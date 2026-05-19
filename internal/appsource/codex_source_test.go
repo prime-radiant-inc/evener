@@ -350,7 +350,7 @@ func TestMapCodexItemUserMessagePreservesImageContent(t *testing.T) {
 		t.Fatalf("text=%q", item.Text)
 	}
 	assertCodexImageItems(t, item.Images, []appwire.InputItem{
-		{Type: "input_image", URL: "data:image/png;base64,aW1n", MediaType: "image/png"},
+		{Type: "input_image", Data: []byte("img"), MediaType: "image/png"},
 		{Type: "local_image", Path: "/tmp/local.png", Name: "local.png"},
 	})
 }
@@ -417,7 +417,8 @@ func assertCodexImageItems(t *testing.T, got, want []appwire.InputItem) {
 			got[i].URL != want[i].URL ||
 			got[i].MediaType != want[i].MediaType ||
 			got[i].Path != want[i].Path ||
-			got[i].Name != want[i].Name {
+			got[i].Name != want[i].Name ||
+			string(got[i].Data) != string(want[i].Data) {
 			t.Fatalf("images[%d]=%+v, want %+v", i, got[i], want[i])
 		}
 	}

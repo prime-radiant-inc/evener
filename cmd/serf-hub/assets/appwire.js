@@ -430,6 +430,7 @@
     return (item.images || []).map((img) => ({
       media_type: img.mediaType || img.media_type || "",
       data: img.data || "",
+      url: img.url || "",
       name: img.name || "",
       sha: img.metadata && img.metadata.sha,
       size: img.metadata && img.metadata.size,

@@ -717,6 +717,8 @@
             src = "data:" + (img.media_type || "image/png") + ";base64," + img.data;
           } else if (img.sha) {
             src = "/s/" + encodeURIComponent(this.sessionId) + "/images/" + encodeURIComponent(img.sha);
+          } else if (img.url) {
+            src = img.url;
           } else {
             continue;
           }

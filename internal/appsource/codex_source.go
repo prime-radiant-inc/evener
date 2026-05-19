@@ -1152,12 +1152,8 @@ func codexInputImages(raw json.RawMessage) []appwire.InputItem {
 		switch rawString(input["type"]) {
 		case "image", "input_image":
 			url := rawString(input["url"])
-			item := appwire.InputItem{
-				Type:      "input_image",
-				URL:       url,
-				MediaType: firstNonEmpty(rawString(input["mediaType"]), rawString(input["mimeType"])),
-			}
-			if item.URL != "" || item.MediaType != "" {
+			item := codexInputImageFromURL(url, firstNonEmpty(rawString(input["mediaType"]), rawString(input["mimeType"])))
+			if item.URL != "" || item.MediaType != "" || len(item.Data) > 0 {
 				images = append(images, item)
 			}
 		case "localImage", "local_image":
@@ -1172,6 +1168,39 @@ func codexInputImages(raw json.RawMessage) []appwire.InputItem {
 		}
 	}
 	return images
+}
+
+func codexInputImageFromURL(rawURL, mediaType string) appwire.InputItem {
+	item := appwire.InputItem{
+		Type:      "input_image",
+		URL:       rawURL,
+		MediaType: mediaType,
+	}
+	if data, dataMediaType, ok := decodeDataImageURL(rawURL); ok {
+		item.URL = ""
+		item.Data = data
+		item.MediaType = firstNonEmpty(mediaType, dataMediaType)
+	}
+	return item
+}
+
+func decodeDataImageURL(rawURL string) ([]byte, string, bool) {
+	if !strings.HasPrefix(rawURL, "data:") {
+		return nil, "", false
+	}
+	header, payload, ok := strings.Cut(strings.TrimPrefix(rawURL, "data:"), ",")
+	if !ok {
+		return nil, "", false
+	}
+	parts := strings.Split(header, ";")
+	if len(parts) == 0 || parts[len(parts)-1] != "base64" {
+		return nil, "", false
+	}
+	data, err := base64.StdEncoding.DecodeString(payload)
+	if err != nil {
+		return nil, "", false
+	}
+	return data, parts[0], true
 }
 
 func notificationMessage(method string, params any) appwire.Notification {

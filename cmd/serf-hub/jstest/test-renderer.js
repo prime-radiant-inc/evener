@@ -43,7 +43,9 @@ window.SerfRenderer.init(conv);
 // ───────────────────────────── replay the captured event stream
 const events = [
   ["SESSION_START", { model: "test", profile: "test", restored: true, session_id: "01TEST" }],
-  ["USER_INPUT", { text: "Hi! How are you?" }],
+  ["USER_INPUT", { text: "Hi! How are you?", images: [
+    { url: "data:image/png;base64,aW1n", name: "data-url.png" },
+  ] }],
   ["STEERING_INJECTED", { text: "<SYSTEM-REMINDER>\n<CURRENT-TASK id=\"1\">\n<TITLE>Understand task</TITLE>\n<INSTRUCTIONS>Understand the task.</INSTRUCTIONS>\n</CURRENT-TASK>\n</SYSTEM-REMINDER>" }],
   ["TOOL_CALL_START", { arguments_json: JSON.stringify({ action: "update", updates: [{ id: 1, status: "done" }] }), call_id: "call_a", tool_name: "task_list" }],
   ["TOOL_CALL_END", { call_id: "call_a", output: "Updated.", tool_name: "task_list" }],
@@ -72,6 +74,8 @@ const pass = (cond, msg) => { if (!cond) failures.push("FAIL: " + msg); };
 const users = conv.querySelectorAll(".user-message");
 pass(users.length === 1, "expected 1 user message, got " + users.length);
 pass(users[0] && users[0].textContent.includes("Hi! How are you?"), "user message text wrong");
+const userThumb = users[0] && users[0].querySelector(".user-image-thumb");
+pass(userThumb && userThumb.getAttribute("src") === "data:image/png;base64,aW1n", "user data-url image did not render");
 
 // 2. Zero steering dividers (current-task should be suppressed).
 const steerings = conv.querySelectorAll(".steering");
