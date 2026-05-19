@@ -736,6 +736,53 @@ func TestWeb_Sidebar_RendersTreeWithLiveAndProjects(t *testing.T) {
 	}
 }
 
+func TestWeb_Sidebar_ProjectLinksEscapeWorkingDir(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "escaped")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workingDir := "/projects/a&b?c#d"
+	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01ESCAPED", UpdatedAt: time.Now(), OriginalPrompt: "escaped project",
+		EnvInfo: agent.EnvironmentInfo{WorkingDir: workingDir},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	escaped := url.QueryEscape(workingDir)
+	for _, want := range []string{
+		`href="/settings/project?cwd=` + escaped + `"`,
+		`hx-get="/_partials/settings/project?cwd=` + escaped + `"`,
+		`hx-push-url="/settings/project?cwd=` + escaped + `"`,
+		`href="/new?dir=` + escaped + `"`,
+		`hx-get="/_partials/workspace/spawn?dir=` + escaped + `"`,
+		`hx-push-url="/new?dir=` + escaped + `"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("sidebar missing escaped URL %q:\n%s", want, body)
+		}
+	}
+}
+
 func TestWeb_Assets_ServeHtmx(t *testing.T) {
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180"})
 	req := httptest.NewRequest(http.MethodGet, "/assets/htmx.min.js", nil)

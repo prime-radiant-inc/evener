@@ -1026,8 +1026,8 @@
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") {
         e.preventDefault();
-        const typed = input.value.trim();
-        if (!typed) return;
+        const typed = input.value;
+        if (!typed.trim()) return;
         const rows = results.querySelectorAll(".chip-picker-dir-row");
         let exact = null;
         for (const row of rows) {

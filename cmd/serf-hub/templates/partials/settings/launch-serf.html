@@ -72,6 +72,7 @@
       form.maxSubagentDepth.value = current.maxSubagentDepth ?? "";
       form.noProjectPrompts.checked = !!current.noProjectPrompts;
       form.dataset.loaded = "true";
+      let statusClearTimer = 0;
 
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
@@ -86,9 +87,18 @@
         };
         try {
           await launchconfig.setLayer("/", "global", out);
-          status.textContent = "Saved at " + new Date().toLocaleTimeString();
-          setTimeout(() => { status.textContent = ""; }, 5000);
+          if (statusClearTimer) clearTimeout(statusClearTimer);
+          const savedMessage = "Saved at " + new Date().toLocaleTimeString();
+          status.textContent = savedMessage;
+          statusClearTimer = setTimeout(() => {
+            if (status.textContent === savedMessage) status.textContent = "";
+            statusClearTimer = 0;
+          }, 5000);
         } catch (err) {
+          if (statusClearTimer) {
+            clearTimeout(statusClearTimer);
+            statusClearTimer = 0;
+          }
           status.textContent = "Error: " + err.message;
         }
       });

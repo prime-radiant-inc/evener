@@ -40,18 +40,18 @@
       {{if .WorkingDir}}
       <a class="project-gear-btn"
          title="project settings for {{.Name}}"
-         href="/settings/project?cwd={{.WorkingDir}}"
-         hx-get="/_partials/settings/project?cwd={{.WorkingDir}}"
+         href="/settings/project?cwd={{.WorkingDir | urlquery}}"
+         hx-get="/_partials/settings/project?cwd={{.WorkingDir | urlquery}}"
          hx-target="#workspace"
          hx-swap="innerHTML"
-         hx-push-url="/settings/project?cwd={{.WorkingDir}}">⚙</a>
+         hx-push-url="/settings/project?cwd={{.WorkingDir | urlquery}}">⚙</a>
       <a class="project-new-btn"
          title="new session in {{.Name}}"
-         href="/new?dir={{.WorkingDir}}"
-         hx-get="/_partials/workspace/spawn?dir={{.WorkingDir}}"
+         href="/new?dir={{.WorkingDir | urlquery}}"
+         hx-get="/_partials/workspace/spawn?dir={{.WorkingDir | urlquery}}"
          hx-target="#workspace"
          hx-swap="innerHTML"
-         hx-push-url="/new?dir={{.WorkingDir}}">＋</a>
+         hx-push-url="/new?dir={{.WorkingDir | urlquery}}">＋</a>
       {{end}}
     </header>
     <div class="project-children">
