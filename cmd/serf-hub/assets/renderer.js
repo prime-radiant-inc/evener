@@ -305,8 +305,17 @@
       // turn/steer / turn/queue / turn/drainAsSteer; deliverNotification
       // below calls tryReconcile after the authoritative reducer update.
       if (window.SerfAppwirePending && typeof window.SerfAppwirePending.create === "function") {
+        // Find the queue-preview <ul data-queue-list> so turn/queue chips
+        // land in the queue chrome instead of the transcript. It usually
+        // lives outside this.conversation's subtree, so search document-
+        // wide and fall back to null (registry then routes queue chips to
+        // the conversation pane to remain backward-compatible).
+        const queueListEl = (this.conversation && this.conversation.ownerDocument
+          ? this.conversation.ownerDocument.querySelector("[data-queue-list]")
+          : document.querySelector("[data-queue-list]"));
         this.pending = window.SerfAppwirePending.create({
           conversation: this.conversation,
+          queueList: queueListEl,
           onRetry: (intent) => {
             // Re-issue the optimistic call. Errors propagate normally;
             // a new pending entry will be created by the wrapper.
@@ -341,9 +350,20 @@
             pending.tryReconcile("turn/steer", params || {});
             pending.tryReconcile("turn/drainAsSteer", params || {});
             return;
-          case "thread/queueChanged":
-            pending.tryReconcile("turn/queue", params || {});
+          case "thread/queueChanged": {
+            // Queue chips reconcile against the authoritative preview list,
+            // not by text-equality on a single field. The registry walks its
+            // pending turn/queue entries and removes any whose text appears
+            // in the preview. Chips still in flight (not yet in preview)
+            // remain pending until the next queueChanged or until timeout.
+            const preview = (params && params.queue && Array.isArray(params.queue.preview))
+              ? params.queue.preview.map(p => (p && p.text) || "")
+              : [];
+            if (typeof pending.tryReconcileQueue === "function") {
+              pending.tryReconcileQueue(preview);
+            }
             return;
+          }
           case "item/started":
           case "item/completed":
             if (params && params.item && params.item.type === "user_message") {
@@ -704,7 +724,11 @@
 
     userMessageCount() {
       if (!this.conversation) return 0;
-      return this.conversation.querySelectorAll(".user-message").length;
+      // Exclude the optimistic-pending turn/start chip: it carries
+      // .user-message for visual styling but is not an authoritative
+      // user message yet, and we don't want appendLocalUserMessage to
+      // short-circuit just because a pending chip is on screen.
+      return this.conversation.querySelectorAll(".user-message:not(.optimistic-pending)").length;
     },
 
     promoteLocalUserMessage(data) {

@@ -17,6 +17,7 @@
 
   function create(opts) {
     const conv = opts.conversation;
+    const queueList = opts.queueList || null;
     const setTimeoutFn = opts.setTimeout || setTimeout;
     const clearTimeoutFn = opts.clearTimeout || clearTimeout;
     const timeoutMs = (typeof opts.timeoutMs === "number") ? opts.timeoutMs : 10000;
@@ -27,7 +28,9 @@
 
     function chipForMethod(method, text) {
       const doc = conv.ownerDocument;
-      const el = doc.createElement("div");
+      // turn/queue chips render as <li> so they fit naturally inside the
+      // queue-preview <ul> ([data-queue-list]); other chips remain <div>.
+      const el = doc.createElement(method === "turn/queue" ? "li" : "div");
       switch (method) {
         case "turn/steer":
           el.className = "steering optimistic-pending";
@@ -42,7 +45,7 @@
           el.textContent = text;
           break;
         case "turn/queue":
-          el.className = "queue-pending optimistic-pending";
+          el.className = "queue-preview-item optimistic-pending";
           el.textContent = text;
           break;
         default:
@@ -52,13 +55,23 @@
       return el;
     }
 
+    // containerFor picks the DOM parent for a given method's chip.
+    // turn/queue chips belong in the queue-preview list; everything
+    // else lands in the conversation pane. If a caller doesn't supply
+    // a queueList, queue chips fall back to the conversation pane so
+    // existing single-container callers keep working.
+    function containerFor(method) {
+      if (method === "turn/queue" && queueList) return queueList;
+      return conv;
+    }
+
     function register(intent) {
       nextID++;
       const id = nextID;
       const method = intent.method;
       const text = intent.text || "";
       const el = chipForMethod(method, text);
-      conv.appendChild(el);
+      containerFor(method).appendChild(el);
 
       const timerID = setTimeoutFn(() => {
         fail({ id }, "server did not confirm");
@@ -85,6 +98,10 @@
       retry.href = "#";
       retry.addEventListener("click", (e) => {
         e.preventDefault();
+        // Remove the failed chip before re-issuing so the user sees a
+        // single fresh pending chip in its place rather than the failed
+        // chip stacked beside the new optimistic one.
+        if (ent.el.parentNode) ent.el.parentNode.removeChild(ent.el);
         onRetry({ method: ent.method, text: ent.text });
       });
       ent.el.appendChild(retry);
@@ -116,7 +133,36 @@
       return false;
     }
 
-    return { register, fail, tryReconcile };
+    // tryReconcileQueue reconciles pending turn/queue entries against the
+    // authoritative queue-preview list emitted by thread/queueChanged.
+    // Each entry in previewTexts is the .text field of a queue preview
+    // entry. For every pending turn/queue chip whose normalized text
+    // appears in the preview, the chip is removed. Chips whose text isn't
+    // in the preview are left in flight (still pending, will time out if
+    // never confirmed). Returns the number of chips reconciled.
+    function tryReconcileQueue(previewTexts) {
+      const wanted = new Set();
+      if (Array.isArray(previewTexts)) {
+        for (const t of previewTexts) {
+          const n = normalizeText(t);
+          if (n) wanted.add(n);
+        }
+      }
+      let removed = 0;
+      // Snapshot ids first since removeEntry mutates the map.
+      const ids = [];
+      for (const [id, ent] of entries) {
+        if (ent.method !== "turn/queue") continue;
+        if (wanted.has(normalizeText(ent.text))) ids.push(id);
+      }
+      for (const id of ids) {
+        removeEntry(id);
+        removed++;
+      }
+      return removed;
+    }
+
+    return { register, fail, tryReconcile, tryReconcileQueue };
   }
 
   window.SerfAppwirePending = { create };

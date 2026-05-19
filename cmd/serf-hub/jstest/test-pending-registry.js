@@ -8,7 +8,9 @@ const MODULE = fs.readFileSync(path.resolve(__dirname, "../assets/pending.js"), 
 function build() {
   const dom = new JSDOM(`<!DOCTYPE html><html><body>
     <div id="conversation"></div>
-    <div id="queue-preview"></div>
+    <div class="queue-preview" data-queue-preview hidden>
+      <ul data-queue-list></ul>
+    </div>
   </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
   const { window } = dom;
   window.eval(MODULE);
@@ -104,6 +106,100 @@ function build() {
   assert.equal(reg.tryReconcile("turn/drainAsSteer", { text: "anything joined here" }), true);
   assert.equal(conv.querySelectorAll(".optimistic-pending").length, 0);
   console.log("ok drain_reconciles_first_match");
+})();
+
+// C2 — turn/queue chip lands in queueList, not in conversation,
+// and tryReconcileQueue removes any chip whose text appears in the
+// authoritative preview list emitted by thread/queueChanged.
+(function test_queue_chip_lands_in_queue_list_and_reconciles_via_preview() {
+  const window = build();
+  const conv = window.document.getElementById("conversation");
+  const queueList = window.document.querySelector("[data-queue-list]");
+  const reg = window.SerfAppwirePending.create({ conversation: conv, queueList });
+
+  reg.register({ method: "turn/queue", text: "q1 text" });
+
+  // Chip lives in the queue-list, not the conversation pane.
+  assert.equal(conv.querySelectorAll(".optimistic-pending").length, 0,
+    "queue chip should not appear in conversation pane");
+  const inQueue = queueList.querySelectorAll(".optimistic-pending");
+  assert.equal(inQueue.length, 1, "expected 1 pending chip in queueList");
+  assert.equal(inQueue[0].tagName, "LI", "queue chip should render as <li> for the queue <ul>");
+  assert.match(inQueue[0].textContent, /q1 text/);
+
+  // tryReconcileQueue removes chips whose text matches a preview entry.
+  const removed = reg.tryReconcileQueue(["q1 text"]);
+  assert.equal(removed, 1, "expected one chip reconciled");
+  assert.equal(queueList.querySelectorAll(".optimistic-pending").length, 0);
+  console.log("ok queue_chip_lands_in_queue_list_and_reconciles_via_preview");
+})();
+
+// tryReconcileQueue does not touch chips whose text isn't in the preview.
+(function test_queue_reconcile_leaves_chips_not_in_preview() {
+  const window = build();
+  const conv = window.document.getElementById("conversation");
+  const queueList = window.document.querySelector("[data-queue-list]");
+  const reg = window.SerfAppwirePending.create({ conversation: conv, queueList });
+
+  reg.register({ method: "turn/queue", text: "first" });
+  reg.register({ method: "turn/queue", text: "second" });
+
+  const removed = reg.tryReconcileQueue(["first"]);
+  assert.equal(removed, 1);
+  const remaining = queueList.querySelectorAll(".optimistic-pending");
+  assert.equal(remaining.length, 1);
+  assert.match(remaining[0].textContent, /second/);
+  console.log("ok queue_reconcile_leaves_chips_not_in_preview");
+})();
+
+// Backward-compat: callers without queueList still get queue chips
+// (they fall back to the conversation pane rather than crashing).
+(function test_queue_chip_falls_back_to_conversation_without_queue_list() {
+  const window = build();
+  const conv = window.document.getElementById("conversation");
+  const reg = window.SerfAppwirePending.create({ conversation: conv });
+  reg.register({ method: "turn/queue", text: "q1" });
+  assert.equal(conv.querySelectorAll(".optimistic-pending").length, 1);
+  console.log("ok queue_chip_falls_back_to_conversation_without_queue_list");
+})();
+
+// I4 — clicking Retry on a failed chip removes the failed DOM element
+// before invoking onRetry, so the caller can re-issue without two
+// chips stacking on screen.
+(function test_retry_click_removes_failed_chip_before_invoking_onRetry() {
+  const window = build();
+  const conv = window.document.getElementById("conversation");
+  const calls = [];
+  const reg = window.SerfAppwirePending.create({
+    conversation: conv,
+    onRetry: (intent) => {
+      // Capture both the intent and the DOM state at the moment onRetry runs,
+      // so we can assert the failed chip was removed before re-issue.
+      calls.push({
+        intent,
+        failedCount: conv.querySelectorAll(".optimistic-failed").length,
+      });
+    },
+  });
+
+  const h = reg.register({ method: "turn/steer", text: "redo this" });
+  reg.fail(h, "server refused");
+  const failed = conv.querySelector(".optimistic-failed");
+  assert.ok(failed, "expected a failed chip");
+  const retry = failed.querySelector(".optimistic-retry");
+  assert.ok(retry, "expected a retry link");
+
+  // Simulate a real click event (jsdom dispatches click handlers).
+  const ev = new window.MouseEvent("click", { bubbles: true, cancelable: true });
+  retry.dispatchEvent(ev);
+
+  assert.equal(calls.length, 1, "onRetry should have been called once");
+  assert.deepEqual(calls[0].intent, { method: "turn/steer", text: "redo this" });
+  assert.equal(calls[0].failedCount, 0,
+    "failed chip must be removed from DOM before onRetry runs");
+  assert.equal(conv.querySelectorAll(".optimistic-failed").length, 0,
+    "failed chip should remain absent after retry");
+  console.log("ok retry_click_removes_failed_chip_before_invoking_onRetry");
 })();
 
 console.log("PASS test-pending-registry.js");
