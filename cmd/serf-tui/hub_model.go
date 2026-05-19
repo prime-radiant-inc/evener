@@ -419,6 +419,20 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case hubDrainAsSteerMsg:
 		if msg.err != nil {
+			if msg.queued {
+				m.pendingAttachments = nil
+				preview := strings.TrimSpace(msg.text)
+				if preview == "" && msg.hadAttachment {
+					preview = "[image]"
+				}
+				if preview != "" {
+					m.sessionQueue = append(m.sessionQueue, preview)
+					m.session.refreshViewport()
+				}
+				m.addHubErrorNotice("Force-steer failed after queueing", "appwire", msg.err, "The composer payload was queued already. Retry force-steer without resubmitting the same draft.")
+				m.recordSessionError("Force-steer failed after queueing: " + msg.err.Error())
+				return m, nil
+			}
 			if draft := strings.TrimSpace(msg.draft); draft != "" {
 				m.session.setInputValue(msg.draft)
 			}

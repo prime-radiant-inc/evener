@@ -19,13 +19,15 @@ type hubQueueMsg struct {
 	err   error
 }
 
-// hubDrainAsSteerMsg reports the result of a turn/drainAsSteer call. On
-// success the local queue preview is cleared and a "Steering sent." notice
-// fires. On failure the composer draft is restored if the call was carrying
-// composer text.
+// hubDrainAsSteerMsg reports the result of a turn/drainAsSteer call. If a
+// composer payload was queued before drain, queued is true so the UI does not
+// restore the already-accepted draft on a later drain failure.
 type hubDrainAsSteerMsg struct {
-	draft string
-	err   error
+	text          string
+	draft         string
+	queued        bool
+	hadAttachment bool
+	err           error
 }
 
 // sendHubQueue issues turn/queue (kata 111a) to enqueue text for processing
@@ -57,20 +59,28 @@ func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft st
 		if text != "" || len(attachments) > 0 {
 			items, err := buildAttachmentItems(attachments)
 			if err != nil {
-				return hubDrainAsSteerMsg{draft: draft, err: err}
+				return hubDrainAsSteerMsg{text: text, draft: draft, hadAttachment: len(attachments) > 0, err: err}
 			}
 			if err := client.TurnQueue(context.Background(), appwire.TurnQueueParams{
 				Ref:   ref.String(),
 				Text:  text,
 				Items: items,
 			}); err != nil {
-				return hubDrainAsSteerMsg{draft: draft, err: err}
+				return hubDrainAsSteerMsg{text: text, draft: draft, hadAttachment: len(attachments) > 0, err: err}
+			}
+			if text != "" || len(items) > 0 {
+				queued := hubDrainAsSteerMsg{text: text, draft: draft, queued: true, hadAttachment: len(items) > 0}
+				err := client.TurnDrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{
+					Ref: ref.String(),
+				})
+				queued.err = err
+				return queued
 			}
 		}
 		err := client.TurnDrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{
 			Ref: ref.String(),
 		})
-		return hubDrainAsSteerMsg{draft: draft, err: err}
+		return hubDrainAsSteerMsg{text: text, draft: draft, err: err}
 	}
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -293,6 +294,50 @@ func TestHubModelBusyCtrlSDrainsQueueAsSteer(t *testing.T) {
 	view := drained.View()
 	if !strings.Contains(view, "Force-steer sent.") {
 		t.Fatalf("missing force-steer confirmation:\n%s", view)
+	}
+}
+
+func TestHubModelBusyCtrlSDrainFailureAfterQueueDoesNotRestoreDraft(t *testing.T) {
+	var queueParams []appwire.TurnQueueParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
+			queueParams = append(queueParams, params)
+			return appwire.EmptyResponse{}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
+			return appwire.EmptyResponse{}, errors.New("drain failed")
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.detail.State = "processing"
+	m.detail.Capabilities.Send = false
+	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Queue = true
+	m.detail.ActiveTurnID = "turn_busy"
+	m.session.processing = true
+	m.session.setInputValue("queued before failed drain")
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	if cmd == nil {
+		t.Fatal("ctrl+s should issue queue+drain command")
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	got := updated.(hubModel)
+
+	if len(queueParams) != 1 || queueParams[0].Text != "queued before failed drain" {
+		t.Fatalf("queue params=%v, want queued composer payload", queueParams)
+	}
+	if got.session.input.Value() != "" {
+		t.Fatalf("draft was restored after successful queue: %q", got.session.input.Value())
+	}
+	if len(got.sessionQueue) != 1 || got.sessionQueue[0] != "queued before failed drain" {
+		t.Fatalf("sessionQueue=%v, want queued payload preview", got.sessionQueue)
+	}
+	view := got.View()
+	if !strings.Contains(view, "Force-steer failed after queueing") {
+		t.Fatalf("missing partial failure notice:\n%s", view)
 	}
 }
 

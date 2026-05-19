@@ -100,7 +100,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "[hub] auth token: %v\n", err)
 		os.Exit(1)
 	}
-	credsStore, _ := credentials.LoadStore(filepath.Join(hubStateRoot, "credentials.toml"))
+	credsStore, err := credentials.LoadStore(filepath.Join(hubStateRoot, "credentials.toml"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[hub] credentials store: %v\n", err)
+		os.Exit(1)
+	}
 	resolvedSerfBinary := resolveSerfBinaryPath(*serfBinary, currentExecutable(), exec.LookPath)
 	if *serfBinary == "" && resolvedSerfBinary != "" && resolvedSerfBinary != "serf" {
 		fmt.Fprintf(os.Stderr, "[hub] resolved serf at %s\n", resolvedSerfBinary)
