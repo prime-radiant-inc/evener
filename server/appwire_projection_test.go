@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"testing"
 
 	"primeradiant.com/serf/agent"
@@ -35,6 +36,42 @@ func TestAppEventProjectorCarriesUserInputTranscriptEntryIndex(t *testing.T) {
 	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
 	if item.TranscriptEntryIndex != 3 {
 		t.Fatalf("transcript entry index=%d, want 3", item.TranscriptEntryIndex)
+	}
+}
+
+func TestAppEventProjectorJSONUsesCodexLifecycleShape(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	out := projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
+
+	started := notificationParamsJSON(t, out, appwire.NotifyTurnStarted)
+	var turnStarted struct {
+		ThreadID string       `json:"threadId"`
+		Ref      string       `json:"ref"`
+		Turn     appwire.Turn `json:"turn"`
+	}
+	if err := json.Unmarshal(started, &turnStarted); err != nil {
+		t.Fatalf("turn/started json: %v", err)
+	}
+	if turnStarted.ThreadID != "th_1" || turnStarted.Ref != "local:th_1" || turnStarted.Turn.Status != appwire.TurnStatusInProgress {
+		t.Fatalf("turn/started=%s", started)
+	}
+
+	completed := notificationParamsJSON(t, out, appwire.NotifyItemCompleted)
+	var itemCompleted struct {
+		ThreadID string `json:"threadId"`
+		Ref      string `json:"ref"`
+		TurnID   string `json:"turnId"`
+		Item     struct {
+			Type   string `json:"type"`
+			Text   string `json:"text"`
+			Status string `json:"status"`
+		} `json:"item"`
+	}
+	if err := json.Unmarshal(completed, &itemCompleted); err != nil {
+		t.Fatalf("item/completed json: %v", err)
+	}
+	if itemCompleted.ThreadID != "th_1" || itemCompleted.Ref != "local:th_1" || itemCompleted.Item.Type != "userMessage" || itemCompleted.Item.Text != "hello" || itemCompleted.Item.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("item/completed=%s", completed)
 	}
 }
 
@@ -621,6 +658,22 @@ func hasAppNotification(items []AppNotification, method string) bool {
 		}
 	}
 	return false
+}
+
+func notificationParamsJSON(t *testing.T, items []AppNotification, method string) []byte {
+	t.Helper()
+	for _, item := range items {
+		if item.Method != method {
+			continue
+		}
+		data, err := json.Marshal(item.Params)
+		if err != nil {
+			t.Fatalf("marshal params for %s: %v", method, err)
+		}
+		return data
+	}
+	t.Fatalf("missing notification %q in %+v", method, items)
+	return nil
 }
 
 func notificationTurnID(t *testing.T, items []AppNotification, method string) string {
