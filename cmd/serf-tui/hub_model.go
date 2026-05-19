@@ -431,7 +431,9 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.session.refreshViewport()
 		return m, nil
 	case hubSendMsg:
-		m.finishAttachmentSubmit()
+		if msg.trackedAttachmentSubmit {
+			m.finishAttachmentSubmit()
+		}
 		if msg.err != nil {
 			// Preserve pendingAttachments on error so the user can retry
 			// without re-pasting (kata re91).
@@ -446,7 +448,9 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case hubQueueMsg:
-		m.finishAttachmentSubmit()
+		if msg.trackedAttachmentSubmit {
+			m.finishAttachmentSubmit()
+		}
 		if msg.err != nil {
 			// Restore the draft; the wire state will not advance because
 			// the daemon never received the message. Preserve attachments
@@ -464,7 +468,9 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// (kata r80p).
 		return m, nil
 	case hubDrainAsSteerMsg:
-		m.finishAttachmentSubmit()
+		if msg.trackedAttachmentSubmit {
+			m.finishAttachmentSubmit()
+		}
 		if msg.err != nil {
 			if msg.queued {
 				m.clearPendingAttachments(true)

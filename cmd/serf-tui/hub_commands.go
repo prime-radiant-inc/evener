@@ -28,10 +28,11 @@ type hubNotificationMsg struct {
 }
 
 type hubSendMsg struct {
-	text   string
-	draft  string
-	turnID string
-	err    error
+	text                    string
+	draft                   string
+	turnID                  string
+	trackedAttachmentSubmit bool
+	err                     error
 }
 
 type hubTasksMsg struct {
@@ -374,13 +375,14 @@ func modelDiagnosticDisabledReason(diagnostic appwire.ModelListDiagnostic) strin
 }
 
 func sendHubInput(client *appwire.Client, ref appwire.Ref, text string, draft string, attachments []*PastedImage) tea.Cmd {
+	trackedAttachmentSubmit := len(attachments) > 0
 	return func() tea.Msg {
 		items, err := buildAttachmentItems(attachments)
 		if err != nil {
-			return hubSendMsg{text: text, draft: draft, err: err}
+			return hubSendMsg{text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, err: err}
 		}
 		resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: ref.String(), Prompt: text, Items: items})
-		return hubSendMsg{text: text, draft: draft, turnID: resp.Turn.ID, err: err}
+		return hubSendMsg{text: text, draft: draft, turnID: resp.Turn.ID, trackedAttachmentSubmit: trackedAttachmentSubmit, err: err}
 	}
 }
 

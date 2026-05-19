@@ -136,6 +136,29 @@ func TestRemoveAttachmentDefersTempCleanupDuringSubmit(t *testing.T) {
 	}
 }
 
+func TestTextOnlyCompletionDoesNotReleaseDeferredAttachmentCleanup(t *testing.T) {
+	m := newSessionHubModel(nil)
+	path := filepath.Join(t.TempDir(), "paste.png")
+	if err := os.WriteFile(path, []byte("png"), 0o644); err != nil {
+		t.Fatalf("write temp attachment: %v", err)
+	}
+	m.attachmentSubmitsInFlight = 1
+	m.deferredAttachmentCleanup = []*PastedImage{{
+		Path:   path,
+		Origin: "clipboard-image",
+	}}
+
+	updated, _ := m.Update(hubSendMsg{text: "text only"})
+	got := updated.(hubModel)
+
+	if got.attachmentSubmitsInFlight != 1 {
+		t.Fatalf("attachmentSubmitsInFlight = %d, want 1", got.attachmentSubmitsInFlight)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("deferred temp attachment cleaned by text-only completion: %v", err)
+	}
+}
+
 // TestCtrlBackspaceRemovesLastAttachment verifies that pressing
 // Ctrl+Backspace in the composer drops the most-recently-added
 // attachment chip without touching the rest. Kata 5vxd.

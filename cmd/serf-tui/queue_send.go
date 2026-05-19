@@ -14,21 +14,23 @@ import (
 // local queue preview is appended with the queued text; on failure the
 // composer draft is restored so the user can retry without retyping.
 type hubQueueMsg struct {
-	text  string
-	draft string
-	err   error
+	text                    string
+	draft                   string
+	trackedAttachmentSubmit bool
+	err                     error
 }
 
 // hubDrainAsSteerMsg reports the result of a turn/drainAsSteer call. If a
 // composer payload was queued before drain, queued is true so the UI does not
 // restore the already-accepted draft on a later drain failure.
 type hubDrainAsSteerMsg struct {
-	text          string
-	draft         string
-	queued        bool
-	preQueueDepth int
-	hadAttachment bool
-	err           error
+	text                    string
+	draft                   string
+	queued                  bool
+	preQueueDepth           int
+	hadAttachment           bool
+	trackedAttachmentSubmit bool
+	err                     error
 }
 
 // sendHubQueue issues turn/queue (kata 111a) to enqueue text for processing
@@ -36,17 +38,18 @@ type hubDrainAsSteerMsg struct {
 // they are read from disk at submit time and shipped as image InputItems
 // alongside the text.
 func sendHubQueue(client *appwire.Client, ref appwire.Ref, text, draft string, attachments []*PastedImage) tea.Cmd {
+	trackedAttachmentSubmit := len(attachments) > 0
 	return func() tea.Msg {
 		items, err := buildAttachmentItems(attachments)
 		if err != nil {
-			return hubQueueMsg{text: text, draft: draft, err: err}
+			return hubQueueMsg{text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, err: err}
 		}
 		err = client.TurnQueue(context.Background(), appwire.TurnQueueParams{
 			Ref:   ref.String(),
 			Text:  text,
 			Items: items,
 		})
-		return hubQueueMsg{text: text, draft: draft, err: err}
+		return hubQueueMsg{text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, err: err}
 	}
 }
 
@@ -56,6 +59,7 @@ func sendHubQueue(client *appwire.Client, ref appwire.Ref, text, draft string, a
 // first so the daemon's atomic drain folds them into the same STEERING
 // payload alongside everything already queued.
 func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft string, attachments []*PastedImage, preQueueDepth ...int) tea.Cmd {
+	trackedAttachmentSubmit := len(attachments) > 0
 	return func() tea.Msg {
 		depth := 0
 		if len(preQueueDepth) > 0 {
@@ -64,17 +68,17 @@ func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft st
 		if text != "" || len(attachments) > 0 {
 			items, err := buildAttachmentItems(attachments)
 			if err != nil {
-				return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, err: err}
+				return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, err: err}
 			}
 			if err := client.TurnQueue(context.Background(), appwire.TurnQueueParams{
 				Ref:   ref.String(),
 				Text:  text,
 				Items: items,
 			}); err != nil {
-				return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, err: err}
+				return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, err: err}
 			}
 			if text != "" || len(items) > 0 {
-				queued := hubDrainAsSteerMsg{text: text, draft: draft, queued: true, preQueueDepth: depth, hadAttachment: len(items) > 0}
+				queued := hubDrainAsSteerMsg{text: text, draft: draft, queued: true, preQueueDepth: depth, hadAttachment: len(items) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit}
 				err := client.TurnDrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{
 					Ref: ref.String(),
 				})
@@ -85,7 +89,7 @@ func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft st
 		err := client.TurnDrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{
 			Ref: ref.String(),
 		})
-		return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, err: err}
+		return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, trackedAttachmentSubmit: trackedAttachmentSubmit, err: err}
 	}
 }
 
