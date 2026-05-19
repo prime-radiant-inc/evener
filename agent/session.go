@@ -974,6 +974,12 @@ func (s *Session) abortResponseProcessing(ctx context.Context) error {
 	return nil
 }
 
+func (s *Session) isClosingOrClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closingOrClosedLocked()
+}
+
 // SetModel changes the model used for future LLM calls.
 // Takes effect on the next request.
 func (s *Session) SetModel(model string) {
@@ -1602,17 +1608,7 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 
 func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecResult {
 	if err := s.abortIfClosing(ctx); err != nil {
-		msg := "tool skipped: session is closing"
-		if err != context.Canceled {
-			msg = "tool skipped: " + err.Error()
-		}
-		return ToolExecResult{
-			ToolName:   call.Name,
-			CallID:     call.ID,
-			Output:     msg,
-			FullOutput: msg,
-			IsError:    true,
-		}
+		return skippedToolResult(call, err)
 	}
 	// PreToolUse hooks
 	if s.hookRunner != nil {
@@ -1640,6 +1636,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 			}
 		}
 	}
+	if err := s.abortIfClosing(ctx); err != nil {
+		return skippedToolResult(call, err)
+	}
 
 	argsJSON, _ := json.Marshal(call.Arguments)
 	startData := ToolCallStartData{
@@ -1660,6 +1659,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 	// Session-level tools (subagents) are registered in the registry with closures.
 	ctx = context.WithValue(ctx, ctxToolCallID, call.ID)
 	toolStart := time.Now()
+	if err := s.abortIfClosing(ctx); err != nil {
+		return skippedToolResult(call, err)
+	}
 	res := s.reg.ExecuteCall(ctx, s.env, call)
 	res.DurationMS = time.Since(toolStart).Milliseconds()
 
@@ -1703,6 +1705,59 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 	}
 
 	return res
+}
+
+func skippedToolResult(call llm.ToolCallData, err error) ToolExecResult {
+	msg := "tool skipped: session is closing"
+	if err != nil && err != context.Canceled {
+		msg = "tool skipped: " + err.Error()
+	}
+	return ToolExecResult{
+		ToolName:   call.Name,
+		CallID:     call.ID,
+		Output:     msg,
+		FullOutput: msg,
+		IsError:    true,
+	}
+}
+
+func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []ToolExecResult, err error) {
+	if len(calls) == 0 {
+		return
+	}
+	if err == nil {
+		err = context.Canceled
+	}
+	parts := make([]llm.ContentPart, 0, len(calls))
+	for i, call := range calls {
+		res := ToolExecResult{}
+		if i < len(results) {
+			res = results[i]
+		}
+		if res.CallID == "" {
+			msg := "tool canceled: " + err.Error()
+			res = ToolExecResult{
+				ToolName:   call.Name,
+				CallID:     call.ID,
+				Output:     msg,
+				FullOutput: msg,
+				IsError:    true,
+			}
+		}
+		parts = append(parts, llm.ContentPart{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID:     res.CallID,
+				Name:           res.ToolName,
+				Content:        res.Output,
+				IsError:        true,
+				DurationMS:     res.DurationMS,
+				ImageData:      res.ImageData,
+				ImageMediaType: res.ImageMediaType,
+			},
+		})
+	}
+	s.appendTurn(TurnToolResults, llm.Message{Role: llm.RoleTool, Content: parts})
 }
 
 func (s *Session) appendTurn(kind TurnKind, m llm.Message) {
@@ -2422,6 +2477,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		consecutiveBareTextResponses = 0
 
 		if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+			if ctx.Err() != nil && !s.isClosingOrClosed() {
+				s.appendCanceledToolResults(calls, nil, abortErr)
+			}
 			return "", abortErr
 		}
 
@@ -2483,21 +2541,33 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 					readBatch = append(readBatch, i)
 				} else {
 					if err := flushReadBatch(readBatch); err != nil {
+						if ctx.Err() != nil && !s.isClosingOrClosed() {
+							s.appendCanceledToolResults(calls, results, err)
+						}
 						return "", err
 					}
 					readBatch = readBatch[:0]
 					if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+						if ctx.Err() != nil && !s.isClosingOrClosed() {
+							s.appendCanceledToolResults(calls, results, abortErr)
+						}
 						return "", abortErr
 					}
 					results[i] = s.execTool(ctx, call)
 				}
 			}
 			if err := flushReadBatch(readBatch); err != nil {
+				if ctx.Err() != nil && !s.isClosingOrClosed() {
+					s.appendCanceledToolResults(calls, results, err)
+				}
 				return "", err
 			}
 		} else {
 			for i := range calls {
 				if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+					if ctx.Err() != nil && !s.isClosingOrClosed() {
+						s.appendCanceledToolResults(calls, results, abortErr)
+					}
 					return "", abortErr
 				}
 				results[i] = s.execTool(ctx, calls[i])
@@ -2505,6 +2575,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 
 		if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+			if ctx.Err() != nil && !s.isClosingOrClosed() {
+				s.appendCanceledToolResults(calls, results, abortErr)
+			}
 			return "", abortErr
 		}
 
