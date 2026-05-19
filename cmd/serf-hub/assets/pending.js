@@ -15,6 +15,10 @@
     return String(s || "").replace(/\s+/g, " ").trim();
   }
 
+  function itemCount(items) {
+    return Array.isArray(items) ? items.length : 0;
+  }
+
   function create(opts) {
     const conv = opts.conversation;
     const queueList = opts.queueList || null;
@@ -119,6 +123,7 @@
 
     function tryReconcile(method, params) {
       const want = normalizeText(params && params.text);
+      const wantItems = itemCount(params && (params.items || params.images));
       for (const [id, ent] of entries) {
         if (ent.method !== method) continue;
         if (method === "turn/drainAsSteer") {
@@ -126,7 +131,13 @@
           removeEntry(id);
           return true;
         }
-        if (!want) continue;
+        if (!want) {
+          if (method === "turn/start" && !normalizeText(ent.text) && itemCount(ent.items) > 0 && wantItems > 0) {
+            removeEntry(id);
+            return true;
+          }
+          continue;
+        }
         if (normalizeText(ent.text) !== want) continue;
         removeEntry(id);
         return true;

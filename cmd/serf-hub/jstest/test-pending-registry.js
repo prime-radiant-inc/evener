@@ -68,6 +68,17 @@ function build() {
   console.log("ok try_reconcile_no_match_returns_false");
 })();
 
+(function test_start_reconcile_matches_image_only_submission() {
+  const window = build();
+  const conv = window.document.getElementById("conversation");
+  const reg = window.SerfAppwirePending.create({ conversation: conv });
+  reg.register({ method: "turn/start", text: "", items: [{ type: "image", name: "shot.png" }] });
+
+  assert.equal(reg.tryReconcile("turn/start", { text: "", items: [{ type: "image", name: "shot.png" }] }), true);
+  assert.equal(conv.querySelectorAll(".optimistic-pending").length, 0);
+  console.log("ok start_reconcile_matches_image_only_submission");
+})();
+
 (function test_timeout_marks_failed() {
   const window = build();
   const fakeNow = { v: 0 };

@@ -73,6 +73,16 @@ window.eval(rendererSrc);
 
   assert.equal(queueList.querySelectorAll(".optimistic-pending").length, 0,
     "string queue previews should reconcile pending queue chips");
+
+  pending.register({ method: "turn/start", text: "", items: [{ type: "image", name: "shot.png" }] });
+  assert.equal(conv.querySelectorAll(".optimistic-pending").length, 1, "expected image-only pending user chip");
+  notify("item/completed", {
+    threadId: "01TEST",
+    item: { type: "user_message", text: "", images: [{ type: "image", name: "shot.png" }] },
+  });
+  assert.equal(conv.querySelectorAll(".optimistic-pending").length, 0,
+    "image-only authoritative user items should reconcile pending turn/start chips");
+
   console.log("PASS test-appwire-queue-reconcile.js");
   process.exit(0);
 })().catch((err) => {

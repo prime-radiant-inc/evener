@@ -123,10 +123,9 @@ formDom.window.localStorage.setItem(unrelatedKey,
 // Global scalar keys: the sweep handles `global.model` explicitly but
 // must NOT JSON.parse `global.working_dir` / `global.last-working-dir`
 // (those are plain strings, not blobs). Seed `global.working_dir`
-// matching the form's existing value so loadDefaults doesn't override
-// the test fixture; the assertion below verifies the key survives the
-// sweep untouched.
-formDom.window.localStorage.setItem("serf-hub.spawn-defaults.global.working_dir", "/tmp/project-with-oauth");
+// different from the form's server-provided value; loadDefaults must not
+// override a pre-filled ?dir value with this global sticky default.
+formDom.window.localStorage.setItem("serf-hub.spawn-defaults.global.working_dir", "/tmp/global-sticky-dir");
 formDom.window.localStorage.setItem("serf-hub.spawn-defaults.global.last-working-dir", "/tmp/some-other-dir");
 
 formDom.window.eval(spawnSrc);
@@ -152,10 +151,12 @@ const unrelatedAfter = JSON.parse(formDom.window.localStorage.getItem(unrelatedK
 assert(unrelatedAfter && unrelatedAfter.model === "openai/gpt-5-mini",
   "sweep must only match keys with the `serf-hub.spawn-defaults.` prefix, got " + JSON.stringify(unrelatedAfter));
 // Global scalar keys must survive the sweep untouched.
-assert(formDom.window.localStorage.getItem("serf-hub.spawn-defaults.global.working_dir") === "/tmp/project-with-oauth",
+assert(formDom.window.localStorage.getItem("serf-hub.spawn-defaults.global.working_dir") === "/tmp/global-sticky-dir",
   "sweep must not touch global.working_dir scalar");
 assert(formDom.window.localStorage.getItem("serf-hub.spawn-defaults.global.last-working-dir") === "/tmp/some-other-dir",
   "sweep must not touch global.last-working-dir scalar");
+assert(formDom.window.document.querySelector('input[name="working_dir"]').value === "/tmp/project-with-oauth",
+  "server-provided working_dir must not be overwritten by global sticky default");
 
 const modelDisplay = () => formDom.window.document.querySelector("[data-chip-value-model]").textContent.trim();
 const modelValue = () => formDom.window.document.querySelector('input[name="model"]').value;

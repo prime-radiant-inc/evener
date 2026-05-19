@@ -2024,7 +2024,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			policy = *s.cfg.LLMRetryPolicy
 		}
 		callCtx := llm.WithAPILogContext(ctx, s.id, round)
-		modelResp, err := s.callModel(callCtx, policy, req)
+		modelResp, err := s.callModel(callCtx, policy, s.profile, req)
 		// Fallback chain: when the primary model returns a Permanent-class
 		// provider error (403/404/422/...), try each configured fallback in
 		// literal order. Stops at the first success; if all fallbacks also
@@ -2035,13 +2035,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if err != nil && len(s.cfg.ModelFallbacks) > 0 && llm.Classify(err) == llm.ErrorClassPermanent {
 			for _, fbModel := range s.cfg.ModelFallbacks {
 				fbProfile := s.profile.WithModel(fbModel)
-				if fbProfile.ID() != req.Provider {
-					continue
-				}
 				fbReq := req
 				fbReq.Model = fbProfile.Model()
 				fbReq.Provider = fbProfile.ID()
-				modelResp, err = s.callModel(callCtx, policy, fbReq)
+				fbReq.WebSearch = fbProfile.SupportsWebSearch()
+				fbReq.ProviderOptions = fbProfile.ProviderOptions()
+				modelResp, err = s.callModel(callCtx, policy, fbProfile, fbReq)
 				if err == nil {
 					// Reflect the model that actually answered in the
 					// request used for downstream logging (transcript,
@@ -2548,8 +2547,8 @@ type sessionModelResponse struct {
 	StreamedAssistant bool
 }
 
-func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, req llm.Request) (sessionModelResponse, error) {
-	if s.profile.SupportsStreaming() {
+func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile ProviderProfile, req llm.Request) (sessionModelResponse, error) {
+	if profile.SupportsStreaming() {
 		st, err := llm.Retry(ctx, policy, s.cfg.LLMSleep, nil, func() (llm.Stream, error) {
 			st, err := s.client.Stream(ctx, req)
 			if err == nil && st == nil {

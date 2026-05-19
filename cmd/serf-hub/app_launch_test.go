@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/launchconfig"
@@ -70,6 +71,58 @@ func TestLaunchController_TrustRepo_RecordsDecision(t *testing.T) {
 	}
 	if got.Effective.Model != "from-repo" {
 		t.Errorf("trusted in-repo did not contribute: %v", got.Effective)
+	}
+}
+
+func TestLaunchController_TrustRepo_DoesNotCarryRejectedHashes(t *testing.T) {
+	stateRoot := t.TempDir()
+	cwd := t.TempDir()
+	repoPath := filepath.Join(cwd, ".serf", "launch.toml")
+	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rejectedContents := []byte(`model = "rejected"`)
+	rejectedHash, err := launchconfig.CanonicalHashTOML(rejectedContents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contents := []byte(`model = "trusted"`)
+	if err := os.WriteFile(repoPath, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := launchconfig.CanonicalHashTOML(contents)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := launchconfig.PathsFor(stateRoot, cwd)
+	if err := launchconfig.SaveMeta(paths.Meta, launchconfig.Meta{
+		Schema:    1,
+		CWD:       cwd,
+		CreatedAt: time.Now(),
+		Trust: launchconfig.MetaTrust{
+			Hashes:   []string{rejectedHash},
+			Decision: "rejected",
+		},
+	}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	c := newHubLaunchController(stateRoot)
+	if _, err := c.TrustRepo(context.Background(), appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: hash}); err != nil {
+		t.Fatalf("TrustRepo: %v", err)
+	}
+	meta, err := launchconfig.LoadMeta(paths.Meta)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if launchconfig.HashInSet(rejectedHash, meta.Trust.Hashes) {
+		t.Fatalf("rejected hash was carried into trusted set: %#v", meta.Trust.Hashes)
+	}
+	if !launchconfig.HashInSet(hash, meta.Trust.Hashes) {
+		t.Fatalf("new trusted hash missing from trusted set: %#v", meta.Trust.Hashes)
+	}
+	if meta.Trust.Decision != "trusted" {
+		t.Fatalf("decision = %q, want trusted", meta.Trust.Decision)
 	}
 }
 

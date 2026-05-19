@@ -12,6 +12,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	authopenai "primeradiant.com/serf/internal/auth/openai"
@@ -378,7 +379,34 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		responsesStream.Close() //nolint:errcheck
 	}()
 
-	return proxy, nil
+	return &responsesFallbackProxyStream{
+		proxy:           proxy,
+		responsesStream: responsesStream,
+	}, nil
+}
+
+type responsesFallbackProxyStream struct {
+	proxy           llm.Stream
+	responsesStream llm.Stream
+	once            sync.Once
+	closeErr        error
+}
+
+func (s *responsesFallbackProxyStream) Events() <-chan llm.StreamEvent {
+	return s.proxy.Events()
+}
+
+func (s *responsesFallbackProxyStream) Close() error {
+	s.once.Do(func() {
+		respErr := s.responsesStream.Close()
+		proxyErr := s.proxy.Close()
+		if respErr != nil {
+			s.closeErr = respErr
+		} else {
+			s.closeErr = proxyErr
+		}
+	})
+	return s.closeErr
 }
 
 // isContentEvent reports whether an event type carries model-generated content.

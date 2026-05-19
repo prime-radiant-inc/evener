@@ -111,8 +111,13 @@ func (c *hubLaunchController) TrustRepo(ctx context.Context, params appwire.Laun
 	}
 	// Append the new hash to the trusted set rather than overwriting, so
 	// branch-switching with different .serf/launch.toml content does not
-	// require re-prompting for previously-approved hashes.
-	existingHashes := launchconfig.TrustHashSet(meta.Trust)
+	// require re-prompting for previously-approved hashes. Rejected hashes
+	// are not part of the trusted set and must not become trusted by a later
+	// trust decision for a different hash.
+	var existingHashes []string
+	if meta.Trust.Decision == "trusted" {
+		existingHashes = launchconfig.TrustHashSet(meta.Trust)
+	}
 	if !launchconfig.HashInSet(params.Hash, existingHashes) {
 		existingHashes = append(existingHashes, params.Hash)
 	}

@@ -336,7 +336,7 @@
           case "item/started":
           case "item/completed":
             if (params && params.item && params.item.type === "user_message") {
-              pending.tryReconcile("turn/start", { text: params.item.text || "" });
+              pending.tryReconcile("turn/start", { text: params.item.text || "", items: params.item.images || [] });
             }
             return;
         }

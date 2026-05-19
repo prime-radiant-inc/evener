@@ -47,7 +47,7 @@
       const globalModel = localStorage.getItem("serf-hub.spawn-defaults.global.model") || "";
       if (!perProject.model && globalModel) perProject.model = globalModel;
       // Layer the global working_dir default when visiting /new without a pre-filled dir
-      if (!perProject.working_dir) {
+      if (!wd && !perProject.working_dir) {
         const globalWorkingDir = localStorage.getItem("serf-hub.spawn-defaults.global.working_dir") || "";
         if (globalWorkingDir) perProject.working_dir = globalWorkingDir;
       }

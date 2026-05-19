@@ -570,6 +570,52 @@ func TestAdapter_Stream_YieldsTextDeltasAndFinish(t *testing.T) {
 	}
 }
 
+func TestAdapter_Stream_CloseClosesResponsesStream(t *testing.T) {
+	requestDone := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		w.Header().Set("Content-Type", "text/event-stream")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done()
+		close(requestDone)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{Model: "gpt-5.2", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- stream.Close() }()
+
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Close hung without closing the underlying Responses stream")
+	}
+
+	select {
+	case <-requestDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("server request context was not canceled by stream Close")
+	}
+}
+
 func TestAdapter_Stream_TranslatesToolCalls(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {

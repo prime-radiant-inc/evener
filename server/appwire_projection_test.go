@@ -38,6 +38,55 @@ func TestAppEventProjectorCarriesUserInputTranscriptEntryIndex(t *testing.T) {
 	}
 }
 
+func TestAppEventProjectorCarriesUserInputImages(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	out := projector.Project(agent.SessionEvent{
+		Kind:      agent.EventUserInput,
+		SessionID: "th_1",
+		Data: agent.UserInputData{
+			Text: "",
+			Images: []agent.UserInputImage{{
+				MediaType: "image/png",
+				Data:      []byte("png"),
+				Name:      "shot.png",
+			}},
+		},
+	})
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if len(item.Images) != 1 {
+		t.Fatalf("images=%+v, want one image", item.Images)
+	}
+	if item.Images[0].Type != "image" || item.Images[0].MediaType != "image/png" || string(item.Images[0].Data) != "png" || item.Images[0].Name != "shot.png" {
+		t.Fatalf("image item=%+v", item.Images[0])
+	}
+}
+
+func TestAppEventProjectorCompletesActiveTurnBeforeQueuedUserInput(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	first := projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "first"}})
+	firstTurnID := notificationTurnID(t, first, appwire.NotifyTurnStarted)
+
+	second := projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "second"}})
+	if len(second) < 2 {
+		t.Fatalf("second notifications=%+v", second)
+	}
+	if second[0].Method != appwire.NotifyTurnCompleted {
+		t.Fatalf("first notification=%q, want turn/completed (notifications=%+v)", second[0].Method, second)
+	}
+	completed := notificationTurn(t, second, appwire.NotifyTurnCompleted)
+	if completed.ID != firstTurnID || completed.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("completed turn=%+v, want id=%q completed", completed, firstTurnID)
+	}
+	started := notificationTurn(t, second, appwire.NotifyTurnStarted)
+	if started.ID == "" || started.ID == firstTurnID {
+		t.Fatalf("queued user input did not start a fresh turn: %+v", started)
+	}
+	item := notificationThreadItem(t, second, appwire.NotifyItemCompleted)
+	if item.TurnID != started.ID || item.Text != "second" {
+		t.Fatalf("queued user item=%+v, want turn=%q text=second", item, started.ID)
+	}
+}
+
 func TestAppEventProjectorProjectsThreadLifecycle(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	started := projector.Project(agent.SessionEvent{
@@ -475,6 +524,11 @@ func hasAppNotification(items []AppNotification, method string) bool {
 
 func notificationTurnID(t *testing.T, items []AppNotification, method string) string {
 	t.Helper()
+	return notificationTurn(t, items, method).ID
+}
+
+func notificationTurn(t *testing.T, items []AppNotification, method string) appwire.Turn {
+	t.Helper()
 	for _, item := range items {
 		if item.Method != method {
 			continue
@@ -487,10 +541,10 @@ func notificationTurnID(t *testing.T, items []AppNotification, method string) st
 		if !ok {
 			t.Fatalf("turn param=%T in %+v", params["turn"], params)
 		}
-		return turn.ID
+		return turn
 	}
 	t.Fatalf("missing notification %q in %+v", method, items)
-	return ""
+	return appwire.Turn{}
 }
 
 func notificationItemTurnID(t *testing.T, items []AppNotification, method string) string {

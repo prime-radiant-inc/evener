@@ -69,6 +69,20 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			p.threadStatus(appwire.ThreadStatusIdle),
 		}
 	case agent.EventUserInput:
+		out := []AppNotification{}
+		if p.activeTurnID != "" {
+			turnID := p.activeTurnID
+			p.activeTurnID = ""
+			p.assistantItem = ""
+			p.assistantText = ""
+			p.toolItemsByKey = map[string]string{}
+			p.suppressedTools = map[string]struct{}{}
+			out = append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
+				"threadId": p.threadID,
+				"ref":      p.ref,
+				"turn":     appwire.Turn{ID: turnID, Status: appwire.TurnStatusCompleted},
+			}))
+		}
 		turnID := p.startTurn()
 		data := eventData[agent.UserInputData](event.Data)
 		item := appwire.ThreadItem{
@@ -77,9 +91,10 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			TurnID:               turnID,
 			TranscriptEntryIndex: data.Turn,
 			Text:                 data.Text,
+			Images:               projectUserInputImages(data.Images),
 			Status:               "completed",
 		}
-		return []AppNotification{
+		out = append(out,
 			p.notification(appwire.NotifyTurnStarted, map[string]any{
 				"threadId": p.threadID,
 				"ref":      p.ref,
@@ -92,7 +107,8 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 				"item":     item,
 			}),
 			p.threadStatus(appwire.ThreadStatusProcessing),
-		}
+		)
+		return out
 	case agent.EventAssistantTextStart:
 		p.ensureTurn()
 		p.assistantItem = p.nextItemID("assistant")
@@ -360,6 +376,22 @@ func (p *AppEventProjector) threadStatus(status string) AppNotification {
 		Ref:      p.ref,
 		Status:   appwire.ThreadStatus{Type: status},
 	})
+}
+
+func projectUserInputImages(images []agent.UserInputImage) []appwire.InputItem {
+	if len(images) == 0 {
+		return nil
+	}
+	out := make([]appwire.InputItem, 0, len(images))
+	for _, img := range images {
+		out = append(out, appwire.InputItem{
+			Type:      "image",
+			MediaType: img.MediaType,
+			Data:      append([]byte(nil), img.Data...),
+			Name:      img.Name,
+		})
+	}
+	return out
 }
 
 func (p *AppEventProjector) startTurn() string {

@@ -58,6 +58,12 @@ func (a *modelTrackingAdapter) Models() []string {
 	return append([]string(nil), a.models...)
 }
 
+func (a *modelTrackingAdapter) Requests() []llm.Request {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]llm.Request(nil), a.requests...)
+}
+
 // TestFallbackChain_PermanentErrorTriesNextModel: primary returns 403, the
 // first fallback succeeds, the second fallback is never called.
 func TestFallbackChain_PermanentErrorTriesNextModel(t *testing.T) {
@@ -239,27 +245,38 @@ func TestFallbackChain_RetryableSkipsFallback(t *testing.T) {
 	}
 }
 
-func TestFallbackChain_SkipsCrossProviderFallbacks(t *testing.T) {
+func TestFallbackChain_TriesCrossProviderFallbacks(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
 	permErr := llm.ErrorFromHTTPStatus("openai", 403, "primary denied", nil, nil)
 
-	f := &modelTrackingAdapter{
+	openaiAdapter := &modelTrackingAdapter{
 		name: "openai",
 		respond: func(req llm.Request) (llm.Response, error) {
 			switch req.Model {
 			case "primary":
 				return llm.Response{}, permErr
 			case "fallback-b":
-				return finalResponse("same provider fallback answered"), nil
-			case "claude-test":
-				t.Errorf("cross-provider fallback must not be invoked with primary provider request surface")
+				t.Errorf("same-provider fallback must not be invoked once cross-provider fallback succeeds")
 			}
 			return llm.Response{}, nil
 		},
 	}
-	c.Register(f)
+	anthropicAdapter := &modelTrackingAdapter{
+		name: "anthropic",
+		respond: func(req llm.Request) (llm.Response, error) {
+			if req.Model != "claude-test" {
+				t.Errorf("anthropic fallback model = %q, want claude-test", req.Model)
+			}
+			if req.Provider != "anthropic" {
+				t.Errorf("anthropic fallback provider = %q, want anthropic", req.Provider)
+			}
+			return finalResponse("cross-provider fallback answered"), nil
+		},
+	}
+	c.Register(openaiAdapter)
+	c.Register(anthropicAdapter)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	sess, err := NewSession(c, NewOpenAIProfile("primary"), NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -279,21 +296,24 @@ func TestFallbackChain_SkipsCrossProviderFallbacks(t *testing.T) {
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "hi", nil)
 	if err != nil {
-		t.Fatalf("ProcessInput: got error %v, want nil (same-provider fallback should succeed)", err)
+		t.Fatalf("ProcessInput: got error %v, want nil (cross-provider fallback should succeed)", err)
 	}
-	if !strings.Contains(out, "same provider fallback answered") {
-		t.Errorf("output: got %q, want same-provider fallback answer", out)
+	if !strings.Contains(out, "cross-provider fallback answered") {
+		t.Errorf("output: got %q, want cross-provider fallback answer", out)
 	}
 
-	got := f.Models()
-	want := []string{"primary", "fallback-b"}
-	if len(got) != len(want) {
-		t.Fatalf("attempted models: got %v want %v", got, want)
+	if got := openaiAdapter.Models(); len(got) != 1 || got[0] != "primary" {
+		t.Fatalf("openai attempted models: got %v want [primary]", got)
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("attempt %d: got %q want %q", i, got[i], want[i])
-		}
+	if got := anthropicAdapter.Models(); len(got) != 1 || got[0] != "claude-test" {
+		t.Fatalf("anthropic attempted models: got %v want [claude-test]", got)
+	}
+	reqs := anthropicAdapter.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("anthropic requests: got %d want 1", len(reqs))
+	}
+	if _, ok := reqs[0].ProviderOptions["anthropic"]; !ok {
+		t.Fatalf("cross-provider fallback did not use anthropic provider options: %#v", reqs[0].ProviderOptions)
 	}
 }
 
