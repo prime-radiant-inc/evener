@@ -1750,7 +1750,7 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 				ToolCallID:     res.CallID,
 				Name:           res.ToolName,
 				Content:        res.Output,
-				IsError:        true,
+				IsError:        res.IsError,
 				DurationMS:     res.DurationMS,
 				ImageData:      res.ImageData,
 				ImageMediaType: res.ImageMediaType,
