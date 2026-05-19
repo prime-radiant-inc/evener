@@ -397,7 +397,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case hubSessionMsg:
 		if msg.err != nil {
-			if msg.expectedState != "" && ((msg.ref != "" && m.detail.Ref != msg.ref) || msg.expectedRefreshToken != m.statusRefreshToken) {
+			if msg.expectedState != "" && (m.mode != hubModeSession || msg.ref == "" || m.detail.Ref != msg.ref || msg.expectedRefreshToken != m.statusRefreshToken) {
 				return m, nil
 			}
 			m.sessionDetailsRequested = false
