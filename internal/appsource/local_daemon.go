@@ -236,7 +236,7 @@ func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.
 		if cerr := ctx.Err(); cerr != nil {
 			return nil, cerr
 		}
-		return nil, localDaemonDialError(localDaemonCallError(err))
+		return nil, localDaemonSubscribeReadError(err)
 	}
 	if _, err := client.ThreadRead(ctx, params); err != nil {
 		transport.Close()
@@ -371,6 +371,15 @@ func localDaemonCallError(err error) error {
 		return appwire.SessionUnavailable("local daemon unavailable: " + wire.Message)
 	}
 	return err
+}
+
+func localDaemonSubscribeReadError(err error) error {
+	mapped := localDaemonCallError(err)
+	var wire appwire.WireError
+	if errors.As(mapped, &wire) {
+		return mapped
+	}
+	return localDaemonDialError(mapped)
 }
 
 func daemonAuthHeader(token string) http.Header {

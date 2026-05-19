@@ -71,6 +71,18 @@ func TestLocalDaemonDialErrorPassesThroughApplicationErrors(t *testing.T) {
 	}
 }
 
+func TestLocalDaemonSubscribeReadErrorPreservesApplicationWireErrors(t *testing.T) {
+	app := appwire.InvalidParams("broken pipe is part of semantic error")
+	got := localDaemonSubscribeReadError(app)
+	var wire appwire.WireError
+	if !errors.As(got, &wire) {
+		t.Fatalf("got %T=%v, want WireError", got, got)
+	}
+	if wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("wire=%+v, want InvalidParams preserved", wire)
+	}
+}
+
 func TestLocalDaemonDialErrorIgnoresNil(t *testing.T) {
 	if got := localDaemonDialError(nil); got != nil {
 		t.Fatalf("nil mapped to %v, want nil", got)
