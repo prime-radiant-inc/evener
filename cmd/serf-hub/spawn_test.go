@@ -421,6 +421,16 @@ func TestProviderCredentialPreflightAcceptsLaunchEnvKey(t *testing.T) {
 	}
 }
 
+func TestProviderCredentialPreflightAcceptsOpenAICompatibleBaseURLOnly(t *testing.T) {
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "")
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "")
+	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	err := validateProviderCredentials("openai-compatible", store, []string{"OPENAI_COMPATIBLE_BASE_URL=http://127.0.0.1:11434/v1"})
+	if err != nil {
+		t.Fatalf("validateProviderCredentials with base-url-only openai-compatible env: %v", err)
+	}
+}
+
 func TestProviderCredentialPreflightRejectsLaunchEnvClearedStoreKey(t *testing.T) {
 	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
 	if err := store.Set("openrouter", "stored-secret"); err != nil {

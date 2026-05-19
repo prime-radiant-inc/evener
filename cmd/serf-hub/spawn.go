@@ -357,6 +357,9 @@ func validateProviderCredentials(provider string, store *credentials.Store, env 
 	if strings.EqualFold(strings.TrimSpace(provider), "openai") && openAIStoredOAuthUsable(env) {
 		return nil
 	}
+	if strings.EqualFold(strings.TrimSpace(provider), "openai-compatible") && openAICompatibleBaseURLInEnv(env) {
+		return nil
+	}
 	// Use List() so providers that need no credentials (e.g. ollama) are
 	// correctly identified via their SourceNone status.
 	for _, p := range store.List() {
@@ -386,6 +389,14 @@ func providerCredentialInEnv(provider string, env []string) bool {
 		}
 	}
 	return false
+}
+
+func openAICompatibleBaseURLInEnv(env []string) bool {
+	value, ok := envLookup(env, "OPENAI_COMPATIBLE_BASE_URL")
+	if env == nil {
+		value, ok = os.Getenv("OPENAI_COMPATIBLE_BASE_URL"), true
+	}
+	return ok && strings.TrimSpace(value) != ""
 }
 
 func openAIStoredOAuthUsable(env []string) bool {
