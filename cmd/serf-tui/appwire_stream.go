@@ -383,14 +383,19 @@ func toolItemTerminal(item appwire.ThreadItem) bool {
 	switch item.Status {
 	case appwire.TurnStatusCompleted, appwire.TurnStatusFailed, appwire.TurnStatusCanceled:
 		return true
-	case appwire.TurnStatusRunning:
+	case appwire.TurnStatusRunning, "inProgress", "active", "processing":
 		return false
 	}
 	return item.Output != "" || item.Error != ""
 }
 
 func toolItemRunning(item appwire.ThreadItem) bool {
-	return item.Status == appwire.TurnStatusRunning
+	switch item.Status {
+	case appwire.TurnStatusRunning, "inProgress", "active", "processing":
+		return true
+	default:
+		return false
+	}
 }
 
 func newStreamEvent(event string, data any) streamEvent {

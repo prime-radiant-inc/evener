@@ -165,47 +165,51 @@ func TestStreamEventsFromThreadReplaysRunningAssistantTextAsDelta(t *testing.T) 
 }
 
 func TestStreamEventsFromThreadKeepsRunningToolWithOutputActive(t *testing.T) {
-	events := streamEventsFromThread(appwire.Thread{
-		ID:        "th_1",
-		SessionID: "th_1",
-		Turns: []appwire.Turn{{
-			ID:     "turn_1",
-			Status: appwire.TurnStatusRunning,
-			Items: []appwire.ThreadItem{{
-				Type:          "tool_call",
-				ID:            "item_tool",
-				CallID:        "call_tool",
-				ToolName:      "shell",
-				ArgumentsJSON: `{"command":"printf partial"}`,
-				Output:        "partial",
-				Status:        appwire.TurnStatusRunning,
-			}},
-		}},
-	})
+	for _, status := range []string{appwire.TurnStatusRunning, "inProgress"} {
+		t.Run(status, func(t *testing.T) {
+			events := streamEventsFromThread(appwire.Thread{
+				ID:        "th_1",
+				SessionID: "th_1",
+				Turns: []appwire.Turn{{
+					ID:     "turn_1",
+					Status: appwire.TurnStatusRunning,
+					Items: []appwire.ThreadItem{{
+						Type:          "tool_call",
+						ID:            "item_tool",
+						CallID:        "call_tool",
+						ToolName:      "shell",
+						ArgumentsJSON: `{"command":"printf partial"}`,
+						Output:        "partial",
+						Status:        status,
+					}},
+				}},
+			})
 
-	var sawStart, sawDelta bool
-	for _, ev := range events {
-		switch ev.Event {
-		case "TOOL_CALL_START":
-			sawStart = true
-		case "TOOL_CALL_OUTPUT_DELTA":
-			sawDelta = true
-			var data struct {
-				CallID string `json:"call_id"`
-				Delta  string `json:"delta"`
+			var sawStart, sawDelta bool
+			for _, ev := range events {
+				switch ev.Event {
+				case "TOOL_CALL_START":
+					sawStart = true
+				case "TOOL_CALL_OUTPUT_DELTA":
+					sawDelta = true
+					var data struct {
+						CallID string `json:"call_id"`
+						Delta  string `json:"delta"`
+					}
+					if err := json.Unmarshal([]byte(ev.Data), &data); err != nil {
+						t.Fatal(err)
+					}
+					if !sawStart || data.CallID != "call_tool" || data.Delta != "partial" {
+						t.Fatalf("events=%+v, delta=%+v, want start before partial output", events, data)
+					}
+				case "TOOL_CALL_END":
+					t.Fatalf("events=%+v, running tool should not be terminal", events)
+				}
 			}
-			if err := json.Unmarshal([]byte(ev.Data), &data); err != nil {
-				t.Fatal(err)
+			if !sawStart || !sawDelta {
+				t.Fatalf("events=%+v, want tool start and output delta", events)
 			}
-			if !sawStart || data.CallID != "call_tool" || data.Delta != "partial" {
-				t.Fatalf("events=%+v, delta=%+v, want start before partial output", events, data)
-			}
-		case "TOOL_CALL_END":
-			t.Fatalf("events=%+v, running tool should not be terminal", events)
-		}
-	}
-	if !sawStart || !sawDelta {
-		t.Fatalf("events=%+v, want tool start and output delta", events)
+		})
 	}
 }
 
