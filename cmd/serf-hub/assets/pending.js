@@ -223,18 +223,23 @@
       let removed = 0;
       // Snapshot ids first since removeEntry mutates the map.
       const ids = [];
-      for (const [id, ent] of entries) {
-        if (ent.method !== "turn/queue") continue;
-        const n = normalizeText(ent.previewText || ent.text);
-        const count = wanted.get(n) || 0;
-        if (count <= 0) continue;
-        ids.push(id);
-        if (count === 1) {
-          wanted.delete(n);
-        } else {
-          wanted.set(n, count - 1);
+      const collect = (preferFailed) => {
+        for (const [id, ent] of entries) {
+          if (ent.method !== "turn/queue") continue;
+          if (!!ent.failed !== preferFailed) continue;
+          const n = normalizeText(ent.previewText || ent.text);
+          const count = wanted.get(n) || 0;
+          if (count <= 0) continue;
+          ids.push(id);
+          if (count === 1) {
+            wanted.delete(n);
+          } else {
+            wanted.set(n, count - 1);
+          }
         }
-      }
+      };
+      collect(false);
+      collect(true);
       for (const id of ids) {
         removeEntry(id);
         removed++;

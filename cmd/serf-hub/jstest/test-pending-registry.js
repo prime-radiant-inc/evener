@@ -231,6 +231,29 @@ function build() {
   console.log("ok queue_reconcile_consumes_duplicate_texts_once");
 })();
 
+// Queue reconciliation prefers live pending retries over older failed
+// duplicates with the same text. A new authoritative preview should not clear
+// the stale failure and leave the successful retry to time out.
+(function test_queue_reconcile_prefers_live_retry_over_failed_duplicate() {
+  const window = build();
+  const conv = window.document.getElementById("conversation");
+  const queueList = window.document.querySelector("[data-queue-list]");
+  const reg = window.SerfAppwirePending.create({ conversation: conv, queueList });
+
+  const failedHandle = reg.register({ method: "turn/queue", text: "same" });
+  reg.fail(failedHandle, "server did not confirm");
+  reg.register({ method: "turn/queue", text: "same" });
+
+  const removed = reg.tryReconcileQueue(["same"]);
+  assert.equal(removed, 1);
+  const pendingList = window.document.querySelector("[data-queue-pending-list]");
+  assert.equal(pendingList.querySelectorAll(".optimistic-pending").length, 0,
+    "live retry should reconcile first");
+  assert.equal(pendingList.querySelectorAll(".optimistic-failed").length, 1,
+    "older failed duplicate should remain until dismissed or late reconcile");
+  console.log("ok queue_reconcile_prefers_live_retry_over_failed_duplicate");
+})();
+
 // Image-only queue chips use the same synthetic preview text as the daemon.
 (function test_queue_reconcile_image_only_preview() {
   const window = build();
