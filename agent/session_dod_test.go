@@ -1059,15 +1059,28 @@ func TestSession_AbortDrainsQueuedInputWithFreshContext(t *testing.T) {
 			return "", ctx.Err()
 		},
 	})
+	var (
+		evMu     sync.Mutex
+		endKinds []string
+	)
+	evDone := make(chan struct{})
 	go func() {
-		for range sess.Events() {
+		defer close(evDone)
+		for ev := range sess.Events() {
+			if ev.Kind == EventSessionEnd {
+				if d, ok := ev.Data.(SessionEndData); ok {
+					evMu.Lock()
+					endKinds = append(endKinds, d.Reason)
+					evMu.Unlock()
+				}
+			}
 		}
 	}()
-	defer sess.Close()
 
 	outerCtx, outerCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer outerCancel()
 	turnCtx, cancelTurn := context.WithCancel(outerCtx)
+	turnCtx = WithQueuedInputDrainOnInterrupt(turnCtx, outerCtx)
 	done := make(chan struct {
 		out string
 		err error
@@ -1103,6 +1116,13 @@ func TestSession_AbortDrainsQueuedInputWithFreshContext(t *testing.T) {
 	}
 	if depth := sess.QueueDepth(); depth != 0 {
 		t.Fatalf("QueueDepth after interrupted drain=%d, want 0", depth)
+	}
+	sess.Close()
+	<-evDone
+	evMu.Lock()
+	defer evMu.Unlock()
+	if len(endKinds) < 2 || endKinds[0] != "interrupted" || endKinds[1] != "input_complete" {
+		t.Fatalf("SESSION_END reasons=%v, want interrupted then input_complete", endKinds)
 	}
 }
 

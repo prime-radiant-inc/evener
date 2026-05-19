@@ -299,6 +299,7 @@ func runServe(args []string) error {
 				}
 				sess := getSession()
 				turnCtx, cancelTurn := context.WithCancel(ctx)
+				turnCtx = agent.WithQueuedInputDrainOnInterrupt(turnCtx, ctx)
 				srv.SetCancelFunc(cancelTurn)
 				srv.SetProcessing(true)
 				srv.SetState("PROCESSING")

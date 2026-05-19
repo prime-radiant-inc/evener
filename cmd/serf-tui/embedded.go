@@ -314,6 +314,7 @@ func (e *embeddedServer) inputLoop(ctx context.Context) {
 			}
 			sess := e.currentSession()
 			turnCtx, cancelTurn := context.WithCancel(ctx)
+			turnCtx = agent.WithQueuedInputDrainOnInterrupt(turnCtx, ctx)
 			e.srv.SetProcessing(true)
 			e.srv.SetState("PROCESSING")
 			e.srv.SetCancelFunc(cancelTurn)

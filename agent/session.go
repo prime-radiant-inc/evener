@@ -331,6 +331,17 @@ type Session struct {
 	promptSourceLog      []PromptSource
 }
 
+type queuedInputDrainContextKey struct{}
+
+// WithQueuedInputDrainOnInterrupt marks ctx as a per-turn interrupt context
+// whose queued input may continue under rootCtx after ctx is canceled.
+func WithQueuedInputDrainOnInterrupt(ctx context.Context, rootCtx context.Context) context.Context {
+	if rootCtx == nil {
+		rootCtx = context.Background()
+	}
+	return context.WithValue(ctx, queuedInputDrainContextKey{}, rootCtx)
+}
+
 // selectStrategy creates the appropriate ContextStrategy from config.
 func selectStrategy(cfg SessionConfig, cm *ContextManager, sess *Session) (ContextStrategy, error) {
 	if cfg.ContextStrategyOverride != nil {
@@ -1361,6 +1372,19 @@ func (s *Session) popQueueHead() queuedInput {
 	return entry
 }
 
+func (s *Session) pushQueueHead(entry queuedInput) {
+	if strings.TrimSpace(entry.Text) == "" && len(entry.Images) == 0 {
+		return
+	}
+	s.queueEventsMu.Lock()
+	defer s.queueEventsMu.Unlock()
+	s.mu.Lock()
+	s.inputQueue = append([]queuedInput{entry}, s.inputQueue...)
+	data := s.queueChangedDataLocked()
+	s.mu.Unlock()
+	s.emit(EventQueueChanged, data)
+}
+
 // queueChangedDataLocked builds a QueueChangedData snapshot from the
 // current inputQueue. The caller must hold s.mu.
 func (s *Session) queueChangedDataLocked() QueueChangedData {
@@ -1595,10 +1619,16 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 				}
 				if !closed {
 					if queued := s.popQueueHead(); strings.TrimSpace(queued.Text) != "" || len(queued.Images) > 0 {
-						next = queued.Text
-						nextImages = queued.Images
-						processCtx = context.WithoutCancel(ctx)
-						continue
+						if rootCtx, ok := queuedInputDrainRoot(ctx, err); ok {
+							next = queued.Text
+							nextImages = queued.Images
+							processCtx = rootCtx
+							s.mu.Lock()
+							s.sessionEndEmitted = false
+							s.mu.Unlock()
+							continue
+						}
+						s.pushQueueHead(queued)
 					}
 				}
 			}
@@ -2837,6 +2867,20 @@ func isTurnCancellation(ctx context.Context, err error) bool {
 	}
 	var abort *llm.AbortError
 	return errors.As(err, &abort)
+}
+
+func queuedInputDrainRoot(ctx context.Context, err error) (context.Context, bool) {
+	rootCtx, ok := ctx.Value(queuedInputDrainContextKey{}).(context.Context)
+	if !ok || rootCtx == nil {
+		return nil, false
+	}
+	if !errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return nil, false
+	}
+	if rootCtx.Err() != nil {
+		return nil, false
+	}
+	return rootCtx, true
 }
 
 func streamUnavailable(err error) bool {
