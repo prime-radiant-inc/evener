@@ -155,7 +155,7 @@ func (p *pendingCoordinator) dispatch(msg tea.Msg) {
 // pending entry matched and was confirmed.
 //
 // Matching rules:
-//   - turn/drainAsSteer: first in-flight entry with that method wins
+//   - turn/drainAsSteer: oldest in-flight entry with that method wins
 //     (text not compared) — the daemon collapses the queue's text into
 //     one steering and the placeholder doesn't know that joined text
 //     in advance. This is the spec's "drain-special" semantic.
@@ -171,8 +171,9 @@ func (p *pendingCoordinator) TryReconcile(method, text string) bool {
 			if state.entry.Method != method {
 				continue
 			}
-			match = state
-			break
+			if match == nil || state.entry.ID < match.entry.ID {
+				match = state
+			}
 		}
 	} else {
 		want := normalizePendingText(text)
@@ -184,8 +185,9 @@ func (p *pendingCoordinator) TryReconcile(method, text string) bool {
 				continue
 			}
 			if normalizePendingText(state.entry.Text) == want {
-				match = state
-				break
+				if match == nil || state.entry.ID < match.entry.ID {
+					match = state
+				}
 			}
 		}
 	}

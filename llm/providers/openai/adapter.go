@@ -1128,10 +1128,14 @@ func toChatMessages(msgs []llm.Message) ([]map[string]any, error) {
 				"content": m.Text(),
 			})
 		case llm.RoleUser:
-			if hasChatImageContent(m.Content) {
+			if hasChatRichContent(m.Content) {
+				content, err := buildChatMultimodalParts(m.Content)
+				if err != nil {
+					return nil, err
+				}
 				out = append(out, map[string]any{
 					"role":    "user",
-					"content": buildChatMultimodalParts(m.Content),
+					"content": content,
 				})
 			} else {
 				out = append(out, map[string]any{
@@ -1206,16 +1210,17 @@ func toCompletionsTools(tools []llm.ToolDefinition) []map[string]any {
 	return out
 }
 
-func hasChatImageContent(parts []llm.ContentPart) bool {
+func hasChatRichContent(parts []llm.ContentPart) bool {
 	for _, p := range parts {
-		if p.Kind == llm.ContentImage {
+		switch p.Kind {
+		case llm.ContentImage, llm.ContentDocument, llm.ContentAudio:
 			return true
 		}
 	}
 	return false
 }
 
-func buildChatMultimodalParts(parts []llm.ContentPart) []map[string]any {
+func buildChatMultimodalParts(parts []llm.ContentPart) ([]map[string]any, error) {
 	var out []map[string]any
 	for _, p := range parts {
 		switch p.Kind {
@@ -1225,13 +1230,27 @@ func buildChatMultimodalParts(parts []llm.ContentPart) []map[string]any {
 			if p.Image == nil {
 				continue
 			}
-			url := p.Image.URL
+			url := strings.TrimSpace(p.Image.URL)
 			if url == "" && len(p.Image.Data) > 0 {
 				mt := strings.TrimSpace(p.Image.MediaType)
 				if mt == "" {
 					mt = "image/png"
 				}
 				url = llm.DataURI(mt, p.Image.Data)
+			} else if llm.IsLocalPath(url) {
+				path := llm.ExpandTilde(url)
+				b, err := os.ReadFile(path)
+				if err != nil {
+					return nil, err
+				}
+				mt := strings.TrimSpace(p.Image.MediaType)
+				if mt == "" {
+					mt = llm.InferMimeTypeFromPath(path)
+				}
+				if mt == "" {
+					mt = "image/png"
+				}
+				url = llm.DataURI(mt, b)
 			}
 			if url == "" {
 				continue
@@ -1241,9 +1260,45 @@ func buildChatMultimodalParts(parts []llm.ContentPart) []map[string]any {
 				imageURL["detail"] = p.Image.Detail
 			}
 			out = append(out, map[string]any{"type": "image_url", "image_url": imageURL})
+		case llm.ContentDocument:
+			if p.Document == nil {
+				continue
+			}
+			fileData := strings.TrimSpace(p.Document.URL)
+			if len(p.Document.Data) > 0 {
+				mt := strings.TrimSpace(p.Document.MediaType)
+				if mt == "" {
+					mt = "application/pdf"
+				}
+				fileData = llm.DataURI(mt, p.Document.Data)
+			} else if llm.IsLocalPath(fileData) {
+				path := llm.ExpandTilde(fileData)
+				b, err := os.ReadFile(path)
+				if err != nil {
+					return nil, err
+				}
+				mt := strings.TrimSpace(p.Document.MediaType)
+				if mt == "" {
+					mt = llm.InferMimeTypeFromPath(path)
+				}
+				if mt == "" {
+					mt = "application/pdf"
+				}
+				fileData = llm.DataURI(mt, b)
+			}
+			if fileData == "" {
+				continue
+			}
+			file := map[string]any{"file_data": fileData}
+			if p.Document.FileName != "" {
+				file["filename"] = p.Document.FileName
+			}
+			out = append(out, map[string]any{"type": "file", "file": file})
+		case llm.ContentAudio:
+			return nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for openai chat fallback: %s", p.Kind)}
 		}
 	}
-	return out
+	return out, nil
 }
 
 func toChatResponseFormat(rf llm.ResponseFormat) map[string]any {

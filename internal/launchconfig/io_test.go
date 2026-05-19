@@ -81,7 +81,7 @@ func TestSaveLayer_AtomicAndPermissions(t *testing.T) {
 
 func TestSaveLayer_PersistsExplicitEmptyModelFallbacks(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "launch.toml")
-	if err := SaveLayer(path, Layer{ModelFallbacksSet: true, ModelFallbacks: []string{}}); err != nil {
+	if err := SaveLayer(path, Layer{Model: "mentions model_fallbacks", ModelFallbacksSet: true, ModelFallbacks: []string{}}); err != nil {
 		t.Fatalf("SaveLayer: %v", err)
 	}
 	data, err := os.ReadFile(path)

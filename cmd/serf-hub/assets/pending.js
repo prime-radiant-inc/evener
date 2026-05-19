@@ -82,16 +82,18 @@
         fail({ id }, "server did not confirm");
       }, timeoutMs);
 
-      entries.set(id, { method, text, items, el, timerID });
+      entries.set(id, { method, text, items, el, timerID, failed: false });
       return { id };
     }
 
     function fail(handle, reason) {
       const ent = entries.get(handle.id);
       if (!ent) return;
+      if (ent.failed) return;
       clearTimeoutFn(ent.timerID);
       ent.el.classList.remove("optimistic-pending");
       ent.el.classList.add("optimistic-failed");
+      ent.failed = true;
       const doc = ent.el.ownerDocument;
       const reasonEl = doc.createElement("div");
       reasonEl.className = "optimistic-failed-reason";
@@ -107,10 +109,10 @@
         // single fresh pending chip in its place rather than the failed
         // chip stacked beside the new optimistic one.
         if (ent.el.parentNode) ent.el.parentNode.removeChild(ent.el);
+        entries.delete(handle.id);
         onRetry({ method: ent.method, text: ent.text, items: ent.items.slice() });
       });
       ent.el.appendChild(retry);
-      entries.delete(handle.id);
     }
 
     function removeEntry(id) {

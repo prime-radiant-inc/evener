@@ -1764,13 +1764,22 @@ func TestStream_ResponsesAPI_404_FallbackPreservesChatRequestSemantics(t *testin
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	localImage := filepath.Join(t.TempDir(), "local.png")
+	if err := os.WriteFile(localImage, []byte("png bytes"), 0o600); err != nil {
+		t.Fatalf("write local image: %v", err)
+	}
+
 	stream, err := a.Stream(ctx, llm.Request{
 		Model: "gpt-4.1-mini",
 		Messages: []llm.Message{{
 			Role: llm.RoleUser,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentText, Text: "describe"},
-				{Kind: llm.ContentImage, Image: &llm.ImageData{URL: "https://example.com/image.png"}},
+				{Kind: llm.ContentImage, Image: &llm.ImageData{URL: localImage}},
+				{Kind: llm.ContentDocument, Document: &llm.DocumentData{
+					Data:     []byte("%PDF"),
+					FileName: "brief.pdf",
+				}},
 			},
 		}},
 		Metadata:  map[string]string{"trace": "abc"},
@@ -1814,8 +1823,16 @@ func TestStream_ResponsesAPI_404_FallbackPreservesChatRequestSemantics(t *testin
 	}
 	messages := chatBody["messages"].([]any)
 	content := messages[0].(map[string]any)["content"].([]any)
-	if len(content) != 2 || content[1].(map[string]any)["type"] != "image_url" {
+	if len(content) != 3 || content[1].(map[string]any)["type"] != "image_url" {
 		t.Fatalf("user multimodal content=%#v", content)
+	}
+	imageURL := content[1].(map[string]any)["image_url"].(map[string]any)["url"].(string)
+	if !strings.HasPrefix(imageURL, "data:image/png;base64,") {
+		t.Fatalf("image_url=%q, want local image data URI", imageURL)
+	}
+	file := content[2].(map[string]any)
+	if file["type"] != "file" || file["file"].(map[string]any)["filename"] != "brief.pdf" {
+		t.Fatalf("document content=%#v", file)
 	}
 }
 

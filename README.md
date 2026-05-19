@@ -275,8 +275,8 @@ Design spec, plans, and notes live under `docs/superpowers/`.
 
 The repo enforces a single naming rule across wire formats:
 
-- **JSON tags** must be `camelCase`.
-- **TOML tags and keys** must be `kebab-case`.
+- **JSON tags** must be `snake_case`, except for documented AppWire/Codex protocol carve-outs that require `camelCase`.
+- **TOML tags and keys** must be `snake_case`.
 - **CLI flags** are `kebab-case` (enforced at the flag registry).
 
 Run the linter via `make lint-naming` or directly with `go run ./cmd/serf-namingcheck`. CI runs it after `go vet`. The check is fast (< 1s on this tree) and exits non-zero on violations. A single field/key can opt out with a `// serf:naming-ignore` (Go) or `# serf:naming-ignore` (TOML) marker on the preceding line — use sparingly, and explain why.

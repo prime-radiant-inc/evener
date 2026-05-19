@@ -1610,13 +1610,15 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "enter" {
 		draft := m.session.input.Value()
 		text := strings.TrimSpace(draft)
-		if text == "" {
+		if text == "" && len(m.pendingAttachments) == 0 {
 			return m, nil
 		}
-		if cmd, args := parseSlashCommand(text); cmd != "" {
-			m.session.resetInput()
-			next := m.runHubSlashCommand(cmd, args)
-			return m, next
+		if text != "" {
+			if cmd, args := parseSlashCommand(text); cmd != "" {
+				m.session.resetInput()
+				next := m.runHubSlashCommand(cmd, args)
+				return m, next
+			}
 		}
 		composerMode := m.sessionComposerMode()
 		if composerMode == hubComposerModeQueue {
@@ -1628,7 +1630,9 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Clear the composer optimistically; the queue preview above
 			// the composer will show the enqueued line. On failure the
 			// hubQueueMsg handler restores the draft.
-			m.session.addHistory(text)
+			if text != "" {
+				m.session.addHistory(text)
+			}
 			m.session.resetInput()
 			m.session.refreshViewport()
 			return m, sendHubQueue(m.client, ref, text, draft, m.pendingAttachments)
@@ -1650,7 +1654,9 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		reducer.applyUserMessageEcho(text)
 		m.applySessionTranscriptReducer(reducer)
 		m.session.lastSentText = text
-		m.session.addHistory(text)
+		if text != "" {
+			m.session.addHistory(text)
+		}
 		m.session.resetInput()
 		m.session.refreshViewport()
 		return m, sendHubInput(m.client, ref, text, draft, m.pendingAttachments)

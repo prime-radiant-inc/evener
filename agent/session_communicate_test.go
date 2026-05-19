@@ -265,6 +265,47 @@ func TestCommunicate_InboxDrainsSteering(t *testing.T) {
 	}
 }
 
+func TestCommunicate_DrainedImageSteeringAppendsTurn(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	sess.SteerWithImages("look at this", []ImageAttachment{{
+		MediaType: "image/png",
+		Data:      []byte("png bytes"),
+		Name:      "shot.png",
+	}})
+
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, communicateCall("c1", "Working..."))
+	if res.IsError {
+		t.Fatalf("communicate error: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "look at this") {
+		t.Fatalf("expected steering text in inbox, got: %s", res.Output)
+	}
+
+	var found bool
+	for _, turn := range sess.Snapshot().History {
+		if turn.Kind != TurnSteering {
+			continue
+		}
+		for _, part := range turn.Message.Content {
+			if part.Kind == llm.ContentImage && part.Image != nil && string(part.Image.Data) == "png bytes" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("image-bearing steering was not appended to history: %+v", sess.Snapshot().History)
+	}
+}
+
 func TestCommunicate_SchemaRejectsMalformedOutput(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()

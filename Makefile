@@ -33,7 +33,7 @@ test-short:
 vet:
 	go vet ./...
 
-# lint-naming enforces JSON=camelCase, TOML=kebab-case across every Go
+# lint-naming enforces JSON=snake_case, TOML=snake_case across every Go
 # struct tag and TOML file in the repo. Fast (well under a second) and
 # safe to run as a separate `go vet`-style gate.
 lint-naming:

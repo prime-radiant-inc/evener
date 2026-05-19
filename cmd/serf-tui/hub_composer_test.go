@@ -155,6 +155,75 @@ func TestHubModelBusyEnterRoutesToQueueAndClearsDraft(t *testing.T) {
 	}
 }
 
+func TestHubModelEnterSendsImageOnlySubmission(t *testing.T) {
+	var got appwire.TurnStartParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+			got = params
+			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_image"}}, nil
+		})
+	})
+	defer cleanup()
+
+	path := writeAttachmentTempFile(t, []byte("image-only"))
+	m := newSessionHubModel(client)
+	m.pendingAttachments = []*PastedImage{{Path: path, MediaType: "image/png"}}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("image-only enter should call the hub")
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	sent := updated.(hubModel)
+
+	if got.Ref != "local:01SEND" || got.Prompt != "" {
+		t.Fatalf("params=%+v, want image-only turn/start", got)
+	}
+	if len(got.Items) != 1 || got.Items[0].Type != "image" || string(got.Items[0].Data) != "image-only" {
+		t.Fatalf("items=%+v, want one image item", got.Items)
+	}
+	if len(sent.pendingAttachments) != 0 {
+		t.Fatalf("pendingAttachments len=%d, want cleared after success", len(sent.pendingAttachments))
+	}
+}
+
+func TestHubModelBusyEnterQueuesImageOnlySubmission(t *testing.T) {
+	var got appwire.TurnQueueParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
+			got = params
+			return appwire.EmptyResponse{}, nil
+		})
+	})
+	defer cleanup()
+
+	path := writeAttachmentTempFile(t, []byte("queued-image-only"))
+	m := newSessionHubModel(client)
+	m.detail.State = "processing"
+	m.detail.Capabilities.Send = false
+	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Queue = true
+	m.session.processing = true
+	m.pendingAttachments = []*PastedImage{{Path: path, MediaType: "image/png"}}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("image-only busy enter should queue through hub")
+	}
+	updated, _ = updated.(hubModel).Update(cmd())
+	queued := updated.(hubModel)
+
+	if got.Ref != "local:01SEND" || got.Text != "" {
+		t.Fatalf("params=%+v, want image-only turn/queue", got)
+	}
+	if len(got.Items) != 1 || got.Items[0].Type != "image" || string(got.Items[0].Data) != "queued-image-only" {
+		t.Fatalf("items=%+v, want one image item", got.Items)
+	}
+	if len(queued.pendingAttachments) != 0 {
+		t.Fatalf("pendingAttachments len=%d, want cleared after success", len(queued.pendingAttachments))
+	}
+}
+
 func TestHubModelBusyCtrlSDrainsQueueAsSteer(t *testing.T) {
 	var queueParams []appwire.TurnQueueParams
 	var drainParams appwire.TurnDrainAsSteerParams

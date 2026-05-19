@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -46,7 +45,7 @@ func SaveLayer(path string, layer Layer) error {
 		return fmt.Errorf("launchconfig: encode %s: %w", tmp, err)
 	}
 	data := buf.String()
-	if layer.ModelFallbacksSet && len(layer.ModelFallbacks) == 0 && !strings.Contains(data, "model_fallbacks") {
+	if layer.ModelFallbacksSet && len(layer.ModelFallbacks) == 0 {
 		data = "model_fallbacks = []\n" + data
 	}
 	if _, err := f.WriteString(data); err != nil {

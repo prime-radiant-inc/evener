@@ -195,6 +195,54 @@ func TestPendingCoordinator_TryReconcile_DrainSpecialIgnoresText(t *testing.T) {
 	}
 }
 
+func TestPendingCoordinator_TryReconcile_MatchesOldestDuplicate(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(0, 0)}
+	msgs := make(chan tea.Msg, 8)
+	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	first := p.Register("turn/steer", "same text").(*pendingHandleImpl).id
+	second := p.Register("turn/steer", "same text").(*pendingHandleImpl).id
+	drainMessages(msgs, 2, 100*time.Millisecond)
+
+	if !p.TryReconcile("turn/steer", "same text") {
+		t.Fatal("TryReconcile should match duplicate text")
+	}
+	got := drainMessages(msgs, 1, 100*time.Millisecond)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 confirmed msg, got %d", len(got))
+	}
+	cm, ok := got[0].(pendingConfirmedMsg)
+	if !ok {
+		t.Fatalf("got %T, want pendingConfirmedMsg", got[0])
+	}
+	if cm.entry.ID != first {
+		t.Fatalf("confirmed ID=%d, want oldest %d; newer was %d", cm.entry.ID, first, second)
+	}
+}
+
+func TestPendingCoordinator_TryReconcile_DrainMatchesOldest(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(0, 0)}
+	msgs := make(chan tea.Msg, 8)
+	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	first := p.Register("turn/drainAsSteer", "").(*pendingHandleImpl).id
+	second := p.Register("turn/drainAsSteer", "").(*pendingHandleImpl).id
+	drainMessages(msgs, 2, 100*time.Millisecond)
+
+	if !p.TryReconcile("turn/drainAsSteer", "joined text") {
+		t.Fatal("TryReconcile should match duplicate drains")
+	}
+	got := drainMessages(msgs, 1, 100*time.Millisecond)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 confirmed msg, got %d", len(got))
+	}
+	cm, ok := got[0].(pendingConfirmedMsg)
+	if !ok {
+		t.Fatalf("got %T, want pendingConfirmedMsg", got[0])
+	}
+	if cm.entry.ID != first {
+		t.Fatalf("confirmed ID=%d, want oldest %d; newer was %d", cm.entry.ID, first, second)
+	}
+}
+
 func TestPendingCoordinator_TryReconcile_NoMatchReturnsFalse(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)

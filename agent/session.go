@@ -4011,15 +4011,17 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			})
 
 			// Drain steering queue into the inbox. The inbox is text-only
-			// in the wire shape; image-bearing steering messages still
-			// surface their text portion here (images are persisted as
-			// ContentImage parts on the appended TurnSteering — they
-			// aren't re-delivered through this tool-response inbox).
+			// in the wire shape, so image-bearing entries are also appended
+			// as TurnSteering to keep their ContentImage parts available to
+			// the next model round.
 			drained := s.drainSteering()
 			inbox := make([]string, 0, len(drained))
 			for _, msg := range drained {
 				if strings.TrimSpace(msg.Text) != "" {
 					inbox = append(inbox, msg.Text)
+				}
+				if len(msg.Images) > 0 {
+					s.appendTurn(TurnSteering, steeringMessageToLLM(msg))
 				}
 			}
 
