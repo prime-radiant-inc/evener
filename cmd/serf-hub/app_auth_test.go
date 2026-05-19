@@ -214,7 +214,7 @@ func TestOpenAIStateDirFromEnvWindowsIgnoresHomeFallback(t *testing.T) {
 		value, ok := env[key]
 		return value, ok
 	})
-	want := filepath.Join(os.TempDir(), "serf")
+	want := filepath.Join(os.TempDir(), ".local", "state", "serf")
 	if got != want {
 		t.Fatalf("stateDir=%q, want %q", got, want)
 	}
@@ -225,7 +225,7 @@ func TestOpenAIStateDirFromEnvDoesNotFallBackToProcessEnv(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", processStateHome)
 
 	got := openAIStateDirFromEnv(map[string]string{})
-	want := filepath.Join(os.TempDir(), "serf")
+	want := filepath.Join(os.TempDir(), ".local", "state", "serf")
 	if got != want {
 		t.Fatalf("stateDir=%q, want %q", got, want)
 	}
