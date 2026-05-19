@@ -349,6 +349,43 @@ func TestLocalDaemonSourceReadsThreadOverAppWire(t *testing.T) {
 	}
 }
 
+func TestLocalDaemonSourceDrainFallbackReportsQueuedPartial(t *testing.T) {
+	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	var queued appwire.TurnQueueParams
+	appserver.HandleTyped(app.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
+		queued = params
+		return appwire.EmptyResponse{}, nil
+	})
+	appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, _ appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
+		return appwire.EmptyResponse{}, appwire.Conflict("queue is empty")
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
+		return []rendezvous.Entry{{
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws" + httpServer.URL[len("http"):],
+			SourceID:  "local",
+			ThreadID:  "th_1",
+			SessionID: "sess_1",
+		}}
+	}, httpServer.Client())
+
+	err := source.DrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{Ref: "local:th_1", Text: "composer payload"})
+	if queued.Text != "composer payload" {
+		t.Fatalf("queued=%+v", queued)
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error %T=%v, want WireError", err, err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok || data.SerfErrorInfo != appwire.ErrorQueuedDrainPartial {
+		t.Fatalf("wire=%+v data=%+v", wire, wire.Data)
+	}
+}
+
 // TestLocalDaemonSourceReadThreadIncludesQueue (kata r80p) covers the
 // authoritative queue-state passthrough: ReadThread must surface the
 // daemon's Queue (depth + first-line-truncated preview) verbatim so the

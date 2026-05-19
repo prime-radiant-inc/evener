@@ -150,7 +150,10 @@ func (s *LocalDaemonSource) DrainAsSteer(ctx context.Context, params appwire.Tur
 			}); err != nil {
 				return err
 			}
-			return client.TurnDrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{Ref: params.Ref})
+			if err := client.TurnDrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{Ref: params.Ref}); err != nil {
+				return appwire.QueuedDrainPartial("composer payload queued but drain failed: " + err.Error())
+			}
+			return nil
 		}
 		return client.TurnDrainAsSteer(ctx, params)
 	})

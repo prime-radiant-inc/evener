@@ -22,6 +22,7 @@ const (
 	ErrorConflict            ErrorInfo = "conflict"
 	ErrorActionUnavailable   ErrorInfo = "actionUnavailable"
 	ErrorHubLaunch           ErrorInfo = "hubLaunch"
+	ErrorQueuedDrainPartial  ErrorInfo = "queuedDrainPartial"
 	ErrorInternal            ErrorInfo = "internal"
 )
 
@@ -100,5 +101,13 @@ func HubLaunchError(message string) WireError {
 		Code:    CodeUnavailable,
 		Message: message,
 		Data:    ErrorData{SerfErrorInfo: ErrorHubLaunch},
+	}
+}
+
+func QueuedDrainPartial(message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data:    ErrorData{SerfErrorInfo: ErrorQueuedDrainPartial},
 	}
 }

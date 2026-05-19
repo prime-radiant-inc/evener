@@ -1518,6 +1518,14 @@
               // and emits thread/queueChanged with depth=0; the preview
               // will hide when that notification lands. No local mirror.
             } catch (err) {
+              if (err && err.serfErrorInfo === "queuedDrainPartial") {
+                ta.value = "";
+                ta.style.height = "";
+                grow();
+                clearSubmittedComposerItems(pendingItems);
+                this.appendBanner("error", "drain failed after queueing: " + err.message, { source: "hub", title: "Hub drain error" });
+                return;
+              }
               this.appendBanner("error", "drain failed: " + err.message, { source: "hub", title: "Hub drain error" });
             }
           } catch (err) {
