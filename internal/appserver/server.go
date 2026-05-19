@@ -181,12 +181,18 @@ func (c *Connection) closeSend() {
 }
 
 func (c *Connection) HandleMessage(ctx context.Context, msg appwire.Message) appwire.Message {
+	if msg.Notification != nil {
+		return c.handleNotification(*msg.Notification)
+	}
 	if msg.Request == nil {
 		return appwire.ErrorMessage(appwire.NewIntID(0), appwire.InvalidRequest("request message required"))
 	}
 	req := *msg.Request
 	if !c.isInitialized() && req.Method != appwire.MethodInitialize {
 		return appwire.ErrorMessage(req.ID, appwire.InvalidRequest("initialize required"))
+	}
+	if c.isInitialized() && req.Method == appwire.MethodInitialize {
+		return appwire.ErrorMessage(req.ID, appwire.InvalidRequest("already initialized"))
 	}
 	result, err := c.server.router.Dispatch(context.WithValue(ctx, connectionContextKey{}, c), req)
 	if err != nil {
@@ -196,6 +202,15 @@ func (c *Connection) HandleMessage(ctx context.Context, msg appwire.Message) app
 		c.setInitialized()
 	}
 	return appwire.ResponseMessage(req.ID, result)
+}
+
+func (c *Connection) handleNotification(notification appwire.Notification) appwire.Message {
+	switch notification.Method {
+	case appwire.MethodInitialized:
+		return appwire.Message{}
+	default:
+		return appwire.Message{}
+	}
 }
 
 type connectionContextKey struct{}

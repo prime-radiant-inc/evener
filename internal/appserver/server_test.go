@@ -37,6 +37,39 @@ func TestConnectionInitializeAllowsLaterRequests(t *testing.T) {
 	}
 }
 
+func TestConnectionAcceptsInitializedNotification(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		return appwire.ThreadListResponse{}, nil
+	})
+	conn := server.NewConnection("conn-1")
+	initResp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	if initResp.Kind() != appwire.MessageResponse {
+		t.Fatalf("init kind=%v", initResp.Kind())
+	}
+	ack := conn.HandleMessage(context.Background(), appwire.NotificationMessage(appwire.MethodInitialized, nil))
+	if ack.Kind() != appwire.MessageInvalid {
+		t.Fatalf("initialized notification kind=%v, want no response", ack.Kind())
+	}
+	listResp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadList, appwire.ThreadListParams{}))
+	if listResp.Kind() != appwire.MessageResponse {
+		t.Fatalf("list kind=%v", listResp.Kind())
+	}
+}
+
+func TestConnectionRejectsRepeatedInitialize(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
+	conn := server.NewConnection("conn-1")
+	first := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	if first.Kind() != appwire.MessageResponse {
+		t.Fatalf("first init kind=%v", first.Kind())
+	}
+	second := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodInitialize, appwire.InitializeParams{}))
+	if second.Kind() != appwire.MessageError {
+		t.Fatalf("second init kind=%v, want error", second.Kind())
+	}
+}
+
 func TestInitializeIsConnectionScoped(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "serf-hub", Version: "test", SourceID: "local"})
 	conn1 := server.NewConnection("conn-1")

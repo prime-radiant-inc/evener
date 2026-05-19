@@ -6,6 +6,7 @@ const ProtocolVersion = "serf-appwire-v1"
 
 const (
 	MethodInitialize                = "initialize"
+	MethodInitialized               = "initialized"
 	MethodThreadList                = "thread/list"
 	MethodThreadRead                = "thread/read"
 	MethodThreadTurnsList           = "thread/turns/list"
