@@ -170,23 +170,26 @@
         }
         reserved++;
         const marker = reserveMarkerAndInsert(pendingState);
+        const item = {
+          type: "image",
+          mediaType: "image/png",
+          name: "paste-" + Date.now() + ".png",
+          marker,
+          pending: true,
+        };
+        pendingState.items.push(item);
         try {
           const { blob, width, height } = await reencodeToPng(window, file);
           const buf = await blob.arrayBuffer();
-          const ts = Date.now();
-          const item = {
-            type: "image",
-            mediaType: "image/png",
-            data: buf,
-            name: "paste-" + ts + ".png",
-            width,
-            height,
-            marker,
-          };
-          pendingState.items.push(item);
+          item.data = buf;
+          item.width = width;
+          item.height = height;
+          item.pending = false;
           attached++;
         } catch (err) {
           stripMarker(pendingState.__textarea, marker);
+          const idx = pendingState.items.indexOf(item);
+          if (idx >= 0) pendingState.items.splice(idx, 1);
           rejected.push(rejectFileName(file));
         }
       }
@@ -276,22 +279,25 @@
     }
     for (const file of images) {
       const marker = reserveMarkerAndInsert(pendingState);
+      const item = {
+        type: "image",
+        mediaType: "image/png",
+        name: file.name || ("attachment-" + Date.now() + ".png"),
+        marker,
+        pending: true,
+      };
+      pendingState.items.push(item);
       try {
         const { blob, width, height } = await reencodeToPng(window, file);
         const buf = await blob.arrayBuffer();
-        const ts = Date.now();
-        const item = {
-          type: "image",
-          mediaType: "image/png",
-          data: buf,
-          name: file.name || ("attachment-" + ts + ".png"),
-          width,
-          height,
-          marker,
-        };
-        pendingState.items.push(item);
+        item.data = buf;
+        item.width = width;
+        item.height = height;
+        item.pending = false;
       } catch (err) {
         stripMarker(pendingState.__textarea, marker);
+        const idx = pendingState.items.indexOf(item);
+        if (idx >= 0) pendingState.items.splice(idx, 1);
         rejected.push((file && file.name) || "decode-failed");
       }
     }

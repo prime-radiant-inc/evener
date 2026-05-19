@@ -288,10 +288,12 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
     ta.dispatchEvent(buildPasteEvent(w, makeFile(w, PNG_BYTES, "slow.png", "image/png")));
     pass(ta.value === "alpha[image 1] omega",
       "expected marker immediately at original cursor, got: " + JSON.stringify(ta.value));
+    pass(pending.items.length === 1 && pending.items[0].pending === true,
+      "expected synchronous pending placeholder, got " + JSON.stringify(pending.items));
     setCursor(ta, ta.value.length);
     ta.value += " typed-later";
     await waitMicrotasks();
-    pass(pending.items.length === 1 && pending.items[0].marker === 1,
+    pass(pending.items.length === 1 && pending.items[0].marker === 1 && pending.items[0].pending === false,
       "expected async decode to attach marker=1 after synchronous insertion");
     pass(ta.value === "alpha[image 1] omega typed-later",
       "expected later typing not to move marker, got: " + JSON.stringify(ta.value));

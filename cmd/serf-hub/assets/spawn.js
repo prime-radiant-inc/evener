@@ -555,9 +555,13 @@
       // Pull pending image attachments off the form-attached state set up
       // earlier in init(). Empty array when none — appwire (and the /api/spawn
       // REST shim) both treat an empty items list as "no attachments".
-      const pendingState = form.__composerPasteState || { items: [] };
-      const attachments = (pendingState.items || []).slice();
-      if (!rawPrompt.trim() && attachments.length === 0) {
+	      const pendingState = form.__composerPasteState || { items: [] };
+	      const attachments = (pendingState.items || []).slice();
+	      if (attachments.some((item) => item && item.pending)) {
+	        renderSpawnError(form, new Error("Image attachment is still processing."));
+	        return;
+	      }
+	      if (!rawPrompt.trim() && attachments.length === 0) {
         renderSpawnError(form, new Error("Prompt is empty. Type something before spawning."));
         const ta = form.querySelector('textarea[name=prompt]');
         if (ta) ta.focus();

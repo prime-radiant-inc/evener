@@ -543,6 +543,24 @@ async function testSubmitPreservesAttachmentsAddedWhileInFlight() {
   const chips = attContainer.querySelectorAll("[data-attachment]");
   pass(chips.length === 1 && chips[0].textContent.includes("second.png"),
     "expected chip for second.png after in-flight send, got " + attContainer.textContent);
+	}
+
+async function testSubmitBlocksWhileAttachmentIsDecoding() {
+	resetComposerState();
+	dispatchPickerChange([makePngFile("slow.png")]);
+	pass(pendingItems().length === 1 && pendingItems()[0].pending === true,
+	  "expected synchronous pending placeholder before decode");
+	ta.value = "too soon";
+	ta.dispatchEvent(new window.Event("input", { bubbles: true }));
+	lastFetch = null;
+	form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+	await new Promise((resolve) => setTimeout(resolve, 5));
+	pass(lastFetch === null, "expected no fetch while attachment is still processing");
+	const banners = Array.from(window.document.querySelectorAll(".banner, .diagnostic, [data-banner]")).map((el) => el.textContent).join("\n");
+	pass(/still processing/.test(banners), "expected still-processing banner, got " + JSON.stringify(banners));
+	await waitForReads();
+	pass(pendingItems().length === 1 && pendingItems()[0].pending === false,
+	  "expected decode to complete after blocked submit");
 }
 
 async function testSubmitEmptyDoesNothing() {
@@ -597,10 +615,11 @@ async function testRejectsNonImage() {
   await testFilePickerAddsChip();
   await testDropAddsChips();
   await testRemoveChip();
-  await testSubmitWithTextAndImage();
-  await testSubmitClearsQueue();
-  await testSubmitPreservesAttachmentsAddedWhileInFlight();
-  await testSubmitEmptyDoesNothing();
+	  await testSubmitWithTextAndImage();
+	  await testSubmitClearsQueue();
+	  await testSubmitPreservesAttachmentsAddedWhileInFlight();
+	  await testSubmitBlocksWhileAttachmentIsDecoding();
+	  await testSubmitEmptyDoesNothing();
   await testUnavailableSendDoesNotSubmit();
   await testRejectsNonImage();
 

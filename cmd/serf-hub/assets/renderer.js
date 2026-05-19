@@ -1280,6 +1280,7 @@
       grow();
 
       const snapshotComposerItems = () => ((this.composerPasteState && this.composerPasteState.items) || []).slice();
+      const hasPendingComposerItems = () => snapshotComposerItems().some((item) => item && item.pending);
       const clearSubmittedComposerItems = (submitted) => {
         if (!this.composerPasteState || !Array.isArray(this.composerPasteState.items)) return;
         const sent = new Set(submitted || []);
@@ -1304,11 +1305,15 @@
       const steerBtn = form.querySelector("[data-steer-trigger]");
       if (steerBtn) {
         steerBtn.addEventListener("click", async () => {
-          const text = ta.value.trim();
-          const pendingItems = snapshotComposerItems();
-          const hasAttachments = pendingItems.length > 0;
-          const hasQueued = (this.queueState && this.queueState.depth > 0) || false;
-          if (!text && !hasQueued && !hasAttachments) {
+	          const text = ta.value.trim();
+	          const pendingItems = snapshotComposerItems();
+	          const hasAttachments = pendingItems.length > 0;
+	          const hasQueued = (this.queueState && this.queueState.depth > 0) || false;
+	          if (hasPendingComposerItems()) {
+	            this.appendBanner("error", "image attachment is still processing", { source: "hub", title: "Hub attachment error" });
+	            return;
+	          }
+	          if (!text && !hasQueued && !hasAttachments) {
             ta.placeholder = "type a steering message, then click send as steer…";
             ta.focus();
             return;
@@ -1417,10 +1422,14 @@
 
       const submit = async (e) => {
         e.preventDefault();
-        const text = ta.value.trim();
-        const items = snapshotComposerItems();
-        const hasAttachments = items.length > 0;
-        if (!text && !hasAttachments) return;
+	        const text = ta.value.trim();
+	        const items = snapshotComposerItems();
+	        const hasAttachments = items.length > 0;
+	        if (hasPendingComposerItems()) {
+	          this.appendBanner("error", "image attachment is still processing", { source: "hub", title: "Hub attachment error" });
+	          return;
+	        }
+	        if (!text && !hasAttachments) return;
         const sendBtn = form.querySelector(".send-btn");
         const canSend = !sendBtn || sendBtn.getAttribute("data-capability-send") !== "false";
         const canQueue = sendBtn && sendBtn.getAttribute("data-capability-queue") === "true";
