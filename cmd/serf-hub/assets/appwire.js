@@ -465,7 +465,7 @@
     if (item.type === "tool_call") {
       const callID = firstNonEmpty(item.callId, item.id);
       const itemID = item.id || "";
-      const completed = terminalStatus(turnStatus) || terminalStatus(item.status) || (!runningStatus(turnStatus) && !runningStatus(item.status) && (!!item.output || !!item.error));
+      const completed = terminalStatus(item.status) || (!runningStatus(item.status) && (!!item.output || !!item.error));
       const out = [["TOOL_CALL_START", { call_id: callID, item_id: itemID, tool_name: item.toolName || "", arguments_json: item.argumentsJson || "" }]];
       if (item.output) out.push(["TOOL_CALL_OUTPUT_DELTA", { call_id: callID, item_id: itemID, delta: item.output }]);
       if (!completed) return out;
@@ -566,7 +566,7 @@
         if (item && item.type === "tool_call") {
           const callID = firstNonEmpty(item.callId, item.id);
           const itemID = item.id || "";
-          const completed = turn.status === "completed" || terminalStatus(item.status) || (!runningStatus(item.status) && (!!item.output || !!item.error));
+          const completed = terminalStatus(item.status) || (!runningStatus(item.status) && (!!item.output || !!item.error));
           if (completed && activeToolCalls.has(callID)) {
             events.push(["TOOL_CALL_END", {
               call_id: callID,

@@ -70,6 +70,31 @@ assert(runningKinds.includes("ASSISTANT_TEXT_START"), "running assistant should 
 assert(runningAssistantEvents.some((event) => event[0] === "ASSISTANT_TEXT_DELTA" && event[1].delta === "partial answer"), "running assistant should replay text as delta");
 assert(!runningKinds.includes("ASSISTANT_TEXT_END"), "running assistant should not emit end");
 
+const splitToolEvents = context.window.SerfAppwire.eventsFromThread({
+  id: "01TOOL",
+  turns: [{
+    id: "turn_done",
+    status: "completed",
+    items: [{
+      type: "tool_call",
+      id: "item_tool_start",
+      callId: "call_tool",
+      toolName: "shell",
+      argumentsJson: "{\"command\":\"printf ok\"}",
+      status: "running",
+    }, {
+      type: "tool_call",
+      id: "item_tool_result",
+      callId: "call_tool",
+      toolName: "shell",
+      output: "ok",
+      status: "completed",
+    }],
+  }],
+});
+assert(splitToolEvents.filter((event) => event[0] === "TOOL_CALL_START").length === 1, "split tool replay should emit one start");
+assert(splitToolEvents.filter((event) => event[0] === "TOOL_CALL_END").length === 1, "split tool replay should emit one end");
+
 const warningEvents = context.window.SerfAppwire.eventsFromNotification("warning", {
   message: "configuration error: unknown provider: openrouter",
   source: "serf",
