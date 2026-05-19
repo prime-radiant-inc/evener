@@ -7,7 +7,8 @@ import "net/http"
 // settings partials, credentials) use inline IIFEs for page initialisation;
 // migrating them all to asset files is tracked separately.
 //
-// `img-src` allows `blob:` so the composer-attachments helper
+// `img-src` allows `https:` for remote AppWire replay images, and `blob:` so
+// the composer-attachments helper
 // (cmd/serf-hub/assets/composer-attachments.js:reencodeToPng) can decode a
 // pasted / dropped / picked image by loading a `URL.createObjectURL(blob)`
 // reference into an `Image` element before re-encoding to PNG (kata 1pgw —
@@ -19,7 +20,7 @@ func CSPMiddleware(next http.Handler) http.Handler {
 			"default-src 'self'; "+
 				"script-src 'self' 'unsafe-inline'; "+
 				"style-src 'self' 'unsafe-inline'; "+
-				"img-src 'self' data: blob:; "+
+				"img-src 'self' data: blob: https:; "+
 				"connect-src 'self'; "+
 				"base-uri 'self'; "+
 				"form-action 'self'; "+

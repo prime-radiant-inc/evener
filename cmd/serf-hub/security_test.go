@@ -25,9 +25,10 @@ func TestCSPMiddleware_SetsStrictDefault(t *testing.T) {
 	for _, want := range []string{
 		"default-src 'self'",
 		"script-src 'self' 'unsafe-inline'",
-		// img-src must include data: (transcript-inline base64 thumbnails) and
-		// blob: (composer-attachments reencodeToPng pipeline; kata 1pgw).
-		"img-src 'self' data: blob:",
+		// img-src must include data: (transcript-inline base64 thumbnails),
+		// blob: (composer-attachments reencodeToPng pipeline; kata 1pgw), and
+		// https: (URL-backed AppWire replay images).
+		"img-src 'self' data: blob: https:",
 		"frame-ancestors 'none'",
 	} {
 		if !strings.Contains(csp, want) {
