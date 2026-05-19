@@ -12,7 +12,7 @@ type WSTransport struct {
 	conn *websocket.Conn
 }
 
-const appWireWebSocketReadLimit = 16 << 20
+const appWireWebSocketReadLimit = 128 << 20
 
 func DialWebSocket(ctx context.Context, url string, client *http.Client) (*WSTransport, error) {
 	return DialWebSocketWithHeaders(ctx, url, client, nil)

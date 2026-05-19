@@ -41,6 +41,19 @@ func readTranscriptLines(t *testing.T, path string) []string {
 	return lines
 }
 
+func TestTranscriptJSONLMaxLineCoversMaxImagePayload(t *testing.T) {
+	const (
+		maxImages     = 8
+		maxImageBytes = 8 * 1024 * 1024
+		jsonHeadroom  = 1024 * 1024
+	)
+	encodedImageBytes := ((maxImageBytes + 2) / 3) * 4
+	encodedPayloadBytes := maxImages*encodedImageBytes + jsonHeadroom
+	if transcriptJSONLMaxLineBytes < encodedPayloadBytes {
+		t.Fatalf("transcriptJSONLMaxLineBytes=%d, want at least %d", transcriptJSONLMaxLineBytes, encodedPayloadBytes)
+	}
+}
+
 func TestTranscriptWriter_CreatesFileAndWritesHeader(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nested", "transcript.jsonl")

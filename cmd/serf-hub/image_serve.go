@@ -64,7 +64,7 @@ func findImageInTranscript(path, wantSha string) ([]byte, string, bool) {
 	}
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 32*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		var head struct {

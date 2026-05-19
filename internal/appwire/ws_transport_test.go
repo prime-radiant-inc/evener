@@ -117,3 +117,16 @@ func TestWSTransportReceivesLargeAppWireMessage(t *testing.T) {
 		t.Fatalf("resp=%+v", resp)
 	}
 }
+
+func TestWSTransportReadLimitCoversMaxComposerImages(t *testing.T) {
+	const (
+		maxImages     = 8
+		maxImageBytes = 8 * 1024 * 1024
+		jsonHeadroom  = 1024 * 1024
+	)
+	encodedImageBytes := ((maxImageBytes + 2) / 3) * 4
+	encodedPayloadBytes := maxImages*encodedImageBytes + jsonHeadroom
+	if appWireWebSocketReadLimit < encodedPayloadBytes {
+		t.Fatalf("appWireWebSocketReadLimit=%d, want at least %d", appWireWebSocketReadLimit, encodedPayloadBytes)
+	}
+}

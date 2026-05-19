@@ -15,6 +15,8 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+const transcriptJSONLMaxLineBytes = 128 << 20
+
 // TranscriptHeader is the first line of a transcript JSONL file.
 type TranscriptHeader struct {
 	Kind             string    `json:"kind"`           // Always "header"
@@ -263,7 +265,7 @@ func OpenTranscriptWriter(path string) (*TranscriptWriter, error) {
 	// Parse entries to find the max seq number.
 	maxSeq := -1
 	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
 	first := true
 	for scanner.Scan() {
 		if first {
@@ -310,7 +312,7 @@ func ReadTranscript(path string) (TranscriptHeader, []TranscriptEntry, int, erro
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
 
 	// First line must be the header.
 	if !scanner.Scan() {
@@ -370,7 +372,7 @@ func ReadTranscriptFull(path string) (TranscriptData, error) {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
 
 	// First line must be the header.
 	if !scanner.Scan() {

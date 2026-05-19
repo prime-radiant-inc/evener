@@ -316,6 +316,9 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		return hubThreadFork(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnStart, func(ctx context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+		if err := validateAppWireInputItems(params.Items); err != nil {
+			return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
+		}
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
 			if _, resumeErr := hubThreadResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref}); resumeErr != nil {
@@ -366,6 +369,9 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		return appwire.EmptyResponse{}, source.InterruptTurn(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnQueue, func(ctx context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
+		if err := validateAppWireInputItems(params.Items); err != nil {
+			return appwire.EmptyResponse{}, appwire.InvalidParams(err.Error())
+		}
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
 			return appwire.EmptyResponse{}, err
@@ -989,7 +995,7 @@ func transcriptTailSummary(path string) (kind string, hasError bool) {
 	}
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
 	var lastLine []byte
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -1172,7 +1178,7 @@ func pastEntryTurns(entry PastEntry) []appwire.Turn {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
 	toolNames := map[string]string{}
 	var turns []appwire.Turn
 	entryIndex := 0
@@ -1398,6 +1404,9 @@ func hubKnowsRef(cfg WebConfig, ref string) bool {
 }
 
 func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+	if err := validateAppWireInputItems(params.Items); err != nil {
+		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
+	}
 	sourceID := launchSourceID(params)
 	if sourceID != "" && sourceID != "local" {
 		if strings.TrimSpace(params.Prompt) == "" {

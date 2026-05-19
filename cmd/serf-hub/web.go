@@ -1776,6 +1776,10 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	if err := validateAppWireInputItems(req.Items); err != nil {
+		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+		return
+	}
 	for i, it := range req.Items {
 		if len(it.Data) > sendMaxImageBytes {
 			http.Error(w, fmt.Sprintf("items[%d] %q exceeds %d-byte limit", i, it.Name, sendMaxImageBytes), http.StatusRequestEntityTooLarge)
@@ -2632,12 +2636,11 @@ type sendRequest struct {
 	Items  []appwire.InputItem     `json:"items,omitempty"`
 }
 
-// Per-request limits for image attachments. The browser-side cap is 8 MB per
-// image; these are slightly looser to leave a margin while still protecting
-// the hub from runaway uploads. A malicious or buggy client cannot push a
-// session's transcript past sendMaxRequestBytes.
+// Per-request limits for image attachments. Match the browser-side cap so
+// REST and AppWire accept the same image payload surface.
 const (
-	sendMaxImageBytes   = 12 * 1024 * 1024 // per-image
+	sendMaxImageItems   = 8
+	sendMaxImageBytes   = 8 * 1024 * 1024  // per-image
 	sendMaxRequestBytes = 40 * 1024 * 1024 // total request body
 )
 
@@ -2655,11 +2658,19 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		http.Error(w, "text or images required", http.StatusBadRequest)
 		return
 	}
+	if len(body.Images) > sendMaxImageItems {
+		http.Error(w, fmt.Sprintf("images exceeds %d-image limit", sendMaxImageItems), http.StatusRequestEntityTooLarge)
+		return
+	}
 	for i, img := range body.Images {
 		if len(img.Data) > sendMaxImageBytes {
 			http.Error(w, fmt.Sprintf("image[%d] %q exceeds %d-byte limit", i, img.Name, sendMaxImageBytes), http.StatusRequestEntityTooLarge)
 			return
 		}
+	}
+	if err := validateAppWireInputItems(body.Items); err != nil {
+		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+		return
 	}
 	for i, it := range body.Items {
 		// Same per-image size cap applies to the v80q items shape; the
@@ -2864,6 +2875,10 @@ func (s *WebServer) handleQueue(w http.ResponseWriter, r *http.Request, id strin
 		http.Error(w, "text or items required", http.StatusBadRequest)
 		return
 	}
+	if err := validateAppWireInputItems(body.Items); err != nil {
+		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+		return
+	}
 	for i, it := range body.Items {
 		if len(it.Data) > sendMaxImageBytes {
 			http.Error(w, fmt.Sprintf("items[%d] %q exceeds %d-byte limit", i, it.Name, sendMaxImageBytes), http.StatusRequestEntityTooLarge)
@@ -2925,6 +2940,10 @@ func (s *WebServer) handleDrainAsSteer(w http.ResponseWriter, r *http.Request, i
 				return
 			}
 		}
+	}
+	if err := validateAppWireInputItems(body.Items); err != nil {
+		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+		return
 	}
 	for i, it := range body.Items {
 		if len(it.Data) > sendMaxImageBytes {
