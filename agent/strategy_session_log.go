@@ -257,6 +257,10 @@ func (s *SessionLogStrategy) AfterAction(ctx context.Context, history []Turn, cl
 		// Non-fatal: log the error but don't fail the session.
 		return nil
 	}
-	s.session.emit(EventForkSummary, ForkSummaryData{Turn: entry.Turn})
-	return s.log.Append(entry)
+	return s.session.withResponseSideEffects(ctx, func() {
+		s.session.emit(EventForkSummary, ForkSummaryData{Turn: entry.Turn})
+		if err := s.log.Append(entry); err != nil {
+			s.session.emit(EventWarning, WarningData{Message: "session log append failed: " + err.Error()})
+		}
+	})
 }
