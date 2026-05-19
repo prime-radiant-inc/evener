@@ -440,6 +440,56 @@ func TestProviderCredentialPreflightAcceptsStoredOpenAIOAuth(t *testing.T) {
 	}
 }
 
+func TestProviderCredentialPreflightUsesLaunchHomeForOpenAIOAuth(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	home := t.TempDir()
+	stateDir := filepath.Join(home, ".local", "state", "serf")
+	if err := authopenai.SaveAuth(stateDir, authopenai.AuthRecord{
+		Version:      1,
+		Provider:     "openai",
+		Source:       authopenai.AuthSourceOAuth,
+		ObtainedAt:   time.Now().Add(-time.Minute),
+		TokenType:    "Bearer",
+		Scope:        "openid profile email offline_access",
+		AccessToken:  "oauth-access-token",
+		RefreshToken: "oauth-refresh-token",
+		Expiry:       time.Now().Add(time.Hour),
+		Email:        "oauth@example.com",
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+
+	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	err := validateProviderCredentials("openai", store, []string{"XDG_STATE_HOME=", "HOME=" + home})
+	if err != nil {
+		t.Fatalf("validateProviderCredentials(openai) with HOME-scoped OAuth: %v", err)
+	}
+}
+
+func TestProviderCredentialPreflightDoesNotUseHubEnvWhenLaunchClearsXDG(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	hubStateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", hubStateHome)
+	if err := authopenai.SaveAuth(authopenai.DefaultStateDirWithStateHome(hubStateHome), authopenai.AuthRecord{
+		Version:      1,
+		Provider:     "openai",
+		Source:       authopenai.AuthSourceOAuth,
+		ObtainedAt:   time.Now().Add(-time.Minute),
+		TokenType:    "Bearer",
+		Scope:        "openid profile email offline_access",
+		AccessToken:  "hub-oauth-access-token",
+		RefreshToken: "hub-oauth-refresh-token",
+		Expiry:       time.Now().Add(time.Hour),
+		Email:        "hub-oauth@example.com",
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+
+	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	err := validateProviderCredentials("openai", store, []string{"XDG_STATE_HOME=", "HOME=" + t.TempDir()})
+	assertHubLaunchError(t, err)
+}
+
 func TestProviderCredentialPreflightAcceptsInheritedGoogleAlias(t *testing.T) {
 	t.Setenv("GOOGLE_API_KEY", "google-secret")
 	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))

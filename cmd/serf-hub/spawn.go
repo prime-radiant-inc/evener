@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -376,7 +377,7 @@ func validateProviderCredentials(provider string, store *credentials.Store, env 
 }
 
 func openAIStoredOAuthUsable(env []string) bool {
-	record, err := authopenai.LoadAuth(authopenai.DefaultStateDirWithStateHome(envValue(env, "XDG_STATE_HOME")))
+	record, err := authopenai.LoadAuth(openAIStateDirFromLaunchEnv(env))
 	if err != nil {
 		return false
 	}
@@ -389,14 +390,27 @@ func openAIStoredOAuthUsable(env []string) bool {
 	return strings.TrimSpace(record.RefreshToken) != ""
 }
 
-func envValue(env []string, key string) string {
+func openAIStateDirFromLaunchEnv(env []string) string {
+	if env == nil {
+		return authopenai.DefaultStateDirWithStateHome("")
+	}
+	if stateHome, ok := envLookup(env, "XDG_STATE_HOME"); ok && strings.TrimSpace(stateHome) != "" {
+		return authopenai.DefaultStateDirWithStateHome(stateHome)
+	}
+	if home, ok := envLookup(env, "HOME"); ok && strings.TrimSpace(home) != "" {
+		return filepath.Join(strings.TrimSpace(home), ".local", "state", "serf")
+	}
+	return filepath.Join(os.TempDir(), "serf")
+}
+
+func envLookup(env []string, key string) (string, bool) {
 	prefix := key + "="
 	for i := len(env) - 1; i >= 0; i-- {
 		if strings.HasPrefix(env[i], prefix) {
-			return strings.TrimPrefix(env[i], prefix)
+			return strings.TrimPrefix(env[i], prefix), true
 		}
 	}
-	return os.Getenv(key)
+	return "", false
 }
 
 func envToMap(env []string) map[string]string {
