@@ -1734,6 +1734,49 @@ func TestStream_ResponsesAPI_404_FallsBackToChatCompletions(t *testing.T) {
 	}
 }
 
+func TestStream_ResponsesAPI_404_DoesNotFallbackWhenRequestSemanticsWouldChange(t *testing.T) {
+	var chatCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"model not found","code":"model_not_found","type":"invalid_request_error"}}`))
+		case "/v1/chat/completions":
+			chatCalls++
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := a.Stream(ctx, llm.Request{
+		Model: "gpt-4.1-mini",
+		Messages: []llm.Message{{
+			Role: llm.RoleUser,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Text: "describe"},
+				{Kind: llm.ContentImage, Image: &llm.ImageData{URL: "https://example.com/image.png"}},
+			},
+		}},
+		Metadata: map[string]string{"trace": "abc"},
+	})
+	if err == nil {
+		t.Fatal("expected fallback rejection, got nil")
+	}
+	if !strings.Contains(err.Error(), "without changing request semantics") || !strings.Contains(err.Error(), "metadata") || !strings.Contains(err.Error(), "non-text user content") {
+		t.Fatalf("error did not explain fallback rejection: %v", err)
+	}
+	if chatCalls != 0 {
+		t.Fatalf("chat fallback was called %d time(s), want 0", chatCalls)
+	}
+}
+
 func TestAdapter_Complete_OAuthTransportUsesCodexEndpointAndAccountHeader(t *testing.T) {
 	var gotPath string
 	var gotAuth string

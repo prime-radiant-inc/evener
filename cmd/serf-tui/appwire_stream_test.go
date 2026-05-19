@@ -168,6 +168,47 @@ func TestStreamEventsFromTurnCompletedIncludesFinalItems(t *testing.T) {
 	}
 }
 
+func TestStreamEventsFromTurnCompletedFailedPreservesDiagnosticFields(t *testing.T) {
+	notification := appwire.NotificationMessage(appwire.NotifyTurnCompleted, map[string]any{
+		"threadId": "th_1",
+		"ref":      "local:th_1",
+		"turn": appwire.Turn{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusFailed,
+			Error: &appwire.TurnError{
+				Message: "configuration failed",
+				Source:  "serf",
+				Title:   "Serf configuration error",
+				Hint:    "Check launch config.",
+				Cause:   &appwire.DiagnosticCause{Kind: "provider", Provider: "openai", Model: "gpt-5", Status: 503},
+			},
+		},
+	})
+
+	events := streamEventsFromNotification(*notification.Notification)
+	var got struct {
+		Error  string                   `json:"error"`
+		Source string                   `json:"source"`
+		Title  string                   `json:"title"`
+		Hint   string                   `json:"hint"`
+		Cause  *appwire.DiagnosticCause `json:"cause"`
+	}
+	for _, ev := range events {
+		if ev.Event != "ERROR" {
+			continue
+		}
+		if err := json.Unmarshal([]byte(ev.Data), &got); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got.Error != "configuration failed" || got.Source != "serf" || got.Title != "Serf configuration error" || got.Hint != "Check launch config." {
+		t.Fatalf("error payload=%+v", got)
+	}
+	if got.Cause == nil || got.Cause.Kind != "provider" || got.Cause.Provider != "openai" || got.Cause.Model != "gpt-5" || got.Cause.Status != 503 {
+		t.Fatalf("cause=%+v", got.Cause)
+	}
+}
+
 func TestStreamEventsFromTurnCompletedSkipsAlreadyCompletedItems(t *testing.T) {
 	translator := newAppwireStreamTranslator()
 	itemCompleted := appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{

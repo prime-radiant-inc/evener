@@ -239,6 +239,25 @@ assert(
   emptyDiagnostic.textContent.toLowerCase().includes("prompt is empty"),
   "empty-prompt diagnostic should explain the issue, got " + emptyDiagnostic.textContent,
 );
+
+let imageOnlySpawnBody = null;
+formDom.window.fetch = (_url, opts) => {
+  imageOnlySpawnBody = JSON.parse(opts.body);
+  return Promise.resolve({ ok: false, text: () => Promise.resolve("image-only test stop") });
+};
+formDom.window.document.querySelector('textarea[name="prompt"]').value = "   \n  ";
+formDom.window.document.querySelector("[data-spawn-form]").__composerPasteState = {
+  items: [{ type: "image", mediaType: "image/png", data: new Uint8Array([1, 2, 3]), name: "shot.png" }],
+};
+formDom.window.document.querySelector("[data-spawn-form]").dispatchEvent(new formDom.window.Event("submit", {
+  bubbles: true,
+  cancelable: true,
+}));
+assert(imageOnlySpawnBody && imageOnlySpawnBody.prompt === "   \n  ",
+  "image-only spawn should submit even with whitespace prompt");
+assert(imageOnlySpawnBody.items && imageOnlySpawnBody.items.length === 1,
+  "image-only spawn should include image items");
+formDom.window.document.querySelector("[data-spawn-form]").__composerPasteState = { items: [] };
 formDom.window.SerfAppwire = savedAppwire;
 
 formDom.window.document.querySelector("[data-recent-prompt]").click();

@@ -250,7 +250,8 @@ type Session struct {
 	// messages into a single steering message sent to the in-flight turn.
 	// Each entry carries text plus any attached images (kata t5j6) so the
 	// composer can queue image-bearing messages alongside text.
-	inputQueue []queuedInput
+	inputQueue    []queuedInput
+	queueEventsMu sync.Mutex
 
 	// communicate tool state (transient, reset each processOneInput call)
 	communicated          bool
@@ -1146,6 +1147,8 @@ func (s *Session) EnqueueWithImages(ctx context.Context, text string, images []I
 	if strings.TrimSpace(text) == "" && len(images) == 0 {
 		return fmt.Errorf("queue: text or images required")
 	}
+	s.queueEventsMu.Lock()
+	defer s.queueEventsMu.Unlock()
 	s.mu.Lock()
 	if s.state == SessionClosed {
 		s.mu.Unlock()
@@ -1172,6 +1175,8 @@ func (s *Session) DrainAsSteer(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	s.queueEventsMu.Lock()
+	defer s.queueEventsMu.Unlock()
 	s.mu.Lock()
 	if s.state == SessionClosed {
 		s.mu.Unlock()
@@ -1185,6 +1190,7 @@ func (s *Session) DrainAsSteer(ctx context.Context) error {
 	s.inputQueue = nil
 	data := s.queueChangedDataLocked()
 	s.mu.Unlock()
+	s.emit(EventQueueChanged, data)
 	texts := make([]string, 0, len(entries))
 	var images []ImageAttachment
 	for _, entry := range entries {
@@ -1199,7 +1205,6 @@ func (s *Session) DrainAsSteer(ctx context.Context) error {
 	} else {
 		s.SteerWithImages(combined, images)
 	}
-	s.emit(EventQueueChanged, data)
 	return nil
 }
 
@@ -1260,6 +1265,8 @@ func queuedEntryPreviewLine(entry queuedInput) string {
 // popQueueHead removes and returns the next queued entry. Returns a zero
 // value when the queue is empty.
 func (s *Session) popQueueHead() queuedInput {
+	s.queueEventsMu.Lock()
+	defer s.queueEventsMu.Unlock()
 	s.mu.Lock()
 	if len(s.inputQueue) == 0 {
 		s.mu.Unlock()
@@ -3245,6 +3252,10 @@ func (s *Session) initSessionState() ([]PromptSource, error) {
 	}
 	s.applyAgentRolePromptOverride()
 
+	if err := s.validateModelFallbacks(); err != nil {
+		return nil, err
+	}
+
 	s.contextMgr = NewContextManager(s.profile, s.client)
 	s.contextMgr.ResultToolName = s.resultToolName()
 
@@ -3303,6 +3314,16 @@ func (s *Session) initSessionState() ([]PromptSource, error) {
 	s.refreshSystemPromptCache()
 
 	return s.promptSourceLog, nil
+}
+
+func (s *Session) validateModelFallbacks() error {
+	for _, fbModel := range s.cfg.ModelFallbacks {
+		fbProfile := s.profile.WithModel(fbModel)
+		if fbProfile.ID() != s.profile.ID() {
+			return fmt.Errorf("model_fallbacks entry %q switches provider from %q to %q; cross-provider fallbacks are not supported because provider prompt/tool surfaces differ", fbModel, s.profile.ID(), fbProfile.ID())
+		}
+	}
+	return nil
 }
 
 func (s *Session) applyAgentRolePromptOverride() {

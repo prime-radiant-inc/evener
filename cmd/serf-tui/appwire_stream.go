@@ -140,10 +140,24 @@ func (t *appwireStreamTranslator) eventsFromNotification(notification appwire.No
 			events := t.eventsFromTurnCompletedItems(turnID, params.Turn.Items)
 			if params.Turn.Status == appwire.TurnStatusFailed {
 				message := "turn failed"
+				payload := map[string]any{"error": message}
 				if params.Turn.Error != nil && params.Turn.Error.Message != "" {
 					message = params.Turn.Error.Message
+					payload["error"] = message
+					if params.Turn.Error.Source != "" {
+						payload["source"] = params.Turn.Error.Source
+					}
+					if params.Turn.Error.Title != "" {
+						payload["title"] = params.Turn.Error.Title
+					}
+					if params.Turn.Error.Hint != "" {
+						payload["hint"] = params.Turn.Error.Hint
+					}
+					if params.Turn.Error.Cause != nil {
+						payload["cause"] = params.Turn.Error.Cause
+					}
 				}
-				events = append(events, newStreamEvent("ERROR", map[string]any{"error": message, "source": "provider"}))
+				events = append(events, newStreamEvent("ERROR", payload))
 			}
 			events = append(events, newStreamEvent("TURN_COMPLETED", map[string]any{"turnId": turnID}))
 			return events

@@ -332,6 +332,9 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		// Hard error from Responses API (non-2xx, etc.) — fall through to Chat
 		// Completions only if it looks like a model-compatibility error.
 		if isFallbackEligible(err) {
+			if reason := chatCompletionsFallbackUnsupported(req); reason != "" {
+				return nil, fmt.Errorf("openai: cannot fall back to /v1/chat/completions without changing request semantics: %s: %w", reason, err)
+			}
 			return a.fallbackToChatCompletions(ctx, req, err)
 		}
 		return nil, err
@@ -353,6 +356,16 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 			if ev.Type == llm.StreamEventError && errors.Is(ev.Err, errEmptyResponsesStream) && !sentContent {
 				// Responses API gave us nothing. Fall back to Chat Completions.
 				responsesStream.Close() //nolint:errcheck
+				if reason := chatCompletionsFallbackUnsupported(req); reason != "" {
+					proxy.Send(llm.StreamEvent{
+						Type: llm.StreamEventError,
+						Err: llm.NewStreamError("openai", fmt.Sprintf(
+							"openai: cannot fall back to /v1/chat/completions without changing request semantics: %s",
+							reason,
+						)),
+					})
+					return
+				}
 				ccStream, ccErr := a.streamViaChatCompletions(out, req)
 				if ccErr != nil {
 					combinedMsg := fmt.Sprintf(
@@ -435,6 +448,31 @@ func isFallbackEligible(err error) bool {
 		return sc == 404 || sc == 422
 	}
 	return errors.Is(err, errEmptyResponsesStream)
+}
+
+func chatCompletionsFallbackUnsupported(req llm.Request) string {
+	var reasons []string
+	if req.ResponseFormat != nil {
+		reasons = append(reasons, "response_format")
+	}
+	if len(req.Metadata) > 0 {
+		reasons = append(reasons, "metadata")
+	}
+	if len(req.ProviderOptions) > 0 {
+		reasons = append(reasons, "provider_options")
+	}
+	for _, msg := range req.Messages {
+		if msg.Role != llm.RoleUser {
+			continue
+		}
+		for _, part := range msg.Content {
+			if part.Kind != llm.ContentText {
+				reasons = append(reasons, "non-text user content")
+				return strings.Join(reasons, ", ")
+			}
+		}
+	}
+	return strings.Join(reasons, ", ")
 }
 
 // fallbackToChatCompletions wraps a Responses API error with fallback context.

@@ -262,11 +262,22 @@ vm.runInContext(SRC, context);
     turn: {
       id: "turn_failed",
       status: "failed",
-      error: { message: "turn failed for test" },
+      error: {
+        message: "turn failed for test",
+        source: "serf",
+        title: "Serf configuration error",
+        hint: "Check launch config.",
+        cause: { kind: "provider", provider: "openai", model: "gpt-5", status: 503 },
+      },
       items: [{ id: "msg_failed", turnId: "turn_failed", type: "agent_message" }],
     },
   });
-  assert(failedTurnEvents.some(([kind]) => kind === "ERROR"), "failed turn should render an error event");
+  const failedTurnError = failedTurnEvents.find(([kind]) => kind === "ERROR");
+  assert(failedTurnError, "failed turn should render an error event");
+  assert(failedTurnError[1].source === "serf", "failed turn error should preserve source");
+  assert(failedTurnError[1].title === "Serf configuration error", "failed turn error should preserve title");
+  assert(failedTurnError[1].hint === "Check launch config.", "failed turn error should preserve hint");
+  assert(failedTurnError[1].cause && failedTurnError[1].cause.kind === "provider", "failed turn error should preserve cause");
   assert(context.window.SerfAppwire.liveItemStateSize() === liveStateBeforeFailedTurn - 1, "failed turn should evict live item state");
   const reusedItemNextTurnEvents = context.window.SerfAppwire.eventsFromNotification("turn/completed", {
     threadId: "th_codex",

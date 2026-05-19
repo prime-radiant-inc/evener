@@ -78,6 +78,7 @@
       this.appwireHydrated = false;
       this.activeTurnId = conversationEl.dataset.activeTurnId || "";
       this.state = conversationEl.dataset.state || "ended";
+      this.processingQueueCap = null;
 
       this.activeMessages = new Map();   // messageId -> {el, textBuf, markdownTimer}
       this.activeTools = new Map();      // callId -> {el, outputBuf}
@@ -159,7 +160,7 @@
           sendBtn.setAttribute("title", "send unavailable");
         } else if (state === "processing") {
           sendBtn.setAttribute("data-capability-send", "false");
-          sendBtn.setAttribute("data-capability-queue", "true");
+          sendBtn.setAttribute("data-capability-queue", this.processingQueueCap === false ? "false" : "true");
           sendBtn.disabled = false;
           sendBtn.removeAttribute("title");
         } else {
@@ -479,6 +480,9 @@
           if (!data.turnId || data.turnId === this.activeTurnId) this.setActiveTurnId("");
           break;
         case "SESSION_START":
+          if (data.status === "processing" && data.capabilities && typeof data.capabilities.queue === "boolean") {
+            this.processingQueueCap = data.capabilities.queue;
+          }
           if (data.session_id && data.session_id !== this.sessionId) {
             this.sessionId = data.session_id;
             history.replaceState(null, "", "/s/" + encodeURIComponent(data.session_id));

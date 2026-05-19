@@ -3459,6 +3459,45 @@ func TestSession_Enqueue_DrainsAfterTurnCompletes(t *testing.T) {
 	}
 }
 
+func TestSession_QueueMutationWaitsForQueuePublicationSlot(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	sess.queueEventsMu.Lock()
+	done := make(chan error, 1)
+	go func() {
+		done <- sess.Enqueue(context.Background(), "queued while publisher busy")
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("Enqueue completed while queue publication slot was held: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if depth := sess.QueueDepth(); depth != 0 {
+		t.Fatalf("QueueDepth while publication slot held = %d, want 0", depth)
+	}
+
+	sess.queueEventsMu.Unlock()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Enqueue did not complete after queue publication slot was released")
+	}
+	if depth := sess.QueueDepth(); depth != 1 {
+		t.Fatalf("QueueDepth after Enqueue = %d, want 1", depth)
+	}
+}
+
 // TestSession_DrainAsSteer_JoinsWithDoubleNewline verifies that
 // DrainAsSteer pops every queued message and combines them into a single
 // STEERING message joined by "\n\n". Kata 0bq1.

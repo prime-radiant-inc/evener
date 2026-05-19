@@ -537,6 +537,8 @@
       ref: threadRef(thread),
       model: thread.modelProvider || "",
       profile: thread.serf && thread.serf.profile || "",
+      status: thread.status && thread.status.type || "",
+      capabilities: thread.serf && thread.serf.capabilities || {},
       restored: true,
     }]];
     // Seed the renderer's queue state from the authoritative thread view
@@ -595,6 +597,7 @@
     if (error.source) payload.source = error.source;
     if (error.title) payload.title = error.title;
     if (error.hint) payload.hint = error.hint;
+    if (error.cause) payload.cause = error.cause;
     return payload;
   }
 
@@ -608,6 +611,8 @@
         ref: threadRef(thread) || params.ref || "",
         model: thread.modelProvider || "",
         profile: thread.serf && thread.serf.profile || "",
+        status: thread.status && thread.status.type || "",
+        capabilities: thread.serf && thread.serf.capabilities || {},
       }]];
     }
     if (method === "thread/closed") {
