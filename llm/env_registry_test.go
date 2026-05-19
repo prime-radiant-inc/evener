@@ -79,6 +79,35 @@ func TestNewFromEnv_UsesSERFStateDirEnvByDefault(t *testing.T) {
 	}
 }
 
+func TestNewFromEnv_PassesXDGStateHomeToFactories(t *testing.T) {
+	// Isolate global registry.
+	envFactoriesMu.Lock()
+	saved := append([]EnvAdapterFactory{}, envFactories...)
+	envFactories = nil
+	envFactoriesMu.Unlock()
+	t.Cleanup(func() {
+		envFactoriesMu.Lock()
+		envFactories = saved
+		envFactoriesMu.Unlock()
+	})
+
+	const wantStateHome = "/tmp/serf-state-home"
+	var gotStateHome string
+	t.Setenv("XDG_STATE_HOME", wantStateHome)
+
+	RegisterEnvAdapterFactory(func(cfg EnvConfig) (ProviderAdapter, bool, error) {
+		gotStateHome = cfg.StateHome
+		return &envFakeAdapter{name: "openai"}, true, nil
+	})
+
+	if _, err := NewFromEnv(); err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	if gotStateHome != wantStateHome {
+		t.Fatalf("factory state home = %q, want %q", gotStateHome, wantStateHome)
+	}
+}
+
 func TestNewFromEnv_UsesRegisteredFactories(t *testing.T) {
 	// Isolate global registry.
 	envFactoriesMu.Lock()

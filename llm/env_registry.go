@@ -7,7 +7,8 @@ import (
 )
 
 type EnvConfig struct {
-	StateDir string
+	StateDir  string
+	StateHome string
 }
 
 type EnvOption func(*EnvConfig)
@@ -46,7 +47,10 @@ func NewFromEnv(opts ...EnvOption) (*Client, error) {
 	factories := append([]EnvAdapterFactory{}, envFactories...)
 	envFactoriesMu.Unlock()
 
-	cfg := EnvConfig{StateDir: os.Getenv("SERF_STATE_DIR")}
+	cfg := EnvConfig{
+		StateDir:  os.Getenv("SERF_STATE_DIR"),
+		StateHome: os.Getenv("XDG_STATE_HOME"),
+	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&cfg)

@@ -1486,10 +1486,11 @@ func TestNewFromEnv_UsesStoredOAuthTransportWhenAPIKeyAbsent(t *testing.T) {
 	}
 }
 
-func TestEnvFactoryUsesConfiguredStateDirForStoredOAuth(t *testing.T) {
+func TestEnvFactoryUsesUserScopedOAuthWithProjectStateDir(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
-	stateDir := filepath.Join(t.TempDir(), "custom-openai-auth")
-	if err := authopenai.SaveAuth(stateDir, authopenai.AuthRecord{
+	userStateDir := authopenai.DefaultStateDir()
+	projectStateDir := filepath.Join(t.TempDir(), "project-state")
+	if err := authopenai.SaveAuth(userStateDir, authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -1499,12 +1500,12 @@ func TestEnvFactoryUsesConfiguredStateDirForStoredOAuth(t *testing.T) {
 		AccessToken:  "oauth-token",
 		RefreshToken: "refresh-token",
 		Expiry:       time.Now().Add(time.Hour).UTC(),
-		AccountID:    "acct_custom_state",
+		AccountID:    "acct_user_state",
 	}); err != nil {
 		t.Fatalf("SaveAuth: %v", err)
 	}
 
-	c, err := llm.NewFromEnv(llm.WithStateDir(stateDir))
+	c, err := llm.NewFromEnv(llm.WithStateDir(projectStateDir))
 	if err != nil {
 		t.Fatalf("NewFromEnv: %v", err)
 	}
