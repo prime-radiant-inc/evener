@@ -35,7 +35,9 @@ const (
 	codexClientVersion = "0.0.0"
 )
 
-type Config struct{}
+type Config struct {
+	StateDir string
+}
 
 type Adapter struct {
 	APIKey           string
@@ -49,8 +51,8 @@ type Adapter struct {
 }
 
 func init() {
-	llm.RegisterEnvAdapterFactory(func(llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
-		a, err := NewFromEnv()
+	llm.RegisterEnvAdapterFactory(func(env llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
+		a, err := NewFromEnv(Config{StateDir: env.StateDir})
 		if err != nil {
 			if isUnconfigured(err) {
 				return nil, false, nil
@@ -62,10 +64,19 @@ func init() {
 }
 
 func NewFromEnv(cfgs ...Config) (*Adapter, error) {
+	var cfg Config
+	for _, next := range cfgs {
+		if strings.TrimSpace(next.StateDir) != "" {
+			cfg.StateDir = next.StateDir
+		}
+	}
 	// Prefer stored OAuth over OPENAI_API_KEY: once a user has signed in via
 	// `serf openai login`, route through the ChatGPT/Codex backend instead of
 	// the env-key API. Service.Status reflects the same preference order.
 	authStateDir := authopenai.DefaultStateDir()
+	if strings.TrimSpace(cfg.StateDir) != "" {
+		authStateDir = strings.TrimSpace(cfg.StateDir)
+	}
 	service := authopenai.NewService(authopenai.DefaultConfig(), nil)
 	status, err := service.Status(authStateDir)
 	if err != nil {

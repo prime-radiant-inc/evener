@@ -1486,6 +1486,33 @@ func TestNewFromEnv_UsesStoredOAuthTransportWhenAPIKeyAbsent(t *testing.T) {
 	}
 }
 
+func TestEnvFactoryUsesConfiguredStateDirForStoredOAuth(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	stateDir := filepath.Join(t.TempDir(), "custom-openai-auth")
+	if err := authopenai.SaveAuth(stateDir, authopenai.AuthRecord{
+		Version:      1,
+		Provider:     "openai",
+		Source:       authopenai.AuthSourceOAuth,
+		ObtainedAt:   time.Now().Add(-time.Minute).UTC(),
+		TokenType:    "Bearer",
+		Scope:        "openid profile email offline_access",
+		AccessToken:  "oauth-token",
+		RefreshToken: "refresh-token",
+		Expiry:       time.Now().Add(time.Hour).UTC(),
+		AccountID:    "acct_custom_state",
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+
+	c, err := llm.NewFromEnv(llm.WithStateDir(stateDir))
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	if c.DefaultProvider() != "openai" {
+		t.Fatalf("DefaultProvider = %q, want openai", c.DefaultProvider())
+	}
+}
+
 // TestStream_EmptyResponsesStream_FallsBackToChatCompletions verifies that when
 // the Responses API returns 200 OK but closes the stream with zero events (the
 // silent failure mode for models that don't support /v1/responses), the adapter
