@@ -383,6 +383,34 @@ func TestLocalDaemonSourceSubscribeThreadMapsConnectionRefused(t *testing.T) {
 	}
 }
 
+func TestLocalDaemonSourceSubscribeThreadPreservesThreadReadWireError(t *testing.T) {
+	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{}, appwire.InvalidParams("broken pipe is semantic here")
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
+		return []rendezvous.Entry{{
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws" + httpServer.URL[len("http"):],
+			SourceID:  "local",
+			ThreadID:  "th_1",
+			SessionID: "sess_1",
+		}}
+	}, httpServer.Client())
+
+	_, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1"})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("SubscribeThread error %T=%v, want WireError", err, err)
+	}
+	if wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("wire=%+v, want InvalidParams preserved", wire)
+	}
+}
+
 func TestLocalDaemonSourceStartTurnMapsDroppedTransportToSessionUnavailable(t *testing.T) {
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, nil)

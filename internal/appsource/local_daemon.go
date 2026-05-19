@@ -236,14 +236,14 @@ func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.
 		if cerr := ctx.Err(); cerr != nil {
 			return nil, cerr
 		}
-		return nil, localDaemonSubscribeReadError(err)
+		return nil, localDaemonDialError(localDaemonCallError(err))
 	}
 	if _, err := client.ThreadRead(ctx, params); err != nil {
 		transport.Close()
 		if cerr := ctx.Err(); cerr != nil {
 			return nil, cerr
 		}
-		return nil, localDaemonDialError(localDaemonCallError(err))
+		return nil, localDaemonSubscribeReadError(err)
 	}
 	out := make(chan appwire.Notification, 128)
 	go func() {
