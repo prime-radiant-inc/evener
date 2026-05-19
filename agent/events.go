@@ -180,7 +180,8 @@ type ToolCallEndData struct {
 }
 
 type SteeringInjectedData struct {
-	Text string `json:"text"`
+	Text   string           `json:"text"`
+	Images []UserInputImage `json:"images,omitempty"`
 }
 
 // QueueChangedData carries an authoritative snapshot of the per-session

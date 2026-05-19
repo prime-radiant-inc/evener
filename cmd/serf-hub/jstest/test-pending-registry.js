@@ -211,6 +211,24 @@ function build() {
   console.log("ok queue_reconcile_consumes_duplicate_texts_once");
 })();
 
+// Image-only queue chips use the same synthetic preview text as the daemon.
+(function test_queue_reconcile_image_only_preview() {
+  const window = build();
+  const conv = window.document.getElementById("conversation");
+  const queueList = window.document.querySelector("[data-queue-list]");
+  const reg = window.SerfAppwirePending.create({ conversation: conv, queueList });
+
+  reg.register({ method: "turn/queue", text: "", items: [{ type: "image", name: "shot.png" }] });
+  const chip = queueList.querySelector(".optimistic-pending");
+  assert.ok(chip, "expected pending image-only queue chip");
+  assert.match(chip.textContent, /\[image\]/);
+
+  const removed = reg.tryReconcileQueue(["[image]"]);
+  assert.equal(removed, 1);
+  assert.equal(queueList.querySelectorAll(".optimistic-pending").length, 0);
+  console.log("ok queue_reconcile_image_only_preview");
+})();
+
 // Backward-compat: callers without queueList still get queue chips
 // (they fall back to the conversation pane rather than crashing).
 (function test_queue_chip_falls_back_to_conversation_without_queue_list() {

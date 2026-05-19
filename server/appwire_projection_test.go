@@ -345,6 +345,33 @@ func TestAppEventProjectorProjectsSteeringInjected(t *testing.T) {
 	}
 }
 
+func TestAppEventProjectorProjectsImageOnlySteeringInjected(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	out := projector.Project(agent.SessionEvent{
+		Kind:      agent.EventSteeringInjected,
+		SessionID: "th_1",
+		Data: agent.SteeringInjectedData{Images: []agent.UserInputImage{{
+			MediaType: "image/png",
+			Data:      []byte("png"),
+			Name:      "shot.png",
+		}}},
+	})
+	if len(out) != 1 || out[0].Method != appwire.NotifySerfSteeringInjected {
+		t.Fatalf("out=%+v", out)
+	}
+	params, ok := out[0].Params.(map[string]any)
+	if !ok {
+		t.Fatalf("params=%T", out[0].Params)
+	}
+	if params["text"] != "[image]" {
+		t.Fatalf("text=%q, want [image]", params["text"])
+	}
+	images, ok := params["images"].([]appwire.InputItem)
+	if !ok || len(images) != 1 || images[0].MediaType != "image/png" {
+		t.Fatalf("images=%+v", params["images"])
+	}
+}
+
 // TestProjector_ForwardsProviderCause (kata cmfz) verifies that when an
 // EventError carries a structured ErrorCause (populated by agent.Session
 // when the underlying error is a typed llm.Error), the projector forwards

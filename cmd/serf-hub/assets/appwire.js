@@ -445,7 +445,7 @@
       return [["USER_INPUT", event]];
     }
     if (item.type === "steering") {
-      return [["STEERING_INJECTED", { text: item.text || "" }]];
+      return [["STEERING_INJECTED", { text: item.text || "", images: item.images || [] }]];
     }
     if (item.type === "agent_message") {
       if (!item.text) return [];
@@ -696,7 +696,7 @@
       if (params.cause) payload.cause = params.cause;
       return [["WARNING", payload]];
     }
-    if (method === "serf/steering/injected") return [["STEERING_INJECTED", { text: params.text || "" }]];
+    if (method === "serf/steering/injected") return [["STEERING_INJECTED", { text: params.text || "", images: params.images || [] }]];
     if (method === "serf/subagent/started") return [["SUBAGENT_START", params.subagent || params]];
     if (method === "serf/subagent/completed") return [["SUBAGENT_END", params.subagent || params]];
     return [];

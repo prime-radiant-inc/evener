@@ -25,6 +25,27 @@ func TestHubTranscriptReducerReconcilesUserEchoWithReplay(t *testing.T) {
 	}
 }
 
+func TestHubTranscriptReducerKeepsImageOnlyUserMessage(t *testing.T) {
+	reducer := newHubTranscriptReducer(nil, nil, nil)
+
+	reducer.applyThreadItem(appwire.ThreadItem{
+		Type: "user_message",
+		ID:   "user_img",
+		Images: []appwire.InputItem{{
+			Type:      "image",
+			MediaType: "image/png",
+			Data:      []byte("png"),
+		}},
+	}, 3, true)
+
+	if len(reducer.messages) != 1 {
+		t.Fatalf("messages len=%d, want 1", len(reducer.messages))
+	}
+	if reducer.messages[0].Kind != msgUser || reducer.messages[0].Text != "[image]" || reducer.messages[0].TurnIndex != 3 {
+		t.Fatalf("image-only user message = %+v", reducer.messages[0])
+	}
+}
+
 func TestHubTranscriptReducerSuppressesReplayedCompletedTool(t *testing.T) {
 	reducer := newHubTranscriptReducer(nil, nil, nil)
 	started := appwire.ThreadItem{

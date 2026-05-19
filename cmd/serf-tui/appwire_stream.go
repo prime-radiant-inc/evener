@@ -201,10 +201,15 @@ func (t *appwireStreamTranslator) eventsFromNotification(notification appwire.No
 		}
 	case appwire.NotifySerfSteeringInjected:
 		var params struct {
-			Text string `json:"text"`
+			Text   string              `json:"text"`
+			Images []appwire.InputItem `json:"images"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
-			return []streamEvent{newStreamEvent("STEERING_INJECTED", map[string]any{"text": params.Text})}
+			payload := map[string]any{"text": params.Text}
+			if len(params.Images) > 0 {
+				payload["images"] = params.Images
+			}
+			return []streamEvent{newStreamEvent("STEERING_INJECTED", payload)}
 		}
 	case appwire.NotifySerfSubagentStarted:
 		var params struct {
@@ -281,7 +286,11 @@ func (t *appwireStreamTranslator) eventsFromItem(item appwire.ThreadItem, comple
 	switch item.Type {
 	case "user_message":
 		t.markItemCompleted(item)
-		return []streamEvent{newStreamEvent("USER_INPUT", map[string]any{"text": item.Text, "turn": item.TranscriptEntryIndex})}
+		payload := map[string]any{"text": item.Text, "turn": item.TranscriptEntryIndex}
+		if len(item.Images) > 0 {
+			payload["images"] = item.Images
+		}
+		return []streamEvent{newStreamEvent("USER_INPUT", payload)}
 	case "agent_message":
 		if completed {
 			t.markItemCompleted(item)

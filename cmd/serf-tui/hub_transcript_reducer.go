@@ -83,19 +83,20 @@ func (r *hubTranscriptReducer) applyToolOutputDelta(itemID, delta string) {
 func (r *hubTranscriptReducer) applyThreadItem(item appwire.ThreadItem, turnIndex int, completed bool) {
 	switch item.Type {
 	case "user_message":
-		if strings.TrimSpace(item.Text) != "" {
+		text := userMessageItemText(item)
+		if strings.TrimSpace(text) != "" {
 			if idx, ok := r.messageIndexByItemID(item.ID, msgUser); ok {
-				r.messages[idx].Text = item.Text
+				r.messages[idx].Text = text
 				r.messages[idx].TurnIndex = turnIndex
 				return
 			}
-			if idx, ok := r.pendingUserEchoIndex(item.Text); ok {
-				r.messages[idx].Text = item.Text
+			if idx, ok := r.pendingUserEchoIndex(text); ok {
+				r.messages[idx].Text = text
 				r.messages[idx].TurnIndex = turnIndex
 				r.messages[idx].ItemID = item.ID
 				return
 			}
-			r.messages = append(r.messages, chatMessage{Kind: msgUser, Text: item.Text, TurnIndex: turnIndex, ItemID: item.ID})
+			r.messages = append(r.messages, chatMessage{Kind: msgUser, Text: text, TurnIndex: turnIndex, ItemID: item.ID})
 		}
 	case "agent_message":
 		if strings.TrimSpace(item.Text) != "" {
@@ -147,6 +148,31 @@ func (r *hubTranscriptReducer) applyThreadItem(item appwire.ThreadItem, turnInde
 		if !done {
 			r.rememberActiveTool(item, idx)
 		}
+	}
+}
+
+func userMessageItemText(item appwire.ThreadItem) string {
+	if strings.TrimSpace(item.Text) != "" {
+		return item.Text
+	}
+	switch len(item.Images) {
+	case 0:
+		return ""
+	case 1:
+		return imageItemsPlaceholder(item.Images)
+	default:
+		return imageItemsPlaceholder(item.Images)
+	}
+}
+
+func imageItemsPlaceholder(images []appwire.InputItem) string {
+	switch len(images) {
+	case 0:
+		return ""
+	case 1:
+		return "[image]"
+	default:
+		return fmt.Sprintf("[%d images]", len(images))
 	}
 }
 

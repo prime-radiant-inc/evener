@@ -31,6 +31,12 @@
       : Buffer.from(binary, "binary").toString("base64");
   }
 
+  function imagePlaceholderForCount(n) {
+    if (n === 1) return "[image]";
+    if (n > 1) return "[" + n + " images]";
+    return "";
+  }
+
   function partialFetch(path, options) {
     options = options || {};
     const headers = new Headers(options.headers || {});
@@ -597,7 +603,7 @@
           this.appendBanner("error", data.error || data.message || "", data);
           break;
         case "STEERING_INJECTED":
-          this.appendSteeringMessage(data.text || "");
+          this.appendSteeringMessage(data.text || imagePlaceholderForCount((data.images || []).length));
           break;
         case "SESSION_END":
           // input_complete = clean end-of-turn termination; not user-meaningful.

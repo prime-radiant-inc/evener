@@ -992,6 +992,13 @@ type steeringMessage struct {
 	Images []ImageAttachment
 }
 
+func steeringInjectedDataFromMessage(msg steeringMessage) SteeringInjectedData {
+	return SteeringInjectedData{
+		Text:   msg.Text,
+		Images: userInputImagesFromAttachments(msg.Images),
+	}
+}
+
 // Steer queues a text-only message to inject after the current tool round
 // completes.
 func (s *Session) Steer(msg string) {
@@ -1868,7 +1875,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	for _, msg := range s.drainSteering() {
 		s.appendTurn(TurnSteering, steeringMessageToLLM(msg))
-		s.emit(EventSteeringInjected, SteeringInjectedData{Text: msg.Text})
+		s.emit(EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	}
 
 	var toolSigs []string
@@ -2350,14 +2357,28 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 					results[batch[0]] = s.execTool(ctx, calls[batch[0]])
 				default:
 					var wg sync.WaitGroup
+					var panicValue any
+					var panicMu sync.Mutex
 					wg.Add(len(batch))
 					for _, i := range batch {
 						go func() {
-							defer wg.Done()
+							defer func() {
+								if r := recover(); r != nil {
+									panicMu.Lock()
+									if panicValue == nil {
+										panicValue = r
+									}
+									panicMu.Unlock()
+								}
+								wg.Done()
+							}()
 							results[i] = s.execTool(ctx, calls[i])
 						}()
 					}
 					wg.Wait()
+					if panicValue != nil {
+						panic(panicValue)
+					}
 				}
 			}
 
@@ -2497,7 +2518,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// Inject any queued steering messages before the next model call.
 		for _, msg := range s.drainSteering() {
 			s.appendTurn(TurnSteering, steeringMessageToLLM(msg))
-			s.emit(EventSteeringInjected, SteeringInjectedData{Text: msg.Text})
+			s.emit(EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 		}
 
 		// Task reminder injection.

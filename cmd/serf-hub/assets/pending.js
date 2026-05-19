@@ -19,6 +19,27 @@
     return Array.isArray(items) ? items.length : 0;
   }
 
+  function imageItemCount(items) {
+    if (!Array.isArray(items)) return 0;
+    let n = 0;
+    for (const item of items) {
+      if (item && item.type === "image") n++;
+    }
+    return n;
+  }
+
+  function imagePlaceholder(n) {
+    if (n === 1) return "[image]";
+    if (n > 1) return "[" + n + " images]";
+    return "";
+  }
+
+  function queuePreviewText(text, items) {
+    const n = normalizeText(text);
+    if (n) return n;
+    return imagePlaceholder(imageItemCount(items));
+  }
+
   function create(opts) {
     const conv = opts.conversation;
     const queueList = opts.queueList || null;
@@ -75,14 +96,15 @@
       const method = intent.method;
       const text = intent.text || "";
       const items = (intent.items || []).slice();
-      const el = chipForMethod(method, text);
+      const previewText = method === "turn/queue" ? queuePreviewText(text, items) : text;
+      const el = chipForMethod(method, previewText);
       containerFor(method).appendChild(el);
 
       const timerID = setTimeoutFn(() => {
         fail({ id }, "server did not confirm");
       }, timeoutMs);
 
-      entries.set(id, { method, text, items, el, timerID, failed: false });
+      entries.set(id, { method, text, items, previewText, el, timerID, failed: false });
       return { id };
     }
 
@@ -169,7 +191,7 @@
       const ids = [];
       for (const [id, ent] of entries) {
         if (ent.method !== "turn/queue") continue;
-        const n = normalizeText(ent.text);
+        const n = normalizeText(ent.previewText || ent.text);
         const count = wanted.get(n) || 0;
         if (count <= 0) continue;
         ids.push(id);

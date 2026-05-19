@@ -304,10 +304,16 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 		}
 	case agent.EventSteeringInjected:
 		data := eventData[agent.SteeringInjectedData](event.Data)
+		images := projectUserInputImages(data.Images)
+		text := data.Text
+		if strings.TrimSpace(text) == "" {
+			text = imagePreviewText(len(images))
+		}
 		return []AppNotification{p.notification(appwire.NotifySerfSteeringInjected, map[string]any{
 			"threadId": p.threadID,
 			"ref":      p.ref,
-			"text":     data.Text,
+			"text":     text,
+			"images":   images,
 		})}
 	case agent.EventQueueChanged:
 		data := eventData[agent.QueueChangedData](event.Data)
@@ -392,6 +398,17 @@ func projectUserInputImages(images []agent.UserInputImage) []appwire.InputItem {
 		})
 	}
 	return out
+}
+
+func imagePreviewText(n int) string {
+	switch n {
+	case 0:
+		return ""
+	case 1:
+		return "[image]"
+	default:
+		return fmt.Sprintf("[%d images]", n)
+	}
 }
 
 func (p *AppEventProjector) startTurn() string {

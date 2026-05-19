@@ -2442,10 +2442,17 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		}
 	case appwire.NotifySerfSteeringInjected:
 		var params struct {
-			Text string `json:"text"`
+			Text   string              `json:"text"`
+			Images []appwire.InputItem `json:"images"`
 		}
-		if json.Unmarshal(notification.Params, &params) == nil && strings.TrimSpace(params.Text) != "" {
-			m.session.messages = append(m.session.messages, chatMessage{Kind: msgSteering, Text: params.Text})
+		if json.Unmarshal(notification.Params, &params) == nil {
+			text := strings.TrimSpace(params.Text)
+			if text == "" {
+				text = imageItemsPlaceholder(params.Images)
+			}
+			if text != "" {
+				m.session.messages = append(m.session.messages, chatMessage{Kind: msgSteering, Text: text})
+			}
 		}
 	case appwire.NotifyWarning:
 		// Cause is decoded as a pointer so its absence (legacy payloads)
