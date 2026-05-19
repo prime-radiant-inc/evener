@@ -56,6 +56,16 @@ func TestToWirePreservesExplicitEmptyModelFallbacks(t *testing.T) {
 	}
 }
 
+func TestWireOmitsUnsetModelFallbacks(t *testing.T) {
+	raw, err := json.Marshal(appwire.LaunchConfigLayer{})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if jsonContains(raw, `"modelFallbacks"`) {
+		t.Fatalf("json = %s, want modelFallbacks omitted when unset", raw)
+	}
+}
+
 func TestResolvedToWire(t *testing.T) {
 	r := Resolved{
 		Effective:  Layer{Model: "m"},

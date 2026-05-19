@@ -301,19 +301,10 @@ func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartP
 		return appwire.TurnStartResponse{}, appwire.InvalidParams("prompt or items required")
 	}
 
-	s.mu.RLock()
-	processing := s.processing
-	reservedTurnID := s.appReservedTurnID
-	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
-	s.mu.RUnlock()
-	if closed {
-		return appwire.TurnStartResponse{}, appwire.Conflict("session is closed")
+	turnID, err := s.reserveAppTurnIDForStart()
+	if err != nil {
+		return appwire.TurnStartResponse{}, err
 	}
-	if processing || strings.TrimSpace(reservedTurnID) != "" {
-		return appwire.TurnStartResponse{}, appwire.Conflict("session is processing")
-	}
-
-	turnID := s.reserveAppTurnID()
 	select {
 	case s.inputCh <- InputMessage{Text: text, Images: images}:
 	default:
@@ -656,6 +647,24 @@ func (s *Server) reserveAppTurnID() string {
 	s.appActiveTurnID = turnID
 	s.appReservedTurnID = turnID
 	return turnID
+}
+
+func (s *Server) reserveAppTurnIDForStart() (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	processing := s.processing
+	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
+	if closed {
+		return "", appwire.Conflict("session is closed")
+	}
+	if processing || strings.TrimSpace(s.appReservedTurnID) != "" {
+		return "", appwire.Conflict("session is processing")
+	}
+	s.ensureAppProjectorLocked("")
+	turnID := s.appProjector.ReserveTurnID()
+	s.appActiveTurnID = turnID
+	s.appReservedTurnID = turnID
+	return turnID, nil
 }
 
 func (s *Server) releaseAppTurnID(turnID string) {

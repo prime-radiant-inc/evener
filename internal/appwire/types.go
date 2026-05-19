@@ -652,9 +652,32 @@ type LaunchConfigLayer struct {
 	PluginDirs         []string          `json:"pluginDirs,omitempty"`
 	MCPConfigs         []string          `json:"mcpConfigs,omitempty"`
 	SystemPromptAppend []string          `json:"systemPromptAppend,omitempty"`
-	ModelFallbacks     []string          `json:"modelFallbacks"`
+	ModelFallbacks     []string          `json:"modelFallbacks,omitempty"`
 	MCPs               []MCPServerSpec   `json:"mcps,omitempty"`
 	Env                map[string]string `json:"env,omitempty"`
+}
+
+func (l LaunchConfigLayer) MarshalJSON() ([]byte, error) {
+	type alias LaunchConfigLayer
+	a := alias(l)
+	a.ModelFallbacks = nil
+	raw, err := json.Marshal(a)
+	if err != nil {
+		return nil, err
+	}
+	if l.ModelFallbacks == nil {
+		return raw, nil
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, err
+	}
+	modelFallbacks, err := json.Marshal(l.ModelFallbacks)
+	if err != nil {
+		return nil, err
+	}
+	obj["modelFallbacks"] = modelFallbacks
+	return json.Marshal(obj)
 }
 
 // MCPServerSpec mirrors launchconfig.MCPServerSpec on the wire.

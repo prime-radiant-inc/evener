@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -835,6 +836,41 @@ func TestServerAppWireTurnStartRejectsReservedActiveTurn(t *testing.T) {
 	}
 	if srv.appReservedTurnID != "turn_reserved" || srv.appActiveTurnID != "turn_reserved" {
 		t.Fatalf("reservation mutated after rejected start: active=%q reserved=%q", srv.appActiveTurnID, srv.appReservedTurnID)
+	}
+}
+
+func TestReserveAppTurnIDForStartIsAtomic(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	ids := make(chan string, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			id, err := srv.reserveAppTurnIDForStart()
+			errs <- err
+			ids <- id
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	close(ids)
+
+	var successes, conflicts int
+	for err := range errs {
+		if err == nil {
+			successes++
+		} else {
+			conflicts++
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("successes=%d conflicts=%d, want one success and one conflict", successes, conflicts)
 	}
 }
 
