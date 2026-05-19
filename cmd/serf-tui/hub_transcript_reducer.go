@@ -205,6 +205,9 @@ func (r *hubTranscriptReducer) pendingUserEchoIndex(text string) (int, bool) {
 		if msg.Kind != msgUser {
 			continue
 		}
+		if msg.Pending {
+			continue
+		}
 		if msg.ItemID == "" && msg.Text == text {
 			return i, true
 		}

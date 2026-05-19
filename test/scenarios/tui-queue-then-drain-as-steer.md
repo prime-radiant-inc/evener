@@ -36,7 +36,7 @@ The wiring lives in:
 1. **Hermetic workdir + tmux + spawn**:
    ```
    WORKDIR=$(mktemp -d -t serf-drain-XXXX)
-   cp /home/jesse/git/prime-radiant/serf/README.md "$WORKDIR/README.md"
+   cp README.md "$WORKDIR/README.md"
    tmux new-session -d -s serf-drain-test -x 200 -y 50 \
      "./serf-tui --hub-addr 127.0.0.1:9180 --debug"
    sleep 1

@@ -34,7 +34,7 @@ For the queue-only and queue+composer drain paths, see
 1. **Prepare a hermetic workdir with a README to read**:
    ```
    WORKDIR=$(mktemp -d -t serf-steer-XXXX)
-   cp /home/jesse/git/prime-radiant/serf/README.md "$WORKDIR/README.md"
+   cp README.md "$WORKDIR/README.md"
    ```
 
 2. **Launch in tmux**:

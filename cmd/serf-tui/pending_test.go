@@ -370,6 +370,29 @@ func TestHubReducer_RemovesPendingOnConfirm(t *testing.T) {
 	}
 }
 
+func TestHubReducer_PendingUserConfirmPreservesAuthoritativeMetadata(t *testing.T) {
+	r := newHubTranscriptReducer(nil, nil, nil)
+	pendingID := r.appendPendingUser("ship it")
+
+	r.applyThreadItem(appwire.ThreadItem{
+		ID:   "item_user_1",
+		Type: "user_message",
+		Text: "ship it",
+	}, 7, false)
+	r.removePending(pendingID)
+
+	if len(r.messages) != 1 {
+		t.Fatalf("messages=%d, want authoritative user row only", len(r.messages))
+	}
+	got := r.messages[0]
+	if got.Pending || got.PendingID != 0 {
+		t.Fatalf("message still pending: %+v", got)
+	}
+	if got.ItemID != "item_user_1" || got.TurnIndex != 7 {
+		t.Fatalf("message metadata=%+v, want item id and turn index preserved", got)
+	}
+}
+
 func TestHubModel_SteerFailsFastOnRPCUnavailable(t *testing.T) {
 	t.Parallel()
 	transport := appwiretest.NewScriptedTransport()

@@ -34,7 +34,7 @@ visible pane.
 1. **Prepare a hermetic workdir**:
    ```
    WORKDIR=$(mktemp -d -t serf-queue-XXXX)
-   cp /home/jesse/git/prime-radiant/serf/README.md "$WORKDIR/README.md"
+   cp README.md "$WORKDIR/README.md"
    ```
 
 2. **Launch in tmux**:
