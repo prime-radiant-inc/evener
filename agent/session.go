@@ -939,6 +939,10 @@ func (s *Session) ContextPressure() float64 {
 // Takes effect on the next request.
 func (s *Session) SetModel(model string) {
 	s.mu.Lock()
+	if s.state == SessionClosed {
+		s.mu.Unlock()
+		return
+	}
 	s.profile = s.profile.WithModel(model)
 	if s.contextMgr != nil {
 		s.contextMgr.SetProfile(s.profile)
@@ -956,6 +960,10 @@ func (s *Session) SetModel(model string) {
 // Takes effect on the next tool execution.
 func (s *Session) SetTimeout(timeoutMS int) {
 	s.mu.Lock()
+	if s.state == SessionClosed {
+		s.mu.Unlock()
+		return
+	}
 	s.cfg.DefaultCommandTimeoutMS = timeoutMS
 	s.mu.Unlock()
 	// Flush meta.json so a daemon crash before the next happy-path turn
@@ -1382,6 +1390,7 @@ func (s *Session) Close() {
 		turns := s.modelResponses
 		emitEnd := !s.sessionEndEmitted
 		s.sessionEndEmitted = true
+		s.state = SessionClosed
 		s.mu.Unlock()
 
 		// Spec Appendix B graceful shutdown ordering:
@@ -1434,10 +1443,7 @@ func (s *Session) Close() {
 			os.RemoveAll(s.embeddedSkillsDir)
 		}
 
-		// 8. Transition to CLOSED last, then close the events channel.
-		s.mu.Lock()
-		s.state = SessionClosed
-		s.mu.Unlock()
+		// 8. Close the events channel after CLOSED has been visible since shutdown began.
 		close(s.events)
 	})
 }

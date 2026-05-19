@@ -865,6 +865,51 @@ func TestSession_SetTimeout_FlushesMeta(t *testing.T) {
 	}
 }
 
+func TestSession_SetModelAndTimeout_NoOpAfterClose(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:                dir,
+		DefaultCommandTimeoutMS: 10_000,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+	sessID := sess.ID()
+	sess.Close()
+
+	before, err := LoadSessionMeta(dir, sessID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta before setters: %v", err)
+	}
+
+	sess.SetModel("gpt-5.3")
+	sess.SetTimeout(45_000)
+
+	after, err := LoadSessionMeta(dir, sessID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta after setters: %v", err)
+	}
+	if after.Model != before.Model {
+		t.Fatalf("closed SetModel changed meta model: got %q want %q", after.Model, before.Model)
+	}
+	if after.Config.DefaultCommandTimeoutMS != before.Config.DefaultCommandTimeoutMS {
+		t.Fatalf("closed SetTimeout changed meta timeout: got %d want %d", after.Config.DefaultCommandTimeoutMS, before.Config.DefaultCommandTimeoutMS)
+	}
+	if got := sess.Meta().Model; got != before.Model {
+		t.Fatalf("closed SetModel changed in-memory model: got %q want %q", got, before.Model)
+	}
+	if got := sess.Meta().Config.DefaultCommandTimeoutMS; got != before.Config.DefaultCommandTimeoutMS {
+		t.Fatalf("closed SetTimeout changed in-memory timeout: got %d want %d", got, before.Config.DefaultCommandTimeoutMS)
+	}
+}
+
 func TestStreamUnavailableIgnoresPlainTextUnsupportedMessages(t *testing.T) {
 	if !streamUnavailable(errStreamUnavailable) {
 		t.Fatal("expected internal sentinel to mark stream unavailable")
@@ -2159,6 +2204,64 @@ func TestSession_Close_CancelsInFlightLLMCall(t *testing.T) {
 		// ProcessInput returned -- Close() successfully cancelled it.
 	case <-time.After(5 * time.Second):
 		t.Fatal("ProcessInput did not return after Close() -- in-flight LLM call not cancelled")
+	}
+}
+
+func TestSession_CloseCancelsInFlightWithoutInterruptMarker(t *testing.T) {
+	blocked := make(chan struct{})
+	c := llm.NewClient()
+	c.Register(&blockingAdapter{name: "openai", blocked: blocked})
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	eventsDone := make(chan []SessionEvent, 1)
+	go func() {
+		var events []SessionEvent
+		for ev := range sess.Events() {
+			events = append(events, ev)
+		}
+		eventsDone <- events
+	}()
+
+	processDone := make(chan error, 1)
+	go func() {
+		_, err := sess.ProcessInput(context.Background(), "hello", nil)
+		processDone <- err
+	}()
+
+	<-blocked
+	sess.Close()
+
+	select {
+	case <-processDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ProcessInput did not return after Close()")
+	}
+
+	var events []SessionEvent
+	select {
+	case events = <-eventsDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("events channel did not close")
+	}
+
+	for _, ev := range events {
+		if ev.Kind == EventSteeringInjected {
+			t.Fatalf("Close emitted interrupt steering marker: %+v", ev)
+		}
+		if ev.Kind != EventSessionEnd {
+			continue
+		}
+		data, ok := ev.Data.(SessionEndData)
+		if !ok {
+			continue
+		}
+		if data.Reason == "interrupted" || data.Interrupted {
+			t.Fatalf("Close emitted interrupted SESSION_END: %+v", data)
+		}
 	}
 }
 
