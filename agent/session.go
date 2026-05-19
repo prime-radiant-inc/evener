@@ -1585,7 +1585,7 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 			// Claude Code / codex. The transcript records an interrupt
 			// marker so the model sees, on the next turn, that the
 			// previous round was cut short.
-			if isTurnCancellation(ctx, err) {
+			if isTurnCancellation(processCtx, err) {
 				s.mu.Lock()
 				// Only flip back to idle when the session isn't already
 				// closed (e.g. daemon shutdown raced the interrupt).
@@ -1619,7 +1619,7 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 				}
 				if !closed {
 					if queued := s.popQueueHead(); strings.TrimSpace(queued.Text) != "" || len(queued.Images) > 0 {
-						if rootCtx, ok := queuedInputDrainRoot(ctx, err); ok {
+						if rootCtx, ok := queuedInputDrainRoot(processCtx, err); ok {
 							next = queued.Text
 							nextImages = queued.Images
 							processCtx = rootCtx
@@ -2874,7 +2874,9 @@ func queuedInputDrainRoot(ctx context.Context, err error) (context.Context, bool
 	if !ok || rootCtx == nil {
 		return nil, false
 	}
-	if !errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	var abort *llm.AbortError
+	drainable := errors.Is(err, context.Canceled) || (errors.As(err, &abort) && errors.Is(ctx.Err(), context.Canceled))
+	if !drainable || errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return nil, false
 	}
 	if rootCtx.Err() != nil {

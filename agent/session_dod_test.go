@@ -1126,6 +1126,79 @@ func TestSession_AbortDrainsQueuedInputWithFreshContext(t *testing.T) {
 	}
 }
 
+func TestSession_AbortErrorDrainsQueuedInputWithFreshContext(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	started := make(chan struct{}, 1)
+	releaseAbort := make(chan struct{})
+
+	c.Register(&fakeErrAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) (llm.Response, error){
+			func(req llm.Request) (llm.Response, error) {
+				started <- struct{}{}
+				<-releaseAbort
+				return llm.Response{}, llm.NewAbortError("user canceled")
+			},
+			func(req llm.Request) (llm.Response, error) {
+				return finalResponse("queued turn completed after abort error"), nil
+			},
+		},
+	})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+	defer sess.Close()
+
+	outerCtx, outerCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer outerCancel()
+	turnCtx, cancelTurn := context.WithCancel(outerCtx)
+	turnCtx = WithQueuedInputDrainOnInterrupt(turnCtx, outerCtx)
+	done := make(chan struct {
+		out string
+		err error
+	}, 1)
+	go func() {
+		out, err := sess.ProcessInput(turnCtx, "run the slow thing", nil)
+		done <- struct {
+			out string
+			err error
+		}{out: out, err: err}
+	}()
+
+	select {
+	case <-started:
+	case <-outerCtx.Done():
+		t.Fatalf("timed out waiting for model call to start")
+	}
+	if err := sess.Enqueue(context.Background(), "queued after abort error"); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	cancelTurn()
+	close(releaseAbort)
+
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("ProcessInput: %v", got.err)
+		}
+		if !strings.Contains(got.out, "queued turn completed after abort error") {
+			t.Fatalf("ProcessInput output=%q, want queued abort-error turn completion", got.out)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("ProcessInput did not drain queued input after abort error")
+	}
+	if depth := sess.QueueDepth(); depth != 0 {
+		t.Fatalf("QueueDepth after abort-error drain=%d, want 0", depth)
+	}
+}
+
 func TestSession_CustomToolRegistration_OverridesExistingTool(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
