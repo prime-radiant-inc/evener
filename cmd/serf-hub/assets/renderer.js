@@ -383,8 +383,14 @@
         deliverNotification(method, params);
       });
       if (typeof window.SerfAppwire.onConnectionLost === "function") {
-        this.appwireConnectionLostUnsubscribe = window.SerfAppwire.onConnectionLost(() => {
+        this.appwireConnectionLostUnsubscribe = window.SerfAppwire.onConnectionLost((err) => {
           this.clearAppwireStream();
+          this.updateThreadState("closed");
+          const detail = err && err.message ? err.message : "connection lost";
+          this.appendBanner("error", "Local daemon unavailable: " + detail, {
+            source: "hub",
+            title: "Hub stream error",
+          });
           this.scheduleAppwireReconnect();
         });
       }

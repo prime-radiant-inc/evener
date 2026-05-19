@@ -986,6 +986,20 @@ func (m *model) handleStreamEvent(ev streamEvent) {
 	case "SESSION_END":
 		m.processing = false
 
+	case "ERROR":
+		var d struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+		json.Unmarshal([]byte(ev.Data), &d)
+		text := strings.TrimSpace(d.Error)
+		if text == "" {
+			text = strings.TrimSpace(d.Message)
+		}
+		if text != "" {
+			m.messages = append(m.messages, chatMessage{Kind: msgSystem, Text: "Session error: " + text})
+		}
+
 	case "COMMUNICATE":
 		var d struct {
 			Message string `json:"message"`

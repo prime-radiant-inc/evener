@@ -10,10 +10,10 @@ renderer's `optimisticCall` wrapper marks the pending chip as
 `.optimistic-failed` immediately with the rejection reason and a
 Retry link — no silent drop, no spinning forever.
 
-The button is disabled in IDLE in production; this scenario drives
-the bug surface that would otherwise appear if a race re-enabled
-it. Forcing `.disabled = false` from the page is the closest
-deterministic reproduction.
+The button is not rendered/enabled in IDLE in production. This
+scenario intentionally drives the underlying AppWire API instead of
+the button so the failure surface remains testable without weakening
+the production capability gate.
 
 Driver: superpowers-chrome:browsing.
 
@@ -54,18 +54,18 @@ HUB=http://localhost:9180
    browsing skill:
    ```
    navigate http://127.0.0.1:9180/auth?token=<TOKEN>&next=/s/<SID>
-   await_element [data-steer-trigger]
+   await_element #conversation
    ```
 
-3. **Force-enable the steer button** (it is disabled in IDLE; we
-   drive the bug surface that would appear if the button were
-   enabled by a race), type a steer body, and click:
+3. **Drive the underlying AppWire steer API**. This is the code path
+   the optimistic registry must handle if a stale/racy caller attempts
+   to steer an IDLE session:
    ```javascript
-   document.querySelector("[data-steer-trigger]").disabled = false;
-   const ta = document.querySelector("textarea.message-input");
-   ta.focus(); ta.value = "this steer should fail visibly";
-   ta.dispatchEvent(new Event("input", { bubbles: true }));
-   document.querySelector("[data-steer-trigger]").click();
+   window.SerfAppwire.steer(
+     window.SerfRenderer.sessionId,
+     "",
+     "this steer should fail visibly"
+   ).catch(() => {});
    ```
 
 4. **Wait for the failed chip** to render:
@@ -76,7 +76,7 @@ HUB=http://localhost:9180
 ## Expected
 
 - A `.optimistic-failed` element appears within ~200 ms of the
-  click. (The pending chip is rendered synchronously by
+  API call. (The pending chip is rendered synchronously by
   `SerfAppwirePending.register` in `pending.js`; when the appwire
   request rejects with the `Unavailable` error, `optimisticCall`
   calls `fail(handle, err.message)`. There is no 10 s timeout

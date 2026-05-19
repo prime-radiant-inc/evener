@@ -184,6 +184,30 @@ func TestHubModelCompletesLiveToolWithoutDuplicateMessage(t *testing.T) {
 	}
 }
 
+func TestHubModelAppliesSteeringInjectedNotification(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1"}
+
+	updated, _ := m.Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifySerfSteeringInjected, map[string]any{
+			"threadId": "th_1",
+			"ref":      "local:th_1",
+			"text":     "check the logs",
+		}).Notification,
+	})
+
+	got := updated.(hubModel)
+	if len(got.session.messages) != 1 {
+		t.Fatalf("messages=%+v", got.session.messages)
+	}
+	msg := got.session.messages[0]
+	if msg.Kind != msgSteering || msg.Text != "check the logs" || msg.Pending || msg.Failed {
+		t.Fatalf("message=%+v, want authoritative steering", msg)
+	}
+}
+
 // TestHubModelAppliesQueueChangedNotification (kata r80p) verifies the
 // TUI consumes thread/queueChanged as the authoritative source for the
 // composer queue preview. The local sessionQueue field reflects the

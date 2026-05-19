@@ -39,12 +39,13 @@ func streamAppwire(ctx context.Context, addr string, send func(tea.Msg)) {
 	}
 	send(streamConnectedMsg{})
 
+	translator := newAppwireStreamTranslator()
 	resp, err := client.ThreadRead(ctx, appwire.ThreadReadParams{IncludeTurns: true, ItemsView: "full", Subscribe: true})
 	if err != nil {
 		send(streamErrorMsg{err})
 		return
 	}
-	for _, ev := range streamEventsFromThread(resp.Thread) {
+	for _, ev := range translator.eventsFromThread(resp.Thread) {
 		send(streamEventMsg(ev))
 	}
 
@@ -57,7 +58,7 @@ func streamAppwire(ctx context.Context, addr string, send func(tea.Msg)) {
 				send(streamErrorMsg{fmt.Errorf("appwire stream closed")})
 				return
 			}
-			for _, ev := range streamEventsFromNotification(notification) {
+			for _, ev := range translator.eventsFromNotification(notification) {
 				send(streamEventMsg(ev))
 			}
 		}
@@ -65,6 +66,22 @@ func streamAppwire(ctx context.Context, addr string, send func(tea.Msg)) {
 }
 
 func streamEventsFromThread(thread appwire.Thread) []streamEvent {
+	return newAppwireStreamTranslator().eventsFromThread(thread)
+}
+
+func streamEventsFromNotification(notification appwire.Notification) []streamEvent {
+	return newAppwireStreamTranslator().eventsFromNotification(notification)
+}
+
+type appwireStreamTranslator struct {
+	activeToolCalls map[string]bool
+}
+
+func newAppwireStreamTranslator() *appwireStreamTranslator {
+	return &appwireStreamTranslator{activeToolCalls: make(map[string]bool)}
+}
+
+func (t *appwireStreamTranslator) eventsFromThread(thread appwire.Thread) []streamEvent {
 	events := []streamEvent{newStreamEvent("SESSION_START", map[string]any{
 		"session_id": firstNonEmptyString(thread.SessionID, thread.ID),
 		"profile":    thread.Serf.Profile,
@@ -72,14 +89,12 @@ func streamEventsFromThread(thread appwire.Thread) []streamEvent {
 		"restored":   true,
 	})}
 	for _, turn := range thread.Turns {
-		for _, item := range turn.Items {
-			events = append(events, streamEventsFromHydratedItem(item)...)
-		}
+		events = append(events, t.eventsFromItems(turn.Items)...)
 	}
 	return events
 }
 
-func streamEventsFromNotification(notification appwire.Notification) []streamEvent {
+func (t *appwireStreamTranslator) eventsFromNotification(notification appwire.Notification) []streamEvent {
 	switch notification.Method {
 	case appwire.NotifyThreadStarted:
 		var params struct {
@@ -115,21 +130,30 @@ func streamEventsFromNotification(notification appwire.Notification) []streamEve
 			Turn appwire.Turn `json:"turn"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
-			return []streamEvent{newStreamEvent("TURN_COMPLETED", map[string]any{"turnId": params.Turn.ID})}
+			events := t.eventsFromItems(params.Turn.Items)
+			if params.Turn.Status == appwire.TurnStatusFailed {
+				message := "turn failed"
+				if params.Turn.Error != nil && params.Turn.Error.Message != "" {
+					message = params.Turn.Error.Message
+				}
+				events = append(events, newStreamEvent("ERROR", map[string]any{"error": message, "source": "provider"}))
+			}
+			events = append(events, newStreamEvent("TURN_COMPLETED", map[string]any{"turnId": params.Turn.ID}))
+			return events
 		}
 	case appwire.NotifyItemStarted:
 		var params struct {
 			Item appwire.ThreadItem `json:"item"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
-			return streamEventsFromItem(params.Item, false)
+			return t.eventsFromItem(params.Item, false)
 		}
 	case appwire.NotifyItemCompleted:
 		var params struct {
 			Item appwire.ThreadItem `json:"item"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
-			return streamEventsFromItem(params.Item, true)
+			return t.eventsFromItem(params.Item, true)
 		}
 	case appwire.NotifyAgentMessageDelta:
 		var params appwire.AgentMessageDeltaParams
@@ -179,27 +203,33 @@ func streamEventsFromNotification(notification appwire.Notification) []streamEve
 	return nil
 }
 
-func streamEventsFromHydratedItem(item appwire.ThreadItem) []streamEvent {
-	if item.Type == "tool_call" && item.Status == appwire.TurnStatusCompleted {
-		return []streamEvent{
-			newStreamEvent("TOOL_CALL_START", map[string]any{
-				"call_id":        firstNonEmptyString(item.CallID, item.ID),
-				"tool_name":      item.ToolName,
-				"arguments_json": item.ArgumentsJSON,
-			}),
-			newStreamEvent("TOOL_CALL_END", map[string]any{
-				"call_id":        firstNonEmptyString(item.CallID, item.ID),
-				"tool_name":      item.ToolName,
-				"arguments_json": item.ArgumentsJSON,
-				"output":         item.Output,
-				"error":          item.Error,
-			}),
-		}
+func (t *appwireStreamTranslator) eventsFromItems(items []appwire.ThreadItem) []streamEvent {
+	var events []streamEvent
+	for _, item := range items {
+		events = append(events, t.eventsFromHydratedItem(item)...)
 	}
-	return streamEventsFromItem(item, item.Status == appwire.TurnStatusCompleted)
+	return events
 }
 
-func streamEventsFromItem(item appwire.ThreadItem, completed bool) []streamEvent {
+func (t *appwireStreamTranslator) eventsFromHydratedItem(item appwire.ThreadItem) []streamEvent {
+	if item.Type == "tool_call" {
+		callID := firstNonEmptyString(item.CallID, item.ID)
+		if toolItemTerminal(item) {
+			if t.activeToolCalls[callID] {
+				delete(t.activeToolCalls, callID)
+				return t.eventsFromItem(item, true)
+			}
+			events := t.eventsFromItem(item, false)
+			events = append(events, t.eventsFromItem(item, true)...)
+			return events
+		}
+		t.activeToolCalls[callID] = true
+		return t.eventsFromItem(item, false)
+	}
+	return t.eventsFromItem(item, item.Status == appwire.TurnStatusCompleted)
+}
+
+func (t *appwireStreamTranslator) eventsFromItem(item appwire.ThreadItem, completed bool) []streamEvent {
 	switch item.Type {
 	case "user_message":
 		return []streamEvent{newStreamEvent("USER_INPUT", map[string]any{"text": item.Text, "turn": item.TranscriptEntryIndex})}
@@ -209,22 +239,33 @@ func streamEventsFromItem(item appwire.ThreadItem, completed bool) []streamEvent
 		}
 		return []streamEvent{newStreamEvent("ASSISTANT_TEXT_START", map[string]any{})}
 	case "tool_call":
+		callID := firstNonEmptyString(item.CallID, item.ID)
 		if completed {
+			delete(t.activeToolCalls, callID)
 			return []streamEvent{newStreamEvent("TOOL_CALL_END", map[string]any{
-				"call_id":        firstNonEmptyString(item.CallID, item.ID),
+				"call_id":        callID,
 				"tool_name":      item.ToolName,
 				"arguments_json": item.ArgumentsJSON,
 				"output":         item.Output,
 				"error":          item.Error,
 			})}
 		}
+		t.activeToolCalls[callID] = true
 		return []streamEvent{newStreamEvent("TOOL_CALL_START", map[string]any{
-			"call_id":        firstNonEmptyString(item.CallID, item.ID),
+			"call_id":        callID,
 			"tool_name":      item.ToolName,
 			"arguments_json": item.ArgumentsJSON,
 		})}
 	}
 	return nil
+}
+
+func toolItemTerminal(item appwire.ThreadItem) bool {
+	switch item.Status {
+	case appwire.TurnStatusCompleted, appwire.TurnStatusFailed, appwire.TurnStatusCanceled:
+		return true
+	}
+	return item.Output != "" || item.Error != ""
 }
 
 func newStreamEvent(event string, data any) streamEvent {

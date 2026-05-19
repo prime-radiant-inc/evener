@@ -2340,6 +2340,13 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			}
 			m.applyQueueState(ref, params.Queue)
 		}
+	case appwire.NotifySerfSteeringInjected:
+		var params struct {
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(notification.Params, &params) == nil && strings.TrimSpace(params.Text) != "" {
+			m.session.messages = append(m.session.messages, chatMessage{Kind: msgSteering, Text: params.Text})
+		}
 	case appwire.NotifyWarning:
 		// Cause is decoded as a pointer so its absence (legacy payloads)
 		// stays distinguishable from kind=="" (kata 5q3p). When present,

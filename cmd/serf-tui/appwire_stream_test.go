@@ -62,6 +62,112 @@ func TestStreamEventsFromThreadHydratesCompletedToolWithStartAndEnd(t *testing.T
 	}
 }
 
+func TestStreamEventsFromThreadHydratesSplitToolAsSingleStartEndPair(t *testing.T) {
+	events := streamEventsFromThread(appwire.Thread{
+		ID:        "th_1",
+		SessionID: "th_1",
+		Turns: []appwire.Turn{{
+			ID: "turn_1",
+			Items: []appwire.ThreadItem{
+				{
+					Type:          "tool_call",
+					ID:            "item_tool_start",
+					CallID:        "call_tool",
+					ToolName:      "shell",
+					ArgumentsJSON: `{"command":"printf ok"}`,
+					Status:        "running",
+				},
+				{
+					Type:     "tool_call",
+					ID:       "item_tool_result",
+					CallID:   "call_tool",
+					ToolName: "shell",
+					Output:   "ok",
+					Status:   appwire.TurnStatusCompleted,
+				},
+			},
+		}},
+	})
+
+	var starts, ends int
+	for _, ev := range events {
+		switch ev.Event {
+		case "TOOL_CALL_START":
+			starts++
+		case "TOOL_CALL_END":
+			ends++
+		}
+	}
+	if starts != 1 || ends != 1 {
+		t.Fatalf("tool starts=%d ends=%d events=%+v", starts, ends, events)
+	}
+}
+
+func TestStreamEventsFromThreadHydratesFailedToolAsTerminal(t *testing.T) {
+	events := streamEventsFromThread(appwire.Thread{
+		ID:        "th_1",
+		SessionID: "th_1",
+		Turns: []appwire.Turn{{
+			ID: "turn_1",
+			Items: []appwire.ThreadItem{{
+				Type:          "tool_call",
+				ID:            "item_tool",
+				CallID:        "call_tool",
+				ToolName:      "shell",
+				ArgumentsJSON: `{"command":"false"}`,
+				Error:         "exit status 1",
+				Status:        appwire.TurnStatusFailed,
+			}},
+		}},
+	})
+
+	var sawEnd bool
+	for _, ev := range events {
+		if ev.Event != "TOOL_CALL_END" {
+			continue
+		}
+		sawEnd = true
+		var data struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(ev.Data), &data); err != nil {
+			t.Fatal(err)
+		}
+		if data.Error != "exit status 1" {
+			t.Fatalf("error=%q", data.Error)
+		}
+	}
+	if !sawEnd {
+		t.Fatalf("events=%+v, want failed tool end", events)
+	}
+}
+
+func TestStreamEventsFromTurnCompletedIncludesFinalItems(t *testing.T) {
+	notification := appwire.NotificationMessage(appwire.NotifyTurnCompleted, map[string]any{
+		"threadId": "th_1",
+		"ref":      "local:th_1",
+		"turn": appwire.Turn{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{{
+				Type:   "agent_message",
+				ID:     "item_agent",
+				TurnID: "turn_1",
+				Text:   "final answer",
+				Status: appwire.TurnStatusCompleted,
+			}},
+		},
+	})
+
+	events := streamEventsFromNotification(*notification.Notification)
+	if len(events) < 2 {
+		t.Fatalf("events=%+v", events)
+	}
+	if events[0].Event != "ASSISTANT_TEXT_END" || events[len(events)-1].Event != "TURN_COMPLETED" {
+		t.Fatalf("events=%+v, want final item before TURN_COMPLETED", events)
+	}
+}
+
 func TestStreamEventsFromNotificationMapsSubagentLifecycle(t *testing.T) {
 	start := appwire.NotificationMessage(appwire.NotifySerfSubagentStarted, map[string]any{
 		"threadId": "th_1",

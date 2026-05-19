@@ -27,6 +27,27 @@ function createWindow(overrides) {
   const { window } = dom;
   window.marked = { parse: (t) => t };
   window.confirm = () => true;
+  window.SerfDiagnostics = {
+    classify: (payload) => payload,
+    render: (payload, actions) => {
+      const el = window.document.createElement("div");
+      el.className = "diagnostic " + (payload.severity || "");
+      el.dataset.source = payload.source || "";
+      el.dataset.title = payload.title || "";
+      const message = window.document.createElement("div");
+      message.className = "diagnostic-message";
+      message.textContent = payload.message || "";
+      el.appendChild(message);
+      for (const action of actions || []) {
+        const button = window.document.createElement("button");
+        button.className = "diagnostic-action";
+        button.textContent = action.label;
+        button.onclick = action.onclick;
+        el.appendChild(button);
+      }
+      return el;
+    },
+  };
   window.SerfAppwire = Object.assign({
     tasks: () => Promise.resolve([]),
     refForSession: (sessionId) => "local:" + sessionId,
@@ -75,9 +96,17 @@ async function testConnectionLossClearsAndReconnects() {
 
   await wait(30);
   assert(typeof lostHandler === "function", "renderer did not register AppWire connection loss callback");
+  window.SerfRenderer.lastUserText = "retry me";
+  window.SerfRenderer.updateThreadState("processing");
   lostHandler(new Error("closed"));
   await wait(30);
   assert(window.SerfRenderer.liveStream === null, "connection loss should clear the AppWire stream sentinel");
+  assert(window.SerfRenderer.state === "closed", "connection loss should mark renderer closed");
+  const diagnostic = window.document.querySelector(".diagnostic");
+  assert(diagnostic, "connection loss should render a hub diagnostic");
+  assert(diagnostic.dataset.source === "hub", "diagnostic should be hub-sourced");
+  assert(diagnostic.textContent.includes("Local daemon unavailable: closed"), "diagnostic should include connection loss reason");
+  assert(diagnostic.textContent.includes("Reconnect & retry"), "diagnostic should offer reconnect retry action");
   assert(unsubscribes === 1, "connection loss should unsubscribe live notifications");
   await wait(300);
   assert(readThreadCalls >= 2, "connection loss should schedule a new thread/read");
