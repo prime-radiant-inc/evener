@@ -351,6 +351,29 @@ func TestUpdateAssistantEndReconcilesHydratedPartialText(t *testing.T) {
 	}
 }
 
+func TestUpdateAssistantEndAppendsAdjacentCompletedMessages(t *testing.T) {
+	initTheme()
+
+	m := newConfiguredModel("127.0.0.1:1234", t.TempDir(), nil, embeddedConfig{}, nil, make(chan tea.Msg, 8), false)
+	updated, _ := m.Update(asyncMsg{msg: streamEventMsg{
+		Event: "ASSISTANT_TEXT_END",
+		Data:  `{"text":"first"}`,
+	}})
+	m = updated.(model)
+	updated, _ = m.Update(asyncMsg{msg: streamEventMsg{
+		Event: "ASSISTANT_TEXT_END",
+		Data:  `{"text":"second"}`,
+	}})
+	m = updated.(model)
+
+	if len(m.messages) != 2 {
+		t.Fatalf("messages = %+v, want two assistant messages", m.messages)
+	}
+	if m.messages[0].Kind != msgAssistant || m.messages[0].Text != "first" || m.messages[1].Kind != msgAssistant || m.messages[1].Text != "second" {
+		t.Fatalf("messages = %+v, want adjacent completed assistant messages preserved", m.messages)
+	}
+}
+
 func TestUpdateToolEndReconcilesHydratedPartialOutput(t *testing.T) {
 	initTheme()
 

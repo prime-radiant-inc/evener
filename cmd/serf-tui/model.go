@@ -51,6 +51,8 @@ type model struct {
 	// Track active transcript items by item/call ID -> index in messages.
 	activeTools       map[string]int
 	activeMessages    map[string]int
+	activeAssistant   bool
+	activeAssistantIx int
 	lastInterrupt     time.Time
 	lastSentText      string                // last user input, used for auto-steer on busy
 	picker            *modelPicker          // non-nil when model picker is active
@@ -131,6 +133,7 @@ func newConfiguredModel(addr, stateDir string, initialMessages []chatMessage, cf
 		messages:          initialMessages,
 		activeTools:       make(map[string]int),
 		activeMessages:    make(map[string]int),
+		activeAssistantIx: -1,
 		history:           loadHistory(stateDir),
 		historyIdx:        -1,
 		observedSubagents: make(map[string]subagentUI),
@@ -680,6 +683,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.messages = nil
 			m.activeTools = make(map[string]int)
+			m.activeAssistant = false
+			m.activeAssistantIx = -1
 			m.turns = 0
 			m.transcriptPicker = nil
 			m.transcriptView = nil
@@ -1015,6 +1020,10 @@ func (m *model) handleStreamEvent(ev streamEvent) {
 			m.messages = append(m.messages, chatMessage{Kind: msgCommunicate, Text: d.Message})
 		}
 
+	case "ASSISTANT_TEXT_START":
+		m.activeAssistant = true
+		m.activeAssistantIx = -1
+
 	case "ASSISTANT_TEXT_END":
 		m.turns++
 		var d struct {
@@ -1044,23 +1053,32 @@ func (m *model) handleStreamEvent(ev streamEvent) {
 			m.turnOutputTokens += u.OutputTokens
 		}
 		if strings.TrimSpace(d.Text) != "" {
-			if len(m.messages) > 0 && m.messages[len(m.messages)-1].Kind == msgAssistant {
-				m.messages[len(m.messages)-1].Text = d.Text
+			if m.activeAssistant && m.activeAssistantIx >= 0 && m.activeAssistantIx < len(m.messages) && m.messages[m.activeAssistantIx].Kind == msgAssistant {
+				m.messages[m.activeAssistantIx].Text = d.Text
 			} else {
 				m.messages = append(m.messages, chatMessage{Kind: msgAssistant, Text: d.Text})
 			}
 		}
+		m.activeAssistant = false
+		m.activeAssistantIx = -1
 
 	case "ASSISTANT_TEXT_DELTA":
 		var d struct {
 			Delta string `json:"delta"`
 		}
 		json.Unmarshal([]byte(ev.Data), &d)
-		// Append to current assistant message or create new one
-		if len(m.messages) > 0 && m.messages[len(m.messages)-1].Kind == msgAssistant {
-			m.messages[len(m.messages)-1].Text += d.Delta
+		m.activeAssistant = true
+		if m.activeAssistantIx >= 0 && m.activeAssistantIx < len(m.messages) && m.messages[m.activeAssistantIx].Kind == msgAssistant {
+			m.messages[m.activeAssistantIx].Text += d.Delta
+		} else if m.activeAssistantIx == -1 {
+			m.messages = append(m.messages, chatMessage{Kind: msgAssistant, Text: d.Delta})
+			m.activeAssistantIx = len(m.messages) - 1
+		} else if len(m.messages) > 0 && m.messages[len(m.messages)-1].Kind == msgAssistant {
+			m.activeAssistantIx = len(m.messages) - 1
+			m.messages[m.activeAssistantIx].Text += d.Delta
 		} else {
 			m.messages = append(m.messages, chatMessage{Kind: msgAssistant, Text: d.Delta})
+			m.activeAssistantIx = len(m.messages) - 1
 		}
 
 	case "TOOL_CALL_START":
