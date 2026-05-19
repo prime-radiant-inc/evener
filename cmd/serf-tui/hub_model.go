@@ -203,7 +203,6 @@ func (m *hubModel) removePendingAttachment(idx int) {
 			m.session.input.SetValue(text[:i] + text[i+len(tok):])
 		}
 	}
-	cleanupPendingAttachmentFile(removed)
 	m.pendingAttachments = append(m.pendingAttachments[:idx], m.pendingAttachments[idx+1:]...)
 }
 

@@ -624,6 +624,9 @@
         // Successful response: clear the pending bag so a back-button
         // return doesn't double-send the same images on retry.
         pendingState.items = [];
+        if (window.SerfComposerAttachments) {
+          window.SerfComposerAttachments.resetMarkerCounter(pendingState);
+        }
         window.location.href = sessionPath(json);
       } catch (err) {
         if (btn) { btn.disabled = false; btn.innerHTML = 'spawn <kbd>⌘↵</kbd>'; }

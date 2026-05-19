@@ -1285,6 +1285,9 @@
         if (!this.composerPasteState || !Array.isArray(this.composerPasteState.items)) return;
         const sent = new Set(submitted || []);
         this.composerPasteState.items = this.composerPasteState.items.filter((item) => !sent.has(item));
+        if (this.composerPasteState.items.length === 0 && window.SerfComposerAttachments) {
+          window.SerfComposerAttachments.resetMarkerCounter(this.composerPasteState);
+        }
         this.renderComposerChips();
       };
 

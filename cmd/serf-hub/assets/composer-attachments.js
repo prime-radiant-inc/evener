@@ -62,6 +62,11 @@
     return pendingState.__nextMarker;
   }
 
+  function resetMarkerCounter(pendingState) {
+    if (!pendingState) return;
+    pendingState.__nextMarker = 0;
+  }
+
   // insertAtCursor splices `str` into textareaEl.value at the current
   // selection (replacing any selected range) and moves the cursor to just
   // after the inserted text. No-op if textareaEl is falsy.
@@ -401,5 +406,6 @@
     attachComposerDropHandlers,
     attachComposerFilePickerHandlers,
     renderAttachmentChips,
+    resetMarkerCounter,
   };
 })();

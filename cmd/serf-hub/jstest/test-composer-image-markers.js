@@ -285,7 +285,32 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
       "expected '[image 2]' after removing '[image 1]', got: " + JSON.stringify(ta.value));
   }
 
-  // ---------- Assertion 8: remove without __textarea wired does not throw ----------
+  // ---------- Assertion 8: clearing a submitted composer resets fresh numbering ----------
+  {
+    const w = buildDom();
+    const ta = w.document.getElementById("ta");
+    const pending = { items: [] };
+    w.SerfComposerAttachments.attachComposerImageHandlers(ta, pending);
+
+    setCursor(ta, 0);
+    ta.dispatchEvent(buildPasteEvent(w, makeFile(w, PNG_BYTES, "a.png", "image/png")));
+    await waitMicrotasks();
+    pass(pending.items.length === 1 && pending.items[0].marker === 1,
+      "precondition: first marker=1, got " + JSON.stringify(pending.items.map(i => i.marker)));
+
+    pending.items = [];
+    ta.value = "";
+    w.SerfComposerAttachments.resetMarkerCounter(pending);
+    ta.dispatchEvent(buildPasteEvent(w, makeFile(w, PNG_BYTES, "b.png", "image/png")));
+    await waitMicrotasks();
+
+    pass(pending.items.length === 1 && pending.items[0].marker === 1,
+      "expected fresh composer marker=1 after reset, got " + JSON.stringify(pending.items.map(i => i.marker)));
+    pass(ta.value === "[image 1]",
+      "expected fresh composer text '[image 1]', got: " + JSON.stringify(ta.value));
+  }
+
+  // ---------- Assertion 9: remove without __textarea wired does not throw ----------
   {
     const w = buildDom();
     const container = w.document.getElementById("attachments");
@@ -304,7 +329,7 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
     pass(pending.items.length === 0, "expected items spliced even without __textarea, got " + pending.items.length);
   }
 
-  // ---------- Assertion 9: marker is inserted synchronously at original cursor ----------
+  // ---------- Assertion 10: marker is inserted synchronously at original cursor ----------
   {
     const w = buildDom();
     const ta = w.document.getElementById("ta");
@@ -327,7 +352,7 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
       "expected later typing not to move marker, got: " + JSON.stringify(ta.value));
   }
 
-  // ---------- Assertion 10: oversized image is rejected before decode ----------
+  // ---------- Assertion 11: oversized image is rejected before decode ----------
   {
     const w = buildDom();
     const ta = w.document.getElementById("ta");
@@ -345,7 +370,7 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
       "expected size rejection banner, got hidden=" + errors.hidden + " text=" + JSON.stringify(errors.textContent));
   }
 
-  // ---------- Assertion 11: attachment count limit is enforced before decode ----------
+  // ---------- Assertion 12: attachment count limit is enforced before decode ----------
   {
     const w = buildDom();
     const ta = w.document.getElementById("ta");
