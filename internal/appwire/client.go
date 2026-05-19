@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -232,7 +233,7 @@ func (c *Client) ThreadShutdown(ctx context.Context, params ThreadShutdownParams
 func (c *Client) TurnStart(ctx context.Context, params TurnStartParams) (TurnStartResponse, error) {
 	var handle PendingHandle
 	if c.pendingCoord != nil {
-		handle = c.pendingCoord.Register(MethodTurnStart, params.Prompt)
+		handle = c.pendingCoord.Register(MethodTurnStart, pendingTurnStartText(params))
 	}
 	var out TurnStartResponse
 	err := c.request(ctx, MethodTurnStart, params, &out)
@@ -240,6 +241,27 @@ func (c *Client) TurnStart(ctx context.Context, params TurnStartParams) (TurnSta
 		handle.Fail(err.Error())
 	}
 	return out, err
+}
+
+func pendingTurnStartText(params TurnStartParams) string {
+	if strings.TrimSpace(params.Prompt) != "" {
+		return params.Prompt
+	}
+	images := 0
+	for _, item := range params.Items {
+		switch item.Type {
+		case "image", "input_image":
+			images++
+		}
+	}
+	switch images {
+	case 0:
+		return ""
+	case 1:
+		return "[image]"
+	default:
+		return fmt.Sprintf("[%d images]", images)
+	}
 }
 
 func (c *Client) TurnSteer(ctx context.Context, params TurnSteerParams) error {

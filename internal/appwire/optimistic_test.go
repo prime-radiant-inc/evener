@@ -163,6 +163,35 @@ func TestTurnStart_RegistersPending_AndFailsOnRPCError(t *testing.T) {
 	}
 }
 
+func TestTurnStart_RegistersImageOnlyPendingPreview(t *testing.T) {
+	t.Parallel()
+	transport := appwiretest.NewScriptedTransport()
+	client := appwire.NewClient(transport)
+	coord := &fakeCoordinator{}
+	client.SetPendingCoordinator(coord)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client.Start(ctx)
+	go func() {
+		req := <-transport.Sent()
+		transport.DeliverError(req.Request.ID, appwire.CodeInternalError, "boom")
+	}()
+	_, _ = client.TurnStart(ctx, appwire.TurnStartParams{
+		Ref: "local:t1",
+		Items: []appwire.InputItem{{
+			Type:      "image",
+			MediaType: "image/png",
+			Data:      []byte("png"),
+			Name:      "shot.png",
+		}},
+	})
+	coord.mu.Lock()
+	defer coord.mu.Unlock()
+	if len(coord.entries) != 1 || coord.entries[0].text != "[image]" {
+		t.Fatalf("pending text entries=%+v, want [image]", coord.entries)
+	}
+}
+
 func TestTurnQueue_RegistersPending(t *testing.T) {
 	t.Parallel()
 	transport := appwiretest.NewScriptedTransport()

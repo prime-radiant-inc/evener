@@ -961,6 +961,16 @@ func (s *Session) abortIfClosing(ctx context.Context) error {
 	return nil
 }
 
+func (s *Session) errIfClosing() error {
+	s.mu.Lock()
+	closing := s.closingOrClosedLocked()
+	s.mu.Unlock()
+	if closing {
+		return context.Canceled
+	}
+	return nil
+}
+
 func (s *Session) abortResponseProcessing(ctx context.Context) error {
 	s.mu.Lock()
 	closing := s.closingOrClosedLocked()
@@ -1677,6 +1687,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 	}
 	res := s.reg.ExecuteCall(ctx, s.env, call)
 	res.DurationMS = time.Since(toolStart).Milliseconds()
+	if err := s.errIfClosing(); err != nil {
+		return skippedToolResult(call, err)
+	}
 
 	// Emit output deltas (best-effort). Even for non-streaming tools, this gives consumers a uniform
 	// incremental event pattern that mirrors provider LLM streaming.
@@ -4218,8 +4231,10 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 	_ = reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: resultToolDef},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = ctx
 			_ = env
+			if err := s.abortIfClosing(ctx); err != nil {
+				return nil, err
+			}
 			message := ""
 			if v, ok := args["message"]; ok {
 				message = strings.TrimSpace(fmt.Sprint(v))
@@ -4245,6 +4260,9 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			structuredText := canonicalNodeOutputText(effectiveOutput)
 			if explicitStructuredOutput {
 				resultText = structuredText
+			}
+			if err := s.abortIfClosing(ctx); err != nil {
+				return nil, err
 			}
 
 			s.emit(EventCommunicate, CommunicateData{
