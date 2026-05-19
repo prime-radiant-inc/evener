@@ -286,7 +286,7 @@ func (t *appwireStreamTranslator) eventsFromItem(item appwire.ThreadItem, comple
 	switch item.Type {
 	case "user_message":
 		t.markItemCompleted(item)
-		payload := map[string]any{"text": item.Text, "turn": item.TranscriptEntryIndex}
+		payload := map[string]any{"text": userMessageItemText(item), "turn": item.TranscriptEntryIndex}
 		if len(item.Images) > 0 {
 			payload["images"] = item.Images
 		}

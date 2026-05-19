@@ -294,6 +294,39 @@ func TestStreamEventsFromTurnCompletedSkipsAlreadyRenderedUserInput(t *testing.T
 	}
 }
 
+func TestStreamEventsFromImageOnlyUserMessageUsesPlaceholder(t *testing.T) {
+	translator := newAppwireStreamTranslator()
+	itemStarted := appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
+		"threadId": "th_1",
+		"ref":      "local:th_1",
+		"item": appwire.ThreadItem{
+			Type:   "user_message",
+			ID:     "item_user",
+			TurnID: "turn_1",
+			Images: []appwire.InputItem{{
+				Type:      "image",
+				MediaType: "image/png",
+				Data:      []byte("png"),
+			}},
+			Status: "running",
+		},
+	})
+	events := translator.eventsFromNotification(*itemStarted.Notification)
+	if len(events) != 1 || events[0].Event != "USER_INPUT" {
+		t.Fatalf("events=%+v, want USER_INPUT", events)
+	}
+	var payload struct {
+		Text   string              `json:"text"`
+		Images []appwire.InputItem `json:"images"`
+	}
+	if err := json.Unmarshal([]byte(events[0].Data), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload.Text != "[image]" || len(payload.Images) != 1 {
+		t.Fatalf("payload=%+v, want image placeholder and image metadata", payload)
+	}
+}
+
 func TestStreamEventsDedupKeysAreTurnScoped(t *testing.T) {
 	translator := newAppwireStreamTranslator()
 	first := appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
