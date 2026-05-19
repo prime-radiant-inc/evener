@@ -27,26 +27,36 @@ func newHubTranscriptReducer(messages []chatMessage, activeTools, activeMessages
 	}
 }
 
-func (r *hubTranscriptReducer) applyAgentMessageDelta(itemID, delta string) {
+func (r *hubTranscriptReducer) applyAgentMessageDelta(turnID, itemID, delta string) {
 	if delta == "" {
 		return
 	}
-	if idx, ok := r.activeMessageIndex(appwire.ThreadItem{ID: itemID}); ok {
+	turnIndex := turnIndexFromID(turnID)
+	item := appwire.ThreadItem{ID: itemID, TurnID: turnID}
+	if idx, ok := r.activeMessageIndex(item); ok {
 		r.messages[idx].Text += delta
+		if turnID != "" {
+			r.messages[idx].TurnID = turnID
+			r.messages[idx].TurnIndex = turnIndex
+		}
 		return
 	}
-	if len(r.messages) > 0 && r.messages[len(r.messages)-1].Kind == msgAssistant {
+	if len(r.messages) > 0 && r.messages[len(r.messages)-1].Kind == msgAssistant && turnScopeMatches(r.messages[len(r.messages)-1].TurnID, turnID, r.messages[len(r.messages)-1].TurnIndex, turnIndex) {
 		idx := len(r.messages) - 1
 		r.messages[idx].Text += delta
+		if turnID != "" {
+			r.messages[idx].TurnID = turnID
+			r.messages[idx].TurnIndex = turnIndex
+		}
 		if itemID != "" {
-			r.rememberActiveMessage(appwire.ThreadItem{ID: itemID}, idx)
+			r.rememberActiveMessage(item, idx)
 		}
 		return
 	}
 	idx := len(r.messages)
-	r.messages = append(r.messages, chatMessage{Kind: msgAssistant, Text: delta, ItemID: itemID})
+	r.messages = append(r.messages, chatMessage{Kind: msgAssistant, Text: delta, TurnID: turnID, TurnIndex: turnIndex, ItemID: itemID})
 	if itemID != "" {
-		r.rememberActiveMessage(appwire.ThreadItem{ID: itemID}, idx)
+		r.rememberActiveMessage(item, idx)
 	}
 }
 
@@ -194,6 +204,9 @@ func (r *hubTranscriptReducer) activeMessageIndex(item appwire.ThreadItem) (int,
 	if !ok || idx < 0 || idx >= len(r.messages) || r.messages[idx].Kind != msgAssistant {
 		return 0, false
 	}
+	if !turnScopeMatches(r.messages[idx].TurnID, item.TurnID, r.messages[idx].TurnIndex, turnIndexFromID(item.TurnID)) {
+		return 0, false
+	}
 	return idx, true
 }
 
@@ -240,11 +253,17 @@ func (r *hubTranscriptReducer) clearActiveMessage(item appwire.ThreadItem) {
 func (r *hubTranscriptReducer) activeToolIndex(item appwire.ThreadItem) (int, bool) {
 	if item.ID != "" {
 		if idx, ok := r.activeTools[item.ID]; ok && idx < len(r.messages) {
+			if !turnScopeMatches(r.messages[idx].TurnID, item.TurnID, r.messages[idx].TurnIndex, turnIndexFromID(item.TurnID)) {
+				return 0, false
+			}
 			return idx, true
 		}
 	}
 	if item.CallID != "" {
 		if idx, ok := r.activeTools[item.CallID]; ok && idx < len(r.messages) {
+			if !turnScopeMatches(r.messages[idx].TurnID, item.TurnID, r.messages[idx].TurnIndex, turnIndexFromID(item.TurnID)) {
+				return 0, false
+			}
 			return idx, true
 		}
 	}

@@ -2453,7 +2453,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 	case appwire.NotifyAgentMessageDelta:
 		var params appwire.AgentMessageDeltaParams
 		if json.Unmarshal(notification.Params, &params) == nil {
-			m.applyAgentMessageDelta(params.ItemID, params.Delta)
+			m.applyAgentMessageDelta(params.TurnID, params.ItemID, params.Delta)
 		}
 	case appwire.NotifyToolOutputDelta:
 		var params appwire.ToolOutputDeltaParams
@@ -2669,9 +2669,9 @@ func (m hubModel) notificationMatchesCurrentSession(notification appwire.Notific
 	return false
 }
 
-func (m *hubModel) applyAgentMessageDelta(itemID, delta string) {
+func (m *hubModel) applyAgentMessageDelta(turnID, itemID, delta string) {
 	reducer := m.sessionTranscriptReducer()
-	reducer.applyAgentMessageDelta(itemID, delta)
+	reducer.applyAgentMessageDelta(turnID, itemID, delta)
 	m.applySessionTranscriptReducer(reducer)
 }
 

@@ -127,6 +127,20 @@ func TestHubTranscriptReducerScopesNonNumericTurnIDs(t *testing.T) {
 	}
 }
 
+func TestHubTranscriptReducerScopesAssistantDeltasByTurnID(t *testing.T) {
+	reducer := newHubTranscriptReducer(nil, nil, nil)
+
+	reducer.applyAgentMessageDelta("turn_codex", "assistant_reused", "first")
+	reducer.applyAgentMessageDelta("turn_stream", "assistant_reused", "second")
+
+	if len(reducer.messages) != 2 {
+		t.Fatalf("messages=%+v, want separate delta-created assistant entries", reducer.messages)
+	}
+	if reducer.messages[0].Text != "first" || reducer.messages[0].TurnID != "turn_codex" || reducer.messages[1].Text != "second" || reducer.messages[1].TurnID != "turn_stream" {
+		t.Fatalf("messages=%+v, want turn-scoped assistant deltas", reducer.messages)
+	}
+}
+
 func TestHubTranscriptReducerLiveAndReplayReconstructSameTranscript(t *testing.T) {
 	user := appwire.ThreadItem{
 		Type:   "user_message",
@@ -157,8 +171,8 @@ func TestHubTranscriptReducerLiveAndReplayReconstructSameTranscript(t *testing.T
 	live := newHubTranscriptReducer(nil, nil, nil)
 	live.applyUserMessageEcho(user.Text)
 	live.applyThreadItem(user, 1, false)
-	live.applyAgentMessageDelta("agent_1", "Thinking **bo")
-	live.applyAgentMessageDelta("agent_1", "ld**")
+	live.applyAgentMessageDelta("turn_1", "agent_1", "Thinking **bo")
+	live.applyAgentMessageDelta("turn_1", "agent_1", "ld**")
 	live.applyThreadItem(toolStart, 1, false)
 	live.applyToolOutputDelta("tool_1", "alpha\n")
 	live.applyThreadItem(toolDone, 1, true)
