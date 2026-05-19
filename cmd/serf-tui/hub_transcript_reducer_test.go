@@ -103,6 +103,30 @@ func TestHubTranscriptReducerScopesItemIDReconciliationByTurn(t *testing.T) {
 	}
 }
 
+func TestHubTranscriptReducerScopesNonNumericTurnIDs(t *testing.T) {
+	reducer := newHubTranscriptReducer(nil, nil, nil)
+
+	reducer.applyThreadItem(appwire.ThreadItem{
+		Type:   "agent_message",
+		ID:     "assistant_reused",
+		TurnID: "turn_codex",
+		Text:   "first",
+	}, 0, true)
+	reducer.applyThreadItem(appwire.ThreadItem{
+		Type:   "agent_message",
+		ID:     "assistant_reused",
+		TurnID: "turn_stream",
+		Text:   "second",
+	}, 0, true)
+
+	if len(reducer.messages) != 2 {
+		t.Fatalf("messages=%+v, want separate assistant entries for non-numeric turn IDs", reducer.messages)
+	}
+	if reducer.messages[0].Text != "first" || reducer.messages[0].TurnID != "turn_codex" || reducer.messages[1].Text != "second" || reducer.messages[1].TurnID != "turn_stream" {
+		t.Fatalf("messages=%+v, want raw turn-scoped assistant reconciliation", reducer.messages)
+	}
+}
+
 func TestHubTranscriptReducerLiveAndReplayReconstructSameTranscript(t *testing.T) {
 	user := appwire.ThreadItem{
 		Type:   "user_message",

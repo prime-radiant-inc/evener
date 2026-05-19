@@ -281,6 +281,7 @@ func wrapText(text string, firstBudget, contBudget int) []string {
 type chatMessage struct {
 	Kind       messageKind
 	Text       string
+	TurnID     string
 	TurnIndex  int
 	ItemID     string
 	ToolCallID string
