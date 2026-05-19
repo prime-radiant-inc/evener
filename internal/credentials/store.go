@@ -48,6 +48,12 @@ var providerEnvVars = map[string][]string{
 	"ollama":               nil,
 }
 
+// EnvVars returns the accepted environment variable names for provider.
+func EnvVars(provider string) []string {
+	vars := providerEnvVars[strings.ToLower(provider)]
+	return append([]string(nil), vars...)
+}
+
 // providerAuthModes lists supported auth flows per provider.
 var providerAuthModes = map[string][]string{
 	"openai":               {"apiKey", "oauth"},

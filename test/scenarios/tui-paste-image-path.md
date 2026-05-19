@@ -90,7 +90,7 @@ Companion scenarios: `tui-paste-image-from-clipboard.md`,
    ```
    The footer should now show:
    ```
-   attachments  ctrl+backspace: drop last
+   attachments  alt+backspace: drop last
    📎 serf-e2e-test-image.png [×]
    ```
    The textarea body should be empty — the path text was NOT

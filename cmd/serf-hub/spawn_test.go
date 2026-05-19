@@ -412,6 +412,15 @@ func TestProviderCredentialPreflightAcceptsConfiguredOpenRouterKey(t *testing.T)
 	}
 }
 
+func TestProviderCredentialPreflightAcceptsLaunchEnvKey(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "")
+	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	err := validateProviderCredentials("openrouter", store, []string{"OPENROUTER_API_KEY=launch-secret"})
+	if err != nil {
+		t.Fatalf("validateProviderCredentials with launch env key: %v", err)
+	}
+}
+
 func TestProviderCredentialPreflightAcceptsStoredOpenAIOAuth(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	xdgStateHome := t.TempDir()

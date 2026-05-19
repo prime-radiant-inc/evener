@@ -367,12 +367,24 @@ func validateProviderCredentials(provider string, store *credentials.Store, env 
 			return nil
 		}
 		if p.Source == credentials.SourceAbsent {
+			if providerCredentialInEnv(provider, env) {
+				return nil
+			}
 			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: set via serf/auth/apiKey/set or set the matching env var", provider))
 		}
 		return nil
 	}
 	// Unknown provider — don't block launch.
 	return nil
+}
+
+func providerCredentialInEnv(provider string, env []string) bool {
+	for _, key := range credentials.EnvVars(provider) {
+		if value, ok := envLookup(env, key); ok && strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func openAIStoredOAuthUsable(env []string) bool {

@@ -159,56 +159,56 @@ func TestTextOnlyCompletionDoesNotReleaseDeferredAttachmentCleanup(t *testing.T)
 	}
 }
 
-// TestCtrlBackspaceRemovesLastAttachment verifies that pressing
-// Ctrl+Backspace in the composer drops the most-recently-added
+// TestAltBackspaceRemovesLastAttachment verifies that pressing
+// Alt+Backspace in the composer drops the most-recently-added
 // attachment chip without touching the rest. Kata 5vxd.
-func TestCtrlBackspaceRemovesLastAttachment(t *testing.T) {
+func TestAltBackspaceRemovesLastAttachment(t *testing.T) {
 	m := newSessionHubModel(nil)
 	first := &PastedImage{Path: "/tmp/one.png", Width: 320, Height: 240}
 	second := &PastedImage{Path: "/tmp/two.png", Width: 1024, Height: 768}
 	m.pendingAttachments = []*PastedImage{first, second}
 
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyBackspace, Alt: true})
+	got := updated.(hubModel)
+
+	if n := len(got.pendingAttachments); n != 1 {
+		t.Fatalf("after Alt+Backspace len = %d, want 1", n)
+	}
+	if got.pendingAttachments[0] != first {
+		t.Fatalf("after Alt+Backspace pendingAttachments[0] = %+v, want first", got.pendingAttachments[0])
+	}
+}
+
+// TestCtrlHWithAttachmentsFallsThrough verifies Ctrl-H is not reserved for
+// chip removal. Many terminals encode ordinary Backspace as Ctrl-H, so the
+// textarea should see the key even when attachments are staged. Kata 5vxd.
+func TestCtrlHWithAttachmentsFallsThrough(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.session.setInputValue("hello")
+	m.pendingAttachments = []*PastedImage{{Path: "/tmp/one.png"}}
+
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlH})
 	got := updated.(hubModel)
 
 	if n := len(got.pendingAttachments); n != 1 {
-		t.Fatalf("after Ctrl+Backspace len = %d, want 1", n)
-	}
-	if got.pendingAttachments[0] != first {
-		t.Fatalf("after Ctrl+Backspace pendingAttachments[0] = %+v, want first", got.pendingAttachments[0])
-	}
-}
-
-// TestCtrlBackspaceWithNoAttachmentsFallsThrough verifies Ctrl-H is not
-// reserved for chip removal when there are no pending attachments. Many
-// terminals encode ordinary Backspace as Ctrl-H, so the textarea should see
-// the key in that case. Kata 5vxd.
-func TestCtrlBackspaceWithNoAttachmentsFallsThrough(t *testing.T) {
-	m := newSessionHubModel(nil)
-	m.session.setInputValue("hello")
-
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlH})
-	got := updated.(hubModel)
-
-	if n := len(got.pendingAttachments); n != 0 {
-		t.Fatalf("pendingAttachments len = %d, want 0", n)
+		t.Fatalf("pendingAttachments len = %d, want 1", n)
 	}
 	if got.session.input.Value() == "hello" {
 		t.Fatalf("Ctrl-H was swallowed before textarea handling; input still %q", got.session.input.Value())
 	}
 }
 
-// TestCtrlBackspaceDoesNotFireDuringPalette verifies that when the
-// command palette is open Ctrl+Backspace falls through to the palette
+// TestAltBackspaceDoesNotFireDuringPalette verifies that when the
+// command palette is open Alt+Backspace falls through to the palette
 // handler instead of removing an attachment. Kata 5vxd.
-func TestCtrlBackspaceDoesNotFireDuringPalette(t *testing.T) {
+func TestAltBackspaceDoesNotFireDuringPalette(t *testing.T) {
 	m := newSessionHubModel(nil)
 	first := &PastedImage{Path: "/tmp/one.png", Width: 320, Height: 240}
 	second := &PastedImage{Path: "/tmp/two.png", Width: 1024, Height: 768}
 	m.pendingAttachments = []*PastedImage{first, second}
 	m.openCommandPalette()
 
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlH})
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyBackspace, Alt: true})
 	got := updated.(hubModel)
 
 	if n := len(got.pendingAttachments); n != 2 {

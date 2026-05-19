@@ -1682,10 +1682,10 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.Type == tea.KeyCtrlV || isAltVKey(msg) {
 		return m.handleClipboardPaste()
 	}
-	// Ctrl+Backspace removes the most recently added attachment chip
-	// (kata 5vxd). Some terminals report ordinary Backspace as Ctrl-H, so
-	// only consume it while a chip is actually available to remove.
-	if msg.Type == tea.KeyCtrlH && len(m.pendingAttachments) > 0 {
+	// Alt+Backspace removes the most recently added attachment chip
+	// (kata 5vxd). Plain Ctrl-H is not safe here because many terminals
+	// report ordinary Backspace as Ctrl-H.
+	if msg.Alt && (msg.Type == tea.KeyBackspace || msg.Type == tea.KeyCtrlH) && len(m.pendingAttachments) > 0 {
 		m.removePendingAttachment(len(m.pendingAttachments) - 1)
 		return m, nil
 	}
