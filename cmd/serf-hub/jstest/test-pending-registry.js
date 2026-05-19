@@ -120,6 +120,22 @@ function build() {
   console.log("ok failed_entry_reconciles_late_authoritative_update");
 })();
 
+(function test_reconcile_prefers_live_retry_over_failed_duplicate() {
+  const window = build();
+  const conv = window.document.getElementById("conversation");
+  const reg = window.SerfAppwirePending.create({ conversation: conv });
+  const failedHandle = reg.register({ method: "turn/steer", text: "same" });
+  reg.fail(failedHandle, "server did not confirm");
+  reg.register({ method: "turn/steer", text: "same" });
+
+  assert.equal(reg.tryReconcile("turn/steer", { text: "same" }), true);
+  assert.equal(conv.querySelectorAll(".optimistic-pending").length, 0,
+    "live retry should reconcile first");
+  assert.equal(conv.querySelectorAll(".optimistic-failed").length, 1,
+    "older failed duplicate should remain until dismissed or late reconcile");
+  console.log("ok reconcile_prefers_live_retry_over_failed_duplicate");
+})();
+
 (function test_drain_reconciles_first_match() {
   const window = build();
   const conv = window.document.getElementById("conversation");

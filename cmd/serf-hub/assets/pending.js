@@ -126,23 +126,24 @@
     function tryReconcile(method, params) {
       const want = normalizeText(params && params.text);
       const wantItems = itemCount(params && (params.items || params.images));
-      for (const [id, ent] of entries) {
-        if (ent.method !== method) continue;
+      const matches = (ent) => {
+        if (ent.method !== method) return false;
         if (method === "turn/drainAsSteer") {
           // Drain matches first-come-first-served, no text comparison.
-          removeEntry(id);
           return true;
         }
         if (!want) {
-          if (method === "turn/start" && !normalizeText(ent.text) && itemCount(ent.items) > 0 && wantItems > 0) {
-            removeEntry(id);
-            return true;
-          }
-          continue;
+          return method === "turn/start" && !normalizeText(ent.text) && itemCount(ent.items) > 0 && wantItems > 0;
         }
-        if (normalizeText(ent.text) !== want) continue;
-        removeEntry(id);
-        return true;
+        return normalizeText(ent.text) === want;
+      };
+      for (const preferFailed of [false, true]) {
+        for (const [id, ent] of entries) {
+          if (!!ent.failed !== preferFailed) continue;
+          if (!matches(ent)) continue;
+          removeEntry(id);
+          return true;
+        }
       }
       return false;
     }

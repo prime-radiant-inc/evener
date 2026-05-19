@@ -265,7 +265,7 @@ func TestCommunicate_InboxDrainsSteering(t *testing.T) {
 	}
 }
 
-func TestCommunicate_DrainedImageSteeringAppendsTurn(t *testing.T) {
+func TestCommunicate_DrainedImageSteeringRequeuesForPostToolInjection(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -290,19 +290,19 @@ func TestCommunicate_DrainedImageSteeringAppendsTurn(t *testing.T) {
 		t.Fatalf("expected steering text in inbox, got: %s", res.Output)
 	}
 
-	var found bool
-	for _, turn := range sess.Snapshot().History {
-		if turn.Kind != TurnSteering {
-			continue
-		}
-		for _, part := range turn.Message.Content {
-			if part.Kind == llm.ContentImage && part.Image != nil && string(part.Image.Data) == "png bytes" {
-				found = true
-			}
+	drained := sess.drainSteering()
+	if len(drained) != 1 {
+		t.Fatalf("deferred steering entries=%d, want 1", len(drained))
+	}
+	msg := steeringMessageToLLM(drained[0])
+	var foundImage bool
+	for _, part := range msg.Content {
+		if part.Kind == llm.ContentImage && part.Image != nil && string(part.Image.Data) == "png bytes" {
+			foundImage = true
 		}
 	}
-	if !found {
-		t.Fatalf("image-bearing steering was not appended to history: %+v", sess.Snapshot().History)
+	if !foundImage {
+		t.Fatalf("deferred steering did not preserve image content: %+v", msg.Content)
 	}
 }
 

@@ -2416,14 +2416,15 @@ func reconcilePendingFromNotification(pending *pendingCoordinator, n appwire.Not
 		// any turn/start pending entry.
 		var p struct {
 			Item struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
+				Type   string              `json:"type"`
+				Text   string              `json:"text"`
+				Images []appwire.InputItem `json:"images"`
 			} `json:"item"`
 		}
 		if err := json.Unmarshal(n.Params, &p); err != nil {
 			return
 		}
-		if p.Item.Type == "user_message" && p.Item.Text != "" {
+		if p.Item.Type == "user_message" && (p.Item.Text != "" || len(p.Item.Images) > 0) {
 			pending.TryReconcile(appwire.MethodTurnStart, p.Item.Text)
 		}
 	}

@@ -1949,7 +1949,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		history := make([]llm.Message, 0, len(historyTurns))
 		for _, t := range historyTurns {
 			if t.Kind == TurnSteering {
-				history = append(history, llm.User(t.Message.Text()))
+				history = append(history, t.Message)
 				continue
 			}
 			if t.Kind == TurnToolResults {
@@ -2827,6 +2827,15 @@ func (s *Session) drainSteering() []steeringMessage {
 	out := append([]steeringMessage{}, s.steeringQueue...)
 	s.steeringQueue = nil
 	return out
+}
+
+func (s *Session) prependSteering(entries []steeringMessage) {
+	if len(entries) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.steeringQueue = append(append([]steeringMessage{}, entries...), s.steeringQueue...)
 }
 
 // SteeringEntry is a read-only snapshot of one entry on the steering
@@ -4016,14 +4025,16 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			// the next model round.
 			drained := s.drainSteering()
 			inbox := make([]string, 0, len(drained))
+			var deferred []steeringMessage
 			for _, msg := range drained {
 				if strings.TrimSpace(msg.Text) != "" {
 					inbox = append(inbox, msg.Text)
 				}
 				if len(msg.Images) > 0 {
-					s.appendTurn(TurnSteering, steeringMessageToLLM(msg))
+					deferred = append(deferred, msg)
 				}
 			}
+			s.prependSteering(deferred)
 
 			s.mu.Lock()
 			s.communicated = true
