@@ -66,6 +66,19 @@ func TestStore_GetFallsBackToEnv(t *testing.T) {
 	}
 }
 
+func TestStore_OpenAICompatibleUsesAPIKeyEnv(t *testing.T) {
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "compat-key")
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "https://compat.example.test/v1")
+	s, _ := LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	v, src := s.Get("openai-compatible")
+	if v != "compat-key" || src != SourceEnv {
+		t.Errorf("openai-compatible env fallback: v=%q src=%q", v, src)
+	}
+	if got := EnvVars("openai-compatible"); len(got) != 1 || got[0] != "OPENAI_COMPATIBLE_API_KEY" {
+		t.Errorf("EnvVars(openai-compatible) = %v", got)
+	}
+}
+
 func TestStore_List(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "env-key")
 	t.Setenv("GEMINI_API_KEY", "")

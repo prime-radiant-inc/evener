@@ -44,7 +44,7 @@ var providerEnvVars = map[string][]string{
 	"openrouter-anthropic": {"OPENROUTER_API_KEY"},
 	"kimi":                 {"KIMI_API_KEY"},
 	"glm":                  {"GLM_API_KEY"},
-	"openai-compatible":    {"OPENAI_COMPATIBLE_BASE_URL"},
+	"openai-compatible":    {"OPENAI_COMPATIBLE_API_KEY"},
 	"ollama":               nil,
 }
 

@@ -57,6 +57,24 @@ func TestToEnv_PerLaunchEnvBeatsCredsStore(t *testing.T) {
 	}
 }
 
+func TestToEnv_OpenAICompatibleCredentialUsesAPIKeyEnv(t *testing.T) {
+	r := Resolved{Effective: Layer{Env: map[string]string{
+		"OPENAI_COMPATIBLE_BASE_URL": "https://compat.example.test/v1",
+	}}}
+	creds := stubCreds{keys: map[string]string{"openai-compatible": "compat-key"}}
+	got := envSliceToMap(ToEnv(EnvInputs{
+		Resolved: r,
+		Provider: "openai-compatible",
+		Creds:    creds,
+	}))
+	if got["OPENAI_COMPATIBLE_API_KEY"] != "compat-key" {
+		t.Errorf("OPENAI_COMPATIBLE_API_KEY = %q, want compat-key", got["OPENAI_COMPATIBLE_API_KEY"])
+	}
+	if got["OPENAI_COMPATIBLE_BASE_URL"] != "https://compat.example.test/v1" {
+		t.Errorf("OPENAI_COMPATIBLE_BASE_URL = %q", got["OPENAI_COMPATIBLE_BASE_URL"])
+	}
+}
+
 func TestToEnv_NoProviderNoInjection(t *testing.T) {
 	creds := stubCreds{keys: map[string]string{"anthropic": "x"}}
 	got := envSliceToMap(ToEnv(EnvInputs{Provider: "", Creds: creds}))
