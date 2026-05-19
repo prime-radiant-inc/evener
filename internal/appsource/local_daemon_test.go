@@ -83,6 +83,18 @@ func TestLocalDaemonSubscribeReadErrorPreservesApplicationWireErrors(t *testing.
 	}
 }
 
+func TestLocalDaemonInitializeErrorPreservesApplicationWireErrors(t *testing.T) {
+	app := appwire.InvalidParams("broken pipe is part of semantic error")
+	got := localDaemonInitializeError(app)
+	var wire appwire.WireError
+	if !errors.As(got, &wire) {
+		t.Fatalf("got %T=%v, want WireError", got, got)
+	}
+	if wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("wire=%+v, want InvalidParams preserved", wire)
+	}
+}
+
 func TestLocalDaemonDialErrorIgnoresNil(t *testing.T) {
 	if got := localDaemonDialError(nil); got != nil {
 		t.Fatalf("nil mapped to %v, want nil", got)
@@ -380,6 +392,34 @@ func TestLocalDaemonSourceSubscribeThreadMapsConnectionRefused(t *testing.T) {
 	data, ok := wire.Data.(appwire.ErrorData)
 	if !ok || wire.Code != appwire.CodeUnavailable || data.SerfErrorInfo != appwire.ErrorSessionUnavailable {
 		t.Fatalf("wire=%+v", wire)
+	}
+}
+
+func TestLocalDaemonSourceSubscribeThreadPreservesInitializeWireError(t *testing.T) {
+	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(app.Router(), appwire.MethodInitialize, func(_ context.Context, _ appwire.InitializeParams) (appwire.InitializeResponse, error) {
+		return appwire.InitializeResponse{}, appwire.InvalidParams("broken pipe is semantic here")
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
+		return []rendezvous.Entry{{
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws" + httpServer.URL[len("http"):],
+			SourceID:  "local",
+			ThreadID:  "th_1",
+			SessionID: "sess_1",
+		}}
+	}, httpServer.Client())
+
+	_, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1"})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("SubscribeThread error %T=%v, want WireError", err, err)
+	}
+	if wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("wire=%+v, want InvalidParams preserved", wire)
 	}
 }
 

@@ -236,7 +236,7 @@ func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.
 		if cerr := ctx.Err(); cerr != nil {
 			return nil, cerr
 		}
-		return nil, localDaemonDialError(localDaemonCallError(err))
+		return nil, localDaemonInitializeError(err)
 	}
 	if _, err := client.ThreadRead(ctx, params); err != nil {
 		transport.Close()
@@ -284,12 +284,7 @@ func (s *LocalDaemonSource) withClient(ctx context.Context, entry rendezvous.Ent
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}
-		// Initialize errors arrive as either a raw transport error (rare) or
-		// as a WireError(CodeInternalError) wrapping the underlying transport
-		// message (the appwire client's failPending path). Run the call-level
-		// unwrap first to handle the wire-wrapped case, then fall through to
-		// the dial-level typed-error match.
-		return localDaemonDialError(localDaemonCallError(err))
+		return localDaemonInitializeError(err)
 	}
 	if err := fn(client); err != nil {
 		return localDaemonCallError(err)
@@ -371,6 +366,15 @@ func localDaemonCallError(err error) error {
 		return appwire.SessionUnavailable("local daemon unavailable: " + wire.Message)
 	}
 	return err
+}
+
+func localDaemonInitializeError(err error) error {
+	mapped := localDaemonCallError(err)
+	var wire appwire.WireError
+	if errors.As(mapped, &wire) {
+		return mapped
+	}
+	return localDaemonDialError(mapped)
 }
 
 func localDaemonSubscribeReadError(err error) error {
