@@ -238,7 +238,9 @@ func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.
 		}
 		return nil, localDaemonInitializeError(err)
 	}
-	if _, err := client.ThreadRead(ctx, params); err != nil {
+	readParams := params
+	readParams.Subscribe = true
+	if _, err := client.ThreadRead(ctx, readParams); err != nil {
 		transport.Close()
 		if cerr := ctx.Err(); cerr != nil {
 			return nil, cerr

@@ -427,6 +427,45 @@ func TestLocalDaemonSourceListQueuesOnlyProcessingThreads(t *testing.T) {
 	}
 }
 
+func TestLocalDaemonSourceSubscribeThreadRequestsSubscription(t *testing.T) {
+	gotSubscribe := make(chan bool, 1)
+	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		gotSubscribe <- params.Subscribe
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_1", SessionID: "sess_1", Serf: appwire.SerfThread{Ref: "local:th_1"}}}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewLocalDaemonSource("local", func() []rendezvous.Entry {
+		return []rendezvous.Entry{{
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws" + httpServer.URL[len("http"):],
+			SourceID:  "local",
+			ThreadID:  "th_1",
+			SessionID: "sess_1",
+		}}
+	}, httpServer.Client())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	notifications, err := source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: "local:th_1"})
+	if err != nil {
+		t.Fatalf("SubscribeThread: %v", err)
+	}
+	if notifications == nil {
+		t.Fatal("notifications channel is nil")
+	}
+	select {
+	case got := <-gotSubscribe:
+		if !got {
+			t.Fatal("SubscribeThread sent ThreadRead with Subscribe=false")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for ThreadRead")
+	}
+}
+
 func TestLocalDaemonSourceSubscribeThreadMapsConnectionRefused(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
