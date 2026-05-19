@@ -2687,10 +2687,14 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				},
 			})
 		}
-		s.appendTurn(TurnToolResults, llm.Message{Role: llm.RoleTool, Content: parts})
-		// Persist the completed tool round so resumed sessions always include
-		// tool_result turns for any prior assistant tool calls.
-		s.maybeAutoSave()
+		if abortErr := s.withResponseSideEffects(ctx, func() {
+			s.appendTurn(TurnToolResults, llm.Message{Role: llm.RoleTool, Content: parts})
+			// Persist the completed tool round so resumed sessions always include
+			// tool_result turns for any prior assistant tool calls.
+			s.maybeAutoSave()
+		}); abortErr != nil {
+			return "", abortErr
+		}
 
 		// If any tool result contained an image, make a side-channel API call
 		// to describe it. GPT models in tool-calling mode never produce text
@@ -2714,7 +2718,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 							}
 						}
 					}
-					s.Steer(label + ": " + desc + "\n<system-reminder>Visual descriptions are summaries. They may miss or mischaracterize details.</system-reminder>")
+					if abortErr := s.withResponseSideEffects(ctx, func() {
+						s.Steer(label + ": " + desc + "\n<system-reminder>Visual descriptions are summaries. They may miss or mischaracterize details.</system-reminder>")
+					}); abortErr != nil {
+						return "", abortErr
+					}
 				}
 			}
 		}
@@ -2729,11 +2737,17 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// Pass s.history directly — no copy needed since the loop is single-
 		// threaded and nothing else modifies history until AfterAction returns.
 		if s.strategy != nil {
-			s.mu.Lock()
-			hist := s.history
-			s.mu.Unlock()
-			if err := s.strategy.AfterAction(ctx, hist, s.client); err != nil {
-				s.emit(EventWarning, WarningData{Message: "strategy AfterAction error: " + err.Error()})
+			var afterActionErr error
+			if abortErr := s.withResponseSideEffects(ctx, func() {
+				s.mu.Lock()
+				hist := s.history
+				s.mu.Unlock()
+				afterActionErr = s.strategy.AfterAction(ctx, hist, s.client)
+				if afterActionErr != nil {
+					s.emit(EventWarning, WarningData{Message: "strategy AfterAction error: " + afterActionErr.Error()})
+				}
+			}); abortErr != nil {
+				return "", abortErr
 			}
 		}
 
@@ -2751,9 +2765,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				s.mu.Unlock()
 
 				warning := s.stuckEscalation(count)
-				s.emit(EventLoopDetection, LoopDetectionData{Message: warning})
-				s.appendTurn(TurnSteering, llm.User(warning))
-				s.emit(EventSteeringInjected, SteeringInjectedData{Text: warning})
+				if abortErr := s.withResponseSideEffects(ctx, func() {
+					s.emit(EventLoopDetection, LoopDetectionData{Message: warning})
+					s.appendTurn(TurnSteering, llm.User(warning))
+					s.emit(EventSteeringInjected, SteeringInjectedData{Text: warning})
+				}); abortErr != nil {
+					return "", abortErr
+				}
 			}
 		}
 
@@ -2773,24 +2791,40 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 		if s.readOnlyStreak == 5 {
 			nudge := "<SYSTEM-REMINDER>You have spent several turns reading without writing or running anything. Review your current task. If you have enough context to make progress, write code or run a command now. A first attempt you can test and fix is more valuable than more reading.</SYSTEM-REMINDER>"
-			s.appendTurn(TurnSteering, llm.User(nudge))
-			s.emit(EventSteeringInjected, SteeringInjectedData{Text: nudge})
+			if abortErr := s.withResponseSideEffects(ctx, func() {
+				s.appendTurn(TurnSteering, llm.User(nudge))
+				s.emit(EventSteeringInjected, SteeringInjectedData{Text: nudge})
+			}); abortErr != nil {
+				return "", abortErr
+			}
 		} else if s.readOnlyStreak == 10 {
 			nudge := "<SYSTEM-REMINDER>You have been reading for 10 turns without acting. Stop reading. Write the deliverable file now, even if incomplete. You can iterate after you have something to test.</SYSTEM-REMINDER>"
-			s.appendTurn(TurnSteering, llm.User(nudge))
-			s.emit(EventSteeringInjected, SteeringInjectedData{Text: nudge})
+			if abortErr := s.withResponseSideEffects(ctx, func() {
+				s.appendTurn(TurnSteering, llm.User(nudge))
+				s.emit(EventSteeringInjected, SteeringInjectedData{Text: nudge})
+			}); abortErr != nil {
+				return "", abortErr
+			}
 		}
 
 		// Inject any queued steering messages before the next model call.
-		for _, msg := range s.drainSteering() {
-			s.appendTurn(TurnSteering, steeringMessageToLLM(msg))
-			s.emit(EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+		if abortErr := s.withResponseSideEffects(ctx, func() {
+			for _, msg := range s.drainSteering() {
+				s.appendTurn(TurnSteering, steeringMessageToLLM(msg))
+				s.emit(EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+			}
+		}); abortErr != nil {
+			return "", abortErr
 		}
 
 		// Task reminder injection.
-		if reminder := s.maybeInjectTaskReminder(); reminder != "" {
-			s.appendTurn(TurnSteering, llm.User(reminder))
-			s.emit(EventSteeringInjected, SteeringInjectedData{Text: reminder})
+		if abortErr := s.withResponseSideEffects(ctx, func() {
+			if reminder := s.maybeInjectTaskReminder(); reminder != "" {
+				s.appendTurn(TurnSteering, llm.User(reminder))
+				s.emit(EventSteeringInjected, SteeringInjectedData{Text: reminder})
+			}
+		}); abortErr != nil {
+			return "", abortErr
 		}
 
 		// Emit round timings before checking result delivery.

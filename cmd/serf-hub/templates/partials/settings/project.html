@@ -21,7 +21,10 @@
       current = await launchconfig.getLayer(cwd, "project");
       resetLaunchDraftFromCurrent();
     } catch (err) {
-      root.innerHTML = `<p class="settings-error">Failed to load: ${err && err.message ? err.message : err}</p>`;
+      const p = document.createElement("p");
+      p.className = "settings-error";
+      p.textContent = `Failed to load: ${err && err.message ? err.message : err}`;
+      root.replaceChildren(p);
       return;
     }
 

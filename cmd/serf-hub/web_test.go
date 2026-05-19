@@ -3933,6 +3933,34 @@ func TestWeb_SettingsLaunchListPanesAvoidHTMLInterpolation(t *testing.T) {
 	}
 }
 
+func TestWeb_SettingsErrorPathsAvoidHTMLInterpolation(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/_partials/settings/project?cwd=/tmp/project", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("project status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	bodies := map[string]string{
+		"project": rec.Body.String(),
+		"inrepo":  settingsRequest(t, web, "inrepo"),
+	}
+	for section, body := range bodies {
+		if strings.Contains(body, "innerHTML = `<p class=\"settings-error\"") {
+			t.Fatalf("%s settings pane interpolates errors into HTML: %q", section, body)
+		}
+		if !strings.Contains(body, ".textContent") || !strings.Contains(body, "replaceChildren") {
+			t.Fatalf("%s settings pane does not render errors via DOM text nodes: %q", section, body)
+		}
+	}
+}
+
 // TestWeb_Settings_NavPresentForAllSections is a regression test for kata
 // 3j2y: the settings shell (nav + header) must be included in the full-page
 // response for plugins, skills, and mcp — not just for general/theme/etc.
