@@ -112,6 +112,35 @@ func TestCodexSourceListThreadsTranslatesSerfStatusFilters(t *testing.T) {
 	}
 }
 
+func TestMapCodexTurnPreservesErrorDetails(t *testing.T) {
+	turn := mapCodexTurn(codexTurn{
+		ID:     "turn_failed",
+		Status: "failed",
+		Error: &codexTurnError{
+			Message:           "request failed",
+			AdditionalDetails: "upstream refused",
+			CodexErrorInfo:    json.RawMessage(`{"type":"Unauthorized","httpStatusCode":401}`),
+		},
+	})
+	if turn.Error == nil {
+		t.Fatal("missing turn error")
+	}
+	if turn.Error.Message != "request failed" || turn.Error.AdditionalDetails != "upstream refused" || turn.Error.Source != "codex" {
+		t.Fatalf("turn error=%+v", turn.Error)
+	}
+	raw, ok := turn.Error.CodexErrorInfo.(json.RawMessage)
+	if !ok {
+		t.Fatalf("codexErrorInfo=%T, want json.RawMessage", turn.Error.CodexErrorInfo)
+	}
+	var info map[string]any
+	if err := json.Unmarshal(raw, &info); err != nil {
+		t.Fatalf("codexErrorInfo json: %v", err)
+	}
+	if info["type"] != "Unauthorized" || info["httpStatusCode"] != float64(401) {
+		t.Fatalf("codexErrorInfo=%+v", info)
+	}
+}
+
 func TestCodexSourceLoadedThreadAdvertisesTurnActions(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (map[string]any, error) {

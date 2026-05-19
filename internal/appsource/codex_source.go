@@ -970,8 +970,9 @@ type codexTurn struct {
 }
 
 type codexTurnError struct {
-	Message           string `json:"message"`
-	AdditionalDetails string `json:"additionalDetails,omitempty"`
+	Message           string          `json:"message"`
+	AdditionalDetails string          `json:"additionalDetails,omitempty"`
+	CodexErrorInfo    json.RawMessage `json:"codexErrorInfo,omitempty"`
 }
 
 type codexModelListResponse struct {
@@ -1008,7 +1009,14 @@ func mapCodexTurn(turn codexTurn) appwire.Turn {
 		DurationMS:  turn.DurationMS,
 	}
 	if turn.Error != nil {
-		out.Error = &appwire.TurnError{Message: firstNonEmpty(turn.Error.Message, turn.Error.AdditionalDetails), Source: "codex"}
+		out.Error = &appwire.TurnError{
+			Message:           firstNonEmpty(turn.Error.Message, turn.Error.AdditionalDetails),
+			AdditionalDetails: turn.Error.AdditionalDetails,
+			Source:            "codex",
+		}
+		if len(turn.Error.CodexErrorInfo) > 0 {
+			out.Error.CodexErrorInfo = json.RawMessage(append([]byte(nil), turn.Error.CodexErrorInfo...))
+		}
 	}
 	for _, item := range turn.Items {
 		out.Items = append(out.Items, mapCodexItem(turn.ID, item))
