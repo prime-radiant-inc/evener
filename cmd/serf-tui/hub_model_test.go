@@ -1926,6 +1926,31 @@ func TestHubModelStatusRefreshIgnoresStaleSessionRead(t *testing.T) {
 		t.Fatalf("detail=%+v, want old matching-state refresh token ignored", got.detail)
 	}
 
+	got.detail.Ref = "local:02OTHER"
+	got.detail.SessionID = "02OTHER"
+	got.session.sessionID = "02OTHER"
+	got.statusRefreshToken = 2
+	updated, _ = got.Update(hubSessionMsg{
+		ref:                  "local:01SEND",
+		expectedState:        appwire.ThreadStatusProcessing,
+		expectedRefreshToken: 2,
+		detail: hubSessionDetail{
+			Ref:       "local:01SEND",
+			SessionID: "01SEND",
+			State:     appwire.ThreadStatusProcessing,
+			Capabilities: hubSessionCapabilities{
+				Send: true,
+			},
+		},
+	})
+	got = updated.(hubModel)
+	if got.detail.Ref != "local:02OTHER" || got.session.sessionID != "02OTHER" {
+		t.Fatalf("stale refresh reactivated old session: detail=%+v sessionID=%q", got.detail, got.session.sessionID)
+	}
+
+	got.detail.Ref = "local:01SEND"
+	got.detail.SessionID = "01SEND"
+	got.session.sessionID = "01SEND"
 	updated, _ = got.Update(hubSessionMsg{
 		expectedState:        appwire.ThreadStatusProcessing,
 		expectedRefreshToken: 2,

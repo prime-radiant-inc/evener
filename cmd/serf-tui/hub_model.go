@@ -406,13 +406,15 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.err = nil
 		m.spawnSubmitting = false
+		if msg.expectedState != "" {
+			if (msg.ref != "" && m.detail.Ref != msg.ref) || msg.expectedRefreshToken != m.statusRefreshToken {
+				return m, nil
+			}
+			if !statusRefreshStatesMatchExpected(m.detail.State, msg.detail.State, msg.expectedState) {
+				return m, nil
+			}
+		}
 		if m.mode == hubModeSession && m.detail.Ref == msg.detail.Ref {
-			if msg.expectedState != "" && msg.expectedRefreshToken != m.statusRefreshToken {
-				return m, nil
-			}
-			if msg.expectedState != "" && !statusRefreshStatesMatchExpected(m.detail.State, msg.detail.State, msg.expectedState) {
-				return m, nil
-			}
 			m.detail = msg.detail
 			// Refresh queue preview from the authoritative read response
 			// (kata r80p) so reloads / status refreshes resync state.

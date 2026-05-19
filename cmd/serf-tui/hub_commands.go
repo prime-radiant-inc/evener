@@ -153,7 +153,7 @@ func fetchHubSessionRead(client *appwire.Client, ref appwire.Ref, expectedState 
 		if err != nil {
 			return hubSessionMsg{ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken, err: err}
 		}
-		return hubSessionMsg{detail: hubDetailFromThread(resp.Thread), messages: messagesFromThread(resp.Thread), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken}
+		return hubSessionMsg{detail: hubDetailFromThread(resp.Thread), messages: messagesFromThread(resp.Thread), ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken}
 	}
 }
 
