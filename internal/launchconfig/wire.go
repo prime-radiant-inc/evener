@@ -18,6 +18,7 @@ func FromWire(in appwire.LaunchConfigLayer) Layer {
 		MCPConfigs:         in.MCPConfigs,
 		SystemPromptAppend: in.SystemPromptAppend,
 		ModelFallbacks:     in.ModelFallbacks,
+		ModelFallbacksSet:  in.ModelFallbacks != nil,
 		Env:                in.Env,
 	}
 	if in.Schema != nil {

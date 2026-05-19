@@ -108,6 +108,21 @@ func TestMerge_ModelFallbacksGlobalOnly(t *testing.T) {
 	}
 }
 
+func TestMerge_EmptyModelFallbacksClearsInherited(t *testing.T) {
+	g := Layer{ModelFallbacks: []string{"openai/gpt-5.4"}}
+	l := Layer{ModelFallbacks: []string{}, ModelFallbacksSet: true}
+	got, _ := mergeLayers(map[LayerName]Layer{LayerGlobal: g, LayerLaunch: l})
+	if got.Effective.ModelFallbacks == nil {
+		t.Fatalf("ModelFallbacks = nil, want explicit empty slice")
+	}
+	if len(got.Effective.ModelFallbacks) != 0 {
+		t.Fatalf("ModelFallbacks = %v, want empty", got.Effective.ModelFallbacks)
+	}
+	if got.Provenance["model_fallbacks"] != LayerLaunch {
+		t.Errorf("provenance[model_fallbacks] = %q, want %q", got.Provenance["model_fallbacks"], LayerLaunch)
+	}
+}
+
 func TestMerge_BlockedCredentialEnvKeys(t *testing.T) {
 	g := Layer{Env: map[string]string{"OPENAI_API_KEY": "leak"}}
 	_, diags := mergeLayers(map[LayerName]Layer{LayerGlobal: g})

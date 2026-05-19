@@ -24,6 +24,7 @@ type Layer struct {
 	MCPConfigs         []string          `toml:"mcp_configs,omitempty"`
 	SystemPromptAppend []string          `toml:"system_prompt_append,omitempty"`
 	ModelFallbacks     []string          `toml:"model_fallbacks,omitempty"`
+	ModelFallbacksSet  bool              `toml:"-" json:"-"`
 	MCPs               []MCPServerSpec   `toml:"mcps,omitempty"`
 	Env                map[string]string `toml:"env,omitempty"`
 }

@@ -1501,6 +1501,55 @@ func TestWeb_ApiSpawn_503WhenNoSpawner(t *testing.T) {
 	}
 }
 
+func TestWeb_ApiSpawn_RejectsOversizeRequest(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+		Spawner: &fakeSpawner{},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/spawn", strings.NewReader(`{"prompt":"`+strings.Repeat("x", sendMaxRequestBytes)+`"}`))
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d, want 400; body=%q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWeb_ApiSpawn_RejectsOversizeItem(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+		Spawner: &fakeSpawner{},
+	})
+	body := spawnRequest{
+		Prompt: "look",
+		Items: []appwire.InputItem{{
+			Type:      "image",
+			MediaType: "image/png",
+			Data:      make([]byte, sendMaxImageBytes+1),
+			Name:      "big.png",
+		}},
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/spawn", bytes.NewReader(payload))
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status: %d, want 413; body=%q", rec.Code, rec.Body.String())
+	}
+}
+
 func TestWeb_ApiSpawn_CodexLaunchFailureReturnsStructuredDiagnostic(t *testing.T) {
 	cfg := CodexLaunchConfig{
 		ID:     "codex-broken",

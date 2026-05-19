@@ -326,7 +326,7 @@
             // in the preview. Chips still in flight (not yet in preview)
             // remain pending until the next queueChanged or until timeout.
             const preview = (params && params.queue && Array.isArray(params.queue.preview))
-              ? params.queue.preview.map(p => (p && p.text) || "")
+              ? params.queue.preview.map(p => typeof p === "string" ? p : ((p && p.text) || ""))
               : [];
             if (typeof pending.tryReconcileQueue === "function") {
               pending.tryReconcileQueue(preview);

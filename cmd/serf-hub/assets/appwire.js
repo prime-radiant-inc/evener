@@ -252,6 +252,7 @@
       model: String(body.model || "").trim(),
       profile: body.agent || "",
       reasoningEffort: body.reasoning_effort || "",
+      launchOverrides: body.launch_overrides || body.launchOverrides || null,
       // Optional initial-turn attachments (kata v80q). Same encoding rules
       // as turn/start: ArrayBuffer bodies base64-encoded here so the daemon
       // can ingest them as appwire.InputItem.Data ([]byte).

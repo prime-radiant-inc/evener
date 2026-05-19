@@ -131,6 +131,7 @@ func (t *appwireStreamTranslator) eventsFromNotification(notification appwire.No
 		}
 	case appwire.NotifyTurnCompleted:
 		var params struct {
+			// serf:naming-ignore: AppWire envelope field
 			TurnID string       `json:"turnId"`
 			Turn   appwire.Turn `json:"turn"`
 		}
@@ -149,6 +150,7 @@ func (t *appwireStreamTranslator) eventsFromNotification(notification appwire.No
 		}
 	case appwire.NotifyItemStarted:
 		var params struct {
+			// serf:naming-ignore: AppWire envelope field
 			TurnID string             `json:"turnId"`
 			Item   appwire.ThreadItem `json:"item"`
 		}
@@ -160,6 +162,7 @@ func (t *appwireStreamTranslator) eventsFromNotification(notification appwire.No
 		}
 	case appwire.NotifyItemCompleted:
 		var params struct {
+			// serf:naming-ignore: AppWire envelope field
 			TurnID string             `json:"turnId"`
 			Item   appwire.ThreadItem `json:"item"`
 		}

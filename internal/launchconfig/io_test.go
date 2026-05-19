@@ -31,6 +31,26 @@ func TestLoadLayer_Parses(t *testing.T) {
 	}
 }
 
+func TestLoadLayer_TracksExplicitEmptyModelFallbacks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "launch.toml")
+	if err := os.WriteFile(path, []byte("model_fallbacks = []\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadLayer(path)
+	if err != nil {
+		t.Fatalf("LoadLayer: %v", err)
+	}
+	if !got.ModelFallbacksSet {
+		t.Fatal("ModelFallbacksSet = false, want true")
+	}
+	if got.ModelFallbacks == nil {
+		t.Fatal("ModelFallbacks = nil, want explicit empty slice")
+	}
+	if len(got.ModelFallbacks) != 0 {
+		t.Fatalf("ModelFallbacks = %v, want empty", got.ModelFallbacks)
+	}
+}
+
 func TestSaveLayer_AtomicAndPermissions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "launch.toml")

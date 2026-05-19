@@ -99,6 +99,7 @@ vm.runInContext(SRC, context);
     model: "openai/gpt-5.1-codex",
     working_dir: "/work/project",
     reasoning_effort: "high",
+    launch_overrides: { maxRounds: 4, appReplaySize: 128 },
   });
   assert(codexStart.ref === "codex:th_codex", "codex appwire start should preserve canonical ref");
   assert(sent.length >= 2, "initialize and model/list should be sent");
@@ -111,6 +112,8 @@ vm.runInContext(SRC, context);
   assert(start.params.modelProvider === "", "browser appwire start should leave model interpretation to the harness");
   assert(start.params.model === "openai/gpt-5.1-codex", "browser appwire start should pass the raw model to the harness");
   assert(start.params.reasoningEffort === "high", "browser appwire start should pass reasoning effort");
+  assert(start.params.launchOverrides && start.params.launchOverrides.maxRounds === 4, "browser appwire start should pass launch overrides");
+  assert(start.params.launchOverrides.appReplaySize === 128, "browser appwire start should preserve launch override fields");
   assert(start.params.prompt === "hello codex", "browser appwire start should pass prompt");
   const results = await context.window.SerfAppwire.search("codex");
   assert(results.live.length === 1, "browser appwire search did not return live Codex result");

@@ -20,7 +20,7 @@ func LoadLayer(path string) (Layer, error) {
 		return Layer{}, fmt.Errorf("launchconfig: read %s: %w", path, err)
 	}
 	var out Layer
-	if _, err := toml.Decode(string(data), &out); err != nil {
+	if _, err := tomlDecode(data, &out); err != nil {
 		return Layer{}, fmt.Errorf("launchconfig: parse %s: %w", path, err)
 	}
 	return out, nil
@@ -78,7 +78,14 @@ func LoadMeta(path string) (Meta, error) {
 // tomlDecode is the inverse of SaveLayer's encoder; exposed for use by
 // callers (the resolver) that have already read raw bytes.
 func tomlDecode(data []byte, out interface{}) (toml.MetaData, error) {
-	return toml.Decode(string(data), out)
+	meta, err := toml.Decode(string(data), out)
+	if err != nil {
+		return meta, err
+	}
+	if layer, ok := out.(*Layer); ok {
+		layer.ModelFallbacksSet = meta.IsDefined("model_fallbacks")
+	}
+	return meta, nil
 }
 
 // SaveMeta writes a Meta to path atomically.
