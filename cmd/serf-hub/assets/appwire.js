@@ -268,8 +268,8 @@
     });
   }
 
-  function readThread(sessionId, includeTurns, subscribe) {
-    return request(METHOD.threadRead, { ref: refForSession(sessionId), includeTurns: !!includeTurns, itemsView: "full", subscribe: !!subscribe });
+  function readThread(sessionId, includeTurns, subscribe, replaceSubscription) {
+    return request(METHOD.threadRead, { ref: refForSession(sessionId), includeTurns: !!includeTurns, itemsView: "full", subscribe: !!subscribe, replaceSubscription: !!replaceSubscription });
   }
 
   function tasks(sessionId) {

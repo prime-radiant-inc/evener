@@ -1020,6 +1020,92 @@ func TestSession_AbortThenFollowup(t *testing.T) {
 	}
 }
 
+func TestSession_AbortDrainsQueuedInputWithFreshContext(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	started := make(chan struct{}, 1)
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "slow", Arguments: json.RawMessage(`{}`)}},
+						},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				return finalResponse("queued turn completed")
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	_ = sess.reg.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "slow"}},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = env
+			_ = args
+			started <- struct{}{}
+			<-ctx.Done()
+			return "", ctx.Err()
+		},
+	})
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+	defer sess.Close()
+
+	outerCtx, outerCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer outerCancel()
+	turnCtx, cancelTurn := context.WithCancel(outerCtx)
+	done := make(chan struct {
+		out string
+		err error
+	}, 1)
+	go func() {
+		out, err := sess.ProcessInput(turnCtx, "run the slow thing", nil)
+		done <- struct {
+			out string
+			err error
+		}{out: out, err: err}
+	}()
+
+	select {
+	case <-started:
+	case <-outerCtx.Done():
+		t.Fatalf("timed out waiting for tool to start")
+	}
+	if err := sess.Enqueue(context.Background(), "queued after interrupt"); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	cancelTurn()
+
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("ProcessInput: %v", got.err)
+		}
+		if !strings.Contains(got.out, "queued turn completed") {
+			t.Fatalf("ProcessInput output=%q, want queued turn completion", got.out)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("ProcessInput did not drain queued input after interrupt")
+	}
+	if depth := sess.QueueDepth(); depth != 0 {
+		t.Fatalf("QueueDepth after interrupted drain=%d, want 0", depth)
+	}
+}
+
 func TestSession_CustomToolRegistration_OverridesExistingTool(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()

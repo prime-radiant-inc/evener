@@ -138,10 +138,11 @@ vm.runInContext(SRC, context);
   });
   assert(replayEvents[0][1].session_id === "codex:th_codex", "browser appwire replay should keep source-qualified session identity");
   assert(replayEvents[0][1].ref === "codex:th_codex", "browser appwire replay should preserve canonical ref separately");
-  await context.window.SerfAppwire.readThread("codex:th_codex", true, true);
+  await context.window.SerfAppwire.readThread("codex:th_codex", true, true, true);
   const read = sent.find((msg) => msg.method === "thread/read");
   assert(read && read.params.ref === "codex:th_codex", "browser appwire read should pass canonical ref");
   assert(read.params.subscribe === true, "browser appwire hydration read should request live subscription");
+  assert(read.params.replaceSubscription === true, "browser appwire hydration read should replace the active live subscription");
   const replayedAssistantEvents = context.window.SerfAppwire.eventsFromThread({
     id: "th_codex",
     sessionId: "th_codex",

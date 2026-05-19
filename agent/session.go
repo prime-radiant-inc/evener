@@ -1546,8 +1546,9 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 	outputs := []string{}
 	next := input
 	nextImages := images
+	processCtx := ctx
 	for {
-		out, err := s.processOneInput(ctx, next, nextImages)
+		out, err := s.processOneInput(processCtx, next, nextImages)
 		// Follow-up turns (after the first) carry no attachments.
 		nextImages = nil
 		if strings.TrimSpace(out) != "" {
@@ -1591,6 +1592,14 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 						Turns:       turns,
 						Interrupted: true,
 					})
+				}
+				if !closed {
+					if queued := s.popQueueHead(); strings.TrimSpace(queued.Text) != "" || len(queued.Images) > 0 {
+						next = queued.Text
+						nextImages = queued.Images
+						processCtx = context.WithoutCancel(ctx)
+						continue
+					}
 				}
 			}
 			return strings.Join(outputs, "\n"), err

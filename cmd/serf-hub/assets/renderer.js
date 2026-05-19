@@ -444,7 +444,7 @@
           this.scheduleAppwireReconnect();
         });
       }
-      window.SerfAppwire.readThread(sessionId, true, true)
+      window.SerfAppwire.readThread(sessionId, true, true, true)
         .then((resp) => {
           if (this.sessionId !== sessionId || this.conversation !== conversation) return;
           const thread = resp.thread || {};
