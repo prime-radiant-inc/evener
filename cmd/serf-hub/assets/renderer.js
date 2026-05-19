@@ -427,6 +427,7 @@
       if (typeof window.SerfAppwire.onConnectionLost === "function") {
         this.appwireConnectionLostUnsubscribe = window.SerfAppwire.onConnectionLost((err) => {
           this.clearAppwireStream();
+          this.statusUpdateSeq++;
           this.updateThreadState("closed");
           const detail = err && err.message ? err.message : "connection lost";
           this.appendBanner("error", "Local daemon unavailable: " + detail, {
@@ -526,12 +527,12 @@
           if (!data.turnId || data.turnId === this.activeTurnId) this.setActiveTurnId("");
           break;
 	        case "SESSION_START":
+	          this.statusUpdateSeq++;
 	          if (data.session_id && data.session_id !== this.sessionId) {
 	            this.sessionId = data.session_id;
 	            this.liveSendCap = null;
 	            this.liveQueueCap = null;
 	            this.liveCapabilitiesStatus = "";
-	            this.statusUpdateSeq++;
 	            history.replaceState(null, "", "/s/" + encodeURIComponent(data.session_id));
             this.conversation.innerHTML = "";
             this.activeMessages.clear();
