@@ -396,7 +396,7 @@ func TestProviderCredentialPreflightRequiresOpenRouterKey(t *testing.T) {
 	// Empty store — no key in file or env.
 	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
 	t.Setenv("OPENROUTER_API_KEY", "") // ensure env is empty
-	err := validateProviderCredentials("openrouter", store)
+	err := validateProviderCredentials("openrouter", store, nil)
 	assertHubLaunchError(t, err)
 	if strings.Contains(err.Error(), "secret") {
 		t.Fatalf("error leaked secret-like value: %v", err)
@@ -406,7 +406,7 @@ func TestProviderCredentialPreflightRequiresOpenRouterKey(t *testing.T) {
 func TestProviderCredentialPreflightAcceptsConfiguredOpenRouterKey(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "configured-secret")
 	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	err := validateProviderCredentials("openrouter", store)
+	err := validateProviderCredentials("openrouter", store, nil)
 	if err != nil {
 		t.Fatalf("validateProviderCredentials: %v", err)
 	}
@@ -427,23 +427,23 @@ func TestProviderCredentialPreflightAcceptsStoredOpenAIOAuth(t *testing.T) {
 		Scope:        "openid profile email offline_access",
 		AccessToken:  "oauth-access-token",
 		RefreshToken: "oauth-refresh-token",
-		Expiry:       time.Now().Add(time.Hour),
+		Expiry:       time.Now().Add(-time.Minute),
 		Email:        "oauth@example.com",
 	}); err != nil {
 		t.Fatalf("SaveAuth: %v", err)
 	}
 
 	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	err := validateProviderCredentials("openai", store)
+	err := validateProviderCredentials("openai", store, []string{"XDG_STATE_HOME=" + xdgStateHome})
 	if err != nil {
-		t.Fatalf("validateProviderCredentials(openai) with stored OAuth: %v", err)
+		t.Fatalf("validateProviderCredentials(openai) with refreshable stored OAuth: %v", err)
 	}
 }
 
 func TestProviderCredentialPreflightAcceptsInheritedGoogleAlias(t *testing.T) {
 	t.Setenv("GOOGLE_API_KEY", "google-secret")
 	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	err := validateProviderCredentials("google", store)
+	err := validateProviderCredentials("google", store, nil)
 	if err != nil {
 		t.Fatalf("validateProviderCredentials: %v", err)
 	}
@@ -451,7 +451,7 @@ func TestProviderCredentialPreflightAcceptsInheritedGoogleAlias(t *testing.T) {
 
 func TestProviderCredentialPreflightAcceptsOllama(t *testing.T) {
 	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	err := validateProviderCredentials("ollama", store)
+	err := validateProviderCredentials("ollama", store, nil)
 	if err != nil {
 		t.Fatalf("validateProviderCredentials for ollama: %v", err)
 	}

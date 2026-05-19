@@ -122,7 +122,7 @@ func (h *HubSpawner) Spawn(ctx context.Context, req SpawnRequest) (rendezvous.En
 		StateDir:  req.StateDir,
 		HubToken:  h.HubToken,
 	})
-	if err := validateProviderCredentials(req.Provider, h.Creds); err != nil {
+	if err := validateProviderCredentials(req.Provider, h.Creds, req.Env); err != nil {
 		return rendezvous.Entry{}, err
 	}
 	if err := validateSerfLaunchContract(ctx, h.SerfBinary, req.Resolved.Effective.Model, req.Env); err != nil {
@@ -153,7 +153,7 @@ func (h *HubSpawner) Resume(ctx context.Context, req ResumeRequest) (rendezvous.
 		HubToken:  h.HubToken,
 	})
 	if req.Provider != "" {
-		if err := validateProviderCredentials(req.Provider, h.Creds); err != nil {
+		if err := validateProviderCredentials(req.Provider, h.Creds, req.Env); err != nil {
 			return rendezvous.Entry{}, err
 		}
 	}
@@ -350,11 +350,11 @@ func setEnvValue(env []string, key, value string) []string {
 //
 // If store is nil, credential validation is skipped (the spawned process
 // inherits env credentials or will fail at the LLM provider level instead).
-func validateProviderCredentials(provider string, store *credentials.Store) error {
+func validateProviderCredentials(provider string, store *credentials.Store, env []string) error {
 	if provider == "" || store == nil {
 		return nil
 	}
-	if strings.EqualFold(strings.TrimSpace(provider), "openai") && openAIStoredOAuthActive() {
+	if strings.EqualFold(strings.TrimSpace(provider), "openai") && openAIStoredOAuthUsable(env) {
 		return nil
 	}
 	// Use List() so providers that need no credentials (e.g. ollama) are
@@ -375,12 +375,28 @@ func validateProviderCredentials(provider string, store *credentials.Store) erro
 	return nil
 }
 
-func openAIStoredOAuthActive() bool {
-	status, err := authopenai.NewService(authopenai.DefaultConfig(), nil).Status(authopenai.DefaultStateDirWithStateHome(""))
+func openAIStoredOAuthUsable(env []string) bool {
+	record, err := authopenai.LoadAuth(authopenai.DefaultStateDirWithStateHome(envValue(env, "XDG_STATE_HOME")))
 	if err != nil {
 		return false
 	}
-	return status.SignedIn && status.Source == authopenai.AuthSourceOAuth && !status.NeedsLogin
+	if record.Source != authopenai.AuthSourceOAuth {
+		return false
+	}
+	if record.Expiry.IsZero() || record.Expiry.After(time.Now()) {
+		return true
+	}
+	return strings.TrimSpace(record.RefreshToken) != ""
+}
+
+func envValue(env []string, key string) string {
+	prefix := key + "="
+	for i := len(env) - 1; i >= 0; i-- {
+		if strings.HasPrefix(env[i], prefix) {
+			return strings.TrimPrefix(env[i], prefix)
+		}
+	}
+	return os.Getenv(key)
 }
 
 func envToMap(env []string) map[string]string {
