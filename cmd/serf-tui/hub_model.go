@@ -2464,6 +2464,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		}
 	case appwire.NotifyTurnCompleted:
 		var params struct {
+			// serf:naming-ignore: AppWire envelope field
 			TurnID string       `json:"turnId"`
 			Turn   appwire.Turn `json:"turn"`
 		}
