@@ -1985,6 +1985,17 @@ func (s *Session) hookInput(event HookEvent) HookInput {
 	}
 }
 
+func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm.Message {
+	combined := user
+	parts := make([]llm.ContentPart, 0, len(user.Content)+1)
+	if strings.TrimSpace(systemPrompt) != "" {
+		parts = append(parts, llm.ContentPart{Kind: llm.ContentText, Text: systemPrompt + "\n\n"})
+	}
+	parts = append(parts, user.Content...)
+	combined.Content = parts
+	return combined
+}
+
 func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment) (string, error) {
 	// Flush meta.json on every exit from this function — normal return, error
 	// return, ctx cancellation, retry-budget exhaustion, or panic. Without
@@ -2197,7 +2208,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			if len(history) > 0 && history[0].Role == llm.RoleUser {
 				messages = make([]llm.Message, len(history))
 				copy(messages, history)
-				messages[0] = llm.User(sys + "\n\n" + history[0].Text())
+				messages[0] = prependSystemPromptToUserMessage(sys, history[0])
 			} else {
 				messages = append([]llm.Message{llm.User(sys)}, history...)
 			}

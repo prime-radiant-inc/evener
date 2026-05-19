@@ -3500,6 +3500,65 @@ func TestSession_SystemPromptAsUser_CombinesIntoOneMessage(t *testing.T) {
 	}
 }
 
+func TestSession_SystemPromptAsUserPreservesImageParts(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("ok") },
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		SystemPromptAsUser: true,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	imgBytes := []byte{0x89, 0x50, 0x4e, 0x47}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "caption this", []ImageAttachment{{
+		MediaType: "image/png",
+		Data:      imgBytes,
+		Name:      "test.png",
+	}}); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	reqs := f.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests: got %d want 1", len(reqs))
+	}
+	msg := reqs[0].Messages[0]
+	if msg.Role != llm.RoleUser {
+		t.Fatalf("first message role=%q, want user", msg.Role)
+	}
+	var sawSystem, sawTask, sawImage bool
+	for _, part := range msg.Content {
+		switch part.Kind {
+		case llm.ContentText:
+			if strings.Contains(part.Text, "<environment>") {
+				sawSystem = true
+			}
+			if strings.Contains(part.Text, "caption this") {
+				sawTask = true
+			}
+		case llm.ContentImage:
+			if part.Image != nil && part.Image.MediaType == "image/png" && string(part.Image.Data) == string(imgBytes) {
+				sawImage = true
+			}
+		}
+	}
+	if !sawSystem || !sawTask || !sawImage {
+		t.Fatalf("combined user message missing parts: system=%v task=%v image=%v content=%+v", sawSystem, sawTask, sawImage, msg.Content)
+	}
+}
+
 func TestSession_Meta_PopulatesOriginalPrompt(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
