@@ -1199,6 +1199,22 @@ func TestSession_AbortErrorDrainsQueuedInputWithFreshContext(t *testing.T) {
 	}
 }
 
+func TestQueuedInputDrainRootAcceptsAbortErrorForCanceledMarkedTurn(t *testing.T) {
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+	turnCtx, cancelTurn := context.WithCancel(rootCtx)
+	markedCtx := WithQueuedInputDrainOnInterrupt(turnCtx, rootCtx)
+	cancelTurn()
+
+	got, ok := queuedInputDrainRoot(markedCtx, llm.NewAbortError("user canceled"))
+	if !ok {
+		t.Fatal("queuedInputDrainRoot rejected AbortError from canceled marked turn")
+	}
+	if got != rootCtx {
+		t.Fatal("queuedInputDrainRoot did not return the root context")
+	}
+}
+
 func TestSession_CustomToolRegistration_OverridesExistingTool(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
