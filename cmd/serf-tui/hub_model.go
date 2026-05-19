@@ -2475,7 +2475,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 				}
 				m.applyThreadItem(item, true)
 			}
-			if params.Turn.ID != "" && params.Turn.ID == m.detail.ActiveTurnID {
+			if turnID != "" && turnID == m.detail.ActiveTurnID {
 				m.detail.ActiveTurnID = ""
 			}
 			if params.Turn.Status == appwire.TurnStatusFailed {

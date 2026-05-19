@@ -79,6 +79,30 @@ func TestHubTranscriptReducerSuppressesReplayedCompletedTool(t *testing.T) {
 	}
 }
 
+func TestHubTranscriptReducerScopesItemIDReconciliationByTurn(t *testing.T) {
+	reducer := newHubTranscriptReducer(nil, nil, nil)
+
+	reducer.applyThreadItem(appwire.ThreadItem{
+		Type:   "user_message",
+		ID:     "item_reused",
+		TurnID: "turn_1",
+		Text:   "first",
+	}, 1, true)
+	reducer.applyThreadItem(appwire.ThreadItem{
+		Type:   "user_message",
+		ID:     "item_reused",
+		TurnID: "turn_2",
+		Text:   "second",
+	}, 2, true)
+
+	if len(reducer.messages) != 2 {
+		t.Fatalf("messages=%+v, want separate entries for reused item IDs across turns", reducer.messages)
+	}
+	if reducer.messages[0].Text != "first" || reducer.messages[0].TurnIndex != 1 || reducer.messages[1].Text != "second" || reducer.messages[1].TurnIndex != 2 {
+		t.Fatalf("messages=%+v, want turn-scoped reconciliation", reducer.messages)
+	}
+}
+
 func TestHubTranscriptReducerLiveAndReplayReconstructSameTranscript(t *testing.T) {
 	user := appwire.ThreadItem{
 		Type:   "user_message",

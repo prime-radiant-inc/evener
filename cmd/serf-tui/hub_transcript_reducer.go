@@ -85,7 +85,7 @@ func (r *hubTranscriptReducer) applyThreadItem(item appwire.ThreadItem, turnInde
 	case "user_message":
 		text := userMessageItemText(item)
 		if strings.TrimSpace(text) != "" {
-			if idx, ok := r.messageIndexByItemID(item.ID, msgUser); ok {
+			if idx, ok := r.messageIndexByItemID(item.ID, msgUser, turnIndex); ok {
 				r.messages[idx].Text = text
 				r.messages[idx].TurnIndex = turnIndex
 				return
@@ -100,22 +100,25 @@ func (r *hubTranscriptReducer) applyThreadItem(item appwire.ThreadItem, turnInde
 		}
 	case "agent_message":
 		if strings.TrimSpace(item.Text) != "" {
-			if idx, ok := r.messageIndexByItemID(item.ID, msgAssistant); ok {
+			if idx, ok := r.messageIndexByItemID(item.ID, msgAssistant, turnIndex); ok {
 				r.messages[idx].Text = item.Text
+				r.messages[idx].TurnIndex = turnIndex
 				if completed {
 					r.clearActiveMessage(item)
 				}
 			} else if idx, ok := r.activeMessageIndex(item); ok {
 				r.messages[idx].Text = item.Text
+				r.messages[idx].TurnIndex = turnIndex
 				if completed {
 					r.clearActiveMessage(item)
 				}
 			} else if len(r.messages) > 0 && r.messages[len(r.messages)-1].Kind == msgAssistant {
 				r.messages[len(r.messages)-1].Text = item.Text
 				r.messages[len(r.messages)-1].ItemID = item.ID
+				r.messages[len(r.messages)-1].TurnIndex = turnIndex
 			} else {
 				idx := len(r.messages)
-				r.messages = append(r.messages, chatMessage{Kind: msgAssistant, Text: item.Text, ItemID: item.ID})
+				r.messages = append(r.messages, chatMessage{Kind: msgAssistant, Text: item.Text, ItemID: item.ID, TurnIndex: turnIndex})
 				if !completed {
 					r.rememberActiveMessage(item, idx)
 				}
@@ -123,13 +126,14 @@ func (r *hubTranscriptReducer) applyThreadItem(item appwire.ThreadItem, turnInde
 		}
 	case "tool_call":
 		done := threadItemToolDone(item, completed)
-		if idx, ok := r.toolIndex(item); ok {
+		if idx, ok := r.toolIndex(item, turnIndex); ok {
 			if item.ID != "" {
 				r.messages[idx].ItemID = item.ID
 			}
 			if item.CallID != "" {
 				r.messages[idx].ToolCallID = item.CallID
 			}
+			r.messages[idx].TurnIndex = turnIndex
 			info := r.messages[idx].Tool
 			if info == nil {
 				return
@@ -144,7 +148,7 @@ func (r *hubTranscriptReducer) applyThreadItem(item appwire.ThreadItem, turnInde
 		}
 		info := toolInfoFromThreadItem(item, done)
 		idx := len(r.messages)
-		r.messages = append(r.messages, chatMessage{Kind: msgTool, ItemID: item.ID, ToolCallID: item.CallID, Tool: info})
+		r.messages = append(r.messages, chatMessage{Kind: msgTool, TurnIndex: turnIndex, ItemID: item.ID, ToolCallID: item.CallID, Tool: info})
 		if !done {
 			r.rememberActiveTool(item, idx)
 		}
@@ -187,12 +191,12 @@ func (r *hubTranscriptReducer) activeMessageIndex(item appwire.ThreadItem) (int,
 	return idx, true
 }
 
-func (r *hubTranscriptReducer) messageIndexByItemID(itemID string, kind messageKind) (int, bool) {
+func (r *hubTranscriptReducer) messageIndexByItemID(itemID string, kind messageKind, turnIndex int) (int, bool) {
 	if itemID == "" {
 		return 0, false
 	}
 	for i := range r.messages {
-		if r.messages[i].Kind == kind && r.messages[i].ItemID == itemID {
+		if r.messages[i].Kind == kind && r.messages[i].ItemID == itemID && turnIndexMatches(r.messages[i].TurnIndex, turnIndex) {
 			return i, true
 		}
 	}
@@ -241,7 +245,7 @@ func (r *hubTranscriptReducer) activeToolIndex(item appwire.ThreadItem) (int, bo
 	return 0, false
 }
 
-func (r *hubTranscriptReducer) toolIndex(item appwire.ThreadItem) (int, bool) {
+func (r *hubTranscriptReducer) toolIndex(item appwire.ThreadItem, turnIndex int) (int, bool) {
 	if idx, ok := r.activeToolIndex(item); ok {
 		return idx, true
 	}
@@ -250,14 +254,18 @@ func (r *hubTranscriptReducer) toolIndex(item appwire.ThreadItem) (int, bool) {
 		if msg.Kind != msgTool || msg.Tool == nil {
 			continue
 		}
-		if item.ID != "" && msg.ItemID == item.ID {
+		if item.ID != "" && msg.ItemID == item.ID && turnIndexMatches(msg.TurnIndex, turnIndex) {
 			return i, true
 		}
-		if item.CallID != "" && msg.ToolCallID == item.CallID {
+		if item.CallID != "" && msg.ToolCallID == item.CallID && turnIndexMatches(msg.TurnIndex, turnIndex) {
 			return i, true
 		}
 	}
 	return 0, false
+}
+
+func turnIndexMatches(existing, incoming int) bool {
+	return existing == 0 || incoming == 0 || existing == incoming
 }
 
 func (r *hubTranscriptReducer) rememberActiveTool(item appwire.ThreadItem, idx int) {

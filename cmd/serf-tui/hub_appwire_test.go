@@ -296,7 +296,6 @@ func TestHubModelTurnCompletedAppliesSnapshotItems(t *testing.T) {
 			"ref":      "local:th_1",
 			"turnId":   "turn_1",
 			"turn": appwire.Turn{
-				ID:     "turn_1",
 				Status: appwire.TurnStatusCompleted,
 				Items: []appwire.ThreadItem{{
 					Type: "user_message",
