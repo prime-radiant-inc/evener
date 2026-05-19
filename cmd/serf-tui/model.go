@@ -1045,9 +1045,7 @@ func (m *model) handleStreamEvent(ev streamEvent) {
 		}
 		if strings.TrimSpace(d.Text) != "" {
 			if len(m.messages) > 0 && m.messages[len(m.messages)-1].Kind == msgAssistant {
-				if m.messages[len(m.messages)-1].Text == "" {
-					m.messages[len(m.messages)-1].Text = d.Text
-				}
+				m.messages[len(m.messages)-1].Text = d.Text
 			} else {
 				m.messages = append(m.messages, chatMessage{Kind: msgAssistant, Text: d.Text})
 			}
@@ -1113,11 +1111,9 @@ func (m *model) handleStreamEvent(ev streamEvent) {
 				tc.Done = true
 				tc.Duration = time.Duration(d.DurationMS) * time.Millisecond
 				tc.Error = d.Error
-				if tc.Output == "" {
-					tc.Output = d.Result
-					if tc.Output == "" {
-						tc.Output = d.Output
-					}
+				finalOutput := firstNonEmptyString(d.Output, d.Result)
+				if finalOutput != "" {
+					tc.Output = finalOutput
 				}
 				// Auto-expand: expand if Detail exists, or if output is short.
 				if tc.Detail != "" {

@@ -330,3 +330,51 @@ func TestUpdateCommunicateDoesNotDuplicateStreamedAssistant(t *testing.T) {
 		t.Fatalf("message = %+v, want communicate Hello", m.messages[0])
 	}
 }
+
+func TestUpdateAssistantEndReconcilesHydratedPartialText(t *testing.T) {
+	initTheme()
+
+	m := newConfiguredModel("127.0.0.1:1234", t.TempDir(), nil, embeddedConfig{}, nil, make(chan tea.Msg, 8), false)
+	updated, _ := m.Update(asyncMsg{msg: streamEventMsg{
+		Event: "ASSISTANT_TEXT_DELTA",
+		Data:  `{"delta":"partial"}`,
+	}})
+	m = updated.(model)
+	updated, _ = m.Update(asyncMsg{msg: streamEventMsg{
+		Event: "ASSISTANT_TEXT_END",
+		Data:  `{"text":"partial final"}`,
+	}})
+	m = updated.(model)
+
+	if len(m.messages) != 1 || m.messages[0].Kind != msgAssistant || m.messages[0].Text != "partial final" {
+		t.Fatalf("messages = %+v, want reconciled assistant final text", m.messages)
+	}
+}
+
+func TestUpdateToolEndReconcilesHydratedPartialOutput(t *testing.T) {
+	initTheme()
+
+	m := newConfiguredModel("127.0.0.1:1234", t.TempDir(), nil, embeddedConfig{}, nil, make(chan tea.Msg, 8), false)
+	updated, _ := m.Update(asyncMsg{msg: streamEventMsg{
+		Event: "TOOL_CALL_START",
+		Data:  `{"call_id":"call_1","tool_name":"shell","arguments_json":"{\"command\":\"printf partial\"}"}`,
+	}})
+	m = updated.(model)
+	updated, _ = m.Update(asyncMsg{msg: streamEventMsg{
+		Event: "TOOL_CALL_OUTPUT_DELTA",
+		Data:  `{"call_id":"call_1","delta":"partial"}`,
+	}})
+	m = updated.(model)
+	updated, _ = m.Update(asyncMsg{msg: streamEventMsg{
+		Event: "TOOL_CALL_END",
+		Data:  `{"call_id":"call_1","output":"partial final"}`,
+	}})
+	m = updated.(model)
+
+	if len(m.messages) != 1 || m.messages[0].Kind != msgTool || m.messages[0].Tool == nil {
+		t.Fatalf("messages = %+v, want one tool message", m.messages)
+	}
+	if !m.messages[0].Tool.Done || m.messages[0].Tool.Output != "partial final" {
+		t.Fatalf("tool = %+v, want reconciled final output", m.messages[0].Tool)
+	}
+}
