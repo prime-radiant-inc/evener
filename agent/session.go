@@ -2035,6 +2035,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if err != nil && len(s.cfg.ModelFallbacks) > 0 && llm.Classify(err) == llm.ErrorClassPermanent {
 			for _, fbModel := range s.cfg.ModelFallbacks {
 				fbProfile := s.profile.WithModel(fbModel)
+				if fbProfile.ID() != req.Provider {
+					continue
+				}
 				fbReq := req
 				fbReq.Model = fbProfile.Model()
 				fbReq.Provider = fbProfile.ID()
@@ -2101,10 +2104,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 
 		if err != nil {
-			errData := errorDataFromError(err)
-			errData.Cause = providerCauseFromError(err, req.Model)
-			s.emit(EventError, errData)
-
 			// Content filter recovery: compaction often removes the offending
 			// content, allowing the next request to succeed. Try once.
 			var cfe *llm.ContentFilterError
@@ -2116,6 +2115,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				s.mu.Unlock()
 				continue
 			}
+
+			errData := errorDataFromError(err)
+			errData.Cause = providerCauseFromError(err, req.Model)
+			s.emit(EventError, errData)
 
 			// Spec: context overflow should emit a warning (no automatic compaction).
 			var cle *llm.ContextLengthError

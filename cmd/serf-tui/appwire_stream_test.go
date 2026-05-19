@@ -322,6 +322,7 @@ func TestStreamEventsDedupKeysUseEnvelopeTurnID(t *testing.T) {
 		"ref":      "local:th_1",
 		"turnId":   "turn_2",
 		"turn": appwire.Turn{
+			ID:     "provider_local_turn_2",
 			Status: appwire.TurnStatusCompleted,
 			Items: []appwire.ThreadItem{{
 				Type:   "user_message",

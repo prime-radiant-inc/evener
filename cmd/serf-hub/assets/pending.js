@@ -70,6 +70,7 @@
       const id = nextID;
       const method = intent.method;
       const text = intent.text || "";
+      const items = (intent.items || []).slice();
       const el = chipForMethod(method, text);
       containerFor(method).appendChild(el);
 
@@ -77,7 +78,7 @@
         fail({ id }, "server did not confirm");
       }, timeoutMs);
 
-      entries.set(id, { method, text, el, timerID });
+      entries.set(id, { method, text, items, el, timerID });
       return { id };
     }
 
@@ -102,7 +103,7 @@
         // single fresh pending chip in its place rather than the failed
         // chip stacked beside the new optimistic one.
         if (ent.el.parentNode) ent.el.parentNode.removeChild(ent.el);
-        onRetry({ method: ent.method, text: ent.text });
+        onRetry({ method: ent.method, text: ent.text, items: ent.items.slice() });
       });
       ent.el.appendChild(retry);
       entries.delete(handle.id);

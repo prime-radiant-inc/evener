@@ -239,6 +239,64 @@ func TestFallbackChain_RetryableSkipsFallback(t *testing.T) {
 	}
 }
 
+func TestFallbackChain_SkipsCrossProviderFallbacks(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	permErr := llm.ErrorFromHTTPStatus("openai", 403, "primary denied", nil, nil)
+
+	f := &modelTrackingAdapter{
+		name: "openai",
+		respond: func(req llm.Request) (llm.Response, error) {
+			switch req.Model {
+			case "primary":
+				return llm.Response{}, permErr
+			case "fallback-b":
+				return finalResponse("same provider fallback answered"), nil
+			case "claude-test":
+				t.Errorf("cross-provider fallback must not be invoked with primary provider request surface")
+			}
+			return llm.Response{}, nil
+		},
+	}
+	c.Register(f)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("primary"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		LLMRetryPolicy: &policy,
+		ModelFallbacks: []string{"anthropic/claude-test", "fallback-b"},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "hi", nil)
+	if err != nil {
+		t.Fatalf("ProcessInput: got error %v, want nil (same-provider fallback should succeed)", err)
+	}
+	if !strings.Contains(out, "same provider fallback answered") {
+		t.Errorf("output: got %q, want same-provider fallback answer", out)
+	}
+
+	got := f.Models()
+	want := []string{"primary", "fallback-b"}
+	if len(got) != len(want) {
+		t.Fatalf("attempted models: got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("attempt %d: got %q want %q", i, got[i], want[i])
+		}
+	}
+}
+
 // TestFallbackChain_EmptyFallbacksNoEffect: primary returns 403, fallbacks
 // empty — behavior matches today: single attempt, error returned.
 func TestFallbackChain_EmptyFallbacksNoEffect(t *testing.T) {

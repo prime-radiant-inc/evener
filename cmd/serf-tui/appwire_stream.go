@@ -136,7 +136,7 @@ func (t *appwireStreamTranslator) eventsFromNotification(notification appwire.No
 			Turn   appwire.Turn `json:"turn"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
-			turnID := firstNonEmptyString(params.Turn.ID, params.TurnID)
+			turnID := firstNonEmptyString(params.TurnID, params.Turn.ID)
 			events := t.eventsFromTurnCompletedItems(turnID, params.Turn.Items)
 			if params.Turn.Status == appwire.TurnStatusFailed {
 				message := "turn failed"

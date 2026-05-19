@@ -221,6 +221,34 @@ func TestPendingCoordinator_FailIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestPendingCoordinator_DispatchDoesNotDropBeyondFormerOutboxCap(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(0, 0)}
+	msgs := make(chan tea.Msg, 128)
+	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+
+	const n = 40
+	handles := make([]appwire.PendingHandle, 0, n)
+	for i := 0; i < n; i++ {
+		handles = append(handles, p.Register("turn/queue", "queued"))
+	}
+	got := drainMessages(msgs, n, time.Second)
+	if len(got) != n {
+		t.Fatalf("registered msgs: got %d want %d", len(got), n)
+	}
+	for _, h := range handles {
+		h.Fail("nope")
+	}
+	got = drainMessages(msgs, n, time.Second)
+	if len(got) != n {
+		t.Fatalf("failed msgs: got %d want %d", len(got), n)
+	}
+	for i, msg := range got {
+		if _, ok := msg.(pendingFailedMsg); !ok {
+			t.Fatalf("msg %d = %T, want pendingFailedMsg", i, msg)
+		}
+	}
+}
+
 func TestHubReducer_RendersPendingChatMessage(t *testing.T) {
 	r := newHubTranscriptReducer(nil, nil, nil)
 

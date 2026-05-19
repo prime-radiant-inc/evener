@@ -652,6 +652,101 @@ func TestStreamGenerate_RetriesStreamTruncation(t *testing.T) {
 	}
 }
 
+func TestStreamGenerate_RetriesErrorEventWithoutForwardingAttemptError(t *testing.T) {
+	c := NewClient()
+	a := &scriptedStreamAdapter{
+		name: "openai",
+		scripts: []func(ctx context.Context, req Request) (Stream, error){
+			func(ctx context.Context, req Request) (Stream, error) {
+				_ = req
+				sctx, cancel := context.WithCancel(ctx)
+				st := NewChanStream(cancel)
+				go func() {
+					defer st.CloseSend()
+					st.Send(StreamEvent{Type: StreamEventStreamStart})
+					st.Send(StreamEvent{Type: StreamEventError, Err: ErrorFromHTTPStatus("openai", 429, "rate limited", nil, nil)})
+					cancel()
+				}()
+				_ = sctx
+				return st, nil
+			},
+			func(ctx context.Context, req Request) (Stream, error) {
+				_ = req
+				sctx, cancel := context.WithCancel(ctx)
+				st := NewChanStream(cancel)
+				go func() {
+					defer st.CloseSend()
+					st.Send(StreamEvent{Type: StreamEventStreamStart})
+					st.Send(StreamEvent{Type: StreamEventTextStart, TextID: "t0"})
+					st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "t0", Delta: "ok"})
+					fr := FinishReason{Reason: FinishReasonStop}
+					st.Send(StreamEvent{
+						Type:         StreamEventFinish,
+						FinishReason: &fr,
+						Response: &Response{
+							Provider: "openai",
+							Model:    "m",
+							Message:  Assistant("ok"),
+						},
+					})
+				}()
+				_ = sctx
+				return st, nil
+			},
+		},
+	}
+	c.Register(a)
+
+	prompt := "hi"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	res, err := StreamGenerate(ctx, GenerateOptions{
+		Client:   c,
+		Model:    "m",
+		Provider: "openai",
+		Prompt:   &prompt,
+		RetryPolicy: &RetryPolicy{
+			MaxRetries: 1,
+			BaseDelay:  1 * time.Millisecond,
+			MaxDelay:   1 * time.Millisecond,
+			Jitter:     false,
+		},
+		Sleep: func(ctx context.Context, d time.Duration) error {
+			_ = ctx
+			_ = d
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("StreamGenerate: %v", err)
+	}
+	defer res.Close() //nolint:errcheck
+
+	var gotText string
+	for ev := range res.Events() {
+		if ev.Type == StreamEventTextDelta {
+			gotText += ev.Delta
+		}
+		if ev.Type == StreamEventError {
+			t.Fatalf("retryable attempt error was forwarded before successful retry: %v", ev.Err)
+		}
+	}
+	if gotText != "ok" {
+		t.Fatalf("text: got %q want ok", gotText)
+	}
+	if got := len(a.Requests()); got != 2 {
+		t.Fatalf("expected retry after attempt error; got %d attempts", got)
+	}
+	resp, rerr := res.Response()
+	if rerr != nil {
+		t.Fatalf("Response error: %v", rerr)
+	}
+	if resp == nil || resp.Text() != "ok" {
+		t.Fatalf("response=%+v, want ok", resp)
+	}
+}
+
 // TestStreamGenerate_TruncationAfterPartialOutput_NoRetry confirms that once
 // text has been delivered to the caller, a subsequent stream truncation is
 // surfaced immediately — no retry, no second attempt.

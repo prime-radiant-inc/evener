@@ -194,12 +194,37 @@ function build() {
   retry.dispatchEvent(ev);
 
   assert.equal(calls.length, 1, "onRetry should have been called once");
-  assert.deepEqual(calls[0].intent, { method: "turn/steer", text: "redo this" });
+  assert.deepEqual(calls[0].intent, { method: "turn/steer", text: "redo this", items: [] });
   assert.equal(calls[0].failedCount, 0,
     "failed chip must be removed from DOM before onRetry runs");
   assert.equal(conv.querySelectorAll(".optimistic-failed").length, 0,
     "failed chip should remain absent after retry");
   console.log("ok retry_click_removes_failed_chip_before_invoking_onRetry");
+})();
+
+(function test_retry_preserves_attachment_items() {
+  const window = build();
+  const conv = window.document.getElementById("conversation");
+  const queueList = window.document.querySelector("[data-queue-list]");
+  const calls = [];
+  const reg = window.SerfAppwirePending.create({
+    conversation: conv,
+    queueList,
+    onRetry: (intent) => calls.push(intent),
+  });
+  const item = { type: "image", name: "shot.png" };
+  const items = [item];
+  const h = reg.register({ method: "turn/queue", text: "with image", items });
+  reg.fail(h, "server refused");
+
+  const retry = queueList.querySelector(".optimistic-retry");
+  assert.ok(retry, "expected queue retry link");
+  retry.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+
+  assert.equal(calls.length, 1, "onRetry should have been called once");
+  assert.deepEqual(calls[0], { method: "turn/queue", text: "with image", items: [item] });
+  assert.notEqual(calls[0].items, items, "items should be a snapshot copy");
+  console.log("ok retry_preserves_attachment_items");
 })();
 
 console.log("PASS test-pending-registry.js");

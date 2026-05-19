@@ -406,6 +406,10 @@ function resetComposerState() {
   if (errBanner) { errBanner.textContent = ""; errBanner.hidden = true; }
 }
 
+function makeAttachment(name) {
+  return { type: "image", mediaType: "image/png", data: new Uint8Array(PNG_BYTES).buffer, name };
+}
+
 // Helper: simulate a file picker change with a list of files. JSDOM's
 // HTMLInputElement.files is read-only via assignment in some setups, so
 // stub the property explicitly.
@@ -493,6 +497,54 @@ async function testSubmitClearsQueue() {
   pass(chips.length === 0, "expected no chips after success, got " + chips.length);
 }
 
+async function testSubmitPreservesAttachmentsAddedWhileInFlight() {
+  resetComposerState();
+  const first = makeAttachment("first.png");
+  const second = makeAttachment("second.png");
+  window.SerfRenderer.composerPasteState.items = [first];
+  window.SerfRenderer.renderComposerChips();
+
+  const originalFetch = window.fetch;
+  let resolveSend;
+  window.fetch = (url, opts) => {
+    if (typeof url === "string" && url.includes("/send")) {
+      lastFetch = { url, opts };
+      return new Promise((resolve) => {
+        resolveSend = () => resolve({
+          ok: true,
+          status: 202,
+          json: () => Promise.resolve([]),
+          text: () => Promise.resolve(""),
+        });
+      });
+    }
+    return originalFetch(url, opts);
+  };
+
+  ta.value = "in flight";
+  ta.dispatchEvent(new window.Event("input", { bubbles: true }));
+  form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+
+  window.SerfRenderer.composerPasteState.items.push(second);
+  window.SerfRenderer.renderComposerChips();
+  pass(pendingItems().length === 2,
+    "expected second attachment staged while send is in flight, got " + pendingItems().length);
+
+  resolveSend();
+  await waitForReads();
+  window.fetch = originalFetch;
+
+  const body = lastFetch && lastFetch.opts && JSON.parse(lastFetch.opts.body);
+  pass(body && Array.isArray(body.items) && body.items.length === 1 && body.items[0].name === "first.png",
+    "in-flight send should use submitted snapshot only, got " + JSON.stringify(body && body.items));
+  pass(pendingItems().length === 1 && pendingItems()[0] === second,
+    "successful send should preserve newly staged attachment, got " + pendingItems().map(i => i.name).join(","));
+  const chips = attContainer.querySelectorAll("[data-attachment]");
+  pass(chips.length === 1 && chips[0].textContent.includes("second.png"),
+    "expected chip for second.png after in-flight send, got " + attContainer.textContent);
+}
+
 async function testSubmitEmptyDoesNothing() {
   ta.value = "";
   ta.dispatchEvent(new window.Event("input", { bubbles: true }));
@@ -547,6 +599,7 @@ async function testRejectsNonImage() {
   await testRemoveChip();
   await testSubmitWithTextAndImage();
   await testSubmitClearsQueue();
+  await testSubmitPreservesAttachmentsAddedWhileInFlight();
   await testSubmitEmptyDoesNothing();
   await testUnavailableSendDoesNotSubmit();
   await testRejectsNonImage();

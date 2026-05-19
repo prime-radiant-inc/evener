@@ -183,14 +183,20 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 						// Buffer finish until we know whether to continue tool looping.
 						cp := ev
 						finishEv = &cp
-					default:
-						outStream.Send(ev)
-						if ev.Type == StreamEventError && ev.Err != nil {
-							// Spec: do not retry after partial data delivered.
+					case StreamEventError:
+						if ev.Err != nil {
+							// Do not forward attempt-local errors before the
+							// retry loop commits this attempt. If no partial
+							// output was delivered, a retry may still succeed;
+							// if partial output was delivered, the final error
+							// is emitted once below after retries are ruled out.
 							_ = st.Close()
 							streamErr = ev.Err
 							return
 						}
+						outStream.Send(ev)
+					default:
+						outStream.Send(ev)
 						if ev.Type == StreamEventTextDelta {
 							hasPartialOutput = true
 						}

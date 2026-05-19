@@ -292,9 +292,9 @@
               case "turn/steer":
                 return window.SerfAppwire.steer(this.sessionId, this.activeTurnId, intent.text);
               case "turn/start":
-                return window.SerfAppwire.startTurn(this.appwireRef || this.sessionId, intent.text, []);
+                return window.SerfAppwire.startTurn(this.appwireRef || this.sessionId, intent.text, intent.items || []);
               case "turn/queue":
-                return window.SerfAppwire.queueTurn(this.sessionId, intent.text, []);
+                return window.SerfAppwire.queueTurn(this.sessionId, intent.text, intent.items || []);
               case "turn/drainAsSteer":
                 return window.SerfAppwire.drainAsSteer(this.sessionId);
             }
@@ -1274,6 +1274,14 @@
       ta.addEventListener("input", grow);
       grow();
 
+      const snapshotComposerItems = () => ((this.composerPasteState && this.composerPasteState.items) || []).slice();
+      const clearSubmittedComposerItems = (submitted) => {
+        if (!this.composerPasteState || !Array.isArray(this.composerPasteState.items)) return;
+        const sent = new Set(submitted || []);
+        this.composerPasteState.items = this.composerPasteState.items.filter((item) => !sent.has(item));
+        this.renderComposerChips();
+      };
+
       // Seed the queue-preview chrome (kata r80p). queueState starts empty
       // on init; cold-load eventsFromThread + thread/queueChanged
       // notifications fill it in from authoritative wire data.
@@ -1292,7 +1300,7 @@
       if (steerBtn) {
         steerBtn.addEventListener("click", async () => {
           const text = ta.value.trim();
-          const pendingItems = (this.composerPasteState && this.composerPasteState.items) || [];
+          const pendingItems = snapshotComposerItems();
           const hasAttachments = pendingItems.length > 0;
           const hasQueued = (this.queueState && this.queueState.depth > 0) || false;
           if (!text && !hasQueued && !hasAttachments) {
@@ -1344,10 +1352,9 @@
               ta.value = "";
               ta.style.height = "";
               grow();
-              // Successful queue: drop the pending bag so the next compose
-              // doesn't re-queue the same attachments.
-              this.composerPasteState.items = [];
-              this.renderComposerChips();
+              // Successful queue: drop only the submitted snapshot so
+              // attachments staged while the request was in flight survive.
+              clearSubmittedComposerItems(pendingItems);
             }
             try {
               if (window.SerfAppwire) {
@@ -1406,7 +1413,7 @@
       const submit = async (e) => {
         e.preventDefault();
         const text = ta.value.trim();
-        const items = (this.composerPasteState && this.composerPasteState.items) || [];
+        const items = snapshotComposerItems();
         const hasAttachments = items.length > 0;
         if (!text && !hasAttachments) return;
         const sendBtn = form.querySelector(".send-btn");
@@ -1425,10 +1432,10 @@
             ta.value = "";
             ta.style.height = "";
             grow();
-            // Successful queue: drop the pending bag so the next compose
-            // starts clean. Preserved on error so the user can retry.
-            this.composerPasteState.items = [];
-            this.renderComposerChips();
+            // Successful queue: drop only the submitted snapshot. Preserved
+            // on error so the user can retry, and newly staged attachments
+            // remain queued for the next message.
+            clearSubmittedComposerItems(items);
           } catch (err) {
             this.appendBanner("error", "queue failed: " + err.message, { source: "hub", title: "Hub queue error" });
           } finally {
@@ -1484,10 +1491,9 @@
           ta.value = "";
           ta.style.height = "";
           grow();
-          // Clear the pending bag and repaint the chip container so the
-          // composer is fresh for the next turn.
-          this.composerPasteState.items = [];
-          this.renderComposerChips();
+          // Clear only the submitted snapshot and repaint the chip container
+          // so attachments staged while this request was in flight remain.
+          clearSubmittedComposerItems(items);
           this.ensureLiveStream();
         } catch (err) {
           this.appendBanner("error", "send failed: " + err.message, { source: "hub", title: "Hub send error" });

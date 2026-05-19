@@ -3051,11 +3051,15 @@ func TestSession_ContentFilterRecovery_CompactsAndRetries(t *testing.T) {
 
 	// Collect events in background.
 	var compactionCount int
+	var errorCount int
 	evDone := make(chan struct{})
 	go func() {
 		for ev := range sess.Events() {
 			if ev.Kind == EventContextCompaction {
 				compactionCount++
+			}
+			if ev.Kind == EventError {
+				errorCount++
 			}
 		}
 		close(evDone)
@@ -3079,6 +3083,9 @@ func TestSession_ContentFilterRecovery_CompactsAndRetries(t *testing.T) {
 	}
 	if compactionCount == 0 {
 		t.Error("expected at least one compaction event from content filter recovery")
+	}
+	if errorCount != 0 {
+		t.Errorf("recovered content filter should not emit terminal EventError; got %d", errorCount)
 	}
 }
 

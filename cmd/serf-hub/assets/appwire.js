@@ -106,7 +106,11 @@
   async function optimisticCall(method, params, intent) {
     let handle = null;
     if (pendingRegistry) {
-      handle = pendingRegistry.register({ method, text: (intent && intent.text) || "" });
+      handle = pendingRegistry.register({
+        method,
+        text: (intent && intent.text) || "",
+        items: (intent && intent.items) || [],
+      });
     }
     try {
       return await request(method, params);
@@ -340,7 +344,7 @@
       ref: refForSession(sessionId),
       prompt: text || "",
       items: inputItemsFromAttachments(attachments),
-    }, { text });
+    }, { text, items: attachments || [] });
   }
 
   function steer(sessionId, turnId, text) {
@@ -359,7 +363,7 @@
       ref: refForSession(sessionId),
       text: text || "",
       items: inputItemsFromAttachments(attachments),
-    }, { text });
+    }, { text, items: attachments || [] });
   }
 
   // drainAsSteer drains the daemon's input queue into a single STEERING

@@ -55,12 +55,12 @@ type pendingCoordinator struct {
 	send    func(tea.Msg)
 	nextID  int64
 	entries map[int64]*pendingEntryState
-	// outbox serialises msg dispatch so Register/Confirm/Fail
-	// emissions arrive at the bubbletea program in the order they
-	// were produced, even though we never call send synchronously
-	// from the caller (which would deadlock the event loop when
-	// reconcile is invoked from inside Update).
-	outbox     chan tea.Msg
+	// outbox serialises msg dispatch so Register/Confirm/Fail emissions arrive
+	// at the bubbletea program in order. It is an unbounded slice guarded by
+	// outboxCond: dispatch must never drop terminal Confirm/Fail messages, but
+	// it also must not block callers inside Update while program.Send is busy.
+	outbox     []tea.Msg
+	outboxCond *sync.Cond
 	dispatcher sync.Once
 }
 
@@ -74,8 +74,8 @@ func newPendingCoordinator(clock pendingClock, send func(tea.Msg)) *pendingCoord
 		clock:   clock,
 		send:    send,
 		entries: map[int64]*pendingEntryState{},
-		outbox:  make(chan tea.Msg, 32),
 	}
+	p.outboxCond = sync.NewCond(&p.mu)
 	p.dispatcher.Do(func() { go p.runDispatcher() })
 	return p
 }
@@ -85,8 +85,14 @@ func newPendingCoordinator(clock pendingClock, send func(tea.Msg)) *pendingCoord
 // send func is snapshotted under the lock on each iteration so
 // setSend takes effect for subsequent emissions.
 func (p *pendingCoordinator) runDispatcher() {
-	for msg := range p.outbox {
+	for {
 		p.mu.Lock()
+		for len(p.outbox) == 0 {
+			p.outboxCond.Wait()
+		}
+		msg := p.outbox[0]
+		copy(p.outbox, p.outbox[1:])
+		p.outbox = p.outbox[:len(p.outbox)-1]
 		sendFn := p.send
 		p.mu.Unlock()
 		if sendFn != nil {
@@ -138,13 +144,10 @@ func (p *pendingCoordinator) Register(method, text string) appwire.PendingHandle
 // drains outbox serially so order is preserved across Register /
 // Confirm / Fail emissions for the same call sequence.
 func (p *pendingCoordinator) dispatch(msg tea.Msg) {
-	select {
-	case p.outbox <- msg:
-	default:
-		// outbox is sized for typical bursts (a single steer click
-		// emits at most ~3 msgs across Register + Confirm/Fail);
-		// dropping silently here is preferable to blocking the caller.
-	}
+	p.mu.Lock()
+	p.outbox = append(p.outbox, msg)
+	p.outboxCond.Signal()
+	p.mu.Unlock()
 }
 
 // TryReconcile is called by the renderer's notification dispatcher
