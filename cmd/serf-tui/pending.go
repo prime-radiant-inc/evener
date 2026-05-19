@@ -107,22 +107,41 @@ func (p *pendingCoordinator) Register(method, text string) appwire.PendingHandle
 
 // TryReconcile is called by the renderer's notification dispatcher
 // after the authoritative reducer update applies. Returns true when a
-// pending entry matched and was confirmed. Match: (method == entry.Method)
-// AND normalizedText(text) == normalizedText(entry.Text).
+// pending entry matched and was confirmed.
+//
+// Matching rules:
+//   - turn/drainAsSteer: first in-flight entry with that method wins
+//     (text not compared) — the daemon collapses the queue's text into
+//     one steering and the placeholder doesn't know that joined text
+//     in advance. This is the spec's "drain-special" semantic.
+//   - Everything else: (method, normalized-text) exact match.
 func (p *pendingCoordinator) TryReconcile(method, text string) bool {
-	want := normalizePendingText(text)
 	p.mu.Lock()
 	var match *pendingEntryState
-	for _, state := range p.entries {
-		if !state.entry.Pending {
-			continue
-		}
-		if state.entry.Method != method {
-			continue
-		}
-		if normalizePendingText(state.entry.Text) == want {
+	if method == appwire.MethodTurnDrainAsSteer {
+		for _, state := range p.entries {
+			if !state.entry.Pending {
+				continue
+			}
+			if state.entry.Method != method {
+				continue
+			}
 			match = state
 			break
+		}
+	} else {
+		want := normalizePendingText(text)
+		for _, state := range p.entries {
+			if !state.entry.Pending {
+				continue
+			}
+			if state.entry.Method != method {
+				continue
+			}
+			if normalizePendingText(state.entry.Text) == want {
+				match = state
+				break
+			}
 		}
 	}
 	if match == nil {

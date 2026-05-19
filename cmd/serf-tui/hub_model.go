@@ -353,21 +353,24 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.entry.Method {
 		case appwire.MethodTurnSteer:
 			m.session.messages = append(m.session.messages, chatMessage{
-				Kind:    msgSteering,
-				Text:    msg.entry.Text,
-				Pending: true,
+				Kind:      msgSteering,
+				Text:      msg.entry.Text,
+				Pending:   true,
+				PendingID: msg.entry.ID,
 			})
 		case appwire.MethodTurnStart:
 			m.session.messages = append(m.session.messages, chatMessage{
-				Kind:    msgUser,
-				Text:    msg.entry.Text,
-				Pending: true,
+				Kind:      msgUser,
+				Text:      msg.entry.Text,
+				Pending:   true,
+				PendingID: msg.entry.ID,
 			})
 		case appwire.MethodTurnDrainAsSteer:
 			m.session.messages = append(m.session.messages, chatMessage{
-				Kind:    msgSteering,
-				Text:    fmt.Sprintf("draining %d → steering", len(m.sessionQueue)),
-				Pending: true,
+				Kind:      msgSteering,
+				Text:      fmt.Sprintf("draining %d → steering", len(m.sessionQueue)),
+				Pending:   true,
+				PendingID: msg.entry.ID,
 			})
 		case appwire.MethodTurnQueue:
 			// Queue entries surface in the queue-preview chrome, not
@@ -376,11 +379,11 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.session.refreshViewport()
 		return m, nil
 	case pendingFailedMsg:
-		m.markMostRecentPendingFailedInline(msg.entry.Method, msg.reason)
+		m.markPendingFailedByID(msg.entry.ID, msg.reason)
 		m.session.refreshViewport()
 		return m, nil
 	case pendingConfirmedMsg:
-		m.removeMostRecentPendingInline(msg.entry.Method)
+		m.removePendingByID(msg.entry.ID)
 		m.session.refreshViewport()
 		return m, nil
 	case hubSendMsg:
@@ -2372,45 +2375,54 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 	// any matching pending optimistic placeholder. This is the SINGLE
 	// reconciliation site on the TUI side per the spec.
 	if m.pending != nil {
-		if method, text, ok := pendingReconcileFromNotification(notification); ok {
-			m.pending.TryReconcile(method, text)
-		}
+		reconcilePendingFromNotification(m.pending, notification)
 	}
 	return cmd
 }
 
-// pendingReconcileFromNotification translates an inbound notification
-// into the (wire-method, matchable-text) pair the pending coordinator
-// expects. Returns (_, _, false) for notifications that don't
-// correspond to an optimistic Turn*-style request. Only the steering
-// reconciler is wired today (Task 7); user-input / queueChanged /
-// drain-special matchers are scaffolded for future extension.
-func pendingReconcileFromNotification(n appwire.Notification) (string, string, bool) {
+// reconcilePendingFromNotification translates an inbound daemon
+// notification into the wire-method name(s) the pending coordinator
+// registered under, then calls TryReconcile. Some notifications
+// match multiple methods (serf/steering/injected reconciles both
+// turn/steer with matching text AND any in-flight turn/drainAsSteer).
+//
+// Drain-special: turn/drainAsSteer matches first-come-first-served
+// regardless of text, because the daemon collapses queued entries
+// into one STEERING and the placeholder doesn't know the joined text.
+func reconcilePendingFromNotification(pending *pendingCoordinator, n appwire.Notification) {
 	switch n.Method {
 	case appwire.NotifySerfSteeringInjected:
 		var p struct {
 			Text string `json:"text"`
 		}
-		if err := json.Unmarshal(n.Params, &p); err != nil {
-			return "", "", false
+		_ = json.Unmarshal(n.Params, &p)
+		pending.TryReconcile(appwire.MethodTurnSteer, p.Text)
+		pending.TryReconcile(appwire.MethodTurnDrainAsSteer, "")
+	case appwire.NotifyItemStarted, appwire.NotifyItemCompleted:
+		// user_message item carries the user's text. Match against
+		// any turn/start pending entry.
+		var p struct {
+			Item struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"item"`
 		}
-		return appwire.MethodTurnSteer, p.Text, true
+		if err := json.Unmarshal(n.Params, &p); err != nil {
+			return
+		}
+		if p.Item.Type == "user_message" && p.Item.Text != "" {
+			pending.TryReconcile(appwire.MethodTurnStart, p.Item.Text)
+		}
 	}
-	return "", "", false
 }
 
-// markMostRecentPendingFailedInline marks the most-recently-appended
-// pending message of the given method-kind as failed. Used by the
-// hubModel handler for pendingFailedMsg, which cannot easily address
-// a specific PendingID because the coordinator and reducer maintain
-// independent ID spaces (Task 6 stopgap).
-func (m *hubModel) markMostRecentPendingFailedInline(method, reason string) {
-	kind := reducerKindForMethod(method)
-	for i := len(m.session.messages) - 1; i >= 0; i-- {
-		if !m.session.messages[i].Pending {
-			continue
-		}
-		if m.session.messages[i].Kind != kind {
+// markPendingFailedByID flips the chatMessage with the given PendingID
+// from Pending → Failed and stamps the reason. ID-keyed so simultaneous
+// placeholders of the same kind (e.g. a steer and a drain both rendered
+// as msgSteering) can't cross-fail each other.
+func (m *hubModel) markPendingFailedByID(id int64, reason string) {
+	for i := range m.session.messages {
+		if m.session.messages[i].PendingID != id {
 			continue
 		}
 		m.session.messages[i].Pending = false
@@ -2420,16 +2432,11 @@ func (m *hubModel) markMostRecentPendingFailedInline(method, reason string) {
 	}
 }
 
-// removeMostRecentPendingInline removes the most-recently-appended
-// pending message of the given method-kind. Used by pendingConfirmedMsg
-// after the authoritative event renders separately.
-func (m *hubModel) removeMostRecentPendingInline(method string) {
-	kind := reducerKindForMethod(method)
-	for i := len(m.session.messages) - 1; i >= 0; i-- {
-		if !m.session.messages[i].Pending {
-			continue
-		}
-		if m.session.messages[i].Kind != kind {
+// removePendingByID drops the chatMessage with the given PendingID
+// after the authoritative event has rendered separately.
+func (m *hubModel) removePendingByID(id int64) {
+	for i := range m.session.messages {
+		if m.session.messages[i].PendingID != id {
 			continue
 		}
 		m.session.messages = append(m.session.messages[:i], m.session.messages[i+1:]...)

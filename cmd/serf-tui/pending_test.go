@@ -175,6 +175,26 @@ func TestPendingCoordinator_TryReconcile_MatchesByMethodAndText(t *testing.T) {
 	}
 }
 
+func TestPendingCoordinator_TryReconcile_DrainSpecialIgnoresText(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(0, 0)}
+	msgs := make(chan tea.Msg, 8)
+	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	p.Register("turn/drainAsSteer", "")
+	drainMessages(msgs, 1, 100*time.Millisecond) // Registered
+
+	// Drain matches the first in-flight entry regardless of text.
+	if !p.TryReconcile("turn/drainAsSteer", "anything joined here") {
+		t.Fatal("drain reconcile should match first pending entry regardless of text")
+	}
+	got := drainMessages(msgs, 1, 100*time.Millisecond)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 confirmed msg, got %d", len(got))
+	}
+	if _, ok := got[0].(pendingConfirmedMsg); !ok {
+		t.Fatalf("got %T, want pendingConfirmedMsg", got[0])
+	}
+}
+
 func TestPendingCoordinator_TryReconcile_NoMatchReturnsFalse(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
