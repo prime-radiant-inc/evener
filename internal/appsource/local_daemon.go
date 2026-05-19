@@ -243,7 +243,7 @@ func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.
 		if cerr := ctx.Err(); cerr != nil {
 			return nil, cerr
 		}
-		return nil, localDaemonCallError(err)
+		return nil, localDaemonDialError(localDaemonCallError(err))
 	}
 	out := make(chan appwire.Notification, 128)
 	go func() {
