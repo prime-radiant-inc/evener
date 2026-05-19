@@ -128,7 +128,7 @@
       const method = intent.method;
       const text = intent.text || "";
       const items = (intent.items || []).slice();
-      const previewText = method === "turn/queue" ? queuePreviewText(text, items) : text;
+      const previewText = (method === "turn/queue" || method === "turn/start") ? queuePreviewText(text, items) : text;
       const el = chipForMethod(method, previewText);
       containerFor(method).appendChild(el);
       if (method === "turn/queue") setQueuePendingVisible(true);

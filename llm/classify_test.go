@@ -59,6 +59,20 @@ func TestClassify404IsPermanent(t *testing.T) {
 	}
 }
 
+func TestClassifyOpenAIResponses404IsFallback(t *testing.T) {
+	err := ErrorFromHTTPStatus("openai", 404, "responses.create(stream) failed: model not found", nil, nil)
+	if got := Classify(err); got != ErrorClassFallback {
+		t.Fatalf("Classify(openai responses 404) = %v, want Fallback", got)
+	}
+}
+
+func TestClassifyOpenAIResponsesEmptyStreamIsFallback(t *testing.T) {
+	err := NewStreamError("openai", "/v1/responses: empty stream (model not supported)")
+	if got := Classify(err); got != ErrorClassFallback {
+		t.Fatalf("Classify(openai responses empty stream) = %v, want Fallback", got)
+	}
+}
+
 func TestClassify400IsPermanent(t *testing.T) {
 	err := ErrorFromHTTPStatus("openai", 400, "bad request", nil, nil)
 	if got := Classify(err); got != ErrorClassPermanent {

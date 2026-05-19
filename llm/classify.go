@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"strings"
 )
 
 // ErrorClass describes how a provider error should affect the retry chain.
@@ -85,6 +86,9 @@ func Classify(err error) ErrorClass {
 
 	var le Error
 	if errors.As(err, &le) {
+		if isEndpointFallbackSignal(err, le) {
+			return ErrorClassFallback
+		}
 		// A provider may flag an otherwise-permanent status as retryable
 		// (e.g. OpenAI cyber_policy_violation on 403). Honor that bit first.
 		if le.Retryable() {
@@ -105,4 +109,18 @@ func Classify(err error) ErrorClass {
 	// Unknown / unwrapped error: default to Retryable (conservative — when
 	// in doubt, retry — matches retryableError's existing behavior).
 	return ErrorClassRetryable
+}
+
+func isEndpointFallbackSignal(err error, le Error) bool {
+	if !strings.EqualFold(strings.TrimSpace(le.Provider()), "openai") {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	switch le.StatusCode() {
+	case 404, 422:
+		return strings.Contains(message, "responses.create") ||
+			strings.Contains(message, "/v1/responses")
+	}
+	return strings.Contains(message, "responses stream closed with no events") ||
+		(strings.Contains(message, "/v1/responses") && strings.Contains(message, "empty stream"))
 }

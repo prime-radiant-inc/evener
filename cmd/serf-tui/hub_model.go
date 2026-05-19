@@ -2518,12 +2518,10 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			}
 			title := params.Title
 			source := params.Source
-			if strings.TrimSpace(title) == "" && strings.TrimSpace(source) == "" {
-				if classifyWarningCategory(message, params.Cause) == "provider" {
-					source = "provider"
-				}
+			if strings.TrimSpace(title) == "" && strings.TrimSpace(source) == "" && classifyWarningCategory(message, params.Cause) == "provider" {
+				source = "provider"
 			}
-			m.addSessionSystemOnce(formatHubDiagnostic(title, source, message, "Session warning"))
+			m.addSessionSystemOnce(formatHubDiagnosticWithCause(title, source, message, "Session warning", params.Cause))
 		}
 	}
 	m.session.refreshViewport()

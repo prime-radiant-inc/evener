@@ -73,10 +73,27 @@ function build() {
   const conv = window.document.getElementById("conversation");
   const reg = window.SerfAppwirePending.create({ conversation: conv });
   reg.register({ method: "turn/start", text: "", items: [{ type: "image", name: "shot.png" }] });
+  const chip = conv.querySelector(".user-message.optimistic-pending");
+  assert.ok(chip, "expected pending image-only start chip");
+  assert.match(chip.textContent, /\[image\]/);
 
   assert.equal(reg.tryReconcile("turn/start", { text: "", items: [{ type: "image", name: "shot.png" }] }), true);
   assert.equal(conv.querySelectorAll(".optimistic-pending").length, 0);
   console.log("ok start_reconcile_matches_image_only_submission");
+})();
+
+(function test_start_image_only_failed_chip_keeps_placeholder() {
+  const window = build();
+  const conv = window.document.getElementById("conversation");
+  const reg = window.SerfAppwirePending.create({ conversation: conv });
+  const h = reg.register({ method: "turn/start", text: "", items: [{ type: "image", name: "shot.png" }] });
+
+  reg.fail(h, "server did not confirm");
+
+  const failed = conv.querySelector(".user-message.optimistic-failed");
+  assert.ok(failed, "expected failed image-only start chip");
+  assert.match(failed.textContent, /\[image\]/);
+  console.log("ok start_image_only_failed_chip_keeps_placeholder");
 })();
 
 (function test_timeout_marks_failed() {
