@@ -259,7 +259,7 @@ func TestReconcilePendingFromNotification_ImageOnlyUserMessage(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
 	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
-	p.Register(appwire.MethodTurnStart, "")
+	p.Register(appwire.MethodTurnStart, "[image]")
 	drainMessages(msgs, 1, 100*time.Millisecond)
 
 	reconcilePendingFromNotification(p, *appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{

@@ -2568,7 +2568,11 @@ func reconcilePendingFromNotification(pending *pendingCoordinator, n appwire.Not
 			return
 		}
 		if p.Item.Type == "user_message" && (p.Item.Text != "" || len(p.Item.Images) > 0) {
-			pending.TryReconcile(appwire.MethodTurnStart, p.Item.Text)
+			text := p.Item.Text
+			if text == "" {
+				text = imageItemsPlaceholder(p.Item.Images)
+			}
+			pending.TryReconcile(appwire.MethodTurnStart, text)
 		}
 	}
 }
