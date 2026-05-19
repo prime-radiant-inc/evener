@@ -317,7 +317,7 @@ has six rebuild points:
 
 1. **Daemon** — `cmd/serf/` and `agent/`. Rebuild: `go build -o /tmp/serf-test ./cmd/serf`. The hub re-spawns it per session, so the next spawned session picks up the new binary.
 2. **Hub** — `cmd/serf-hub/` and `server/`. Rebuild + kill the running hub: `pkill -f serf-hub-test; go build -o /tmp/serf-hub-test ./cmd/serf-hub && /tmp/serf-hub-test -addr 127.0.0.1:9180 -serf /tmp/serf-test &`.
-3. **Web renderer** — `cmd/serf-hub/assets/*.js`. Hub serves these from disk on every request; just refresh the browser tab.
+3. **Web renderer** — `cmd/serf-hub/assets/*.js`. These files are embedded into `serf-hub`; rebuild and restart the hub, then refresh the browser tab.
 4. **TUI** — `cmd/serf-tui/`. Rebuild: `go build -o /tmp/serf-tui-test ./cmd/serf-tui`. The running TUI keeps the old binary in memory — kill the tmux session and restart for the new code.
 5. **AppWire types** — `internal/appwire/`. Both daemon and hub statically link these; rebuild both.
 6. **Pending-coordinator / pending-registry** — owned by the TUI and the renderer respectively; same rebuild rules as 3 and 4.

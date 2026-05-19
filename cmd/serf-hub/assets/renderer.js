@@ -86,6 +86,7 @@
       this.state = conversationEl.dataset.state || "ended";
       this.liveSendCap = null;
       this.liveQueueCap = null;
+      this.liveSteerCap = null;
       this.liveCapabilitiesStatus = "";
       this.statusUpdateSeq = 0;
 
@@ -162,6 +163,7 @@
           if (caps) {
             if (typeof caps.send === "boolean") this.liveSendCap = caps.send;
             if (typeof caps.queue === "boolean") this.liveQueueCap = caps.queue;
+            if (typeof caps.steer === "boolean") this.liveSteerCap = caps.steer;
             this.liveCapabilitiesStatus = refreshedStatus;
           }
           this.updateThreadState(refreshedStatus);
@@ -234,7 +236,9 @@
         // button (kata 0bq1). It is meaningful as long as there is an active
         // turn — whether or not the queue is non-empty — because pressing it
         // with just textarea text falls back to the classic steer path.
-        steer.disabled = !hasActiveTurn || !turnAcceptsActions;
+        const canSteer = typeof this.liveSteerCap === "boolean" ? this.liveSteerCap : steer.getAttribute("data-capability-steer") !== "false";
+        steer.setAttribute("data-capability-steer", canSteer ? "true" : "false");
+        steer.disabled = !canSteer || !hasActiveTurn || !turnAcceptsActions;
       }
     },
 
@@ -539,6 +543,7 @@
 	            this.sessionId = data.session_id;
 	            this.liveSendCap = null;
 	            this.liveQueueCap = null;
+	            this.liveSteerCap = null;
 	            this.liveCapabilitiesStatus = "";
 	            history.replaceState(null, "", "/s/" + encodeURIComponent(data.session_id));
             this.conversation.innerHTML = "";
@@ -563,6 +568,7 @@
 	          if (data.capabilities) {
 	            if (typeof data.capabilities.send === "boolean") this.liveSendCap = data.capabilities.send;
 	            if (typeof data.capabilities.queue === "boolean") this.liveQueueCap = data.capabilities.queue;
+	            if (typeof data.capabilities.steer === "boolean") this.liveSteerCap = data.capabilities.steer;
 	            this.liveCapabilitiesStatus = data.status || "";
 	          }
 	          if (data.status) {

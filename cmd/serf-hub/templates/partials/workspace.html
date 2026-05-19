@@ -64,8 +64,8 @@
     <span class="input-chip model-chip" title="model changes unavailable">{{if .Model}}{{.Model}}{{else}}—{{end}}</span>
     {{end}}
     <span class="controls-spacer"></span>
-    {{if .Capabilities.Steer}}
-    <button type="button" class="input-btn input-btn-ghost" data-steer-trigger title="drain the queue as a steering message — or steer with the textarea text when the queue is empty"{{if or (eq .ActiveTurnID "") (and (ne .State "processing") (ne .State "awaiting") (ne .State "active"))}} disabled{{end}}>send as steer <kbd>⇧↵</kbd></button>
+    {{if or .Capabilities.Steer .Capabilities.Send .Capabilities.Queue}}
+    <button type="button" class="input-btn input-btn-ghost" data-steer-trigger data-capability-steer="{{.Capabilities.Steer}}" title="drain the queue as a steering message — or steer with the textarea text when the queue is empty"{{if or (not .Capabilities.Steer) (eq .ActiveTurnID "") (and (ne .State "processing") (ne .State "awaiting") (ne .State "active"))}} disabled{{end}}>send as steer <kbd>⇧↵</kbd></button>
     {{end}}
     <button type="submit" class="input-btn input-btn-primary send-btn" data-capability-send="{{.Capabilities.Send}}" data-capability-queue="{{.Capabilities.Queue}}"{{if and (not .Capabilities.Send) (not .Capabilities.Queue)}} disabled title="send unavailable"{{end}}>send <kbd>⌘↵</kbd></button>
   </div>

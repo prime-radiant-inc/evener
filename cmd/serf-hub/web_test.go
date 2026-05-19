@@ -114,7 +114,7 @@ func TestWeb_CodexSessionRouteReadsConfiguredSource(t *testing.T) {
 			t.Fatalf("codex workspace advertised unsupported control %q:\n%s", unsupported, body)
 		}
 	}
-	for _, disabledUntilTurn := range []string{`data-action-trigger="interrupt" title="cancel the in-flight model call" disabled`, `data-steer-trigger title="drain the queue as a steering message — or steer with the textarea text when the queue is empty" disabled`} {
+	for _, disabledUntilTurn := range []string{`data-action-trigger="interrupt" title="cancel the in-flight model call" disabled`, `data-steer-trigger data-capability-steer="true" title="drain the queue as a steering message — or steer with the textarea text when the queue is empty" disabled`} {
 		if !strings.Contains(body, disabledUntilTurn) {
 			t.Fatalf("codex workspace missing disabled turn control %q:\n%s", disabledUntilTurn, body)
 		}
@@ -123,6 +123,37 @@ func TestWeb_CodexSessionRouteReadsConfiguredSource(t *testing.T) {
 		if !strings.Contains(body, supported) {
 			t.Fatalf("codex workspace missing supported control %q:\n%s", supported, body)
 		}
+	}
+}
+
+func TestWeb_WorkspaceRendersDisabledSteerControlForIdleSendCapableAppThread(t *testing.T) {
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Past: NewPastIndex("")})
+	web.sources.Add(&scriptedAppSource{
+		id: "codex",
+		thread: appwire.Thread{
+			ID:            "th_idle",
+			SessionID:     "th_idle",
+			Source:        "codex",
+			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			ModelProvider: "gpt-5",
+			Serf: appwire.SerfThread{
+				Ref:          "codex:th_idle",
+				Capabilities: appwire.ThreadCapabilities{Send: true, Steer: false},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+url.PathEscape("codex:th_idle")+"/workspace", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `data-steer-trigger data-capability-steer="false"`) || !strings.Contains(body, `disabled>send as steer`) {
+		t.Fatalf("workspace should render disabled steer control for idle send-capable app thread:\n%s", body)
 	}
 }
 
