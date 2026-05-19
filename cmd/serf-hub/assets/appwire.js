@@ -368,19 +368,13 @@
   }
 
   // drainAsSteer drains the daemon's input queue into a single STEERING
-  // injection on the active turn (kata 0bq1). When the caller has extra
-  // text/attachments to merge into the drain (kata v80q), we first queue
-  // them so the daemon's drain pass includes the bytes. Then we issue
-  // turn/drainAsSteer. Rejected when the queue is empty or no turn is
-  // active.
-  async function drainAsSteer(sessionId, text, attachments) {
-    const hasText = !!(text && String(text).trim());
-    const hasAttachments = !!(attachments && attachments.length > 0);
-    if (hasText || hasAttachments) {
-      await queueTurn(sessionId, text || "", attachments || []);
-    }
+  // injection on the active turn (kata 0bq1). Text/attachments ride on the
+  // drain request so the daemon appends and drains them atomically.
+  function drainAsSteer(sessionId, text, attachments) {
     return optimisticCall(METHOD.turnDrainAsSteer, {
       ref: refForSession(sessionId),
+      text: text || "",
+      items: inputItemsFromAttachments(attachments),
     }, { text: "" });
   }
 

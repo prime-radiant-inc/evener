@@ -121,6 +121,7 @@ type Server struct {
 	queueFunc           func(string) error
 	queueWithImagesFunc func(string, []ImageAttachment) error
 	drainSteerFunc      func() error
+	drainSteerInputFunc func(string, []ImageAttachment) error
 	queueDepthFn        func() int
 	queuePreviewFn      func() []string
 	compactFunc         func(context.Context) error
@@ -308,6 +309,14 @@ func (s *Server) SetDrainAsSteerFunc(fn func() error) {
 	s.mu.Unlock()
 }
 
+// SetDrainAsSteerWithInputFunc sets the function called when drain-as-steer
+// carries a composer payload. The callback must append and drain atomically.
+func (s *Server) SetDrainAsSteerWithInputFunc(fn func(string, []ImageAttachment) error) {
+	s.mu.Lock()
+	s.drainSteerInputFunc = fn
+	s.mu.Unlock()
+}
+
 // SetQueueDepthFunc sets a callback returning the current queue depth so
 // capability projection can advertise Queue accurately.
 func (s *Server) SetQueueDepthFunc(fn func() int) {
@@ -375,6 +384,7 @@ func (s *Server) handleDrainAsSteer(w http.ResponseWriter, r *http.Request) {
 	processing := s.processing
 	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
 	fn := s.drainSteerFunc
+	inputFn := s.drainSteerInputFunc
 	depthFn := s.queueDepthFn
 	s.mu.RUnlock()
 	if closed {
@@ -389,11 +399,30 @@ func (s *Server) handleDrainAsSteer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "drain-as-steer not available", http.StatusServiceUnavailable)
 		return
 	}
-	if depthFn != nil && depthFn() == 0 {
+	var req InputRequest
+	hasBody := r.ContentLength != 0
+	if hasBody {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+	}
+	hasInput := strings.TrimSpace(req.Text) != "" || len(req.Images) > 0
+	if hasInput && inputFn == nil {
+		http.Error(w, "drain-as-steer with input not available", http.StatusServiceUnavailable)
+		return
+	}
+	if !hasInput && depthFn != nil && depthFn() == 0 {
 		http.Error(w, "queue is empty", http.StatusConflict)
 		return
 	}
-	if err := fn(); err != nil {
+	var err error
+	if hasInput {
+		err = inputFn(req.Text, req.Images)
+	} else {
+		err = fn()
+	}
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

@@ -774,6 +774,38 @@ func TestDrainAsSteerEndpoint_NoContent(t *testing.T) {
 	}
 }
 
+func TestDrainAsSteerEndpoint_WithInputBypassesEmptyQueue(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetProcessing(true)
+	srv.SetDrainAsSteerFunc(func() error {
+		t.Fatal("classic drain callback should not be used for input-bearing drain")
+		return nil
+	})
+	var gotText string
+	var gotImages []ImageAttachment
+	srv.SetDrainAsSteerWithInputFunc(func(text string, images []ImageAttachment) error {
+		gotText = text
+		gotImages = append([]ImageAttachment(nil), images...)
+		return nil
+	})
+	srv.SetQueueDepthFunc(func() int { return 0 })
+
+	body := strings.NewReader(`{"text":"composer payload","images":[{"media_type":"image/png","data":"cG5n","name":"shot.png"}]}`)
+	req := httptest.NewRequest(http.MethodPost, "/drain-as-steer", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status: got %d, want 204; body=%q", rec.Code, rec.Body.String())
+	}
+	if gotText != "composer payload" {
+		t.Fatalf("text=%q, want composer payload", gotText)
+	}
+	if len(gotImages) != 1 || gotImages[0].Name != "shot.png" || string(gotImages[0].Data) != "png" {
+		t.Fatalf("images=%+v", gotImages)
+	}
+}
+
 func TestDrainAsSteerEndpoint_RejectsEmpty(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetProcessing(true)

@@ -253,8 +253,7 @@ async function testQueueTurnEncodesAttachments() {
 }
 
 // ---------- 5. drainAsSteer accepts attachments ----------
-// drainAsSteer with attachments queues them as a final entry before draining.
-// We verify the JS layer issues a turn/queue followed by turn/drainAsSteer.
+// drainAsSteer with attachments sends one atomic turn/drainAsSteer request.
 async function testDrainAsSteerWithAttachmentsQueuesThenDrains() {
   const dom = new JSDOM("<!DOCTYPE html><html><body></body></html>", {
     url: "http://127.0.0.1:9180/",
@@ -287,20 +286,17 @@ async function testDrainAsSteerWithAttachmentsQueuesThenDrains() {
 
   const attachments = [{ type: "image", mediaType: "image/png", data: arrayBuf(PNG_BYTES), name: "d.png" }];
   await window.SerfAppwire.drainAsSteer("local:01TEST", "drain text", attachments);
-  // Expectation: when attachments are present, drainAsSteer first queues
-  // (turn/queue with items) and then issues turn/drainAsSteer.
   const methods = sentJSONs.map((m) => m.method);
-  pass(methods.includes("turn/queue"),
-    "drain: expected a turn/queue call before drain (with attachments), got " + JSON.stringify(methods));
-  pass(methods.includes("turn/drainAsSteer"),
-    "drain: expected a turn/drainAsSteer call, got " + JSON.stringify(methods));
-  // The queue call must carry the base64-encoded image.
-  const queueCall = sentJSONs.find((m) => m.method === "turn/queue");
-  if (queueCall) {
-    const items = (queueCall.params && queueCall.params.items) || [];
+  pass(methods.length === 1 && methods[0] === "turn/drainAsSteer",
+    "drain: expected one turn/drainAsSteer call, got " + JSON.stringify(methods));
+  const drainCall = sentJSONs.find((m) => m.method === "turn/drainAsSteer");
+  if (drainCall) {
+    pass(drainCall.params && drainCall.params.text === "drain text",
+      "drain: params should carry text, got " + JSON.stringify(drainCall.params));
+    const items = (drainCall.params && drainCall.params.items) || [];
     const imgs = items.filter((it) => it && it.type === "image");
     pass(imgs.length === 1 && imgs[0].data === PNG_B64,
-      "drain: queue items should carry the base64 image, got " + JSON.stringify(items));
+      "drain: params items should carry the base64 image, got " + JSON.stringify(items));
   }
 }
 

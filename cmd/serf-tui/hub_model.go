@@ -1851,9 +1851,9 @@ func (m hubModel) restoreInstructionMessage() string {
 
 // handleSessionForceSteer routes the Ctrl+S force-steer keybind: drain
 // every queued message into a single STEERING entry for the in-flight turn
-// (kata 0bq1). If the composer has unsent text, it is queued first so the
-// drain picks it up alongside the existing queue. With nothing to steer,
-// the binding fires a transient banner instead of calling the hub.
+// (kata 0bq1). If the composer has unsent text or attachments, they ride on
+// the drain request so the daemon appends and drains atomically. With nothing
+// to steer, the binding fires a transient banner instead of calling the hub.
 func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 	if m.sessionComposerMode() != hubComposerModeQueue {
 		// Not in a queue-able state; nothing to do. Silently no-op so the
@@ -1880,9 +1880,9 @@ func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 		// Pure drain of the existing queue. Clear nothing on the composer.
 		return m, sendHubDrainAsSteer(m.client, ref, "", "", nil, len(m.sessionQueue))
 	}
-	// Composer has text and/or attachments. sendHubDrainAsSteer queues the
-	// composer payload first so the daemon's atomic DrainAsSteer pops it
-	// alongside everything already queued into a single STEERING entry.
+	// Composer has text and/or attachments. sendHubDrainAsSteer sends the
+	// payload on turn/drainAsSteer so the daemon folds it into the same
+	// STEERING entry as everything already queued.
 	if pending != "" {
 		m.session.addHistory(pending)
 	}

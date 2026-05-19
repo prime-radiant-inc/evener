@@ -163,8 +163,8 @@ async function testQueueChangedShrinksOnHeadPop() {
 }
 
 async function testDrainAsSteerClearsQueueAndPosts() {
-  // Type something while queue still has one entry → drain should enqueue
-  // the textarea first, then call /drain-as-steer.
+  // Type something while queue still has one entry → drain should carry the
+  // textarea text on /drain-as-steer.
   ta.value = "and one more thought before drain";
   ta.dispatchEvent(new window.Event("input", { bubbles: true }));
   fetchLog.length = 0;
@@ -173,10 +173,11 @@ async function testDrainAsSteerClearsQueueAndPosts() {
   await wait(20);
 
   const calls = fetchLog.map(c => c.url);
-  pass(calls.some(u => u.includes("/queue")),
-    "expected an extra /queue call before drain, got " + JSON.stringify(calls));
-  pass(calls.some(u => u.includes("/drain-as-steer")),
-    "expected /drain-as-steer call from steer button, got " + JSON.stringify(calls));
+  pass(calls.length === 1 && calls[0].includes("/drain-as-steer"),
+    "expected one /drain-as-steer call from steer button, got " + JSON.stringify(calls));
+  const body = JSON.parse((fetchLog[0] && fetchLog[0].opts && fetchLog[0].opts.body) || "{}");
+  pass(body.text === "and one more thought before drain",
+    "expected drain body to carry textarea text, got " + JSON.stringify(body));
   // After drain the daemon emits thread/queueChanged with depth=0. The
   // renderer no longer mirrors locally (kata r80p), so we deliver the
   // wire event here to verify the preview hides.

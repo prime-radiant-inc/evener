@@ -242,6 +242,9 @@ func (e *embeddedServer) wireSession(sess *agent.Session) {
 	e.srv.SetDrainAsSteerFunc(func() error {
 		return sess.DrainAsSteer(context.Background())
 	})
+	e.srv.SetDrainAsSteerWithInputFunc(func(text string, images []server.ImageAttachment) error {
+		return sess.DrainAsSteerWithInput(context.Background(), text, images)
+	})
 	e.srv.SetQueueDepthFunc(sess.QueueDepth)
 	e.srv.SetQueuePreviewFunc(sess.QueuePreview)
 	e.srv.SetContextPressureFunc(sess.ContextPressure)

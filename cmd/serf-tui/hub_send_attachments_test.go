@@ -131,21 +131,19 @@ func TestSendHubQueueIncludesAttachments(t *testing.T) {
 }
 
 // TestSendHubDrainAsSteerIncludesAttachments verifies the drain-as-steer
-// path queues composer text + attachments before draining, so the
-// resulting STEERING message carries the image bytes alongside any
-// already-queued items.
+// path sends composer text + attachments on the drain request so the daemon
+// can append and drain atomically.
 func TestSendHubDrainAsSteerIncludesAttachments(t *testing.T) {
 	path := writeAttachmentTempFile(t, []byte("\x89PNG\r\n\x1a\nsteer-png-bytes"))
 
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
-	var queueParams []appwire.TurnQueueParams
-	var drainCalled bool
+	var drainParams appwire.TurnDrainAsSteerParams
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
-		queueParams = append(queueParams, params)
+		t.Fatalf("turn/queue should not be called for force-steer: %+v", params)
 		return appwire.EmptyResponse{}, nil
 	})
-	appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, _ appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
-		drainCalled = true
+	appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
+		drainParams = params
 		return appwire.EmptyResponse{}, nil
 	})
 	client, cleanup := newTUIAppWireClient(t, app)
@@ -158,20 +156,16 @@ func TestSendHubDrainAsSteerIncludesAttachments(t *testing.T) {
 	if !ok || drainMsg.err != nil {
 		t.Fatalf("msg=%T err=%v", msg, drainMsg.err)
 	}
-	if !drainCalled {
+	if drainParams.Ref == "" {
 		t.Fatal("drainAsSteer never invoked")
 	}
-	if len(queueParams) != 1 {
-		t.Fatalf("queueParams len=%d, want 1: %+v", len(queueParams), queueParams)
+	if drainParams.Ref != "local:th_s" || drainParams.Text != "steer me" {
+		t.Fatalf("drain params=%+v, want ref=local:th_s text=steer me", drainParams)
 	}
-	q := queueParams[0]
-	if q.Ref != "local:th_s" || q.Text != "steer me" {
-		t.Fatalf("queue params=%+v, want ref=local:th_s text=steer me", q)
+	if len(drainParams.Items) != 1 {
+		t.Fatalf("drain items len=%d, want 1: %+v", len(drainParams.Items), drainParams.Items)
 	}
-	if len(q.Items) != 1 {
-		t.Fatalf("queue items len=%d, want 1: %+v", len(q.Items), q.Items)
-	}
-	item := q.Items[0]
+	item := drainParams.Items[0]
 	if item.Type != "image" || item.MediaType != "image/png" {
 		t.Errorf("item=%+v, want type=image mediaType=image/png", item)
 	}

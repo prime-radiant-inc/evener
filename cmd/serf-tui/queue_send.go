@@ -21,9 +21,7 @@ type hubQueueMsg struct {
 	err                     error
 }
 
-// hubDrainAsSteerMsg reports the result of a turn/drainAsSteer call. If a
-// composer payload was queued before drain, queued is true so the UI does not
-// restore the already-accepted draft on a later drain failure.
+// hubDrainAsSteerMsg reports the result of a turn/drainAsSteer call.
 type hubDrainAsSteerMsg struct {
 	text                    string
 	draft                   string
@@ -57,9 +55,8 @@ func sendHubQueue(client *appwire.Client, ref appwire.Ref, text, draft string, a
 
 // sendHubDrainAsSteer issues turn/drainAsSteer (kata 0bq1) to drain every
 // queued message into a single STEERING message for the in-flight turn.
-// When the composer carries text or attachments (kata re91) they are queued
-// first so the daemon's atomic drain folds them into the same STEERING
-// payload alongside everything already queued.
+// When the composer carries text or attachments (kata re91) they ride on
+// the drain request so the daemon appends and drains atomically.
 func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft string, attachments []*PastedImage, preQueueDepth ...int) tea.Cmd {
 	trackedAttachmentSubmit := len(attachments) > 0
 	return func() tea.Msg {
@@ -67,31 +64,16 @@ func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft st
 		if len(preQueueDepth) > 0 {
 			depth = preQueueDepth[0]
 		}
-		if text != "" || len(attachments) > 0 {
-			items, err := buildAttachmentItems(attachments)
-			if err != nil {
-				return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
-			}
-			if err := client.TurnQueue(context.Background(), appwire.TurnQueueParams{
-				Ref:   ref.String(),
-				Text:  text,
-				Items: items,
-			}); err != nil {
-				return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
-			}
-			if text != "" || len(items) > 0 {
-				queued := hubDrainAsSteerMsg{text: text, draft: draft, queued: true, preQueueDepth: depth, hadAttachment: len(items) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments}
-				err := client.TurnDrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{
-					Ref: ref.String(),
-				})
-				queued.err = err
-				return queued
-			}
+		items, err := buildAttachmentItems(attachments)
+		if err != nil {
+			return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 		}
-		err := client.TurnDrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{
-			Ref: ref.String(),
+		err = client.TurnDrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{
+			Ref:   ref.String(),
+			Text:  text,
+			Items: items,
 		})
-		return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
+		return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(items) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 	}
 }
 

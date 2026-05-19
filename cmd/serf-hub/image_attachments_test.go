@@ -438,26 +438,25 @@ func TestWeb_Queue_ItemsShapeForwardedToDaemonQueueTurn(t *testing.T) {
 	}
 }
 
-// TestWeb_DrainAsSteer_ItemsShapeQueuesThenDrains drives the kata v80q
+// TestWeb_DrainAsSteer_ItemsShapeSendsAtomicDrain drives the kata v80q
 // shape on /s/<id>/drain-as-steer: when the request carries an `items`
-// array, the hub must first queue them (so the daemon's drain pass picks
-// them up) and only then fire the drain-as-steer RPC. The daemon ends up
-// observing a TurnQueue with the items followed by a TurnDrainAsSteer.
-func TestWeb_DrainAsSteer_ItemsShapeQueuesThenDrains(t *testing.T) {
+// array, the hub forwards them on the drain RPC so the daemon appends and
+// drains atomically.
+func TestWeb_DrainAsSteer_ItemsShapeSendsAtomicDrain(t *testing.T) {
 	dir := t.TempDir()
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon-test", SourceID: "local"})
-	gotItems := make(chan []appwire.InputItem, 1)
-	drained := make(chan struct{}, 1)
+	queued := make(chan struct{}, 1)
+	drained := make(chan appwire.TurnDrainAsSteerParams, 1)
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
 		select {
-		case gotItems <- params.Items:
+		case queued <- struct{}{}:
 		default:
 		}
 		return appwire.EmptyResponse{}, nil
 	})
-	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, _ appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
 		select {
-		case drained <- struct{}{}:
+		case drained <- params:
 		default:
 		}
 		return appwire.EmptyResponse{}, nil
@@ -523,17 +522,21 @@ func TestWeb_DrainAsSteer_ItemsShapeQueuesThenDrains(t *testing.T) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 
-	var items []appwire.InputItem
 	select {
-	case items = <-gotItems:
+	case <-queued:
+		t.Fatalf("daemon TurnQueue was invoked; drain payload must be atomic")
 	default:
-		t.Fatalf("daemon TurnQueue was not invoked before drain")
 	}
+	var params appwire.TurnDrainAsSteerParams
 	select {
-	case <-drained:
+	case params = <-drained:
 	default:
 		t.Fatalf("daemon TurnDrainAsSteer was not invoked")
 	}
+	if params.Text != "drain with image" {
+		t.Fatalf("Text=%q, want drain with image", params.Text)
+	}
+	items := params.Items
 	if len(items) != 1 {
 		t.Fatalf("Items: got %d, want 1 (%+v)", len(items), items)
 	}

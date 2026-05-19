@@ -80,6 +80,44 @@ func TestSession_DrainAsSteer_CarriesImagesIntoSteeringMessage(t *testing.T) {
 	}
 }
 
+func TestSession_DrainAsSteerWithInput_AppendsAndDrainsAtomically(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai"}
+	c.Register(f)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	if err := sess.Enqueue(context.Background(), "already queued"); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	imgs := []ImageAttachment{{
+		MediaType: "image/png",
+		Data:      sessionPngSig,
+		Name:      "atomic.png",
+	}}
+	if err := sess.DrainAsSteerWithInput(context.Background(), "composer payload", imgs); err != nil {
+		t.Fatalf("DrainAsSteerWithInput: %v", err)
+	}
+
+	if depth := sess.QueueDepth(); depth != 0 {
+		t.Fatalf("QueueDepth=%d, want 0", depth)
+	}
+	queue := sess.SteeringQueueSnapshot()
+	if len(queue) != 1 {
+		t.Fatalf("steeringQueue: got %d entries, want 1", len(queue))
+	}
+	if !strings.Contains(queue[0].Text, "already queued") || !strings.Contains(queue[0].Text, "composer payload") {
+		t.Fatalf("steering text=%q", queue[0].Text)
+	}
+	if len(queue[0].Images) != 1 || queue[0].Images[0].Name != "atomic.png" {
+		t.Fatalf("steering images=%+v", queue[0].Images)
+	}
+}
+
 // TestSession_Enqueue_DrainCarriesImagesIntoUserTurn verifies that an
 // image enqueued during one turn becomes a ContentImage user-message part
 // when the queue is drained as a fresh turn after the active turn finishes

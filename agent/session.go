@@ -1279,6 +1279,14 @@ func (s *Session) EnqueueWithImages(ctx context.Context, text string, images []I
 // entry are forwarded as additional ContentImage parts on the steering
 // message (kata t5j6).
 func (s *Session) DrainAsSteer(ctx context.Context) error {
+	return s.DrainAsSteerWithInput(ctx, "", nil)
+}
+
+// DrainAsSteerWithInput appends the supplied text/images to the queue and
+// drains the full queue as one steering injection while holding the queue
+// event lock. This is the atomic force-steer path used by clients that submit
+// a composer payload together with the drain request.
+func (s *Session) DrainAsSteerWithInput(ctx context.Context, text string, images []ImageAttachment) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -1288,6 +1296,13 @@ func (s *Session) DrainAsSteer(ctx context.Context) error {
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return fmt.Errorf("drain: session is closed")
+	}
+	if strings.TrimSpace(text) != "" || len(images) > 0 {
+		entry := queuedInput{Text: text}
+		if len(images) > 0 {
+			entry.Images = append([]ImageAttachment(nil), images...)
+		}
+		s.inputQueue = append(s.inputQueue, entry)
 	}
 	if len(s.inputQueue) == 0 {
 		s.mu.Unlock()
@@ -1299,18 +1314,18 @@ func (s *Session) DrainAsSteer(ctx context.Context) error {
 	s.mu.Unlock()
 	s.emit(EventQueueChanged, data)
 	texts := make([]string, 0, len(entries))
-	var images []ImageAttachment
+	var drainedImages []ImageAttachment
 	for _, entry := range entries {
 		if strings.TrimSpace(entry.Text) != "" {
 			texts = append(texts, entry.Text)
 		}
-		images = append(images, entry.Images...)
+		drainedImages = append(drainedImages, entry.Images...)
 	}
 	combined := strings.Join(texts, "\n\n")
-	if len(images) == 0 {
+	if len(drainedImages) == 0 {
 		s.Steer(combined)
 	} else {
-		s.SteerWithImages(combined, images)
+		s.SteerWithImages(combined, drainedImages)
 	}
 	return nil
 }

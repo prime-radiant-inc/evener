@@ -390,6 +390,9 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		return appwire.EmptyResponse{}, source.QueueTurn(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnDrainAsSteer, func(ctx context.Context, params appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
+		if err := validateAppWireInputItems(params.Items); err != nil {
+			return appwire.EmptyResponse{}, appwire.InvalidParams(err.Error())
+		}
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 		if err != nil {
 			return appwire.EmptyResponse{}, err

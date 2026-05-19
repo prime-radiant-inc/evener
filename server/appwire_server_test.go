@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -953,5 +954,46 @@ func TestServerAppWireTurnDrainAsSteerDispatchesWhenQueued(t *testing.T) {
 	}
 	if called != 1 {
 		t.Fatalf("drain called=%d, want 1", called)
+	}
+}
+
+func TestServerAppWireTurnDrainAsSteerDispatchesInputAtomically(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetProcessing(true)
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "PROCESSING"})
+	srv.SetDrainAsSteerFunc(func() error {
+		t.Fatal("classic drain callback should not be used for input-bearing drain")
+		return nil
+	})
+	var gotText string
+	var gotImages []ImageAttachment
+	srv.SetDrainAsSteerWithInputFunc(func(text string, images []ImageAttachment) error {
+		gotText = text
+		gotImages = append([]ImageAttachment(nil), images...)
+		return nil
+	})
+	srv.SetQueueDepthFunc(func() int { return 0 })
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{
+		Ref:  "local:th_1",
+		Text: "composer payload",
+		Items: []appwire.InputItem{{
+			Type:      "image",
+			MediaType: "image/png",
+			Data:      []byte("png"),
+			Name:      "shot.png",
+		}},
+	}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v error=%+v", resp.Kind(), resp.Error)
+	}
+	if gotText != "composer payload" {
+		t.Fatalf("text=%q, want composer payload", gotText)
+	}
+	if len(gotImages) != 1 || gotImages[0].Name != "shot.png" || !bytes.Equal(gotImages[0].Data, []byte("png")) {
+		t.Fatalf("images=%+v", gotImages)
 	}
 }

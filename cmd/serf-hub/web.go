@@ -2908,9 +2908,8 @@ func (s *WebServer) handleQueue(w http.ResponseWriter, r *http.Request, id strin
 
 // drainAsSteerRequest is the JSON body accepted by POST /s/<id>/drain-as-steer.
 // All fields are optional — a body-less request matches the kata 0bq1
-// classic drain shape. When Text or Items are set (kata v80q), the handler
-// first queues them so the daemon's drain pass picks up the new entries
-// alongside whatever was already queued, then issues the drain-as-steer RPC.
+// classic drain shape. Text/Items ride on turn/drainAsSteer so the daemon
+// atomically appends the composer payload and drains the queue.
 type drainAsSteerRequest struct {
 	Text  string              `json:"text,omitempty"`
 	Items []appwire.InputItem `json:"items,omitempty"`
@@ -2920,10 +2919,6 @@ type drainAsSteerRequest struct {
 // steer combined action). Drains the daemon's input queue into a single
 // STEERING injection on the in-flight turn. Rides on the Steer capability;
 // the daemon returns Conflict when idle or when the queue is empty.
-//
-// When the request body carries Text or Items (kata v80q image-attachment
-// drain), we queue them first via turn/queue so the daemon's drain pass
-// picks up the new bytes along with whatever was already in the queue.
 func (s *WebServer) handleDrainAsSteer(w http.ResponseWriter, r *http.Request, id string) {
 	r.Body = http.MaxBytesReader(w, r.Body, sendMaxRequestBytes)
 	var body drainAsSteerRequest
@@ -2965,23 +2960,11 @@ func (s *WebServer) handleDrainAsSteer(w http.ResponseWriter, r *http.Request, i
 		http.NotFound(w, r)
 		return
 	}
-	// Pre-drain queue step: if the caller supplied text/items, push them
-	// onto the queue first so the daemon's drain pass sees them too. This
-	// keeps the wire shape of drain-as-steer itself unchanged (still no
-	// body) while letting the browser submit a single combined drain
-	// request from a composer that has unsent text + image bytes.
-	hasText := strings.TrimSpace(body.Text) != ""
-	if hasText || len(body.Items) > 0 {
-		if err := source.QueueTurn(r.Context(), appwire.TurnQueueParams{
-			Ref:   ref,
-			Text:  strings.TrimSpace(body.Text),
-			Items: body.Items,
-		}); err != nil {
-			writeSessionActionError(w, r, err)
-			return
-		}
-	}
-	if err := source.DrainAsSteer(r.Context(), appwire.TurnDrainAsSteerParams{Ref: ref}); err != nil {
+	if err := source.DrainAsSteer(r.Context(), appwire.TurnDrainAsSteerParams{
+		Ref:   ref,
+		Text:  strings.TrimSpace(body.Text),
+		Items: body.Items,
+	}); err != nil {
 		writeSessionActionError(w, r, err)
 		return
 	}

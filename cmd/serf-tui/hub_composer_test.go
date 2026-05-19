@@ -295,12 +295,11 @@ func TestHubModelBusyEnterRestoresAttachmentsOnQueueFailure(t *testing.T) {
 }
 
 func TestHubModelBusyCtrlSDrainsQueueAsSteer(t *testing.T) {
-	var queueParams []appwire.TurnQueueParams
 	var drainParams appwire.TurnDrainAsSteerParams
 	var drainCalled bool
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
-			queueParams = append(queueParams, params)
+			t.Fatalf("turn/queue should not be called for force-steer: %+v", params)
 			return appwire.EmptyResponse{}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
@@ -326,10 +325,8 @@ func TestHubModelBusyCtrlSDrainsQueueAsSteer(t *testing.T) {
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	if cmd == nil {
-		t.Fatal("ctrl+s should issue queue+drain command")
+		t.Fatal("ctrl+s should issue drain command")
 	}
-	// sendHubQueueThenDrain serialises queue+drain in one Cmd and
-	// returns a hubDrainAsSteerMsg.
 	updated, _ = updated.(hubModel).Update(cmd())
 	drained := updated.(hubModel)
 
@@ -339,8 +336,8 @@ func TestHubModelBusyCtrlSDrainsQueueAsSteer(t *testing.T) {
 	if drainParams.Ref != "local:01SEND" {
 		t.Fatalf("drain params=%+v", drainParams)
 	}
-	if len(queueParams) != 1 || queueParams[0].Text != "composer text in flight" {
-		t.Fatalf("queue params=%v, want one entry with composer text", queueParams)
+	if drainParams.Text != "composer text in flight" {
+		t.Fatalf("drain text=%q, want composer text in flight", drainParams.Text)
 	}
 	if drained.session.input.Value() != "" {
 		t.Fatalf("force-steer should clear composer, got %q", drained.session.input.Value())
@@ -366,11 +363,10 @@ func TestHubModelBusyCtrlSDrainsQueueAsSteer(t *testing.T) {
 	}
 }
 
-func TestHubModelBusyCtrlSDrainFailureAfterQueueDoesNotRestoreDraft(t *testing.T) {
-	var queueParams []appwire.TurnQueueParams
+func TestHubModelBusyCtrlSDrainFailureRestoresDraft(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
-			queueParams = append(queueParams, params)
+			t.Fatalf("turn/queue should not be called for force-steer: %+v", params)
 			return appwire.EmptyResponse{}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
@@ -390,32 +386,21 @@ func TestHubModelBusyCtrlSDrainFailureAfterQueueDoesNotRestoreDraft(t *testing.T
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	if cmd == nil {
-		t.Fatal("ctrl+s should issue queue+drain command")
+		t.Fatal("ctrl+s should issue drain command")
 	}
 	msg := cmd()
-	updated, _ = updated.(hubModel).Update(hubNotificationMsg{
-		ok: true,
-		notification: *appwire.NotificationMessage(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
-			ThreadID: m.detail.SessionID,
-			Ref:      m.detail.Ref,
-			Queue:    appwire.QueueState{Depth: 1, Preview: []string{"queued before failed drain"}},
-		}).Notification,
-	})
 	updated, _ = updated.(hubModel).Update(msg)
 	got := updated.(hubModel)
 
-	if len(queueParams) != 1 || queueParams[0].Text != "queued before failed drain" {
-		t.Fatalf("queue params=%v, want queued composer payload", queueParams)
+	if got.session.input.Value() != "queued before failed drain" {
+		t.Fatalf("draft was not restored after failed atomic drain: %q", got.session.input.Value())
 	}
-	if got.session.input.Value() != "" {
-		t.Fatalf("draft was restored after successful queue: %q", got.session.input.Value())
-	}
-	if len(got.sessionQueue) != 1 || got.sessionQueue[0] != "queued before failed drain" {
-		t.Fatalf("sessionQueue=%v, want queued payload preview", got.sessionQueue)
+	if len(got.sessionQueue) != 0 {
+		t.Fatalf("sessionQueue=%v, want unchanged empty queue", got.sessionQueue)
 	}
 	view := got.View()
-	if !strings.Contains(view, "Force-steer failed after queueing") {
-		t.Fatalf("missing partial failure notice:\n%s", view)
+	if !strings.Contains(view, "Force-steer failed") {
+		t.Fatalf("missing failure notice:\n%s", view)
 	}
 }
 

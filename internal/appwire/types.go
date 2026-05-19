@@ -452,9 +452,12 @@ type TurnQueueParams struct {
 
 // TurnDrainAsSteerParams is the wire shape for turn/drainAsSteer (kata
 // 0bq1 force-steer combined action). Pops every queued message and sends
-// them to the in-flight turn as a single STEERING message.
+// them to the in-flight turn as a single STEERING message. Text/Items let
+// clients atomically append the current composer payload before the drain.
 type TurnDrainAsSteerParams struct {
-	Ref string `json:"ref"`
+	Ref   string      `json:"ref"`
+	Text  string      `json:"text,omitempty"`
+	Items []InputItem `json:"items,omitempty"`
 }
 
 type ThreadCompactStartParams struct {

@@ -404,9 +404,12 @@ func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueP
 }
 
 // handleAppTurnDrainAsSteer handles turn/drainAsSteer (kata 0bq1).
-func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, _ appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
+func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
+	text, images := inputFromItems(params.Text, params.Items)
+	hasInput := strings.TrimSpace(text) != "" || len(images) > 0
 	s.mu.RLock()
 	fn := s.drainSteerFunc
+	inputFn := s.drainSteerInputFunc
 	depthFn := s.queueDepthFn
 	processing := s.processing
 	reservedTurnID := s.appReservedTurnID
@@ -421,10 +424,19 @@ func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, _ appwire.TurnDrai
 	if fn == nil {
 		return appwire.EmptyResponse{}, appwire.Unavailable("drain-as-steer not available")
 	}
-	if depthFn != nil && depthFn() == 0 {
+	if hasInput && inputFn == nil {
+		return appwire.EmptyResponse{}, appwire.Unavailable("drain-as-steer with input not available")
+	}
+	if !hasInput && depthFn != nil && depthFn() == 0 {
 		return appwire.EmptyResponse{}, appwire.Conflict("queue is empty")
 	}
-	if err := fn(); err != nil {
+	var err error
+	if hasInput {
+		err = inputFn(text, images)
+	} else {
+		err = fn()
+	}
+	if err != nil {
 		return appwire.EmptyResponse{}, err
 	}
 	return appwire.EmptyResponse{}, nil

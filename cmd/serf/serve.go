@@ -247,6 +247,9 @@ func runServe(args []string) error {
 		return getSession().EnqueueWithImages(ctx, text, images)
 	})
 	srv.SetDrainAsSteerFunc(func() error { return getSession().DrainAsSteer(ctx) })
+	srv.SetDrainAsSteerWithInputFunc(func(text string, images []server.ImageAttachment) error {
+		return getSession().DrainAsSteerWithInput(ctx, text, images)
+	})
 	srv.SetQueueDepthFunc(func() int { return getSession().QueueDepth() })
 	srv.SetQueuePreviewFunc(func() []string { return getSession().QueuePreview() })
 	srv.SetContextPressureFunc(func() float64 { return getSession().ContextPressure() })

@@ -1434,8 +1434,8 @@
       // 0bq1). Semantics by composer state:
       //   • textarea has text + queue empty → classic /steer with textarea
       //     content (matches kata a08v behavior).
-      //   • textarea has text + queue non-empty → enqueue the textarea
-      //     first, then drain — preserves the user's typed text.
+      //   • textarea has text + queue non-empty → send text on the drain
+      //     request so the daemon appends and drains atomically.
       //   • textarea empty + queue non-empty → drain.
       //   • textarea empty + queue empty → no-op except focus, matches
       //     the classic empty-steer placeholder.
@@ -1460,7 +1460,7 @@
             // Path A: classic steer (no queue + no attachments). Keeps the
             // existing single-text /steer pipeline so the daemon writes one
             // STEERING entry with the textarea text. (When attachments are
-            // present we always go through queue-then-drain so the image
+            // present we always go through drain-as-steer so the image
             // bytes are preserved — /steer is text-only.)
             if (!hasQueued && !hasAttachments) {
               if (window.SerfAppwire) {
@@ -1487,29 +1487,22 @@
               grow();
               return;
             }
-            // Path B: drain. If the textarea has text and/or attachments we
-            // enqueue them first so the bytes ride along the single STEERING
-            // entry the daemon emits when draining. /drain-as-steer pops
-            // every queued message + merges into one steering injection.
-            if (text || hasAttachments) {
-              try { await this.queueText(text, pendingItems); } catch (err) {
-                this.appendBanner("error", "queue failed: " + err.message, { source: "hub", title: "Hub queue error" });
-                return;
-              }
-              ta.value = "";
-              ta.style.height = "";
-              grow();
-              // Successful queue: drop only the submitted snapshot so
-              // attachments staged while the request was in flight survive.
-              clearSubmittedComposerItems(pendingItems);
-            }
+            // Path B: drain. Text/attachments ride on drain-as-steer so the
+            // daemon appends and drains the composer payload atomically.
             try {
               if (window.SerfAppwire) {
-                await window.SerfAppwire.drainAsSteer(this.sessionId);
+                await window.SerfAppwire.drainAsSteer(this.sessionId, text, pendingItems);
               } else {
+                const fetchItems = pendingItems.map((a) => ({
+                  type: "image",
+                  mediaType: a.mediaType || "",
+                  data: itemDataToBase64(a.data),
+                  name: a.name || "",
+                }));
                 const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/drain-as-steer", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ text, items: fetchItems }),
                 });
                 if (!resp.ok) {
                   const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
@@ -1517,6 +1510,10 @@
                   return;
                 }
               }
+              ta.value = "";
+              ta.style.height = "";
+              grow();
+              clearSubmittedComposerItems(pendingItems);
               // Daemon collapses the whole queue into one STEERING entry
               // and emits thread/queueChanged with depth=0; the preview
               // will hide when that notification lands. No local mirror.
