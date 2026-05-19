@@ -168,14 +168,13 @@ func TestServerAppWireTurnStartImageItemReachesInputCh(t *testing.T) {
 		t.Fatalf("init=%v", init.Kind())
 	}
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
-		Ref:    "local:th_img1",
-		Prompt: "describe this",
-		Items: []appwire.InputItem{{
+		Ref: "local:th_img1",
+		Input: append([]appwire.InputItem{{Type: "text", Text: "describe this"}}, appwire.InputItem{
 			Type:      "image",
 			MediaType: "image/png",
 			Data:      pngSig,
 			Name:      "shot.png",
-		}},
+		}),
 	}))
 	if resp.Kind() != appwire.MessageResponse {
 		// Surface the wire error so a regression in handler signature is obvious.

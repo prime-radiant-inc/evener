@@ -6,15 +6,10 @@ import (
 )
 
 func TestThreadItemMarshalUsesCodexItemTypes(t *testing.T) {
-	tests := map[string]string{
-		"user_message":  "userMessage",
-		"agent_message": "agentMessage",
-		"tool_call":     "commandExecution",
-	}
-	for in, want := range tests {
-		data, err := json.Marshal(ThreadItem{Type: in, ID: "item_1"})
+	for _, typ := range []string{"userMessage", "agentMessage", "commandExecution"} {
+		data, err := json.Marshal(ThreadItem{Type: typ, ID: "item_1"})
 		if err != nil {
-			t.Fatalf("marshal %q: %v", in, err)
+			t.Fatalf("marshal %q: %v", typ, err)
 		}
 		var got struct {
 			Type string `json:"type"`
@@ -22,30 +17,20 @@ func TestThreadItemMarshalUsesCodexItemTypes(t *testing.T) {
 		if err := json.Unmarshal(data, &got); err != nil {
 			t.Fatalf("decode %s: %v", data, err)
 		}
-		if got.Type != want {
-			t.Fatalf("type=%q, want %q in %s", got.Type, want, data)
+		if got.Type != typ {
+			t.Fatalf("type=%q, want %q in %s", got.Type, typ, data)
 		}
 	}
 }
 
-func TestThreadItemUnmarshalAcceptsCodexAndLegacyItemTypes(t *testing.T) {
-	tests := map[string]string{
-		"userMessage":      "user_message",
-		"user_message":     "user_message",
-		"agentMessage":     "agent_message",
-		"agent_message":    "agent_message",
-		"commandExecution": "tool_call",
-		"mcpToolCall":      "tool_call",
-		"dynamicToolCall":  "tool_call",
-		"tool_call":        "tool_call",
-	}
-	for in, want := range tests {
+func TestThreadItemUnmarshalUsesCodexItemTypes(t *testing.T) {
+	for _, typ := range []string{"userMessage", "agentMessage", "commandExecution", "mcpToolCall", "dynamicToolCall"} {
 		var item ThreadItem
-		if err := json.Unmarshal([]byte(`{"type":"`+in+`","id":"item_1"}`), &item); err != nil {
-			t.Fatalf("unmarshal %q: %v", in, err)
+		if err := json.Unmarshal([]byte(`{"type":"`+typ+`","id":"item_1"}`), &item); err != nil {
+			t.Fatalf("unmarshal %q: %v", typ, err)
 		}
-		if item.Type != want {
-			t.Fatalf("type=%q, want %q", item.Type, want)
+		if item.Type != typ {
+			t.Fatalf("type=%q, want %q", item.Type, typ)
 		}
 	}
 }

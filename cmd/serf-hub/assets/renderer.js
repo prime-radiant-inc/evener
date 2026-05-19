@@ -202,7 +202,7 @@
           sendBtn.disabled = !canSend && !canQueue;
           if (sendBtn.disabled) sendBtn.setAttribute("title", "send unavailable");
           else sendBtn.removeAttribute("title");
-        } else if (state === "processing" || state === "active") {
+        } else if (state === "active") {
           sendBtn.setAttribute("data-capability-send", "false");
           sendBtn.setAttribute("data-capability-queue", "true");
           sendBtn.disabled = false;
@@ -244,7 +244,7 @@
     },
 
     turnAcceptsActions(state) {
-      return state === "processing" || state === "awaiting" || state === "active";
+      return state === "active" || state === "awaiting";
     },
 
     hydrateDescriptions() {
@@ -382,13 +382,13 @@
           }
           case "item/started":
           case "item/completed":
-            if (params && params.item && (params.item.type === "user_message" || params.item.type === "userMessage")) {
+            if (params && params.item && params.item.type === "userMessage") {
               pending.tryReconcile("turn/start", { text: params.item.text || "", items: params.item.images || [] });
             }
             return;
           case "turn/completed":
             for (const item of (params && params.turn && params.turn.items) || []) {
-              if (item && (item.type === "user_message" || item.type === "userMessage")) {
+              if (item && item.type === "userMessage") {
                 pending.tryReconcile("turn/start", { text: item.text || "", items: item.images || [] });
               }
             }

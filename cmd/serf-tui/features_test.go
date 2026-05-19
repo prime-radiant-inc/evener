@@ -47,7 +47,7 @@ func TestRenderToolCall_Expanded(t *testing.T) {
 		Detail:      "full args here",
 		Output:      "file1.go\nfile2.go",
 		Expanded:    true,
-		Done:       true,
+		Done:        true,
 		Duration:    500 * time.Millisecond,
 	}
 	out := renderToolCall(tc, 80, false)
@@ -456,7 +456,7 @@ func TestIsToolFocused(t *testing.T) {
 			{Kind: msgTool, Tool: &toolCallInfo{Name: "a", Done: true}},
 			{Kind: msgTool, Tool: &toolCallInfo{Name: "b", Done: true}},
 		},
-		scrollMode:    true,
+		scrollMode:     true,
 		focusedToolIdx: 1,
 	}
 
@@ -473,7 +473,7 @@ func TestIsToolFocused_NotInScrollMode(t *testing.T) {
 		messages: []chatMessage{
 			{Kind: msgTool, Tool: &toolCallInfo{Name: "a", Done: true}},
 		},
-		scrollMode:    false,
+		scrollMode:     false,
 		focusedToolIdx: 0,
 	}
 	// When not in scroll mode, nothing should be focused

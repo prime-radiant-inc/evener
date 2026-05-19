@@ -48,7 +48,7 @@ func TestCodexAppServerCoreFixtureCompatibility(t *testing.T) {
 		t.Fatalf("turn status=%q", got)
 	}
 	items := body.Thread.Turns[0].Items
-	if items[0].Type != "user_message" || items[1].Type != "agent_message" || items[2].Type != "tool_call" {
+	if items[0].Type != "userMessage" || items[1].Type != "agentMessage" || items[2].Type != "commandExecution" {
 		t.Fatalf("items=%+v", items)
 	}
 
@@ -84,7 +84,7 @@ func TestCodexAppServerCoreFixtureCompatibility(t *testing.T) {
 	if err := json.Unmarshal(msg.Notification.Params, &params); err != nil {
 		t.Fatalf("decode notification params: %v", err)
 	}
-	if params.ThreadID != "thr_123" || params.TurnID != "turn_456" || params.Item.Type != "tool_call" || params.Item.Status != TurnStatusInProgress {
+	if params.ThreadID != "thr_123" || params.TurnID != "turn_456" || params.Item.Type != "dynamicToolCall" || params.Item.Status != TurnStatusInProgress {
 		t.Fatalf("params=%+v", params)
 	}
 }

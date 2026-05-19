@@ -11,7 +11,7 @@ func TestHubTranscriptReducerReconcilesUserEchoWithReplay(t *testing.T) {
 	reducer := newHubTranscriptReducer([]chatMessage{{Kind: msgUser, Text: "please inspect this"}}, nil, nil)
 
 	reducer.applyThreadItem(appwire.ThreadItem{
-		Type:   "user_message",
+		Type:   "userMessage",
 		ID:     "user_1",
 		TurnID: "turn_7",
 		Text:   "please inspect this",
@@ -29,7 +29,7 @@ func TestHubTranscriptReducerKeepsImageOnlyUserMessage(t *testing.T) {
 	reducer := newHubTranscriptReducer(nil, nil, nil)
 
 	reducer.applyThreadItem(appwire.ThreadItem{
-		Type: "user_message",
+		Type: "userMessage",
 		ID:   "user_img",
 		Images: []appwire.InputItem{{
 			Type:      "image",
@@ -49,13 +49,13 @@ func TestHubTranscriptReducerKeepsImageOnlyUserMessage(t *testing.T) {
 func TestHubTranscriptReducerSuppressesReplayedCompletedTool(t *testing.T) {
 	reducer := newHubTranscriptReducer(nil, nil, nil)
 	started := appwire.ThreadItem{
-		Type:          "tool_call",
+		Type:          "commandExecution",
 		ID:            "tool_1",
 		CallID:        "call_1",
 		TurnID:        "turn_1",
 		ToolName:      "shell",
 		ArgumentsJSON: `{"command":"printf 'alpha\n'"}`,
-		Status:        "running",
+		Status:        appwire.TurnStatusInProgress,
 	}
 	completed := started
 	completed.Output = "alpha\n"
@@ -83,13 +83,13 @@ func TestHubTranscriptReducerScopesItemIDReconciliationByTurn(t *testing.T) {
 	reducer := newHubTranscriptReducer(nil, nil, nil)
 
 	reducer.applyThreadItem(appwire.ThreadItem{
-		Type:   "user_message",
+		Type:   "userMessage",
 		ID:     "item_reused",
 		TurnID: "turn_1",
 		Text:   "first",
 	}, 1, true)
 	reducer.applyThreadItem(appwire.ThreadItem{
-		Type:   "user_message",
+		Type:   "userMessage",
 		ID:     "item_reused",
 		TurnID: "turn_2",
 		Text:   "second",
@@ -107,13 +107,13 @@ func TestHubTranscriptReducerScopesNonNumericTurnIDs(t *testing.T) {
 	reducer := newHubTranscriptReducer(nil, nil, nil)
 
 	reducer.applyThreadItem(appwire.ThreadItem{
-		Type:   "agent_message",
+		Type:   "agentMessage",
 		ID:     "assistant_reused",
 		TurnID: "turn_codex",
 		Text:   "first",
 	}, 0, true)
 	reducer.applyThreadItem(appwire.ThreadItem{
-		Type:   "agent_message",
+		Type:   "agentMessage",
 		ID:     "assistant_reused",
 		TurnID: "turn_stream",
 		Text:   "second",
@@ -143,25 +143,25 @@ func TestHubTranscriptReducerScopesAssistantDeltasByTurnID(t *testing.T) {
 
 func TestHubTranscriptReducerLiveAndReplayReconstructSameTranscript(t *testing.T) {
 	user := appwire.ThreadItem{
-		Type:   "user_message",
+		Type:   "userMessage",
 		ID:     "user_1",
 		TurnID: "turn_1",
 		Text:   "please inspect this",
 	}
 	toolStart := appwire.ThreadItem{
-		Type:          "tool_call",
+		Type:          "commandExecution",
 		ID:            "tool_1",
 		CallID:        "call_1",
 		TurnID:        "turn_1",
 		ToolName:      "shell",
 		ArgumentsJSON: `{"command":"printf 'alpha\n'"}`,
-		Status:        "running",
+		Status:        appwire.TurnStatusInProgress,
 	}
 	toolDone := toolStart
 	toolDone.Output = "alpha\n"
 	toolDone.Status = "completed"
 	assistantDone := appwire.ThreadItem{
-		Type:   "agent_message",
+		Type:   "agentMessage",
 		ID:     "agent_1",
 		TurnID: "turn_1",
 		Text:   "Thinking **bold**\nDone.",
@@ -179,7 +179,7 @@ func TestHubTranscriptReducerLiveAndReplayReconstructSameTranscript(t *testing.T
 	live.applyThreadItem(assistantDone, 1, true)
 
 	replay := newHubTranscriptReducer(nil, nil, nil)
-	for _, item := range []appwire.ThreadItem{user, {Type: "agent_message", ID: "agent_1", TurnID: "turn_1", Text: "Thinking **bold**\nDone.", Status: "completed"}, toolDone} {
+	for _, item := range []appwire.ThreadItem{user, {Type: "agentMessage", ID: "agent_1", TurnID: "turn_1", Text: "Thinking **bold**\nDone.", Status: "completed"}, toolDone} {
 		replay.applyThreadItem(item, 1, item.Status == "completed")
 	}
 
@@ -193,7 +193,7 @@ func TestHubTranscriptReducerToolOutputDeltaBeforeStartStaysInOneToolGroup(t *te
 
 	reducer.applyToolOutputDelta("tool_late", "first\n")
 	reducer.applyThreadItem(appwire.ThreadItem{
-		Type:          "tool_call",
+		Type:          "commandExecution",
 		ID:            "tool_late",
 		CallID:        "call_late",
 		TurnID:        "turn_1",
@@ -218,7 +218,7 @@ func TestHubTranscriptReducerPreservesSerfAndCodexToolShapes(t *testing.T) {
 	reducer := newHubTranscriptReducer(nil, nil, nil)
 
 	reducer.applyThreadItem(appwire.ThreadItem{
-		Type:          "tool_call",
+		Type:          "commandExecution",
 		ID:            "serf_tool",
 		CallID:        "serf_call",
 		TurnID:        "turn_1",
@@ -228,7 +228,7 @@ func TestHubTranscriptReducerPreservesSerfAndCodexToolShapes(t *testing.T) {
 		Status:        "completed",
 	}, 1, true)
 	reducer.applyThreadItem(appwire.ThreadItem{
-		Type:          "tool_call",
+		Type:          "commandExecution",
 		ID:            "codex_tool",
 		CallID:        "codex_tool",
 		TurnID:        "turn_1",

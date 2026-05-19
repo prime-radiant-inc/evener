@@ -27,6 +27,16 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
+func imageInputItems(input []appwire.InputItem) []appwire.InputItem {
+	var out []appwire.InputItem
+	for _, item := range input {
+		if item.Type == "image" || item.Type == "input_image" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 // testImageBytes is a tiny PNG signature used wherever a test needs an
 // opaque payload; the size and content don't matter since the wire treats
 // it as []byte.
@@ -148,10 +158,10 @@ func TestWeb_Send_ImageAttachmentsForwardedToDaemonStartTurn(t *testing.T) {
 	gotItems := make(chan []appwire.InputItem, 1)
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 		select {
-		case gotItems <- params.Items:
+		case gotItems <- imageInputItems(params.Input):
 		default:
 		}
-		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_send_img", Status: appwire.TurnStatusRunning}}, nil
+		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_send_img", Status: appwire.TurnStatusInProgress}}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodInitialize, func(_ context.Context, _ appwire.InitializeParams) (appwire.InitializeResponse, error) {
 		return appwire.InitializeResponse{
@@ -254,10 +264,10 @@ func TestWeb_Send_ItemsShapeForwardedToDaemonStartTurn(t *testing.T) {
 	gotItems := make(chan []appwire.InputItem, 1)
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 		select {
-		case gotItems <- params.Items:
+		case gotItems <- imageInputItems(params.Input):
 		default:
 		}
-		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_items", Status: appwire.TurnStatusRunning}}, nil
+		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_items", Status: appwire.TurnStatusInProgress}}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodInitialize, func(_ context.Context, _ appwire.InitializeParams) (appwire.InitializeResponse, error) {
 		return appwire.InitializeResponse{ServerInfo: appwire.ServerInfo{Name: "daemon-test"}}, nil
@@ -371,7 +381,7 @@ func TestWeb_Queue_ItemsShapeForwardedToDaemonQueueTurn(t *testing.T) {
 			ID:        "01QUEUEITEMS",
 			SessionID: "01QUEUEITEMS",
 			// Queue requires the session to be processing.
-			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing},
+			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 			Source: "local",
 			Serf: appwire.SerfThread{
 				Ref:          "local:01QUEUEITEMS",
@@ -486,7 +496,7 @@ func TestWeb_DrainAsSteer_ItemsShapeSendsAtomicDrain(t *testing.T) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
 			ID:        "01DRAINITEMS",
 			SessionID: "01DRAINITEMS",
-			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing},
+			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 			Source:    "local",
 			Serf: appwire.SerfThread{
 				Ref:          "local:01DRAINITEMS",

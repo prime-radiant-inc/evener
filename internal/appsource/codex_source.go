@@ -160,8 +160,8 @@ func (s *CodexSource) StartThread(ctx context.Context, params appwire.ThreadStar
 	live := s.newLiveThread(thread.ID, client, closeClient)
 	s.setLiveThread(thread.ID, live)
 	resp := appwire.ThreadStartResponse{Thread: thread}
-	if strings.TrimSpace(params.Prompt) != "" || len(params.EffectiveInput()) > 0 {
-		turnResp, err := s.startTurnWithClient(ctx, client, appwire.TurnStartParams{Ref: thread.Serf.Ref, Prompt: params.Prompt, Items: params.Items, Input: params.Input})
+	if len(params.Input) > 0 {
+		turnResp, err := s.startTurnWithClient(ctx, client, appwire.TurnStartParams{Ref: thread.Serf.Ref, Input: params.Input})
 		if err != nil {
 			s.removeLiveThread(thread.ID, live)
 			live.retire()
@@ -214,7 +214,7 @@ func (s *CodexSource) StartTurn(ctx context.Context, params appwire.TurnStartPar
 	if err != nil {
 		return appwire.TurnStartResponse{}, err
 	}
-	input, err := codexInput(params.Prompt, params.EffectiveInput())
+	input, err := codexInput("", params.Input)
 	if err != nil {
 		return appwire.TurnStartResponse{}, err
 	}
@@ -254,7 +254,7 @@ func (s *CodexSource) startTurnWithClient(ctx context.Context, client *appwire.C
 	if err != nil {
 		return appwire.TurnStartResponse{}, err
 	}
-	input, err := codexInput(params.Prompt, params.EffectiveInput())
+	input, err := codexInput("", params.Input)
 	if err != nil {
 		return appwire.TurnStartResponse{}, err
 	}
@@ -277,11 +277,11 @@ func (s *CodexSource) SteerTurn(ctx context.Context, params appwire.TurnSteerPar
 	if err != nil {
 		return err
 	}
-	turnID := params.EffectiveTurnID()
+	turnID := params.ExpectedTurnID
 	if turnID == "" {
-		return appwire.InvalidParams("turnId is required for codex turn/steer")
+		return appwire.InvalidParams("expectedTurnId is required for codex turn/steer")
 	}
-	input, err := codexInput(params.Text, params.EffectiveInput())
+	input, err := codexInput("", params.Input)
 	if err != nil {
 		return err
 	}
@@ -299,9 +299,9 @@ func (s *CodexSource) InterruptTurn(ctx context.Context, params appwire.TurnInte
 	if err != nil {
 		return err
 	}
-	turnID := params.EffectiveTurnID()
+	turnID := params.ExpectedTurnID
 	if turnID == "" {
-		return appwire.InvalidParams("turnId is required for codex turn/interrupt")
+		return appwire.InvalidParams("expectedTurnId is required for codex turn/interrupt")
 	}
 	return s.withClient(ctx, func(client *appwire.Client) error {
 		return client.Request(ctx, appwire.MethodTurnInterrupt, map[string]any{"threadId": threadID, "turnId": turnID, "expectedTurnId": turnID}, nil)
@@ -799,12 +799,12 @@ func codexThreadListStatuses(statuses []string) []string {
 	}
 	out := make([]string, 0, len(statuses))
 	for _, status := range statuses {
-		switch strings.ToLower(strings.TrimSpace(status)) {
-		case "active", "processing":
+		switch strings.TrimSpace(status) {
+		case "active":
 			out = append(out, "active")
-		case "notloaded", "ended":
+		case "notLoaded":
 			out = append(out, "notLoaded")
-		case "systemerror", "error":
+		case "systemError":
 			out = append(out, "systemError")
 		default:
 			out = append(out, status)
@@ -987,13 +987,13 @@ type codexModelListParams struct{}
 func mapCodexThreadStatus(status codexThreadStatus) appwire.ThreadStatus {
 	switch status.Type {
 	case "active":
-		return appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing, ActiveFlags: status.ActiveFlags}
+		return appwire.ThreadStatus{Type: appwire.ThreadStatusActive, ActiveFlags: status.ActiveFlags}
 	case "idle":
 		return appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}
 	case "systemError":
-		return appwire.ThreadStatus{Type: appwire.ThreadStatusError}
+		return appwire.ThreadStatus{Type: appwire.ThreadStatusSystemError}
 	case "notLoaded", "":
-		return appwire.ThreadStatus{Type: appwire.ThreadStatusEnded}
+		return appwire.ThreadStatus{Type: appwire.ThreadStatusNotLoaded}
 	default:
 		return appwire.ThreadStatus{Type: status.Type, ActiveFlags: status.ActiveFlags}
 	}
@@ -1027,9 +1027,9 @@ func mapCodexTurn(turn codexTurn) appwire.Turn {
 func mapCodexTurnStatus(status string) string {
 	switch status {
 	case "inProgress":
-		return appwire.TurnStatusRunning
+		return appwire.TurnStatusInProgress
 	case "interrupted":
-		return appwire.TurnStatusCanceled
+		return appwire.TurnStatusInterrupted
 	case "":
 		return appwire.TurnStatusCompleted
 	default:
@@ -1040,20 +1040,20 @@ func mapCodexTurnStatus(status string) string {
 func mapCodexItem(turnID string, raw json.RawMessage) appwire.ThreadItem {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &obj); err != nil {
-		return appwire.ThreadItem{Type: "tool_call", TurnID: turnID, Raw: raw, Error: err.Error()}
+		return appwire.ThreadItem{Type: "commandExecution", TurnID: turnID, Raw: raw, Error: err.Error()}
 	}
 	itemType := rawString(obj["type"])
 	item := appwire.ThreadItem{Type: itemType, ID: rawString(obj["id"]), TurnID: turnID, Raw: raw}
 	switch itemType {
 	case "userMessage":
-		item.Type = "user_message"
+		item.Type = "userMessage"
 		item.Text = codexInputText(obj["content"])
 		item.Images = codexInputImages(obj["content"])
 	case "agentMessage":
-		item.Type = "agent_message"
+		item.Type = "agentMessage"
 		item.Text = rawString(obj["text"])
 	case "commandExecution":
-		item.Type = "tool_call"
+		item.Type = "commandExecution"
 		item.ToolName = "shell"
 		item.CallID = item.ID
 		item.ArgumentsJSON = jsonString(map[string]any{"command": rawString(obj["command"]), "cwd": rawString(obj["cwd"])})
@@ -1063,7 +1063,7 @@ func mapCodexItem(turnID string, raw json.RawMessage) appwire.ThreadItem {
 			item.Error = "command failed"
 		}
 	case "mcpToolCall":
-		item.Type = "tool_call"
+		item.Type = "commandExecution"
 		item.ToolName = rawString(obj["tool"])
 		item.CallID = item.ID
 		item.ArgumentsJSON = string(obj["arguments"])
@@ -1071,14 +1071,14 @@ func mapCodexItem(turnID string, raw json.RawMessage) appwire.ThreadItem {
 		item.Output = string(obj["result"])
 		item.Error = string(obj["error"])
 	case "dynamicToolCall":
-		item.Type = "tool_call"
+		item.Type = "commandExecution"
 		item.ToolName = rawString(obj["tool"])
 		item.CallID = item.ID
 		item.ArgumentsJSON = string(obj["arguments"])
 		item.Status = rawString(obj["status"])
 		item.Output = string(obj["contentItems"])
 	default:
-		item.Type = "tool_call"
+		item.Type = "commandExecution"
 		item.ToolName = itemType
 	}
 	return item

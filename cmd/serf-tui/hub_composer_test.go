@@ -198,11 +198,11 @@ func TestHubModelEnterSendsImageOnlySubmission(t *testing.T) {
 	updated, _ = inFlight.Update(cmd())
 	sent := updated.(hubModel)
 
-	if got.Ref != "local:01SEND" || got.Prompt != "" {
+	if got.Ref != "local:01SEND" || testInputText(got.Input) != "" {
 		t.Fatalf("params=%+v, want image-only turn/start", got)
 	}
-	if len(got.Items) != 1 || got.Items[0].Type != "image" || string(got.Items[0].Data) != "image-only" {
-		t.Fatalf("items=%+v, want one image item", got.Items)
+	if len(got.Input) != 1 || got.Input[0].Type != "image" || string(got.Input[0].Data) != "image-only" {
+		t.Fatalf("input=%+v, want one image item", got.Input)
 	}
 	if len(sent.pendingAttachments) != 0 {
 		t.Fatalf("pendingAttachments len=%d, want cleared after success", len(sent.pendingAttachments))
@@ -538,7 +538,7 @@ func TestHubModelSessionComposerUsesHistoryNavigationOnlyWhenEmpty(t *testing.T)
 func TestHubModelSessionComposerAddsSentPromptsToHistory(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_sent", Status: appwire.TurnStatusRunning}}, nil
+			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_sent", Status: appwire.TurnStatusInProgress}}, nil
 		})
 	})
 	defer cleanup()

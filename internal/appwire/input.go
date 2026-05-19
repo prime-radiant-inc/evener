@@ -1,25 +1,14 @@
 package appwire
 
-import "strings"
-
 func (p TurnStartParams) EffectiveInput() []InputItem {
-	if len(p.Input) > 0 {
-		return p.Input
-	}
-	return p.Items
+	return p.Input
 }
 
 func (p ThreadStartParams) EffectiveInput() []InputItem {
-	if len(p.Input) > 0 {
-		return p.Input
-	}
-	return p.Items
+	return p.Input
 }
 
 func (p TurnStartParams) TargetRef() string {
-	if strings.TrimSpace(p.Ref) != "" {
-		return p.Ref
-	}
 	return p.ThreadID
 }
 
@@ -28,29 +17,17 @@ func (p TurnSteerParams) EffectiveInput() []InputItem {
 }
 
 func (p TurnSteerParams) EffectiveTurnID() string {
-	if strings.TrimSpace(p.ExpectedTurnID) != "" {
-		return p.ExpectedTurnID
-	}
-	return p.TurnID
+	return p.ExpectedTurnID
 }
 
 func (p TurnSteerParams) TargetRef() string {
-	if strings.TrimSpace(p.Ref) != "" {
-		return p.Ref
-	}
 	return p.ThreadID
 }
 
 func (p TurnInterruptParams) EffectiveTurnID() string {
-	if strings.TrimSpace(p.ExpectedTurnID) != "" {
-		return p.ExpectedTurnID
-	}
-	return p.TurnID
+	return p.ExpectedTurnID
 }
 
 func (p TurnInterruptParams) TargetRef() string {
-	if strings.TrimSpace(p.Ref) != "" {
-		return p.Ref
-	}
 	return p.ThreadID
 }

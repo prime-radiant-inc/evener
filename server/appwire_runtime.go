@@ -113,7 +113,7 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 		if idx, ok := turnIndex[id]; ok {
 			return &turns[idx]
 		}
-		turns = append(turns, appwire.Turn{ID: id, ItemsView: "full", Status: appwire.TurnStatusRunning})
+		turns = append(turns, appwire.Turn{ID: id, ItemsView: "full", Status: appwire.TurnStatusInProgress})
 		turnIndex[id] = len(turns) - 1
 		return &turns[len(turns)-1]
 	}
@@ -153,7 +153,7 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 					turn.Items[i].Type = itemType
 				}
 				if turn.Items[i].Status == "" {
-					turn.Items[i].Status = appwire.TurnStatusRunning
+					turn.Items[i].Status = appwire.TurnStatusInProgress
 				}
 				return &turn.Items[i]
 			}
@@ -162,7 +162,7 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 			Type:   itemType,
 			ID:     itemID,
 			TurnID: turnID,
-			Status: appwire.TurnStatusRunning,
+			Status: appwire.TurnStatusInProgress,
 		})
 		return &turn.Items[len(turn.Items)-1]
 	}
@@ -200,7 +200,7 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 			if json.Unmarshal(record.Notification.Params, &params) != nil {
 				continue
 			}
-			item := itemForDelta(params.TurnID, params.ItemID, "agent_message")
+			item := itemForDelta(params.TurnID, params.ItemID, "agentMessage")
 			if item != nil {
 				item.Text += params.Delta
 			}
@@ -218,7 +218,7 @@ func appTurnsFromNotifications(records []appserver.SequencedNotification) []appw
 			if itemID == "" {
 				itemID = params.CallID
 			}
-			item := itemForDelta(params.TurnID, itemID, "tool_call")
+			item := itemForDelta(params.TurnID, itemID, "commandExecution")
 			if item != nil {
 				if item.CallID == "" {
 					item.CallID = params.CallID
@@ -298,9 +298,9 @@ func mergeAppThreadItem(existing, incoming appwire.ThreadItem) appwire.ThreadIte
 }
 
 func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-	text, images := inputFromItems(params.Prompt, params.EffectiveInput())
+	text, images := inputFromItems("", params.Input)
 	if strings.TrimSpace(text) == "" && len(images) == 0 {
-		return appwire.TurnStartResponse{}, appwire.InvalidParams("prompt or items required")
+		return appwire.TurnStartResponse{}, appwire.InvalidParams("input is required")
 	}
 
 	turnID, err := s.reserveAppTurnIDForStart()
@@ -313,17 +313,17 @@ func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartP
 		s.releaseAppTurnID(turnID)
 		return appwire.TurnStartResponse{}, appwire.Conflict("input buffer full")
 	}
-	return appwire.TurnStartResponse{Turn: appwire.Turn{ID: turnID, Status: appwire.TurnStatusRunning}}, nil
+	return appwire.TurnStartResponse{Turn: appwire.Turn{ID: turnID, Status: appwire.TurnStatusInProgress}}, nil
 }
 
 func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerParams) (appwire.EmptyResponse, error) {
-	text, _ := inputFromItems(params.Text, params.EffectiveInput())
+	text, _ := inputFromItems("", params.Input)
 	if strings.TrimSpace(text) == "" {
-		return appwire.EmptyResponse{}, appwire.InvalidParams("text is required")
+		return appwire.EmptyResponse{}, appwire.InvalidParams("input is required")
 	}
-	turnID := strings.TrimSpace(params.EffectiveTurnID())
+	turnID := strings.TrimSpace(params.ExpectedTurnID)
 	if turnID == "" {
-		return appwire.EmptyResponse{}, appwire.InvalidParams("turnId is required")
+		return appwire.EmptyResponse{}, appwire.InvalidParams("expectedTurnId is required")
 	}
 	s.mu.RLock()
 	fn := s.steerFunc
@@ -345,9 +345,9 @@ func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerP
 }
 
 func (s *Server) handleAppTurnInterrupt(_ context.Context, params appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
-	turnID := strings.TrimSpace(params.EffectiveTurnID())
+	turnID := strings.TrimSpace(params.ExpectedTurnID)
 	if turnID == "" {
-		return appwire.EmptyResponse{}, appwire.InvalidParams("turnId is required")
+		return appwire.EmptyResponse{}, appwire.InvalidParams("expectedTurnId is required")
 	}
 	s.mu.RLock()
 	cancel := s.cancelFunc
@@ -696,23 +696,23 @@ func (s *Server) releaseAppTurnID(turnID string) {
 
 func appStatus(state string, processing bool) string {
 	if processing {
-		return appwire.ThreadStatusProcessing
+		return appwire.ThreadStatusActive
 	}
 	switch strings.ToUpper(state) {
 	case "IDLE":
 		return appwire.ThreadStatusIdle
 	case "PROCESSING":
-		return appwire.ThreadStatusProcessing
+		return appwire.ThreadStatusActive
 	case "AWAITING", "AWAITING_INPUT", "AWAITING_REPLY":
 		return appwire.ThreadStatusAwaiting
 	case "WARNING":
 		return appwire.ThreadStatusWarning
 	case "ERRORED", "ERROR":
-		return appwire.ThreadStatusError
+		return appwire.ThreadStatusSystemError
 	case "CLOSED":
 		return appwire.ThreadStatusClosed
 	case "ENDED":
-		return appwire.ThreadStatusEnded
+		return appwire.ThreadStatusNotLoaded
 	default:
 		return appwire.ThreadStatusIdle
 	}

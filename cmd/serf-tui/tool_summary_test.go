@@ -127,14 +127,14 @@ func TestSummarizeTool_TaskList_Append(t *testing.T) {
 }
 
 func TestSummarizeTool_TaskList_Update(t *testing.T) {
-	desc, detail := summarizeTool("task_list", `{"action":"update","updates":[{"id":1,"status":"done"},{"id":2,"status":"in_progress"}]}`)
+	desc, detail := summarizeTool("task_list", `{"action":"update","updates":[{"id":1,"status":"done"},{"id":2,"status":"inProgress"}]}`)
 	if desc != "update 2 tasks" {
 		t.Errorf("desc: got %q", desc)
 	}
 	if !strings.Contains(detail, "done") {
 		t.Errorf("detail missing status: %q", detail)
 	}
-	if !strings.Contains(detail, "in_progress") {
+	if !strings.Contains(detail, "inProgress") {
 		t.Errorf("detail missing status: %q", detail)
 	}
 	if !strings.Contains(detail, "✓") {

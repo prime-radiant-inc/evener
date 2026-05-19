@@ -272,7 +272,7 @@ func (t *appwireStreamTranslator) eventsFromTurnCompletedItems(turnID string, it
 }
 
 func (t *appwireStreamTranslator) eventsFromHydratedItem(item appwire.ThreadItem, turnCompleted bool) []streamEvent {
-	if item.Type == "tool_call" {
+	if item.Type == "commandExecution" {
 		callID := firstNonEmptyString(item.CallID, item.ID)
 		if toolItemTerminal(item) || (turnCompleted && !toolItemRunning(item)) {
 			if t.activeToolCalls[callID] {
@@ -291,7 +291,7 @@ func (t *appwireStreamTranslator) eventsFromHydratedItem(item appwire.ThreadItem
 
 func (t *appwireStreamTranslator) eventsFromItem(item appwire.ThreadItem, completed bool) []streamEvent {
 	switch item.Type {
-	case "user_message":
+	case "userMessage":
 		t.markItemCompleted(item)
 		payload := map[string]any{"text": userMessageItemText(item), "turn": item.TranscriptEntryIndex}
 		if len(item.Images) > 0 {
@@ -309,7 +309,7 @@ func (t *appwireStreamTranslator) eventsFromItem(item appwire.ThreadItem, comple
 			payload["images"] = item.Images
 		}
 		return []streamEvent{newStreamEvent("STEERING_INJECTED", payload)}
-	case "agent_message":
+	case "agentMessage":
 		if completed {
 			t.markItemCompleted(item)
 			return []streamEvent{newStreamEvent("ASSISTANT_TEXT_END", map[string]any{"text": item.Text})}
@@ -319,7 +319,7 @@ func (t *appwireStreamTranslator) eventsFromItem(item appwire.ThreadItem, comple
 			events = append(events, newStreamEvent("ASSISTANT_TEXT_DELTA", map[string]any{"delta": item.Text}))
 		}
 		return events
-	case "tool_call":
+	case "commandExecution":
 		callID := firstNonEmptyString(item.CallID, item.ID)
 		if completed {
 			delete(t.activeToolCalls, callID)
@@ -373,7 +373,7 @@ func itemCompletionKeys(item appwire.ThreadItem) []string {
 	if item.ID != "" {
 		keys = append(keys, scope+"item:"+item.ID)
 	}
-	if item.Type == "tool_call" && item.CallID != "" {
+	if item.Type == "commandExecution" && item.CallID != "" {
 		keys = append(keys, scope+"call:"+item.CallID)
 	}
 	return keys

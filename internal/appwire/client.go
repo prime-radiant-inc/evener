@@ -257,11 +257,11 @@ func (c *Client) TurnStart(ctx context.Context, params TurnStartParams) (TurnSta
 }
 
 func pendingTurnStartText(params TurnStartParams) string {
-	if strings.TrimSpace(params.Prompt) != "" {
-		return params.Prompt
-	}
 	images := 0
-	for _, item := range params.EffectiveInput() {
+	for _, item := range params.Input {
+		if strings.TrimSpace(item.Text) != "" {
+			return item.Text
+		}
 		switch item.Type {
 		case "image", "input_image":
 			images++
@@ -280,13 +280,22 @@ func pendingTurnStartText(params TurnStartParams) string {
 func (c *Client) TurnSteer(ctx context.Context, params TurnSteerParams) error {
 	var handle PendingHandle
 	if c.pendingCoord != nil {
-		handle = c.pendingCoord.Register(MethodTurnSteer, params.Text)
+		handle = c.pendingCoord.Register(MethodTurnSteer, inputText(params.Input))
 	}
 	err := c.request(ctx, MethodTurnSteer, params, nil)
 	if err != nil && handle != nil {
 		handle.Fail(err.Error())
 	}
 	return err
+}
+
+func inputText(input []InputItem) string {
+	for _, item := range input {
+		if strings.TrimSpace(item.Text) != "" {
+			return item.Text
+		}
+	}
+	return ""
 }
 
 func (c *Client) TurnInterrupt(ctx context.Context, params TurnInterruptParams) error {

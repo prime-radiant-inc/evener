@@ -69,7 +69,7 @@ func TestServeWebSocketPushesNotificationsToSubscribedThread(t *testing.T) {
 
 	server.Broadcast("th_1", appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 		ThreadID: "th_1",
-		Status:   appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing},
+		Status:   appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 	})
 
 	select {

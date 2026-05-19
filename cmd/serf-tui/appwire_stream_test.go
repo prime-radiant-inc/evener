@@ -15,7 +15,7 @@ func TestStreamEventsFromThreadHydratesCompletedToolWithStartAndEnd(t *testing.T
 		Turns: []appwire.Turn{{
 			ID: "turn_1",
 			Items: []appwire.ThreadItem{{
-				Type:          "tool_call",
+				Type:          "commandExecution",
 				ID:            "item_tool",
 				CallID:        "call_tool",
 				ToolName:      "shell",
@@ -70,7 +70,7 @@ func TestStreamEventsFromThreadTreatsItemsInCompletedTurnAsCompleted(t *testing.
 			ID:     "turn_1",
 			Status: appwire.TurnStatusCompleted,
 			Items: []appwire.ThreadItem{{
-				Type: "agent_message",
+				Type: "agentMessage",
 				ID:   "agent_1",
 				Text: "done",
 			}},
@@ -102,7 +102,7 @@ func TestStreamEventsFromThreadTreatsCompletedTurnToolAsTerminal(t *testing.T) {
 			ID:     "turn_1",
 			Status: appwire.TurnStatusCompleted,
 			Items: []appwire.ThreadItem{{
-				Type:          "tool_call",
+				Type:          "commandExecution",
 				ID:            "item_tool",
 				CallID:        "call_tool",
 				ToolName:      "shell",
@@ -131,12 +131,12 @@ func TestStreamEventsFromThreadReplaysRunningAssistantTextAsDelta(t *testing.T) 
 		SessionID: "th_1",
 		Turns: []appwire.Turn{{
 			ID:     "turn_1",
-			Status: appwire.TurnStatusRunning,
+			Status: appwire.TurnStatusInProgress,
 			Items: []appwire.ThreadItem{{
-				Type:   "agent_message",
+				Type:   "agentMessage",
 				ID:     "item_agent",
 				Text:   "partial answer",
-				Status: appwire.TurnStatusRunning,
+				Status: appwire.TurnStatusInProgress,
 			}},
 		}},
 	})
@@ -165,16 +165,16 @@ func TestStreamEventsFromThreadReplaysRunningAssistantTextAsDelta(t *testing.T) 
 }
 
 func TestStreamEventsFromThreadKeepsRunningToolWithOutputActive(t *testing.T) {
-	for _, status := range []string{appwire.TurnStatusRunning, "inProgress"} {
+	for _, status := range []string{appwire.TurnStatusInProgress, "inProgress"} {
 		t.Run(status, func(t *testing.T) {
 			events := streamEventsFromThread(appwire.Thread{
 				ID:        "th_1",
 				SessionID: "th_1",
 				Turns: []appwire.Turn{{
 					ID:     "turn_1",
-					Status: appwire.TurnStatusRunning,
+					Status: appwire.TurnStatusInProgress,
 					Items: []appwire.ThreadItem{{
-						Type:          "tool_call",
+						Type:          "commandExecution",
 						ID:            "item_tool",
 						CallID:        "call_tool",
 						ToolName:      "shell",
@@ -222,15 +222,15 @@ func TestStreamEventsFromThreadHydratesSplitToolAsSingleStartEndPair(t *testing.
 			Status: appwire.TurnStatusCompleted,
 			Items: []appwire.ThreadItem{
 				{
-					Type:          "tool_call",
+					Type:          "commandExecution",
 					ID:            "item_tool_start",
 					CallID:        "call_tool",
 					ToolName:      "shell",
 					ArgumentsJSON: `{"command":"printf ok"}`,
-					Status:        "running",
+					Status:        appwire.TurnStatusInProgress,
 				},
 				{
-					Type:     "tool_call",
+					Type:     "commandExecution",
 					ID:       "item_tool_result",
 					CallID:   "call_tool",
 					ToolName: "shell",
@@ -262,7 +262,7 @@ func TestStreamEventsFromThreadHydratesFailedToolAsTerminal(t *testing.T) {
 		Turns: []appwire.Turn{{
 			ID: "turn_1",
 			Items: []appwire.ThreadItem{{
-				Type:          "tool_call",
+				Type:          "commandExecution",
 				ID:            "item_tool",
 				CallID:        "call_tool",
 				ToolName:      "shell",
@@ -302,7 +302,7 @@ func TestStreamEventsFromTurnCompletedIncludesFinalItems(t *testing.T) {
 			ID:     "turn_1",
 			Status: appwire.TurnStatusCompleted,
 			Items: []appwire.ThreadItem{{
-				Type:   "agent_message",
+				Type:   "agentMessage",
 				ID:     "item_agent",
 				TurnID: "turn_1",
 				Text:   "final answer",
@@ -376,7 +376,7 @@ func TestStreamEventsFromThreadFailedTurnPreservesDiagnosticFields(t *testing.T)
 				Cause:   &appwire.DiagnosticCause{Kind: "provider", Provider: "openai", Model: "gpt-5", Status: 503},
 			},
 			Items: []appwire.ThreadItem{{
-				Type:   "agent_message",
+				Type:   "agentMessage",
 				ID:     "item_agent",
 				TurnID: "turn_1",
 				Text:   "partial answer",
@@ -420,7 +420,7 @@ func TestStreamEventsFromTurnCompletedSkipsAlreadyCompletedItems(t *testing.T) {
 		"threadId": "th_1",
 		"ref":      "local:th_1",
 		"item": appwire.ThreadItem{
-			Type:   "agent_message",
+			Type:   "agentMessage",
 			ID:     "item_agent",
 			TurnID: "turn_1",
 			Text:   "final answer",
@@ -439,7 +439,7 @@ func TestStreamEventsFromTurnCompletedSkipsAlreadyCompletedItems(t *testing.T) {
 			ID:     "turn_1",
 			Status: appwire.TurnStatusCompleted,
 			Items: []appwire.ThreadItem{{
-				Type:   "agent_message",
+				Type:   "agentMessage",
 				ID:     "item_agent",
 				TurnID: "turn_1",
 				Text:   "final answer",
@@ -464,11 +464,11 @@ func TestStreamEventsFromTurnCompletedSkipsAlreadyRenderedUserInput(t *testing.T
 		"threadId": "th_1",
 		"ref":      "local:th_1",
 		"item": appwire.ThreadItem{
-			Type:   "user_message",
+			Type:   "userMessage",
 			ID:     "item_user",
 			TurnID: "turn_1",
 			Text:   "hello",
-			Status: "running",
+			Status: appwire.TurnStatusInProgress,
 		},
 	})
 	startEvents := translator.eventsFromNotification(*itemStarted.Notification)
@@ -483,7 +483,7 @@ func TestStreamEventsFromTurnCompletedSkipsAlreadyRenderedUserInput(t *testing.T
 			ID:     "turn_1",
 			Status: appwire.TurnStatusCompleted,
 			Items: []appwire.ThreadItem{{
-				Type:   "user_message",
+				Type:   "userMessage",
 				ID:     "item_user",
 				TurnID: "turn_1",
 				Text:   "hello",
@@ -505,7 +505,7 @@ func TestStreamEventsFromImageOnlyUserMessageUsesPlaceholder(t *testing.T) {
 		"threadId": "th_1",
 		"ref":      "local:th_1",
 		"item": appwire.ThreadItem{
-			Type:   "user_message",
+			Type:   "userMessage",
 			ID:     "item_user",
 			TurnID: "turn_1",
 			Images: []appwire.InputItem{{
@@ -513,7 +513,7 @@ func TestStreamEventsFromImageOnlyUserMessageUsesPlaceholder(t *testing.T) {
 				MediaType: "image/png",
 				Data:      []byte("png"),
 			}},
-			Status: "running",
+			Status: appwire.TurnStatusInProgress,
 		},
 	})
 	events := translator.eventsFromNotification(*itemStarted.Notification)
@@ -564,7 +564,7 @@ func TestStreamEventsDedupKeysAreTurnScoped(t *testing.T) {
 		"threadId": "th_1",
 		"ref":      "local:th_1",
 		"item": appwire.ThreadItem{
-			Type:   "user_message",
+			Type:   "userMessage",
 			ID:     "reused_item",
 			TurnID: "turn_1",
 			Text:   "first",
@@ -579,7 +579,7 @@ func TestStreamEventsDedupKeysAreTurnScoped(t *testing.T) {
 			ID:     "turn_2",
 			Status: appwire.TurnStatusCompleted,
 			Items: []appwire.ThreadItem{{
-				Type:   "user_message",
+				Type:   "userMessage",
 				ID:     "reused_item",
 				TurnID: "turn_2",
 				Text:   "second",
@@ -615,7 +615,7 @@ func TestStreamEventsDedupKeysUseEnvelopeTurnID(t *testing.T) {
 		"ref":      "local:th_1",
 		"turnId":   "turn_1",
 		"item": appwire.ThreadItem{
-			Type: "user_message",
+			Type: "userMessage",
 			ID:   "reused_item",
 			Text: "first",
 		},
@@ -630,7 +630,7 @@ func TestStreamEventsDedupKeysUseEnvelopeTurnID(t *testing.T) {
 			ID:     "provider_local_turn_2",
 			Status: appwire.TurnStatusCompleted,
 			Items: []appwire.ThreadItem{{
-				Type:   "user_message",
+				Type:   "userMessage",
 				ID:     "reused_item",
 				Text:   "second",
 				Status: appwire.TurnStatusCompleted,

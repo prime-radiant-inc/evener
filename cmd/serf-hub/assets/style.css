@@ -273,14 +273,12 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .fork-row { color: var(--text-muted); }
 .fork-row .row-title { flex: 1; }
 .fork-glyph { font-family: ui-monospace, "SFMono-Regular", monospace; color: var(--state-ended); width: 6px; }
-.fork-row[data-state="processing"] .fork-glyph { color: var(--state-processing); }
 .fork-row[data-state="active"] .fork-glyph { color: var(--state-processing); }
 .fork-row[data-state="awaiting"] .fork-glyph { color: var(--state-awaiting); }
 .fork-row[data-state="warning"] .fork-glyph { color: var(--state-warning); }
 .fork-row[data-state="idle"] .fork-glyph { color: var(--state-idle); }
 .live-row .row-title { flex: 1; }
 .status-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--state-ended); flex-shrink: 0; }
-.status-dot[data-state="processing"] { background: var(--state-processing); }
 .status-dot[data-state="active"] { background: var(--state-processing); }
 .status-dot[data-state="awaiting"] { background: var(--state-awaiting); }
 .status-dot[data-state="warning"] { background: var(--state-warning); }
@@ -291,7 +289,6 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .row-age { color: var(--text-muted); font-size: 11px; margin-left: auto; }
 .live-row { background: transparent; border-left: 2px solid transparent; }
 .live-row[data-state="awaiting"]   { background: rgba(247,118,142,0.08); border-left: 2px solid var(--state-awaiting); }
-.live-row[data-state="processing"] { background: rgba(122,162,247,0.08); border-left: 2px solid var(--state-processing); }
 .live-row[data-state="active"] { background: rgba(122,162,247,0.08); border-left: 2px solid var(--state-processing); }
 .live-row[data-state="warning"]    { background: rgba(224,175,104,0.06); border-left: 2px solid var(--state-warning); }
 
@@ -312,7 +309,6 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .project-rollup-dot[data-state=""]           { display: none; }
 .project-rollup-dot[data-state="ended"]      { display: none; }
 .project-rollup-dot[data-state="awaiting"]   { background: var(--state-awaiting); }
-.project-rollup-dot[data-state="processing"] { background: var(--state-processing); }
 .project-rollup-dot[data-state="active"] { background: var(--state-processing); }
 .project-rollup-dot[data-state="warning"]    { background: var(--state-warning); }
 .project-rollup-dot[data-state="idle"]       { background: var(--state-idle); }

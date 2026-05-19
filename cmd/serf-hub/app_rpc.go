@@ -325,7 +325,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		return hubThreadFork(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnStart, func(ctx context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-		if err := validateAppWireInputItems(params.EffectiveInput()); err != nil {
+		if err := validateAppWireInputItems(params.Input); err != nil {
 			return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
 		}
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
@@ -942,11 +942,11 @@ func appThreadMatches(thread appwire.Thread, params appwire.ThreadListParams) bo
 func normalizeThreadListStatusFilter(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "active":
-		return appwire.ThreadStatusProcessing
+		return appwire.ThreadStatusActive
 	case "notloaded":
-		return appwire.ThreadStatusEnded
+		return appwire.ThreadStatusNotLoaded
 	case "systemerror":
-		return appwire.ThreadStatusError
+		return appwire.ThreadStatusSystemError
 	default:
 		return strings.ToLower(strings.TrimSpace(status))
 	}
@@ -969,7 +969,7 @@ func sanitizeStaleProcessingStatus(cfg WebConfig, thread appwire.Thread) appwire
 	if cfg.Past == nil {
 		return thread
 	}
-	if thread.Status.Type != appwire.ThreadStatusProcessing {
+	if thread.Status.Type != appwire.ThreadStatusActive {
 		return thread
 	}
 	threadID := firstNonEmpty(thread.ID, thread.SessionID)
@@ -991,7 +991,7 @@ func sanitizeStaleProcessingStatus(cfg WebConfig, thread appwire.Thread) appwire
 	transcriptPath := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
 	tailKind, tailHasError := transcriptTailSummary(transcriptPath)
 	if tailKind == "api_call" && tailHasError {
-		thread.Status = appwire.ThreadStatus{Type: appwire.ThreadStatusError}
+		thread.Status = appwire.ThreadStatus{Type: appwire.ThreadStatusSystemError}
 	}
 	return thread
 }
@@ -1160,7 +1160,7 @@ func pastEntryThread(entry PastEntry, includeTurns bool) appwire.Thread {
 		ModelProvider: entry.Meta.Model,
 		CreatedAt:     unixSeconds(createdAt),
 		UpdatedAt:     unixSeconds(updatedAt),
-		Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusEnded},
+		Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusNotLoaded},
 		Path:          filepath.Base(cwd),
 		CWD:           cwd,
 		Source:        "local",
@@ -1240,7 +1240,7 @@ func appItemsFromReplayTurn(turnID string, turnIndex int, turn replayTurn, toolN
 	case "USER_INPUT":
 		images := appInputImagesFromReplayContent(turn.Message.Content)
 		item := appwire.ThreadItem{
-			Type:                 "user_message",
+			Type:                 "userMessage",
 			ID:                   fmt.Sprintf("item_user_%d", turnIndex),
 			TurnID:               turnID,
 			TranscriptEntryIndex: turnIndex,
@@ -1270,20 +1270,20 @@ func appItemsFromReplayTurn(turnID string, turnIndex int, turn replayTurn, toolN
 			case "text":
 				if part.Text != "" {
 					items = append(items, appwire.ThreadItem{
-						Type:   "agent_message",
+						Type:   "agentMessage",
 						ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
 						TurnID: turnID,
 						Text:   part.Text,
 						Status: "completed",
 					})
 				}
-			case "tool_call":
+			case "commandExecution":
 				if part.ToolCall != nil {
 					toolNames[part.ToolCall.ID] = part.ToolCall.Name
 					if part.ToolCall.Name == "communicate" {
 						if text := communicateMessageFromArguments(part.ToolCall.Arguments); text != "" {
 							items = append(items, appwire.ThreadItem{
-								Type:   "agent_message",
+								Type:   "agentMessage",
 								ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
 								TurnID: turnID,
 								Text:   text,
@@ -1293,13 +1293,13 @@ func appItemsFromReplayTurn(turnID string, turnIndex int, turn replayTurn, toolN
 						continue
 					}
 					items = append(items, appwire.ThreadItem{
-						Type:          "tool_call",
+						Type:          "commandExecution",
 						ID:            fmt.Sprintf("item_tool_%d_%d", turnIndex, i),
 						TurnID:        turnID,
 						ToolName:      part.ToolCall.Name,
 						CallID:        part.ToolCall.ID,
 						ArgumentsJSON: string(part.ToolCall.Arguments),
-						Status:        appwire.TurnStatusRunning,
+						Status:        appwire.TurnStatusInProgress,
 					})
 				}
 			}
@@ -1320,7 +1320,7 @@ func appItemsFromReplayTurn(turnID string, turnIndex int, turn replayTurn, toolN
 				continue
 			}
 			item := appwire.ThreadItem{
-				Type:     "tool_call",
+				Type:     "commandExecution",
 				ID:       fmt.Sprintf("item_tool_result_%d_%d", turnIndex, i),
 				TurnID:   turnID,
 				ToolName: name,
@@ -1416,14 +1416,11 @@ func hubKnowsRef(cfg WebConfig, ref string) bool {
 }
 
 func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
-	if err := validateAppWireInputItems(params.EffectiveInput()); err != nil {
+	if err := validateAppWireInputItems(params.Input); err != nil {
 		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
 	}
 	sourceID := launchSourceID(params)
 	if sourceID != "" && sourceID != "local" {
-		if strings.TrimSpace(params.Prompt) == "" {
-			params.Prompt = ""
-		}
 		var source appsource.Source
 		if cfg.CodexLauncher != nil && cfg.CodexLauncher.Manages(sourceID) {
 			launched, err := cfg.CodexLauncher.EnsureSource(ctx, sourceID, sources)
@@ -1544,8 +1541,8 @@ func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Regis
 		threadResp.Thread = appwire.Thread{ID: entry.ThreadID, SessionID: entry.SessionID, Source: "local", Serf: appwire.SerfThread{Ref: ref}}
 	}
 	turn := appwire.Turn{}
-	if params.Prompt != "" || len(params.EffectiveInput()) > 0 {
-		turnResp, err := source.StartTurn(ctx, appwire.TurnStartParams{Ref: ref, Prompt: params.Prompt, Items: params.Items, Input: params.Input})
+	if len(params.Input) > 0 {
+		turnResp, err := source.StartTurn(ctx, appwire.TurnStartParams{Ref: ref, Input: params.Input})
 		if err != nil {
 			return appwire.ThreadStartResponse{}, err
 		}

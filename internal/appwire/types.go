@@ -64,23 +64,18 @@ const (
 const (
 	ThreadStatusIdle        = "idle"
 	ThreadStatusActive      = "active"
-	ThreadStatusProcessing  = ThreadStatusActive
 	ThreadStatusAwaiting    = "awaiting"
 	ThreadStatusWarning     = "warning"
 	ThreadStatusClosed      = "closed"
 	ThreadStatusNotLoaded   = "notLoaded"
-	ThreadStatusEnded       = ThreadStatusNotLoaded
 	ThreadStatusSystemError = "systemError"
-	ThreadStatusError       = ThreadStatusSystemError
 )
 
 const (
 	TurnStatusInProgress  = "inProgress"
-	TurnStatusRunning     = TurnStatusInProgress
 	TurnStatusCompleted   = "completed"
 	TurnStatusFailed      = "failed"
 	TurnStatusInterrupted = "interrupted"
-	TurnStatusCanceled    = TurnStatusInterrupted
 )
 
 type InitializeParams struct {
@@ -392,8 +387,6 @@ type ThreadTranscriptListResponse struct {
 type ThreadStartParams struct {
 	Harness         string             `json:"harness,omitempty"`
 	CWD             string             `json:"cwd"`
-	Prompt          string             `json:"prompt,omitempty"`
-	Items           []InputItem        `json:"items,omitempty"`
 	Input           []InputItem        `json:"input,omitempty"`
 	ModelProvider   string             `json:"modelProvider,omitempty"`
 	Model           string             `json:"model,omitempty"`
@@ -432,8 +425,6 @@ type ThreadForkResponse struct {
 type TurnStartParams struct {
 	Ref      string      `json:"ref,omitempty"`
 	ThreadID string      `json:"threadId,omitempty"`
-	Prompt   string      `json:"prompt,omitempty"`
-	Items    []InputItem `json:"items,omitempty"`
 	Input    []InputItem `json:"input,omitempty"`
 }
 
@@ -444,16 +435,13 @@ type TurnStartResponse struct {
 type TurnSteerParams struct {
 	Ref            string      `json:"ref,omitempty"`
 	ThreadID       string      `json:"threadId,omitempty"`
-	TurnID         string      `json:"turnId"`
 	ExpectedTurnID string      `json:"expectedTurnId,omitempty"`
-	Text           string      `json:"text"`
 	Input          []InputItem `json:"input,omitempty"`
 }
 
 type TurnInterruptParams struct {
 	Ref            string `json:"ref,omitempty"`
 	ThreadID       string `json:"threadId,omitempty"`
-	TurnID         string `json:"turnId,omitempty"`
 	ExpectedTurnID string `json:"expectedTurnId,omitempty"`
 }
 

@@ -1017,8 +1017,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func statusRefreshStatesMatchExpected(currentState, payloadState, expectedState string) bool {
-	expected := appwire.CanonicalThreadStatus(expectedState)
-	return appwire.CanonicalThreadStatus(currentState) == expected && appwire.CanonicalThreadStatus(payloadState) == expected
+	return currentState == expectedState && payloadState == expectedState
 }
 
 func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -2450,7 +2449,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		if json.Unmarshal(notification.Params, &params) == nil {
 			previous := m.detail.State
 			m.detail.State = params.Status.Type
-			m.session.processing = params.Status.Type == appwire.ThreadStatusProcessing
+			m.session.processing = params.Status.Type == appwire.ThreadStatusActive
 			// Refresh on any transition so capabilities (interrupt, steer, send, etc.)
 			// reflect the source's current view. Without this, the cached idle snapshot
 			// keeps Interrupt=false for the entire turn (kata 4yvd).
@@ -2591,7 +2590,7 @@ func reconcilePendingFromNotification(pending *pendingCoordinator, n appwire.Not
 		pending.TryReconcile(appwire.MethodTurnSteer, p.Text)
 		pending.TryReconcile(appwire.MethodTurnDrainAsSteer, "")
 	case appwire.NotifyItemStarted, appwire.NotifyItemCompleted:
-		// user_message item carries the user's text. Match against
+		// userMessage item carries the user's text. Match against
 		// any turn/start pending entry.
 		var p struct {
 			Item appwire.ThreadItem `json:"item"`
@@ -2599,7 +2598,7 @@ func reconcilePendingFromNotification(pending *pendingCoordinator, n appwire.Not
 		if err := json.Unmarshal(n.Params, &p); err != nil {
 			return
 		}
-		if p.Item.Type == "user_message" && (p.Item.Text != "" || len(p.Item.Images) > 0) {
+		if p.Item.Type == "userMessage" && (p.Item.Text != "" || len(p.Item.Images) > 0) {
 			text := p.Item.Text
 			if text == "" {
 				text = imageItemsPlaceholder(p.Item.Images)
@@ -3713,7 +3712,7 @@ func statusDot(state string) string {
 	switch stateLabel(state) {
 	case "awaiting":
 		return "●"
-	case "processing":
+	case "active":
 		return "●"
 	case "warning":
 		return "●"
@@ -3728,17 +3727,19 @@ func stateLabel(state string) string {
 	switch strings.ToLower(strings.TrimSpace(state)) {
 	case "awaiting", "awaiting_reply", "needs-input":
 		return "awaiting"
-	case "active", "processing", "running", "working":
-		return "processing"
+	case "active":
+		return "active"
 	case "warning", "warn":
 		return "warning"
 	case "idle", "ready":
 		return "idle"
+	case "notloaded":
+		return "notLoaded"
 	case "ended", "done", "closed":
 		return "ended"
 	default:
 		if strings.TrimSpace(state) == "" {
-			return "ended"
+			return "notLoaded"
 		}
 		return state
 	}
@@ -3765,7 +3766,7 @@ func attentionRankLabel(state string) int {
 	switch stateLabel(state) {
 	case "awaiting":
 		return 4
-	case "processing":
+	case "active":
 		return 3
 	case "warning":
 		return 2

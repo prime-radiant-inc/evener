@@ -235,7 +235,7 @@ func TestAppEventProjectorMarksInterruptedTurnCanceled(t *testing.T) {
 			if !ok {
 				t.Fatalf("turn=%T", params["turn"])
 			}
-			if turn.Status == appwire.TurnStatusCanceled {
+			if turn.Status == appwire.TurnStatusInterrupted {
 				sawCanceled = true
 			}
 		case appwire.NotifyThreadStatusChanged:
@@ -288,7 +288,7 @@ func TestAppEventProjectorLetsInterruptedSessionEndCancelAfterContextCanceledErr
 		if !ok {
 			t.Fatalf("turn=%T", params["turn"])
 		}
-		if turn.Status != appwire.TurnStatusCanceled {
+		if turn.Status != appwire.TurnStatusInterrupted {
 			t.Fatalf("turn status=%s, want canceled", turn.Status)
 		}
 		return
@@ -327,7 +327,7 @@ func TestAppEventProjectorProjectsCommunicateAsAssistantMessage(t *testing.T) {
 	})
 
 	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
-	if item.Type != "agent_message" || item.Text != "done" || item.Status != appwire.TurnStatusCompleted {
+	if item.Type != "agentMessage" || item.Text != "done" || item.Status != appwire.TurnStatusCompleted {
 		t.Fatalf("communicate item=%+v", item)
 	}
 }

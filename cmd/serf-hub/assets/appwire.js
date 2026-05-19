@@ -213,7 +213,7 @@
   function searchResult(thread) {
     const id = threadID(thread);
     const ref = threadRef(thread);
-    const state = (thread.status && thread.status.type) || "ended";
+    const state = (thread.status && thread.status.type) || "notLoaded";
     const title = thread.name || thread.preview || id;
     return {
       id: ref || id,
@@ -221,7 +221,7 @@
       title,
       state,
       project: thread.path || basename(thread.cwd),
-      age: state === "ended" ? "" : "now",
+      age: state === "notLoaded" ? "" : "now",
     };
   }
 
@@ -235,7 +235,7 @@
       const past = [];
       for (const thread of threads) {
         const result = searchResult(thread);
-        if (result.state === "ended" || result.state === "closed") past.push(result);
+        if (result.state === "notLoaded" || result.state === "closed") past.push(result);
         else live.push(result);
       }
       return { live, past };
@@ -256,16 +256,12 @@
     return request(METHOD.threadStart, {
       harness: body.harness || "",
       cwd: body.working_dir || "",
-      prompt: body.prompt || body.task || "",
+      input: inputItemsForTextAndAttachments(body.prompt || "", body.attachments),
       modelProvider: "",
       model: String(body.model || "").trim(),
       profile: body.agent || "",
       reasoningEffort: body.reasoning_effort || "",
       launchOverrides: body.launch_overrides || body.launchOverrides || null,
-      // Optional initial-turn attachments (kata v80q). Same encoding rules
-      // as turn/start: ArrayBuffer bodies base64-encoded here so the daemon
-      // can ingest them as appwire.InputItem.Data ([]byte).
-      items: inputItemsFromAttachments(body.attachments),
     }).then((resp) => {
       const thread = resp.thread || {};
       return { ref: threadRef(thread), session_id: threadID(thread) };
@@ -329,8 +325,14 @@
     return "";
   }
 
+  function inputItemsForTextAndAttachments(text, attachments) {
+    const input = [];
+    if (text && String(text).trim()) input.push({ type: "text", text: String(text) });
+    return input.concat(inputItemsFromAttachments(attachments));
+  }
+
   // inputItemsFromAttachments translates the composer's pending attachment
-  // bag into the on-wire `items` array. We always emit Type="image" (the
+  // bag into image input items. We always emit Type="image" (the
   // server treats "image" and "input_image" as equivalent — InputItem schema
   // is unchanged). When .data is an ArrayBuffer it's base64-encoded here so
   // the JSON.stringify upstream produces a normal string.
@@ -347,14 +349,15 @@
   function startTurn(sessionId, text, attachments) {
     return optimisticCall(METHOD.turnStart, {
       ref: refForSession(sessionId),
-      prompt: text || "",
-      items: inputItemsFromAttachments(attachments),
+      input: inputItemsForTextAndAttachments(text, attachments),
     }, { text, items: attachments || [] });
   }
 
   function steer(sessionId, turnId, text) {
     return optimisticCall(METHOD.turnSteer, {
-      ref: refForSession(sessionId), turnId: turnId || "", text: text || "",
+      ref: refForSession(sessionId),
+      expectedTurnId: turnId || "",
+      input: inputItemsForTextAndAttachments(text, []),
     }, { text });
   }
 
@@ -395,7 +398,7 @@
 
   function action(sessionId, name, turnId) {
     const ref = refForSession(sessionId);
-    if (name === "interrupt") return request(METHOD.turnInterrupt, { ref, turnId: turnId || "" });
+    if (name === "interrupt") return request(METHOD.turnInterrupt, { ref, expectedTurnId: turnId || "" });
     if (name === "compact") return request(METHOD.threadCompactStart, { ref });
     if (name === "clear") return request(METHOD.threadClear, { ref });
     if (name === "shutdown") return request(METHOD.threadShutdown, { ref });
@@ -457,31 +460,25 @@
 
   function canonicalThreadStatus(status) {
     status = String(status || "").trim();
-    if (!status || status === "ended") return "notLoaded";
-    if (status === "processing") return "active";
-    if (status === "error") return "systemError";
     return status;
   }
 
   function canonicalTurnStatus(status) {
     status = String(status || "").trim();
-    if (!status) return "";
-    if (status === "running" || status === "active" || status === "processing") return "inProgress";
-    if (status === "canceled" || status === "cancelled") return "interrupted";
     return status;
   }
 
   function internalItemType(type) {
-    if (type === "userMessage") return "user_message";
-    if (type === "agentMessage") return "agent_message";
-    if (type === "commandExecution" || type === "mcpToolCall" || type === "dynamicToolCall" || type === "collabToolCall") return "tool_call";
+    if (type === "userMessage") return "userMessage";
+    if (type === "agentMessage") return "agentMessage";
+    if (type === "commandExecution" || type === "mcpToolCall" || type === "dynamicToolCall" || type === "collabToolCall") return "commandExecution";
     return type;
   }
 
   function eventsFromItem(item, turnStatus) {
     if (!item) return [];
     const type = internalItemType(item.type);
-    if (type === "user_message") {
+    if (type === "userMessage") {
       const event = { text: item.text || "", images: imagesForUserItem(item) };
       const entryIndex = transcriptEntryIndex(item);
       if (entryIndex > 0) event.turn = entryIndex;
@@ -490,14 +487,14 @@
     if (type === "steering") {
       return [["STEERING_INJECTED", { text: item.text || "", images: item.images || [] }]];
     }
-    if (type === "agent_message") {
+    if (type === "agentMessage") {
       if (!item.text) return [];
       if (terminalStatus(turnStatus) || terminalStatus(item.status) || (!runningStatus(turnStatus) && !runningStatus(item.status))) {
         return [["ASSISTANT_TEXT_START", {}], ["ASSISTANT_TEXT_END", { text: item.text }]];
       }
       return [["ASSISTANT_TEXT_START", {}], ["ASSISTANT_TEXT_DELTA", { delta: item.text }]];
     }
-    if (type === "tool_call") {
+    if (type === "commandExecution") {
       const callID = firstNonEmpty(item.callId, item.id);
       const itemID = item.id || "";
       const completed = terminalStatus(item.status) || (!runningStatus(item.status) && (!!item.output || !!item.error));
@@ -551,8 +548,8 @@
     if (!state) return eventsFromItem(item, "completed");
     if (state.completed) return [];
     const type = internalItemType(item.type);
-    if (type === "agent_message") return [["ASSISTANT_TEXT_END", { text: item.text || "" }]];
-    if (type === "tool_call") {
+    if (type === "agentMessage") return [["ASSISTANT_TEXT_END", { text: item.text || "" }]];
+    if (type === "commandExecution") {
       const callID = firstNonEmpty(item.callId, item.id);
       const itemID = item.id || "";
       const out = [];
@@ -599,7 +596,7 @@
     const activeToolCalls = new Set();
     for (const turn of thread.turns || []) {
       for (const item of turn.items || []) {
-        if (item && internalItemType(item.type) === "tool_call") {
+        if (item && internalItemType(item.type) === "commandExecution") {
           const callID = firstNonEmpty(item.callId, item.id);
           const itemID = item.id || "";
           const completed = terminalStatus(item.status) || (!runningStatus(item.status) && (!!item.output || !!item.error));
@@ -679,9 +676,9 @@
     if (method === "item/started") {
       markLiveItem(params, item, { started: true });
       const type = internalItemType(item.type);
-      if (type === "user_message") return eventsFromItem(item);
-      if (type === "agent_message") return [["ASSISTANT_TEXT_START", {}]];
-      if (type === "tool_call") return [["TOOL_CALL_START", {
+      if (type === "userMessage") return eventsFromItem(item);
+      if (type === "agentMessage") return [["ASSISTANT_TEXT_START", {}]];
+      if (type === "commandExecution") return [["TOOL_CALL_START", {
         call_id: firstNonEmpty(item.callId, item.id),
         item_id: item.id || "",
         tool_name: item.toolName || "",
@@ -692,8 +689,8 @@
     if (method === "item/completed") {
       markLiveItem(params, item, { completed: true });
       const type = internalItemType(item.type);
-      if (type === "user_message") return eventsFromItem(item);
-      if (type === "tool_call") return [["TOOL_CALL_END", {
+      if (type === "userMessage") return eventsFromItem(item);
+      if (type === "commandExecution") return [["TOOL_CALL_END", {
         call_id: firstNonEmpty(item.callId, item.id),
         item_id: item.id || "",
         tool_name: item.toolName || "",
@@ -702,7 +699,7 @@
         error: item.error || "",
         tool_state: item.raw || "",
       }]];
-      if (type === "agent_message") return [["ASSISTANT_TEXT_END", { text: item.text || "" }]];
+      if (type === "agentMessage") return [["ASSISTANT_TEXT_END", { text: item.text || "" }]];
       return eventsFromItem(item);
     }
     if (method === "item/agentMessage/delta") {

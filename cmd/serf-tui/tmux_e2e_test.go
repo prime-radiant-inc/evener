@@ -102,8 +102,8 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	if spawns[0].CWD != "/tmp/serf-tui-e2e/custom" {
 		t.Fatalf("dashboard spawn cwd=%q, want /tmp/serf-tui-e2e/custom", spawns[0].CWD)
 	}
-	if spawns[0].Prompt != "spawn from dashboard" {
-		t.Fatalf("dashboard spawn prompt=%q, want spawn from dashboard", spawns[0].Prompt)
+	if testInputText(spawns[0].Input) != "spawn from dashboard" {
+		t.Fatalf("dashboard spawn prompt=%q, want spawn from dashboard", testInputText(spawns[0].Input))
 	}
 	if spawns[0].ModelProvider != "" || spawns[0].Model != "openai/gpt-5" {
 		t.Fatalf("dashboard spawn model=%s/%s, want openai/gpt-5", spawns[0].ModelProvider, spawns[0].Model)
@@ -119,8 +119,8 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	if spawns[1].CWD != tuiE2EProjectDir {
 		t.Fatalf("project spawn cwd=%q, want %q", spawns[1].CWD, tuiE2EProjectDir)
 	}
-	if spawns[1].Prompt != "spawn from project" {
-		t.Fatalf("project spawn prompt=%q, want spawn from project", spawns[1].Prompt)
+	if testInputText(spawns[1].Input) != "spawn from project" {
+		t.Fatalf("project spawn prompt=%q, want spawn from project", testInputText(spawns[1].Input))
 	}
 	if spawns[1].ModelProvider != "" || spawns[1].Model != "openai/gpt-5" {
 		t.Fatalf("project spawn model=%s/%s, want openai/gpt-5", spawns[1].ModelProvider, spawns[1].Model)
@@ -666,7 +666,7 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 	requireFullTmuxE2E(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	hub.SetSessionState("01LIVE", appwire.ThreadStatusProcessing)
+	hub.SetSessionState("01LIVE", appwire.ThreadStatusActive)
 	hub.SetSessionContextPressure("01LIVE", 0.66)
 	defer hub.Close()
 	app := startTUITmux(t, bin, hub.URL())
@@ -676,7 +676,7 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 	app.WaitFor(
 		"live task",
 		"source: serf",
-		"state: processing",
+		"state: active",
 		"model: gpt-5",
 		"project: serf",
 		"cwd: "+tuiE2EProjectDir,
@@ -1089,19 +1089,19 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 			ID:     "turn_1",
 			Status: appwire.TurnStatusCompleted,
 			Items: []appwire.ThreadItem{
-				{Type: "user_message", ID: "user-1", TurnID: "turn_1", Text: "initial question"},
-				{Type: "tool_call", ID: "tool-1", TurnID: "turn_1", ToolName: "exec", ArgumentsJSON: `{"cmd":"echo e2e"}`, Output: "tool output from e2e", Status: "completed"},
-				{Type: "agent_message", ID: "agent-1", TurnID: "turn_1", Text: "initial answer", Status: "completed"},
+				{Type: "userMessage", ID: "user-1", TurnID: "turn_1", Text: "initial question"},
+				{Type: "commandExecution", ID: "tool-1", TurnID: "turn_1", ToolName: "exec", ArgumentsJSON: `{"cmd":"echo e2e"}`, Output: "tool output from e2e", Status: "completed"},
+				{Type: "agentMessage", ID: "agent-1", TurnID: "turn_1", Text: "initial answer", Status: "completed"},
 			},
 		}, {
 			ID:     "turn_active",
-			Status: appwire.TurnStatusRunning,
+			Status: appwire.TurnStatusInProgress,
 		}},
 	})
 	h.sessions["01SUB"] = &tuiE2ESession{
 		ID:         "01SUB",
 		Title:      "subagent inspect",
-		State:      appwire.ThreadStatusEnded,
+		State:      appwire.ThreadStatusNotLoaded,
 		Project:    "serf",
 		WorkingDir: tuiE2EProjectDir,
 		Model:      "gpt-5",
@@ -1114,14 +1114,14 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 			ID:     "turn_1",
 			Status: appwire.TurnStatusCompleted,
 			Items: []appwire.ThreadItem{
-				{Type: "agent_message", ID: "sub-agent-1", TurnID: "turn_1", Text: "subagent transcript from e2e", Status: "completed"},
+				{Type: "agentMessage", ID: "sub-agent-1", TurnID: "turn_1", Text: "subagent transcript from e2e", Status: "completed"},
 			},
 		}},
 	}
 	h.addSession(&tuiE2ESession{
 		ID:           "01PAST",
 		Title:        "ended maintenance",
-		State:        appwire.ThreadStatusEnded,
+		State:        appwire.ThreadStatusNotLoaded,
 		Project:      "serf",
 		WorkingDir:   tuiE2EProjectDir,
 		Model:        "gpt-5",
@@ -1145,7 +1145,7 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 			ID:     "turn_1",
 			Status: appwire.TurnStatusCompleted,
 			Items: []appwire.ThreadItem{
-				{Type: "agent_message", ID: "ops-agent-1", TurnID: "turn_1", Text: "ops transcript", Status: "completed"},
+				{Type: "agentMessage", ID: "ops-agent-1", TurnID: "turn_1", Text: "ops transcript", Status: "completed"},
 			},
 		}},
 	})
@@ -1234,7 +1234,7 @@ func (h *tuiE2EHub) EndDashboardSessions() {
 	defer h.mu.Unlock()
 	for _, id := range h.order {
 		if s := h.sessions[id]; s != nil {
-			s.State = appwire.ThreadStatusEnded
+			s.State = appwire.ThreadStatusNotLoaded
 			s.Live = false
 		}
 	}
@@ -1256,13 +1256,13 @@ func (h *tuiE2EHub) BroadcastToolStarted(threadID string) {
 		"ref":      "local:" + threadID,
 		"turnId":   "turn_tool",
 		"item": appwire.ThreadItem{
-			Type:          "tool_call",
+			Type:          "commandExecution",
 			ID:            "tool_stream",
 			CallID:        "call_stream",
 			TurnID:        "turn_tool",
 			ToolName:      "read_file",
 			ArgumentsJSON: `{"file_path":"/tmp/tmux-tool.txt"}`,
-			Status:        "running",
+			Status:        appwire.TurnStatusInProgress,
 		},
 	})
 }
@@ -1283,7 +1283,7 @@ func (h *tuiE2EHub) BroadcastToolCompleted(threadID string) {
 		"ref":      "local:" + threadID,
 		"turnId":   "turn_tool",
 		"item": appwire.ThreadItem{
-			Type:          "tool_call",
+			Type:          "commandExecution",
 			ID:            "tool_stream",
 			CallID:        "call_stream",
 			TurnID:        "turn_tool",
@@ -1303,7 +1303,7 @@ func (h *tuiE2EHub) AppendAssistantFinal(threadID, text string) {
 			ID:     "turn_stream",
 			Status: appwire.TurnStatusCompleted,
 			Items: []appwire.ThreadItem{
-				{Type: "agent_message", ID: "agent_stream", TurnID: "turn_stream", Text: text, Status: "completed"},
+				{Type: "agentMessage", ID: "agent_stream", TurnID: "turn_stream", Text: text, Status: "completed"},
 			},
 		})
 	}
@@ -1318,7 +1318,7 @@ func (h *tuiE2EHub) AppendToolFinal(threadID string) {
 			Status: appwire.TurnStatusCompleted,
 			Items: []appwire.ThreadItem{
 				{
-					Type:          "tool_call",
+					Type:          "commandExecution",
 					ID:            "tool_stream",
 					CallID:        "call_stream",
 					TurnID:        "turn_tool",
@@ -1447,7 +1447,7 @@ func (h *tuiE2EHub) handleThreadStart(_ context.Context, params appwire.ThreadSt
 			ID:     "turn_1",
 			Status: appwire.TurnStatusCompleted,
 			Items: []appwire.ThreadItem{
-				{Type: "agent_message", ID: "spawn-agent-1", TurnID: "turn_1", Text: "spawn transcript ready", Status: "completed"},
+				{Type: "agentMessage", ID: "spawn-agent-1", TurnID: "turn_1", Text: "spawn transcript ready", Status: "completed"},
 			},
 		}},
 	}
@@ -1472,7 +1472,7 @@ func (h *tuiE2EHub) handleThreadResume(_ context.Context, params appwire.ThreadR
 			ID:     "turn_1",
 			Status: appwire.TurnStatusCompleted,
 			Items: []appwire.ThreadItem{
-				{Type: "agent_message", ID: "resume-agent-1", TurnID: "turn_1", Text: "resume transcript ready", Status: "completed"},
+				{Type: "agentMessage", ID: "resume-agent-1", TurnID: "turn_1", Text: "resume transcript ready", Status: "completed"},
 			},
 		}},
 	}
@@ -1486,8 +1486,8 @@ func (h *tuiE2EHub) handleTurnStart(_ context.Context, params appwire.TurnStartP
 	if h.failSend {
 		return appwire.TurnStartResponse{}, fmt.Errorf("send failed")
 	}
-	h.sends = append(h.sends, params.Prompt)
-	return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_sent", Status: appwire.TurnStatusRunning}}, nil
+	h.sends = append(h.sends, testInputText(params.Input))
+	return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_sent", Status: appwire.TurnStatusInProgress}}, nil
 }
 
 func (h *tuiE2EHub) handleTurnSteer(_ context.Context, params appwire.TurnSteerParams) (appwire.EmptyResponse, error) {
@@ -1527,8 +1527,8 @@ func (h *tuiE2EHub) handleThreadTranscriptList(_ context.Context, params appwire
 		return appwire.ThreadTranscriptListResponse{}, appwire.Unavailable("thread not found: " + id)
 	}
 	return appwire.ThreadTranscriptListResponse{Data: []appwire.ThreadTranscriptTarget{
-		{Ref: "local:01LIVE", ThreadID: "01LIVE", Title: "main session (live)", Kind: "main", Status: appwire.ThreadStatusProcessing, Source: "local"},
-		{Ref: "local:01SUB", ThreadID: "01SUB", Title: "subagent inspect", Kind: "subagent", Status: appwire.ThreadStatusEnded, Source: "local", TurnsUsed: 1},
+		{Ref: "local:01LIVE", ThreadID: "01LIVE", Title: "main session (live)", Kind: "main", Status: appwire.ThreadStatusActive, Source: "local"},
+		{Ref: "local:01SUB", ThreadID: "01SUB", Title: "subagent inspect", Kind: "subagent", Status: appwire.ThreadStatusNotLoaded, Source: "local", TurnsUsed: 1},
 	}}, nil
 }
 
@@ -1591,8 +1591,8 @@ func (h *tuiE2EHub) handleThreadFork(_ context.Context, params appwire.ThreadFor
 			ID:     "turn_1",
 			Status: appwire.TurnStatusCompleted,
 			Items: []appwire.ThreadItem{
-				{Type: "user_message", ID: "fork-user-1", TurnID: "turn_1", Text: params.EditedInput},
-				{Type: "agent_message", ID: "fork-agent-1", TurnID: "turn_1", Text: "fork answer", Status: "completed"},
+				{Type: "userMessage", ID: "fork-user-1", TurnID: "turn_1", Text: params.EditedInput},
+				{Type: "agentMessage", ID: "fork-agent-1", TurnID: "turn_1", Text: "fork answer", Status: "completed"},
 			},
 		}},
 	}

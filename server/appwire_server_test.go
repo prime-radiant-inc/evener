@@ -25,8 +25,8 @@ func TestServerAppWireTurnStartQueuesInput(t *testing.T) {
 		t.Fatalf("init=%v", init.Kind())
 	}
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
-		Ref:    "local:th_1",
-		Prompt: "hello",
+		Ref:   "local:th_1",
+		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 	}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v", resp.Kind())
@@ -92,8 +92,8 @@ func TestServerAppWireTurnStartIDMatchesProjectedNotifications(t *testing.T) {
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
-		Ref:    "local:th_1",
-		Prompt: "hello",
+		Ref:   "local:th_1",
+		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 	}))
 	if resp.Kind() != appwire.MessageResponse {
 		t.Fatalf("resp=%v", resp.Kind())
@@ -129,7 +129,7 @@ func TestServerAppWireTurnStartIDMatchesProjectedNotifications(t *testing.T) {
 			if err := json.Unmarshal(item.Notification.Params, &params); err != nil {
 				t.Fatalf("item completed params: %v", err)
 			}
-			if params.Item.Type == "user_message" && params.Item.Text == "hello" {
+			if params.Item.Type == "userMessage" && params.Item.Text == "hello" {
 				itemTurnID = params.Item.TurnID
 			}
 		}
@@ -181,10 +181,10 @@ func TestServerAppWireThreadReadIncludesProjectedTurns(t *testing.T) {
 	if len(turn.Items) != 2 {
 		t.Fatalf("items=%+v", turn.Items)
 	}
-	if turn.Items[0].Type != "user_message" || turn.Items[0].Text != "hello" {
+	if turn.Items[0].Type != "userMessage" || turn.Items[0].Text != "hello" {
 		t.Fatalf("user item=%+v", turn.Items[0])
 	}
-	if turn.Items[1].Type != "agent_message" || turn.Items[1].Text != "hi there" {
+	if turn.Items[1].Type != "agentMessage" || turn.Items[1].Text != "hi there" {
 		t.Fatalf("agent item=%+v", turn.Items[1])
 	}
 }
@@ -245,16 +245,16 @@ func TestServerAppWireThreadReadIncludesInProgressDeltas(t *testing.T) {
 	for i := range data.Thread.Turns[0].Items {
 		item := &data.Thread.Turns[0].Items[i]
 		switch item.Type {
-		case "agent_message":
+		case "agentMessage":
 			agentItem = item
-		case "tool_call":
+		case "commandExecution":
 			toolItem = item
 		}
 	}
-	if agentItem == nil || agentItem.Text != "partial answer" || agentItem.Status != appwire.TurnStatusRunning {
+	if agentItem == nil || agentItem.Text != "partial answer" || agentItem.Status != appwire.TurnStatusInProgress {
 		t.Fatalf("agent item=%+v", agentItem)
 	}
-	if toolItem == nil || toolItem.Output != "ok done" || toolItem.Status != appwire.TurnStatusRunning {
+	if toolItem == nil || toolItem.Output != "ok done" || toolItem.Status != appwire.TurnStatusInProgress {
 		t.Fatalf("tool item=%+v", toolItem)
 	}
 }
@@ -325,9 +325,9 @@ func TestServerAppWireThreadReadMergesCompletionItemsWithDeltas(t *testing.T) {
 	for i := range data.Thread.Turns[0].Items {
 		item := &data.Thread.Turns[0].Items[i]
 		switch item.Type {
-		case "agent_message":
+		case "agentMessage":
 			agentItem = item
-		case "tool_call":
+		case "commandExecution":
 			toolItem = item
 		}
 	}
@@ -380,10 +380,10 @@ func TestServerAppWireThreadReadUsesCommunicateAsAssistantMessage(t *testing.T) 
 	}
 	var agentMessages, communicateTools int
 	for _, item := range data.Thread.Turns[0].Items {
-		if item.Type == "agent_message" && item.Text == "done" {
+		if item.Type == "agentMessage" && item.Text == "done" {
 			agentMessages++
 		}
-		if item.Type == "tool_call" && item.ToolName == "communicate" {
+		if item.Type == "commandExecution" && item.ToolName == "communicate" {
 			communicateTools++
 		}
 	}
@@ -419,15 +419,15 @@ func TestServerAppWireTurnSteerRejectsMismatchedTurnID(t *testing.T) {
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
 	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
-		Ref:    "local:th_1",
-		Prompt: "hello",
+		Ref:   "local:th_1",
+		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 	}))
 	startResp := start.Response.Result.(appwire.TurnStartResponse)
 
 	bad := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnSteer, appwire.TurnSteerParams{
-		Ref:    "local:th_1",
-		TurnID: startResp.Turn.ID + "-stale",
-		Text:   "wrong turn",
+		Ref:            "local:th_1",
+		ExpectedTurnID: startResp.Turn.ID + "-stale",
+		Input:          []appwire.InputItem{{Type: "text", Text: "wrong turn"}},
 	}))
 	if bad.Kind() != appwire.MessageError {
 		t.Fatalf("bad steer response=%v", bad.Kind())
@@ -437,9 +437,9 @@ func TestServerAppWireTurnSteerRejectsMismatchedTurnID(t *testing.T) {
 	}
 
 	good := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(4), appwire.MethodTurnSteer, appwire.TurnSteerParams{
-		Ref:    "local:th_1",
-		TurnID: startResp.Turn.ID,
-		Text:   "right turn",
+		Ref:            "local:th_1",
+		ExpectedTurnID: startResp.Turn.ID,
+		Input:          []appwire.InputItem{{Type: "text", Text: "right turn"}},
 	}))
 	if good.Kind() != appwire.MessageResponse {
 		t.Fatalf("good steer response=%v error=%+v", good.Kind(), good.Error)
@@ -457,8 +457,8 @@ func TestServerAppWireTurnSteerRequiresTurnID(t *testing.T) {
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnSteer, appwire.TurnSteerParams{
-		Ref:  "local:th_1",
-		Text: "missing turn",
+		Ref:   "local:th_1",
+		Input: []appwire.InputItem{{Type: "text", Text: "missing turn"}},
 	}))
 	if resp.Kind() != appwire.MessageError {
 		t.Fatalf("steer without turn id response=%v", resp.Kind())
@@ -477,8 +477,8 @@ func TestServerAppWireTurnInterruptRequiresActiveTurnID(t *testing.T) {
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
 	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
-		Ref:    "local:th_1",
-		Prompt: "hello",
+		Ref:   "local:th_1",
+		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 	}))
 	startResp := start.Response.Result.(appwire.TurnStartResponse)
 
@@ -489,15 +489,15 @@ func TestServerAppWireTurnInterruptRequiresActiveTurnID(t *testing.T) {
 		t.Fatalf("interrupt without turn id=%+v", missing)
 	}
 	stale := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(4), appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
-		Ref:    "local:th_1",
-		TurnID: startResp.Turn.ID + "-stale",
+		Ref:            "local:th_1",
+		ExpectedTurnID: startResp.Turn.ID + "-stale",
 	}))
 	if stale.Kind() != appwire.MessageError || stale.Error.Error.Code != appwire.CodeConflict {
 		t.Fatalf("stale interrupt=%+v", stale)
 	}
 	good := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(5), appwire.MethodTurnInterrupt, appwire.TurnInterruptParams{
-		Ref:    "local:th_1",
-		TurnID: startResp.Turn.ID,
+		Ref:            "local:th_1",
+		ExpectedTurnID: startResp.Turn.ID,
 	}))
 	if good.Kind() != appwire.MessageResponse {
 		t.Fatalf("good interrupt=%+v", good)
@@ -535,7 +535,7 @@ func TestAppStatusPreservesAttentionStates(t *testing.T) {
 		"AWAITING_INPUT": "awaiting",
 		"AWAITING_REPLY": "awaiting",
 		"WARNING":        "warning",
-		"ERRORED":        appwire.ThreadStatusError,
+		"ERRORED":        appwire.ThreadStatusSystemError,
 	}
 	for state, want := range tests {
 		if got := appStatus(state, false); got != want {
@@ -552,8 +552,8 @@ func TestServerAppWireTurnStartRejectsClosedSession(t *testing.T) {
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
-		Ref:    "local:th_1",
-		Prompt: "hello",
+		Ref:   "local:th_1",
+		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
 	}))
 	if resp.Kind() != appwire.MessageError {
 		t.Fatalf("resp=%v", resp.Kind())
@@ -854,8 +854,8 @@ func TestServerAppWireTurnStartRejectsReservedActiveTurn(t *testing.T) {
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
 	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
-		Ref:    "local:th_1",
-		Prompt: "second",
+		Ref:   "local:th_1",
+		Input: []appwire.InputItem{{Type: "text", Text: "second"}},
 	}))
 	if resp.Kind() != appwire.MessageError {
 		t.Fatalf("expected error response, got %v", resp.Kind())

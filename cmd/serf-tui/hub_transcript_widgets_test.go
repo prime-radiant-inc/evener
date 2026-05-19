@@ -29,13 +29,13 @@ func TestHubModelLiveAgentCompletionUpdatesDeltaWithoutDuplicate(t *testing.T) {
 			"threadId": "th_1",
 			"turnId":   "turn_1",
 			"item": appwire.ThreadItem{
-				Type:          "tool_call",
+				Type:          "commandExecution",
 				ID:            "tool_1",
 				CallID:        "call_1",
 				TurnID:        "turn_1",
 				ToolName:      "shell",
 				ArgumentsJSON: `{"command":"pwd"}`,
-				Status:        "running",
+				Status:        appwire.TurnStatusInProgress,
 			},
 		}).Notification,
 	})
@@ -45,7 +45,7 @@ func TestHubModelLiveAgentCompletionUpdatesDeltaWithoutDuplicate(t *testing.T) {
 			"threadId": "th_1",
 			"turnId":   "turn_1",
 			"item": appwire.ThreadItem{
-				Type:   "agent_message",
+				Type:   "agentMessage",
 				ID:     "agent_1",
 				TurnID: "turn_1",
 				Text:   "partial **markdown** final",

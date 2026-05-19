@@ -20,7 +20,7 @@ func TestBuildTranscriptPickerItems_MergesObservedAndActiveSubagents(t *testing.
 		SessionID: "root-123",
 		Detailed: &server.DetailedStatus{
 			Subagents: []server.SubagentStatusInfo{
-				{ID: "sub-running", Status: "running", TurnsUsed: 1},
+				{ID: "sub-running", Status: "inProgress", TurnsUsed: 1},
 			},
 		},
 	})

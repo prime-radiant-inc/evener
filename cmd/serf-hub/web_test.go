@@ -1536,15 +1536,13 @@ func TestWeb_ApiSpawn_AllowsBlankCodexPromptWithoutTurnStart(t *testing.T) {
 	}
 }
 
-func TestSpawnRequestJSONAcceptsPromptAndLegacyTask(t *testing.T) {
+func TestSpawnRequestJSONAcceptsPrompt(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		body string
 		want string
 	}{
 		{name: "prompt", body: `{"prompt":"hello prompt"}`, want: "hello prompt"},
-		{name: "legacy_task", body: `{"task":"hello legacy"}`, want: "hello legacy"},
-		{name: "prompt_preferred", body: `{"prompt":"hello prompt","task":"hello legacy"}`, want: "hello prompt"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var got spawnRequest
@@ -2100,7 +2098,7 @@ func TestWeb_Send_EndedRosterEntryResumesForwardsAndKeepsReplay(t *testing.T) {
 	var gotPrompt string
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-		gotPrompt = params.Prompt
+		gotPrompt = inputTextForTest(params.Input)
 		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_4"}}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3108,20 +3106,21 @@ func TestWeb_Send_ForwardsTextAndImages(t *testing.T) {
 	if rec.Code < 200 || rec.Code >= 300 {
 		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
 	}
-	if got.Prompt != "caption" {
-		t.Errorf("prompt=%q, want %q", got.Prompt, "caption")
+	if inputTextForTest(got.Input) != "caption" {
+		t.Errorf("prompt=%q, want %q", inputTextForTest(got.Input), "caption")
 	}
-	if len(got.Items) != 1 {
-		t.Fatalf("items=%d, want 1", len(got.Items))
+	items := imageInputItems(got.Input)
+	if len(items) != 1 {
+		t.Fatalf("items=%d, want 1", len(items))
 	}
-	if got.Items[0].MediaType != "image/png" {
-		t.Errorf("media_type=%q, want image/png", got.Items[0].MediaType)
+	if items[0].MediaType != "image/png" {
+		t.Errorf("media_type=%q, want image/png", items[0].MediaType)
 	}
-	if got.Items[0].Name != "x.png" {
-		t.Errorf("name=%q, want x.png", got.Items[0].Name)
+	if items[0].Name != "x.png" {
+		t.Errorf("name=%q, want x.png", items[0].Name)
 	}
-	if len(got.Items[0].Data) != len(imgBytes) {
-		t.Errorf("image data len=%d, want %d", len(got.Items[0].Data), len(imgBytes))
+	if len(items[0].Data) != len(imgBytes) {
+		t.Errorf("image data len=%d, want %d", len(items[0].Data), len(imgBytes))
 	}
 }
 
@@ -3168,20 +3167,21 @@ func TestWeb_Send_ImageOnly_Forwards(t *testing.T) {
 	if rec.Code < 200 || rec.Code >= 300 {
 		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
 	}
-	if got.Prompt != "" {
-		t.Errorf("prompt=%q, want empty", got.Prompt)
+	if inputTextForTest(got.Input) != "" {
+		t.Errorf("prompt=%q, want empty", inputTextForTest(got.Input))
 	}
-	if len(got.Items) != 1 {
-		t.Fatalf("items=%d, want 1", len(got.Items))
+	items := imageInputItems(got.Input)
+	if len(items) != 1 {
+		t.Fatalf("items=%d, want 1", len(items))
 	}
-	if got.Items[0].MediaType != "image/jpeg" {
-		t.Errorf("media_type=%q, want image/jpeg", got.Items[0].MediaType)
+	if items[0].MediaType != "image/jpeg" {
+		t.Errorf("media_type=%q, want image/jpeg", items[0].MediaType)
 	}
-	if got.Items[0].Name != "y.jpg" {
-		t.Errorf("name=%q, want y.jpg", got.Items[0].Name)
+	if items[0].Name != "y.jpg" {
+		t.Errorf("name=%q, want y.jpg", items[0].Name)
 	}
-	if len(got.Items[0].Data) != len(imgBytes) {
-		t.Errorf("image data len=%d, want %d", len(got.Items[0].Data), len(imgBytes))
+	if len(items[0].Data) != len(imgBytes) {
+		t.Errorf("image data len=%d, want %d", len(items[0].Data), len(imgBytes))
 	}
 }
 
@@ -3638,7 +3638,7 @@ func TestWeb_Steer_ForwardsBodyToDaemon(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status=%d, want 204 (body=%q)", rec.Code, rec.Body.String())
 	}
-	if got.Ref != "local:01STEER" || got.Text != "stop using mocks" {
+	if got.Ref != "local:01STEER" || inputTextForTest(got.Input) != "stop using mocks" {
 		t.Errorf("steer params=%+v", got)
 	}
 }
@@ -4274,7 +4274,7 @@ func TestWeb_WorkspaceDataLocalLiveUsesAppWireCapabilities(t *testing.T) {
 			ModelProvider: "gpt-5",
 			CWD:           "/projects/serf",
 			Turns: []appwire.Turn{
-				{ID: "turn_live", Status: appwire.TurnStatusRunning},
+				{ID: "turn_live", Status: appwire.TurnStatusInProgress},
 			},
 			Serf: appwire.SerfThread{
 				Ref:          "local:01CAPS",

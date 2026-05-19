@@ -54,9 +54,18 @@ func TestSendHubInputUsesAppWireTurnStart(t *testing.T) {
 	if !ok || sendMsg.err != nil {
 		t.Fatalf("msg=%T err=%v", msg, sendMsg.err)
 	}
-	if got.Ref != "local:th_1" || got.Prompt != "ship it" {
+	if got.Ref != "local:th_1" || testInputText(got.Input) != "ship it" {
 		t.Fatalf("params=%+v", got)
 	}
+}
+
+func testInputText(input []appwire.InputItem) string {
+	for _, item := range input {
+		if item.Text != "" {
+			return item.Text
+		}
+	}
+	return ""
 }
 
 func TestHubModelAppliesAppWireNotifications(t *testing.T) {
@@ -93,7 +102,7 @@ func TestHubModelAppliesAppWireNotifications(t *testing.T) {
 			"threadId": "th_1",
 			"turnId":   "turn_1",
 			"item": appwire.ThreadItem{
-				Type:   "agent_message",
+				Type:   "agentMessage",
 				ID:     "item_1",
 				TurnID: "turn_1",
 				Text:   "hello world final",
@@ -117,13 +126,13 @@ func TestHubModelCompletesLiveToolWithoutDuplicateMessage(t *testing.T) {
 			"threadId": "th_1",
 			"turnId":   "turn_1",
 			"item": appwire.ThreadItem{
-				Type:          "tool_call",
+				Type:          "commandExecution",
 				ID:            "item_tool_1",
 				CallID:        "call_1",
 				TurnID:        "turn_1",
 				ToolName:      "shell",
 				ArgumentsJSON: `{"command":"printf 'one\ntwo\n'"}`,
-				Status:        "running",
+				Status:        appwire.TurnStatusInProgress,
 			},
 		}).Notification,
 	})
@@ -151,7 +160,7 @@ func TestHubModelCompletesLiveToolWithoutDuplicateMessage(t *testing.T) {
 			"threadId": "th_1",
 			"turnId":   "turn_1",
 			"item": appwire.ThreadItem{
-				Type:     "tool_call",
+				Type:     "commandExecution",
 				ID:       "item_tool_1",
 				CallID:   "call_1",
 				TurnID:   "turn_1",
@@ -298,11 +307,11 @@ func TestHubModelTurnCompletedAppliesSnapshotItems(t *testing.T) {
 			"turn": appwire.Turn{
 				Status: appwire.TurnStatusCompleted,
 				Items: []appwire.ThreadItem{{
-					Type: "user_message",
+					Type: "userMessage",
 					ID:   "item_user",
 					Text: "hello",
 				}, {
-					Type: "agent_message",
+					Type: "agentMessage",
 					ID:   "item_agent",
 					Text: "done",
 				}},

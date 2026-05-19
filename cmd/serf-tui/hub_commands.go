@@ -195,7 +195,7 @@ func sendHubSpawn(client *appwire.Client, req hubSpawnRequest) tea.Cmd {
 		resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
 			Harness:         req.Harness,
 			CWD:             req.WorkingDir,
-			Prompt:          req.Prompt,
+			Input:           textInput(req.Prompt),
 			Model:           strings.TrimSpace(req.Model),
 			LaunchOverrides: req.LaunchOverrides,
 		})
@@ -397,7 +397,7 @@ func sendHubInput(client *appwire.Client, ref appwire.Ref, text string, draft st
 		if err != nil {
 			return hubSendMsg{text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 		}
-		resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: ref.String(), Prompt: text, Items: items})
+		resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: ref.String(), Input: appendTextInput(text, items)})
 		return hubSendMsg{text: text, draft: draft, turnID: resp.Turn.ID, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 	}
 }
@@ -430,7 +430,7 @@ func sendHubAction(client *appwire.Client, ref appwire.Ref, action string, turnI
 		var err error
 		switch action {
 		case "interrupt":
-			err = client.TurnInterrupt(context.Background(), appwire.TurnInterruptParams{Ref: ref.String(), TurnID: turnID})
+			err = client.TurnInterrupt(context.Background(), appwire.TurnInterruptParams{Ref: ref.String(), ExpectedTurnID: turnID})
 		case "compact":
 			err = client.ThreadCompactStart(context.Background(), appwire.ThreadCompactStartParams{Ref: ref.String()})
 		case "shutdown":
@@ -446,9 +446,21 @@ func sendHubAction(client *appwire.Client, ref appwire.Ref, action string, turnI
 
 func sendHubSteer(client *appwire.Client, ref appwire.Ref, turnID string, text string) tea.Cmd {
 	return func() tea.Msg {
-		err := client.TurnSteer(context.Background(), appwire.TurnSteerParams{Ref: ref.String(), TurnID: turnID, Text: text})
+		err := client.TurnSteer(context.Background(), appwire.TurnSteerParams{Ref: ref.String(), ExpectedTurnID: turnID, Input: textInput(text)})
 		return hubActionMsg{action: "steer", err: err}
 	}
+}
+
+func appendTextInput(text string, items []appwire.InputItem) []appwire.InputItem {
+	input := textInput(text)
+	return append(input, items...)
+}
+
+func textInput(text string) []appwire.InputItem {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	return []appwire.InputItem{{Type: "text", Text: text}}
 }
 
 func sendHubClear(client *appwire.Client, ref appwire.Ref) tea.Cmd {

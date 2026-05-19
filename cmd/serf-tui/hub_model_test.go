@@ -55,7 +55,7 @@ func TestHubModelDashboardShowsFullSessionTreeGroupedByProject(t *testing.T) {
 		Live: []hubTreeNode{
 			{Ref: "local:01LIVEA", SessionID: "01LIVEA", Title: "live alpha", State: "awaiting", Project: "serf", Live: true},
 			{Ref: "local:01LIVEB", SessionID: "01LIVEB", Title: "live beta", State: "idle", Project: "serf", Live: true},
-			{Ref: "local:01BRAIN", SessionID: "01BRAIN", Title: "brain live", State: "processing", Project: "brainstorm", Live: true},
+			{Ref: "local:01BRAIN", SessionID: "01BRAIN", Title: "brain live", State: "active", Project: "brainstorm", Live: true},
 		},
 		Projects: []hubTreeProject{
 			{
@@ -71,9 +71,9 @@ func TestHubModelDashboardShowsFullSessionTreeGroupedByProject(t *testing.T) {
 			{
 				Key:         "brainstorm",
 				Name:        "brainstorm",
-				RollupState: "processing",
+				RollupState: "active",
 				Sessions: []hubTreeNode{
-					{Ref: "local:01BRAIN", SessionID: "01BRAIN", Title: "brain live", State: "processing", Project: "brainstorm", Live: true},
+					{Ref: "local:01BRAIN", SessionID: "01BRAIN", Title: "brain live", State: "active", Project: "brainstorm", Live: true},
 				},
 			},
 			{
@@ -141,7 +141,7 @@ func TestHubModelDashboardRendersProjectTreeHierarchy(t *testing.T) {
 			RollupState: "idle",
 			Sessions: []hubTreeNode{
 				{Ref: "local:01ALPHA", SessionID: "01ALPHA", Title: "alpha task", State: "idle", Project: "serf", SourceLabel: "local", Model: "gpt-5", Live: true, UpdatedAt: 20},
-				{Ref: "codex-local:01BETA", SessionID: "01BETA", Title: "beta task", State: "processing", Project: "serf", SourceLabel: "codex-local", Model: "gpt-5.3-codex", Live: true, UpdatedAt: 10},
+				{Ref: "codex-local:01BETA", SessionID: "01BETA", Title: "beta task", State: "active", Project: "serf", SourceLabel: "codex-local", Model: "gpt-5.3-codex", Live: true, UpdatedAt: 10},
 			},
 		}, {
 			Key:         "codex",
@@ -621,7 +621,7 @@ func TestHubModelEndedSessionCanResumeOnSend(t *testing.T) {
 		Ref:       "local:01ENDED",
 		SessionID: "01ENDED",
 		Title:     "ended history",
-		State:     appwire.ThreadStatusEnded,
+		State:     appwire.ThreadStatusNotLoaded,
 		Project:   "serf",
 		Live:      false,
 	}, "/tmp/serf"))
@@ -658,7 +658,7 @@ func TestHubModelEndedSessionCanResumeOnSend(t *testing.T) {
 	}
 	updated, _ = updated.(hubModel).Update(cmd())
 	gotModel := updated.(hubModel)
-	if gotStart.Ref != "local:01ENDED" || gotStart.Prompt != "restart with this" {
+	if gotStart.Ref != "local:01ENDED" || testInputText(gotStart.Input) != "restart with this" {
 		t.Fatalf("turn start params=%+v", gotStart)
 	}
 	if gotModel.session.input.Value() != "" {
@@ -949,10 +949,10 @@ func TestHubModelSessionHeaderShowsCodexMetadata(t *testing.T) {
 		Name:          "codex task",
 		ModelProvider: "gpt-5.3-codex",
 		CWD:           "/tmp/serf",
-		Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing},
+		Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 		Turns: []appwire.Turn{
 			{ID: "turn_1", Status: appwire.TurnStatusCompleted},
-			{ID: "turn_2", Status: appwire.TurnStatusRunning},
+			{ID: "turn_2", Status: appwire.TurnStatusInProgress},
 		},
 		Serf: appwire.SerfThread{
 			Ref:             "codex-local:01CODEX",
@@ -969,7 +969,7 @@ func TestHubModelSessionHeaderShowsCodexMetadata(t *testing.T) {
 	for _, want := range []string{
 		"codex task",
 		"source: codex-local",
-		"state: processing",
+		"state: active",
 		"model: gpt-5.3-codex",
 		"project: serf",
 		"cwd: /tmp/serf",
@@ -989,7 +989,7 @@ func TestHubModelSessionHeaderShowsProviderWhenModelUnknown(t *testing.T) {
 		Source:    "codex-local",
 		Name:      "codex replay",
 		CWD:       "/tmp/serf",
-		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusEnded},
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusNotLoaded},
 		Serf: appwire.SerfThread{
 			Ref:     "codex-local:01CODEX",
 			Profile: "openai",
@@ -1079,7 +1079,7 @@ func TestHubModelSessionStatusLineShowsConnectionAuthBusyAndError(t *testing.T) 
 	m := newSessionHubModel(client)
 	m.width = 120
 	m.detail.Model = "openai/gpt-5"
-	m.detail.State = "processing"
+	m.detail.State = "active"
 	m.detail.ActiveTurnID = "turn_busy"
 	updated, _ := m.Update(hubAuthStatusMsg{status: appwire.AuthStatusResponse{
 		Provider:     "openai",
@@ -1112,7 +1112,7 @@ func TestHubModelSessionStatusLineReflectsCapabilityChanges(t *testing.T) {
 		t.Fatalf("send-ready status missing:\n%s", got)
 	}
 
-	m.detail.State = "processing"
+	m.detail.State = "active"
 	m.detail.Capabilities.Send = true
 	m.detail.Capabilities.Steer = true
 	m.detail.Capabilities.Queue = true
@@ -1188,8 +1188,8 @@ func TestHubModelDashboardSpawnUsesSelectedProjectWorkingDir(t *testing.T) {
 	if gotModelList.CWD != "/tmp/serf" {
 		t.Fatalf("model list cwd=%q, want /tmp/serf", gotModelList.CWD)
 	}
-	if gotSpawn.Prompt != "build the thing" {
-		t.Fatalf("prompt=%q, want build the thing", gotSpawn.Prompt)
+	if testInputText(gotSpawn.Input) != "build the thing" {
+		t.Fatalf("prompt=%q, want build the thing", testInputText(gotSpawn.Input))
 	}
 	if gotSpawn.ModelProvider != "" || gotSpawn.Model != "openai/gpt-5" {
 		t.Fatalf("model=%s/%s, want openai/gpt-5", gotSpawn.ModelProvider, gotSpawn.Model)
@@ -1596,8 +1596,8 @@ func TestHubModelDashboardSpawnEditsWorkingDirBeforePosting(t *testing.T) {
 	if gotSpawn.CWD != "/tmp/custom-serf" {
 		t.Fatalf("spawn cwd=%q, want /tmp/custom-serf", gotSpawn.CWD)
 	}
-	if gotSpawn.Prompt != "spawn with custom cwd" {
-		t.Fatalf("spawn prompt=%q", gotSpawn.Prompt)
+	if testInputText(gotSpawn.Input) != "spawn with custom cwd" {
+		t.Fatalf("spawn prompt=%q", testInputText(gotSpawn.Input))
 	}
 }
 
@@ -1759,8 +1759,8 @@ func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 	if gotSpawn.CWD != "/tmp/serf" {
 		t.Fatalf("cwd=%q, want /tmp/serf", gotSpawn.CWD)
 	}
-	if gotSpawn.Prompt != "slow spawn" {
-		t.Fatalf("prompt=%q, want slow spawn", gotSpawn.Prompt)
+	if testInputText(gotSpawn.Input) != "slow spawn" {
+		t.Fatalf("prompt=%q, want slow spawn", testInputText(gotSpawn.Input))
 	}
 	if gotSpawn.ModelProvider != "" || gotSpawn.Model != "openai/gpt-5" {
 		t.Fatalf("model=%s/%s, want openai/gpt-5", gotSpawn.ModelProvider, gotSpawn.Model)
@@ -1790,7 +1790,7 @@ func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
 	defer cleanup()
 
 	m := newSessionHubModel(client)
-	m.detail.State = appwire.ThreadStatusProcessing
+	m.detail.State = appwire.ThreadStatusActive
 	m.detail.Capabilities.Send = false
 	m.session.processing = true
 	notification := appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
@@ -1828,7 +1828,7 @@ func TestHubModelStatusProcessingRefreshesSessionCapabilities(t *testing.T) {
 				t.Fatalf("ref=%q, want local:01SEND", params.Ref)
 			}
 			thread := appwireThread(hubTreeNode{
-				Ref: "local:01SEND", SessionID: "01SEND", Title: "send task", State: "processing", Model: "gpt-5", Project: "serf", Live: true,
+				Ref: "local:01SEND", SessionID: "01SEND", Title: "send task", State: "active", Model: "gpt-5", Project: "serf", Live: true,
 			}, "/tmp/serf")
 			// Source's mid-turn capability snapshot: send/steer flip with state,
 			// but interrupt is freshly advertised.
@@ -1850,7 +1850,7 @@ func TestHubModelStatusProcessingRefreshesSessionCapabilities(t *testing.T) {
 	notification := appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 		ThreadID: "01SEND",
 		Ref:      "local:01SEND",
-		Status:   appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing},
+		Status:   appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 	})
 
 	cmd := m.applyHubNotification(*notification.Notification)
@@ -1881,10 +1881,10 @@ func TestHubModelStatusRefreshIgnoresStaleSessionRead(t *testing.T) {
 	m.session.processing = false
 
 	updated, _ := m.Update(hubSessionMsg{
-		expectedState: appwire.ThreadStatusProcessing,
+		expectedState: appwire.ThreadStatusActive,
 		detail: hubSessionDetail{
 			Ref:   "local:01SEND",
-			State: appwire.ThreadStatusProcessing,
+			State: appwire.ThreadStatusActive,
 			Capabilities: hubSessionCapabilities{
 				Send:      false,
 				Interrupt: true,
@@ -1899,13 +1899,13 @@ func TestHubModelStatusRefreshIgnoresStaleSessionRead(t *testing.T) {
 		t.Fatalf("capabilities=%+v, want stale refresh ignored", got.detail.Capabilities)
 	}
 
-	got.detail.State = appwire.ThreadStatusProcessing
+	got.detail.State = appwire.ThreadStatusActive
 	got.detail.Capabilities.Send = false
 	got.detail.Capabilities.Interrupt = true
 	got.statusRefreshToken = 2
 	updated, _ = got.Update(hubSessionMsg{
 		ref:                  "local:01SEND",
-		expectedState:        appwire.ThreadStatusProcessing,
+		expectedState:        appwire.ThreadStatusActive,
 		expectedRefreshToken: 1,
 		err:                  errors.New("old refresh failed"),
 	})
@@ -1915,18 +1915,18 @@ func TestHubModelStatusRefreshIgnoresStaleSessionRead(t *testing.T) {
 	}
 
 	updated, _ = got.Update(hubSessionMsg{
-		expectedState:        appwire.ThreadStatusProcessing,
+		expectedState:        appwire.ThreadStatusActive,
 		expectedRefreshToken: 1,
 		detail: hubSessionDetail{
 			Ref:   "local:01SEND",
-			State: appwire.ThreadStatusProcessing,
+			State: appwire.ThreadStatusActive,
 			Capabilities: hubSessionCapabilities{
 				Send: true,
 			},
 		},
 	})
 	got = updated.(hubModel)
-	if got.detail.State != appwire.ThreadStatusProcessing || got.detail.Capabilities.Send || !got.detail.Capabilities.Interrupt {
+	if got.detail.State != appwire.ThreadStatusActive || got.detail.Capabilities.Send || !got.detail.Capabilities.Interrupt {
 		t.Fatalf("detail=%+v, want old matching-state refresh token ignored", got.detail)
 	}
 
@@ -1936,12 +1936,12 @@ func TestHubModelStatusRefreshIgnoresStaleSessionRead(t *testing.T) {
 	got.statusRefreshToken = 2
 	updated, _ = got.Update(hubSessionMsg{
 		ref:                  "local:01SEND",
-		expectedState:        appwire.ThreadStatusProcessing,
+		expectedState:        appwire.ThreadStatusActive,
 		expectedRefreshToken: 2,
 		detail: hubSessionDetail{
 			Ref:       "local:01SEND",
 			SessionID: "01SEND",
-			State:     appwire.ThreadStatusProcessing,
+			State:     appwire.ThreadStatusActive,
 			Capabilities: hubSessionCapabilities{
 				Send: true,
 			},
@@ -1959,12 +1959,12 @@ func TestHubModelStatusRefreshIgnoresStaleSessionRead(t *testing.T) {
 	got.statusRefreshToken = 2
 	updated, _ = got.Update(hubSessionMsg{
 		ref:                  "local:01SEND",
-		expectedState:        appwire.ThreadStatusProcessing,
+		expectedState:        appwire.ThreadStatusActive,
 		expectedRefreshToken: 2,
 		detail: hubSessionDetail{
 			Ref:       "local:01SEND",
 			SessionID: "01SEND",
-			State:     appwire.ThreadStatusProcessing,
+			State:     appwire.ThreadStatusActive,
 		},
 	})
 	got = updated.(hubModel)
@@ -1974,7 +1974,7 @@ func TestHubModelStatusRefreshIgnoresStaleSessionRead(t *testing.T) {
 
 	updated, _ = got.Update(hubSessionMsg{
 		ref:                  "local:01SEND",
-		expectedState:        appwire.ThreadStatusProcessing,
+		expectedState:        appwire.ThreadStatusActive,
 		expectedRefreshToken: 2,
 		err:                  errors.New("late refresh failed"),
 	})
@@ -1988,7 +1988,7 @@ func TestHubModelStatusRefreshIgnoresStaleSessionRead(t *testing.T) {
 	got.detail.SessionID = "01SEND"
 	got.session.sessionID = "01SEND"
 	updated, _ = got.Update(hubSessionMsg{
-		expectedState:        appwire.ThreadStatusProcessing,
+		expectedState:        appwire.ThreadStatusActive,
 		expectedRefreshToken: 2,
 		detail: hubSessionDetail{
 			Ref:   "local:01SEND",
@@ -1999,7 +1999,7 @@ func TestHubModelStatusRefreshIgnoresStaleSessionRead(t *testing.T) {
 		},
 	})
 	got = updated.(hubModel)
-	if got.detail.State != appwire.ThreadStatusProcessing {
+	if got.detail.State != appwire.ThreadStatusActive {
 		t.Fatalf("state=%q, want stale idle response ignored", got.detail.State)
 	}
 	if got.detail.Capabilities.Send || !got.detail.Capabilities.Interrupt {
@@ -2007,30 +2007,30 @@ func TestHubModelStatusRefreshIgnoresStaleSessionRead(t *testing.T) {
 	}
 
 	updated, _ = got.Update(hubSessionMsg{
-		expectedState:        appwire.ThreadStatusProcessing,
+		expectedState:        appwire.ThreadStatusActive,
 		expectedRefreshToken: 2,
 		detail: hubSessionDetail{
 			Ref:   "local:01SEND",
-			State: appwire.ThreadStatusProcessing,
+			State: appwire.ThreadStatusActive,
 			Capabilities: hubSessionCapabilities{
 				Interrupt: true,
 			},
 		},
 	})
 	got = updated.(hubModel)
-	if got.detail.State != appwire.ThreadStatusProcessing || !got.detail.Capabilities.Interrupt {
+	if got.detail.State != appwire.ThreadStatusActive || !got.detail.Capabilities.Interrupt {
 		t.Fatalf("detail=%+v, want matching processing refresh applied", got.detail)
 	}
 }
 
 func TestStatusRefreshStatesMatchExpectedRequiresCurrentAndPayload(t *testing.T) {
-	if statusRefreshStatesMatchExpected(appwire.ThreadStatusProcessing, appwire.ThreadStatusIdle, appwire.ThreadStatusProcessing) {
+	if statusRefreshStatesMatchExpected(appwire.ThreadStatusActive, appwire.ThreadStatusIdle, appwire.ThreadStatusActive) {
 		t.Fatal("expected stale payload state to fail")
 	}
-	if statusRefreshStatesMatchExpected(appwire.ThreadStatusIdle, appwire.ThreadStatusProcessing, appwire.ThreadStatusProcessing) {
+	if statusRefreshStatesMatchExpected(appwire.ThreadStatusIdle, appwire.ThreadStatusActive, appwire.ThreadStatusActive) {
 		t.Fatal("expected stale current state to fail")
 	}
-	if !statusRefreshStatesMatchExpected(appwire.ThreadStatusProcessing, appwire.ThreadStatusProcessing, appwire.ThreadStatusProcessing) {
+	if !statusRefreshStatesMatchExpected(appwire.ThreadStatusActive, appwire.ThreadStatusActive, appwire.ThreadStatusActive) {
 		t.Fatal("expected matching current and payload states to pass")
 	}
 }
@@ -2053,7 +2053,7 @@ func TestHubModelSendUsesAppWireTurnStart(t *testing.T) {
 	}
 	updated, _ = updated.(hubModel).Update(cmd())
 	gotModel := updated.(hubModel)
-	if got.Ref != "local:01SEND" || got.Prompt != "ship it" {
+	if got.Ref != "local:01SEND" || testInputText(got.Input) != "ship it" {
 		t.Fatalf("params=%+v", got)
 	}
 	if gotModel.session.input.Value() != "" {
@@ -2152,16 +2152,16 @@ func TestHubModelSameSessionRefreshReplacesTranscript(t *testing.T) {
 
 func TestHubModelExpectedStatusRefreshDoesNotReplaceTranscript(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.detail.State = appwire.ThreadStatusProcessing
+	m.detail.State = appwire.ThreadStatusActive
 	m.session.messages = []chatMessage{{Kind: msgAssistant, Text: "live transcript"}}
 
 	updated, _ := m.Update(hubSessionMsg{
 		ref:           "local:01SEND",
-		expectedState: appwire.ThreadStatusProcessing,
+		expectedState: appwire.ThreadStatusActive,
 		detail: hubSessionDetail{
 			Ref:       "local:01SEND",
 			SessionID: "01SEND",
-			State:     appwire.ThreadStatusProcessing,
+			State:     appwire.ThreadStatusActive,
 		},
 		messages: []chatMessage{{Kind: msgAssistant, Text: "status payload transcript"}},
 	})
@@ -2332,7 +2332,7 @@ func TestHubModelActionsAndClearUseAppWire(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodTurnInterrupt, func(_ context.Context, params appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
 			methods = append(methods, appwire.MethodTurnInterrupt)
-			interruptTurnID = params.TurnID
+			interruptTurnID = params.ExpectedTurnID
 			return appwire.EmptyResponse{}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadCompactStart, func(context.Context, appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
@@ -2665,7 +2665,7 @@ func TestHubModelTurnStartEnablesTurnActions(t *testing.T) {
 	got.detail.Capabilities.Interrupt = false
 	got.detail.Capabilities.Steer = false
 	params, err := json.Marshal(map[string]any{
-		"turn": appwire.Turn{ID: "turn_notified", Status: appwire.TurnStatusRunning},
+		"turn": appwire.Turn{ID: "turn_notified", Status: appwire.TurnStatusInProgress},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -3419,7 +3419,7 @@ func TestHubDetailFromThreadIncludesActiveTurnID(t *testing.T) {
 		Serf:      appwire.SerfThread{Ref: "local:th_1"},
 		Turns: []appwire.Turn{
 			{ID: "turn_done", Status: appwire.TurnStatusCompleted},
-			{ID: "turn_active", Status: appwire.TurnStatusRunning},
+			{ID: "turn_active", Status: appwire.TurnStatusInProgress},
 		},
 	})
 	if detail.ActiveTurnID != "turn_active" {
@@ -3561,11 +3561,11 @@ func appwireThread(node hubTreeNode, cwd string) appwire.Thread {
 		if node.Live {
 			status = appwire.ThreadStatusIdle
 		} else {
-			status = appwire.ThreadStatusEnded
+			status = appwire.ThreadStatusNotLoaded
 		}
 	}
 	if !node.Live && status == appwire.ThreadStatusIdle {
-		status = appwire.ThreadStatusEnded
+		status = appwire.ThreadStatusNotLoaded
 	}
 	threadID := ref.ThreadID
 	if threadID == "" {

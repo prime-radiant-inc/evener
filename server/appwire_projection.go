@@ -87,7 +87,7 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 		turnID := p.startTurn()
 		data := eventData[agent.UserInputData](event.Data)
 		item := appwire.ThreadItem{
-			Type:                 "user_message",
+			Type:                 "userMessage",
 			ID:                   p.nextItemID("user"),
 			TurnID:               turnID,
 			TranscriptEntryIndex: data.Turn,
@@ -99,7 +99,7 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			p.notification(appwire.NotifyTurnStarted, map[string]any{
 				"threadId": p.threadID,
 				"ref":      p.ref,
-				"turn":     appwire.Turn{ID: turnID, Status: appwire.TurnStatusRunning},
+				"turn":     appwire.Turn{ID: turnID, Status: appwire.TurnStatusInProgress},
 			}),
 			p.notification(appwire.NotifyItemCompleted, map[string]any{
 				"threadId": p.threadID,
@@ -107,7 +107,7 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 				"turnId":   turnID,
 				"item":     item,
 			}),
-			p.threadStatus(appwire.ThreadStatusProcessing),
+			p.threadStatus(appwire.ThreadStatusActive),
 		)
 		return out
 	case agent.EventAssistantTextStart:
@@ -119,10 +119,10 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			"ref":      p.ref,
 			"turnId":   p.activeTurnID,
 			"item": appwire.ThreadItem{
-				Type:   "agent_message",
+				Type:   "agentMessage",
 				ID:     p.assistantItem,
 				TurnID: p.activeTurnID,
-				Status: appwire.TurnStatusRunning,
+				Status: appwire.TurnStatusInProgress,
 			},
 		})}
 	case agent.EventAssistantTextDelta:
@@ -144,7 +144,7 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			text = p.assistantText
 		}
 		item := appwire.ThreadItem{
-			Type:   "agent_message",
+			Type:   "agentMessage",
 			ID:     p.assistantItem,
 			TurnID: p.activeTurnID,
 			Text:   text,
@@ -171,7 +171,7 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			return nil
 		}
 		item := appwire.ThreadItem{
-			Type:   "agent_message",
+			Type:   "agentMessage",
 			ID:     p.nextItemID("assistant"),
 			TurnID: p.activeTurnID,
 			Text:   text,
@@ -198,13 +198,13 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			"ref":      p.ref,
 			"turnId":   p.activeTurnID,
 			"item": appwire.ThreadItem{
-				Type:          "tool_call",
+				Type:          "commandExecution",
 				ID:            itemID,
 				TurnID:        p.activeTurnID,
 				ToolName:      data.ToolName,
 				CallID:        data.CallID,
 				ArgumentsJSON: data.ArgumentsJSON,
-				Status:        appwire.TurnStatusRunning,
+				Status:        appwire.TurnStatusInProgress,
 			},
 		})}
 	case agent.EventToolCallOutputDelta:
@@ -227,7 +227,7 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			return nil
 		}
 		item := appwire.ThreadItem{
-			Type:     "tool_call",
+			Type:     "commandExecution",
 			ID:       p.toolItemID(data.CallID),
 			TurnID:   p.activeTurnID,
 			ToolName: data.ToolName,
@@ -352,7 +352,7 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 		if p.activeTurnID != "" {
 			turnStatus := appwire.TurnStatusCompleted
 			if state == appwire.ThreadStatusClosed || data.Interrupted {
-				turnStatus = appwire.TurnStatusCanceled
+				turnStatus = appwire.TurnStatusInterrupted
 			}
 			turnID := p.activeTurnID
 			p.activeTurnID = ""

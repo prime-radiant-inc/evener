@@ -85,7 +85,7 @@ func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 	items := appItemsFromReplayTurn("turn_1", 1, replayTurn{
 		Kind: "ASSISTANT",
 		Message: replayMessage{Content: []replayPart{{
-			Kind: "tool_call",
+			Kind: "commandExecution",
 			ToolCall: &replayToolCall{
 				ID:        "call_1",
 				Name:      "communicate",
@@ -94,7 +94,7 @@ func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 		}}},
 	}, toolNames)
 
-	if len(items) != 1 || items[0].Type != "agent_message" || items[0].Text != "done" {
+	if len(items) != 1 || items[0].Type != "agentMessage" || items[0].Text != "done" {
 		t.Fatalf("communicate items=%+v", items)
 	}
 
@@ -198,7 +198,7 @@ func TestHubRPCThreadListIncludesPastThreads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadList: %v", err)
 	}
-	if len(resp.Data) != 1 || resp.Data[0].ID != sessionID || resp.Data[0].Status.Type != appwire.ThreadStatusEnded {
+	if len(resp.Data) != 1 || resp.Data[0].ID != sessionID || resp.Data[0].Status.Type != appwire.ThreadStatusNotLoaded {
 		t.Fatalf("threads=%+v", resp.Data)
 	}
 }
@@ -467,7 +467,7 @@ func TestHubThreadListSearchMatchesProviderOnlyProfile(t *testing.T) {
 		SessionID: "th_codex",
 		Source:    "codex-local",
 		Preview:   "codex replay",
-		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusEnded},
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusNotLoaded},
 		Serf: appwire.SerfThread{
 			Ref:     "codex-local:th_codex",
 			Profile: "openai",
@@ -609,10 +609,10 @@ func TestHubRPCThreadReadReturnsPastTranscript(t *testing.T) {
 	if resp.Thread.ID != sessionID || len(resp.Thread.Turns) != 3 {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
-	if got := resp.Thread.Turns[0].Items[0]; got.Type != "user_message" || got.Text != "first task" {
+	if got := resp.Thread.Turns[0].Items[0]; got.Type != "userMessage" || got.Text != "first task" {
 		t.Fatalf("first item=%+v", got)
 	}
-	if got := resp.Thread.Turns[1].Items[0]; got.Type != "agent_message" || got.Text != "first reply" {
+	if got := resp.Thread.Turns[1].Items[0]; got.Type != "agentMessage" || got.Text != "first reply" {
 		t.Fatalf("second item=%+v", got)
 	}
 }
@@ -693,12 +693,12 @@ func TestSanitizeStaleProcessingStatusFlipsFailedAPICallToError(t *testing.T) {
 		ID:        sessionID,
 		SessionID: sessionID,
 		Source:    "local",
-		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing},
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 		Serf:      appwire.SerfThread{Ref: "local:" + sessionID},
 	}
 	out := sanitizeStaleProcessingStatus(WebConfig{Past: past}, thread)
-	if out.Status.Type != appwire.ThreadStatusError {
-		t.Fatalf("status=%q want=%q", out.Status.Type, appwire.ThreadStatusError)
+	if out.Status.Type != appwire.ThreadStatusSystemError {
+		t.Fatalf("status=%q want=%q", out.Status.Type, appwire.ThreadStatusSystemError)
 	}
 }
 
@@ -718,12 +718,12 @@ func TestSanitizeStaleProcessingStatusLeavesCompletedAssistantTailAlone(t *testi
 		ID:        sessionID,
 		SessionID: sessionID,
 		Source:    "local",
-		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing},
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 		Serf:      appwire.SerfThread{Ref: "local:" + sessionID},
 	}
 	out := sanitizeStaleProcessingStatus(WebConfig{Past: past}, thread)
-	if out.Status.Type != appwire.ThreadStatusProcessing {
-		t.Fatalf("status=%q want=%q (mid-tool processing must be preserved)", out.Status.Type, appwire.ThreadStatusProcessing)
+	if out.Status.Type != appwire.ThreadStatusActive {
+		t.Fatalf("status=%q want=%q (mid-tool processing must be preserved)", out.Status.Type, appwire.ThreadStatusActive)
 	}
 }
 
@@ -741,12 +741,12 @@ func TestSanitizeStaleProcessingStatusLeavesUserInputTailAlone(t *testing.T) {
 		ID:        sessionID,
 		SessionID: sessionID,
 		Source:    "local",
-		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing},
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 		Serf:      appwire.SerfThread{Ref: "local:" + sessionID},
 	}
 	out := sanitizeStaleProcessingStatus(WebConfig{Past: past}, thread)
-	if out.Status.Type != appwire.ThreadStatusProcessing {
-		t.Fatalf("status=%q want=%q (USER_INPUT tail is not a stuck signal)", out.Status.Type, appwire.ThreadStatusProcessing)
+	if out.Status.Type != appwire.ThreadStatusActive {
+		t.Fatalf("status=%q want=%q (USER_INPUT tail is not a stuck signal)", out.Status.Type, appwire.ThreadStatusActive)
 	}
 }
 
@@ -762,12 +762,12 @@ func TestSanitizeStaleProcessingStatusIgnoresNonLocalSources(t *testing.T) {
 		ID:        sessionID,
 		SessionID: sessionID,
 		Source:    "codex",
-		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing},
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 		Serf:      appwire.SerfThread{Ref: "codex:" + sessionID},
 	}
 	out := sanitizeStaleProcessingStatus(WebConfig{Past: past}, thread)
-	if out.Status.Type != appwire.ThreadStatusProcessing {
-		t.Fatalf("status=%q want=%q (only local sessions get the override)", out.Status.Type, appwire.ThreadStatusProcessing)
+	if out.Status.Type != appwire.ThreadStatusActive {
+		t.Fatalf("status=%q want=%q (only local sessions get the override)", out.Status.Type, appwire.ThreadStatusActive)
 	}
 }
 
@@ -781,7 +781,7 @@ func TestSanitizeStaleProcessingStatusLeavesNonProcessingAlone(t *testing.T) {
 	}
 	// Daemon legitimately reports idle / awaiting / error — we must not
 	// rewrite those.
-	for _, status := range []string{appwire.ThreadStatusIdle, appwire.ThreadStatusAwaiting, appwire.ThreadStatusError, appwire.ThreadStatusEnded} {
+	for _, status := range []string{appwire.ThreadStatusIdle, appwire.ThreadStatusAwaiting, appwire.ThreadStatusSystemError, appwire.ThreadStatusNotLoaded} {
 		thread := appwire.Thread{
 			ID:        sessionID,
 			SessionID: sessionID,
@@ -813,7 +813,7 @@ func TestHubRPCThreadReadFlipsStuckProcessingToError(t *testing.T) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
 			ID:        sessionID,
 			SessionID: sessionID,
-			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing},
+			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 			Source:    "local",
 			Serf:      appwire.SerfThread{Ref: params.Ref},
 		}}, nil
@@ -844,8 +844,8 @@ func TestHubRPCThreadReadFlipsStuckProcessingToError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
-	if resp.Thread.Status.Type != appwire.ThreadStatusError {
-		t.Fatalf("status=%q want=%q", resp.Thread.Status.Type, appwire.ThreadStatusError)
+	if resp.Thread.Status.Type != appwire.ThreadStatusSystemError {
+		t.Fatalf("status=%q want=%q", resp.Thread.Status.Type, appwire.ThreadStatusSystemError)
 	}
 }
 
@@ -913,7 +913,7 @@ func TestHubRPCThreadReadMergesPastTurnsForLiveDaemon(t *testing.T) {
 	if len(resp.Thread.Turns) != 3 {
 		t.Fatalf("turns=%d thread=%+v", len(resp.Thread.Turns), resp.Thread)
 	}
-	if got := resp.Thread.Turns[0].Items[0]; got.Type != "user_message" || got.Text != "first task" {
+	if got := resp.Thread.Turns[0].Items[0]; got.Type != "userMessage" || got.Text != "first task" {
 		t.Fatalf("first item=%+v", got)
 	}
 }
@@ -1627,7 +1627,7 @@ func TestHubThreadListMatchesCodexNativeStatusFilters(t *testing.T) {
 		ID:        "th_codex",
 		SessionID: "th_codex",
 		Source:    "codex",
-		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusProcessing},
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 		Serf:      appwire.SerfThread{Ref: "codex:th_codex"},
 	}})
 
@@ -1778,6 +1778,15 @@ type resumeAfterSubscribeUnavailableSource struct {
 	startPrompt string
 }
 
+func inputTextForTest(input []appwire.InputItem) string {
+	for _, item := range input {
+		if item.Text != "" {
+			return item.Text
+		}
+	}
+	return ""
+}
+
 func (s *resumeAfterSubscribeUnavailableSource) ID() string { return "local" }
 
 func (s *resumeAfterSubscribeUnavailableSource) SubscribeThread(ctx context.Context, params appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
@@ -1793,7 +1802,7 @@ func (s *resumeAfterSubscribeUnavailableSource) SubscribeThread(ctx context.Cont
 
 func (s *resumeAfterSubscribeUnavailableSource) StartTurn(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 	s.mu.Lock()
-	s.startPrompt = params.Prompt
+	s.startPrompt = inputTextForTest(params.Input)
 	s.mu.Unlock()
 	return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_resumed"}}, nil
 }
@@ -2893,7 +2902,7 @@ func TestHubRPCThreadStartRoutesByHarnessToConfiguredCodexSource(t *testing.T) {
 	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
 		Harness: "codex",
 		CWD:     "/work/project",
-		Prompt:  "hello codex",
+		Input:   []appwire.InputItem{{Type: "text", Text: "hello codex"}},
 		Model:   "gpt-5.1-codex",
 	})
 	if err != nil {
@@ -2924,7 +2933,7 @@ func TestHubRPCThreadStartLaunchesConfiguredCodexAppServer(t *testing.T) {
 	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
 		Harness: "codex-managed",
 		CWD:     "/tmp/project",
-		Prompt:  "hello launched codex",
+		Input:   []appwire.InputItem{{Type: "text", Text: "hello launched codex"}},
 	})
 	if err != nil {
 		t.Fatalf("ThreadStart: %v", err)
@@ -2951,7 +2960,7 @@ func TestHubRPCThreadStartRelaunchesConfiguredCodexAppServerAfterExit(t *testing
 	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
 		Harness: "codex-managed",
 		CWD:     "/tmp/project",
-		Prompt:  "first launched codex",
+		Input:   []appwire.InputItem{{Type: "text", Text: "first launched codex"}},
 	}); err != nil {
 		t.Fatalf("first ThreadStart: %v", err)
 	}
@@ -2964,7 +2973,7 @@ func TestHubRPCThreadStartRelaunchesConfiguredCodexAppServerAfterExit(t *testing
 	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
 		Harness: "codex-managed",
 		CWD:     "/tmp/project",
-		Prompt:  "second launched codex",
+		Input:   []appwire.InputItem{{Type: "text", Text: "second launched codex"}},
 	})
 	if err != nil {
 		t.Fatalf("second ThreadStart: %v", err)
@@ -3065,7 +3074,7 @@ func TestHubRPCTurnStartEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "codex-managed:th_fake", Prompt: "continue"})
+	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "codex-managed:th_fake", Input: []appwire.InputItem{{Type: "text", Text: "continue"}}})
 	if err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
@@ -3142,7 +3151,6 @@ func TestHubRPCThreadStartAllowsBlankCodexPromptWithoutTurnStart(t *testing.T) {
 	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
 		Harness: "codex",
 		CWD:     "/work/project",
-		Prompt:  "   ",
 	})
 	if err != nil {
 		t.Fatalf("ThreadStart: %v", err)
@@ -3453,7 +3461,7 @@ func TestHubRPCThreadStartRelaysReturnedSourceThread(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Harness: "codex", CWD: "/work", Prompt: "hello"})
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Harness: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
 	if err != nil {
 		t.Fatalf("ThreadStart: %v", err)
 	}
@@ -3508,7 +3516,7 @@ func TestHubRPCThreadStartReturnsThreadWhenPostStartRelayFails(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Harness: "codex", CWD: "/work", Prompt: "hello"})
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Harness: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
 	if err != nil {
 		t.Fatalf("ThreadStart: %v", err)
 	}
@@ -3602,7 +3610,7 @@ func TestHubRPCTurnStartResumesPastThread(t *testing.T) {
 	})
 	var gotPrompt string
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-		gotPrompt = params.Prompt
+		gotPrompt = inputTextForTest(params.Input)
 		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_4"}}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
@@ -3632,7 +3640,7 @@ func TestHubRPCTurnStartResumesPastThread(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, Prompt: "resume work"}); err != nil {
+	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
 	if gotPrompt != "resume work" {
@@ -3682,7 +3690,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterRelaySubscribeUnavailable(t *testi
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, Prompt: "resume after relay"}); err != nil {
+	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume after relay"}}}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
 	if prompt := source.lastStartPrompt(); prompt != "resume after relay" {
@@ -3739,7 +3747,7 @@ func TestHubRPCTurnStartDoesNotResumePastThreadOnLiveStartError(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, Prompt: "resume work"})
+	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
 	if err == nil || !strings.Contains(err.Error(), "session is processing") {
 		t.Fatalf("TurnStart err=%v, want live start error", err)
 	}
@@ -3794,7 +3802,7 @@ func TestHubRPCTurnStartDoesNotResumePastThreadOnGenericSubstringError(t *testin
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, Prompt: "resume work"})
+	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
 	if err == nil || !strings.Contains(err.Error(), "connection refused") {
 		t.Fatalf("TurnStart err=%v, want live start error", err)
 	}
@@ -3850,7 +3858,7 @@ func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true}); err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
-	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, Prompt: "resume work"}); err != nil {
+	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}}); err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
 
@@ -3937,7 +3945,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, Prompt: "resume work"})
+	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
 	if err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
@@ -3997,7 +4005,7 @@ func (s *resumeAfterSessionUnavailableManagedSource) StartTurn(_ context.Context
 	s.mu.Lock()
 	s.startCalls++
 	calls := s.startCalls
-	s.startPrompts = append(s.startPrompts, params.Prompt)
+	s.startPrompts = append(s.startPrompts, inputTextForTest(params.Input))
 	s.mu.Unlock()
 	if calls == 1 {
 		return appwire.TurnStartResponse{}, appwire.SessionUnavailable("managed daemon went away")
@@ -4059,8 +4067,8 @@ func TestHubRPCTurnStartResumesManagedLaunchRefOnSessionUnavailable(t *testing.T
 		t.Fatalf("Initialize: %v", err)
 	}
 	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{
-		Ref:    "codex-managed:th_managed",
-		Prompt: "keep going",
+		Ref:   "codex-managed:th_managed",
+		Input: []appwire.InputItem{{Type: "text", Text: "keep going"}},
 	})
 	if err != nil {
 		t.Fatalf("TurnStart: %v", err)
@@ -4151,8 +4159,8 @@ func TestHubRPCTurnStartDoesNotResumeUnknownNonLocalRef(t *testing.T) {
 		t.Fatalf("Initialize: %v", err)
 	}
 	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{
-		Ref:    "codex:th_unknown",
-		Prompt: "should not resume",
+		Ref:   "codex:th_unknown",
+		Input: []appwire.InputItem{{Type: "text", Text: "should not resume"}},
 	})
 	if err == nil {
 		t.Fatal("TurnStart succeeded, want SessionUnavailable error")

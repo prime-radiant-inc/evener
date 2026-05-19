@@ -66,11 +66,12 @@ func TestSendHubInputIncludesAttachments(t *testing.T) {
 	if !ok || sendMsg.err != nil {
 		t.Fatalf("msg=%T err=%v", msg, sendMsg.err)
 	}
-	if got.Ref != "local:th_1" || got.Prompt != "hi" {
+	if got.Ref != "local:th_1" || testInputText(got.Input) != "hi" {
 		t.Fatalf("params=%+v, want ref=local:th_1 prompt=hi", got)
 	}
-	if len(got.Items) != 2 {
-		t.Fatalf("items len=%d, want 2: %+v", len(got.Items), got.Items)
+	items := testImageInput(got.Input)
+	if len(items) != 2 {
+		t.Fatalf("items len=%d, want 2: %+v", len(items), got.Input)
 	}
 	for i, want := range []struct {
 		path  string
@@ -79,7 +80,7 @@ func TestSendHubInputIncludesAttachments(t *testing.T) {
 		{first, []byte("\x89PNG\r\n\x1a\nfirst-png-bytes")},
 		{second, []byte("\x89PNG\r\n\x1a\nsecond-png-bytes")},
 	} {
-		item := got.Items[i]
+		item := items[i]
 		if item.Type != "image" {
 			t.Errorf("items[%d].Type=%q, want image", i, item.Type)
 		}
@@ -318,11 +319,12 @@ func TestAttachmentBytesReadFromTempFile(t *testing.T) {
 	if sendMsg, ok := msg.(hubSendMsg); !ok || sendMsg.err != nil {
 		t.Fatalf("msg=%T err=%v", msg, sendMsg.err)
 	}
-	if len(got.Items) != 1 {
-		t.Fatalf("items len=%d, want 1: %+v", len(got.Items), got.Items)
+	items := testImageInput(got.Input)
+	if len(items) != 1 {
+		t.Fatalf("items len=%d, want 1: %+v", len(items), got.Input)
 	}
-	if !bytes.Equal(got.Items[0].Data, want) {
-		t.Fatalf("item.Data=%x, want late-bytes %x", got.Items[0].Data, want)
+	if !bytes.Equal(items[0].Data, want) {
+		t.Fatalf("item.Data=%x, want late-bytes %x", items[0].Data, want)
 	}
 }
 
@@ -357,10 +359,21 @@ func TestSubmitSnapshotsAttachmentSliceBeforeAsyncCommand(t *testing.T) {
 	if sendMsg, ok := msg.(hubSendMsg); !ok || sendMsg.err != nil {
 		t.Fatalf("msg=%T err=%v", msg, sendMsg.err)
 	}
-	if len(got.Items) != 2 {
-		t.Fatalf("items len=%d, want 2: %+v", len(got.Items), got.Items)
+	items := testImageInput(got.Input)
+	if len(items) != 2 {
+		t.Fatalf("items len=%d, want 2: %+v", len(items), got.Input)
 	}
-	if !bytes.Equal(got.Items[0].Data, []byte("\x89PNG\r\n\x1a\na")) || !bytes.Equal(got.Items[1].Data, []byte("\x89PNG\r\n\x1a\nb")) {
-		t.Fatalf("sent items mutated after chip removal: %+v", got.Items)
+	if !bytes.Equal(items[0].Data, []byte("\x89PNG\r\n\x1a\na")) || !bytes.Equal(items[1].Data, []byte("\x89PNG\r\n\x1a\nb")) {
+		t.Fatalf("sent items mutated after chip removal: %+v", items)
 	}
+}
+
+func testImageInput(input []appwire.InputItem) []appwire.InputItem {
+	var out []appwire.InputItem
+	for _, item := range input {
+		if item.Type == "image" || item.Type == "input_image" {
+			out = append(out, item)
+		}
+	}
+	return out
 }

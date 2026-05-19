@@ -264,7 +264,7 @@ func TestReconcilePendingFromNotification_ImageOnlyUserMessage(t *testing.T) {
 
 	reconcilePendingFromNotification(p, *appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
 		"item": appwire.ThreadItem{
-			Type: "user_message",
+			Type: "userMessage",
 			Images: []appwire.InputItem{{
 				Type:      "image",
 				MediaType: "image/png",
@@ -376,7 +376,7 @@ func TestHubReducer_PendingUserConfirmPreservesAuthoritativeMetadata(t *testing.
 
 	r.applyThreadItem(appwire.ThreadItem{
 		ID:   "item_user_1",
-		Type: "user_message",
+		Type: "userMessage",
 		Text: "ship it",
 	}, 7, false)
 	r.removePending(pendingID)
@@ -411,8 +411,9 @@ func TestHubModel_SteerFailsFastOnRPCUnavailable(t *testing.T) {
 	}()
 
 	if err := client.TurnSteer(ctx, appwire.TurnSteerParams{
-		Ref:  appwire.Ref{SourceID: "local", ThreadID: "t1"}.String(),
-		Text: "go check this",
+		Ref:            appwire.Ref{SourceID: "local", ThreadID: "t1"}.String(),
+		ExpectedTurnID: "turn_1",
+		Input:          []appwire.InputItem{{Type: "text", Text: "go check this"}},
 	}); err == nil {
 		t.Fatal("expected error from TurnSteer")
 	}

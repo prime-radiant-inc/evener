@@ -102,7 +102,7 @@ func (r *hubTranscriptReducer) applyToolOutputDelta(itemID, delta string) {
 
 func (r *hubTranscriptReducer) applyThreadItem(item appwire.ThreadItem, turnIndex int, completed bool) {
 	switch item.Type {
-	case "user_message":
+	case "userMessage":
 		text := userMessageItemText(item)
 		if strings.TrimSpace(text) != "" {
 			if idx, ok := r.messageIndexByItemID(item.ID, msgUser, item.TurnID, turnIndex); ok {
@@ -120,7 +120,7 @@ func (r *hubTranscriptReducer) applyThreadItem(item appwire.ThreadItem, turnInde
 			}
 			r.messages = append(r.messages, chatMessage{Kind: msgUser, Text: text, TurnID: item.TurnID, TurnIndex: turnIndex, ItemID: item.ID})
 		}
-	case "agent_message":
+	case "agentMessage":
 		if strings.TrimSpace(item.Text) != "" {
 			if idx, ok := r.messageIndexByItemID(item.ID, msgAssistant, item.TurnID, turnIndex); ok {
 				r.messages[idx].Text = item.Text
@@ -149,7 +149,7 @@ func (r *hubTranscriptReducer) applyThreadItem(item appwire.ThreadItem, turnInde
 				}
 			}
 		}
-	case "tool_call":
+	case "commandExecution":
 		done := threadItemToolDone(item, completed)
 		if idx, ok := r.toolIndex(item, turnIndex); ok {
 			if item.ID != "" {

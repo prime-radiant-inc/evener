@@ -167,7 +167,7 @@ func hubNodeFromThread(thread appwire.Thread) hubTreeNode {
 		RowID:       "project:" + hubProjectKey(project) + ":" + ref,
 		CreatedAt:   thread.CreatedAt,
 		UpdatedAt:   thread.UpdatedAt,
-		Live:        thread.Status.Type != appwire.ThreadStatusClosed && thread.Status.Type != appwire.ThreadStatusEnded,
+		Live:        thread.Status.Type != appwire.ThreadStatusClosed && thread.Status.Type != appwire.ThreadStatusNotLoaded,
 	}
 }
 
@@ -257,7 +257,7 @@ func recentTurnErrors(thread appwire.Thread) []string {
 
 func activeTurnIDFromThread(thread appwire.Thread) string {
 	for _, turn := range thread.Turns {
-		if turn.Status == appwire.TurnStatusRunning {
+		if turn.Status == appwire.TurnStatusInProgress {
 			return turn.ID
 		}
 	}
@@ -296,7 +296,7 @@ func messagesFromThread(thread appwire.Thread) []chatMessage {
 }
 
 func threadItemToolDone(item appwire.ThreadItem, completed bool) bool {
-	return completed || appwire.IsTerminalItemStatus(item.Status) || item.Output != "" || item.Error != ""
+	return (completed && !appwire.IsActiveItemStatus(item.Status)) || appwire.IsTerminalItemStatus(item.Status) || item.Output != "" || item.Error != ""
 }
 
 func toolInfoFromThreadItem(item appwire.ThreadItem, done bool) *toolCallInfo {

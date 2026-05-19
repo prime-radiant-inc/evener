@@ -2,33 +2,23 @@ package appwire
 
 import "testing"
 
-func TestCanonicalThreadStatusUsesCodexVocabulary(t *testing.T) {
-	tests := map[string]string{
-		"processing":  ThreadStatusActive,
-		"active":      ThreadStatusActive,
-		"ended":       ThreadStatusNotLoaded,
-		"notLoaded":   ThreadStatusNotLoaded,
-		"error":       ThreadStatusSystemError,
-		"systemError": ThreadStatusSystemError,
+func TestThreadStatusHelpersUseCodexVocabulary(t *testing.T) {
+	if !IsActiveThreadStatus(ThreadStatusActive) {
+		t.Fatal("active should be active")
 	}
-	for in, want := range tests {
-		if got := CanonicalThreadStatus(in); got != want {
-			t.Fatalf("CanonicalThreadStatus(%q)=%q, want %q", in, got, want)
-		}
+	if IsActiveThreadStatus("processing") {
+		t.Fatal("processing should not be accepted")
 	}
 }
 
-func TestCanonicalTurnStatusUsesCodexVocabulary(t *testing.T) {
-	tests := map[string]string{
-		"running":     TurnStatusInProgress,
-		"inProgress":  TurnStatusInProgress,
-		"processing":  TurnStatusInProgress,
-		"canceled":    TurnStatusInterrupted,
-		"interrupted": TurnStatusInterrupted,
+func TestTurnStatusHelpersUseCodexVocabulary(t *testing.T) {
+	if !IsActiveTurnStatus(TurnStatusInProgress) {
+		t.Fatal("inProgress should be active")
 	}
-	for in, want := range tests {
-		if got := CanonicalTurnStatus(in); got != want {
-			t.Fatalf("CanonicalTurnStatus(%q)=%q, want %q", in, got, want)
-		}
+	if IsActiveTurnStatus("running") {
+		t.Fatal("running should not be accepted")
+	}
+	if !IsTerminalTurnStatus(TurnStatusInterrupted) {
+		t.Fatal("interrupted should be terminal")
 	}
 }

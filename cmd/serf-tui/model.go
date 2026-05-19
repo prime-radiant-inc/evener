@@ -971,7 +971,7 @@ func (m *model) handleStreamEvent(ev streamEvent) {
 			Status string `json:"status"`
 		}
 		if json.Unmarshal([]byte(ev.Data), &d) == nil {
-			m.processing = d.Status == appwire.ThreadStatusProcessing
+			m.processing = d.Status == appwire.ThreadStatusActive
 		}
 
 	case "USER_INPUT", "STEERING_INJECTED":

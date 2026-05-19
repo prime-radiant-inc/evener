@@ -618,7 +618,7 @@ func appThreadTreeRef(thread appwire.Thread) (appwire.Ref, bool) {
 
 func appThreadTreeLive(thread appwire.Thread) bool {
 	switch thread.Status.Type {
-	case appwire.ThreadStatusClosed, appwire.ThreadStatusEnded:
+	case appwire.ThreadStatusClosed, appwire.ThreadStatusNotLoaded:
 		return false
 	default:
 		return true
@@ -1731,8 +1731,7 @@ func launchHarnessIDs(cfg WebConfig) []string {
 	return out
 }
 
-// spawnRequest is the JSON body for POST /api/spawn. The prompt field is
-// current; task is accepted by UnmarshalJSON for legacy callers. Items
+// spawnRequest is the JSON body for POST /api/spawn. Items
 // carries optional attachments (e.g. image bytes) that the composer wants
 // to include with the initial user turn (kata t5j6).
 type spawnRequest struct {
@@ -1746,22 +1745,6 @@ type spawnRequest struct {
 	ReasoningEffort string                     `json:"reasoning_effort"`
 	LaunchOverrides *appwire.LaunchConfigLayer `json:"launch_overrides,omitempty"`
 	Items           []appwire.InputItem        `json:"items,omitempty"`
-}
-
-func (r *spawnRequest) UnmarshalJSON(data []byte) error {
-	type spawnRequestAlias spawnRequest
-	var aux struct {
-		spawnRequestAlias
-		LegacyTask string `json:"task"`
-	}
-	if err := json.Unmarshal(data, &aux); err != nil {
-		return err
-	}
-	*r = spawnRequest(aux.spawnRequestAlias)
-	if r.Prompt == "" {
-		r.Prompt = aux.LegacyTask
-	}
-	return nil
 }
 
 // handleApiSpawn spawns a new daemon and optionally sends the initial prompt.
@@ -1793,12 +1776,11 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 	resp, err := hubThreadStart(r.Context(), s.cfg, s.sources, appwire.ThreadStartParams{
 		Harness:         req.Harness,
 		CWD:             req.WorkingDir,
-		Prompt:          req.Prompt,
+		Input:           append(inputItemsForText(req.Prompt), req.Items...),
 		Model:           req.Model,
 		Profile:         req.Agent,
 		ReasoningEffort: req.ReasoningEffort,
 		LaunchOverrides: req.LaunchOverrides,
-		Items:           req.Items,
 	})
 	if err != nil {
 		writeSpawnError(w, err)
@@ -2473,7 +2455,7 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 
 func activeTurnIDFromAppwireThread(thread appwire.Thread) string {
 	for _, turn := range thread.Turns {
-		if turn.Status == appwire.TurnStatusRunning {
+		if turn.Status == appwire.TurnStatusInProgress {
 			return turn.ID
 		}
 	}
@@ -2576,14 +2558,14 @@ func stateLabel(state string) string {
 	switch state {
 	case "awaiting":
 		return "awaiting"
-	case "active", "processing":
-		return "processing"
+	case "active":
+		return "active"
 	case "warning":
 		return "warning"
 	case "idle":
 		return "idle"
-	case "ended", "notLoaded":
-		return "ended"
+	case "notLoaded":
+		return "notLoaded"
 	}
 	return state
 }
@@ -2731,9 +2713,9 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		return le, nil
 	}
 
-	turnParams := appwire.TurnStartParams{Ref: ref, Prompt: body.Text}
+	turnParams := appwire.TurnStartParams{Ref: ref, Input: inputItemsForText(body.Text)}
 	for _, img := range body.Images {
-		turnParams.Items = append(turnParams.Items, appwire.InputItem{
+		turnParams.Input = append(turnParams.Input, appwire.InputItem{
 			Type:      "image",
 			MediaType: img.MediaType,
 			Data:      img.Data,
@@ -2743,7 +2725,7 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 	// Append the v80q items shape directly. Go's json unmarshal already
 	// base64-decoded the `data` field into the []byte we hand to the
 	// daemon, so no further re-encoding is needed here.
-	turnParams.Items = append(turnParams.Items, body.Items...)
+	turnParams.Input = append(turnParams.Input, body.Items...)
 	startTurn := func(forceResume bool) error {
 		if forceResume {
 			if !isLocalRouteID(id) {
@@ -2803,6 +2785,13 @@ func (s *WebServer) resumeRequestFor(id string) ResumeRequest {
 	return resumeRequestForConfig(s.cfg, id)
 }
 
+func inputItemsForText(text string) []appwire.InputItem {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	return []appwire.InputItem{{Type: "text", Text: text}}
+}
+
 // steerRequest is the JSON body for POST /s/<id>/steer.
 type steerRequest struct {
 	Text   string `json:"text"`
@@ -2842,7 +2831,7 @@ func (s *WebServer) handleSteer(w http.ResponseWriter, r *http.Request, id strin
 		http.NotFound(w, r)
 		return
 	}
-	if err := source.SteerTurn(r.Context(), appwire.TurnSteerParams{Ref: ref, TurnID: strings.TrimSpace(body.TurnID), Text: body.Text}); err != nil {
+	if err := source.SteerTurn(r.Context(), appwire.TurnSteerParams{Ref: ref, ExpectedTurnID: strings.TrimSpace(body.TurnID), Input: inputItemsForText(body.Text)}); err != nil {
 		writeSessionActionError(w, r, err)
 		return
 	}
@@ -3001,7 +2990,7 @@ func (s *WebServer) handleSessionAction(w http.ResponseWriter, r *http.Request, 
 	}
 	switch action {
 	case "interrupt":
-		err = source.InterruptTurn(r.Context(), appwire.TurnInterruptParams{Ref: ref, TurnID: strings.TrimSpace(body.TurnID)})
+		err = source.InterruptTurn(r.Context(), appwire.TurnInterruptParams{Ref: ref, ExpectedTurnID: strings.TrimSpace(body.TurnID)})
 	case "compact":
 		err = source.CompactThread(r.Context(), appwire.ThreadCompactStartParams{Ref: ref})
 	case "clear":

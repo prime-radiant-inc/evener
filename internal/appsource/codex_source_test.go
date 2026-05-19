@@ -26,7 +26,7 @@ func TestCodexSourceListsThreads(t *testing.T) {
 			t.Fatalf("searchTerm=%v", params["searchTerm"])
 		}
 		statuses, ok := params["statuses"].([]any)
-		if !ok || len(statuses) != 2 || statuses[0] != "running" || statuses[1] != "completed" {
+		if !ok || len(statuses) != 2 || statuses[0] != "active" || statuses[1] != "notLoaded" {
 			t.Fatalf("statuses=%#v", params["statuses"])
 		}
 		if params["includeSubagents"] != true {
@@ -53,7 +53,7 @@ func TestCodexSourceListsThreads(t *testing.T) {
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
 	resp, err := source.ListThreads(context.Background(), appwire.ThreadListParams{
 		SearchTerm:       "task",
-		Statuses:         []string{"running", "completed"},
+		Statuses:         []string{"active", "notLoaded"},
 		IncludeSubagents: true,
 	})
 	if err != nil {
@@ -69,7 +69,7 @@ func TestCodexSourceListsThreads(t *testing.T) {
 	if thread.Serf.Ref != "codex:th_codex" {
 		t.Fatalf("ref=%q", thread.Serf.Ref)
 	}
-	if thread.Status.Type != appwire.ThreadStatusEnded {
+	if thread.Status.Type != appwire.ThreadStatusNotLoaded {
 		t.Fatalf("status=%+v", thread.Status)
 	}
 	if !thread.Serf.Capabilities.Send || !thread.Serf.Capabilities.Compact || thread.Serf.Capabilities.ForkFromTurn || thread.Serf.Capabilities.Steer || thread.Serf.Capabilities.Interrupt || thread.Serf.Capabilities.Shutdown {
@@ -102,12 +102,12 @@ func TestCodexSourceListThreadsTranslatesSerfStatusFilters(t *testing.T) {
 
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
 	resp, err := source.ListThreads(context.Background(), appwire.ThreadListParams{
-		Statuses: []string{appwire.ThreadStatusProcessing, appwire.ThreadStatusEnded},
+		Statuses: []string{appwire.ThreadStatusActive, appwire.ThreadStatusNotLoaded},
 	})
 	if err != nil {
 		t.Fatalf("ListThreads: %v", err)
 	}
-	if len(resp.Data) != 1 || resp.Data[0].Status.Type != appwire.ThreadStatusProcessing {
+	if len(resp.Data) != 1 || resp.Data[0].Status.Type != appwire.ThreadStatusActive {
 		t.Fatalf("threads=%+v", resp.Data)
 	}
 }
@@ -210,11 +210,11 @@ func TestCodexSourceStartTurnMapsPromptToInput(t *testing.T) {
 	defer httpServer.Close()
 
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	resp, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Prompt: "hello codex"})
+	resp, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "hello codex"}}})
 	if err != nil {
 		t.Fatalf("StartTurn: %v", err)
 	}
-	if resp.Turn.ID != "turn_codex" || resp.Turn.Status != appwire.TurnStatusRunning {
+	if resp.Turn.ID != "turn_codex" || resp.Turn.Status != appwire.TurnStatusInProgress {
 		t.Fatalf("turn=%+v", resp.Turn)
 	}
 	if captured["threadId"] != "th_codex" {
@@ -258,7 +258,7 @@ func TestCodexSourceStartTurnAcceptsCodexNativeInputItems(t *testing.T) {
 	}
 
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Items: items}); err != nil {
+	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Input: items}); err != nil {
 		t.Fatalf("StartTurn: %v", err)
 	}
 	input, ok := captured["input"].([]any)
@@ -324,7 +324,7 @@ func TestCodexSourceStartTurnResumesThreadBeforeStreaming(t *testing.T) {
 	defer httpServer.Close()
 
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Prompt: "follow up"}); err != nil {
+	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "follow up"}}}); err != nil {
 		t.Fatalf("StartTurn: %v", err)
 	}
 	notifications, err := source.SubscribeThread(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
@@ -372,7 +372,7 @@ func TestMapCodexItemUserMessagePreservesImageContent(t *testing.T) {
 	}`)
 
 	item := mapCodexItem("turn_1", raw)
-	if item.Type != "user_message" || item.ID != "item_img" || item.TurnID != "turn_1" {
+	if item.Type != "userMessage" || item.ID != "item_img" || item.TurnID != "turn_1" {
 		t.Fatalf("item identity=%+v", item)
 	}
 	if item.Text != "caption this" {
@@ -394,7 +394,7 @@ func TestMapCodexItemUserMessagePreservesImageOnlyContent(t *testing.T) {
 	}`)
 
 	item := mapCodexItem("turn_1", raw)
-	if item.Type != "user_message" || item.Text != "" {
+	if item.Type != "userMessage" || item.Text != "" {
 		t.Fatalf("item=%+v", item)
 	}
 	assertCodexImageItems(t, item.Images, []appwire.InputItem{
@@ -777,7 +777,7 @@ func TestCodexSourceStartThreadSpoolsInitialTurnNotificationsForEarlySubscribers
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	resp, err := source.StartThread(ctx, appwire.ThreadStartParams{CWD: "/work/project", Prompt: "hello codex"})
+	resp, err := source.StartThread(ctx, appwire.ThreadStartParams{CWD: "/work/project", Input: []appwire.InputItem{{Type: "text", Text: "hello codex"}}})
 	if err != nil {
 		t.Fatalf("StartThread: %v", err)
 	}
@@ -866,7 +866,7 @@ func TestCodexSourceStartThreadWithPromptKeepsTurnNotificationsOnLiveConnection(
 	defer httpServer.Close()
 
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	resp, err := source.StartThread(context.Background(), appwire.ThreadStartParams{CWD: "/work/project", Prompt: "hello codex"})
+	resp, err := source.StartThread(context.Background(), appwire.ThreadStartParams{CWD: "/work/project", Input: []appwire.InputItem{{Type: "text", Text: "hello codex"}}})
 	if err != nil {
 		t.Fatalf("StartThread: %v", err)
 	}
@@ -944,7 +944,7 @@ func TestCodexSourceStartTurnUsesLiveConnectionForNotifications(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SubscribeThread: %v", err)
 	}
-	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Prompt: "follow up"}); err != nil {
+	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "follow up"}}}); err != nil {
 		t.Fatalf("StartTurn: %v", err)
 	}
 
@@ -975,13 +975,13 @@ func TestCodexSourceStartTurnRetiresLiveConnectionOnTransportFailure(t *testing.
 	defer httpServer.Close()
 
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Prompt: "first"}); err != nil {
+	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "first"}}}); err != nil {
 		t.Fatalf("first StartTurn: %v", err)
 	}
 	if source.liveThread("th_codex") == nil {
 		t.Fatal("first StartTurn did not cache live thread")
 	}
-	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Prompt: "second"})
+	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "second"}}})
 	assertSessionUnavailable(t, err, t.Name())
 	if source.liveThread("th_codex") != nil {
 		t.Fatal("transport-shaped live StartTurn failure left stale live thread cached")
@@ -1008,7 +1008,7 @@ func TestCodexSourceStartTurnRetiresLiveConnectionWithoutSubscriber(t *testing.T
 	defer httpServer.Close()
 
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Prompt: "follow up"}); err != nil {
+	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "follow up"}}}); err != nil {
 		t.Fatalf("StartTurn: %v", err)
 	}
 
@@ -1383,7 +1383,7 @@ func TestCodexSourceStartTurnMapsDialRefusedToSessionUnavailable(t *testing.T) {
 	}
 
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: endpoint}, nil)
-	_, err = source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Prompt: "hi"})
+	_, err = source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}})
 	assertSessionUnavailable(t, err, t.Name())
 }
 
@@ -1422,7 +1422,7 @@ func TestCodexSourceStartTurnMapsDroppedTransportToSessionUnavailable(t *testing
 	defer httpServer.Close()
 
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Prompt: "hi"})
+	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}})
 	assertSessionUnavailable(t, err, t.Name())
 }
 
@@ -1437,7 +1437,7 @@ func TestCodexSourceStartTurnPassesThroughApplicationErrors(t *testing.T) {
 	defer httpServer.Close()
 
 	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
-	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Prompt: "hi"})
+	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}})
 	if err == nil {
 		t.Fatal("StartTurn unexpectedly succeeded")
 	}

@@ -23,7 +23,7 @@ func TestCodexLauncherLaunchesProcessAndWaitsForReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureSource: %v", err)
 	}
-	resp, err := source.StartThread(context.Background(), appwire.ThreadStartParams{CWD: "/tmp/project", Prompt: "hello codex"})
+	resp, err := source.StartThread(context.Background(), appwire.ThreadStartParams{CWD: "/tmp/project", Input: []appwire.InputItem{{Type: "text", Text: "hello codex"}}})
 	if err != nil {
 		t.Fatalf("StartThread: %v", err)
 	}

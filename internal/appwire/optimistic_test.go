@@ -50,8 +50,9 @@ func TestTurnSteer_RegistersPending_AndFailsOnRPCError(t *testing.T) {
 	}()
 
 	err := client.TurnSteer(ctx, appwire.TurnSteerParams{
-		Ref:  appwire.Ref{SourceID: "local", ThreadID: "t1"}.String(),
-		Text: "hold on, look at this first",
+		Ref:            appwire.Ref{SourceID: "local", ThreadID: "t1"}.String(),
+		ExpectedTurnID: "turn_1",
+		Input:          []appwire.InputItem{{Type: "text", Text: "hold on, look at this first"}},
 	})
 	if err == nil {
 		t.Fatalf("TurnSteer should have returned the RPC error")
@@ -97,8 +98,9 @@ func TestTurnSteer_RegistersPending_NoFailOnRPCSuccess(t *testing.T) {
 	}()
 
 	if err := client.TurnSteer(ctx, appwire.TurnSteerParams{
-		Ref:  appwire.Ref{SourceID: "local", ThreadID: "t1"}.String(),
-		Text: "go ahead",
+		Ref:            appwire.Ref{SourceID: "local", ThreadID: "t1"}.String(),
+		ExpectedTurnID: "turn_1",
+		Input:          []appwire.InputItem{{Type: "text", Text: "go ahead"}},
 	}); err != nil {
 		t.Fatalf("TurnSteer: %v", err)
 	}
@@ -125,7 +127,7 @@ func TestTurnSteer_NoCoordinator_PassThrough(t *testing.T) {
 		req := <-transport.Sent()
 		transport.DeliverResponse(req.Request.ID, struct{}{})
 	}()
-	if err := client.TurnSteer(ctx, appwire.TurnSteerParams{Ref: "local:t1", Text: "x"}); err != nil {
+	if err := client.TurnSteer(ctx, appwire.TurnSteerParams{Ref: "local:t1", ExpectedTurnID: "turn_1", Input: []appwire.InputItem{{Type: "text", Text: "x"}}}); err != nil {
 		t.Fatalf("TurnSteer: %v", err)
 	}
 }
@@ -144,8 +146,8 @@ func TestTurnStart_RegistersPending_AndFailsOnRPCError(t *testing.T) {
 		transport.DeliverError(req.Request.ID, appwire.CodeInternalError, "boom")
 	}()
 	_, err := client.TurnStart(ctx, appwire.TurnStartParams{
-		Ref:    appwire.Ref{SourceID: "local", ThreadID: "t1"}.String(),
-		Prompt: "first message",
+		Ref:   appwire.Ref{SourceID: "local", ThreadID: "t1"}.String(),
+		Input: []appwire.InputItem{{Type: "text", Text: "first message"}},
 	})
 	if err == nil {
 		t.Fatal("expected error")
@@ -178,7 +180,7 @@ func TestTurnStart_RegistersImageOnlyPendingPreview(t *testing.T) {
 	}()
 	_, _ = client.TurnStart(ctx, appwire.TurnStartParams{
 		Ref: "local:t1",
-		Items: []appwire.InputItem{{
+		Input: []appwire.InputItem{{
 			Type:      "image",
 			MediaType: "image/png",
 			Data:      []byte("png"),

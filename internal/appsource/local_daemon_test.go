@@ -626,7 +626,7 @@ func TestLocalDaemonSourceStartTurnMapsDroppedTransportToSessionUnavailable(t *t
 		}}
 	}, httpServer.Client())
 
-	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "local:th_1", Prompt: "hi"})
+	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "local:th_1", Input: []appwire.InputItem{{Type: "text", Text: "hi"}}})
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("StartTurn error %T=%v, want WireError", err, err)

@@ -12,23 +12,23 @@
       "status": "completed",
       "items": [
         {
-          "type": "agent_message",
+          "type": "agentMessage",
           "id": "item_msg_1",
           "turnId": "turn_1",
           "text": "I'll inspect the file first.",
           "status": "completed"
         },
         {
-          "type": "tool_call",
+          "type": "commandExecution",
           "id": "item_shell_start",
           "turnId": "turn_1",
           "toolName": "shell",
           "callId": "call_shell",
           "argumentsJson": "{\"command\":\"printf 'alpha\\nbeta\\n'\"}",
-          "status": "running"
+          "status": "inProgress"
         },
         {
-          "type": "agent_message",
+          "type": "agentMessage",
           "id": "item_msg_2",
           "turnId": "turn_1",
           "text": "I need one more check.",
@@ -41,7 +41,7 @@
       "status": "completed",
       "items": [
         {
-          "type": "tool_call",
+          "type": "commandExecution",
           "id": "item_shell_result",
           "turnId": "turn_2",
           "toolName": "shell",
@@ -50,7 +50,7 @@
           "status": "completed"
         },
         {
-          "type": "tool_call",
+          "type": "commandExecution",
           "id": "item_missing_file",
           "turnId": "turn_2",
           "toolName": "read_file",
@@ -60,7 +60,7 @@
           "status": "completed"
         },
         {
-          "type": "agent_message",
+          "type": "agentMessage",
           "id": "item_msg_3",
           "turnId": "turn_2",
           "text": "Done.",
