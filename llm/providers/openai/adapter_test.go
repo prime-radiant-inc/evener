@@ -2536,6 +2536,31 @@ func TestToResponsesInput_ToolResultWithImage(t *testing.T) {
 	}
 }
 
+func TestBuildChatCompletionsBodyRejectsToolResultImage(t *testing.T) {
+	req := llm.Request{
+		Model: "gpt-4.1-mini",
+		Messages: []llm.Message{{
+			Role: llm.RoleTool,
+			Content: []llm.ContentPart{{
+				Kind: llm.ContentToolResult,
+				ToolResult: &llm.ToolResultData{
+					ToolCallID:     "call_img",
+					Content:        "screenshot",
+					ImageData:      []byte{0x89, 0x50, 0x4e, 0x47},
+					ImageMediaType: "image/png",
+				},
+			}},
+		}},
+	}
+	_, err := buildChatCompletionsBody(req, true)
+	if err == nil {
+		t.Fatal("buildChatCompletionsBody accepted tool-result image")
+	}
+	if !strings.Contains(err.Error(), "tool-result images") {
+		t.Fatalf("error=%v, want tool-result image explanation", err)
+	}
+}
+
 func TestToResponsesInput_ToolResultWithImage_DefaultMediaType(t *testing.T) {
 	imgBytes := []byte{0x89, 0x50, 0x4e, 0x47}
 	msgs := []llm.Message{

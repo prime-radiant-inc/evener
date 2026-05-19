@@ -154,7 +154,7 @@
     }
     function offClick(e) {
       const path = (e.composedPath && e.composedPath()) || [];
-      if (!path.includes(picker)) dismiss();
+      if (!picker.isConnected || !path.includes(picker)) dismiss();
     }
     function onKey(e) {
       if (e.key === "Escape") {

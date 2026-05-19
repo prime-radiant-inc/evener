@@ -93,7 +93,7 @@ func (t *appwireStreamTranslator) eventsFromThread(thread appwire.Thread) []stre
 		"restored":   true,
 	})}
 	for _, turn := range thread.Turns {
-		events = append(events, t.eventsFromItems(turn.ID, turn.Items)...)
+		events = append(events, t.eventsFromItems(turn.ID, turn.Status, turn.Items)...)
 		events = append(events, eventsFromFailedTurn(turn)...)
 	}
 	return events
@@ -245,13 +245,14 @@ func eventsFromFailedTurn(turn appwire.Turn) []streamEvent {
 	return []streamEvent{newStreamEvent("ERROR", payload)}
 }
 
-func (t *appwireStreamTranslator) eventsFromItems(turnID string, items []appwire.ThreadItem) []streamEvent {
+func (t *appwireStreamTranslator) eventsFromItems(turnID, turnStatus string, items []appwire.ThreadItem) []streamEvent {
 	var events []streamEvent
+	turnCompleted := turnStatus == appwire.TurnStatusCompleted
 	for _, item := range items {
 		if item.TurnID == "" {
 			item.TurnID = turnID
 		}
-		events = append(events, t.eventsFromHydratedItem(item)...)
+		events = append(events, t.eventsFromHydratedItem(item, turnCompleted)...)
 	}
 	return events
 }
@@ -265,12 +266,12 @@ func (t *appwireStreamTranslator) eventsFromTurnCompletedItems(turnID string, it
 		if t.itemAlreadyCompleted(item) {
 			continue
 		}
-		events = append(events, t.eventsFromHydratedItem(item)...)
+		events = append(events, t.eventsFromHydratedItem(item, true)...)
 	}
 	return events
 }
 
-func (t *appwireStreamTranslator) eventsFromHydratedItem(item appwire.ThreadItem) []streamEvent {
+func (t *appwireStreamTranslator) eventsFromHydratedItem(item appwire.ThreadItem, turnCompleted bool) []streamEvent {
 	if item.Type == "tool_call" {
 		callID := firstNonEmptyString(item.CallID, item.ID)
 		if toolItemTerminal(item) {
@@ -285,7 +286,7 @@ func (t *appwireStreamTranslator) eventsFromHydratedItem(item appwire.ThreadItem
 		t.activeToolCalls[callID] = true
 		return t.eventsFromItem(item, false)
 	}
-	return t.eventsFromItem(item, item.Status == appwire.TurnStatusCompleted)
+	return t.eventsFromItem(item, turnCompleted || item.Status == appwire.TurnStatusCompleted)
 }
 
 func (t *appwireStreamTranslator) eventsFromItem(item appwire.ThreadItem, completed bool) []streamEvent {

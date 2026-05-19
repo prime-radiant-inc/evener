@@ -1059,6 +1059,9 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 // buildChatCompletionsBody translates an llm.Request into a Chat Completions
 // request body. This is used by the Responses-API fallback path.
 func buildChatCompletionsBody(req llm.Request, stream bool) (map[string]any, error) {
+	if requestHasToolResultImages(req) {
+		return nil, fmt.Errorf("openai chat completions fallback does not support tool-result images")
+	}
 	body := map[string]any{
 		"model": req.Model,
 	}
@@ -1189,6 +1192,20 @@ func toChatMessages(msgs []llm.Message) ([]map[string]any, error) {
 		}
 	}
 	return out, nil
+}
+
+func requestHasToolResultImages(req llm.Request) bool {
+	for _, m := range req.Messages {
+		if m.Role != llm.RoleTool {
+			continue
+		}
+		for _, p := range m.Content {
+			if p.Kind == llm.ContentToolResult && p.ToolResult != nil && len(p.ToolResult.ImageData) > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // toCompletionsTools converts tool definitions for the Chat Completions format.

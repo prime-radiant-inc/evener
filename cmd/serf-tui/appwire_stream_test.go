@@ -62,6 +62,38 @@ func TestStreamEventsFromThreadHydratesCompletedToolWithStartAndEnd(t *testing.T
 	}
 }
 
+func TestStreamEventsFromThreadTreatsItemsInCompletedTurnAsCompleted(t *testing.T) {
+	events := streamEventsFromThread(appwire.Thread{
+		ID:        "th_1",
+		SessionID: "th_1",
+		Turns: []appwire.Turn{{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{{
+				Type: "agent_message",
+				ID:   "agent_1",
+				Text: "done",
+			}},
+		}},
+	})
+
+	for _, ev := range events {
+		if ev.Event == "ASSISTANT_TEXT_END" {
+			var data struct {
+				Text string `json:"text"`
+			}
+			if err := json.Unmarshal([]byte(ev.Data), &data); err != nil {
+				t.Fatal(err)
+			}
+			if data.Text != "done" {
+				t.Fatalf("text=%q, want done", data.Text)
+			}
+			return
+		}
+	}
+	t.Fatalf("events=%+v, want ASSISTANT_TEXT_END", events)
+}
+
 func TestStreamEventsFromThreadHydratesSplitToolAsSingleStartEndPair(t *testing.T) {
 	events := streamEventsFromThread(appwire.Thread{
 		ID:        "th_1",
@@ -390,7 +422,7 @@ func TestHydratedSteeringItemCarriesImages(t *testing.T) {
 			Metadata:  map[string]string{"sha": "abc"},
 		}},
 		Status: appwire.TurnStatusCompleted,
-	})
+	}, false)
 	if len(events) != 1 || events[0].Event != "STEERING_INJECTED" {
 		t.Fatalf("events=%+v, want STEERING_INJECTED", events)
 	}
