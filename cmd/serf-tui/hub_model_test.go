@@ -1948,6 +1948,27 @@ func TestHubModelStatusRefreshIgnoresStaleSessionRead(t *testing.T) {
 		t.Fatalf("stale refresh reactivated old session: detail=%+v sessionID=%q", got.detail, got.session.sessionID)
 	}
 
+	got.mode = hubModeDashboard
+	got.detail.Ref = "local:01SEND"
+	got.detail.SessionID = "01SEND"
+	got.session.sessionID = "01SEND"
+	got.statusRefreshToken = 2
+	updated, _ = got.Update(hubSessionMsg{
+		ref:                  "local:01SEND",
+		expectedState:        appwire.ThreadStatusProcessing,
+		expectedRefreshToken: 2,
+		detail: hubSessionDetail{
+			Ref:       "local:01SEND",
+			SessionID: "01SEND",
+			State:     appwire.ThreadStatusProcessing,
+		},
+	})
+	got = updated.(hubModel)
+	if got.mode != hubModeDashboard {
+		t.Fatalf("refresh reactivated session after leaving session mode: mode=%v", got.mode)
+	}
+
+	got.mode = hubModeSession
 	got.detail.Ref = "local:01SEND"
 	got.detail.SessionID = "01SEND"
 	got.session.sessionID = "01SEND"

@@ -407,7 +407,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		m.spawnSubmitting = false
 		if msg.expectedState != "" {
-			if (msg.ref != "" && m.detail.Ref != msg.ref) || msg.expectedRefreshToken != m.statusRefreshToken {
+			if m.mode != hubModeSession || msg.ref == "" || m.detail.Ref != msg.ref || msg.expectedRefreshToken != m.statusRefreshToken {
 				return m, nil
 			}
 			if !statusRefreshStatesMatchExpected(m.detail.State, msg.detail.State, msg.expectedState) {
