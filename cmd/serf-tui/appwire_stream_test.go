@@ -214,7 +214,8 @@ func TestStreamEventsFromThreadHydratesSplitToolAsSingleStartEndPair(t *testing.
 		ID:        "th_1",
 		SessionID: "th_1",
 		Turns: []appwire.Turn{{
-			ID: "turn_1",
+			ID:     "turn_1",
+			Status: appwire.TurnStatusCompleted,
 			Items: []appwire.ThreadItem{
 				{
 					Type:          "tool_call",
