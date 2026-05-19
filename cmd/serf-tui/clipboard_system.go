@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -298,6 +299,9 @@ func fileURIToPath(uri string) string {
 			return ""
 		}
 		rest = rest[idx:]
+	}
+	if path, err := url.PathUnescape(rest); err == nil {
+		return path
 	}
 	return rest
 }

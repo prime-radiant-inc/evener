@@ -301,6 +301,13 @@ func TestPasteClipboardImage_WSLErrorWhenConvertedPathMissing(t *testing.T) {
 	}
 }
 
+func TestFileURIToPathUnescapesPercentEncoding(t *testing.T) {
+	got := fileURIToPath("file:///tmp/My%20Shot%231.png")
+	if got != "/tmp/My Shot#1.png" {
+		t.Fatalf("path=%q, want unescaped path", got)
+	}
+}
+
 func TestPasteClipboardImage_NoImageReturnsError(t *testing.T) {
 	src := &fakeClipboard{
 		filesErr:    errors.New("no file list"),

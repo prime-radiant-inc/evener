@@ -93,7 +93,9 @@ func (s *Server) handleAppThreadList(context.Context, appwire.ThreadListParams) 
 
 func (s *Server) handleAppThreadRead(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 	thread := s.appThread()
-	appserver.Subscribe(ctx, thread.ID)
+	if params.Subscribe {
+		appserver.Subscribe(ctx, thread.ID)
+	}
 	if params.IncludeTurns {
 		thread.Turns = appTurnsFromNotifications(s.AppNotificationsAfter(0, thread.ID))
 	}

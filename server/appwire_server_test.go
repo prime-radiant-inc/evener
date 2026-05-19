@@ -552,7 +552,7 @@ func TestServerAppWireErrorEventNotifiesSubscribers(t *testing.T) {
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
-	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1"}); err != nil {
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1", Subscribe: true}); err != nil {
 		t.Fatalf("ThreadRead: %v", err)
 	}
 
@@ -682,36 +682,29 @@ func TestServerAppWireThreadReadSubscribesForNotifications(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 
-	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
-	defer httpServer.Close()
-	transport, err := appwire.DialWebSocket(context.Background(), "ws"+httpServer.URL[len("http"):], httpServer.Client())
-	if err != nil {
-		t.Fatalf("dial: %v", err)
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1", Subscribe: true}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v", resp.Kind())
 	}
-	defer transport.Close()
-	client := appwire.NewClient(transport)
-	client.Start(context.Background())
-
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
-		t.Fatalf("Initialize: %v", err)
+	if got := srv.AppServer().SubscriberCount("th_1"); got != 1 {
+		t.Fatalf("subscriber count=%d, want 1", got)
 	}
-	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1"}); err != nil {
-		t.Fatalf("ThreadRead: %v", err)
+}
+
+func TestServerAppWireThreadReadDoesNotSubscribeByDefault(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1"}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v", resp.Kind())
 	}
-
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventAssistantTextDelta,
-		SessionID: "sess_1",
-		Data:      agent.AssistantTextDeltaData{Delta: "hi"},
-	})
-
-	select {
-	case got := <-client.Notifications():
-		if got.Method != appwire.NotifyAgentMessageDelta {
-			t.Fatalf("method=%q", got.Method)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for notification")
+	if got := srv.AppServer().SubscriberCount("th_1"); got != 0 {
+		t.Fatalf("subscriber count=%d, want 0", got)
 	}
 }
 
