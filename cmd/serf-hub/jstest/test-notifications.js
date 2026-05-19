@@ -210,6 +210,21 @@ function assert(cond, msg) {
     );
   }
 
+  // 6b. HTMX settle refresh must not clear the last awaiting count.
+  {
+    const w = makeWindow({ prefs: { title: true }, live: [{ id: "a", state: "awaiting" }] });
+    load(w);
+    await flush(w);
+    await flush(w);
+    assert(w.document.title.indexOf("(1) ") === 0, "baseline should include count: " + w.document.title);
+    w.document.body.dispatchEvent(new w.CustomEvent("htmx:afterSettle", { bubbles: true }));
+    await flush(w);
+    assert(
+      w.document.title.indexOf("(1) ") === 0,
+      "htmx settle should preserve latest awaiting count, got: " + w.document.title
+    );
+  }
+
   // 7. First-poll seeding: a session already in `awaiting` at init time
   //    must NOT fire a notification when the very next poll returns the
   //    same state. This is the failure mode kata #28 calls out — opening

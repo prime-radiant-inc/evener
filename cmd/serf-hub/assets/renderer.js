@@ -2109,8 +2109,8 @@
     searchPromise.then(resp => {
       const awaiting = (resp.live || []).filter(s => s.state === "awaiting").length;
       const prefix = awaiting > 0 ? "(" + awaiting + ") " : "";
-      document.title = formatTitle(section, prefix);
-    }).catch(() => { document.title = formatTitle(section); });
+      document.title = formatTitle(pageSection(), prefix);
+    }).catch(() => { document.title = formatTitle(pageSection()); });
   }
   function readNotifPrefs() {
     try { return JSON.parse(localStorage.getItem("serf-hub.notifications") || "{}"); }

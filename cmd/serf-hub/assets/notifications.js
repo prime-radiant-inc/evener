@@ -30,6 +30,7 @@
   const prevState = new Map();
   let pollTimer = null;
   let initialized = false;
+  let latestLive = [];
 
   function readPrefs() {
     try {
@@ -217,6 +218,7 @@
     return searchPromise
       .then((resp) => {
         const live = (resp && resp.live) || [];
+        latestLive = live;
         const prefs = readPrefs();
         applyAll(prefs, live);
         detectTransitions(prefs, live);
@@ -241,6 +243,7 @@
     initialSearch
       .then((resp) => {
         const live = (resp && resp.live) || [];
+        latestLive = live;
         applyAll(prefs, live);
         for (const s of live) prevState.set(s.id, s.state);
       })
@@ -282,7 +285,7 @@
     if (!initialized) return;
     syncSettingsHeader();
     const prefs = readPrefs();
-    applyTitle(prefs, []);
+    applyAll(prefs, latestLive);
   });
 
   function syncSettingsHeader() {

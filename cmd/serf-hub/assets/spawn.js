@@ -953,6 +953,7 @@
     picker.style.top = (chip.offsetTop + chip.offsetHeight + 4) + "px";
     picker.style.left = chip.offsetLeft + "px";
     picker.style.zIndex = "50";
+    attachPickerDismiss(picker);
   }
 
   function openDirPicker(chip) {

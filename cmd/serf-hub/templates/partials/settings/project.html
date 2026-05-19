@@ -15,8 +15,10 @@
     }
 
     let current = {};
+    let launchDraft = {};
     try {
       current = await launchconfig.getLayer(cwd, "project");
+      resetLaunchDraftFromCurrent();
     } catch (err) {
       root.innerHTML = `<p class="settings-error">Failed to load: ${err && err.message ? err.message : err}</p>`;
       return;
@@ -30,22 +32,35 @@
       return current;
     }
 
+    function resetLaunchDraftFromCurrent() {
+      launchDraft = {
+        model: current.model,
+        agent: current.agent,
+        reasoningEffort: current.reasoningEffort,
+        contextStrategy: current.contextStrategy,
+        maxRounds: current.maxRounds,
+        maxSubagentDepth: current.maxSubagentDepth,
+        noProjectPrompts: current.noProjectPrompts,
+      };
+    }
+
     // captureLaunchForm reads in-progress edits to the launch-form fields
-    // back into `current` so the next render() doesn't wipe them.
+    // into a draft object so the next render() doesn't wipe them. The draft
+    // is not merged into the persisted project layer until Save is clicked.
     function captureLaunchForm() {
       const fld = (name) => root.querySelector(`[name="${name}"]`);
       const mh = root.querySelector("#proj-model-hidden");
-      if (mh) current.model = mh.value.trim() || undefined;
-      if (fld("agent")) current.agent = fld("agent").value.trim() || undefined;
-      if (fld("reasoningEffort")) current.reasoningEffort = fld("reasoningEffort").value || undefined;
-      if (fld("contextStrategy")) current.contextStrategy = fld("contextStrategy").value || undefined;
-      if (fld("maxRounds")) current.maxRounds = fld("maxRounds").value === "" ? undefined : +fld("maxRounds").value;
-      if (fld("maxSubagentDepth")) current.maxSubagentDepth = fld("maxSubagentDepth").value === "" ? undefined : +fld("maxSubagentDepth").value;
-      if (fld("noProjectPrompts")) current.noProjectPrompts = fld("noProjectPrompts").checked || undefined;
+      if (mh) launchDraft.model = mh.value.trim() || undefined;
+      if (fld("agent")) launchDraft.agent = fld("agent").value.trim() || undefined;
+      if (fld("reasoningEffort")) launchDraft.reasoningEffort = fld("reasoningEffort").value || undefined;
+      if (fld("contextStrategy")) launchDraft.contextStrategy = fld("contextStrategy").value || undefined;
+      if (fld("maxRounds")) launchDraft.maxRounds = fld("maxRounds").value === "" ? undefined : +fld("maxRounds").value;
+      if (fld("maxSubagentDepth")) launchDraft.maxSubagentDepth = fld("maxSubagentDepth").value === "" ? undefined : +fld("maxSubagentDepth").value;
+      if (fld("noProjectPrompts")) launchDraft.noProjectPrompts = fld("noProjectPrompts").checked || undefined;
     }
 
     // Event delegation — survives every render() because root persists.
-    // Captures launch-form edits to `current` on every keystroke / change
+    // Captures launch-form edits to `launchDraft` on every keystroke / change
     // so clicking Add (which triggers a re-render) doesn't wipe pending
     // typed values.
     root.addEventListener("input", (ev) => {
@@ -60,7 +75,7 @@
     });
 
     function render() {
-      const launch = current;
+      const launch = { ...current, ...launchDraft };
       const pluginDirs = launch.pluginDirs || [];
       const skillsDirs = launch.skillsDirs || [];
       const mcps = launch.mcps || [];
@@ -210,9 +225,10 @@
         // belt-and-suspenders call in case the user clicks Save without
         // ever moving focus out of a field.
         captureLaunchForm();
-        const out = { ...current };
+        const out = { ...current, ...launchDraft };
         try {
           await saveProjectLayer(out);
+          resetLaunchDraftFromCurrent();
           statusEl().textContent = "Saved at " + new Date().toLocaleTimeString();
           setTimeout(() => { const el = statusEl(); if (el) el.textContent = ""; }, 5000);
         } catch (err) {
