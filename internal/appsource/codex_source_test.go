@@ -828,6 +828,43 @@ func TestCodexSourceStartTurnUsesLiveConnectionForNotifications(t *testing.T) {
 	assertDelta(t, notifications, "follow-up live")
 }
 
+func TestCodexSourceStartTurnRetiresLiveConnectionOnTransportFailure(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
+	handleCodexResume(server)
+	var calls int
+	appserver.HandleTyped(server.Router(), appwire.MethodTurnStart, func(ctx context.Context, params map[string]any) (map[string]any, error) {
+		calls++
+		if params["threadId"] != "th_codex" {
+			t.Fatalf("threadId=%v", params["threadId"])
+		}
+		if calls == 2 {
+			return nil, appwire.InternalError("websocket: close 1006: abnormal closure")
+		}
+		appserver.Subscribe(ctx, "th_codex")
+		return map[string]any{"turn": map[string]any{
+			"id":        "turn_codex",
+			"items":     []any{},
+			"itemsView": "full",
+			"status":    "inProgress",
+		}}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer httpServer.Close()
+
+	source := NewCodexSource(CodexSourceConfig{ID: "codex", Endpoint: wsURL(httpServer)}, httpServer.Client())
+	if _, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Prompt: "first"}); err != nil {
+		t.Fatalf("first StartTurn: %v", err)
+	}
+	if source.liveThread("th_codex") == nil {
+		t.Fatal("first StartTurn did not cache live thread")
+	}
+	_, err := source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "codex:th_codex", Prompt: "second"})
+	assertSessionUnavailable(t, err, t.Name())
+	if source.liveThread("th_codex") != nil {
+		t.Fatal("transport-shaped live StartTurn failure left stale live thread cached")
+	}
+}
+
 func TestCodexSourceStartTurnRetiresLiveConnectionWithoutSubscriber(t *testing.T) {
 	withCodexLiveNoSubscriberTimeout(t, 20*time.Millisecond)
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})

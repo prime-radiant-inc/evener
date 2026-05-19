@@ -221,7 +221,12 @@ func (s *CodexSource) StartTurn(ctx context.Context, params appwire.TurnStartPar
 	var out codexTurnStartResponse
 	if live := s.liveThread(threadID); live != nil {
 		if err := codexTurnStart(ctx, live.client, threadID, input, &out); err != nil {
-			return appwire.TurnStartResponse{}, codexSourceCallError(err)
+			mapped := codexSourceCallError(err)
+			if codexSourceSessionUnavailable(mapped) {
+				s.removeLiveThread(threadID, live)
+				live.retire()
+			}
+			return appwire.TurnStartResponse{}, mapped
 		}
 		return appwire.TurnStartResponse{Turn: mapCodexTurn(out.Turn)}, nil
 	}
@@ -642,6 +647,21 @@ func codexSourceCallError(err error) error {
 		return appwire.SessionUnavailable("codex daemon unavailable: " + wire.Message)
 	}
 	return err
+}
+
+func codexSourceSessionUnavailable(err error) bool {
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeUnavailable {
+		return false
+	}
+	switch data := wire.Data.(type) {
+	case appwire.ErrorData:
+		return data.SerfErrorInfo == appwire.ErrorSessionUnavailable
+	case map[string]any:
+		return data["serfErrorInfo"] == string(appwire.ErrorSessionUnavailable)
+	default:
+		return false
+	}
 }
 
 func (s *CodexSource) connect(ctx context.Context) (*appwire.Client, func() error, error) {
