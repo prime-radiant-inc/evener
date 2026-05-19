@@ -398,9 +398,6 @@ func openAIStateDirFromLaunchEnv(env []string) string {
 	if stateHome, ok := envLookup(env, "XDG_STATE_HOME"); ok && strings.TrimSpace(stateHome) != "" {
 		return authopenai.DefaultStateDirWithStateHome(stateHome)
 	}
-	if home, ok := envLookup(env, "HOME"); ok && strings.TrimSpace(home) != "" {
-		return filepath.Join(strings.TrimSpace(home), ".local", "state", "serf")
-	}
 	if runtime.GOOS == "windows" {
 		if userProfile, ok := envLookup(env, "USERPROFILE"); ok && strings.TrimSpace(userProfile) != "" {
 			return filepath.Join(strings.TrimSpace(userProfile), ".local", "state", "serf")
@@ -410,6 +407,9 @@ func openAIStateDirFromLaunchEnv(env []string) string {
 		if hasDrive && hasPath && strings.TrimSpace(drive) != "" && strings.TrimSpace(path) != "" {
 			return filepath.Join(strings.TrimSpace(drive)+strings.TrimSpace(path), ".local", "state", "serf")
 		}
+	}
+	if home, ok := envLookup(env, "HOME"); ok && strings.TrimSpace(home) != "" {
+		return filepath.Join(strings.TrimSpace(home), ".local", "state", "serf")
 	}
 	return filepath.Join(os.TempDir(), "serf")
 }
