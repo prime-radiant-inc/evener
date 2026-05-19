@@ -2094,6 +2094,18 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		timings.LLMCall = time.Since(tPhaseStart)
 
+		if err == nil {
+			if cerr := ctx.Err(); cerr != nil {
+				return "", cerr
+			}
+			s.mu.Lock()
+			closing := s.closingOrClosedLocked()
+			s.mu.Unlock()
+			if closing {
+				return "", context.Canceled
+			}
+		}
+
 		// Log API call to transcript (both success and error paths).
 		if s.transcript != nil {
 			apiCall := TranscriptAPICall{

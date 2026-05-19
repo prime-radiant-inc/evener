@@ -2248,13 +2248,23 @@ func TestSession_CloseCannotBeReopenedByLateTurnCompletion(t *testing.T) {
 	sess.Close()
 	close(release)
 
+	var processErr error
 	select {
-	case <-processDone:
+	case processErr = <-processDone:
 	case <-time.After(5 * time.Second):
 		t.Fatal("ProcessInput did not return after releasing adapter")
 	}
+	if !errors.Is(processErr, context.Canceled) {
+		t.Fatalf("ProcessInput error=%v, want context.Canceled", processErr)
+	}
 	if got := sess.State(); got != SessionClosed {
 		t.Fatalf("late ProcessInput completion reopened session: got %s want %s", got, SessionClosed)
+	}
+	sess.mu.Lock()
+	history := append([]Turn(nil), sess.history...)
+	sess.mu.Unlock()
+	if len(history) != 1 || history[0].Kind != TurnUserInput {
+		t.Fatalf("late model response was processed into history: %+v", history)
 	}
 }
 
