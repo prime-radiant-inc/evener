@@ -36,8 +36,8 @@ func ToArgs(r Resolved) []string {
 	if e.NoProjectPrompts != nil && *e.NoProjectPrompts {
 		out = append(out, "--no-project-prompts")
 	}
-	if e.SSERingSize != nil {
-		add("--sse-ring-size", fmt.Sprintf("%d", *e.SSERingSize))
+	if e.AppReplaySize != nil {
+		add("--app-replay-size", fmt.Sprintf("%d", *e.AppReplaySize))
 	}
 	for _, d := range e.SkillsDirs {
 		add("--skills-dir", d)

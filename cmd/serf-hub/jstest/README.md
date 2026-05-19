@@ -1,7 +1,7 @@
 # renderer.js JSDOM tests
 
 These tests load `../assets/renderer.js` into a JSDOM window, mock
-`EventSource` + `fetch`, fire captured event streams, and assert on the
+`fetch` and AppWire helpers as needed, fire captured renderer events, and assert on the
 DOM that the renderer builds. They cover the parts of the rendering
 contract that are easiest to break: steering classification, task_list
 system-line prose, full-list pointer rendering, and the sidebar's

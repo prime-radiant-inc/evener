@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -99,15 +98,14 @@ type ActionCapabilities struct {
 
 // ServerConfig holds configuration for the HTTP server.
 type ServerConfig struct {
-	RingBufferSize int // default: 1000
-	HubToken       string
-	AllowedHost    string
+	AppReplaySize int // default: 1000
+	HubToken      string
+	AllowedHost   string
 }
 
-// Server is the HTTP server that bridges an agent.Session to REST+SSE clients.
+// Server is the HTTP server that bridges an agent.Session to REST and appwire clients.
 type Server struct {
 	mux         *http.ServeMux
-	broadcaster *Broadcaster
 	appServer   *appserver.Server
 	appNotifier *appserver.Notifier
 
@@ -122,32 +120,31 @@ type Server struct {
 	queueFunc           func(string) error
 	queueWithImagesFunc func(string, []ImageAttachment) error
 	drainSteerFunc      func() error
-	queueDepthFn     func() int
-	queuePreviewFn   func() []string
-	compactFunc      func(context.Context) error
-	clearFunc        func(context.Context) error
-	pressureFn       func() float64
-	detailedStatusFn func() DetailedStatus
-	modelFunc        func(string)
-	listModelsFunc   func(context.Context) ([]ModelsResponseItem, error)
-	tasksFn          func() any
-	shutdownFunc     func()
-	processing       bool
-	inputCh          chan InputMessage
-	hubToken         string
-	sameOrigin       sameOriginPolicy
+	queueDepthFn        func() int
+	queuePreviewFn      func() []string
+	compactFunc         func(context.Context) error
+	clearFunc           func(context.Context) error
+	pressureFn          func() float64
+	detailedStatusFn    func() DetailedStatus
+	modelFunc           func(string)
+	listModelsFunc      func(context.Context) ([]ModelsResponseItem, error)
+	tasksFn             func() any
+	shutdownFunc        func()
+	processing          bool
+	inputCh             chan InputMessage
+	hubToken            string
+	sameOrigin          sameOriginPolicy
 }
 
 // NewServer creates a new Server.
 func NewServer(cfg ServerConfig) *Server {
-	ringSize := cfg.RingBufferSize
-	if ringSize <= 0 {
-		ringSize = 1000
+	replaySize := cfg.AppReplaySize
+	if replaySize <= 0 {
+		replaySize = 1000
 	}
 
 	s := &Server{
-		mux:         http.NewServeMux(),
-		broadcaster: NewBroadcaster(ringSize),
+		mux: http.NewServeMux(),
 		appServer: appserver.NewServer(appserver.ServerConfig{
 			ServerName: "serf-serve",
 			SourceID:   "local",
@@ -164,7 +161,7 @@ func NewServer(cfg ServerConfig) *Server {
 				DirectoryComplete: false,
 			},
 		}),
-		appNotifier: appserver.NewNotifier(ringSize),
+		appNotifier: appserver.NewNotifier(replaySize),
 		appSourceID: "local",
 		inputCh:     make(chan InputMessage, 1),
 		hubToken:    strings.TrimSpace(cfg.HubToken),
@@ -182,7 +179,6 @@ func NewServer(cfg ServerConfig) *Server {
 	s.mux.HandleFunc("/models", s.handleModels)
 	s.mux.HandleFunc("/clear", s.handleClear)
 	s.mux.HandleFunc("/input", s.handleInput)
-	s.mux.HandleFunc("/events", s.handleEvents)
 	s.mux.HandleFunc("/tasks", s.handleTasks)
 	s.mux.HandleFunc("/shutdown", s.handleShutdown)
 	return s
@@ -719,63 +715,5 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 	default:
 		http.Error(w, "input buffer full", http.StatusConflict)
-	}
-}
-
-// sseEvent wraps an event type and data for SSE serialization.
-type sseEvent struct {
-	Type string
-	Data any
-}
-
-// Broadcast sends an event to all SSE subscribers via the broadcaster.
-// The event type becomes the SSE `event:` field, and data is JSON-encoded for the `data:` field.
-func (s *Server) Broadcast(eventType string, data any) {
-	s.broadcaster.Send(sseEvent{Type: eventType, Data: data})
-}
-
-func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming not supported", http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
-
-	// Parse Last-Event-ID for catchup
-	var lastID uint64
-	if idStr := r.Header.Get("Last-Event-ID"); idStr != "" {
-		fmt.Sscanf(idStr, "%d", &lastID)
-	}
-
-	ch, unsub := s.broadcaster.Subscribe(lastID)
-	defer unsub()
-
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case item, ok := <-ch:
-			if !ok {
-				return
-			}
-			ev, _ := item.Value.(sseEvent)
-			data, err := json.Marshal(ev.Data)
-			if err != nil {
-				continue
-			}
-			fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", item.ID, ev.Type, data)
-			flusher.Flush()
-		}
 	}
 }

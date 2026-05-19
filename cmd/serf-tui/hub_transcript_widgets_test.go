@@ -189,7 +189,6 @@ func TestDetailsDrawerShowsHubDiagnostics(t *testing.T) {
 	for _, want := range []string{
 		"Hub ref:  local:01SEND",
 		"Web:      http://127.0.0.1:9180/s/local:01SEND",
-		"Events:   http://127.0.0.1:9180/api/sessions/local:01SEND/events?mode=live",
 		"Context:  37% used",
 		"Branch:   wip/tui",
 		"Tools (2):",

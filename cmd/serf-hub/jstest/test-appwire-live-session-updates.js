@@ -18,8 +18,6 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <header class="workspace-header" data-session-id="sess-route"></header>
   <div id="conversation"
        data-session-id="sess-route"
-       data-replay-url="/past/sess-route/replay"
-       data-events-url=""
        data-state="idle"></div>
   <form data-input-form data-session-id="sess-route">
     <textarea class="message-input"></textarea>

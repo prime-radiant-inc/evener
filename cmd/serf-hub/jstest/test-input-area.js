@@ -24,8 +24,6 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <div id="conversation"
        data-session-id="01TEST"
        data-active-turn-id="turn_steer"
-       data-replay-url=""
-       data-events-url=""
        data-state="processing"></div>
   <form class="workspace-input" data-input-form data-session-id="01TEST">
     <div class="input-attachments" data-attachments></div>
@@ -91,29 +89,6 @@ window.fetch = (url, opts) => {
     text: () => Promise.resolve(fetchResponseOk ? "" : "boom"),
   });
 };
-
-// Stub EventSource so init() doesn't try to open one (no events url anyway).
-class MockEventSource {
-  constructor(url) {
-    this.url = url;
-    this.listeners = new Map();
-    this.closed = false;
-    MockEventSource.instances.push(this);
-  }
-  addEventListener(name, fn) {
-    const listeners = this.listeners.get(name) || [];
-    listeners.push(fn);
-    this.listeners.set(name, listeners);
-  }
-  set onerror(_) {}
-  close() { this.closed = true; }
-  emit(name, data) {
-    const event = { data: JSON.stringify(data || {}) };
-    for (const fn of this.listeners.get(name) || []) fn(event);
-  }
-}
-MockEventSource.instances = [];
-window.EventSource = MockEventSource;
 
 // JSDOM doesn't lay out text, so scrollHeight is always 0. Override it on
 // HTMLTextAreaElement so the auto-grow math has something to work with —
@@ -195,34 +170,79 @@ async function checkFailureKeepsValue() {
   pass(ta.value === "won't go", "expected textarea preserved on failure, got " + JSON.stringify(ta.value));
 }
 
-// 5b. Replying to an ended session (replayUrl-only, replay finished and
-//     closed the EventSource) must reconnect to /events on send-success
-//     so the new turn renders without a page reload.
+// 5b. Replying to an ended session with no open stream must reconnect
+//     AppWire on send-success so the new turn renders without a page reload.
 async function checkReconnectsLiveAfterSendOnEndedSession() {
-  // Simulate the post-replay state: no eventSource open, no eventsUrl.
-  window.SerfRenderer.eventSource = null;
-  window.SerfRenderer.eventsUrl = "";
-  const beforeCount = MockEventSource.instances.length;
+  let notificationHandler = null;
+  let subscriptions = 0;
+  window.SerfAppwire = {
+    refForSession: (sessionId) => "local:" + sessionId,
+    onNotification: (handler) => {
+      notificationHandler = handler;
+      subscriptions++;
+      return () => {};
+    },
+    onConnectionLost: () => () => {},
+    readThread: () => Promise.resolve({
+      thread: {
+        id: "01TEST",
+        sessionId: "01TEST",
+        serf: { ref: "local:01TEST" },
+        turns: [],
+      },
+    }),
+    eventsFromThread: () => [],
+    eventsFromNotification: (method, params) => {
+      if (method === "item/completed" && params.item && params.item.type === "user_message") {
+        return [["USER_INPUT", { text: params.item.text || "", turn: 4 }]];
+      }
+      if (method === "item/started" && params.item && params.item.type === "agent_message") {
+        return [["ASSISTANT_TEXT_START", { message_id: params.item.id }]];
+      }
+      if (method === "item/agentMessage/delta") {
+        return [["ASSISTANT_TEXT_DELTA", { message_id: params.itemId, delta: params.delta || "" }]];
+      }
+      if (method === "item/completed" && params.item && params.item.type === "agent_message") {
+        return [["ASSISTANT_TEXT_END", { message_id: params.item.id }]];
+      }
+      return [];
+    },
+    startTurn: () => Promise.resolve({ turn: { id: "turn_resume" } }),
+  };
+
+  // Simulate the post-hydration state: no stream handle open.
+  window.SerfRenderer.liveStream = null;
   ta.value = "resume me";
   ta.dispatchEvent(new window.Event("input", { bubbles: true }));
   fetchResponseOk = true;
   const submitEvent = new window.Event("submit", { bubbles: true, cancelable: true });
   form.dispatchEvent(submitEvent);
-  await new Promise(r => setTimeout(r, 10));
-  pass(window.SerfRenderer.eventSource !== null, "expected EventSource re-opened after send-success on ended session");
-  pass(
-    window.SerfRenderer.eventsUrl === "/s/01TEST/events",
-    "expected eventsUrl set to /s/01TEST/events, got " + JSON.stringify(window.SerfRenderer.eventsUrl)
-  );
+  await new Promise(r => setTimeout(r, 20));
+  pass(window.SerfRenderer.liveStream !== null, "expected AppWire stream opened after send-success on ended session");
+  pass(subscriptions === 1, "expected exactly one AppWire subscription after resumed send, got " + subscriptions);
+  pass(typeof notificationHandler === "function", "expected AppWire notification handler after resumed send");
 
-  const liveSource = MockEventSource.instances[MockEventSource.instances.length - 1];
-  pass(MockEventSource.instances.length === beforeCount + 1, "expected exactly one live EventSource after resumed send");
-  pass(liveSource && liveSource.url === "/s/01TEST/events", "expected live EventSource URL /s/01TEST/events, got " + (liveSource && liveSource.url));
-
-  liveSource.emit("USER_INPUT", { text: "resume me", turn: 4 });
-  liveSource.emit("ASSISTANT_TEXT_START", { turn: 4, message_id: "msg_resume" });
-  liveSource.emit("ASSISTANT_TEXT_DELTA", { message_id: "msg_resume", delta: "live resumed answer" });
-  liveSource.emit("ASSISTANT_TEXT_END", { message_id: "msg_resume" });
+  notificationHandler("item/completed", {
+    threadId: "01TEST",
+    ref: "local:01TEST",
+    item: { type: "user_message", id: "item_user_resume", text: "resume me" },
+  });
+  notificationHandler("item/started", {
+    threadId: "01TEST",
+    ref: "local:01TEST",
+    item: { type: "agent_message", id: "msg_resume" },
+  });
+  notificationHandler("item/agentMessage/delta", {
+    threadId: "01TEST",
+    ref: "local:01TEST",
+    itemId: "msg_resume",
+    delta: "live resumed answer",
+  });
+  notificationHandler("item/completed", {
+    threadId: "01TEST",
+    ref: "local:01TEST",
+    item: { type: "agent_message", id: "msg_resume" },
+  });
   await new Promise(r => setTimeout(r, 10));
 
   pass(conv.textContent.includes("resume me"), "expected resumed user message to render without refresh");
@@ -233,18 +253,26 @@ async function checkReconnectsLiveAfterSendOnEndedSession() {
   pass(conv.textContent.includes("live resumed answer"), "expected resumed assistant answer to render without refresh");
 }
 
-// 5c. A failed send must NOT open a live stream — connecting to a daemon
-//     that just refused our send would just queue stale events.
+// 5c. A failed send must NOT open a live stream.
 async function checkNoReconnectOnSendFailure() {
-  window.SerfRenderer.eventSource = null;
-  window.SerfRenderer.eventsUrl = "";
+  window.SerfAppwire = {
+    refForSession: (sessionId) => "local:" + sessionId,
+    startTurn: () => Promise.reject(new Error("boom")),
+    onNotification: () => () => {},
+    onConnectionLost: () => () => {},
+    readThread: () => Promise.resolve({ thread: { id: "01TEST", sessionId: "01TEST", turns: [] } }),
+    eventsFromThread: () => [],
+    eventsFromNotification: () => [],
+  };
+  window.SerfRenderer.liveStream = null;
   ta.value = "broken";
   ta.dispatchEvent(new window.Event("input", { bubbles: true }));
   fetchResponseOk = false;
   const submitEvent = new window.Event("submit", { bubbles: true, cancelable: true });
   form.dispatchEvent(submitEvent);
   await new Promise(r => setTimeout(r, 10));
-  pass(window.SerfRenderer.eventSource === null, "expected no EventSource opened on send failure");
+  pass(window.SerfRenderer.liveStream === null, "expected no AppWire stream opened on send failure");
+  window.SerfAppwire = null;
 }
 
 // 6. The steer button posts to /s/<id>/steer when the textarea has text,

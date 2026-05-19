@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/internal/appwire"
 	authopenai "primeradiant.com/serf/internal/auth/openai"
 	"primeradiant.com/serf/server"
 )
@@ -26,7 +27,7 @@ type model struct {
 	width     int
 	height    int
 
-	// Session info (from SSE events)
+	// Session info (from appwire events)
 	sessionModel      string
 	sessionProfile    string
 	sessionID         string
@@ -58,7 +59,7 @@ type model struct {
 	scrollMode        bool                  // true when scrolling history; input is blurred
 	focusedToolIdx    int                   // index into messages of focused tool call in scroll mode; -1 = none
 	transcriptView    *transcriptViewState  // non-nil when viewing a transcript instead of live chat
-	observedSubagents map[string]subagentUI // subagents seen via SSE or /status
+	observedSubagents map[string]subagentUI // subagents seen via appwire or /status
 
 	// Embedded runtime lifecycle.
 	configProvider string
@@ -566,17 +567,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refreshViewport()
 		return m, nil
 
-	case sseConnectedMsg:
+	case streamConnectedMsg:
 		m.connected = true
 		return m, tea.Batch(cmds...)
 
-	case sseErrorMsg:
+	case streamErrorMsg:
 		m.connected = false
 		m.err = msg.err
 		return m, tea.Batch(cmds...)
 
-	case sseEventMsg:
-		m.handleSSEEvent(SSEEvent(msg))
+	case streamEventMsg:
+		m.handleStreamEvent(streamEvent(msg))
 		m.refreshViewport()
 		return m, tea.Batch(cmds...)
 
@@ -780,7 +781,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.connected = false
 		m.err = nil
 		m.authBootstrap = false
-		cmds = append(cmds, m.startSSEStream())
+		cmds = append(cmds, m.startAppwireStream())
 		return m, tea.Batch(cmds...)
 
 	case authStatusMsg:
@@ -930,7 +931,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m *model) handleSSEEvent(ev SSEEvent) {
+func (m *model) handleStreamEvent(ev streamEvent) {
 	switch ev.Event {
 	case "SESSION_START":
 		var d struct {
@@ -958,6 +959,14 @@ func (m *model) handleSSEEvent(ev SSEEvent) {
 			go func() {
 				m.asyncCh <- loadAuthStatusCmd(m.authController, "openai")()
 			}()
+		}
+
+	case "THREAD_STATUS_CHANGED":
+		var d struct {
+			Status string `json:"status"`
+		}
+		if json.Unmarshal([]byte(ev.Data), &d) == nil {
+			m.processing = d.Status == appwire.ThreadStatusProcessing
 		}
 
 	case "USER_INPUT", "STEERING_INJECTED":

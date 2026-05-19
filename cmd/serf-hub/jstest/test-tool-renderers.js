@@ -14,30 +14,23 @@ function newHarness() {
       <button data-details-trigger><span class="panel-toggle-label">details</span></button>
     </div>
     <header class="workspace-header" data-session-id="01TEST"></header>
-    <div id="conversation" data-session-id="01TEST" data-replay-url="/past/01TEST/replay" data-events-url="" data-state="ended"></div>
+    <div id="conversation" data-session-id="01TEST" data-state="ended"></div>
     <form data-input-form data-session-id="01TEST"><textarea class="message-input"></textarea></form>
   </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
   const { window } = dom;
   window.marked = { parse: t => String(t || "").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>") };
   window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
-  class MockEventSource {
-    constructor() { this.listeners = new Map(); MockEventSource.last = this; }
-    addEventListener(n, f) { (this.listeners.get(n) || this.listeners.set(n, []).get(n)).push(f); }
-    set onerror(f) {} close() {}
-    fire(n, d) { (this.listeners.get(n) || []).forEach(fn => fn({ data: JSON.stringify(d) })); }
-  }
-  window.EventSource = MockEventSource;
   window.eval(rendererSrc);
   const conv = window.document.getElementById("conversation");
   window.SerfRenderer.init(conv);
-  return { window, conv, es: MockEventSource.last };
+  return { window, conv };
 }
 
 let allPass = true;
 async function scenario(name, eventSeq, check) {
-  const { window, conv, es } = newHarness();
+  const { window, conv } = newHarness();
   await new Promise(r => setTimeout(r, 30));
-  for (const [t, d] of eventSeq) es.fire(t, d);
+  for (const [t, d] of eventSeq) window.SerfRenderer.handleData(t, d);
   await new Promise(r => setTimeout(r, 10));
   const result = check({ conv, window });
   console.log((result.ok ? "PASS" : "FAIL") + " — " + name);
@@ -49,11 +42,11 @@ async function scenario(name, eventSeq, check) {
 }
 
 async function streamingMarkdownScenario() {
-  const { conv, es } = newHarness();
+  const { window, conv } = newHarness();
   await new Promise(r => setTimeout(r, 30));
-  es.fire("SESSION_START", { session_id: "01TEST" });
-  es.fire("ASSISTANT_TEXT_START", {});
-  es.fire("ASSISTANT_TEXT_DELTA", { delta: "Harness is **serf**" });
+  window.SerfRenderer.handleData("SESSION_START", { session_id: "01TEST" });
+  window.SerfRenderer.handleData("ASSISTANT_TEXT_START", {});
+  window.SerfRenderer.handleData("ASSISTANT_TEXT_DELTA", { delta: "Harness is **serf**" });
   await new Promise(r => setTimeout(r, 550));
 
   const rendered = conv.querySelector(".assistant-message");
@@ -65,7 +58,7 @@ async function streamingMarkdownScenario() {
     return;
   }
 
-  es.fire("ASSISTANT_TEXT_DELTA", { delta: " and stable" });
+  window.SerfRenderer.handleData("ASSISTANT_TEXT_DELTA", { delta: " and stable" });
   await new Promise(r => setTimeout(r, 10));
 
   const updated = conv.querySelector(".assistant-message");

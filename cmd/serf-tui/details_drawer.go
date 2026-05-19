@@ -44,8 +44,6 @@ func (d detailsDrawer) View() string {
 		base := strings.TrimRight(d.HubURL, "/")
 		escaped := url.PathEscape(detail.Ref)
 		fmt.Fprintf(&b, "Web:      %s/s/%s\n", base, escaped)
-		fmt.Fprintf(&b, "Replay:   %s/api/sessions/%s/events?mode=transcript-follow\n", base, escaped)
-		fmt.Fprintf(&b, "Events:   %s/api/sessions/%s/events?mode=live\n", base, escaped)
 	}
 	if caps := capabilityList(detail.Capabilities); caps != "" {
 		fmt.Fprintf(&b, "Capabilities: %s\n", caps)

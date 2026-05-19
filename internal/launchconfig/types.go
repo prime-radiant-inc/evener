@@ -18,7 +18,7 @@ type Layer struct {
 	MaxRounds          *int              `toml:"max_rounds,omitempty"`
 	MaxSubagentDepth   *int              `toml:"max_subagent_depth,omitempty"`
 	NoProjectPrompts   *bool             `toml:"no_project_prompts,omitempty"`
-	SSERingSize        *int              `toml:"sse_ring_size,omitempty"`
+	AppReplaySize      *int              `toml:"app_replay_size,omitempty"`
 	SkillsDirs         []string          `toml:"skills_dirs,omitempty"`
 	PluginDirs         []string          `toml:"plugin_dirs,omitempty"`
 	MCPConfigs         []string          `toml:"mcp_configs,omitempty"`
@@ -100,6 +100,6 @@ type MetaTrust struct {
 	// Deprecated: new code reads Hashes; old single-hash entries are migrated
 	// to Hashes on first write.
 	Hash      string    `toml:"hash,omitempty"`
-	Decision  string    `toml:"decision,omitempty"`  // "trusted" | "rejected"
+	Decision  string    `toml:"decision,omitempty"` // "trusted" | "rejected"
 	DecidedAt time.Time `toml:"decided_at,omitempty"`
 }

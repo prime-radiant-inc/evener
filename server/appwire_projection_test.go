@@ -38,6 +38,38 @@ func TestAppEventProjectorCarriesUserInputTranscriptEntryIndex(t *testing.T) {
 	}
 }
 
+func TestAppEventProjectorProjectsThreadLifecycle(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	started := projector.Project(agent.SessionEvent{
+		Kind:      agent.EventSessionStart,
+		SessionID: "th_1",
+		Data:      agent.SessionStartData{Profile: "openai", Model: "gpt-5"},
+	})
+
+	thread := notificationThread(t, started, appwire.NotifyThreadStarted)
+	if thread.ID != "th_1" || thread.SessionID != "th_1" || thread.Serf.Ref != "local:th_1" {
+		t.Fatalf("started thread identity=%+v", thread)
+	}
+	if thread.Serf.Profile != "openai" || thread.ModelProvider != "gpt-5" {
+		t.Fatalf("started thread model/profile=%+v", thread)
+	}
+	if status := notificationThreadStatus(t, started, appwire.NotifyThreadStatusChanged); status.Type != appwire.ThreadStatusIdle {
+		t.Fatalf("started status=%+v, want idle", status)
+	}
+
+	closed := projector.Project(agent.SessionEvent{
+		Kind:      agent.EventSessionEnd,
+		SessionID: "th_1",
+		Data:      agent.SessionEndData{Reason: "done", State: "CLOSED"},
+	})
+	if !hasAppNotification(closed, appwire.NotifyThreadClosed) {
+		t.Fatalf("closed lifecycle missing thread/closed: %+v", closed)
+	}
+	if status := notificationThreadStatus(t, closed, appwire.NotifyThreadStatusChanged); status.Type != appwire.ThreadStatusClosed {
+		t.Fatalf("closed status=%+v, want closed", status)
+	}
+}
+
 func TestAppEventProjectorCompletesTurnOnSessionEnd(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	started := projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
@@ -460,4 +492,40 @@ func notificationThreadItem(t *testing.T, items []AppNotification, method string
 	}
 	t.Fatalf("missing notification %q in %+v", method, items)
 	return appwire.ThreadItem{}
+}
+
+func notificationThread(t *testing.T, items []AppNotification, method string) appwire.Thread {
+	t.Helper()
+	for _, item := range items {
+		if item.Method != method {
+			continue
+		}
+		params, ok := item.Params.(map[string]any)
+		if !ok {
+			t.Fatalf("params=%T", item.Params)
+		}
+		thread, ok := params["thread"].(appwire.Thread)
+		if !ok {
+			t.Fatalf("thread param=%T in %+v", params["thread"], params)
+		}
+		return thread
+	}
+	t.Fatalf("missing notification %q in %+v", method, items)
+	return appwire.Thread{}
+}
+
+func notificationThreadStatus(t *testing.T, items []AppNotification, method string) appwire.ThreadStatus {
+	t.Helper()
+	for _, item := range items {
+		if item.Method != method {
+			continue
+		}
+		params, ok := item.Params.(appwire.ThreadStatusChangedParams)
+		if !ok {
+			t.Fatalf("params=%T", item.Params)
+		}
+		return params.Status
+	}
+	t.Fatalf("missing notification %q in %+v", method, items)
+	return appwire.ThreadStatus{}
 }

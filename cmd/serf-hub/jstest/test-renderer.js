@@ -1,5 +1,5 @@
-// Test harness: load renderer.js into a JSDOM window, mock EventSource,
-// fire a captured event stream, and assert what got rendered.
+// Test harness: load renderer.js into a JSDOM window, fire captured
+// renderer events, and assert what got rendered.
 const fs = require("fs");
 const path = require("path");
 const { JSDOM, ResourceLoader } = require("jsdom");
@@ -16,8 +16,6 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <header class="workspace-header" data-session-id="01TEST"></header>
   <div id="conversation"
        data-session-id="01TEST"
-       data-replay-url="/past/01TEST/replay"
-       data-events-url=""
        data-state="ended"></div>
   <form data-input-form data-session-id="01TEST">
     <textarea class="message-input"></textarea>
@@ -32,26 +30,6 @@ window.fetch = (url) => Promise.resolve({
   ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve(""),
 });
 
-// Mock EventSource — captured stream gets fed by .fire(events).
-class MockEventSource {
-  constructor(url) {
-    this.url = url;
-    this.listeners = new Map();
-    MockEventSource.last = this;
-  }
-  addEventListener(name, fn) {
-    if (!this.listeners.has(name)) this.listeners.set(name, []);
-    this.listeners.get(name).push(fn);
-  }
-  set onerror(fn) { this._onerror = fn; }
-  close() { this.closed = true; }
-  fire(name, data) {
-    const fns = this.listeners.get(name) || [];
-    for (const fn of fns) fn({ data: JSON.stringify(data) });
-  }
-}
-window.EventSource = MockEventSource;
-
 // Also stub htmx hook events.
 window.HTMLElement.prototype.contains = window.HTMLElement.prototype.contains || function () { return false; };
 
@@ -61,12 +39,6 @@ window.eval(rendererSrc);
 // Initialize the renderer on #conversation explicitly.
 const conv = window.document.getElementById("conversation");
 window.SerfRenderer.init(conv);
-
-const es = MockEventSource.last;
-if (!es) {
-  console.error("FAIL: renderer didn't open an EventSource");
-  process.exit(2);
-}
 
 // ───────────────────────────── replay the captured event stream
 const events = [
@@ -85,7 +57,7 @@ const events = [
 async function flushAndAssert() {
   await new Promise(r => setTimeout(r, 30));
   for (const [name, data] of events) {
-    es.fire(name, data);
+    window.SerfRenderer.handleData(name, data);
   }
   await new Promise(r => setTimeout(r, 10));
   runAssertions();

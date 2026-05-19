@@ -1,13 +1,11 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
-	"io"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -40,13 +38,13 @@ type WebConfig struct {
 	RunDir        string // run directory where rendezvous files live
 	Roster        *Roster
 	Past          *PastIndex
-	Spawner       Spawner           // optional; nil disables spawn
-	Models        []modelDescriptor // available models for the spawn chip
-	PastPerPage   int               // results per page for /past; defaults to 50 when zero
-	StateDir      string            // root of the projects/<sha> state directory; needed for ForkSession
+	Spawner       Spawner            // optional; nil disables spawn
+	Models        []modelDescriptor  // available models for the spawn chip
+	PastPerPage   int                // results per page for /past; defaults to 50 when zero
+	StateDir      string             // root of the projects/<sha> state directory; needed for ForkSession
 	CredsStore    *credentials.Store // credentials store; passed to auth controller
 	PluginDirs    []string           // explicit plugin dirs; when empty, default to ~/.config/serf/plugins/*
-	MCPConfigPath string            // MCP config file path; when empty, default to ~/.config/serf/mcp.json
+	MCPConfigPath string             // MCP config file path; when empty, default to ~/.config/serf/mcp.json
 	CodexSources  []appsource.CodexSourceConfig
 	CodexLaunches []CodexLaunchConfig
 	CodexLauncher *CodexLauncher
@@ -75,7 +73,6 @@ type WebServer struct {
 	inputStripTmpl *template.Template
 	credsTmpl      *template.Template
 	settingsTmpls  map[string]*template.Template
-	sse            *SSEProxy
 	appRPC         *appserver.Server
 	sources        *appsource.Registry
 	startedAt      time.Time
@@ -109,10 +106,6 @@ func NewWebServer(cfg WebConfig) *WebServer {
 			"templates/partials/settings/"+sec+".html",
 		))
 	}
-	var sse *SSEProxy
-	if cfg.Roster != nil {
-		sse = NewSSEProxy(cfg.Roster)
-	}
 	sources := newHubSourceRegistry(cfg)
 	if cfg.CodexLauncher == nil && len(cfg.CodexLaunches) > 0 {
 		cfg.CodexLauncher = NewCodexLauncher(cfg.CodexLaunches)
@@ -122,7 +115,6 @@ func NewWebServer(cfg WebConfig) *WebServer {
 		workspaceTmpl: workspaceTmpl, spawnTmpl: spawnTmpl, inputStripTmpl: inputStripTmpl,
 		credsTmpl:     credsTmpl,
 		settingsTmpls: settingsTmpls,
-		sse:           sse,
 		sources:       sources,
 		startedAt:     time.Now().UTC(),
 		resumeLocks:   map[string]*sync.Mutex{},
@@ -161,7 +153,6 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/s/", s.handleSession)
 	mux.HandleFunc("/new", s.handleIndex)
 	mux.HandleFunc("/_partials/", s.handleInternalPartial)
-	mux.HandleFunc("/past/", s.handlePastID) // /past/<id>/replay
 
 	// Settings
 	mux.HandleFunc("/settings", s.handleSettings)
@@ -760,10 +751,6 @@ func hubDetailFromAppThread(thread appwire.Thread) hubapi.SessionDetail {
 	if detail.SessionID == "" {
 		detail.SessionID = thread.ID
 	}
-	detail.Streams.TranscriptFollow = "/api/sessions/" + ref.PathEscaped() + "/events?mode=transcript-follow"
-	if detail.Live {
-		detail.Streams.Live = "/api/sessions/" + ref.PathEscaped() + "/events?mode=live"
-	}
 	return detail
 }
 
@@ -867,8 +854,6 @@ func (s *WebServer) handleAPISession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeAPIJSON(w, http.StatusOK, detail)
-	case "events":
-		s.handleAPISessionEvents(w, r, routeID)
 	case "send":
 		s.handleSend(w, r, routeID)
 	case "tasks":
@@ -911,22 +896,17 @@ func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
 		ForkLabel:      wd.ForkLabel,
 		DivergenceTurn: wd.DivergenceTurn,
 		Capabilities:   s.apiSessionCapabilities(id, live),
-		Streams: hubapi.SessionStreams{
-			TranscriptFollow: "/api/sessions/" + ref.PathEscaped() + "/events?mode=transcript-follow",
-		},
 	}
 	if detail.Project == "" || detail.Project == "." {
 		detail.Project = "(no project)"
 	}
 	if live {
-		detail.Streams.Live = "/api/sessions/" + ref.PathEscaped() + "/events?mode=live"
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		appRef := appRefFromRouteID(id)
 		if source, err := sourceForThreadWithManagedLaunch(ctx, s.cfg, s.sources, appRef, ""); err == nil {
 			if resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: appRef, IncludeTurns: true, ItemsView: "full"}); err == nil {
 				appDetail := hubDetailFromAppThread(resp.Thread)
-				appDetail.Streams = detail.Streams
 				appDetail.ParentSessionID = detail.ParentSessionID
 				appDetail.DivergenceTurn = detail.DivergenceTurn
 				appDetail.ForkLabel = detail.ForkLabel
@@ -937,7 +917,6 @@ func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
 	}
 	if s.cfg.Past != nil {
 		if pe, ok := s.cfg.Past.Find(id); ok {
-			detail.Streams.Replay = "/api/sessions/" + ref.PathEscaped() + "/events?mode=replay"
 			if detail.Title == "" {
 				detail.Title = pastTitle(pe)
 			}
@@ -979,436 +958,6 @@ func (s *WebServer) apiSessionCapabilities(id string, live bool) hubapi.SessionC
 		}
 	}
 	return caps
-}
-
-func (s *WebServer) handleAPISessionEvents(w http.ResponseWriter, r *http.Request, id string) {
-	if r.Method != http.MethodGet {
-		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
-		return
-	}
-	mode := r.URL.Query().Get("mode")
-	if mode == "" {
-		mode = "transcript-follow"
-	}
-	switch mode {
-	case "live":
-		s.serveAppwireEvents(w, r, id, false)
-	case "transcript-follow":
-		if s.isLive(id) {
-			s.serveAppwireEvents(w, r, id, true)
-			return
-		}
-		if s.cfg.Past != nil {
-			if pe, ok := s.cfg.Past.Find(id); ok {
-				s.serveReplay(w, r, pe)
-				return
-			}
-		}
-		writeAPIError(w, http.StatusNotFound, "session not found")
-	case "replay":
-		if s.cfg.Past != nil {
-			if pe, ok := s.cfg.Past.Find(id); ok {
-				s.serveReplay(w, r, pe)
-				return
-			}
-		}
-		writeAPIError(w, http.StatusNotFound, "session not found")
-	default:
-		writeAPIError(w, http.StatusBadRequest, "unknown events mode")
-	}
-}
-
-func (s *WebServer) serveAppwireEvents(w http.ResponseWriter, r *http.Request, id string, includeReplay bool) {
-	ref := appRefFromRouteID(id)
-	source, err := sourceForThreadWithManagedLaunch(r.Context(), s.cfg, s.sources, ref, "")
-	if err != nil {
-		writeAPIError(w, http.StatusNotFound, "session not live")
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	flusher, _ := w.(http.Flusher)
-	ctx := r.Context()
-	if includeReplay {
-		if resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: true, ItemsView: "full"}); err == nil {
-			writeThreadReplaySSE(w, flusher, resp.Thread)
-		}
-	}
-	notifications, err := source.SubscribeThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false})
-	if err != nil {
-		writeSSE(w, flusher, "ERROR", map[string]any{"error": err.Error()})
-		return
-	}
-	sseWriter := newNotificationSSEWriter(w, flusher)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case notification, ok := <-notifications:
-			if !ok {
-				return
-			}
-			sseWriter.write(notification)
-		}
-	}
-}
-
-func writeThreadReplaySSE(w io.Writer, flusher http.Flusher, thread appwire.Thread) {
-	writeSSE(w, flusher, "SESSION_START", map[string]any{
-		"session_id": threadReplaySessionID(thread),
-		"model":      thread.ModelProvider,
-		"profile":    thread.Serf.Profile,
-	})
-	activeToolCalls := map[string]struct{}{}
-	for _, turn := range thread.Turns {
-		turnIndex := turnIndexFromAppwireID(turn.ID)
-		for _, item := range turn.Items {
-			if item.Type == "tool_call" {
-				writeToolReplaySSE(w, flusher, turnIndex, item, activeToolCalls)
-				continue
-			}
-			writeItemReplaySSE(w, flusher, turnIndex, item)
-		}
-		if turn.Status == appwire.TurnStatusFailed {
-			message := "turn failed"
-			if turn.Error != nil && strings.TrimSpace(turn.Error.Message) != "" {
-				message = turn.Error.Message
-			}
-			writeSSE(w, flusher, "ERROR", errorPayload(message, turn.Error))
-		}
-	}
-}
-
-func writeToolReplaySSE(w io.Writer, flusher http.Flusher, turnIndex int, item appwire.ThreadItem, activeToolCalls map[string]struct{}) {
-	callID := firstNonEmpty(item.CallID, item.ID)
-	completed := item.Status == appwire.TurnStatusCompleted || item.Output != "" || item.Error != ""
-	if completed && callID != "" {
-		if _, ok := activeToolCalls[callID]; ok {
-			writeToolReplayEndSSE(w, flusher, item)
-			delete(activeToolCalls, callID)
-			return
-		}
-	}
-	writeSSE(w, flusher, "TOOL_CALL_START", map[string]any{
-		"call_id":        callID,
-		"tool_name":      item.ToolName,
-		"arguments_json": item.ArgumentsJSON,
-	})
-	if !completed {
-		if callID != "" {
-			activeToolCalls[callID] = struct{}{}
-		}
-		return
-	}
-	if item.Output != "" {
-		writeSSE(w, flusher, "TOOL_CALL_OUTPUT_DELTA", map[string]any{
-			"call_id": callID,
-			"delta":   item.Output,
-			"turn":    turnIndex,
-		})
-	}
-	writeToolReplayEndSSE(w, flusher, item)
-}
-
-func writeToolReplayEndSSE(w io.Writer, flusher http.Flusher, item appwire.ThreadItem) {
-	writeSSE(w, flusher, "TOOL_CALL_END", map[string]any{
-		"call_id":        firstNonEmpty(item.CallID, item.ID),
-		"item_id":        item.ID,
-		"tool_name":      item.ToolName,
-		"arguments_json": item.ArgumentsJSON,
-		"output":         item.Output,
-		"error":          item.Error,
-		"tool_state":     item.Raw,
-	})
-}
-
-func threadReplaySessionID(thread appwire.Thread) string {
-	if ref, err := appwire.ParseRef(thread.Serf.Ref); err == nil {
-		if ref.SourceID != "local" {
-			return ref.String()
-		}
-		if thread.SessionID == "" {
-			return ref.ThreadID
-		}
-	}
-	if thread.SessionID != "" {
-		return thread.SessionID
-	}
-	return thread.ID
-}
-
-func writeItemReplaySSE(w io.Writer, flusher http.Flusher, turnIndex int, item appwire.ThreadItem) {
-	switch item.Type {
-	case "user_message":
-		payload := map[string]any{"text": item.Text, "turn": turnIndex}
-		var images []map[string]any
-		for _, image := range item.Images {
-			record := map[string]any{
-				"media_type": image.MediaType,
-				"name":       image.Name,
-			}
-			if image.Metadata != nil {
-				record["sha"] = image.Metadata["sha"]
-				if size := image.Metadata["size"]; size != "" {
-					record["size"] = size
-				}
-			}
-			images = append(images, record)
-		}
-		if len(images) > 0 {
-			payload["images"] = images
-		}
-		writeSSE(w, flusher, "USER_INPUT", payload)
-	case "steering":
-		writeSSE(w, flusher, "STEERING_INJECTED", map[string]any{"text": item.Text})
-	case "agent_message":
-		if item.Text != "" {
-			writeSSE(w, flusher, "ASSISTANT_TEXT_END", map[string]any{"text": item.Text})
-		}
-	case "tool_call":
-		writeToolReplaySSE(w, flusher, turnIndex, item, map[string]struct{}{})
-	}
-}
-
-func writeNotificationSSE(w io.Writer, flusher http.Flusher, notification appwire.Notification) {
-	newNotificationSSEWriter(w, flusher).write(notification)
-}
-
-type notificationSSEWriter struct {
-	w              io.Writer
-	flusher        http.Flusher
-	startedItems   map[string]struct{}
-	completedItems map[string]struct{}
-	outputDeltas   map[string]string
-}
-
-func newNotificationSSEWriter(w io.Writer, flusher http.Flusher) *notificationSSEWriter {
-	return &notificationSSEWriter{
-		w:              w,
-		flusher:        flusher,
-		startedItems:   map[string]struct{}{},
-		completedItems: map[string]struct{}{},
-		outputDeltas:   map[string]string{},
-	}
-}
-
-func (sw *notificationSSEWriter) write(notification appwire.Notification) {
-	switch notification.Method {
-	case appwire.NotifyThreadStatusChanged:
-		var params appwire.ThreadStatusChangedParams
-		if json.Unmarshal(notification.Params, &params) == nil {
-			writeSSE(sw.w, sw.flusher, "THREAD_STATUS_CHANGED", map[string]any{"status": params.Status.Type})
-		}
-	case appwire.NotifyTurnStarted:
-		var params struct {
-			Turn appwire.Turn `json:"turn"`
-		}
-		if json.Unmarshal(notification.Params, &params) == nil {
-			writeSSE(sw.w, sw.flusher, "TURN_STARTED", map[string]any{"turnId": params.Turn.ID})
-		}
-	case appwire.NotifyItemStarted:
-		var params struct {
-			Item appwire.ThreadItem `json:"item"`
-		}
-		if json.Unmarshal(notification.Params, &params) == nil {
-			switch params.Item.Type {
-			case "user_message":
-				writeSSE(sw.w, sw.flusher, "USER_INPUT", map[string]any{"text": params.Item.Text, "turn": turnIndexFromAppwireID(params.Item.TurnID)})
-			case "agent_message":
-				writeSSE(sw.w, sw.flusher, "ASSISTANT_TEXT_START", map[string]any{})
-			case "tool_call":
-				writeSSE(sw.w, sw.flusher, "TOOL_CALL_START", map[string]any{
-					"call_id":        firstNonEmpty(params.Item.CallID, params.Item.ID),
-					"tool_name":      params.Item.ToolName,
-					"arguments_json": params.Item.ArgumentsJSON,
-				})
-			}
-			sw.markStarted(params.Item)
-		}
-	case appwire.NotifyAgentMessageDelta:
-		var params appwire.AgentMessageDeltaParams
-		if json.Unmarshal(notification.Params, &params) == nil {
-			writeSSE(sw.w, sw.flusher, "ASSISTANT_TEXT_DELTA", map[string]any{"delta": params.Delta})
-		}
-	case appwire.NotifyToolOutputDelta:
-		var params appwire.ToolOutputDeltaParams
-		if json.Unmarshal(notification.Params, &params) == nil {
-			callID := firstNonEmpty(params.CallID, params.ItemID)
-			sw.markOutputDelta(params.ItemID, params.CallID, params.Delta)
-			writeSSE(sw.w, sw.flusher, "TOOL_CALL_OUTPUT_DELTA", map[string]any{"call_id": callID, "item_id": params.ItemID, "delta": params.Delta})
-		}
-	case appwire.NotifyItemCompleted:
-		var params struct {
-			Item appwire.ThreadItem `json:"item"`
-		}
-		if json.Unmarshal(notification.Params, &params) == nil {
-			if params.Item.Type == "agent_message" {
-				writeSSE(sw.w, sw.flusher, "ASSISTANT_TEXT_END", map[string]any{"text": params.Item.Text})
-			}
-			if params.Item.Type == "tool_call" {
-				writeSSE(sw.w, sw.flusher, "TOOL_CALL_END", map[string]any{
-					"call_id":        firstNonEmpty(params.Item.CallID, params.Item.ID),
-					"item_id":        params.Item.ID,
-					"tool_name":      params.Item.ToolName,
-					"arguments_json": params.Item.ArgumentsJSON,
-					"output":         params.Item.Output,
-					"error":          params.Item.Error,
-					"tool_state":     params.Item.Raw,
-				})
-			}
-			sw.markCompleted(params.Item)
-		}
-	case appwire.NotifyTurnCompleted:
-		var params struct {
-			Turn appwire.Turn `json:"turn"`
-		}
-		if json.Unmarshal(notification.Params, &params) != nil {
-			return
-		}
-		writeSSE(sw.w, sw.flusher, "TURN_COMPLETED", map[string]any{"turnId": params.Turn.ID})
-		if params.Turn.Status == appwire.TurnStatusFailed {
-			message := "turn failed"
-			if params.Turn.Error != nil && strings.TrimSpace(params.Turn.Error.Message) != "" {
-				message = params.Turn.Error.Message
-			}
-			writeSSE(sw.w, sw.flusher, "ERROR", errorPayload(message, params.Turn.Error))
-		} else if params.Turn.Status != appwire.TurnStatusFailed {
-			turnIndex := turnIndexFromAppwireID(params.Turn.ID)
-			for _, item := range params.Turn.Items {
-				sw.writeCompletedTurnItem(turnIndex, item)
-			}
-		}
-	case appwire.NotifyWarning:
-		writeSSE(sw.w, sw.flusher, "WARNING", warningPayload(notification.Params))
-	case appwire.NotifySerfSteeringInjected:
-		var params struct {
-			Text string `json:"text"`
-		}
-		if json.Unmarshal(notification.Params, &params) == nil {
-			writeSSE(sw.w, sw.flusher, "STEERING_INJECTED", map[string]any{"text": params.Text})
-		}
-	}
-}
-
-func (sw *notificationSSEWriter) writeCompletedTurnItem(turnIndex int, item appwire.ThreadItem) {
-	if sw.isCompleted(item) {
-		return
-	}
-	switch item.Type {
-	case "agent_message":
-		if item.Text != "" {
-			writeSSE(sw.w, sw.flusher, "ASSISTANT_TEXT_END", map[string]any{"text": item.Text})
-		}
-	case "tool_call":
-		if !sw.isStarted(item) {
-			writeSSE(sw.w, sw.flusher, "TOOL_CALL_START", map[string]any{
-				"call_id":        firstNonEmpty(item.CallID, item.ID),
-				"tool_name":      item.ToolName,
-				"arguments_json": item.ArgumentsJSON,
-			})
-		}
-		if delta, ok := sw.completedOutputDelta(item); ok && delta != "" {
-			writeSSE(sw.w, sw.flusher, "TOOL_CALL_OUTPUT_DELTA", map[string]any{
-				"call_id": firstNonEmpty(item.CallID, item.ID),
-				"item_id": item.ID,
-				"delta":   delta,
-				"turn":    turnIndex,
-			})
-		}
-		writeSSE(sw.w, sw.flusher, "TOOL_CALL_END", map[string]any{
-			"call_id":        firstNonEmpty(item.CallID, item.ID),
-			"item_id":        item.ID,
-			"tool_name":      item.ToolName,
-			"arguments_json": item.ArgumentsJSON,
-			"output":         item.Output,
-			"error":          item.Error,
-			"tool_state":     item.Raw,
-		})
-	}
-	sw.markCompleted(item)
-}
-
-func (sw *notificationSSEWriter) markOutputDelta(itemID, callID, delta string) {
-	seen := map[string]struct{}{}
-	for _, key := range []string{itemID, callID} {
-		if key == "" {
-			continue
-		}
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		sw.outputDeltas[key] += delta
-	}
-}
-
-func (sw *notificationSSEWriter) completedOutputDelta(item appwire.ThreadItem) (string, bool) {
-	if item.Output == "" {
-		return "", false
-	}
-	streamed, ok := sw.streamedOutput(item)
-	if !ok {
-		return item.Output, true
-	}
-	if strings.HasPrefix(item.Output, streamed) {
-		return item.Output[len(streamed):], true
-	}
-	return "", false
-}
-
-func (sw *notificationSSEWriter) streamedOutput(item appwire.ThreadItem) (string, bool) {
-	for _, key := range []string{item.ID, item.CallID} {
-		if key == "" {
-			continue
-		}
-		if streamed, ok := sw.outputDeltas[key]; ok {
-			return streamed, true
-		}
-	}
-	return "", false
-}
-
-func (sw *notificationSSEWriter) markStarted(item appwire.ThreadItem) {
-	if key := itemSSEKey(item); key != "" {
-		sw.startedItems[key] = struct{}{}
-	}
-}
-
-func (sw *notificationSSEWriter) markCompleted(item appwire.ThreadItem) {
-	if key := itemSSEKey(item); key != "" {
-		sw.completedItems[key] = struct{}{}
-	}
-}
-
-func (sw *notificationSSEWriter) isStarted(item appwire.ThreadItem) bool {
-	_, ok := sw.startedItems[itemSSEKey(item)]
-	return ok
-}
-
-func (sw *notificationSSEWriter) isCompleted(item appwire.ThreadItem) bool {
-	_, ok := sw.completedItems[itemSSEKey(item)]
-	return ok
-}
-
-func itemSSEKey(item appwire.ThreadItem) string {
-	return firstNonEmpty(item.CallID, item.ID)
-}
-
-func errorPayload(message string, turnErr *appwire.TurnError) map[string]any {
-	payload := map[string]any{"error": message}
-	if turnErr != nil {
-		if turnErr.Source != "" {
-			payload["source"] = turnErr.Source
-		}
-		if turnErr.Title != "" {
-			payload["title"] = turnErr.Title
-		}
-		if turnErr.Hint != "" {
-			payload["hint"] = turnErr.Hint
-		}
-	}
-	addDiagnosticDefaults(payload, message)
-	return payload
 }
 
 func warningPayload(raw json.RawMessage) map[string]any {
@@ -1469,17 +1018,6 @@ func warningMessage(raw json.RawMessage) string {
 	return string(raw)
 }
 
-func writeSSE(w io.Writer, flusher http.Flusher, event string, data any) {
-	payload, err := json.Marshal(data)
-	if err != nil {
-		return
-	}
-	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, payload)
-	if flusher != nil {
-		flusher.Flush()
-	}
-}
-
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if value != "" {
@@ -1487,13 +1025,6 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func turnIndexFromAppwireID(raw string) int {
-	raw = strings.TrimPrefix(strings.TrimSpace(raw), "turn_")
-	var n int
-	_, _ = fmt.Sscanf(raw, "%d", &n)
-	return n
 }
 
 func (s *WebServer) handleAPIClear(w http.ResponseWriter, r *http.Request, id string) {
@@ -1616,25 +1147,25 @@ type mcpDisplay struct {
 
 // settingsData is the template data passed to all settings section templates.
 type settingsData struct {
-	Active              string
-	HubAddr             string
-	RunDir              string
-	StateDir            string
-	SpawnTimeout        string
-	PastPerPage         int
-	Providers           []providerDisplay
-	ModelDiagnostics    []appwire.ModelListDiagnostic
-	Agents              []agentDisplay
-	Plugins             []pluginDisplay
-	PluginsError        string
-	Skills              []skillDisplay
-	Mcps                []mcpDisplay
-	McpsError           string
-	McpConfigPath       string
-	PastCount           int
-	CodexLaunches       []CodexLaunchConfig
-	ProjectCWD          string             // canonical cwd for the per-project settings page
-	AvailableProjects   []projectListItem  // known projects shown when ProjectCWD is empty
+	Active            string
+	HubAddr           string
+	RunDir            string
+	StateDir          string
+	SpawnTimeout      string
+	PastPerPage       int
+	Providers         []providerDisplay
+	ModelDiagnostics  []appwire.ModelListDiagnostic
+	Agents            []agentDisplay
+	Plugins           []pluginDisplay
+	PluginsError      string
+	Skills            []skillDisplay
+	Mcps              []mcpDisplay
+	McpsError         string
+	McpConfigPath     string
+	PastCount         int
+	CodexLaunches     []CodexLaunchConfig
+	ProjectCWD        string            // canonical cwd for the per-project settings page
+	AvailableProjects []projectListItem // known projects shown when ProjectCWD is empty
 }
 
 // projectListItem is one row in the project picker on the /settings/project page.
@@ -2023,120 +1554,6 @@ func (s *WebServer) handleWorkspaceEmpty(w http.ResponseWriter, r *http.Request)
 	fmt.Fprint(w, `<div class="workspace-empty"><p>No session selected.</p><p style="margin-top:1em"><a href="/new" hx-get="/_partials/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ new session</a></p></div>`)
 }
 
-// handlePastID dispatches /past/<id>/replay (the only past route still served
-// by the new app — the workspace partial points its renderer at it for past
-// sessions).
-func (s *WebServer) handlePastID(w http.ResponseWriter, r *http.Request) {
-	rest := strings.TrimPrefix(r.URL.Path, "/past/")
-	parts := strings.SplitN(rest, "/", 2)
-	id := parts[0]
-	if id == "" || s.cfg.Past == nil {
-		http.NotFound(w, r)
-		return
-	}
-	entry, ok := s.cfg.Past.Find(id)
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	tail := ""
-	if len(parts) == 2 {
-		tail = parts[1]
-	}
-	if tail != "replay" {
-		http.NotFound(w, r)
-		return
-	}
-	s.serveReplay(w, r, entry)
-}
-
-// serveReplay reads <state_dir>/sessions/<id>.transcript.jsonl and translates
-// each turn into the SSE events the browser renderer expects. The transcript
-// is a record of message-shaped Turns; the renderer is built around the
-// daemon's runtime event stream, so we map between the two here.
-func (s *WebServer) serveReplay(w http.ResponseWriter, r *http.Request, entry PastEntry) {
-	transcriptPath := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
-	f, err := os.Open(transcriptPath)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
-		return
-	}
-	defer f.Close()
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		http.Error(w, "streaming not supported", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	id := uint64(0)
-	emit := func(event string, payload any) {
-		data, err := json.Marshal(payload)
-		if err != nil {
-			return
-		}
-		id++
-		fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", id, event, data)
-		flusher.Flush()
-	}
-
-	// call_id -> tool_name, so TOOL_RESULTS turns can name the tool the
-	// renderer is closing out.
-	toolNames := map[string]string{}
-
-	first := true
-	entryIndex := 0
-	for scanner.Scan() {
-		raw := scanner.Bytes()
-		var head struct {
-			Kind string `json:"kind"`
-		}
-		if err := json.Unmarshal(raw, &head); err != nil {
-			continue
-		}
-		if first {
-			first = false
-			if head.Kind == "header" {
-				var h replayHeader
-				if err := json.Unmarshal(raw, &h); err == nil {
-					emit("SESSION_START", map[string]any{
-						"session_id": h.SessionID,
-						"profile":    h.ProfileID,
-						"model":      h.Model,
-						"restored":   true,
-					})
-				}
-				continue
-			}
-		}
-		if head.Kind == "api_call" {
-			var call agent.TranscriptAPICall
-			if err := json.Unmarshal(raw, &call); err == nil && strings.TrimSpace(call.Error) != "" {
-				emit("ERROR", errorPayload(call.Error, nil))
-			}
-			continue
-		}
-		if head.Kind != "entry" {
-			continue
-		}
-		var entryRec replayEntry
-		if err := json.Unmarshal(raw, &entryRec); err != nil {
-			continue
-		}
-		entryIndex++
-		emitTurnEvents(emit, entryIndex, entryRec.Turn, toolNames)
-	}
-	// Tell EventSource clients we're done. The browser would otherwise
-	// auto-reconnect on close and the replay would re-run from the top.
-	emit("REPLAY_DONE", map[string]any{})
-}
-
 type replayHeader struct {
 	SessionID string `json:"session_id"`
 	ProfileID string `json:"profile_id"`
@@ -2182,102 +1599,6 @@ type replayToolResult struct {
 	Name       string `json:"name,omitempty"`
 	Content    any    `json:"content,omitempty"`
 	IsError    bool   `json:"is_error,omitempty"`
-}
-
-// emitTurnEvents translates a single transcript Turn into the SSE events
-// the renderer consumes. toolNames carries call_id -> tool_name across calls
-// so we can populate TOOL_CALL_END from a TOOL_RESULTS turn.
-func emitTurnEvents(emit func(string, any), turnIndex int, turn replayTurn, toolNames map[string]string) {
-	switch turn.Kind {
-	case "USER_INPUT":
-		text := joinText(turn.Message.Content)
-		payload := map[string]any{"text": text, "turn": turnIndex}
-		var images []map[string]any
-		for _, p := range turn.Message.Content {
-			if p.Kind != "image" || p.Image == nil || len(p.Image.Data) == 0 {
-				continue
-			}
-			// Strip raw bytes from the replay payload — multi-MB transcripts
-			// were re-emitted on every reload. The renderer fetches lazily
-			// via /s/<id>/images/<sha> instead.
-			images = append(images, map[string]any{
-				"media_type": p.Image.MediaType,
-				"sha":        imageSha(p.Image.Data),
-				"name":       p.Image.Name,
-				"size":       len(p.Image.Data),
-			})
-		}
-		if len(images) > 0 {
-			payload["images"] = images
-		}
-		emit("USER_INPUT", payload)
-	case "STEERING":
-		text := joinText(turn.Message.Content)
-		emit("STEERING_INJECTED", map[string]any{"text": text})
-	case "ASSISTANT":
-		for _, p := range turn.Message.Content {
-			switch p.Kind {
-			case "text":
-				if p.Text == "" {
-					continue
-				}
-				emit("ASSISTANT_TEXT_START", map[string]any{})
-				emit("ASSISTANT_TEXT_END", map[string]any{
-					"text":          p.Text,
-					"finish_reason": "stop",
-				})
-			case "tool_call":
-				if p.ToolCall == nil {
-					continue
-				}
-				toolNames[p.ToolCall.ID] = p.ToolCall.Name
-				args := ""
-				if len(p.ToolCall.Arguments) > 0 {
-					args = string(p.ToolCall.Arguments)
-				}
-				if p.ToolCall.Name == "communicate" {
-					if text := communicateMessageFromArguments(p.ToolCall.Arguments); text != "" {
-						emit("ASSISTANT_TEXT_START", map[string]any{})
-						emit("ASSISTANT_TEXT_END", map[string]any{
-							"text":          text,
-							"finish_reason": "stop",
-						})
-					}
-					continue
-				}
-				emit("TOOL_CALL_START", map[string]any{
-					"tool_name":      p.ToolCall.Name,
-					"call_id":        p.ToolCall.ID,
-					"arguments_json": args,
-				})
-			}
-		}
-	case "TOOL", "TOOL_RESULTS":
-		for _, p := range turn.Message.Content {
-			if p.Kind != "tool_result" || p.ToolResult == nil {
-				continue
-			}
-			name := p.ToolResult.Name
-			if name == "" {
-				name = toolNames[p.ToolResult.ToolCallID]
-			}
-			if name == "communicate" {
-				delete(toolNames, p.ToolResult.ToolCallID)
-				continue
-			}
-			out := stringifyToolContent(p.ToolResult.Content)
-			payload := map[string]any{
-				"tool_name": name,
-				"call_id":   p.ToolResult.ToolCallID,
-			}
-			if p.ToolResult.IsError {
-				payload["error"] = out
-			} else {
-				payload["output"] = out
-			}
-			emit("TOOL_CALL_END", payload)
-		}
-	}
 }
 
 func joinText(parts []replayPart) string {
@@ -2865,14 +2186,6 @@ func (s *WebServer) handleSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleDrainAsSteer(w, r, id)
-	case "events":
-		if !s.isLive(id) && s.cfg.Past != nil {
-			if pe, ok := s.cfg.Past.Find(id); ok {
-				s.serveReplay(w, r, pe)
-				return
-			}
-		}
-		s.serveAppwireEvents(w, r, id, true)
 	default:
 		// /s/<id>/images/<sha> — sha-addressed image fetch for replay.
 		if strings.HasPrefix(sub, "images/") {
@@ -2900,8 +2213,6 @@ type WorkspaceData struct {
 	ContextNumbers string
 	Cost           string
 	ActiveTurnID   string
-	ReplayURL      string
-	EventsURL      string
 	Capabilities   hubapi.SessionCapabilities
 	// Fork lineage for the preserved-original side of a fork. Non-empty
 	// only when this session's meta carries ForkLabel — i.e., it's the
@@ -3088,21 +2399,13 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 					s.fillForkLineage(&data, pe.Meta)
 				}
 			}
-			// A daemon reporting ENDED is still in the roster (its rendezvous
-			// file lingers until pruned) but its /events stream will never
-			// emit anything new. Treat it as past content: serve replay so
-			// the user sees the full transcript. The renderer will switch
-			// to /events on the next send-to-ended (which resumes a fresh
-			// daemon).
 			if state == "ended" && s.cfg.Past != nil {
 				if _, ok := s.cfg.Past.Find(id); ok {
 					data.Capabilities = s.apiSessionCapabilities(id, false)
-					data.ReplayURL = "/past/" + id + "/replay"
 					return data
 				}
 			}
 			data.Capabilities, data.ActiveTurnID = s.liveWorkspaceSnapshot(id, data.Capabilities)
-			data.EventsURL = "/s/" + id + "/events"
 			return data
 		}
 	}
@@ -3118,7 +2421,6 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				Model:        pe.Meta.Model,
 				WorkingDir:   pe.Meta.EnvInfo.WorkingDir,
 				Branch:       pe.Meta.EnvInfo.GitBranch,
-				ReplayURL:    "/past/" + id + "/replay",
 				Capabilities: s.apiSessionCapabilities(id, false),
 			}
 			s.fillForkLineage(&data, pe.Meta)
@@ -3154,7 +2456,6 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 		ActiveTurnID: activeTurnIDFromAppwireThread(thread),
 		Model:        thread.ModelProvider,
 		WorkingDir:   thread.CWD,
-		EventsURL:    "/s/" + url.PathEscape(ref) + "/events",
 		Capabilities: hubCapabilitiesFromAppwire(thread.Serf.Capabilities),
 	}
 }

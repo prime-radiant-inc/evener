@@ -13,8 +13,6 @@ function createWindow(overrides) {
     <header class="workspace-header" data-session-id="sess-live"></header>
     <div id="conversation"
          data-session-id="sess-live"
-         data-replay-url="/past/sess-live/replay"
-         data-events-url=""
          data-state="idle"></div>
     <form data-input-form data-session-id="sess-live">
       <textarea class="message-input"></textarea>
@@ -79,7 +77,7 @@ async function testConnectionLossClearsAndReconnects() {
   assert(typeof lostHandler === "function", "renderer did not register AppWire connection loss callback");
   lostHandler(new Error("closed"));
   await wait(30);
-  assert(window.SerfRenderer.eventSource === null, "connection loss should clear the AppWire stream sentinel");
+  assert(window.SerfRenderer.liveStream === null, "connection loss should clear the AppWire stream sentinel");
   assert(unsubscribes === 1, "connection loss should unsubscribe live notifications");
   await wait(300);
   assert(readThreadCalls >= 2, "connection loss should schedule a new thread/read");
@@ -100,7 +98,7 @@ async function testReadFailureClearsSentinel() {
   });
 
   await wait(30);
-  assert(window.SerfRenderer.eventSource === null, "failed thread/read should clear the AppWire stream sentinel");
+  assert(window.SerfRenderer.liveStream === null, "failed thread/read should clear the AppWire stream sentinel");
   assert(unsubscribes === 1, "failed thread/read should unsubscribe live notifications");
   window.SerfRenderer.ensureLiveStream();
   await wait(30);

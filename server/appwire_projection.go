@@ -49,7 +49,25 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 
 	switch event.Kind {
 	case agent.EventSessionStart:
-		return []AppNotification{p.threadStatus(appwire.ThreadStatusIdle)}
+		data := eventData[agent.SessionStartData](event.Data)
+		return []AppNotification{
+			p.notification(appwire.NotifyThreadStarted, map[string]any{
+				"threadId": p.threadID,
+				"ref":      p.ref,
+				"thread": appwire.Thread{
+					ID:            p.threadID,
+					SessionID:     p.threadID,
+					Source:        "local",
+					ModelProvider: data.Model,
+					Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+					Serf: appwire.SerfThread{
+						Ref:     p.ref,
+						Profile: data.Profile,
+					},
+				},
+			}),
+			p.threadStatus(appwire.ThreadStatusIdle),
+		}
 	case agent.EventUserInput:
 		turnID := p.startTurn()
 		data := eventData[agent.UserInputData](event.Data)
@@ -317,7 +335,15 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 				"turn":     appwire.Turn{ID: turnID, Status: turnStatus},
 			}))
 		}
-		return append(out, p.threadStatus(state))
+		out = append(out, p.threadStatus(state))
+		if state == appwire.ThreadStatusClosed {
+			out = append(out, p.notification(appwire.NotifyThreadClosed, map[string]any{
+				"threadId": p.threadID,
+				"ref":      p.ref,
+				"reason":   data.Reason,
+			}))
+		}
+		return out
 	default:
 		return nil
 	}

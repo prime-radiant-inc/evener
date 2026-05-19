@@ -216,7 +216,7 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 
 	e.wireSession(sess)
 
-	// Bridge session events to SSE broadcaster.
+	// Bridge session events to AppWire notifications.
 	go server.BridgeWithObserver(srv, sess.Events(), e.eventObserver)
 
 	// Input processing loop.
@@ -399,7 +399,7 @@ func waitForEmbeddedReady(addr string, timeout time.Duration) error {
 	return fmt.Errorf("wait for embedded server readiness: %w", lastErr)
 }
 
-func (m *model) startSSEStream() tea.Cmd {
+func (m *model) startAppwireStream() tea.Cmd {
 	if m.asyncCh == nil || m.addr == "" {
 		return nil
 	}
@@ -410,7 +410,7 @@ func (m *model) startSSEStream() tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.streamCancel = cancel
 	return func() tea.Msg {
-		go streamSSE(ctx, addr, func(msg tea.Msg) {
+		go streamAppwire(ctx, addr, func(msg tea.Msg) {
 			m.asyncCh <- msg
 		})
 		return nil

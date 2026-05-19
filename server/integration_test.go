@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -13,8 +12,8 @@ import (
 	"primeradiant.com/serf/agent"
 )
 
-func TestIntegration_InputToSSE(t *testing.T) {
-	srv := NewServer(ServerConfig{RingBufferSize: 100})
+func TestIntegration_InputToAppwire(t *testing.T) {
+	srv := NewServer(ServerConfig{AppReplaySize: 100})
 
 	// Simulate session events
 	events := make(chan agent.SessionEvent, 10)
@@ -53,51 +52,6 @@ func TestIntegration_InputToSSE(t *testing.T) {
 		t.Fatal("timeout waiting for input")
 	}
 
-	// Subscribe to SSE
-	sseResp, err := http.Get(ts.URL + "/events")
-	if err != nil {
-		t.Fatalf("SSE connect: %v", err)
-	}
-	defer sseResp.Body.Close()
-
-	if ct := sseResp.Header.Get("Content-Type"); ct != "text/event-stream" {
-		t.Errorf("content-type: got %q, want text/event-stream", ct)
-	}
-
-	// Simulate an event through the bridge
-	events <- agent.SessionEvent{
-		Kind:      agent.EventAssistantTextDelta,
-		SessionID: "test",
-		Data:      agent.AssistantTextDeltaData{Delta: "world"},
-	}
-
-	// Read the SSE event from the stream in a goroutine since scanner.Scan blocks
-	type scanResult struct {
-		found bool
-		err   error
-	}
-	resultCh := make(chan scanResult, 1)
-	go func() {
-		scanner := bufio.NewScanner(sseResp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if strings.Contains(line, "ASSISTANT_TEXT_DELTA") {
-				resultCh <- scanResult{found: true}
-				return
-			}
-		}
-		resultCh <- scanResult{err: scanner.Err()}
-	}()
-
-	select {
-	case res := <-resultCh:
-		if !res.found {
-			t.Fatalf("SSE stream ended without ASSISTANT_TEXT_DELTA event, err: %v", res.err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for SSE event")
-	}
-
 	// Verify interrupt returns 204
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -124,7 +78,7 @@ func TestIntegration_InputToSSE(t *testing.T) {
 }
 
 func TestIntegration_StatusUpdates(t *testing.T) {
-	srv := NewServer(ServerConfig{RingBufferSize: 100})
+	srv := NewServer(ServerConfig{AppReplaySize: 100})
 
 	events := make(chan agent.SessionEvent, 10)
 	go Bridge(srv, events)

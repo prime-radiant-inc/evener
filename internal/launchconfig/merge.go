@@ -86,16 +86,16 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 			prov["no_project_prompts"] = name
 			nonEmpty = true
 		}
-		if l.SSERingSize != nil {
+		if l.AppReplaySize != nil {
 			if name != LayerGlobal {
 				diags = append(diags, Diagnostic{
-					Layer: name, Field: "sse_ring_size",
-					Message: "sse_ring_size is only honored at the global layer",
+					Layer: name, Field: "app_replay_size",
+					Message: "app_replay_size is only honored at the global layer",
 				})
 			} else {
-				v := *l.SSERingSize
-				eff.SSERingSize = &v
-				prov["sse_ring_size"] = name
+				v := *l.AppReplaySize
+				eff.AppReplaySize = &v
+				prov["app_replay_size"] = name
 				nonEmpty = true
 			}
 		}

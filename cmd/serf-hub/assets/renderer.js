@@ -52,11 +52,11 @@
       if (conversationEl.__serfInitialized) return;
       conversationEl.__serfInitialized = true;
 
-      // Close any previous EventSource so switching sessions doesn't leak
+      // Close any previous live stream handle so switching sessions doesn't leak
       // connections or replay duplicate events.
-      if (this.eventSource) {
-        try { this.eventSource.close(); } catch (e) {}
-        this.eventSource = null;
+      if (this.liveStream) {
+        try { this.liveStream.close(); } catch (e) {}
+        this.liveStream = null;
       }
       if (this.appwireUnsubscribe) {
         try { this.appwireUnsubscribe(); } catch (e) {}
@@ -77,8 +77,6 @@
       this.appwireThreadId = null;
       this.appwireHydrated = false;
       this.activeTurnId = conversationEl.dataset.activeTurnId || "";
-      this.replayUrl = conversationEl.dataset.replayUrl || "";
-      this.eventsUrl = conversationEl.dataset.eventsUrl || "";
       this.state = conversationEl.dataset.state || "ended";
 
       this.activeMessages = new Map();   // messageId -> {el, textBuf, markdownTimer}
@@ -114,19 +112,10 @@
 
       this.conversation.innerHTML = "";
 
-      // Prefer appwire for live sessions when available — the renderer's
-      // optimistic-rendering registry, the active-turn capability surface,
-      // and the queue-preview projection are all wired through the appwire
-      // notification path. The legacy `/events` SSE proxy stays as the
-      // fallback for environments without WebSocket support and for past-
-      // session replay (where there is no live state to subscribe to).
-      const url = this.replayUrl || this.eventsUrl;
-      if (window.SerfAppwire && this.sessionId && !this.replayUrl) {
+      if (window.SerfAppwire && this.sessionId) {
         this.connectAppwire();
-      } else if (this.eventsUrl) {
-        this.connectEventSource(this.eventsUrl);
-      } else if (url) {
-        this.connect(url);
+      } else {
+        this.appendBanner("error", "stream failed: appwire unavailable", { source: "hub", title: "Hub stream error" });
       }
 
       this.bindInputForm();
@@ -256,48 +245,20 @@
       this.taskBadgeTimer = setInterval(tick, 5000);
     },
 
-    // ensureLiveStream wires up the live SSE source for the current session
-    // when no EventSource is open. Called after sending to an ended session:
-    // the daemon was just resumed and the past replay finished and closed,
-    // so without this the new turn would only appear on a full page reload.
+    // ensureLiveStream wires up the appwire stream for the current session
+    // when no stream is open. Called after sending to an ended session:
+    // the daemon was just resumed, so without this the new turn would only
+    // appear on a full page reload.
     // We don't wipe rendered content — the past replay sequence already
     // populated the DOM, and this just appends new events on top.
     ensureLiveStream() {
-      if (this.eventSource) return;
+      if (this.liveStream) return;
       if (!this.sessionId) return;
       if (window.SerfAppwire) {
         this.connectAppwire();
         return;
       }
-      this.eventsUrl = "/s/" + encodeURIComponent(this.sessionId) + "/events";
-      this.connectEventSource(this.eventsUrl);
-    },
-
-    connect(url) {
-      if (window.SerfAppwire) {
-        this.connectAppwire();
-        return;
-      }
-      this.connectEventSource(url);
-    },
-
-    connectEventSource(url) {
-      this.eventSource = new EventSource(url);
-      const kinds = [
-        "SESSION_START", "SESSION_END", "USER_INPUT",
-        "THREAD_STATUS_CHANGED", "TURN_STARTED", "TURN_COMPLETED",
-        "ASSISTANT_TEXT_START", "ASSISTANT_TEXT_DELTA", "ASSISTANT_TEXT_END",
-        "TOOL_CALL_START", "TOOL_CALL_OUTPUT_DELTA", "TOOL_CALL_END",
-        "STEERING_INJECTED", "WARNING", "ERROR",
-        "SUBAGENT_START", "SUBAGENT_END", "COMMUNICATE",
-      ];
-      kinds.forEach((k) => this.eventSource.addEventListener(k, (ev) => this.handle(k, ev)));
-      // Replay endpoints emit REPLAY_DONE after the last entry; close the
-      // EventSource so the browser doesn't auto-reconnect and replay again.
-      this.eventSource.addEventListener("REPLAY_DONE", () => {
-        if (this.eventSource) { this.eventSource.close(); this.eventSource = null; }
-      });
-      this.eventSource.onerror = () => { /* browser auto-reconnects for live streams */ };
+      this.appendBanner("error", "stream failed: appwire unavailable", { source: "hub", title: "Hub stream error" });
     },
 
     connectAppwire() {
@@ -305,7 +266,7 @@
       const sessionId = this.sessionId;
       const conversation = this.conversation;
       this.clearAppwireStream();
-      this.eventSource = {
+      this.liveStream = {
         close: () => this.clearAppwireStream(),
       };
       // Optimistic-rendering registry. SerfAppwire's optimisticCall
@@ -462,7 +423,7 @@
         try { this.appwireConnectionLostUnsubscribe(); } catch (e) {}
         this.appwireConnectionLostUnsubscribe = null;
       }
-      this.eventSource = null;
+      this.liveStream = null;
     },
 
     scheduleAppwireReconnect() {
@@ -668,8 +629,8 @@
         for (const img of images) {
           if (!img) continue;
           // Live USER_INPUT: bytes inline as base64 in img.data.
-          // Replay USER_INPUT: bytes referenced by sha; fetch lazily from
-          // /s/<id>/images/<sha> so SSE replay payloads stay small.
+          // Transcript USER_INPUT: bytes referenced by sha; fetch lazily from
+          // /s/<id>/images/<sha> so live payloads stay small.
           let src = "";
           if (img.data) {
             src = "data:" + (img.media_type || "image/png") + ";base64," + img.data;

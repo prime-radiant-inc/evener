@@ -23,25 +23,25 @@ const serfLaunchCheckTimeout = 30 * time.Second
 
 // SpawnRequest carries the per-spawn knobs passed directly from the caller.
 type SpawnRequest struct {
-	Resolved    launchconfig.Resolved
-	WorkingDir  string
-	StateDir    string
-	RunDir      string
-	SSERingSize int
-	Env         []string // populated by ToEnv during Spawn
-	Provider    string   // for credential injection
+	Resolved      launchconfig.Resolved
+	WorkingDir    string
+	StateDir      string
+	RunDir        string
+	AppReplaySize int
+	Env           []string // populated by ToEnv during Spawn
+	Provider      string   // for credential injection
 }
 
 // ResumeRequest carries the resolved state needed to resume a saved session.
 type ResumeRequest struct {
-	SessionID   string
-	WorkingDir  string
-	StateDir    string
-	Resolved    launchconfig.Resolved
-	RunDir      string
-	SSERingSize int
-	Env         []string // populated by ToEnv during Resume
-	Provider    string   // for credential injection
+	SessionID     string
+	WorkingDir    string
+	StateDir      string
+	Resolved      launchconfig.Resolved
+	RunDir        string
+	AppReplaySize int
+	Env           []string // populated by ToEnv during Resume
+	Provider      string   // for credential injection
 }
 
 // HubSpawner fulfills the Spawner interface using SpawnDaemon.
@@ -109,8 +109,8 @@ func (h *HubSpawner) Spawn(ctx context.Context, req SpawnRequest) (rendezvous.En
 		req.StateDir = resolveSerfLaunchStateDir(req.WorkingDir, req.Resolved.Effective.Env)
 	}
 	req.RunDir = h.RunDir
-	if req.Resolved.Effective.SSERingSize != nil {
-		req.SSERingSize = *req.Resolved.Effective.SSERingSize
+	if req.Resolved.Effective.AppReplaySize != nil {
+		req.AppReplaySize = *req.Resolved.Effective.AppReplaySize
 	}
 	req.Env = launchconfig.ToEnv(launchconfig.EnvInputs{
 		Resolved:  req.Resolved,
@@ -139,8 +139,8 @@ func (h *HubSpawner) Resume(ctx context.Context, req ResumeRequest) (rendezvous.
 		req.StateDir = resolveSerfLaunchStateDir(req.WorkingDir, req.Resolved.Effective.Env)
 	}
 	req.RunDir = h.RunDir
-	if req.Resolved.Effective.SSERingSize != nil {
-		req.SSERingSize = *req.Resolved.Effective.SSERingSize
+	if req.Resolved.Effective.AppReplaySize != nil {
+		req.AppReplaySize = *req.Resolved.Effective.AppReplaySize
 	}
 	req.Env = launchconfig.ToEnv(launchconfig.EnvInputs{
 		Resolved:  req.Resolved,
@@ -177,8 +177,8 @@ func buildSpawnArgs(req SpawnRequest) []string {
 	if req.RunDir != "" {
 		args = append(args, "--run-dir", req.RunDir)
 	}
-	if req.SSERingSize > 0 {
-		args = append(args, "--sse-ring-size", fmt.Sprintf("%d", req.SSERingSize))
+	if req.AppReplaySize > 0 {
+		args = append(args, "--app-replay-size", fmt.Sprintf("%d", req.AppReplaySize))
 	}
 	args = append(args, launchconfig.ToArgs(req.Resolved)...)
 	return args
@@ -281,8 +281,8 @@ func ResumeDaemon(ctx context.Context, serfBinary, runDir string, req ResumeRequ
 	if req.RunDir != "" {
 		args = append(args, "--run-dir", req.RunDir)
 	}
-	if req.SSERingSize > 0 {
-		args = append(args, "--sse-ring-size", fmt.Sprintf("%d", req.SSERingSize))
+	if req.AppReplaySize > 0 {
+		args = append(args, "--app-replay-size", fmt.Sprintf("%d", req.AppReplaySize))
 	}
 	args = append(args, launchconfig.ToArgs(req.Resolved)...)
 	cmd := exec.Command(serfBinary, args...)

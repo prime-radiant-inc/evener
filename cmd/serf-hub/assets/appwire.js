@@ -595,6 +595,18 @@
   function eventsFromNotification(method, params) {
     params = params || {};
     const item = params.item || {};
+    if (method === "thread/started") {
+      const thread = params.thread || {};
+      return [["SESSION_START", {
+        session_id: replaySessionID(thread) || params.threadId || "",
+        ref: threadRef(thread) || params.ref || "",
+        model: thread.modelProvider || "",
+        profile: thread.serf && thread.serf.profile || "",
+      }]];
+    }
+    if (method === "thread/closed") {
+      return [["SESSION_END", { reason: params.reason || "closed" }]];
+    }
     if (method === "thread/status/changed") {
       return [["THREAD_STATUS_CHANGED", { status: params.status && params.status.type || "" }]];
     }
@@ -611,6 +623,7 @@
     }
     if (method === "item/started") {
       markLiveItem(params, item, { started: true });
+      if (item.type === "user_message") return eventsFromItem(item);
       if (item.type === "agent_message") return [["ASSISTANT_TEXT_START", {}]];
       if (item.type === "tool_call") return [["TOOL_CALL_START", {
         call_id: firstNonEmpty(item.callId, item.id),
@@ -622,6 +635,7 @@
     }
     if (method === "item/completed") {
       markLiveItem(params, item, { completed: true });
+      if (item.type === "user_message") return eventsFromItem(item);
       if (item.type === "tool_call") return [["TOOL_CALL_END", {
         call_id: firstNonEmpty(item.callId, item.id),
         item_id: item.id || "",

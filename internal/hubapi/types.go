@@ -81,30 +81,23 @@ type SessionDetail struct {
 	ForkLabel       string              `json:"fork_label,omitempty"`
 	IsSubagent      bool                `json:"is_subagent"`
 	Capabilities    SessionCapabilities `json:"capabilities"`
-	Streams         SessionStreams      `json:"streams"`
 }
 
 type SessionCapabilities struct {
-	Send           bool   `json:"send"`
-	Steer          bool   `json:"steer"`
-	Interrupt      bool   `json:"interrupt"`
-	Compact        bool   `json:"compact"`
-	Clear          bool   `json:"clear"`
-	Fork           bool   `json:"fork"`
-	Resume         bool   `json:"resume"`
-	Shutdown       bool   `json:"shutdown"`
-	ChangeModel    bool   `json:"change_model"`
+	Send        bool `json:"send"`
+	Steer       bool `json:"steer"`
+	Interrupt   bool `json:"interrupt"`
+	Compact     bool `json:"compact"`
+	Clear       bool `json:"clear"`
+	Fork        bool `json:"fork"`
+	Resume      bool `json:"resume"`
+	Shutdown    bool `json:"shutdown"`
+	ChangeModel bool `json:"change_model"`
 	// Queue mirrors appwire.ThreadCapabilities.Queue (kata 111a). True when
 	// the daemon will accept turn/queue while a turn is in flight; gates the
 	// composer's queue affordance on the web UI.
 	Queue          bool   `json:"queue"`
 	ReadOnlyReason string `json:"read_only_reason,omitempty"`
-}
-
-type SessionStreams struct {
-	TranscriptFollow string `json:"transcript_follow,omitempty"`
-	Live             string `json:"live,omitempty"`
-	Replay           string `json:"replay,omitempty"`
 }
 
 type SpawnSchema struct {

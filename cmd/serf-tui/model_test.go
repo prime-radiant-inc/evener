@@ -200,13 +200,6 @@ func TestTUIEnterSubmitsInput(t *testing.T) {
 			}
 			inputCh <- req.Text
 			w.WriteHeader(http.StatusAccepted)
-		case r.Method == http.MethodGet && r.URL.Path == "/events":
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.WriteHeader(http.StatusOK)
-			if f, ok := w.(http.Flusher); ok {
-				f.Flush()
-			}
-			<-r.Context().Done()
 		default:
 			http.NotFound(w, r)
 		}
@@ -249,22 +242,22 @@ func TestTUIEnterSubmitsInput(t *testing.T) {
 	}
 }
 
-func TestUpdateAsyncSSEConnectedKeepsWaitingForAsync(t *testing.T) {
+func TestUpdateAsyncStreamConnectedKeepsWaitingForAsync(t *testing.T) {
 	initTheme()
 
 	asyncCh := make(chan tea.Msg, 64)
 	m := newConfiguredModel("127.0.0.1:1234", t.TempDir(), nil, embeddedConfig{}, nil, asyncCh, false)
 
-	asyncCh <- sseEventMsg{
+	asyncCh <- streamEventMsg{
 		Event: "COMMUNICATE",
 		Data:  `{"message":"Hi. What can I help with?"}`,
 	}
-	asyncCh <- sseEventMsg{
+	asyncCh <- streamEventMsg{
 		Event: "SESSION_END",
 		Data:  `{"reason":"input_complete","state":"IDLE","turns":1}`,
 	}
 
-	updated, cmd := m.Update(asyncMsg{msg: sseConnectedMsg{}})
+	updated, cmd := m.Update(asyncMsg{msg: streamConnectedMsg{}})
 	if cmd == nil {
 		t.Fatal("Update() returned nil cmd; want waitForAsync to remain armed")
 	}
@@ -274,9 +267,9 @@ func TestUpdateAsyncSSEConnectedKeepsWaitingForAsync(t *testing.T) {
 	if !ok {
 		t.Fatalf("cmd() returned %T, want asyncMsg", next)
 	}
-	ev, ok := wrapped.msg.(sseEventMsg)
+	ev, ok := wrapped.msg.(streamEventMsg)
 	if !ok {
-		t.Fatalf("wrapped.msg = %T, want sseEventMsg", wrapped.msg)
+		t.Fatalf("wrapped.msg = %T, want streamEventMsg", wrapped.msg)
 	}
 	if ev.Event != "COMMUNICATE" {
 		t.Fatalf("event type = %q, want COMMUNICATE", ev.Event)
@@ -301,9 +294,9 @@ func TestUpdateAsyncSSEConnectedKeepsWaitingForAsync(t *testing.T) {
 	if !ok {
 		t.Fatalf("second cmd() returned %T, want asyncMsg", next)
 	}
-	ev, ok = wrapped.msg.(sseEventMsg)
+	ev, ok = wrapped.msg.(streamEventMsg)
 	if !ok {
-		t.Fatalf("second wrapped.msg = %T, want sseEventMsg", wrapped.msg)
+		t.Fatalf("second wrapped.msg = %T, want streamEventMsg", wrapped.msg)
 	}
 	if ev.Event != "SESSION_END" {
 		t.Fatalf("second event type = %q, want SESSION_END", ev.Event)
@@ -314,17 +307,17 @@ func TestUpdateCommunicateDoesNotDuplicateStreamedAssistant(t *testing.T) {
 	initTheme()
 
 	m := newConfiguredModel("127.0.0.1:1234", t.TempDir(), nil, embeddedConfig{}, nil, make(chan tea.Msg, 8), false)
-	updated, _ := m.Update(asyncMsg{msg: sseEventMsg{
+	updated, _ := m.Update(asyncMsg{msg: streamEventMsg{
 		Event: "ASSISTANT_TEXT_DELTA",
 		Data:  `{"delta":"Hel"}`,
 	}})
 	m = updated.(model)
-	updated, _ = m.Update(asyncMsg{msg: sseEventMsg{
+	updated, _ = m.Update(asyncMsg{msg: streamEventMsg{
 		Event: "ASSISTANT_TEXT_DELTA",
 		Data:  `{"delta":"lo"}`,
 	}})
 	m = updated.(model)
-	updated, _ = m.Update(asyncMsg{msg: sseEventMsg{
+	updated, _ = m.Update(asyncMsg{msg: streamEventMsg{
 		Event: "COMMUNICATE",
 		Data:  `{"message":"Hello"}`,
 	}})

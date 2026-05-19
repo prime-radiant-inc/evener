@@ -13,24 +13,16 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
     <button data-details-trigger><span class="panel-toggle-label">details</span></button>
   </div>
   <header class="workspace-header" data-session-id="01TEST"></header>
-  <div id="conversation" data-session-id="01TEST" data-replay-url="/past/01TEST/replay" data-events-url="" data-state="ended"></div>
+  <div id="conversation" data-session-id="01TEST" data-state="ended"></div>
   <form data-input-form data-session-id="01TEST"><textarea class="message-input"></textarea></form>
 </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
 
 const { window } = dom;
 window.marked = { parse: t => t.replace(/^# /m, "<h1>").replace(/$/m, "</h1>") };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
-class MockEventSource {
-  constructor() { this.listeners = new Map(); MockEventSource.last = this; }
-  addEventListener(n, f) { if (!this.listeners.has(n)) this.listeners.set(n, []); this.listeners.get(n).push(f); }
-  set onerror(f) {} close() {}
-  fire(n, d) { (this.listeners.get(n) || []).forEach(fn => fn({ data: JSON.stringify(d) })); }
-}
-window.EventSource = MockEventSource;
 window.eval(rendererSrc);
 const conv = window.document.getElementById("conversation");
 window.SerfRenderer.init(conv);
-const es = MockEventSource.last;
 
 // Realistic 7-task plan with steering noise interleaved.
 const events = [
@@ -120,7 +112,7 @@ const events = [
 
 (async () => {
 await new Promise(r => setTimeout(r, 30));
-for (const [t, d] of events) es.fire(t, d);
+for (const [t, d] of events) window.SerfRenderer.handleData(t, d);
 await new Promise(r => setTimeout(r, 10));
 
 // Print a readable summary of what got rendered.

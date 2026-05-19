@@ -53,7 +53,7 @@ func runServe(args []string) error {
 	contextStrategy := fs.String("context-strategy", "", "context management strategy")
 	outputSchema := fs.String("output-schema", "", "inline JSON Schema applied to the communicate tool's output field")
 	verbose := fs.Bool("verbose", false, "emit NDJSON events to stderr")
-	sseRingSize := fs.Int("sse-ring-size", 0, "SSE/AppWire replay ring size (default 1000)")
+	appReplaySize := fs.Int("app-replay-size", 0, "AppWire notification replay ring size (default 1000)")
 	noProjectPrompts := fs.Bool("no-project-prompts", false, "suppress .serf/prompts/ loading")
 	agentName := fs.String("agent", "", "agent persona name (default: default)")
 	var skillsDirs cmdutil.StringSliceFlag
@@ -204,9 +204,9 @@ func runServe(args []string) error {
 
 	hubToken := os.Getenv("SERF_HUB_TOKEN")
 	srv := server.NewServer(server.ServerConfig{
-		RingBufferSize: *sseRingSize,
-		HubToken:       hubToken,
-		AllowedHost:    listener.Addr().String(),
+		AppReplaySize: *appReplaySize,
+		HubToken:      hubToken,
+		AllowedHost:   listener.Addr().String(),
 	})
 	srv.SetAppIdentity("local", sess.ID())
 	rvRegistration := &serveRendezvousRegistration{}
@@ -280,7 +280,7 @@ func runServe(args []string) error {
 		cancel()
 	})
 
-	// Bridge session events to SSE broadcaster.
+	// Bridge session events to appwire notifications.
 	bridgeSession(sess)
 
 	// Input processing loop. Each turn runs under a per-turn cancellable

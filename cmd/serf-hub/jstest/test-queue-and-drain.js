@@ -20,8 +20,6 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <div id="conversation"
        data-session-id="01TEST"
        data-active-turn-id="turn_live"
-       data-replay-url=""
-       data-events-url=""
        data-state="processing"></div>
   <form class="workspace-input" data-input-form data-session-id="01TEST">
     <div class="input-attachments" data-attachments></div>
@@ -72,18 +70,6 @@ window.fetch = (url, opts) => {
     text: () => Promise.resolve(fetchResponseOk ? "" : "boom"),
   });
 };
-
-class MockEventSource {
-  constructor(url) { this.url = url; this.listeners = new Map(); this.closed = false; }
-  addEventListener(name, fn) {
-    const list = this.listeners.get(name) || [];
-    list.push(fn);
-    this.listeners.set(name, list);
-  }
-  set onerror(_) {}
-  close() { this.closed = true; }
-}
-window.EventSource = MockEventSource;
 
 Object.defineProperty(window.HTMLTextAreaElement.prototype, "scrollHeight", {
   configurable: true,

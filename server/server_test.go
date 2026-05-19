@@ -293,42 +293,6 @@ func TestInputEndpoint_ImageOnly(t *testing.T) {
 	}
 }
 
-func TestEventsEndpoint_SSE(t *testing.T) {
-	srv := NewServer(ServerConfig{RingBufferSize: 100})
-
-	// Start a test HTTP server
-	ts := httptest.NewServer(srv)
-	defer ts.Close()
-
-	// Connect to SSE endpoint
-	resp, err := http.Get(ts.URL + "/events")
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
-		t.Errorf("content-type: got %q, want text/event-stream", ct)
-	}
-
-	// Send an event through the broadcaster
-	srv.Broadcast("TEST_EVENT", map[string]string{"msg": "hello"})
-
-	// Read the SSE event
-	buf := make([]byte, 4096)
-	n, err := resp.Body.Read(buf)
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	output := string(buf[:n])
-	if !strings.Contains(output, "event: TEST_EVENT") {
-		t.Errorf("expected event type in output, got: %s", output)
-	}
-	if !strings.Contains(output, `"msg":"hello"`) {
-		t.Errorf("expected data in output, got: %s", output)
-	}
-}
-
 func TestCompactEndpoint(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 
@@ -609,16 +573,6 @@ func TestStatusEndpoint_NoDetailedStatusFunc(t *testing.T) {
 	}
 	if status.Detailed != nil {
 		t.Error("expected nil detailed status when no func set")
-	}
-}
-
-func TestEventsEndpoint_MethodNotAllowed(t *testing.T) {
-	srv := NewServer(ServerConfig{})
-	req := httptest.NewRequest(http.MethodPost, "/events", nil)
-	w := httptest.NewRecorder()
-	srv.ServeHTTP(w, req)
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("status code: got %d, want 405", w.Code)
 	}
 }
 

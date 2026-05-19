@@ -18,8 +18,6 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <div class="conversation" id="conversation"
        data-session-id="01ACT001"
        data-active-turn-id="turn_1"
-       data-replay-url=""
-       data-events-url=""
        data-state="processing">conversation body</div>
 </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
 
@@ -32,7 +30,6 @@ window.fetch = (url, opts) => {
   calls.push({ url, opts });
   return Promise.resolve({ ok: true, text: () => Promise.resolve("") });
 };
-window.EventSource = class { constructor(){this.listeners=new Map()} addEventListener(n,f){const l=this.listeners.get(n)||[];l.push(f);this.listeners.set(n,l)} set onerror(f){} close(){} };
 
 window.eval(rendererSrc);
 

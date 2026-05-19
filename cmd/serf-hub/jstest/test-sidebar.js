@@ -14,15 +14,12 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <header class="workspace-header" data-session-id="01TEST"></header>
   <div id="conversation"
        data-session-id="01TEST"
-       data-replay-url=""
-       data-events-url=""
        data-state="ended"></div>
 </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
 
 const { window } = dom;
 window.marked = { parse: t => t };
 window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
-window.EventSource = class { constructor(){this.listeners=new Map()} addEventListener(n,f){const l=this.listeners.get(n)||[];l.push(f);this.listeners.set(n,l)} set onerror(f){} close(){} };
 
 window.eval(rendererSrc);
 

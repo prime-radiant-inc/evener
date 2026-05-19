@@ -1,8 +1,6 @@
 package server
 
 import (
-	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -11,7 +9,7 @@ import (
 )
 
 func TestBridge_ForwardsEvents(t *testing.T) {
-	srv := NewServer(ServerConfig{RingBufferSize: 100})
+	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	events := make(chan agent.SessionEvent, 10)
 
 	go Bridge(srv, events)
@@ -26,14 +24,14 @@ func TestBridge_ForwardsEvents(t *testing.T) {
 	// Give bridge time to process
 	time.Sleep(50 * time.Millisecond)
 
-	items := srv.broadcaster.ring.After(0)
+	items := srv.AppNotificationsAfter(0, "s1")
 	if len(items) == 0 {
-		t.Fatal("expected at least one event in ring buffer")
+		t.Fatal("expected at least one appwire notification")
 	}
 }
 
 func TestBridge_UpdatesStatusOnSessionStart(t *testing.T) {
-	srv := NewServer(ServerConfig{RingBufferSize: 100})
+	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	events := make(chan agent.SessionEvent, 10)
 
 	go Bridge(srv, events)
@@ -62,7 +60,7 @@ func TestBridge_UpdatesStatusOnSessionStart(t *testing.T) {
 }
 
 func TestBridge_IncrementsturnsOnAssistantTextEnd(t *testing.T) {
-	srv := NewServer(ServerConfig{RingBufferSize: 100})
+	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	events := make(chan agent.SessionEvent, 10)
 
 	go Bridge(srv, events)
@@ -87,7 +85,7 @@ func TestBridge_IncrementsturnsOnAssistantTextEnd(t *testing.T) {
 }
 
 func TestBridge_ClosesOnSessionEnd(t *testing.T) {
-	srv := NewServer(ServerConfig{RingBufferSize: 100})
+	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	events := make(chan agent.SessionEvent, 10)
 
 	go Bridge(srv, events)
@@ -114,7 +112,7 @@ func TestBridge_ClosesOnSessionEnd(t *testing.T) {
 }
 
 func TestBridge_UsesSessionEndStateWhenProvided(t *testing.T) {
-	srv := NewServer(ServerConfig{RingBufferSize: 100})
+	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	events := make(chan agent.SessionEvent, 10)
 
 	go Bridge(srv, events)
@@ -134,7 +132,7 @@ func TestBridge_UsesSessionEndStateWhenProvided(t *testing.T) {
 }
 
 func TestBridge_IgnoresStaleEventsAfterSessionIdentityChanges(t *testing.T) {
-	srv := NewServer(ServerConfig{RingBufferSize: 100})
+	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	srv.SetAppIdentity("local", "new-session")
 	srv.UpdateSessionInfo("new-session", "gpt-5", "openai")
 	srv.SetState("IDLE")
@@ -158,16 +156,13 @@ func TestBridge_IgnoresStaleEventsAfterSessionIdentityChanges(t *testing.T) {
 	if status.SessionID != "new-session" || status.State != "IDLE" {
 		t.Fatalf("status after stale event=%+v, want new-session IDLE", status)
 	}
-	if items := srv.broadcaster.ring.After(0); len(items) != 0 {
-		t.Fatalf("stale event was broadcast: %+v", items)
-	}
 	if items := srv.AppNotificationsAfter(0, "new-session"); len(items) != 0 {
 		t.Fatalf("stale event was projected under new session: %+v", items)
 	}
 }
 
 func TestBridgeWithObserver_InvokesObserverAndForwardsEvents(t *testing.T) {
-	srv := NewServer(ServerConfig{RingBufferSize: 100})
+	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	events := make(chan agent.SessionEvent, 10)
 	observed := make(chan agent.SessionEvent, 1)
 	done := make(chan struct{})
@@ -196,54 +191,10 @@ func TestBridgeWithObserver_InvokesObserverAndForwardsEvents(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("observer was not invoked")
 	}
-
-	items := srv.broadcaster.ring.After(0)
-	if len(items) == 0 {
-		t.Fatal("expected forwarded event in ring buffer")
-	}
-}
-
-func TestBridge_SessionStartEnrichesSSEData(t *testing.T) {
-	srv := NewServer(ServerConfig{RingBufferSize: 100})
-	events := make(chan agent.SessionEvent, 10)
-
-	go Bridge(srv, events)
-
-	events <- agent.SessionEvent{
-		Kind:      agent.EventSessionStart,
-		SessionID: "sess-abc",
-		Data: agent.SessionStartData{
-			Profile: "anthropic",
-			Model:   "claude-4",
-		},
-	}
-	close(events)
-	time.Sleep(50 * time.Millisecond)
-
-	items := srv.broadcaster.ring.After(0)
-	if len(items) == 0 {
-		t.Fatal("expected at least one event in ring buffer")
-	}
-	ev, ok := items[0].Value.(sseEvent)
-	if !ok {
-		t.Fatal("expected sseEvent in ring buffer")
-	}
-	if ev.Type != "SESSION_START" {
-		t.Errorf("event type: got %q, want SESSION_START", ev.Type)
-	}
-	// The data should be json.RawMessage containing session_id
-	raw, ok := ev.Data.(json.RawMessage)
-	if !ok {
-		t.Fatalf("expected json.RawMessage data, got %T", ev.Data)
-	}
-	dataStr := string(raw)
-	if !strings.Contains(dataStr, `"session_id":"sess-abc"`) {
-		t.Errorf("SSE data should contain session_id, got: %s", dataStr)
-	}
 }
 
 func TestBridge_RecordsAppWireNotifications(t *testing.T) {
-	srv := NewServer(ServerConfig{RingBufferSize: 100})
+	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	srv.SetAppIdentity("local", "th_1")
 	events := make(chan agent.SessionEvent, 10)
 

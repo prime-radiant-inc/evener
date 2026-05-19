@@ -21,8 +21,6 @@ function newHarness() {
     <header class="workspace-header" data-session-id="01TEST"></header>
     <div id="conversation"
          data-session-id="01TEST"
-         data-replay-url="/past/01TEST/replay"
-         data-events-url=""
          data-state="ended"></div>
     <form data-input-form data-session-id="01TEST">
       <textarea class="message-input"></textarea>
@@ -34,17 +32,6 @@ function newHarness() {
   window.fetch = () => Promise.resolve({
     ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve(""),
   });
-
-  class MockEventSource {
-    constructor(url) { this.url = url; this.listeners = new Map(); MockEventSource.last = this; }
-    addEventListener(name, fn) {
-      if (!this.listeners.has(name)) this.listeners.set(name, []);
-      this.listeners.get(name).push(fn);
-    }
-    set onerror(fn) { this._onerror = fn; }
-    close() {}
-  }
-  window.EventSource = MockEventSource;
 
   // Load diagnostics first — renderer reads window.SerfDiagnostics.classify().
   window.eval(DIAGNOSTICS_SRC);

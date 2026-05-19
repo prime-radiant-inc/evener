@@ -14,8 +14,6 @@ function newHarness() {
     <header class="workspace-header" data-session-id="01TEST"></header>
     <div id="conversation"
          data-session-id="01TEST"
-         data-replay-url="/past/01TEST/replay"
-         data-events-url=""
          data-state="ended"></div>
     <form data-input-form data-session-id="01TEST">
       <textarea class="message-input"></textarea>
@@ -26,35 +24,17 @@ function newHarness() {
   window.marked = { parse: (t) => t };
   window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
 
-  class MockEventSource {
-    constructor(url) {
-      this.url = url;
-      this.listeners = new Map();
-      MockEventSource.last = this;
-    }
-    addEventListener(name, fn) {
-      if (!this.listeners.has(name)) this.listeners.set(name, []);
-      this.listeners.get(name).push(fn);
-    }
-    set onerror(fn) { this._onerror = fn; }
-    close() {}
-    fire(name, data) {
-      const fns = this.listeners.get(name) || [];
-      for (const fn of fns) fn({ data: JSON.stringify(data) });
-    }
-  }
-  window.EventSource = MockEventSource;
   window.eval(rendererSrc);
   const conv = window.document.getElementById("conversation");
   window.SerfRenderer.init(conv);
-  return { window, conv, es: MockEventSource.last };
+  return { window, conv };
 }
 
 let allPass = true;
 async function scenario(name, eventSeq, expectations) {
-  const { window, conv, es } = newHarness();
+  const { window, conv } = newHarness();
   await new Promise(r => setTimeout(r, 30));
-  for (const [type, data] of eventSeq) es.fire(type, data);
+  for (const [type, data] of eventSeq) window.SerfRenderer.handleData(type, data);
   await new Promise(r => setTimeout(r, 10));
   const sysLines = Array.from(conv.querySelectorAll(".system-line")).map(e => e.textContent);
   const steerings = Array.from(conv.querySelectorAll(".steering"));

@@ -211,7 +211,7 @@ serf-tui --no-auto-start-hub
 - **Dashboard**: Browse live and saved sessions from the hub roster and past-session index
 - **Session drill-in**: Open a session transcript from the dashboard
 - **Hub actions**: Send input, view tasks/details, interrupt, compact, clear, and switch models through hub endpoints
-- **Streaming**: Follow session SSE streams through the hub
+- **Streaming**: Follow session AppWire streams through the hub
 - **Markdown rendering**: Format-aware display of assistant messages
 - **Tool inspection**: Collapse/expand tool calls and view arguments
 
@@ -252,7 +252,7 @@ past_results_per_page = 50
 past_index_db = "/Users/you/.serf/index.db"
 
 [serf_launch]
-sse_ring_size = 4096
+app_replay_size = 4096
 ```
 
 Hub launch model choices come from the Serf launch harness contract
@@ -261,7 +261,7 @@ Hub launch model choices come from the Serf launch harness contract
 
 ### Architecture
 
-Daemons are loopback-only. Each writes a private rendezvous file to `~/.serf/run/<pid>.json`; the hub watches the directory, probes daemons for state, and proxies AppWire/REST/SSE so the browser only ever talks to the hub origin. Hub-spawned daemons require the per-hub bearer token recorded in their rendezvous file. Daemon and Hub same-origin guards plus strict Hub CSP defend against DNS-rebinding and cross-origin attacks.
+Daemons are loopback-only. Each writes a private rendezvous file to `~/.serf/run/<pid>.json`; the hub watches the directory, probes daemons for state, and proxies AppWire/REST so the browser only ever talks to the hub origin. Hub-spawned daemons require the per-hub bearer token recorded in their rendezvous file. Daemon and Hub same-origin guards plus strict Hub CSP defend against DNS-rebinding and cross-origin attacks.
 
 ### Operating notes
 

@@ -41,6 +41,7 @@ const (
 
 const (
 	NotifyThreadStarted        = "thread/started"
+	NotifyThreadClosed         = "thread/closed"
 	NotifyThreadStatusChanged  = "thread/status/changed"
 	NotifyThreadQueueChanged   = "thread/queueChanged"
 	NotifyTurnStarted          = "turn/started"
@@ -522,14 +523,14 @@ type AuthStatusResponse struct {
 	// HasStoredFile is true when a key exists in credentials.toml.
 	HasStoredFile bool `json:"hasStoredFile,omitempty"`
 	// EnvVar is the name of the env var that supplies a key, when present.
-	EnvVar string `json:"envVar,omitempty"`
-	Email          string `json:"email,omitempty"`
-	StoredEmail    string `json:"storedEmail,omitempty"`
-	AccountID      string `json:"accountId,omitempty"`
-	WorkspaceID    string `json:"workspaceId,omitempty"`
-	NeedsRefresh   bool   `json:"needsRefresh,omitempty"`
-	NeedsLogin     bool   `json:"needsLogin,omitempty"`
-	Error          string `json:"error,omitempty"`
+	EnvVar       string `json:"envVar,omitempty"`
+	Email        string `json:"email,omitempty"`
+	StoredEmail  string `json:"storedEmail,omitempty"`
+	AccountID    string `json:"accountId,omitempty"`
+	WorkspaceID  string `json:"workspaceId,omitempty"`
+	NeedsRefresh bool   `json:"needsRefresh,omitempty"`
+	NeedsLogin   bool   `json:"needsLogin,omitempty"`
+	Error        string `json:"error,omitempty"`
 }
 
 type AuthLoginStartParams struct {
@@ -645,7 +646,7 @@ type LaunchConfigLayer struct {
 	MaxRounds          *int              `json:"maxRounds,omitempty"`
 	MaxSubagentDepth   *int              `json:"maxSubagentDepth,omitempty"`
 	NoProjectPrompts   *bool             `json:"noProjectPrompts,omitempty"`
-	SSERingSize        *int              `json:"sseRingSize,omitempty"`
+	AppReplaySize      *int              `json:"appReplaySize,omitempty"`
 	SkillsDirs         []string          `json:"skillsDirs,omitempty"`
 	PluginDirs         []string          `json:"pluginDirs,omitempty"`
 	MCPConfigs         []string          `json:"mcpConfigs,omitempty"`

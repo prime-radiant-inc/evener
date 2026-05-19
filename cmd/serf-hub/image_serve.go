@@ -18,7 +18,7 @@ var imageShaRegexp = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // handleSessionImage streams the image whose sha256 matches the URL fragment
 // for a given session. Used by the renderer when replaying a past USER_INPUT
 // turn — the replay path strips inline image bytes and references each image
-// by sha so SSE replay payloads stay small. The bytes still live in the
+// by sha so live transcript payloads stay small. The bytes still live in the
 // session transcript, so we re-scan to find them.
 //
 // This is loopback-only and a session-scoped read, so we don't index or

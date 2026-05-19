@@ -11,8 +11,8 @@ func TestClientURLPreservesQueryString(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := client.URL("/api/sessions/local:01ABC/events?mode=transcript-follow")
-	want := "http://127.0.0.1:9180/api/sessions/local:01ABC/events?mode=transcript-follow"
+	got := client.URL("/api/sessions/local:01ABC?include=details")
+	want := "http://127.0.0.1:9180/api/sessions/local:01ABC?include=details"
 	if got != want {
 		t.Fatalf("URL()=%q, want %q", got, want)
 	}
