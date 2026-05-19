@@ -54,18 +54,20 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
   const renderer = window.SerfRenderer;
 
   // ------------------------------------------------------------------
-  // 1. No lastUserText → no actions even for retry-eligible sources.
+  // 1. No submitted payload → no actions even for retry-eligible sources.
   // ------------------------------------------------------------------
   renderer.lastUserText = "";
+  renderer.lastSubmittedTurn = null;
   const emptyProvider = renderer.buildDiagnosticActions({
     severity: "error", source: "provider", message: "stream ended without finish event",
   });
-  pass(emptyProvider === null, "expected null when lastUserText is empty, got " + JSON.stringify(emptyProvider));
+  pass(emptyProvider === null, "expected null when submitted payload is empty, got " + JSON.stringify(emptyProvider));
 
   // ------------------------------------------------------------------
   // 2. provider-source error → "Retry turn" (regression guard).
   // ------------------------------------------------------------------
   renderer.lastUserText = "say hello";
+  renderer.lastSubmittedTurn = { text: "say hello", items: [{ type: "image", media_type: "image/png", data: "abc", name: "shot.png" }] };
   const providerActions = renderer.buildDiagnosticActions({
     severity: "error", source: "provider", message: "stream ended without finish event",
   });
@@ -106,8 +108,13 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
   });
   pass(uiActions === null, "ui-source diagnostics should not get a retry button, got " + JSON.stringify(uiActions));
 
+  const localHubActions = renderer.buildDiagnosticActions({
+    severity: "error", source: "hub", message: "send failed: HTTP 409",
+  });
+  pass(localHubActions === null, "local hub action failures should not get reconnect retry, got " + JSON.stringify(localHubActions));
+
   // ------------------------------------------------------------------
-  // 5. Hub onclick calls SerfAppwire.startTurn with the captured lastUserText.
+  // 5. Hub onclick calls SerfAppwire.startTurn with the captured payload.
   //    Confirms the factored helper threads parameters through unchanged.
   // ------------------------------------------------------------------
   const startTurnCalls = [];
@@ -142,8 +149,10 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
   if (startTurnCalls.length) {
     pass(startTurnCalls[0].ref === "ref:01TEST", "hub onclick: wrong ref " + startTurnCalls[0].ref);
     pass(startTurnCalls[0].text === "say hello", "hub onclick: wrong text " + startTurnCalls[0].text);
-    pass(Array.isArray(startTurnCalls[0].images) && startTurnCalls[0].images.length === 0,
-      "hub onclick: images should be empty array");
+    pass(Array.isArray(startTurnCalls[0].images) && startTurnCalls[0].images.length === 1,
+      "hub onclick: images should include submitted attachment payload");
+    pass(startTurnCalls[0].images[0].name === "shot.png",
+      "hub onclick: wrong image payload " + JSON.stringify(startTurnCalls[0].images[0]));
   }
 
   // ------------------------------------------------------------------

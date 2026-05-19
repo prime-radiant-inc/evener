@@ -250,14 +250,19 @@ spawn_timeout = "30s"
 past_results_per_page = 50
 # Optional; default is ~/.serf/index.db.
 past_index_db = "/Users/you/.serf/index.db"
-
-[serf_launch]
-app_replay_size = 4096
 ```
 
 Hub launch model choices come from the Serf launch harness contract
-(`serf launch-check --models`) using the hub process environment plus
-`[serf_launch.env]`, not from a static model roster in `hub.toml`.
+(`serf launch-check --models`), not from a static model roster in `hub.toml`.
+Launch defaults live in layered launch config files. For user-wide defaults,
+create `~/.serf/launch.toml`:
+
+```toml
+app_replay_size = 4096
+
+[env]
+OPENAI_API_KEY = "..."
+```
 
 ### Architecture
 

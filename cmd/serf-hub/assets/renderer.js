@@ -108,6 +108,7 @@
       // successful response. Preserved on error so the user can retry.
       this.composerPasteState = { items: [] };
       this.lastUserText = "";            // most-recent user turn text (for "Retry turn")
+      this.lastSubmittedTurn = null;      // {text, items} payload for diagnostic retry
       // queueState is the wire-sourced authoritative queue (kata r80p):
       // every entry is a first-line-truncated string in FIFO order, sourced
       // from thread.serf.queue on cold-load and from thread/queueChanged
@@ -528,6 +529,7 @@
           break;
         case "USER_INPUT":
           this.lastUserText = data.text || "";
+          this.lastSubmittedTurn = { text: data.text || "", items: Array.isArray(data.images) ? data.images.slice() : [] };
           if (this.promoteLocalUserMessage(data)) break;
           this.userTurnIndex++;
           if (typeof data.turn === "number" && data.turn > 0) {
@@ -702,6 +704,7 @@
     appendLocalUserMessage(text, images, turnId, previousUserCount) {
       if (this.userMessageCount() > previousUserCount) return;
       this.lastUserText = text || "";
+      this.lastSubmittedTurn = { text: text || "", items: Array.isArray(images) ? images.slice() : [] };
       this.userTurnIndex++;
       this.entryIndex++;
       const wrap = this.appendUserMessage(text || "", this.entryIndex, images || []);
@@ -1094,24 +1097,36 @@
     // buildDiagnosticActions returns an array of action descriptors for the
     // given diagnostic payload, or null if no actions apply.
     //
-    // Two diagnostic sources get a retry button:
+    // Two diagnostic sources can get a retry button:
     //   - source=provider → "Retry turn"  (model/API failed mid-turn)
-    //   - source=hub      → "Reconnect & retry"  (daemon connection died)
+    //   - source=hub      → "Reconnect & retry"  (daemon/session unavailable)
     // Both share the same onclick body: re-issue the last user turn against
     // the same session.  The hub's auto-resume layer transparently relaunches
     // a fresh daemon when the original one is gone, so this button works
-    // uniformly across both failure shapes.
+    // uniformly for daemon/session-unavailable failures.
     buildDiagnosticActions(payload) {
       const classified = window.SerfDiagnostics ? window.SerfDiagnostics.classify(payload) : null;
       if (!classified) return null;
       const source = classified.source;
       if (source !== "provider" && source !== "hub") return null;
-      const lastText = this.lastUserText;
-      if (!lastText) return null;
+      if (source === "hub" && !this.isReconnectRetryDiagnostic(classified)) return null;
+      const lastTurn = this.lastSubmittedTurn || { text: this.lastUserText || "", items: [] };
+      if (!lastTurn.text && (!Array.isArray(lastTurn.items) || lastTurn.items.length === 0)) return null;
       const label = source === "hub" ? "Reconnect & retry" : "Retry turn";
       const failPrefix = source === "hub" ? "reconnect failed: " : "retry failed: ";
       const errTitle = source === "hub" ? "Reconnect error" : "Retry error";
-      return [{ label, onclick: this.makeRetryTurnHandler(lastText, failPrefix, errTitle) }];
+      return [{ label, onclick: this.makeRetryTurnHandler(lastTurn, failPrefix, errTitle) }];
+    },
+
+    isReconnectRetryDiagnostic(diagnostic) {
+      const text = ((diagnostic && (diagnostic.message || diagnostic.title || "")) || "").toLowerCase();
+      return text.includes("rendezvous") ||
+        text.includes("daemon spawn") ||
+        text.includes("process exited before rendezvous") ||
+        text.includes("resume timed out") ||
+        text.includes("local daemon unavailable") ||
+        text.includes("source not found") ||
+        text.includes("session unavailable");
     },
 
     // makeRetryTurnHandler builds the onclick body shared by the
@@ -1124,9 +1139,11 @@
     // against /s/<id>/send would re-issue against a dead daemon for the same
     // hub-source error that surfaced the button. If SerfAppwire is missing at
     // click time we surface that as a diagnostic — there is no useful fallback.
-    makeRetryTurnHandler(lastText, failPrefix, errTitle) {
+    makeRetryTurnHandler(lastTurn, failPrefix, errTitle) {
       const sessionId = this.sessionId;
       const appwireRef = this.appwireRef;
+      const text = lastTurn && lastTurn.text || "";
+      const items = Array.isArray(lastTurn && lastTurn.items) ? lastTurn.items.slice() : [];
       const self = this;
       return async function() {
         if (!window.SerfAppwire) {
@@ -1134,7 +1151,7 @@
           return;
         }
         try {
-          await window.SerfAppwire.startTurn(appwireRef || sessionId, lastText, []);
+          await window.SerfAppwire.startTurn(appwireRef || sessionId, text, items);
           self.ensureLiveStream();
         } catch (err) {
           self.appendBanner("error", failPrefix + err.message, { source: "hub", title: errTitle });

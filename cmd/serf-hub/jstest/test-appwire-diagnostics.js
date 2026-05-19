@@ -43,6 +43,16 @@ assert(errorEvent, "thread replay should emit ERROR");
 assert(errorEvent[1].source === "serf", "thread ERROR source missing");
 assert(errorEvent[1].title === "Serf configuration error", "thread ERROR title missing");
 
+const emptyQueueEvents = context.window.SerfAppwire.eventsFromThread({
+  id: "01TEST",
+  serf: { queue: { depth: 0, preview: [] } },
+  turns: [],
+});
+const emptyQueue = emptyQueueEvents.find((event) => event[0] === "QUEUE_CHANGED");
+assert(emptyQueue, "thread replay should emit empty QUEUE_CHANGED");
+assert(emptyQueue[1].depth === 0, "empty queue depth should be 0");
+assert(Array.isArray(emptyQueue[1].preview) && emptyQueue[1].preview.length === 0, "empty queue preview should be []");
+
 const warningEvents = context.window.SerfAppwire.eventsFromNotification("warning", {
   message: "configuration error: unknown provider: openrouter",
   source: "serf",

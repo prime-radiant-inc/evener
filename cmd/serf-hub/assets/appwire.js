@@ -544,13 +544,11 @@
     // Seed the renderer's queue state from the authoritative thread view
     // (kata r80p). Without this, a cold-load tab would render an empty
     // preview until the next mutation arrived as a notification.
-    const queue = thread && thread.serf && thread.serf.queue;
-    if (queue && (queue.depth || (Array.isArray(queue.preview) && queue.preview.length))) {
-      events.push(["QUEUE_CHANGED", {
-        depth: typeof queue.depth === "number" ? queue.depth : (queue.preview || []).length,
-        preview: Array.isArray(queue.preview) ? queue.preview.slice() : [],
-      }]);
-    }
+    const queue = (thread && thread.serf && thread.serf.queue) || {};
+    events.push(["QUEUE_CHANGED", {
+      depth: typeof queue.depth === "number" ? queue.depth : (Array.isArray(queue.preview) ? queue.preview.length : 0),
+      preview: Array.isArray(queue.preview) ? queue.preview.slice() : [],
+    }]);
     const activeToolCalls = new Set();
     for (const turn of thread.turns || []) {
       for (const item of turn.items || []) {
