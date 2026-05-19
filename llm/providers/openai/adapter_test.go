@@ -1734,8 +1734,8 @@ func TestStream_ResponsesAPI_404_FallsBackToChatCompletions(t *testing.T) {
 	}
 }
 
-func TestStream_ResponsesAPI_404_DoesNotFallbackWhenRequestSemanticsWouldChange(t *testing.T) {
-	var chatCalls int
+func TestStream_ResponsesAPI_404_FallbackPreservesChatRequestSemantics(t *testing.T) {
+	var chatBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/responses":
@@ -1743,8 +1743,17 @@ func TestStream_ResponsesAPI_404_DoesNotFallbackWhenRequestSemanticsWouldChange(
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":{"message":"model not found","code":"model_not_found","type":"invalid_request_error"}}`))
 		case "/v1/chat/completions":
-			chatCalls++
+			if err := json.NewDecoder(r.Body).Decode(&chatBody); err != nil {
+				t.Fatalf("decode chat body: %v", err)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
 			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintln(w, `data: {"id":"cc","model":"gpt-4.1-mini","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}`)
+			_, _ = fmt.Fprintln(w)
+			_, _ = fmt.Fprintln(w, `data: {"id":"cc","model":"gpt-4.1-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+			_, _ = fmt.Fprintln(w)
+			_, _ = fmt.Fprintln(w, `data: [DONE]`)
+			_, _ = fmt.Fprintln(w)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -1755,7 +1764,7 @@ func TestStream_ResponsesAPI_404_DoesNotFallbackWhenRequestSemanticsWouldChange(
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err := a.Stream(ctx, llm.Request{
+	stream, err := a.Stream(ctx, llm.Request{
 		Model: "gpt-4.1-mini",
 		Messages: []llm.Message{{
 			Role: llm.RoleUser,
@@ -1764,16 +1773,49 @@ func TestStream_ResponsesAPI_404_DoesNotFallbackWhenRequestSemanticsWouldChange(
 				{Kind: llm.ContentImage, Image: &llm.ImageData{URL: "https://example.com/image.png"}},
 			},
 		}},
-		Metadata: map[string]string{"trace": "abc"},
+		Metadata:  map[string]string{"trace": "abc"},
+		WebSearch: true,
+		ResponseFormat: &llm.ResponseFormat{
+			Type:       "json_schema",
+			JSONSchema: map[string]any{"type": "object"},
+			Strict:     true,
+		},
+		ProviderOptions: map[string]any{"openai": map[string]any{"parallel_tool_calls": false}},
 	})
-	if err == nil {
-		t.Fatal("expected fallback rejection, got nil")
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
 	}
-	if !strings.Contains(err.Error(), "without changing request semantics") || !strings.Contains(err.Error(), "metadata") || !strings.Contains(err.Error(), "non-text user content") {
-		t.Fatalf("error did not explain fallback rejection: %v", err)
+	defer stream.Close() //nolint:errcheck
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventError {
+			t.Fatalf("unexpected stream error: %v", ev.Err)
+		}
 	}
-	if chatCalls != 0 {
-		t.Fatalf("chat fallback was called %d time(s), want 0", chatCalls)
+	if chatBody == nil {
+		t.Fatal("chat fallback was not called")
+	}
+	if chatBody["metadata"].(map[string]any)["trace"] != "abc" {
+		t.Fatalf("metadata not preserved: %#v", chatBody["metadata"])
+	}
+	if got, ok := chatBody["parallel_tool_calls"].(bool); !ok || got {
+		t.Fatalf("provider option parallel_tool_calls = %v, want false", got)
+	}
+	rf := chatBody["response_format"].(map[string]any)
+	if rf["type"] != "json_schema" {
+		t.Fatalf("response_format=%#v", rf)
+	}
+	jsonSchema := rf["json_schema"].(map[string]any)
+	if jsonSchema["strict"] != true {
+		t.Fatalf("response_format json_schema=%#v, want strict", jsonSchema)
+	}
+	tools := chatBody["tools"].([]any)
+	if len(tools) != 1 || tools[0].(map[string]any)["type"] != "web_search" {
+		t.Fatalf("tools=%#v, want web_search", tools)
+	}
+	messages := chatBody["messages"].([]any)
+	content := messages[0].(map[string]any)["content"].([]any)
+	if len(content) != 2 || content[1].(map[string]any)["type"] != "image_url" {
+		t.Fatalf("user multimodal content=%#v", content)
 	}
 }
 

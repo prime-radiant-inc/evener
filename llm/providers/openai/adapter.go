@@ -332,9 +332,6 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		// Hard error from Responses API (non-2xx, etc.) — fall through to Chat
 		// Completions only if it looks like a model-compatibility error.
 		if isFallbackEligible(err) {
-			if reason := chatCompletionsFallbackUnsupported(req); reason != "" {
-				return nil, fmt.Errorf("openai: cannot fall back to /v1/chat/completions without changing request semantics: %s: %w", reason, err)
-			}
 			return a.fallbackToChatCompletions(ctx, req, err)
 		}
 		return nil, err
@@ -356,16 +353,6 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 			if ev.Type == llm.StreamEventError && errors.Is(ev.Err, errEmptyResponsesStream) && !sentContent {
 				// Responses API gave us nothing. Fall back to Chat Completions.
 				responsesStream.Close() //nolint:errcheck
-				if reason := chatCompletionsFallbackUnsupported(req); reason != "" {
-					proxy.Send(llm.StreamEvent{
-						Type: llm.StreamEventError,
-						Err: llm.NewStreamError("openai", fmt.Sprintf(
-							"openai: cannot fall back to /v1/chat/completions without changing request semantics: %s",
-							reason,
-						)),
-					})
-					return
-				}
 				ccStream, ccErr := a.streamViaChatCompletions(out, req)
 				if ccErr != nil {
 					combinedMsg := fmt.Sprintf(
@@ -448,31 +435,6 @@ func isFallbackEligible(err error) bool {
 		return sc == 404 || sc == 422
 	}
 	return errors.Is(err, errEmptyResponsesStream)
-}
-
-func chatCompletionsFallbackUnsupported(req llm.Request) string {
-	var reasons []string
-	if req.ResponseFormat != nil {
-		reasons = append(reasons, "response_format")
-	}
-	if len(req.Metadata) > 0 {
-		reasons = append(reasons, "metadata")
-	}
-	if len(req.ProviderOptions) > 0 {
-		reasons = append(reasons, "provider_options")
-	}
-	for _, msg := range req.Messages {
-		if msg.Role != llm.RoleUser {
-			continue
-		}
-		for _, part := range msg.Content {
-			if part.Kind != llm.ContentText {
-				reasons = append(reasons, "non-text user content")
-				return strings.Join(reasons, ", ")
-			}
-		}
-	}
-	return strings.Join(reasons, ", ")
 }
 
 // fallbackToChatCompletions wraps a Responses API error with fallback context.
@@ -1129,12 +1091,28 @@ func buildChatCompletionsBody(req llm.Request, stream bool) (map[string]any, err
 	if len(req.StopSequences) > 0 {
 		body["stop"] = req.StopSequences
 	}
+	if req.ResponseFormat != nil {
+		body["response_format"] = toChatResponseFormat(*req.ResponseFormat)
+	}
 	if req.ReasoningEffort != nil {
 		body["reasoning_effort"] = *req.ReasoningEffort
+	}
+	if len(req.Metadata) > 0 {
+		body["metadata"] = req.Metadata
+	}
+	if req.WebSearch {
+		tools, _ := body["tools"].([]map[string]any)
+		tools = append(tools, map[string]any{"type": "web_search"})
+		body["tools"] = tools
 	}
 	if stream {
 		body["stream"] = true
 		body["stream_options"] = map[string]any{"include_usage": true}
+	}
+	if opts, ok := req.ProviderOptions["openai"].(map[string]any); ok {
+		for k, v := range opts {
+			body[k] = v
+		}
 	}
 	return body, nil
 }
@@ -1150,10 +1128,17 @@ func toChatMessages(msgs []llm.Message) ([]map[string]any, error) {
 				"content": m.Text(),
 			})
 		case llm.RoleUser:
-			out = append(out, map[string]any{
-				"role":    "user",
-				"content": m.Text(),
-			})
+			if hasChatImageContent(m.Content) {
+				out = append(out, map[string]any{
+					"role":    "user",
+					"content": buildChatMultimodalParts(m.Content),
+				})
+			} else {
+				out = append(out, map[string]any{
+					"role":    "user",
+					"content": m.Text(),
+				})
+			}
 		case llm.RoleAssistant:
 			msg := map[string]any{"role": "assistant"}
 			text := m.Text()
@@ -1219,6 +1204,68 @@ func toCompletionsTools(tools []llm.ToolDefinition) []map[string]any {
 		})
 	}
 	return out
+}
+
+func hasChatImageContent(parts []llm.ContentPart) bool {
+	for _, p := range parts {
+		if p.Kind == llm.ContentImage {
+			return true
+		}
+	}
+	return false
+}
+
+func buildChatMultimodalParts(parts []llm.ContentPart) []map[string]any {
+	var out []map[string]any
+	for _, p := range parts {
+		switch p.Kind {
+		case llm.ContentText:
+			out = append(out, map[string]any{"type": "text", "text": p.Text})
+		case llm.ContentImage:
+			if p.Image == nil {
+				continue
+			}
+			url := p.Image.URL
+			if url == "" && len(p.Image.Data) > 0 {
+				mt := strings.TrimSpace(p.Image.MediaType)
+				if mt == "" {
+					mt = "image/png"
+				}
+				url = llm.DataURI(mt, p.Image.Data)
+			}
+			if url == "" {
+				continue
+			}
+			imageURL := map[string]any{"url": url}
+			if p.Image.Detail != "" {
+				imageURL["detail"] = p.Image.Detail
+			}
+			out = append(out, map[string]any{"type": "image_url", "image_url": imageURL})
+		}
+	}
+	return out
+}
+
+func toChatResponseFormat(rf llm.ResponseFormat) map[string]any {
+	switch rf.Type {
+	case "json", "json_object":
+		return map[string]any{"type": "json_object"}
+	case "json_schema":
+		out := map[string]any{"type": "json_schema"}
+		if rf.JSONSchema != nil {
+			schema := map[string]any{
+				"name":   "response",
+				"schema": rf.JSONSchema,
+			}
+			if rf.Strict {
+				schema["strict"] = true
+			}
+			out["json_schema"] = schema
+		}
+		return out
+	default:
+		return map[string]any{"type": "text"}
+	}
 }
 
 func (a *Adapter) responsesURL() string {
