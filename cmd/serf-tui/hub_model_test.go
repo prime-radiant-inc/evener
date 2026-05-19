@@ -1957,6 +1957,18 @@ func TestHubModelStatusRefreshIgnoresStaleSessionRead(t *testing.T) {
 	}
 }
 
+func TestStatusRefreshStatesMatchExpectedRequiresCurrentAndPayload(t *testing.T) {
+	if statusRefreshStatesMatchExpected(appwire.ThreadStatusProcessing, appwire.ThreadStatusIdle, appwire.ThreadStatusProcessing) {
+		t.Fatal("expected stale payload state to fail")
+	}
+	if statusRefreshStatesMatchExpected(appwire.ThreadStatusIdle, appwire.ThreadStatusProcessing, appwire.ThreadStatusProcessing) {
+		t.Fatal("expected stale current state to fail")
+	}
+	if !statusRefreshStatesMatchExpected(appwire.ThreadStatusProcessing, appwire.ThreadStatusProcessing, appwire.ThreadStatusProcessing) {
+		t.Fatal("expected matching current and payload states to pass")
+	}
+}
+
 func TestHubModelSendUsesAppWireTurnStart(t *testing.T) {
 	var got appwire.TurnStartParams
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {

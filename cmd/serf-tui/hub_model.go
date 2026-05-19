@@ -410,7 +410,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.expectedState != "" && msg.expectedRefreshToken != m.statusRefreshToken {
 				return m, nil
 			}
-			if msg.expectedState != "" && (m.detail.State != msg.expectedState || msg.detail.State != msg.expectedState) {
+			if msg.expectedState != "" && !statusRefreshStatesMatchExpected(m.detail.State, msg.detail.State, msg.expectedState) {
 				return m, nil
 			}
 			m.detail = msg.detail
@@ -1005,6 +1005,10 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+func statusRefreshStatesMatchExpected(currentState, payloadState, expectedState string) bool {
+	return currentState == expectedState && payloadState == expectedState
 }
 
 func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
