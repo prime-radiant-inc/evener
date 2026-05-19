@@ -150,14 +150,13 @@ func PasteClipboardImage(src ClipboardSource) (*PastedImage, error) {
 		path, werr := tryWSLClipboardFallback(src, err)
 		if werr == nil {
 			info, statErr := os.Stat(path)
-			size := 0
-			if statErr == nil {
-				size = int(info.Size())
+			if statErr != nil {
+				return nil, fmt.Errorf("wsl clipboard image stat %q: %w", path, statErr)
 			}
 			return &PastedImage{
 				Path:      path,
 				MediaType: "image/png",
-				Size:      size,
+				Size:      int(info.Size()),
 				Origin:    "wsl",
 			}, nil
 		}

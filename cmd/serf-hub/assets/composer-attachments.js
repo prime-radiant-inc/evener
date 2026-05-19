@@ -49,16 +49,17 @@
     });
   }
 
-  // nextMarker returns max(existing item.marker, 0) + 1. Monotonic — never
-  // reused. Removing chip 2 from [1,2,3] leaves [1,3]; the next attach gets
+  // nextMarker advances a per-composer high-water counter. Monotonic — never
+  // reused. Removing chip 3 from [1,2,3] leaves [1,2]; the next attach gets
   // 4. The "leave gaps" decision keeps existing marker references stable in
   // the prose the user has already typed.
   function nextMarker(pendingState) {
-    let max = 0;
+    let max = (typeof pendingState.__nextMarker === "number") ? pendingState.__nextMarker : 0;
     for (const it of pendingState.items || []) {
       if (it && typeof it.marker === "number" && it.marker > max) max = it.marker;
     }
-    return max + 1;
+    pendingState.__nextMarker = max + 1;
+    return pendingState.__nextMarker;
   }
 
   // insertAtCursor splices `str` into textareaEl.value at the current

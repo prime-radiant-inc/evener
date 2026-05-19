@@ -121,6 +121,30 @@ func TestNextMarker_AfterRemoval_DoesNotReuse(t *testing.T) {
 	}
 }
 
+// TestNextMarker_AfterRemovingHighest_DoesNotReuse verifies the high-water
+// marker counter survives removing the highest (and only) marker. Kata 2stz.
+func TestNextMarker_AfterRemovingHighest_DoesNotReuse(t *testing.T) {
+	m := newSessionHubModel(nil)
+	a := &PastedImage{Path: "/tmp/a.png"}
+	m.addPendingAttachment(a)
+
+	m.removePendingAttachment(0)
+
+	b := &PastedImage{Path: "/tmp/b.png"}
+	m.addPendingAttachment(b)
+
+	if b.MarkerN != 2 {
+		t.Fatalf("new attachment MarkerN = %d, want 2 (never reuse removed highest marker)", b.MarkerN)
+	}
+	got := m.session.input.Value()
+	if strings.Contains(got, "[image 1]") {
+		t.Fatalf("input must not contain reused marker [image 1]: %q", got)
+	}
+	if !strings.Contains(got, "[image 2]") {
+		t.Fatalf("input missing newly inserted marker [image 2]: %q", got)
+	}
+}
+
 // TestRemovePendingAttachment_NoOpForUnassignedMarker verifies that
 // removing an attachment whose MarkerN is 0 (unassigned, defensive case)
 // does not mutate the textarea or panic. Kata 2stz.

@@ -150,6 +150,10 @@ type hubModel struct {
 	// cleans up afterwards. The slice is rendered as a row of chips
 	// below the composer textarea.
 	pendingAttachments []*PastedImage
+	// nextAttachmentMarker is a per-composer high-water counter. Marker
+	// numbers are never reused while a composer draft is alive, even if the
+	// user removes the highest-numbered attachment.
+	nextAttachmentMarker int
 	// clipboardSource is the production clipboard reader, swappable in
 	// tests via newSessionHubModel + assignment. When nil we lazily
 	// install the platform-specific SystemClipboardSource on first use.
@@ -163,8 +167,8 @@ type hubModel struct {
 }
 
 // addPendingAttachment appends a captured image to the composer's
-// pending-attachment list. Callers own the backing file — the submit
-// flow is responsible for cleanup.
+// pending-attachment list. The model cleans up paste-owned temp files when
+// the attachment leaves the composer.
 //
 // The image is assigned a monotonically-increasing MarkerN and the
 // literal "[image N]" token is inserted at the textarea's current
@@ -174,9 +178,9 @@ func (m *hubModel) addPendingAttachment(img *PastedImage) {
 	if img == nil {
 		return
 	}
-	n := nextMarker(m.pendingAttachments)
-	img.MarkerN = n
-	m.session.input.InsertString("[image " + strconv.Itoa(n) + "]")
+	m.nextAttachmentMarker++
+	img.MarkerN = m.nextAttachmentMarker
+	m.session.input.InsertString("[image " + strconv.Itoa(img.MarkerN) + "]")
 	m.pendingAttachments = append(m.pendingAttachments, img)
 }
 
@@ -199,23 +203,28 @@ func (m *hubModel) removePendingAttachment(idx int) {
 			m.session.input.SetValue(text[:i] + text[i+len(tok):])
 		}
 	}
+	cleanupPendingAttachmentFile(removed)
 	m.pendingAttachments = append(m.pendingAttachments[:idx], m.pendingAttachments[idx+1:]...)
 }
 
-// nextMarker returns the next monotonic marker number for a new
-// attachment: max(existing.MarkerN) + 1, or 1 when none exist. Removed
-// attachments' numbers are not reused, so gaps are possible.
-func nextMarker(atts []*PastedImage) int {
-	max := 0
-	for _, a := range atts {
-		if a == nil {
-			continue
-		}
-		if a.MarkerN > max {
-			max = a.MarkerN
+func (m *hubModel) clearPendingAttachments(cleanupFiles bool) {
+	if cleanupFiles {
+		for _, img := range m.pendingAttachments {
+			cleanupPendingAttachmentFile(img)
 		}
 	}
-	return max + 1
+	m.pendingAttachments = nil
+	m.nextAttachmentMarker = 0
+}
+
+func cleanupPendingAttachmentFile(img *PastedImage) {
+	if img == nil || img.Path == "" {
+		return
+	}
+	switch img.Origin {
+	case "clipboard-image", "wsl":
+		_ = os.Remove(img.Path)
+	}
 }
 
 const hubCtrlCQuitWindow = time.Second
@@ -315,6 +324,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.clearNoticesByCategory("action-unavailable")
+		m.clearPendingAttachments(true)
 		m.mode = hubModeSession
 		m.detail = msg.detail
 		m.session = newModel("", "", nil)
@@ -397,7 +407,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clearNoticesByCategory("appwire")
 			m.clearSessionError()
 			m.setActiveTurnID(msg.turnID)
-			m.pendingAttachments = nil
+			m.clearPendingAttachments(true)
 		}
 		return m, nil
 	case hubQueueMsg:
@@ -412,7 +422,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.clearNoticesByCategory("appwire")
 		m.clearSessionError()
-		m.pendingAttachments = nil
+		m.clearPendingAttachments(true)
 		// The daemon emits a thread/queueChanged notification with the
 		// new state; applyHubNotification picks it up. No local mirror
 		// (kata r80p).
@@ -420,7 +430,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case hubDrainAsSteerMsg:
 		if msg.err != nil {
 			if msg.queued {
-				m.pendingAttachments = nil
+				m.clearPendingAttachments(true)
 				preview := strings.TrimSpace(msg.text)
 				if preview == "" && msg.hadAttachment {
 					preview = "[image]"
@@ -442,7 +452,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.clearNoticesByCategory("appwire")
 		m.clearSessionError()
-		m.pendingAttachments = nil
+		m.clearPendingAttachments(true)
 		// The daemon emits thread/queueChanged with depth=0 after a
 		// successful drain; applyHubNotification clears sessionQueue when
 		// it lands. We don't preemptively wipe here so the preview

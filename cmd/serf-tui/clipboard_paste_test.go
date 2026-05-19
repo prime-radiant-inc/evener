@@ -288,6 +288,19 @@ func TestPasteClipboardImage_FallsBackToWSL(t *testing.T) {
 	}
 }
 
+func TestPasteClipboardImage_WSLErrorWhenConvertedPathMissing(t *testing.T) {
+	src := &fakeClipboard{
+		filesErr:    errors.New("no file list"),
+		imageErr:    ErrNoClipboardImage,
+		winPath:     `C:\definitely-missing-serf-clipboard\clip.png`,
+		procVersion: "Linux version 5.15-microsoft-standard-WSL2",
+	}
+
+	if got, err := PasteClipboardImage(src); err == nil {
+		t.Fatalf("PasteClipboardImage err = nil, got %+v; want stat error for missing WSL path", got)
+	}
+}
+
 func TestPasteClipboardImage_NoImageReturnsError(t *testing.T) {
 	src := &fakeClipboard{
 		filesErr:    errors.New("no file list"),

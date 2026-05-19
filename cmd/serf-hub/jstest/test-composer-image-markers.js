@@ -1,6 +1,6 @@
 // Test harness for kata 2stz: positional [image N] markers in the web
 // composer. When a user attaches an image (paste / drop / file-picker),
-// the helper assigns item.marker = N (max existing + 1, default 1) and
+// the helper assigns item.marker = N from a per-composer high-water counter and
 // inserts the literal text "[image N]" at the textarea cursor. On chip
 // remove, the first occurrence of "[image N]" for the removed item is
 // stripped from the textarea value. Numbering is monotonic — never reuse.
@@ -257,7 +257,35 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
       "expected no '[image 1]' (it was removed earlier), got: " + JSON.stringify(ta.value));
   }
 
-  // ---------- Assertion 7: remove without __textarea wired does not throw ----------
+  // ---------- Assertion 7: removing the highest marker still never reuses ----------
+  {
+    const w = buildDom();
+    const ta = w.document.getElementById("ta");
+    const container = w.document.getElementById("attachments");
+    const pending = { items: [] };
+    w.SerfComposerAttachments.attachComposerImageHandlers(ta, pending);
+    w.SerfComposerAttachments.renderAttachmentChips(container, pending);
+
+    setCursor(ta, 0);
+    ta.dispatchEvent(buildPasteEvent(w, makeFile(w, PNG_BYTES, "a.png", "image/png")));
+    await waitMicrotasks();
+
+    const removeBtn = container.querySelector("[data-attachment-remove]");
+    pass(removeBtn !== null, "precondition: remove button rendered");
+    removeBtn.click();
+    pass(pending.items.length === 0, "precondition: item removed, got " + pending.items.length);
+
+    setCursor(ta, ta.value.length);
+    ta.dispatchEvent(buildPasteEvent(w, makeFile(w, PNG_BYTES, "b.png", "image/png")));
+    await waitMicrotasks();
+
+    pass(pending.items.length === 1 && pending.items[0].marker === 2,
+      "expected new marker=2 after removing highest marker, got " + JSON.stringify(pending.items.map(i => i.marker)));
+    pass(ta.value === "[image 2]",
+      "expected '[image 2]' after removing '[image 1]', got: " + JSON.stringify(ta.value));
+  }
+
+  // ---------- Assertion 8: remove without __textarea wired does not throw ----------
   {
     const w = buildDom();
     const container = w.document.getElementById("attachments");
@@ -276,7 +304,7 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
     pass(pending.items.length === 0, "expected items spliced even without __textarea, got " + pending.items.length);
   }
 
-  // ---------- Assertion 8: marker is inserted synchronously at original cursor ----------
+  // ---------- Assertion 9: marker is inserted synchronously at original cursor ----------
   {
     const w = buildDom();
     const ta = w.document.getElementById("ta");
@@ -299,7 +327,7 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
       "expected later typing not to move marker, got: " + JSON.stringify(ta.value));
   }
 
-  // ---------- Assertion 9: oversized image is rejected before decode ----------
+  // ---------- Assertion 10: oversized image is rejected before decode ----------
   {
     const w = buildDom();
     const ta = w.document.getElementById("ta");
@@ -317,7 +345,7 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
       "expected size rejection banner, got hidden=" + errors.hidden + " text=" + JSON.stringify(errors.textContent));
   }
 
-  // ---------- Assertion 10: attachment count limit is enforced before decode ----------
+  // ---------- Assertion 11: attachment count limit is enforced before decode ----------
   {
     const w = buildDom();
     const ta = w.document.getElementById("ta");
