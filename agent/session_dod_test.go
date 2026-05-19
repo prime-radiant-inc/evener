@@ -1206,12 +1206,40 @@ func TestQueuedInputDrainRootAcceptsAbortErrorForCanceledMarkedTurn(t *testing.T
 	markedCtx := WithQueuedInputDrainOnInterrupt(turnCtx, rootCtx)
 	cancelTurn()
 
-	got, ok := queuedInputDrainRoot(markedCtx, llm.NewAbortError("user canceled"))
+	got, ok := queuedInputDrainContext(markedCtx, llm.NewAbortError("user canceled"))
 	if !ok {
-		t.Fatal("queuedInputDrainRoot rejected AbortError from canceled marked turn")
+		t.Fatal("queuedInputDrainContext rejected AbortError from canceled marked turn")
 	}
 	if got != rootCtx {
-		t.Fatal("queuedInputDrainRoot did not return the root context")
+		t.Fatal("queuedInputDrainContext did not return the root context")
+	}
+}
+
+func TestQueuedInputDrainContextUsesFreshCancelableTurnContext(t *testing.T) {
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+	turnCtx, cancelTurn := context.WithCancel(rootCtx)
+	var cancelDrain context.CancelFunc
+	markedCtx := WithQueuedInputDrainOnInterruptHandler(turnCtx, rootCtx, func(root context.Context) (context.Context, context.CancelFunc) {
+		drainCtx, cancel := context.WithCancel(root)
+		cancelDrain = cancel
+		return drainCtx, cancel
+	})
+	cancelTurn()
+
+	got, ok := queuedInputDrainContext(markedCtx, context.Canceled)
+	if !ok {
+		t.Fatal("queuedInputDrainContext rejected canceled marked turn")
+	}
+	if got == rootCtx {
+		t.Fatal("queuedInputDrainContext returned root context, want fresh turn context")
+	}
+	if got.Err() != nil {
+		t.Fatalf("fresh drain context is already canceled: %v", got.Err())
+	}
+	cancelDrain()
+	if !errors.Is(got.Err(), context.Canceled) {
+		t.Fatalf("fresh drain context err=%v, want context.Canceled after cancelDrain", got.Err())
 	}
 }
 

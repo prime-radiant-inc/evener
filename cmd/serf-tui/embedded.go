@@ -313,13 +313,23 @@ func (e *embeddedServer) inputLoop(ctx context.Context) {
 				return
 			}
 			sess := e.currentSession()
+			var currentCancel context.CancelFunc
+			var nextTurnCtx func(context.Context) (context.Context, context.CancelFunc)
+			nextTurnCtx = func(root context.Context) (context.Context, context.CancelFunc) {
+				drainCtx, cancelDrain := context.WithCancel(root)
+				drainCtx = agent.WithQueuedInputDrainOnInterruptHandler(drainCtx, root, nextTurnCtx)
+				currentCancel = cancelDrain
+				e.srv.SetCancelFunc(cancelDrain)
+				return drainCtx, cancelDrain
+			}
 			turnCtx, cancelTurn := context.WithCancel(ctx)
-			turnCtx = agent.WithQueuedInputDrainOnInterrupt(turnCtx, ctx)
+			currentCancel = cancelTurn
+			turnCtx = agent.WithQueuedInputDrainOnInterruptHandler(turnCtx, ctx, nextTurnCtx)
 			e.srv.SetProcessing(true)
 			e.srv.SetState("PROCESSING")
 			e.srv.SetCancelFunc(cancelTurn)
 			_, processErr := sess.ProcessInput(turnCtx, msg.Text, msg.Images)
-			cancelTurn()
+			currentCancel()
 			e.srv.SetCancelFunc(nil)
 			e.srv.SetProcessing(false)
 			e.srv.SetState(string(sess.State()))

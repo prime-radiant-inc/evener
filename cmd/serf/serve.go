@@ -298,8 +298,18 @@ func runServe(args []string) error {
 					return
 				}
 				sess := getSession()
+				var currentCancel context.CancelFunc
+				var nextTurnCtx func(context.Context) (context.Context, context.CancelFunc)
+				nextTurnCtx = func(root context.Context) (context.Context, context.CancelFunc) {
+					drainCtx, cancelDrain := context.WithCancel(root)
+					drainCtx = agent.WithQueuedInputDrainOnInterruptHandler(drainCtx, root, nextTurnCtx)
+					currentCancel = cancelDrain
+					srv.SetCancelFunc(cancelDrain)
+					return drainCtx, cancelDrain
+				}
 				turnCtx, cancelTurn := context.WithCancel(ctx)
-				turnCtx = agent.WithQueuedInputDrainOnInterrupt(turnCtx, ctx)
+				currentCancel = cancelTurn
+				turnCtx = agent.WithQueuedInputDrainOnInterruptHandler(turnCtx, ctx, nextTurnCtx)
 				srv.SetCancelFunc(cancelTurn)
 				srv.SetProcessing(true)
 				srv.SetState("PROCESSING")
@@ -307,7 +317,7 @@ func runServe(args []string) error {
 				srv.SetProcessing(false)
 				srv.SetState(string(sess.State()))
 				srv.SetCancelFunc(nil)
-				cancelTurn()
+				currentCancel()
 				if processErr != nil {
 					fmt.Fprintf(os.Stderr, "[serve] error: %v\n", processErr)
 				}

@@ -333,13 +333,28 @@ type Session struct {
 
 type queuedInputDrainContextKey struct{}
 
+type queuedInputDrainConfig struct {
+	rootCtx context.Context
+	nextCtx func(context.Context) (context.Context, context.CancelFunc)
+}
+
 // WithQueuedInputDrainOnInterrupt marks ctx as a per-turn interrupt context
 // whose queued input may continue under rootCtx after ctx is canceled.
 func WithQueuedInputDrainOnInterrupt(ctx context.Context, rootCtx context.Context) context.Context {
+	return WithQueuedInputDrainOnInterruptHandler(ctx, rootCtx, nil)
+}
+
+// WithQueuedInputDrainOnInterruptHandler marks ctx like
+// WithQueuedInputDrainOnInterrupt and lets callers install a fresh cancelable
+// context when queued input is drained after an interrupt.
+func WithQueuedInputDrainOnInterruptHandler(ctx context.Context, rootCtx context.Context, nextCtx func(context.Context) (context.Context, context.CancelFunc)) context.Context {
 	if rootCtx == nil {
 		rootCtx = context.Background()
 	}
-	return context.WithValue(ctx, queuedInputDrainContextKey{}, rootCtx)
+	return context.WithValue(ctx, queuedInputDrainContextKey{}, queuedInputDrainConfig{
+		rootCtx: rootCtx,
+		nextCtx: nextCtx,
+	})
 }
 
 // selectStrategy creates the appropriate ContextStrategy from config.
@@ -1619,10 +1634,10 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 				}
 				if !closed {
 					if queued := s.popQueueHead(); strings.TrimSpace(queued.Text) != "" || len(queued.Images) > 0 {
-						if rootCtx, ok := queuedInputDrainRoot(processCtx, err); ok {
+						if drainCtx, ok := queuedInputDrainContext(processCtx, err); ok {
 							next = queued.Text
 							nextImages = queued.Images
-							processCtx = rootCtx
+							processCtx = drainCtx
 							s.mu.Lock()
 							s.sessionEndEmitted = false
 							s.mu.Unlock()
@@ -2869,9 +2884,9 @@ func isTurnCancellation(ctx context.Context, err error) bool {
 	return errors.As(err, &abort)
 }
 
-func queuedInputDrainRoot(ctx context.Context, err error) (context.Context, bool) {
-	rootCtx, ok := ctx.Value(queuedInputDrainContextKey{}).(context.Context)
-	if !ok || rootCtx == nil {
+func queuedInputDrainContext(ctx context.Context, err error) (context.Context, bool) {
+	cfg, ok := ctx.Value(queuedInputDrainContextKey{}).(queuedInputDrainConfig)
+	if !ok || cfg.rootCtx == nil {
 		return nil, false
 	}
 	var abort *llm.AbortError
@@ -2879,10 +2894,17 @@ func queuedInputDrainRoot(ctx context.Context, err error) (context.Context, bool
 	if !drainable || errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return nil, false
 	}
-	if rootCtx.Err() != nil {
+	if cfg.rootCtx.Err() != nil {
 		return nil, false
 	}
-	return rootCtx, true
+	if cfg.nextCtx == nil {
+		return cfg.rootCtx, true
+	}
+	nextCtx, _ := cfg.nextCtx(cfg.rootCtx)
+	if nextCtx == nil {
+		return nil, false
+	}
+	return nextCtx, true
 }
 
 func streamUnavailable(err error) bool {
