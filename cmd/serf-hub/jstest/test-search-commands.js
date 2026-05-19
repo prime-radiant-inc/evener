@@ -440,6 +440,22 @@ async function commandSweep() {
         assertCS(c, /less rambling/.test(String(hit && hit.opts && hit.opts.body)), "body carries steer text");
         assertCS(c, /"turn_id":"turn_cmd"/.test(String(hit && hit.opts && hit.opts.body)), "body carries turn id");
       } },
+    { name: "queue-rest-failure", page: "session", query: "/queue", argEntry: "later", activeTurn: "turn_cmd", expectStaysOpen: true,
+      fetchResponse: () => ({ ok: false, status: 409, text: () => Promise.resolve("turn is not active") }),
+      expect: (c) => {
+        const hit = c.calls.fetches.find(f => f.url === "/s/01S/queue");
+        assertCS(c, !!hit, "POST /s/01S/queue");
+        const err = c.results.querySelector(".palette-error");
+        assertCS(c, !!err && /turn is not active/.test(err.textContent || ""), "queue REST failure stays inline");
+      } },
+    { name: "drain-rest-failure", page: "session", query: "/drain", activeTurn: "turn_cmd", expectStaysOpen: true,
+      fetchResponse: () => ({ ok: false, status: 400, text: () => Promise.resolve("queue empty") }),
+      expect: (c) => {
+        const hit = c.calls.fetches.find(f => f.url === "/s/01S/drain-as-steer");
+        assertCS(c, !!hit, "POST /s/01S/drain-as-steer");
+        const err = c.results.querySelector(".palette-error");
+        assertCS(c, !!err && /queue empty/.test(err.textContent || ""), "drain REST failure stays inline");
+      } },
     { name: "copy-id", page: "session", query: "/copy",
       expect: (c) => assertCS(c, c.calls.clipboardWrites.slice(-1)[0] === "01S", "wrote session ID to clipboard") },
     { name: "tasks", page: "session", query: "/tasks",
@@ -499,6 +515,7 @@ async function runCaseCS(tc) {
       return Promise.resolve({ ok: true, json: () => Promise.resolve(tc.modelsResponse || []) });
     }
     calls.fetches.push({ url: u, opts: opts || {} });
+    if (tc.fetchResponse) return Promise.resolve(tc.fetchResponse(u, opts || {}));
     return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
   };
   window.confirm = () => { calls.confirms += 1; return tc.confirmAnswer === undefined ? true : tc.confirmAnswer; };

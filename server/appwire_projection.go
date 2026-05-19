@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -263,6 +264,24 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 		}
 		info := diagnostic.FromFields(data.Source, data.Title, data.Hint, message)
 		cause := projectErrorCause(data.Cause)
+		warning := p.notification(appwire.NotifyWarning, map[string]any{
+			"threadId": p.threadID,
+			"ref":      p.ref,
+			"message":  message,
+			"source":   string(info.Source),
+			"title":    info.Title,
+			"hint":     info.Hint,
+			"cause":    cause,
+			"warning": agent.WarningData{
+				Message: message,
+				Source:  string(info.Source),
+				Title:   info.Title,
+				Hint:    info.Hint,
+			},
+		})
+		if isContextCanceledError(message) {
+			return []AppNotification{warning}
+		}
 		p.ensureTurn()
 		turnID := p.activeTurnID
 		p.activeTurnID = ""
@@ -271,21 +290,7 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 		p.toolItemsByKey = map[string]string{}
 		p.suppressedTools = map[string]struct{}{}
 		return []AppNotification{
-			p.notification(appwire.NotifyWarning, map[string]any{
-				"threadId": p.threadID,
-				"ref":      p.ref,
-				"message":  message,
-				"source":   string(info.Source),
-				"title":    info.Title,
-				"hint":     info.Hint,
-				"cause":    cause,
-				"warning": agent.WarningData{
-					Message: message,
-					Source:  string(info.Source),
-					Title:   info.Title,
-					Hint:    info.Hint,
-				},
-			}),
+			warning,
 			p.notification(appwire.NotifyTurnCompleted, map[string]any{
 				"threadId": p.threadID,
 				"ref":      p.ref,
@@ -377,6 +382,10 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 
 func (p *AppEventProjector) notification(method string, params any) AppNotification {
 	return AppNotification{ThreadID: p.threadID, Method: method, Params: params}
+}
+
+func isContextCanceledError(message string) bool {
+	return strings.TrimSpace(message) == context.Canceled.Error()
 }
 
 func (p *AppEventProjector) threadStatus(status string) AppNotification {

@@ -158,6 +158,47 @@ assert(formDom.window.localStorage.getItem("serf-hub.spawn-defaults.global.last-
 assert(formDom.window.document.querySelector('input[name="working_dir"]').value === "/tmp/project-with-oauth",
   "server-provided working_dir must not be overwritten by global sticky default");
 
+const staleModelDom = new JSDOM(`<!DOCTYPE html><html><body>
+  <form data-spawn-form>
+    <button class="chip" type="button" data-chip="harness"><span class="chip-value" data-chip-value-harness>serf</span></button>
+    <button class="chip" type="button" data-chip="model"><span class="chip-value" data-chip-value-model>(pick a model)</span></button>
+    <textarea name="prompt"></textarea>
+    <input type="hidden" name="harness" value="serf">
+    <input type="hidden" data-harness-option value="serf" data-label="serf">
+    <input type="hidden" name="model" value="">
+    <input type="hidden" name="working_dir" value="/tmp/current-stale">
+    <input type="hidden" name="branch" value="">
+    <input type="hidden" name="access_mode" value="full">
+    <input type="hidden" name="agent" value="default">
+    <input type="hidden" name="reasoning_effort" value="">
+    <button class="spawn-btn" type="submit">spawn</button>
+  </form>
+</body></html>`, {
+  runScripts: "outside-only",
+  pretendToBeVisual: true,
+  url: "http://127.0.0.1:9180/new",
+});
+staleModelDom.window.SerfAppwire = {
+  listModels() {
+    return {
+      then(resolve) {
+        resolve([{ provider: "openai", model: "gpt-5.2" }]);
+        return { catch() {} };
+      },
+    };
+  },
+};
+staleModelDom.window.localStorage.setItem("serf-hub.spawn-defaults.global.model", "openai/gpt-5.2");
+staleModelDom.window.localStorage.setItem("serf-hub.spawn-defaults./tmp/current-stale",
+  JSON.stringify({ model: "openai/gpt-5-mini", working_dir: "/tmp/current-stale" }));
+staleModelDom.window.eval(spawnSrc);
+staleModelDom.window.document.dispatchEvent(new staleModelDom.window.Event("DOMContentLoaded", { bubbles: true }));
+assert(staleModelDom.window.localStorage.getItem("serf-hub.spawn-defaults.global.model") === "openai/gpt-5.2",
+  "clearing stale per-project model must preserve a different valid global model default");
+const staleCurrentAfter = JSON.parse(staleModelDom.window.localStorage.getItem("serf-hub.spawn-defaults./tmp/current-stale") || "null");
+assert(staleCurrentAfter && !("model" in staleCurrentAfter) && staleCurrentAfter.working_dir === "/tmp/current-stale",
+  "clearing stale per-project model should only drop the matching model, got " + JSON.stringify(staleCurrentAfter));
+
 const modelDisplay = () => formDom.window.document.querySelector("[data-chip-value-model]").textContent.trim();
 const modelValue = () => formDom.window.document.querySelector('input[name="model"]').value;
 assert(modelDisplay() === "openai/gpt-5.2", "serf spawn should apply stored serf model default");

@@ -219,6 +219,46 @@ func TestAppEventProjectorMarksInterruptedTurnCanceled(t *testing.T) {
 	}
 }
 
+func TestAppEventProjectorLetsInterruptedSessionEndCancelAfterContextCanceledError(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
+	errOut := projector.Project(agent.SessionEvent{
+		Kind:      agent.EventError,
+		SessionID: "th_1",
+		Data:      agent.ErrorData{Error: "context canceled"},
+	})
+	if !hasAppNotification(errOut, appwire.NotifyWarning) {
+		t.Fatalf("context canceled EventError missing warning: %+v", errOut)
+	}
+	if hasAppNotification(errOut, appwire.NotifyTurnCompleted) {
+		t.Fatalf("context canceled EventError completed turn before interrupted SessionEnd: %+v", errOut)
+	}
+
+	sessionEnd := projector.Project(agent.SessionEvent{Kind: agent.EventSessionEnd, SessionID: "th_1", Data: agent.SessionEndData{
+		Reason:      "interrupted",
+		State:       "IDLE",
+		Interrupted: true,
+	}})
+	for _, n := range sessionEnd {
+		if n.Method != appwire.NotifyTurnCompleted {
+			continue
+		}
+		params, ok := n.Params.(map[string]any)
+		if !ok {
+			t.Fatalf("turnCompleted params=%T", n.Params)
+		}
+		turn, ok := params["turn"].(appwire.Turn)
+		if !ok {
+			t.Fatalf("turn=%T", params["turn"])
+		}
+		if turn.Status != appwire.TurnStatusCanceled {
+			t.Fatalf("turn status=%s, want canceled", turn.Status)
+		}
+		return
+	}
+	t.Fatalf("interrupted SessionEnd did not complete the active turn: %+v", sessionEnd)
+}
+
 func TestAppEventProjectorKeepsToolEventsInActiveTurnAfterAssistantText(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	started := projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})

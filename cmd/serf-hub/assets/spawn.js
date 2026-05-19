@@ -65,13 +65,15 @@
     if (d.working_dir) localStorage.setItem("serf-hub.spawn-defaults.global.working_dir", d.working_dir);
   }
 
-  // clearStoredModelDefault removes the global model pre-fill and any
-  // per-project entry whose model matches `value`. The per-project key is
-  // a JSON blob, so we mutate it in place rather than dropping the whole
-  // record (working_dir / branch / access_mode defaults stay intact).
+  // clearStoredModelDefault removes stored defaults whose model matches
+  // `value`. Per-project keys are JSON blobs, so mutate them in place rather
+  // than dropping the whole record (working_dir / branch / access_mode
+  // defaults stay intact).
   function clearStoredModelDefault(value) {
     try {
-      localStorage.removeItem("serf-hub.spawn-defaults.global.model");
+      if (localStorage.getItem("serf-hub.spawn-defaults.global.model") === value) {
+        localStorage.removeItem("serf-hub.spawn-defaults.global.model");
+      }
     } catch (e) { /* ignore quota / privacy mode */ }
     try {
       const wd = currentWorkingDir();

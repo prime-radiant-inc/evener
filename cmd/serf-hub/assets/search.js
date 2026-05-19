@@ -159,6 +159,15 @@
   // palette open and surface an inline error instead of closing silently.
   function blocked(message) { return { paletteBlocked: true, message: message }; }
 
+  function blockedFromResponse(prefix, resp) {
+    if (!resp || resp.ok) return resp;
+    return Promise.resolve(typeof resp.text === "function" ? resp.text() : "")
+      .then(function (body) {
+        const detail = String(body || "").trim() || ("HTTP " + resp.status);
+        return blocked(prefix + ": " + detail);
+      });
+  }
+
   function postSession(ctx, action) {
     if (!ctx.sessionId) return Promise.resolve();
     const turnId = activeTurnId();
@@ -283,7 +292,7 @@
               : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/queue", {
                   method: "POST", headers: { "Content-Type": "application/json" },
                   body: JSON.stringify({ text: text }),
-                });
+                }).then(function (resp) { return blockedFromResponse("queue failed", resp); });
             // The daemon emits thread/queueChanged which updates the
             // renderer's queueState — no local mirroring needed (kata r80p).
             return Promise.resolve(promise);
@@ -302,7 +311,7 @@
             ? window.SerfAppwire.drainAsSteer(ctx.sessionId)
             : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/drain-as-steer", {
                 method: "POST", headers: { "Content-Type": "application/json" },
-              });
+              }).then(function (resp) { return blockedFromResponse("drain failed", resp); });
           // The daemon emits thread/queueChanged with depth=0 after the
           // drain; the renderer wipes its preview on receipt (kata r80p).
           return Promise.resolve(promise);
@@ -631,24 +640,17 @@
     const ctx = buildCtx();
     let result;
     try { result = cmd.run(ctx); } catch (_) {}
-    if (isBlocked(result)) {
-      // Keep the palette open and surface the failure inline. The command
-      // already appended a persistent page-level banner via
-      // showTurnActionUnavailable; the inline error makes the cause obvious
-      // without forcing the user to scan the workspace.
-      showPaletteError(result.message);
-      return;
-    }
-    if (!cmd.stayOpen) rememberCommand(cmd.id);
-    // Commands flagged stayOpen reroute the palette in-place (search/help)
-    // and should keep the modal open.
-    if (!cmd.stayOpen) close();
+    handleCommandResult(result, { closeOnSuccess: !cmd.stayOpen, rememberOnSuccess: cmd.stayOpen ? "" : cmd.id });
   }
 
   function runWithArg(cmd, arg) {
     const ctx = buildCtx();
     let result;
     try { result = cmd.args.run(ctx, arg); } catch (_) {}
+    handleCommandResult(result, { closeOnSuccess: true });
+  }
+
+  function handleCommandResult(result, opts) {
     if (isBlocked(result)) {
       // Don't close: the user lost no typed text, and the inline error tells
       // them why their submit didn't go through. They can hit Esc to back
@@ -656,7 +658,30 @@
       showPaletteError(result.message);
       return;
     }
-    close();
+    if (result && typeof result.then === "function") {
+      result.then(function (value) {
+        if (isBlocked(value)) {
+          showPaletteError(value.message);
+          return;
+        }
+        finishCommandSuccess(opts);
+      }).catch(function (err) {
+        showPaletteError(commandErrorMessage(err));
+      });
+      return;
+    }
+    finishCommandSuccess(opts);
+  }
+
+  function finishCommandSuccess(opts) {
+    if (opts && opts.rememberOnSuccess) rememberCommand(opts.rememberOnSuccess);
+    if (!opts || opts.closeOnSuccess) close();
+  }
+
+  function commandErrorMessage(err) {
+    if (err && err.message) return err.message;
+    const msg = String(err || "").trim();
+    return msg || "command failed";
   }
 
   function isBlocked(result) {
