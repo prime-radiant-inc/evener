@@ -417,6 +417,9 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.mode == hubModeSession && m.detail.Ref == msg.detail.Ref {
 			m.detail = msg.detail
+			if msg.expectedState == "" {
+				m.replaceSessionTranscript(msg.messages)
+			}
 			// Refresh queue preview from the authoritative read response
 			// (kata r80p) so reloads / status refreshes resync state.
 			m.applyQueueState(msg.detail.Ref, msg.detail.Queue)
@@ -2711,6 +2714,15 @@ func (m *hubModel) applySessionTranscriptReducer(reducer hubTranscriptReducer) {
 	m.session.messages = reducer.messages
 	m.session.activeTools = reducer.activeTools
 	m.session.activeMessages = reducer.activeMessages
+}
+
+func (m *hubModel) replaceSessionTranscript(messages []chatMessage) {
+	m.session.messages = append([]chatMessage(nil), messages...)
+	m.session.activeTools = nil
+	m.session.activeMessages = nil
+	m.browseSelected = -1
+	m.transcriptView = nil
+	m.session.refreshViewport()
 }
 
 func buildHubRows(tree hubTreeResponse) []hubRow {

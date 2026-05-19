@@ -2122,6 +2122,55 @@ func TestHubModelTasksAndDetailsUseAppWire(t *testing.T) {
 	}
 }
 
+func TestHubModelSameSessionRefreshReplacesTranscript(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.session.messages = []chatMessage{{Kind: msgAssistant, Text: "stale transcript"}}
+	m.session.activeTools = map[string]int{"call_old": 0}
+	m.session.activeMessages = map[string]int{"item_old": 0}
+	m.browseSelected = 0
+
+	updated, _ := m.Update(hubSessionMsg{
+		ref: "local:01SEND",
+		detail: hubSessionDetail{
+			Ref:       "local:01SEND",
+			SessionID: "01SEND",
+			State:     appwire.ThreadStatusIdle,
+		},
+		messages: []chatMessage{{Kind: msgAssistant, Text: "fresh transcript"}},
+	})
+	got := updated.(hubModel)
+	if len(got.session.messages) != 1 || got.session.messages[0].Text != "fresh transcript" {
+		t.Fatalf("messages=%+v, want fresh transcript", got.session.messages)
+	}
+	if len(got.session.activeTools) != 0 || len(got.session.activeMessages) != 0 {
+		t.Fatalf("active transcript state not reset: tools=%+v messages=%+v", got.session.activeTools, got.session.activeMessages)
+	}
+	if got.browseSelected != -1 {
+		t.Fatalf("browseSelected=%d, want reset", got.browseSelected)
+	}
+}
+
+func TestHubModelExpectedStatusRefreshDoesNotReplaceTranscript(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.State = appwire.ThreadStatusProcessing
+	m.session.messages = []chatMessage{{Kind: msgAssistant, Text: "live transcript"}}
+
+	updated, _ := m.Update(hubSessionMsg{
+		ref:           "local:01SEND",
+		expectedState: appwire.ThreadStatusProcessing,
+		detail: hubSessionDetail{
+			Ref:       "local:01SEND",
+			SessionID: "01SEND",
+			State:     appwire.ThreadStatusProcessing,
+		},
+		messages: []chatMessage{{Kind: msgAssistant, Text: "status payload transcript"}},
+	})
+	got := updated.(hubModel)
+	if len(got.session.messages) != 1 || got.session.messages[0].Text != "live transcript" {
+		t.Fatalf("messages=%+v, want status refresh to preserve transcript", got.session.messages)
+	}
+}
+
 func TestFetchHubSessionSubscribesToLiveThread(t *testing.T) {
 	var got appwire.ThreadReadParams
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
