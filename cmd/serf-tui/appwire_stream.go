@@ -295,11 +295,15 @@ func (t *appwireStreamTranslator) itemAlreadyCompleted(item appwire.ThreadItem) 
 
 func itemCompletionKeys(item appwire.ThreadItem) []string {
 	keys := make([]string, 0, 2)
+	scope := "turn:" + item.TurnID + ":"
+	if item.TurnID == "" {
+		scope = ""
+	}
 	if item.ID != "" {
-		keys = append(keys, "item:"+item.ID)
+		keys = append(keys, scope+"item:"+item.ID)
 	}
 	if item.Type == "tool_call" && item.CallID != "" {
-		keys = append(keys, "call:"+item.CallID)
+		keys = append(keys, scope+"call:"+item.CallID)
 	}
 	return keys
 }
