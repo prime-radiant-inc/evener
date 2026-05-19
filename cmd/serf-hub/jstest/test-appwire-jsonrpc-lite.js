@@ -269,9 +269,12 @@ vm.runInContext(SRC, context);
         hint: "Check launch config.",
         cause: { kind: "provider", provider: "openai", model: "gpt-5", status: 503 },
       },
-      items: [{ id: "msg_failed", turnId: "turn_failed", type: "agent_message" }],
+      items: [{ id: "msg_failed", turnId: "turn_failed", type: "agent_message", text: "final failure" }],
     },
   });
+  const failedTurnAssistant = failedTurnEvents.find(([kind]) => kind === "ASSISTANT_TEXT_END");
+  assert(failedTurnAssistant && failedTurnAssistant[1].text === "final failure",
+    "failed turn should replay final transcript items before ERROR");
   const failedTurnError = failedTurnEvents.find(([kind]) => kind === "ERROR");
   assert(failedTurnError, "failed turn should render an error event");
   assert(failedTurnError[1].source === "serf", "failed turn error should preserve source");

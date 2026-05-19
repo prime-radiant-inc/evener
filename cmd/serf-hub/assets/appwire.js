@@ -673,14 +673,14 @@
     }
     if (method === "turn/completed" && params.turn) {
       const turnId = firstNonEmpty(params.turnId, params.turn.id);
-      if (params.turn.status === "failed") {
-        for (const item of params.turn.items || []) deleteLiveItem(params, item);
-        return [["TURN_COMPLETED", { turnId }], ["ERROR", errorPayload(params.turn.error, "turn failed")]];
-      }
       const out = [["TURN_COMPLETED", { turnId }]];
       for (const item of params.turn.items || []) {
         out.push.apply(out, eventsFromCompletedTurnItem(params, item));
         deleteLiveItem(params, item);
+      }
+      if (params.turn.status === "failed") {
+        out.push(["ERROR", errorPayload(params.turn.error, "turn failed")]);
+        return out;
       }
       return out;
     }

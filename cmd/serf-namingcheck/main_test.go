@@ -311,11 +311,11 @@ func TestCheckJSONTag_ProvidersCarveOut(t *testing.T) {
 		rel string
 		tag string
 	}{
-		{"llm/providers/openai/types.go", "tool_calls"},      // OpenAI snake
-		{"llm/providers/openai/types.go", "finish_reason"},   // OpenAI snake
-		{"llm/providers/google/types.go", "candidateCount"},  // Google camel
+		{"llm/providers/openai/types.go", "tool_calls"},       // OpenAI snake
+		{"llm/providers/openai/types.go", "finish_reason"},    // OpenAI snake
+		{"llm/providers/google/types.go", "candidateCount"},   // Google camel
 		{"llm/providers/google/types.go", "generationConfig"}, // Google camel
-		{"llm/providers/anthropic/types.go", "stop_reason"},  // Anthropic snake
+		{"llm/providers/anthropic/types.go", "stop_reason"},   // Anthropic snake
 	}
 	for _, c := range cases {
 		if msg := checkJSONTag(c.tag, c.rel); msg != "" {
@@ -397,8 +397,10 @@ camelCase = true
 [good_section]
 inner_key = 1
 
-[bad-section]
+[bad-section] # trailing comment
 some-key = 2
+bad_section.foo-key = 3
+bad-section.good_key = 4
 
 # serf:naming-ignore: kata.toml legacy
 some-other-key = 3
@@ -419,6 +421,8 @@ some-other-key = 3
 		`toml key "camelCase"`,
 		`toml table key "bad-section"`,
 		`toml key "some-key"`,
+		`toml key "foo-key"`,
+		`toml key "bad-section"`,
 	}
 	for _, w := range expectContains {
 		found := false

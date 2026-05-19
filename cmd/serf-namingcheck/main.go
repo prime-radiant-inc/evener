@@ -445,8 +445,8 @@ func splitWords(s string) []string {
 // --- TOML files ------------------------------------------------------------
 
 var (
-	tomlKeyLineRe   = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_\-]*)\s*=`)
-	tomlTableLineRe = regexp.MustCompile(`^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*$`)
+	tomlKeyLineRe   = regexp.MustCompile(`^\s*([A-Za-z_][A-Za-z0-9_\-]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_\-]*)*)\s*=`)
+	tomlTableLineRe = regexp.MustCompile(`^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(?:#.*)?$`)
 )
 
 func checkTOMLFile(path, rel string) ([]Violation, error) {
@@ -508,13 +508,15 @@ func checkTOMLFile(path, rel string) ([]Violation, error) {
 
 		// Plain key = value lines.
 		if m := tomlKeyLineRe.FindStringSubmatch(line); m != nil {
-			key := m[1]
-			if !prevIgnore && !isSnakeCase(key) {
-				out = append(out, Violation{
-					File:    rel,
-					Line:    lineNo,
-					Message: fmt.Sprintf("toml key %q must be snake_case (suggest %q)", key, toSnakeCase(key)),
-				})
+			for _, part := range strings.Split(m[1], ".") {
+				key := strings.TrimSpace(part)
+				if !prevIgnore && !isSnakeCase(key) {
+					out = append(out, Violation{
+						File:    rel,
+						Line:    lineNo,
+						Message: fmt.Sprintf("toml key %q must be snake_case (suggest %q)", key, toSnakeCase(key)),
+					})
+				}
 			}
 			// Watch for the start of a triple-quoted string so we don't
 			// misparse content lines inside it.
