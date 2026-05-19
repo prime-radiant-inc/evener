@@ -314,7 +314,11 @@ func (t *appwireStreamTranslator) eventsFromItem(item appwire.ThreadItem, comple
 			t.markItemCompleted(item)
 			return []streamEvent{newStreamEvent("ASSISTANT_TEXT_END", map[string]any{"text": item.Text})}
 		}
-		return []streamEvent{newStreamEvent("ASSISTANT_TEXT_START", map[string]any{})}
+		events := []streamEvent{newStreamEvent("ASSISTANT_TEXT_START", map[string]any{})}
+		if item.Text != "" {
+			events = append(events, newStreamEvent("ASSISTANT_TEXT_DELTA", map[string]any{"delta": item.Text}))
+		}
+		return events
 	case "tool_call":
 		callID := firstNonEmptyString(item.CallID, item.ID)
 		if completed {
@@ -329,11 +333,18 @@ func (t *appwireStreamTranslator) eventsFromItem(item appwire.ThreadItem, comple
 			})}
 		}
 		t.activeToolCalls[callID] = true
-		return []streamEvent{newStreamEvent("TOOL_CALL_START", map[string]any{
+		events := []streamEvent{newStreamEvent("TOOL_CALL_START", map[string]any{
 			"call_id":        callID,
 			"tool_name":      item.ToolName,
 			"arguments_json": item.ArgumentsJSON,
 		})}
+		if item.Output != "" {
+			events = append(events, newStreamEvent("TOOL_CALL_OUTPUT_DELTA", map[string]any{
+				"call_id": callID,
+				"delta":   item.Output,
+			}))
+		}
+		return events
 	}
 	return nil
 }
@@ -372,6 +383,8 @@ func toolItemTerminal(item appwire.ThreadItem) bool {
 	switch item.Status {
 	case appwire.TurnStatusCompleted, appwire.TurnStatusFailed, appwire.TurnStatusCanceled:
 		return true
+	case appwire.TurnStatusRunning:
+		return false
 	}
 	return item.Output != "" || item.Error != ""
 }
