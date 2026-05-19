@@ -222,6 +222,36 @@ func (m *hubModel) clearPendingAttachments(cleanupFiles bool) {
 	m.nextAttachmentMarker = 0
 }
 
+func (m *hubModel) clearSubmittedAttachments(submitted []*PastedImage, cleanupFiles bool) {
+	if len(submitted) == 0 {
+		return
+	}
+	submittedSet := make(map[*PastedImage]struct{}, len(submitted))
+	for _, img := range submitted {
+		if img == nil {
+			continue
+		}
+		submittedSet[img] = struct{}{}
+		if cleanupFiles {
+			m.cleanupPendingAttachmentFile(img)
+		}
+	}
+	if len(submittedSet) == 0 {
+		return
+	}
+	kept := m.pendingAttachments[:0]
+	for _, img := range m.pendingAttachments {
+		if _, ok := submittedSet[img]; ok {
+			continue
+		}
+		kept = append(kept, img)
+	}
+	m.pendingAttachments = kept
+	if len(m.pendingAttachments) == 0 {
+		m.nextAttachmentMarker = 0
+	}
+}
+
 func (m *hubModel) snapshotPendingAttachmentsForSubmit() []*PastedImage {
 	if len(m.pendingAttachments) == 0 {
 		return nil
@@ -444,7 +474,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clearNoticesByCategory("appwire")
 			m.clearSessionError()
 			m.setActiveTurnID(msg.turnID)
-			m.clearPendingAttachments(true)
+			m.clearSubmittedAttachments(msg.submittedAttachments, true)
 		}
 		return m, nil
 	case hubQueueMsg:
@@ -462,7 +492,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.clearNoticesByCategory("appwire")
 		m.clearSessionError()
-		m.clearPendingAttachments(true)
+		m.clearSubmittedAttachments(msg.submittedAttachments, true)
 		// The daemon emits a thread/queueChanged notification with the
 		// new state; applyHubNotification picks it up. No local mirror
 		// (kata r80p).
@@ -473,7 +503,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.err != nil {
 			if msg.queued {
-				m.clearPendingAttachments(true)
+				m.clearSubmittedAttachments(msg.submittedAttachments, true)
 				preview := strings.TrimSpace(msg.text)
 				if preview == "" && msg.hadAttachment {
 					preview = "[image]"
@@ -495,7 +525,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.clearNoticesByCategory("appwire")
 		m.clearSessionError()
-		m.clearPendingAttachments(true)
+		m.clearSubmittedAttachments(msg.submittedAttachments, true)
 		// The daemon emits thread/queueChanged with depth=0 after a
 		// successful drain; applyHubNotification clears sessionQueue when
 		// it lands. We don't preemptively wipe here so the preview
@@ -1612,16 +1642,10 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleClipboardPaste()
 	}
 	// Ctrl+Backspace removes the most recently added attachment chip
-	// (kata 5vxd). The TUI reserves this binding for the chip-remove
-	// affordance whenever the composer is the focused surface — modals
-	// and the command palette are handled earlier in this function so
-	// they still see the key. When no attachments are pending the
-	// binding is a deliberate no-op so the textarea doesn't suddenly
-	// delete a character when the user expected a chip removal.
-	if msg.Type == tea.KeyCtrlH {
-		if len(m.pendingAttachments) > 0 {
-			m.removePendingAttachment(len(m.pendingAttachments) - 1)
-		}
+	// (kata 5vxd). Some terminals report ordinary Backspace as Ctrl-H, so
+	// only consume it while a chip is actually available to remove.
+	if msg.Type == tea.KeyCtrlH && len(m.pendingAttachments) > 0 {
+		m.removePendingAttachment(len(m.pendingAttachments) - 1)
 		return m, nil
 	}
 	if msg.Paste {

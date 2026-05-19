@@ -179,10 +179,11 @@ func TestCtrlBackspaceRemovesLastAttachment(t *testing.T) {
 	}
 }
 
-// TestCtrlBackspaceWithNoAttachmentsNoOp verifies that Ctrl+Backspace is
-// a no-op when there are no pending attachments and does not leak into
-// the textarea. Kata 5vxd.
-func TestCtrlBackspaceWithNoAttachmentsNoOp(t *testing.T) {
+// TestCtrlBackspaceWithNoAttachmentsFallsThrough verifies Ctrl-H is not
+// reserved for chip removal when there are no pending attachments. Many
+// terminals encode ordinary Backspace as Ctrl-H, so the textarea should see
+// the key in that case. Kata 5vxd.
+func TestCtrlBackspaceWithNoAttachmentsFallsThrough(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.session.setInputValue("hello")
 
@@ -192,8 +193,8 @@ func TestCtrlBackspaceWithNoAttachmentsNoOp(t *testing.T) {
 	if n := len(got.pendingAttachments); n != 0 {
 		t.Fatalf("pendingAttachments len = %d, want 0", n)
 	}
-	if got.session.input.Value() != "hello" {
-		t.Fatalf("Ctrl+Backspace mutated textarea: %q, want %q", got.session.input.Value(), "hello")
+	if got.session.input.Value() == "hello" {
+		t.Fatalf("Ctrl-H was swallowed before textarea handling; input still %q", got.session.input.Value())
 	}
 }
 

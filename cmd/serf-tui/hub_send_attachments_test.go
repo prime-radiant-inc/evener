@@ -190,11 +190,29 @@ func TestSendClearsPendingAttachmentsOnSuccess(t *testing.T) {
 		{Path: "/tmp/sent-two.png", MediaType: "image/png"},
 	}
 
-	updated, _ := m.Update(hubSendMsg{text: "hi", turnID: "turn_done"})
+	updated, _ := m.Update(hubSendMsg{text: "hi", turnID: "turn_done", submittedAttachments: m.pendingAttachments})
 	got := updated.(hubModel)
 
 	if len(got.pendingAttachments) != 0 {
 		t.Fatalf("pendingAttachments after success len=%d, want 0", len(got.pendingAttachments))
+	}
+}
+
+func TestSendClearsOnlySubmittedAttachmentSnapshot(t *testing.T) {
+	m := newSessionHubModel(nil)
+	submitted := &PastedImage{Path: "/tmp/submitted.png", MediaType: "image/png"}
+	newDraft := &PastedImage{Path: "/tmp/new-draft.png", MediaType: "image/png"}
+	m.pendingAttachments = []*PastedImage{submitted, newDraft}
+	m.nextAttachmentMarker = 2
+
+	updated, _ := m.Update(hubSendMsg{text: "hi", turnID: "turn_done", submittedAttachments: []*PastedImage{submitted}})
+	got := updated.(hubModel)
+
+	if len(got.pendingAttachments) != 1 || got.pendingAttachments[0] != newDraft {
+		t.Fatalf("pendingAttachments after success = %+v, want only new draft", got.pendingAttachments)
+	}
+	if got.nextAttachmentMarker != 2 {
+		t.Fatalf("nextAttachmentMarker = %d, want preserved high-water 2", got.nextAttachmentMarker)
 	}
 }
 

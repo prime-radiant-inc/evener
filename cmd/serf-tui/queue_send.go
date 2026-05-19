@@ -17,6 +17,7 @@ type hubQueueMsg struct {
 	text                    string
 	draft                   string
 	trackedAttachmentSubmit bool
+	submittedAttachments    []*PastedImage
 	err                     error
 }
 
@@ -30,6 +31,7 @@ type hubDrainAsSteerMsg struct {
 	preQueueDepth           int
 	hadAttachment           bool
 	trackedAttachmentSubmit bool
+	submittedAttachments    []*PastedImage
 	err                     error
 }
 
@@ -42,14 +44,14 @@ func sendHubQueue(client *appwire.Client, ref appwire.Ref, text, draft string, a
 	return func() tea.Msg {
 		items, err := buildAttachmentItems(attachments)
 		if err != nil {
-			return hubQueueMsg{text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, err: err}
+			return hubQueueMsg{text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 		}
 		err = client.TurnQueue(context.Background(), appwire.TurnQueueParams{
 			Ref:   ref.String(),
 			Text:  text,
 			Items: items,
 		})
-		return hubQueueMsg{text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, err: err}
+		return hubQueueMsg{text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 	}
 }
 
@@ -68,17 +70,17 @@ func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft st
 		if text != "" || len(attachments) > 0 {
 			items, err := buildAttachmentItems(attachments)
 			if err != nil {
-				return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, err: err}
+				return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 			}
 			if err := client.TurnQueue(context.Background(), appwire.TurnQueueParams{
 				Ref:   ref.String(),
 				Text:  text,
 				Items: items,
 			}); err != nil {
-				return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, err: err}
+				return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 			}
 			if text != "" || len(items) > 0 {
-				queued := hubDrainAsSteerMsg{text: text, draft: draft, queued: true, preQueueDepth: depth, hadAttachment: len(items) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit}
+				queued := hubDrainAsSteerMsg{text: text, draft: draft, queued: true, preQueueDepth: depth, hadAttachment: len(items) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments}
 				err := client.TurnDrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{
 					Ref: ref.String(),
 				})
@@ -89,7 +91,7 @@ func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft st
 		err := client.TurnDrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{
 			Ref: ref.String(),
 		})
-		return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, trackedAttachmentSubmit: trackedAttachmentSubmit, err: err}
+		return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 	}
 }
 

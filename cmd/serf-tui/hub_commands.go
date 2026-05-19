@@ -32,6 +32,7 @@ type hubSendMsg struct {
 	draft                   string
 	turnID                  string
 	trackedAttachmentSubmit bool
+	submittedAttachments    []*PastedImage
 	err                     error
 }
 
@@ -379,10 +380,10 @@ func sendHubInput(client *appwire.Client, ref appwire.Ref, text string, draft st
 	return func() tea.Msg {
 		items, err := buildAttachmentItems(attachments)
 		if err != nil {
-			return hubSendMsg{text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, err: err}
+			return hubSendMsg{text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 		}
 		resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: ref.String(), Prompt: text, Items: items})
-		return hubSendMsg{text: text, draft: draft, turnID: resp.Turn.ID, trackedAttachmentSubmit: trackedAttachmentSubmit, err: err}
+		return hubSendMsg{text: text, draft: draft, turnID: resp.Turn.ID, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 	}
 }
 

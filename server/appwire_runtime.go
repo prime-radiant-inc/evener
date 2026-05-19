@@ -376,12 +376,13 @@ func (s *Server) handleAppTurnQueue(_ context.Context, params appwire.TurnQueueP
 	fn := s.queueFunc
 	imgFn := s.queueWithImagesFunc
 	processing := s.processing
+	activeTurnID := s.appActiveTurnID
 	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
 	s.mu.RUnlock()
 	if closed {
 		return appwire.EmptyResponse{}, appwire.Conflict("session is closed")
 	}
-	if !processing {
+	if !processing && strings.TrimSpace(activeTurnID) == "" {
 		return appwire.EmptyResponse{}, appwire.Conflict("no active turn to queue against")
 	}
 	if len(images) > 0 {
@@ -408,12 +409,13 @@ func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, _ appwire.TurnDrai
 	fn := s.drainSteerFunc
 	depthFn := s.queueDepthFn
 	processing := s.processing
+	activeTurnID := s.appActiveTurnID
 	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
 	s.mu.RUnlock()
 	if closed {
 		return appwire.EmptyResponse{}, appwire.Conflict("session is closed")
 	}
-	if !processing {
+	if !processing && strings.TrimSpace(activeTurnID) == "" {
 		return appwire.EmptyResponse{}, appwire.Conflict("no active turn to steer")
 	}
 	if fn == nil {
@@ -612,9 +614,10 @@ func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCa
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	closed := appStatus(state, processing) == appwire.ThreadStatusClosed
+	active := processing || strings.TrimSpace(s.appActiveTurnID) != ""
 	return appwire.ThreadCapabilities{
 		Send:         !processing && !closed,
-		Steer:        s.steerFunc != nil && processing && !closed,
+		Steer:        s.steerFunc != nil && active && !closed,
 		Interrupt:    s.cancelFunc != nil,
 		Compact:      s.compactFunc != nil && !closed,
 		Clear:        s.clearFunc != nil && !processing && !closed,
@@ -622,8 +625,8 @@ func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCa
 		Shutdown:     s.shutdownFunc != nil,
 		ChangeModel:  s.modelFunc != nil && !closed,
 		// Queue mirrors Steer's "active turn" gate: only meaningful while
-		// a turn is in flight (kata 111a).
-		Queue: s.queueFunc != nil && processing && !closed,
+		// a turn is in flight or reserved by turn/start (kata 111a).
+		Queue: s.queueFunc != nil && active && !closed,
 	}
 }
 
