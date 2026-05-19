@@ -1,7 +1,9 @@
 package launchconfig
 
 import (
+	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/internal/appwire"
@@ -40,6 +42,20 @@ func TestToWire(t *testing.T) {
 	}
 }
 
+func TestToWirePreservesExplicitEmptyModelFallbacks(t *testing.T) {
+	got := ToWire(Layer{ModelFallbacksSet: true, ModelFallbacks: []string{}})
+	if got.ModelFallbacks == nil || len(got.ModelFallbacks) != 0 {
+		t.Fatalf("ModelFallbacks = %#v, want explicit empty slice", got.ModelFallbacks)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !jsonContains(raw, `"modelFallbacks":[]`) {
+		t.Fatalf("json = %s, want explicit empty modelFallbacks array", raw)
+	}
+}
+
 func TestResolvedToWire(t *testing.T) {
 	r := Resolved{
 		Effective:  Layer{Model: "m"},
@@ -61,4 +77,8 @@ func TestResolvedToWire(t *testing.T) {
 		t.Errorf("Repo = %v", got.Repo)
 	}
 	_ = reflect.TypeOf(got)
+}
+
+func jsonContains(raw []byte, needle string) bool {
+	return strings.Contains(string(raw), needle)
 }

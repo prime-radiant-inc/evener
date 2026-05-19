@@ -303,12 +303,13 @@ func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartP
 
 	s.mu.RLock()
 	processing := s.processing
+	reservedTurnID := s.appReservedTurnID
 	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
 	s.mu.RUnlock()
 	if closed {
 		return appwire.TurnStartResponse{}, appwire.Conflict("session is closed")
 	}
-	if processing {
+	if processing || strings.TrimSpace(reservedTurnID) != "" {
 		return appwire.TurnStartResponse{}, appwire.Conflict("session is processing")
 	}
 
@@ -622,7 +623,7 @@ func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCa
 	closed := appStatus(state, processing) == appwire.ThreadStatusClosed
 	active := processing || strings.TrimSpace(s.appReservedTurnID) != ""
 	return appwire.ThreadCapabilities{
-		Send:         !processing && !closed,
+		Send:         !active && !closed,
 		Steer:        s.steerFunc != nil && active && !closed,
 		Interrupt:    s.cancelFunc != nil,
 		Compact:      s.compactFunc != nil && !closed,

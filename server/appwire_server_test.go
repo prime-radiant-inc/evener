@@ -748,6 +748,9 @@ func TestServerAppWireQueueCapabilityFlipsWithProcessing(t *testing.T) {
 	if !caps.Queue {
 		t.Fatalf("Queue should be true while an active turn is reserved")
 	}
+	if caps.Send {
+		t.Fatalf("Send should be false while an active turn is reserved")
+	}
 
 	// No QueueFunc registered: Queue stays false.
 	srv2 := NewServer(ServerConfig{})
@@ -810,6 +813,28 @@ func TestServerAppWireTurnQueueAcceptsReservedActiveTurn(t *testing.T) {
 	}
 	if len(got) != 1 || got[0] != "queued" {
 		t.Fatalf("got=%v", got)
+	}
+}
+
+func TestServerAppWireTurnStartRejectsReservedActiveTurn(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetProcessing(false)
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "IDLE"})
+	srv.appActiveTurnID = "turn_reserved"
+	srv.appReservedTurnID = "turn_reserved"
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
+		Ref:    "local:th_1",
+		Prompt: "second",
+	}))
+	if resp.Kind() != appwire.MessageError {
+		t.Fatalf("expected error response, got %v", resp.Kind())
+	}
+	if srv.appReservedTurnID != "turn_reserved" || srv.appActiveTurnID != "turn_reserved" {
+		t.Fatalf("reservation mutated after rejected start: active=%q reserved=%q", srv.appActiveTurnID, srv.appReservedTurnID)
 	}
 }
 

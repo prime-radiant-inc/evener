@@ -652,7 +652,7 @@ type LaunchConfigLayer struct {
 	PluginDirs         []string          `json:"pluginDirs,omitempty"`
 	MCPConfigs         []string          `json:"mcpConfigs,omitempty"`
 	SystemPromptAppend []string          `json:"systemPromptAppend,omitempty"`
-	ModelFallbacks     []string          `json:"modelFallbacks,omitempty"`
+	ModelFallbacks     []string          `json:"modelFallbacks"`
 	MCPs               []MCPServerSpec   `json:"mcps,omitempty"`
 	Env                map[string]string `json:"env,omitempty"`
 }

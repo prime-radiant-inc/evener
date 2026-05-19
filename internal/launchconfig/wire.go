@@ -48,6 +48,9 @@ func ToWire(in Layer) appwire.LaunchConfigLayer {
 		ModelFallbacks:     in.ModelFallbacks,
 		Env:                in.Env,
 	}
+	if in.ModelFallbacksSet && out.ModelFallbacks == nil {
+		out.ModelFallbacks = []string{}
+	}
 	if in.Schema != 0 {
 		s := in.Schema
 		out.Schema = &s
