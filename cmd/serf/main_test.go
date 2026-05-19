@@ -559,8 +559,11 @@ func TestOpenAILoginAutoSelectsDeviceWhenHeadless(t *testing.T) {
 	if !strings.Contains(out, "auth_mode=device") {
 		t.Fatalf("stdout = %q, want auth_mode=device line", out)
 	}
-	if !strings.Contains(out, "auto") {
-		t.Fatalf("stdout = %q, want 'auto' reason in auth_mode line", out)
+	if !strings.Contains(out, "auth_mode_reason=auto_no_display") {
+		t.Fatalf("stdout = %q, want auth_mode_reason=auto_no_display in auth_mode line", out)
+	}
+	if strings.Contains(out, "auth_mode=device ") && strings.Contains(out, "(") {
+		t.Fatalf("stdout = %q, want script-friendly auth_mode fields without parenthetical text", out)
 	}
 	if !strings.Contains(out, "device_code=AUTO-9999") {
 		t.Fatalf("stdout = %q, want device_code line from stubbed action", out)

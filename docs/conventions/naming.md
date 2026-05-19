@@ -67,10 +67,10 @@ JSON and TOML now agree, only the CLI's hyphens differ.
 | Reasoning effort level | `--reasoning-effort` | `reasoning_effort` |
 | Extra plugin directory | `--plugin-dir` (repeatable) | `plugin_dirs` (array) |
 | Extra skills directory | `--skills-dir` (repeatable) | `skills_dirs` (array) |
-| Path to `.mcp.json` | `--mcp-config` (repeatable) | `mcp_config_files` (array) |
+| Path to `.mcp.json` | `--mcp-config` (repeatable) | `mcp_configs` (array) |
 | Max tool rounds per input | `--max-rounds` | `max_rounds` |
 | Max subagent nesting depth | `--max-subagent-depth` | `max_subagent_depth` |
-| SSE ring buffer size | (none) | `sse_ring_size` |
+| AppWire replay buffer size | `--app-replay-size` | `app_replay_size` |
 | Suppress `.serf/prompts/` loading | `--no-project-prompts` | `no_project_prompts` |
 
 Note the CLI singular form (`--plugin-dir`, repeatable) pairs with a
@@ -172,7 +172,7 @@ When you add a new TOML config file, JSON payload, or CLI flag:
 - `agent/session.go`, `agent/transcript.go` — snake_case JSON examples
   (`session_id`, `working_dir`, `plugin_dirs`).
 - `internal/launchconfig/types.go` — snake_case TOML examples
-  (`reasoning_effort`, `max_rounds`, `sse_ring_size`).
+  (`reasoning_effort`, `max_rounds`, `app_replay_size`).
 - `internal/appwire/types.go` — camelCase JSON examples for the codex
   carve-out (`clientInfo`, `protocolVersion`, `pluginDirs`).
 - `cmd/serf/main.go` — kebab-case CLI flag examples

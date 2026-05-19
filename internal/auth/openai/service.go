@@ -225,6 +225,11 @@ func (s *Service) LoginWithDevice(ctx context.Context, stateDir string, showProm
 		ctx = context.Background()
 	}
 
+	// Mark when this login started before any network/prompt work, so the
+	// watcher can detect a parallel browser login that completes while the
+	// device-code setup is still in progress.
+	startedAt := s.now()
+
 	dc, err := s.requestDeviceCode(ctx, s.client, s.config())
 	if err != nil {
 		return AuthStatus{}, err
@@ -233,11 +238,6 @@ func (s *Service) LoginWithDevice(ctx context.Context, stateDir string, showProm
 	if showPrompt != nil {
 		showPrompt(dc)
 	}
-
-	// Mark when this login started so the watcher can distinguish a fresh
-	// parallel-login record from pre-existing state the user explicitly
-	// chose to re-issue.
-	startedAt := s.now()
 
 	// Wrap the parent context so a parallel-login detection can cancel the
 	// poll without disturbing the caller's context. A separate flag tells

@@ -522,6 +522,66 @@ func TestLoginWithDeviceDetectsConcurrentSuccess(t *testing.T) {
 	}
 }
 
+func TestLoginWithDeviceDetectsConcurrentSuccessWrittenDuringPrompt(t *testing.T) {
+	m := newDeviceMockServer(t)
+	stateDir := t.TempDir()
+
+	m.usercode = func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"device_auth_id": "dev-prompt-parallel",
+			"user_code":      "PRM-CODE",
+			"interval":       "0",
+		})
+	}
+	m.token = func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}
+
+	loginStart := time.Date(2026, 5, 19, 10, 0, 0, 0, time.UTC)
+	promptLoginAt := loginStart.Add(time.Minute)
+	afterPrompt := loginStart.Add(2 * time.Minute)
+
+	svc := NewService(m.cfg(), m.server.Client())
+	svc.concurrentLoginWatchInterval = 20 * time.Millisecond
+	var nowCalls atomic.Int32
+	svc.now = func() time.Time {
+		if nowCalls.Add(1) == 1 {
+			return loginStart
+		}
+		return afterPrompt
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	status, err := svc.LoginWithDevice(ctx, stateDir, func(DeviceCode) {
+		record := AuthRecord{
+			Version:      1,
+			Provider:     "openai",
+			Source:       AuthSourceOAuth,
+			ObtainedAt:   promptLoginAt,
+			TokenType:    "Bearer",
+			Scope:        "openid profile email offline_access",
+			AccessToken:  "prompt-access-token",
+			RefreshToken: "prompt-refresh-token",
+			Expiry:       loginStart.Add(time.Hour),
+			Email:        "prompt-parallel@example.com",
+		}
+		if err := SaveAuth(stateDir, record); err != nil {
+			t.Fatalf("SaveAuth(prompt parallel record): %v", err)
+		}
+	})
+	if err != nil {
+		t.Fatalf("LoginWithDevice() error = %v, want nil", err)
+	}
+	if !status.SignedIn {
+		t.Fatalf("status.SignedIn = false, want true (status = %+v)", status)
+	}
+	if status.Email != "prompt-parallel@example.com" {
+		t.Fatalf("status.Email = %q, want prompt-parallel@example.com", status.Email)
+	}
+}
+
 // TestLoginWithDeviceIgnoresPreExistingState confirms the watcher does NOT
 // fire on auth state that pre-dates the current login attempt. A user who
 // explicitly invokes `serf openai login` while a stale record sits on disk

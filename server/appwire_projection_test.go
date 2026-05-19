@@ -139,6 +139,40 @@ func TestAppEventProjectorCompletesTurnOnSessionEnd(t *testing.T) {
 	}
 }
 
+func TestAppEventProjectorMapsAwaitingSessionEnd(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
+	sessionEnd := projector.Project(agent.SessionEvent{Kind: agent.EventSessionEnd, SessionID: "th_1", Data: agent.SessionEndData{
+		Reason: "input_complete",
+		State:  "AWAITING_INPUT",
+	}})
+
+	if hasAppNotification(sessionEnd, appwire.NotifyThreadClosed) {
+		t.Fatalf("awaiting SessionEnd emitted thread/closed: %+v", sessionEnd)
+	}
+	if status := notificationThreadStatus(t, sessionEnd, appwire.NotifyThreadStatusChanged); status.Type != appwire.ThreadStatusAwaiting {
+		t.Fatalf("awaiting status=%+v, want awaiting", status)
+	}
+	for _, n := range sessionEnd {
+		if n.Method != appwire.NotifyTurnCompleted {
+			continue
+		}
+		params, ok := n.Params.(map[string]any)
+		if !ok {
+			t.Fatalf("turnCompleted params=%T", n.Params)
+		}
+		turn, ok := params["turn"].(appwire.Turn)
+		if !ok {
+			t.Fatalf("turn=%T", params["turn"])
+		}
+		if turn.Status != appwire.TurnStatusCompleted {
+			t.Fatalf("awaiting turn status=%s, want completed", turn.Status)
+		}
+		return
+	}
+	t.Fatalf("awaiting SessionEnd missing turn/completed: %+v", sessionEnd)
+}
+
 // TestAppEventProjectorMarksInterruptedTurnCanceled covers kata 0ax1:
 // an interrupted turn keeps the thread alive (status=idle) but the
 // active turn must be reported as canceled, not completed.

@@ -337,8 +337,11 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 	case agent.EventSessionEnd:
 		data := eventData[agent.SessionEndData](event.Data)
 		state := appwire.ThreadStatusClosed
-		if strings.EqualFold(data.State, "IDLE") {
+		switch {
+		case strings.EqualFold(data.State, "IDLE"):
 			state = appwire.ThreadStatusIdle
+		case strings.EqualFold(data.State, "AWAITING_INPUT"):
+			state = appwire.ThreadStatusAwaiting
 		}
 		out := []AppNotification{}
 		if p.activeTurnID != "" {

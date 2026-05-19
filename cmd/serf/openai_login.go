@@ -106,7 +106,11 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 	defer cancel()
 
 	mode, reason := chooseLoginMode(*device, *noDevice)
-	fmt.Fprintf(stdout, "auth_mode=%s%s\n", mode, reason)
+	fmt.Fprintf(stdout, "auth_mode=%s", mode)
+	if reason != "" {
+		fmt.Fprintf(stdout, " auth_mode_reason=%s", reason)
+	}
+	fmt.Fprintln(stdout)
 
 	if mode == "device" {
 		return runOpenAIDeviceLogin(ctx, resolvedStateDir, stdout, stderr)
@@ -130,19 +134,19 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 }
 
 // chooseLoginMode picks "device" or "browser" given the flag state. The
-// returned reason is a parenthesised suffix suitable for direct append to
-// the `auth_mode=` line (empty when the user picked the mode explicitly).
+// returned reason is script-friendly key/value content for auth_mode_reason
+// (empty when no extra reason should be printed).
 func chooseLoginMode(forceDevice, forceBrowser bool) (mode, reason string) {
 	switch {
 	case forceDevice:
-		return "device", " (forced)"
+		return "device", "forced"
 	case forceBrowser:
-		return "browser", " (forced)"
+		return "browser", "forced"
 	}
 	if isHeadlessLogin() {
-		return "device", " (auto: no display)"
+		return "device", "auto_no_display"
 	}
-	return "browser", " (auto)"
+	return "browser", "auto"
 }
 
 // isHeadlessLogin reports whether the current session looks unable to open
