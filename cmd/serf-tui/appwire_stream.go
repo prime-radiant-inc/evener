@@ -274,7 +274,7 @@ func (t *appwireStreamTranslator) eventsFromTurnCompletedItems(turnID string, it
 func (t *appwireStreamTranslator) eventsFromHydratedItem(item appwire.ThreadItem, turnCompleted bool) []streamEvent {
 	if item.Type == "tool_call" {
 		callID := firstNonEmptyString(item.CallID, item.ID)
-		if toolItemTerminal(item) {
+		if turnCompleted || toolItemTerminal(item) {
 			if t.activeToolCalls[callID] {
 				delete(t.activeToolCalls, callID)
 				return t.eventsFromItem(item, true)

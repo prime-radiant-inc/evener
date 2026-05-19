@@ -94,6 +94,37 @@ func TestStreamEventsFromThreadTreatsItemsInCompletedTurnAsCompleted(t *testing.
 	t.Fatalf("events=%+v, want ASSISTANT_TEXT_END", events)
 }
 
+func TestStreamEventsFromThreadTreatsCompletedTurnToolAsTerminal(t *testing.T) {
+	events := streamEventsFromThread(appwire.Thread{
+		ID:        "th_1",
+		SessionID: "th_1",
+		Turns: []appwire.Turn{{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{{
+				Type:          "tool_call",
+				ID:            "item_tool",
+				CallID:        "call_tool",
+				ToolName:      "shell",
+				ArgumentsJSON: `{"command":"true"}`,
+			}},
+		}},
+	})
+
+	var starts, ends int
+	for _, ev := range events {
+		switch ev.Event {
+		case "TOOL_CALL_START":
+			starts++
+		case "TOOL_CALL_END":
+			ends++
+		}
+	}
+	if starts != 1 || ends != 1 {
+		t.Fatalf("events=%+v, want one tool start and one tool end", events)
+	}
+}
+
 func TestStreamEventsFromThreadHydratesSplitToolAsSingleStartEndPair(t *testing.T) {
 	events := streamEventsFromThread(appwire.Thread{
 		ID:        "th_1",
