@@ -622,8 +622,14 @@ func codexSourceCallError(err error) error {
 		return nil
 	}
 	var wire appwire.WireError
-	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+	if errors.As(err, &wire) && wire.Code != appwire.CodeInternalError {
 		return err
+	}
+	if !errors.As(err, &wire) {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		return codexSourceDialError(err)
 	}
 	msg := strings.ToLower(wire.Message)
 	if strings.Contains(msg, "failed to get reader") ||
@@ -631,7 +637,8 @@ func codexSourceCallError(err error) error {
 		strings.Contains(msg, "eof") ||
 		strings.Contains(msg, "connection reset") ||
 		strings.Contains(msg, "broken pipe") ||
-		strings.Contains(msg, "use of closed network connection") {
+		strings.Contains(msg, "use of closed network connection") ||
+		strings.Contains(msg, "i/o timeout") {
 		return appwire.SessionUnavailable("codex daemon unavailable: " + wire.Message)
 	}
 	return err

@@ -88,6 +88,23 @@ func TestLocalDaemonSubscribeReadErrorMapsInternalTransportWireErrors(t *testing
 	assertSessionUnavailable(t, got, "internal i/o timeout")
 }
 
+func TestLocalDaemonCallErrorMapsRawTransportFailures(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"ECONNRESET", &net.OpError{Op: "write", Err: syscall.ECONNRESET}},
+		{"broken pipe string", errors.New("write tcp: broken pipe")},
+		{"closed connection string", errors.New("use of closed network connection")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := localDaemonCallError(tc.err)
+			assertSessionUnavailable(t, got, tc.name)
+		})
+	}
+}
+
 func TestLocalDaemonInitializeErrorPreservesApplicationWireErrors(t *testing.T) {
 	app := appwire.InvalidParams("broken pipe is part of semantic error")
 	got := localDaemonInitializeError(app)
@@ -103,6 +120,15 @@ func TestLocalDaemonInitializeErrorPreservesApplicationWireErrors(t *testing.T) 
 func TestLocalDaemonInitializeErrorMapsInternalTransportWireErrors(t *testing.T) {
 	got := localDaemonInitializeError(appwire.InternalError("initialize failed: i/o timeout"))
 	assertSessionUnavailable(t, got, "internal i/o timeout")
+}
+
+func TestLocalDaemonCallErrorPreservesCallerCancellation(t *testing.T) {
+	if got := localDaemonCallError(context.Canceled); !errors.Is(got, context.Canceled) {
+		t.Fatalf("context.Canceled remapped: %v", got)
+	}
+	if got := localDaemonCallError(context.DeadlineExceeded); !errors.Is(got, context.DeadlineExceeded) {
+		t.Fatalf("context.DeadlineExceeded remapped: %v", got)
+	}
 }
 
 func TestLocalDaemonDialErrorIgnoresNil(t *testing.T) {

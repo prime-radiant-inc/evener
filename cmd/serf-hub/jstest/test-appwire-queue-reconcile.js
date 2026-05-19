@@ -64,14 +64,15 @@ window.eval(rendererSrc);
 
   const queueList = window.document.querySelector("[data-queue-list]");
   pending.register({ method: "turn/queue", text: "queued as string" });
-  assert.equal(queueList.querySelectorAll(".optimistic-pending").length, 1, "expected pending queue chip");
+  const pendingQueueList = window.document.querySelector("[data-queue-pending-list]");
+  assert.equal(pendingQueueList.querySelectorAll(".optimistic-pending").length, 1, "expected pending queue chip");
 
   notify("thread/queueChanged", {
     threadId: "01TEST",
     queue: { depth: 1, preview: ["queued as string"] },
   });
 
-  assert.equal(queueList.querySelectorAll(".optimistic-pending").length, 0,
+  assert.equal(pendingQueueList.querySelectorAll(".optimistic-pending").length, 0,
     "string queue previews should reconcile pending queue chips");
 
   pending.register({ method: "turn/start", text: "", items: [{ type: "image", name: "shot.png" }] });

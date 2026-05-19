@@ -20,6 +20,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/internal/appwire"
@@ -112,6 +113,86 @@ func TestEmbeddedDaemon_DrainAsSteerCapability(t *testing.T) {
 	}
 }
 
+func TestEmbeddedDaemon_InputLoopWiresInterruptForLiveTurn(t *testing.T) {
+	dir := t.TempDir()
+	adapter := &embeddedBlockingAdapter{name: "openai", started: make(chan struct{}), done: make(chan error, 1)}
+	c := llm.NewClient()
+	c.Register(adapter)
+	profile := agent.NewOpenAIProfile("gpt-test")
+	env := agent.NewLocalExecutionEnvironment(dir)
+	sess, err := agent.NewSession(c, profile, env, agent.SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	srv := server.NewServer(server.ServerConfig{})
+	srv.SetAppIdentity("local", sess.ID())
+	e := &embeddedServer{
+		srv:        srv,
+		sess:       sess,
+		client:     c,
+		profile:    profile,
+		env:        env,
+		sessionCfg: agent.SessionConfig{StateDir: dir},
+	}
+	e.wireSession(sess)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	defer sess.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.inputLoop(ctx)
+
+	resp, err := http.Post(ts.URL+"/input", "application/json", strings.NewReader(`{"text":"block"}`))
+	if err != nil {
+		t.Fatalf("POST /input: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("input status=%d", resp.StatusCode)
+	}
+
+	select {
+	case <-adapter.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("adapter did not start")
+	}
+
+	resp, err = http.Post(ts.URL+"/interrupt", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /interrupt: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("interrupt status=%d", resp.StatusCode)
+	}
+
+	select {
+	case err := <-adapter.done:
+		if err == nil {
+			t.Fatal("adapter completed without cancellation")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("adapter did not observe turn cancellation")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		resp, err = http.Post(ts.URL+"/interrupt", "application/json", nil)
+		if err != nil {
+			t.Fatalf("POST /interrupt after turn: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusServiceUnavailable {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("interrupt after turn status=%d, want eventual 503", resp.StatusCode)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // TestEmbeddedDaemon_QueueWithImagesRoundTrip drives an appwire
 // turn/queue request carrying an image attachment, then a
 // turn/drainAsSteer, and verifies the underlying agent.Session's
@@ -191,5 +272,23 @@ func (a *embeddedNoopAdapter) Complete(_ context.Context, req llm.Request) (llm.
 	return llm.Response{Provider: a.name, Model: req.Model, Message: llm.Assistant("noop")}, nil
 }
 func (a *embeddedNoopAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
+}
+
+type embeddedBlockingAdapter struct {
+	name    string
+	started chan struct{}
+	done    chan error
+}
+
+func (a *embeddedBlockingAdapter) Name() string { return a.name }
+func (a *embeddedBlockingAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	close(a.started)
+	<-ctx.Done()
+	err := ctx.Err()
+	a.done <- err
+	return llm.Response{Provider: a.name, Model: req.Model}, err
+}
+func (a *embeddedBlockingAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
 	return nil, llm.ErrStreamUnsupported
 }

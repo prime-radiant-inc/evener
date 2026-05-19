@@ -1153,11 +1153,29 @@ func TestCodexSourceCallErrorMapsTransportFailures(t *testing.T) {
 		{"connection reset", "appwire turn/start: read tcp: connection reset by peer"},
 		{"broken pipe", "appwire turn/start: write: broken pipe"},
 		{"use of closed network connection", "appwire turn/start: use of closed network connection"},
+		{"i/o timeout", "appwire turn/start: write tcp: i/o timeout"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			in := appwire.InternalError(tc.msg)
 			got := codexSourceCallError(in)
+			assertSessionUnavailable(t, got, tc.name)
+		})
+	}
+}
+
+func TestCodexSourceCallErrorMapsRawTransportFailures(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"ECONNRESET", &net.OpError{Op: "write", Err: syscall.ECONNRESET}},
+		{"broken pipe string", errors.New("write tcp: broken pipe")},
+		{"closed connection string", errors.New("use of closed network connection")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := codexSourceCallError(tc.err)
 			assertSessionUnavailable(t, got, tc.name)
 		})
 	}
@@ -1184,6 +1202,13 @@ func TestCodexSourceCallErrorPassesThroughApplicationErrors(t *testing.T) {
 		if errors.As(got, &w) && w.Code == appwire.CodeUnavailable {
 			t.Fatalf("non-transport internal error remapped: %+v", w)
 		}
+	}
+
+	if got := codexSourceCallError(context.Canceled); !errors.Is(got, context.Canceled) {
+		t.Fatalf("context.Canceled remapped: %v", got)
+	}
+	if got := codexSourceCallError(context.DeadlineExceeded); !errors.Is(got, context.DeadlineExceeded) {
+		t.Fatalf("context.DeadlineExceeded remapped: %v", got)
 	}
 }
 

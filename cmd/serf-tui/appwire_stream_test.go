@@ -209,6 +209,59 @@ func TestStreamEventsFromTurnCompletedFailedPreservesDiagnosticFields(t *testing
 	}
 }
 
+func TestStreamEventsFromThreadFailedTurnPreservesDiagnosticFields(t *testing.T) {
+	events := streamEventsFromThread(appwire.Thread{
+		ID:        "th_1",
+		SessionID: "th_1",
+		Turns: []appwire.Turn{{
+			ID:     "turn_1",
+			Status: appwire.TurnStatusFailed,
+			Error: &appwire.TurnError{
+				Message: "configuration failed",
+				Source:  "serf",
+				Title:   "Serf configuration error",
+				Hint:    "Check launch config.",
+				Cause:   &appwire.DiagnosticCause{Kind: "provider", Provider: "openai", Model: "gpt-5", Status: 503},
+			},
+			Items: []appwire.ThreadItem{{
+				Type:   "agent_message",
+				ID:     "item_agent",
+				TurnID: "turn_1",
+				Text:   "partial answer",
+				Status: appwire.TurnStatusCompleted,
+			}},
+		}},
+	})
+
+	var sawFinal bool
+	var got struct {
+		Error  string                   `json:"error"`
+		Source string                   `json:"source"`
+		Title  string                   `json:"title"`
+		Hint   string                   `json:"hint"`
+		Cause  *appwire.DiagnosticCause `json:"cause"`
+	}
+	for _, ev := range events {
+		switch ev.Event {
+		case "ASSISTANT_TEXT_END":
+			sawFinal = true
+		case "ERROR":
+			if err := json.Unmarshal([]byte(ev.Data), &got); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if !sawFinal {
+		t.Fatalf("events=%+v, want final item before failed turn error", events)
+	}
+	if got.Error != "configuration failed" || got.Source != "serf" || got.Title != "Serf configuration error" || got.Hint != "Check launch config." {
+		t.Fatalf("error payload=%+v", got)
+	}
+	if got.Cause == nil || got.Cause.Kind != "provider" || got.Cause.Provider != "openai" || got.Cause.Model != "gpt-5" || got.Cause.Status != 503 {
+		t.Fatalf("cause=%+v", got.Cause)
+	}
+}
+
 func TestStreamEventsFromTurnCompletedSkipsAlreadyCompletedItems(t *testing.T) {
 	translator := newAppwireStreamTranslator()
 	itemCompleted := appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{

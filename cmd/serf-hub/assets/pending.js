@@ -43,10 +43,12 @@
   function create(opts) {
     const conv = opts.conversation;
     const queueList = opts.queueList || null;
+    const queueWrap = queueList ? queueList.closest("[data-queue-preview]") : null;
     const setTimeoutFn = opts.setTimeout || setTimeout;
     const clearTimeoutFn = opts.clearTimeout || clearTimeout;
     const timeoutMs = (typeof opts.timeoutMs === "number") ? opts.timeoutMs : 10000;
     const onRetry = opts.onRetry || function () {};
+    let queuePendingList = null;
 
     let nextID = 0;
     const entries = new Map(); // id → {method, text, el, timerID}
@@ -80,13 +82,43 @@
       return el;
     }
 
+    function ensureQueuePendingList() {
+      if (!queueList) return null;
+      if (queuePendingList && queuePendingList.isConnected) return queuePendingList;
+      const doc = queueList.ownerDocument;
+      queuePendingList = doc.createElement("ul");
+      queuePendingList.className = "queue-preview-list queue-preview-pending-list";
+      queuePendingList.setAttribute("data-queue-pending-list", "");
+      if (queueList.parentNode) {
+        queueList.parentNode.insertBefore(queuePendingList, queueList.nextSibling);
+      }
+      return queuePendingList;
+    }
+
+    function setQueuePendingVisible(visible) {
+      if (!queueWrap) return;
+      if (visible) {
+        queueWrap.hidden = false;
+        return;
+      }
+      if (queueList && queueList.children.length > 0) return;
+      queueWrap.hidden = true;
+    }
+
+    function hasQueueEntries() {
+      for (const ent of entries.values()) {
+        if (ent.method === "turn/queue") return true;
+      }
+      return false;
+    }
+
     // containerFor picks the DOM parent for a given method's chip.
     // turn/queue chips belong in the queue-preview list; everything
     // else lands in the conversation pane. If a caller doesn't supply
     // a queueList, queue chips fall back to the conversation pane so
     // existing single-container callers keep working.
     function containerFor(method) {
-      if (method === "turn/queue" && queueList) return queueList;
+      if (method === "turn/queue" && queueList) return ensureQueuePendingList() || queueList;
       return conv;
     }
 
@@ -99,6 +131,7 @@
       const previewText = method === "turn/queue" ? queuePreviewText(text, items) : text;
       const el = chipForMethod(method, previewText);
       containerFor(method).appendChild(el);
+      if (method === "turn/queue") setQueuePendingVisible(true);
 
       const timerID = setTimeoutFn(() => {
         fail({ id }, "server did not confirm");
@@ -143,6 +176,7 @@
       clearTimeoutFn(ent.timerID);
       if (ent.el.parentNode) ent.el.parentNode.removeChild(ent.el);
       entries.delete(id);
+      if (ent.method === "turn/queue" && !hasQueueEntries()) setQueuePendingVisible(false);
     }
 
     function tryReconcile(method, params) {
@@ -208,7 +242,7 @@
       return removed;
     }
 
-    return { register, fail, tryReconcile, tryReconcileQueue };
+    return { register, fail, tryReconcile, tryReconcileQueue, hasQueueEntries };
   }
 
   window.SerfAppwirePending = { create };

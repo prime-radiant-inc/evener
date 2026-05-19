@@ -162,15 +162,18 @@ function build() {
   // Chip lives in the queue-list, not the conversation pane.
   assert.equal(conv.querySelectorAll(".optimistic-pending").length, 0,
     "queue chip should not appear in conversation pane");
-  const inQueue = queueList.querySelectorAll(".optimistic-pending");
+  const pendingList = window.document.querySelector("[data-queue-pending-list]");
+  const inQueue = pendingList.querySelectorAll(".optimistic-pending");
   assert.equal(inQueue.length, 1, "expected 1 pending chip in queueList");
   assert.equal(inQueue[0].tagName, "LI", "queue chip should render as <li> for the queue <ul>");
   assert.match(inQueue[0].textContent, /q1 text/);
+  assert.equal(window.document.querySelector("[data-queue-preview]").hidden, false,
+    "pending queue chip should unhide queue preview");
 
   // tryReconcileQueue removes chips whose text matches a preview entry.
   const removed = reg.tryReconcileQueue(["q1 text"]);
   assert.equal(removed, 1, "expected one chip reconciled");
-  assert.equal(queueList.querySelectorAll(".optimistic-pending").length, 0);
+  assert.equal(pendingList.querySelectorAll(".optimistic-pending").length, 0);
   console.log("ok queue_chip_lands_in_queue_list_and_reconciles_via_preview");
 })();
 
@@ -186,7 +189,7 @@ function build() {
 
   const removed = reg.tryReconcileQueue(["first"]);
   assert.equal(removed, 1);
-  const remaining = queueList.querySelectorAll(".optimistic-pending");
+  const remaining = window.document.querySelector("[data-queue-pending-list]").querySelectorAll(".optimistic-pending");
   assert.equal(remaining.length, 1);
   assert.match(remaining[0].textContent, /second/);
   console.log("ok queue_reconcile_leaves_chips_not_in_preview");
@@ -205,7 +208,7 @@ function build() {
 
   const removed = reg.tryReconcileQueue(["same"]);
   assert.equal(removed, 1);
-  const remaining = queueList.querySelectorAll(".optimistic-pending");
+  const remaining = window.document.querySelector("[data-queue-pending-list]").querySelectorAll(".optimistic-pending");
   assert.equal(remaining.length, 1);
   assert.match(remaining[0].textContent, /same/);
   console.log("ok queue_reconcile_consumes_duplicate_texts_once");
@@ -219,13 +222,13 @@ function build() {
   const reg = window.SerfAppwirePending.create({ conversation: conv, queueList });
 
   reg.register({ method: "turn/queue", text: "", items: [{ type: "image", name: "shot.png" }] });
-  const chip = queueList.querySelector(".optimistic-pending");
+  const chip = window.document.querySelector("[data-queue-pending-list]").querySelector(".optimistic-pending");
   assert.ok(chip, "expected pending image-only queue chip");
   assert.match(chip.textContent, /\[image\]/);
 
   const removed = reg.tryReconcileQueue(["[image]"]);
   assert.equal(removed, 1);
-  assert.equal(queueList.querySelectorAll(".optimistic-pending").length, 0);
+  assert.equal(window.document.querySelector("[data-queue-pending-list]").querySelectorAll(".optimistic-pending").length, 0);
   console.log("ok queue_reconcile_image_only_preview");
 })();
 
@@ -294,7 +297,7 @@ function build() {
   const h = reg.register({ method: "turn/queue", text: "with image", items });
   reg.fail(h, "server refused");
 
-  const retry = queueList.querySelector(".optimistic-retry");
+  const retry = window.document.querySelector("[data-queue-pending-list]").querySelector(".optimistic-retry");
   assert.ok(retry, "expected queue retry link");
   retry.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
 

@@ -1584,9 +1584,10 @@
       const state = this.queueState || { depth: 0, preview: [] };
       const depth = state.depth || (state.preview || []).length || 0;
       const preview = state.preview || [];
+      const hasPendingQueue = this.pending && typeof this.pending.hasQueueEntries === "function" && this.pending.hasQueueEntries();
       if (depthEl) depthEl.textContent = String(depth);
       if (depth === 0) {
-        wrap.hidden = true;
+        wrap.hidden = !hasPendingQueue;
         if (list) list.innerHTML = "";
         return;
       }

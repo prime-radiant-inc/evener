@@ -94,6 +94,7 @@ func (t *appwireStreamTranslator) eventsFromThread(thread appwire.Thread) []stre
 	})}
 	for _, turn := range thread.Turns {
 		events = append(events, t.eventsFromItems(turn.ID, turn.Items)...)
+		events = append(events, eventsFromFailedTurn(turn)...)
 	}
 	return events
 }
@@ -138,27 +139,7 @@ func (t *appwireStreamTranslator) eventsFromNotification(notification appwire.No
 		if json.Unmarshal(notification.Params, &params) == nil {
 			turnID := firstNonEmptyString(params.TurnID, params.Turn.ID)
 			events := t.eventsFromTurnCompletedItems(turnID, params.Turn.Items)
-			if params.Turn.Status == appwire.TurnStatusFailed {
-				message := "turn failed"
-				payload := map[string]any{"error": message}
-				if params.Turn.Error != nil && params.Turn.Error.Message != "" {
-					message = params.Turn.Error.Message
-					payload["error"] = message
-					if params.Turn.Error.Source != "" {
-						payload["source"] = params.Turn.Error.Source
-					}
-					if params.Turn.Error.Title != "" {
-						payload["title"] = params.Turn.Error.Title
-					}
-					if params.Turn.Error.Hint != "" {
-						payload["hint"] = params.Turn.Error.Hint
-					}
-					if params.Turn.Error.Cause != nil {
-						payload["cause"] = params.Turn.Error.Cause
-					}
-				}
-				events = append(events, newStreamEvent("ERROR", payload))
-			}
+			events = append(events, eventsFromFailedTurn(params.Turn)...)
 			events = append(events, newStreamEvent("TURN_COMPLETED", map[string]any{"turnId": turnID}))
 			return events
 		}
@@ -237,6 +218,31 @@ func (t *appwireStreamTranslator) eventsFromNotification(notification appwire.No
 		}
 	}
 	return nil
+}
+
+func eventsFromFailedTurn(turn appwire.Turn) []streamEvent {
+	if turn.Status != appwire.TurnStatusFailed {
+		return nil
+	}
+	message := "turn failed"
+	payload := map[string]any{"error": message}
+	if turn.Error != nil && turn.Error.Message != "" {
+		message = turn.Error.Message
+		payload["error"] = message
+		if turn.Error.Source != "" {
+			payload["source"] = turn.Error.Source
+		}
+		if turn.Error.Title != "" {
+			payload["title"] = turn.Error.Title
+		}
+		if turn.Error.Hint != "" {
+			payload["hint"] = turn.Error.Hint
+		}
+		if turn.Error.Cause != nil {
+			payload["cause"] = turn.Error.Cause
+		}
+	}
+	return []streamEvent{newStreamEvent("ERROR", payload)}
 }
 
 func (t *appwireStreamTranslator) eventsFromItems(turnID string, items []appwire.ThreadItem) []streamEvent {

@@ -313,9 +313,13 @@ func (e *embeddedServer) inputLoop(ctx context.Context) {
 				return
 			}
 			sess := e.currentSession()
+			turnCtx, cancelTurn := context.WithCancel(ctx)
 			e.srv.SetProcessing(true)
 			e.srv.SetState("PROCESSING")
-			_, processErr := sess.ProcessInput(ctx, msg.Text, msg.Images)
+			e.srv.SetCancelFunc(cancelTurn)
+			_, processErr := sess.ProcessInput(turnCtx, msg.Text, msg.Images)
+			cancelTurn()
+			e.srv.SetCancelFunc(nil)
 			e.srv.SetProcessing(false)
 			e.srv.SetState(string(sess.State()))
 			if processErr != nil {
