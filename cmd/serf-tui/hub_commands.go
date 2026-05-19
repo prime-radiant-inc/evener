@@ -19,6 +19,7 @@ type hubTreeMsg struct {
 type hubSessionMsg struct {
 	detail               hubSessionDetail
 	messages             []chatMessage
+	ref                  string
 	expectedState        string
 	expectedRefreshToken int
 	err                  error
@@ -146,7 +147,7 @@ func fetchHubSessionExpectingStateToken(client *appwire.Client, ref appwire.Ref,
 	return func() tea.Msg {
 		resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: ref.String(), IncludeTurns: true, ItemsView: "full"})
 		if err != nil {
-			return hubSessionMsg{err: err}
+			return hubSessionMsg{ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken, err: err}
 		}
 		return hubSessionMsg{detail: hubDetailFromThread(resp.Thread), messages: messagesFromThread(resp.Thread), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken}
 	}

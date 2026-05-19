@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -1893,6 +1894,17 @@ func TestHubModelStatusRefreshIgnoresStaleSessionRead(t *testing.T) {
 	got.detail.Capabilities.Send = false
 	got.detail.Capabilities.Interrupt = true
 	got.statusRefreshToken = 2
+	updated, _ = got.Update(hubSessionMsg{
+		ref:                  "local:01SEND",
+		expectedState:        appwire.ThreadStatusProcessing,
+		expectedRefreshToken: 1,
+		err:                  errors.New("old refresh failed"),
+	})
+	got = updated.(hubModel)
+	if got.err != nil {
+		t.Fatalf("err=%v, want stale refresh error ignored", got.err)
+	}
+
 	updated, _ = got.Update(hubSessionMsg{
 		expectedState:        appwire.ThreadStatusProcessing,
 		expectedRefreshToken: 1,
