@@ -170,6 +170,28 @@ async function checkFailureKeepsValue() {
   pass(ta.value === "won't go", "expected textarea preserved on failure, got " + JSON.stringify(ta.value));
 }
 
+async function checkProcessingSendCapabilityKeepsSendMode() {
+  await waitForReads();
+  const send = form.querySelector(".send-btn");
+  window.SerfRenderer.handleData("SESSION_START", {
+    session_id: "01TEST",
+    status: "processing",
+    capabilities: { send: true, queue: false },
+  });
+  pass(send.getAttribute("data-capability-send") === "true", "processing send capability should stay true");
+  pass(send.getAttribute("data-capability-queue") === "false", "processing queue capability should stay false");
+  pass(send.disabled === false, "send-capable processing composer should stay enabled");
+
+  ta.value = "active follow-up";
+  ta.dispatchEvent(new window.Event("input", { bubbles: true }));
+  fetchResponseOk = true;
+  lastFetch = null;
+  form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  await new Promise(r => setTimeout(r, 10));
+  pass(lastFetch !== null, "expected fetch for send-capable processing submit");
+  pass(lastFetch && lastFetch.url.includes("/s/01TEST/send"), "send-capable processing submit should use /send, got " + (lastFetch && lastFetch.url));
+}
+
 // 5b. Replying to an ended session with no open stream must reconnect
 //     AppWire on send-success so the new turn renders without a page reload.
 async function checkReconnectsLiveAfterSendOnEndedSession() {
@@ -607,6 +629,7 @@ async function testRejectsNonImage() {
 (async () => {
   await checkReset();
   await checkFailureKeepsValue();
+  await checkProcessingSendCapabilityKeepsSendMode();
   await checkReconnectsLiveAfterSendOnEndedSession();
   await checkNoReconnectOnSendFailure();
   await checkSteerWired();

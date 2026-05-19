@@ -41,6 +41,9 @@ func (m hubModel) sessionComposerMode() hubComposerMode {
 		if m.detail.Capabilities.Queue {
 			return hubComposerModeQueue
 		}
+		if m.detail.Capabilities.Send {
+			return hubComposerModeSend
+		}
 		return hubComposerModeReadOnly
 	}
 	if m.sessionCanStartTurn() {
@@ -52,6 +55,9 @@ func (m hubModel) sessionComposerMode() hubComposerMode {
 func (m hubModel) sessionComposerReadOnlyReason() string {
 	if m.sessionTurnActionState() {
 		if !m.detail.Capabilities.Queue {
+			if m.detail.Capabilities.Send {
+				return ""
+			}
 			return "source does not advertise queue"
 		}
 	}

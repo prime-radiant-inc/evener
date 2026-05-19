@@ -1122,6 +1122,11 @@ func TestHubModelSessionStatusLineReflectsCapabilityChanges(t *testing.T) {
 	}
 
 	m.detail.Capabilities.Queue = false
+	if got := m.sessionView(); !strings.Contains(got, "send: ready") {
+		t.Fatalf("send-ready active status missing:\n%s", got)
+	}
+
+	m.detail.Capabilities.Send = false
 	if got := m.sessionView(); !strings.Contains(got, "read-only: source does not advertise queue") {
 		t.Fatalf("read-only status missing:\n%s", got)
 	}

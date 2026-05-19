@@ -436,7 +436,15 @@
     }));
   }
 
-  function eventsFromItem(item) {
+  function terminalStatus(status) {
+    return status === "completed" || status === "failed" || status === "canceled";
+  }
+
+  function runningStatus(status) {
+    return status === "running" || status === "inProgress" || status === "active" || status === "processing";
+  }
+
+  function eventsFromItem(item, turnStatus) {
     if (!item) return [];
     if (item.type === "user_message") {
       const event = { text: item.text || "", images: imagesForUserItem(item) };
@@ -449,15 +457,18 @@
     }
     if (item.type === "agent_message") {
       if (!item.text) return [];
-      return [["ASSISTANT_TEXT_START", {}], ["ASSISTANT_TEXT_END", { text: item.text }]];
+      if (terminalStatus(turnStatus) || terminalStatus(item.status) || (!runningStatus(turnStatus) && !runningStatus(item.status))) {
+        return [["ASSISTANT_TEXT_START", {}], ["ASSISTANT_TEXT_END", { text: item.text }]];
+      }
+      return [["ASSISTANT_TEXT_START", {}], ["ASSISTANT_TEXT_DELTA", { delta: item.text }]];
     }
     if (item.type === "tool_call") {
       const callID = firstNonEmpty(item.callId, item.id);
       const itemID = item.id || "";
-      const completed = item.status === "completed" || !!item.output || !!item.error;
+      const completed = terminalStatus(turnStatus) || terminalStatus(item.status) || (!runningStatus(turnStatus) && !runningStatus(item.status) && (!!item.output || !!item.error));
       const out = [["TOOL_CALL_START", { call_id: callID, item_id: itemID, tool_name: item.toolName || "", arguments_json: item.argumentsJson || "" }]];
-      if (!completed) return out;
       if (item.output) out.push(["TOOL_CALL_OUTPUT_DELTA", { call_id: callID, item_id: itemID, delta: item.output }]);
+      if (!completed) return out;
       out.push(["TOOL_CALL_END", { call_id: callID, item_id: itemID, tool_name: item.toolName || "", output: item.output || "", error: item.error || "", tool_state: item.raw || "" }]);
       return out;
     }
@@ -502,7 +513,7 @@
   function eventsFromCompletedTurnItem(params, item) {
     const key = liveItemKey(params, item);
     const state = key ? liveItemState.get(key) : null;
-    if (!state) return eventsFromItem(item);
+    if (!state) return eventsFromItem(item, "completed");
     if (state.completed) return [];
     if (item.type === "agent_message") return [["ASSISTANT_TEXT_END", { text: item.text || "" }]];
     if (item.type === "tool_call") {
@@ -555,7 +566,7 @@
         if (item && item.type === "tool_call") {
           const callID = firstNonEmpty(item.callId, item.id);
           const itemID = item.id || "";
-          const completed = item.status === "completed" || !!item.output || !!item.error;
+          const completed = turn.status === "completed" || terminalStatus(item.status) || (!runningStatus(item.status) && (!!item.output || !!item.error));
           if (completed && activeToolCalls.has(callID)) {
             events.push(["TOOL_CALL_END", {
               call_id: callID,
@@ -568,11 +579,11 @@
             activeToolCalls.delete(callID);
             continue;
           }
-          events.push.apply(events, eventsFromItem(item));
+          events.push.apply(events, eventsFromItem(item, turn.status));
           if (!completed && callID) activeToolCalls.add(callID);
           continue;
         }
-        events.push.apply(events, eventsFromItem(item));
+        events.push.apply(events, eventsFromItem(item, turn.status));
       }
       if (turn.status === "failed") {
         events.push(["ERROR", errorPayload(turn.error, "turn failed")]);

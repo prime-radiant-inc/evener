@@ -84,7 +84,8 @@
       this.appwireHydrated = false;
       this.activeTurnId = conversationEl.dataset.activeTurnId || "";
       this.state = conversationEl.dataset.state || "ended";
-      this.processingQueueCap = null;
+      this.liveSendCap = null;
+      this.liveQueueCap = null;
 
       this.activeMessages = new Map();   // messageId -> {el, textBuf, markdownTimer}
       this.activeTools = new Map();      // callId -> {el, outputBuf}
@@ -151,13 +152,9 @@
       const ended = state === "ended" || state === "closed";
       if (!this.turnAcceptsActions(state)) this.setActiveTurnId("");
       this.syncTurnActionControls();
-      // Send/queue capabilities flip on the state transition (kata 111a).
-      // The server-rendered workspace template captures the state at request
-      // time; the live stream then has to keep the send button's
-      // data-capability-* attributes in sync as the daemon cycles between
-      // processing (queue=on, send=off) and idle (queue=off, send=on). For
-      // ended/closed sessions both flip off — the button stays disabled
-      // because there is nothing the user can do.
+      // Prefer source-advertised send/queue capabilities when AppWire has
+      // supplied them. Some sources accept Send while active and do not expose
+      // Queue, so state alone is not enough to decide composer mode.
       const sendBtn = document.querySelector("form[data-input-form] .send-btn");
       if (sendBtn) {
         if (ended) {
@@ -165,9 +162,17 @@
           sendBtn.setAttribute("data-capability-queue", "false");
           sendBtn.disabled = true;
           sendBtn.setAttribute("title", "send unavailable");
+        } else if (typeof this.liveSendCap === "boolean" || typeof this.liveQueueCap === "boolean") {
+          const canSend = this.liveSendCap === true;
+          const canQueue = this.liveQueueCap === true;
+          sendBtn.setAttribute("data-capability-send", canSend ? "true" : "false");
+          sendBtn.setAttribute("data-capability-queue", canQueue ? "true" : "false");
+          sendBtn.disabled = !canSend && !canQueue;
+          if (sendBtn.disabled) sendBtn.setAttribute("title", "send unavailable");
+          else sendBtn.removeAttribute("title");
         } else if (state === "processing") {
           sendBtn.setAttribute("data-capability-send", "false");
-          sendBtn.setAttribute("data-capability-queue", this.processingQueueCap === false ? "false" : "true");
+          sendBtn.setAttribute("data-capability-queue", "true");
           sendBtn.disabled = false;
           sendBtn.removeAttribute("title");
         } else {
@@ -489,7 +494,8 @@
 	        case "SESSION_START":
 	          if (data.session_id && data.session_id !== this.sessionId) {
 	            this.sessionId = data.session_id;
-	            this.processingQueueCap = null;
+	            this.liveSendCap = null;
+	            this.liveQueueCap = null;
 	            history.replaceState(null, "", "/s/" + encodeURIComponent(data.session_id));
             this.conversation.innerHTML = "";
             this.activeMessages.clear();
@@ -510,8 +516,9 @@
 	            this.queueState = { depth: 0, preview: [] };
 	            this.renderQueuePreview();
 	          }
-	          if (data.capabilities && typeof data.capabilities.queue === "boolean") {
-	            this.processingQueueCap = data.capabilities.queue;
+	          if (data.capabilities) {
+	            if (typeof data.capabilities.send === "boolean") this.liveSendCap = data.capabilities.send;
+	            if (typeof data.capabilities.queue === "boolean") this.liveQueueCap = data.capabilities.queue;
 	          }
 	          if (data.status) {
 	            this.updateThreadState(data.status);

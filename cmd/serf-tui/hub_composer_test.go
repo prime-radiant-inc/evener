@@ -67,8 +67,21 @@ func TestHubModelBusyComposerShowsQueueOrReadOnlyMode(t *testing.T) {
 		t.Fatalf("queue-without-steer composer must not advertise force-steer:\n%s", got)
 	}
 
-	// Neither queue nor steer: read-only.
+	// Send-capable active sources stay in send mode even when they do not
+	// advertise queue.
 	m.detail.Capabilities.Queue = false
+	got = m.sessionView()
+	for _, want := range []string{"message", "enter: send", "> nudge the running turn"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("busy send composer missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "read-only:") {
+		t.Fatalf("busy send-capable composer must not be read-only:\n%s", got)
+	}
+
+	// Neither queue nor send: read-only.
+	m.detail.Capabilities.Send = false
 	got = m.sessionView()
 	for _, want := range []string{"read-only:", "source does not advertise queue", "> nudge the running turn"} {
 		if !strings.Contains(got, want) {
@@ -80,7 +93,7 @@ func TestHubModelBusyComposerShowsQueueOrReadOnlyMode(t *testing.T) {
 func TestHubModelBusyEnterWithoutQueuePreservesDraftAndExplainsReason(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.State = "processing"
-	m.detail.Capabilities.Send = true
+	m.detail.Capabilities.Send = false
 	m.detail.Capabilities.Queue = false
 	m.session.processing = true
 	m.session.setInputValue("do not drop this")

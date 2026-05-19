@@ -53,6 +53,23 @@ assert(emptyQueue, "thread replay should emit empty QUEUE_CHANGED");
 assert(emptyQueue[1].depth === 0, "empty queue depth should be 0");
 assert(Array.isArray(emptyQueue[1].preview) && emptyQueue[1].preview.length === 0, "empty queue preview should be []");
 
+const runningAssistantEvents = context.window.SerfAppwire.eventsFromThread({
+  id: "01RUN",
+  turns: [{
+    id: "turn_running",
+    status: "running",
+    items: [{
+      type: "agent_message",
+      id: "item_agent",
+      text: "partial answer",
+    }],
+  }],
+});
+const runningKinds = runningAssistantEvents.map((event) => event[0]);
+assert(runningKinds.includes("ASSISTANT_TEXT_START"), "running assistant should emit start");
+assert(runningAssistantEvents.some((event) => event[0] === "ASSISTANT_TEXT_DELTA" && event[1].delta === "partial answer"), "running assistant should replay text as delta");
+assert(!runningKinds.includes("ASSISTANT_TEXT_END"), "running assistant should not emit end");
+
 const warningEvents = context.window.SerfAppwire.eventsFromNotification("warning", {
   message: "configuration error: unknown provider: openrouter",
   source: "serf",
