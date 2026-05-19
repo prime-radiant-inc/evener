@@ -131,6 +131,34 @@ func TestBridge_UsesSessionEndStateWhenProvided(t *testing.T) {
 	}
 }
 
+func TestBridge_InterruptedSessionEndDoesNotClearProcessing(t *testing.T) {
+	srv := NewServer(ServerConfig{AppReplaySize: 100})
+	srv.SetProcessing(true)
+	srv.SetState("PROCESSING")
+	events := make(chan agent.SessionEvent, 10)
+
+	go Bridge(srv, events)
+
+	events <- agent.SessionEvent{
+		Kind:      agent.EventSessionEnd,
+		SessionID: "s1",
+		Data:      agent.SessionEndData{Reason: "interrupted", State: "IDLE", Interrupted: true},
+	}
+	close(events)
+	time.Sleep(50 * time.Millisecond)
+
+	status := srv.GetStatus()
+	if status.State != "PROCESSING" {
+		t.Errorf("state: got %q, want PROCESSING", status.State)
+	}
+	srv.mu.RLock()
+	processing := srv.processing
+	srv.mu.RUnlock()
+	if !processing {
+		t.Error("processing: got false, want true")
+	}
+}
+
 func TestBridge_IgnoresStaleEventsAfterSessionIdentityChanges(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	srv.SetAppIdentity("local", "new-session")

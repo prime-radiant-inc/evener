@@ -30,10 +30,18 @@ func BridgeWithObserver(srv *Server, events <-chan agent.SessionEvent, observer 
 		case agent.EventAssistantTextEnd:
 			srv.IncrementTurns()
 		case agent.EventSessionEnd:
-			srv.SetProcessing(false)
-			if d, ok := ev.Data.(agent.SessionEndData); ok && d.State != "" {
-				srv.SetState(d.State)
+			if d, ok := ev.Data.(agent.SessionEndData); ok {
+				if d.Interrupted {
+					continue
+				}
+				srv.SetProcessing(false)
+				if d.State != "" {
+					srv.SetState(d.State)
+				} else {
+					srv.SetState("CLOSED")
+				}
 			} else {
+				srv.SetProcessing(false)
 				srv.SetState("CLOSED")
 			}
 		}
