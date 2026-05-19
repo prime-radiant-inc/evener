@@ -241,6 +241,9 @@ func (r *hubTranscriptReducer) pendingUserEchoIndex(text string) (int, bool) {
 		if msg.Pending {
 			continue
 		}
+		if msg.Failed || msg.PendingID != 0 {
+			continue
+		}
 		if msg.ItemID == "" && msg.Text == text {
 			return i, true
 		}

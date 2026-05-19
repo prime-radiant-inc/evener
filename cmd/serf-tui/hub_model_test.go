@@ -2631,14 +2631,31 @@ func TestHubModelSendErrorRemovesOptimisticUserEcho(t *testing.T) {
 	reducer := m.sessionTranscriptReducer()
 	reducer.applyUserMessageEcho("ship it")
 	m.applySessionTranscriptReducer(reducer)
+	m.session.messages = append(m.session.messages, chatMessage{
+		Kind:      msgUser,
+		Text:      "ship it",
+		Failed:    true,
+		PendingID: 42,
+	})
 
 	updated, _ := m.Update(hubSendMsg{text: "ship it", draft: "ship it", err: errors.New("network down")})
 	got := updated.(hubModel)
 
+	failedRows := 0
 	for _, msg := range got.session.messages {
-		if msg.Kind == msgUser && msg.Text == "ship it" {
+		if msg.Kind != msgUser || msg.Text != "ship it" {
+			continue
+		}
+		if msg.Failed && msg.PendingID == 42 {
+			failedRows++
+			continue
+		}
+		if !msg.Failed && msg.PendingID == 0 {
 			t.Fatalf("failed send left optimistic user echo: %+v", got.session.messages)
 		}
+	}
+	if failedRows != 1 {
+		t.Fatalf("failed pending placeholder count=%d messages=%+v", failedRows, got.session.messages)
 	}
 	if got.session.input.Value() != "ship it" {
 		t.Fatalf("draft=%q, want restored draft", got.session.input.Value())
