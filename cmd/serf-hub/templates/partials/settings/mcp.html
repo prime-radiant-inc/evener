@@ -11,23 +11,44 @@
       const current = await launchconfig.getLayer("/", "global");
       const mcps = current.mcps || [];
       function render() {
-        root.innerHTML = `
-          <ul class="settings-list">
-            ${mcps.map((m, i) => `
-              <li>
-                <code>${m.name}</code> →
-                <code>${m.command} ${(m.args || []).join(" ")}</code>
-                <button data-i="${i}" data-action="rm">remove</button>
-              </li>
-            `).join("")}
-          </ul>
-          <form id="mcps-add">
-            <input type="text" name="name" placeholder="name" required>
-            <input type="text" name="command" placeholder="command" required>
-            <input type="text" name="args" placeholder="args (space-separated)">
-            <button type="submit">Add</button>
-          </form>
-        `;
+        root.replaceChildren();
+        const list = document.createElement("ul");
+        list.className = "settings-list";
+        mcps.forEach((m, i) => {
+          const item = document.createElement("li");
+          const name = document.createElement("code");
+          name.textContent = m.name || "";
+          const command = document.createElement("code");
+          command.textContent = [m.command || "", ...((m.args || []))].filter(Boolean).join(" ");
+          const button = document.createElement("button");
+          button.type = "button";
+          button.dataset.i = String(i);
+          button.dataset.action = "rm";
+          button.textContent = "remove";
+          item.append(name, " \u2192 ", command, " ", button);
+          list.appendChild(item);
+        });
+        const form = document.createElement("form");
+        form.id = "mcps-add";
+        const nameInput = document.createElement("input");
+        nameInput.type = "text";
+        nameInput.name = "name";
+        nameInput.placeholder = "name";
+        nameInput.required = true;
+        const commandInput = document.createElement("input");
+        commandInput.type = "text";
+        commandInput.name = "command";
+        commandInput.placeholder = "command";
+        commandInput.required = true;
+        const argsInput = document.createElement("input");
+        argsInput.type = "text";
+        argsInput.name = "args";
+        argsInput.placeholder = "args (space-separated)";
+        const add = document.createElement("button");
+        add.type = "submit";
+        add.textContent = "Add";
+        form.append(nameInput, commandInput, argsInput, add);
+        root.append(list, form);
         root.querySelectorAll("button[data-action=rm]").forEach(b => {
           b.addEventListener("click", async () => {
             mcps.splice(+b.dataset.i, 1);
@@ -49,7 +70,10 @@
       render();
       root.dataset.loaded = "true";
     } catch (err) {
-      root.innerHTML = `<p class="settings-error">Failed to load: ${err && err.message ? err.message : err}</p>`;
+      const p = document.createElement("p");
+      p.className = "settings-error";
+      p.textContent = `Failed to load: ${err && err.message ? err.message : err}`;
+      root.replaceChildren(p);
     }
   })();
 </script>

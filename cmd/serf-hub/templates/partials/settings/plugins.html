@@ -13,17 +13,33 @@
       const current = await launchconfig.getLayer("/", "global");
       const dirs = current.pluginDirs || [];
       function render() {
-        root.innerHTML = `
-          <ul class="settings-list">
-            ${dirs.map((d, i) => `
-              <li><code>${d}</code> <button data-i="${i}" data-action="rm">remove</button></li>
-            `).join("")}
-          </ul>
-          <form id="plugins-add">
-            <input type="text" name="dir" placeholder="/absolute/path" required>
-            <button type="submit">Add</button>
-          </form>
-        `;
+        root.replaceChildren();
+        const list = document.createElement("ul");
+        list.className = "settings-list";
+        dirs.forEach((d, i) => {
+          const item = document.createElement("li");
+          const code = document.createElement("code");
+          code.textContent = d;
+          const button = document.createElement("button");
+          button.type = "button";
+          button.dataset.i = String(i);
+          button.dataset.action = "rm";
+          button.textContent = "remove";
+          item.append(code, " ", button);
+          list.appendChild(item);
+        });
+        const form = document.createElement("form");
+        form.id = "plugins-add";
+        const input = document.createElement("input");
+        input.type = "text";
+        input.name = "dir";
+        input.placeholder = "/absolute/path";
+        input.required = true;
+        const add = document.createElement("button");
+        add.type = "submit";
+        add.textContent = "Add";
+        form.append(input, add);
+        root.append(list, form);
         root.querySelectorAll("button[data-action=rm]").forEach(b => {
           b.addEventListener("click", async () => {
             dirs.splice(+b.dataset.i, 1);
@@ -44,7 +60,10 @@
       render();
       root.dataset.loaded = "true";
     } catch (err) {
-      root.innerHTML = `<p class="settings-error">Failed to load: ${err && err.message ? err.message : err}</p>`;
+      const p = document.createElement("p");
+      p.className = "settings-error";
+      p.textContent = `Failed to load: ${err && err.message ? err.message : err}`;
+      root.replaceChildren(p);
     }
   })();
 </script>
