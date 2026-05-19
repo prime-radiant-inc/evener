@@ -126,6 +126,63 @@ func TestFallbackChain_PermanentErrorTriesNextModel(t *testing.T) {
 	}
 }
 
+func TestFallbackChain_EndpointFallbackErrorTriesNextModel(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	endpointFallbackErr := llm.ErrorFromHTTPStatus("openai", 404, "responses.create(stream) failed: model not found", nil, nil)
+
+	f := &modelTrackingAdapter{
+		name: "openai",
+		respond: func(req llm.Request) (llm.Response, error) {
+			switch req.Model {
+			case "primary":
+				return llm.Response{}, endpointFallbackErr
+			case "fallback-b":
+				return finalResponse("fallback B answered"), nil
+			}
+			t.Errorf("unexpected model %q", req.Model)
+			return llm.Response{}, nil
+		},
+	}
+	c.Register(f)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("primary"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		LLMRetryPolicy: &policy,
+		ModelFallbacks: []string{"fallback-b"},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := sess.ProcessInput(ctx, "hi", nil)
+	if err != nil {
+		t.Fatalf("ProcessInput: got error %v, want nil (fallback should succeed)", err)
+	}
+	if !strings.Contains(out, "fallback B answered") {
+		t.Errorf("output: got %q, want substring 'fallback B answered'", out)
+	}
+
+	got := f.Models()
+	want := []string{"primary", "fallback-b"}
+	if len(got) != len(want) {
+		t.Fatalf("attempted models: got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("attempt %d: got %q want %q", i, got[i], want[i])
+		}
+	}
+}
+
 // TestFallbackChain_ExhaustionReturnsLastError: primary + all fallbacks return
 // 403; the error returned to the caller is the LAST attempt's error.
 func TestFallbackChain_ExhaustionReturnsLastError(t *testing.T) {

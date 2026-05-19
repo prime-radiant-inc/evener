@@ -2187,13 +2187,14 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		callCtx := llm.WithAPILogContext(ctx, s.id, round)
 		modelResp, err := s.callModel(callCtx, policy, s.profile, req)
 		// Fallback chain: when the primary model returns a Permanent-class
-		// provider error (403/404/422/...), try each configured fallback in
-		// literal order. Stops at the first success; if all fallbacks also
-		// fail, the LAST attempt's error is returned to the caller. Retryable
-		// errors (429/5xx) burn the existing retry budget on the same model
-		// and DO NOT trigger the fallback chain — they are handled by the
-		// retry loop inside callModel. Kata cxw8.
-		if err != nil && len(s.cfg.ModelFallbacks) > 0 && llm.Classify(err) == llm.ErrorClassPermanent {
+		// provider error (403/404/422/...) or an endpoint-fallback signal,
+		// try each configured fallback in literal order. Stops at the first
+		// success; if all fallbacks also fail, the LAST attempt's error is
+		// returned to the caller. Retryable errors (429/5xx) burn the
+		// existing retry budget on the same model and DO NOT trigger the
+		// fallback chain — they are handled by the retry loop inside
+		// callModel. Kata cxw8.
+		if err != nil && len(s.cfg.ModelFallbacks) > 0 && modelFallbackEligible(err) {
 			for _, fbModel := range s.cfg.ModelFallbacks {
 				fbProfile := s.profile.WithModel(fbModel)
 				fbReq := req
@@ -3579,6 +3580,15 @@ func (s *Session) validateModelFallbacks() error {
 		}
 	}
 	return nil
+}
+
+func modelFallbackEligible(err error) bool {
+	switch llm.Classify(err) {
+	case llm.ErrorClassPermanent, llm.ErrorClassFallback:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Session) applyAgentRolePromptOverride() {
