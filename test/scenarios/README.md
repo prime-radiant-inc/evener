@@ -44,6 +44,15 @@ When a scenario needs different state (e.g. no daemon running, OAuth
 signed out), it says so in **Pre-state** and provides commands to
 reach that state.
 
+**See `docs/agentic-testing.md`** for practical patterns and recipes:
+hermetic workdirs, the AGENTS.md pacing trick for keeping a turn in
+`processing`, the synchronous-vs-async DOM assertion shape for
+optimistic-rendering scenarios, tmux form-fill conventions
+(`BTab` / `C-u` / `-l`), stderr-probe debugging when an assertion
+fails, the rebuild matrix across daemon / hub / web / TUI, and the
+over-specification trap (when a scenario describes a path that
+production gating prevents).
+
 ## Filing failures
 
 When a scenario fails, file a kata via `~/go/bin/kata create <title>
