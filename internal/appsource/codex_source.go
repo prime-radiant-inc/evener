@@ -1042,6 +1042,7 @@ func mapCodexItem(turnID string, raw json.RawMessage) appwire.ThreadItem {
 	case "userMessage":
 		item.Type = "user_message"
 		item.Text = codexInputText(obj["content"])
+		item.Images = codexInputImages(obj["content"])
 	case "agentMessage":
 		item.Type = "agent_message"
 		item.Text = rawString(obj["text"])
@@ -1139,6 +1140,38 @@ func codexInputText(raw json.RawMessage) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+func codexInputImages(raw json.RawMessage) []appwire.InputItem {
+	var inputs []map[string]json.RawMessage
+	if json.Unmarshal(raw, &inputs) != nil {
+		return nil
+	}
+	var images []appwire.InputItem
+	for _, input := range inputs {
+		switch rawString(input["type"]) {
+		case "image", "input_image":
+			url := rawString(input["url"])
+			item := appwire.InputItem{
+				Type:      "input_image",
+				URL:       url,
+				MediaType: firstNonEmpty(rawString(input["mediaType"]), rawString(input["mimeType"])),
+			}
+			if item.URL != "" || item.MediaType != "" {
+				images = append(images, item)
+			}
+		case "localImage", "local_image":
+			path := firstNonEmpty(rawString(input["path"]), rawString(input["name"]))
+			if path != "" {
+				images = append(images, appwire.InputItem{
+					Type: "local_image",
+					Path: path,
+					Name: rawString(input["name"]),
+				})
+			}
+		}
+	}
+	return images
 }
 
 func notificationMessage(method string, params any) appwire.Notification {

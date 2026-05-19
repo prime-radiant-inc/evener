@@ -330,6 +330,99 @@ func assertCodexInputItem(t *testing.T, raw any, want map[string]any) {
 		t.Fatalf("input item has extra fields: got=%#v want=%#v", got, want)
 	}
 }
+
+func TestMapCodexItemUserMessagePreservesImageContent(t *testing.T) {
+	raw := json.RawMessage(`{
+		"type":"userMessage",
+		"id":"item_img",
+		"content":[
+			{"type":"image","url":"data:image/png;base64,aW1n","mediaType":"image/png"},
+			{"type":"text","text":"caption this"},
+			{"type":"localImage","path":"/tmp/local.png","name":"local.png"}
+		]
+	}`)
+
+	item := mapCodexItem("turn_1", raw)
+	if item.Type != "user_message" || item.ID != "item_img" || item.TurnID != "turn_1" {
+		t.Fatalf("item identity=%+v", item)
+	}
+	if item.Text != "caption this" {
+		t.Fatalf("text=%q", item.Text)
+	}
+	assertCodexImageItems(t, item.Images, []appwire.InputItem{
+		{Type: "input_image", URL: "data:image/png;base64,aW1n", MediaType: "image/png"},
+		{Type: "local_image", Path: "/tmp/local.png", Name: "local.png"},
+	})
+}
+
+func TestMapCodexItemUserMessagePreservesImageOnlyContent(t *testing.T) {
+	raw := json.RawMessage(`{
+		"type":"userMessage",
+		"id":"item_img_only",
+		"content":[
+			{"type":"image","url":"https://example.com/screenshot.png","mimeType":"image/png"}
+		]
+	}`)
+
+	item := mapCodexItem("turn_1", raw)
+	if item.Type != "user_message" || item.Text != "" {
+		t.Fatalf("item=%+v", item)
+	}
+	assertCodexImageItems(t, item.Images, []appwire.InputItem{
+		{Type: "input_image", URL: "https://example.com/screenshot.png", MediaType: "image/png"},
+	})
+}
+
+func TestMapCodexNotificationPreservesUserMessageImages(t *testing.T) {
+	source := NewCodexSource(CodexSourceConfig{ID: "codex"}, nil)
+	notification := notificationMessage(appwire.NotifyItemCompleted, map[string]any{
+		"turnId": "turn_1",
+		"item": map[string]any{
+			"type": "userMessage",
+			"id":   "item_img",
+			"content": []map[string]any{
+				{"type": "image", "url": "https://example.com/screenshot.png"},
+			},
+		},
+	})
+
+	mapped := source.mapNotification("th_codex", notification)
+	if mapped.Method != appwire.NotifyItemCompleted {
+		t.Fatalf("method=%q", mapped.Method)
+	}
+	var params struct {
+		ThreadID string             `json:"threadId"`
+		Ref      string             `json:"ref"`
+		TurnID   string             `json:"turnId"`
+		Item     appwire.ThreadItem `json:"item"`
+	}
+	if err := json.Unmarshal(mapped.Params, &params); err != nil {
+		t.Fatalf("params: %v", err)
+	}
+	if params.ThreadID != "th_codex" || params.Ref != "codex:th_codex" || params.TurnID != "turn_1" {
+		t.Fatalf("params identity=%+v", params)
+	}
+	assertCodexImageItems(t, params.Item.Images, []appwire.InputItem{
+		{Type: "input_image", URL: "https://example.com/screenshot.png"},
+	})
+}
+
+func assertCodexImageItems(t *testing.T, got, want []appwire.InputItem) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("images=%+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i].Type != want[i].Type ||
+			got[i].URL != want[i].URL ||
+			got[i].MediaType != want[i].MediaType ||
+			got[i].Path != want[i].Path ||
+			got[i].Name != want[i].Name {
+			t.Fatalf("images[%d]=%+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
 func TestCodexSourceStartThreadUsesCodexUserThreadSource(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
 	var captured map[string]any

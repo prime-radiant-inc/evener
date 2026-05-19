@@ -54,6 +54,8 @@ func TestValidateRepoPath(t *testing.T) {
 	}{
 		{"/repo", "sub/skills", true},
 		{"/repo", "./sub/skills", true},
+		{"/repo", "..plugins", true},
+		{"/repo", "sub/..plugins", true},
 		{"/repo", "../escape", false},
 		{"/repo", "/absolute", false},
 		{"/repo", "sub/../../escape", false},

@@ -48,7 +48,8 @@ func ValidateRepoRelativePath(repoRoot, path string) error {
 	if err != nil {
 		return fmt.Errorf("path resolution: %w", err)
 	}
-	if strings.HasPrefix(rel, "..") || rel == ".." {
+	slashRel := filepath.ToSlash(rel)
+	if slashRel == ".." || strings.HasPrefix(slashRel, "../") {
 		return fmt.Errorf("path escapes repo: %q", path)
 	}
 	return nil
