@@ -1220,35 +1220,29 @@ func pastEntryTurns(entry PastEntry) []appwire.Turn {
 func appItemsFromReplayTurn(turnID string, turnIndex int, turn replayTurn, toolNames map[string]string) []appwire.ThreadItem {
 	switch turn.Kind {
 	case "USER_INPUT":
+		images := appInputImagesFromReplayContent(turn.Message.Content)
 		item := appwire.ThreadItem{
 			Type:                 "user_message",
 			ID:                   fmt.Sprintf("item_user_%d", turnIndex),
 			TurnID:               turnID,
 			TranscriptEntryIndex: turnIndex,
 			Text:                 joinText(turn.Message.Content),
+			Images:               images,
 			Status:               "completed",
-		}
-		for _, part := range turn.Message.Content {
-			if part.Kind != "image" || part.Image == nil || len(part.Image.Data) == 0 {
-				continue
-			}
-			item.Images = append(item.Images, appwire.InputItem{
-				Type:      "input_image",
-				MediaType: part.Image.MediaType,
-				Name:      part.Image.Name,
-				Metadata: map[string]string{
-					"sha":  imageSha(part.Image.Data),
-					"size": strconv.Itoa(len(part.Image.Data)),
-				},
-			})
 		}
 		return []appwire.ThreadItem{item}
 	case "STEERING":
+		images := appInputImagesFromReplayContent(turn.Message.Content)
+		text := joinText(turn.Message.Content)
+		if text == "" && len(images) > 0 {
+			text = appImagePlaceholder(len(images))
+		}
 		return []appwire.ThreadItem{{
 			Type:   "steering",
 			ID:     fmt.Sprintf("item_steering_%d", turnIndex),
 			TurnID: turnID,
-			Text:   joinText(turn.Message.Content),
+			Text:   text,
+			Images: images,
 			Status: "completed",
 		}}
 	case "ASSISTANT":
@@ -1325,6 +1319,36 @@ func appItemsFromReplayTurn(turnID string, turnIndex int, turn replayTurn, toolN
 		return items
 	default:
 		return nil
+	}
+}
+
+func appInputImagesFromReplayContent(parts []replayPart) []appwire.InputItem {
+	var images []appwire.InputItem
+	for _, part := range parts {
+		if part.Kind != "image" || part.Image == nil || len(part.Image.Data) == 0 {
+			continue
+		}
+		images = append(images, appwire.InputItem{
+			Type:      "input_image",
+			MediaType: part.Image.MediaType,
+			Name:      part.Image.Name,
+			Metadata: map[string]string{
+				"sha":  imageSha(part.Image.Data),
+				"size": strconv.Itoa(len(part.Image.Data)),
+			},
+		})
+	}
+	return images
+}
+
+func appImagePlaceholder(count int) string {
+	switch count {
+	case 0:
+		return ""
+	case 1:
+		return "[image]"
+	default:
+		return fmt.Sprintf("[%d images]", count)
 	}
 }
 

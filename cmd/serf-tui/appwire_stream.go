@@ -297,6 +297,17 @@ func (t *appwireStreamTranslator) eventsFromItem(item appwire.ThreadItem, comple
 			payload["images"] = item.Images
 		}
 		return []streamEvent{newStreamEvent("USER_INPUT", payload)}
+	case "steering":
+		t.markItemCompleted(item)
+		text := item.Text
+		if text == "" && len(item.Images) > 0 {
+			text = imageItemsPlaceholder(item.Images)
+		}
+		payload := map[string]any{"text": text}
+		if len(item.Images) > 0 {
+			payload["images"] = item.Images
+		}
+		return []streamEvent{newStreamEvent("STEERING_INJECTED", payload)}
 	case "agent_message":
 		if completed {
 			t.markItemCompleted(item)

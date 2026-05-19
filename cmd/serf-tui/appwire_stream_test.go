@@ -380,6 +380,32 @@ func TestStreamEventsFromImageOnlyUserMessageUsesPlaceholder(t *testing.T) {
 	}
 }
 
+func TestHydratedSteeringItemCarriesImages(t *testing.T) {
+	translator := newAppwireStreamTranslator()
+	events := translator.eventsFromHydratedItem(appwire.ThreadItem{
+		Type: "steering",
+		Images: []appwire.InputItem{{
+			Type:      "image",
+			MediaType: "image/png",
+			Metadata:  map[string]string{"sha": "abc"},
+		}},
+		Status: appwire.TurnStatusCompleted,
+	})
+	if len(events) != 1 || events[0].Event != "STEERING_INJECTED" {
+		t.Fatalf("events=%+v, want STEERING_INJECTED", events)
+	}
+	var payload struct {
+		Text   string              `json:"text"`
+		Images []appwire.InputItem `json:"images"`
+	}
+	if err := json.Unmarshal([]byte(events[0].Data), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload.Text != "[image]" || len(payload.Images) != 1 {
+		t.Fatalf("payload=%+v, want image placeholder and image metadata", payload)
+	}
+}
+
 func TestStreamEventsDedupKeysAreTurnScoped(t *testing.T) {
 	translator := newAppwireStreamTranslator()
 	first := appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{

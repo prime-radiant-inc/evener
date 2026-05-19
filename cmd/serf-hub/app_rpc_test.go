@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -106,6 +107,32 @@ func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 	}, toolNames)
 	if len(results) != 0 {
 		t.Fatalf("communicate tool results should be hidden, got %+v", results)
+	}
+}
+
+func TestAppItemsFromReplayTurnSteeringCarriesImageMetadata(t *testing.T) {
+	img := []byte("png")
+	items := appItemsFromReplayTurn("turn_3", 3, replayTurn{
+		Kind: "STEERING",
+		Message: replayMessage{Content: []replayPart{{
+			Kind: "image",
+			Image: &replayImage{
+				Data:      img,
+				MediaType: "image/png",
+				Name:      "steer.png",
+			},
+		}}},
+	}, map[string]string{})
+
+	if len(items) != 1 {
+		t.Fatalf("items=%+v, want one steering item", items)
+	}
+	got := items[0]
+	if got.Type != "steering" || got.Text != "[image]" || len(got.Images) != 1 {
+		t.Fatalf("steering item=%+v, want image placeholder and image metadata", got)
+	}
+	if got.Images[0].Metadata["sha"] != imageSha(img) || got.Images[0].Metadata["size"] != strconv.Itoa(len(img)) {
+		t.Fatalf("image metadata=%+v, want sha/size", got.Images[0].Metadata)
 	}
 }
 
