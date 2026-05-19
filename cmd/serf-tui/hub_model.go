@@ -403,7 +403,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		m.spawnSubmitting = false
 		if m.mode == hubModeSession && m.detail.Ref == msg.detail.Ref {
-			if msg.expectedState != "" && m.detail.State != msg.expectedState {
+			if msg.expectedState != "" && (m.detail.State != msg.expectedState || msg.detail.State != msg.expectedState) {
 				return m, nil
 			}
 			m.detail = msg.detail

@@ -1889,8 +1889,11 @@ func TestHubModelStatusRefreshIgnoresStaleSessionRead(t *testing.T) {
 		t.Fatalf("capabilities=%+v, want stale refresh ignored", got.detail.Capabilities)
 	}
 
+	got.detail.State = appwire.ThreadStatusProcessing
+	got.detail.Capabilities.Send = false
+	got.detail.Capabilities.Interrupt = true
 	updated, _ = got.Update(hubSessionMsg{
-		expectedState: appwire.ThreadStatusIdle,
+		expectedState: appwire.ThreadStatusProcessing,
 		detail: hubSessionDetail{
 			Ref:   "local:01SEND",
 			State: appwire.ThreadStatusIdle,
@@ -1900,8 +1903,26 @@ func TestHubModelStatusRefreshIgnoresStaleSessionRead(t *testing.T) {
 		},
 	})
 	got = updated.(hubModel)
-	if got.detail.State != appwire.ThreadStatusIdle || !got.detail.Capabilities.Send {
-		t.Fatalf("detail=%+v, want matching idle refresh applied", got.detail)
+	if got.detail.State != appwire.ThreadStatusProcessing {
+		t.Fatalf("state=%q, want stale idle response ignored", got.detail.State)
+	}
+	if got.detail.Capabilities.Send || !got.detail.Capabilities.Interrupt {
+		t.Fatalf("capabilities=%+v, want stale idle response ignored", got.detail.Capabilities)
+	}
+
+	updated, _ = got.Update(hubSessionMsg{
+		expectedState: appwire.ThreadStatusProcessing,
+		detail: hubSessionDetail{
+			Ref:   "local:01SEND",
+			State: appwire.ThreadStatusProcessing,
+			Capabilities: hubSessionCapabilities{
+				Interrupt: true,
+			},
+		},
+	})
+	got = updated.(hubModel)
+	if got.detail.State != appwire.ThreadStatusProcessing || !got.detail.Capabilities.Interrupt {
+		t.Fatalf("detail=%+v, want matching processing refresh applied", got.detail)
 	}
 }
 
