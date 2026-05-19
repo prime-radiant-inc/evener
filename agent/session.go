@@ -947,6 +947,33 @@ func (s *Session) setStateIfOpenLocked(state SessionState) {
 	s.state = state
 }
 
+func (s *Session) abortIfClosing(ctx context.Context) error {
+	s.mu.Lock()
+	closing := s.closingOrClosedLocked()
+	s.mu.Unlock()
+	if closing {
+		return context.Canceled
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Session) abortResponseProcessing(ctx context.Context) error {
+	s.mu.Lock()
+	closing := s.closingOrClosedLocked()
+	s.mu.Unlock()
+	if closing {
+		return context.Canceled
+	}
+	if err := ctx.Err(); err != nil {
+		s.emit(EventError, errorDataFromError(err))
+		return err
+	}
+	return nil
+}
+
 // SetModel changes the model used for future LLM calls.
 // Takes effect on the next request.
 func (s *Session) SetModel(model string) {
@@ -1574,6 +1601,19 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 }
 
 func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecResult {
+	if err := s.abortIfClosing(ctx); err != nil {
+		msg := "tool skipped: session is closing"
+		if err != context.Canceled {
+			msg = "tool skipped: " + err.Error()
+		}
+		return ToolExecResult{
+			ToolName:   call.Name,
+			CallID:     call.ID,
+			Output:     msg,
+			FullOutput: msg,
+			IsError:    true,
+		}
+	}
 	// PreToolUse hooks
 	if s.hookRunner != nil {
 		hi := s.hookInput(HookPreToolUse)
@@ -2095,14 +2135,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		timings.LLMCall = time.Since(tPhaseStart)
 
 		if err == nil {
-			if cerr := ctx.Err(); cerr != nil {
-				return "", cerr
-			}
-			s.mu.Lock()
-			closing := s.closingOrClosedLocked()
-			s.mu.Unlock()
-			if closing {
-				return "", context.Canceled
+			if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+				return "", abortErr
 			}
 		}
 
@@ -2207,6 +2241,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			return "", fmt.Errorf("provider error: %w", err)
 		}
 
+		if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+			return "", abortErr
+		}
+
 		// Accumulate usage and record exact input token count for pressure calculation.
 		if s.contextMgr != nil {
 			s.contextMgr.AddUsage(resp.Usage)
@@ -2244,6 +2282,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			if s.maybeWarnContextUsage(req.Messages) {
 				ctxWarned = true
 			}
+		}
+
+		if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+			return "", abortErr
 		}
 
 		txt := resp.Text()
@@ -2379,6 +2421,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		consecutiveEmptyResponses = 0
 		consecutiveBareTextResponses = 0
 
+		if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+			return "", abortErr
+		}
+
 		// --- Phase: ToolExec ---
 		tPhaseStart = time.Now()
 
@@ -2387,11 +2433,14 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		if s.profile.SupportsParallelToolCalls() && len(calls) > 1 {
 			// Ordered-group algorithm: batch consecutive read-only calls for
 			// parallel execution; serialize everything else.
-			flushReadBatch := func(batch []int) {
+			flushReadBatch := func(batch []int) error {
 				switch len(batch) {
 				case 0:
 					// nothing to do
 				case 1:
+					if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+						return abortErr
+					}
 					results[batch[0]] = s.execTool(ctx, calls[batch[0]])
 				default:
 					var wg sync.WaitGroup
@@ -2410,14 +2459,21 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 								}
 								wg.Done()
 							}()
+							if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+								panic(abortErr)
+							}
 							results[i] = s.execTool(ctx, calls[i])
 						}()
 					}
 					wg.Wait()
 					if panicValue != nil {
+						if err, ok := panicValue.(error); ok {
+							return err
+						}
 						panic(panicValue)
 					}
 				}
+				return nil
 			}
 
 			var readBatch []int
@@ -2426,16 +2482,30 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				if t != nil && t.ReadOnly {
 					readBatch = append(readBatch, i)
 				} else {
-					flushReadBatch(readBatch)
+					if err := flushReadBatch(readBatch); err != nil {
+						return "", err
+					}
 					readBatch = readBatch[:0]
+					if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+						return "", abortErr
+					}
 					results[i] = s.execTool(ctx, call)
 				}
 			}
-			flushReadBatch(readBatch)
+			if err := flushReadBatch(readBatch); err != nil {
+				return "", err
+			}
 		} else {
 			for i := range calls {
+				if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+					return "", abortErr
+				}
 				results[i] = s.execTool(ctx, calls[i])
 			}
+		}
+
+		if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+			return "", abortErr
 		}
 
 		timings.ToolExec = time.Since(tPhaseStart)

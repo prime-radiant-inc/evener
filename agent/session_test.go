@@ -2268,6 +2268,40 @@ func TestSession_CloseCannotBeReopenedByLateTurnCompletion(t *testing.T) {
 	}
 }
 
+func TestSession_ExecToolRefusesClosedSession(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ran := false
+	sess.RegisterTool("late_tool", "late tool", map[string]any{}, func(context.Context, any) (any, error) {
+		ran = true
+		return "ran", nil
+	})
+	sess.Close()
+
+	res := sess.execTool(context.Background(), llm.ToolCallData{
+		ID:        "late_call",
+		Name:      "late_tool",
+		Arguments: json.RawMessage(`{}`),
+		Type:      "function",
+	})
+	if ran {
+		t.Fatal("tool executed after session close")
+	}
+	if !res.IsError || !strings.Contains(res.FullOutput, "session is closing") {
+		t.Fatalf("closed execTool result=%+v, want skipped error", res)
+	}
+}
+
 func TestSession_CloseCancelsInFlightWithoutInterruptMarker(t *testing.T) {
 	blocked := make(chan struct{})
 	c := llm.NewClient()
