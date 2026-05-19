@@ -190,6 +190,15 @@ async function checkProcessingSendCapabilityKeepsSendMode() {
   await new Promise(r => setTimeout(r, 10));
   pass(lastFetch !== null, "expected fetch for send-capable processing submit");
   pass(lastFetch && lastFetch.url.includes("/s/01TEST/send"), "send-capable processing submit should use /send, got " + (lastFetch && lastFetch.url));
+
+  window.SerfRenderer.handleData("SESSION_START", {
+    session_id: "01TEST",
+    status: "idle",
+    capabilities: { send: true, queue: false },
+  });
+  window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "processing" });
+  pass(send.getAttribute("data-capability-send") === "false", "stale idle send capability should not survive processing status change");
+  pass(send.getAttribute("data-capability-queue") === "true", "processing status change without fresh caps should fall back to queue mode");
 }
 
 // 5b. Replying to an ended session with no open stream must reconnect

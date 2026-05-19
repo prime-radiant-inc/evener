@@ -86,6 +86,7 @@
       this.state = conversationEl.dataset.state || "ended";
       this.liveSendCap = null;
       this.liveQueueCap = null;
+      this.liveCapabilitiesStatus = "";
 
       this.activeMessages = new Map();   // messageId -> {el, textBuf, markdownTimer}
       this.activeTools = new Map();      // callId -> {el, outputBuf}
@@ -162,7 +163,7 @@
           sendBtn.setAttribute("data-capability-queue", "false");
           sendBtn.disabled = true;
           sendBtn.setAttribute("title", "send unavailable");
-        } else if (typeof this.liveSendCap === "boolean" || typeof this.liveQueueCap === "boolean") {
+        } else if (this.liveCapabilitiesStatus === state && (typeof this.liveSendCap === "boolean" || typeof this.liveQueueCap === "boolean")) {
           const canSend = this.liveSendCap === true;
           const canQueue = this.liveQueueCap === true;
           sendBtn.setAttribute("data-capability-send", canSend ? "true" : "false");
@@ -496,6 +497,7 @@
 	            this.sessionId = data.session_id;
 	            this.liveSendCap = null;
 	            this.liveQueueCap = null;
+	            this.liveCapabilitiesStatus = "";
 	            history.replaceState(null, "", "/s/" + encodeURIComponent(data.session_id));
             this.conversation.innerHTML = "";
             this.activeMessages.clear();
@@ -519,6 +521,7 @@
 	          if (data.capabilities) {
 	            if (typeof data.capabilities.send === "boolean") this.liveSendCap = data.capabilities.send;
 	            if (typeof data.capabilities.queue === "boolean") this.liveQueueCap = data.capabilities.queue;
+	            this.liveCapabilitiesStatus = data.status || "";
 	          }
 	          if (data.status) {
 	            this.updateThreadState(data.status);
