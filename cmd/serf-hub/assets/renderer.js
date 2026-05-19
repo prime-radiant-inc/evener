@@ -529,7 +529,7 @@
           break;
         case "USER_INPUT":
           this.lastUserText = data.text || "";
-          this.lastSubmittedTurn = { text: data.text || "", items: Array.isArray(data.images) ? data.images.slice() : [] };
+          this.lastSubmittedTurn = this.retryPayload(data.text || "", data.images || []);
           if (this.promoteLocalUserMessage(data)) break;
           this.userTurnIndex++;
           if (typeof data.turn === "number" && data.turn > 0) {
@@ -704,7 +704,7 @@
     appendLocalUserMessage(text, images, turnId, previousUserCount) {
       if (this.userMessageCount() > previousUserCount) return;
       this.lastUserText = text || "";
-      this.lastSubmittedTurn = { text: text || "", items: Array.isArray(images) ? images.slice() : [] };
+      this.lastSubmittedTurn = this.retryPayload(text || "", images || []);
       this.userTurnIndex++;
       this.entryIndex++;
       const wrap = this.appendUserMessage(text || "", this.entryIndex, images || []);
@@ -721,6 +721,29 @@
       // user message yet, and we don't want appendLocalUserMessage to
       // short-circuit just because a pending chip is on screen.
       return this.conversation.querySelectorAll(".user-message:not(.optimistic-pending)").length;
+    },
+
+    retryPayload(text, items) {
+      return { text: text || "", items: this.retryableAttachmentItems(items) };
+    },
+
+    retryableAttachmentItems(items) {
+      const out = [];
+      for (const item of items || []) {
+        if (!item) continue;
+        const url = String(item.url || "").trim();
+        const data = item.data;
+        if (!url && itemDataToBase64(data) === "") continue;
+        out.push({
+          type: item.type || "image",
+          mediaType: item.mediaType || item.media_type || "",
+          media_type: item.media_type || item.mediaType || "",
+          data,
+          url,
+          name: item.name || "",
+        });
+      }
+      return out;
     },
 
     promoteLocalUserMessage(data) {
@@ -1459,6 +1482,7 @@
 	          return;
 	        }
 	        if (!text && !hasAttachments) return;
+        this.lastSubmittedTurn = this.retryPayload(text, items);
         const sendBtn = form.querySelector(".send-btn");
         const canSend = !sendBtn || sendBtn.getAttribute("data-capability-send") !== "false";
         const canQueue = sendBtn && sendBtn.getAttribute("data-capability-queue") === "true";

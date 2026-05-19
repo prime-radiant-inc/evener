@@ -113,6 +113,18 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
   });
   pass(localHubActions === null, "local hub action failures should not get reconnect retry, got " + JSON.stringify(localHubActions));
 
+  renderer.handle("USER_INPUT", {
+    text: "replayed sha image",
+    images: [{ type: "image", media_type: "image/png", sha256: "sha-only", name: "replay.png" }],
+  });
+  pass(renderer.lastSubmittedTurn && renderer.lastSubmittedTurn.text === "replayed sha image",
+    "replayed USER_INPUT should update retry text");
+  pass(renderer.lastSubmittedTurn.items.length === 0,
+    "sha-only replay images should not be stored as retryable attachments");
+
+  renderer.lastUserText = "say hello";
+  renderer.lastSubmittedTurn = { text: "say hello", items: [{ type: "image", media_type: "image/png", data: "abc", name: "shot.png" }] };
+
   // ------------------------------------------------------------------
   // 5. Hub onclick calls SerfAppwire.startTurn with the captured payload.
   //    Confirms the factored helper threads parameters through unchanged.
