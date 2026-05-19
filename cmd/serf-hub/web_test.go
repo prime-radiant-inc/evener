@@ -783,6 +783,51 @@ func TestWeb_Sidebar_ProjectLinksEscapeWorkingDir(t *testing.T) {
 	}
 }
 
+func TestWeb_ProjectSettingsListEscapesWorkingDir(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "escaped-settings")
+	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workingDir := "/projects/a&b?c#d"
+	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID: "01PSET", UpdatedAt: time.Now(), OriginalPrompt: "project settings",
+		EnvInfo: agent.EnvironmentInfo{WorkingDir: workingDir},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/_partials/settings/project", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	req.Header.Set("HX-Target", "settings-content")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	escaped := url.QueryEscape(workingDir)
+	for _, want := range []string{
+		`href="/settings/project?cwd=` + escaped + `"`,
+		`hx-get="/_partials/settings/project?cwd=` + escaped + `"`,
+		`hx-push-url="/settings/project?cwd=` + escaped + `"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("project settings list missing escaped URL %q:\n%s", want, body)
+		}
+	}
+}
+
 func TestWeb_Assets_ServeHtmx(t *testing.T) {
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180"})
 	req := httptest.NewRequest(http.MethodGet, "/assets/htmx.min.js", nil)

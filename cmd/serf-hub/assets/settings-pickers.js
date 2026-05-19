@@ -106,6 +106,7 @@
           el.addEventListener("click", () => {
             const val = m.provider + "/" + m.model;
             hiddenInput.value = val;
+            hiddenInput.dispatchEvent(new Event("change", { bubbles: true }));
             if (displayEl) displayEl.textContent = val;
             picker.remove();
           });

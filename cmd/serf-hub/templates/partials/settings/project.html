@@ -16,6 +16,7 @@
 
     let current = {};
     let launchDraft = {};
+    let statusClearTimer = 0;
     try {
       current = await launchconfig.getLayer(cwd, "project");
       resetLaunchDraftFromCurrent();
@@ -213,6 +214,7 @@
       const modelDisplay = root.querySelector("#proj-model-display");
       root.querySelector("#proj-model-clear").addEventListener("click", () => {
         modelHidden.value = "";
+        modelHidden.dispatchEvent(new Event("change", { bubbles: true }));
         modelDisplay.textContent = "(inherit global)";
       });
 
@@ -229,9 +231,19 @@
         try {
           await saveProjectLayer(out);
           resetLaunchDraftFromCurrent();
-          statusEl().textContent = "Saved at " + new Date().toLocaleTimeString();
-          setTimeout(() => { const el = statusEl(); if (el) el.textContent = ""; }, 5000);
+          if (statusClearTimer) clearTimeout(statusClearTimer);
+          const savedMessage = "Saved at " + new Date().toLocaleTimeString();
+          statusEl().textContent = savedMessage;
+          statusClearTimer = setTimeout(() => {
+            const el = statusEl();
+            if (el && el.textContent === savedMessage) el.textContent = "";
+            statusClearTimer = 0;
+          }, 5000);
         } catch (err) {
+          if (statusClearTimer) {
+            clearTimeout(statusClearTimer);
+            statusClearTimer = 0;
+          }
           statusEl().textContent = "Error: " + (err && err.message ? err.message : err);
         }
       });
@@ -364,7 +376,7 @@
 <ul class="settings-project-list">
   {{range .AvailableProjects}}
   <li class="settings-project-list-item">
-    <a href="/settings/project?cwd={{.CWD}}" hx-get="/_partials/settings/project?cwd={{.CWD}}" hx-target="#settings-content" hx-push-url="/settings/project?cwd={{.CWD}}">
+    <a href="/settings/project?cwd={{.CWD | urlquery}}" hx-get="/_partials/settings/project?cwd={{.CWD | urlquery}}" hx-target="#settings-content" hx-push-url="/settings/project?cwd={{.CWD | urlquery}}">
       <span class="settings-project-name">{{.Name}}</span>
       <span class="settings-project-cwd">{{.CWD}}</span>
     </a>
