@@ -113,6 +113,29 @@ func TestSessionSwitchClearsPendingAttachmentsAndTempFiles(t *testing.T) {
 	}
 }
 
+func TestRemoveAttachmentDefersTempCleanupDuringSubmit(t *testing.T) {
+	m := newSessionHubModel(nil)
+	path := filepath.Join(t.TempDir(), "paste.png")
+	if err := os.WriteFile(path, []byte("png"), 0o644); err != nil {
+		t.Fatalf("write temp attachment: %v", err)
+	}
+	m.pendingAttachments = []*PastedImage{{
+		Path:   path,
+		Origin: "clipboard-image",
+	}}
+	m.attachmentSubmitsInFlight = 1
+
+	m.removePendingAttachment(0)
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("temp attachment removed while submit in flight: %v", err)
+	}
+
+	m.finishAttachmentSubmit()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("temp attachment stat err = %v, want not exist after submit finishes", err)
+	}
+}
+
 // TestCtrlBackspaceRemovesLastAttachment verifies that pressing
 // Ctrl+Backspace in the composer drops the most-recently-added
 // attachment chip without touching the rest. Kata 5vxd.

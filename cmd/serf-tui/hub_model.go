@@ -150,6 +150,11 @@ type hubModel struct {
 	// cleans up afterwards. The slice is rendered as a row of chips
 	// below the composer textarea.
 	pendingAttachments []*PastedImage
+	// attachmentSubmitsInFlight counts async submit commands that captured
+	// attachment pointers. While non-zero, removed temp files are queued for
+	// deferred cleanup so the command can still read them.
+	attachmentSubmitsInFlight int
+	deferredAttachmentCleanup []*PastedImage
 	// nextAttachmentMarker is a per-composer high-water counter. Marker
 	// numbers are never reused while a composer draft is alive, even if the
 	// user removes the highest-numbered attachment.
@@ -203,17 +208,47 @@ func (m *hubModel) removePendingAttachment(idx int) {
 			m.session.input.SetValue(text[:i] + text[i+len(tok):])
 		}
 	}
+	m.cleanupPendingAttachmentFile(removed)
 	m.pendingAttachments = append(m.pendingAttachments[:idx], m.pendingAttachments[idx+1:]...)
 }
 
 func (m *hubModel) clearPendingAttachments(cleanupFiles bool) {
 	if cleanupFiles {
 		for _, img := range m.pendingAttachments {
-			cleanupPendingAttachmentFile(img)
+			m.cleanupPendingAttachmentFile(img)
 		}
 	}
 	m.pendingAttachments = nil
 	m.nextAttachmentMarker = 0
+}
+
+func (m *hubModel) snapshotPendingAttachmentsForSubmit() []*PastedImage {
+	if len(m.pendingAttachments) == 0 {
+		return nil
+	}
+	m.attachmentSubmitsInFlight++
+	return append([]*PastedImage(nil), m.pendingAttachments...)
+}
+
+func (m *hubModel) finishAttachmentSubmit() {
+	if m.attachmentSubmitsInFlight > 0 {
+		m.attachmentSubmitsInFlight--
+	}
+	if m.attachmentSubmitsInFlight != 0 {
+		return
+	}
+	for _, img := range m.deferredAttachmentCleanup {
+		cleanupPendingAttachmentFile(img)
+	}
+	m.deferredAttachmentCleanup = nil
+}
+
+func (m *hubModel) cleanupPendingAttachmentFile(img *PastedImage) {
+	if m.attachmentSubmitsInFlight > 0 {
+		m.deferredAttachmentCleanup = append(m.deferredAttachmentCleanup, img)
+		return
+	}
+	cleanupPendingAttachmentFile(img)
 }
 
 func cleanupPendingAttachmentFile(img *PastedImage) {
@@ -396,6 +431,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.session.refreshViewport()
 		return m, nil
 	case hubSendMsg:
+		m.finishAttachmentSubmit()
 		if msg.err != nil {
 			// Preserve pendingAttachments on error so the user can retry
 			// without re-pasting (kata re91).
@@ -410,6 +446,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case hubQueueMsg:
+		m.finishAttachmentSubmit()
 		if msg.err != nil {
 			// Restore the draft; the wire state will not advance because
 			// the daemon never received the message. Preserve attachments
@@ -427,6 +464,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// (kata r80p).
 		return m, nil
 	case hubDrainAsSteerMsg:
+		m.finishAttachmentSubmit()
 		if msg.err != nil {
 			if msg.queued {
 				m.clearPendingAttachments(true)
@@ -1658,7 +1696,8 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.session.resetInput()
 			m.session.refreshViewport()
-			return m, sendHubQueue(m.client, ref, text, draft, m.pendingAttachments)
+			attachments := m.snapshotPendingAttachmentsForSubmit()
+			return m, sendHubQueue(m.client, ref, text, draft, attachments)
 		}
 		if composerMode == hubComposerModeReadOnly || !m.sessionCanStartTurn() {
 			reason := m.sessionComposerReadOnlyReason()
@@ -1682,7 +1721,8 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.session.resetInput()
 		m.session.refreshViewport()
-		return m, sendHubInput(m.client, ref, text, draft, m.pendingAttachments)
+		attachments := m.snapshotPendingAttachmentsForSubmit()
+		return m, sendHubInput(m.client, ref, text, draft, attachments)
 	}
 
 	prevHeight := m.session.input.Height()
@@ -1751,12 +1791,12 @@ func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 	}
 	draft := m.session.input.Value()
 	pending := strings.TrimSpace(draft)
-	attachments := m.pendingAttachments
-	if pending == "" && len(m.sessionQueue) == 0 && len(attachments) == 0 {
+	hasAttachments := len(m.pendingAttachments) > 0
+	if pending == "" && len(m.sessionQueue) == 0 && !hasAttachments {
 		m.addSessionSystem("Nothing to steer: the queue is empty.")
 		return m, nil
 	}
-	if pending == "" && len(attachments) == 0 {
+	if pending == "" && !hasAttachments {
 		// Pure drain of the existing queue. Clear nothing on the composer.
 		return m, sendHubDrainAsSteer(m.client, ref, "", "", nil, len(m.sessionQueue))
 	}
@@ -1768,6 +1808,7 @@ func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 	}
 	m.session.resetInput()
 	m.session.refreshViewport()
+	attachments := m.snapshotPendingAttachmentsForSubmit()
 	return m, sendHubDrainAsSteer(m.client, ref, pending, draft, attachments, len(m.sessionQueue))
 }
 

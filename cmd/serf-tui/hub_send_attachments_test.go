@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -252,5 +253,44 @@ func TestAttachmentBytesReadFromTempFile(t *testing.T) {
 	}
 	if !bytes.Equal(got.Items[0].Data, want) {
 		t.Fatalf("item.Data=%x, want late-bytes %x", got.Items[0].Data, want)
+	}
+}
+
+func TestSubmitSnapshotsAttachmentSliceBeforeAsyncCommand(t *testing.T) {
+	pathA := writeAttachmentTempFile(t, []byte("\x89PNG\r\n\x1a\na"))
+	pathB := writeAttachmentTempFile(t, []byte("\x89PNG\r\n\x1a\nb"))
+
+	app := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
+	var got appwire.TurnStartParams
+	appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+		got = params
+		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_snapshot"}}, nil
+	})
+	client, cleanup := newTUIAppWireClient(t, app)
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.session.input.SetValue("ship")
+	m.pendingAttachments = []*PastedImage{
+		{Path: pathA, MediaType: "image/png"},
+		{Path: pathB, MediaType: "image/png"},
+	}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Update returned nil cmd, want send command")
+	}
+	inFlight := updated.(hubModel)
+	inFlight.removePendingAttachment(0)
+
+	msg := cmd()
+	if sendMsg, ok := msg.(hubSendMsg); !ok || sendMsg.err != nil {
+		t.Fatalf("msg=%T err=%v", msg, sendMsg.err)
+	}
+	if len(got.Items) != 2 {
+		t.Fatalf("items len=%d, want 2: %+v", len(got.Items), got.Items)
+	}
+	if !bytes.Equal(got.Items[0].Data, []byte("\x89PNG\r\n\x1a\na")) || !bytes.Equal(got.Items[1].Data, []byte("\x89PNG\r\n\x1a\nb")) {
+		t.Fatalf("sent items mutated after chip removal: %+v", got.Items)
 	}
 }
