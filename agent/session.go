@@ -230,6 +230,7 @@ type Session struct {
 
 	mu             sync.Mutex
 	state          SessionState
+	closing        bool
 	turns          int // user input count (for MaxTurns enforcement)
 	modelResponses int // LLM round-trip count (for meta.json turn_count)
 	history        []Turn
@@ -870,7 +871,7 @@ func (s *Session) Meta() SessionMeta {
 // Takes effect on the next request (spec).
 func (s *Session) SetReasoningEffort(effort string) {
 	s.mu.Lock()
-	if s.state == SessionClosed {
+	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return
 	}
@@ -935,11 +936,22 @@ func (s *Session) ContextPressure() float64 {
 	return s.contextMgr.Pressure(hist, 0)
 }
 
+func (s *Session) closingOrClosedLocked() bool {
+	return s.closing || s.state == SessionClosed
+}
+
+func (s *Session) setStateIfOpenLocked(state SessionState) {
+	if s.closingOrClosedLocked() {
+		return
+	}
+	s.state = state
+}
+
 // SetModel changes the model used for future LLM calls.
 // Takes effect on the next request.
 func (s *Session) SetModel(model string) {
 	s.mu.Lock()
-	if s.state == SessionClosed {
+	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return
 	}
@@ -960,7 +972,7 @@ func (s *Session) SetModel(model string) {
 // Takes effect on the next tool execution.
 func (s *Session) SetTimeout(timeoutMS int) {
 	s.mu.Lock()
-	if s.state == SessionClosed {
+	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return
 	}
@@ -1020,7 +1032,7 @@ func (s *Session) Steer(msg string) {
 func (s *Session) SteerWithImages(msg string, images []ImageAttachment) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.state == SessionClosed {
+	if s.closingOrClosedLocked() {
 		return
 	}
 	if strings.TrimSpace(msg) == "" && len(images) == 0 {
@@ -1124,7 +1136,7 @@ func (s *Session) describeImage(ctx context.Context, r ToolExecResult) string {
 func (s *Session) FollowUp(msg string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.state == SessionClosed {
+	if s.closingOrClosedLocked() {
 		return
 	}
 	if strings.TrimSpace(msg) == "" {
@@ -1165,7 +1177,7 @@ func (s *Session) EnqueueWithImages(ctx context.Context, text string, images []I
 	s.queueEventsMu.Lock()
 	defer s.queueEventsMu.Unlock()
 	s.mu.Lock()
-	if s.state == SessionClosed {
+	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return fmt.Errorf("queue: session is closed")
 	}
@@ -1193,7 +1205,7 @@ func (s *Session) DrainAsSteer(ctx context.Context) error {
 	s.queueEventsMu.Lock()
 	defer s.queueEventsMu.Unlock()
 	s.mu.Lock()
-	if s.state == SessionClosed {
+	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return fmt.Errorf("drain: session is closed")
 	}
@@ -1390,6 +1402,7 @@ func (s *Session) Close() {
 		turns := s.modelResponses
 		emitEnd := !s.sessionEndEmitted
 		s.sessionEndEmitted = true
+		s.closing = true
 		s.state = SessionClosed
 		s.mu.Unlock()
 
@@ -1443,7 +1456,10 @@ func (s *Session) Close() {
 			os.RemoveAll(s.embeddedSkillsDir)
 		}
 
-		// 8. Close the events channel after CLOSED has been visible since shutdown began.
+		// 8. Reassert CLOSED in case an in-flight turn reached a late state transition.
+		s.mu.Lock()
+		s.state = SessionClosed
+		s.mu.Unlock()
 		close(s.events)
 	})
 }
@@ -1464,6 +1480,10 @@ func (s *Session) extractOriginalPrompt() string {
 func (s *Session) ProcessInput(ctx context.Context, input string, images []ImageAttachment) (string, error) {
 	// Reset so SESSION_END can fire at the end of this input's processing.
 	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return "", fmt.Errorf("session is closed")
+	}
 	s.sessionEndEmitted = false
 	s.mu.Unlock()
 
@@ -1488,10 +1508,10 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 				s.mu.Lock()
 				// Only flip back to idle when the session isn't already
 				// closed (e.g. daemon shutdown raced the interrupt).
-				if s.state != SessionClosed {
+				if !s.closingOrClosedLocked() {
 					s.state = SessionIdle
 				}
-				closed := s.state == SessionClosed
+				closed := s.closingOrClosedLocked()
 				turns := s.modelResponses
 				emitEnd := !s.sessionEndEmitted && !closed
 				if emitEnd {
@@ -1816,11 +1836,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	defer cancel()
 
 	s.mu.Lock()
-	if s.state == SessionClosed {
+	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return "", fmt.Errorf("session is closed")
 	}
-	s.state = SessionProcessing
+	s.setStateIfOpenLocked(SessionProcessing)
 	s.communicated = false
 	s.communicateAwaitReply = false
 	s.communicateText = ""
@@ -1832,7 +1852,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	case <-ctx.Done():
 		s.emit(EventError, errorDataFromError(ctx.Err()))
 		s.mu.Lock()
-		if s.state == SessionProcessing {
+		if s.state == SessionProcessing && !s.closingOrClosedLocked() {
 			s.state = SessionIdle
 		}
 		s.mu.Unlock()
@@ -1869,7 +1889,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	if s.cfg.MaxTurns > 0 && turns >= s.cfg.MaxTurns {
 		s.emit(EventTurnLimit, TurnLimitData{MaxTurns: s.cfg.MaxTurns})
 		s.mu.Lock()
-		s.state = SessionIdle
+		s.setStateIfOpenLocked(SessionIdle)
 		s.mu.Unlock()
 		return "", nil
 	}
@@ -1908,7 +1928,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		case <-ctx.Done():
 			s.emit(EventError, errorDataFromError(ctx.Err()))
 			s.mu.Lock()
-			if s.state == SessionProcessing {
+			if s.state == SessionProcessing && !s.closingOrClosedLocked() {
 				s.state = SessionIdle
 			}
 			s.mu.Unlock()
@@ -2162,7 +2182,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// meta.json flush happens via the deferred flush at the top of
 			// processOneInput (kata ztne).
 			s.mu.Lock()
-			if s.state == SessionProcessing {
+			if s.state == SessionProcessing && !s.closingOrClosedLocked() {
 				s.state = SessionIdle
 			}
 			s.mu.Unlock()
@@ -2307,7 +2327,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				err := &emptyResponseExhaustedError{retries: maxEmptyRetries}
 				s.emit(EventError, errorDataFromError(err))
 				s.mu.Lock()
-				s.state = SessionIdle
+				s.setStateIfOpenLocked(SessionIdle)
 				s.mu.Unlock()
 				return "", err
 			} else {
@@ -2337,7 +2357,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				}
 				s.emit(EventError, errorDataFromError(err))
 				s.mu.Lock()
-				s.state = SessionIdle
+				s.setStateIfOpenLocked(SessionIdle)
 				s.mu.Unlock()
 				return "", err
 			}
@@ -2563,10 +2583,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				}
 			}
 			s.mu.Lock()
-			if awaitReply {
-				s.state = SessionAwaitingInput
-			} else {
-				s.state = SessionIdle
+			if !s.closingOrClosedLocked() {
+				if awaitReply {
+					s.state = SessionAwaitingInput
+				} else {
+					s.state = SessionIdle
+				}
 			}
 			s.mu.Unlock()
 			return text, nil
@@ -2575,7 +2597,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 	s.emit(EventTurnLimit, TurnLimitData{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput})
 	s.mu.Lock()
-	s.state = SessionIdle
+	s.setStateIfOpenLocked(SessionIdle)
 	s.mu.Unlock()
 	return lastText, nil
 }

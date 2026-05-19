@@ -2180,6 +2180,22 @@ func (a *blockingAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stre
 	return nil, llm.ErrStreamUnsupported
 }
 
+type closeRaceAdapter struct {
+	name    string
+	blocked chan struct{}
+	release chan struct{}
+}
+
+func (a *closeRaceAdapter) Name() string { return a.name }
+func (a *closeRaceAdapter) Complete(context.Context, llm.Request) (llm.Response, error) {
+	close(a.blocked)
+	<-a.release
+	return finalResponse("done"), nil
+}
+func (a *closeRaceAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
+}
+
 func TestSession_Close_CancelsInFlightLLMCall(t *testing.T) {
 	blocked := make(chan struct{})
 	c := llm.NewClient()
@@ -2204,6 +2220,41 @@ func TestSession_Close_CancelsInFlightLLMCall(t *testing.T) {
 		// ProcessInput returned -- Close() successfully cancelled it.
 	case <-time.After(5 * time.Second):
 		t.Fatal("ProcessInput did not return after Close() -- in-flight LLM call not cancelled")
+	}
+}
+
+func TestSession_CloseCannotBeReopenedByLateTurnCompletion(t *testing.T) {
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	c := llm.NewClient()
+	c.Register(&closeRaceAdapter{name: "openai", blocked: blocked, release: release})
+	dir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	processDone := make(chan error, 1)
+	go func() {
+		_, err := sess.ProcessInput(context.Background(), "hello", nil)
+		processDone <- err
+	}()
+
+	<-blocked
+	sess.Close()
+	close(release)
+
+	select {
+	case <-processDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("ProcessInput did not return after releasing adapter")
+	}
+	if got := sess.State(); got != SessionClosed {
+		t.Fatalf("late ProcessInput completion reopened session: got %s want %s", got, SessionClosed)
 	}
 }
 
