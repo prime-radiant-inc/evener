@@ -119,8 +119,8 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
   });
   pass(renderer.lastSubmittedTurn && renderer.lastSubmittedTurn.text === "replayed sha image",
     "replayed USER_INPUT should update retry text");
-  pass(renderer.lastSubmittedTurn.items.length === 0,
-    "sha-only replay images should not be stored as retryable attachments");
+  pass(renderer.lastSubmittedTurn.items.length === 1 && renderer.lastSubmittedTurn.items[0].sha === "sha-only",
+    "sha-only replay images should be retained for retry hydration");
 
   renderer.lastUserText = "say hello";
   renderer.lastSubmittedTurn = { text: "say hello", items: [{ type: "image", media_type: "image/png", data: "abc", name: "shot.png" }] };

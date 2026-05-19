@@ -119,6 +119,7 @@ type hubModel struct {
 	authStatus         authStatus
 	authStatusSeen     bool
 	sessionStatusError string
+	statusRefreshToken int
 
 	authLoginProvider string
 	authLoginFlowID   string
@@ -403,6 +404,9 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		m.spawnSubmitting = false
 		if m.mode == hubModeSession && m.detail.Ref == msg.detail.Ref {
+			if msg.expectedState != "" && msg.expectedRefreshToken != m.statusRefreshToken {
+				return m, nil
+			}
 			if msg.expectedState != "" && (m.detail.State != msg.expectedState || msg.detail.State != msg.expectedState) {
 				return m, nil
 			}
@@ -2420,7 +2424,8 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			// keeps Interrupt=false for the entire turn (kata 4yvd).
 			if previous != params.Status.Type && m.client != nil {
 				if ref, ok := m.currentRef(); ok {
-					cmd = fetchHubSessionExpectingState(m.client, ref, params.Status.Type)
+					m.statusRefreshToken++
+					cmd = fetchHubSessionExpectingStateToken(m.client, ref, params.Status.Type, m.statusRefreshToken)
 				}
 			}
 		}

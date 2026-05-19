@@ -1892,8 +1892,26 @@ func TestHubModelStatusRefreshIgnoresStaleSessionRead(t *testing.T) {
 	got.detail.State = appwire.ThreadStatusProcessing
 	got.detail.Capabilities.Send = false
 	got.detail.Capabilities.Interrupt = true
+	got.statusRefreshToken = 2
 	updated, _ = got.Update(hubSessionMsg{
-		expectedState: appwire.ThreadStatusProcessing,
+		expectedState:        appwire.ThreadStatusProcessing,
+		expectedRefreshToken: 1,
+		detail: hubSessionDetail{
+			Ref:   "local:01SEND",
+			State: appwire.ThreadStatusProcessing,
+			Capabilities: hubSessionCapabilities{
+				Send: true,
+			},
+		},
+	})
+	got = updated.(hubModel)
+	if got.detail.State != appwire.ThreadStatusProcessing || got.detail.Capabilities.Send || !got.detail.Capabilities.Interrupt {
+		t.Fatalf("detail=%+v, want old matching-state refresh token ignored", got.detail)
+	}
+
+	updated, _ = got.Update(hubSessionMsg{
+		expectedState:        appwire.ThreadStatusProcessing,
+		expectedRefreshToken: 2,
 		detail: hubSessionDetail{
 			Ref:   "local:01SEND",
 			State: appwire.ThreadStatusIdle,
@@ -1911,7 +1929,8 @@ func TestHubModelStatusRefreshIgnoresStaleSessionRead(t *testing.T) {
 	}
 
 	updated, _ = got.Update(hubSessionMsg{
-		expectedState: appwire.ThreadStatusProcessing,
+		expectedState:        appwire.ThreadStatusProcessing,
+		expectedRefreshToken: 2,
 		detail: hubSessionDetail{
 			Ref:   "local:01SEND",
 			State: appwire.ThreadStatusProcessing,

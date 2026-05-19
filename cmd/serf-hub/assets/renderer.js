@@ -732,14 +732,16 @@
       for (const item of items || []) {
         if (!item) continue;
         const url = String(item.url || "").trim();
+        const sha = String(item.sha || item.sha256 || "").trim();
         const data = item.data;
-        if (!url && itemDataToBase64(data) === "") continue;
+        if (!url && !sha && itemDataToBase64(data) === "") continue;
         out.push({
           type: item.type || "image",
           mediaType: item.mediaType || item.media_type || "",
           media_type: item.media_type || item.mediaType || "",
           data,
           url,
+          sha,
           name: item.name || "",
         });
       }
@@ -1174,12 +1176,34 @@
           return;
         }
         try {
-          await window.SerfAppwire.startTurn(appwireRef || sessionId, text, items);
+          const retryItems = await self.hydrateRetryAttachmentItems(items);
+          await window.SerfAppwire.startTurn(appwireRef || sessionId, text, retryItems);
           self.ensureLiveStream();
         } catch (err) {
           self.appendBanner("error", failPrefix + err.message, { source: "hub", title: errTitle });
         }
       };
+    },
+
+    async hydrateRetryAttachmentItems(items) {
+      const hydrated = [];
+      for (const item of items || []) {
+        if (!item) continue;
+        if (item.data || item.url || !item.sha) {
+          hydrated.push(item);
+          continue;
+        }
+        const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/images/" + encodeURIComponent(item.sha));
+        if (!resp.ok) throw new Error("image retry fetch failed: HTTP " + resp.status);
+        const data = await resp.arrayBuffer();
+        const contentType = resp.headers && resp.headers.get ? resp.headers.get("content-type") : "";
+        hydrated.push(Object.assign({}, item, {
+          data,
+          mediaType: item.mediaType || item.media_type || contentType || "image/png",
+          media_type: item.media_type || item.mediaType || contentType || "image/png",
+        }));
+      }
+      return hydrated;
     },
 
     // appendSteeringMessage classifies the injected steering text and routes
