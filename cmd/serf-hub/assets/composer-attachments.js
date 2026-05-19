@@ -18,6 +18,9 @@
 (function () {
   "use strict";
 
+  const maxAttachmentCount = 8;
+  const maxAttachmentBytes = 8 * 1024 * 1024;
+
   // Convert any image blob to a PNG blob via canvas. For PNG inputs we still
   // round-trip through canvas to strip color profiles + EXIF — matches the
   // TUI's "always re-encode pasted clipboard image data to PNG" rule (codex
@@ -91,15 +94,32 @@
     }
   }
 
-  // assignMarkerAndInsert is the shared post-push step for paste / drop /
-  // file-picker: stamp item.marker, then insert "[image N]" at the cursor
+  // reserveMarkerAndInsert is the shared pre-decode step for paste / drop /
+  // file-picker: reserve marker N, then insert "[image N]" at the cursor
   // of pendingState.__textarea (if wired). Skips insertion when __textarea
-  // is unset (e.g. a chip-only consumer) but still stamps the marker so
-  // chip remove can find the substring it would have inserted.
-  function assignMarkerAndInsert(pendingState, item) {
+  // is unset (e.g. a chip-only consumer), but still returns the marker so
+  // the finalized item can keep stable numbering.
+  function reserveMarkerAndInsert(pendingState) {
     const n = nextMarker(pendingState);
-    item.marker = n;
     insertAtCursor(pendingState.__textarea, "[image " + n + "]");
+    return n;
+  }
+
+  function rejectFileName(file) {
+    return file && file.name ? file.name : "unknown";
+  }
+
+  function attachmentRejection(file, reservedCount) {
+    if (!file || typeof file.type !== "string" || file.type.indexOf("image/") !== 0) {
+      return rejectFileName(file);
+    }
+    if (reservedCount >= maxAttachmentCount) {
+      return rejectFileName(file) + " (maximum " + maxAttachmentCount + " images)";
+    }
+    if (typeof file.size === "number" && file.size > maxAttachmentBytes) {
+      return rejectFileName(file) + " (maximum 8 MB)";
+    }
+    return "";
   }
 
   // Pull every image File off a ClipboardEvent. Text portions are left for
@@ -140,7 +160,16 @@
       // so any accompanying text portion still gets inserted into the
       // textarea by the default handler. (preventDefault would block both.)
       let attached = 0;
+      let reserved = pendingState.items.length;
+      const rejected = [];
       for (const file of files) {
+        const rejection = attachmentRejection(file, reserved);
+        if (rejection) {
+          rejected.push(rejection);
+          continue;
+        }
+        reserved++;
+        const marker = reserveMarkerAndInsert(pendingState);
         try {
           const { blob, width, height } = await reencodeToPng(window, file);
           const buf = await blob.arrayBuffer();
@@ -152,20 +181,20 @@
             name: "paste-" + ts + ".png",
             width,
             height,
+            marker,
           };
           pendingState.items.push(item);
-          assignMarkerAndInsert(pendingState, item);
           attached++;
         } catch (err) {
-          // Best-effort: drop the failing image silently. The user can
-          // re-paste; we don't have a banner channel from this helper.
+          stripMarker(pendingState.__textarea, marker);
+          rejected.push(rejectFileName(file));
         }
       }
       // Auto-clear any stale rejection banner left over from a previous
       // drop / file-picker gesture (kata xpnk). A successful paste counts
       // as the user moving on — leaving an obsolete "Not an image: …"
       // message above a freshly-attached chip is misleading.
-      if (attached > 0) surfaceRejections(textareaEl, []);
+      surfaceRejections(textareaEl, attached > 0 && rejected.length === 0 ? [] : rejected);
       // Re-render any chip containers that were bound to this state.
       for (const container of pendingState.__containers || []) {
         renderAttachmentChips(container, pendingState);
@@ -233,16 +262,20 @@
     if (!Array.isArray(pendingState.items)) pendingState.items = [];
     const window = anchorEl.ownerDocument.defaultView;
     const files = Array.from(fileList || []);
-    const images = [];
     const rejected = [];
+    const images = [];
+    let reserved = pendingState.items.length;
     for (const f of files) {
-      if (f && typeof f.type === "string" && f.type.indexOf("image/") === 0) {
-        images.push(f);
-      } else {
-        rejected.push(f && f.name ? f.name : "unknown");
+      const rejection = attachmentRejection(f, reserved);
+      if (rejection) {
+        rejected.push(rejection);
+        continue;
       }
+      reserved++;
+      images.push(f);
     }
     for (const file of images) {
+      const marker = reserveMarkerAndInsert(pendingState);
       try {
         const { blob, width, height } = await reencodeToPng(window, file);
         const buf = await blob.arrayBuffer();
@@ -254,10 +287,11 @@
           name: file.name || ("attachment-" + ts + ".png"),
           width,
           height,
+          marker,
         };
         pendingState.items.push(item);
-        assignMarkerAndInsert(pendingState, item);
       } catch (err) {
+        stripMarker(pendingState.__textarea, marker);
         rejected.push((file && file.name) || "decode-failed");
       }
     }

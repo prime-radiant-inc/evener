@@ -276,6 +276,64 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
     pass(pending.items.length === 0, "expected items spliced even without __textarea, got " + pending.items.length);
   }
 
+  // ---------- Assertion 8: marker is inserted synchronously at original cursor ----------
+  {
+    const w = buildDom();
+    const ta = w.document.getElementById("ta");
+    const pending = { items: [] };
+    w.SerfComposerAttachments.attachComposerImageHandlers(ta, pending);
+
+    ta.value = "alpha omega";
+    setCursor(ta, 5);
+    ta.dispatchEvent(buildPasteEvent(w, makeFile(w, PNG_BYTES, "slow.png", "image/png")));
+    pass(ta.value === "alpha[image 1] omega",
+      "expected marker immediately at original cursor, got: " + JSON.stringify(ta.value));
+    setCursor(ta, ta.value.length);
+    ta.value += " typed-later";
+    await waitMicrotasks();
+    pass(pending.items.length === 1 && pending.items[0].marker === 1,
+      "expected async decode to attach marker=1 after synchronous insertion");
+    pass(ta.value === "alpha[image 1] omega typed-later",
+      "expected later typing not to move marker, got: " + JSON.stringify(ta.value));
+  }
+
+  // ---------- Assertion 9: oversized image is rejected before decode ----------
+  {
+    const w = buildDom();
+    const ta = w.document.getElementById("ta");
+    const errors = w.document.getElementById("errors");
+    const pending = { items: [] };
+    w.SerfComposerAttachments.attachComposerImageHandlers(ta, pending);
+
+    const big = makeFile(w, new Uint8Array(8 * 1024 * 1024 + 1), "big.png", "image/png");
+    setCursor(ta, 0);
+    ta.dispatchEvent(buildPasteEvent(w, big));
+    await waitMicrotasks();
+    pass(pending.items.length === 0, "expected oversized image rejected, got " + pending.items.length);
+    pass(ta.value === "", "expected no marker for oversized image, got: " + JSON.stringify(ta.value));
+    pass(!errors.hidden && /maximum 8 MB/.test(errors.textContent),
+      "expected size rejection banner, got hidden=" + errors.hidden + " text=" + JSON.stringify(errors.textContent));
+  }
+
+  // ---------- Assertion 10: attachment count limit is enforced before decode ----------
+  {
+    const w = buildDom();
+    const ta = w.document.getElementById("ta");
+    const errors = w.document.getElementById("errors");
+    const pending = { items: [] };
+    for (let i = 1; i <= 8; i++) {
+      pending.items.push({ type: "image", mediaType: "image/png", data: new ArrayBuffer(1), marker: i, name: "pre-" + i + ".png" });
+    }
+    w.SerfComposerAttachments.attachComposerImageHandlers(ta, pending);
+
+    ta.dispatchEvent(buildPasteEvent(w, makeFile(w, PNG_BYTES, "ninth.png", "image/png")));
+    await waitMicrotasks();
+    pass(pending.items.length === 8, "expected ninth image rejected, got " + pending.items.length);
+    pass(ta.value === "", "expected no marker for ninth image, got: " + JSON.stringify(ta.value));
+    pass(!errors.hidden && /maximum 8 images/.test(errors.textContent),
+      "expected count rejection banner, got hidden=" + errors.hidden + " text=" + JSON.stringify(errors.textContent));
+  }
+
   if (failures.length === 0) {
     console.log("PASS: all assertions");
     process.exit(0);

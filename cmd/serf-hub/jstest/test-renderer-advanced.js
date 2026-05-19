@@ -15,9 +15,10 @@ function newHarness() {
     <div id="conversation"
          data-session-id="01TEST"
          data-state="ended"></div>
-    <form data-input-form data-session-id="01TEST">
-      <textarea class="message-input"></textarea>
-    </form>
+	    <form data-input-form data-session-id="01TEST">
+	      <textarea class="message-input"></textarea>
+	      <button class="send-btn" type="submit"></button>
+	    </form>
   </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
 
   const { window } = dom;
@@ -235,7 +236,7 @@ await scenario("auto-advance steering becomes 'now on X'", [
 });
 
 // 6. Update without seeded description falls back to #N
-await scenario("update with no seeded description falls back to #N", [
+	await scenario("update with no seeded description falls back to #N", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "c1", tool_name: "task_list", arguments_json: JSON.stringify({
     action: "update", updates: [{ id: 7, status: "done" }],
@@ -246,8 +247,28 @@ await scenario("update with no seeded description falls back to #N", [
   const t = sysLines[0];
   if (!t.includes("#7")) return { ok: false, detail: "should fall back to #7: " + t };
   if (!t.includes("done")) return { ok: false, detail: "should say done: " + t };
-  return { ok: true };
-});
+	  return { ok: true };
+	});
 
-process.exit(allPass ? 0 : 1);
+	// 7. Queue capability is captured even when SESSION_START is idle, then
+	// respected when the same session later enters processing.
+	{
+	  const { window } = newHarness();
+	  await new Promise(r => setTimeout(r, 30));
+	  const btn = window.document.querySelector(".send-btn");
+	  window.SerfRenderer.handleData("SESSION_START", {
+	    session_id: "01TEST",
+	    status: "idle",
+	    capabilities: { queue: false },
+	  });
+	  window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "processing" });
+	  const ok = btn.getAttribute("data-capability-queue") === "false";
+	  console.log((ok ? "PASS" : "FAIL") + " — idle SESSION_START queue=false survives processing transition");
+	  if (!ok) {
+	    allPass = false;
+	    console.log("  detail: queue attr=" + btn.getAttribute("data-capability-queue"));
+	  }
+	}
+
+	process.exit(allPass ? 0 : 1);
 })();

@@ -479,13 +479,11 @@
         case "TURN_COMPLETED":
           if (!data.turnId || data.turnId === this.activeTurnId) this.setActiveTurnId("");
           break;
-        case "SESSION_START":
-          if (data.status === "processing" && data.capabilities && typeof data.capabilities.queue === "boolean") {
-            this.processingQueueCap = data.capabilities.queue;
-          }
-          if (data.session_id && data.session_id !== this.sessionId) {
-            this.sessionId = data.session_id;
-            history.replaceState(null, "", "/s/" + encodeURIComponent(data.session_id));
+	        case "SESSION_START":
+	          if (data.session_id && data.session_id !== this.sessionId) {
+	            this.sessionId = data.session_id;
+	            this.processingQueueCap = null;
+	            history.replaceState(null, "", "/s/" + encodeURIComponent(data.session_id));
             this.conversation.innerHTML = "";
             this.activeMessages.clear();
             this.activeTools.clear();
@@ -502,10 +500,13 @@
             this.renderComposerChips();
             // Reset to empty; the next QUEUE_CHANGED event (cold-load or
             // notification) will fill in authoritative state from the wire.
-            this.queueState = { depth: 0, preview: [] };
-            this.renderQueuePreview();
-          }
-          break;
+	            this.queueState = { depth: 0, preview: [] };
+	            this.renderQueuePreview();
+	          }
+	          if (data.capabilities && typeof data.capabilities.queue === "boolean") {
+	            this.processingQueueCap = data.capabilities.queue;
+	          }
+	          break;
         case "QUEUE_CHANGED":
           // Authoritative queue state from the daemon (kata r80p). The
           // depth + preview are stored verbatim; renderQueuePreview reads

@@ -877,6 +877,37 @@ func TestStreamUnavailableIgnoresPlainTextUnsupportedMessages(t *testing.T) {
 	}
 }
 
+func TestSession_ProviderAbortKeepsSessionIdle(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeErrAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) (llm.Response, error){
+			func(req llm.Request) (llm.Response, error) {
+				return llm.Response{}, llm.NewAbortError("user canceled")
+			},
+		},
+	})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	_, err = sess.ProcessInput(context.Background(), "cancel", nil)
+	if err == nil {
+		t.Fatal("expected abort error")
+	}
+	var abort *llm.AbortError
+	if !errors.As(err, &abort) {
+		t.Fatalf("err=%T %v, want AbortError", err, err)
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state=%s, want %s", got, SessionIdle)
+	}
+}
+
 func TestSession_NaturalCompletion_LoadsOnlyProfileDocs(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("AGENTS\n"), 0o644)

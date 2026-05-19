@@ -1471,7 +1471,7 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 			// Claude Code / codex. The transcript records an interrupt
 			// marker so the model sees, on the next turn, that the
 			// previous round was cut short.
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+			if isTurnCancellation(ctx, err) {
 				s.mu.Lock()
 				// Only flip back to idle when the session isn't already
 				// closed (e.g. daemon shutdown raced the interrupt).
@@ -2110,6 +2110,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 
 		if err != nil {
+			if isTurnCancellation(ctx, err) {
+				return "", err
+			}
+
 			// Content filter recovery: compaction often removes the offending
 			// content, allowing the next request to succeed. Try once.
 			var cfe *llm.ContentFilterError
@@ -2581,6 +2585,14 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 		return sessionModelResponse{}, err
 	}
 	return sessionModelResponse{Response: resp}, nil
+}
+
+func isTurnCancellation(ctx context.Context, err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+		return true
+	}
+	var abort *llm.AbortError
+	return errors.As(err, &abort)
 }
 
 func streamUnavailable(err error) bool {
