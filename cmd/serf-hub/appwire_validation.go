@@ -7,9 +7,12 @@ import (
 )
 
 func validateAppWireInputItems(items []appwire.InputItem) error {
-	imageCount := 0
+	return validateAppWireInputItemsWithExisting(items, 0)
+}
+
+func validateAppWireInputItemsWithExisting(items []appwire.InputItem, imageCount int) error {
 	for i, it := range items {
-		if it.Type != "image" {
+		if !isImageInputItem(it) {
 			continue
 		}
 		imageCount++
@@ -21,4 +24,8 @@ func validateAppWireInputItems(items []appwire.InputItem) error {
 		}
 	}
 	return nil
+}
+
+func isImageInputItem(it appwire.InputItem) bool {
+	return it.Type == "image" || it.Type == "input_image"
 }

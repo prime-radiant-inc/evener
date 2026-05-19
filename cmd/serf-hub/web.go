@@ -2641,7 +2641,7 @@ type sendRequest struct {
 const (
 	sendMaxImageItems   = 8
 	sendMaxImageBytes   = 8 * 1024 * 1024  // per-image
-	sendMaxRequestBytes = 40 * 1024 * 1024 // total request body
+	sendMaxRequestBytes = 96 * 1024 * 1024 // total request body
 )
 
 func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string) {
@@ -2668,7 +2668,7 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 			return
 		}
 	}
-	if err := validateAppWireInputItems(body.Items); err != nil {
+	if err := validateAppWireInputItemsWithExisting(body.Items, len(body.Images)); err != nil {
 		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
 		return
 	}

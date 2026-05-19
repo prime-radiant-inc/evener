@@ -8,12 +8,19 @@ import (
 
 func TestValidateAppWireInputItemsRejectsOversizedImage(t *testing.T) {
 	err := validateAppWireInputItems([]appwire.InputItem{{
-		Type: "image",
+		Type: "input_image",
 		Name: "too-large.png",
 		Data: make([]byte, sendMaxImageBytes+1),
 	}})
 	if err == nil {
 		t.Fatal("validateAppWireInputItems accepted oversized image")
+	}
+}
+
+func TestValidateAppWireInputItemsCountsExistingImages(t *testing.T) {
+	items := []appwire.InputItem{{Type: "input_image", Data: []byte("x")}}
+	if err := validateAppWireInputItemsWithExisting(items, sendMaxImageItems); err == nil {
+		t.Fatal("validateAppWireInputItemsWithExisting accepted combined image count over limit")
 	}
 }
 
@@ -32,5 +39,13 @@ func TestTranscriptJSONLMaxLineCoversMaxImagePayload(t *testing.T) {
 	encodedPayloadBytes := sendMaxImageItems*encodedImageBytes + 1024*1024
 	if transcriptJSONLMaxLineBytes < encodedPayloadBytes {
 		t.Fatalf("transcriptJSONLMaxLineBytes=%d, want at least %d", transcriptJSONLMaxLineBytes, encodedPayloadBytes)
+	}
+}
+
+func TestSendMaxRequestBytesCoversMaxImagePayload(t *testing.T) {
+	encodedImageBytes := ((sendMaxImageBytes + 2) / 3) * 4
+	encodedPayloadBytes := sendMaxImageItems*encodedImageBytes + 1024*1024
+	if sendMaxRequestBytes < encodedPayloadBytes {
+		t.Fatalf("sendMaxRequestBytes=%d, want at least %d", sendMaxRequestBytes, encodedPayloadBytes)
 	}
 }
