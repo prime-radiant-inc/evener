@@ -20,6 +20,8 @@ type Client struct {
 	pending       map[string]pendingRequest
 	notifications chan Notification
 	pendingCoord  PendingCoordinator
+	featuresMu    sync.RWMutex
+	features      FeatureSet
 }
 
 type pendingRequest struct {
@@ -161,7 +163,18 @@ func (c *Client) failPending(err error) {
 func (c *Client) Initialize(ctx context.Context, params InitializeParams) (InitializeResponse, error) {
 	var out InitializeResponse
 	err := c.request(ctx, MethodInitialize, params, &out)
+	if err == nil {
+		c.featuresMu.Lock()
+		c.features = out.Features
+		c.featuresMu.Unlock()
+	}
 	return out, err
+}
+
+func (c *Client) SupportsTurnDrainAsSteerInput() bool {
+	c.featuresMu.RLock()
+	defer c.featuresMu.RUnlock()
+	return c.features.TurnDrainAsSteerInput
 }
 
 func (c *Client) ThreadList(ctx context.Context, params ThreadListParams) (ThreadListResponse, error) {

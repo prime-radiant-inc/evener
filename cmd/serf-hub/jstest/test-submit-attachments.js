@@ -143,7 +143,7 @@ async function testMultiAttachmentEntries() {
     send(body) {
       const msg = JSON.parse(body);
       if (msg.method === "initialize") {
-        setTimeout(() => { if (this.listeners.message) this.listeners.message[0]({ data: JSON.stringify({ id: msg.id, result: {} }) }); }, 0);
+        setTimeout(() => { if (this.listeners.message) this.listeners.message[0]({ data: JSON.stringify({ id: msg.id, result: { features: { turnDrainAsSteerInput: true } } }) }); }, 0);
         return;
       }
       sentJSON = msg;
@@ -189,7 +189,7 @@ async function testEmptyAttachmentsSendsNoImageItems() {
     send(body) {
       const msg = JSON.parse(body);
       if (msg.method === "initialize") {
-        setTimeout(() => { if (this.listeners.message) this.listeners.message[0]({ data: JSON.stringify({ id: msg.id, result: {} }) }); }, 0);
+        setTimeout(() => { if (this.listeners.message) this.listeners.message[0]({ data: JSON.stringify({ id: msg.id, result: { features: { turnDrainAsSteerInput: true } } }) }); }, 0);
         return;
       }
       sentJSON = msg;

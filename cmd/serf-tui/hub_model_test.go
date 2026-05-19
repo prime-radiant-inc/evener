@@ -1668,7 +1668,11 @@ func TestHubModelSpawnFormFocusControlsHarnessAndModel(t *testing.T) {
 
 func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 	var gotSpawn appwire.ThreadStartParams
-	app := appserver.NewServer(appserver.ServerConfig{ServerName: "serf-hub", SourceID: "local"})
+	app := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "serf-hub",
+		SourceID:   "local",
+		Features:   appwire.FeatureSet{TurnDrainAsSteerInput: true},
+	})
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return threadListResponse(hubTreeResponse{Projects: []hubTreeProject{{
 			Key:        "serf",
@@ -3434,7 +3438,11 @@ func TestHubModelIgnoresNotificationsForOtherSessions(t *testing.T) {
 
 func newTestHubClient(t *testing.T, register func(*appserver.Server)) (*appwire.Client, func()) {
 	t.Helper()
-	app := appserver.NewServer(appserver.ServerConfig{ServerName: "serf-hub", SourceID: "local"})
+	app := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "serf-hub",
+		SourceID:   "local",
+		Features:   appwire.FeatureSet{TurnDrainAsSteerInput: true},
+	})
 	appserver.HandleTyped(app.Router(), appwire.MethodSerfHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
 		return appwire.HarnessListResponse{Data: []appwire.HarnessDescriptor{{ID: "serf", Label: "serf", Kind: "serf"}}}, nil
 	})

@@ -140,7 +140,11 @@ func TestWeb_ApiSpawn_ForwardsImageItemsToThreadStart(t *testing.T) {
 func TestWeb_Send_ImageAttachmentsForwardedToDaemonStartTurn(t *testing.T) {
 	dir := t.TempDir()
 	// Stand up a fake daemon that records TurnStart params.
-	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon-test", SourceID: "local"})
+	daemon := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "daemon-test",
+		SourceID:   "local",
+		Features:   appwire.FeatureSet{TurnDrainAsSteerInput: true},
+	})
 	gotItems := make(chan []appwire.InputItem, 1)
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 		select {
@@ -150,7 +154,10 @@ func TestWeb_Send_ImageAttachmentsForwardedToDaemonStartTurn(t *testing.T) {
 		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_send_img", Status: appwire.TurnStatusRunning}}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodInitialize, func(_ context.Context, _ appwire.InitializeParams) (appwire.InitializeResponse, error) {
-		return appwire.InitializeResponse{ServerInfo: appwire.ServerInfo{Name: "daemon-test"}}, nil
+		return appwire.InitializeResponse{
+			ServerInfo: appwire.ServerInfo{Name: "daemon-test"},
+			Features:   appwire.FeatureSet{TurnDrainAsSteerInput: true},
+		}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{
@@ -239,7 +246,11 @@ func TestWeb_Send_ImageAttachmentsForwardedToDaemonStartTurn(t *testing.T) {
 // the browser composer-attachments pipeline emits.
 func TestWeb_Send_ItemsShapeForwardedToDaemonStartTurn(t *testing.T) {
 	dir := t.TempDir()
-	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon-test", SourceID: "local"})
+	daemon := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "daemon-test",
+		SourceID:   "local",
+		Features:   appwire.FeatureSet{TurnDrainAsSteerInput: true},
+	})
 	gotItems := make(chan []appwire.InputItem, 1)
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 		select {
@@ -444,7 +455,11 @@ func TestWeb_Queue_ItemsShapeForwardedToDaemonQueueTurn(t *testing.T) {
 // drains atomically.
 func TestWeb_DrainAsSteer_ItemsShapeSendsAtomicDrain(t *testing.T) {
 	dir := t.TempDir()
-	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon-test", SourceID: "local"})
+	daemon := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "daemon-test",
+		SourceID:   "local",
+		Features:   appwire.FeatureSet{TurnDrainAsSteerInput: true},
+	})
 	queued := make(chan struct{}, 1)
 	drained := make(chan appwire.TurnDrainAsSteerParams, 1)
 	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
@@ -462,7 +477,10 @@ func TestWeb_DrainAsSteer_ItemsShapeSendsAtomicDrain(t *testing.T) {
 		return appwire.EmptyResponse{}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodInitialize, func(_ context.Context, _ appwire.InitializeParams) (appwire.InitializeResponse, error) {
-		return appwire.InitializeResponse{ServerInfo: appwire.ServerInfo{Name: "daemon-test"}}, nil
+		return appwire.InitializeResponse{
+			ServerInfo: appwire.ServerInfo{Name: "daemon-test"},
+			Features:   appwire.FeatureSet{TurnDrainAsSteerInput: true},
+		}, nil
 	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		return appwire.ThreadReadResponse{Thread: appwire.Thread{

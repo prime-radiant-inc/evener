@@ -43,7 +43,11 @@ func TestSendHubInputIncludesAttachments(t *testing.T) {
 	first := writeAttachmentTempFile(t, []byte("\x89PNG\r\n\x1a\nfirst-png-bytes"))
 	second := writeAttachmentTempFile(t, []byte("\x89PNG\r\n\x1a\nsecond-png-bytes"))
 
-	app := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
+	app := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "hub",
+		SourceID:   "local",
+		Features:   appwire.FeatureSet{TurnDrainAsSteerInput: true},
+	})
 	var got appwire.TurnStartParams
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
 		got = params
@@ -96,7 +100,11 @@ func TestSendHubInputIncludesAttachments(t *testing.T) {
 func TestSendHubQueueIncludesAttachments(t *testing.T) {
 	path := writeAttachmentTempFile(t, []byte("\x89PNG\r\n\x1a\nqueue-png-bytes"))
 
-	app := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
+	app := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "hub",
+		SourceID:   "local",
+		Features:   appwire.FeatureSet{TurnDrainAsSteerInput: true},
+	})
 	var got appwire.TurnQueueParams
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
 		got = params
@@ -136,7 +144,11 @@ func TestSendHubQueueIncludesAttachments(t *testing.T) {
 func TestSendHubDrainAsSteerIncludesAttachments(t *testing.T) {
 	path := writeAttachmentTempFile(t, []byte("\x89PNG\r\n\x1a\nsteer-png-bytes"))
 
-	app := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
+	app := appserver.NewServer(appserver.ServerConfig{
+		ServerName: "hub",
+		SourceID:   "local",
+		Features:   appwire.FeatureSet{TurnDrainAsSteerInput: true},
+	})
 	var drainParams appwire.TurnDrainAsSteerParams
 	appserver.HandleTyped(app.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
 		t.Fatalf("turn/queue should not be called for force-steer: %+v", params)
@@ -171,6 +183,34 @@ func TestSendHubDrainAsSteerIncludesAttachments(t *testing.T) {
 	}
 	if !bytes.Equal(item.Data, []byte("\x89PNG\r\n\x1a\nsteer-png-bytes")) {
 		t.Errorf("item.Data=%x, want steer png bytes", item.Data)
+	}
+}
+
+func TestSendHubDrainAsSteerFallsBackWithoutAtomicFeature(t *testing.T) {
+	app := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
+	var queueParams []appwire.TurnQueueParams
+	var drainParams appwire.TurnDrainAsSteerParams
+	appserver.HandleTyped(app.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
+		queueParams = append(queueParams, params)
+		return appwire.EmptyResponse{}, nil
+	})
+	appserver.HandleTyped(app.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
+		drainParams = params
+		return appwire.EmptyResponse{}, nil
+	})
+	client, cleanup := newTUIAppWireClient(t, app)
+	defer cleanup()
+
+	msg := sendHubDrainAsSteer(client, appwire.Ref{SourceID: "local", ThreadID: "th_s"}, "steer me", "steer me", nil)()
+	drainMsg, ok := msg.(hubDrainAsSteerMsg)
+	if !ok || drainMsg.err != nil {
+		t.Fatalf("msg=%T err=%v", msg, drainMsg.err)
+	}
+	if len(queueParams) != 1 || queueParams[0].Text != "steer me" {
+		t.Fatalf("queueParams=%+v", queueParams)
+	}
+	if drainParams.Ref != "local:th_s" || drainParams.Text != "" || len(drainParams.Items) != 0 {
+		t.Fatalf("drainParams=%+v", drainParams)
 	}
 }
 

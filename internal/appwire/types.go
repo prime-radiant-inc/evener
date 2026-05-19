@@ -117,6 +117,9 @@ type FeatureSet struct {
 	ModelList         bool `json:"modelList"`
 	DirectoryComplete bool `json:"directoryComplete"`
 	Auth              bool `json:"auth"`
+	// TurnDrainAsSteerInput means turn/drainAsSteer accepts Text/Items and
+	// atomically appends them before draining.
+	TurnDrainAsSteerInput bool `json:"turnDrainAsSteerInput"`
 }
 
 type Thread struct {

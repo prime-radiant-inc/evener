@@ -28,6 +28,7 @@
   const notificationHandlers = new Set();
   const connectionLostHandlers = new Set();
   const liveItemState = new Map();
+  let serverFeatures = {};
 
   function rpcURL() {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -55,7 +56,10 @@
         request(METHOD.initialize, {
           clientInfo: { name: "serf-web", version: "0.1.0" },
           capabilities: {},
-        }).then(() => resolve(sock), (err) => {
+        }).then((resp) => {
+          serverFeatures = (resp && resp.features) || {};
+          resolve(sock);
+        }, (err) => {
           initializeFailed = true;
           if (ws === sock) ws = null;
           connecting = null;
@@ -370,7 +374,18 @@
   // drainAsSteer drains the daemon's input queue into a single STEERING
   // injection on the active turn (kata 0bq1). Text/attachments ride on the
   // drain request so the daemon appends and drains them atomically.
-  function drainAsSteer(sessionId, text, attachments) {
+  async function drainAsSteer(sessionId, text, attachments) {
+    const hasText = !!(text && String(text).trim());
+    const hasAttachments = !!(attachments && attachments.length > 0);
+    if (hasText || hasAttachments) {
+      await connect();
+      if (!serverFeatures.turnDrainAsSteerInput) {
+        await queueTurn(sessionId, text || "", attachments || []);
+        return optimisticCall(METHOD.turnDrainAsSteer, {
+          ref: refForSession(sessionId),
+        }, { text: "" });
+      }
+    }
     return optimisticCall(METHOD.turnDrainAsSteer, {
       ref: refForSession(sessionId),
       text: text || "",
