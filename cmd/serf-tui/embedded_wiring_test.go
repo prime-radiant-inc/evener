@@ -193,6 +193,111 @@ func TestEmbeddedDaemon_InputLoopWiresInterruptForLiveTurn(t *testing.T) {
 	}
 }
 
+func TestEmbeddedDaemon_InterruptedQueueDrainStaysProcessingAndInterruptible(t *testing.T) {
+	dir := t.TempDir()
+	adapter := &embeddedMultiBlockingAdapter{
+		name:    "openai",
+		started: make(chan struct{}, 2),
+		done:    make(chan error, 2),
+	}
+	c := llm.NewClient()
+	c.Register(adapter)
+	profile := agent.NewOpenAIProfile("gpt-test")
+	env := agent.NewLocalExecutionEnvironment(dir)
+	sess, err := agent.NewSession(c, profile, env, agent.SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	srv := server.NewServer(server.ServerConfig{})
+	srv.SetAppIdentity("local", sess.ID())
+	e := &embeddedServer{
+		srv:        srv,
+		sess:       sess,
+		client:     c,
+		profile:    profile,
+		env:        env,
+		sessionCfg: agent.SessionConfig{StateDir: dir},
+	}
+	e.wireSession(sess)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	defer sess.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.inputLoop(ctx)
+
+	resp, err := http.Post(ts.URL+"/input", "application/json", strings.NewReader(`{"text":"block"}`))
+	if err != nil {
+		t.Fatalf("POST /input: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("input status=%d", resp.StatusCode)
+	}
+	select {
+	case <-adapter.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first turn did not start")
+	}
+	if err := sess.Enqueue(context.Background(), "queued drain"); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	resp, err = http.Post(ts.URL+"/interrupt", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST first interrupt: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("first interrupt status=%d", resp.StatusCode)
+	}
+	select {
+	case err := <-adapter.done:
+		if err == nil {
+			t.Fatal("first turn completed without cancellation")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first turn was not canceled")
+	}
+	select {
+	case <-adapter.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued drained turn did not start")
+	}
+
+	resp, err = http.Get(ts.URL + "/status")
+	if err != nil {
+		t.Fatalf("GET /status: %v", err)
+	}
+	var status server.StatusInfo
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		resp.Body.Close()
+		t.Fatalf("decode status: %v", err)
+	}
+	resp.Body.Close()
+	if status.State != "PROCESSING" || status.Capabilities.Send {
+		t.Fatalf("status during drained turn = %+v, want processing with send disabled", status)
+	}
+
+	resp, err = http.Post(ts.URL+"/interrupt", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST second interrupt: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("second interrupt status=%d", resp.StatusCode)
+	}
+	select {
+	case err := <-adapter.done:
+		if err == nil {
+			t.Fatal("drained turn completed without cancellation")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("drained turn was not canceled by second interrupt")
+	}
+}
+
 // TestEmbeddedDaemon_QueueWithImagesRoundTrip drives an appwire
 // turn/queue request carrying an image attachment, then a
 // turn/drainAsSteer, and verifies the underlying agent.Session's
@@ -290,5 +395,23 @@ func (a *embeddedBlockingAdapter) Complete(ctx context.Context, req llm.Request)
 	return llm.Response{Provider: a.name, Model: req.Model}, err
 }
 func (a *embeddedBlockingAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
+}
+
+type embeddedMultiBlockingAdapter struct {
+	name    string
+	started chan struct{}
+	done    chan error
+}
+
+func (a *embeddedMultiBlockingAdapter) Name() string { return a.name }
+func (a *embeddedMultiBlockingAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	a.started <- struct{}{}
+	<-ctx.Done()
+	err := ctx.Err()
+	a.done <- err
+	return llm.Response{Provider: a.name, Model: req.Model}, err
+}
+func (a *embeddedMultiBlockingAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
 	return nil, llm.ErrStreamUnsupported
 }

@@ -304,6 +304,8 @@ func runServe(args []string) error {
 					drainCtx, cancelDrain := context.WithCancel(root)
 					drainCtx = agent.WithQueuedInputDrainOnInterruptHandler(drainCtx, root, nextTurnCtx)
 					currentCancel = cancelDrain
+					srv.SetProcessing(true)
+					srv.SetState("PROCESSING")
 					srv.SetCancelFunc(cancelDrain)
 					return drainCtx, cancelDrain
 				}

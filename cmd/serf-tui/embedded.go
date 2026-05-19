@@ -319,6 +319,8 @@ func (e *embeddedServer) inputLoop(ctx context.Context) {
 				drainCtx, cancelDrain := context.WithCancel(root)
 				drainCtx = agent.WithQueuedInputDrainOnInterruptHandler(drainCtx, root, nextTurnCtx)
 				currentCancel = cancelDrain
+				e.srv.SetProcessing(true)
+				e.srv.SetState("PROCESSING")
 				e.srv.SetCancelFunc(cancelDrain)
 				return drainCtx, cancelDrain
 			}
