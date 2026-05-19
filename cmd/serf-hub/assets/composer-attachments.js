@@ -128,6 +128,30 @@
     return "";
   }
 
+  function reserveAttachmentItems(pendingState, files, rejected, nameForFile) {
+    const items = [];
+    let reserved = pendingState.items.length;
+    for (const file of files) {
+      const rejection = attachmentRejection(file, reserved);
+      if (rejection) {
+        rejected.push(rejection);
+        continue;
+      }
+      reserved++;
+      const marker = reserveMarkerAndInsert(pendingState);
+      const item = {
+        type: "image",
+        mediaType: "image/png",
+        name: nameForFile(file),
+        marker,
+        pending: true,
+      };
+      pendingState.items.push(item);
+      items.push({ file, item, marker });
+    }
+    return items;
+  }
+
   // Pull every image File off a ClipboardEvent. Text portions are left for
   // the browser's default paste handler so "see this:" + screenshot still
   // inserts the prose alongside the chip.
@@ -166,24 +190,10 @@
       // so any accompanying text portion still gets inserted into the
       // textarea by the default handler. (preventDefault would block both.)
       let attached = 0;
-      let reserved = pendingState.items.length;
       const rejected = [];
-      for (const file of files) {
-        const rejection = attachmentRejection(file, reserved);
-        if (rejection) {
-          rejected.push(rejection);
-          continue;
-        }
-        reserved++;
-        const marker = reserveMarkerAndInsert(pendingState);
-        const item = {
-          type: "image",
-          mediaType: "image/png",
-          name: "paste-" + Date.now() + ".png",
-          marker,
-          pending: true,
-        };
-        pendingState.items.push(item);
+      const reservedItems = reserveAttachmentItems(pendingState, files, rejected, () => "paste-" + Date.now() + ".png");
+      for (const reserved of reservedItems) {
+        const { file, item, marker } = reserved;
         try {
           const { blob, width, height } = await reencodeToPng(window, file);
           const buf = await blob.arrayBuffer();
@@ -272,27 +282,14 @@
     const window = anchorEl.ownerDocument.defaultView;
     const files = Array.from(fileList || []);
     const rejected = [];
-    const images = [];
-    let reserved = pendingState.items.length;
-    for (const f of files) {
-      const rejection = attachmentRejection(f, reserved);
-      if (rejection) {
-        rejected.push(rejection);
-        continue;
-      }
-      reserved++;
-      images.push(f);
-    }
-    for (const file of images) {
-      const marker = reserveMarkerAndInsert(pendingState);
-      const item = {
-        type: "image",
-        mediaType: "image/png",
-        name: file.name || ("attachment-" + Date.now() + ".png"),
-        marker,
-        pending: true,
-      };
-      pendingState.items.push(item);
+    const reservedItems = reserveAttachmentItems(
+      pendingState,
+      files,
+      rejected,
+      (file) => file.name || ("attachment-" + Date.now() + ".png"),
+    );
+    for (const reserved of reservedItems) {
+      const { file, item, marker } = reserved;
       try {
         const { blob, width, height } = await reencodeToPng(window, file);
         const buf = await blob.arrayBuffer();

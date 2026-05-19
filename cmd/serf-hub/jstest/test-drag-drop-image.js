@@ -136,7 +136,9 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
   {
     const w = buildDom();
     const dropZone = w.document.getElementById("drop");
+    const ta = w.document.getElementById("ta");
     const pending = { items: [] };
+    w.SerfComposerAttachments.attachComposerImageHandlers(ta, pending);
     w.SerfComposerAttachments.attachComposerDropHandlers(dropZone, pending);
 
     const files = [
@@ -145,6 +147,7 @@ function pass(cond, msg) { if (!cond) failures.push("FAIL: " + msg); }
     ];
     const ev = buildDropEvent(w, "drop", files);
     dropZone.dispatchEvent(ev);
+    pass(ta.value === "[image 1][image 2]", "expected both markers inserted synchronously, got " + JSON.stringify(ta.value));
     await waitMicrotasks();
 
     pass(pending.items.length === 2, "expected 2 queued items, got " + pending.items.length);
