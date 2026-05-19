@@ -190,6 +190,36 @@ func TestOpenAIStateDirFromEnvUsesWindowsHomePrecedence(t *testing.T) {
 	}
 }
 
+func TestOpenAIStateDirFromEnvUsesWindowsHomeDrivePath(t *testing.T) {
+	got := openAIStateDirFromLookup("windows", func(key string) (string, bool) {
+		env := map[string]string{
+			"HOME":      `C:\msys\home\jesse`,
+			"HOMEDRIVE": `D:`,
+			"HOMEPATH":  `\Users\Jesse`,
+		}
+		value, ok := env[key]
+		return value, ok
+	})
+	want := filepath.Join(`D:\Users\Jesse`, ".local", "state", "serf")
+	if got != want {
+		t.Fatalf("stateDir=%q, want %q", got, want)
+	}
+}
+
+func TestOpenAIStateDirFromEnvWindowsIgnoresHomeFallback(t *testing.T) {
+	got := openAIStateDirFromLookup("windows", func(key string) (string, bool) {
+		env := map[string]string{
+			"HOME": `C:\msys\home\jesse`,
+		}
+		value, ok := env[key]
+		return value, ok
+	})
+	want := filepath.Join(os.TempDir(), "serf")
+	if got != want {
+		t.Fatalf("stateDir=%q, want %q", got, want)
+	}
+}
+
 func TestOpenAIStateDirFromEnvDoesNotFallBackToProcessEnv(t *testing.T) {
 	processStateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", processStateHome)

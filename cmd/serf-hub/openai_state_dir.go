@@ -35,6 +35,7 @@ func openAIStateDirFromLookup(goos string, lookup func(string) (string, bool)) s
 		if hasDrive && hasPath && strings.TrimSpace(drive) != "" && strings.TrimSpace(path) != "" {
 			return filepath.Join(strings.TrimSpace(drive)+strings.TrimSpace(path), ".local", "state", "serf")
 		}
+		return filepath.Join(os.TempDir(), "serf")
 	}
 	if home, ok := lookup("HOME"); ok && strings.TrimSpace(home) != "" {
 		return filepath.Join(strings.TrimSpace(home), ".local", "state", "serf")
