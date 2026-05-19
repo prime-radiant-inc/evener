@@ -67,6 +67,12 @@
     pendingState.__nextMarker = 0;
   }
 
+  function nextAttachmentGesture(pendingState) {
+    if (!pendingState) return 0;
+    pendingState.__attachmentGestureVersion = (pendingState.__attachmentGestureVersion || 0) + 1;
+    return pendingState.__attachmentGestureVersion;
+  }
+
   // insertAtCursor splices `str` into textareaEl.value at the current
   // selection (replacing any selected range) and moves the cursor to just
   // after the inserted text. No-op if textareaEl is falsy.
@@ -186,6 +192,7 @@
     textareaEl.addEventListener("paste", async (e) => {
       const files = imageFilesFromClipboard(e.clipboardData);
       if (files.length === 0) return; // text-only paste — let the browser insert
+      const gestureVersion = nextAttachmentGesture(pendingState);
       // We deliberately DO NOT preventDefault when text is also present,
       // so any accompanying text portion still gets inserted into the
       // textarea by the default handler. (preventDefault would block both.)
@@ -213,7 +220,7 @@
       // drop / file-picker gesture (kata xpnk). A successful paste counts
       // as the user moving on — leaving an obsolete "Not an image: …"
       // message above a freshly-attached chip is misleading.
-      surfaceRejections(textareaEl, attached > 0 && rejected.length === 0 ? [] : rejected);
+      surfaceRejections(textareaEl, attached > 0 && rejected.length === 0 ? [] : rejected, pendingState, gestureVersion);
       // Re-render any chip containers that were bound to this state.
       for (const container of pendingState.__containers || []) {
         renderAttachmentChips(container, pendingState);
@@ -279,6 +286,7 @@
   async function ingestFiles(anchorEl, pendingState, fileList) {
     if (!pendingState) return;
     if (!Array.isArray(pendingState.items)) pendingState.items = [];
+    const gestureVersion = nextAttachmentGesture(pendingState);
     const window = anchorEl.ownerDocument.defaultView;
     const files = Array.from(fileList || []);
     const rejected = [];
@@ -304,7 +312,7 @@
         rejected.push((file && file.name) || "decode-failed");
       }
     }
-    surfaceRejections(anchorEl, rejected);
+    surfaceRejections(anchorEl, rejected, pendingState, gestureVersion);
     // Re-render any chip containers bound to this state.
     for (const container of pendingState.__containers || []) {
       renderAttachmentChips(container, pendingState);
@@ -328,7 +336,10 @@
     return null;
   }
 
-  function surfaceRejections(anchorEl, rejected) {
+  function surfaceRejections(anchorEl, rejected, pendingState, gestureVersion) {
+    if (pendingState && typeof gestureVersion === "number" && gestureVersion !== pendingState.__attachmentGestureVersion) {
+      return;
+    }
     const banner = findErrorBanner(anchorEl);
     if (!banner) return;
     if (!rejected || rejected.length === 0) {
