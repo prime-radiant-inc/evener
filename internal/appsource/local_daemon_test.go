@@ -83,6 +83,11 @@ func TestLocalDaemonSubscribeReadErrorPreservesApplicationWireErrors(t *testing.
 	}
 }
 
+func TestLocalDaemonSubscribeReadErrorMapsInternalTransportWireErrors(t *testing.T) {
+	got := localDaemonSubscribeReadError(appwire.InternalError("read failed: i/o timeout"))
+	assertSessionUnavailable(t, got, "internal i/o timeout")
+}
+
 func TestLocalDaemonInitializeErrorPreservesApplicationWireErrors(t *testing.T) {
 	app := appwire.InvalidParams("broken pipe is part of semantic error")
 	got := localDaemonInitializeError(app)
@@ -93,6 +98,11 @@ func TestLocalDaemonInitializeErrorPreservesApplicationWireErrors(t *testing.T) 
 	if wire.Code != appwire.CodeInvalidParams {
 		t.Fatalf("wire=%+v, want InvalidParams preserved", wire)
 	}
+}
+
+func TestLocalDaemonInitializeErrorMapsInternalTransportWireErrors(t *testing.T) {
+	got := localDaemonInitializeError(appwire.InternalError("initialize failed: i/o timeout"))
+	assertSessionUnavailable(t, got, "internal i/o timeout")
 }
 
 func TestLocalDaemonDialErrorIgnoresNil(t *testing.T) {

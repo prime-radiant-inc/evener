@@ -371,7 +371,7 @@ func localDaemonCallError(err error) error {
 func localDaemonInitializeError(err error) error {
 	mapped := localDaemonCallError(err)
 	var wire appwire.WireError
-	if errors.As(mapped, &wire) {
+	if errors.As(mapped, &wire) && wire.Code != appwire.CodeInternalError {
 		return mapped
 	}
 	return localDaemonDialError(mapped)
@@ -380,7 +380,7 @@ func localDaemonInitializeError(err error) error {
 func localDaemonSubscribeReadError(err error) error {
 	mapped := localDaemonCallError(err)
 	var wire appwire.WireError
-	if errors.As(mapped, &wire) {
+	if errors.As(mapped, &wire) && wire.Code != appwire.CodeInternalError {
 		return mapped
 	}
 	return localDaemonDialError(mapped)
