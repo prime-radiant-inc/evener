@@ -303,6 +303,55 @@ func TestStreamEventsDedupKeysAreTurnScoped(t *testing.T) {
 	}
 }
 
+func TestStreamEventsDedupKeysUseEnvelopeTurnID(t *testing.T) {
+	translator := newAppwireStreamTranslator()
+	first := appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
+		"threadId": "th_1",
+		"ref":      "local:th_1",
+		"turnId":   "turn_1",
+		"item": appwire.ThreadItem{
+			Type: "user_message",
+			ID:   "reused_item",
+			Text: "first",
+		},
+	})
+	_ = translator.eventsFromNotification(*first.Notification)
+
+	secondTurn := appwire.NotificationMessage(appwire.NotifyTurnCompleted, map[string]any{
+		"threadId": "th_1",
+		"ref":      "local:th_1",
+		"turn": appwire.Turn{
+			ID:     "turn_2",
+			Status: appwire.TurnStatusCompleted,
+			Items: []appwire.ThreadItem{{
+				Type:   "user_message",
+				ID:     "reused_item",
+				Text:   "second",
+				Status: appwire.TurnStatusCompleted,
+			}},
+		},
+	})
+	events := translator.eventsFromNotification(*secondTurn.Notification)
+	var sawSecond bool
+	for _, ev := range events {
+		if ev.Event != "USER_INPUT" {
+			continue
+		}
+		var data struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal([]byte(ev.Data), &data); err != nil {
+			t.Fatal(err)
+		}
+		if data.Text == "second" {
+			sawSecond = true
+		}
+	}
+	if !sawSecond {
+		t.Fatalf("events=%+v, want second turn user input from envelope turn ids", events)
+	}
+}
+
 func TestStreamEventsFromNotificationMapsSubagentLifecycle(t *testing.T) {
 	start := appwire.NotificationMessage(appwire.NotifySerfSubagentStarted, map[string]any{
 		"threadId": "th_1",

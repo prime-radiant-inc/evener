@@ -93,7 +93,7 @@ func (t *appwireStreamTranslator) eventsFromThread(thread appwire.Thread) []stre
 		"restored":   true,
 	})}
 	for _, turn := range thread.Turns {
-		events = append(events, t.eventsFromItems(turn.Items)...)
+		events = append(events, t.eventsFromItems(turn.ID, turn.Items)...)
 	}
 	return events
 }
@@ -134,7 +134,7 @@ func (t *appwireStreamTranslator) eventsFromNotification(notification appwire.No
 			Turn appwire.Turn `json:"turn"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
-			events := t.eventsFromTurnCompletedItems(params.Turn.Items)
+			events := t.eventsFromTurnCompletedItems(params.Turn.ID, params.Turn.Items)
 			if params.Turn.Status == appwire.TurnStatusFailed {
 				message := "turn failed"
 				if params.Turn.Error != nil && params.Turn.Error.Message != "" {
@@ -147,16 +147,24 @@ func (t *appwireStreamTranslator) eventsFromNotification(notification appwire.No
 		}
 	case appwire.NotifyItemStarted:
 		var params struct {
-			Item appwire.ThreadItem `json:"item"`
+			TurnID string             `json:"turnId"`
+			Item   appwire.ThreadItem `json:"item"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
+			if params.Item.TurnID == "" {
+				params.Item.TurnID = params.TurnID
+			}
 			return t.eventsFromItem(params.Item, false)
 		}
 	case appwire.NotifyItemCompleted:
 		var params struct {
-			Item appwire.ThreadItem `json:"item"`
+			TurnID string             `json:"turnId"`
+			Item   appwire.ThreadItem `json:"item"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
+			if params.Item.TurnID == "" {
+				params.Item.TurnID = params.TurnID
+			}
 			return t.eventsFromItem(params.Item, true)
 		}
 	case appwire.NotifyAgentMessageDelta:
@@ -207,17 +215,23 @@ func (t *appwireStreamTranslator) eventsFromNotification(notification appwire.No
 	return nil
 }
 
-func (t *appwireStreamTranslator) eventsFromItems(items []appwire.ThreadItem) []streamEvent {
+func (t *appwireStreamTranslator) eventsFromItems(turnID string, items []appwire.ThreadItem) []streamEvent {
 	var events []streamEvent
 	for _, item := range items {
+		if item.TurnID == "" {
+			item.TurnID = turnID
+		}
 		events = append(events, t.eventsFromHydratedItem(item)...)
 	}
 	return events
 }
 
-func (t *appwireStreamTranslator) eventsFromTurnCompletedItems(items []appwire.ThreadItem) []streamEvent {
+func (t *appwireStreamTranslator) eventsFromTurnCompletedItems(turnID string, items []appwire.ThreadItem) []streamEvent {
 	var events []streamEvent
 	for _, item := range items {
+		if item.TurnID == "" {
+			item.TurnID = turnID
+		}
 		if t.itemAlreadyCompleted(item) {
 			continue
 		}
