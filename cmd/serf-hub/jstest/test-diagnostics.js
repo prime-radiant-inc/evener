@@ -163,6 +163,8 @@ assert(inlineActionsEl !== null, "inline actions on input should render diagnost
 // Legacy stream-truncation diagnostic stored as serf → reclassify to provider.
 const legacyStreamTrunc = diagnostics.classify({
   source: "serf",
+  title: "Serf error",
+  hint: "Check the Serf session log and daemon state.",
   message: "stream ended without finish event",
 });
 assert(legacyStreamTrunc.source === "provider",
@@ -200,6 +202,8 @@ assert(heuristicProvider.source === "provider",
 // Legacy hub failure stored as serf → reclassify to hub.
 const legacyHub = diagnostics.classify({
   source: "serf",
+  title: "Session warning",
+  hint: "Check the Serf session log and daemon state.",
   message: "rendezvous timeout",
 });
 assert(legacyHub.source === "hub",

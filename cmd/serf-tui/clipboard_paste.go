@@ -241,9 +241,11 @@ func NormalizePastedPath(text string) string {
 	}
 
 	// Strip a single surrounding pair of double or single quotes.
+	quoted := false
 	if len(t) >= 2 {
 		if (t[0] == '"' && t[len(t)-1] == '"') || (t[0] == '\'' && t[len(t)-1] == '\'') {
 			t = t[1 : len(t)-1]
+			quoted = true
 		}
 	}
 
@@ -262,13 +264,16 @@ func NormalizePastedPath(text string) string {
 		return t
 	}
 
-	// POSIX path. Reject anything with internal whitespace or newlines —
-	// that almost certainly means we received literal text rather than a
-	// single path token.
-	if strings.ContainsAny(t, " \t\r\n") {
+	if strings.ContainsAny(t, "\r\n") {
 		return ""
 	}
 	if strings.HasPrefix(t, "/") || strings.HasPrefix(t, "~") || strings.HasPrefix(t, "./") || strings.HasPrefix(t, "../") {
+		// Unquoted whitespace almost certainly means we received literal
+		// text rather than a single path token. Quoted POSIX paths can
+		// legitimately contain spaces, e.g. "/home/me/My Pictures/a.png".
+		if !quoted && strings.ContainsAny(t, " \t") {
+			return ""
+		}
 		return t
 	}
 

@@ -31,7 +31,8 @@
     const raw = typeof input === "string" ? { message: input } : (input || {});
     const severity = normalizeSeverity(raw.severity || raw.kind);
     const message = cleanMessage(firstNonEmpty(raw.message, raw.error, raw.warning));
-    let source = normalizeSource(raw.source);
+    const storedSource = normalizeSource(raw.source);
+    let source = storedSource;
     let title = String(raw.title || "").trim();
     let hint = String(raw.hint || "").trim();
     const lower = message.toLowerCase();
@@ -71,6 +72,11 @@
     // warnings, etc).
     if (typedCauseKind === "provider") {
       source = "provider";
+    }
+
+    if (storedSource === "serf" && source !== "serf") {
+      if (isDefaultSerfTitle(title, severity, lower)) title = "";
+      if (isDefaultSerfHint(hint, lower)) hint = "";
     }
 
     if (!title) title = defaultTitle(source, severity, lower);
@@ -160,6 +166,20 @@
       return "Check the browser console and refresh if the local UI state is stale.";
     }
     return "Check the Serf session log and daemon state.";
+  }
+
+  function isDefaultSerfTitle(title, severity, message) {
+    if (!title) return false;
+    const text = String(title || "").trim();
+    return text === defaultTitle("serf", severity, message) || text === "Serf error" || text === "Serf warning" || text === "Session warning";
+  }
+
+  function isDefaultSerfHint(hint, message) {
+    if (!hint) return false;
+    const text = String(hint || "").trim();
+    return text === defaultHint("serf", message) ||
+      text === "Check the Serf session log and daemon state." ||
+      text.indexOf("Hub launched Serf with provider configuration") === 0;
   }
 
   // render builds a diagnostic card element.

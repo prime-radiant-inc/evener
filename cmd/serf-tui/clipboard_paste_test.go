@@ -100,6 +100,7 @@ func TestNormalizePastedPath(t *testing.T) {
 	}{
 		{"file URL absolute", "file:///tmp/example.png", "/tmp/example.png"},
 		{"double-quoted unix path", `"/tmp/example.png"`, "/tmp/example.png"},
+		{"double-quoted unix path with spaces", `"/tmp/My Pictures/example.png"`, "/tmp/My Pictures/example.png"},
 		{"single-quoted unix path", `'/tmp/example.png'`, "/tmp/example.png"},
 		{"raw windows path", `C:\Users\Alice\foo.png`, `C:\Users\Alice\foo.png`},
 		{"raw windows forward slash", `C:/Users/Alice/foo.png`, `C:/Users/Alice/foo.png`},
