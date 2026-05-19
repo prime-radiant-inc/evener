@@ -284,6 +284,48 @@ func TestHubModelSurfacesStructuredWarningDiagnostic(t *testing.T) {
 	}
 }
 
+func TestHubModelTurnCompletedAppliesSnapshotItems(t *testing.T) {
+	m := newHubModel(nil, "")
+	m.mode = hubModeSession
+	m.detail = hubSessionDetail{Ref: "local:th_1", SessionID: "sess_1", ActiveTurnID: "turn_1"}
+
+	updated, _ := m.Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyTurnCompleted, map[string]any{
+			"threadId": "th_1",
+			"ref":      "local:th_1",
+			"turnId":   "turn_1",
+			"turn": appwire.Turn{
+				ID:     "turn_1",
+				Status: appwire.TurnStatusCompleted,
+				Items: []appwire.ThreadItem{{
+					Type: "user_message",
+					ID:   "item_user",
+					Text: "hello",
+				}, {
+					Type: "agent_message",
+					ID:   "item_agent",
+					Text: "done",
+				}},
+			},
+		}).Notification,
+	})
+
+	got := updated.(hubModel)
+	if got.detail.ActiveTurnID != "" {
+		t.Fatalf("active turn=%q, want cleared", got.detail.ActiveTurnID)
+	}
+	if len(got.session.messages) != 2 {
+		t.Fatalf("messages=%+v, want user and assistant snapshot items", got.session.messages)
+	}
+	if got.session.messages[0].Kind != msgUser || got.session.messages[0].Text != "hello" {
+		t.Fatalf("user message=%+v", got.session.messages[0])
+	}
+	if got.session.messages[1].Kind != msgAssistant || got.session.messages[1].Text != "done" {
+		t.Fatalf("assistant message=%+v", got.session.messages[1])
+	}
+}
+
 func TestMessagesFromThreadIncludesFailedTurnDiagnostic(t *testing.T) {
 	messages := messagesFromThread(appwire.Thread{
 		Turns: []appwire.Turn{{

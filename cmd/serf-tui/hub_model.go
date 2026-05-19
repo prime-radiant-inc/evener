@@ -2464,9 +2464,17 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		}
 	case appwire.NotifyTurnCompleted:
 		var params struct {
-			Turn appwire.Turn `json:"turn"`
+			TurnID string       `json:"turnId"`
+			Turn   appwire.Turn `json:"turn"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
+			turnID := firstNonEmptyString(params.TurnID, params.Turn.ID)
+			for _, item := range params.Turn.Items {
+				if item.TurnID == "" {
+					item.TurnID = turnID
+				}
+				m.applyThreadItem(item, true)
+			}
 			if params.Turn.ID != "" && params.Turn.ID == m.detail.ActiveTurnID {
 				m.detail.ActiveTurnID = ""
 			}
