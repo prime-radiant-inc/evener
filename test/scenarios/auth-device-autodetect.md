@@ -22,16 +22,16 @@ fresh device code each run; that's expected and harmless.
 
 1. **SERF_LOGIN_HEADLESS=1 forces device**:
    `timeout 2 bash -c "SERF_LOGIN_HEADLESS=1 ./serf openai login 2>&1 | head -1"`
-   Expect: `auth_mode=device (auto: no display)`
+   Expect: `auth_mode=device auth_mode_reason=auto_no_display`
 2. **SERF_LOGIN_HEADLESS=0 forces browser**:
    `timeout 2 bash -c "SERF_LOGIN_HEADLESS=0 ./serf openai login 2>&1 | head -1"`
-   Expect: `auth_mode=browser (auto)`
+   Expect: `auth_mode=browser auth_mode_reason=auto`
 3. **--device explicit**:
    `timeout 2 bash -c "./serf openai login --device 2>&1 | head -1"`
-   Expect: `auth_mode=device (forced)`
+   Expect: `auth_mode=device auth_mode_reason=forced`
 4. **--no-device explicit**:
    `timeout 2 bash -c "./serf openai login --no-device 2>&1 | head -1"`
-   Expect: `auth_mode=browser (forced)`
+   Expect: `auth_mode=browser auth_mode_reason=forced`
 5. **Conflicting flags**:
    `./serf openai login --device --no-device; echo EXIT=$?`
    Expect: stderr `serf openai: conflicting flags: --device and
@@ -39,8 +39,8 @@ fresh device code each run; that's expected and harmless.
 6. **No env override, default behavior on this box** (Linux,
    typically no `$DISPLAY` over SSH):
    `timeout 2 bash -c "env -u SERF_LOGIN_HEADLESS ./serf openai login 2>&1 | head -1"`
-   On a headless box: `auth_mode=device (auto: ...)`. On a graphical
-   Linux: `auth_mode=browser (auto)`.
+   On a headless box: `auth_mode=device auth_mode_reason=auto_...`. On a graphical
+   Linux: `auth_mode=browser auth_mode_reason=auto`.
 
 ## Expected
 
@@ -66,7 +66,7 @@ fresh device code each run; that's expected and harmless.
   and reap.
 - `SSH_CONNECTION`/`SSH_TTY` env vars override headless detection.
   If you're testing locally with these set, your "no env override"
-  step (#6) will report `auth_mode=device (auto: ssh)`. That's
+  step (#6) will report `auth_mode=device auth_mode_reason=auto_ssh`. That's
   correct behavior; just adjust the expected outcome to match your
   setup.
 - The device flow on macOS would default to browser regardless of

@@ -52,7 +52,7 @@ HUB=http://localhost:9180
    long bash loop, then immediately try to interrupt:
    ```bash
    curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-     -d '{"text":"call exec_command with command=\"bash\" and args=[\"-c\",\"for i in 1 2 3 4 5 6 7 8 9 10; do echo step $i; sleep 2; done\"] then report"}' \
+     -d '{"text":"call exec_command with command=\"bash -c '\''for i in 1 2 3 4 5 6 7 8 9 10; do echo step $i; sleep 2; done'\''\" then report"}' \
      "$HUB/s/$SID/send" &
    # wait until the session is actually processing
    for i in $(seq 1 10); do
@@ -77,7 +77,7 @@ head and runs it as a fresh user turn:
    ```bash
    # Re-send a slow turn so we have a window to queue + interrupt.
    curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
-     -d '{"text":"call exec_command with command=\"bash\" and args=[\"-c\",\"for i in 1 2 3 4 5 6 7 8 9 10; do echo step $i; sleep 2; done\"] then report"}' \
+     -d '{"text":"call exec_command with command=\"bash -c '\''for i in 1 2 3 4 5 6 7 8 9 10; do echo step $i; sleep 2; done'\''\" then report"}' \
      "$HUB/s/$SID/send" &
    for i in $(seq 1 10); do
      d=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID")

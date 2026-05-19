@@ -403,6 +403,9 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		m.spawnSubmitting = false
 		if m.mode == hubModeSession && m.detail.Ref == msg.detail.Ref {
+			if msg.expectedState != "" && m.detail.State != msg.expectedState {
+				return m, nil
+			}
 			m.detail = msg.detail
 			// Refresh queue preview from the authoritative read response
 			// (kata r80p) so reloads / status refreshes resync state.
@@ -2417,7 +2420,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			// keeps Interrupt=false for the entire turn (kata 4yvd).
 			if previous != params.Status.Type && m.client != nil {
 				if ref, ok := m.currentRef(); ok {
-					cmd = fetchHubSession(m.client, ref)
+					cmd = fetchHubSessionExpectingState(m.client, ref, params.Status.Type)
 				}
 			}
 		}

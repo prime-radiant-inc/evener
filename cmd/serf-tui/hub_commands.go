@@ -17,9 +17,10 @@ type hubTreeMsg struct {
 }
 
 type hubSessionMsg struct {
-	detail   hubSessionDetail
-	messages []chatMessage
-	err      error
+	detail        hubSessionDetail
+	messages      []chatMessage
+	expectedState string
+	err           error
 }
 
 type hubNotificationMsg struct {
@@ -133,12 +134,16 @@ func fetchHubTree(client *appwire.Client) tea.Cmd {
 }
 
 func fetchHubSession(client *appwire.Client, ref appwire.Ref) tea.Cmd {
+	return fetchHubSessionExpectingState(client, ref, "")
+}
+
+func fetchHubSessionExpectingState(client *appwire.Client, ref appwire.Ref, expectedState string) tea.Cmd {
 	return func() tea.Msg {
 		resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: ref.String(), IncludeTurns: true, ItemsView: "full"})
 		if err != nil {
 			return hubSessionMsg{err: err}
 		}
-		return hubSessionMsg{detail: hubDetailFromThread(resp.Thread), messages: messagesFromThread(resp.Thread)}
+		return hubSessionMsg{detail: hubDetailFromThread(resp.Thread), messages: messagesFromThread(resp.Thread), expectedState: expectedState}
 	}
 }
 

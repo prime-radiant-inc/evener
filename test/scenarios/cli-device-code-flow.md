@@ -54,18 +54,18 @@ state.
    sleep 5
    ```
 
-4. **Read stdout** and confirm the four expected lines, in order:
+4. **Read stdout** and confirm the three expected lines, in order:
    ```bash
    cat "$tmpdir/login.stdout"
    ```
    Expect exactly:
    ```
-   auth_mode=device (forced)
+   auth_mode=device auth_mode_reason=forced
    device_code_url=https://auth.openai.com/codex/device
    device_code=XXXX-XXXXX
    ```
-   The `device_code` value is a fresh code each run (8 chars, hyphen
-   in the middle — e.g. `7JN1-VX9XM`).
+   The `device_code` value is a fresh code each run (4 chars, hyphen,
+   then 5 chars — e.g. `7JN1-VX9XM`).
 
 5. **Read stderr** and confirm the human-readable prompt:
    ```bash
@@ -112,7 +112,7 @@ unset XDG_STATE_HOME
 
 ### Part A — Expected (falsification)
 
-- **Missing `auth_mode=device (forced)`**: the mode-selection table
+- **Missing `auth_mode=device auth_mode_reason=forced`**: the mode-selection table
   regressed. Cross-check with `auth-device-autodetect.md`.
 - **Missing `device_code_url=https://auth.openai.com/codex/device`**:
   either the constant changed (check
@@ -230,5 +230,5 @@ This deletes the test-only auth record. The user's real
   the flag, Part A will pick the mode based on environment
   (`SSH_CONNECTION`, `$DISPLAY`, etc.) — see
   `auth-device-autodetect.md`. On a graphical workstation without
-  SSH, that means `auth_mode=browser (auto)` instead and the rest of
+  SSH, that means `auth_mode=browser auth_mode_reason=auto` instead and the rest of
   this scenario does not apply.

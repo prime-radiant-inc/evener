@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -395,23 +393,7 @@ func openAIStateDirFromLaunchEnv(env []string) string {
 	if env == nil {
 		return authopenai.DefaultStateDirWithStateHome("")
 	}
-	if stateHome, ok := envLookup(env, "XDG_STATE_HOME"); ok && strings.TrimSpace(stateHome) != "" {
-		return authopenai.DefaultStateDirWithStateHome(stateHome)
-	}
-	if runtime.GOOS == "windows" {
-		if userProfile, ok := envLookup(env, "USERPROFILE"); ok && strings.TrimSpace(userProfile) != "" {
-			return filepath.Join(strings.TrimSpace(userProfile), ".local", "state", "serf")
-		}
-		drive, hasDrive := envLookup(env, "HOMEDRIVE")
-		path, hasPath := envLookup(env, "HOMEPATH")
-		if hasDrive && hasPath && strings.TrimSpace(drive) != "" && strings.TrimSpace(path) != "" {
-			return filepath.Join(strings.TrimSpace(drive)+strings.TrimSpace(path), ".local", "state", "serf")
-		}
-	}
-	if home, ok := envLookup(env, "HOME"); ok && strings.TrimSpace(home) != "" {
-		return filepath.Join(strings.TrimSpace(home), ".local", "state", "serf")
-	}
-	return filepath.Join(os.TempDir(), "serf")
+	return openAIStateDirFromEnvList(env)
 }
 
 func envLookup(env []string, key string) (string, bool) {

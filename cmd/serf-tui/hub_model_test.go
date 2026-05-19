@@ -1863,6 +1863,48 @@ func TestHubModelStatusProcessingRefreshesSessionCapabilities(t *testing.T) {
 	}
 }
 
+func TestHubModelStatusRefreshIgnoresStaleSessionRead(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.State = appwire.ThreadStatusIdle
+	m.detail.Capabilities.Send = true
+	m.detail.Capabilities.Interrupt = false
+	m.session.processing = false
+
+	updated, _ := m.Update(hubSessionMsg{
+		expectedState: appwire.ThreadStatusProcessing,
+		detail: hubSessionDetail{
+			Ref:   "local:01SEND",
+			State: appwire.ThreadStatusProcessing,
+			Capabilities: hubSessionCapabilities{
+				Send:      false,
+				Interrupt: true,
+			},
+		},
+	})
+	got := updated.(hubModel)
+	if got.detail.State != appwire.ThreadStatusIdle {
+		t.Fatalf("state=%q, want stale processing refresh ignored", got.detail.State)
+	}
+	if !got.detail.Capabilities.Send || got.detail.Capabilities.Interrupt {
+		t.Fatalf("capabilities=%+v, want stale refresh ignored", got.detail.Capabilities)
+	}
+
+	updated, _ = got.Update(hubSessionMsg{
+		expectedState: appwire.ThreadStatusIdle,
+		detail: hubSessionDetail{
+			Ref:   "local:01SEND",
+			State: appwire.ThreadStatusIdle,
+			Capabilities: hubSessionCapabilities{
+				Send: true,
+			},
+		},
+	})
+	got = updated.(hubModel)
+	if got.detail.State != appwire.ThreadStatusIdle || !got.detail.Capabilities.Send {
+		t.Fatalf("detail=%+v, want matching idle refresh applied", got.detail)
+	}
+}
+
 func TestHubModelSendUsesAppWireTurnStart(t *testing.T) {
 	var got appwire.TurnStartParams
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {

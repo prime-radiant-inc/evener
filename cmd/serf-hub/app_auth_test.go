@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -171,6 +172,32 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 				t.Fatalf("status=%+v, want signedIn=%t needsRefresh=%t needsLogin=%t", status, tc.wantSignedIn, tc.wantRefresh, tc.wantLogin)
 			}
 		})
+	}
+}
+
+func TestOpenAIStateDirFromEnvUsesWindowsHomePrecedence(t *testing.T) {
+	got := openAIStateDirFromLookup("windows", func(key string) (string, bool) {
+		env := map[string]string{
+			"HOME":        `C:\msys\home\jesse`,
+			"USERPROFILE": `C:\Users\Jesse`,
+		}
+		value, ok := env[key]
+		return value, ok
+	})
+	want := filepath.Join(`C:\Users\Jesse`, ".local", "state", "serf")
+	if got != want {
+		t.Fatalf("stateDir=%q, want %q", got, want)
+	}
+}
+
+func TestOpenAIStateDirFromEnvDoesNotFallBackToProcessEnv(t *testing.T) {
+	processStateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", processStateHome)
+
+	got := openAIStateDirFromEnv(map[string]string{})
+	want := filepath.Join(os.TempDir(), "serf")
+	if got != want {
+		t.Fatalf("stateDir=%q, want %q", got, want)
 	}
 }
 

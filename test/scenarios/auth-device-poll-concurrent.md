@@ -123,7 +123,7 @@ unit).
   rejecting the record on a clock skew.
 - After step 6: stdout contains, in order:
   ```
-  auth_mode=device (forced)
+  auth_mode=device auth_mode_reason=forced
   device_code_url=https://auth.openai.com/codex/device
   device_code=XXXX-XXXXX
   concurrent_login=detected

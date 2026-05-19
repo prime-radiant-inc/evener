@@ -334,13 +334,7 @@ func effectiveHubAuthEnv(launchEnv map[string]string) map[string]string {
 }
 
 func openAIStateDirFromEnv(env map[string]string) string {
-	if stateHome := strings.TrimSpace(env["XDG_STATE_HOME"]); stateHome != "" {
-		return filepath.Join(stateHome, "serf")
-	}
-	if home := strings.TrimSpace(env["HOME"]); home != "" {
-		return filepath.Join(home, ".local", "state", "serf")
-	}
-	return authopenai.DefaultStateDirWithStateHome("")
+	return openAIStateDirFromEnvMap(env)
 }
 
 func openAIStatusFromRecord(now time.Time, record authopenai.AuthRecord) authopenai.AuthStatus {

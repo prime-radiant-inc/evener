@@ -89,7 +89,7 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
    otherwise the model will fabricate the loop output and finish
    instantly (sharp edge from `workspace-title-bar-actions.md`):
    ```bash
-   tmux send-keys -t serf-interrupt-test -l 'You MUST call the exec_command tool with command=bash args=["-c","for i in $(seq 1 30); do echo step $i; sleep 2; done"]. Do not fabricate output; actually run the tool. Wait for it to complete before composing your communicate response.'
+   tmux send-keys -t serf-interrupt-test -l 'You MUST call the exec_command tool with command="bash -c '\''for i in $(seq 1 30); do echo step $i; sleep 2; done'\''". Do not fabricate output; actually run the tool. Wait for it to complete before composing your communicate response.'
    sleep 0.2
    tmux send-keys -t serf-interrupt-test Enter
    sleep 2
@@ -233,7 +233,7 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
     interrupt the turn via the palette. The queued line should
     survive the interrupt and run as the next user turn.
     ```bash
-    tmux send-keys -t serf-interrupt-test -l 'You MUST call exec_command with command=bash args=["-c","for i in $(seq 1 15); do echo loop $i; sleep 2; done"]. Do not fabricate output.'
+    tmux send-keys -t serf-interrupt-test -l 'You MUST call exec_command with command="bash -c '\''for i in $(seq 1 15); do echo loop $i; sleep 2; done'\''". Do not fabricate output.'
     tmux send-keys -t serf-interrupt-test Enter
     sleep 3
     tmux capture-pane -t serf-interrupt-test -p | head -25
