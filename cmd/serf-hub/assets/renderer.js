@@ -145,6 +145,30 @@
       this.startTaskBadgePoller();
     },
 
+    refreshCapabilitiesForStatus(status) {
+      status = String(status || "").trim();
+      if (!status || !this.sessionId || this.liveCapabilitiesStatus === status) return false;
+      if (!window.SerfAppwire || typeof window.SerfAppwire.readThread !== "function") return false;
+      const sessionId = this.sessionId;
+      const conversation = this.conversation;
+      window.SerfAppwire.readThread(sessionId, false, false)
+        .then((resp) => {
+          if (this.sessionId !== sessionId || this.conversation !== conversation) return;
+          const thread = (resp && resp.thread) || {};
+          const caps = thread.serf && thread.serf.capabilities;
+          if (caps) {
+            if (typeof caps.send === "boolean") this.liveSendCap = caps.send;
+            if (typeof caps.queue === "boolean") this.liveQueueCap = caps.queue;
+            this.liveCapabilitiesStatus = (thread.status && thread.status.type) || status;
+          }
+          this.updateThreadState(status);
+        })
+        .catch(() => {
+          this.updateThreadState(status);
+        });
+      return true;
+    },
+
     updateThreadState(state) {
       state = String(state || "").trim();
       if (!state) return;
@@ -163,7 +187,7 @@
           sendBtn.setAttribute("data-capability-queue", "false");
           sendBtn.disabled = true;
           sendBtn.setAttribute("title", "send unavailable");
-        } else if (this.liveCapabilitiesStatus === state && (typeof this.liveSendCap === "boolean" || typeof this.liveQueueCap === "boolean")) {
+        } else if ((this.liveCapabilitiesStatus === state || this.liveQueueCap === false) && (typeof this.liveSendCap === "boolean" || typeof this.liveQueueCap === "boolean")) {
           const canSend = this.liveSendCap === true;
           const canQueue = this.liveQueueCap === true;
           sendBtn.setAttribute("data-capability-send", canSend ? "true" : "false");
@@ -484,6 +508,7 @@
       try { data = JSON.parse(ev.data); } catch (e) {}
       switch (kind) {
         case "THREAD_STATUS_CHANGED":
+          if (this.refreshCapabilitiesForStatus(data.status || "")) break;
           this.updateThreadState(data.status || "");
           break;
         case "TURN_STARTED":

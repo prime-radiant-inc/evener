@@ -197,8 +197,26 @@ async function checkProcessingSendCapabilityKeepsSendMode() {
     capabilities: { send: true, queue: false },
   });
   window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "processing" });
-  pass(send.getAttribute("data-capability-send") === "false", "stale idle send capability should not survive processing status change");
-  pass(send.getAttribute("data-capability-queue") === "true", "processing status change without fresh caps should fall back to queue mode");
+  pass(send.getAttribute("data-capability-send") === "true", "cached source send capability should stay true when queue is unsupported");
+  pass(send.getAttribute("data-capability-queue") === "false", "cached source queue=false should not become queue=true without fresh caps");
+
+  window.SerfAppwire = {
+    readThread: () => Promise.resolve({
+      thread: {
+        status: { type: "processing" },
+        serf: { capabilities: { send: false, queue: true } },
+      },
+    }),
+  };
+  window.SerfRenderer.handleData("SESSION_START", {
+    session_id: "01TEST",
+    status: "idle",
+    capabilities: { send: true, queue: false },
+  });
+  window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "processing" });
+  await new Promise(r => setTimeout(r, 10));
+  pass(send.getAttribute("data-capability-send") === "false", "fresh processing send capability should replace idle send capability");
+  pass(send.getAttribute("data-capability-queue") === "true", "fresh processing queue capability should replace idle queue capability");
 }
 
 // 5b. Replying to an ended session with no open stream must reconnect
