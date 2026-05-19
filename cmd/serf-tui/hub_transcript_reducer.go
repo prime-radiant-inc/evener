@@ -68,6 +68,16 @@ func (r *hubTranscriptReducer) applyUserMessageEcho(text string) {
 	r.messages = append(r.messages, chatMessage{Kind: msgUser, Text: text})
 }
 
+func (r *hubTranscriptReducer) removeUserMessageEcho(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	if idx, ok := r.pendingUserEchoIndex(text); ok {
+		r.messages = append(r.messages[:idx], r.messages[idx+1:]...)
+	}
+}
+
 func (r *hubTranscriptReducer) applyToolOutputDelta(itemID, delta string) {
 	if delta == "" {
 		return

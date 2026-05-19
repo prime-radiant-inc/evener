@@ -507,6 +507,9 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			// Preserve pendingAttachments on error so the user can retry
 			// without re-pasting (kata re91).
+			reducer := m.sessionTranscriptReducer()
+			reducer.removeUserMessageEcho(msg.text)
+			m.applySessionTranscriptReducer(reducer)
 			m.restoreSubmittedAttachments(msg.submittedAttachments)
 			m.session.setInputValue(msg.draft)
 			m.addHubErrorNotice("Send failed", "appwire", msg.err, "Check the hub connection and retry the action.")

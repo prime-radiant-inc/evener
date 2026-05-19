@@ -2626,6 +2626,25 @@ func TestHubModelTurnStartEnablesTurnActions(t *testing.T) {
 	}
 }
 
+func TestHubModelSendErrorRemovesOptimisticUserEcho(t *testing.T) {
+	m := newSessionHubModel(nil)
+	reducer := m.sessionTranscriptReducer()
+	reducer.applyUserMessageEcho("ship it")
+	m.applySessionTranscriptReducer(reducer)
+
+	updated, _ := m.Update(hubSendMsg{text: "ship it", draft: "ship it", err: errors.New("network down")})
+	got := updated.(hubModel)
+
+	for _, msg := range got.session.messages {
+		if msg.Kind == msgUser && msg.Text == "ship it" {
+			t.Fatalf("failed send left optimistic user echo: %+v", got.session.messages)
+		}
+	}
+	if got.session.input.Value() != "ship it" {
+		t.Fatalf("draft=%q, want restored draft", got.session.input.Value())
+	}
+}
+
 func TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild(t *testing.T) {
 	var gotReq appwire.ThreadForkParams
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
