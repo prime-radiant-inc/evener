@@ -307,3 +307,44 @@ func TestHubModel_SteerFailsFastOnRPCUnavailable(t *testing.T) {
 		t.Fatalf("reason: %q", fm.reason)
 	}
 }
+
+// TestPendingCoordinator_DispatchIsAsync_NoDeadlock guards the
+// deadlock that ate hours during live e2e verification: when the
+// coordinator's send func is called synchronously from inside the
+// bubbletea event loop (e.g. from TryReconcile inside Update), an
+// unbuffered program.Send blocks until the loop dequeues — but the
+// loop can't dequeue while Update is still running. The coordinator
+// dispatches msgs in a goroutine to break the cycle. This test wires
+// a blocking-forever send and asserts TryReconcile still returns.
+func TestPendingCoordinator_DispatchIsAsync_NoDeadlock(t *testing.T) {
+	t.Parallel()
+	clock := &fakeClock{now: time.Unix(0, 0)}
+	blockForever := make(chan tea.Msg) // unbuffered, never read
+	p := newPendingCoordinator(clock, func(m tea.Msg) { blockForever <- m })
+
+	// Register synchronously must not block on send (we always dispatch).
+	done := make(chan bool, 1)
+	go func() {
+		p.Register("turn/drainAsSteer", "")
+		done <- true
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Register blocked — send is not being dispatched asynchronously")
+	}
+
+	// TryReconcile must also not block on send.
+	go func() {
+		ok := p.TryReconcile("turn/drainAsSteer", "")
+		if !ok {
+			t.Errorf("TryReconcile should have matched")
+		}
+		done <- true
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("TryReconcile blocked — send is not being dispatched asynchronously")
+	}
+}

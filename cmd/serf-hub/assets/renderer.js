@@ -114,8 +114,16 @@
 
       this.conversation.innerHTML = "";
 
+      // Prefer appwire for live sessions when available — the renderer's
+      // optimistic-rendering registry, the active-turn capability surface,
+      // and the queue-preview projection are all wired through the appwire
+      // notification path. The legacy `/events` SSE proxy stays as the
+      // fallback for environments without WebSocket support and for past-
+      // session replay (where there is no live state to subscribe to).
       const url = this.replayUrl || this.eventsUrl;
-      if (this.eventsUrl) {
+      if (window.SerfAppwire && this.sessionId && !this.replayUrl) {
+        this.connectAppwire();
+      } else if (this.eventsUrl) {
         this.connectEventSource(this.eventsUrl);
       } else if (url) {
         this.connect(url);

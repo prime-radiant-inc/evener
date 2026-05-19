@@ -55,6 +55,13 @@ type pendingCoordinator struct {
 	send    func(tea.Msg)
 	nextID  int64
 	entries map[int64]*pendingEntryState
+	// outbox serialises msg dispatch so Register/Confirm/Fail
+	// emissions arrive at the bubbletea program in the order they
+	// were produced, even though we never call send synchronously
+	// from the caller (which would deadlock the event loop when
+	// reconcile is invoked from inside Update).
+	outbox     chan tea.Msg
+	dispatcher sync.Once
 }
 
 type pendingEntryState struct {
@@ -63,10 +70,28 @@ type pendingEntryState struct {
 }
 
 func newPendingCoordinator(clock pendingClock, send func(tea.Msg)) *pendingCoordinator {
-	return &pendingCoordinator{
+	p := &pendingCoordinator{
 		clock:   clock,
 		send:    send,
 		entries: map[int64]*pendingEntryState{},
+		outbox:  make(chan tea.Msg, 32),
+	}
+	p.dispatcher.Do(func() { go p.runDispatcher() })
+	return p
+}
+
+// runDispatcher drains the outbox into the registered send func.
+// One goroutine, serial delivery, never blocks the caller. The current
+// send func is snapshotted under the lock on each iteration so
+// setSend takes effect for subsequent emissions.
+func (p *pendingCoordinator) runDispatcher() {
+	for msg := range p.outbox {
+		p.mu.Lock()
+		sendFn := p.send
+		p.mu.Unlock()
+		if sendFn != nil {
+			sendFn(msg)
+		}
 	}
 }
 
@@ -101,8 +126,25 @@ func (p *pendingCoordinator) Register(method, text string) appwire.PendingHandle
 		p.failByID(id, "server did not confirm")
 	})
 	p.mu.Unlock()
-	p.send(pendingRegisteredMsg{entry: entry})
+	p.dispatch(pendingRegisteredMsg{entry: entry})
 	return &pendingHandleImpl{coord: p, id: id}
+}
+
+// dispatch enqueues a tea.Msg for delivery to the bubbletea program.
+// program.Send blocks on an unbuffered channel until the event loop
+// dequeues; calling it synchronously from inside the event loop (e.g.
+// from TryReconcile inside Update) deadlocks because the loop can't
+// dequeue while Update is still running. The dispatcher goroutine
+// drains outbox serially so order is preserved across Register /
+// Confirm / Fail emissions for the same call sequence.
+func (p *pendingCoordinator) dispatch(msg tea.Msg) {
+	select {
+	case p.outbox <- msg:
+	default:
+		// outbox is sized for typical bursts (a single steer click
+		// emits at most ~3 msgs across Register + Confirm/Fail);
+		// dropping silently here is preferable to blocking the caller.
+	}
 }
 
 // TryReconcile is called by the renderer's notification dispatcher
@@ -151,8 +193,9 @@ func (p *pendingCoordinator) TryReconcile(method, text string) bool {
 	match.timer.Stop()
 	delete(p.entries, match.entry.ID)
 	match.entry.Pending = false
+	matchEntry := match.entry
 	p.mu.Unlock()
-	p.send(pendingConfirmedMsg{entry: match.entry})
+	p.dispatch(pendingConfirmedMsg{entry: matchEntry})
 	return true
 }
 
@@ -170,7 +213,7 @@ func (p *pendingCoordinator) failByID(id int64, reason string) {
 	delete(p.entries, id)
 	entry := state.entry
 	p.mu.Unlock()
-	p.send(pendingFailedMsg{entry: entry, reason: reason})
+	p.dispatch(pendingFailedMsg{entry: entry, reason: reason})
 }
 
 func normalizePendingText(s string) string {
