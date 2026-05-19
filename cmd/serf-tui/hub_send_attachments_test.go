@@ -235,6 +235,24 @@ func TestSendKeepsPendingAttachmentsOnError(t *testing.T) {
 	}
 }
 
+func TestSendRestoresSubmittedAttachmentSnapshotOnError(t *testing.T) {
+	m := newSessionHubModel(nil)
+	submitted := &PastedImage{Path: "/tmp/restore-one.png", MediaType: "image/png", MarkerN: 4}
+	newDraft := &PastedImage{Path: "/tmp/new-draft.png", MediaType: "image/png", MarkerN: 5}
+	m.pendingAttachments = []*PastedImage{newDraft}
+	m.nextAttachmentMarker = 5
+
+	updated, _ := m.Update(hubSendMsg{text: "hi", draft: "hi", err: errors.New("boom"), submittedAttachments: []*PastedImage{submitted}})
+	got := updated.(hubModel)
+
+	if len(got.pendingAttachments) != 2 || got.pendingAttachments[0] != submitted || got.pendingAttachments[1] != newDraft {
+		t.Fatalf("pendingAttachments after error = %+v, want submitted restored before new draft", got.pendingAttachments)
+	}
+	if got.nextAttachmentMarker != 5 {
+		t.Fatalf("nextAttachmentMarker = %d, want preserved high-water 5", got.nextAttachmentMarker)
+	}
+}
+
 // TestAttachmentBytesReadFromTempFile verifies that the bytes shipped on
 // the wire are read from PastedImage.Path at submit time, not captured
 // when the attachment was first staged. We mutate the temp file after

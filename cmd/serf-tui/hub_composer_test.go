@@ -168,13 +168,21 @@ func TestHubModelEnterSendsImageOnlySubmission(t *testing.T) {
 
 	path := writeAttachmentTempFile(t, []byte("image-only"))
 	m := newSessionHubModel(client)
-	m.pendingAttachments = []*PastedImage{{Path: path, MediaType: "image/png"}}
+	m.pendingAttachments = []*PastedImage{{Path: path, MediaType: "image/png", MarkerN: 1}}
+	m.nextAttachmentMarker = 1
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("image-only enter should call the hub")
 	}
-	updated, _ = updated.(hubModel).Update(cmd())
+	inFlight := updated.(hubModel)
+	if len(inFlight.pendingAttachments) != 0 {
+		t.Fatalf("pendingAttachments len=%d while send in flight, want 0", len(inFlight.pendingAttachments))
+	}
+	if inFlight.nextAttachmentMarker != 1 {
+		t.Fatalf("nextAttachmentMarker=%d while send in flight, want preserved high-water 1", inFlight.nextAttachmentMarker)
+	}
+	updated, _ = inFlight.Update(cmd())
 	sent := updated.(hubModel)
 
 	if got.Ref != "local:01SEND" || got.Prompt != "" {
@@ -205,13 +213,21 @@ func TestHubModelBusyEnterQueuesImageOnlySubmission(t *testing.T) {
 	m.detail.Capabilities.Steer = true
 	m.detail.Capabilities.Queue = true
 	m.session.processing = true
-	m.pendingAttachments = []*PastedImage{{Path: path, MediaType: "image/png"}}
+	m.pendingAttachments = []*PastedImage{{Path: path, MediaType: "image/png", MarkerN: 1}}
+	m.nextAttachmentMarker = 1
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("image-only busy enter should queue through hub")
 	}
-	updated, _ = updated.(hubModel).Update(cmd())
+	inFlight := updated.(hubModel)
+	if len(inFlight.pendingAttachments) != 0 {
+		t.Fatalf("pendingAttachments len=%d while queue in flight, want 0", len(inFlight.pendingAttachments))
+	}
+	if inFlight.nextAttachmentMarker != 1 {
+		t.Fatalf("nextAttachmentMarker=%d while queue in flight, want preserved high-water 1", inFlight.nextAttachmentMarker)
+	}
+	updated, _ = inFlight.Update(cmd())
 	queued := updated.(hubModel)
 
 	if got.Ref != "local:01SEND" || got.Text != "" {
@@ -222,6 +238,46 @@ func TestHubModelBusyEnterQueuesImageOnlySubmission(t *testing.T) {
 	}
 	if len(queued.pendingAttachments) != 0 {
 		t.Fatalf("pendingAttachments len=%d, want cleared after success", len(queued.pendingAttachments))
+	}
+}
+
+func TestHubModelBusyEnterRestoresAttachmentsOnQueueFailure(t *testing.T) {
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
+			return appwire.EmptyResponse{}, errors.New("queue rejected")
+		})
+	})
+	defer cleanup()
+
+	path := writeAttachmentTempFile(t, []byte("queued-image-fail"))
+	img := &PastedImage{Path: path, MediaType: "image/png", MarkerN: 7}
+	m := newSessionHubModel(client)
+	m.detail.State = "processing"
+	m.detail.Capabilities.Send = false
+	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Queue = true
+	m.session.processing = true
+	m.pendingAttachments = []*PastedImage{img}
+	m.nextAttachmentMarker = 7
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("image-only busy enter should queue through hub")
+	}
+	inFlight := updated.(hubModel)
+	if len(inFlight.pendingAttachments) != 0 {
+		t.Fatalf("pendingAttachments len=%d while queue in flight, want 0", len(inFlight.pendingAttachments))
+	}
+	if inFlight.nextAttachmentMarker != 7 {
+		t.Fatalf("nextAttachmentMarker=%d while queue in flight, want preserved high-water 7", inFlight.nextAttachmentMarker)
+	}
+	updated, _ = inFlight.Update(cmd())
+	failed := updated.(hubModel)
+	if len(failed.pendingAttachments) != 1 || failed.pendingAttachments[0] != img {
+		t.Fatalf("pendingAttachments after queue failure=%+v, want restored image", failed.pendingAttachments)
+	}
+	if failed.nextAttachmentMarker != 7 {
+		t.Fatalf("nextAttachmentMarker=%d, want 7", failed.nextAttachmentMarker)
 	}
 }
 

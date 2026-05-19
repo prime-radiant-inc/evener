@@ -228,12 +228,13 @@ type Session struct {
 	events  chan SessionEvent
 	envInfo EnvironmentInfo
 
-	mu             sync.Mutex
-	state          SessionState
-	closing        bool
-	turns          int // user input count (for MaxTurns enforcement)
-	modelResponses int // LLM round-trip count (for meta.json turn_count)
-	history        []Turn
+	mu                    sync.Mutex
+	responseSideEffectsMu sync.Mutex
+	state                 SessionState
+	closing               bool
+	turns                 int // user input count (for MaxTurns enforcement)
+	modelResponses        int // LLM round-trip count (for meta.json turn_count)
+	history               []Turn
 
 	forkParentID   string
 	forkDivergence int
@@ -974,6 +975,16 @@ func (s *Session) abortResponseProcessing(ctx context.Context) error {
 	return nil
 }
 
+func (s *Session) withResponseSideEffects(ctx context.Context, fn func()) error {
+	s.responseSideEffectsMu.Lock()
+	defer s.responseSideEffectsMu.Unlock()
+	if err := s.abortResponseProcessing(ctx); err != nil {
+		return err
+	}
+	fn()
+	return nil
+}
+
 func (s *Session) isClosingOrClosed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1424,6 +1435,7 @@ func (s *Session) providerVisibleToolNames(names []string) []string {
 
 func (s *Session) Close() {
 	s.closeOnce.Do(func() {
+		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
 		// Collect subagents and clear the map under the lock, then close
 		// outside the lock to avoid deadlock (sub.sess.Close() acquires its own mu).
@@ -1438,6 +1450,7 @@ func (s *Session) Close() {
 		s.closing = true
 		s.state = SessionClosed
 		s.mu.Unlock()
+		s.responseSideEffectsMu.Unlock()
 
 		// Spec Appendix B graceful shutdown ordering:
 		// 1. Cancel in-flight LLM calls.
@@ -2363,30 +2376,34 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 		skipHistory := noContent && !hasPhase
 
-		if !modelResp.StreamedAssistant {
-			s.emit(EventAssistantTextStart, AssistantTextStartData{
-				Model: resp.Model,
-			})
+		if abortErr := s.withResponseSideEffects(ctx, func() {
+			if !modelResp.StreamedAssistant {
+				s.emit(EventAssistantTextStart, AssistantTextStartData{
+					Model: resp.Model,
+				})
+			}
+			if !skipHistory {
+				s.appendAssistantTurn(resp)
+			}
+			if !modelResp.StreamedAssistant && strings.TrimSpace(txt) != "" {
+				s.emit(EventAssistantTextDelta, AssistantTextDeltaData{Delta: txt})
+			}
+			textEndData := AssistantTextEndData{
+				Text:         txt,
+				Usage:        resp.Usage,
+				FinishReason: resp.Finish.Reason,
+				Model:        resp.Model,
+			}
+			if reasoning := resp.ReasoningText(); reasoning != "" {
+				textEndData.Reasoning = reasoning
+			}
+			s.emit(EventAssistantTextEnd, textEndData)
+			s.mu.Lock()
+			s.modelResponses++
+			s.mu.Unlock()
+		}); abortErr != nil {
+			return "", abortErr
 		}
-		if !skipHistory {
-			s.appendAssistantTurn(resp)
-		}
-		if !modelResp.StreamedAssistant && strings.TrimSpace(txt) != "" {
-			s.emit(EventAssistantTextDelta, AssistantTextDeltaData{Delta: txt})
-		}
-		textEndData := AssistantTextEndData{
-			Text:         txt,
-			Usage:        resp.Usage,
-			FinishReason: resp.Finish.Reason,
-			Model:        resp.Model,
-		}
-		if reasoning := resp.ReasoningText(); reasoning != "" {
-			textEndData.Reasoning = reasoning
-		}
-		s.emit(EventAssistantTextEnd, textEndData)
-		s.mu.Lock()
-		s.modelResponses++
-		s.mu.Unlock()
 		// pause_turn: model needs another turn (e.g. server-side web search still running).
 		if resp.Finish.Reason == llm.FinishReasonPauseTurn {
 			round-- // Don't count pause_turn as a tool round.

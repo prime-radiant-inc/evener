@@ -450,6 +450,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 	entry := localDaemonRendezvousEntry(item)
 	threadID := localDaemonThreadID(item)
 	ref := appwire.Ref{SourceID: s.sourceID, ThreadID: threadID}.String()
+	status := localDaemonThreadStatus(item.Status)
 	startedAt := int64(0)
 	if !entry.StartedAt.IsZero() {
 		startedAt = entry.StartedAt.Unix()
@@ -475,10 +476,10 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 				ForkFromTurn: true,
 				Shutdown:     true,
 				ChangeModel:  true,
-				Queue:        true,
+				Queue:        status == appwire.ThreadStatusProcessing,
 			},
 		},
-		Status: appwire.ThreadStatus{Type: localDaemonThreadStatus(item.Status)},
+		Status: appwire.ThreadStatus{Type: status},
 	}
 }
 

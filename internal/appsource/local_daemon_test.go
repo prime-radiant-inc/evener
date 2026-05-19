@@ -400,6 +400,33 @@ func TestLocalDaemonSourceReadThreadIncludesQueue(t *testing.T) {
 	}
 }
 
+func TestLocalDaemonSourceListQueuesOnlyProcessingThreads(t *testing.T) {
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/idle", ThreadID: "th_idle", SessionID: "sess_idle"}, Status: "idle"},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/processing", ThreadID: "th_processing", SessionID: "sess_processing"}, Status: "processing"},
+		}
+	}, nil)
+
+	resp, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("threads len=%d, want 2: %+v", len(resp.Data), resp.Data)
+	}
+	capsByID := map[string]appwire.ThreadCapabilities{}
+	for _, thread := range resp.Data {
+		capsByID[thread.ID] = thread.Serf.Capabilities
+	}
+	if capsByID["th_idle"].Queue {
+		t.Fatalf("idle thread advertised queue capability: %+v", capsByID["th_idle"])
+	}
+	if !capsByID["th_processing"].Queue {
+		t.Fatalf("processing thread did not advertise queue capability: %+v", capsByID["th_processing"])
+	}
+}
+
 func TestLocalDaemonSourceSubscribeThreadMapsConnectionRefused(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

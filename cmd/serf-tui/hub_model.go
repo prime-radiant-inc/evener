@@ -247,9 +247,35 @@ func (m *hubModel) clearSubmittedAttachments(submitted []*PastedImage, cleanupFi
 		kept = append(kept, img)
 	}
 	m.pendingAttachments = kept
-	if len(m.pendingAttachments) == 0 {
+	if len(m.pendingAttachments) == 0 && cleanupFiles {
 		m.nextAttachmentMarker = 0
 	}
+}
+
+func (m *hubModel) restoreSubmittedAttachments(submitted []*PastedImage) {
+	if len(submitted) == 0 {
+		return
+	}
+	present := make(map[*PastedImage]struct{}, len(m.pendingAttachments))
+	for _, img := range m.pendingAttachments {
+		if img != nil {
+			present[img] = struct{}{}
+		}
+	}
+	restored := make([]*PastedImage, 0, len(submitted)+len(m.pendingAttachments))
+	for _, img := range submitted {
+		if img == nil {
+			continue
+		}
+		if _, ok := present[img]; ok {
+			continue
+		}
+		restored = append(restored, img)
+		if img.MarkerN > m.nextAttachmentMarker {
+			m.nextAttachmentMarker = img.MarkerN
+		}
+	}
+	m.pendingAttachments = append(restored, m.pendingAttachments...)
 }
 
 func (m *hubModel) snapshotPendingAttachmentsForSubmit() []*PastedImage {
@@ -257,7 +283,9 @@ func (m *hubModel) snapshotPendingAttachmentsForSubmit() []*PastedImage {
 		return nil
 	}
 	m.attachmentSubmitsInFlight++
-	return append([]*PastedImage(nil), m.pendingAttachments...)
+	submitted := append([]*PastedImage(nil), m.pendingAttachments...)
+	m.clearSubmittedAttachments(submitted, false)
+	return submitted
 }
 
 func (m *hubModel) finishAttachmentSubmit() {
@@ -467,6 +495,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			// Preserve pendingAttachments on error so the user can retry
 			// without re-pasting (kata re91).
+			m.restoreSubmittedAttachments(msg.submittedAttachments)
 			m.session.setInputValue(msg.draft)
 			m.addHubErrorNotice("Send failed", "appwire", msg.err, "Check the hub connection and retry the action.")
 			m.recordSessionError("Send failed: " + msg.err.Error())
@@ -485,6 +514,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Restore the draft; the wire state will not advance because
 			// the daemon never received the message. Preserve attachments
 			// (kata re91) so the user can retry.
+			m.restoreSubmittedAttachments(msg.submittedAttachments)
 			m.session.setInputValue(msg.draft)
 			m.addHubErrorNotice("Queue failed", "appwire", msg.err, "Check the hub connection and retry the action.")
 			m.recordSessionError("Queue failed: " + msg.err.Error())
@@ -516,6 +546,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.recordSessionError("Force-steer failed after queueing: " + msg.err.Error())
 				return m, nil
 			}
+			m.restoreSubmittedAttachments(msg.submittedAttachments)
 			if draft := strings.TrimSpace(msg.draft); draft != "" {
 				m.session.setInputValue(msg.draft)
 			}
