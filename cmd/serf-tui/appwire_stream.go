@@ -131,10 +131,12 @@ func (t *appwireStreamTranslator) eventsFromNotification(notification appwire.No
 		}
 	case appwire.NotifyTurnCompleted:
 		var params struct {
-			Turn appwire.Turn `json:"turn"`
+			TurnID string       `json:"turnId"`
+			Turn   appwire.Turn `json:"turn"`
 		}
 		if json.Unmarshal(notification.Params, &params) == nil {
-			events := t.eventsFromTurnCompletedItems(params.Turn.ID, params.Turn.Items)
+			turnID := firstNonEmptyString(params.Turn.ID, params.TurnID)
+			events := t.eventsFromTurnCompletedItems(turnID, params.Turn.Items)
 			if params.Turn.Status == appwire.TurnStatusFailed {
 				message := "turn failed"
 				if params.Turn.Error != nil && params.Turn.Error.Message != "" {
@@ -142,7 +144,7 @@ func (t *appwireStreamTranslator) eventsFromNotification(notification appwire.No
 				}
 				events = append(events, newStreamEvent("ERROR", map[string]any{"error": message, "source": "provider"}))
 			}
-			events = append(events, newStreamEvent("TURN_COMPLETED", map[string]any{"turnId": params.Turn.ID}))
+			events = append(events, newStreamEvent("TURN_COMPLETED", map[string]any{"turnId": turnID}))
 			return events
 		}
 	case appwire.NotifyItemStarted:
