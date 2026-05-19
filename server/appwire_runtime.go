@@ -298,7 +298,7 @@ func mergeAppThreadItem(existing, incoming appwire.ThreadItem) appwire.ThreadIte
 }
 
 func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-	text, images := inputFromItems(params.Prompt, params.Items)
+	text, images := inputFromItems(params.Prompt, params.EffectiveInput())
 	if strings.TrimSpace(text) == "" && len(images) == 0 {
 		return appwire.TurnStartResponse{}, appwire.InvalidParams("prompt or items required")
 	}
@@ -317,10 +317,11 @@ func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartP
 }
 
 func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerParams) (appwire.EmptyResponse, error) {
-	if strings.TrimSpace(params.Text) == "" {
+	text, _ := inputFromItems(params.Text, params.EffectiveInput())
+	if strings.TrimSpace(text) == "" {
 		return appwire.EmptyResponse{}, appwire.InvalidParams("text is required")
 	}
-	turnID := strings.TrimSpace(params.TurnID)
+	turnID := strings.TrimSpace(params.EffectiveTurnID())
 	if turnID == "" {
 		return appwire.EmptyResponse{}, appwire.InvalidParams("turnId is required")
 	}
@@ -339,12 +340,12 @@ func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerP
 	if turnID != activeTurnID {
 		return appwire.EmptyResponse{}, appwire.Conflict("turn is not active")
 	}
-	fn(params.Text)
+	fn(text)
 	return appwire.EmptyResponse{}, nil
 }
 
 func (s *Server) handleAppTurnInterrupt(_ context.Context, params appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
-	turnID := strings.TrimSpace(params.TurnID)
+	turnID := strings.TrimSpace(params.EffectiveTurnID())
 	if turnID == "" {
 		return appwire.EmptyResponse{}, appwire.InvalidParams("turnId is required")
 	}

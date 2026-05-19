@@ -92,7 +92,7 @@ func (s *LocalDaemonSource) ForkThread(context.Context, appwire.ThreadForkParams
 }
 
 func (s *LocalDaemonSource) StartTurn(ctx context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-	entry, err := s.entryForRef(params.Ref, "")
+	entry, err := s.entryForRef(params.Ref, params.ThreadID)
 	if err != nil {
 		return appwire.TurnStartResponse{}, err
 	}
@@ -106,7 +106,7 @@ func (s *LocalDaemonSource) StartTurn(ctx context.Context, params appwire.TurnSt
 }
 
 func (s *LocalDaemonSource) SteerTurn(ctx context.Context, params appwire.TurnSteerParams) error {
-	entry, err := s.entryForRef(params.Ref, "")
+	entry, err := s.entryForRef(params.Ref, params.ThreadID)
 	if err != nil {
 		return err
 	}
@@ -116,7 +116,7 @@ func (s *LocalDaemonSource) SteerTurn(ctx context.Context, params appwire.TurnSt
 }
 
 func (s *LocalDaemonSource) InterruptTurn(ctx context.Context, params appwire.TurnInterruptParams) error {
-	entry, err := s.entryForRef(params.Ref, "")
+	entry, err := s.entryForRef(params.Ref, params.ThreadID)
 	if err != nil {
 		return err
 	}

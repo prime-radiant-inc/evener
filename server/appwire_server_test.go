@@ -41,6 +41,38 @@ func TestServerAppWireTurnStartQueuesInput(t *testing.T) {
 	}
 }
 
+func TestServerAppWireTurnStartAcceptsCodexInput(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+
+	conn := srv.AppServer().NewConnection("test")
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	if init.Kind() != appwire.MessageResponse {
+		t.Fatalf("init=%v", init.Kind())
+	}
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
+		ThreadID: "th_1",
+		Input: []appwire.InputItem{
+			{Type: "text", Text: "hello"},
+			{Type: "image", MediaType: "image/png", Data: []byte("png"), Name: "shot.png"},
+		},
+	}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v", resp.Kind())
+	}
+	select {
+	case msg := <-srv.InputCh():
+		if msg.Text != "hello" {
+			t.Fatalf("text=%q", msg.Text)
+		}
+		if len(msg.Images) != 1 || msg.Images[0].MediaType != "image/png" || string(msg.Images[0].Data) != "png" || msg.Images[0].Name != "shot.png" {
+			t.Fatalf("images=%+v", msg.Images)
+		}
+	default:
+		t.Fatal("input was not queued")
+	}
+}
+
 func TestServerAppWireTurnStartIDMatchesProjectedNotifications(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")

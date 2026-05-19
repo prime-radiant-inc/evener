@@ -392,6 +392,7 @@ type ThreadStartParams struct {
 	CWD             string             `json:"cwd"`
 	Prompt          string             `json:"prompt,omitempty"`
 	Items           []InputItem        `json:"items,omitempty"`
+	Input           []InputItem        `json:"input,omitempty"`
 	ModelProvider   string             `json:"modelProvider,omitempty"`
 	Model           string             `json:"model,omitempty"`
 	Profile         string             `json:"profile,omitempty"`
@@ -427,9 +428,11 @@ type ThreadForkResponse struct {
 }
 
 type TurnStartParams struct {
-	Ref    string      `json:"ref"`
-	Prompt string      `json:"prompt,omitempty"`
-	Items  []InputItem `json:"items,omitempty"`
+	Ref      string      `json:"ref,omitempty"`
+	ThreadID string      `json:"threadId,omitempty"`
+	Prompt   string      `json:"prompt,omitempty"`
+	Items    []InputItem `json:"items,omitempty"`
+	Input    []InputItem `json:"input,omitempty"`
 }
 
 type TurnStartResponse struct {
@@ -437,14 +440,19 @@ type TurnStartResponse struct {
 }
 
 type TurnSteerParams struct {
-	Ref    string `json:"ref"`
-	TurnID string `json:"turnId"`
-	Text   string `json:"text"`
+	Ref            string      `json:"ref,omitempty"`
+	ThreadID       string      `json:"threadId,omitempty"`
+	TurnID         string      `json:"turnId"`
+	ExpectedTurnID string      `json:"expectedTurnId,omitempty"`
+	Text           string      `json:"text"`
+	Input          []InputItem `json:"input,omitempty"`
 }
 
 type TurnInterruptParams struct {
-	Ref    string `json:"ref"`
-	TurnID string `json:"turnId,omitempty"`
+	Ref            string `json:"ref,omitempty"`
+	ThreadID       string `json:"threadId,omitempty"`
+	TurnID         string `json:"turnId,omitempty"`
+	ExpectedTurnID string `json:"expectedTurnId,omitempty"`
 }
 
 // TurnQueueParams is the wire shape for turn/queue (kata 111a). Queues a

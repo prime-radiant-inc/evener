@@ -2689,7 +2689,7 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 				writeSessionActionError(w, r, err)
 				return
 			}
-			if err := ensureThreadActionAvailable(r.Context(), source, ref, "send"); err != nil {
+			if err := ensureThreadActionAvailable(r.Context(), source, ref, "", "send"); err != nil {
 				writeSessionActionError(w, r, err)
 				return
 			}
@@ -2765,7 +2765,7 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 			return err
 		}
 		if !forceResume {
-			if err := ensureThreadActionAvailable(r.Context(), source, ref, "send"); err != nil {
+			if err := ensureThreadActionAvailable(r.Context(), source, ref, "", "send"); err != nil {
 				return err
 			}
 		}

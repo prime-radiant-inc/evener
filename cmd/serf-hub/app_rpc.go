@@ -228,7 +228,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		return nil
 	}
 	startTurn := func(ctx context.Context, source appsource.Source, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-		readParams := appwire.ThreadReadParams{Ref: params.Ref, IncludeTurns: false}
+		readParams := appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID, IncludeTurns: false}
 		threadResp, err := source.ReadThread(ctx, readParams)
 		if err != nil {
 			return appwire.TurnStartResponse{}, err
@@ -325,15 +325,15 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		return hubThreadFork(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnStart, func(ctx context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-		if err := validateAppWireInputItems(params.Items); err != nil {
+		if err := validateAppWireInputItems(params.EffectiveInput()); err != nil {
 			return appwire.TurnStartResponse{}, appwire.InvalidParams(err.Error())
 		}
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
-			if _, resumeErr := hubThreadResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref}); resumeErr != nil {
+			if _, resumeErr := hubThreadResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
 				return appwire.TurnStartResponse{}, resumeErr
 			}
-			source, err = sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+			source, err = sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
 			if err != nil {
 				return appwire.TurnStartResponse{}, err
 			}
@@ -342,37 +342,37 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		if err == nil {
 			return resp, nil
 		}
-		if !hubKnowsRef(cfg, params.Ref) {
+		if params.Ref != "" && !hubKnowsRef(cfg, params.Ref) {
 			return appwire.TurnStartResponse{}, err
 		}
 		if !shouldResumeAfterTurnStartError(err) {
 			return appwire.TurnStartResponse{}, err
 		}
-		if _, resumeErr := hubThreadResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref}); resumeErr != nil {
+		if _, resumeErr := hubThreadResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
 			return appwire.TurnStartResponse{}, resumeErr
 		}
-		source, sourceErr := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+		source, sourceErr := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if sourceErr != nil {
 			return appwire.TurnStartResponse{}, sourceErr
 		}
 		return startTurn(ctx, source, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnSteer, func(ctx context.Context, params appwire.TurnSteerParams) (appwire.EmptyResponse, error) {
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
 			return appwire.EmptyResponse{}, err
 		}
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "steer"); err != nil {
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, params.ThreadID, "steer"); err != nil {
 			return appwire.EmptyResponse{}, err
 		}
 		return appwire.EmptyResponse{}, source.SteerTurn(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodTurnInterrupt, func(ctx context.Context, params appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, params.ThreadID)
 		if err != nil {
 			return appwire.EmptyResponse{}, err
 		}
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "interrupt"); err != nil {
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, params.ThreadID, "interrupt"); err != nil {
 			return appwire.EmptyResponse{}, err
 		}
 		return appwire.EmptyResponse{}, source.InterruptTurn(ctx, params)
@@ -385,7 +385,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		if err != nil {
 			return appwire.EmptyResponse{}, err
 		}
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "queue"); err != nil {
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "queue"); err != nil {
 			return appwire.EmptyResponse{}, err
 		}
 		return appwire.EmptyResponse{}, source.QueueTurn(ctx, params)
@@ -401,7 +401,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		// drainAsSteer rides on the Steer capability — the daemon checks
 		// queue depth separately to return Conflict when there is nothing
 		// to drain.
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "steer"); err != nil {
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "steer"); err != nil {
 			return appwire.EmptyResponse{}, err
 		}
 		return appwire.EmptyResponse{}, source.DrainAsSteer(ctx, params)
@@ -411,7 +411,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		if err != nil {
 			return appwire.ThreadClearResponse{}, err
 		}
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "clear"); err != nil {
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "clear"); err != nil {
 			return appwire.ThreadClearResponse{}, err
 		}
 		return source.ClearThread(ctx, params)
@@ -421,7 +421,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		if err != nil {
 			return appwire.EmptyResponse{}, err
 		}
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "compact"); err != nil {
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "compact"); err != nil {
 			return appwire.EmptyResponse{}, err
 		}
 		return appwire.EmptyResponse{}, source.CompactThread(ctx, params)
@@ -431,7 +431,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		if err != nil {
 			return appwire.EmptyResponse{}, err
 		}
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "shutdown"); err != nil {
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "shutdown"); err != nil {
 			return appwire.EmptyResponse{}, err
 		}
 		return appwire.EmptyResponse{}, source.ShutdownThread(ctx, params)
@@ -441,7 +441,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		if err != nil {
 			return appwire.EmptyResponse{}, err
 		}
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "model"); err != nil {
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "model"); err != nil {
 			return appwire.EmptyResponse{}, err
 		}
 		return appwire.EmptyResponse{}, source.SetThreadModel(ctx, params)
@@ -690,8 +690,8 @@ func isSessionUnavailableError(err error) bool {
 	return wire.Code == appwire.CodeUnavailable && serfErrorInfoFromData(wire.Data) == string(appwire.ErrorSessionUnavailable)
 }
 
-func ensureThreadActionAvailable(ctx context.Context, source appsource.Source, ref, action string) error {
-	resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false})
+func ensureThreadActionAvailable(ctx context.Context, source appsource.Source, ref, threadID, action string) error {
+	resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, ThreadID: threadID, IncludeTurns: false})
 	if err != nil {
 		return err
 	}
@@ -1416,7 +1416,7 @@ func hubKnowsRef(cfg WebConfig, ref string) bool {
 }
 
 func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
-	if err := validateAppWireInputItems(params.Items); err != nil {
+	if err := validateAppWireInputItems(params.EffectiveInput()); err != nil {
 		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
 	}
 	sourceID := launchSourceID(params)
@@ -1544,8 +1544,8 @@ func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Regis
 		threadResp.Thread = appwire.Thread{ID: entry.ThreadID, SessionID: entry.SessionID, Source: "local", Serf: appwire.SerfThread{Ref: ref}}
 	}
 	turn := appwire.Turn{}
-	if params.Prompt != "" || len(params.Items) > 0 {
-		turnResp, err := source.StartTurn(ctx, appwire.TurnStartParams{Ref: ref, Prompt: params.Prompt, Items: params.Items})
+	if params.Prompt != "" || len(params.EffectiveInput()) > 0 {
+		turnResp, err := source.StartTurn(ctx, appwire.TurnStartParams{Ref: ref, Prompt: params.Prompt, Items: params.Items, Input: params.Input})
 		if err != nil {
 			return appwire.ThreadStartResponse{}, err
 		}
@@ -1817,7 +1817,7 @@ func hubThreadFork(ctx context.Context, cfg WebConfig, sources *appsource.Regist
 			return appwire.ThreadForkResponse{}, err
 		}
 		if threadForkRequiresTurnCapability(params) {
-			if err := ensureThreadActionAvailable(ctx, source, params.Ref, "fork"); err != nil {
+			if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "fork"); err != nil {
 				return appwire.ThreadForkResponse{}, err
 			}
 		}

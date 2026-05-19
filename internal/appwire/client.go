@@ -261,7 +261,7 @@ func pendingTurnStartText(params TurnStartParams) string {
 		return params.Prompt
 	}
 	images := 0
-	for _, item := range params.Items {
+	for _, item := range params.EffectiveInput() {
 		switch item.Type {
 		case "image", "input_image":
 			images++

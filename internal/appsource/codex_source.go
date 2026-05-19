@@ -160,8 +160,8 @@ func (s *CodexSource) StartThread(ctx context.Context, params appwire.ThreadStar
 	live := s.newLiveThread(thread.ID, client, closeClient)
 	s.setLiveThread(thread.ID, live)
 	resp := appwire.ThreadStartResponse{Thread: thread}
-	if strings.TrimSpace(params.Prompt) != "" || len(params.Items) > 0 {
-		turnResp, err := s.startTurnWithClient(ctx, client, appwire.TurnStartParams{Ref: thread.Serf.Ref, Prompt: params.Prompt, Items: params.Items})
+	if strings.TrimSpace(params.Prompt) != "" || len(params.EffectiveInput()) > 0 {
+		turnResp, err := s.startTurnWithClient(ctx, client, appwire.TurnStartParams{Ref: thread.Serf.Ref, Prompt: params.Prompt, Items: params.Items, Input: params.Input})
 		if err != nil {
 			s.removeLiveThread(thread.ID, live)
 			live.retire()
@@ -210,11 +210,11 @@ func (s *CodexSource) ForkThread(ctx context.Context, params appwire.ThreadForkP
 }
 
 func (s *CodexSource) StartTurn(ctx context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-	threadID, err := s.threadID(params.Ref, "")
+	threadID, err := s.threadID(params.Ref, params.ThreadID)
 	if err != nil {
 		return appwire.TurnStartResponse{}, err
 	}
-	input, err := codexInput(params.Prompt, params.Items)
+	input, err := codexInput(params.Prompt, params.EffectiveInput())
 	if err != nil {
 		return appwire.TurnStartResponse{}, err
 	}
@@ -250,11 +250,11 @@ func (s *CodexSource) StartTurn(ctx context.Context, params appwire.TurnStartPar
 }
 
 func (s *CodexSource) startTurnWithClient(ctx context.Context, client *appwire.Client, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-	threadID, err := s.threadID(params.Ref, "")
+	threadID, err := s.threadID(params.Ref, params.ThreadID)
 	if err != nil {
 		return appwire.TurnStartResponse{}, err
 	}
-	input, err := codexInput(params.Prompt, params.Items)
+	input, err := codexInput(params.Prompt, params.EffectiveInput())
 	if err != nil {
 		return appwire.TurnStartResponse{}, err
 	}
@@ -273,36 +273,38 @@ func codexTurnStart(ctx context.Context, client *appwire.Client, threadID string
 }
 
 func (s *CodexSource) SteerTurn(ctx context.Context, params appwire.TurnSteerParams) error {
-	threadID, err := s.threadID(params.Ref, "")
+	threadID, err := s.threadID(params.Ref, params.ThreadID)
 	if err != nil {
 		return err
 	}
-	if params.TurnID == "" {
+	turnID := params.EffectiveTurnID()
+	if turnID == "" {
 		return appwire.InvalidParams("turnId is required for codex turn/steer")
 	}
-	input, err := codexInput(params.Text, nil)
+	input, err := codexInput(params.Text, params.EffectiveInput())
 	if err != nil {
 		return err
 	}
 	return s.withClient(ctx, func(client *appwire.Client) error {
 		return client.Request(ctx, appwire.MethodTurnSteer, map[string]any{
 			"threadId":       threadID,
-			"expectedTurnId": params.TurnID,
+			"expectedTurnId": turnID,
 			"input":          input,
 		}, nil)
 	})
 }
 
 func (s *CodexSource) InterruptTurn(ctx context.Context, params appwire.TurnInterruptParams) error {
-	threadID, err := s.threadID(params.Ref, "")
+	threadID, err := s.threadID(params.Ref, params.ThreadID)
 	if err != nil {
 		return err
 	}
-	if params.TurnID == "" {
+	turnID := params.EffectiveTurnID()
+	if turnID == "" {
 		return appwire.InvalidParams("turnId is required for codex turn/interrupt")
 	}
 	return s.withClient(ctx, func(client *appwire.Client) error {
-		return client.Request(ctx, appwire.MethodTurnInterrupt, map[string]any{"threadId": threadID, "turnId": params.TurnID}, nil)
+		return client.Request(ctx, appwire.MethodTurnInterrupt, map[string]any{"threadId": threadID, "turnId": turnID, "expectedTurnId": turnID}, nil)
 	})
 }
 
