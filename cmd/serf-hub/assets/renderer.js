@@ -1482,7 +1482,6 @@
 	          return;
 	        }
 	        if (!text && !hasAttachments) return;
-        this.lastSubmittedTurn = this.retryPayload(text, items);
         const sendBtn = form.querySelector(".send-btn");
         const canSend = !sendBtn || sendBtn.getAttribute("data-capability-send") !== "false";
         const canQueue = sendBtn && sendBtn.getAttribute("data-capability-queue") === "true";
@@ -1515,6 +1514,7 @@
           this.appendBanner("error", "send is not available for this session", { source: "hub", title: "Hub send error" });
           return;
         }
+        this.lastSubmittedTurn = this.retryPayload(text, items);
         if (sendBtn) sendBtn.disabled = true;
         try {
           // Snapshot the items so a successful response can clear the bag
