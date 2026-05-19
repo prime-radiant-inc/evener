@@ -16,7 +16,7 @@ func TestStatusEndpoint_Idle(t *testing.T) {
 
 	srv.SetStatus(StatusInfo{
 		SessionID: "test-123",
-		State:     "IDLE",
+		State:     "idle",
 		Turns:     5,
 		Model:     "gpt-5",
 		Profile:   "openai",
@@ -37,8 +37,8 @@ func TestStatusEndpoint_Idle(t *testing.T) {
 	if status.SessionID != "test-123" {
 		t.Errorf("session_id: got %q, want test-123", status.SessionID)
 	}
-	if status.State != "IDLE" {
-		t.Errorf("state: got %q, want IDLE", status.State)
+	if status.State != "idle" {
+		t.Errorf("state: got %q, want idle", status.State)
 	}
 }
 
@@ -46,7 +46,7 @@ func TestStatusEndpoint_ContextPressure(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetStatus(StatusInfo{
 		SessionID: "test-456",
-		State:     "IDLE",
+		State:     "idle",
 		Model:     "gpt-4o",
 	})
 	srv.SetContextPressureFunc(func() float64 { return 0.42 })
@@ -185,7 +185,7 @@ func TestInputEndpoint_Conflict(t *testing.T) {
 
 func TestInputEndpoint_ClosedSessionConflict(t *testing.T) {
 	srv := NewServer(ServerConfig{})
-	srv.SetState("CLOSED")
+	srv.SetState("closed")
 
 	body := strings.NewReader(`{"text":"hello"}`)
 	req := httptest.NewRequest(http.MethodPost, "/input", body)
@@ -483,7 +483,7 @@ func TestStatusEndpoint_DetailedStatus(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetStatus(StatusInfo{
 		SessionID: "test-789",
-		State:     "IDLE",
+		State:     "idle",
 		Model:     "gpt-5",
 		Profile:   "openai",
 	})
@@ -556,7 +556,7 @@ func TestStatusEndpoint_NoDetailedStatusFunc(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetStatus(StatusInfo{
 		SessionID: "test-no-detail",
-		State:     "IDLE",
+		State:     "idle",
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
@@ -839,7 +839,7 @@ func TestStatusCapabilities_QueueGatedByProcessing(t *testing.T) {
 
 	// Idle: Queue must be false even when QueueFunc is set.
 	srv.SetProcessing(false)
-	srv.SetStatus(StatusInfo{SessionID: "s1", State: "IDLE"})
+	srv.SetStatus(StatusInfo{SessionID: "s1", State: "idle"})
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	rec := httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)
@@ -856,7 +856,7 @@ func TestStatusCapabilities_QueueGatedByProcessing(t *testing.T) {
 
 	// Processing: Queue flips to true.
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "s1", State: "PROCESSING"})
+	srv.SetStatus(StatusInfo{SessionID: "s1", State: "active"})
 	req = httptest.NewRequest(http.MethodGet, "/status", nil)
 	rec = httptest.NewRecorder()
 	srv.ServeHTTP(rec, req)

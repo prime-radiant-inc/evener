@@ -76,11 +76,7 @@ func (m hubModel) sessionCanStartTurn() bool {
 
 func (m hubModel) sessionTurnActionState() bool {
 	switch stateLabel(m.detail.State) {
-	case "processing", "awaiting":
-		return true
-	}
-	switch strings.ToLower(strings.TrimSpace(m.detail.State)) {
-	case "active", "running", "working":
+	case "active", "awaiting":
 		return true
 	}
 	return m.session.processing

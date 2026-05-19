@@ -40,7 +40,7 @@ window.SerfAppwire = {
       id: "01TEST",
       sessionId: "01TEST",
       serf: { ref: "local:01TEST" },
-      status: { type: "processing" },
+      status: { type: "active" },
       queue: { depth: 0, preview: [] },
       turns: [],
     },

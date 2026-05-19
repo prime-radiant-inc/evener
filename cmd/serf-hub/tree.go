@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/internal/appwire"
 )
 
 // Tree is the sidebar data model: a flat live-triage section and a
@@ -35,7 +35,7 @@ type TreeNode struct {
 	ID        string
 	Title     string
 	Project   string
-	State     string // "awaiting" | "processing" | "warning" | "idle" | "ended"
+	State     string // "awaiting" | "active" | "warning" | "idle" | "ended"
 	Kind      string // "session" | "subagent" | "fork"
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -49,7 +49,7 @@ func attentionRank(state string) int {
 	switch state {
 	case "awaiting":
 		return 4
-	case "processing":
+	case "active":
 		return 3
 	case "warning":
 		return 2
@@ -63,10 +63,10 @@ func attentionRank(state string) int {
 // rollupRank ranks states for a project's rollup dot. Per spec the dot
 // reflects the most-attention-needing live child:
 //
-//	awaiting > warning > processing > idle
+//	awaiting > warning > active > idle
 //
 // (warning beats processing here because a warning is something the user
-// likely needs to look at, while processing is the daemon making progress
+// likely needs to look at, while active is the daemon making progress
 // on its own.)
 func rollupRank(state string) int {
 	switch state {
@@ -74,7 +74,7 @@ func rollupRank(state string) int {
 		return 4
 	case "warning":
 		return 3
-	case "processing":
+	case "active":
 		return 2
 	case "idle":
 		return 1
@@ -140,27 +140,27 @@ func shortID(id string) string {
 	return "session " + id[len(id)-6:]
 }
 
-// normalizeState maps the daemon's uppercase state vocabulary to the
-// lowercase tokens used by the hub UI (CSS data-state selectors,
-// attention-rank ordering).
+// normalizeState accepts Codex thread status terms and maps them to hub UI
+// display states.
 func normalizeState(s string) string {
 	switch s {
 	case "":
 		return "idle"
-	case "AWAITING_REPLY", "AWAITING", "AWAITING_INPUT":
+	case appwire.ThreadStatusAwaiting:
 		return "awaiting"
-	case "PROCESSING", "STREAMING", "TOOL", "COMPACTING":
-		return "processing"
-	case "ERRORED", "ERROR":
+	case appwire.ThreadStatusActive:
+		return "active"
+	case appwire.ThreadStatusSystemError:
 		return "awaiting" // errored sessions need user attention; group with awaiting
-	case "WARNING":
+	case appwire.ThreadStatusWarning:
 		return "warning"
-	case "IDLE":
+	case appwire.ThreadStatusIdle:
 		return "idle"
-	case "ENDED", "CLOSED":
+	case appwire.ThreadStatusClosed, appwire.ThreadStatusNotLoaded, "ended":
 		return "ended"
+	default:
+		return "idle"
 	}
-	return strings.ToLower(s)
 }
 
 // nodeKind returns "fork", "subagent", or "session" for a meta.
@@ -201,9 +201,7 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 		}
 	}
 
-	// stateFor resolves the display state for a session ID. Daemon /status
-	// reports uppercase ("IDLE", "PROCESSING", "AWAITING_REPLY", "ERRORED");
-	// the UI vocabulary is lowercase to match CSS data-state selectors.
+	// stateFor resolves the display state for a session ID.
 	stateFor := func(id string) string {
 		if le, ok := liveMap[id]; ok {
 			return normalizeState(le.Status)

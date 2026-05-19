@@ -151,7 +151,7 @@ function assert(cond, msg) {
   {
     const w = makeWindow({
       prefs: { sound: true },
-      live: [{ id: "a", state: "processing" }],
+      live: [{ id: "a", state: "active" }],
     });
     load(w);
     await flush(w);

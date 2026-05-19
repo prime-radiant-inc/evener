@@ -151,18 +151,18 @@ func NewServer(cfg ServerConfig) *Server {
 			ServerName: "serf-serve",
 			SourceID:   "local",
 			Features: appwire.FeatureSet{
-				ThreadList:            true,
-				ThreadTurnsList:       false,
-				TurnStart:             true,
-				TurnSteer:             true,
-				ThreadClear:           true,
-				ThreadShutdown:        true,
-				ForkFromTurn:          false,
-				Tasks:                 true,
-				ModelList:             true,
-				DirectoryComplete:     false,
-				},
-			}),
+				ThreadList:        true,
+				ThreadTurnsList:   false,
+				TurnStart:         true,
+				TurnSteer:         true,
+				ThreadClear:       true,
+				ThreadShutdown:    true,
+				ForkFromTurn:      false,
+				Tasks:             true,
+				ModelList:         true,
+				DirectoryComplete: false,
+			},
+		}),
 		appNotifier: appserver.NewNotifier(replaySize),
 		appSourceID: "local",
 		inputCh:     make(chan InputMessage, 1),
@@ -230,7 +230,7 @@ func (s *Server) SetWorkingDir(dir string) {
 	s.mu.Unlock()
 }
 
-// SetState updates the session state string (IDLE, PROCESSING, CLOSED).
+// SetState updates the session state string.
 func (s *Server) SetState(state string) {
 	s.mu.Lock()
 	s.status.State = state

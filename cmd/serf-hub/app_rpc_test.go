@@ -146,7 +146,7 @@ func TestHubRPCThreadListUsesRosterStatusAndSessionID(t *testing.T) {
 		ThreadID:  "01OLD",
 		SessionID: "01OLD",
 	})
-	roster := NewRoster(runDir, fakeProber{sessionID: "01NEW", status: "AWAITING_REPLY"})
+	roster := NewRoster(runDir, fakeProber{sessionID: "01NEW", status: appwire.ThreadStatusAwaiting})
 	roster.Refresh()
 
 	hub := newHubRPCTestServer(t, WebConfig{
@@ -797,7 +797,7 @@ func TestSanitizeStaleProcessingStatusLeavesNonProcessingAlone(t *testing.T) {
 }
 
 func TestHubRPCThreadReadFlipsStuckProcessingToError(t *testing.T) {
-	// End-to-end: daemon claims PROCESSING, transcript tail is a failed
+	// End-to-end: daemon claims active, transcript tail is a failed
 	// api_call. MethodThreadRead must report error so the hub UI doesn't
 	// disable steer/send forever (kata r6y9).
 	root := t.TempDir()

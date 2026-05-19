@@ -2,7 +2,7 @@
 // localStorage["serf-hub.notifications"] and drives four channels:
 //   - title-bar count of awaiting sessions
 //   - favicon dot for highest-attention state
-//   - OS notification on idle->awaiting and processing->errored transitions
+//   - OS notification on idle->awaiting and active->errored transitions
 //   - short tone on the same transitions
 //
 // Polls /api/search?q= every 5s for live state. Settings pane dispatches
@@ -18,11 +18,11 @@
     "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%237aa2f7'/></svg>";
 
   // Highest priority first. Transitions of interest below use these names.
-  const STATE_PRIORITY = ["errored", "awaiting", "processing", "idle"];
+  const STATE_PRIORITY = ["errored", "awaiting", "active", "idle"];
   const STATE_COLORS = {
     errored: "#f7768e",
     awaiting: "#e0af68",
-    processing: "#7aa2f7",
+    active: "#7aa2f7",
     idle: "#9ece6a",
   };
 
@@ -184,7 +184,7 @@
   // The two transitions that fire OS + sound notifications.
   function isAlertTransition(from, to) {
     if (from === "idle" && to === "awaiting") return true;
-    if (from === "processing" && to === "errored") return true;
+    if (from === "active" && to === "errored") return true;
     return false;
   }
 

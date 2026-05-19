@@ -32,9 +32,6 @@ func newHubSourceRegistry(cfg WebConfig) *appsource.Registry {
 			live := cfg.Roster.List()
 			entries := make([]appsource.LocalDaemonEntry, 0, len(live))
 			for _, item := range live {
-				if strings.EqualFold(item.Status, "CLOSED") {
-					continue
-				}
 				entries = append(entries, appsource.LocalDaemonEntry{
 					Entry:     item.Entry,
 					SessionID: item.SessionID,
@@ -952,12 +949,12 @@ func normalizeThreadListStatusFilter(status string) string {
 }
 
 // sanitizeStaleProcessingStatus rewrites a thread's status when the live source
-// claims the session is processing but the on-disk transcript shows the last
+// claims the session is active but the on-disk transcript shows the last
 // thing recorded was a failed LLM call. The agent loop has a known gap where a
 // retryable stream error (e.g. "stream ended without finish event") returns
-// from session.Input without flipping the in-memory state back to IDLE; the
-// daemon then keeps answering /status with PROCESSING forever, even though
-// nothing is in flight. Hub readers conclude "processing" and the workspace UI
+// from session.Input without flipping the in-memory state back to idle; the
+// daemon then keeps answering /status with active forever, even though
+// nothing is in flight. Hub readers conclude "active" and the workspace UI
 // disables steer/send. We catch the discrepancy here by consulting the past
 // index for the same thread: if the last transcript line is an api_call whose
 // Error field is non-empty, the session is wedged and the correct status is

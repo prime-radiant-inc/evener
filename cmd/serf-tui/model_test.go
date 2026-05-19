@@ -254,7 +254,7 @@ func TestUpdateAsyncStreamConnectedKeepsWaitingForAsync(t *testing.T) {
 	}
 	asyncCh <- streamEventMsg{
 		Event: "SESSION_END",
-		Data:  `{"reason":"input_complete","state":"IDLE","turns":1}`,
+		Data:  `{"reason":"input_complete","state":"idle","turns":1}`,
 	}
 
 	updated, cmd := m.Update(asyncMsg{msg: streamConnectedMsg{}})

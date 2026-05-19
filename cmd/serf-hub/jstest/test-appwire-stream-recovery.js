@@ -97,7 +97,7 @@ async function testConnectionLossClearsAndReconnects() {
   await wait(30);
   assert(typeof lostHandler === "function", "renderer did not register AppWire connection loss callback");
   window.SerfRenderer.lastUserText = "retry me";
-  window.SerfRenderer.updateThreadState("processing");
+  window.SerfRenderer.updateThreadState("active");
   lostHandler(new Error("closed"));
   await wait(30);
   assert(window.SerfRenderer.liveStream === null, "connection loss should clear the AppWire stream sentinel");

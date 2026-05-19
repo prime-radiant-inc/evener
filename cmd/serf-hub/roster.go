@@ -18,7 +18,7 @@ import (
 type LiveEntry struct {
 	rendezvous.Entry
 	SessionID string
-	Status    string // most-recent daemon state ("processing", "idle", "awaiting", etc.)
+	Status    string // most-recent daemon state ("active", "idle", "awaiting", etc.)
 }
 
 // Prober is implemented by liveness-checking strategies.

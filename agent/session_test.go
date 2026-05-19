@@ -2066,16 +2066,16 @@ func TestSession_PauseTurn_ContinuesLoop(t *testing.T) {
 
 func TestSessionState_Transitions(t *testing.T) {
 	// Verify state type and constants exist
-	if SessionIdle != SessionState("IDLE") {
+	if SessionIdle != SessionState("idle") {
 		t.Fatal("SessionIdle wrong")
 	}
-	if SessionProcessing != SessionState("PROCESSING") {
+	if SessionProcessing != SessionState("active") {
 		t.Fatal("SessionProcessing wrong")
 	}
-	if SessionAwaitingInput != SessionState("AWAITING_INPUT") {
+	if SessionAwaitingInput != SessionState("awaiting") {
 		t.Fatal("SessionAwaitingInput wrong")
 	}
-	if SessionClosed != SessionState("CLOSED") {
+	if SessionClosed != SessionState("closed") {
 		t.Fatal("SessionClosed wrong")
 	}
 }

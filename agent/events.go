@@ -114,7 +114,7 @@ type SessionEndData struct {
 	Turns  int    `json:"turns,omitempty"`
 	// Interrupted is true when the input was aborted via the interrupt
 	// signal (POST /interrupt or TurnInterrupt RPC). When set, the
-	// session remains alive (State="IDLE") but the active turn was cut
+	// session remains alive (State="idle") but the active turn was cut
 	// short; the appwire projection maps this to a "canceled" turn
 	// status while the thread status stays idle.
 	Interrupted bool `json:"interrupted,omitempty"`

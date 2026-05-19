@@ -433,7 +433,7 @@ func TestLocalDaemonSourceListQueuesOnlyProcessingThreads(t *testing.T) {
 	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
 		return []LocalDaemonEntry{
 			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/idle", ThreadID: "th_idle", SessionID: "sess_idle"}, Status: "idle"},
-			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/processing", ThreadID: "th_processing", SessionID: "sess_processing"}, Status: "processing"},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/processing", ThreadID: "th_processing", SessionID: "sess_processing"}, Status: appwire.ThreadStatusActive},
 		}
 	}, nil)
 

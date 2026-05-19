@@ -323,7 +323,7 @@ func (e *embeddedServer) inputLoop(ctx context.Context) {
 				drainCtx = agent.WithQueuedInputDrainOnInterruptHandler(drainCtx, root, nextTurnCtx)
 				currentCancel = cancelDrain
 				e.srv.SetProcessing(true)
-				e.srv.SetState("PROCESSING")
+				e.srv.SetState(string(agent.SessionProcessing))
 				e.srv.SetCancelFunc(cancelDrain)
 				return drainCtx, cancelDrain
 			}
@@ -331,7 +331,7 @@ func (e *embeddedServer) inputLoop(ctx context.Context) {
 			currentCancel = cancelTurn
 			turnCtx = agent.WithQueuedInputDrainOnInterruptHandler(turnCtx, ctx, nextTurnCtx)
 			e.srv.SetProcessing(true)
-			e.srv.SetState("PROCESSING")
+			e.srv.SetState(string(agent.SessionProcessing))
 			e.srv.SetCancelFunc(cancelTurn)
 			_, processErr := sess.ProcessInput(turnCtx, msg.Text, msg.Images)
 			currentCancel()

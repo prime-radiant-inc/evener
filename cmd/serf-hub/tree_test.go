@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -30,8 +31,8 @@ func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 			EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"}},
 	}
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01ACTIVE", Status: "processing"},
-		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01SUB1", Status: "processing"},
+		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01ACTIVE", Status: appwire.ThreadStatusActive},
+		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01SUB1", Status: appwire.ThreadStatusActive},
 	}
 
 	tree := BuildTree(metas, live)
@@ -78,13 +79,13 @@ func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 		t.Errorf("01OTHER should have no children, got %d", len(proj.Sessions[1].Children))
 	}
 
-	// Live: 2 entries, both processing
+	// Live: 2 entries, both active.
 	if len(tree.Live) != 2 {
 		t.Fatalf("live: %d", len(tree.Live))
 	}
 
-	// Rollup state for the project: processing (the most-attention live state)
-	if proj.RollupState != "processing" {
+	// Rollup state for the project: active (the most-attention live state).
+	if proj.RollupState != "active" {
 		t.Errorf("rollup: %q", proj.RollupState)
 	}
 }
@@ -104,7 +105,7 @@ func TestBuildTree_AttentionSortsLive(t *testing.T) {
 	live := []LiveEntry{
 		{Entry: rendezvous.Entry{PID: 1}, SessionID: "01IDLE", Status: "idle"},
 		{Entry: rendezvous.Entry{PID: 2}, SessionID: "01AWAIT", Status: "awaiting"},
-		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01PROC", Status: "processing"},
+		{Entry: rendezvous.Entry{PID: 3}, SessionID: "01PROC", Status: appwire.ThreadStatusActive},
 	}
 
 	tree := BuildTree(metas, live)
@@ -160,10 +161,10 @@ func TestBuildTree_OrdersProjectSessionsByUpdatedCreatedTitleAndID(t *testing.T)
 func TestBuildTree_OrdersLiveRowsWithoutMetasByStartedAtAndID(t *testing.T) {
 	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1, StartedAt: base.Add(-time.Hour)}, SessionID: "02OLD", Status: "IDLE"},
-		{Entry: rendezvous.Entry{PID: 2, StartedAt: base}, SessionID: "01NEW", Status: "IDLE"},
-		{Entry: rendezvous.Entry{PID: 3, StartedAt: base.Add(-2 * time.Hour)}, SessionID: "04TIEA", Status: "IDLE"},
-		{Entry: rendezvous.Entry{PID: 4, StartedAt: base.Add(-2 * time.Hour)}, SessionID: "03TIEB", Status: "IDLE"},
+		{Entry: rendezvous.Entry{PID: 1, StartedAt: base.Add(-time.Hour)}, SessionID: "02OLD", Status: appwire.ThreadStatusIdle},
+		{Entry: rendezvous.Entry{PID: 2, StartedAt: base}, SessionID: "01NEW", Status: appwire.ThreadStatusIdle},
+		{Entry: rendezvous.Entry{PID: 3, StartedAt: base.Add(-2 * time.Hour)}, SessionID: "04TIEA", Status: appwire.ThreadStatusIdle},
+		{Entry: rendezvous.Entry{PID: 4, StartedAt: base.Add(-2 * time.Hour)}, SessionID: "03TIEB", Status: appwire.ThreadStatusIdle},
 	}
 
 	tree := BuildTree(nil, live)
@@ -186,8 +187,8 @@ func TestBuildTree_OrdersMixedLiveRowsByMergedMetadata(t *testing.T) {
 		OriginalPrompt: "meta-backed live row",
 	}}
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1, StartedAt: base.Add(-2 * time.Hour)}, SessionID: "01META", Status: "IDLE"},
-		{Entry: rendezvous.Entry{PID: 2, StartedAt: base}, SessionID: "02FRESH", Status: "IDLE"},
+		{Entry: rendezvous.Entry{PID: 1, StartedAt: base.Add(-2 * time.Hour)}, SessionID: "01META", Status: appwire.ThreadStatusIdle},
+		{Entry: rendezvous.Entry{PID: 2, StartedAt: base}, SessionID: "02FRESH", Status: appwire.ThreadStatusIdle},
 	}
 
 	tree := BuildTree(metas, live)

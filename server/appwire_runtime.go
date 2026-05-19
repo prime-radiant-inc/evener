@@ -698,20 +698,20 @@ func appStatus(state string, processing bool) string {
 	if processing {
 		return appwire.ThreadStatusActive
 	}
-	switch strings.ToUpper(state) {
-	case "IDLE":
+	switch strings.TrimSpace(state) {
+	case appwire.ThreadStatusIdle:
 		return appwire.ThreadStatusIdle
-	case "PROCESSING":
+	case appwire.ThreadStatusActive:
 		return appwire.ThreadStatusActive
-	case "AWAITING", "AWAITING_INPUT", "AWAITING_REPLY":
+	case appwire.ThreadStatusAwaiting:
 		return appwire.ThreadStatusAwaiting
-	case "WARNING":
+	case appwire.ThreadStatusWarning:
 		return appwire.ThreadStatusWarning
-	case "ERRORED", "ERROR":
+	case appwire.ThreadStatusSystemError:
 		return appwire.ThreadStatusSystemError
-	case "CLOSED":
+	case appwire.ThreadStatusClosed:
 		return appwire.ThreadStatusClosed
-	case "ENDED":
+	case appwire.ThreadStatusNotLoaded:
 		return appwire.ThreadStatusNotLoaded
 	default:
 		return appwire.ThreadStatusIdle

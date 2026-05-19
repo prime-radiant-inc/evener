@@ -192,7 +192,7 @@ func TestWeb_Send_ImageAttachmentsForwardedToDaemonStartTurn(t *testing.T) {
 		ThreadID:  "01SENDIMG",
 		SessionID: "01SENDIMG",
 	})
-	r := NewRoster(dir, fakeProber{sessionID: "01SENDIMG", status: "AWAITING_REPLY"})
+	r := NewRoster(dir, fakeProber{sessionID: "01SENDIMG", status: appwire.ThreadStatusAwaiting})
 	r.Refresh()
 
 	web := NewWebServer(WebConfig{
@@ -296,7 +296,7 @@ func TestWeb_Send_ItemsShapeForwardedToDaemonStartTurn(t *testing.T) {
 		ThreadID:  "01SENDITEMS",
 		SessionID: "01SENDITEMS",
 	})
-	r := NewRoster(dir, fakeProber{sessionID: "01SENDITEMS", status: "AWAITING_REPLY"})
+	r := NewRoster(dir, fakeProber{sessionID: "01SENDITEMS", status: appwire.ThreadStatusAwaiting})
 	r.Refresh()
 
 	web := NewWebServer(WebConfig{

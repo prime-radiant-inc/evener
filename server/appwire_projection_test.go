@@ -146,7 +146,7 @@ func TestAppEventProjectorProjectsThreadLifecycle(t *testing.T) {
 	closed := projector.Project(agent.SessionEvent{
 		Kind:      agent.EventSessionEnd,
 		SessionID: "th_1",
-		Data:      agent.SessionEndData{Reason: "done", State: "CLOSED"},
+		Data:      agent.SessionEndData{Reason: "done", State: "closed"},
 	})
 	if !hasAppNotification(closed, appwire.NotifyThreadClosed) {
 		t.Fatalf("closed lifecycle missing thread/closed: %+v", closed)
@@ -160,7 +160,7 @@ func TestAppEventProjectorCompletesTurnOnSessionEnd(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	started := projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
 	assistantEnd := projector.Project(agent.SessionEvent{Kind: agent.EventAssistantTextEnd, SessionID: "th_1", Data: agent.AssistantTextEndData{Text: "hi"}})
-	sessionEnd := projector.Project(agent.SessionEvent{Kind: agent.EventSessionEnd, SessionID: "th_1", Data: agent.SessionEndData{Reason: "input_complete", State: "IDLE"}})
+	sessionEnd := projector.Project(agent.SessionEvent{Kind: agent.EventSessionEnd, SessionID: "th_1", Data: agent.SessionEndData{Reason: "input_complete", State: "idle"}})
 
 	if len(started) == 0 || started[0].Method != appwire.NotifyTurnStarted {
 		t.Fatalf("started=%+v", started)
@@ -181,7 +181,7 @@ func TestAppEventProjectorMapsAwaitingSessionEnd(t *testing.T) {
 	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
 	sessionEnd := projector.Project(agent.SessionEvent{Kind: agent.EventSessionEnd, SessionID: "th_1", Data: agent.SessionEndData{
 		Reason: "input_complete",
-		State:  "AWAITING_INPUT",
+		State:  "awaiting",
 	}})
 
 	if hasAppNotification(sessionEnd, appwire.NotifyThreadClosed) {
@@ -218,7 +218,7 @@ func TestAppEventProjectorMarksInterruptedTurnCanceled(t *testing.T) {
 	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
 	sessionEnd := projector.Project(agent.SessionEvent{Kind: agent.EventSessionEnd, SessionID: "th_1", Data: agent.SessionEndData{
 		Reason:      "interrupted",
-		State:       "IDLE",
+		State:       "idle",
 		Interrupted: true,
 	}})
 
@@ -273,7 +273,7 @@ func TestAppEventProjectorLetsInterruptedSessionEndCancelAfterContextCanceledErr
 
 	sessionEnd := projector.Project(agent.SessionEvent{Kind: agent.EventSessionEnd, SessionID: "th_1", Data: agent.SessionEndData{
 		Reason:      "interrupted",
-		State:       "IDLE",
+		State:       "idle",
 		Interrupted: true,
 	}})
 	for _, n := range sessionEnd {

@@ -41,7 +41,7 @@ func TestHubModelSessionComposerShowsReadOnlyReasonAndDraft(t *testing.T) {
 
 func TestHubModelBusyComposerShowsQueueOrReadOnlyMode(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.detail.State = "processing"
+	m.detail.State = "active"
 	m.detail.Capabilities.Send = true
 	m.detail.Capabilities.Steer = true
 	m.detail.Capabilities.Queue = true
@@ -92,7 +92,7 @@ func TestHubModelBusyComposerShowsQueueOrReadOnlyMode(t *testing.T) {
 
 func TestHubModelBusyEnterWithoutQueuePreservesDraftAndExplainsReason(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.detail.State = "processing"
+	m.detail.State = "active"
 	m.detail.Capabilities.Send = false
 	m.detail.Capabilities.Queue = false
 	m.session.processing = true
@@ -125,7 +125,7 @@ func TestHubModelBusyEnterRoutesToQueueAndClearsDraft(t *testing.T) {
 	defer cleanup()
 
 	m := newSessionHubModel(client)
-	m.detail.State = "processing"
+	m.detail.State = "active"
 	m.detail.Capabilities.Send = false
 	m.detail.Capabilities.Steer = true
 	m.detail.Capabilities.Queue = true
@@ -221,7 +221,7 @@ func TestHubModelBusyEnterQueuesImageOnlySubmission(t *testing.T) {
 
 	path := writeAttachmentTempFile(t, []byte("queued-image-only"))
 	m := newSessionHubModel(client)
-	m.detail.State = "processing"
+	m.detail.State = "active"
 	m.detail.Capabilities.Send = false
 	m.detail.Capabilities.Steer = true
 	m.detail.Capabilities.Queue = true
@@ -265,7 +265,7 @@ func TestHubModelBusyEnterRestoresAttachmentsOnQueueFailure(t *testing.T) {
 	path := writeAttachmentTempFile(t, []byte("queued-image-fail"))
 	img := &PastedImage{Path: path, MediaType: "image/png", MarkerN: 7}
 	m := newSessionHubModel(client)
-	m.detail.State = "processing"
+	m.detail.State = "active"
 	m.detail.Capabilities.Send = false
 	m.detail.Capabilities.Steer = true
 	m.detail.Capabilities.Queue = true
@@ -311,7 +311,7 @@ func TestHubModelBusyCtrlSDrainsQueueAsSteer(t *testing.T) {
 	defer cleanup()
 
 	m := newSessionHubModel(client)
-	m.detail.State = "processing"
+	m.detail.State = "active"
 	m.detail.Capabilities.Send = false
 	m.detail.Capabilities.Steer = true
 	m.detail.Capabilities.Queue = true
@@ -376,7 +376,7 @@ func TestHubModelBusyCtrlSDrainFailureRestoresDraft(t *testing.T) {
 	defer cleanup()
 
 	m := newSessionHubModel(client)
-	m.detail.State = "processing"
+	m.detail.State = "active"
 	m.detail.Capabilities.Send = false
 	m.detail.Capabilities.Steer = true
 	m.detail.Capabilities.Queue = true
@@ -413,7 +413,7 @@ func TestHubModelBusyCtrlSQueuedDrainPartialDoesNotRestoreDraft(t *testing.T) {
 	defer cleanup()
 
 	m := newSessionHubModel(client)
-	m.detail.State = "processing"
+	m.detail.State = "active"
 	m.detail.Capabilities.Send = false
 	m.detail.Capabilities.Steer = true
 	m.detail.Capabilities.Queue = true
@@ -441,7 +441,7 @@ func TestHubModelBusyCtrlSQueuedDrainPartialDoesNotRestoreDraft(t *testing.T) {
 
 func TestHubModelBusyCtrlSWithEmptyQueueAndEmptyComposerBanner(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.detail.State = "processing"
+	m.detail.State = "active"
 	m.detail.Capabilities.Send = false
 	m.detail.Capabilities.Steer = true
 	m.detail.Capabilities.Queue = true

@@ -54,8 +54,8 @@ func TestBridge_UpdatesStatusOnSessionStart(t *testing.T) {
 	if status.Model != "gpt-5" {
 		t.Errorf("model: got %q, want gpt-5", status.Model)
 	}
-	if status.State != "IDLE" {
-		t.Errorf("state: got %q, want IDLE", status.State)
+	if status.State != "idle" {
+		t.Errorf("state: got %q, want idle", status.State)
 	}
 }
 
@@ -99,8 +99,8 @@ func TestBridge_ClosesOnSessionEnd(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	status := srv.GetStatus()
-	if status.State != "CLOSED" {
-		t.Errorf("state: got %q, want CLOSED", status.State)
+	if status.State != "closed" {
+		t.Errorf("state: got %q, want closed", status.State)
 	}
 
 	srv.mu.RLock()
@@ -120,21 +120,21 @@ func TestBridge_UsesSessionEndStateWhenProvided(t *testing.T) {
 	events <- agent.SessionEvent{
 		Kind:      agent.EventSessionEnd,
 		SessionID: "s1",
-		Data:      agent.SessionEndData{Reason: "input_complete", State: "IDLE"},
+		Data:      agent.SessionEndData{Reason: "input_complete", State: "idle"},
 	}
 	close(events)
 	time.Sleep(50 * time.Millisecond)
 
 	status := srv.GetStatus()
-	if status.State != "IDLE" {
-		t.Errorf("state: got %q, want IDLE", status.State)
+	if status.State != "idle" {
+		t.Errorf("state: got %q, want idle", status.State)
 	}
 }
 
 func TestBridge_InterruptedSessionEndDoesNotClearProcessing(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	srv.SetProcessing(true)
-	srv.SetState("PROCESSING")
+	srv.SetState("active")
 	events := make(chan agent.SessionEvent, 10)
 
 	go Bridge(srv, events)
@@ -142,14 +142,14 @@ func TestBridge_InterruptedSessionEndDoesNotClearProcessing(t *testing.T) {
 	events <- agent.SessionEvent{
 		Kind:      agent.EventSessionEnd,
 		SessionID: "s1",
-		Data:      agent.SessionEndData{Reason: "interrupted", State: "IDLE", Interrupted: true},
+		Data:      agent.SessionEndData{Reason: "interrupted", State: "idle", Interrupted: true},
 	}
 	close(events)
 	time.Sleep(50 * time.Millisecond)
 
 	status := srv.GetStatus()
-	if status.State != "PROCESSING" {
-		t.Errorf("state: got %q, want PROCESSING", status.State)
+	if status.State != "active" {
+		t.Errorf("state: got %q, want active", status.State)
 	}
 	srv.mu.RLock()
 	processing := srv.processing
@@ -163,7 +163,7 @@ func TestBridge_IgnoresStaleEventsAfterSessionIdentityChanges(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	srv.SetAppIdentity("local", "new-session")
 	srv.UpdateSessionInfo("new-session", "gpt-5", "openai")
-	srv.SetState("IDLE")
+	srv.SetState("idle")
 	events := make(chan agent.SessionEvent, 10)
 	done := make(chan struct{})
 
@@ -175,14 +175,14 @@ func TestBridge_IgnoresStaleEventsAfterSessionIdentityChanges(t *testing.T) {
 	events <- agent.SessionEvent{
 		Kind:      agent.EventSessionEnd,
 		SessionID: "old-session",
-		Data:      agent.SessionEndData{Reason: "clear", State: "CLOSED"},
+		Data:      agent.SessionEndData{Reason: "clear", State: "closed"},
 	}
 	close(events)
 	<-done
 
 	status := srv.GetStatus()
-	if status.SessionID != "new-session" || status.State != "IDLE" {
-		t.Fatalf("status after stale event=%+v, want new-session IDLE", status)
+	if status.SessionID != "new-session" || status.State != "idle" {
+		t.Fatalf("status after stale event=%+v, want new-session idle", status)
 	}
 	if items := srv.AppNotificationsAfter(0, "new-session"); len(items) != 0 {
 		t.Fatalf("stale event was projected under new session: %+v", items)

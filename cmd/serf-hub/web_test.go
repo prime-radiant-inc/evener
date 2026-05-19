@@ -295,7 +295,7 @@ func TestWeb_APITreeMarksConfiguredCodexEndedThreadsRecent(t *testing.T) {
 			"modelProvider": "openai",
 			"createdAt":     100,
 			"updatedAt":     200,
-			"status":        map[string]any{"type": "ended"},
+			"status":        map[string]any{"type": "closed"},
 			"cwd":           "/work/codex",
 			"cliVersion":    "codex-test",
 			"source":        "appServer",
@@ -2150,7 +2150,7 @@ func TestWeb_Send_EndedRosterEntryResumesForwardsAndKeepsReplay(t *testing.T) {
 			return entry, nil
 		},
 	}
-	roster := NewRoster(runDir, fakeProber{sessionID: sessionID, status: "ended"})
+	roster := NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusClosed})
 	roster.Refresh()
 	web := NewWebServer(WebConfig{
 		HubAddr: "127.0.0.1:9180",
@@ -2289,22 +2289,22 @@ func TestWeb_ApiSearch_OrdersLiveResultsByStartedAtAndID(t *testing.T) {
 		2: {
 			Entry:     rendezvous.Entry{PID: 2, StartedAt: base.Add(-time.Hour), WorkingDir: "/projects/serf"},
 			SessionID: "02LIVEOLD",
-			Status:    "IDLE",
+			Status:    appwire.ThreadStatusIdle,
 		},
 		1: {
 			Entry:     rendezvous.Entry{PID: 1, StartedAt: base, WorkingDir: "/projects/serf"},
 			SessionID: "01LIVENEW",
-			Status:    "IDLE",
+			Status:    appwire.ThreadStatusIdle,
 		},
 		4: {
 			Entry:     rendezvous.Entry{PID: 4, StartedAt: base.Add(-2 * time.Hour), WorkingDir: "/projects/serf"},
 			SessionID: "04LIVETIEB",
-			Status:    "IDLE",
+			Status:    appwire.ThreadStatusIdle,
 		},
 		3: {
 			Entry:     rendezvous.Entry{PID: 3, StartedAt: base.Add(-2 * time.Hour), WorkingDir: "/projects/serf"},
 			SessionID: "03LIVETIEA",
-			Status:    "IDLE",
+			Status:    appwire.ThreadStatusIdle,
 		},
 	}
 	web := NewWebServer(WebConfig{
@@ -3262,7 +3262,7 @@ func TestWeb_Send_RejectsOversizeImage(t *testing.T) {
 func TestWeb_Sidebar_LiveRowDataState(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{PID: 30, Address: "127.0.0.1:55570"})
-	r := NewRoster(dir, fakeProber{sessionID: "01LIVEACC", status: "AWAITING_REPLY"})
+	r := NewRoster(dir, fakeProber{sessionID: "01LIVEACC", status: appwire.ThreadStatusAwaiting})
 	r.Refresh()
 
 	web := NewWebServer(WebConfig{
@@ -3372,7 +3372,7 @@ func TestWeb_WorkspacePartial_RosterEndedSessionKeepsResumeSendEnabled(t *testin
 	}
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 10, Address: "127.0.0.1:55556", WorkingDir: "/projects/serf"})
-	r := NewRoster(runDir, fakeProber{sessionID: "01ENDED001", status: "ENDED"})
+	r := NewRoster(runDir, fakeProber{sessionID: "01ENDED001", status: appwire.ThreadStatusClosed})
 	r.Refresh()
 
 	web := NewWebServer(WebConfig{
@@ -3486,7 +3486,7 @@ func TestWeb_SessionAction_InterruptForwards(t *testing.T) {
 		})
 	})
 	defer daemon.Close()
-	r := NewRoster(dir, fakeProber{sessionID: "01ACTINT", status: "processing"})
+	r := NewRoster(dir, fakeProber{sessionID: "01ACTINT", status: appwire.ThreadStatusActive})
 	r.Refresh()
 
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
@@ -3625,7 +3625,7 @@ func TestWeb_Steer_ForwardsBodyToDaemon(t *testing.T) {
 		})
 	})
 	defer daemon.Close()
-	r := NewRoster(dir, fakeProber{sessionID: "01STEER", status: "processing"})
+	r := NewRoster(dir, fakeProber{sessionID: "01STEER", status: appwire.ThreadStatusActive})
 	r.Refresh()
 
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
@@ -3650,7 +3650,7 @@ func TestWeb_Steer_ForwardsBodyToDaemon(t *testing.T) {
 func TestWeb_Steer_RejectsEmptyText(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{PID: 34, Address: "127.0.0.1:1"})
-	r := NewRoster(dir, fakeProber{sessionID: "01STEEREMPTY", status: "processing"})
+	r := NewRoster(dir, fakeProber{sessionID: "01STEEREMPTY", status: appwire.ThreadStatusActive})
 	r.Refresh()
 
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
@@ -3732,8 +3732,8 @@ func TestWeb_Sidebar_RollupState_AwaitingHasPriority(t *testing.T) {
 		t.Fatal(err)
 	}
 	prober := perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{
-		"127.0.0.1:1001": {SessionID: "01AWAIT", Status: "AWAITING_REPLY"},
-		"127.0.0.1:1002": {SessionID: "01IDLE", Status: "IDLE"},
+		"127.0.0.1:1001": {SessionID: "01AWAIT", Status: appwire.ThreadStatusAwaiting},
+		"127.0.0.1:1002": {SessionID: "01IDLE", Status: appwire.ThreadStatusIdle},
 	}}
 	r := NewRoster(rDir, prober)
 	r.Refresh()
@@ -4064,7 +4064,7 @@ func TestWeb_APITreeReturnsRefsAndNormalizesAwaitingInput(t *testing.T) {
 	writeRendezvous(t, runDir, rendezvous.Entry{
 		PID: 44, Address: "127.0.0.1:4444", WorkingDir: "/projects/serf", Model: "gpt-5",
 	})
-	r := NewRoster(runDir, fakeProber{sessionID: "01TREE", status: "AWAITING_INPUT"})
+	r := NewRoster(runDir, fakeProber{sessionID: "01TREE", status: appwire.ThreadStatusAwaiting})
 	r.Refresh()
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
 
@@ -4098,8 +4098,8 @@ func TestWeb_APITreeGroupsLiveOnlySessionsByProject(t *testing.T) {
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 50, Address: "127.0.0.1:4050", WorkingDir: "/projects/serf", Model: "gpt-5"})
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 51, Address: "127.0.0.1:4051", WorkingDir: "/projects/serf", Model: "gpt-5"})
 	r := NewRoster(runDir, perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{
-		"127.0.0.1:4050": {SessionID: "01LIVEA", Status: "IDLE"},
-		"127.0.0.1:4051": {SessionID: "01LIVEB", Status: "AWAITING_INPUT"},
+		"127.0.0.1:4050": {SessionID: "01LIVEA", Status: appwire.ThreadStatusIdle},
+		"127.0.0.1:4051": {SessionID: "01LIVEB", Status: appwire.ThreadStatusAwaiting},
 	}})
 	r.Refresh()
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
@@ -4135,7 +4135,7 @@ func TestWeb_APITreeGroupsLiveOnlySessionsByProject(t *testing.T) {
 func TestWeb_APITreeSkipsLiveEntriesUntilSessionIDKnown(t *testing.T) {
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 52, Address: "127.0.0.1:4052", WorkingDir: "/projects/serf", Model: "gpt-5"})
-	r := NewRoster(runDir, fakeProber{sessionID: "", status: "IDLE"})
+	r := NewRoster(runDir, fakeProber{sessionID: "", status: appwire.ThreadStatusIdle})
 	r.Refresh()
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
 
@@ -4158,7 +4158,7 @@ func TestWeb_APITreeSkipsLiveEntriesUntilSessionIDKnown(t *testing.T) {
 func TestWeb_SidebarSkipsLiveEntriesUntilSessionIDKnown(t *testing.T) {
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 53, Address: "127.0.0.1:4053", WorkingDir: "/projects/serf", Model: "gpt-5"})
-	r := NewRoster(runDir, fakeProber{sessionID: "", status: "IDLE"})
+	r := NewRoster(runDir, fakeProber{sessionID: "", status: appwire.ThreadStatusIdle})
 	r.Refresh()
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
 
@@ -4193,7 +4193,7 @@ func TestWeb_APISessionDetailsLiveAndPast(t *testing.T) {
 	}
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 45, Address: "127.0.0.1:4545", WorkingDir: "/projects/serf", Model: "gpt-5"})
-	r := NewRoster(runDir, fakeProber{sessionID: "01DETAIL", status: "IDLE"})
+	r := NewRoster(runDir, fakeProber{sessionID: "01DETAIL", status: appwire.ThreadStatusIdle})
 	r.Refresh()
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
 
@@ -4237,7 +4237,7 @@ func TestWeb_APISessionDetailsLiveWithoutAppWireDoesNotAdvertiseActions(t *testi
 	}
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 45, Address: "127.0.0.1:4545", WorkingDir: "/projects/serf", Model: "gpt-5"})
-	r := NewRoster(runDir, fakeProber{sessionID: "01DETAIL", status: "IDLE"})
+	r := NewRoster(runDir, fakeProber{sessionID: "01DETAIL", status: appwire.ThreadStatusIdle})
 	r.Refresh()
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
 
@@ -4263,7 +4263,7 @@ func TestWeb_APISessionDetailsLiveWithoutAppWireDoesNotAdvertiseActions(t *testi
 func TestWeb_WorkspaceDataLocalLiveUsesAppWireCapabilities(t *testing.T) {
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 64, Address: "127.0.0.1:6464", WorkingDir: "/projects/serf", Model: "gpt-5"})
-	r := NewRoster(runDir, fakeProber{sessionID: "01CAPS", status: "IDLE"})
+	r := NewRoster(runDir, fakeProber{sessionID: "01CAPS", status: appwire.ThreadStatusIdle})
 	r.Refresh()
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
 	web.sources.Add(&scriptedAppSource{
@@ -4303,7 +4303,7 @@ func TestWeb_WorkspaceDataLocalLiveUsesAppWireCapabilities(t *testing.T) {
 func TestWeb_APISessionDetailsLocalLiveUsesAppWireForkCapability(t *testing.T) {
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 65, Address: "127.0.0.1:6565", WorkingDir: "/projects/serf", Model: "gpt-5"})
-	r := NewRoster(runDir, fakeProber{sessionID: "01FORKCAP", status: "IDLE"})
+	r := NewRoster(runDir, fakeProber{sessionID: "01FORKCAP", status: appwire.ThreadStatusIdle})
 	r.Refresh()
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
 	web.sources.Add(&scriptedAppSource{
@@ -4413,7 +4413,7 @@ func TestWeb_APISessionActionClearReturnsRef(t *testing.T) {
 		})
 	})
 	defer daemon.Close()
-	r := NewRoster(runDir, fakeProber{sessionID: "01OLD", status: "IDLE"})
+	r := NewRoster(runDir, fakeProber{sessionID: "01OLD", status: appwire.ThreadStatusIdle})
 	r.Refresh()
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
 
@@ -4447,7 +4447,7 @@ func TestWeb_APISessionActionModelForwardsBody(t *testing.T) {
 		})
 	})
 	defer daemon.Close()
-	r := NewRoster(runDir, fakeProber{sessionID: "01MODEL", status: "IDLE"})
+	r := NewRoster(runDir, fakeProber{sessionID: "01MODEL", status: appwire.ThreadStatusIdle})
 	r.Refresh()
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
 

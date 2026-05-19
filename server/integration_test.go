@@ -115,8 +115,8 @@ func TestIntegration_StatusUpdates(t *testing.T) {
 	if status.Model != "gpt-5" {
 		t.Errorf("model: got %q, want gpt-5", status.Model)
 	}
-	if status.State != "IDLE" {
-		t.Errorf("state: got %q, want IDLE", status.State)
+	if status.State != "idle" {
+		t.Errorf("state: got %q, want idle", status.State)
 	}
 
 	close(events)

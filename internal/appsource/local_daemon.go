@@ -501,19 +501,21 @@ func localDaemonThreadID(item LocalDaemonEntry) string {
 }
 
 func localDaemonThreadStatus(status string) string {
-	switch strings.ToUpper(strings.TrimSpace(status)) {
-	case "PROCESSING", "STREAMING", "TOOL", "COMPACTING":
+	switch strings.TrimSpace(status) {
+	case appwire.ThreadStatusActive:
 		return appwire.ThreadStatusActive
-	case "AWAITING", "AWAITING_INPUT", "AWAITING_REPLY":
+	case appwire.ThreadStatusAwaiting:
 		return appwire.ThreadStatusAwaiting
-	case "WARNING":
+	case appwire.ThreadStatusWarning:
 		return appwire.ThreadStatusWarning
-	case "ERRORED", "ERROR":
+	case appwire.ThreadStatusSystemError:
 		return appwire.ThreadStatusSystemError
-	case "CLOSED":
+	case appwire.ThreadStatusClosed:
 		return appwire.ThreadStatusClosed
-	case "ENDED":
+	case appwire.ThreadStatusNotLoaded:
 		return appwire.ThreadStatusNotLoaded
+	case appwire.ThreadStatusIdle:
+		return appwire.ThreadStatusIdle
 	default:
 		return appwire.ThreadStatusIdle
 	}

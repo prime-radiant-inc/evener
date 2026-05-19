@@ -1584,7 +1584,7 @@
         const sendBtn = form.querySelector(".send-btn");
         const canSend = !sendBtn || sendBtn.getAttribute("data-capability-send") !== "false";
         const canQueue = sendBtn && sendBtn.getAttribute("data-capability-queue") === "true";
-        // When the session is processing the send capability flips off and
+        // When the session is active the send capability flips off and
         // the queue capability flips on (kata 111a). Route Enter ⌘↵ to
         // turn/queue in that mode so the message is buffered and processed
         // after the active turn completes. Attachments ride the same items

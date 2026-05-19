@@ -308,7 +308,7 @@ func runServe(args []string) error {
 					drainCtx = agent.WithQueuedInputDrainOnInterruptHandler(drainCtx, root, nextTurnCtx)
 					currentCancel = cancelDrain
 					srv.SetProcessing(true)
-					srv.SetState("PROCESSING")
+					srv.SetState(string(agent.SessionProcessing))
 					srv.SetCancelFunc(cancelDrain)
 					return drainCtx, cancelDrain
 				}
@@ -317,7 +317,7 @@ func runServe(args []string) error {
 				turnCtx = agent.WithQueuedInputDrainOnInterruptHandler(turnCtx, ctx, nextTurnCtx)
 				srv.SetCancelFunc(cancelTurn)
 				srv.SetProcessing(true)
-				srv.SetState("PROCESSING")
+				srv.SetState(string(agent.SessionProcessing))
 				result, processErr := sess.ProcessInput(turnCtx, msg.Text, msg.Images)
 				srv.SetProcessing(false)
 				srv.SetState(string(sess.State()))

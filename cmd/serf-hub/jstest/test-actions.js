@@ -18,7 +18,7 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <div class="conversation" id="conversation"
        data-session-id="01ACT001"
        data-active-turn-id="turn_1"
-       data-state="processing">conversation body</div>
+       data-state="active">conversation body</div>
 </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
 
 const { window } = dom;

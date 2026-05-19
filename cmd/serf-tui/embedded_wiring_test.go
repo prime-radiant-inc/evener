@@ -276,7 +276,7 @@ func TestEmbeddedDaemon_InterruptedQueueDrainStaysProcessingAndInterruptible(t *
 		t.Fatalf("decode status: %v", err)
 	}
 	resp.Body.Close()
-	if status.State != "PROCESSING" || status.Capabilities.Send {
+	if status.State != "active" || status.Capabilities.Send {
 		t.Fatalf("status during drained turn = %+v, want processing with send disabled", status)
 	}
 

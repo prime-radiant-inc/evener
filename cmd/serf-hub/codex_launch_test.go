@@ -152,7 +152,7 @@ func TestFakeCodexAppServerHelper(t *testing.T) {
 			"sessionId":     "th_fake",
 			"preview":       "fake codex",
 			"modelProvider": "openai",
-			"status":        map[string]any{"type": "ended"},
+			"status":        map[string]any{"type": "closed"},
 			"cwd":           "/tmp/fake-codex",
 			"source":        "appServer",
 		}}}, nil

@@ -31,10 +31,10 @@ const ctxToolCallID ctxKey = "toolCallID"
 type SessionState string
 
 const (
-	SessionIdle          SessionState = "IDLE"
-	SessionProcessing    SessionState = "PROCESSING"
-	SessionAwaitingInput SessionState = "AWAITING_INPUT"
-	SessionClosed        SessionState = "CLOSED"
+	SessionIdle          SessionState = "idle"
+	SessionProcessing    SessionState = "active"
+	SessionAwaitingInput SessionState = "awaiting"
+	SessionClosed        SessionState = "closed"
 )
 
 const (
@@ -1566,7 +1566,7 @@ func (s *Session) Close() {
 			os.RemoveAll(s.embeddedSkillsDir)
 		}
 
-		// 8. Reassert CLOSED in case an in-flight turn reached a late state transition.
+		// 8. Reassert closed in case an in-flight turn reached a late state transition.
 		s.mu.Lock()
 		s.state = SessionClosed
 		s.mu.Unlock()
@@ -2376,15 +2376,15 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			if errors.As(err, &cle) {
 				s.emit(EventWarning, warningDataFromError("Context length exceeded", err))
 			}
-			// Spec: non-retryable/unrecoverable errors transition the session to CLOSED.
+			// Spec: non-retryable/unrecoverable errors transition the session to closed.
 			var le llm.Error
 			if errors.As(err, &le) && !le.Retryable() {
 				s.Close()
 			}
 			// Recoverable LLM errors (retry policy exhausted, stream-ended,
 			// timeouts, etc.) bail out of the run loop without compacting or
-			// closing — but we still need to leave PROCESSING. Without this
-			// flip the session sits in PROCESSING forever from the daemon's
+			// closing — but we still need to leave active. Without this
+			// flip the session sits in active forever from the daemon's
 			// /status endpoint, the hub disables steer/send, and the user has
 			// no recovery path short of restarting the daemon (kata r6y9).
 			// meta.json flush happens via the deferred flush at the top of

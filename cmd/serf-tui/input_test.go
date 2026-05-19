@@ -121,7 +121,7 @@ func TestFetchStatus(t *testing.T) {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"session_id":"abc","state":"IDLE","turns":5,"model":"gpt-4o","profile":"openai","context_pressure":0.35}`))
+		w.Write([]byte(`{"session_id":"abc","state":"idle","turns":5,"model":"gpt-4o","profile":"openai","context_pressure":0.35}`))
 	}))
 	defer ts.Close()
 
@@ -148,7 +148,7 @@ func TestFetchStatus_WithDetailedFields(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{
-			"session_id":"xyz","state":"IDLE","turns":10,"model":"gpt-5","profile":"openai",
+			"session_id":"xyz","state":"idle","turns":10,"model":"gpt-5","profile":"openai",
 			"context_pressure":0.42,
 			"detailed":{
 				"tools":[{"name":"shell","source":"core"},{"name":"linear__search","source":"mcp:streamlinear"}],
@@ -198,7 +198,7 @@ func TestFetchTranscriptTargets(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{
 			"session_id":"root-123",
-			"state":"IDLE",
+			"state":"idle",
 			"turns":5,
 			"model":"gpt-5",
 			"profile":"openai",

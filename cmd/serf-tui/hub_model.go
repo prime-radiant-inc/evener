@@ -3725,17 +3725,17 @@ func statusDot(state string) string {
 
 func stateLabel(state string) string {
 	switch strings.ToLower(strings.TrimSpace(state)) {
-	case "awaiting", "awaiting_reply", "needs-input":
+	case "awaiting":
 		return "awaiting"
 	case "active":
 		return "active"
-	case "warning", "warn":
+	case "warning":
 		return "warning"
-	case "idle", "ready":
+	case "idle":
 		return "idle"
 	case "notloaded":
 		return "notLoaded"
-	case "ended", "done", "closed":
+	case "closed":
 		return "ended"
 	default:
 		if strings.TrimSpace(state) == "" {

@@ -1056,7 +1056,7 @@ func TestHubModelSessionHeaderTruncatesLongLabels(t *testing.T) {
 		Ref:         "codex-local-with-long-name:01LONG",
 		SourceLabel: "codex-local-with-long-name",
 		Title:       "review the very long generated migration transcript without overlap",
-		State:       "processing",
+		State:       "active",
 		Model:       "openai/gpt-5.3-super-long-model-name-for-terminal-testing",
 		WorkingDir:  "/Users/jesse/Documents/GitHub/prime-radiant-inc/serf/.worktrees/tui-257-session-composer",
 		Project:     "serf",

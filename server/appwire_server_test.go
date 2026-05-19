@@ -158,7 +158,7 @@ func TestServerAppWireThreadReadIncludesProjectedTurns(t *testing.T) {
 	srv.RecordAppEvent(agent.SessionEvent{
 		Kind:      agent.EventSessionEnd,
 		SessionID: "th_1",
-		Data:      agent.SessionEndData{Reason: "input_complete", State: "IDLE"},
+		Data:      agent.SessionEndData{Reason: "input_complete", State: "idle"},
 	})
 
 	conn := srv.AppServer().NewConnection("test")
@@ -360,7 +360,7 @@ func TestServerAppWireThreadReadUsesCommunicateAsAssistantMessage(t *testing.T) 
 			CallID:   "call_1",
 			Output:   `{"accepted":true}`,
 		}},
-		{Kind: agent.EventSessionEnd, SessionID: "th_1", Data: agent.SessionEndData{Reason: "input_complete", State: "IDLE"}},
+		{Kind: agent.EventSessionEnd, SessionID: "th_1", Data: agent.SessionEndData{Reason: "input_complete", State: "idle"}},
 	} {
 		srv.RecordAppEvent(ev)
 	}
@@ -532,10 +532,9 @@ func TestServerAppWireThreadModelSetQualifiesProvider(t *testing.T) {
 
 func TestAppStatusPreservesAttentionStates(t *testing.T) {
 	tests := map[string]string{
-		"AWAITING_INPUT": "awaiting",
-		"AWAITING_REPLY": "awaiting",
-		"WARNING":        "warning",
-		"ERRORED":        appwire.ThreadStatusSystemError,
+		appwire.ThreadStatusAwaiting:    appwire.ThreadStatusAwaiting,
+		appwire.ThreadStatusWarning:     appwire.ThreadStatusWarning,
+		appwire.ThreadStatusSystemError: appwire.ThreadStatusSystemError,
 	}
 	for state, want := range tests {
 		if got := appStatus(state, false); got != want {
@@ -547,7 +546,7 @@ func TestAppStatusPreservesAttentionStates(t *testing.T) {
 func TestServerAppWireTurnStartRejectsClosedSession(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetState("CLOSED")
+	srv.SetState("closed")
 
 	conn := srv.AppServer().NewConnection("test")
 	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
@@ -644,7 +643,7 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetStatus(StatusInfo{
 		SessionID:  "sess_1",
-		State:      "IDLE",
+		State:      "idle",
 		Model:      "gpt-5",
 		Profile:    "openai",
 		WorkingDir: "/tmp/project",
@@ -751,16 +750,16 @@ func TestServerAppWireQueueCapabilityFlipsWithProcessing(t *testing.T) {
 
 	// Idle: capabilities.queue must be false even with QueueFunc set.
 	srv.SetProcessing(false)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "IDLE"})
-	caps := srv.appCapabilities("IDLE", false)
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
+	caps := srv.appCapabilities("idle", false)
 	if caps.Queue {
 		t.Fatalf("Queue should be false when idle")
 	}
 
 	// Processing: capabilities.queue flips to true.
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "PROCESSING"})
-	caps = srv.appCapabilities("PROCESSING", true)
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
+	caps = srv.appCapabilities("active", true)
 	if !caps.Queue {
 		t.Fatalf("Queue should be true mid-turn")
 	}
@@ -768,10 +767,10 @@ func TestServerAppWireQueueCapabilityFlipsWithProcessing(t *testing.T) {
 	// Reserved active turn: turn/start has returned an active turn ID, but
 	// the input loop has not necessarily flipped processing yet.
 	srv.SetProcessing(false)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "IDLE"})
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
 	srv.appActiveTurnID = "turn_reserved"
 	srv.appReservedTurnID = "turn_reserved"
-	caps = srv.appCapabilities("IDLE", false)
+	caps = srv.appCapabilities("idle", false)
 	if !caps.Queue {
 		t.Fatalf("Queue should be true while an active turn is reserved")
 	}
@@ -783,7 +782,7 @@ func TestServerAppWireQueueCapabilityFlipsWithProcessing(t *testing.T) {
 	srv2 := NewServer(ServerConfig{})
 	srv2.SetAppIdentity("local", "th_2")
 	srv2.SetProcessing(true)
-	if caps2 := srv2.appCapabilities("PROCESSING", true); caps2.Queue {
+	if caps2 := srv2.appCapabilities("active", true); caps2.Queue {
 		t.Fatalf("Queue should be false without QueueFunc registered")
 	}
 }
@@ -795,7 +794,7 @@ func TestServerAppWireTurnQueueAcceptsMidTurnMessage(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "PROCESSING"})
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
 	var got []string
 	srv.SetQueueFunc(func(text string) error {
 		got = append(got, text)
@@ -820,7 +819,7 @@ func TestServerAppWireTurnQueueAcceptsReservedActiveTurn(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(false)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "IDLE"})
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
 	srv.appActiveTurnID = "turn_reserved"
 	srv.appReservedTurnID = "turn_reserved"
 	var got []string
@@ -847,7 +846,7 @@ func TestServerAppWireTurnStartRejectsReservedActiveTurn(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(false)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "IDLE"})
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
 	srv.appActiveTurnID = "turn_reserved"
 	srv.appReservedTurnID = "turn_reserved"
 
@@ -904,7 +903,7 @@ func TestServerAppWireTurnQueueRejectsStaleProjectedActiveTurn(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(false)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "IDLE"})
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
 	srv.appActiveTurnID = "turn_stale"
 	srv.SetQueueFunc(func(string) error { return nil })
 
@@ -925,7 +924,7 @@ func TestServerAppWireTurnQueueRejectsWhenIdle(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(false)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "IDLE"})
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
 	srv.SetQueueFunc(func(string) error { return nil })
 
 	conn := srv.AppServer().NewConnection("test")
@@ -948,7 +947,7 @@ func TestServerAppWireTurnDrainAsSteerRequiresQueuedMessages(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "PROCESSING"})
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
 	srv.SetDrainAsSteerFunc(func() error { return nil })
 	srv.SetQueueDepthFunc(func() int { return 0 })
 
@@ -971,7 +970,7 @@ func TestServerAppWireTurnDrainAsSteerDispatchesWhenQueued(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "PROCESSING"})
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
 	called := 0
 	srv.SetDrainAsSteerFunc(func() error { called++; return nil })
 	srv.SetQueueDepthFunc(func() int { return 2 })
@@ -993,7 +992,7 @@ func TestServerAppWireTurnDrainAsSteerDispatchesInputAtomically(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetProcessing(true)
-	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "PROCESSING"})
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
 	srv.SetDrainAsSteerFunc(func() error {
 		t.Fatal("classic drain callback should not be used for input-bearing drain")
 		return nil
