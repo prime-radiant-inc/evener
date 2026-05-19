@@ -26,6 +26,7 @@ type hubDrainAsSteerMsg struct {
 	text          string
 	draft         string
 	queued        bool
+	preQueueDepth int
 	hadAttachment bool
 	err           error
 }
@@ -54,22 +55,26 @@ func sendHubQueue(client *appwire.Client, ref appwire.Ref, text, draft string, a
 // When the composer carries text or attachments (kata re91) they are queued
 // first so the daemon's atomic drain folds them into the same STEERING
 // payload alongside everything already queued.
-func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft string, attachments []*PastedImage) tea.Cmd {
+func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft string, attachments []*PastedImage, preQueueDepth ...int) tea.Cmd {
 	return func() tea.Msg {
+		depth := 0
+		if len(preQueueDepth) > 0 {
+			depth = preQueueDepth[0]
+		}
 		if text != "" || len(attachments) > 0 {
 			items, err := buildAttachmentItems(attachments)
 			if err != nil {
-				return hubDrainAsSteerMsg{text: text, draft: draft, hadAttachment: len(attachments) > 0, err: err}
+				return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, err: err}
 			}
 			if err := client.TurnQueue(context.Background(), appwire.TurnQueueParams{
 				Ref:   ref.String(),
 				Text:  text,
 				Items: items,
 			}); err != nil {
-				return hubDrainAsSteerMsg{text: text, draft: draft, hadAttachment: len(attachments) > 0, err: err}
+				return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, err: err}
 			}
 			if text != "" || len(items) > 0 {
-				queued := hubDrainAsSteerMsg{text: text, draft: draft, queued: true, hadAttachment: len(items) > 0}
+				queued := hubDrainAsSteerMsg{text: text, draft: draft, queued: true, preQueueDepth: depth, hadAttachment: len(items) > 0}
 				err := client.TurnDrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{
 					Ref: ref.String(),
 				})
@@ -80,7 +85,7 @@ func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft st
 		err := client.TurnDrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{
 			Ref: ref.String(),
 		})
-		return hubDrainAsSteerMsg{text: text, draft: draft, err: err}
+		return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, err: err}
 	}
 }
 

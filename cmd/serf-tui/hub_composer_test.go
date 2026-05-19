@@ -323,7 +323,16 @@ func TestHubModelBusyCtrlSDrainFailureAfterQueueDoesNotRestoreDraft(t *testing.T
 	if cmd == nil {
 		t.Fatal("ctrl+s should issue queue+drain command")
 	}
-	updated, _ = updated.(hubModel).Update(cmd())
+	msg := cmd()
+	updated, _ = updated.(hubModel).Update(hubNotificationMsg{
+		ok: true,
+		notification: *appwire.NotificationMessage(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
+			ThreadID: m.detail.SessionID,
+			Ref:      m.detail.Ref,
+			Queue:    appwire.QueueState{Depth: 1, Preview: []string{"queued before failed drain"}},
+		}).Notification,
+	})
+	updated, _ = updated.(hubModel).Update(msg)
 	got := updated.(hubModel)
 
 	if len(queueParams) != 1 || queueParams[0].Text != "queued before failed drain" {

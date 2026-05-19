@@ -25,8 +25,8 @@
     function getField(name) { return root.querySelector(`[name="${name}"]`); }
     function statusEl() { return root.querySelector("#proj-status"); }
     async function saveProjectLayer(next) {
-      const resp = await launchconfig.setLayer(cwd, "project", next);
-      current = (resp && resp.layers && resp.layers.project) || await launchconfig.getLayer(cwd, "project");
+      await launchconfig.setLayer(cwd, "project", next);
+      current = await launchconfig.getLayer(cwd, "project");
       return current;
     }
 

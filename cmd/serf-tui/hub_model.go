@@ -425,7 +425,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if preview == "" && msg.hadAttachment {
 					preview = "[image]"
 				}
-				if preview != "" {
+				if preview != "" && len(m.sessionQueue) <= msg.preQueueDepth {
 					m.sessionQueue = append(m.sessionQueue, preview)
 					m.session.refreshViewport()
 				}
@@ -1749,7 +1749,7 @@ func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 	}
 	if pending == "" && len(attachments) == 0 {
 		// Pure drain of the existing queue. Clear nothing on the composer.
-		return m, sendHubDrainAsSteer(m.client, ref, "", "", nil)
+		return m, sendHubDrainAsSteer(m.client, ref, "", "", nil, len(m.sessionQueue))
 	}
 	// Composer has text and/or attachments. sendHubDrainAsSteer queues the
 	// composer payload first so the daemon's atomic DrainAsSteer pops it
@@ -1759,7 +1759,7 @@ func (m hubModel) handleSessionForceSteer() (tea.Model, tea.Cmd) {
 	}
 	m.session.resetInput()
 	m.session.refreshViewport()
-	return m, sendHubDrainAsSteer(m.client, ref, pending, draft, attachments)
+	return m, sendHubDrainAsSteer(m.client, ref, pending, draft, attachments, len(m.sessionQueue))
 }
 
 // isAltVKey reports whether the keypress is Alt+v / Ctrl+Alt+V. WSL
