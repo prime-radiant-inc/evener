@@ -22,7 +22,7 @@ func hubTranscriptPickerItems(targets []appwire.ThreadTranscriptTarget) []modelP
 			details = append(details, source)
 		}
 		if target.Status != "" {
-			details = append(details, target.Status)
+			details = append(details, stateLabel(target.Status))
 		}
 		if target.Kind == "subagent" && target.TurnsUsed > 0 {
 			details = append(details, fmt.Sprintf("%d turns", target.TurnsUsed))

@@ -447,11 +447,28 @@
   }
 
   function terminalStatus(status) {
-    return status === "completed" || status === "failed" || status === "canceled";
+    status = canonicalTurnStatus(status);
+    return status === "completed" || status === "failed" || status === "interrupted";
   }
 
   function runningStatus(status) {
-    return status === "running" || status === "inProgress" || status === "active" || status === "processing";
+    return canonicalTurnStatus(status) === "inProgress";
+  }
+
+  function canonicalThreadStatus(status) {
+    status = String(status || "").trim();
+    if (!status || status === "ended") return "notLoaded";
+    if (status === "processing") return "active";
+    if (status === "error") return "systemError";
+    return status;
+  }
+
+  function canonicalTurnStatus(status) {
+    status = String(status || "").trim();
+    if (!status) return "";
+    if (status === "running" || status === "active" || status === "processing") return "inProgress";
+    if (status === "canceled" || status === "cancelled") return "interrupted";
+    return status;
   }
 
   function eventsFromItem(item, turnStatus) {
@@ -558,7 +575,7 @@
       ref: threadRef(thread),
       model: thread.modelProvider || "",
       profile: thread.serf && thread.serf.profile || "",
-      status: thread.status && thread.status.type || "",
+      status: canonicalThreadStatus(thread.status && thread.status.type || ""),
       capabilities: thread.serf && thread.serf.capabilities || {},
       restored: true,
     }]];
@@ -604,8 +621,7 @@
 
   function activeTurnIDFromThread(thread) {
     for (const turn of (thread && thread.turns) || []) {
-      if (turn && turn.status === "running") return turn.id || "";
-      if (turn && turn.status === "inProgress") return turn.id || "";
+      if (turn && canonicalTurnStatus(turn.status) === "inProgress") return turn.id || "";
     }
     return "";
   }
@@ -630,7 +646,7 @@
         ref: threadRef(thread) || params.ref || "",
         model: thread.modelProvider || "",
         profile: thread.serf && thread.serf.profile || "",
-        status: thread.status && thread.status.type || "",
+        status: canonicalThreadStatus(thread.status && thread.status.type || ""),
         capabilities: thread.serf && thread.serf.capabilities || {},
       }]];
     }
@@ -638,7 +654,7 @@
       return [["SESSION_END", { reason: params.reason || "closed" }]];
     }
     if (method === "thread/status/changed") {
-      return [["THREAD_STATUS_CHANGED", { status: params.status && params.status.type || "" }]];
+      return [["THREAD_STATUS_CHANGED", { status: canonicalThreadStatus(params.status && params.status.type || "") }]];
     }
     if (method === "thread/queueChanged") {
       const q = params.queue || {};

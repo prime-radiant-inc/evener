@@ -380,22 +380,17 @@ func itemCompletionKeys(item appwire.ThreadItem) []string {
 }
 
 func toolItemTerminal(item appwire.ThreadItem) bool {
-	switch item.Status {
-	case appwire.TurnStatusCompleted, appwire.TurnStatusFailed, appwire.TurnStatusCanceled:
+	if appwire.IsTerminalItemStatus(item.Status) {
 		return true
-	case appwire.TurnStatusRunning, "inProgress", "active", "processing":
+	}
+	if appwire.IsActiveItemStatus(item.Status) {
 		return false
 	}
 	return item.Output != "" || item.Error != ""
 }
 
 func toolItemRunning(item appwire.ThreadItem) bool {
-	switch item.Status {
-	case appwire.TurnStatusRunning, "inProgress", "active", "processing":
-		return true
-	default:
-		return false
-	}
+	return appwire.IsActiveItemStatus(item.Status)
 }
 
 func newStreamEvent(event string, data any) streamEvent {

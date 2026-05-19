@@ -283,8 +283,10 @@ func messagesFromThread(thread appwire.Thread) []chatMessage {
 	reducer := newHubTranscriptReducer(nil, nil, nil)
 	for _, turn := range thread.Turns {
 		turnIndex := turnIndexFromID(turn.ID)
+		turnCompleted := appwire.IsTerminalTurnStatus(turn.Status)
 		for _, item := range turn.Items {
-			reducer.applyThreadItem(item, turnIndex, false)
+			completed := turnCompleted && !appwire.IsActiveItemStatus(item.Status)
+			reducer.applyThreadItem(item, turnIndex, completed)
 		}
 		if turn.Status == appwire.TurnStatusFailed && turn.Error != nil {
 			reducer.messages = append(reducer.messages, chatMessage{Kind: msgSystem, Text: formatHubTurnError(turn.Error, "Session error")})
@@ -294,7 +296,7 @@ func messagesFromThread(thread appwire.Thread) []chatMessage {
 }
 
 func threadItemToolDone(item appwire.ThreadItem, completed bool) bool {
-	return completed || item.Status == "completed" || item.Output != "" || item.Error != ""
+	return completed || appwire.IsTerminalItemStatus(item.Status) || item.Output != "" || item.Error != ""
 }
 
 func toolInfoFromThreadItem(item appwire.ThreadItem, done bool) *toolCallInfo {

@@ -61,20 +61,25 @@ const (
 )
 
 const (
-	ThreadStatusIdle       = "idle"
-	ThreadStatusProcessing = "processing"
-	ThreadStatusAwaiting   = "awaiting"
-	ThreadStatusWarning    = "warning"
-	ThreadStatusClosed     = "closed"
-	ThreadStatusEnded      = "ended"
-	ThreadStatusError      = "error"
+	ThreadStatusIdle        = "idle"
+	ThreadStatusActive      = "active"
+	ThreadStatusProcessing  = ThreadStatusActive
+	ThreadStatusAwaiting    = "awaiting"
+	ThreadStatusWarning     = "warning"
+	ThreadStatusClosed      = "closed"
+	ThreadStatusNotLoaded   = "notLoaded"
+	ThreadStatusEnded       = ThreadStatusNotLoaded
+	ThreadStatusSystemError = "systemError"
+	ThreadStatusError       = ThreadStatusSystemError
 )
 
 const (
-	TurnStatusRunning   = "running"
-	TurnStatusCompleted = "completed"
-	TurnStatusFailed    = "failed"
-	TurnStatusCanceled  = "canceled"
+	TurnStatusInProgress  = "inProgress"
+	TurnStatusRunning     = TurnStatusInProgress
+	TurnStatusCompleted   = "completed"
+	TurnStatusFailed      = "failed"
+	TurnStatusInterrupted = "interrupted"
+	TurnStatusCanceled    = TurnStatusInterrupted
 )
 
 type InitializeParams struct {

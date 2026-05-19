@@ -441,7 +441,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.session.sessionID = msg.detail.SessionID
 		m.session.sessionModel = msg.detail.Model
 		m.session.sessionProfile = msg.detail.Profile
-		m.session.processing = msg.detail.State == "processing"
+		m.session.processing = appwire.IsActiveThreadStatus(msg.detail.State)
 		m.session.messages = msg.messages
 		m.session.viewport.Width = m.width
 		m.session.viewport.Height = m.session.vpHeight()
@@ -1017,7 +1017,8 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func statusRefreshStatesMatchExpected(currentState, payloadState, expectedState string) bool {
-	return currentState == expectedState && payloadState == expectedState
+	expected := appwire.CanonicalThreadStatus(expectedState)
+	return appwire.CanonicalThreadStatus(currentState) == expected && appwire.CanonicalThreadStatus(payloadState) == expected
 }
 
 func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -3731,7 +3732,7 @@ func stateLabel(state string) string {
 	switch strings.ToLower(strings.TrimSpace(state)) {
 	case "awaiting", "awaiting_reply", "needs-input":
 		return "awaiting"
-	case "processing", "running", "working":
+	case "active", "processing", "running", "working":
 		return "processing"
 	case "warning", "warn":
 		return "warning"

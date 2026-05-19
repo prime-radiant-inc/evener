@@ -274,9 +274,6 @@ func (r *hubTranscriptReducer) activeToolIndex(item appwire.ThreadItem) (int, bo
 	}
 	if item.CallID != "" {
 		if idx, ok := r.activeTools[item.CallID]; ok && idx < len(r.messages) {
-			if !turnScopeMatches(r.messages[idx].TurnID, item.TurnID, r.messages[idx].TurnIndex, turnIndexFromID(item.TurnID)) {
-				return 0, false
-			}
 			return idx, true
 		}
 	}

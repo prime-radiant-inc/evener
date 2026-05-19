@@ -798,15 +798,11 @@ func codexThreadListStatuses(statuses []string) []string {
 	out := make([]string, 0, len(statuses))
 	for _, status := range statuses {
 		switch strings.ToLower(strings.TrimSpace(status)) {
-		case appwire.ThreadStatusProcessing:
+		case "active", "processing":
 			out = append(out, "active")
-		case appwire.ThreadStatusEnded:
+		case "notloaded", "ended":
 			out = append(out, "notLoaded")
-		case appwire.ThreadStatusError:
-			out = append(out, "systemError")
-		case "notloaded":
-			out = append(out, "notLoaded")
-		case "systemerror":
+		case "systemerror", "error":
 			out = append(out, "systemError")
 		default:
 			out = append(out, status)

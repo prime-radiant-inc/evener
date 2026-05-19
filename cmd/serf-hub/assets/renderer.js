@@ -202,7 +202,7 @@
           sendBtn.disabled = !canSend && !canQueue;
           if (sendBtn.disabled) sendBtn.setAttribute("title", "send unavailable");
           else sendBtn.removeAttribute("title");
-        } else if (state === "processing") {
+        } else if (state === "processing" || state === "active") {
           sendBtn.setAttribute("data-capability-send", "false");
           sendBtn.setAttribute("data-capability-queue", "true");
           sendBtn.disabled = false;

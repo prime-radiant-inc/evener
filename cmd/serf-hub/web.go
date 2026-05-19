@@ -2576,13 +2576,13 @@ func stateLabel(state string) string {
 	switch state {
 	case "awaiting":
 		return "awaiting"
-	case "processing":
+	case "active", "processing":
 		return "processing"
 	case "warning":
 		return "warning"
 	case "idle":
 		return "idle"
-	case "ended":
+	case "ended", "notLoaded":
 		return "ended"
 	}
 	return state
