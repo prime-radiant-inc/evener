@@ -169,6 +169,7 @@
           this.updateThreadState(refreshedStatus);
         })
         .catch(() => {
+          if (this.sessionId !== sessionId || this.conversation !== conversation) return;
           if (seq !== this.statusUpdateSeq) return;
           this.updateThreadState(status);
         });

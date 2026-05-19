@@ -2777,6 +2777,63 @@ func TestThreadStart_LaunchOverridesApplied(t *testing.T) {
 	}
 }
 
+func TestHubRPCThreadStartUsesGlobalLaunchDefaultModel(t *testing.T) {
+	runDir := t.TempDir()
+	stateRoot := t.TempDir()
+	cwd := t.TempDir()
+	c := newHubLaunchController(stateRoot)
+	if _, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
+		CWD:    cwd,
+		Layer:  "global",
+		Config: appwire.LaunchConfigLayer{Model: "openai/gpt-5"},
+	}); err != nil {
+		t.Fatalf("SetLayer: %v", err)
+	}
+	var got SpawnRequest
+	spawner := &fakeRPCModelContractSpawner{
+		fakeRPCSpawner: fakeRPCSpawner{
+			spawn: func(_ context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+				got = req
+				return rendezvous.Entry{
+					PID:       201,
+					Protocol:  appwire.ProtocolVersion,
+					SourceID:  "local",
+					ThreadID:  "th_default_model",
+					SessionID: "sess_default_model",
+				}, nil
+			},
+		},
+		contract: appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{
+			Provider: "openai",
+			Model:    "gpt-5",
+		}}},
+	}
+	hub := newHubRPCTestServer(t, WebConfig{
+		RunDir:       runDir,
+		HubStateRoot: stateRoot,
+		Spawner:      spawner,
+		Past:         NewPastIndex(""),
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		CWD: cwd,
+	}); err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	if got.Resolved.Effective.Model != "openai/gpt-5" {
+		t.Errorf("Model = %q, want openai/gpt-5", got.Resolved.Effective.Model)
+	}
+	if got.Provider != "openai" {
+		t.Errorf("Provider = %q, want openai", got.Provider)
+	}
+}
+
 func TestHubRPCThreadStartRoutesByHarnessToConfiguredCodexSource(t *testing.T) {
 	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
 	var startCalled bool

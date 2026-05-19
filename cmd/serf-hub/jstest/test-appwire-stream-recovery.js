@@ -249,12 +249,53 @@ async function testEarlyNotificationWaitsForHydratedThreadIdentity() {
 	assert(window.document.body.textContent.includes("early codex update"), "early AppWire notification was dropped before hydration");
 }
 
+async function testStaleCapabilityRefreshErrorDoesNotUpdateNewSession() {
+  let rejectRead = null;
+  let readThreadCalls = 0;
+  const window = createWindow({
+    onNotification: () => () => {},
+    onConnectionLost: () => () => {},
+    readThread: () => {
+      readThreadCalls++;
+      if (readThreadCalls === 1) {
+        return Promise.resolve({
+          thread: {
+            id: "thread-live",
+            sessionId: "sess-live",
+            serf: { ref: "local:thread-live" },
+            turns: [],
+          },
+        });
+      }
+      return new Promise((_, reject) => { rejectRead = reject; });
+    },
+  });
+
+  await wait(10);
+  const seq = ++window.SerfRenderer.statusUpdateSeq;
+  assert(window.SerfRenderer.refreshCapabilitiesForStatus("running", seq), "capability refresh should start");
+  const oldConversation = window.document.getElementById("conversation");
+  const newConversation = window.document.createElement("div");
+  newConversation.id = "conversation";
+  newConversation.dataset.sessionId = "sess-new";
+  newConversation.dataset.state = "idle";
+  oldConversation.replaceWith(newConversation);
+  window.SerfRenderer.conversation = newConversation;
+  window.SerfRenderer.sessionId = "sess-new";
+
+  rejectRead(new Error("lost"));
+  await wait(30);
+
+  assert(newConversation.dataset.state === "idle", "stale failed capability refresh updated the new session state");
+}
+
 (async () => {
 	await testConnectionLossClearsAndReconnects();
 	await testReadFailureClearsSentinel();
 	await testReconnectDoesNotDuplicateReplay();
 	await testStaleHydrationDoesNotRenderIntoNewSession();
 	await testEarlyNotificationWaitsForHydratedThreadIdentity();
+	await testStaleCapabilityRefreshErrorDoesNotUpdateNewSession();
 	console.log("PASS: appwire renderer stream recovery");
 	process.exit(0);
 })().catch((err) => {

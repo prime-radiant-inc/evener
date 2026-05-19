@@ -1449,17 +1449,6 @@ func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Regis
 	if cfg.Spawner == nil {
 		return appwire.ThreadStartResponse{}, appwire.Unavailable("spawner not configured")
 	}
-	model := params.Model
-	if params.ModelProvider != "" && params.Model != "" && !strings.HasPrefix(params.Model, params.ModelProvider+"/") {
-		model = params.ModelProvider + "/" + params.Model
-	}
-	if model == "" {
-		return appwire.ThreadStartResponse{}, appwire.InvalidParams("model is required")
-	}
-	modelRef, err := cmdutil.ParseModelRef(model)
-	if err != nil {
-		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
-	}
 	workingDir := params.CWD
 	if workingDir != "" {
 		resolved, err := canonicalizeDir(workingDir)
@@ -1468,15 +1457,20 @@ func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Regis
 		}
 		workingDir = resolved
 	}
-	if err := validateSerfLaunchModel(ctx, cfg, modelRef, workingDir); err != nil {
-		return appwire.ThreadStartResponse{}, err
-	}
 	var overrides launchconfig.Layer
 	if params.LaunchOverrides != nil {
 		overrides = launchconfig.FromWire(*params.LaunchOverrides)
 	}
 	// Legacy scalar fields win over launchOverrides (per spec §5.4).
 	if params.Model != "" {
+		model := params.Model
+		if params.ModelProvider != "" && !strings.HasPrefix(params.Model, params.ModelProvider+"/") {
+			model = params.ModelProvider + "/" + params.Model
+		}
+		modelRef, err := cmdutil.ParseModelRef(model)
+		if err != nil {
+			return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
+		}
 		overrides.Model = modelRef.Qualified()
 	}
 	if params.Profile != "" {
@@ -1488,6 +1482,17 @@ func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Regis
 	spawnResolved, resolveErr := launchconfig.Resolve(cfg.HubStateRoot, workingDir, overrides)
 	if resolveErr != nil {
 		return appwire.ThreadStartResponse{}, resolveErr
+	}
+	resolvedModel := strings.TrimSpace(spawnResolved.Effective.Model)
+	if resolvedModel == "" {
+		return appwire.ThreadStartResponse{}, appwire.InvalidParams("model is required")
+	}
+	modelRef, err := cmdutil.ParseModelRef(resolvedModel)
+	if err != nil {
+		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
+	}
+	if err := validateSerfLaunchModel(ctx, cfg, modelRef, workingDir); err != nil {
+		return appwire.ThreadStartResponse{}, err
 	}
 	entry, err := cfg.Spawner.Spawn(ctx, SpawnRequest{
 		Resolved:   spawnResolved,
