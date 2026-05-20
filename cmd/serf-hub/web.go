@@ -2212,6 +2212,7 @@ type WorkspaceData struct {
 	ContextNumbers string
 	Cost           string
 	ActiveTurnID   string
+	RunningFor     string
 	Capabilities   hubapi.SessionCapabilities
 	// Fork lineage for the preserved-original side of a fork. Non-empty
 	// only when this session's meta carries ForkLabel — i.e., it's the
@@ -2466,10 +2467,38 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 		StateLabel:   stateLabel(state),
 		TurnCount:    completedTurnCount(thread.Turns),
 		ActiveTurnID: activeTurnIDFromAppwireThread(thread),
+		RunningFor:   activeTurnRunningFor(thread),
 		Model:        thread.ModelProvider,
 		WorkingDir:   thread.CWD,
 		Capabilities: hubCapabilitiesFromAppwire(thread.Serf.Capabilities),
 	}
+}
+
+func activeTurnRunningFor(thread appwire.Thread) string {
+	for _, turn := range thread.Turns {
+		if turn.Status != appwire.TurnStatusInProgress || turn.StartedAt == nil || *turn.StartedAt <= 0 {
+			continue
+		}
+		return compactDuration(time.Since(time.Unix(*turn.StartedAt, 0)))
+	}
+	return ""
+}
+
+func compactDuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	if d < time.Minute {
+		seconds := int(d.Seconds())
+		if seconds < 1 {
+			seconds = 1
+		}
+		return fmt.Sprintf("%ds", seconds)
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
 }
 
 func activeTurnIDFromAppwireThread(thread appwire.Thread) string {
@@ -2601,6 +2630,8 @@ func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id 
 		"ContextPercent": 0,
 		"ContextNumbers": "",
 		"Cost":           wd.Cost,
+		"State":          wd.State,
+		"RunningFor":     wd.RunningFor,
 	}
 	if data["Model"] == "" {
 		data["Model"] = "—"
@@ -2609,6 +2640,7 @@ func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id 
 		if detail.Model != "" {
 			data["Model"] = detail.Model
 		}
+		data["State"] = detail.State
 		data["ContextPercent"] = int(detail.ContextPressure * 100)
 		data["ContextWindow"] = detail.ContextWindow
 		data["ContextNumbers"] = formatContextNumbers(detail.ContextUsed, detail.ContextWindow, detail.ContextRemaining)

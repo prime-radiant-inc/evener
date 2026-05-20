@@ -120,9 +120,42 @@ func (s *LocalDaemonSource) InterruptTurn(ctx context.Context, params appwire.Tu
 	if err != nil {
 		return err
 	}
+	if strings.TrimSpace(params.ExpectedTurnID) == "" {
+		return s.restInterrupt(ctx, entry)
+	}
 	return s.withClient(ctx, entry, func(client *appwire.Client) error {
 		return client.TurnInterrupt(ctx, params)
 	})
+}
+
+func (s *LocalDaemonSource) restInterrupt(ctx context.Context, entry rendezvous.Entry) error {
+	if strings.TrimSpace(entry.Address) == "" {
+		return appwire.SessionUnavailable("local daemon address unavailable")
+	}
+	client := s.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+entry.Address+"/interrupt", nil)
+	if err != nil {
+		return err
+	}
+	if entry.HubToken != "" {
+		req.Header.Set("Authorization", "Bearer "+entry.HubToken)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+		return localDaemonDialError(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return appwire.Unavailable(strings.TrimSpace(string(body)))
+	}
+	return nil
 }
 
 func (s *LocalDaemonSource) QueueTurn(ctx context.Context, params appwire.TurnQueueParams) error {

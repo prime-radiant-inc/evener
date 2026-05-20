@@ -664,3 +664,37 @@ func TestLocalDaemonSourceSendsHubTokenBearer(t *testing.T) {
 		t.Fatal("daemon did not receive websocket request")
 	}
 }
+
+func TestLocalDaemonSourceInterruptWithoutTurnIDUsesRESTInterrupt(t *testing.T) {
+	var called bool
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/interrupt" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodPost {
+			t.Fatalf("method=%s, want POST", r.Method)
+		}
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer daemon.Close()
+
+	entry := rendezvous.Entry{
+		Address:  daemon.Listener.Addr().String(),
+		Endpoint: "ws://" + daemon.Listener.Addr().String() + "/rpc",
+		Protocol: appwire.ProtocolVersion,
+		SourceID: "local",
+		ThreadID: "01INT",
+	}
+	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
+		return []LocalDaemonEntry{{Entry: entry, SessionID: "01INT"}}
+	}, daemon.Client())
+
+	if err := source.InterruptTurn(context.Background(), appwire.TurnInterruptParams{Ref: "local:01INT"}); err != nil {
+		t.Fatalf("InterruptTurn: %v", err)
+	}
+	if !called {
+		t.Fatal("REST /interrupt was not called")
+	}
+}

@@ -2,6 +2,7 @@
 {{if .WorkingDir}}<span class="cwd" title="{{.WorkingDir}}">{{.WorkingDir}}</span>{{end}}
 {{if and .WorkingDir .Branch}}<span class="rule-dot">·</span>{{end}}
 {{if .Branch}}<span class="branch">{{.Branch}}</span>{{end}}
+{{if or (eq .State "active") (eq .State "awaiting")}}{{if or .WorkingDir .Branch}}<span class="rule-dot">·</span>{{end}}<span class="running-indicator" data-running-indicator><span class="running-dot"></span>running{{if .RunningFor}} · {{.RunningFor}}{{end}}</span>{{end}}
 <span class="status-spacer"></span>
 {{if .ContextWindow}}<span class="context"><span class="context-label">context</span><span class="context-bar"><span class="context-fill" style="width:{{.ContextPercent}}%"></span></span><span class="context-numbers">{{.ContextNumbers}}</span></span>{{end}}
 {{if .Cost}}<span class="rule-dot">·</span><span class="cost">{{.Cost}}</span>{{end}}

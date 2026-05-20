@@ -404,9 +404,14 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 
 .input-controls { display: flex; align-items: center; gap: 8px; padding: 8px 0 0; flex-wrap: wrap; }
 .controls-spacer { flex: 1; }
+.running-indicator { display: inline-flex; align-items: center; gap: 6px; color: var(--text); font-size: 12px; white-space: nowrap; }
+.running-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--state-processing); box-shadow: 0 0 0 4px rgba(122,162,247,0.12); }
 .input-btn { display: inline-flex; align-items: center; gap: 5px; padding: 4px 12px; background: var(--bg); border: 1px solid var(--rule); border-radius: 4px; color: var(--text); font: inherit; font-size: 11.5px; cursor: pointer; }
 .input-btn:hover { background: var(--bg-raised); }
 .input-btn-ghost { color: var(--text-muted); }
+.input-btn-stop { color: var(--state-awaiting); border-color: rgba(247,118,142,0.45); background: rgba(247,118,142,0.08); margin-right: 10px; }
+.input-btn-stop:hover:not([disabled]) { background: rgba(247,118,142,0.14); border-color: rgba(247,118,142,0.65); }
+.input-btn-stop[disabled] { opacity: 0.45; cursor: not-allowed; }
 .input-btn-primary { background: var(--state-processing); color: var(--bg); border-color: transparent; font-weight: 500; }
 .input-btn-primary:hover { background: var(--state-processing); filter: brightness(1.1); }
 .input-btn-primary kbd { background: rgba(0,0,0,0.2); border: 1px solid rgba(0,0,0,0.3); color: inherit; font-family: ui-monospace, "SFMono-Regular", monospace; padding: 0 4px; border-radius: 3px; }

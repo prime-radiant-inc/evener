@@ -126,12 +126,17 @@ func TestWeb_CodexSessionRouteReadsConfiguredSource(t *testing.T) {
 			t.Fatalf("codex workspace advertised unsupported control %q:\n%s", unsupported, body)
 		}
 	}
-	for _, disabledUntilTurn := range []string{`data-action-trigger="interrupt" title="cancel the in-flight model call" disabled`, `data-steer-trigger data-capability-steer="true" title="drain the queue as a steering message — or steer with the textarea text when the queue is empty" disabled`} {
+	for _, disabledUntilTurn := range []string{`data-action-trigger="interrupt"`, `data-steer-trigger data-capability-steer="true" title="drain the queue as a steering message — or steer with the textarea text when the queue is empty" disabled`} {
 		if !strings.Contains(body, disabledUntilTurn) {
 			t.Fatalf("codex workspace missing disabled turn control %q:\n%s", disabledUntilTurn, body)
 		}
 	}
-	for _, supported := range []string{`data-action-trigger="compact"`, `class="input-btn input-btn-primary send-btn"`} {
+	for _, unsupportedHeader := range []string{`data-action-trigger="compact"`, `data-action-trigger="shutdown"`} {
+		if strings.Contains(body, unsupportedHeader) {
+			t.Fatalf("workspace rendered removed header action %q:\n%s", unsupportedHeader, body)
+		}
+	}
+	for _, supported := range []string{`class="input-btn input-btn-primary send-btn"`} {
 		if !strings.Contains(body, supported) {
 			t.Fatalf("codex workspace missing supported control %q:\n%s", supported, body)
 		}
@@ -166,6 +171,55 @@ func TestWeb_WorkspaceRendersDisabledSteerControlForIdleSendCapableAppThread(t *
 	body := rec.Body.String()
 	if !strings.Contains(body, `data-steer-trigger data-capability-steer="false"`) || !strings.Contains(body, `disabled>send as steer`) {
 		t.Fatalf("workspace should render disabled steer control for idle send-capable app thread:\n%s", body)
+	}
+}
+
+func TestWeb_WorkspaceRendersBottomStopForActiveSession(t *testing.T) {
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Past: NewPastIndex("")})
+	started := time.Now().Add(-2 * time.Minute).Unix()
+	web.sources.Add(&scriptedAppSource{
+		id: "codex",
+		thread: appwire.Thread{
+			ID:            "th_active",
+			SessionID:     "th_active",
+			Source:        "codex",
+			Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+			ModelProvider: "gpt-5",
+			Turns: []appwire.Turn{{
+				ID:        "turn_1",
+				Status:    appwire.TurnStatusInProgress,
+				StartedAt: &started,
+			}},
+			Serf: appwire.SerfThread{
+				Ref:          "codex:th_active",
+				Capabilities: appwire.ThreadCapabilities{Send: false, Steer: true, Interrupt: true, Queue: true},
+			},
+		},
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+url.PathEscape("codex:th_active")+"/workspace", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, `class="header-action" data-action-trigger="interrupt"`) ||
+		strings.Contains(body, `data-action-trigger="compact"`) ||
+		strings.Contains(body, `data-action-trigger="shutdown"`) {
+		t.Fatalf("workspace rendered removed header controls:\n%s", body)
+	}
+	if !strings.Contains(body, `class="input-btn input-btn-stop stop-btn" data-action-trigger="interrupt"`) ||
+		!strings.Contains(body, `>Stop<`) {
+		t.Fatalf("workspace missing bottom Stop control:\n%s", body)
+	}
+	if strings.Contains(body, `class="input-btn input-btn-stop stop-btn" data-action-trigger="interrupt" title="stop the in-flight turn" disabled`) {
+		t.Fatalf("bottom Stop should be enabled for active session:\n%s", body)
+	}
+	if !strings.Contains(body, `data-running-indicator`) {
+		t.Fatalf("workspace missing bottom running indicator:\n%s", body)
 	}
 }
 
@@ -3531,9 +3585,10 @@ func TestWeb_SessionAction_InterruptForwards(t *testing.T) {
 
 	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
 
-	req := httptest.NewRequest(http.MethodPost, "/s/01ACTINT/interrupt", nil)
+	req := httptest.NewRequest(http.MethodPost, "/s/01ACTINT/interrupt", strings.NewReader(`{"turn_id":"turn_1"}`))
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
 

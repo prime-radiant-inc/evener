@@ -243,7 +243,10 @@
       const hasActiveTurn = !!this.activeTurnId;
       const turnAcceptsActions = this.turnAcceptsActions(this.state);
       const interrupt = document.querySelector('[data-action-trigger="interrupt"]');
-      if (interrupt) interrupt.disabled = !hasActiveTurn || !turnAcceptsActions;
+      if (interrupt) {
+        const canInterrupt = interrupt.getAttribute("data-capability-interrupt") !== "false";
+        interrupt.disabled = !canInterrupt || !turnAcceptsActions;
+      }
       const steer = document.querySelector("[data-steer-trigger]");
       if (steer) {
         // The steer trigger now doubles as the force-steer-drain-queue
@@ -630,7 +633,10 @@
           this.setActiveTurnId(data.turnId || "");
           break;
         case "TURN_COMPLETED":
-          if (!data.turnId || data.turnId === this.activeTurnId) this.setActiveTurnId("");
+          if (!data.turnId || data.turnId === this.activeTurnId) {
+            this.setActiveTurnId("");
+            if (this.turnAcceptsActions(this.state)) this.updateThreadState("idle");
+          }
           break;
 	        case "SESSION_START":
 	          this.statusUpdateSeq++;
@@ -2438,12 +2444,6 @@
     const sessionId = conv && conv.getAttribute("data-session-id");
     if (!sessionId) return;
     const turnId = (window.SerfRenderer && window.SerfRenderer.activeTurnId) || (conv && conv.getAttribute("data-active-turn-id")) || "";
-    if (action === "interrupt" && !turnId) {
-      if (window.SerfRenderer && window.SerfRenderer.appendBanner) {
-        window.SerfRenderer.appendBanner("error", "interrupt failed: no active turn", { source: "hub", title: "Hub action error" });
-      }
-      return;
-    }
     const actionPromise = window.SerfAppwire
       ? window.SerfAppwire.action(sessionId, action, turnId).then(() => ({ ok: true, text: () => Promise.resolve("") }))
       : fetch("/s/" + encodeURIComponent(sessionId) + "/" + action, {

@@ -9,15 +9,6 @@
       <button class="title-action" type="button" data-copy-id="{{.ID}}" title="copy session ID">⧉</button>
     </div>
     <div class="workspace-actions">
-      {{if .Capabilities.Interrupt}}
-      <button type="button" class="header-action" data-action-trigger="interrupt" title="cancel the in-flight model call"{{if or (eq .ActiveTurnID "") (and (ne .State "awaiting") (ne .State "active"))}} disabled{{end}}>interrupt</button>
-      {{end}}
-      {{if .Capabilities.Compact}}
-      <button type="button" class="header-action" data-action-trigger="compact" title="compact the transcript"{{if eq .State "ended"}} disabled{{end}}>compact</button>
-      {{end}}
-      {{if .Capabilities.Shutdown}}
-      <button type="button" class="header-action header-action-danger" data-action-trigger="shutdown" title="shut down this daemon"{{if eq .State "ended"}} disabled{{end}}>shutdown</button>
-      {{end}}
       <button type="button" class="panel-toggle" data-tasks-trigger title="task list">
         <span class="panel-toggle-icon">☑</span><span class="panel-toggle-label">tasks</span>
       </button>
@@ -63,7 +54,13 @@
     {{else}}
     <span class="input-chip model-chip" title="model changes unavailable">{{if .Model}}{{.Model}}{{else}}—{{end}}</span>
     {{end}}
+    {{if or (eq .State "active") (eq .State "awaiting")}}
+    <span class="running-indicator" data-running-indicator><span class="running-dot"></span>running{{if .RunningFor}} · {{.RunningFor}}{{end}}</span>
+    {{end}}
     <span class="controls-spacer"></span>
+    {{if .Capabilities.Interrupt}}
+    <button type="button" class="input-btn input-btn-stop stop-btn" data-action-trigger="interrupt" data-capability-interrupt="{{.Capabilities.Interrupt}}" title="stop the in-flight turn"{{if and (ne .State "awaiting") (ne .State "active")}} disabled{{end}}>Stop</button>
+    {{end}}
     {{if or .Capabilities.Steer .Capabilities.Send .Capabilities.Queue}}
     <button type="button" class="input-btn input-btn-ghost" data-steer-trigger data-capability-steer="{{.Capabilities.Steer}}" title="drain the queue as a steering message — or steer with the textarea text when the queue is empty"{{if or (not .Capabilities.Steer) (eq .ActiveTurnID "") (and (ne .State "awaiting") (ne .State "active"))}} disabled{{end}}>send as steer <kbd>⇧↵</kbd></button>
     {{end}}
