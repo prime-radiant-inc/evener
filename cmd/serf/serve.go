@@ -218,6 +218,12 @@ func runServe(args []string) error {
 		defer currentMu.RUnlock()
 		return currentSess
 	}
+	srv.SetTranscriptPathFunc(func() string {
+		if current := getSession(); current != nil {
+			return current.TranscriptPath()
+		}
+		return ""
+	})
 	setSession := func(next *agent.Session) {
 		currentMu.Lock()
 		currentSess = next

@@ -133,6 +133,7 @@ type Server struct {
 	listModelsFunc      func(context.Context) ([]ModelsResponseItem, error)
 	tasksFn             func() any
 	shutdownFunc        func()
+	transcriptPathFn    func() string
 	processing          bool
 	inputCh             chan InputMessage
 	hubToken            string

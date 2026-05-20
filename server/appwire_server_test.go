@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/diagnostic"
+	"primeradiant.com/serf/llm"
 )
 
 func TestServerAppWireTurnStartQueuesInput(t *testing.T) {
@@ -757,6 +760,81 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 	}
 	if diag.Hooks["PreToolUse"] != 3 {
 		t.Fatalf("hooks=%+v", diag.Hooks)
+	}
+}
+
+func TestAppTurnsFromTranscriptFilePreservesToolCallArguments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := agent.NewTranscriptWriter(path, agent.TranscriptHeader{SessionID: "th_1"})
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+	if err := w.Append(agent.NewTurn(agent.TurnAssistant, llm.Message{
+		Role: llm.RoleAssistant,
+		Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:        "call_read",
+				Name:      "read_file",
+				Arguments: json.RawMessage(`{"file_path":"/tmp/example.txt"}`),
+			},
+		}},
+	})); err != nil {
+		t.Fatalf("append tool call: %v", err)
+	}
+	if err := w.Append(agent.NewTurn(agent.TurnToolResults, llm.ToolResultNamed("call_read", "read_file", "line 1\nline 2\n", false))); err != nil {
+		t.Fatalf("append tool result: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close transcript: %v", err)
+	}
+
+	turns := appTurnsFromTranscriptFile(path)
+	if len(turns) != 2 || len(turns[0].Items) != 1 || len(turns[1].Items) != 1 {
+		t.Fatalf("turns=%+v", turns)
+	}
+	start := turns[0].Items[0]
+	done := turns[1].Items[0]
+	if start.CallID != "call_read" || start.ArgumentsJSON == "" || !strings.Contains(start.ArgumentsJSON, "/tmp/example.txt") {
+		t.Fatalf("start item=%+v", start)
+	}
+	if done.CallID != "call_read" || done.Output != "line 1\nline 2\n" {
+		t.Fatalf("done item=%+v", done)
+	}
+}
+
+func TestServerAppWireThreadReadUsesTranscriptWhenReplayBufferDroppedPrefix(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := agent.NewTranscriptWriter(path, agent.TranscriptHeader{SessionID: "th_1"})
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+	if err := w.Append(agent.NewTurn(agent.TurnUserInput, llm.User("first"))); err != nil {
+		t.Fatalf("append first: %v", err)
+	}
+	if err := w.Append(agent.NewTurn(agent.TurnAssistant, llm.Assistant("second"))); err != nil {
+		t.Fatalf("append second: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close transcript: %v", err)
+	}
+
+	srv := NewServer(ServerConfig{AppReplaySize: 2})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetTranscriptPathFunc(func() string { return path })
+	srv.RecordAppEvent(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "tail"}})
+	srv.RecordAppEvent(agent.SessionEvent{Kind: agent.EventAssistantTextEnd, SessionID: "th_1", Data: agent.AssistantTextEndData{Text: "only tail"}})
+	srv.RecordAppEvent(agent.SessionEvent{Kind: agent.EventSessionEnd, SessionID: "th_1", Data: agent.SessionEndData{State: appwire.ThreadStatusIdle}})
+
+	resp, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{IncludeTurns: true})
+	if err != nil {
+		t.Fatalf("handleAppThreadRead: %v", err)
+	}
+	if len(resp.Thread.Turns) != 2 {
+		t.Fatalf("turns=%+v, want full transcript", resp.Thread.Turns)
+	}
+	if got := resp.Thread.Turns[0].Items[0].Text; got != "first" {
+		t.Fatalf("first turn text=%q", got)
 	}
 }
 

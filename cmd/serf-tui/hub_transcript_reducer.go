@@ -292,7 +292,7 @@ func (r *hubTranscriptReducer) toolIndex(item appwire.ThreadItem, turnIndex int)
 		if item.ID != "" && msg.ItemID == item.ID && turnScopeMatches(msg.TurnID, item.TurnID, msg.TurnIndex, turnIndex) {
 			return i, true
 		}
-		if item.CallID != "" && msg.ToolCallID == item.CallID && turnScopeMatches(msg.TurnID, item.TurnID, msg.TurnIndex, turnIndex) {
+		if item.CallID != "" && msg.ToolCallID == item.CallID {
 			return i, true
 		}
 	}

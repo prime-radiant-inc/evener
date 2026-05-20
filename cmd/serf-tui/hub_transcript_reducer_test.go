@@ -79,6 +79,42 @@ func TestHubTranscriptReducerSuppressesReplayedCompletedTool(t *testing.T) {
 	}
 }
 
+func TestHubTranscriptReducerPairsTranscriptToolStartAndResultAcrossTurns(t *testing.T) {
+	reducer := newHubTranscriptReducer(nil, nil, nil)
+	started := appwire.ThreadItem{
+		Type:          "commandExecution",
+		ID:            "tool_start",
+		CallID:        "call_read",
+		TurnID:        "turn_1",
+		ToolName:      "read_file",
+		ArgumentsJSON: `{"file_path":"/tmp/example.txt"}`,
+		Status:        appwire.TurnStatusInProgress,
+	}
+	completed := appwire.ThreadItem{
+		Type:     "commandExecution",
+		ID:       "tool_result",
+		CallID:   "call_read",
+		TurnID:   "turn_2",
+		ToolName: "read_file",
+		Output:   "line 1\nline 2\n",
+		Status:   appwire.TurnStatusCompleted,
+	}
+
+	reducer.applyThreadItem(started, 1, false)
+	reducer.applyThreadItem(completed, 2, true)
+
+	tools := transcriptTools(reducer.messages)
+	if len(tools) != 1 {
+		t.Fatalf("tools=%+v messages=%+v, want one paired tool", tools, reducer.messages)
+	}
+	if tools[0].Name != "read_file" || tools[0].Output != "line 1\nline 2\n" || !tools[0].Done {
+		t.Fatalf("tool=%+v", tools[0])
+	}
+	if msg := reducer.messages[0]; msg.ItemID != "tool_result" || msg.ToolCallID != "call_read" || msg.TurnID != "turn_2" {
+		t.Fatalf("message=%+v", msg)
+	}
+}
+
 func TestHubTranscriptReducerScopesItemIDReconciliationByTurn(t *testing.T) {
 	reducer := newHubTranscriptReducer(nil, nil, nil)
 

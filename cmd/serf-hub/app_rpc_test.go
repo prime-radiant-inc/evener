@@ -110,6 +110,27 @@ func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 	}
 }
 
+func TestAppItemsFromReplayTurnAcceptsCurrentToolCallKind(t *testing.T) {
+	toolNames := map[string]string{}
+	items := appItemsFromReplayTurn("turn_1", 1, replayTurn{
+		Kind: "ASSISTANT",
+		Message: replayMessage{Content: []replayPart{{
+			Kind: "tool_call",
+			ToolCall: &replayToolCall{
+				ID:        "call_read",
+				Name:      "read_file",
+				Arguments: []byte(`{"file_path":"/tmp/example.txt"}`),
+			},
+		}}},
+	}, toolNames)
+	if len(items) != 1 {
+		t.Fatalf("items=%+v, want one tool item", items)
+	}
+	if got := items[0]; got.Type != "commandExecution" || got.CallID != "call_read" || !strings.Contains(got.ArgumentsJSON, "/tmp/example.txt") {
+		t.Fatalf("tool item=%+v", got)
+	}
+}
+
 func TestAppItemsFromReplayTurnSteeringCarriesImageMetadata(t *testing.T) {
 	img := []byte("png")
 	items := appItemsFromReplayTurn("turn_3", 3, replayTurn{

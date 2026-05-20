@@ -1273,7 +1273,7 @@ func appItemsFromReplayTurn(turnID string, turnIndex int, turn replayTurn, toolN
 						Status: "completed",
 					})
 				}
-			case "commandExecution":
+			case "commandExecution", "tool_call":
 				if part.ToolCall != nil {
 					toolNames[part.ToolCall.ID] = part.ToolCall.Name
 					if part.ToolCall.Name == "communicate" {
