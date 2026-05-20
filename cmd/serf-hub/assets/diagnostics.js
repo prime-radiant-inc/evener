@@ -72,6 +72,8 @@
     // warnings, etc).
     if (typedCauseKind === "provider") {
       source = "provider";
+      if (isLegacyNonProviderTitle(title, severity, lower)) title = "";
+      if (isLegacyNonProviderHint(hint, lower)) hint = "";
     }
 
     if (storedSource === "serf" && source !== "serf") {
@@ -180,6 +182,27 @@
     return text === defaultHint("serf", message) ||
       text === "Check the Serf session log and daemon state." ||
       text.indexOf("Hub launched Serf with provider configuration") === 0;
+  }
+
+  function isLegacyNonProviderTitle(title, severity, message) {
+    if (!title) return false;
+    const text = String(title || "").trim();
+    return isDefaultSerfTitle(text, severity, message) ||
+      text === defaultTitle("hub", severity, message) ||
+      text === defaultTitle("ui", severity, message) ||
+      text === "Hub warning" ||
+      text === "UI warning" ||
+      text === "Session error" ||
+      text === "Session warning";
+  }
+
+  function isLegacyNonProviderHint(hint, message) {
+    if (!hint) return false;
+    const text = String(hint || "").trim();
+    return isDefaultSerfHint(text, message) ||
+      text === defaultHint("hub", message) ||
+      text === defaultHint("ui", message) ||
+      text === "Check the Serf session log and daemon state.";
   }
 
   // render builds a diagnostic card element.

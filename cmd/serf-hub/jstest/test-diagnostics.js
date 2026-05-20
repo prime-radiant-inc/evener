@@ -230,6 +230,30 @@ assert(typedCauseOverride.source === "provider",
 assert(typedCauseOverride.title === "Provider error",
   "typed cause.kind=provider should yield provider title, got " + typedCauseOverride.title);
 
+const typedCauseClearsLegacyHubDefaults = diagnostics.classify({
+  source: "hub",
+  title: "Hub error",
+  hint: "Check the hub process, AppWire connection, spawn arguments, and rendezvous state.",
+  message: "upstream typed provider failure",
+  cause: { kind: "provider", provider: "openai", model: "gpt-4o", status: 503 },
+});
+assert(typedCauseClearsLegacyHubDefaults.source === "provider",
+  "typed provider cause should override source=hub, got " + typedCauseClearsLegacyHubDefaults.source);
+assert(typedCauseClearsLegacyHubDefaults.title === "Provider error",
+  "typed provider cause should clear stale hub title, got " + typedCauseClearsLegacyHubDefaults.title);
+assert(typedCauseClearsLegacyHubDefaults.hint.includes("model provider"),
+  "typed provider cause should clear stale hub hint, got " + typedCauseClearsLegacyHubDefaults.hint);
+
+const typedCauseClearsLegacySessionTitle = diagnostics.classify({
+  source: "session",
+  title: "Session warning",
+  hint: "Check the Serf session log and daemon state.",
+  message: "upstream typed provider failure",
+  cause: { kind: "provider", provider: "openai", status: 429 },
+});
+assert(typedCauseClearsLegacySessionTitle.title === "Provider error",
+  "typed provider cause should clear stale session title, got " + typedCauseClearsLegacySessionTitle.title);
+
 // (2) typed cause wins over substring match too (here the message would
 // already match the openai-error pattern; the assertion is that the path
 // through classify() is the typed-cause branch, not the heuristic — both
