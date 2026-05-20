@@ -1476,6 +1476,12 @@
         }
         this.renderComposerChips();
       };
+      const clearComposerDraftIfUnchanged = (submittedValue) => {
+        if (ta.value !== submittedValue) return;
+        ta.value = "";
+        ta.style.height = "";
+        grow();
+      };
 
       // Seed the queue-preview chrome (kata r80p). queueState starts empty
       // on init; cold-load eventsFromThread + thread/queueChanged
@@ -1494,7 +1500,8 @@
       const steerBtn = form.querySelector("[data-steer-trigger]");
       if (steerBtn) {
         steerBtn.addEventListener("click", async () => {
-	          const text = ta.value.trim();
+	          const submittedValue = ta.value;
+	          const text = submittedValue.trim();
 	          const pendingItems = snapshotComposerItems();
 	          const hasAttachments = pendingItems.length > 0;
 	          const hasQueued = (this.queueState && this.queueState.depth > 0) || false;
@@ -1534,9 +1541,7 @@
                   return;
                 }
               }
-              ta.value = "";
-              ta.style.height = "";
-              grow();
+              clearComposerDraftIfUnchanged(submittedValue);
               return;
             }
             // Path B: drain. Text/attachments ride on drain-as-steer so the
@@ -1560,9 +1565,7 @@
                   const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
                   const info = resp.headers && resp.headers.get ? resp.headers.get("x-serf-error-info") : "";
                   if (info === "queuedDrainPartial") {
-                    ta.value = "";
-                    ta.style.height = "";
-                    grow();
+                    clearComposerDraftIfUnchanged(submittedValue);
                     clearSubmittedComposerItems(pendingItems);
                     this.appendBanner("error", "drain failed after queueing: " + detail, { source: "hub", title: "Hub drain error" });
                     return;
@@ -1571,18 +1574,14 @@
                   return;
                 }
               }
-              ta.value = "";
-              ta.style.height = "";
-              grow();
+              clearComposerDraftIfUnchanged(submittedValue);
               clearSubmittedComposerItems(pendingItems);
               // Daemon collapses the whole queue into one STEERING entry
               // and emits thread/queueChanged with depth=0; the preview
               // will hide when that notification lands. No local mirror.
             } catch (err) {
               if (err && err.serfErrorInfo === "queuedDrainPartial") {
-                ta.value = "";
-                ta.style.height = "";
-                grow();
+                clearComposerDraftIfUnchanged(submittedValue);
                 clearSubmittedComposerItems(pendingItems);
                 this.appendBanner("error", "drain failed after queueing: " + err.message, { source: "hub", title: "Hub drain error" });
                 return;
@@ -1625,7 +1624,8 @@
 
       const submit = async (e) => {
         e.preventDefault();
-	        const text = ta.value.trim();
+	        const submittedValue = ta.value;
+	        const text = submittedValue.trim();
 	        const items = snapshotComposerItems();
 	        const hasAttachments = items.length > 0;
 	        if (hasPendingComposerItems()) {
@@ -1646,9 +1646,7 @@
           if (sendBtn) sendBtn.disabled = true;
           try {
             await this.queueText(text, items);
-            ta.value = "";
-            ta.style.height = "";
-            grow();
+            clearComposerDraftIfUnchanged(submittedValue);
             // Successful queue: drop only the submitted snapshot. Preserved
             // on error so the user can retry, and newly staged attachments
             // remain queued for the next message.
@@ -1706,9 +1704,7 @@
             name: a.name || "",
           }));
           this.appendLocalUserMessage(text, echoImages, turnId, previousUserCount);
-          ta.value = "";
-          ta.style.height = "";
-          grow();
+          clearComposerDraftIfUnchanged(submittedValue);
           // Clear only the submitted snapshot and repaint the chip container
           // so attachments staged while this request was in flight remain.
           clearSubmittedComposerItems(items);

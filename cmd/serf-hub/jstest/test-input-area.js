@@ -621,6 +621,8 @@ async function testSubmitPreservesAttachmentsAddedWhileInFlight() {
 
   window.SerfRenderer.composerPasteState.items.push(second);
   window.SerfRenderer.renderComposerChips();
+  ta.value = "new draft\n\n[image 2]";
+  ta.dispatchEvent(new window.Event("input", { bubbles: true }));
   pass(pendingItems().length === 2,
     "expected second attachment staged while send is in flight, got " + pendingItems().length);
 
@@ -633,6 +635,8 @@ async function testSubmitPreservesAttachmentsAddedWhileInFlight() {
     "in-flight send should use submitted snapshot only, got " + JSON.stringify(body && body.items));
   pass(pendingItems().length === 1 && pendingItems()[0] === second,
     "successful send should preserve newly staged attachment, got " + pendingItems().map(i => i.name).join(","));
+  pass(ta.value === "new draft\n\n[image 2]",
+    "successful send should preserve newer composer draft, got " + JSON.stringify(ta.value));
   const chips = attContainer.querySelectorAll("[data-attachment]");
   pass(chips.length === 1 && chips[0].textContent.includes("second.png"),
     "expected chip for second.png after in-flight send, got " + attContainer.textContent);
