@@ -301,15 +301,7 @@ func (c *Client) TurnInterrupt(ctx context.Context, params TurnInterruptParams) 
 // recorded; the queued message is processed as a fresh user turn after the
 // active turn completes.
 func (c *Client) TurnQueue(ctx context.Context, params TurnQueueParams) error {
-	var handle PendingHandle
-	if c.pendingCoord != nil {
-		handle = c.pendingCoord.Register(MethodTurnQueue, inputText(params.Input))
-	}
-	err := c.request(ctx, MethodTurnQueue, params, nil)
-	if err != nil && handle != nil {
-		handle.Fail(err.Error())
-	}
-	return err
+	return c.request(ctx, MethodTurnQueue, params, nil)
 }
 
 // TurnDrainAsSteer calls turn/drainAsSteer (kata 0bq1) to drain every queued

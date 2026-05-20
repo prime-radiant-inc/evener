@@ -194,7 +194,7 @@ func TestTurnStart_RegistersImageOnlyPendingPreview(t *testing.T) {
 	}
 }
 
-func TestTurnQueue_RegistersPending(t *testing.T) {
+func TestTurnQueue_DoesNotRegisterPending(t *testing.T) {
 	t.Parallel()
 	transport := appwiretest.NewScriptedTransport()
 	client := appwire.NewClient(transport)
@@ -208,18 +208,15 @@ func TestTurnQueue_RegistersPending(t *testing.T) {
 		transport.DeliverResponse(req.Request.ID, struct{}{})
 	}()
 	if err := client.TurnQueue(ctx, appwire.TurnQueueParams{
-		Ref:  appwire.Ref{SourceID: "local", ThreadID: "t1"}.String(),
+		Ref:   appwire.Ref{SourceID: "local", ThreadID: "t1"}.String(),
 		Input: []appwire.InputItem{{Type: "text", Text: "queued msg"}},
 	}); err != nil {
 		t.Fatalf("TurnQueue: %v", err)
 	}
 	coord.mu.Lock()
 	defer coord.mu.Unlock()
-	if len(coord.entries) != 1 || coord.entries[0].method != "turn/queue" {
-		t.Fatalf("entry: %+v", coord.entries)
-	}
-	if coord.entries[0].text != "queued msg" {
-		t.Fatalf("text mismatch: %q", coord.entries[0].text)
+	if len(coord.entries) != 0 {
+		t.Fatalf("TurnQueue should not register transcript pending entries, got %+v", coord.entries)
 	}
 }
 
