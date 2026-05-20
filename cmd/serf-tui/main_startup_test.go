@@ -3,6 +3,9 @@ package main
 import (
 	"errors"
 	"flag"
+	"io"
+	"os"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -73,6 +76,34 @@ func TestParseTUIStartupOptionsHelpReturnsErrHelp(t *testing.T) {
 	_, err := parseTUIStartupOptions([]string{"--help"}, func(string) string { return "" })
 	if !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("parseTUIStartupOptions(--help) err = %v, want flag.ErrHelp", err)
+	}
+}
+
+func TestParseTUIStartupOptionsHelpUsesEnvironmentHubAddr(t *testing.T) {
+	origStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = origStderr })
+
+	_, parseErr := parseTUIStartupOptions([]string{"--help"}, func(key string) string {
+		if key == "SERF_HUB_ADDR" {
+			return "http://env-hub:9180"
+		}
+		return ""
+	})
+	_ = w.Close()
+	out, readErr := io.ReadAll(r)
+	if readErr != nil {
+		t.Fatalf("ReadAll: %v", readErr)
+	}
+	if !errors.Is(parseErr, flag.ErrHelp) {
+		t.Fatalf("parseTUIStartupOptions(--help) err = %v, want flag.ErrHelp", parseErr)
+	}
+	if got := string(out); !strings.Contains(got, "default: http://env-hub:9180") {
+		t.Fatalf("help output missing env hub addr default:\n%s", got)
 	}
 }
 

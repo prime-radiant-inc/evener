@@ -87,7 +87,7 @@ func parseTUIStartupOptions(args []string, getenv func(string) string) (tuiStart
 		fmt.Fprintf(w, "Usage: serf-tui [flags]\n\n")
 		fmt.Fprintf(w, "Serf TUI — interactive terminal UI for serf-hub.\n\n")
 		fmt.Fprintf(w, "Flags:\n")
-		fmt.Fprintf(w, "  --hub-addr <addr>        serf hub address (default: %s)\n", defaultHubAddr)
+		fmt.Fprintf(w, "  --hub-addr <addr>        serf hub address (default: %s)\n", opts.HubAddr)
 		fmt.Fprintf(w, "  --hub-bin <path>         path to serf-hub binary\n")
 		fmt.Fprintf(w, "  --no-auto-start-hub      do not start a local hub when unreachable\n")
 		fmt.Fprintf(w, "  --state-dir <path>       override Serf state directory\n")
