@@ -298,6 +298,60 @@ async function testEarlyMatchingNotificationDoesNotDuplicateHydratedItem() {
 	assert(rendered.length === 1, "hydration plus buffered notification duplicated the same user item");
 }
 
+async function testBufferedDeltaReplaysForInProgressHydratedItem() {
+	let notificationHandler = null;
+	let resolveRead = null;
+	const window = createWindow({
+		onNotification: (handler) => {
+			notificationHandler = handler;
+			return () => {};
+		},
+		onConnectionLost: () => () => {},
+		readThread: () => new Promise((resolve) => { resolveRead = resolve; }),
+		eventsFromThread: (thread) => {
+			const events = [];
+			for (const turn of thread.turns || []) {
+				for (const item of turn.items || []) {
+					if (item.type === "agentMessage") {
+						events.push(["ASSISTANT_TEXT_START", {}]);
+						if (item.text) events.push(["ASSISTANT_TEXT_DELTA", { delta: item.text }]);
+					}
+				}
+			}
+			return events;
+		},
+		eventsFromNotification: (method, params) => {
+			if (method !== "item/agentMessage/delta") return [];
+			return [["ASSISTANT_TEXT_DELTA", { delta: params.delta || "" }]];
+		},
+	});
+
+	await wait(10);
+	notificationHandler("item/agentMessage/delta", {
+		ref: "local:sess-live",
+		threadId: "sess-live",
+		turnId: "turn_1",
+		itemId: "assistant_1",
+		delta: " tail",
+	});
+	resolveRead({
+		thread: {
+			id: "sess-live",
+			sessionId: "sess-live",
+			serf: { ref: "local:sess-live" },
+			turns: [{
+				id: "turn_1",
+				status: "inProgress",
+				items: [{ id: "assistant_1", type: "agentMessage", status: "inProgress", text: "partial" }],
+			}],
+		},
+	});
+	await wait(30);
+
+	const text = window.document.querySelector(".assistant-message").textContent;
+	assert(text === "partial tail", "buffered delta for in-progress hydrated item was not replayed; got " + JSON.stringify(text));
+}
+
 async function testHydrationDedupeDoesNotDropReusedItemIDOnLaterTurn() {
 	let notificationHandler = null;
 	let resolveRead = null;
@@ -462,6 +516,7 @@ async function testStaleCapabilityRefreshErrorDoesNotUpdateNewSession() {
 	await testStaleHydrationDoesNotRenderIntoNewSession();
 	await testEarlyNotificationWaitsForHydratedThreadIdentity();
 	await testEarlyMatchingNotificationDoesNotDuplicateHydratedItem();
+	await testBufferedDeltaReplaysForInProgressHydratedItem();
 	await testHydrationDedupeDoesNotDropReusedItemIDOnLaterTurn();
 	await testBufferedTurnCompletedKeepsCompletionButSkipsHydratedItems();
 	await testStaleCapabilityRefreshErrorDoesNotUpdateNewSession();

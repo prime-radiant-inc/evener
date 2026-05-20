@@ -441,7 +441,7 @@
         if (!ref && threadId && threadId !== sessionId) return true;
         return false;
       };
-      let hydratedNotificationKeys = { itemKeys: new Set() };
+      let hydratedNotificationKeys = { itemKeys: new Set(), completedItemKeys: new Set() };
       const firstNonEmpty = (...values) => {
         for (const value of values) {
           if (typeof value === "string" && value.trim() !== "") return value;
@@ -467,6 +467,7 @@
       };
       const hydrationKeysFromThread = (thread) => {
         const itemKeys = new Set();
+        const completedItemKeys = new Set();
         const threadKey = firstNonEmpty(
           thread && thread.serf && thread.serf.ref,
           thread && thread.ref,
@@ -476,18 +477,26 @@
         );
         for (const turn of (thread && thread.turns) || []) {
           const turnKey = firstNonEmpty(turn && turn.id);
+          const turnCompleted = String((turn && turn.status) || "").toLowerCase() === "completed";
           for (const item of (turn && turn.items) || []) {
             const itemKey = firstNonEmpty(item && item.callId, item && item.id, item && item.itemId);
             const scoped = scopedItemKey(threadKey, turnKey, itemKey);
-            if (scoped) itemKeys.add(scoped);
+            if (scoped) {
+              itemKeys.add(scoped);
+              const itemCompleted = String((item && item.status) || "").toLowerCase() === "completed";
+              if (turnCompleted || itemCompleted) completedItemKeys.add(scoped);
+            }
           }
         }
-        return { itemKeys };
+        return { itemKeys, completedItemKeys };
+      };
+      const hydratedItemCompleted = (itemKey) => {
+        return itemKey && hydratedNotificationKeys.completedItemKeys && hydratedNotificationKeys.completedItemKeys.has(itemKey);
       };
       const notificationCoveredByHydration = (method, params) => {
         if (String(method || "").indexOf("item/") === 0) {
           const itemKey = notificationItemKey(params);
-          if (itemKey && hydratedNotificationKeys.itemKeys.has(itemKey)) return true;
+          if (hydratedItemCompleted(itemKey)) return true;
         }
         return false;
       };
