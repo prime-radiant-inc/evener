@@ -280,6 +280,31 @@ func (m *hubModel) restoreSubmittedAttachments(submitted []*PastedImage) {
 	m.pendingAttachments = append(restored, m.pendingAttachments...)
 }
 
+func (m *hubModel) restoreFailedComposerPayload(draft string, submitted []*PastedImage) bool {
+	if m.session.input.Value() != "" || len(m.pendingAttachments) > 0 {
+		m.clearSubmittedAttachments(submitted, true)
+		return false
+	}
+	m.restoreSubmittedAttachments(submitted)
+	m.session.setInputValue(draft)
+	return true
+}
+
+func (m *hubModel) noteUnrestoredFailedComposerPayload(action, draft string, submitted []*PastedImage) {
+	preview := strings.TrimSpace(draft)
+	if preview == "" {
+		switch len(submitted) {
+		case 0:
+			return
+		case 1:
+			preview = "[image]"
+		default:
+			preview = fmt.Sprintf("[%d images]", len(submitted))
+		}
+	}
+	m.addSessionSystem(fmt.Sprintf("%s failed; preserved current draft instead of restoring failed payload: %s", action, preview))
+}
+
 func (m *hubModel) snapshotPendingAttachmentsForSubmit() []*PastedImage {
 	if len(m.pendingAttachments) == 0 {
 		return nil
@@ -529,8 +554,9 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			reducer := m.sessionTranscriptReducer()
 			reducer.removeUserMessageEcho(msg.text)
 			m.applySessionTranscriptReducer(reducer)
-			m.restoreSubmittedAttachments(msg.submittedAttachments)
-			m.session.setInputValue(msg.draft)
+			if !m.restoreFailedComposerPayload(msg.draft, msg.submittedAttachments) {
+				m.noteUnrestoredFailedComposerPayload("Send", msg.draft, msg.submittedAttachments)
+			}
 			m.addHubErrorNotice("Send failed", "appwire", msg.err, "Check the hub connection and retry the action.")
 			m.recordSessionError("Send failed: " + msg.err.Error())
 		} else {
@@ -551,11 +577,11 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.err != nil {
-			// Restore the draft; the wire state will not advance because
-			// the daemon never received the message. Preserve attachments
-			// (kata re91) so the user can retry.
-			m.restoreSubmittedAttachments(msg.submittedAttachments)
-			m.session.setInputValue(msg.draft)
+			// Restore the failed payload only if the composer is still at
+			// the post-submit blank state; newer user edits win.
+			if !m.restoreFailedComposerPayload(msg.draft, msg.submittedAttachments) {
+				m.noteUnrestoredFailedComposerPayload("Queue", msg.draft, msg.submittedAttachments)
+			}
 			m.addHubErrorNotice("Queue failed", "appwire", msg.err, "Check the hub connection and retry the action.")
 			m.recordSessionError("Queue failed: " + msg.err.Error())
 			return m, nil
@@ -592,9 +618,8 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.recordSessionError("Force-steer failed after queueing: " + msg.err.Error())
 				return m, nil
 			}
-			m.restoreSubmittedAttachments(msg.submittedAttachments)
-			if draft := strings.TrimSpace(msg.draft); draft != "" {
-				m.session.setInputValue(msg.draft)
+			if !m.restoreFailedComposerPayload(msg.draft, msg.submittedAttachments) {
+				m.noteUnrestoredFailedComposerPayload("Force-steer", msg.draft, msg.submittedAttachments)
 			}
 			m.addHubErrorNotice("Force-steer failed", "appwire", msg.err, "Check the hub connection and retry the action.")
 			m.recordSessionError("Force-steer failed: " + msg.err.Error())

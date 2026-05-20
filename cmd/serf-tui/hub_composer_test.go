@@ -588,6 +588,80 @@ func TestHubModelFailedSendPreservesDraftExactly(t *testing.T) {
 	}
 }
 
+func TestHubModelFailureRestorePreservesNewerComposerDraft(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		msg  tea.Msg
+	}{
+		{
+			name: "send",
+			msg: hubSendMsg{
+				ref:   "local:01SEND",
+				text:  "old send",
+				draft: "old send",
+				err:   errors.New("send failed"),
+			},
+		},
+		{
+			name: "queue",
+			msg: hubQueueMsg{
+				ref:   "local:01SEND",
+				text:  "old queue",
+				draft: "old queue",
+				err:   errors.New("queue failed"),
+			},
+		},
+		{
+			name: "force steer",
+			msg: hubDrainAsSteerMsg{
+				ref:   "local:01SEND",
+				text:  "old steer",
+				draft: "old steer",
+				err:   errors.New("steer failed"),
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newSessionHubModel(nil)
+			m.session.setInputValue("newer draft")
+
+			updated, _ := m.Update(tt.msg)
+			got := updated.(hubModel)
+			if got.session.input.Value() != "newer draft" {
+				t.Fatalf("input=%q, want newer draft", got.session.input.Value())
+			}
+			if !strings.Contains(got.sessionView(), "preserved current draft") {
+				t.Fatalf("missing failed payload notice:\n%s", got.sessionView())
+			}
+		})
+	}
+}
+
+func TestHubModelFailureRestorePreservesNewerAttachments(t *testing.T) {
+	oldPath := writeAttachmentTempFile(t, []byte("old-image"))
+	newPath := writeAttachmentTempFile(t, []byte("new-image"))
+	oldImage := &PastedImage{Path: oldPath, MediaType: "image/png", MarkerN: 1}
+	newImage := &PastedImage{Path: newPath, MediaType: "image/png", MarkerN: 2}
+
+	m := newSessionHubModel(nil)
+	m.pendingAttachments = []*PastedImage{newImage}
+
+	updated, _ := m.Update(hubQueueMsg{
+		ref:                  "local:01SEND",
+		text:                 "old queue",
+		draft:                "old queue",
+		submittedAttachments: []*PastedImage{oldImage},
+		err:                  errors.New("queue failed"),
+	})
+	got := updated.(hubModel)
+	if len(got.pendingAttachments) != 1 || got.pendingAttachments[0] != newImage {
+		t.Fatalf("pendingAttachments=%+v, want only newer attachment", got.pendingAttachments)
+	}
+	if got.session.input.Value() != "" {
+		t.Fatalf("input=%q, want unchanged empty draft", got.session.input.Value())
+	}
+}
+
 func TestHubModelSessionComposerBoundsRenderedDraftHeight(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.session.setInputValue("one\ntwo\nthree\nfour\nfive\nsix\nseven")

@@ -266,7 +266,7 @@ func TestSendKeepsPendingAttachmentsOnError(t *testing.T) {
 	}
 }
 
-func TestSendRestoresSubmittedAttachmentSnapshotOnError(t *testing.T) {
+func TestSendDoesNotRestoreSubmittedAttachmentSnapshotOverNewDraft(t *testing.T) {
 	m := newSessionHubModel(nil)
 	submitted := &PastedImage{Path: "/tmp/restore-one.png", MediaType: "image/png", MarkerN: 4}
 	newDraft := &PastedImage{Path: "/tmp/new-draft.png", MediaType: "image/png", MarkerN: 5}
@@ -276,11 +276,27 @@ func TestSendRestoresSubmittedAttachmentSnapshotOnError(t *testing.T) {
 	updated, _ := m.Update(hubSendMsg{text: "hi", draft: "hi", err: errors.New("boom"), submittedAttachments: []*PastedImage{submitted}})
 	got := updated.(hubModel)
 
-	if len(got.pendingAttachments) != 2 || got.pendingAttachments[0] != submitted || got.pendingAttachments[1] != newDraft {
-		t.Fatalf("pendingAttachments after error = %+v, want submitted restored before new draft", got.pendingAttachments)
+	if len(got.pendingAttachments) != 1 || got.pendingAttachments[0] != newDraft {
+		t.Fatalf("pendingAttachments after error = %+v, want only new draft", got.pendingAttachments)
 	}
 	if got.nextAttachmentMarker != 5 {
 		t.Fatalf("nextAttachmentMarker = %d, want preserved high-water 5", got.nextAttachmentMarker)
+	}
+}
+
+func TestSendRestoresSubmittedAttachmentSnapshotOnErrorWhenComposerUnchanged(t *testing.T) {
+	m := newSessionHubModel(nil)
+	submitted := &PastedImage{Path: "/tmp/restore-one.png", MediaType: "image/png", MarkerN: 4}
+	m.nextAttachmentMarker = 4
+
+	updated, _ := m.Update(hubSendMsg{text: "hi", draft: "hi", err: errors.New("boom"), submittedAttachments: []*PastedImage{submitted}})
+	got := updated.(hubModel)
+
+	if len(got.pendingAttachments) != 1 || got.pendingAttachments[0] != submitted {
+		t.Fatalf("pendingAttachments after error = %+v, want submitted restored", got.pendingAttachments)
+	}
+	if got.nextAttachmentMarker != 4 {
+		t.Fatalf("nextAttachmentMarker = %d, want preserved high-water 4", got.nextAttachmentMarker)
 	}
 }
 
