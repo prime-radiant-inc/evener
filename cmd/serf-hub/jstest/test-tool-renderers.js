@@ -76,8 +76,8 @@ async function streamingMarkdownScenario() {
 
 (async () => {
 
-// Cheap-cluster — read_file should land in .tool-call-cluster, no body.
-await scenario("read_file in cheap cluster", [
+// Cheap-cluster — read_file should land in .tool-call-cluster and expose output.
+await scenario("read_file in cheap cluster with disclosure body", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "r1", tool_name: "read_file", arguments_json: JSON.stringify({ file_path: "src/main.go" }) }],
   ["TOOL_CALL_END", { call_id: "r1", output: "line\nline\nline\n", tool_name: "read_file" }],
@@ -88,6 +88,43 @@ await scenario("read_file in cheap cluster", [
   if (!call) return { ok: false, detail: "no read_file tool-call" };
   if (!call.textContent.includes("src/main.go")) return { ok: false, detail: "missing path" };
   if (!call.textContent.includes("3 lines")) return { ok: false, detail: "missing line count" };
+  const body = cluster.querySelector(".cheap-tool-body");
+  if (!body) return { ok: false, detail: "no cheap tool disclosure body" };
+  const pre = body.querySelector(".cheap-tool-output");
+  if (!pre || !pre.textContent.includes("line\nline\nline")) return { ok: false, detail: "read output missing" };
+  if (!body.querySelector(".cheap-tool-args").textContent.includes("src/main.go")) return { ok: false, detail: "read args missing" };
+  return { ok: true };
+});
+
+await scenario("grep in cheap cluster exposes output and args", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "g1", tool_name: "grep_files", arguments_json: JSON.stringify({ pattern: "TODO", path: "agent" }) }],
+  ["TOOL_CALL_END", { call_id: "g1", output: "agent/a.go:12:TODO one\nagent/b.go:3:TODO two\n", tool_name: "grep_files" }],
+], ({ conv }) => {
+  const cluster = conv.querySelector(".tool-call-cluster");
+  if (!cluster) return { ok: false, detail: "no cheap cluster" };
+  const call = cluster.querySelector(".tool-call.grep_files");
+  if (!call) return { ok: false, detail: "no grep_files tool-call" };
+  if (!call.textContent.includes("2 hits")) return { ok: false, detail: "missing hit count" };
+  const body = cluster.querySelector(".cheap-tool-body");
+  if (!body) return { ok: false, detail: "no grep disclosure body" };
+  if (!body.querySelector(".cheap-tool-args").textContent.includes("TODO")) return { ok: false, detail: "grep args missing" };
+  if (!body.querySelector(".cheap-tool-output").textContent.includes("agent/a.go:12")) return { ok: false, detail: "grep output missing" };
+  return { ok: true };
+});
+
+await scenario("list_dir in cheap cluster exposes entries", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "l1", tool_name: "list_dir", arguments_json: JSON.stringify({ path: "cmd/serf-hub" }) }],
+  ["TOOL_CALL_END", { call_id: "l1", output: "assets\njstest\nweb.go\n", tool_name: "list_dir" }],
+], ({ conv }) => {
+  const call = conv.querySelector(".tool-call.list_dir");
+  if (!call) return { ok: false, detail: "no list_dir tool-call" };
+  if (!call.textContent.includes("3 entries")) return { ok: false, detail: "missing entry count" };
+  const body = call.querySelector(".cheap-tool-body");
+  if (!body) return { ok: false, detail: "no list disclosure body" };
+  if (!body.querySelector(".cheap-tool-args").textContent.includes("cmd/serf-hub")) return { ok: false, detail: "list args missing" };
+  if (!body.querySelector(".cheap-tool-output").textContent.includes("web.go")) return { ok: false, detail: "list output missing" };
   return { ok: true };
 });
 
@@ -105,6 +142,21 @@ await scenario("edit_file diff body", [
   if (!diff) return { ok: false, detail: "no diff body" };
   if (!diff.querySelector(".add")) return { ok: false, detail: "no .add lines" };
   if (!diff.querySelector(".del")) return { ok: false, detail: "no .del lines" };
+  return { ok: true };
+});
+
+await scenario("apply_patch diff body", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "p1", tool_name: "apply_patch", arguments_json: JSON.stringify({ patch: "*** Begin Patch\n*** Update File: x.go\n@@\n-old\n+new\n*** End Patch" }) }],
+  ["TOOL_CALL_OUTPUT_DELTA", { call_id: "p1", delta: "@@\n-old\n+new\n" }],
+  ["TOOL_CALL_END", { call_id: "p1", output: "@@\n-old\n+new\n", tool_name: "apply_patch" }],
+], ({ conv }) => {
+  const card = conv.querySelector(".tool-call.apply_patch");
+  if (!card) return { ok: false, detail: "no apply_patch tool-call" };
+  const diff = card.querySelector(".diff-body");
+  if (!diff) return { ok: false, detail: "no patch diff body" };
+  if (!diff.querySelector(".add")) return { ok: false, detail: "no patch add lines" };
+  if (!diff.querySelector(".del")) return { ok: false, detail: "no patch del lines" };
   return { ok: true };
 });
 

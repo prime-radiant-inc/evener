@@ -484,6 +484,8 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .tool-body summary { cursor: pointer; color: var(--text-muted); padding: 2px 0; user-select: none; }
 .tool-body summary:hover { color: var(--text); }
 .shell-output { margin: 6px 0 0; padding: 8px 10px; background: var(--bg); border-radius: 4px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.5; color: var(--text); white-space: pre-wrap; max-height: 360px; overflow-y: auto; }
+.cheap-tool-args { margin: 6px 0 0; padding: 8px 10px; background: var(--bg); border-radius: 4px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.5; color: var(--text-muted); white-space: pre-wrap; max-height: 180px; overflow-y: auto; }
+.cheap-tool-output { margin: 6px 0 0; padding: 8px 10px; background: var(--bg); border-radius: 4px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.5; color: var(--text); white-space: pre-wrap; max-height: 360px; overflow-y: auto; }
 .task-list-body { list-style: none; margin: 0 0 24px 44px; padding: 8px 0 8px 14px; border-left: 1px solid var(--rule); display: flex; flex-direction: column; gap: 4px; }
 .task-list-body .task-row { padding: 2px 0; background: transparent; border: none; font-size: 12px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .task-list-body .task-id { color: var(--text-muted); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 11px; }

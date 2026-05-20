@@ -2103,6 +2103,37 @@
   }
 
   // Cheap renderers — read/grep/list_dir/glob — share a common shape.
+  function cheapToolBody(args, el) {
+    const wrap = document.createElement("details");
+    wrap.className = "tool-body cheap-tool-body";
+    const summary = document.createElement("summary");
+    summary.textContent = "details";
+    const argsPre = document.createElement("pre");
+    argsPre.className = "cheap-tool-args";
+    argsPre.textContent = JSON.stringify(args || {}, null, 2);
+    const outputPre = document.createElement("pre");
+    outputPre.className = "cheap-tool-output";
+    wrap.appendChild(summary);
+    wrap.appendChild(argsPre);
+    wrap.appendChild(outputPre);
+    el.appendChild(wrap);
+    return { wrap, argsPre, outputPre };
+  }
+
+  function cheapToolBodyDelta(state, out) {
+    if (state.body && state.body.outputPre) {
+      state.body.outputPre.textContent = clip(out || "", 8000);
+    }
+  }
+
+  function cheapToolBodyEnd(state, data, out) {
+    if (!state.body) return;
+    const text = data.error || out || "";
+    state.body.outputPre.textContent = clip(text, 8000);
+    if (data.error) state.body.wrap.open = true;
+    if (!text.trim()) state.body.outputPre.style.display = "none";
+  }
+
   const readRenderer = {
     mode: "cheap", friendly: "read",
     target: (a) => a.file_path || a.path || "",
@@ -2112,21 +2143,33 @@
       if (total && total.total_lines) return lines + " of " + total.total_lines + " lines";
       return lines + " lines";
     },
+    body: cheapToolBody,
+    bodyDelta: cheapToolBodyDelta,
+    bodyEnd: cheapToolBodyEnd,
   };
   const grepRenderer = {
     mode: "cheap", friendly: "grep",
     target: (a) => '"' + clip(a.pattern || "", 50) + '" in ' + (a.path || "."),
     result: (data, out) => ((out.match(/\n/g) || []).length) + " hits",
+    body: cheapToolBody,
+    bodyDelta: cheapToolBodyDelta,
+    bodyEnd: cheapToolBodyEnd,
   };
   const lsRenderer = {
     mode: "cheap", friendly: "ls",
     target: (a) => a.path || ".",
     result: (data, out) => ((out.match(/\n/g) || []).length) + " entries",
+    body: cheapToolBody,
+    bodyDelta: cheapToolBodyDelta,
+    bodyEnd: cheapToolBodyEnd,
   };
   const globRenderer = {
     mode: "cheap", friendly: "find",
     target: (a) => a.pattern || a.glob || "",
     result: (data, out) => ((out.match(/\n/g) || []).length) + " matches",
+    body: cheapToolBody,
+    bodyDelta: cheapToolBodyDelta,
+    bodyEnd: cheapToolBodyEnd,
   };
 
   // Card renderer for shell with collapsible stdout/stderr.
