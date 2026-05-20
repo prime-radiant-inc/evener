@@ -249,6 +249,54 @@ async function testEarlyNotificationWaitsForHydratedThreadIdentity() {
 	assert(window.document.body.textContent.includes("early codex update"), "early AppWire notification was dropped before hydration");
 }
 
+async function testEarlyMatchingNotificationDoesNotDuplicateHydratedItem() {
+	let notificationHandler = null;
+	let resolveRead = null;
+	const window = createWindow({
+		onNotification: (handler) => {
+			notificationHandler = handler;
+			return () => {};
+		},
+		onConnectionLost: () => () => {},
+		readThread: () => new Promise((resolve) => { resolveRead = resolve; }),
+		eventsFromThread: (thread) => {
+			const events = [];
+			for (const turn of thread.turns || []) {
+				for (const item of turn.items || []) {
+					if (item.type === "userMessage") events.push(["USER_INPUT", { text: item.text || "" }]);
+				}
+			}
+			return events;
+		},
+		eventsFromNotification: () => [["USER_INPUT", { text: "same hydrated text" }]],
+	});
+
+	await wait(10);
+	notificationHandler("item/completed", {
+		ref: "local:sess-live",
+		threadId: "sess-live",
+		item: { id: "item_user", type: "userMessage", text: "same hydrated text" },
+	});
+	assert(!window.document.body.textContent.includes("same hydrated text"), "matching notification rendered before hydration");
+	resolveRead({
+		thread: {
+			id: "sess-live",
+			sessionId: "sess-live",
+			serf: { ref: "local:sess-live" },
+			turns: [{
+				id: "turn_1",
+				status: "completed",
+				items: [{ id: "item_user", type: "userMessage", text: "same hydrated text" }],
+			}],
+		},
+	});
+	await wait(30);
+
+	const rendered = Array.from(window.document.querySelectorAll(".user-message-text"))
+		.filter((el) => el.textContent === "same hydrated text");
+	assert(rendered.length === 1, "hydration plus buffered notification duplicated the same user item");
+}
+
 async function testStaleCapabilityRefreshErrorDoesNotUpdateNewSession() {
   let rejectRead = null;
   let readThreadCalls = 0;
@@ -295,6 +343,7 @@ async function testStaleCapabilityRefreshErrorDoesNotUpdateNewSession() {
 	await testReconnectDoesNotDuplicateReplay();
 	await testStaleHydrationDoesNotRenderIntoNewSession();
 	await testEarlyNotificationWaitsForHydratedThreadIdentity();
+	await testEarlyMatchingNotificationDoesNotDuplicateHydratedItem();
 	await testStaleCapabilityRefreshErrorDoesNotUpdateNewSession();
 	console.log("PASS: appwire renderer stream recovery");
 	process.exit(0);

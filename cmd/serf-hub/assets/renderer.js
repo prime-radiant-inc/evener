@@ -428,7 +428,57 @@
         if (!ref && threadId && threadId !== sessionId) return true;
         return false;
       };
+      let hydratedNotificationKeys = { itemKeys: new Set(), completedTurnIds: new Set() };
+      const firstNonEmpty = (...values) => {
+        for (const value of values) {
+          if (typeof value === "string" && value.trim() !== "") return value;
+        }
+        return "";
+      };
+      const notificationItemKey = (params) => {
+        params = params || {};
+        const item = params.item || {};
+        return firstNonEmpty(params.itemId, params.callId, item.callId, item.id, item.itemId);
+      };
+      const turnIDFromNotification = (params) => {
+        params = params || {};
+        const turn = params.turn || {};
+        return firstNonEmpty(params.turnId, turn.id);
+      };
+      const hydrationKeysFromThread = (thread) => {
+        const itemKeys = new Set();
+        const completedTurnIds = new Set();
+        for (const turn of (thread && thread.turns) || []) {
+          const turnId = firstNonEmpty(turn && turn.id);
+          const turnStatus = String((turn && turn.status) || "");
+          if (turnId && /^(completed|failed|canceled|cancelled)$/i.test(turnStatus)) {
+            completedTurnIds.add(turnId);
+          }
+          for (const item of (turn && turn.items) || []) {
+            const itemKey = firstNonEmpty(item && item.callId, item && item.id, item && item.itemId);
+            if (itemKey) itemKeys.add(itemKey);
+          }
+        }
+        return { itemKeys, completedTurnIds };
+      };
+      const notificationCoveredByHydration = (method, params) => {
+        if (method === "turn/completed") {
+          const turnId = turnIDFromNotification(params);
+          if (turnId && hydratedNotificationKeys.completedTurnIds.has(turnId)) return true;
+        }
+        if (String(method || "").indexOf("item/") === 0) {
+          const itemKey = notificationItemKey(params);
+          if (itemKey && hydratedNotificationKeys.itemKeys.has(itemKey)) return true;
+        }
+        return false;
+      };
       this.appwireUnsubscribe = window.SerfAppwire.onNotification((method, params) => {
+        if (!this.appwireHydrated) {
+          if (shouldWaitForHydration(params) || notificationMatches(params)) {
+            pendingNotifications.push([method, params]);
+          }
+          return;
+        }
         if (shouldWaitForHydration(params)) {
           pendingNotifications.push([method, params]);
           return;
@@ -459,14 +509,16 @@
           if (typeof window.SerfAppwire.activeTurnIDFromThread === "function") {
             this.setActiveTurnId(window.SerfAppwire.activeTurnIDFromThread(thread));
           }
+          hydratedNotificationKeys = hydrationKeysFromThread(thread);
           for (const [kind, data] of window.SerfAppwire.eventsFromThread(thread)) {
             this.handleData(kind, data);
           }
+          this.appwireHydrated = true;
           while (pendingNotifications.length > 0) {
             const [method, params] = pendingNotifications.shift();
+            if (notificationCoveredByHydration(method, params)) continue;
             if (notificationMatches(params)) deliverNotification(method, params);
           }
-          this.appwireHydrated = true;
         })
         .catch((err) => {
           if (this.sessionId !== sessionId || this.conversation !== conversation) return;
