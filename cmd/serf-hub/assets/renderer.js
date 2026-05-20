@@ -506,7 +506,7 @@
         }
         const items = params.turn.items.filter((item) => {
           const itemKey = notificationItemKey(params, item);
-          return !itemKey || !hydratedNotificationKeys.itemKeys.has(itemKey);
+          return !hydratedItemCompleted(itemKey);
         });
         if (items.length === params.turn.items.length) return params;
         return Object.assign({}, params, {
