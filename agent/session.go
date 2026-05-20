@@ -300,10 +300,11 @@ type Session struct {
 	// SESSION_END deduplication: emitted exactly once across ProcessInput and Close.
 	sessionEndEmitted bool
 
-	name        string
-	nameSource  string
-	nameUpdated time.Time
-	nameSet     bool
+	name              string
+	nameSource        string
+	nameUpdated       time.Time
+	nameSet           bool
+	namePromptPending bool
 
 	nameSessionFromTextFunc func(context.Context, string, string) error
 
@@ -929,18 +930,28 @@ func (s *Session) launchInitialPromptNamer(ctx context.Context, input string) {
 		return
 	}
 	s.mu.Lock()
-	alreadyNamed := s.nameSet || strings.TrimSpace(s.name) != ""
-	s.mu.Unlock()
-	if alreadyNamed {
+	if s.nameSet || s.namePromptPending || strings.TrimSpace(s.name) != "" {
+		s.mu.Unlock()
 		return
 	}
+	s.namePromptPending = true
+	s.mu.Unlock()
 	go func() {
 		nameCtx := ctx
 		if nameCtx == nil {
 			nameCtx = context.Background()
 		}
-		_ = s.nameSessionFromText(nameCtx, sessionNameSourcePrompt, input)
+		err := s.nameSessionFromText(nameCtx, sessionNameSourcePrompt, input)
+		s.clearPromptNamePendingAfterAttempt(err)
 	}()
+}
+
+func (s *Session) clearPromptNamePendingAfterAttempt(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err != nil || strings.TrimSpace(s.name) == "" {
+		s.namePromptPending = false
+	}
 }
 
 func (s *Session) launchCompactionNamer(ctx context.Context, turn Turn) {

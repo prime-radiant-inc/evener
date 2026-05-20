@@ -2374,6 +2374,56 @@ func TestWeb_ApiSearch_FiltersPast(t *testing.T) {
 	if strings.Contains(body, "01OTHER") {
 		t.Errorf("body incorrectly includes 01OTHER: %q", body)
 	}
+	var resp searchResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode search response: %v", err)
+	}
+	if len(resp.Past) != 1 {
+		t.Fatalf("past results = %d, want 1: %q", len(resp.Past), rec.Body.String())
+	}
+	if resp.Past[0].Title != "01MATCH" {
+		t.Fatalf("past title = %q, want compact ID without original prompt", resp.Past[0].Title)
+	}
+}
+
+func TestWeb_ApiSearch_PastUsesGeneratedNameTitle(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
+		ID:             "01MATCH",
+		UpdatedAt:      time.Now(),
+		Name:           "Generated Frobnitz Title",
+		OriginalPrompt: "unrelated original prompt",
+		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/projects/alpha"},
+	})
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    idx,
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/search?q=generated", nil)
+	req.Host = "127.0.0.1:9180"
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	var resp searchResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode search response: %v", err)
+	}
+	if len(resp.Past) != 1 {
+		t.Fatalf("past results = %d, want 1: %q", len(resp.Past), rec.Body.String())
+	}
+	if resp.Past[0].Title != "Generated Frobnitz Title" {
+		t.Fatalf("past title = %q, want generated name", resp.Past[0].Title)
+	}
 }
 
 func TestWeb_ApiSearch_OrdersLiveResultsByStartedAtAndID(t *testing.T) {

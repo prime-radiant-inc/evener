@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -14,6 +15,7 @@ const (
 	sessionNameSourcePrompt     = "prompt"
 	sessionNameSourceCompaction = "compaction"
 	sessionNameMaxRunes         = 60
+	sessionNameTimeout          = 15 * time.Second
 )
 
 // SessionNameResult is the advisory output of the cheap-model session namer.
@@ -36,6 +38,11 @@ func NameSession(ctx context.Context, client *llm.Client, profile ProviderProfil
 	if text == "" {
 		return SessionNameResult{}, fmt.Errorf("session namer: source text is empty")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	callCtx, cancel := context.WithTimeout(ctx, sessionNameTimeout)
+	defer cancel()
 
 	cheapModel := strings.TrimSpace(profile.CheapModel())
 	if cheapModel == "" {
@@ -43,7 +50,7 @@ func NameSession(ctx context.Context, client *llm.Client, profile ProviderProfil
 	}
 	maxTokens := 80
 	temp := 0.0
-	res, err := llm.GenerateObject(ctx, llm.GenerateObjectOptions{
+	res, err := llm.GenerateObject(callCtx, llm.GenerateObjectOptions{
 		GenerateOptions: llm.GenerateOptions{
 			Client:      client,
 			Provider:    profile.ID(),

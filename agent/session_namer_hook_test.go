@@ -141,6 +141,44 @@ func TestSessionLaunchesInitialPromptNamerAsynchronously(t *testing.T) {
 	close(done)
 }
 
+func TestSessionInitialPromptNamerSkipsWhilePending(t *testing.T) {
+	dir := t.TempDir()
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
+	sess, err := NewSession(client, profile, NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	calls := make(chan string, 2)
+	done := make(chan struct{})
+	sess.nameSessionFromTextFunc = func(ctx context.Context, source, text string) error {
+		calls <- text
+		<-done
+		return nil
+	}
+
+	sess.launchInitialPromptNamer(context.Background(), "initial task")
+	select {
+	case got := <-calls:
+		if got != "initial task" {
+			t.Fatalf("first namer text = %q, want initial task", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("initial prompt namer did not start")
+	}
+
+	sess.launchInitialPromptNamer(context.Background(), "later task")
+	select {
+	case got := <-calls:
+		t.Fatalf("second namer started while first pending with text %q", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(done)
+}
+
 func TestSessionProcessInput_LaunchesInitialPromptNamer(t *testing.T) {
 	dir := t.TempDir()
 	client := llm.NewClient()

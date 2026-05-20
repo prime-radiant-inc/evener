@@ -313,13 +313,9 @@ func (s *WebServer) handleApiSearch(w http.ResponseWriter, r *http.Request) {
 		// Empty query → most-recent N. Substring match otherwise.
 		results := s.cfg.Past.Search(q, 20, 0)
 		for _, e := range results {
-			title := e.Meta.OriginalPrompt
-			if title == "" {
-				title = shortID(e.Meta.ID)
-			}
 			resp.Past = append(resp.Past, searchResult{
 				ID:      e.Meta.ID,
-				Title:   title,
+				Title:   searchPastTitle(e),
 				State:   "ended",
 				Project: filepath.Base(e.Meta.EnvInfo.WorkingDir),
 				Age:     ageString(e.Meta.UpdatedAt),
@@ -2596,6 +2592,13 @@ func liveTitle(id string, le LiveEntry, past *PastIndex) string {
 
 func pastTitle(pe PastEntry) string {
 	if title := agent.SessionDisplayName(pe.Meta); title != "" {
+		return title
+	}
+	return shortID(pe.Meta.ID)
+}
+
+func searchPastTitle(pe PastEntry) string {
+	if title := strings.TrimSpace(pe.Meta.Name); title != "" {
 		return title
 	}
 	return shortID(pe.Meta.ID)
