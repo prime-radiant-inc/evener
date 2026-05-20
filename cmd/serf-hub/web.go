@@ -910,6 +910,9 @@ func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
 		if source, err := sourceForThreadWithManagedLaunch(ctx, s.cfg, s.sources, appRef, ""); err == nil {
 			if resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: appRef, IncludeTurns: true, ItemsView: "full"}); err == nil {
 				appDetail := hubDetailFromAppThread(resp.Thread)
+				if isLocalRouteID(id) && detail.TurnCount > 0 {
+					appDetail.TurnCount = detail.TurnCount
+				}
 				appDetail.ParentSessionID = detail.ParentSessionID
 				appDetail.DivergenceTurn = detail.DivergenceTurn
 				appDetail.ForkLabel = detail.ForkLabel
@@ -2383,6 +2386,19 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 				Model:        le.Model,
 				WorkingDir:   le.WorkingDir,
 				Capabilities: s.apiSessionCapabilities(id, true),
+			}
+			if status := s.fetchStatus(le); status != nil {
+				if status.State != "" {
+					data.State = normalizeState(status.State)
+					data.StateLabel = stateLabel(data.State)
+				}
+				if status.Model != "" {
+					data.Model = status.Model
+				}
+				if status.WorkingDir != "" {
+					data.WorkingDir = status.WorkingDir
+				}
+				data.TurnCount = status.Turns
 			}
 			// Branch isn't on the rendezvous entry or daemon /status — fall
 			// back to the past index where the agent persists EnvInfo.

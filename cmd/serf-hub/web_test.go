@@ -1996,6 +1996,38 @@ func TestFormatContextNumbersShowsUsedWindowAndRemaining(t *testing.T) {
 	}
 }
 
+func TestWorkspaceDataUsesDaemonStatusTurnCountForLiveLocalSession(t *testing.T) {
+	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"session_id":  "01TURNCOUNT",
+			"state":       "active",
+			"turns":       37,
+			"model":       "gpt-5",
+			"working_dir": "/tmp/turns",
+		})
+	}))
+	defer daemon.Close()
+
+	addr := strings.TrimPrefix(daemon.URL, "http://")
+	roster := &Roster{bySess: map[string]LiveEntry{
+		"01TURNCOUNT": {
+			Entry:     rendezvous.Entry{Address: addr, SessionID: "01TURNCOUNT", Model: "gpt-5", WorkingDir: "/tmp/turns"},
+			SessionID: "01TURNCOUNT",
+			Status:    "active",
+		},
+	}}
+	web := NewWebServer(WebConfig{Roster: roster})
+
+	got := web.workspaceData("01TURNCOUNT")
+	if got.TurnCount != 37 {
+		t.Fatalf("TurnCount = %d, want daemon /status turns 37", got.TurnCount)
+	}
+}
+
 // TestWeb_Send_ClosedSessionRequiresSpawner verifies that POSTing to /s/<id>/send
 // when the session is not live and no spawner is configured returns 503.
 func TestWeb_Send_ClosedSessionRequiresSpawner(t *testing.T) {
