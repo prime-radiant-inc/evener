@@ -2302,6 +2302,124 @@ func TestSession_ExecToolRefusesClosedSession(t *testing.T) {
 	}
 }
 
+type blockingCleanupEnv struct {
+	ExecutionEnvironment
+	started     chan struct{}
+	release     chan struct{}
+	startedOnce sync.Once
+}
+
+func (e *blockingCleanupEnv) Cleanup() {
+	e.startedOnce.Do(func() { close(e.started) })
+	<-e.release
+	e.ExecutionEnvironment.Cleanup()
+}
+
+func TestSession_ExecToolEmitsEndWhenCloseBeginsAfterStart(t *testing.T) {
+	dir := t.TempDir()
+	env := &blockingCleanupEnv{
+		ExecutionEnvironment: NewLocalExecutionEnvironment(dir),
+		started:              make(chan struct{}),
+		release:              make(chan struct{}),
+	}
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), env, SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	toolStarted := make(chan struct{})
+	releaseTool := make(chan struct{})
+	sess.RegisterTool("slow_tool", "slow tool", map[string]any{}, func(context.Context, any) (any, error) {
+		close(toolStarted)
+		<-releaseTool
+		return "ran", nil
+	})
+
+	eventsDone := make(chan []SessionEvent, 1)
+	go func() {
+		var events []SessionEvent
+		for ev := range sess.Events() {
+			events = append(events, ev)
+		}
+		eventsDone <- events
+	}()
+
+	resultDone := make(chan ToolExecResult, 1)
+	go func() {
+		resultDone <- sess.execTool(context.Background(), llm.ToolCallData{
+			ID:        "slow_call",
+			Name:      "slow_tool",
+			Arguments: json.RawMessage(`{}`),
+			Type:      "function",
+		})
+	}()
+
+	select {
+	case <-toolStarted:
+	case <-time.After(time.Second):
+		t.Fatal("tool did not start")
+	}
+	closeDone := make(chan struct{})
+	go func() {
+		sess.Close()
+		close(closeDone)
+	}()
+	select {
+	case <-env.started:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not reach cleanup")
+	}
+	close(releaseTool)
+
+	var res ToolExecResult
+	select {
+	case res = <-resultDone:
+	case <-time.After(time.Second):
+		t.Fatal("execTool did not return after close began")
+	}
+	if !res.IsError || !strings.Contains(res.FullOutput, "session is closing") {
+		t.Fatalf("execTool result=%+v, want skipped closing error", res)
+	}
+
+	close(env.release)
+	select {
+	case <-closeDone:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not finish")
+	}
+	var events []SessionEvent
+	select {
+	case events = <-eventsDone:
+	case <-time.After(time.Second):
+		t.Fatal("events channel did not close")
+	}
+
+	starts := 0
+	ends := 0
+	var end ToolCallEndData
+	for _, ev := range events {
+		switch ev.Kind {
+		case EventToolCallStart:
+			if data, ok := ev.Data.(ToolCallStartData); ok && data.CallID == "slow_call" {
+				starts++
+			}
+		case EventToolCallEnd:
+			if data, ok := ev.Data.(ToolCallEndData); ok && data.CallID == "slow_call" {
+				ends++
+				end = data
+			}
+		}
+	}
+	if starts != 1 || ends != 1 {
+		t.Fatalf("tool events starts=%d ends=%d events=%+v", starts, ends, events)
+	}
+	if !strings.Contains(end.Error, "session is closing") {
+		t.Fatalf("terminal tool end error=%q, want closing error", end.Error)
+	}
+}
+
 func TestSession_AppendCanceledToolResultsPreservesCompletedStatus(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()

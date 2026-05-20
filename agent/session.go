@@ -230,6 +230,7 @@ type Session struct {
 
 	mu                    sync.Mutex
 	responseSideEffectsMu sync.Mutex
+	toolEventsWG          sync.WaitGroup
 	state                 SessionState
 	closing               bool
 	turns                 int // user input count (for MaxTurns enforcement)
@@ -1570,6 +1571,7 @@ func (s *Session) Close() {
 		s.mu.Lock()
 		s.state = SessionClosed
 		s.mu.Unlock()
+		s.toolEventsWG.Wait()
 		close(s.events)
 	})
 }
@@ -1746,20 +1748,64 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 	if desc, ok := args["description"].(string); ok && desc != "" {
 		startData.Description = desc
 	}
-	s.emit(EventToolCallStart, startData)
+	startEmitted := false
+	toolEventOpen := false
+	closeToolEvent := func() {
+		if toolEventOpen {
+			s.toolEventsWG.Done()
+			toolEventOpen = false
+		}
+	}
+	if err := s.withResponseSideEffects(ctx, func() {
+		s.toolEventsWG.Add(1)
+		startEmitted = true
+		toolEventOpen = true
+		s.emit(EventToolCallStart, startData)
+	}); err != nil {
+		return skippedToolResult(call, err)
+	}
+	defer closeToolEvent()
+	emitCanceledEnd := func(err error) {
+		if !startEmitted {
+			return
+		}
+		res := skippedToolResult(call, err)
+		s.responseSideEffectsMu.Lock()
+		s.emit(EventToolCallEnd, ToolCallEndData{
+			ToolName: res.ToolName,
+			CallID:   res.CallID,
+			Error:    res.FullOutput,
+		})
+		s.responseSideEffectsMu.Unlock()
+		closeToolEvent()
+		startEmitted = false
+	}
 
 	// Session-level tools (subagents) are registered in the registry with closures.
 	ctx = context.WithValue(ctx, ctxToolCallID, call.ID)
 	toolStart := time.Now()
 	if err := s.abortIfClosing(ctx); err != nil {
+		emitCanceledEnd(err)
 		return skippedToolResult(call, err)
 	}
 	res := s.reg.ExecuteCall(ctx, s.env, call)
 	res.DurationMS = time.Since(toolStart).Milliseconds()
 	if err := s.errIfClosing(); err != nil {
+		emitCanceledEnd(err)
 		return skippedToolResult(call, err)
 	}
 
+	s.responseSideEffectsMu.Lock()
+	if err := s.errIfClosing(); err != nil {
+		s.emit(EventToolCallEnd, ToolCallEndData{
+			ToolName: call.Name,
+			CallID:   call.ID,
+			Error:    skippedToolResult(call, err).FullOutput,
+		})
+		s.responseSideEffectsMu.Unlock()
+		closeToolEvent()
+		return skippedToolResult(call, err)
+	}
 	// Emit output deltas (best-effort). Even for non-streaming tools, this gives consumers a uniform
 	// incremental event pattern that mirrors provider LLM streaming.
 	full := res.FullOutput
@@ -1787,6 +1833,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 		endData.Output = res.FullOutput
 	}
 	s.emit(EventToolCallEnd, endData)
+	s.responseSideEffectsMu.Unlock()
+	closeToolEvent()
+	startEmitted = false
 
 	// PostToolUse hooks
 	if s.hookRunner != nil {
