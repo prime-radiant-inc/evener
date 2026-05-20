@@ -60,11 +60,10 @@ the area they exercise.
   shutdown title-bar actions hit the daemon end-to-end (kata
   `gx92`; surfaced kata `k7t8` — interrupt is unwired in
   production).
-- `tui-steer-live-turn.md` — composer auto-switches to `steer`
-  mode while a turn is processing; Enter fires `turn/steer`
-  and the agent receives a `STEERING` transcript entry it
-  acts on before the turn ends. Live-tested against
-  `anthropic/claude-haiku-4-5-20251001` (kata `mn4z`).
+- `tui-steer-live-turn.md` — active turns put the composer in
+  queue mode; Ctrl+S is the explicit force-steer path that injects
+  a `STEERING` transcript entry before the turn ends. Live-tested
+  against `anthropic/claude-haiku-4-5-20251001` (kata `mn4z`).
 - `web-steer-live-turn.md` — web-hub counterpart: both the
   input-area `steer` button and the `/steer` ⌘K palette command
   inject a STEERING transcript entry mid-turn, the conversation
