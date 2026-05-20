@@ -162,34 +162,49 @@ func (p *pendingCoordinator) dispatch(msg tea.Msg) {
 //   - Everything else: (method, normalized-text) exact match.
 func (p *pendingCoordinator) TryReconcile(method, text string) bool {
 	p.mu.Lock()
-	var match *pendingEntryState
+	var pendingMatch *pendingEntryState
+	var failedMatch *pendingEntryState
 	if method == appwire.MethodTurnDrainAsSteer {
 		for _, state := range p.entries {
-			if !state.entry.Pending {
-				continue
-			}
 			if state.entry.Method != method {
 				continue
 			}
-			if match == nil || state.entry.ID < match.entry.ID {
-				match = state
+			if state.entry.Pending {
+				if pendingMatch == nil || state.entry.ID < pendingMatch.entry.ID {
+					pendingMatch = state
+				}
+				continue
+			}
+			if state.entry.Failed {
+				if failedMatch == nil || state.entry.ID < failedMatch.entry.ID {
+					failedMatch = state
+				}
 			}
 		}
 	} else {
 		want := normalizePendingText(text)
 		for _, state := range p.entries {
-			if !state.entry.Pending {
-				continue
-			}
 			if state.entry.Method != method {
 				continue
 			}
 			if normalizePendingText(state.entry.Text) == want {
-				if match == nil || state.entry.ID < match.entry.ID {
-					match = state
+				if state.entry.Pending {
+					if pendingMatch == nil || state.entry.ID < pendingMatch.entry.ID {
+						pendingMatch = state
+					}
+					continue
+				}
+				if state.entry.Failed {
+					if failedMatch == nil || state.entry.ID < failedMatch.entry.ID {
+						failedMatch = state
+					}
 				}
 			}
 		}
+	}
+	match := pendingMatch
+	if match == nil {
+		match = failedMatch
 	}
 	if match == nil {
 		p.mu.Unlock()
@@ -198,6 +213,8 @@ func (p *pendingCoordinator) TryReconcile(method, text string) bool {
 	match.timer.Stop()
 	delete(p.entries, match.entry.ID)
 	match.entry.Pending = false
+	match.entry.Failed = false
+	match.entry.Reason = ""
 	matchEntry := match.entry
 	p.mu.Unlock()
 	p.dispatch(pendingConfirmedMsg{entry: matchEntry})
@@ -215,7 +232,6 @@ func (p *pendingCoordinator) failByID(id int64, reason string) {
 	state.entry.Pending = false
 	state.entry.Failed = true
 	state.entry.Reason = reason
-	delete(p.entries, id)
 	entry := state.entry
 	p.mu.Unlock()
 	p.dispatch(pendingFailedMsg{entry: entry, reason: reason})

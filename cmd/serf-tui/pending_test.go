@@ -151,6 +151,65 @@ func TestPendingCoordinator_TimeoutMarksFailed(t *testing.T) {
 	}
 }
 
+func TestPendingCoordinator_TimedOutEntryReconcilesLateNotification(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(0, 0)}
+	msgs := make(chan tea.Msg, 8)
+	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	p.Register("turn/steer", "eventually lands")
+	drainMessages(msgs, 1, 100*time.Millisecond) // Registered
+
+	clock.Advance(11 * time.Second)
+	got := drainMessages(msgs, 1, 100*time.Millisecond)
+	if len(got) != 1 {
+		t.Fatalf("expected failed msg from timeout, got %d", len(got))
+	}
+	if _, ok := got[0].(pendingFailedMsg); !ok {
+		t.Fatalf("got %T, want pendingFailedMsg", got[0])
+	}
+
+	if !p.TryReconcile("turn/steer", "eventually lands") {
+		t.Fatal("late authoritative event should reconcile timed-out entry")
+	}
+	got = drainMessages(msgs, 1, 100*time.Millisecond)
+	if len(got) != 1 {
+		t.Fatalf("expected confirmed msg after late reconcile, got %d", len(got))
+	}
+	cm, ok := got[0].(pendingConfirmedMsg)
+	if !ok {
+		t.Fatalf("got %T, want pendingConfirmedMsg", got[0])
+	}
+	if cm.entry.Pending || cm.entry.Failed || cm.entry.Reason != "" {
+		t.Fatalf("confirmed entry should be terminal clean: %+v", cm.entry)
+	}
+}
+
+func TestPendingCoordinator_ReconcilePrefersLivePendingOverFailedDuplicate(t *testing.T) {
+	clock := &fakeClock{now: time.Unix(0, 0)}
+	msgs := make(chan tea.Msg, 8)
+	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	failedID := p.Register("turn/steer", "same text").(*pendingHandleImpl).id
+	drainMessages(msgs, 1, 100*time.Millisecond) // Registered
+	clock.Advance(11 * time.Second)
+	drainMessages(msgs, 1, 100*time.Millisecond) // Failed
+	liveID := p.Register("turn/steer", "same text").(*pendingHandleImpl).id
+	drainMessages(msgs, 1, 100*time.Millisecond) // Registered
+
+	if !p.TryReconcile("turn/steer", "same text") {
+		t.Fatal("authoritative event should reconcile matching pending entry")
+	}
+	got := drainMessages(msgs, 1, 100*time.Millisecond)
+	if len(got) != 1 {
+		t.Fatalf("expected confirmed msg, got %d", len(got))
+	}
+	cm, ok := got[0].(pendingConfirmedMsg)
+	if !ok {
+		t.Fatalf("got %T, want pendingConfirmedMsg", got[0])
+	}
+	if cm.entry.ID != liveID {
+		t.Fatalf("confirmed ID=%d, want live pending %d over failed %d", cm.entry.ID, liveID, failedID)
+	}
+}
+
 func TestPendingCoordinator_TryReconcile_MatchesByMethodAndText(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
