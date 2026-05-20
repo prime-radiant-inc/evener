@@ -55,7 +55,7 @@ The wiring lives in:
    sleep 3
    tmux capture-pane -t serf-drain-test -p
    ```
-   Confirm `state: processing`, composer label `queue`, footer
+   Confirm `state: active`, composer label `queue`, footer
    `enter: queue  ctrl+s: send as steer …`.
 
 3. **Type two follow-up messages and queue both with Enter**:

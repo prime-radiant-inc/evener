@@ -63,7 +63,7 @@ For the queue-only and queue+composer drain paths, see
    tmux capture-pane -t serf-steer-test -p
    ```
    Confirm view shows `serf / session / <ULID>`, the status row
-   reads `state: processing  model: claude-haiku-4-5-…`, the
+   reads `state: active  model: claude-haiku-4-5-…`, the
    second status row reads
    `status: hub connected  provider: anthropic  queue: ready
    busy: turn_1`, and the composer label is now `queue` (not

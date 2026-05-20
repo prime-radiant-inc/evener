@@ -39,11 +39,11 @@ HUB=http://localhost:9180
      -d "{\"prompt\":\"Read AGENTS.md if it exists in your cwd. Then write a long careful 5-paragraph essay about software engineering practices. Follow the pacing rules in AGENTS.md exactly — insert exec_command sleep calls between every paragraph.\",\"model\":\"openai/gpt-5.4-mini\",\"working_dir\":\"$tmpdir\",\"harness\":\"serf\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
      $HUB/api/spawn)
    SID=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['session_id'])")
-   # wait until the session is processing
+   # wait until the session is active
    for i in $(seq 1 30); do
      d=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID")
      state=$(echo "$d" | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))")
-     [ "$state" = "processing" ] && break
+     [ "$state" = "active" ] && break
      sleep 1
    done
    echo "SID=$SID state=$state"

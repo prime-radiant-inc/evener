@@ -91,7 +91,7 @@ HUB=http://localhost:9180
      d=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID")
      state=$(echo "$d" | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))")
      turn=$(echo "$d" | python3 -c "import json,sys; print(json.load(sys.stdin).get('active_turn_id',''))")
-     [ "$state" = "processing" ] && break
+     [ "$state" = "active" ] && break
      sleep 1
    done
    echo "state=$state turn=$turn"
@@ -106,7 +106,7 @@ HUB=http://localhost:9180
    ```javascript
    const conv = document.querySelector("[data-role='conversation']");
    ({ state: conv.dataset.state, activeTurnId: conv.dataset.activeTurnId });
-   // { state: "processing", activeTurnId: "turn_<n>" }
+   // { state: "active", activeTurnId: "turn_<n>" }
    ```
    Confirm the input-area "send as steer" button is enabled:
    ```javascript
@@ -182,10 +182,10 @@ HUB=http://localhost:9180
 ## Expected
 
 - **Step 3 (browser hydration)**: live stream sets
-  `data-state="processing"` and `data-active-turn-id="turn_<n>"` on
+  `data-state="active"` and `data-active-turn-id="turn_<n>"` on
   the conversation pane; `[data-steer-trigger].disabled === false`.
   Falsification: button stays disabled while server shows
-  `state=processing` (would mean the live stream isn't propagating
+  `state=active` (would mean the live stream isn't propagating
   `THREAD_STATUS_CHANGED` or `TURN_STARTED`).
 - **Step 4 (PATH A)**: button click POSTs to `/s/<sid>/steer`
   (or `turn/steer` via appwire) with the textarea body. Hub returns
@@ -274,7 +274,7 @@ rm -rf "$tmpdir"
   AND the live stream catches up via SSE/appwire within a few
   hundred ms. If you check `data-active-turn-id` immediately after
   navigate it may be empty; wait for the next event or reload once
-  the server reports `state=processing`.
+  the server reports `state=active`.
 - **STEERING entry vs `turn_count`**. `turn_count` (in
   `<sid>.meta.json` and `/api/sessions/local:<sid>`) counts
   committed user→assistant exchanges. A steering injection writes a

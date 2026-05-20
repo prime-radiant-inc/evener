@@ -65,9 +65,9 @@ Driver: tmux send-keys / capture-pane.
    tmux send-keys -t serf-steer-ok-test Tab
    tmux send-keys -t serf-steer-ok-test -l "Read AGENTS.md in your cwd. Then write a long 5-paragraph essay about software engineering. Follow the pacing rules in AGENTS.md exactly."
    tmux send-keys -t serf-steer-ok-test Enter
-   # Wait until composer label flips to `queue` (= state=processing).
+   # Wait until composer label flips to `queue` (= state=active).
    sleep 5
-   tmux capture-pane -t serf-steer-ok-test -p | grep -q "state: processing"
+   tmux capture-pane -t serf-steer-ok-test -p | grep -q "state: active"
    ```
 
 4. **Type a steer body and press Ctrl+S**:

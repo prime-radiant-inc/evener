@@ -156,7 +156,7 @@ Companion scenarios: `web-paste-image-from-clipboard.md`,
   message, possibly a brief `read_file` tool call probing the
   literal "image" path (claude-haiku-4-5 quirk; harmless), then a
   `communicate` whose body describes the image. State returns to
-  `idle`. Falsification: state stays `processing` for >30 s with no
+  `idle`. Falsification: state stays `active` for >30 s with no
   output, OR the assistant text describes a different colour /
   shape, OR the model refuses with `I cannot see images`.
 - **Step 7 (transcript)**: at least one `USER_INPUT` row has a

@@ -3,7 +3,7 @@
 **What this covers**: kata `r6y9`, commit `c10b2fd`. Before the fix, a
 session whose last turn errored with `stream ended without finish event`
 (or any retryable-LLM-error path that bailed before flipping
-SessionIdle) would persist as state=processing forever. The hub's
+SessionIdle) would persist as state=active forever. The hub's
 `MethodThreadRead`/`hubThreadList` would surface it, the workspace UI
 would disable steer/send ("no active turn is available for steer"),
 and the user had no recovery path short of killing the daemon.

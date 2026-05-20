@@ -62,7 +62,7 @@ visible pane.
    sleep 2
    tmux capture-pane -t serf-queue-test -p
    ```
-   Confirm `state: processing`, the second status row reads
+   Confirm `state: active`, the second status row reads
    `queue: ready  busy: turn_1`, and the composer label is now
    `queue` (not `message`) with footer
    `enter: queue  ctrl+s: send as steer  esc: browse  ctrl+p:
@@ -98,7 +98,7 @@ visible pane.
      "http://localhost:9180/api/sessions/local:$SID" | \
      python3 -c "import json,sys; d=json.load(sys.stdin); print('state=',d.get('state'))"
    ```
-   `state= processing`. (Queue depth is not yet surfaced by the
+   `state= active`. (Queue depth is not yet surfaced by the
    appwire layer — see sharp edges; the TUI preview is the
    user-visible truth.)
 

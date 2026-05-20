@@ -75,7 +75,7 @@ HUB=http://localhost:9180
    ```javascript
    const conv = document.querySelector("#conversation");
    ({ state: conv.dataset.state, activeTurnId: conv.dataset.activeTurnId });
-   // { state: "processing", activeTurnId: "turn_<n>" }
+   // { state: "active", activeTurnId: "turn_<n>" }
    ```
    Verify the send button advertises queue capability and is
    disabled (because send is gated off mid-turn):
@@ -128,7 +128,7 @@ HUB=http://localhost:9180
    # over the public API today (see Sharp edges).
    curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
      | python3 -c "import json,sys; d=json.load(sys.stdin); print('state=',d['state'],'queue_cap=',d['capabilities'].get('queue'))"
-   # state= processing queue_cap= True
+   # state= active queue_cap= True
    ```
 
 5. **Wait for the original turn to settle, then verify the queued

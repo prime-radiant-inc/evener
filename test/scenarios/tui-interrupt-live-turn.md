@@ -107,7 +107,7 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
    print('caps.interrupt=', d.get('capabilities', {}).get('interrupt'))
    "
    ```
-   Expect: `state=processing`, `active_turn_id=turn_N`,
+   Expect: `state=active`, `active_turn_id=turn_N`,
    `caps.interrupt=True`. Also confirm via `ps`:
    ```bash
    ps -ef | grep -E 'bash -c.*seq 1 30' | grep -v grep
@@ -302,11 +302,11 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
   within ~10 s.
 - **Step 2**: TUI dashboard renders with the new session as a leaf
   under its `$tmpdir` project.
-- **Step 4**: status line flips to `state: processing  ...  busy:
+- **Step 4**: status line flips to `state: active  ...  busy:
   turn_N`. Transcript view shows the new user message and a
   `▸ shell  Run requested 30-step loop command and capture output
   ...` row.
-- **Step 5**: REST reports `state=processing`,
+- **Step 5**: REST reports `state=active`,
   `capabilities.interrupt=true`; bash loop process visible in `ps`.
 - **Step 6**: palette shows `/interrupt` enabled within ~1 s of the
   turn starting, with no user intervention needed beyond opening the
@@ -318,12 +318,12 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
   daemon stopped advertising `Interrupt: true` mid-turn (that would
   also break the REST path).
 - **Step 7-8**: within ~1-2 s of Enter, session state flips from
-  `processing` back to `idle` (`live=true`, `active_turn_id`
+  `active` back to `idle` (`live=true`, `active_turn_id`
   cleared). TUI status line shows `state: idle`. The session stays
   alive — the abort signal cancels the *turn*, not the *session*
   (kata `0ax1`). The active turn is reported `status=canceled` on
   the appwire `turn/completed` notification. **Falsification**:
-  state stays `processing` for the full ~60 s of the bash loop, OR
+  state stays `active` for the full ~60 s of the bash loop, OR
   state flips to `closed`/`ended` (the old pre-`0ax1` semantic —
   would mean ProcessInput's abort path is calling `s.Close()`
   again), OR REST returns 503 on the underlying interrupt POST
@@ -336,7 +336,7 @@ tmux kill-session -t serf-interrupt-test 2>/dev/null
   interrupted turn (model never got to compose one). Bash loop
   process is gone.
 - **Step 10 (follow-up after interrupt)**: the new prompt sails
-  through. State cycles `idle → processing → idle`; the assistant
+  through. State cycles `idle → active → idle`; the assistant
   emits a `communicate` reply (typically `OK`). This is the kata
   `0ax1` user-facing promise: an interrupt does not lock the user
   out of the session.

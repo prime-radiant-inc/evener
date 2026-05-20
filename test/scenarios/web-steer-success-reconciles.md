@@ -59,11 +59,11 @@ HUB=http://localhost:9180
      -d "{\"prompt\":\"Read AGENTS.md if it exists in your cwd. Then write a long 5-paragraph essay about software engineering. Follow the pacing rules in AGENTS.md exactly.\",\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$tmpdir\",\"harness\":\"serf\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
      $HUB/api/spawn)
    SID=$(echo "$resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['session_id'])")
-   # Wait until state=processing (turn actually started).
+   # Wait until state=active (turn actually started).
    for i in $(seq 1 30); do
      state=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID" \
               | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))")
-     [ "$state" = "processing" ] && break
+     [ "$state" = "active" ] && break
      sleep 1
    done
    ```
@@ -74,7 +74,7 @@ HUB=http://localhost:9180
    await_element [data-steer-trigger]
    ```
    Confirm the button is enabled (live stream has hydrated the
-   processing state):
+   active state):
    ```javascript
    ({ disabled: document.querySelector("[data-steer-trigger]").disabled });
    // { disabled: false }
@@ -115,7 +115,7 @@ HUB=http://localhost:9180
     failed: document.querySelectorAll(".optimistic-failed").length,   // 0
   })
   ```
-- Session continues to `processing`, then settles to `idle` with
+- Session continues to `active`, then settles to `idle` with
   the model honoring the steer (closing output is a haiku, not the
   5-paragraph essay).
 

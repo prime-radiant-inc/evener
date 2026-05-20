@@ -45,7 +45,7 @@ verify each exit individually with mocked LLMs. For a manual repro:
 1. Spawn a session as above. Wait for idle.
 2. `pkill -f 'serf serve.*<session_id>'` — kill mid-life.
 3. Send another turn from the workspace UI.
-4. While the agent is processing (status=processing), send a SECOND
+4. While the agent is processing (status=active), send a SECOND
    message immediately. The hub's send-while-processing returns a
    `Conflict` error; the agent loop is unaffected. (This is NOT the
    ztne path — included as a control to confirm normal flush still

@@ -54,12 +54,12 @@ HUB=http://localhost:9180
    curl -s -X POST -H "Content-Type: application/json" -H "Authorization: Bearer $TOKEN" \
      -d '{"text":"call exec_command with command=\"bash -c '\''for i in 1 2 3 4 5 6 7 8 9 10; do echo step $i; sleep 2; done'\''\" then report"}' \
      "$HUB/s/$SID/send" &
-   # wait until the session is actually processing
+   # wait until the session is actually active
    for i in $(seq 1 10); do
      d=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID")
      state=$(echo "$d" | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))")
      turn=$(echo "$d" | python3 -c "import json,sys; print(json.load(sys.stdin).get('active_turn_id',''))")
-     [ "$state" = "processing" ] && break
+     [ "$state" = "active" ] && break
      sleep 1
    done
    echo "state=$state turn=$turn"
@@ -83,7 +83,7 @@ head and runs it as a fresh user turn:
      d=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID")
      state=$(echo "$d" | python3 -c "import json,sys; print(json.load(sys.stdin).get('state'))")
      turn=$(echo "$d" | python3 -c "import json,sys; print(json.load(sys.stdin).get('active_turn_id',''))")
-     [ "$state" = "processing" ] && break
+     [ "$state" = "active" ] && break
      sleep 1
    done
 
@@ -138,7 +138,7 @@ head and runs it as a fresh user turn:
 
    **Expected**: queue POST returns 204 (kata `111a` capability
    gating ensures `queue_cap=true` mid-turn). Interrupt cancels
-   the in-flight turn (state cycles processing → idle) but does
+   the in-flight turn (state cycles active → idle) but does
    NOT drop the queued message: the daemon's outer ProcessInput
    loop still pops the queue head on its next iteration and runs
    it as a fresh user turn. `turn_count` increments by exactly
@@ -222,7 +222,7 @@ head and runs it as a fresh user turn:
 - **Step 2 (interrupt)**: while the bash loop is running,
   `capabilities.interrupt=true`. Hub returns `204 No Content` for
   the interrupt POST. Within ~3s the in-flight turn is cancelled
-  and the session flips from `processing` back to `idle` (kata
+  and the session flips from `active` back to `idle` (kata
   `0ax1`): the abort signal cancels the **turn**, not the session.
   The transcript records the partial tool output plus a system
   interrupt marker (a `STEERING` turn whose text contains
@@ -230,7 +230,7 @@ head and runs it as a fresh user turn:
   reported `status=canceled` on `turn/completed`. The session
   remains alive — steps 3-5 below still work on the same SID.
   Send a follow-up `/send` immediately and it must complete
-  normally. Falsification: state stays `processing` for the full
+  normally. Falsification: state stays `active` for the full
   ~25-30s of the bash loop, or state flips to `closed`/`ended`
   (the old pre-`0ax1` semantic — would mean the ProcessInput abort
   path is still calling `s.Close()`), or `capabilities.interrupt=false`
@@ -280,7 +280,7 @@ find ~/.local/state/serf/projects -name "$SID*" -delete
   idle session surfaces an honest error rather than a silent 204.
 - **Interrupt semantics** (kata `0ax1`, fixed). A successful
   interrupt cancels the in-flight turn but keeps the session
-  alive. State transitions `processing → idle` (NOT `closed`),
+  alive. State transitions `active → idle` (NOT `closed`),
   the outer session loop in `cmd/serf/serve.go` remains ready for
   the next `/input` POST, and the user can immediately follow up
   with another message. The transcript records a `STEERING` turn
@@ -293,7 +293,7 @@ find ~/.local/state/serf/projects -name "$SID*" -delete
   `exec_command` with a sleep loop. `gpt-5.4-mini` did so reliably in
   testing, but a model that shortcuts (responds with "I'll do that"
   via `communicate` without invoking the tool) will finish in
-  seconds. If you see `state=processing` for less than ~5 seconds,
+  seconds. If you see `state=active` for less than ~5 seconds,
   inspect the transcript — the model may not have run the loop and
   the interrupt may have raced the natural turn completion.
 - The compact endpoint is synchronous and very fast here (single
