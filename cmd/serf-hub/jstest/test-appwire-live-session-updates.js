@@ -131,8 +131,10 @@ async function run() {
   });
   await new Promise((resolve) => setTimeout(resolve, 10));
   pass(conv.dataset.state === "active", "active status did not update conversation state");
+  pass(window.document.querySelector(".send-btn").getAttribute("data-capability-send") === "false",
+    "active AppWire status should not preserve stale idle send capability before fresh capabilities arrive");
   pass(window.document.querySelector(".send-btn").getAttribute("data-capability-queue") === "false",
-    "active AppWire status should preserve source queue=false baseline before fresh capabilities arrive");
+    "active AppWire status should not invent queue support when source advertised queue=false");
   pass(!window.document.querySelector('[data-action-trigger="interrupt"]').disabled, "interrupt should enable while processing after turn/start returns an id");
 
   notificationHandler("turn/started", {

@@ -202,7 +202,7 @@
           sendBtn.setAttribute("data-capability-queue", "false");
           sendBtn.disabled = true;
           sendBtn.setAttribute("title", "send unavailable");
-        } else if ((this.liveCapabilitiesStatus === state || this.liveQueueCap === false) && (typeof this.liveSendCap === "boolean" || typeof this.liveQueueCap === "boolean")) {
+        } else if (this.liveCapabilitiesStatus === state && (typeof this.liveSendCap === "boolean" || typeof this.liveQueueCap === "boolean")) {
           const canSend = this.liveSendCap === true;
           const canQueue = this.liveQueueCap === true;
           sendBtn.setAttribute("data-capability-send", canSend ? "true" : "false");
@@ -210,6 +210,11 @@
           sendBtn.disabled = !canSend && !canQueue;
           if (sendBtn.disabled) sendBtn.setAttribute("title", "send unavailable");
           else sendBtn.removeAttribute("title");
+        } else if (state === "active" && this.liveQueueCap === false) {
+          sendBtn.setAttribute("data-capability-send", "false");
+          sendBtn.setAttribute("data-capability-queue", "false");
+          sendBtn.disabled = true;
+          sendBtn.setAttribute("title", "send unavailable");
         } else if (state === "active") {
           sendBtn.setAttribute("data-capability-send", "false");
           sendBtn.setAttribute("data-capability-queue", "true");

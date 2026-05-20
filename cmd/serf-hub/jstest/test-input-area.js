@@ -197,8 +197,9 @@ async function checkProcessingSendCapabilityKeepsSendMode() {
     capabilities: { send: true, queue: false },
   });
   window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "active" });
-  pass(send.getAttribute("data-capability-send") === "true", "active status should preserve source send capability when queue is unsupported");
-  pass(send.getAttribute("data-capability-queue") === "false", "active status should preserve source queue=false baseline before refresh");
+  pass(send.getAttribute("data-capability-send") === "false", "active status should not preserve stale idle send capability");
+  pass(send.getAttribute("data-capability-queue") === "false", "active status should not invent queue support when source queue=false is cached");
+  pass(send.disabled === true, "active status with cached queue=false should disable composer until fresh caps arrive");
 
   window.SerfAppwire = {
     readThread: () => Promise.resolve({
@@ -214,8 +215,8 @@ async function checkProcessingSendCapabilityKeepsSendMode() {
     capabilities: { send: true, queue: false },
   });
   window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "active" });
-  pass(send.getAttribute("data-capability-send") === "true", "active status should preserve source send baseline before refresh resolves");
-  pass(send.getAttribute("data-capability-queue") === "false", "active status should preserve source queue baseline before refresh resolves");
+  pass(send.getAttribute("data-capability-send") === "false", "active status should disable stale send baseline before refresh resolves");
+  pass(send.getAttribute("data-capability-queue") === "false", "active status should keep cached queue=false before refresh resolves");
   await new Promise(r => setTimeout(r, 10));
   pass(send.getAttribute("data-capability-send") === "false", "fresh active send capability should replace idle send capability");
   pass(send.getAttribute("data-capability-queue") === "true", "fresh active queue capability should replace idle queue capability");
@@ -489,6 +490,11 @@ function pendingItems() {
 }
 
 function resetComposerState() {
+  window.SerfRenderer.handleData("SESSION_START", {
+    session_id: "01TEST",
+    status: "idle",
+    capabilities: { send: true, queue: false },
+  });
   if (window.SerfRenderer.composerPasteState) {
     window.SerfRenderer.composerPasteState.items = [];
   } else {

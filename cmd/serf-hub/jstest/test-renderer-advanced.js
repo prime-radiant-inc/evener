@@ -250,8 +250,8 @@ await scenario("auto-advance steering becomes 'now on X'", [
 	  return { ok: true };
 	});
 
-	// 7. A status change applies immediately while preserving the last
-	// source-advertised capability baseline until refresh returns.
+	// 7. A status change applies immediately without carrying stale idle
+	// send capability into an active turn.
 	{
 	  const { window } = newHarness();
 	  await new Promise(r => setTimeout(r, 30));
@@ -262,8 +262,9 @@ await scenario("auto-advance steering becomes 'now on X'", [
 	    capabilities: { queue: false },
 	  });
 	  window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "active" });
-	  const ok = btn.getAttribute("data-capability-queue") === "false";
-	  console.log((ok ? "PASS" : "FAIL") + " — active status preserves source queue=false baseline");
+	  const ok = btn.getAttribute("data-capability-send") === "false" &&
+	    btn.getAttribute("data-capability-queue") === "false";
+	  console.log((ok ? "PASS" : "FAIL") + " — active status avoids stale idle send capability");
 	  if (!ok) {
 	    allPass = false;
 	    console.log("  detail: queue attr=" + btn.getAttribute("data-capability-queue"));
