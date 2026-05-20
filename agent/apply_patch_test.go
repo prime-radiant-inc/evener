@@ -124,6 +124,127 @@ func TestApplyPatch_ContextHintDisambiguates(t *testing.T) {
 	}
 }
 
+func TestApplyPatch_SearchesWholeOldBlock(t *testing.T) {
+	dir := t.TempDir()
+	content := strings.Join([]string{
+		"func first() {",
+		"\tmodel := \"openai/gpt-5\"",
+		"\treturn model",
+		"}",
+		"",
+		"func second() {",
+		"\tmodel := \"openai/gpt-5\"",
+		"\tconfig := loadConfig()",
+		"}",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "f.go"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	patch := "*** Begin Patch\n*** Update File: f.go\n@@\n \tmodel := \"openai/gpt-5\"\n \tconfig := loadConfig()\n+\tfastCheapModel := \"openai/gpt-5-mini\"\n }\n*** End Patch\n"
+	_, err := ApplyPatch(dir, patch)
+	if err != nil {
+		t.Fatalf("ApplyPatch: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "f.go"))
+	text := string(got)
+	if strings.Contains(text, "func first() {\n\tmodel := \"openai/gpt-5\"\n\tfastCheapModel") {
+		t.Fatalf("patch applied to first matching anchor instead of whole block:\n%s", text)
+	}
+	if !strings.Contains(text, "func second() {\n\tmodel := \"openai/gpt-5\"\n\tconfig := loadConfig()\n\tfastCheapModel := \"openai/gpt-5-mini\"\n}") {
+		t.Fatalf("patch did not apply to whole-block match:\n%s", text)
+	}
+}
+
+func TestApplyPatch_HintCanBeFirstOldLine(t *testing.T) {
+	dir := t.TempDir()
+	content := strings.Join([]string{
+		"func target() {",
+		"\treturn oldValue",
+		"}",
+		"",
+		"func unrelated() {",
+		"\treturn oldValue",
+		"}",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "f.go"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	patch := "*** Begin Patch\n*** Update File: f.go\n@@ func unrelated() {\n func unrelated() {\n-\treturn oldValue\n+\treturn newValue\n }\n*** End Patch\n"
+	_, err := ApplyPatch(dir, patch)
+	if err != nil {
+		t.Fatalf("ApplyPatch: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "f.go"))
+	text := string(got)
+	if strings.Contains(text, "func target() {\n\treturn newValue\n}") {
+		t.Fatalf("patch applied to earlier block instead of hinted block:\n%s", text)
+	}
+	if !strings.Contains(text, "func unrelated() {\n\treturn newValue\n}") {
+		t.Fatalf("patch did not update hinted block:\n%s", text)
+	}
+}
+
+func TestApplyPatch_SequenceSearchMatchesOpenAILeniency(t *testing.T) {
+	dir := t.TempDir()
+	content := "func f() {\n\toldCall()   \n\treturn\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "f.go"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	patch := "*** Begin Patch\n*** Update File: f.go\n@@\n \toldCall()\n \treturn\n+\t// done\n*** End Patch\n"
+	_, err := ApplyPatch(dir, patch)
+	if err != nil {
+		t.Fatalf("ApplyPatch: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "f.go"))
+	if !strings.Contains(string(got), "\toldCall()   \n\treturn\n\t// done\n") {
+		t.Fatalf("patch did not apply with trailing-whitespace leniency:\n%s", string(got))
+	}
+}
+
+func TestApplyPatch_FuzzyMatchPreservesOriginalContextLines(t *testing.T) {
+	dir := t.TempDir()
+	content := "func f() {\n\toldCall()   \n\treturn\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "f.go"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	patch := "*** Begin Patch\n*** Update File: f.go\n@@\n \toldCall()\n-\treturn\n+\treturn nil\n }\n*** End Patch\n"
+	_, err := ApplyPatch(dir, patch)
+	if err != nil {
+		t.Fatalf("ApplyPatch: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "f.go"))
+	if !strings.Contains(string(got), "\toldCall()   \n\treturn nil\n") {
+		t.Fatalf("fuzzy context line was not preserved from original file:\n%s", string(got))
+	}
+	if strings.Contains(string(got), "\toldCall()\n\treturn nil\n") {
+		t.Fatalf("fuzzy context line was rewritten from patch text:\n%s", string(got))
+	}
+}
+
+func TestApplyPatch_SequenceSearchMatchesInternalWhitespaceFuzzily(t *testing.T) {
+	dir := t.TempDir()
+	content := "func f() {\n\tconst value    = 1\n\treturn value\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "f.go"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	patch := "*** Begin Patch\n*** Update File: f.go\n@@\n \tconst value = 1\n-\treturn value\n+\treturn value + 1\n }\n*** End Patch\n"
+	_, err := ApplyPatch(dir, patch)
+	if err != nil {
+		t.Fatalf("ApplyPatch: %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "f.go"))
+	if !strings.Contains(string(got), "\tconst value    = 1\n\treturn value + 1\n") {
+		t.Fatalf("patch did not apply while preserving internally fuzzy context:\n%s", string(got))
+	}
+}
+
 func TestApplyPatch_MultiHunkSingleFile(t *testing.T) {
 	dir := t.TempDir()
 	content := "alpha\nbeta\ngamma\ndelta\nepsilon\n"
@@ -166,6 +287,92 @@ func TestApplyPatch_FuzzyMatch_UnicodeQuotes(t *testing.T) {
 	got, _ := os.ReadFile(filepath.Join(dir, "test.go"))
 	if !strings.Contains(string(got), "goodbye world") {
 		t.Errorf("expected result to contain 'goodbye world', got:\n%s\nresult: %s", string(got), result)
+	}
+}
+
+func TestApplyPatch_ContextMismatchReportsContextAndCandidates(t *testing.T) {
+	dir := t.TempDir()
+	content := strings.Join([]string{
+		"func first() {",
+		"\tmodel := \"openai/gpt-5\"",
+		"\treturn model",
+		"}",
+		"",
+		"func second() {",
+		"\tgot, err := resolve()",
+		"\tif err != nil {",
+		"\t\treturn err",
+		"\t}",
+		"\tmodel := \"openai/gpt-5\"",
+		"\treturn model",
+		"}",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "f.go"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	patch := "*** Begin Patch\n*** Update File: f.go\n@@\n \tgot, err := resolve()\n \tmodel := \"openai/gpt-5\"\n+\tfastCheapModel := \"openai/gpt-5-mini\"\n*** End Patch\n"
+	_, err := ApplyPatch(dir, patch)
+	if err == nil {
+		t.Fatal("expected patch mismatch")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"apply_patch: expected lines not found in f.go at line 7",
+		"wanted: \"\\tgot, err := resolve()\"",
+		"got:    \"\\tgot, err := resolve()\"",
+		"File context around line 7:",
+		">  7 | \tgot, err := resolve()",
+		"Expected old/context lines from patch:",
+		"  \tgot, err := resolve()",
+		"Potential locations for old/context block:",
+		"candidate at line 7:",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("error missing %q:\n%s", want, msg)
+		}
+	}
+}
+
+func TestApplyPatch_DeleteMismatchReportsFullBlockCandidate(t *testing.T) {
+	dir := t.TempDir()
+	content := strings.Join([]string{
+		"func before() {",
+		"\tclose(done)",
+		"}",
+		"",
+		"func target() {",
+		"\tdefer sess.Close()",
+		"\tclose(done)",
+		"}",
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "hook_test.go"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	patch := "*** Begin Patch\n*** Update File: hook_test.go\n@@\n func target() {\n-\tclose(done)\n+\tclose(complete)\n }\n*** End Patch\n"
+	_, err := ApplyPatch(dir, patch)
+	if err == nil {
+		t.Fatal("expected patch mismatch")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"apply_patch: expected lines not found in hook_test.go at line 5",
+		"wanted: \"func target() {\"",
+		"got:    \"func target() {\"",
+		"File context around line 5:",
+		"Expected old/context lines from patch:",
+		"  func target() {",
+		"  \tclose(done)",
+		"  }",
+		"Potential locations for old/context block:",
+		"candidate at line 5:",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("error missing %q:\n%s", want, msg)
+		}
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -91,65 +92,41 @@ func (o updateFileOp) apply(rootDir string) ([]string, error) {
 	pos := 0
 
 	for _, h := range o.hunks {
-		anchor := firstAnchor(h)
-		if anchor != "" {
-			hint := hintFromHunk(h)
-			searchStart := pos
-			if hint != "" {
-				hintIdx := indexOfLine(origLines, hint, pos)
-				if hintIdx >= 0 {
-					searchStart = hintIdx
-				}
-			}
-			k := indexOfLine(origLines, anchor, searchStart)
-			if k < 0 {
-				// Fall back to searching from pos if hint-narrowed search failed
-				k = indexOfLine(origLines, anchor, pos)
-			}
-			if k < 0 {
-				return nil, fmt.Errorf("apply_patch: anchor not found in %s: %q", o.path, anchor)
-			}
-			out = append(out, origLines[pos:k]...)
-			pos = k
+		entries := replacementEntriesFromHunk(h)
+		oldLines, newLines := replacementLinesFromEntries(entries)
+		if len(oldLines) == 0 {
+			out = append(out, newLines...)
+			continue
 		}
 
-		for _, l := range h {
-			if strings.HasPrefix(l, "@@") {
-				continue
-			}
-			if l == "" {
-				// Diff lines always have a prefix; ignore empty (best-effort).
-				continue
-			}
-			prefix := l[0]
-			body := ""
-			if len(l) > 1 {
-				body = l[1:]
-			}
-			switch prefix {
-			case ' ':
-				if pos >= len(origLines) {
-					return nil, fmt.Errorf("apply_patch: context mismatch in %s: want %q at line %d but file only has %d lines", o.path, body, pos+1, len(origLines))
-				}
-				if !fuzzyLineMatch(origLines[pos], body) {
-					return nil, fmt.Errorf("apply_patch: context mismatch in %s: want %q at line %d, got %q", o.path, body, pos+1, origLines[pos])
-				}
-				out = append(out, origLines[pos])
-				pos++
-			case '-':
-				if pos >= len(origLines) {
-					return nil, fmt.Errorf("apply_patch: delete mismatch in %s: want %q at line %d but file only has %d lines", o.path, body, pos+1, len(origLines))
-				}
-				if !fuzzyLineMatch(origLines[pos], body) {
-					return nil, fmt.Errorf("apply_patch: delete mismatch in %s: want %q at line %d, got %q", o.path, body, pos+1, origLines[pos])
-				}
-				pos++
-			case '+':
-				out = append(out, body)
-			default:
-				// ignore
+		hint := hintFromHunk(h)
+		searchStart := pos
+		if hint != "" {
+			if hintIdx := indexOfLine(origLines, hint, pos); hintIdx >= 0 {
+				searchStart = hintIdx
 			}
 		}
+
+		k := seekLineSequence(origLines, oldLines, searchStart)
+		if k < 0 && searchStart != pos {
+			// Fall back to searching from pos if hint-narrowed search failed.
+			k = seekLineSequence(origLines, oldLines, pos)
+		}
+		if k < 0 {
+			diagLine := mismatchLineForMissingSequence(origLines, oldLines[0], searchStart)
+			return nil, fmt.Errorf("%s", formatPatchMismatchError(patchMismatchDiagnostic{
+				kind:      "expected lines not found",
+				path:      o.path,
+				want:      oldLines[0],
+				line:      diagLine,
+				got:       lineAt(origLines, diagLine-1),
+				lines:     origLines,
+				hunkLines: h,
+			}))
+		}
+		out = append(out, origLines[pos:k]...)
+		out = append(out, applyReplacementEntries(origLines[k:k+len(oldLines)], entries)...)
+		pos = k + len(oldLines)
 	}
 
 	out = append(out, origLines[pos:]...)
@@ -290,19 +267,371 @@ func hintFromHunk(hunkLines []string) string {
 	return ""
 }
 
-func firstAnchor(hunk []string) string {
-	for _, l := range hunk {
-		if l == "" {
-			continue
-		}
-		if strings.HasPrefix(l, "@@") {
-			continue
-		}
-		if l[0] == ' ' || l[0] == '-' {
-			return l[1:]
+type patchMismatchDiagnostic struct {
+	kind      string
+	path      string
+	want      string
+	got       string
+	line      int
+	gotEOF    bool
+	lines     []string
+	hunkLines []string
+}
+
+func formatPatchMismatchError(d patchMismatchDiagnostic) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "apply_patch: %s in %s", d.kind, d.path)
+	if d.line > 0 {
+		fmt.Fprintf(&b, " at line %d", d.line)
+	}
+	fmt.Fprintf(&b, "\nwanted: %q", d.want)
+	if d.gotEOF {
+		fmt.Fprintf(&b, "\ngot:    end of file after %d lines", len(d.lines))
+	} else if d.got != "" || d.line > 0 {
+		fmt.Fprintf(&b, "\ngot:    %q", d.got)
+	}
+
+	if d.line > 0 {
+		fmt.Fprintf(&b, "\n\nFile context around line %d:\n%s", d.line, formatLineSnippet(d.lines, d.line, 2))
+	}
+
+	if matches := candidateLineIndexes(d.lines, d.want, d.line, 3); len(matches) > 0 {
+		fmt.Fprintf(&b, "\n\nNearby matches for wanted line:\n")
+		for i, idx := range matches {
+			if i > 0 {
+				b.WriteByte('\n')
+			}
+			fmt.Fprintf(&b, "candidate at line %d:\n%s", idx+1, formatLineSnippet(d.lines, idx+1, 2))
 		}
 	}
-	return ""
+
+	oldLines := oldLinesFromHunk(d.hunkLines)
+	if len(oldLines) > 0 {
+		fmt.Fprintf(&b, "\n\nExpected old/context lines from patch:\n%s", formatExpectedLines(oldLines))
+		if matches := candidateSequenceIndexes(d.lines, oldLines, d.line, 2); len(matches) > 0 {
+			fmt.Fprintf(&b, "\n\nPotential locations for old/context block:\n")
+			for i, idx := range matches {
+				if i > 0 {
+					b.WriteByte('\n')
+				}
+				fmt.Fprintf(&b, "candidate at line %d:\n%s", idx+1, formatLineSnippet(d.lines, idx+1, minInt(6, maxInt(2, len(oldLines)+1))))
+			}
+		}
+	}
+	return b.String()
+}
+
+func formatLineSnippet(lines []string, line, radius int) string {
+	if len(lines) == 0 {
+		return "(file is empty)\n"
+	}
+	if line < 1 {
+		line = 1
+	}
+	if line > len(lines) {
+		line = len(lines)
+	}
+	start := maxInt(1, line-radius)
+	end := minInt(len(lines), line+radius)
+	width := len(fmt.Sprint(end))
+	var b strings.Builder
+	for i := start; i <= end; i++ {
+		marker := " "
+		if i == line {
+			marker = ">"
+		}
+		fmt.Fprintf(&b, "%s %*d | %s\n", marker, width, i, lines[i-1])
+	}
+	return b.String()
+}
+
+func candidateLineIndexes(lines []string, want string, failedLine int, limit int) []int {
+	var exact, contains []int
+	normWant := normalizeUnicode(normalizeWS(want))
+	for i, line := range lines {
+		if failedLine > 0 && i == failedLine-1 {
+			continue
+		}
+		if fuzzyLineMatch(line, want) {
+			exact = append(exact, i)
+			continue
+		}
+		if normWant != "" && strings.Contains(normalizeUnicode(normalizeWS(line)), normWant) {
+			contains = append(contains, i)
+		}
+	}
+	return nearestIndexes(append(exact, contains...), failedLine, limit)
+}
+
+func candidateSequenceIndexes(lines, pattern []string, failedLine int, limit int) []int {
+	if len(pattern) == 0 || len(pattern) > len(lines) {
+		return nil
+	}
+	var out []int
+	for i := 0; i <= len(lines)-len(pattern); i++ {
+		if failedLine > 0 && i <= failedLine-1 && failedLine-1 < i+len(pattern) {
+			continue
+		}
+		ok := true
+		for j := range pattern {
+			if !fuzzyLineMatch(lines[i+j], pattern[j]) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			out = append(out, i)
+		}
+	}
+	if len(out) > 0 {
+		return nearestIndexes(out, failedLine, limit)
+	}
+	return looseCandidateSequenceIndexes(lines, pattern, failedLine, limit)
+}
+
+func looseCandidateSequenceIndexes(lines, pattern []string, failedLine int, limit int) []int {
+	minScore := minInt(2, len(pattern))
+	window := len(pattern) + 4
+	if window > len(lines) {
+		window = len(lines)
+	}
+	var out []int
+	for i := 0; i < len(lines); i++ {
+		if !fuzzyLineMatch(lines[i], pattern[0]) {
+			continue
+		}
+		end := minInt(len(lines), i+window)
+		score := 0
+		next := 0
+		for j := i; j < end && next < len(pattern); j++ {
+			if fuzzyLineMatch(lines[j], pattern[next]) {
+				score++
+				next++
+			}
+		}
+		if score >= minScore {
+			out = append(out, i)
+		}
+	}
+	return nearestIndexes(out, failedLine, limit)
+}
+
+func mismatchLineForMissingSequence(lines []string, want string, searchStart int) int {
+	for i := searchStart; i < len(lines); i++ {
+		if fuzzyLineMatch(lines[i], want) {
+			return i + 1
+		}
+	}
+	if len(lines) == 0 {
+		return 0
+	}
+	return minInt(searchStart+1, len(lines))
+}
+
+func nearestIndexes(indexes []int, failedLine int, limit int) []int {
+	if len(indexes) <= limit {
+		return indexes
+	}
+	if failedLine <= 0 {
+		return indexes[:limit]
+	}
+	type candidate struct {
+		index int
+		dist  int
+	}
+	candidates := make([]candidate, 0, len(indexes))
+	for _, idx := range indexes {
+		dist := idx + 1 - failedLine
+		if dist < 0 {
+			dist = -dist
+		}
+		candidates = append(candidates, candidate{index: idx, dist: dist})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].dist == candidates[j].dist {
+			return candidates[i].index < candidates[j].index
+		}
+		return candidates[i].dist < candidates[j].dist
+	})
+	out := make([]int, 0, limit)
+	for i := 0; i < limit && i < len(candidates); i++ {
+		out = append(out, candidates[i].index)
+	}
+	return out
+}
+
+func oldLinesFromHunk(hunk []string) []string {
+	oldLines, _ := replacementLinesFromEntries(replacementEntriesFromHunk(hunk))
+	return oldLines
+}
+
+type replacementEntry struct {
+	prefix byte
+	body   string
+}
+
+func replacementEntriesFromHunk(hunk []string) []replacementEntry {
+	var entries []replacementEntry
+	for _, l := range hunk {
+		if l == "" || strings.HasPrefix(l, "@@") {
+			continue
+		}
+		switch l[0] {
+		case ' ', '-', '+':
+			body := ""
+			if len(l) > 1 {
+				body = l[1:]
+			}
+			entries = append(entries, replacementEntry{prefix: l[0], body: body})
+		}
+	}
+	return entries
+}
+
+func replacementLinesFromEntries(entries []replacementEntry) ([]string, []string) {
+	var oldLines []string
+	var newLines []string
+	for _, entry := range entries {
+		switch entry.prefix {
+		case ' ':
+			oldLines = append(oldLines, entry.body)
+			newLines = append(newLines, entry.body)
+		case '-':
+			oldLines = append(oldLines, entry.body)
+		case '+':
+			newLines = append(newLines, entry.body)
+		}
+	}
+	return oldLines, newLines
+}
+
+func applyReplacementEntries(matchedOldLines []string, entries []replacementEntry) []string {
+	out := make([]string, 0, len(entries))
+	oldIdx := 0
+	for _, entry := range entries {
+		switch entry.prefix {
+		case ' ':
+			if oldIdx < len(matchedOldLines) {
+				out = append(out, matchedOldLines[oldIdx])
+			} else {
+				out = append(out, entry.body)
+			}
+			oldIdx++
+		case '-':
+			oldIdx++
+		case '+':
+			out = append(out, entry.body)
+		}
+	}
+	return out
+}
+
+func seekLineSequence(lines, pattern []string, start int) int {
+	if len(pattern) == 0 {
+		return start
+	}
+	if start < 0 {
+		start = 0
+	}
+	if len(pattern) > len(lines) || start > len(lines)-len(pattern) {
+		return -1
+	}
+
+	for i := start; i <= len(lines)-len(pattern); i++ {
+		if lineSequenceMatches(lines[i:i+len(pattern)], pattern, matchExact) {
+			return i
+		}
+	}
+	for i := start; i <= len(lines)-len(pattern); i++ {
+		if lineSequenceMatches(lines[i:i+len(pattern)], pattern, matchTrimRight) {
+			return i
+		}
+	}
+	for i := start; i <= len(lines)-len(pattern); i++ {
+		if lineSequenceMatches(lines[i:i+len(pattern)], pattern, matchTrimBoth) {
+			return i
+		}
+	}
+	for i := start; i <= len(lines)-len(pattern); i++ {
+		if lineSequenceMatches(lines[i:i+len(pattern)], pattern, matchUnicodeNormalized) {
+			return i
+		}
+	}
+	for i := start; i <= len(lines)-len(pattern); i++ {
+		if lineSequenceMatches(lines[i:i+len(pattern)], pattern, matchFuzzyLine) {
+			return i
+		}
+	}
+	return -1
+}
+
+type lineMatchMode int
+
+const (
+	matchExact lineMatchMode = iota
+	matchTrimRight
+	matchTrimBoth
+	matchUnicodeNormalized
+	matchFuzzyLine
+)
+
+func lineSequenceMatches(lines, pattern []string, mode lineMatchMode) bool {
+	for i := range pattern {
+		if !lineMatchesMode(lines[i], pattern[i], mode) {
+			return false
+		}
+	}
+	return true
+}
+
+func lineMatchesMode(a, b string, mode lineMatchMode) bool {
+	switch mode {
+	case matchExact:
+		return a == b
+	case matchTrimRight:
+		return strings.TrimRight(a, " \t\r") == strings.TrimRight(b, " \t\r")
+	case matchTrimBoth:
+		return strings.TrimSpace(a) == strings.TrimSpace(b)
+	case matchUnicodeNormalized:
+		return normalizeUnicode(strings.TrimSpace(a)) == normalizeUnicode(strings.TrimSpace(b))
+	case matchFuzzyLine:
+		return fuzzyLineMatch(a, b)
+	default:
+		return false
+	}
+}
+
+func lineAt(lines []string, idx int) string {
+	if idx < 0 || idx >= len(lines) {
+		return ""
+	}
+	return lines[idx]
+}
+
+func formatExpectedLines(lines []string) string {
+	var b strings.Builder
+	limit := minInt(len(lines), 12)
+	for _, line := range lines[:limit] {
+		fmt.Fprintf(&b, "  %s\n", line)
+	}
+	if len(lines) > limit {
+		fmt.Fprintf(&b, "  ... %d more lines omitted\n", len(lines)-limit)
+	}
+	return b.String()
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // normalizeWS collapses all whitespace runs to single spaces and trims ends.
