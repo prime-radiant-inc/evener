@@ -136,7 +136,7 @@ func TestTurnSteer_NoCoordinator_PassThrough(t *testing.T) {
 	}
 }
 
-func TestTurnStart_RegistersPending_AndFailsOnRPCError(t *testing.T) {
+func TestTurnStart_DoesNotRegisterPending(t *testing.T) {
 	t.Parallel()
 	transport := appwiretest.NewScriptedTransport()
 	client := appwire.NewClient(transport)
@@ -158,46 +158,8 @@ func TestTurnStart_RegistersPending_AndFailsOnRPCError(t *testing.T) {
 	}
 	coord.mu.Lock()
 	defer coord.mu.Unlock()
-	if len(coord.entries) != 1 || coord.entries[0].method != "turn/start" {
-		t.Fatalf("entry: %+v", coord.entries)
-	}
-	if !coord.entries[0].failed {
-		t.Fatal("expected failed")
-	}
-	if coord.entries[0].text != "first message" {
-		t.Fatalf("text = %q, want %q", coord.entries[0].text, "first message")
-	}
-	if coord.entries[0].ref != "local:t1" {
-		t.Fatalf("ref = %q, want local:t1", coord.entries[0].ref)
-	}
-}
-
-func TestTurnStart_RegistersImageOnlyPendingPreview(t *testing.T) {
-	t.Parallel()
-	transport := appwiretest.NewScriptedTransport()
-	client := appwire.NewClient(transport)
-	coord := &fakeCoordinator{}
-	client.SetPendingCoordinator(coord)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	client.Start(ctx)
-	go func() {
-		req := <-transport.Sent()
-		transport.DeliverError(req.Request.ID, appwire.CodeInternalError, "boom")
-	}()
-	_, _ = client.TurnStart(ctx, appwire.TurnStartParams{
-		Ref: "local:t1",
-		Input: []appwire.InputItem{{
-			Type:      "image",
-			MediaType: "image/png",
-			Data:      []byte("png"),
-			Name:      "shot.png",
-		}},
-	})
-	coord.mu.Lock()
-	defer coord.mu.Unlock()
-	if len(coord.entries) != 1 || coord.entries[0].text != "[image]" {
-		t.Fatalf("pending text entries=%+v, want [image]", coord.entries)
+	if len(coord.entries) != 0 {
+		t.Fatalf("turn/start should use caller local echo, got pending entries=%+v", coord.entries)
 	}
 }
 
