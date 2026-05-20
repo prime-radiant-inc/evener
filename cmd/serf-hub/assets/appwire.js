@@ -347,10 +347,10 @@
   }
 
   function startTurn(sessionId, text, attachments) {
-    return optimisticCall(METHOD.turnStart, {
+    return request(METHOD.turnStart, {
       ref: refForSession(sessionId),
       input: inputItemsForTextAndAttachments(text, attachments),
-    }, { text, items: attachments || [] });
+    });
   }
 
   function steer(sessionId, turnId, text) {

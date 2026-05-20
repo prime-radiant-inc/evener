@@ -43,13 +43,13 @@ class FakeWebSocket {
         });
         return;
       }
-      if (msg.method === "turn/start" && msg.params.input && msg.params.input[0] && msg.params.input[0].text === "FAIL_REGISTRY_SWITCH") {
+      if (msg.method === "turn/steer" && msg.params.input && msg.params.input[0] && msg.params.input[0].text === "FAIL_REGISTRY_SWITCH") {
         this.dispatch("message", {
           data: JSON.stringify({
             id: msg.id,
             error: {
               code: -32000,
-              message: "turn start failed",
+              message: "turn steer failed",
             },
           }),
         });
@@ -204,7 +204,7 @@ vm.runInContext(SRC, context);
     register(intent) { return { id: "one", intent }; },
     fail(handle, msg) { registryOneFailures.push({ handle, msg }); },
   });
-  const failedTurn = context.window.SerfAppwire.startTurn("01LOCAL", "FAIL_REGISTRY_SWITCH", []);
+  const failedTurn = context.window.SerfAppwire.steer("01LOCAL", "turn_1", "FAIL_REGISTRY_SWITCH");
   context.window.SerfAppwire.setPendingRegistry({
     register(intent) { return { id: "two", intent }; },
     fail(handle, msg) { registryTwoFailures.push({ handle, msg }); },
@@ -218,6 +218,16 @@ vm.runInContext(SRC, context);
   assert(registryOneFailures.length === 1, "failed optimistic call should fail the registry that registered the chip");
   assert(registryOneFailures[0].handle.id === "one", "failed optimistic call should preserve the original handle");
   assert(registryTwoFailures.length === 0, "failed optimistic call should not fail the current global registry after it changes");
+
+  let startPendingRegistrations = 0;
+  context.window.SerfAppwire.setPendingRegistry({
+    register() { startPendingRegistrations++; return { id: "start" }; },
+    fail() {},
+  });
+  await context.window.SerfAppwire.startTurn("01LOCAL", "single local echo", []);
+  context.window.SerfAppwire.setPendingRegistry(null);
+  assert(startPendingRegistrations === 0, "turn/start should not register a pending chip when renderer already appends a local echo");
+
   context.window.SerfAppwire.eventsFromNotification("item/started", {
     threadId: "th_codex",
     turnId: "turn_dedupe",
