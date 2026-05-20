@@ -250,8 +250,8 @@ await scenario("auto-advance steering becomes 'now on X'", [
 	  return { ok: true };
 	});
 
-	// 7. Queue capability is captured even when SESSION_START is idle, then
-	// respected when the same session later enters processing.
+	// 7. A status change applies immediately with state-derived capabilities;
+	// source capabilities are refreshed asynchronously after the transition.
 	{
 	  const { window } = newHarness();
 	  await new Promise(r => setTimeout(r, 30));
@@ -262,8 +262,8 @@ await scenario("auto-advance steering becomes 'now on X'", [
 	    capabilities: { queue: false },
 	  });
 	  window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "active" });
-	  const ok = btn.getAttribute("data-capability-queue") === "false";
-	  console.log((ok ? "PASS" : "FAIL") + " — idle SESSION_START queue=false survives processing transition");
+	  const ok = btn.getAttribute("data-capability-queue") === "true";
+	  console.log((ok ? "PASS" : "FAIL") + " — active status immediately enables conservative queue capability");
 	  if (!ok) {
 	    allPass = false;
 	    console.log("  detail: queue attr=" + btn.getAttribute("data-capability-queue"));

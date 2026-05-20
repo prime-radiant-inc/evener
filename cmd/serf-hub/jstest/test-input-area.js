@@ -197,8 +197,8 @@ async function checkProcessingSendCapabilityKeepsSendMode() {
     capabilities: { send: true, queue: false },
   });
   window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "active" });
-  pass(send.getAttribute("data-capability-send") === "true", "cached source send capability should stay true when queue is unsupported");
-  pass(send.getAttribute("data-capability-queue") === "false", "cached source queue=false should not become queue=true without fresh caps");
+  pass(send.getAttribute("data-capability-send") === "false", "active status should immediately disable stale idle send capability");
+  pass(send.getAttribute("data-capability-queue") === "true", "active status should immediately enable conservative queue capability");
 
   window.SerfAppwire = {
     readThread: () => Promise.resolve({
@@ -214,6 +214,8 @@ async function checkProcessingSendCapabilityKeepsSendMode() {
     capabilities: { send: true, queue: false },
   });
   window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "active" });
+  pass(send.getAttribute("data-capability-send") === "false", "active status should update send capability before refresh resolves");
+  pass(send.getAttribute("data-capability-queue") === "true", "active status should update queue capability before refresh resolves");
   await new Promise(r => setTimeout(r, 10));
   pass(send.getAttribute("data-capability-send") === "false", "fresh active send capability should replace idle send capability");
   pass(send.getAttribute("data-capability-queue") === "true", "fresh active queue capability should replace idle queue capability");

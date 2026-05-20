@@ -160,6 +160,7 @@
           const thread = (resp && resp.thread) || {};
           const caps = thread.serf && thread.serf.capabilities;
           const refreshedStatus = (thread.status && thread.status.type) || status;
+          if (refreshedStatus !== status) return;
           if (caps) {
             if (typeof caps.send === "boolean") this.liveSendCap = caps.send;
             if (typeof caps.queue === "boolean") this.liveQueueCap = caps.queue;
@@ -174,6 +175,13 @@
           this.updateThreadState(status);
         });
       return true;
+    },
+
+    resetLiveCapabilities() {
+      this.liveSendCap = null;
+      this.liveQueueCap = null;
+      this.liveSteerCap = null;
+      this.liveCapabilitiesStatus = "";
     },
 
     updateThreadState(state) {
@@ -600,8 +608,9 @@
           {
             const status = data.status || "";
             const seq = ++this.statusUpdateSeq;
-            if (this.refreshCapabilitiesForStatus(status, seq)) break;
+            this.resetLiveCapabilities();
             this.updateThreadState(status);
+            this.refreshCapabilitiesForStatus(status, seq);
           }
           break;
         case "TURN_STARTED":
@@ -614,10 +623,7 @@
 	          this.statusUpdateSeq++;
 	          if (data.session_id && data.session_id !== this.sessionId) {
 	            this.sessionId = data.session_id;
-	            this.liveSendCap = null;
-	            this.liveQueueCap = null;
-	            this.liveSteerCap = null;
-	            this.liveCapabilitiesStatus = "";
+	            this.resetLiveCapabilities();
 	            history.replaceState(null, "", "/s/" + encodeURIComponent(data.session_id));
             this.conversation.innerHTML = "";
             this.activeMessages.clear();
