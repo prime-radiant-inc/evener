@@ -96,6 +96,9 @@ func (t *appwireStreamTranslator) eventsFromThread(thread appwire.Thread) []stre
 		events = append(events, t.eventsFromItems(turn.ID, turn.Status, turn.Items)...)
 		events = append(events, eventsFromFailedTurn(turn)...)
 	}
+	if thread.Status.Type != "" {
+		events = append(events, newStreamEvent("THREAD_STATUS_CHANGED", map[string]any{"status": thread.Status.Type}))
+	}
 	return events
 }
 

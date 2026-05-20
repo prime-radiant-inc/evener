@@ -62,6 +62,39 @@ func TestStreamEventsFromThreadHydratesCompletedToolWithStartAndEnd(t *testing.T
 	}
 }
 
+func TestStreamEventsFromThreadEmitsStatusAfterHydration(t *testing.T) {
+	events := streamEventsFromThread(appwire.Thread{
+		ID:        "th_1",
+		SessionID: "th_1",
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+		Turns: []appwire.Turn{{
+			ID: "turn_1",
+			Items: []appwire.ThreadItem{{
+				Type: "userMessage",
+				ID:   "item_user",
+				Text: "done already",
+			}},
+		}},
+	})
+
+	if len(events) < 2 {
+		t.Fatalf("events=%+v, want hydration plus status", events)
+	}
+	last := events[len(events)-1]
+	if last.Event != "THREAD_STATUS_CHANGED" {
+		t.Fatalf("last event=%+v, want THREAD_STATUS_CHANGED after hydration", last)
+	}
+	var data struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(last.Data), &data); err != nil {
+		t.Fatal(err)
+	}
+	if data.Status != appwire.ThreadStatusIdle {
+		t.Fatalf("status=%q, want idle", data.Status)
+	}
+}
+
 func TestStreamEventsFromThreadTreatsItemsInCompletedTurnAsCompleted(t *testing.T) {
 	events := streamEventsFromThread(appwire.Thread{
 		ID:        "th_1",
