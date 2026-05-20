@@ -2465,6 +2465,64 @@ func TestSession_AppendCanceledToolResultsPreservesCompletedStatus(t *testing.T)
 	}
 }
 
+func TestSession_AppendToolResultsSynthesizesCanceledResultsOnCancel(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	calls := []llm.ToolCallData{
+		{ID: "ok_call", Name: "ok_tool"},
+		{ID: "canceled_call", Name: "slow_tool"},
+	}
+	results := []ToolExecResult{{
+		ToolName:   "ok_tool",
+		CallID:     "ok_call",
+		Output:     "ok",
+		FullOutput: "ok",
+		IsError:    false,
+	}}
+	parts := []llm.ContentPart{{
+		Kind: llm.ContentToolResult,
+		ToolResult: &llm.ToolResultData{
+			ToolCallID: "ok_call",
+			Name:       "ok_tool",
+			Content:    "ok",
+		},
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := sess.appendToolResults(ctx, calls, results, parts); !errors.Is(err, context.Canceled) {
+		t.Fatalf("appendToolResults err=%v, want context.Canceled", err)
+	}
+
+	sess.mu.Lock()
+	history := append([]Turn(nil), sess.history...)
+	sess.mu.Unlock()
+	if len(history) != 1 || history[0].Kind != TurnToolResults {
+		t.Fatalf("history=%+v, want one fallback tool-results turn", history)
+	}
+	gotParts := history[0].Message.Content
+	if len(gotParts) != 2 {
+		t.Fatalf("parts=%+v, want two tool results", gotParts)
+	}
+	if gotParts[0].ToolResult == nil || gotParts[0].ToolResult.IsError {
+		t.Fatalf("completed result was not preserved as success: %+v", gotParts[0].ToolResult)
+	}
+	if gotParts[1].ToolResult == nil || !gotParts[1].ToolResult.IsError {
+		t.Fatalf("synthetic canceled result was not marked error: %+v", gotParts[1].ToolResult)
+	}
+}
+
 func TestSession_CloseCancelsInFlightWithoutInterruptMarker(t *testing.T) {
 	blocked := make(chan struct{})
 	c := llm.NewClient()

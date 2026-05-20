@@ -1904,6 +1904,21 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 	s.appendTurn(TurnToolResults, llm.Message{Role: llm.RoleTool, Content: parts})
 }
 
+func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallData, results []ToolExecResult, parts []llm.ContentPart) error {
+	if abortErr := s.withResponseSideEffects(ctx, func() {
+		s.appendTurn(TurnToolResults, llm.Message{Role: llm.RoleTool, Content: parts})
+		// Persist the completed tool round so resumed sessions always include
+		// tool_result turns for any prior assistant tool calls.
+		s.maybeAutoSave()
+	}); abortErr != nil {
+		if ctx.Err() != nil && !s.isClosingOrClosed() {
+			s.appendCanceledToolResults(calls, results, abortErr)
+		}
+		return abortErr
+	}
+	return nil
+}
+
 func (s *Session) appendTurn(kind TurnKind, m llm.Message) {
 	t := NewTurn(kind, m)
 	s.mu.Lock()
@@ -2762,12 +2777,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				},
 			})
 		}
-		if abortErr := s.withResponseSideEffects(ctx, func() {
-			s.appendTurn(TurnToolResults, llm.Message{Role: llm.RoleTool, Content: parts})
-			// Persist the completed tool round so resumed sessions always include
-			// tool_result turns for any prior assistant tool calls.
-			s.maybeAutoSave()
-		}); abortErr != nil {
+		if abortErr := s.appendToolResults(ctx, calls, results, parts); abortErr != nil {
 			return "", abortErr
 		}
 
