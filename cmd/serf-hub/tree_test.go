@@ -90,6 +90,37 @@ func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 	}
 }
 
+func TestBuildTree_UsesGeneratedNameForSessionTitle(t *testing.T) {
+	tree := BuildTree([]agent.SessionMeta{{
+		ID:             "01NAMED",
+		Name:           "Launch Config Cheap Model",
+		OriginalPrompt: "unrelated original prompt",
+		UpdatedAt:      time.Now(),
+	}}, nil)
+	if len(tree.Projects) != 1 || len(tree.Projects[0].Sessions) != 1 {
+		t.Fatalf("unexpected tree shape: %#v", tree)
+	}
+	if got := tree.Projects[0].Sessions[0].Title; got != "Launch Config Cheap Model" {
+		t.Fatalf("session title = %q, want generated name", got)
+	}
+}
+
+func TestBuildTree_UsesGeneratedNameForForkBaseTitle(t *testing.T) {
+	tree := BuildTree([]agent.SessionMeta{{
+		ID:             "01FORK",
+		Name:           "Generated Base",
+		OriginalPrompt: "original base",
+		ForkLabel:      "before TDD",
+		UpdatedAt:      time.Now(),
+	}}, nil)
+	if len(tree.Projects) != 1 || len(tree.Projects[0].Sessions) != 1 {
+		t.Fatalf("unexpected tree shape: %#v", tree)
+	}
+	if got := tree.Projects[0].Sessions[0].Title; got != "Generated Base · before TDD" {
+		t.Fatalf("fork title = %q, want generated name plus label", got)
+	}
+}
+
 func TestBuildTree_AttentionSortsLive(t *testing.T) {
 	// Three live sessions: idle, awaiting, processing.
 	// Live should sort: awaiting, processing, idle.

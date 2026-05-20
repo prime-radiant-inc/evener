@@ -12,6 +12,7 @@ import "time"
 type Layer struct {
 	Schema             int               `toml:"schema,omitempty"`
 	Model              string            `toml:"model,omitempty"`
+	FastCheapModel     string            `toml:"fast_cheap_model,omitempty"`
 	Agent              string            `toml:"agent,omitempty"`
 	ReasoningEffort    string            `toml:"reasoning_effort,omitempty"`
 	ContextStrategy    string            `toml:"context_strategy,omitempty"`

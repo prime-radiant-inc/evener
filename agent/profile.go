@@ -80,6 +80,7 @@ type baseProfile struct {
 	providerOpts    map[string]any
 	effortLevels    []string
 	webSearch       bool
+	cheapModel      string
 }
 
 func (p *baseProfile) ID() string    { return p.id }
@@ -131,6 +132,9 @@ func (p *baseProfile) SupportsWebSearch() bool      { return p.webSearch }
 func (p *baseProfile) DefaultCommandTimeoutMS() int { return p.defaultTimeout }
 func (p *baseProfile) KnowledgeCutoff() string      { return p.knowledgeCutoff }
 func (p *baseProfile) CheapModel() string {
+	if strings.TrimSpace(p.cheapModel) != "" {
+		return strings.TrimSpace(p.cheapModel)
+	}
 	switch p.id {
 	case "openai":
 		return "gpt-4.1-nano"

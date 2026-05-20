@@ -40,6 +40,9 @@ type SessionMeta struct {
 	UpdatedAt       time.Time       `json:"updated_at"`
 	TurnCount       int             `json:"turn_count"`
 	LastInputTokens int             `json:"last_input_tokens,omitempty"`
+	Name            string          `json:"name,omitempty"`
+	NameSource      string          `json:"name_source,omitempty"`
+	NameUpdatedAt   time.Time       `json:"name_updated_at,omitzero"`
 	OriginalPrompt  string          `json:"original_prompt,omitempty"`
 	// ParentSessionID, DivergenceTurn, and ForkLabel are non-empty on sessions
 	// that branched from another via the fork operation. ParentSessionID names
@@ -70,6 +73,19 @@ func (m *SessionMeta) UnmarshalJSON(data []byte) error {
 		m.OriginalPrompt = aux.LegacyOriginalPrompt
 	}
 	return nil
+}
+
+// SessionDisplayName returns the best available human-readable title for a
+// session. Generated names are preferred, with OriginalPrompt retained as the
+// backward-compatible fallback for sessions written before naming existed.
+func SessionDisplayName(meta SessionMeta) string {
+	if name := strings.TrimSpace(meta.Name); name != "" {
+		return name
+	}
+	if prompt := strings.TrimSpace(meta.OriginalPrompt); prompt != "" {
+		return prompt
+	}
+	return strings.TrimSpace(meta.ID)
 }
 
 const sessionsSubdir = "sessions"

@@ -9,6 +9,7 @@ import (
 func TestToArgs_AllFields(t *testing.T) {
 	r := Resolved{Effective: Layer{
 		Model:              "openai/gpt-5",
+		FastCheapModel:     "openai/gpt-5-mini",
 		Agent:              "default",
 		ReasoningEffort:    "medium",
 		ContextStrategy:    "compact",
@@ -28,6 +29,7 @@ func TestToArgs_AllFields(t *testing.T) {
 	got := ToArgs(r)
 	want := []string{
 		"--model", "openai/gpt-5",
+		"--fast-cheap-model", "openai/gpt-5-mini",
 		"--agent", "default",
 		"--reasoning-effort", "medium",
 		"--context-strategy", "compact",

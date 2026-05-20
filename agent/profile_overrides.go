@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"slices"
+	"strings"
 
 	"primeradiant.com/serf/llm"
 )
@@ -80,6 +81,35 @@ func WithAllowedDecisions(p ProviderProfile, decisions []string) ProviderProfile
 		}
 	}
 	clone.toolDefs = defs
+
+	if ap, ok := p.(*anthropicProfile); ok {
+		apClone := *ap
+		apClone.baseProfile = clone
+		return &apClone
+	}
+	return &clone
+}
+
+// WithCheapModel returns a cloned profile whose CheapModel method returns the
+// supplied model. Passing an empty model returns p unchanged.
+func WithCheapModel(p ProviderProfile, model string) ProviderProfile {
+	model = strings.TrimSpace(model)
+	if p == nil || model == "" {
+		return p
+	}
+
+	var bp *baseProfile
+	switch v := p.(type) {
+	case *baseProfile:
+		bp = v
+	case *anthropicProfile:
+		bp = &v.baseProfile
+	default:
+		return p
+	}
+
+	clone := *bp
+	clone.cheapModel = model
 
 	if ap, ok := p.(*anthropicProfile); ok {
 		apClone := *ap

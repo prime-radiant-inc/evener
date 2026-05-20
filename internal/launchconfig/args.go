@@ -18,6 +18,9 @@ func ToArgs(r Resolved) []string {
 	if e.Model != "" {
 		add("--model", e.Model)
 	}
+	if e.FastCheapModel != "" {
+		add("--fast-cheap-model", e.FastCheapModel)
+	}
 	if e.Agent != "" {
 		add("--agent", e.Agent)
 	}

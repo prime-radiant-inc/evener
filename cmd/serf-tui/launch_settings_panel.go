@@ -180,6 +180,7 @@ func layerRows(l appwire.LaunchConfigLayer) []layerRow {
 	}
 	return []layerRow{
 		{"model", "model", l.Model},
+		{"fast_cheap_model", "fast_cheap_model", l.FastCheapModel},
 		{"agent", "agent", l.Agent},
 		{"reasoning_effort", "reasoning_effort", l.ReasoningEffort},
 		{"context_strategy", "context_strategy", l.ContextStrategy},
@@ -278,6 +279,8 @@ func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.La
 	switch field {
 	case "model":
 		layer.Model = strings.TrimSpace(value)
+	case "fast_cheap_model":
+		layer.FastCheapModel = strings.TrimSpace(value)
 	case "agent":
 		layer.Agent = strings.TrimSpace(value)
 	case "reasoning_effort":

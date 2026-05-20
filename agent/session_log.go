@@ -12,10 +12,11 @@ import (
 
 // SessionLogEntry is a structured summary of one action.
 type SessionLogEntry struct {
+	Kind         string   `json:"kind,omitempty"`
 	Turn         int      `json:"turn"`
-	Action       string   `json:"action"`       // tool name or "assistant"
+	Action       string   `json:"action"` // tool name or "assistant"
 	Summary      string   `json:"summary"`
-	Outcome      string   `json:"outcome"`      // "success" or "failure"
+	Outcome      string   `json:"outcome"` // "success" or "failure"
 	FilesTouched []string `json:"files_touched,omitempty"`
 	Failures     []string `json:"failures,omitempty"`
 }
@@ -148,8 +149,12 @@ func (l *SessionLog) String() string {
 	}
 
 	var sb strings.Builder
-	for i, entry := range l.entries {
-		if i > 0 {
+	wrote := false
+	for _, entry := range l.entries {
+		if entry.Kind == "advisory" {
+			continue
+		}
+		if wrote {
 			sb.WriteString("\n")
 		}
 		// Format: "Turn 47 [edit_file] success: Modified auth middleware..."
@@ -158,6 +163,7 @@ func (l *SessionLog) String() string {
 			entry.Action,
 			entry.Outcome,
 			entry.Summary))
+		wrote = true
 	}
 
 	return sb.String()

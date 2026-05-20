@@ -146,6 +146,48 @@ func TestPastIndex_Search(t *testing.T) {
 	}
 }
 
+func TestPastIndex_SearchMatchesGeneratedName(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	writeMeta(t, proj, agent.SessionMeta{
+		ID:             "01NAMED",
+		Name:           "Launch Config Cheap Model",
+		OriginalPrompt: "unrelated original prompt",
+		UpdatedAt:      time.Now(),
+	})
+
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	got := idx.Search("cheap model", 50, 0)
+	if len(got) != 1 || got[0].ID != "01NAMED" {
+		t.Fatalf("Search cheap model: got %v", got)
+	}
+}
+
+func TestPastIndex_SearchSQLiteFTSMatchesGeneratedName(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	_ = os.MkdirAll(proj, 0o755)
+	writeMeta(t, proj, agent.SessionMeta{
+		ID:             "01NAMED",
+		Name:           "Launch Config Cheap Model",
+		OriginalPrompt: "unrelated original prompt",
+		UpdatedAt:      time.Now(),
+	})
+
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, ".serf", "index.db"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	got := idx.Search("cheap model", 50, 0)
+	if len(got) != 1 || got[0].ID != "01NAMED" {
+		t.Fatalf("Search cheap model: got %v", got)
+	}
+}
+
 func TestPastIndex_SearchUsesSQLiteFTSWhenConfigured(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")

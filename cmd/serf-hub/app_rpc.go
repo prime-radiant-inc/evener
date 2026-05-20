@@ -1130,7 +1130,7 @@ func mergePastThreadForRead(cfg WebConfig, params appwire.ThreadReadParams, live
 }
 
 func pastEntryThread(entry PastEntry, includeTurns bool) appwire.Thread {
-	title := entry.Meta.OriginalPrompt
+	title := agent.SessionDisplayName(entry.Meta)
 	if title == "" {
 		title = entry.Meta.ID
 	}

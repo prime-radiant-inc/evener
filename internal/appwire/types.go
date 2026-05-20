@@ -647,6 +647,7 @@ type AuthApiKeySetParams struct {
 type LaunchConfigLayer struct {
 	Schema             *int              `json:"schema,omitempty"`
 	Model              string            `json:"model,omitempty"`
+	FastCheapModel     string            `json:"fastCheapModel,omitempty"`
 	Agent              string            `json:"agent,omitempty"`
 	ReasoningEffort    string            `json:"reasoningEffort,omitempty"`
 	ContextStrategy    string            `json:"contextStrategy,omitempty"`

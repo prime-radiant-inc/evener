@@ -32,9 +32,10 @@ func TestLaunchController_SetLayer_GlobalRoundtrip(t *testing.T) {
 	cwd := t.TempDir()
 	c := newHubLaunchController(stateRoot)
 	model := "openai/gpt-5"
+	fastCheapModel := "openai/gpt-5-mini"
 	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
 		CWD: cwd, Layer: "global",
-		Config: appwire.LaunchConfigLayer{Model: model},
+		Config: appwire.LaunchConfigLayer{Model: model, FastCheapModel: fastCheapModel},
 	})
 	if err != nil {
 		t.Fatalf("SetLayer: %v", err)
@@ -45,6 +46,9 @@ func TestLaunchController_SetLayer_GlobalRoundtrip(t *testing.T) {
 	}
 	if got.Model != model {
 		t.Errorf("Got = %q, want %q", got.Model, model)
+	}
+	if got.FastCheapModel != fastCheapModel {
+		t.Errorf("FastCheapModel = %q, want %q", got.FastCheapModel, fastCheapModel)
 	}
 }
 

@@ -1085,6 +1085,94 @@ func TestSessionMeta_OriginalPrompt_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestSessionMeta_NameFields_RoundTrip(t *testing.T) {
+	updatedAt := time.Date(2026, 5, 20, 14, 32, 11, 0, time.UTC)
+	original := SessionMeta{
+		ID:            "01TEST0001",
+		Name:          "Fix Handler Bug",
+		NameSource:    "prompt",
+		NameUpdatedAt: updatedAt,
+	}
+	data, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	gotJSON := string(data)
+	for _, want := range []string{"name", "name_source", "name_updated_at"} {
+		if !strings.Contains(gotJSON, want) {
+			t.Fatalf("expected %q in JSON, got: %s", want, gotJSON)
+		}
+	}
+	var got SessionMeta
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Name != original.Name {
+		t.Fatalf("Name: got %q, want %q", got.Name, original.Name)
+	}
+	if got.NameSource != original.NameSource {
+		t.Fatalf("NameSource: got %q, want %q", got.NameSource, original.NameSource)
+	}
+	if !got.NameUpdatedAt.Equal(updatedAt) {
+		t.Fatalf("NameUpdatedAt: got %v, want %v", got.NameUpdatedAt, updatedAt)
+	}
+}
+
+func TestSessionMeta_NameFields_OmitEmpty(t *testing.T) {
+	meta := SessionMeta{ID: "01TEST0001"}
+	data, err := json.Marshal(meta)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(data)
+	for _, field := range []string{"name", "name_source", "name_updated_at"} {
+		if strings.Contains(got, field) {
+			t.Fatalf("expected empty name fields to be omitted, got: %s", got)
+		}
+	}
+}
+
+func TestSessionDisplayName(t *testing.T) {
+	tests := []struct {
+		name string
+		meta SessionMeta
+		want string
+	}{
+		{
+			name: "name wins over original prompt",
+			meta: SessionMeta{ID: "01TEST0001", Name: "Generated Name", OriginalPrompt: "original prompt"},
+			want: "Generated Name",
+		},
+		{
+			name: "original prompt wins over ID",
+			meta: SessionMeta{ID: "01TEST0001", OriginalPrompt: "original prompt"},
+			want: "original prompt",
+		},
+		{
+			name: "ID used when both are blank",
+			meta: SessionMeta{ID: "01TEST0001"},
+			want: "01TEST0001",
+		},
+		{
+			name: "whitespace is trimmed",
+			meta: SessionMeta{ID: "  01TEST0001  ", Name: "  Generated Name  ", OriginalPrompt: "  original prompt  "},
+			want: "Generated Name",
+		},
+		{
+			name: "blank name falls back after trimming",
+			meta: SessionMeta{ID: "01TEST0001", Name: "  ", OriginalPrompt: "  original prompt  "},
+			want: "original prompt",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := SessionDisplayName(tt.meta); got != tt.want {
+				t.Fatalf("SessionDisplayName() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSessionMeta_OriginalPrompt_ReadsLegacyOriginalTask(t *testing.T) {
 	data := []byte(`{"id":"01TEST0001","original_task":"fix the bug in handler"}`)
 	var got SessionMeta

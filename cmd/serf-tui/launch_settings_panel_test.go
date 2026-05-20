@@ -50,3 +50,26 @@ func TestLaunchSettingsPanel_EditEmitsModalRequest(t *testing.T) {
 		t.Errorf("req.CurrentValue = %q", req.CurrentValue)
 	}
 }
+
+func TestLayerRows_IncludesFastCheapModel(t *testing.T) {
+	rows := layerRows(appwire.LaunchConfigLayer{FastCheapModel: "openai/gpt-5-mini"})
+	for _, row := range rows {
+		if row.field == "fast_cheap_model" {
+			if row.value != "openai/gpt-5-mini" {
+				t.Fatalf("fast_cheap_model value = %q, want openai/gpt-5-mini", row.value)
+			}
+			return
+		}
+	}
+	t.Fatalf("layerRows missing fast_cheap_model row: %#v", rows)
+}
+
+func TestApplyEdit_FastCheapModel(t *testing.T) {
+	got, err := applyEdit(appwire.LaunchConfigLayer{}, "fast_cheap_model", " openai/gpt-5-mini ")
+	if err != nil {
+		t.Fatalf("applyEdit: %v", err)
+	}
+	if got.FastCheapModel != "openai/gpt-5-mini" {
+		t.Fatalf("FastCheapModel = %q, want openai/gpt-5-mini", got.FastCheapModel)
+	}
+}

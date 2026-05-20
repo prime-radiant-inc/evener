@@ -115,21 +115,14 @@ func projectName(m agent.SessionMeta) string {
 // short, human-friendlier rendering of the session ID rather than the full
 // 26-character ULID, which clutters the sidebar.
 func nodeTitle(m agent.SessionMeta, kind string) string {
-	if kind == "fork" {
-		base := m.OriginalPrompt
-		if base == "" {
-			base = shortID(m.ID)
-		}
-		if m.ForkLabel != "" {
-			return base + " · " + m.ForkLabel
-		}
-		return base
+	base := agent.SessionDisplayName(m)
+	if base == "" {
+		base = shortID(m.ID)
 	}
-	// "session" and "subagent"
-	if m.OriginalPrompt != "" {
-		return m.OriginalPrompt
+	if kind == "fork" && m.ForkLabel != "" {
+		return base + " · " + m.ForkLabel
 	}
-	return shortID(m.ID)
+	return base
 }
 
 // shortID renders an unnamed session ID compactly.
@@ -275,12 +268,13 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 
 		sessions := make([]TreeNode, 0, len(acc.topLevel))
 		for _, m := range acc.topLevel {
+			kind := nodeKind(m)
 			node := TreeNode{
 				ID:        m.ID,
-				Title:     nodeTitle(m, "session"),
+				Title:     nodeTitle(m, kind),
 				Project:   pname,
 				State:     stateFor(m.ID),
-				Kind:      "session",
+				Kind:      kind,
 				CreatedAt: orderCreatedAt(m.CreatedAt, m.UpdatedAt),
 				UpdatedAt: orderUpdatedAt(m.UpdatedAt, m.CreatedAt),
 				Age:       ageString(orderUpdatedAt(m.UpdatedAt, m.CreatedAt)),

@@ -2544,9 +2544,8 @@ func (s *WebServer) fillForkLineage(data *WorkspaceData, m agent.SessionMeta) {
 	}
 	for _, candidate := range s.cfg.Past.AllMetas() {
 		if candidate.ParentSessionID == m.ID && !candidate.IsSubagent && candidate.ForkLabel == "" {
-			if candidate.OriginalPrompt != "" {
-				data.ForkOfTitle = candidate.OriginalPrompt
-			} else {
+			data.ForkOfTitle = agent.SessionDisplayName(candidate)
+			if data.ForkOfTitle == "" {
 				data.ForkOfTitle = shortID(candidate.ID)
 			}
 			return
@@ -2559,16 +2558,16 @@ func (s *WebServer) fillForkLineage(data *WorkspaceData, m agent.SessionMeta) {
 // fall back to a short session ID.
 func liveTitle(id string, le LiveEntry, past *PastIndex) string {
 	if past != nil {
-		if pe, ok := past.Find(id); ok && pe.Meta.OriginalPrompt != "" {
-			return pe.Meta.OriginalPrompt
+		if pe, ok := past.Find(id); ok {
+			return pastTitle(pe)
 		}
 	}
 	return shortID(id)
 }
 
 func pastTitle(pe PastEntry) string {
-	if pe.Meta.OriginalPrompt != "" {
-		return pe.Meta.OriginalPrompt
+	if title := agent.SessionDisplayName(pe.Meta); title != "" {
+		return title
 	}
 	return shortID(pe.Meta.ID)
 }

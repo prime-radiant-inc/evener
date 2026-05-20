@@ -300,6 +300,13 @@ type Session struct {
 	// SESSION_END deduplication: emitted exactly once across ProcessInput and Close.
 	sessionEndEmitted bool
 
+	name        string
+	nameSource  string
+	nameUpdated time.Time
+	nameSet     bool
+
+	nameSessionFromTextFunc func(context.Context, string, string) error
+
 	// closeOnce ensures Close() body runs exactly once.
 	closeOnce sync.Once
 
@@ -486,9 +493,12 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 
 	applyThresholdScale(s.contextMgr, cfg.CompactionThresholdScale)
 	s.contextMgr.OnCompactionTurn = func(t Turn) {
-		if err := s.transcript.Append(t); err != nil {
-			s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
+		if s.transcript != nil {
+			if err := s.transcript.Append(t); err != nil {
+				s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
+			}
 		}
+		s.launchCompactionNamer(s.sessionCtx, t)
 		// After compaction, inject full task list if tasks exist.
 		if s.taskStore != nil {
 			if reminder := taskReminderFull(s.taskStore); reminder != "" {
@@ -629,9 +639,12 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 
 	applyThresholdScale(s.contextMgr, cfg.CompactionThresholdScale)
 	s.contextMgr.OnCompactionTurn = func(t Turn) {
-		if err := s.transcript.Append(t); err != nil {
-			s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
+		if s.transcript != nil {
+			if err := s.transcript.Append(t); err != nil {
+				s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
+			}
 		}
+		s.launchCompactionNamer(s.sessionCtx, t)
 		// After compaction, inject full task list if tasks exist.
 		if s.taskStore != nil {
 			if reminder := taskReminderFull(s.taskStore); reminder != "" {
@@ -721,6 +734,10 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 		forkParentID:   meta.ParentSessionID,
 		forkDivergence: meta.DivergenceTurn,
 		forkLabel:      meta.ForkLabel,
+		name:           meta.Name,
+		nameSource:     meta.NameSource,
+		nameUpdated:    meta.NameUpdatedAt,
+		nameSet:        strings.TrimSpace(meta.Name) != "",
 		subagents:      map[string]*subagent{},
 		readFiles:      map[string]bool{},
 		sessionCtx:     sessCtx,
@@ -774,9 +791,12 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 
 	applyThresholdScale(s.contextMgr, cfg.CompactionThresholdScale)
 	s.contextMgr.OnCompactionTurn = func(t Turn) {
-		if err := s.transcript.Append(t); err != nil {
-			s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
+		if s.transcript != nil {
+			if err := s.transcript.Append(t); err != nil {
+				s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
+			}
 		}
+		s.launchCompactionNamer(s.sessionCtx, t)
 		if s.taskStore != nil {
 			if reminder := taskReminderFull(s.taskStore); reminder != "" {
 				s.Steer(reminder)
@@ -887,11 +907,183 @@ func (s *Session) Meta() SessionMeta {
 		UpdatedAt:       now,
 		TurnCount:       s.modelResponses,
 		LastInputTokens: s.contextMgr.LastInputTokens(),
+		Name:            s.name,
+		NameSource:      s.nameSource,
+		NameUpdatedAt:   s.nameUpdated,
 		OriginalPrompt:  originalPrompt,
 		ParentSessionID: parentID,
 		DivergenceTurn:  divergence,
 		ForkLabel:       s.forkLabel,
 		IsSubagent:      isSubagent,
+	}
+}
+
+func (s *Session) launchInitialPromptNamer(ctx context.Context, input string) {
+	if s.stateDir == "" {
+		return
+	}
+	if !sessionNamerEnabled(s.profile) {
+		return
+	}
+	if strings.TrimSpace(input) == "" {
+		return
+	}
+	s.mu.Lock()
+	alreadyNamed := s.nameSet || strings.TrimSpace(s.name) != ""
+	s.mu.Unlock()
+	if alreadyNamed {
+		return
+	}
+	go func() {
+		nameCtx := ctx
+		if nameCtx == nil {
+			nameCtx = context.Background()
+		}
+		_ = s.nameSessionFromText(nameCtx, sessionNameSourcePrompt, input)
+	}()
+}
+
+func (s *Session) launchCompactionNamer(ctx context.Context, turn Turn) {
+	if s.stateDir == "" {
+		return
+	}
+	if !sessionNamerEnabled(s.profile) {
+		return
+	}
+	if !isSessionNameCompactionTurn(turn) || strings.TrimSpace(turn.Message.Text()) == "" {
+		return
+	}
+	if !s.shouldNameFromCompaction() {
+		return
+	}
+	go func() {
+		nameCtx := ctx
+		if nameCtx == nil {
+			nameCtx = context.Background()
+		}
+		_ = s.nameSessionFromCompactionTurn(nameCtx, turn)
+	}()
+}
+
+func (s *Session) nameSessionFromCompactionTurn(ctx context.Context, turn Turn) error {
+	if !isSessionNameCompactionTurn(turn) {
+		return nil
+	}
+	text := strings.TrimSpace(turn.Message.Text())
+	if text == "" {
+		return nil
+	}
+	if !s.shouldNameFromCompaction() {
+		return nil
+	}
+	return s.nameSessionFromText(ctx, sessionNameSourceCompaction, text)
+}
+
+func isSessionNameCompactionTurn(turn Turn) bool {
+	return turn.Kind == TurnSummary || turn.Kind == TurnCheckpoint
+}
+
+func (s *Session) shouldNameFromCompaction() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if strings.TrimSpace(s.name) == "" {
+		return true
+	}
+	source := strings.TrimSpace(s.nameSource)
+	return source == sessionNameSourcePrompt || source == sessionNameSourceCompaction
+}
+
+func (s *Session) nameSessionFromText(ctx context.Context, source, text string) error {
+	source = normalizeSessionNameSource(source)
+	if !s.shouldApplySessionName(source) {
+		return nil
+	}
+	if s.nameSessionFromTextFunc != nil {
+		return s.nameSessionFromTextFunc(ctx, source, text)
+	}
+
+	result, err := NameSession(ctx, s.client, s.profile, source, text)
+	if err != nil {
+		s.appendSessionNamerLog(SessionLogEntry{
+			Kind:     "advisory",
+			Action:   "session_namer",
+			Summary:  fmt.Sprintf("Failed to generate %s-derived session name", sessionNameSourceLabel(source)),
+			Outcome:  "failure",
+			Failures: []string{err.Error()},
+		})
+		return err
+	}
+
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return context.Canceled
+	}
+	if !s.shouldApplySessionNameLocked(result.Source) {
+		s.mu.Unlock()
+		return nil
+	}
+	s.name = result.Name
+	s.nameSource = result.Source
+	s.nameUpdated = time.Now().UTC()
+	s.nameSet = true
+	s.mu.Unlock()
+
+	s.appendSessionNamerLog(SessionLogEntry{
+		Kind:    "advisory",
+		Action:  "session_namer",
+		Summary: fmt.Sprintf("Suggested %s-derived session name: %s", sessionNameSourceLabel(result.Source), result.Name),
+		Outcome: "success",
+	})
+	s.maybeAutoSave()
+	return nil
+}
+
+func (s *Session) shouldApplySessionName(source string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.shouldApplySessionNameLocked(source)
+}
+
+func (s *Session) shouldApplySessionNameLocked(source string) bool {
+	source = normalizeSessionNameSource(source)
+	if strings.TrimSpace(s.name) == "" {
+		return true
+	}
+	currentSource := strings.TrimSpace(s.nameSource)
+	switch source {
+	case sessionNameSourceCompaction:
+		return currentSource == sessionNameSourcePrompt || currentSource == sessionNameSourceCompaction
+	case sessionNameSourcePrompt:
+		return false
+	default:
+		return false
+	}
+}
+
+func (s *Session) appendSessionNamerLog(entry SessionLogEntry) {
+	if s.stateDir == "" {
+		return
+	}
+	entry.Kind = "advisory"
+	entry.Action = "session_namer"
+	logPath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".log.jsonl")
+	log, err := NewSessionLog(logPath)
+	if err != nil {
+		s.emit(EventWarning, WarningData{Message: fmt.Sprintf("session namer log open failed: %v", err)})
+		return
+	}
+	if err := log.Append(entry); err != nil {
+		s.emit(EventWarning, WarningData{Message: fmt.Sprintf("session namer log append failed: %v", err)})
+	}
+}
+
+func sessionNameSourceLabel(source string) string {
+	switch normalizeSessionNameSource(source) {
+	case sessionNameSourceCompaction:
+		return "compaction"
+	default:
+		return "prompt"
 	}
 }
 
@@ -2138,6 +2330,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		Turn:   userInputTurn,
 	})
 	s.appendTurn(TurnUserInput, buildUserInputMessage(input, images))
+	s.launchInitialPromptNamer(s.sessionCtx, input)
 
 	// UserPromptSubmit hooks
 	if s.hookRunner != nil {

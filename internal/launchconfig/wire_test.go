@@ -11,14 +11,18 @@ import (
 
 func TestFromWire(t *testing.T) {
 	in := appwire.LaunchConfigLayer{
-		Model:     "openai/gpt-5",
-		Schema:    ptrInt(1),
-		MCPs:      []appwire.MCPServerSpec{{Name: "x", Command: "y", Args: []string{"z"}}},
-		MaxRounds: ptrInt(50),
+		Model:          "openai/gpt-5",
+		FastCheapModel: "openai/gpt-5-mini",
+		Schema:         ptrInt(1),
+		MCPs:           []appwire.MCPServerSpec{{Name: "x", Command: "y", Args: []string{"z"}}},
+		MaxRounds:      ptrInt(50),
 	}
 	got := FromWire(in)
 	if got.Model != "openai/gpt-5" {
 		t.Errorf("Model")
+	}
+	if got.FastCheapModel != "openai/gpt-5-mini" {
+		t.Errorf("FastCheapModel = %q, want openai/gpt-5-mini", got.FastCheapModel)
 	}
 	if got.Schema != 1 {
 		t.Errorf("Schema = %d, want 1", got.Schema)
@@ -32,10 +36,13 @@ func TestFromWire(t *testing.T) {
 }
 
 func TestToWire(t *testing.T) {
-	in := Layer{Model: "openai/gpt-5", MaxRounds: ptrInt(50)}
+	in := Layer{Model: "openai/gpt-5", FastCheapModel: "openai/gpt-5-mini", MaxRounds: ptrInt(50)}
 	got := ToWire(in)
 	if got.Model != "openai/gpt-5" {
 		t.Errorf("Model")
+	}
+	if got.FastCheapModel != "openai/gpt-5-mini" {
+		t.Errorf("FastCheapModel = %q, want openai/gpt-5-mini", got.FastCheapModel)
 	}
 	if got.MaxRounds == nil || *got.MaxRounds != 50 {
 		t.Errorf("MaxRounds = %v", got.MaxRounds)

@@ -11,6 +11,7 @@ func TestLayerTOMLRoundTrip(t *testing.T) {
 	input := `
 schema = 1
 model = "openai/gpt-5"
+fast_cheap_model = "openai/gpt-5-mini"
 agent = "default"
 reasoning_effort = "medium"
 context_strategy = "compact"
@@ -40,6 +41,9 @@ FOO = "bar"
 	}
 	if got.Model != "openai/gpt-5" {
 		t.Errorf("Model = %q, want openai/gpt-5", got.Model)
+	}
+	if got.FastCheapModel != "openai/gpt-5-mini" {
+		t.Errorf("FastCheapModel = %q, want openai/gpt-5-mini", got.FastCheapModel)
 	}
 	if got.MaxRounds == nil || *got.MaxRounds != 200 {
 		t.Errorf("MaxRounds = %v, want 200", got.MaxRounds)

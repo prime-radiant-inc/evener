@@ -20,6 +20,7 @@ func TestBuildSpawnArgs(t *testing.T) {
 	req := SpawnRequest{
 		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
 			Model:           "openai/gpt-5.2",
+			FastCheapModel:  "openai/gpt-5-mini",
 			Agent:           "default",
 			ReasoningEffort: "medium",
 			AppReplaySize:   &ssering,
@@ -31,6 +32,7 @@ func TestBuildSpawnArgs(t *testing.T) {
 	args := buildSpawnArgs(req)
 	want := map[string]string{
 		"--model":            "openai/gpt-5.2",
+		"--fast-cheap-model": "openai/gpt-5-mini",
 		"--agent":            "default",
 		"--reasoning-effort": "medium",
 		"--app-replay-size":  "4096",

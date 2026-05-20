@@ -217,6 +217,86 @@ func TestSessionLog_String(t *testing.T) {
 	}
 }
 
+func TestSessionLog_AdvisoryKindPersists(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.log")
+
+	log := mustNewSessionLog(t, path)
+	entry := SessionLogEntry{
+		Kind:    "advisory",
+		Turn:    1,
+		Action:  "session_namer",
+		Summary: "Suggested prompt-derived session name: Launch Config Cheap Model",
+		Outcome: "success",
+	}
+	if err := log.Append(entry); err != nil {
+		t.Fatalf("Append advisory: %v", err)
+	}
+
+	reloaded := mustNewSessionLog(t, path)
+	entries := reloaded.Entries()
+	if len(entries) != 1 {
+		t.Fatalf("entries len = %d, want 1", len(entries))
+	}
+	if entries[0].Kind != "advisory" {
+		t.Fatalf("Kind = %q, want advisory", entries[0].Kind)
+	}
+	if entries[0].Action != "session_namer" || entries[0].Summary != entry.Summary {
+		t.Fatalf("reloaded advisory mismatch: %+v", entries[0])
+	}
+}
+
+func TestSessionLog_StringExcludesAdvisoryEntries(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.log")
+
+	log := mustNewSessionLog(t, path)
+	if err := log.Append(SessionLogEntry{
+		Kind:    "advisory",
+		Turn:    1,
+		Action:  "session_namer",
+		Summary: "Suggested prompt-derived session name: Launch Config Cheap Model",
+		Outcome: "success",
+	}); err != nil {
+		t.Fatalf("Append advisory: %v", err)
+	}
+	if err := log.Append(SessionLogEntry{
+		Turn:    2,
+		Action:  "edit_file",
+		Summary: "Modified auth middleware",
+		Outcome: "success",
+	}); err != nil {
+		t.Fatalf("Append regular: %v", err)
+	}
+
+	str := log.String()
+	if strings.Contains(str, "session_namer") || strings.Contains(str, "Launch Config Cheap Model") {
+		t.Fatalf("String() should exclude advisory entries, got: %s", str)
+	}
+	if !strings.Contains(str, "Modified auth middleware") {
+		t.Fatalf("String() missing regular entry, got: %s", str)
+	}
+}
+
+func TestSessionLog_StringOnlyAdvisoryEntriesIsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.log")
+
+	log := mustNewSessionLog(t, path)
+	if err := log.Append(SessionLogEntry{
+		Kind:    "advisory",
+		Turn:    1,
+		Action:  "session_namer",
+		Summary: "Suggested prompt-derived session name: Launch Config Cheap Model",
+		Outcome: "success",
+	}); err != nil {
+		t.Fatalf("Append advisory: %v", err)
+	}
+	if got := log.String(); got != "" {
+		t.Fatalf("String() = %q, want empty for advisory-only log", got)
+	}
+}
+
 func TestSessionLog_ConcurrentAppend(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.log")
@@ -316,4 +396,3 @@ func mustNewSessionLog(t *testing.T, path string) *SessionLog {
 	}
 	return log
 }
-

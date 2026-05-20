@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -35,6 +36,7 @@ func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", "127.0.0.1:9131", "listen address")
 	model := fs.String("model", "", "LLM model identifier (provider/model)")
+	fastCheapModel := fs.String("fast-cheap-model", "", "fast cheap model identifier for side calls (same provider/model as --model)")
 	workDir := fs.String("dir", "", "working directory")
 	stateDir := fs.String("state-dir", "", "override runtime state directory")
 	runDirFlag := fs.String("run-dir", "", "override rendezvous run directory")
@@ -145,6 +147,10 @@ func runServe(args []string) error {
 		return fmt.Errorf("LLM client: %w", err)
 	}
 	profile, err := cmdutil.SelectProfile(modelRef.Provider, modelRef.Model, *outputSchema)
+	if err != nil {
+		return err
+	}
+	profile, err = applyFastCheapModel(profile, *fastCheapModel)
 	if err != nil {
 		return err
 	}
@@ -394,6 +400,20 @@ func runServe(args []string) error {
 		return err
 	}
 	return nil
+}
+
+func applyFastCheapModel(profile agent.ProviderProfile, raw string) (agent.ProviderProfile, error) {
+	if profile == nil || strings.TrimSpace(raw) == "" {
+		return profile, nil
+	}
+	ref, err := cmdutil.ParseModelRef(raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid --fast-cheap-model: %w", err)
+	}
+	if ref.Provider != profile.ID() {
+		return nil, fmt.Errorf("--fast-cheap-model provider %q must match active provider %q", ref.Provider, profile.ID())
+	}
+	return agent.WithCheapModel(profile, ref.Model), nil
 }
 
 func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus {

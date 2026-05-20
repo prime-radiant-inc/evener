@@ -6,6 +6,7 @@ import "primeradiant.com/serf/internal/appwire"
 func FromWire(in appwire.LaunchConfigLayer) Layer {
 	out := Layer{
 		Model:              in.Model,
+		FastCheapModel:     in.FastCheapModel,
 		Agent:              in.Agent,
 		ReasoningEffort:    in.ReasoningEffort,
 		ContextStrategy:    in.ContextStrategy,
@@ -34,6 +35,7 @@ func FromWire(in appwire.LaunchConfigLayer) Layer {
 func ToWire(in Layer) appwire.LaunchConfigLayer {
 	out := appwire.LaunchConfigLayer{
 		Model:              in.Model,
+		FastCheapModel:     in.FastCheapModel,
 		Agent:              in.Agent,
 		ReasoningEffort:    in.ReasoningEffort,
 		ContextStrategy:    in.ContextStrategy,

@@ -187,6 +187,7 @@ func (i *PastIndex) rebuildFTS(entries []PastEntry) error {
 	}()
 	if _, err := db.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS past_sessions_fts USING fts5(
 id,
+name,
 original_prompt,
 working_dir,
 state_dir UNINDEXED,
@@ -202,13 +203,13 @@ sort_rank UNINDEXED
 	if _, err := tx.Exec(`DELETE FROM past_sessions_fts`); err != nil {
 		return err
 	}
-	stmt, err := tx.Prepare(`INSERT INTO past_sessions_fts(id, original_prompt, working_dir, state_dir, sort_rank) VALUES (?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT INTO past_sessions_fts(id, name, original_prompt, working_dir, state_dir, sort_rank) VALUES (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return err
 	}
 	defer stmt.Close()
 	for rank, entry := range entries {
-		if _, err := stmt.Exec(entry.ID, entry.Meta.OriginalPrompt, entry.Meta.EnvInfo.WorkingDir, entry.StateDir, rank); err != nil {
+		if _, err := stmt.Exec(entry.ID, entry.Meta.Name, entry.Meta.OriginalPrompt, entry.Meta.EnvInfo.WorkingDir, entry.StateDir, rank); err != nil {
 			return err
 		}
 	}
@@ -293,6 +294,9 @@ func ftsQuery(q string) string {
 }
 
 func matches(e PastEntry, lowerQ string) bool {
+	if strings.Contains(strings.ToLower(e.Meta.Name), lowerQ) {
+		return true
+	}
 	if strings.Contains(strings.ToLower(e.Meta.OriginalPrompt), lowerQ) {
 		return true
 	}

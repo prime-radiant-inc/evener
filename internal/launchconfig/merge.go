@@ -53,6 +53,11 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 			prov["model"] = name
 			nonEmpty = true
 		}
+		if l.FastCheapModel != "" {
+			eff.FastCheapModel = l.FastCheapModel
+			prov["fast_cheap_model"] = name
+			nonEmpty = true
+		}
 		if l.Agent != "" {
 			eff.Agent = l.Agent
 			prov["agent"] = name
