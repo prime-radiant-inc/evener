@@ -44,9 +44,9 @@ func NameSession(ctx context.Context, client *llm.Client, profile ProviderProfil
 	callCtx, cancel := context.WithTimeout(ctx, sessionNameTimeout)
 	defer cancel()
 
-	cheapModel := strings.TrimSpace(profile.CheapModel())
-	if cheapModel == "" {
-		cheapModel = profile.Model()
+	model := sessionNamerModel(profile)
+	if model == "" {
+		return SessionNameResult{}, fmt.Errorf("session namer: model is empty")
 	}
 	maxTokens := 80
 	temp := 0.0
@@ -54,7 +54,7 @@ func NameSession(ctx context.Context, client *llm.Client, profile ProviderProfil
 		GenerateOptions: llm.GenerateOptions{
 			Client:      client,
 			Provider:    profile.ID(),
-			Model:       cheapModel,
+			Model:       model,
 			System:      ptrString(sessionNamerSystemPrompt),
 			Prompt:      ptrString(sessionNamerUserPrompt(source, text)),
 			Temperature: &temp,
@@ -79,7 +79,17 @@ func sessionNamerEnabled(profile ProviderProfile) bool {
 	if profile == nil {
 		return false
 	}
-	return strings.TrimSpace(configuredSessionNamerModel(profile)) != ""
+	return sessionNamerModel(profile) != ""
+}
+
+func sessionNamerModel(profile ProviderProfile) string {
+	if profile == nil {
+		return ""
+	}
+	if model := configuredSessionNamerModel(profile); model != "" {
+		return model
+	}
+	return strings.TrimSpace(profile.Model())
 }
 
 func configuredSessionNamerModel(profile ProviderProfile) string {

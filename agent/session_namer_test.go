@@ -9,6 +9,7 @@ import (
 )
 
 func TestNameSession_UsesCheapModelAndStructuredOutput(t *testing.T) {
+	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
@@ -42,7 +43,7 @@ func TestNameSession_UsesCheapModelAndStructuredOutput(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	got, err := NameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourcePrompt, "fix the flaky test in agent/session_test.go")
+	got, err := NameSession(context.Background(), client, profile, sessionNameSourcePrompt, "fix the flaky test in agent/session_test.go")
 	if err != nil {
 		t.Fatalf("NameSession: %v", err)
 	}
@@ -54,6 +55,30 @@ func TestNameSession_UsesCheapModelAndStructuredOutput(t *testing.T) {
 	}
 	if got.Usage.TotalTokens != 15 {
 		t.Fatalf("Usage.TotalTokens = %d, want 15", got.Usage.TotalTokens)
+	}
+}
+
+func TestNameSession_FallsBackToActiveModel(t *testing.T) {
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				if req.Model != "gpt-5.2" {
+					t.Fatalf("model = %q, want active model", req.Model)
+				}
+				return llm.Response{Message: llm.Assistant(`{"name":"Review System Prompt"}`)}
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	got, err := NameSession(context.Background(), client, NewOpenAIProfile("gpt-5.2"), sessionNameSourcePrompt, "review the system prompt")
+	if err != nil {
+		t.Fatalf("NameSession: %v", err)
+	}
+	if got.Name != "Review System Prompt" {
+		t.Fatalf("Name = %q, want Review System Prompt", got.Name)
 	}
 }
 

@@ -16,8 +16,8 @@ func TestSessionNameFromPrompt_UpdatesMetaAndAdvisoryLog(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				if req.Model != "gpt-4.1-nano" {
-					t.Fatalf("model = %q, want cheap model", req.Model)
+				if req.Model != "gpt-5.2" {
+					t.Fatalf("model = %q, want active model", req.Model)
 				}
 				return llm.Response{
 					Message: llm.Assistant(`{"name":"Fix Flaky Test"}`),
@@ -28,7 +28,7 @@ func TestSessionNameFromPrompt_UpdatesMetaAndAdvisoryLog(t *testing.T) {
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
+	profile := NewOpenAIProfile("gpt-5.2")
 	sess, err := NewSession(client, profile, NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
