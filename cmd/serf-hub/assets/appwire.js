@@ -669,13 +669,23 @@
       markLiveItem(params, item, { started: true });
       const type = internalItemType(item.type);
       if (type === "userMessage") return eventsFromItem(item);
-      if (type === "agentMessage") return [["ASSISTANT_TEXT_START", {}]];
-      if (type === "commandExecution") return [["TOOL_CALL_START", {
-        call_id: firstNonEmpty(item.callId, item.id),
-        item_id: item.id || "",
-        tool_name: item.toolName || "",
-        arguments_json: item.argumentsJson || "",
-      }]];
+      if (type === "agentMessage") {
+        const out = [["ASSISTANT_TEXT_START", {}]];
+        if (item.text) out.push(["ASSISTANT_TEXT_DELTA", { delta: item.text }]);
+        return out;
+      }
+      if (type === "commandExecution") {
+        const callID = firstNonEmpty(item.callId, item.id);
+        const itemID = item.id || "";
+        const out = [["TOOL_CALL_START", {
+          call_id: callID,
+          item_id: itemID,
+          tool_name: item.toolName || "",
+          arguments_json: item.argumentsJson || "",
+        }]];
+        if (item.output) out.push(["TOOL_CALL_OUTPUT_DELTA", { call_id: callID, item_id: itemID, delta: item.output }]);
+        return out;
+      }
       return [];
     }
     if (method === "item/completed") {

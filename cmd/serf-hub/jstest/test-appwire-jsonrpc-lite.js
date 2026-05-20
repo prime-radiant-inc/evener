@@ -233,6 +233,26 @@ vm.runInContext(SRC, context);
     turnId: "turn_dedupe",
     item: { id: "msg_dedupe", type: "agentMessage" },
   });
+  const startedAgentSnapshotEvents = context.window.SerfAppwire.eventsFromNotification("item/started", {
+    threadId: "th_codex",
+    turnId: "turn_started_snapshot",
+    item: { id: "msg_started_snapshot", type: "agentMessage", text: "started prefix" },
+  });
+  assert(startedAgentSnapshotEvents.some(([kind, data]) => kind === "ASSISTANT_TEXT_DELTA" && data.delta === "started prefix"),
+    "item/started should render agentMessage snapshot text");
+  const startedToolSnapshotEvents = context.window.SerfAppwire.eventsFromNotification("item/started", {
+    threadId: "th_tool_started_snapshot",
+    turnId: "turn_tool_started_snapshot",
+    item: {
+      id: "tool_started_snapshot",
+      callId: "call_started_snapshot",
+      type: "commandExecution",
+      toolName: "shell",
+      output: "started output",
+    },
+  });
+  assert(startedToolSnapshotEvents.some(([kind, data]) => kind === "TOOL_CALL_OUTPUT_DELTA" && data.delta === "started output"),
+    "item/started should render commandExecution snapshot output");
   context.window.SerfAppwire.eventsFromNotification("item/agentMessage/delta", {
     threadId: "th_codex",
     turnId: "turn_dedupe",
