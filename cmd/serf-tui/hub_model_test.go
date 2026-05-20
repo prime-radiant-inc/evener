@@ -2679,6 +2679,45 @@ func TestHubModelTurnStartEnablesTurnActions(t *testing.T) {
 	}
 }
 
+func TestHubModelIgnoresAsyncCompletionForDifferentSession(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.Ref = "local:current"
+	m.detail.ActiveTurnID = "turn_current"
+	m.session.setInputValue("current draft")
+	m.sessionQueue = []string{"current queued"}
+
+	updated, _ := m.Update(hubSendMsg{ref: "local:old", text: "old", draft: "old draft", turnID: "turn_old"})
+	got := updated.(hubModel)
+	if got.detail.ActiveTurnID != "turn_current" {
+		t.Fatalf("stale send changed active turn id=%q", got.detail.ActiveTurnID)
+	}
+	if got.session.input.Value() != "current draft" {
+		t.Fatalf("stale send changed draft=%q", got.session.input.Value())
+	}
+
+	updated, _ = got.Update(hubQueueMsg{ref: "local:old", text: "old", draft: "old draft", err: errors.New("queue failed")})
+	got = updated.(hubModel)
+	if got.session.input.Value() != "current draft" {
+		t.Fatalf("stale queue error restored old draft=%q", got.session.input.Value())
+	}
+
+	updated, _ = got.Update(hubDrainAsSteerMsg{
+		ref:           "local:old",
+		text:          "old queued",
+		draft:         "old draft",
+		preQueueDepth: 1,
+		err:           appwire.Conflict("queued before drain failed"),
+		queued:        true,
+	})
+	got = updated.(hubModel)
+	if len(got.sessionQueue) != 1 || got.sessionQueue[0] != "current queued" {
+		t.Fatalf("stale drain mutated queue preview: %+v", got.sessionQueue)
+	}
+	if got.session.input.Value() != "current draft" {
+		t.Fatalf("stale drain changed draft=%q", got.session.input.Value())
+	}
+}
+
 func TestHubModelSendErrorRemovesOptimisticUserEcho(t *testing.T) {
 	m := newSessionHubModel(nil)
 	reducer := m.sessionTranscriptReducer()

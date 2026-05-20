@@ -31,6 +31,7 @@ type hubNotificationMsg struct {
 }
 
 type hubSendMsg struct {
+	ref                     string
 	text                    string
 	draft                   string
 	turnID                  string
@@ -395,10 +396,10 @@ func sendHubInput(client *appwire.Client, ref appwire.Ref, text string, draft st
 	return func() tea.Msg {
 		items, err := buildAttachmentItems(attachments)
 		if err != nil {
-			return hubSendMsg{text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
+			return hubSendMsg{ref: ref.String(), text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 		}
 		resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{Ref: ref.String(), Input: appendTextInput(text, items)})
-		return hubSendMsg{text: text, draft: draft, turnID: resp.Turn.ID, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
+		return hubSendMsg{ref: ref.String(), text: text, draft: draft, turnID: resp.Turn.ID, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 	}
 }
 

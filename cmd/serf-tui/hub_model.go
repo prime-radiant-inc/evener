@@ -508,6 +508,12 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.trackedAttachmentSubmit {
 			m.finishAttachmentSubmit()
 		}
+		if msg.ref != "" && !m.matchesAsyncSessionRef(msg.ref) {
+			if msg.err == nil {
+				m.clearSubmittedAttachments(msg.submittedAttachments, true)
+			}
+			return m, nil
+		}
 		if msg.err != nil {
 			// Preserve pendingAttachments on error so the user can retry
 			// without re-pasting (kata re91).
@@ -529,6 +535,12 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.trackedAttachmentSubmit {
 			m.finishAttachmentSubmit()
 		}
+		if msg.ref != "" && !m.matchesAsyncSessionRef(msg.ref) {
+			if msg.err == nil {
+				m.clearSubmittedAttachments(msg.submittedAttachments, true)
+			}
+			return m, nil
+		}
 		if msg.err != nil {
 			// Restore the draft; the wire state will not advance because
 			// the daemon never received the message. Preserve attachments
@@ -549,6 +561,12 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case hubDrainAsSteerMsg:
 		if msg.trackedAttachmentSubmit {
 			m.finishAttachmentSubmit()
+		}
+		if msg.ref != "" && !m.matchesAsyncSessionRef(msg.ref) {
+			if msg.err == nil || msg.queued || isQueuedDrainPartial(msg.err) {
+				m.clearSubmittedAttachments(msg.submittedAttachments, true)
+			}
+			return m, nil
 		}
 		if msg.err != nil {
 			if msg.queued || isQueuedDrainPartial(msg.err) {
@@ -2412,6 +2430,10 @@ func (m hubModel) currentRef() (appwire.Ref, bool) {
 		return appwire.Ref{}, false
 	}
 	return ref, true
+}
+
+func (m hubModel) matchesAsyncSessionRef(ref string) bool {
+	return m.mode == hubModeSession && strings.TrimSpace(ref) != "" && strings.TrimSpace(m.detail.Ref) == strings.TrimSpace(ref)
 }
 
 func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.Cmd {

@@ -14,6 +14,7 @@ import (
 // local queue preview is appended with the queued text; on failure the
 // composer draft is restored so the user can retry without retyping.
 type hubQueueMsg struct {
+	ref                     string
 	text                    string
 	draft                   string
 	trackedAttachmentSubmit bool
@@ -23,6 +24,7 @@ type hubQueueMsg struct {
 
 // hubDrainAsSteerMsg reports the result of a turn/drainAsSteer call.
 type hubDrainAsSteerMsg struct {
+	ref                     string
 	text                    string
 	draft                   string
 	queued                  bool
@@ -42,13 +44,13 @@ func sendHubQueue(client *appwire.Client, ref appwire.Ref, text, draft string, a
 	return func() tea.Msg {
 		items, err := buildAttachmentItems(attachments)
 		if err != nil {
-			return hubQueueMsg{text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
+			return hubQueueMsg{ref: ref.String(), text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 		}
 		err = client.TurnQueue(context.Background(), appwire.TurnQueueParams{
 			Ref:   ref.String(),
 			Input: appendTextInput(text, items),
 		})
-		return hubQueueMsg{text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
+		return hubQueueMsg{ref: ref.String(), text: text, draft: draft, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 	}
 }
 
@@ -65,13 +67,13 @@ func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft st
 		}
 		items, err := buildAttachmentItems(attachments)
 		if err != nil {
-			return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
+			return hubDrainAsSteerMsg{ref: ref.String(), text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(attachments) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 		}
 		err = client.TurnDrainAsSteer(context.Background(), appwire.TurnDrainAsSteerParams{
 			Ref:   ref.String(),
 			Input: appendTextInput(text, items),
 		})
-		return hubDrainAsSteerMsg{text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(items) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
+		return hubDrainAsSteerMsg{ref: ref.String(), text: text, draft: draft, preQueueDepth: depth, hadAttachment: len(items) > 0, trackedAttachmentSubmit: trackedAttachmentSubmit, submittedAttachments: attachments, err: err}
 	}
 }
 
