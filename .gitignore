@@ -8,7 +8,9 @@
 /.serf/web_cache/
 /.serf/prompts/
 /serf
+/serf-hub
 /serf-tui
+/serf-namingcheck
 /serfeval
 /llmcall
 /sessions/

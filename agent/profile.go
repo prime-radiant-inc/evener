@@ -144,6 +144,7 @@ func (p *baseProfile) CheapModel() string {
 		return p.model
 	}
 }
+
 // prefixAction is the resolution of a slash-prefixed model string
 // "X/Y" passed to WithModel on a profile with id `id`. See decidePrefixAction.
 type prefixAction int
@@ -1262,7 +1263,7 @@ func defCommunicateNamed(name string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        name,
-		Description: "Send a user-facing message. This is the only valid way to communicate with the user; never emit a plain assistant response. Set `message` to the exact text the user should see. Set `await_reply` to true only when you need user input before you can continue; otherwise set it to false. Always include `output` as the structured envelope. For ordinary conversational replies, leave `output.message` empty, `output.data` empty, and `output.artifacts` empty. When handing back completed work or machine-readable results, populate `output.message`, `output.data`, and `output.artifacts` accordingly. Some workflows may also require extra fields inside `output`, such as `output.decision` or specific `output.data.*` keys.",
+		Description: "Send a user-facing message. ALWAYS use this tool when sending a message to the user. Never emit a plain response. Set `message` to the exact text the user should see. Set `await_reply=true` only when you need user input before you can continue. Otherwise set `await_reply=false`. Always include the structured `output` envelope. For ordinary conversational replies, leave `output.message` empty, `output.data` empty, and `output.artifacts` empty. When handing back completed work or machine-readable results, populate `output` with the evidence and structured data the caller needs. Some workflows may also require extra fields inside `output`, such as `output.decision` or specific `output.data.*` keys.",
 		Strict:      &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
