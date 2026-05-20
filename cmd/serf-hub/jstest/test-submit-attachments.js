@@ -261,6 +261,7 @@ async function testDrainAsSteerWithAttachmentsQueuesThenDrains() {
   });
   const { window } = dom;
   const sentJSONs = [];
+  const pendingIntents = [];
   class StubWS {
     constructor() {
       this.readyState = 1;
@@ -282,6 +283,13 @@ async function testDrainAsSteerWithAttachmentsQueuesThenDrains() {
   window.WebSocket = StubWS;
   window.WebSocket.OPEN = 1;
   window.eval(appwireSrc);
+  window.SerfAppwire.setPendingRegistry({
+    register: (intent) => {
+      pendingIntents.push(intent);
+      return { id: pendingIntents.length };
+    },
+    fail: () => {},
+  });
 
   const attachments = [{ type: "image", mediaType: "image/png", data: arrayBuf(PNG_BYTES), name: "d.png" }];
   await window.SerfAppwire.drainAsSteer("local:01TEST", "drain text", attachments);
@@ -296,6 +304,14 @@ async function testDrainAsSteerWithAttachmentsQueuesThenDrains() {
     const imgs = items.filter((it) => it && it.type === "image");
     pass(imgs.length === 1 && imgs[0].data === PNG_B64,
       "drain: params input should carry the base64 image, got " + JSON.stringify(items));
+  }
+  pass(pendingIntents.length === 1 && pendingIntents[0].method === "turn/drainAsSteer",
+    "drain: expected one optimistic drain intent, got " + JSON.stringify(pendingIntents));
+  if (pendingIntents[0]) {
+    pass(pendingIntents[0].text === "drain text",
+      "drain: optimistic intent should preserve text for retry, got " + JSON.stringify(pendingIntents[0]));
+    pass(pendingIntents[0].items && pendingIntents[0].items.length === 1 && pendingIntents[0].items[0].name === "d.png",
+      "drain: optimistic intent should preserve attachment metadata for retry, got " + JSON.stringify(pendingIntents[0]));
   }
 }
 

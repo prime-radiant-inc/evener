@@ -343,7 +343,7 @@
               case "turn/queue":
                 return window.SerfAppwire.queueTurn(this.sessionId, intent.text, intent.items || []);
               case "turn/drainAsSteer":
-                return window.SerfAppwire.drainAsSteer(this.sessionId);
+                return window.SerfAppwire.drainAsSteer(this.sessionId, intent.text, intent.items || []);
             }
           },
         });

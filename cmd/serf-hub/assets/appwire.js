@@ -380,7 +380,7 @@
     return optimisticCall(METHOD.turnDrainAsSteer, {
       ref: refForSession(sessionId),
       input: inputItemsForTextAndAttachments(text || "", attachments),
-    }, { text: "" });
+    }, { text: text || "", items: attachments || [] });
   }
 
   function action(sessionId, name, turnId) {

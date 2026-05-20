@@ -347,4 +347,27 @@ function build() {
   console.log("ok retry_preserves_attachment_items");
 })();
 
+(function test_drain_retry_preserves_payload_items() {
+  const window = build();
+  const conv = window.document.getElementById("conversation");
+  const calls = [];
+  const reg = window.SerfAppwirePending.create({
+    conversation: conv,
+    onRetry: (intent) => calls.push(intent),
+  });
+  const item = { type: "image", name: "steer.png" };
+  const items = [item];
+  const h = reg.register({ method: "turn/drainAsSteer", text: "force this through", items });
+  reg.fail(h, "server refused");
+
+  const retry = conv.querySelector(".optimistic-retry");
+  assert.ok(retry, "expected drain retry link");
+  retry.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+
+  assert.equal(calls.length, 1, "onRetry should have been called once");
+  assert.deepEqual(calls[0], { method: "turn/drainAsSteer", text: "force this through", items: [item] });
+  assert.notEqual(calls[0].items, items, "items should be a snapshot copy");
+  console.log("ok drain_retry_preserves_payload_items");
+})();
+
 console.log("PASS test-pending-registry.js");
