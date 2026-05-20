@@ -468,6 +468,9 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmd := m.applyHubNotification(msg.notification)
 		return m, tea.Batch(cmd, waitHubNotification(m.client))
 	case pendingRegisteredMsg:
+		if msg.entry.Ref != "" && !m.matchesAsyncSessionRef(msg.entry.Ref) {
+			return m, nil
+		}
 		switch msg.entry.Method {
 		case appwire.MethodTurnSteer:
 			m.session.messages = append(m.session.messages, chatMessage{
@@ -497,10 +500,16 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.session.refreshViewport()
 		return m, nil
 	case pendingFailedMsg:
+		if msg.entry.Ref != "" && !m.matchesAsyncSessionRef(msg.entry.Ref) {
+			return m, nil
+		}
 		m.markPendingFailedByID(msg.entry.ID, msg.reason)
 		m.session.refreshViewport()
 		return m, nil
 	case pendingConfirmedMsg:
+		if msg.entry.Ref != "" && !m.matchesAsyncSessionRef(msg.entry.Ref) {
+			return m, nil
+		}
 		m.removePendingByID(msg.entry.ID)
 		m.session.refreshViewport()
 		return m, nil
@@ -2603,14 +2612,15 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 // regardless of text, because the daemon collapses queued entries
 // into one STEERING and the placeholder doesn't know the joined text.
 func reconcilePendingFromNotification(pending *pendingCoordinator, n appwire.Notification) {
+	ref := notificationPendingRef(n)
 	switch n.Method {
 	case appwire.NotifySerfSteeringInjected:
 		var p struct {
 			Text string `json:"text"`
 		}
 		_ = json.Unmarshal(n.Params, &p)
-		pending.TryReconcile(appwire.MethodTurnSteer, p.Text)
-		pending.TryReconcile(appwire.MethodTurnDrainAsSteer, "")
+		pending.TryReconcile(appwire.MethodTurnSteer, p.Text, ref)
+		pending.TryReconcile(appwire.MethodTurnDrainAsSteer, "", ref)
 	case appwire.NotifyItemStarted, appwire.NotifyItemCompleted:
 		// userMessage item carries the user's text. Match against
 		// any turn/start pending entry.
@@ -2625,7 +2635,7 @@ func reconcilePendingFromNotification(pending *pendingCoordinator, n appwire.Not
 			if text == "" {
 				text = imageItemsPlaceholder(p.Item.Images)
 			}
-			pending.TryReconcile(appwire.MethodTurnStart, text)
+			pending.TryReconcile(appwire.MethodTurnStart, text, ref)
 		}
 	case appwire.NotifyTurnCompleted:
 		var p struct {
@@ -2642,9 +2652,20 @@ func reconcilePendingFromNotification(pending *pendingCoordinator, n appwire.Not
 			if text == "" {
 				text = imageItemsPlaceholder(item.Images)
 			}
-			pending.TryReconcile(appwire.MethodTurnStart, text)
+			pending.TryReconcile(appwire.MethodTurnStart, text, ref)
 		}
 	}
+}
+
+func notificationPendingRef(n appwire.Notification) string {
+	var p appwire.NotificationRef
+	if err := json.Unmarshal(n.Params, &p); err != nil {
+		return ""
+	}
+	if strings.TrimSpace(p.Ref) != "" {
+		return strings.TrimSpace(p.Ref)
+	}
+	return strings.TrimSpace(p.ThreadID)
 }
 
 // markPendingFailedByID flips the chatMessage with the given PendingID

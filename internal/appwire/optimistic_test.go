@@ -19,16 +19,17 @@ type fakeCoordinator struct {
 type fakeHandle struct {
 	method string
 	text   string
+	ref    string
 	failed bool
 	reason string
 }
 
 func (h *fakeHandle) Fail(reason string) { h.failed = true; h.reason = reason }
 
-func (f *fakeCoordinator) Register(method, text string) appwire.PendingHandle {
+func (f *fakeCoordinator) Register(method, text, ref string) appwire.PendingHandle {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	h := &fakeHandle{method: method, text: text}
+	h := &fakeHandle{method: method, text: text, ref: ref}
 	f.entries = append(f.entries, h)
 	return h
 }
@@ -72,6 +73,9 @@ func TestTurnSteer_RegistersPending_AndFailsOnRPCError(t *testing.T) {
 	}
 	if e.text != "hold on, look at this first" {
 		t.Fatalf("text = %q", e.text)
+	}
+	if e.ref != "local:t1" {
+		t.Fatalf("ref = %q, want local:t1", e.ref)
 	}
 	if !e.failed {
 		t.Fatalf("handle was not marked failed")
@@ -163,6 +167,9 @@ func TestTurnStart_RegistersPending_AndFailsOnRPCError(t *testing.T) {
 	if coord.entries[0].text != "first message" {
 		t.Fatalf("text = %q, want %q", coord.entries[0].text, "first message")
 	}
+	if coord.entries[0].ref != "local:t1" {
+		t.Fatalf("ref = %q, want local:t1", coord.entries[0].ref)
+	}
 }
 
 func TestTurnStart_RegistersImageOnlyPendingPreview(t *testing.T) {
@@ -244,6 +251,9 @@ func TestTurnDrainAsSteer_RegistersPending_TextEmpty(t *testing.T) {
 	defer coord.mu.Unlock()
 	if len(coord.entries) != 1 || coord.entries[0].method != "turn/drainAsSteer" {
 		t.Fatalf("entry: %+v", coord.entries)
+	}
+	if coord.entries[0].ref != "local:t1" {
+		t.Fatalf("ref = %q, want local:t1", coord.entries[0].ref)
 	}
 }
 

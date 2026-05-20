@@ -14,7 +14,7 @@ type PendingCoordinator interface {
 	// signal RPC-level failure (network error, hub Unavailable).
 	// The coordinator owns the timeout, the reconciliation, and the
 	// authoritative confirmation lifecycle.
-	Register(method, text string) PendingHandle
+	Register(method, text, ref string) PendingHandle
 }
 
 // PendingHandle is the per-call lifecycle handle returned by

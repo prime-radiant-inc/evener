@@ -240,7 +240,7 @@ func (c *Client) ThreadShutdown(ctx context.Context, params ThreadShutdownParams
 func (c *Client) TurnStart(ctx context.Context, params TurnStartParams) (TurnStartResponse, error) {
 	var handle PendingHandle
 	if c.pendingCoord != nil {
-		handle = c.pendingCoord.Register(MethodTurnStart, pendingTurnStartText(params))
+		handle = c.pendingCoord.Register(MethodTurnStart, pendingTurnStartText(params), pendingTargetRef(params.Ref, params.ThreadID))
 	}
 	var out TurnStartResponse
 	err := c.request(ctx, MethodTurnStart, params, &out)
@@ -274,7 +274,7 @@ func pendingTurnStartText(params TurnStartParams) string {
 func (c *Client) TurnSteer(ctx context.Context, params TurnSteerParams) error {
 	var handle PendingHandle
 	if c.pendingCoord != nil {
-		handle = c.pendingCoord.Register(MethodTurnSteer, inputText(params.Input))
+		handle = c.pendingCoord.Register(MethodTurnSteer, inputText(params.Input), pendingTargetRef(params.Ref, params.ThreadID))
 	}
 	err := c.request(ctx, MethodTurnSteer, params, nil)
 	if err != nil && handle != nil {
@@ -309,13 +309,20 @@ func (c *Client) TurnQueue(ctx context.Context, params TurnQueueParams) error {
 func (c *Client) TurnDrainAsSteer(ctx context.Context, params TurnDrainAsSteerParams) error {
 	var handle PendingHandle
 	if c.pendingCoord != nil {
-		handle = c.pendingCoord.Register(MethodTurnDrainAsSteer, "")
+		handle = c.pendingCoord.Register(MethodTurnDrainAsSteer, "", params.Ref)
 	}
 	err := c.request(ctx, MethodTurnDrainAsSteer, params, nil)
 	if err != nil && handle != nil {
 		handle.Fail(err.Error())
 	}
 	return err
+}
+
+func pendingTargetRef(ref, threadID string) string {
+	if strings.TrimSpace(ref) != "" {
+		return ref
+	}
+	return threadID
 }
 
 func (c *Client) TasksList(ctx context.Context, params TaskListParams) (TaskListResponse, error) {

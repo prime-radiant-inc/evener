@@ -34,6 +34,7 @@ type pendingEntry struct {
 	ID      int64
 	Method  string
 	Text    string
+	Ref     string
 	Pending bool
 	Failed  bool
 	Reason  string
@@ -121,11 +122,11 @@ func (h *pendingHandleImpl) Fail(reason string) {
 }
 
 // Register satisfies appwire.PendingCoordinator.
-func (p *pendingCoordinator) Register(method, text string) appwire.PendingHandle {
+func (p *pendingCoordinator) Register(method, text, ref string) appwire.PendingHandle {
 	p.mu.Lock()
 	p.nextID++
 	id := p.nextID
-	entry := pendingEntry{ID: id, Method: method, Text: text, Pending: true}
+	entry := pendingEntry{ID: id, Method: method, Text: text, Ref: strings.TrimSpace(ref), Pending: true}
 	state := &pendingEntryState{entry: entry}
 	p.entries[id] = state
 	state.timer = p.clock.AfterFunc(pendingTimeout, func() {
@@ -160,13 +161,14 @@ func (p *pendingCoordinator) dispatch(msg tea.Msg) {
 //     one steering and the placeholder doesn't know that joined text
 //     in advance. This is the spec's "drain-special" semantic.
 //   - Everything else: (method, normalized-text) exact match.
-func (p *pendingCoordinator) TryReconcile(method, text string) bool {
+func (p *pendingCoordinator) TryReconcile(method, text, ref string) bool {
+	ref = strings.TrimSpace(ref)
 	p.mu.Lock()
 	var pendingMatch *pendingEntryState
 	var failedMatch *pendingEntryState
 	if method == appwire.MethodTurnDrainAsSteer {
 		for _, state := range p.entries {
-			if state.entry.Method != method {
+			if state.entry.Method != method || !pendingRefsMatch(state.entry.Ref, ref) {
 				continue
 			}
 			if state.entry.Pending {
@@ -184,7 +186,7 @@ func (p *pendingCoordinator) TryReconcile(method, text string) bool {
 	} else {
 		want := normalizePendingText(text)
 		for _, state := range p.entries {
-			if state.entry.Method != method {
+			if state.entry.Method != method || !pendingRefsMatch(state.entry.Ref, ref) {
 				continue
 			}
 			if normalizePendingText(state.entry.Text) == want {
@@ -219,6 +221,21 @@ func (p *pendingCoordinator) TryReconcile(method, text string) bool {
 	p.mu.Unlock()
 	p.dispatch(pendingConfirmedMsg{entry: matchEntry})
 	return true
+}
+
+func pendingRefsMatch(entryRef, ref string) bool {
+	entryRef = strings.TrimSpace(entryRef)
+	ref = strings.TrimSpace(ref)
+	if entryRef == "" || ref == "" || entryRef == ref {
+		return true
+	}
+	if parsed, err := appwire.ParseRef(entryRef); err == nil && parsed.ThreadID == ref {
+		return true
+	}
+	if parsed, err := appwire.ParseRef(ref); err == nil && parsed.ThreadID == entryRef {
+		return true
+	}
+	return false
 }
 
 func (p *pendingCoordinator) failByID(id int64, reason string) {

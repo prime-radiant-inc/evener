@@ -3524,6 +3524,50 @@ func TestHubModelIgnoresNotificationsForOtherSessions(t *testing.T) {
 	}
 }
 
+func TestHubModelIgnoresPendingCoordinatorMessagesForOtherSessions(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.Ref = "local:current"
+	m.session.sessionID = "current"
+
+	updated, _ := m.Update(pendingRegisteredMsg{entry: pendingEntry{
+		ID:      1,
+		Method:  appwire.MethodTurnStart,
+		Text:    "wrong",
+		Ref:     "local:other",
+		Pending: true,
+	}})
+	got := updated.(hubModel)
+	if len(got.session.messages) != 0 {
+		t.Fatalf("messages=%+v, want no placeholder from other session", got.session.messages)
+	}
+
+	updated, _ = got.Update(pendingRegisteredMsg{entry: pendingEntry{
+		ID:      2,
+		Method:  appwire.MethodTurnStart,
+		Text:    "right",
+		Ref:     "local:current",
+		Pending: true,
+	}})
+	got = updated.(hubModel)
+	if len(got.session.messages) != 1 || got.session.messages[0].Text != "right" {
+		t.Fatalf("messages=%+v", got.session.messages)
+	}
+
+	updated, _ = got.Update(pendingFailedMsg{
+		entry: pendingEntry{
+			ID:     2,
+			Method: appwire.MethodTurnStart,
+			Text:   "right",
+			Ref:    "local:other",
+		},
+		reason: "wrong session",
+	})
+	got = updated.(hubModel)
+	if got.session.messages[0].Failed {
+		t.Fatalf("pending message failed from other session: %+v", got.session.messages[0])
+	}
+}
+
 func newTestHubClient(t *testing.T, register func(*appserver.Server)) (*appwire.Client, func()) {
 	t.Helper()
 	app := appserver.NewServer(appserver.ServerConfig{
