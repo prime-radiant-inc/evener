@@ -250,8 +250,8 @@ await scenario("auto-advance steering becomes 'now on X'", [
 	  return { ok: true };
 	});
 
-	// 7. A status change applies immediately with state-derived capabilities;
-	// source capabilities are refreshed asynchronously after the transition.
+	// 7. A status change applies immediately while preserving the last
+	// source-advertised capability baseline until refresh returns.
 	{
 	  const { window } = newHarness();
 	  await new Promise(r => setTimeout(r, 30));
@@ -262,8 +262,8 @@ await scenario("auto-advance steering becomes 'now on X'", [
 	    capabilities: { queue: false },
 	  });
 	  window.SerfRenderer.handleData("THREAD_STATUS_CHANGED", { status: "active" });
-	  const ok = btn.getAttribute("data-capability-queue") === "true";
-	  console.log((ok ? "PASS" : "FAIL") + " — active status immediately enables conservative queue capability");
+	  const ok = btn.getAttribute("data-capability-queue") === "false";
+	  console.log((ok ? "PASS" : "FAIL") + " — active status preserves source queue=false baseline");
 	  if (!ok) {
 	    allPass = false;
 	    console.log("  detail: queue attr=" + btn.getAttribute("data-capability-queue"));

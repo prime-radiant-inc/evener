@@ -608,7 +608,6 @@
           {
             const status = data.status || "";
             const seq = ++this.statusUpdateSeq;
-            this.resetLiveCapabilities();
             this.updateThreadState(status);
             this.refreshCapabilitiesForStatus(status, seq);
           }
