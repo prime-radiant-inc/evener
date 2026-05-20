@@ -964,6 +964,32 @@ func TestServerAppWireTurnDrainAsSteerRequiresQueuedMessages(t *testing.T) {
 	}
 }
 
+func TestServerAppWireTurnDrainAsSteerRejectsReservedTurn(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
+	srv.appActiveTurnID = "turn_reserved"
+	srv.appReservedTurnID = "turn_reserved"
+	called := 0
+	srv.SetDrainAsSteerFunc(func() error { called++; return nil })
+	srv.SetQueueDepthFunc(func() int { return 1 })
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{
+		Ref: "local:th_1",
+	}))
+	if resp.Kind() != appwire.MessageError {
+		t.Fatalf("expected error, got %v", resp.Kind())
+	}
+	if resp.Error.Error.Code != appwire.CodeConflict {
+		t.Fatalf("error=%+v", resp.Error.Error)
+	}
+	if called != 0 {
+		t.Fatalf("drain called=%d, want 0", called)
+	}
+}
+
 // TestServerAppWireTurnDrainAsSteerDispatchesWhenQueued verifies the
 // handler invokes the registered drain callback.
 func TestServerAppWireTurnDrainAsSteerDispatchesWhenQueued(t *testing.T) {

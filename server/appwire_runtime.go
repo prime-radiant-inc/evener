@@ -413,13 +413,12 @@ func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.Tur
 	inputFn := s.drainSteerInputFunc
 	depthFn := s.queueDepthFn
 	processing := s.processing
-	reservedTurnID := s.appReservedTurnID
 	closed := appStatus(s.status.State, processing) == appwire.ThreadStatusClosed
 	s.mu.RUnlock()
 	if closed {
 		return appwire.EmptyResponse{}, appwire.Conflict("session is closed")
 	}
-	if !processing && strings.TrimSpace(reservedTurnID) == "" {
+	if !processing {
 		return appwire.EmptyResponse{}, appwire.Conflict("no active turn to steer")
 	}
 	if fn == nil {
