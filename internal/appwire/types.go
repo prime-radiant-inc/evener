@@ -155,13 +155,16 @@ type ThreadStatus struct {
 }
 
 type SerfThread struct {
-	Ref             string             `json:"ref"`
-	ParentRef       string             `json:"parentRef,omitempty"`
-	Kind            string             `json:"kind,omitempty"`
-	Profile         string             `json:"profile,omitempty"`
-	ContextPressure float64            `json:"contextPressure,omitempty"`
-	Capabilities    ThreadCapabilities `json:"capabilities"`
-	Diagnostics     *SerfDiagnostics   `json:"diagnostics,omitempty"`
+	Ref              string             `json:"ref"`
+	ParentRef        string             `json:"parentRef,omitempty"`
+	Kind             string             `json:"kind,omitempty"`
+	Profile          string             `json:"profile,omitempty"`
+	ContextPressure  float64            `json:"contextPressure,omitempty"`
+	ContextUsed      int                `json:"contextUsed,omitempty"`
+	ContextWindow    int                `json:"contextWindow,omitempty"`
+	ContextRemaining int                `json:"contextRemaining,omitempty"`
+	Capabilities     ThreadCapabilities `json:"capabilities"`
+	Diagnostics      *SerfDiagnostics   `json:"diagnostics,omitempty"`
 	// Queue carries authoritative queue depth + preview for the per-session
 	// input queue (kata r80p). Both UIs derive their queue-preview chrome
 	// from this field rather than mirroring queue mutations locally, which

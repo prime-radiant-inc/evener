@@ -1505,6 +1505,20 @@ func TestContextManager_UsesLastInputTokensForPressure(t *testing.T) {
 	}
 }
 
+func TestContextManager_EstimateUsageReportsRemainingWindow(t *testing.T) {
+	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
+	cm := NewContextManager(profile, nil)
+	cm.RecordInputTokens(550, 10)
+
+	history := make([]Turn, 11)
+	history[10] = Turn{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("y", 40))}
+
+	got := cm.EstimateUsage(history, 0)
+	if got.Used != 560 || got.Window != 1000 || got.Remaining != 440 {
+		t.Fatalf("EstimateUsage = %+v, want used=560 window=1000 remaining=440", got)
+	}
+}
+
 func TestContextManager_FallsBackToCharHeuristicWithoutMeasurement(t *testing.T) {
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
 	cm := NewContextManager(profile, nil)

@@ -262,6 +262,10 @@ func runServe(args []string) error {
 	srv.SetQueueDepthFunc(func() int { return getSession().QueueDepth() })
 	srv.SetQueuePreviewFunc(func() []string { return getSession().QueuePreview() })
 	srv.SetContextPressureFunc(func() float64 { return getSession().ContextPressure() })
+	srv.SetContextMetricsFunc(func() server.ContextMetrics {
+		metrics := getSession().ContextMetrics()
+		return server.ContextMetrics{Used: metrics.Used, Window: metrics.Window, Remaining: metrics.Remaining}
+	})
 	srv.SetModelFunc(func(model string) { getSession().SetModel(model) })
 	srv.SetListModelsFunc(cmdutil.ListModelsFunc(client, profile.ID()))
 	srv.SetDetailedStatusFunc(func() server.DetailedStatus {

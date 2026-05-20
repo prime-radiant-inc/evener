@@ -791,6 +791,7 @@ func (s *Server) appThread() appwire.Thread {
 	threadID := s.appThreadID
 	processing := s.processing
 	pfn := s.pressureFn
+	cmfn := s.contextMetricsFn
 	dfn := s.detailedStatusFn
 	qpfn := s.queuePreviewFn
 	qdfn := s.queueDepthFn
@@ -806,6 +807,14 @@ func (s *Server) appThread() appwire.Thread {
 	pressure := status.ContextPressure
 	if pfn != nil {
 		pressure = pfn()
+	}
+	metrics := ContextMetrics{
+		Used:      status.ContextUsed,
+		Window:    status.ContextWindow,
+		Remaining: status.ContextRemaining,
+	}
+	if cmfn != nil {
+		metrics = cmfn()
 	}
 	var diagnostics *appwire.SerfDiagnostics
 	if dfn != nil {
@@ -835,12 +844,15 @@ func (s *Server) appThread() appwire.Thread {
 		Path:          filepath.Base(status.WorkingDir),
 		Source:        sourceID,
 		Serf: appwire.SerfThread{
-			Ref:             ref,
-			Profile:         status.Profile,
-			ContextPressure: pressure,
-			Capabilities:    s.appCapabilities(status.State, processing),
-			Diagnostics:     diagnostics,
-			Queue:           queue,
+			Ref:              ref,
+			Profile:          status.Profile,
+			ContextPressure:  pressure,
+			ContextUsed:      metrics.Used,
+			ContextWindow:    metrics.Window,
+			ContextRemaining: metrics.Remaining,
+			Capabilities:     s.appCapabilities(status.State, processing),
+			Diagnostics:      diagnostics,
+			Queue:            queue,
 		},
 	}
 }

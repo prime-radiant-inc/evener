@@ -71,15 +71,25 @@ type DetailedStatus struct {
 
 // StatusInfo is the JSON response for GET /status.
 type StatusInfo struct {
-	SessionID       string             `json:"session_id"`
-	State           string             `json:"state"`
-	Turns           int                `json:"turns"`
-	Model           string             `json:"model"`
-	Profile         string             `json:"profile"`
-	WorkingDir      string             `json:"working_dir,omitempty"`
-	ContextPressure float64            `json:"context_pressure"`
-	Detailed        *DetailedStatus    `json:"detailed,omitempty"`
-	Capabilities    ActionCapabilities `json:"capabilities"`
+	SessionID        string             `json:"session_id"`
+	State            string             `json:"state"`
+	Turns            int                `json:"turns"`
+	Model            string             `json:"model"`
+	Profile          string             `json:"profile"`
+	WorkingDir       string             `json:"working_dir,omitempty"`
+	ContextPressure  float64            `json:"context_pressure"`
+	ContextUsed      int                `json:"context_used,omitempty"`
+	ContextWindow    int                `json:"context_window,omitempty"`
+	ContextRemaining int                `json:"context_remaining,omitempty"`
+	Detailed         *DetailedStatus    `json:"detailed,omitempty"`
+	Capabilities     ActionCapabilities `json:"capabilities"`
+}
+
+// ContextMetrics describes the estimated size of the active session context.
+type ContextMetrics struct {
+	Used      int
+	Window    int
+	Remaining int
 }
 
 // ActionCapabilities reports which mutating session actions are currently
@@ -128,6 +138,7 @@ type Server struct {
 	compactFunc         func(context.Context) error
 	clearFunc           func(context.Context) error
 	pressureFn          func() float64
+	contextMetricsFn    func() ContextMetrics
 	detailedStatusFn    func() DetailedStatus
 	modelFunc           func(string)
 	listModelsFunc      func(context.Context) ([]ModelsResponseItem, error)
@@ -446,6 +457,13 @@ func (s *Server) SetContextPressureFunc(fn func() float64) {
 	s.mu.Unlock()
 }
 
+// SetContextMetricsFunc sets a callback to retrieve live context size metrics.
+func (s *Server) SetContextMetricsFunc(fn func() ContextMetrics) {
+	s.mu.Lock()
+	s.contextMetricsFn = fn
+	s.mu.Unlock()
+}
+
 // SetDetailedStatusFunc sets a callback to retrieve detailed session status.
 func (s *Server) SetDetailedStatusFunc(fn func() DetailedStatus) {
 	s.mu.Lock()
@@ -654,6 +672,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	status := s.status
 	pfn := s.pressureFn
+	cmfn := s.contextMetricsFn
 	dfn := s.detailedStatusFn
 	processing := s.processing
 	closed := appStatus(status.State, processing) == appwire.ThreadStatusClosed
@@ -672,6 +691,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	if pfn != nil {
 		status.ContextPressure = pfn()
+	}
+	if cmfn != nil {
+		metrics := cmfn()
+		status.ContextUsed = metrics.Used
+		status.ContextWindow = metrics.Window
+		status.ContextRemaining = metrics.Remaining
 	}
 	if dfn != nil {
 		ds := dfn()

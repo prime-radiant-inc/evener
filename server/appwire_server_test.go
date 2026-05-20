@@ -721,6 +721,9 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 		WorkingDir: "/tmp/project",
 	})
 	srv.SetContextPressureFunc(func() float64 { return 0.42 })
+	srv.SetContextMetricsFunc(func() ContextMetrics {
+		return ContextMetrics{Used: 42000, Window: 100000, Remaining: 58000}
+	})
 	srv.SetDetailedStatusFunc(func() DetailedStatus {
 		return DetailedStatus{
 			Tools: []ToolInfo{{Name: "shell", Source: "core"}},
@@ -753,6 +756,9 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 	}
 	if data.Thread.Serf.ContextPressure != 0.42 {
 		t.Fatalf("context pressure=%v", data.Thread.Serf.ContextPressure)
+	}
+	if data.Thread.Serf.ContextUsed != 42000 || data.Thread.Serf.ContextWindow != 100000 || data.Thread.Serf.ContextRemaining != 58000 {
+		t.Fatalf("context metrics=%+v", data.Thread.Serf)
 	}
 	diag := data.Thread.Serf.Diagnostics
 	if diag == nil || len(diag.Tools) != 1 || len(diag.MCP) != 1 || len(diag.Skills) != 1 || len(diag.Plugins) != 1 || len(diag.Subagents) != 1 || len(diag.Agents) != 1 {

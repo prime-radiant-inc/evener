@@ -733,20 +733,23 @@ func hubDetailFromAppThread(thread appwire.Thread) hubapi.SessionDetail {
 	}
 	live := state != "ended" && state != "closed"
 	detail := hubapi.SessionDetail{
-		Ref:             ref.String(),
-		HostID:          ref.HostID,
-		SessionID:       ref.SessionID,
-		Title:           title,
-		State:           state,
-		Live:            live,
-		Project:         project,
-		WorkingDir:      thread.CWD,
-		Model:           thread.ModelProvider,
-		Profile:         thread.Serf.Profile,
-		TurnCount:       completedTurnCount(thread.Turns),
-		ActiveTurnID:    activeTurnIDFromAppwireThread(thread),
-		ContextPressure: thread.Serf.ContextPressure,
-		Capabilities:    hubCapabilitiesFromAppwire(thread.Serf.Capabilities),
+		Ref:              ref.String(),
+		HostID:           ref.HostID,
+		SessionID:        ref.SessionID,
+		Title:            title,
+		State:            state,
+		Live:             live,
+		Project:          project,
+		WorkingDir:       thread.CWD,
+		Model:            thread.ModelProvider,
+		Profile:          thread.Serf.Profile,
+		TurnCount:        completedTurnCount(thread.Turns),
+		ActiveTurnID:     activeTurnIDFromAppwireThread(thread),
+		ContextPressure:  thread.Serf.ContextPressure,
+		ContextUsed:      thread.Serf.ContextUsed,
+		ContextWindow:    thread.Serf.ContextWindow,
+		ContextRemaining: thread.Serf.ContextRemaining,
+		Capabilities:     hubCapabilitiesFromAppwire(thread.Serf.Capabilities),
 	}
 	if detail.SessionID == "" {
 		detail.SessionID = thread.ID
@@ -2592,6 +2595,8 @@ func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id 
 			data["Model"] = detail.Model
 		}
 		data["ContextPercent"] = int(detail.ContextPressure * 100)
+		data["ContextWindow"] = detail.ContextWindow
+		data["ContextNumbers"] = formatContextNumbers(detail.ContextUsed, detail.ContextWindow, detail.ContextRemaining)
 		if detail.WorkingDir != "" {
 			data["WorkingDir"] = detail.WorkingDir
 		}
@@ -2600,6 +2605,26 @@ func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id 
 	if err := s.inputStripTmpl.ExecuteTemplate(w, "input_status", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+func formatContextNumbers(used, window, remaining int) string {
+	if window <= 0 {
+		return ""
+	}
+	if remaining < 0 {
+		remaining = 0
+	}
+	return fmt.Sprintf("%s / %s tokens (%s left)", formatTokenCount(used), formatTokenCount(window), formatTokenCount(remaining))
+}
+
+func formatTokenCount(n int) string {
+	if n < 0 {
+		n = 0
+	}
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	return fmt.Sprintf("%dk", (n+500)/1000)
 }
 
 // sendRequest is the JSON body accepted by POST /s/<id>/send. Items carries
@@ -3120,15 +3145,16 @@ func waitForRosterMatch(r *Roster, sessionID string, pid int, timeout time.Durat
 
 // daemonStatus is the subset of /status fields the hub cares about.
 type daemonStatus struct {
-	SessionID       string  `json:"session_id"`
-	Model           string  `json:"model"`
-	Profile         string  `json:"profile"`
-	State           string  `json:"state"`
-	Turns           int     `json:"turns"`
-	WorkingDir      string  `json:"working_dir,omitempty"`
-	ContextPressure float64 `json:"context_pressure"`
-	ContextUsed     int     `json:"context_used,omitempty"`
-	ContextWindow   int     `json:"context_window,omitempty"`
+	SessionID        string  `json:"session_id"`
+	Model            string  `json:"model"`
+	Profile          string  `json:"profile"`
+	State            string  `json:"state"`
+	Turns            int     `json:"turns"`
+	WorkingDir       string  `json:"working_dir,omitempty"`
+	ContextPressure  float64 `json:"context_pressure"`
+	ContextUsed      int     `json:"context_used,omitempty"`
+	ContextWindow    int     `json:"context_window,omitempty"`
+	ContextRemaining int     `json:"context_remaining,omitempty"`
 }
 
 // fetchStatus reads /status from the daemon at le.Address, returning nil on any error.

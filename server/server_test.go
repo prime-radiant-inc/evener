@@ -50,6 +50,9 @@ func TestStatusEndpoint_ContextPressure(t *testing.T) {
 		Model:     "gpt-4o",
 	})
 	srv.SetContextPressureFunc(func() float64 { return 0.42 })
+	srv.SetContextMetricsFunc(func() ContextMetrics {
+		return ContextMetrics{Used: 42000, Window: 100000, Remaining: 58000}
+	})
 
 	req := httptest.NewRequest(http.MethodGet, "/status", nil)
 	w := httptest.NewRecorder()
@@ -65,6 +68,9 @@ func TestStatusEndpoint_ContextPressure(t *testing.T) {
 	}
 	if status.ContextPressure != 0.42 {
 		t.Errorf("context_pressure: got %f, want 0.42", status.ContextPressure)
+	}
+	if status.ContextUsed != 42000 || status.ContextWindow != 100000 || status.ContextRemaining != 58000 {
+		t.Fatalf("context metrics: got used=%d window=%d remaining=%d", status.ContextUsed, status.ContextWindow, status.ContextRemaining)
 	}
 }
 

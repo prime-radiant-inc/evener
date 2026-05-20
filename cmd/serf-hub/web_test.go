@@ -1988,6 +1988,14 @@ func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
 	}
 }
 
+func TestFormatContextNumbersShowsUsedWindowAndRemaining(t *testing.T) {
+	got := formatContextNumbers(42000, 100000, 58000)
+	want := "42k / 100k tokens (58k left)"
+	if got != want {
+		t.Fatalf("formatContextNumbers() = %q, want %q", got, want)
+	}
+}
+
 // TestWeb_Send_ClosedSessionRequiresSpawner verifies that POSTing to /s/<id>/send
 // when the session is not live and no spawner is configured returns 503.
 func TestWeb_Send_ClosedSessionRequiresSpawner(t *testing.T) {
