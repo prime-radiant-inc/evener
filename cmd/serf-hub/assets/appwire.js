@@ -524,6 +524,11 @@
     return state;
   }
 
+  function getLiveItemState(params, item) {
+    const key = liveItemKey(params, item);
+    return key ? liveItemState.get(key) : null;
+  }
+
   function deleteLiveItem(params, item) {
     const key = liveItemKey(params, item);
     if (key) liveItemState.delete(key);
@@ -674,8 +679,10 @@
       return [];
     }
     if (method === "item/completed") {
+      const previousState = getLiveItemState(params, item);
       markLiveItem(params, item, { completed: true });
       const type = internalItemType(item.type);
+      if (type === "userMessage" && previousState && previousState.started) return [];
       if (type === "userMessage") return eventsFromItem(item);
       if (type === "commandExecution") return [["TOOL_CALL_END", {
         call_id: firstNonEmpty(item.callId, item.id),

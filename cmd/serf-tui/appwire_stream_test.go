@@ -499,6 +499,45 @@ func TestStreamEventsFromTurnCompletedSkipsAlreadyRenderedUserInput(t *testing.T
 	}
 }
 
+func TestStreamEventsFromItemCompletedSkipsAlreadyStartedUserInput(t *testing.T) {
+	translator := newAppwireStreamTranslator()
+	itemStarted := appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
+		"threadId": "th_1",
+		"ref":      "local:th_1",
+		"turnId":   "turn_1",
+		"item": appwire.ThreadItem{
+			Type:   "userMessage",
+			ID:     "item_user",
+			TurnID: "turn_1",
+			Text:   "hello",
+			Status: appwire.TurnStatusInProgress,
+		},
+	})
+	startEvents := translator.eventsFromNotification(*itemStarted.Notification)
+	if len(startEvents) != 1 || startEvents[0].Event != "USER_INPUT" {
+		t.Fatalf("start events=%+v", startEvents)
+	}
+
+	itemCompleted := appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
+		"threadId": "th_1",
+		"ref":      "local:th_1",
+		"turnId":   "turn_1",
+		"item": appwire.ThreadItem{
+			Type:   "userMessage",
+			ID:     "item_user",
+			TurnID: "turn_1",
+			Text:   "hello",
+			Status: appwire.TurnStatusCompleted,
+		},
+	})
+	completedEvents := translator.eventsFromNotification(*itemCompleted.Notification)
+	for _, ev := range completedEvents {
+		if ev.Event == "USER_INPUT" {
+			t.Fatalf("item completed duplicated already started user input: %+v", completedEvents)
+		}
+	}
+}
+
 func TestStreamEventsFromImageOnlyUserMessageUsesPlaceholder(t *testing.T) {
 	translator := newAppwireStreamTranslator()
 	itemStarted := appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{

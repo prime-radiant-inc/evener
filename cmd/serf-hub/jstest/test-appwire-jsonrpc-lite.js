@@ -246,6 +246,20 @@ vm.runInContext(SRC, context);
   });
   assert(!dedupedCompletedTurnEvents.some(([kind, data]) => kind === "ASSISTANT_TEXT_END" && data.text === "CODEX_DEDUPE_OK"), "completed turn should not replay already completed assistant item");
   assert(context.window.SerfAppwire.liveItemStateSize() === liveStateBeforeCompletedTurn - 1, "completed turn should evict reconciled live item state");
+  const userStartedEvents = context.window.SerfAppwire.eventsFromNotification("item/started", {
+    threadId: "th_codex",
+    turnId: "turn_user_dedupe",
+    item: { id: "user_dedupe", type: "userMessage", text: "USER_DEDUPE_OK" },
+  });
+  assert(userStartedEvents.some(([kind, data]) => kind === "USER_INPUT" && data.text === "USER_DEDUPE_OK"),
+    "item/started should render user input");
+  const userCompletedEvents = context.window.SerfAppwire.eventsFromNotification("item/completed", {
+    threadId: "th_codex",
+    turnId: "turn_user_dedupe",
+    item: { id: "user_dedupe", turnId: "turn_user_dedupe", type: "userMessage", text: "USER_DEDUPE_OK" },
+  });
+  assert(!userCompletedEvents.some(([kind]) => kind === "USER_INPUT"),
+    "item/completed should not duplicate user input already rendered from item/started");
   context.window.SerfAppwire.eventsFromNotification("item/started", {
     threadId: "th_failed",
     turnId: "turn_failed",

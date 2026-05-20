@@ -165,6 +165,9 @@ func (t *appwireStreamTranslator) eventsFromNotification(notification appwire.No
 			if params.Item.TurnID == "" {
 				params.Item.TurnID = params.TurnID
 			}
+			if params.Item.Type == "userMessage" && t.itemAlreadyCompleted(params.Item) {
+				return nil
+			}
 			return t.eventsFromItem(params.Item, true)
 		}
 	case appwire.NotifyAgentMessageDelta:
