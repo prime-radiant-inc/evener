@@ -297,6 +297,74 @@ async function testEarlyMatchingNotificationDoesNotDuplicateHydratedItem() {
 	assert(rendered.length === 1, "hydration plus buffered notification duplicated the same user item");
 }
 
+async function testBufferedTurnCompletedKeepsCompletionButSkipsHydratedItems() {
+	let notificationHandler = null;
+	let resolveRead = null;
+	let completed = 0;
+	const window = createWindow({
+		onNotification: (handler) => {
+			notificationHandler = handler;
+			return () => {};
+		},
+		onConnectionLost: () => () => {},
+		activeTurnIDFromThread: () => "turn_1",
+		readThread: () => new Promise((resolve) => { resolveRead = resolve; }),
+		eventsFromThread: (thread) => {
+			const events = [["TURN_STARTED", { turnId: "turn_1" }]];
+			for (const turn of thread.turns || []) {
+				for (const item of turn.items || []) {
+					if (item.type === "agentMessage") {
+						events.push(["ASSISTANT_TEXT_START", {}], ["ASSISTANT_TEXT_END", { text: item.text || "" }]);
+					}
+				}
+			}
+			return events;
+		},
+		eventsFromNotification: (method, params) => {
+			if (method !== "turn/completed") return [];
+			const events = [["TURN_COMPLETED", { turnId: "turn_1" }]];
+			completed++;
+			for (const item of (params.turn && params.turn.items) || []) {
+				if (item.type === "agentMessage") {
+					events.push(["ASSISTANT_TEXT_START", {}], ["ASSISTANT_TEXT_END", { text: item.text || "" }]);
+				}
+			}
+			return events;
+		},
+	});
+
+	await wait(10);
+	notificationHandler("turn/completed", {
+		ref: "local:sess-live",
+		threadId: "sess-live",
+		turnId: "turn_1",
+		turn: {
+			id: "turn_1",
+			status: "completed",
+			items: [{ id: "assistant_1", type: "agentMessage", text: "hydrated answer" }],
+		},
+	});
+	resolveRead({
+		thread: {
+			id: "sess-live",
+			sessionId: "sess-live",
+			serf: { ref: "local:sess-live" },
+			turns: [{
+				id: "turn_1",
+				status: "inProgress",
+				items: [{ id: "assistant_1", type: "agentMessage", text: "hydrated answer" }],
+			}],
+		},
+	});
+	await wait(30);
+
+	const rendered = Array.from(window.document.querySelectorAll(".assistant-message"))
+		.filter((el) => el.textContent === "hydrated answer");
+	assert(completed === 1, "buffered turn/completed should still be delivered once");
+	assert(window.SerfRenderer.activeTurnId === "", "buffered turn/completed did not clear active turn");
+	assert(rendered.length === 1, "buffered turn/completed duplicated hydrated assistant item");
+}
+
 async function testStaleCapabilityRefreshErrorDoesNotUpdateNewSession() {
   let rejectRead = null;
   let readThreadCalls = 0;
@@ -344,6 +412,7 @@ async function testStaleCapabilityRefreshErrorDoesNotUpdateNewSession() {
 	await testStaleHydrationDoesNotRenderIntoNewSession();
 	await testEarlyNotificationWaitsForHydratedThreadIdentity();
 	await testEarlyMatchingNotificationDoesNotDuplicateHydratedItem();
+	await testBufferedTurnCompletedKeepsCompletionButSkipsHydratedItems();
 	await testStaleCapabilityRefreshErrorDoesNotUpdateNewSession();
 	console.log("PASS: appwire renderer stream recovery");
 	process.exit(0);
