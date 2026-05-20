@@ -1298,6 +1298,10 @@ func (s *Session) DrainAsSteerWithInput(ctx context.Context, text string, images
 		s.mu.Unlock()
 		return fmt.Errorf("drain: session is closed")
 	}
+	if s.state != SessionProcessing {
+		s.mu.Unlock()
+		return fmt.Errorf("drain: no active turn to steer")
+	}
 	if strings.TrimSpace(text) != "" || len(images) > 0 {
 		entry := queuedInput{Text: text}
 		if len(images) > 0 {

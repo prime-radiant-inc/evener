@@ -37,10 +37,15 @@ var embeddedPNGSig = []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
 // so tests can hit /status, /queue, /drain-as-steer over real HTTP.
 func newWiredEmbeddedForTest(t *testing.T) (*embeddedServer, *httptest.Server, *agent.Session) {
 	t.Helper()
+	return newWiredEmbeddedWithAdapterForTest(t, &embeddedNoopAdapter{name: "openai"})
+}
+
+func newWiredEmbeddedWithAdapterForTest(t *testing.T, adapter llm.ProviderAdapter) (*embeddedServer, *httptest.Server, *agent.Session) {
+	t.Helper()
 	dir := t.TempDir()
 
 	c := llm.NewClient()
-	c.Register(&embeddedNoopAdapter{name: "openai"})
+	c.Register(adapter)
 	profile := agent.NewOpenAIProfile("gpt-test")
 	env := agent.NewLocalExecutionEnvironment(dir)
 	sess, err := agent.NewSession(c, profile, env, agent.SessionConfig{})
@@ -305,17 +310,28 @@ func TestEmbeddedDaemon_InterruptedQueueDrainStaysProcessingAndInterruptible(t *
 // wireSession wires SetQueueWithImagesFunc, SetDrainAsSteerFunc, and
 // SetQueueDepthFunc on the embedded server.
 func TestEmbeddedDaemon_QueueWithImagesRoundTrip(t *testing.T) {
-	e, _, sess := newWiredEmbeddedForTest(t)
+	adapter := &embeddedBlockingAdapter{name: "openai", started: make(chan struct{}), done: make(chan error, 1)}
+	e, _, sess := newWiredEmbeddedWithAdapterForTest(t, adapter)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_, _ = sess.ProcessInput(ctx, "keep turn active", nil)
+	}()
+	select {
+	case <-adapter.started:
+	case <-time.After(time.Second):
+		t.Fatal("session did not enter active turn")
+	}
 	e.srv.SetProcessing(true)
 
 	conn := e.srv.AppServer().NewConnection("test")
-	ctx := context.Background()
+	reqCtx := context.Background()
 
-	if r := conn.HandleMessage(ctx, appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{})); r.Kind() != appwire.MessageResponse {
+	if r := conn.HandleMessage(reqCtx, appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{})); r.Kind() != appwire.MessageResponse {
 		raw, _ := json.Marshal(r)
 		t.Fatalf("initialize: %s", raw)
 	}
-	if r := conn.HandleMessage(ctx, appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{
+	if r := conn.HandleMessage(reqCtx, appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnQueue, appwire.TurnQueueParams{
 		Ref: "local:" + sess.ID(),
 		Input: []appwire.InputItem{{Type: "text", Text: "drain me"}, {
 			Type:      "image",
@@ -327,7 +343,7 @@ func TestEmbeddedDaemon_QueueWithImagesRoundTrip(t *testing.T) {
 		raw, _ := json.Marshal(r)
 		t.Fatalf("turn/queue: %s (embedded daemon must call SetQueueWithImagesFunc in wireSession)", raw)
 	}
-	if r := conn.HandleMessage(ctx, appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{
+	if r := conn.HandleMessage(reqCtx, appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnDrainAsSteer, appwire.TurnDrainAsSteerParams{
 		Ref: "local:" + sess.ID(),
 	})); r.Kind() != appwire.MessageResponse {
 		raw, _ := json.Marshal(r)
@@ -343,6 +359,12 @@ func TestEmbeddedDaemon_QueueWithImagesRoundTrip(t *testing.T) {
 	}
 	if len(steering[0].Images) != 1 || !bytes.Equal(steering[0].Images[0].Data, embeddedPNGSig) {
 		t.Errorf("steering image not preserved: %+v", steering[0].Images)
+	}
+	cancel()
+	select {
+	case <-adapter.done:
+	case <-time.After(time.Second):
+		t.Fatal("active turn did not stop after cancellation")
 	}
 }
 

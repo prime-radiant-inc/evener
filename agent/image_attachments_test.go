@@ -42,6 +42,9 @@ func TestSession_DrainAsSteer_CarriesImagesIntoSteeringMessage(t *testing.T) {
 	if err := sess.EnqueueWithImages(context.Background(), "drain me", imgs); err != nil {
 		t.Fatalf("EnqueueWithImages: %v", err)
 	}
+	sess.mu.Lock()
+	sess.state = SessionProcessing
+	sess.mu.Unlock()
 	if err := sess.DrainAsSteer(context.Background()); err != nil {
 		t.Fatalf("DrainAsSteer: %v", err)
 	}
@@ -94,6 +97,9 @@ func TestSession_DrainAsSteerWithInput_AppendsAndDrainsAtomically(t *testing.T) 
 	if err := sess.Enqueue(context.Background(), "already queued"); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
+	sess.mu.Lock()
+	sess.state = SessionProcessing
+	sess.mu.Unlock()
 	imgs := []ImageAttachment{{
 		MediaType: "image/png",
 		Data:      sessionPngSig,

@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/internal/appwire"
@@ -83,12 +84,23 @@ func TestServerAppWireTurnQueueImageItemReachesQueueFunc(t *testing.T) {
 func TestServerAppWireTurnDrainAsSteerThroughSessionProducesImageBearingSteer(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeServerAdapter{name: "openai"})
+	adapter := &blockingServerAdapter{name: "openai", started: make(chan struct{}), done: make(chan error, 1)}
+	c.Register(adapter)
 	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.2"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_, _ = sess.ProcessInput(ctx, "keep turn active", nil)
+	}()
+	select {
+	case <-adapter.started:
+	case <-time.After(time.Second):
+		t.Fatal("session did not enter active turn")
+	}
 
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", sess.ID())
@@ -136,6 +148,12 @@ func TestServerAppWireTurnDrainAsSteerThroughSessionProducesImageBearingSteer(t 
 	if len(entry.Images) != 1 || entry.Images[0].MediaType != "image/png" || !bytes.Equal(entry.Images[0].Data, pngSig) {
 		t.Errorf("steering image mismatch: %+v", entry.Images)
 	}
+	cancel()
+	select {
+	case <-adapter.done:
+	case <-time.After(time.Second):
+		t.Fatal("active turn did not stop after cancellation")
+	}
 }
 
 // fakeServerAdapter is a minimal llm.Adapter shim used in this package's
@@ -149,6 +167,24 @@ func (a *fakeServerAdapter) Complete(_ context.Context, req llm.Request) (llm.Re
 	return llm.Response{Provider: a.name, Model: req.Model, Message: llm.Assistant("noop")}, nil
 }
 func (a *fakeServerAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, llm.ErrStreamUnsupported
+}
+
+type blockingServerAdapter struct {
+	name    string
+	started chan struct{}
+	done    chan error
+}
+
+func (a *blockingServerAdapter) Name() string { return a.name }
+func (a *blockingServerAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	close(a.started)
+	<-ctx.Done()
+	err := ctx.Err()
+	a.done <- err
+	return llm.Response{Provider: a.name, Model: req.Model}, err
+}
+func (a *blockingServerAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
 	return nil, llm.ErrStreamUnsupported
 }
 

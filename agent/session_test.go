@@ -4033,6 +4033,9 @@ func TestSession_DrainAsSteer_JoinsWithDoubleNewline(t *testing.T) {
 	if depth := sess.QueueDepth(); depth != 3 {
 		t.Fatalf("QueueDepth: got %d, want 3", depth)
 	}
+	sess.mu.Lock()
+	sess.state = SessionProcessing
+	sess.mu.Unlock()
 
 	if err := sess.DrainAsSteer(context.Background()); err != nil {
 		t.Fatalf("DrainAsSteer: %v", err)
@@ -4052,6 +4055,41 @@ func TestSession_DrainAsSteer_JoinsWithDoubleNewline(t *testing.T) {
 	want := "alpha\n\nbravo\n\ncharlie"
 	if len(steering) != 1 || steering[0] != want {
 		t.Fatalf("steeringQueue: got %#v, want [%q]", steering, want)
+	}
+}
+
+func TestSession_DrainAsSteer_RejectsIdleWithoutMutatingQueue(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	if err := sess.Enqueue(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Enqueue alpha: %v", err)
+	}
+	err = sess.DrainAsSteerWithInput(context.Background(), "bravo", nil)
+	if err == nil || !strings.Contains(err.Error(), "no active turn") {
+		t.Fatalf("DrainAsSteerWithInput idle err=%v, want no active turn", err)
+	}
+	if depth := sess.QueueDepth(); depth != 1 {
+		t.Fatalf("QueueDepth after rejected drain: got %d, want 1", depth)
+	}
+	sess.mu.Lock()
+	steeringDepth := len(sess.steeringQueue)
+	queuedText := ""
+	if len(sess.inputQueue) == 1 {
+		queuedText = sess.inputQueue[0].Text
+	}
+	sess.mu.Unlock()
+	if steeringDepth != 0 {
+		t.Fatalf("steeringQueue after rejected drain: got %d, want 0", steeringDepth)
+	}
+	if queuedText != "alpha" {
+		t.Fatalf("queue after rejected drain: got %q, want original alpha only", queuedText)
 	}
 }
 
@@ -4086,6 +4124,9 @@ func TestSession_DrainAsSteer_Empty_ReturnsError(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
+	sess.mu.Lock()
+	sess.state = SessionProcessing
+	sess.mu.Unlock()
 	if err := sess.DrainAsSteer(context.Background()); err == nil {
 		t.Fatalf("DrainAsSteer empty queue: want error, got nil")
 	}
