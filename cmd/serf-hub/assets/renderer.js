@@ -435,17 +435,38 @@
         }
         return "";
       };
-      const notificationItemKey = (params) => {
+      const scopedItemKey = (threadKey, turnKey, itemKey) => {
+        if (!itemKey) return "";
+        const parts = [];
+        if (threadKey) parts.push("thread:" + threadKey);
+        if (turnKey) parts.push("turn:" + turnKey);
+        parts.push("item:" + itemKey);
+        return parts.join("\x00");
+      };
+      const notificationItemKey = (params, itemOverride) => {
         params = params || {};
-        const item = params.item || {};
-        return firstNonEmpty(params.itemId, params.callId, item.callId, item.id, item.itemId);
+        const item = itemOverride || params.item || {};
+        const turn = params.turn || {};
+        const threadKey = firstNonEmpty(params.ref, params.threadRef, params.threadId, item.ref, item.threadRef, item.threadId);
+        const turnKey = firstNonEmpty(params.turnId, item.turnId, turn.id);
+        const itemKey = firstNonEmpty(params.itemId, params.callId, item.callId, item.id, item.itemId);
+        return scopedItemKey(threadKey, turnKey, itemKey);
       };
       const hydrationKeysFromThread = (thread) => {
         const itemKeys = new Set();
+        const threadKey = firstNonEmpty(
+          thread && thread.serf && thread.serf.ref,
+          thread && thread.ref,
+          thread && thread.threadId,
+          thread && thread.id,
+          thread && thread.sessionId,
+        );
         for (const turn of (thread && thread.turns) || []) {
+          const turnKey = firstNonEmpty(turn && turn.id);
           for (const item of (turn && turn.items) || []) {
             const itemKey = firstNonEmpty(item && item.callId, item && item.id, item && item.itemId);
-            if (itemKey) itemKeys.add(itemKey);
+            const scoped = scopedItemKey(threadKey, turnKey, itemKey);
+            if (scoped) itemKeys.add(scoped);
           }
         }
         return { itemKeys };
@@ -462,7 +483,7 @@
           return params;
         }
         const items = params.turn.items.filter((item) => {
-          const itemKey = firstNonEmpty(item && item.callId, item && item.id, item && item.itemId);
+          const itemKey = notificationItemKey(params, item);
           return !itemKey || !hydratedNotificationKeys.itemKeys.has(itemKey);
         });
         if (items.length === params.turn.items.length) return params;

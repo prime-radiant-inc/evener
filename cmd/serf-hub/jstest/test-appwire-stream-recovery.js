@@ -275,6 +275,7 @@ async function testEarlyMatchingNotificationDoesNotDuplicateHydratedItem() {
 	notificationHandler("item/completed", {
 		ref: "local:sess-live",
 		threadId: "sess-live",
+		turnId: "turn_1",
 		item: { id: "item_user", type: "userMessage", text: "same hydrated text" },
 	});
 	assert(!window.document.body.textContent.includes("same hydrated text"), "matching notification rendered before hydration");
@@ -295,6 +296,55 @@ async function testEarlyMatchingNotificationDoesNotDuplicateHydratedItem() {
 	const rendered = Array.from(window.document.querySelectorAll(".user-message-text"))
 		.filter((el) => el.textContent === "same hydrated text");
 	assert(rendered.length === 1, "hydration plus buffered notification duplicated the same user item");
+}
+
+async function testHydrationDedupeDoesNotDropReusedItemIDOnLaterTurn() {
+	let notificationHandler = null;
+	let resolveRead = null;
+	const window = createWindow({
+		onNotification: (handler) => {
+			notificationHandler = handler;
+			return () => {};
+		},
+		onConnectionLost: () => () => {},
+		readThread: () => new Promise((resolve) => { resolveRead = resolve; }),
+		eventsFromThread: (thread) => {
+			const events = [];
+			for (const turn of thread.turns || []) {
+				for (const item of turn.items || []) {
+					if (item.type === "userMessage") events.push(["USER_INPUT", { text: item.text || "" }]);
+				}
+			}
+			return events;
+		},
+		eventsFromNotification: () => [["USER_INPUT", { text: "later turn text" }]],
+	});
+
+	await wait(10);
+	notificationHandler("item/completed", {
+		ref: "local:sess-live",
+		threadId: "sess-live",
+		turnId: "turn_2",
+		item: { id: "reused_id", turnId: "turn_2", type: "userMessage", text: "later turn text" },
+	});
+	resolveRead({
+		thread: {
+			id: "sess-live",
+			sessionId: "sess-live",
+			serf: { ref: "local:sess-live" },
+			turns: [{
+				id: "turn_1",
+				status: "completed",
+				items: [{ id: "reused_id", turnId: "turn_1", type: "userMessage", text: "hydrated turn text" }],
+			}],
+		},
+	});
+	await wait(30);
+
+	const rendered = Array.from(window.document.querySelectorAll(".user-message-text"))
+		.map((el) => el.textContent);
+	assert(rendered.includes("hydrated turn text"), "hydrated reused-id item missing");
+	assert(rendered.includes("later turn text"), "buffered later-turn reused-id notification was dropped");
 }
 
 async function testBufferedTurnCompletedKeepsCompletionButSkipsHydratedItems() {
@@ -412,6 +462,7 @@ async function testStaleCapabilityRefreshErrorDoesNotUpdateNewSession() {
 	await testStaleHydrationDoesNotRenderIntoNewSession();
 	await testEarlyNotificationWaitsForHydratedThreadIdentity();
 	await testEarlyMatchingNotificationDoesNotDuplicateHydratedItem();
+	await testHydrationDedupeDoesNotDropReusedItemIDOnLaterTurn();
 	await testBufferedTurnCompletedKeepsCompletionButSkipsHydratedItems();
 	await testStaleCapabilityRefreshErrorDoesNotUpdateNewSession();
 	console.log("PASS: appwire renderer stream recovery");
