@@ -2605,6 +2605,23 @@ func reconcilePendingFromNotification(pending *pendingCoordinator, n appwire.Not
 			}
 			pending.TryReconcile(appwire.MethodTurnStart, text)
 		}
+	case appwire.NotifyTurnCompleted:
+		var p struct {
+			Turn appwire.Turn `json:"turn"`
+		}
+		if err := json.Unmarshal(n.Params, &p); err != nil {
+			return
+		}
+		for _, item := range p.Turn.Items {
+			if item.Type != "userMessage" || (item.Text == "" && len(item.Images) == 0) {
+				continue
+			}
+			text := item.Text
+			if text == "" {
+				text = imageItemsPlaceholder(item.Images)
+			}
+			pending.TryReconcile(appwire.MethodTurnStart, text)
+		}
 	}
 }
 
