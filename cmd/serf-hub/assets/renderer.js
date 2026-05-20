@@ -1663,6 +1663,10 @@
 	          return;
 	        }
 	        if (!text && !hasAttachments) return;
+        const submittedSessionId = this.sessionId;
+        const submittedConversation = this.conversation;
+        const submittedAppwireRef = this.appwireRef;
+        const sendStillCurrent = () => this.sessionId === submittedSessionId && this.conversation === submittedConversation;
         const sendBtn = form.querySelector(".send-btn");
         const canSend = !sendBtn || sendBtn.getAttribute("data-capability-send") !== "false";
         const canQueue = sendBtn && sendBtn.getAttribute("data-capability-queue") === "true";
@@ -1676,16 +1680,19 @@
           if (sendBtn) sendBtn.disabled = true;
           try {
             await this.queueText(text, items);
+            if (!sendStillCurrent()) return;
             clearComposerDraftIfUnchanged(submittedValue);
             // Successful queue: drop only the submitted snapshot. Preserved
             // on error so the user can retry, and newly staged attachments
             // remain queued for the next message.
             clearSubmittedComposerItems(items);
           } catch (err) {
-            this.appendBanner("error", "queue failed: " + err.message, { source: "hub", title: "Hub queue error" });
+            if (sendStillCurrent()) this.appendBanner("error", "queue failed: " + err.message, { source: "hub", title: "Hub queue error" });
           } finally {
-            if (sendBtn) sendBtn.disabled = false;
-            this.syncTurnActionControls();
+            if (sendStillCurrent()) {
+              if (sendBtn) sendBtn.disabled = false;
+              this.syncTurnActionControls();
+            }
           }
           return;
         }
@@ -1701,7 +1708,8 @@
           const previousUserCount = this.userMessageCount();
           let turnId = "";
           if (window.SerfAppwire) {
-            const resp = await window.SerfAppwire.startTurn(this.appwireRef || this.sessionId, text, items);
+            const resp = await window.SerfAppwire.startTurn(submittedAppwireRef || submittedSessionId, text, items);
+            if (!sendStillCurrent()) return;
             turnId = resp && resp.turn && resp.turn.id || "";
             this.setActiveTurnId(turnId || this.activeTurnId);
           } else {
@@ -1715,13 +1723,15 @@
               data: itemDataToBase64(a.data),
               name: a.name || "",
             }));
-            const resp = await fetch("/s/" + encodeURIComponent(this.sessionId) + "/send", {
+            const resp = await fetch("/s/" + encodeURIComponent(submittedSessionId) + "/send", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ text, items: fetchItems }),
             });
+            if (!sendStillCurrent()) return;
             if (!resp.ok) {
               const detail = (await resp.text()).trim() || ("HTTP " + resp.status);
+              if (!sendStillCurrent()) return;
               this.appendBanner("error", "send failed: " + detail, { source: "hub", title: "Hub send error" });
               return;
             }
@@ -1740,9 +1750,9 @@
           clearSubmittedComposerItems(items);
           this.ensureLiveStream();
         } catch (err) {
-          this.appendBanner("error", "send failed: " + err.message, { source: "hub", title: "Hub send error" });
+          if (sendStillCurrent()) this.appendBanner("error", "send failed: " + err.message, { source: "hub", title: "Hub send error" });
         } finally {
-          if (sendBtn && canSend) sendBtn.disabled = false;
+          if (sendStillCurrent() && sendBtn && canSend) sendBtn.disabled = false;
         }
       };
       form.addEventListener("submit", submit);

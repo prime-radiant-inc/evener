@@ -650,6 +650,41 @@ async function testSubmitPreservesAttachmentsAddedWhileInFlight() {
     "expected chip for second.png after in-flight send, got " + attContainer.textContent);
 	}
 
+async function testSubmitDoesNotMutateNewSessionAfterNavigation() {
+  resetComposerState();
+  const originalAppwire = window.SerfAppwire;
+  let resolveStart;
+  window.SerfAppwire = {
+    startTurn: () => new Promise((resolve) => { resolveStart = resolve; }),
+  };
+
+  ta.value = "old session draft";
+  ta.dispatchEvent(new window.Event("input", { bubbles: true }));
+  form.dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+
+  const oldConversation = window.SerfRenderer.conversation;
+  const newConversation = window.document.createElement("div");
+  newConversation.dataset.sessionId = "02NEW";
+  newConversation.dataset.state = "idle";
+  window.SerfRenderer.conversation = newConversation;
+  window.SerfRenderer.sessionId = "02NEW";
+  window.SerfRenderer.appwireRef = "local:02NEW";
+
+  resolveStart({ turn: { id: "turn_old" } });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  pass(!newConversation.textContent.includes("old session draft"),
+    "stale send completion rendered into new session: " + newConversation.textContent);
+  pass(!oldConversation.textContent.includes("old session draft"),
+    "stale send completion should not append a local echo after navigation");
+  window.SerfRenderer.conversation = oldConversation;
+  window.SerfRenderer.sessionId = "01TEST";
+  window.SerfRenderer.appwireRef = null;
+  window.SerfAppwire = originalAppwire;
+  resetComposerState();
+}
+
 async function testSubmitBlocksWhileAttachmentIsDecoding() {
 	resetComposerState();
 	dispatchPickerChange([makePngFile("slow.png")]);
@@ -724,6 +759,7 @@ async function testRejectsNonImage() {
 	  await testSubmitWithTextAndImage();
 	  await testSubmitClearsQueue();
 	  await testSubmitPreservesAttachmentsAddedWhileInFlight();
+	  await testSubmitDoesNotMutateNewSessionAfterNavigation();
 	  await testSubmitBlocksWhileAttachmentIsDecoding();
 	  await testSubmitEmptyDoesNothing();
   await testUnavailableSendDoesNotSubmit();
