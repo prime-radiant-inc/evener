@@ -242,6 +242,9 @@ func runServe(args []string) error {
 
 	srv.SetCompactFunc(func(ctx context.Context) error { return getSession().Compact(ctx) })
 	srv.SetSteerFunc(func(text string) { getSession().Steer(text) })
+	srv.SetSteerWithImagesFunc(func(text string, images []server.ImageAttachment) {
+		getSession().SteerWithImages(text, images)
+	})
 	srv.SetQueueFunc(func(text string) error { return getSession().Enqueue(ctx, text) })
 	srv.SetQueueWithImagesFunc(func(text string, images []server.ImageAttachment) error {
 		return getSession().EnqueueWithImages(ctx, text, images)

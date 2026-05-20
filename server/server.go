@@ -118,6 +118,7 @@ type Server struct {
 	appReservedTurnID   string
 	cancelFunc          context.CancelFunc
 	steerFunc           func(string)
+	steerWithImagesFunc func(string, []ImageAttachment)
 	queueFunc           func(string) error
 	queueWithImagesFunc func(string, []ImageAttachment) error
 	drainSteerFunc      func() error
@@ -256,6 +257,14 @@ func (s *Server) SetCancelFunc(cancel context.CancelFunc) {
 func (s *Server) SetSteerFunc(fn func(string)) {
 	s.mu.Lock()
 	s.steerFunc = fn
+	s.mu.Unlock()
+}
+
+// SetSteerWithImagesFunc sets the function called by AppWire turn/steer when
+// the input carries image attachments.
+func (s *Server) SetSteerWithImagesFunc(fn func(string, []ImageAttachment)) {
+	s.mu.Lock()
+	s.steerWithImagesFunc = fn
 	s.mu.Unlock()
 }
 
@@ -647,9 +656,10 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	dfn := s.detailedStatusFn
 	processing := s.processing
 	closed := appStatus(status.State, processing) == appwire.ThreadStatusClosed
+	steerAvailable := s.steerFunc != nil || s.steerWithImagesFunc != nil
 	capabilities := ActionCapabilities{
 		Send:        !processing && !closed,
-		Steer:       s.steerFunc != nil,
+		Steer:       steerAvailable,
 		Interrupt:   s.cancelFunc != nil,
 		Compact:     s.compactFunc != nil && !closed,
 		Clear:       s.clearFunc != nil && !processing && !closed,

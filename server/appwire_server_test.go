@@ -449,6 +449,75 @@ func TestServerAppWireTurnSteerRejectsMismatchedTurnID(t *testing.T) {
 	}
 }
 
+func TestServerAppWireTurnSteerPreservesImages(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	var gotText string
+	var gotImages []ImageAttachment
+	srv.SetSteerWithImagesFunc(func(text string, images []ImageAttachment) {
+		gotText = text
+		gotImages = append([]ImageAttachment(nil), images...)
+	})
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
+		Ref:   "local:th_1",
+		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
+	}))
+	startResp := start.Response.Result.(appwire.TurnStartResponse)
+
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnSteer, appwire.TurnSteerParams{
+		Ref:            "local:th_1",
+		ExpectedTurnID: startResp.Turn.ID,
+		Input: []appwire.InputItem{
+			{Type: "text", Text: "look at this"},
+			{Type: "image", MediaType: "image/png", Name: "shot.png", Data: []byte("png")},
+		},
+	}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("steer response=%v error=%+v", resp.Kind(), resp.Error)
+	}
+	if gotText != "look at this" {
+		t.Fatalf("text=%q, want look at this", gotText)
+	}
+	if len(gotImages) != 1 || gotImages[0].MediaType != "image/png" || gotImages[0].Name != "shot.png" || !bytes.Equal(gotImages[0].Data, []byte("png")) {
+		t.Fatalf("images=%+v", gotImages)
+	}
+}
+
+func TestServerAppWireTurnSteerRejectsImagesWithoutImageHook(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	var steered []string
+	srv.SetSteerFunc(func(text string) {
+		steered = append(steered, text)
+	})
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
+		Ref:   "local:th_1",
+		Input: []appwire.InputItem{{Type: "text", Text: "hello"}},
+	}))
+	startResp := start.Response.Result.(appwire.TurnStartResponse)
+
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodTurnSteer, appwire.TurnSteerParams{
+		Ref:            "local:th_1",
+		ExpectedTurnID: startResp.Turn.ID,
+		Input:          []appwire.InputItem{{Type: "image", MediaType: "image/png", Name: "shot.png", Data: []byte("png")}},
+	}))
+	if resp.Kind() != appwire.MessageError {
+		t.Fatalf("steer response=%v, want error", resp.Kind())
+	}
+	if resp.Error.Error.Code != appwire.CodeUnavailable {
+		t.Fatalf("error=%+v", resp.Error.Error)
+	}
+	if len(steered) != 0 {
+		t.Fatalf("text steer invoked despite image input: %v", steered)
+	}
+}
+
 func TestServerAppWireTurnSteerRequiresTurnID(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")

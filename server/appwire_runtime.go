@@ -317,8 +317,8 @@ func (s *Server) handleAppTurnStart(_ context.Context, params appwire.TurnStartP
 }
 
 func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerParams) (appwire.EmptyResponse, error) {
-	text, _ := inputFromItems("", params.Input)
-	if strings.TrimSpace(text) == "" {
+	text, images := inputFromItems("", params.Input)
+	if strings.TrimSpace(text) == "" && len(images) == 0 {
 		return appwire.EmptyResponse{}, appwire.InvalidParams("input is required")
 	}
 	turnID := strings.TrimSpace(params.ExpectedTurnID)
@@ -327,12 +327,16 @@ func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerP
 	}
 	s.mu.RLock()
 	fn := s.steerFunc
+	imgFn := s.steerWithImagesFunc
 	activeTurnID := s.appActiveTurnID
 	reservedTurnID := s.appReservedTurnID
 	processing := s.processing
 	s.mu.RUnlock()
-	if fn == nil {
+	if fn == nil && imgFn == nil {
 		return appwire.EmptyResponse{}, appwire.Unavailable("steer not available")
+	}
+	if len(images) > 0 && imgFn == nil {
+		return appwire.EmptyResponse{}, appwire.Unavailable("steer with images not available")
 	}
 	if !processing && strings.TrimSpace(reservedTurnID) == "" {
 		return appwire.EmptyResponse{}, appwire.Conflict("turn is not active")
@@ -340,7 +344,11 @@ func (s *Server) handleAppTurnSteer(_ context.Context, params appwire.TurnSteerP
 	if turnID != activeTurnID {
 		return appwire.EmptyResponse{}, appwire.Conflict("turn is not active")
 	}
-	fn(text)
+	if imgFn != nil {
+		imgFn(text, images)
+	} else {
+		fn(text)
+	}
 	return appwire.EmptyResponse{}, nil
 }
 
@@ -627,9 +635,10 @@ func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCa
 	defer s.mu.RUnlock()
 	closed := appStatus(state, processing) == appwire.ThreadStatusClosed
 	active := processing || strings.TrimSpace(s.appReservedTurnID) != ""
+	steerAvailable := s.steerFunc != nil || s.steerWithImagesFunc != nil
 	return appwire.ThreadCapabilities{
 		Send:         !active && !closed,
-		Steer:        s.steerFunc != nil && active && !closed,
+		Steer:        steerAvailable && active && !closed,
 		Interrupt:    s.cancelFunc != nil,
 		Compact:      s.compactFunc != nil && !closed,
 		Clear:        s.clearFunc != nil && !processing && !closed,
