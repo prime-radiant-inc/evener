@@ -448,8 +448,8 @@ func (s *CodexSource) runLiveThread(threadID string, live *codexLiveThread) {
 
 func (live *codexLiveThread) publish(notification appwire.Notification) {
 	live.mu.Lock()
-	defer live.mu.Unlock()
 	if live.closed || live.retiring {
+		live.mu.Unlock()
 		return
 	}
 	if len(live.subscribers) == 0 && !live.hadSub {
@@ -462,7 +462,17 @@ func (live *codexLiveThread) publish(notification appwire.Notification) {
 		select {
 		case subscriber <- notification:
 		default:
+			delete(live.subscribers, subscriber)
+			close(subscriber)
 		}
+	}
+	shouldRetire := live.hadSub && len(live.subscribers) == 0 && !live.closed && !live.retiring
+	if shouldRetire {
+		live.retiring = true
+	}
+	live.mu.Unlock()
+	if shouldRetire {
+		live.retire()
 	}
 }
 

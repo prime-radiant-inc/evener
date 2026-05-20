@@ -263,7 +263,6 @@ func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.
 				case <-ctx.Done():
 					return
 				case out <- notification:
-				default:
 				}
 			}
 		}

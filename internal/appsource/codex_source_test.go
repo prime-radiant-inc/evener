@@ -815,6 +815,30 @@ func TestCodexLiveThreadDoesNotReplayDeliveredLiveNotifications(t *testing.T) {
 	assertNoNotification(t, notifications2, "live after subscriber")
 }
 
+func TestCodexLiveThreadClosesSlowSubscriberInsteadOfDropping(t *testing.T) {
+	live := &codexLiveThread{
+		close:       func() error { return nil },
+		subscribers: map[chan appwire.Notification]struct{}{},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	notifications := live.subscribe(ctx)
+
+	for i := 0; i < codexLiveSubscriberBuffer; i++ {
+		live.publish(deltaNotification("buffered"))
+	}
+	live.publish(deltaNotification("would have dropped"))
+
+	for i := 0; i < codexLiveSubscriberBuffer; i++ {
+		if _, ok := <-notifications; !ok {
+			t.Fatalf("subscriber closed before draining buffered notification %d", i)
+		}
+	}
+	if _, ok := <-notifications; ok {
+		t.Fatal("slow subscriber stayed open after its channel filled")
+	}
+}
+
 func TestCodexLiveThreadIsClosedAfterLastSubscriberRetires(t *testing.T) {
 	retired := make(chan struct{})
 	live := &codexLiveThread{
