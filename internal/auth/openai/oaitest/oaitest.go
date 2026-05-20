@@ -12,9 +12,9 @@ import (
 
 // IsolateOpenAIAuth clears every env var that the OpenAI provider /
 // auth layer reads, and points XDG_STATE_HOME at a fresh temp dir so
-// LoadAuth returns ErrAuthNotFound. Returns the resolved auth state
-// directory ("$XDG_STATE_HOME/serf/auth") so tests that want to plant
-// a record can do so without re-deriving the path.
+// LoadAuth returns ErrAuthNotFound. Returns the resolved Serf state
+// directory ("$XDG_STATE_HOME/serf") so tests can pass it directly to
+// openai.LoadAuth or openai.SaveAuth.
 //
 // Safe to call multiple times in one test; t.Setenv handles cleanup.
 func IsolateOpenAIAuth(t *testing.T) string {
@@ -31,5 +31,5 @@ func IsolateOpenAIAuth(t *testing.T) string {
 	}
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
-	return filepath.Join(stateHome, "serf", "auth")
+	return filepath.Join(stateHome, "serf")
 }
