@@ -632,6 +632,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .spawn-advanced-body select,
 .spawn-advanced-body button { background: transparent; border: 1px solid var(--rule); border-radius: 4px; padding: 4px 8px; color: var(--text); font: inherit; font-size: 12px; outline: none; cursor: pointer; }
 .spawn-advanced-body button[type="button"] { background: var(--bg-elev, transparent); }
+.spawn-advanced-textarea { width: 100%; min-height: 132px; line-height: 1.45; resize: vertical; cursor: text; }
 .spawn-advanced-row { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .spawn-advanced-model { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .spawn-advanced-radio { display: flex; gap: 12px; flex-wrap: wrap; }

@@ -1045,9 +1045,24 @@ func TestSpawnTemplate_HasSchemaAdvancedRoot(t *testing.T) {
 		`validateAdvancedPathScalars`,
 		`command.dataset.launchMcpCommand = "true"`,
 		`validateMCPCommandInput(command)`,
+		`input.className = "spawn-advanced-textarea"`,
+		`input.rows = 6`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("spawn.js missing %q", want)
+		}
+	}
+	css, err := os.ReadFile("assets/style.css")
+	if err != nil {
+		t.Fatalf("read style.css: %v", err)
+	}
+	for _, want := range []string{
+		`.spawn-advanced-textarea`,
+		`min-height: 132px`,
+		`resize: vertical`,
+	} {
+		if !strings.Contains(string(css), want) {
+			t.Fatalf("style.css missing %q", want)
 		}
 	}
 	listBeforeControls := strings.Index(src, "wrap.appendChild(list);\n    wrap.appendChild(controls);")

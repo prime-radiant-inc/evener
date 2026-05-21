@@ -434,7 +434,12 @@
 
   function textInputForOption(opt, multiline) {
     const input = document.createElement(multiline ? "textarea" : "input");
-    if (!multiline) input.type = opt.kind === "integer" ? "number" : "text";
+    if (multiline) {
+      input.className = "spawn-advanced-textarea";
+      input.rows = 6;
+    } else {
+      input.type = opt.kind === "integer" ? "number" : "text";
+    }
     input.dataset.launchField = opt.field || "";
     input.dataset.launchWireField = opt.wireField || "";
     input.dataset.launchKind = opt.kind || "";
