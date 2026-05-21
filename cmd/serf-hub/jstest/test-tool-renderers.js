@@ -140,21 +140,22 @@ await scenario("list_dir in cheap cluster exposes entries", [
   return { ok: true };
 });
 
-// edit_file — should produce a diff body.
-await scenario("edit_file diff body", [
+// edit_file — should produce a details disclosure with a diff from edit args.
+await scenario("edit_file details diff body", [
   ["SESSION_START", { session_id: "01TEST" }],
-  ["TOOL_CALL_START", { call_id: "e1", tool_name: "edit_file", arguments_json: JSON.stringify({ file_path: "x.go" }) }],
-  ["TOOL_CALL_OUTPUT_DELTA", { call_id: "e1", delta: "+ added line\n- removed line\n" }],
-  ["TOOL_CALL_END", { call_id: "e1", output: "+ added line\n- removed line\n", tool_name: "edit_file" }],
+  ["TOOL_CALL_START", { call_id: "e1", tool_name: "edit_file", arguments_json: JSON.stringify({ file_path: "x.go", old_string: "old line\nkept line", new_string: "new line\nkept line" }) }],
+  ["TOOL_CALL_END", { call_id: "e1", output: "edited x.go: 1 replacement(s)", tool_name: "edit_file" }],
 ], ({ conv }) => {
   const card = conv.querySelector(".tool-call.edit_file");
   if (!card) return { ok: false, detail: "no edit tool-call" };
   if (!card.textContent.includes("x.go")) return { ok: false, detail: "missing target" };
   const disclosure = card.querySelector("details.edit-body");
   if (!disclosure) return { ok: false, detail: "no edit disclosure" };
-  if (!disclosure.querySelector("summary") || !disclosure.querySelector("summary").textContent.includes("edit")) return { ok: false, detail: "no edit summary" };
+  if (!disclosure.querySelector("summary") || disclosure.querySelector("summary").textContent.trim() !== "details") return { ok: false, detail: "edit summary should be details" };
   const diff = disclosure.querySelector(".diff-body");
   if (!diff) return { ok: false, detail: "no diff body" };
+  if (diff.textContent.includes("edited x.go")) return { ok: false, detail: "edit output shown instead of diff" };
+  if (!diff.textContent.includes("-old line") || !diff.textContent.includes("+new line")) return { ok: false, detail: "argument diff text missing" };
   if (!diff.querySelector(".add")) return { ok: false, detail: "no .add lines" };
   if (!diff.querySelector(".del")) return { ok: false, detail: "no .del lines" };
   if (!card.querySelector(".tool-status-good")) return { ok: false, detail: "missing left success icon" };

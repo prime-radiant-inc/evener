@@ -2480,16 +2480,31 @@
     };
   }
 
+  function editDiffText(args, out) {
+    args = args || {};
+    const oldText = typeof args.old_string === "string" ? args.old_string : "";
+    const newText = typeof args.new_string === "string" ? args.new_string : "";
+    if (oldText || newText) {
+      const lines = [];
+      const path = args.file_path || args.path || "";
+      if (path) lines.push("--- " + path, "+++ " + path);
+      for (const line of splitOutputLines(oldText)) lines.push("-" + line);
+      for (const line of splitOutputLines(newText)) lines.push("+" + line);
+      return lines.join("\n");
+    }
+    return out || "";
+  }
+
   function editRenderer() {
     return {
       mode: "card", friendly: "edit",
       target: (a) => a.file_path || a.path || "",
-      result: diffResult,
+      result: (data, out, state) => diffResult(data, editDiffText(state && state.args, out)),
       body: (args, conversation) => {
         const wrap = document.createElement("details");
         wrap.className = "tool-body edit-body";
         const summary = document.createElement("summary");
-        summary.textContent = "edit";
+        summary.textContent = "details";
         const pre = document.createElement("pre");
         pre.className = "diff-body";
         wrap.appendChild(summary);
@@ -2497,8 +2512,8 @@
         conversation.appendChild(wrap);
         return { wrap, pre };
       },
-      bodyDelta: (state, out) => { if (state.body) renderDiff(state.body.pre, out); },
-      bodyEnd: (state, data, out) => { if (state.body) renderDiff(state.body.pre, out); },
+      bodyDelta: (state, out) => { if (state.body) renderDiff(state.body.pre, editDiffText(state.args, out)); },
+      bodyEnd: (state, data, out) => { if (state.body) renderDiff(state.body.pre, editDiffText(state.args, out)); },
     };
   }
 
