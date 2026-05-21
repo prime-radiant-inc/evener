@@ -465,8 +465,8 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .assistant-message pre { background: var(--bg-raised); padding: 12px 16px; border-radius: 6px; overflow-x: auto; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 13px; }
 
 /* Annotation tier — tool calls, diffs, subagent references */
-.tool-call { margin: 0 0 6px 28px; font-size: 12.5px; color: var(--text-muted); display: flex; gap: 14px; flex-wrap: wrap; }
-.tool-call-cluster { margin-bottom: 24px; }
+.tool-call { margin: 0 0 3px 22px; font-size: 12.5px; color: var(--text-muted); display: flex; gap: 10px; flex-wrap: wrap; }
+.tool-call-cluster { margin-bottom: 12px; }
 .tool-call-cluster .tool-call:last-child { margin-bottom: 0; }
 .tool-call .verb { color: var(--text-muted); font-family: ui-monospace, "SFMono-Regular", monospace; }
 .tool-call .target { color: var(--text); font-family: ui-monospace, "SFMono-Regular", monospace; word-break: break-all; }
@@ -479,29 +479,29 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
   flex: 0 0 100%;
   margin: 4px 0 0;
 }
-.diff-body { margin: 0 0 24px 44px; padding-left: 14px; border-left: 1px solid var(--rule); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.65; color: var(--text-muted); white-space: pre-wrap; }
+.diff-body { margin: 0 0 12px 36px; padding-left: 10px; border-left: 1px solid var(--rule); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.5; color: var(--text-muted); white-space: pre-wrap; }
 .diff-body .add { color: var(--state-idle); }
 .diff-body .del { color: var(--state-awaiting); }
 .diff-body .hunk { color: var(--text-dim); }
 
 /* Shared style for tool-body elements: diff, shell output, task list, etc. */
-.tool-body { margin: 0 0 24px 44px; padding-left: 14px; border-left: 1px solid var(--rule); font-size: 12px; color: var(--text-muted); }
-.tool-body summary { cursor: pointer; color: var(--text-muted); padding: 2px 0; user-select: none; }
+.tool-body { margin: 0 0 12px 36px; padding-left: 10px; border-left: 1px solid var(--rule); font-size: 12px; color: var(--text-muted); }
+.tool-body summary { cursor: pointer; color: var(--text-muted); padding: 0; user-select: none; }
 .tool-body summary:hover { color: var(--text); }
-.shell-output { margin: 6px 0 0; padding: 8px 10px; background: var(--bg); border-radius: 4px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.5; color: var(--text); white-space: pre-wrap; max-height: 360px; overflow-y: auto; }
-.cheap-tool-args { margin: 6px 0 0; padding: 8px 10px; background: var(--bg); border-radius: 4px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.5; color: var(--text-muted); white-space: pre-wrap; max-height: 180px; overflow-y: auto; }
-.cheap-tool-output { margin: 6px 0 0; padding: 8px 10px; background: var(--bg); border-radius: 4px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.5; color: var(--text); white-space: pre-wrap; max-height: 360px; overflow-y: auto; }
-.task-list-body { list-style: none; margin: 0 0 24px 44px; padding: 8px 0 8px 14px; border-left: 1px solid var(--rule); display: flex; flex-direction: column; gap: 4px; }
+.shell-output { margin: 4px 0 0; padding: 6px 8px; background: var(--bg); border-radius: 4px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.4; color: var(--text); white-space: pre-wrap; max-height: 360px; overflow-y: auto; }
+.cheap-tool-args { margin: 4px 0 0; padding: 6px 8px; background: var(--bg); border-radius: 4px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.4; color: var(--text-muted); white-space: pre-wrap; max-height: 180px; overflow-y: auto; }
+.cheap-tool-output { margin: 4px 0 0; padding: 6px 8px; background: var(--bg); border-radius: 4px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.4; color: var(--text); white-space: pre-wrap; max-height: 360px; overflow-y: auto; }
+.task-list-body { list-style: none; margin: 0 0 12px 36px; padding: 6px 0 6px 10px; border-left: 1px solid var(--rule); display: flex; flex-direction: column; gap: 3px; }
 .task-list-body .task-row { padding: 2px 0; background: transparent; border: none; font-size: 12px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .task-list-body .task-id { color: var(--text-muted); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 11px; }
 .task-list-body .task-arrow { color: var(--text-dim); }
 .task-list-body .task-status-label { color: var(--text); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 11px; }
 .task-list-body .task-notes { color: var(--text-muted); font-style: italic; font-size: 11px; }
 .task-list-body .task-type { color: var(--text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
-.fetch-body { margin: 0 0 24px 44px; padding-left: 14px; border-left: 1px solid var(--rule); font-size: 12px; color: var(--text-muted); font-style: italic; }
-.search-body { list-style: none; margin: 0 0 24px 44px; padding-left: 14px; border-left: 1px solid var(--rule); font-size: 12px; color: var(--text); }
+.fetch-body { margin: 0 0 12px 36px; padding-left: 10px; border-left: 1px solid var(--rule); font-size: 12px; color: var(--text-muted); font-style: italic; }
+.search-body { list-style: none; margin: 0 0 12px 36px; padding-left: 10px; border-left: 1px solid var(--rule); font-size: 12px; color: var(--text); }
 .search-body li { padding: 2px 0; }
-.subagent-reference { margin: 0 0 26px 28px; font-size: 12.5px; color: var(--text-muted); cursor: pointer; }
+.subagent-reference { margin: 0 0 12px 22px; font-size: 12.5px; color: var(--text-muted); cursor: pointer; }
 .subagent-reference .verb { color: var(--state-subagent); font-family: ui-monospace, "SFMono-Regular", monospace; }
 .subagent-reference:hover { color: var(--text); }
 .diagnostic {
