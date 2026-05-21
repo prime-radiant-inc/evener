@@ -179,6 +179,7 @@ await scenario("apply_patch diff body with five-line preview", [
   if (!preview.querySelector(".del")) return { ok: false, detail: "no patch del lines" };
   const more = body.querySelector(".patch-output-more");
   if (!more) return { ok: false, detail: "missing patch more disclosure" };
+  if (body.querySelectorAll(".patch-output-more").length !== 1) return { ok: false, detail: "duplicate patch more disclosures" };
   if (!more.querySelector("summary") || !more.querySelector("summary").textContent.includes("3 more lines")) return { ok: false, detail: "wrong patch more summary" };
   if (!more.querySelector(".patch-rest") || !more.querySelector(".patch-rest").textContent.includes("+added")) return { ok: false, detail: "patch rest missing hidden diff lines" };
   return { ok: true };

@@ -2071,7 +2071,7 @@
     const details = document.createElement("details");
     details.className = "task-system-details";
     const summary = document.createElement("summary");
-    summary.textContent = "details";
+    summary.textContent = "task details";
     details.appendChild(summary);
     const dl = document.createElement("dl");
     dl.className = "task-system-detail";
@@ -2514,8 +2514,9 @@
         pre.className = "diff-body patch-preview";
         wrap.appendChild(pre);
         conversation.appendChild(wrap);
-        setExpandableDiff({ wrap, pre }, (args && args.patch) || "", { moreClass: "patch-output-more", outputClassName: "diff-body patch-rest" });
-        return { wrap, pre };
+        const body = { wrap, pre };
+        setExpandableDiff(body, (args && args.patch) || "", { moreClass: "patch-output-more", outputClassName: "diff-body patch-rest" });
+        return body;
       },
       bodyDelta: (state) => {
         if (state.body) setExpandableDiff(state.body, (state.args && state.args.patch) || "", { moreClass: "patch-output-more", outputClassName: "diff-body patch-rest" });
