@@ -84,6 +84,99 @@ func TestBuildSpawnArgs_FromResolved(t *testing.T) {
 	}
 }
 
+func TestPrepareResolvedForSpawnMaterializesInlinePrompts(t *testing.T) {
+	stateDir := t.TempDir()
+	const systemPrompt = "base inline prompt body"
+	const appendPrompt = "append inline prompt body"
+	resolved := launchconfig.Resolved{Effective: launchconfig.Layer{
+		SystemPromptMode:       "inline",
+		SystemPromptText:       systemPrompt,
+		SystemPromptAppendMode: "inline",
+		SystemPromptAppendText: appendPrompt,
+	}}
+
+	got, cleanup, err := prepareResolvedForSpawn(stateDir, resolved)
+	if err != nil {
+		t.Fatalf("prepareResolvedForSpawn: %v", err)
+	}
+	defer cleanup()
+
+	if got.Effective.SystemPromptMode != "file" {
+		t.Fatalf("SystemPromptMode=%q, want file", got.Effective.SystemPromptMode)
+	}
+	if got.Effective.SystemPromptAppendMode != "file" {
+		t.Fatalf("SystemPromptAppendMode=%q, want file", got.Effective.SystemPromptAppendMode)
+	}
+	if got.Effective.SystemPromptText != "" {
+		t.Fatalf("SystemPromptText=%q, want cleared", got.Effective.SystemPromptText)
+	}
+	if got.Effective.SystemPromptAppendText != "" {
+		t.Fatalf("SystemPromptAppendText=%q, want cleared", got.Effective.SystemPromptAppendText)
+	}
+	assertPromptFile(t, got.Effective.SystemPromptFile, stateDir, systemPrompt)
+	assertPromptFile(t, got.Effective.SystemPromptAppendFile, stateDir, appendPrompt)
+}
+
+func TestBuildSpawnArgsPreparedInlinePromptsUseFilesWithoutLeakingText(t *testing.T) {
+	stateDir := t.TempDir()
+	const systemPrompt = "do not leak base prompt"
+	const appendPrompt = "do not leak append prompt"
+	resolved, cleanup, err := prepareResolvedForSpawn(stateDir, launchconfig.Resolved{Effective: launchconfig.Layer{
+		Model:                  "openai/gpt-5",
+		SystemPromptMode:       "inline",
+		SystemPromptText:       systemPrompt,
+		SystemPromptAppendMode: "inline",
+		SystemPromptAppendText: appendPrompt,
+	}})
+	if err != nil {
+		t.Fatalf("prepareResolvedForSpawn: %v", err)
+	}
+	defer cleanup()
+
+	args := buildSpawnArgs(SpawnRequest{Resolved: resolved, StateDir: stateDir})
+	joined := strings.Join(args, "\x00")
+	if strings.Contains(joined, systemPrompt) || strings.Contains(joined, appendPrompt) {
+		t.Fatalf("buildSpawnArgs leaked inline prompt body text: %#v", args)
+	}
+	got := pairsToMap(args)
+	if got["--system-prompt"] == "" {
+		t.Fatalf("missing --system-prompt in %#v", args)
+	}
+	if got["--system-prompt-append"] == "" {
+		t.Fatalf("missing --system-prompt-append in %#v", args)
+	}
+	assertPromptFile(t, got["--system-prompt"], stateDir, systemPrompt)
+	assertPromptFile(t, got["--system-prompt-append"], stateDir, appendPrompt)
+}
+
+func assertPromptFile(t *testing.T, path, stateDir, want string) {
+	t.Helper()
+	if path == "" {
+		t.Fatal("prompt path is empty")
+	}
+	rel, err := filepath.Rel(stateDir, path)
+	if err != nil {
+		t.Fatalf("prompt path %q is not relative to state dir %q: %v", path, stateDir, err)
+	}
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		t.Fatalf("prompt path %q is not under state dir %q", path, stateDir)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read prompt file %q: %v", path, err)
+	}
+	if string(data) != want {
+		t.Fatalf("prompt file %q = %q, want %q", path, data, want)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat prompt file %q: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("prompt file mode=%#o, want 0600", got)
+	}
+}
+
 func TestWaitForRendezvous_AppearsInTime(t *testing.T) {
 	dir := t.TempDir()
 

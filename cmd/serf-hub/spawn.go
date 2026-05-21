@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -111,6 +112,12 @@ func (h *HubSpawner) Spawn(ctx context.Context, req SpawnRequest) (rendezvous.En
 	if req.StateDir == "" {
 		req.StateDir = resolveSerfLaunchStateDir(req.WorkingDir, req.Resolved.Effective.Env)
 	}
+	resolved, cleanup, err := prepareResolvedForSpawn(req.StateDir, req.Resolved)
+	if err != nil {
+		return rendezvous.Entry{}, err
+	}
+	defer cleanup()
+	req.Resolved = resolved
 	req.RunDir = h.RunDir
 	if req.Resolved.Effective.AppReplaySize != nil {
 		req.AppReplaySize = *req.Resolved.Effective.AppReplaySize
@@ -141,6 +148,12 @@ func (h *HubSpawner) Resume(ctx context.Context, req ResumeRequest) (rendezvous.
 	if req.StateDir == "" {
 		req.StateDir = resolveSerfLaunchStateDir(req.WorkingDir, req.Resolved.Effective.Env)
 	}
+	resolved, cleanup, err := prepareResolvedForSpawn(req.StateDir, req.Resolved)
+	if err != nil {
+		return rendezvous.Entry{}, err
+	}
+	defer cleanup()
+	req.Resolved = resolved
 	req.RunDir = h.RunDir
 	if req.Resolved.Effective.AppReplaySize != nil {
 		req.AppReplaySize = *req.Resolved.Effective.AppReplaySize
@@ -163,6 +176,53 @@ func (h *HubSpawner) Resume(ctx context.Context, req ResumeRequest) (rendezvous.
 		return rendezvous.Entry{}, err
 	}
 	return ResumeDaemon(ctx, h.SerfBinary, h.RunDir, req, timeout)
+}
+
+func prepareResolvedForSpawn(stateDir string, resolved launchconfig.Resolved) (launchconfig.Resolved, func(), error) {
+	effective := &resolved.Effective
+	if effective.SystemPromptMode != "inline" && effective.SystemPromptAppendMode != "inline" {
+		return resolved, func() {}, nil
+	}
+	if stateDir == "" {
+		return launchconfig.Resolved{}, nil, errors.New("state dir is required for inline system prompts")
+	}
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return launchconfig.Resolved{}, nil, fmt.Errorf("create state dir for inline prompts: %w", err)
+	}
+	tempDir, err := os.MkdirTemp(stateDir, "inline-prompts-")
+	if err != nil {
+		return launchconfig.Resolved{}, nil, fmt.Errorf("create inline prompt dir: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(tempDir) }
+	writePrompt := func(name, text string) (string, error) {
+		path := filepath.Join(tempDir, name)
+		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+			return "", err
+		}
+		return path, nil
+	}
+
+	if effective.SystemPromptMode == "inline" {
+		path, err := writePrompt("system-prompt.md", effective.SystemPromptText)
+		if err != nil {
+			cleanup()
+			return launchconfig.Resolved{}, nil, fmt.Errorf("write inline system prompt: %w", err)
+		}
+		effective.SystemPromptMode = "file"
+		effective.SystemPromptFile = path
+		effective.SystemPromptText = ""
+	}
+	if effective.SystemPromptAppendMode == "inline" {
+		path, err := writePrompt("system-prompt-append.md", effective.SystemPromptAppendText)
+		if err != nil {
+			cleanup()
+			return launchconfig.Resolved{}, nil, fmt.Errorf("write inline system prompt append: %w", err)
+		}
+		effective.SystemPromptAppendMode = "file"
+		effective.SystemPromptAppendFile = path
+		effective.SystemPromptAppendText = ""
+	}
+	return resolved, cleanup, nil
 }
 
 // buildSpawnArgs assembles the arg slice for `serf serve` from a SpawnRequest.
