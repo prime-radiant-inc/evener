@@ -187,19 +187,21 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 		}
 		body["tool_choice"] = tc
 	}
-	if req.Temperature != nil {
+	if req.Temperature != nil && !a.usesCodexBackend() {
 		body["temperature"] = *req.Temperature
 	}
-	if req.TopP != nil {
+	if req.TopP != nil && !a.usesCodexBackend() {
 		body["top_p"] = *req.TopP
 	}
 	if req.MaxTokens != nil && !a.usesCodexBackend() {
 		body["max_output_tokens"] = *req.MaxTokens
 	}
-	if len(req.StopSequences) > 0 {
+	if len(req.StopSequences) > 0 && !a.usesCodexBackend() {
 		body["stop"] = req.StopSequences
 	}
-	if len(req.Metadata) > 0 {
+	if len(req.Metadata) > 0 && a.usesCodexBackend() {
+		body["client_metadata"] = req.Metadata
+	} else if len(req.Metadata) > 0 {
 		body["metadata"] = req.Metadata
 	}
 	if req.ReasoningEffort != nil {

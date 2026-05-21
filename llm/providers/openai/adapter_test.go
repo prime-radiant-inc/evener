@@ -1919,7 +1919,7 @@ func TestAdapter_Complete_OAuthTransportUsesCodexEndpointAndAccountHeader(t *tes
 	}
 }
 
-func TestAdapter_Complete_OAuthTransportOmitsMaxOutputTokens(t *testing.T) {
+func TestAdapter_Complete_OAuthTransportOmitsUnsupportedPublicResponsesFields(t *testing.T) {
 	var gotBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/backend-api/codex/responses" {
@@ -1943,19 +1943,31 @@ func TestAdapter_Complete_OAuthTransportOmitsMaxOutputTokens(t *testing.T) {
 		Client:           srv.Client(),
 	}
 	maxTokens := 80
+	temp := 0.0
+	topP := 0.5
 	_, err := a.Complete(context.Background(), llm.Request{
-		Model:     "gpt-5.5",
-		Messages:  []llm.Message{llm.User("hi")},
-		MaxTokens: &maxTokens,
+		Model:         "gpt-5.5",
+		Messages:      []llm.Message{llm.User("hi")},
+		Temperature:   &temp,
+		TopP:          &topP,
+		MaxTokens:     &maxTokens,
+		StopSequences: []string{"STOP"},
+		Metadata:      map[string]string{"trace": "abc"},
 	})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
-	if _, ok := gotBody["max_output_tokens"]; ok {
-		t.Fatalf("max_output_tokens should be omitted for Codex backend: %#v", gotBody)
+	for _, key := range []string{"temperature", "top_p", "max_output_tokens", "stop", "metadata"} {
+		if _, ok := gotBody[key]; ok {
+			t.Fatalf("%s should be omitted for Codex backend: %#v", key, gotBody)
+		}
 	}
 	if gotBody["stream"] != true {
 		t.Fatalf("stream = %#v, want true", gotBody["stream"])
+	}
+	clientMetadata, ok := gotBody["client_metadata"].(map[string]any)
+	if !ok || clientMetadata["trace"] != "abc" {
+		t.Fatalf("client_metadata = %#v, want trace metadata", gotBody["client_metadata"])
 	}
 }
 
