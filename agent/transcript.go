@@ -449,7 +449,8 @@ func ResumeHistory(entries []TranscriptEntry) []Turn {
 		for i, e := range entries {
 			turns[i] = e.Turn
 		}
-		return turns
+		repaired, _ := repairOrphanedToolResults(turns)
+		return repaired
 	}
 
 	// Return compaction turn + everything after it.
@@ -457,5 +458,6 @@ func ResumeHistory(entries []TranscriptEntry) []Turn {
 	for i := compactionIdx; i < len(entries); i++ {
 		result = append(result, entries[i].Turn)
 	}
-	return result
+	repaired, _ := repairOrphanedToolResults(result)
+	return repaired
 }

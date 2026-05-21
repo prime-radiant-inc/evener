@@ -407,6 +407,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
 	}
+	profile = resolveLiveModelProfileWithTimeout(client, profile)
 	cfg.applyDefaults()
 	// Let the provider profile override the generic default command timeout.
 	if profileTimeout := profile.DefaultCommandTimeoutMS(); profileTimeout > 0 && cfg.DefaultCommandTimeoutMS == 10_000 {
@@ -561,6 +562,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
 	}
+	profile = resolveLiveModelProfileWithTimeout(client, profile)
 
 	// Try transcript-based resume first, fall back to snapshot history.
 	var resumeHistory []Turn
@@ -708,6 +710,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
 	}
+	profile = resolveLiveModelProfileWithTimeout(client, profile)
 
 	// Recover history from transcript JSONL. No snapshot fallback.
 	var resumeHistory []Turn
@@ -1243,7 +1246,18 @@ func (s *Session) SetModel(model string) {
 		s.mu.Unlock()
 		return
 	}
-	s.profile = s.profile.WithModel(model)
+	nextProfile := s.profile.WithModel(model)
+	client := s.client
+	s.mu.Unlock()
+
+	nextProfile = resolveLiveModelProfileWithTimeout(client, nextProfile)
+
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return
+	}
+	s.profile = nextProfile
 	if s.contextMgr != nil {
 		s.contextMgr.SetProfile(s.profile)
 	}
@@ -2354,6 +2368,8 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	default:
 	}
 
+	s.repairOrphanedToolResults("before accepting new input")
+
 	s.mu.Lock()
 	userInputTurn := len(s.history) + 1
 	s.mu.Unlock()
@@ -2453,6 +2469,14 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		s.mu.Lock()
 		historyTurns := append([]Turn{}, s.history...)
 		s.mu.Unlock()
+		if repaired, repairs := repairOrphanedToolResults(historyTurns); repairs > 0 {
+			historyTurns = repaired
+			s.mu.Lock()
+			s.history = repaired
+			s.mu.Unlock()
+			s.emit(EventWarning, WarningData{Message: fmt.Sprintf("Recovered %d interrupted tool call(s) before model request", repairs)})
+			s.maybeAutoSave()
+		}
 
 		// Apply context management before each LLM request.
 		if s.strategy != nil {
