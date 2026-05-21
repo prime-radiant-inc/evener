@@ -18,6 +18,16 @@
   <label>Agent
     <input type="text" name="agent" placeholder="default">
   </label>
+  <label>Fast cheap model
+    <div class="sp-model-wrap">
+      <input type="hidden" name="fastCheapModel" id="lf-fast-cheap-model-hidden">
+      <button class="sp-model-btn" type="button" data-settings-model-picker>
+        <span class="sp-model-display" id="lf-fast-cheap-model-display">(use active model)</span>
+        <span class="sp-model-caret">▾</span>
+      </button>
+      <button class="sp-clear-btn" type="button" id="lf-fast-cheap-model-clear" title="clear">✕</button>
+    </div>
+  </label>
   <label>Reasoning effort
     <select name="reasoningEffort">
       <option value="">(default)</option>
@@ -51,13 +61,22 @@
     const modelHidden = document.getElementById("lf-model-hidden");
     const modelDisplay = document.getElementById("lf-model-display");
     const modelClear = document.getElementById("lf-model-clear");
+    const fastCheapModelHidden = document.getElementById("lf-fast-cheap-model-hidden");
+    const fastCheapModelDisplay = document.getElementById("lf-fast-cheap-model-display");
+    const fastCheapModelClear = document.getElementById("lf-fast-cheap-model-clear");
 
     function setModel(v) {
       modelHidden.value = v || "";
       modelDisplay.textContent = v || "(none set)";
     }
 
+    function setFastCheapModel(v) {
+      fastCheapModelHidden.value = v || "";
+      fastCheapModelDisplay.textContent = v || "(use active model)";
+    }
+
     modelClear.addEventListener("click", () => setModel(""));
+    fastCheapModelClear.addEventListener("click", () => setFastCheapModel(""));
 
     // Re-init picker after DOM is ready (settings-pickers.js may have run before this block)
     if (window.SettingsPickers) window.SettingsPickers.init(form);
@@ -65,6 +84,7 @@
     try {
       const current = await launchconfig.getLayer("/", "global");
       setModel(current.model || "");
+      setFastCheapModel(current.fastCheapModel || "");
       form.agent.value = current.agent || "";
       form.reasoningEffort.value = current.reasoningEffort || "";
       form.contextStrategy.value = current.contextStrategy || "";
@@ -79,6 +99,7 @@
         const out = { ...current,
           model: modelHidden.value.trim() || undefined,
           agent: form.agent.value.trim() || undefined,
+          fastCheapModel: fastCheapModelHidden.value.trim() || undefined,
           reasoningEffort: form.reasoningEffort.value || undefined,
           contextStrategy: form.contextStrategy.value || undefined,
           maxRounds: form.maxRounds.value === "" ? undefined : +form.maxRounds.value,

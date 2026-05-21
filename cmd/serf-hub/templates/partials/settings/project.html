@@ -39,6 +39,7 @@
     function resetLaunchDraftFromCurrent() {
       launchDraft = {
         model: current.model,
+        fastCheapModel: current.fastCheapModel,
         agent: current.agent,
         reasoningEffort: current.reasoningEffort,
         contextStrategy: current.contextStrategy,
@@ -54,7 +55,9 @@
     function captureLaunchForm() {
       const fld = (name) => root.querySelector(`[name="${name}"]`);
       const mh = root.querySelector("#proj-model-hidden");
+      const fcmh = root.querySelector("#proj-fast-cheap-model-hidden");
       if (mh) launchDraft.model = mh.value.trim() || undefined;
+      if (fcmh) launchDraft.fastCheapModel = fcmh.value.trim() || undefined;
       if (fld("agent")) launchDraft.agent = fld("agent").value.trim() || undefined;
       if (fld("reasoningEffort")) launchDraft.reasoningEffort = fld("reasoningEffort").value || undefined;
       if (fld("contextStrategy")) launchDraft.contextStrategy = fld("contextStrategy").value || undefined;
@@ -87,6 +90,7 @@
       const systemPromptAppend = launch.systemPromptAppend || [];
       const env = launch.env || {};
       const modelVal = escapeHtml(launch.model || "");
+      const fastCheapModelVal = escapeHtml(launch.fastCheapModel || "");
 
       root.innerHTML = `
         <h3 class="settings-h3">Launch defaults</h3>
@@ -103,6 +107,16 @@
           </label>
           <label>Agent
             <input type="text" name="agent" value="${escapeHtml(launch.agent || "")}" placeholder="(inherit global)">
+          </label>
+          <label>Fast cheap model
+            <div class="sp-model-wrap">
+              <input type="hidden" name="fastCheapModel" id="proj-fast-cheap-model-hidden" value="${fastCheapModelVal}">
+              <button class="sp-model-btn" type="button" data-settings-model-picker>
+                <span class="sp-model-display" id="proj-fast-cheap-model-display">${fastCheapModelVal || "(use active model)"}</span>
+                <span class="sp-model-caret">▾</span>
+              </button>
+              <button class="sp-clear-btn" type="button" id="proj-fast-cheap-model-clear" title="clear">✕</button>
+            </div>
           </label>
           <label>Reasoning effort
             <select name="reasoningEffort">
@@ -219,6 +233,13 @@
         modelHidden.value = "";
         modelHidden.dispatchEvent(new Event("change", { bubbles: true }));
         modelDisplay.textContent = "(inherit global)";
+      });
+      const fastCheapModelHidden = root.querySelector("#proj-fast-cheap-model-hidden");
+      const fastCheapModelDisplay = root.querySelector("#proj-fast-cheap-model-display");
+      root.querySelector("#proj-fast-cheap-model-clear").addEventListener("click", () => {
+        fastCheapModelHidden.value = "";
+        fastCheapModelHidden.dispatchEvent(new Event("change", { bubbles: true }));
+        fastCheapModelDisplay.textContent = "(use active model)";
       });
 
       // Init settings pickers (model + dir) for this render

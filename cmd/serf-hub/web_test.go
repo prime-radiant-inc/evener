@@ -3950,6 +3950,52 @@ func settingsRequest(t *testing.T, web *WebServer, section string) string {
 	return rec.Body.String()
 }
 
+func TestWeb_SettingsLaunchFormsExposeFastCheapModel(t *testing.T) {
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+	})
+	globalBody := settingsRequest(t, web, "launch-serf")
+	for _, want := range []string{
+		`name="fastCheapModel"`,
+		`id="lf-fast-cheap-model-hidden"`,
+		`id="lf-fast-cheap-model-display"`,
+		`id="lf-fast-cheap-model-clear"`,
+		"data-settings-model-picker",
+		`setFastCheapModel(current.fastCheapModel || "")`,
+		"fastCheapModelHidden.value.trim()",
+	} {
+		if !strings.Contains(globalBody, want) {
+			t.Fatalf("global launch settings missing %q: %q", want, globalBody)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/_partials/settings/project?cwd=/tmp/project", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("project status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	projectBody := rec.Body.String()
+	for _, want := range []string{
+		`name="fastCheapModel"`,
+		`id="proj-fast-cheap-model-hidden"`,
+		`id="proj-fast-cheap-model-display"`,
+		`id="proj-fast-cheap-model-clear"`,
+		"data-settings-model-picker",
+		"current.fastCheapModel",
+		"launchDraft.fastCheapModel",
+		"#proj-fast-cheap-model-hidden",
+	} {
+		if !strings.Contains(projectBody, want) {
+			t.Fatalf("project launch settings missing %q: %q", want, projectBody)
+		}
+	}
+}
+
 // writeFakePlugin creates a minimal plugin tree at <root>/<name>:
 //
 //	.claude-plugin/plugin.json with the given name+version
