@@ -54,6 +54,7 @@
           await launchconfig.setLayer("/", "global", window.LaunchConfigControls.collect(form));
           setStatus("Saved at " + new Date().toLocaleTimeString());
         } catch (err) {
+          window.LaunchConfigControls.showBackendError(form, err);
           setStatus("Error: " + (err && err.message ? err.message : err));
         }
       });

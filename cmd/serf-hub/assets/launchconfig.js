@@ -61,6 +61,44 @@
     if (opt.pathKind) el.dataset.launchPathKind = opt.pathKind;
   }
 
+  function fieldWrapFor(el) {
+    if (!el || !el.closest) return null;
+    if (el.classList && el.classList.contains("spawn-advanced-list-control")) return el;
+    return el.closest(".spawn-advanced-list-control[data-launch-wire-field], [data-launch-option]");
+  }
+
+  function errorElFor(wrap) {
+    if (!wrap) return null;
+    let err = wrap.querySelector(":scope > [data-launch-validation-error]");
+    if (!err) {
+      err = document.createElement("div");
+      err.dataset.launchValidationError = "true";
+      err.className = "settings-error launch-validation-error";
+      err.hidden = true;
+      wrap.appendChild(err);
+    }
+    return err;
+  }
+
+  function setFieldError(wrap, message) {
+    const err = errorElFor(wrap);
+    if (!err) return;
+    err.textContent = message || "";
+    err.hidden = !message;
+    if (message) wrap.dataset.launchInvalid = "true";
+    else delete wrap.dataset.launchInvalid;
+  }
+
+  function clearValidation(root) {
+    root.querySelectorAll("[data-launch-validation-error]").forEach((el) => {
+      el.textContent = "";
+      el.hidden = true;
+    });
+    root.querySelectorAll("[data-launch-invalid]").forEach((el) => {
+      delete el.dataset.launchInvalid;
+    });
+  }
+
   function textInputForOption(opt, mode, multiline) {
     const input = document.createElement(multiline ? "textarea" : "input");
     if (multiline) {
@@ -258,11 +296,13 @@
     add.addEventListener("click", async () => {
       const value = (input.value || "").trim();
       if (!value) return;
+      setFieldError(wrap, "");
       if (opt.pathKind && global.launchconfig && global.launchconfig.validatePath) {
         const result = await global.launchconfig.validatePath(value, schemaPathKind(opt.pathKind));
         if (!result || !result.valid) {
           input.setCustomValidity((result && result.error) || "invalid path");
           input.reportValidity();
+          setFieldError(wrap, input.validationMessage || (result && result.error) || "invalid path");
           return;
         }
         input.setCustomValidity("");
@@ -279,6 +319,7 @@
     wrap.appendChild(title);
     wrap.appendChild(list);
     wrap.appendChild(controls);
+    errorElFor(wrap);
     row.appendChild(wrap);
   }
 
@@ -328,6 +369,7 @@
     wrap.appendChild(title);
     wrap.appendChild(list);
     wrap.appendChild(controls);
+    errorElFor(wrap);
     row.appendChild(wrap);
   }
 
@@ -375,6 +417,7 @@
     wrap.appendChild(title);
     wrap.appendChild(list);
     wrap.appendChild(controls);
+    errorElFor(wrap);
     row.appendChild(wrap);
   }
 
@@ -492,6 +535,7 @@
     const value = (input.value || "").trim();
     input.dataset.launchInvalid = "";
     input.setCustomValidity("");
+    setFieldError(fieldWrapFor(input), "");
     if (!value) return true;
     if (!global.launchconfig || !global.launchconfig.validatePath) return true;
     const result = await global.launchconfig.validatePath(value, schemaPathKind(input.dataset.launchPathKind));
@@ -499,6 +543,7 @@
       input.dataset.launchInvalid = "true";
       input.setCustomValidity((result && result.error) || "invalid path");
       input.reportValidity();
+      setFieldError(fieldWrapFor(input), input.validationMessage || (result && result.error) || "invalid path");
       return false;
     }
     input.value = result.path || value;
@@ -511,6 +556,7 @@
     const value = (input.value || "").trim();
     input.dataset.launchInvalid = "";
     input.setCustomValidity("");
+    setFieldError(fieldWrapFor(input), "");
     if (!value) return true;
     if (!global.launchconfig || !global.launchconfig.validatePath) return true;
     const result = await global.launchconfig.validatePath(value, "command");
@@ -518,6 +564,7 @@
       input.dataset.launchInvalid = "true";
       input.setCustomValidity((result && result.error) || "invalid command");
       input.reportValidity();
+      setFieldError(fieldWrapFor(input), input.validationMessage || (result && result.error) || "invalid command");
       return false;
     }
     input.value = result.path || value;
@@ -526,14 +573,46 @@
   }
 
   async function validate(root) {
+    clearValidation(root);
     const inputs = Array.from(root.querySelectorAll("input[data-launch-path-kind][data-launch-wire-field], textarea[data-launch-path-kind][data-launch-wire-field], select[data-launch-path-kind][data-launch-wire-field]"));
     for (const input of inputs) {
       if (!(await validatePathInput(input))) return false;
+    }
+    const pathLists = Array.from(root.querySelectorAll(".spawn-advanced-list-control[data-launch-kind=\"pathList\"][data-launch-path-kind]"));
+    for (const wrap of pathLists) {
+      const kind = schemaPathKind(wrap.dataset.launchPathKind);
+      const rows = Array.from(wrap.querySelectorAll("[data-launch-list] li"));
+      for (const li of rows) {
+        const value = (li.dataset.value || "").trim();
+        if (!value) continue;
+        if (!global.launchconfig || !global.launchconfig.validatePath) continue;
+        const result = await global.launchconfig.validatePath(value, kind);
+        if (!result || !result.valid) {
+          setFieldError(wrap, (result && result.error) || "invalid path: " + value);
+          if (wrap.scrollIntoView) wrap.scrollIntoView({ block: "nearest" });
+          return false;
+        }
+        li.dataset.value = result.path || value;
+        const span = li.querySelector("span");
+        if (span) span.textContent = li.dataset.value;
+      }
+      setFieldError(wrap, "");
     }
     const commands = Array.from(root.querySelectorAll("[data-launch-mcp-command]"));
     for (const input of commands) {
       if (!(await validateMCPCommandInput(input))) return false;
     }
+    return true;
+  }
+
+  function showBackendError(root, err) {
+    const message = err && err.message ? err.message : String(err || "");
+    const isEnvCredential = /\benv key\b/i.test(message) && /credential/i.test(message);
+    if (!isEnvCredential) return false;
+    const envWrap = root.querySelector("[data-launch-kind=\"envMap\"][data-launch-wire-field=\"env\"]");
+    if (!envWrap) return false;
+    setFieldError(envWrap, message);
+    if (envWrap.scrollIntoView) envWrap.scrollIntoView({ block: "nearest" });
     return true;
   }
 
@@ -587,6 +666,7 @@
     populate,
     collect,
     validate,
+    showBackendError,
     schemaPathKind,
     optionSupportsLayer,
     optionSupportsSpawn,

@@ -11,73 +11,130 @@ function assert(cond, msg) {
   }
 }
 
-const dom = new JSDOM(`<!DOCTYPE html><html><body>
-  <form id="settings" data-launch-settings-root data-launch-settings-layer="global">
-    <div data-launch-settings-groups></div>
-  </form>
-</body></html>`, {
-  runScripts: "outside-only",
-  pretendToBeVisual: true,
-  url: "http://127.0.0.1:9180/settings/launch-serf",
+(async function main() {
+  const dom = new JSDOM(`<!DOCTYPE html><html><body>
+    <form id="settings" data-launch-settings-root data-launch-settings-layer="global">
+      <div data-launch-settings-groups></div>
+    </form>
+  </body></html>`, {
+    runScripts: "outside-only",
+    pretendToBeVisual: true,
+    url: "http://127.0.0.1:9180/settings/launch-serf",
+  });
+
+  const validateCalls = [];
+  dom.window.SerfAppwire = {
+    request() { return Promise.resolve({}); },
+    validatePath(value, kind) {
+      validateCalls.push({ value, kind });
+      if (value.includes("missing")) {
+        return Promise.resolve({ valid: false, error: "missing path: " + value });
+      }
+      return Promise.resolve({ valid: true, path: value.replace("/raw/", "/canonical/") });
+    },
+  };
+  dom.window.eval(src);
+
+  const schema = [
+    {
+      field: "model",
+      wireField: "model",
+      label: "Model",
+      group: "Model",
+      kind: "modelPicker",
+      defaultableLayers: ["global", "project"],
+      perLaunch: true,
+      envFallback: { name: "SERF_MODEL" },
+      driverSupport: { serf: true },
+    },
+    {
+      field: "plugin_dirs",
+      wireField: "pluginDirs",
+      label: "Plugin directories",
+      group: "Resources",
+      kind: "pathList",
+      pathKind: "dir",
+      defaultableLayers: ["global", "project"],
+      perLaunch: true,
+      driverSupport: { serf: true },
+    },
+    {
+      field: "trace_file",
+      wireField: "traceFile",
+      label: "Trace file",
+      group: "Debug Logging",
+      kind: "path",
+      pathKind: "outputFile",
+      defaultableLayers: ["global", "project", "launch"],
+      perLaunch: true,
+      driverSupport: { serf: true },
+    },
+    {
+      field: "env",
+      wireField: "env",
+      label: "Environment variables",
+      group: "Environment",
+      kind: "envMap",
+      defaultableLayers: ["global", "project"],
+      perLaunch: true,
+      driverSupport: { serf: true },
+    },
+  ];
+
+  const root = dom.window.document.getElementById("settings");
+  dom.window.LaunchConfigControls.render(root, {
+    mode: "settings",
+    layer: "global",
+    options: schema,
+    current: {
+      model: "openai/gpt-5",
+      pluginDirs: ["/missing/plugin", "/raw/plugin"],
+      traceFile: "/tmp/trace.out",
+      env: { FOO: "bar" },
+    },
+    includeEnvFallbacks: false,
+  });
+
+  assert(root.querySelector("[data-launch-settings-groups]"), "settings groups root should remain present");
+  assert(root.querySelector('[data-launch-wire-field="model"]'), "model control should render");
+  assert(root.querySelector('[data-launch-wire-field="traceFile"]').dataset.launchPathKind === "outputFile",
+    "pathKind should stay on rendered path control");
+  assert(root.querySelector('[data-launch-wire-field="traceFile"]').value === "/tmp/trace.out",
+    "path current value should populate");
+  assert(!root.textContent.includes("SERF_MODEL"), "settings controls must not render env fallback values");
+  assert(!root.querySelector("[data-launch-env-fallback]"), "settings controls must not expose env fallback nodes");
+
+  const invalid = await dom.window.LaunchConfigControls.validate(root);
+  assert(!invalid, "validate should block invalid pathList entries");
+  assert(validateCalls.some(c => c.value === "/missing/plugin" && c.kind === "dir"),
+    "pathList validation should use schema pathKind");
+  const pluginWrap = root.querySelector('[data-launch-kind="pathList"][data-launch-wire-field="pluginDirs"]');
+  const pluginError = pluginWrap.querySelector("[data-launch-validation-error]");
+  assert(pluginError && !pluginError.hidden && pluginError.textContent.includes("missing path"),
+    "pathList validation should render inline error");
+
+  pluginWrap.querySelector('[data-value="/missing/plugin"]').remove();
+  const valid = await dom.window.LaunchConfigControls.validate(root);
+  assert(valid, "validate should pass after invalid pathList entry is removed");
+  assert(validateCalls.some(c => c.value === "/tmp/trace.out" && c.kind === "output-file"),
+    "outputFile scalar validation should map to output-file");
+  assert(pluginWrap.querySelector('[data-value="/canonical/plugin"]'),
+    "valid pathList entries should update to canonical validated path");
+
+  const envError = new Error('env key "OPENAI_API_KEY" looks like a credential; route through serf/auth/apiKey/set');
+  assert(dom.window.LaunchConfigControls.showBackendError(root, envError),
+    "credential env backend errors should be recognized");
+  const envWrap = root.querySelector('[data-launch-kind="envMap"][data-launch-wire-field="env"]');
+  const envInline = envWrap.querySelector("[data-launch-validation-error]");
+  assert(envInline && !envInline.hidden && envInline.textContent.includes("OPENAI_API_KEY"),
+    "credential env backend errors should render inline near env control");
+
+  const out = dom.window.LaunchConfigControls.collect(root);
+  assert(out.model === "openai/gpt-5", "collect should include populated model");
+  assert(out.traceFile === "/tmp/trace.out", "collect should include output-file field with wire name");
+  assert(out.pluginDirs && out.pluginDirs[0] === "/canonical/plugin", "collect should include canonicalized path list");
+  assert(out.env && out.env.FOO === "bar", "collect should include env map values");
+})().catch((err) => {
+  console.error(err && err.stack ? err.stack : err);
+  process.exit(1);
 });
-
-dom.window.SerfAppwire = { request() { return Promise.resolve({}); } };
-dom.window.eval(src);
-
-const schema = [
-  {
-    field: "model",
-    wireField: "model",
-    label: "Model",
-    group: "Model",
-    kind: "modelPicker",
-    defaultableLayers: ["global", "project"],
-    perLaunch: true,
-    envFallback: { name: "SERF_MODEL" },
-    driverSupport: { serf: true },
-  },
-  {
-    field: "trace_file",
-    wireField: "traceFile",
-    label: "Trace file",
-    group: "Debug Logging",
-    kind: "path",
-    pathKind: "outputFile",
-    defaultableLayers: ["global", "project", "launch"],
-    perLaunch: true,
-    driverSupport: { serf: true },
-  },
-  {
-    field: "env",
-    wireField: "env",
-    label: "Environment variables",
-    group: "Environment",
-    kind: "envMap",
-    defaultableLayers: ["global", "project"],
-    perLaunch: true,
-    driverSupport: { serf: true },
-  },
-];
-
-const root = dom.window.document.getElementById("settings");
-dom.window.LaunchConfigControls.render(root, {
-  mode: "settings",
-  layer: "global",
-  options: schema,
-  current: { model: "openai/gpt-5", traceFile: "/tmp/trace.out", env: { FOO: "bar" } },
-  includeEnvFallbacks: false,
-});
-
-assert(root.querySelector("[data-launch-settings-groups]"), "settings groups root should remain present");
-assert(root.querySelector('[data-launch-wire-field="model"]'), "model control should render");
-assert(root.querySelector('[data-launch-wire-field="traceFile"]').dataset.launchPathKind === "outputFile",
-  "pathKind should stay on rendered path control");
-assert(root.querySelector('[data-launch-wire-field="traceFile"]').value === "/tmp/trace.out",
-  "path current value should populate");
-assert(!root.textContent.includes("SERF_MODEL"), "settings controls must not render env fallback values");
-assert(!root.querySelector("[data-launch-env-fallback]"), "settings controls must not expose env fallback nodes");
-
-const out = dom.window.LaunchConfigControls.collect(root);
-assert(out.model === "openai/gpt-5", "collect should include populated model");
-assert(out.traceFile === "/tmp/trace.out", "collect should include output-file field with wire name");
-assert(out.env && out.env.FOO === "bar", "collect should include env map values");
