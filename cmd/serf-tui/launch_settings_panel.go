@@ -2,6 +2,9 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -157,9 +160,10 @@ func renderLayerView(label string, l appwire.LaunchConfigLayer, cursor int) stri
 }
 
 type layerRow struct {
-	field string
-	label string
-	value string
+	field     string
+	label     string
+	value     string
+	editValue string
 }
 
 func layerRows(l appwire.LaunchConfigLayer) []layerRow {
@@ -179,19 +183,19 @@ func layerRows(l appwire.LaunchConfigLayer) []layerRow {
 		return "false"
 	}
 	return []layerRow{
-		{"model", "model", l.Model},
-		{"fast_cheap_model", "fast_cheap_model", l.FastCheapModel},
-		{"agent", "agent", l.Agent},
-		{"reasoning_effort", "reasoning_effort", l.ReasoningEffort},
-		{"context_strategy", "context_strategy", l.ContextStrategy},
-		{"max_rounds", "max_rounds", ptrIntStr(l.MaxRounds)},
-		{"max_subagent_depth", "max_subagent_depth", ptrIntStr(l.MaxSubagentDepth)},
-		{"no_project_prompts", "no_project_prompts", ptrBoolStr(l.NoProjectPrompts)},
-		{"skills_dirs", "skills_dirs", fmt.Sprintf("%d entries", len(l.SkillsDirs))},
-		{"plugin_dirs", "plugin_dirs", fmt.Sprintf("%d entries", len(l.PluginDirs))},
-		{"mcp_configs", "mcp_configs", fmt.Sprintf("%d entries", len(l.MCPConfigs))},
-		{"mcps", "mcps", fmt.Sprintf("%d entries", len(l.MCPs))},
-		{"env", "env", fmt.Sprintf("%d entries", len(l.Env))},
+		{"model", "model", l.Model, l.Model},
+		{"fast_cheap_model", "fast_cheap_model", l.FastCheapModel, l.FastCheapModel},
+		{"agent", "agent", l.Agent, l.Agent},
+		{"reasoning_effort", "reasoning_effort", l.ReasoningEffort, l.ReasoningEffort},
+		{"context_strategy", "context_strategy", l.ContextStrategy, l.ContextStrategy},
+		{"max_rounds", "max_rounds", ptrIntStr(l.MaxRounds), ptrIntStr(l.MaxRounds)},
+		{"max_subagent_depth", "max_subagent_depth", ptrIntStr(l.MaxSubagentDepth), ptrIntStr(l.MaxSubagentDepth)},
+		{"no_project_prompts", "no_project_prompts", ptrBoolStr(l.NoProjectPrompts), ptrBoolStr(l.NoProjectPrompts)},
+		{"skills_dirs", "skills_dirs", fmt.Sprintf("%d entries", len(l.SkillsDirs)), strings.Join(l.SkillsDirs, ", ")},
+		{"plugin_dirs", "plugin_dirs", fmt.Sprintf("%d entries", len(l.PluginDirs)), strings.Join(l.PluginDirs, ", ")},
+		{"mcp_configs", "mcp_configs", fmt.Sprintf("%d entries", len(l.MCPConfigs)), strings.Join(l.MCPConfigs, ", ")},
+		{"mcps", "mcps", fmt.Sprintf("%d entries", len(l.MCPs)), ""},
+		{"env", "env", fmt.Sprintf("%d entries", len(l.Env)), ""},
 	}
 }
 
@@ -238,7 +242,7 @@ func (p launchSettingsPanel) editCurrent() (tea.Model, tea.Cmd) {
 		return launchSettingsEditRequestMsg{
 			Layer:        p.tabName(),
 			Field:        row.field,
-			CurrentValue: row.value,
+			CurrentValue: row.editValue,
 		}
 	}
 }
@@ -316,10 +320,19 @@ func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.La
 		entries := splitTrim(value, ",")
 		switch field {
 		case "skills_dirs":
+			if err := validatePathEntries(entries, "dir"); err != nil {
+				return layer, err
+			}
 			layer.SkillsDirs = entries
 		case "plugin_dirs":
+			if err := validatePathEntries(entries, "dir"); err != nil {
+				return layer, err
+			}
 			layer.PluginDirs = entries
 		case "mcp_configs":
+			if err := validatePathEntries(entries, "file"); err != nil {
+				return layer, err
+			}
 			layer.MCPConfigs = entries
 		case "system_prompt_append":
 			layer.SystemPromptAppend = entries
@@ -328,6 +341,63 @@ func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.La
 		return layer, fmt.Errorf("editing %q in TUI not yet supported; use the web UI", field)
 	}
 	return layer, nil
+}
+
+func launchSettingsFieldUsesPathCompletion(field string) bool {
+	switch field {
+	case "skills_dirs", "plugin_dirs", "mcp_configs":
+		return true
+	default:
+		return false
+	}
+}
+
+func validatePathEntries(entries []string, kind string) error {
+	for _, entry := range entries {
+		if err := validateLocalLaunchPath(entry, kind); err != nil {
+			return fmt.Errorf("%s: %w", entry, err)
+		}
+	}
+	return nil
+}
+
+func validateLocalLaunchPath(path, kind string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("path is required")
+	}
+	if strings.HasPrefix(path, "~/") || path == "~" {
+		path = filepath.Join(os.Getenv("HOME"), strings.TrimPrefix(path, "~"))
+	}
+	if kind == "command" && !strings.ContainsRune(path, filepath.Separator) {
+		_, err := exec.LookPath(path)
+		return err
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("absolute path required")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	switch kind {
+	case "dir":
+		if !info.IsDir() {
+			return fmt.Errorf("path is not a directory")
+		}
+	case "file":
+		if info.IsDir() {
+			return fmt.Errorf("path is a directory")
+		}
+	case "command", "executable":
+		if info.IsDir() {
+			return fmt.Errorf("path is a directory")
+		}
+		if info.Mode()&0o111 == 0 {
+			return fmt.Errorf("path is not executable")
+		}
+	}
+	return nil
 }
 
 func parseOptionalInt(value string) (*int, error) {

@@ -941,17 +941,22 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case launchSettingsEditRequestMsg:
 		if msg.Layer == "launch" {
-			modal := newTextInputModal(
+			modal := newTextInputModalWithInput(
 				fmt.Sprintf("Edit %s (current: %s):", msg.Field, msg.CurrentValue),
 				"launch-override:"+msg.Field,
+				msg.CurrentValue,
 			)
 			m.followupModal = &modal
 			return m, nil
 		}
-		modal := newTextInputModal(
-			fmt.Sprintf("Edit %s.%s (current: %s):", msg.Layer, msg.Field, msg.CurrentValue),
-			fmt.Sprintf("settings-edit:%s:%s", msg.Layer, msg.Field),
-		)
+		prompt := fmt.Sprintf("Edit %s.%s (current: %s):", msg.Layer, msg.Field, msg.CurrentValue)
+		tag := fmt.Sprintf("settings-edit:%s:%s", msg.Layer, msg.Field)
+		var modal textInputModal
+		if launchSettingsFieldUsesPathCompletion(msg.Field) {
+			modal = newPathTextInputModal(prompt, tag, msg.CurrentValue)
+		} else {
+			modal = newTextInputModalWithInput(prompt, tag, msg.CurrentValue)
+		}
 		m.followupModal = &modal
 		return m, nil
 	case textInputResultMsg:
