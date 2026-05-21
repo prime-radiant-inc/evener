@@ -465,7 +465,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .assistant-message pre { background: var(--bg-raised); padding: 12px 16px; border-radius: 6px; overflow-x: auto; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 13px; }
 
 /* Annotation tier — tool calls, diffs, subagent references */
-.tool-call { margin: 0 0 3px 22px; font-size: 12.5px; color: var(--text-muted); display: flex; gap: 10px; flex-wrap: wrap; }
+.tool-call { margin: 0 0 3px 22px; font-size: 12.5px; color: var(--text-muted); display: flex; column-gap: 10px; row-gap: 1px; flex-wrap: wrap; }
 .tool-call-cluster { margin-bottom: 12px; }
 .tool-call-cluster .tool-call:last-child { margin-bottom: 0; }
 .tool-call .verb { color: var(--text-muted); font-family: ui-monospace, "SFMono-Regular", monospace; }
@@ -477,7 +477,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .tool-call .diff-body,
 .tool-call .tool-body {
   flex: 0 0 100%;
-  margin: 4px 0 0;
+  margin: 0;
 }
 .diff-body { margin: 0 0 12px 36px; padding-left: 10px; border-left: 1px solid var(--rule); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.5; color: var(--text-muted); white-space: pre-wrap; }
 .diff-body .add { color: var(--state-idle); }
