@@ -61,6 +61,11 @@ type GenerateOptions struct {
 	StopSequences   []string
 	ReasoningEffort *string
 	Metadata        map[string]string
+	ClientMetadata  map[string]string
+	Include         []string
+	PromptCacheKey  string
+	SessionID       string
+	ThreadID        string
 	ProviderOptions map[string]any
 
 	// RepairToolCall is called when tool argument validation fails. If it returns
@@ -230,6 +235,11 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 			StopSequences:   opts.StopSequences,
 			ReasoningEffort: opts.ReasoningEffort,
 			Metadata:        opts.Metadata,
+			ClientMetadata:  opts.ClientMetadata,
+			Include:         opts.Include,
+			PromptCacheKey:  opts.PromptCacheKey,
+			SessionID:       opts.SessionID,
+			ThreadID:        opts.ThreadID,
 			ProviderOptions: opts.ProviderOptions,
 			WebSearch:       opts.WebSearch,
 			AdapterTimeout:  opts.AdapterTimeout,

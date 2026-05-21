@@ -85,6 +85,10 @@ func TestAdapter_Complete_MapsToResponsesAPI(t *testing.T) {
 	if reasoningAny, ok := gotBody["reasoning"].(map[string]any); !ok || reasoningAny["effort"] != "low" {
 		t.Fatalf("reasoning: %#v", gotBody["reasoning"])
 	}
+	include, ok := gotBody["include"].([]any)
+	if !ok || len(include) != 1 || include[0] != encryptedReasoning {
+		t.Fatalf("include: %#v, want encrypted reasoning", gotBody["include"])
+	}
 	if toolsAny, ok := gotBody["tools"].([]any); !ok || len(toolsAny) != 1 {
 		t.Fatalf("tools: %#v", gotBody["tools"])
 	}
@@ -1868,12 +1872,22 @@ func TestAdapter_Complete_OAuthTransportUsesCodexEndpointAndAccountHeader(t *tes
 	var gotPath string
 	var gotAuth string
 	var gotAccount string
+	var gotOriginator string
+	var gotUserAgent string
+	var gotSessionID string
+	var gotThreadID string
+	var gotClientRequestID string
 	var gotStream bool
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotAuth = r.Header.Get("Authorization")
 		gotAccount = r.Header.Get("ChatGPT-Account-ID")
+		gotOriginator = r.Header.Get("originator")
+		gotUserAgent = r.Header.Get("User-Agent")
+		gotSessionID = r.Header.Get("session-id")
+		gotThreadID = r.Header.Get("thread-id")
+		gotClientRequestID = r.Header.Get("x-client-request-id")
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		gotStream, _ = body["stream"].(bool)
@@ -1899,8 +1913,10 @@ func TestAdapter_Complete_OAuthTransportUsesCodexEndpointAndAccountHeader(t *tes
 		Client:           srv.Client(),
 	}
 	_, err := a.Complete(context.Background(), llm.Request{
-		Model:    "gpt-5.2",
-		Messages: []llm.Message{llm.User("hi")},
+		Model:     "gpt-5.2",
+		Messages:  []llm.Message{llm.User("hi")},
+		SessionID: "sess_123",
+		ThreadID:  "thread_456",
 	})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
@@ -1913,6 +1929,21 @@ func TestAdapter_Complete_OAuthTransportUsesCodexEndpointAndAccountHeader(t *tes
 	}
 	if gotAccount != "acct_123" {
 		t.Fatalf("ChatGPT-Account-ID = %q", gotAccount)
+	}
+	if gotOriginator != defaultOriginator {
+		t.Fatalf("originator = %q", gotOriginator)
+	}
+	if !strings.HasPrefix(gotUserAgent, defaultOriginator+"/") {
+		t.Fatalf("User-Agent = %q, want serf prefix", gotUserAgent)
+	}
+	if gotSessionID != "sess_123" {
+		t.Fatalf("session-id = %q", gotSessionID)
+	}
+	if gotThreadID != "thread_456" {
+		t.Fatalf("thread-id = %q", gotThreadID)
+	}
+	if gotClientRequestID != "thread_456" {
+		t.Fatalf("x-client-request-id = %q", gotClientRequestID)
 	}
 	if !gotStream {
 		t.Fatal("stream = false, want true for OAuth transport")
@@ -1945,14 +1976,18 @@ func TestAdapter_Complete_OAuthTransportOmitsUnsupportedPublicResponsesFields(t 
 	maxTokens := 80
 	temp := 0.0
 	topP := 0.5
+	reasoning := "low"
 	_, err := a.Complete(context.Background(), llm.Request{
-		Model:         "gpt-5.5",
-		Messages:      []llm.Message{llm.User("hi")},
-		Temperature:   &temp,
-		TopP:          &topP,
-		MaxTokens:     &maxTokens,
-		StopSequences: []string{"STOP"},
-		Metadata:      map[string]string{"trace": "abc"},
+		Model:           "gpt-5.5",
+		Messages:        []llm.Message{llm.User("hi")},
+		Temperature:     &temp,
+		TopP:            &topP,
+		MaxTokens:       &maxTokens,
+		StopSequences:   []string{"STOP"},
+		ReasoningEffort: &reasoning,
+		Metadata:        map[string]string{"trace": "abc"},
+		ClientMetadata:  map[string]string{"x-codex-installation-id": "install_123"},
+		PromptCacheKey:  "thread_456",
 	})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
@@ -1966,8 +2001,15 @@ func TestAdapter_Complete_OAuthTransportOmitsUnsupportedPublicResponsesFields(t 
 		t.Fatalf("stream = %#v, want true", gotBody["stream"])
 	}
 	clientMetadata, ok := gotBody["client_metadata"].(map[string]any)
-	if !ok || clientMetadata["trace"] != "abc" {
-		t.Fatalf("client_metadata = %#v, want trace metadata", gotBody["client_metadata"])
+	if !ok || clientMetadata["trace"] != "abc" || clientMetadata["x-codex-installation-id"] != "install_123" {
+		t.Fatalf("client_metadata = %#v, want merged metadata", gotBody["client_metadata"])
+	}
+	if gotBody["prompt_cache_key"] != "thread_456" {
+		t.Fatalf("prompt_cache_key = %#v", gotBody["prompt_cache_key"])
+	}
+	include, ok := gotBody["include"].([]any)
+	if !ok || len(include) != 1 || include[0] != encryptedReasoning {
+		t.Fatalf("include = %#v, want encrypted reasoning", gotBody["include"])
 	}
 }
 

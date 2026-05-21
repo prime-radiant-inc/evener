@@ -205,6 +205,11 @@ type Request struct {
 	StopSequences   []string          `json:"stop_sequences,omitempty"`
 	ReasoningEffort *string           `json:"reasoning_effort,omitempty"` // low|medium|high|none
 	Metadata        map[string]string `json:"metadata,omitempty"`
+	ClientMetadata  map[string]string `json:"client_metadata,omitempty"`
+	Include         []string          `json:"include,omitempty"`
+	PromptCacheKey  string            `json:"prompt_cache_key,omitempty"`
+	SessionID       string            `json:"session_id,omitempty"`
+	ThreadID        string            `json:"thread_id,omitempty"`
 
 	ProviderOptions map[string]any `json:"provider_options,omitempty"`
 

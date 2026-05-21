@@ -694,6 +694,49 @@ func TestSession_ReasoningEffort_PassedThroughAndCanChange(t *testing.T) {
 	}
 }
 
+func TestSession_PopulatesModelRequestMetadata(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("ok") },
+	}}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	_, err = sess.ProcessInput(context.Background(), "run", nil)
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+
+	reqs := f.Requests()
+	if len(reqs) == 0 {
+		t.Fatal("requests: got 0 want at least 1")
+	}
+	req := reqs[0]
+	if req.SessionID != sess.ID() {
+		t.Fatalf("SessionID = %q, want %q", req.SessionID, sess.ID())
+	}
+	if req.ThreadID != sess.ID() {
+		t.Fatalf("ThreadID = %q, want %q", req.ThreadID, sess.ID())
+	}
+	if req.PromptCacheKey != sess.ID() {
+		t.Fatalf("PromptCacheKey = %q, want %q", req.PromptCacheKey, sess.ID())
+	}
+	if got := req.ClientMetadata[codexInstallationIDMetadataKey]; got == "" {
+		t.Fatalf("client metadata missing %s: %#v", codexInstallationIDMetadataKey, req.ClientMetadata)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "installation_id")); err != nil {
+		t.Fatalf("installation_id file: %v", err)
+	}
+}
+
 type tinyProfile struct {
 	id   string
 	cw   int
