@@ -37,6 +37,20 @@ func TestSchemaRows_PathFieldsRequestCompletion(t *testing.T) {
 	}
 }
 
+func TestSchemaRows_ModelFallbacksDistinguishesUnsetAndExplicitEmpty(t *testing.T) {
+	schema := []appwire.LaunchOption{
+		{Field: "model_fallbacks", Label: "Model fallbacks", Kind: "modelList", DefaultableLayers: []string{"global"}, PerLaunch: true},
+	}
+	rows := launchSchemaRows(schema, appwire.LaunchConfigLayer{}, launchLayerGlobal, launchSchemaRowsSettings)
+	if len(rows) != 1 || rows[0].value != "(default)" || rows[0].editValue != "(default)" {
+		t.Fatalf("nil model_fallbacks row=%+v, want default", rows)
+	}
+	rows = launchSchemaRows(schema, appwire.LaunchConfigLayer{ModelFallbacks: []string{}}, launchLayerGlobal, launchSchemaRowsSettings)
+	if len(rows) != 1 || rows[0].value != "0 entries (explicit)" || rows[0].editValue != "[]" {
+		t.Fatalf("empty model_fallbacks row=%+v, want explicit empty", rows)
+	}
+}
+
 func rowFields(rows []layerRow) []string {
 	fields := make([]string, 0, len(rows))
 	for _, row := range rows {

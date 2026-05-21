@@ -70,6 +70,9 @@ func (m launchOverridesModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			row := rows[m.cursor]
+			if launchSettingsFieldReadOnly(row.field) {
+				return m, nil
+			}
 			return m, func() tea.Msg {
 				return launchSettingsEditRequestMsg{Layer: "launch", Field: row.field, CurrentValue: row.editValue, PathCompletion: row.pathCompletion}
 			}

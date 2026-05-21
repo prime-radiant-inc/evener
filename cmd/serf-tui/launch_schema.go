@@ -88,6 +88,15 @@ func launchOptionValue(opt appwire.LaunchOption, l appwire.LaunchConfigLayer) (s
 	listStr := func(values []string) (string, string) {
 		return fmt.Sprintf("%d entries", len(values)), strings.Join(values, ", ")
 	}
+	modelFallbacksStr := func(values []string) (string, string) {
+		if values == nil {
+			return "(default)", "(default)"
+		}
+		if len(values) == 0 {
+			return "0 entries (explicit)", "[]"
+		}
+		return fmt.Sprintf("%d entries", len(values)), strings.Join(values, ", ")
+	}
 	switch opt.Field {
 	case "agent":
 		return defaultString(l.Agent), l.Agent
@@ -126,9 +135,9 @@ func launchOptionValue(opt appwire.LaunchOption, l appwire.LaunchConfigLayer) (s
 	case "mcp_configs":
 		return listStr(l.MCPConfigs)
 	case "mcps":
-		return fmt.Sprintf("%d entries", len(l.MCPs)), ""
+		return fmt.Sprintf("%d entries (read-only)", len(l.MCPs)), ""
 	case "model_fallbacks":
-		return listStr(l.ModelFallbacks)
+		return modelFallbacksStr(l.ModelFallbacks)
 	case "env":
 		return fmt.Sprintf("%d entries", len(l.Env)), envEditValue(l.Env)
 	case "verbose":

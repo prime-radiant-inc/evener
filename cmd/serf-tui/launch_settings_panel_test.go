@@ -180,9 +180,70 @@ func TestApplyEdit_NewSchemaFields(t *testing.T) {
 	}
 }
 
+func TestApplyEdit_ModelFallbacksUnsetExplicitEmptyAndReplacement(t *testing.T) {
+	got, err := applyEdit(appwire.LaunchConfigLayer{}, "model_fallbacks", "")
+	if err != nil {
+		t.Fatalf("blank model_fallbacks: %v", err)
+	}
+	if got.ModelFallbacks != nil {
+		t.Fatalf("blank ModelFallbacks=%#v, want nil", got.ModelFallbacks)
+	}
+	got, err = applyEdit(appwire.LaunchConfigLayer{ModelFallbacks: []string{"openai/gpt-5-mini"}}, "model_fallbacks", "(default)")
+	if err != nil {
+		t.Fatalf("default model_fallbacks: %v", err)
+	}
+	if got.ModelFallbacks != nil {
+		t.Fatalf("default ModelFallbacks=%#v, want nil", got.ModelFallbacks)
+	}
+	got, err = applyEdit(appwire.LaunchConfigLayer{}, "model_fallbacks", "[]")
+	if err != nil {
+		t.Fatalf("empty model_fallbacks: %v", err)
+	}
+	if got.ModelFallbacks == nil || len(got.ModelFallbacks) != 0 {
+		t.Fatalf("empty ModelFallbacks=%#v, want explicit empty slice", got.ModelFallbacks)
+	}
+	got, err = applyEdit(appwire.LaunchConfigLayer{}, "model_fallbacks", "openai/gpt-5-mini, openai/gpt-5-nano")
+	if err != nil {
+		t.Fatalf("replacement model_fallbacks: %v", err)
+	}
+	if len(got.ModelFallbacks) != 2 || got.ModelFallbacks[0] != "openai/gpt-5-mini" || got.ModelFallbacks[1] != "openai/gpt-5-nano" {
+		t.Fatalf("replacement ModelFallbacks=%#v", got.ModelFallbacks)
+	}
+}
+
 func TestApplyEdit_OutputFileRejectsMissingParent(t *testing.T) {
 	_, err := applyEdit(appwire.LaunchConfigLayer{}, "trace_file", filepath.Join(t.TempDir(), "missing", "trace.jsonl"))
 	if err == nil {
 		t.Fatal("expected missing parent error")
+	}
+}
+
+func TestValidateLocalLaunchPath_OutputFileRejectsExistingDirectory(t *testing.T) {
+	err := validateLocalLaunchPath(t.TempDir(), "outputFile")
+	if err == nil || !strings.Contains(err.Error(), "path is a directory") {
+		t.Fatalf("err=%v, want existing directory rejection", err)
+	}
+}
+
+func TestValidateLocalLaunchPath_OutputFileRejectsNonWritableParent(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o755)
+	err := validateLocalLaunchPath(filepath.Join(dir, "trace.jsonl"), "outputFile")
+	if err == nil || !strings.Contains(err.Error(), "parent directory is not writable") {
+		t.Fatalf("err=%v, want non-writable parent rejection", err)
+	}
+}
+
+func TestApplyEdit_MCPsUnsupportedDoesNotClearExisting(t *testing.T) {
+	layer := appwire.LaunchConfigLayer{MCPs: []appwire.MCPServerSpec{{Name: "docs", Command: "docs-mcp"}}}
+	got, err := applyEdit(layer, "mcps", "")
+	if err == nil {
+		t.Fatal("expected mcps editing to be unsupported")
+	}
+	if len(got.MCPs) != 1 || got.MCPs[0].Name != "docs" {
+		t.Fatalf("MCPs=%+v, want existing MCP preserved", got.MCPs)
 	}
 }

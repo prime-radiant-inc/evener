@@ -258,6 +258,9 @@ func (p launchSettingsPanel) editCurrent() (tea.Model, tea.Cmd) {
 		return p, nil
 	}
 	row := rows[p.cursor]
+	if launchSettingsFieldReadOnly(row.field) {
+		return p, nil
+	}
 	return p, func() tea.Msg {
 		return launchSettingsEditRequestMsg{
 			Layer:          p.tabName(),
@@ -398,7 +401,7 @@ func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.La
 		case "export_atif_path":
 			layer.ExportATIFPath = v
 		}
-	case "skills_dirs", "plugin_dirs", "mcp_configs", "system_prompt_append", "model_fallbacks":
+	case "skills_dirs", "plugin_dirs", "mcp_configs", "system_prompt_append":
 		entries := splitTrim(value, ",")
 		switch field {
 		case "skills_dirs":
@@ -418,25 +421,30 @@ func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.La
 			layer.MCPConfigs = entries
 		case "system_prompt_append":
 			layer.SystemPromptAppend = entries
-		case "model_fallbacks":
-			layer.ModelFallbacks = entries
 		}
+	case "model_fallbacks":
+		layer.ModelFallbacks = parseModelFallbacks(value)
 	case "env":
 		env, err := parseEnvMap(value)
 		if err != nil {
 			return layer, err
 		}
 		layer.Env = env
-	case "mcps":
-		mcps, err := parseMCPServers(value)
-		if err != nil {
-			return layer, err
-		}
-		layer.MCPs = mcps
 	default:
 		return layer, fmt.Errorf("editing %q in TUI not yet supported; use the web UI", field)
 	}
 	return layer, nil
+}
+
+func parseModelFallbacks(value string) []string {
+	switch strings.TrimSpace(value) {
+	case "", "(default)":
+		return nil
+	case "[]":
+		return []string{}
+	default:
+		return splitTrim(value, ",")
+	}
 }
 
 func parseOptionalBool(value string) (*bool, error) {
@@ -461,6 +469,10 @@ func launchSettingsFieldUsesPathCompletion(field string) bool {
 	default:
 		return false
 	}
+}
+
+func launchSettingsFieldReadOnly(field string) bool {
+	return field == "mcps"
 }
 
 func validatePathEntries(entries []string, kind string) error {
@@ -488,6 +500,9 @@ func validateLocalLaunchPath(path, kind string) error {
 		return fmt.Errorf("absolute path required")
 	}
 	if kind == "outputFile" {
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			return fmt.Errorf("path is a directory")
+		}
 		parent := filepath.Dir(path)
 		info, err := os.Stat(parent)
 		if err != nil {
@@ -495,6 +510,9 @@ func validateLocalLaunchPath(path, kind string) error {
 		}
 		if !info.IsDir() {
 			return fmt.Errorf("parent path is not a directory")
+		}
+		if info.Mode().Perm()&0o222 == 0 {
+			return fmt.Errorf("parent directory is not writable")
 		}
 		return nil
 	}
@@ -535,26 +553,6 @@ func parseEnvMap(value string) (map[string]string, error) {
 			return nil, fmt.Errorf("env entries must be KEY=value")
 		}
 		out[key] = strings.TrimSpace(val)
-	}
-	return out, nil
-}
-
-func parseMCPServers(value string) ([]appwire.MCPServerSpec, error) {
-	entries := splitTrim(value, ",")
-	if len(entries) == 0 {
-		return nil, nil
-	}
-	out := make([]appwire.MCPServerSpec, 0, len(entries))
-	for _, entry := range entries {
-		name, rest, ok := strings.Cut(entry, "=")
-		if !ok {
-			return nil, fmt.Errorf("mcp entries must be name=command [args...]")
-		}
-		fields := strings.Fields(rest)
-		if strings.TrimSpace(name) == "" || len(fields) == 0 {
-			return nil, fmt.Errorf("mcp entries must be name=command [args...]")
-		}
-		out = append(out, appwire.MCPServerSpec{Name: strings.TrimSpace(name), Command: fields[0], Args: fields[1:]})
 	}
 	return out, nil
 }
