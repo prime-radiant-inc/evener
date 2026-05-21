@@ -264,6 +264,16 @@
     list.appendChild(li);
   }
 
+  function clearListAddValidation(input, wrap) {
+    if (input && typeof input.setCustomValidity === "function") {
+      input.setCustomValidity("");
+    }
+    if (input && input.dataset) {
+      delete input.dataset.launchInvalid;
+    }
+    setFieldError(wrap, "");
+  }
+
   function renderListControl(row, opt, ctx) {
     const wrap = document.createElement("div");
     wrap.className = "spawn-advanced-list-control";
@@ -290,6 +300,8 @@
       if (opt.pathKind) input.dataset.settingsDirInput = "true";
       controls.appendChild(input);
     }
+    input.addEventListener("input", () => clearListAddValidation(input, wrap));
+    input.addEventListener("change", () => clearListAddValidation(input, wrap));
     const add = document.createElement("button");
     add.type = "button";
     add.textContent = "add";

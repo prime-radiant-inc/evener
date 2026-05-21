@@ -121,6 +121,24 @@ function assert(cond, msg) {
   assert(pluginWrap.querySelector('[data-value="/canonical/plugin"]'),
     "valid pathList entries should update to canonical validated path");
 
+  const pendingPath = pluginWrap.querySelector(".settings-add-row input");
+  const addPath = pluginWrap.querySelector(".settings-add-row button");
+  pendingPath.value = "/missing/pending";
+  addPath.click();
+  await new Promise(resolve => dom.window.setTimeout(resolve, 0));
+  assert(!pendingPath.checkValidity(), "invalid Add click should leave pending path input invalid");
+  assert(!root.checkValidity(), "stale invalid pending path should block native form validation before it is cleared");
+  assert(pluginError && !pluginError.hidden && pluginError.textContent.includes("missing path"),
+    "invalid Add click should keep inline validation visible");
+  pendingPath.value = "";
+  pendingPath.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  assert(pendingPath.checkValidity(), "clearing pending path input should clear stale custom validity");
+  assert(root.checkValidity(), "cleared pending path input should not block native form validation");
+  assert(pluginError.hidden, "clearing pending path input should clear inline validation");
+  pendingPath.value = "/raw/pending";
+  pendingPath.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+  assert(pendingPath.checkValidity(), "editing pending path input should clear stale custom validity");
+
   const envError = new Error('env key "OPENAI_API_KEY" looks like a credential; route through serf/auth/apiKey/set');
   assert(dom.window.LaunchConfigControls.showBackendError(root, envError),
     "credential env backend errors should be recognized");
