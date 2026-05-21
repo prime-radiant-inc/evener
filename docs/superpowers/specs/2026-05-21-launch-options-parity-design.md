@@ -31,7 +31,7 @@ Out of scope:
 
 - Hub-owned process controls: `addr`, `runDir`, `resume`, `resumeLast`, `stateDir`.
 - Other CLI-only behavior flags for this pass: `systemPromptAsUser`, `outputSchema`, `resultToolName`, `shareTaskStore`.
-- Moving the project layer from hub state to `.serf/launch.local.toml`; that is tracked separately by kata `7174`.
+- Moving the project layer from hub state to `.serf/launch.local.toml`; this is already handled by the launch-config path design.
 
 Merge order remains:
 
