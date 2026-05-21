@@ -116,6 +116,20 @@ func TestAdapter_Complete_MapsToMessagesAPI_AndSetsBetaHeaders(t *testing.T) {
 	}
 }
 
+func TestAdapter_BuildRequestBody_ServiceTier(t *testing.T) {
+	body, err := (&Adapter{}).buildRequestBody(llm.Request{
+		Model:       "claude-test",
+		Messages:    []llm.Message{llm.User("hi")},
+		ServiceTier: " standard_only ",
+	})
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+	if got := body["service_tier"]; got != "standard_only" {
+		t.Fatalf("service_tier = %#v, want standard_only", got)
+	}
+}
+
 func TestAdapter_Complete_HTTPErrorMapping_AuthenticationError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
