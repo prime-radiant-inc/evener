@@ -804,7 +804,7 @@
   }
 
   async function validatePathInput(input) {
-    if (!input || !input.dataset.launchPathKind) return true;
+    if (!input || !input.dataset.launchPathKind || typeof input.setCustomValidity !== "function") return true;
     const value = (input.value || "").trim();
     input.dataset.launchInvalid = "";
     input.setCustomValidity("");
@@ -823,7 +823,7 @@
   }
 
   function validateAdvancedPathScalars() {
-    const inputs = Array.from(document.querySelectorAll("[data-launch-path-kind][data-launch-wire-field]"));
+    const inputs = Array.from(document.querySelectorAll("input[data-launch-path-kind][data-launch-wire-field], textarea[data-launch-path-kind][data-launch-wire-field], select[data-launch-path-kind][data-launch-wire-field]"));
     if (inputs.length === 0) return true;
     return (async () => {
       for (const input of inputs) {

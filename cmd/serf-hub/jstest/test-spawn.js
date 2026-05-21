@@ -286,6 +286,10 @@ formDom.window.fetch = (_url, opts) => {
   imageOnlySpawnBody = JSON.parse(opts.body);
   return Promise.resolve({ ok: false, text: () => Promise.resolve("image-only test stop") });
 };
+const pathListWrapper = formDom.window.document.createElement("div");
+pathListWrapper.dataset.launchPathKind = "dir";
+pathListWrapper.dataset.launchWireField = "skillsDirs";
+formDom.window.document.querySelector("[data-spawn-form]").appendChild(pathListWrapper);
 formDom.window.document.querySelector('textarea[name="prompt"]').value = "   \n  ";
 formDom.window.document.querySelector("[data-spawn-form]").__composerPasteState = {
   items: [{ type: "image", mediaType: "image/png", data: new Uint8Array([1, 2, 3]), name: "shot.png" }],
@@ -295,9 +299,10 @@ formDom.window.document.querySelector("[data-spawn-form]").dispatchEvent(new for
   cancelable: true,
 }));
 assert(imageOnlySpawnBody && imageOnlySpawnBody.prompt === "   \n  ",
-  "image-only spawn should submit even with whitespace prompt");
+  "image-only spawn should submit even with whitespace prompt and path-list wrapper hooks");
 assert(imageOnlySpawnBody.items && imageOnlySpawnBody.items.length === 1,
   "image-only spawn should include image items");
+pathListWrapper.remove();
 formDom.window.document.querySelector("[data-spawn-form]").__composerPasteState = { items: [] };
 formDom.window.SerfAppwire = savedAppwire;
 
