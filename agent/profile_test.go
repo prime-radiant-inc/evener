@@ -324,6 +324,16 @@ func TestAnthropicProfile_WithModel_OllamaPrefix(t *testing.T) {
 	}
 }
 
+func TestNewOpenAIProfile_UnknownModelUsesModernContextFallback(t *testing.T) {
+	p := NewOpenAIProfile("gpt-6-preview")
+	if got := p.ContextWindowSize(); got == 128_000 {
+		t.Fatalf("ContextWindowSize() = %d, want modern fallback larger than 128000", got)
+	}
+	if got := p.ContextWindowSize(); got < 400_000 {
+		t.Fatalf("ContextWindowSize() = %d, want at least 400000", got)
+	}
+}
+
 // TestNewOpenAICompatProfile_OllamaResolvesCatalogMetadata verifies that
 // constructing an Ollama profile with a model that exists in the catalog
 // under a provider-prefixed key picks up the catalog's context window
@@ -548,9 +558,15 @@ func TestBaseProfile_WithModel_PreservesSlashOnMetaProviders(t *testing.T) {
 	}{
 		{func() ProviderProfile { return NewMiniMaxProfile("minimax/minimax-m2.7") }, "minimax", "minimax/minimax-m2.7"},
 		{func() ProviderProfile { return NewMiniMaxProfile("minimax/minimax-m2.7") }, "minimax", "minimax/minimax-m2.1"},
-		{func() ProviderProfile { return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0) }, "openrouter", "minimax/minimax-m2.7"},
-		{func() ProviderProfile { return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0) }, "openrouter", "anthropic/claude-3-haiku-20240307"},
-		{func() ProviderProfile { return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0) }, "openrouter", "deepseek/deepseek-r1"},
+		{func() ProviderProfile {
+			return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
+		}, "openrouter", "minimax/minimax-m2.7"},
+		{func() ProviderProfile {
+			return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
+		}, "openrouter", "anthropic/claude-3-haiku-20240307"},
+		{func() ProviderProfile {
+			return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
+		}, "openrouter", "deepseek/deepseek-r1"},
 		{func() ProviderProfile { return NewOpenRouterAnthropicProfile("minimax/minimax-m2.7") }, "openrouter-anthropic", "minimax/minimax-m2.7"},
 		{func() ProviderProfile { return NewOpenRouterAnthropicProfile("minimax/minimax-m2.7") }, "openrouter-anthropic", "anthropic/claude-3-5-sonnet"},
 	}
@@ -762,10 +778,18 @@ func TestBaseProfile_WithModel_OpenRouterSwitchesToUnambiguousProvider(t *testin
 		wantID       string
 		wantModel    string
 	}{
-		{func() ProviderProfile { return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0) }, "ollama/llama3.1", "ollama", "llama3.1"},
-		{func() ProviderProfile { return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0) }, "kimi/kimi-k2.5", "kimi", "kimi-k2.5"},
-		{func() ProviderProfile { return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0) }, "glm/glm-5", "glm", "glm-5"},
-		{func() ProviderProfile { return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0) }, "openrouter-anthropic/claude-3-5-sonnet", "openrouter-anthropic", "claude-3-5-sonnet"},
+		{func() ProviderProfile {
+			return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
+		}, "ollama/llama3.1", "ollama", "llama3.1"},
+		{func() ProviderProfile {
+			return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
+		}, "kimi/kimi-k2.5", "kimi", "kimi-k2.5"},
+		{func() ProviderProfile {
+			return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
+		}, "glm/glm-5", "glm", "glm-5"},
+		{func() ProviderProfile {
+			return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
+		}, "openrouter-anthropic/claude-3-5-sonnet", "openrouter-anthropic", "claude-3-5-sonnet"},
 		{func() ProviderProfile { return NewOpenRouterAnthropicProfile("anthropic/claude-3-haiku-20240307") }, "ollama/llama3.1", "ollama", "llama3.1"},
 		{func() ProviderProfile { return NewOpenRouterAnthropicProfile("anthropic/claude-3-haiku-20240307") }, "kimi/kimi-k2.5", "kimi", "kimi-k2.5"},
 	}

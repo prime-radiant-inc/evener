@@ -376,7 +376,7 @@ func NewOpenAIProfile(model string) ProviderProfile {
 		id:              "openai",
 		model:           model,
 		parallel:        true,
-		contextWindow:   128_000,
+		contextWindow:   400_000,
 		docFiles:        []string{"AGENTS.md", ".codex/instructions.md"},
 		reasoning:       true,
 		streaming:       true,
