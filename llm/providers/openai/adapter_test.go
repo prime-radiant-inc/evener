@@ -2913,7 +2913,7 @@ func TestAdapter_ListModels(t *testing.T) {
 		w.Write([]byte(`{
 			"object": "list",
 			"data": [
-				{"id": "gpt-4o", "object": "model", "owned_by": "openai"},
+				{"id": "gpt-4o", "object": "model", "owned_by": "openai", "context_window": 128000, "max_output_tokens": 16384},
 				{"id": "gpt-4o-mini", "object": "model", "owned_by": "openai"},
 				{"id": "o3", "object": "model", "owned_by": "openai"},
 				{"id": "text-embedding-3-small", "object": "model", "owned_by": "openai"},
@@ -2966,6 +2966,14 @@ func TestAdapter_ListModels(t *testing.T) {
 		if m.Provider != "openai" {
 			t.Errorf("model %s: provider = %q, want openai", m.ID, m.Provider)
 		}
+		if m.ID == "gpt-4o" {
+			if m.ContextWindow != 128000 {
+				t.Errorf("gpt-4o context window = %d, want 128000", m.ContextWindow)
+			}
+			if m.MaxOutputTokens == nil || *m.MaxOutputTokens != 16384 {
+				t.Errorf("gpt-4o max output tokens = %v, want 16384", m.MaxOutputTokens)
+			}
+		}
 	}
 	for i := 1; i < len(models); i++ {
 		if models[i].ID < models[i-1].ID {
@@ -2991,7 +2999,19 @@ func TestAdapter_ListModels_OAuthTransportUsesCodexModelsEndpoint(t *testing.T) 
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{
 			"models": [
-				{"slug": "gpt-5.3-codex", "display_name": "GPT-5.3 Codex"},
+				{
+					"slug": "gpt-5.3-codex",
+					"display_name": "GPT-5.3 Codex",
+					"default_reasoning_level": "medium",
+					"supported_reasoning_levels": [{"effort":"low"},{"effort":"medium"},{"effort":"high"}],
+					"supports_parallel_tool_calls": true,
+					"supports_image_detail_original": true,
+					"supports_search_tool": true,
+					"input_modalities": ["text", "image"],
+					"context_window": 272000,
+					"max_context_window": 400000,
+					"max_output_tokens": 128000
+				},
 				{"slug": "gpt-image-1", "display_name": "Image"}
 			]
 		}`))
@@ -3027,6 +3047,27 @@ func TestAdapter_ListModels_OAuthTransportUsesCodexModelsEndpoint(t *testing.T) 
 	}
 	if len(models) != 1 || models[0].ID != "gpt-5.3-codex" || models[0].DisplayName != "GPT-5.3 Codex" || models[0].Provider != "openai" {
 		t.Fatalf("models=%+v", models)
+	}
+	if models[0].ContextWindow != 400000 {
+		t.Fatalf("ContextWindow = %d, want max_context_window 400000", models[0].ContextWindow)
+	}
+	if models[0].MaxOutputTokens == nil || *models[0].MaxOutputTokens != 128000 {
+		t.Fatalf("MaxOutputTokens = %v, want 128000", models[0].MaxOutputTokens)
+	}
+	if !models[0].SupportsReasoning {
+		t.Fatalf("SupportsReasoning = false, want true")
+	}
+	if got := models[0].ReasoningEffortLevels; len(got) != 3 || got[0] != "low" || got[2] != "high" {
+		t.Fatalf("ReasoningEffortLevels = %v, want [low medium high]", got)
+	}
+	if !models[0].SupportsTools {
+		t.Fatalf("SupportsTools = false, want true")
+	}
+	if !models[0].SupportsVision {
+		t.Fatalf("SupportsVision = false, want true")
+	}
+	if models[0].SupportsWebSearch == nil || !*models[0].SupportsWebSearch {
+		t.Fatalf("SupportsWebSearch = %v, want true", models[0].SupportsWebSearch)
 	}
 }
 

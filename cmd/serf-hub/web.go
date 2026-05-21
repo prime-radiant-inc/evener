@@ -1965,14 +1965,26 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 				"model":        m.ID,
 				"display_name": m.DisplayName,
 			}
-			// Enrich from the embedded catalog where the live API doesn't
-			// carry context window or pricing.
+			if m.ContextWindow > 0 {
+				entry["context_window"] = m.ContextWindow
+			}
+			if m.SupportsTools {
+				entry["supports_tools"] = true
+			}
+			if m.SupportsReasoning {
+				entry["supports_reasoning"] = true
+			}
+			// Keep catalog enrichment for static pricing/capability hints, but
+			// do not replace live token limits with catalog values.
 			if mi != nil {
-				entry["context_window"] = mi.ContextWindow
-				entry["supports_tools"] = mi.SupportsTools
-				entry["supports_reasoning"] = mi.SupportsReasoning
 				entry["input_cost_per_million"] = mi.InputCostPerMillion
 				entry["output_cost_per_million"] = mi.OutputCostPerMillion
+				if _, ok := entry["supports_tools"]; !ok {
+					entry["supports_tools"] = mi.SupportsTools
+				}
+				if _, ok := entry["supports_reasoning"]; !ok {
+					entry["supports_reasoning"] = mi.SupportsReasoning
+				}
 			}
 			out = append(out, entry)
 		}
