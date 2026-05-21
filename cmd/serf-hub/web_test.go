@@ -991,6 +991,42 @@ func TestWeb_WorkspaceSpawn_RendersForm(t *testing.T) {
 	}
 }
 
+func TestSpawnTemplate_HasSchemaAdvancedRoot(t *testing.T) {
+	t.Setenv("SERF_MODEL", "openai/gpt-5")
+	t.Setenv("SERF_REASONING_EFFORT", "high")
+	t.Setenv("OPENAI_API_KEY", "secret-token")
+	t.Setenv("SERF_API_TOKEN", "secret-token")
+	web := NewWebServer(WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  NewRoster(t.TempDir(), nil),
+		Past:    NewPastIndex(""),
+	})
+	req := httptest.NewRequest(http.MethodGet, "/_partials/workspace/spawn", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`data-spawn-advanced-schema-root`,
+		`id="spawn-advanced-schema"`,
+		`data-spawn-safe-env data-env-name="SERF_MODEL" value="openai/gpt-5"`,
+		`data-spawn-safe-env data-env-name="SERF_REASONING_EFFORT" value="high"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("spawn advanced missing %q:\n%s", want, body)
+		}
+	}
+	for _, blocked := range []string{"OPENAI_API_KEY", "SERF_API_TOKEN", "secret-token"} {
+		if strings.Contains(body, blocked) {
+			t.Fatalf("spawn advanced exposed blocked env %q:\n%s", blocked, body)
+		}
+	}
+}
+
 func TestWeb_WorkspaceSpawn_DoesNotSubmitPlaceholderDefaults(t *testing.T) {
 	web := NewWebServer(WebConfig{
 		HubAddr: "127.0.0.1:9180",

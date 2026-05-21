@@ -413,37 +413,405 @@
     form.insertBefore(el, actions || null);
   }
 
-  function collectAdvancedOverrides() {
-    const skillsDirs = Array.from(document.querySelectorAll("#ovr-skill-list li")).map(li => li.dataset.value);
-    const pluginDirs = Array.from(document.querySelectorAll("#ovr-plugin-list li")).map(li => li.dataset.value);
-    const maxRoundsRaw = document.getElementById("ovr-max-rounds");
-    const ctxEl = document.getElementById("ovr-ctx");
-    const overrides = {};
-    if (skillsDirs.length) overrides.skillsDirs = skillsDirs;
-    if (pluginDirs.length) overrides.pluginDirs = pluginDirs;
-    if (maxRoundsRaw && maxRoundsRaw.value !== "") overrides.maxRounds = +maxRoundsRaw.value;
-    if (ctxEl && ctxEl.value) overrides.contextStrategy = ctxEl.value;
-    return Object.keys(overrides).length ? overrides : undefined;
+  function safeEnvFallbacks() {
+    const out = {};
+    document.querySelectorAll("[data-spawn-safe-env]").forEach((el) => {
+      const name = el.dataset.envName || "";
+      if (name) out[name] = el.value || "";
+    });
+    return out;
   }
 
-  function attachListAdd(inputId, addBtnId, listId) {
-    const addBtn = document.getElementById(addBtnId);
-    if (!addBtn) return;
-    addBtn.addEventListener("click", () => {
-      const input = document.getElementById(inputId);
-      const v = input.value.trim();
-      if (!v) return;
+  function schemaPathKind(kind) {
+    return kind === "outputFile" ? "output-file" : (kind || "");
+  }
+
+  function schemaSupportedForSpawn(opt) {
+    if (!opt || !opt.perLaunch) return false;
+    if (opt.driverSupport && opt.driverSupport.serf === false) return false;
+    return !opt.driverSupport || opt.driverSupport.serf === true;
+  }
+
+  function textInputForOption(opt, multiline) {
+    const input = document.createElement(multiline ? "textarea" : "input");
+    if (!multiline) input.type = opt.kind === "integer" ? "number" : "text";
+    input.dataset.launchField = opt.field || "";
+    input.dataset.launchWireField = opt.wireField || "";
+    input.dataset.launchKind = opt.kind || "";
+    if (opt.pathKind) {
+      input.dataset.launchPathKind = opt.pathKind;
+      input.dataset.settingsDirInput = "true";
+    }
+    if (opt.kind === "integer") {
+      input.min = "0";
+      input.step = "1";
+    }
+    return input;
+  }
+
+  function appendEnvFallback(label, opt) {
+    const fallback = opt && opt.envFallback;
+    if (!fallback || fallback.secret) return;
+    const safe = safeEnvFallbacks();
+    const value = safe[fallback.name];
+    if (!value) return;
+    const hint = document.createElement("span");
+    hint.className = "spawn-advanced-env-fallback";
+    hint.textContent = "env " + fallback.name + ": " + value;
+    label.appendChild(hint);
+  }
+
+  function renderScalarControl(row, opt) {
+    const label = document.createElement("label");
+    label.textContent = opt.label || opt.field;
+
+    if (opt.kind === "select") {
+      const select = document.createElement("select");
+      select.dataset.launchField = opt.field || "";
+      select.dataset.launchWireField = opt.wireField || "";
+      select.dataset.launchKind = opt.kind || "";
+      (opt.choices || []).forEach((choice) => {
+        const o = document.createElement("option");
+        o.value = choice.value || "";
+        o.textContent = choice.label || choice.value || "(default)";
+        if (choice.disabled) o.disabled = true;
+        select.appendChild(o);
+      });
+      label.appendChild(select);
+      appendEnvFallback(label, opt);
+      row.appendChild(label);
+      return;
+    }
+
+    if (opt.kind === "radio") {
+      const wrap = document.createElement("div");
+      wrap.className = "spawn-advanced-radio";
+      (opt.choices || []).forEach((choice, i) => {
+        const choiceLabel = document.createElement("label");
+        const radio = document.createElement("input");
+        radio.type = "radio";
+        radio.name = "launch-" + (opt.field || "");
+        radio.value = choice.value || "";
+        radio.dataset.launchField = opt.field || "";
+        radio.dataset.launchWireField = opt.wireField || "";
+        radio.dataset.launchKind = opt.kind || "";
+        if (i === 0) radio.checked = true;
+        choiceLabel.appendChild(radio);
+        choiceLabel.appendChild(document.createTextNode(choice.label || choice.value || "(default)"));
+        wrap.appendChild(choiceLabel);
+      });
+      label.appendChild(wrap);
+      row.appendChild(label);
+      return;
+    }
+
+    if (opt.kind === "boolean") {
+      const select = document.createElement("select");
+      select.dataset.launchField = opt.field || "";
+      select.dataset.launchWireField = opt.wireField || "";
+      select.dataset.launchKind = opt.kind || "";
+      [
+        ["", "(default)"],
+        ["true", "true"],
+        ["false", "false"],
+      ].forEach(([value, text]) => {
+        const o = document.createElement("option");
+        o.value = value;
+        o.textContent = text;
+        select.appendChild(o);
+      });
+      label.appendChild(select);
+      row.appendChild(label);
+      return;
+    }
+
+    if (opt.kind === "modelPicker") {
+      const wrap = document.createElement("span");
+      wrap.className = "sp-model-wrap spawn-advanced-model";
+      const hidden = document.createElement("input");
+      hidden.type = "hidden";
+      hidden.dataset.launchField = opt.field || "";
+      hidden.dataset.launchWireField = opt.wireField || "";
+      hidden.dataset.launchKind = opt.kind || "";
+      const display = document.createElement("span");
+      display.className = "sp-model-display";
+      display.textContent = "(default)";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.settingsModelPicker = "true";
+      button.textContent = "pick";
+      wrap.appendChild(hidden);
+      wrap.appendChild(display);
+      wrap.appendChild(button);
+      label.appendChild(wrap);
+      appendEnvFallback(label, opt);
+      row.appendChild(label);
+      return;
+    }
+
+    const input = textInputForOption(opt, opt.kind === "multilineText");
+    label.appendChild(input);
+    appendEnvFallback(label, opt);
+    row.appendChild(label);
+  }
+
+  function appendListRow(list, value) {
+    const li = document.createElement("li");
+    li.dataset.value = value;
+    const span = document.createElement("span");
+    span.textContent = value;
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.textContent = "remove";
+    rm.addEventListener("click", () => li.remove());
+    li.appendChild(span);
+    li.appendChild(rm);
+    list.appendChild(li);
+  }
+
+  function renderListControl(row, opt) {
+    const wrap = document.createElement("div");
+    wrap.className = "spawn-advanced-list-control";
+    wrap.dataset.launchField = opt.field || "";
+    wrap.dataset.launchWireField = opt.wireField || "";
+    wrap.dataset.launchKind = opt.kind || "";
+    if (opt.pathKind) wrap.dataset.launchPathKind = opt.pathKind;
+
+    const label = document.createElement("label");
+    label.textContent = opt.label || opt.field;
+    const input = document.createElement("input");
+    input.type = "text";
+    if (opt.pathKind) input.dataset.settingsDirInput = "true";
+    label.appendChild(input);
+
+    const list = document.createElement("ul");
+    list.className = "spawn-advanced-list";
+    list.dataset.launchList = "true";
+
+    const add = document.createElement("button");
+    add.type = "button";
+    add.textContent = "add";
+    add.addEventListener("click", async () => {
+      const value = input.value.trim();
+      if (!value) return;
+      if (opt.pathKind && window.launchconfig && window.launchconfig.validatePath) {
+        const result = await window.launchconfig.validatePath(value, schemaPathKind(opt.pathKind));
+        if (!result || !result.valid) {
+          input.setCustomValidity((result && result.error) || "invalid path");
+          input.reportValidity();
+          return;
+        }
+        input.setCustomValidity("");
+        appendListRow(list, result.path || value);
+      } else {
+        appendListRow(list, value);
+      }
+      input.value = "";
+    });
+
+    wrap.appendChild(label);
+    wrap.appendChild(list);
+    wrap.appendChild(add);
+    row.appendChild(wrap);
+  }
+
+  function renderEnvControl(row, opt) {
+    const wrap = document.createElement("div");
+    wrap.className = "spawn-advanced-list-control";
+    wrap.dataset.launchField = opt.field || "";
+    wrap.dataset.launchWireField = opt.wireField || "";
+    wrap.dataset.launchKind = opt.kind || "";
+    const title = document.createElement("div");
+    title.className = "spawn-advanced-field-label";
+    title.textContent = opt.label || opt.field;
+    const name = document.createElement("input");
+    name.type = "text";
+    name.placeholder = "NAME";
+    const value = document.createElement("input");
+    value.type = "text";
+    value.placeholder = "value";
+    const list = document.createElement("ul");
+    list.className = "spawn-advanced-list";
+    list.dataset.launchEnvList = "true";
+    const add = document.createElement("button");
+    add.type = "button";
+    add.textContent = "add";
+    add.addEventListener("click", () => {
+      const k = name.value.trim();
+      if (!k) return;
       const li = document.createElement("li");
-      li.dataset.value = v;
-      li.textContent = v;
+      li.dataset.name = k;
+      li.dataset.value = value.value;
+      const span = document.createElement("span");
+      span.textContent = k + "=" + value.value;
       const rm = document.createElement("button");
       rm.type = "button";
       rm.textContent = "remove";
       rm.addEventListener("click", () => li.remove());
+      li.appendChild(span);
       li.appendChild(rm);
-      document.getElementById(listId).appendChild(li);
-      input.value = "";
+      list.appendChild(li);
+      name.value = "";
+      value.value = "";
     });
+    wrap.appendChild(title);
+    wrap.appendChild(name);
+    wrap.appendChild(value);
+    wrap.appendChild(list);
+    wrap.appendChild(add);
+    row.appendChild(wrap);
+  }
+
+  function renderMCPControl(row, opt) {
+    const wrap = document.createElement("div");
+    wrap.className = "spawn-advanced-list-control";
+    wrap.dataset.launchField = opt.field || "";
+    wrap.dataset.launchWireField = opt.wireField || "";
+    wrap.dataset.launchKind = opt.kind || "";
+    const title = document.createElement("div");
+    title.className = "spawn-advanced-field-label";
+    title.textContent = opt.label || opt.field;
+    const name = document.createElement("input");
+    name.type = "text";
+    name.placeholder = "name";
+    const command = document.createElement("input");
+    command.type = "text";
+    command.placeholder = "command";
+    const args = document.createElement("input");
+    args.type = "text";
+    args.placeholder = "args";
+    const list = document.createElement("ul");
+    list.className = "spawn-advanced-list";
+    list.dataset.launchMcpList = "true";
+    const add = document.createElement("button");
+    add.type = "button";
+    add.textContent = "add";
+    add.addEventListener("click", () => {
+      const spec = { name: name.value.trim(), command: command.value.trim(), args: args.value.trim() ? args.value.trim().split(/\s+/) : [] };
+      if (!spec.name || !spec.command) return;
+      const li = document.createElement("li");
+      li.dataset.spec = JSON.stringify(spec);
+      const span = document.createElement("span");
+      span.textContent = spec.name + ": " + spec.command + (spec.args.length ? " " + spec.args.join(" ") : "");
+      const rm = document.createElement("button");
+      rm.type = "button";
+      rm.textContent = "remove";
+      rm.addEventListener("click", () => li.remove());
+      li.appendChild(span);
+      li.appendChild(rm);
+      list.appendChild(li);
+      name.value = "";
+      command.value = "";
+      args.value = "";
+    });
+    wrap.appendChild(title);
+    wrap.appendChild(name);
+    wrap.appendChild(command);
+    wrap.appendChild(args);
+    wrap.appendChild(list);
+    wrap.appendChild(add);
+    row.appendChild(wrap);
+  }
+
+  function renderSchemaOption(group, opt) {
+    const row = document.createElement("div");
+    row.className = "spawn-advanced-row";
+    row.dataset.launchOption = opt.field || "";
+    if (opt.kind === "pathList" || opt.kind === "modelList") {
+      renderListControl(row, opt);
+    } else if (opt.kind === "envMap") {
+      renderEnvControl(row, opt);
+    } else if (opt.kind === "mcpServerList") {
+      renderMCPControl(row, opt);
+    } else {
+      renderScalarControl(row, opt);
+    }
+    group.appendChild(row);
+  }
+
+  async function renderSchemaAdvanced() {
+    const root = document.querySelector("[data-spawn-advanced-schema-root]");
+    if (!root || root.__schemaRendered) return;
+    root.__schemaRendered = true;
+    if (!window.launchconfig || !window.launchconfig.schema) {
+      root.textContent = "Advanced launch schema unavailable.";
+      return;
+    }
+    root.textContent = "Loading advanced options...";
+    try {
+      const schema = await window.launchconfig.schema();
+      const options = ((schema && schema.options) || []).filter(schemaSupportedForSpawn);
+      root.innerHTML = "";
+      let currentGroup = "";
+      let fieldset = null;
+      options.forEach((opt) => {
+        if (opt.group !== currentGroup) {
+          currentGroup = opt.group || "";
+          fieldset = document.createElement("fieldset");
+          fieldset.className = "spawn-advanced-group";
+          fieldset.dataset.launchGroup = currentGroup;
+          const legend = document.createElement("legend");
+          legend.textContent = currentGroup;
+          fieldset.appendChild(legend);
+          root.appendChild(fieldset);
+        }
+        renderSchemaOption(fieldset, opt);
+      });
+      if (window.SettingsPickers && window.SettingsPickers.init) {
+        window.SettingsPickers.init(root);
+      }
+    } catch (err) {
+      root.textContent = "Advanced launch schema unavailable.";
+    }
+  }
+
+  function collectAdvancedOverrides() {
+    const overrides = {};
+    document.querySelectorAll("[data-launch-wire-field]").forEach((el) => {
+      const wire = el.dataset.launchWireField;
+      const kind = el.dataset.launchKind;
+      if (!wire || kind === "pathList" || kind === "modelList" || kind === "mcpServerList" || kind === "envMap") return;
+      if (el.type === "radio" && !el.checked) return;
+      if (kind === "boolean") {
+        if (el.value === "true") overrides[wire] = true;
+        if (el.value === "false") overrides[wire] = false;
+        return;
+      }
+      const value = (el.value || "").trim();
+      if (!value) return;
+      overrides[wire] = kind === "integer" ? Number(value) : value;
+    });
+    document.querySelectorAll(".spawn-advanced-list-control[data-launch-wire-field]").forEach((wrap) => {
+      const wire = wrap.dataset.launchWireField;
+      const kind = wrap.dataset.launchKind;
+      if (!wire) return;
+      if (kind === "envMap") {
+        const env = {};
+        wrap.querySelectorAll("[data-launch-env-list] li").forEach((li) => {
+          if (li.dataset.name) env[li.dataset.name] = li.dataset.value || "";
+        });
+        if (Object.keys(env).length) overrides[wire] = env;
+        return;
+      }
+      if (kind === "mcpServerList") {
+        const specs = [];
+        wrap.querySelectorAll("[data-launch-mcp-list] li").forEach((li) => {
+          try { specs.push(JSON.parse(li.dataset.spec || "{}")); } catch (e) { /* skip malformed local row */ }
+        });
+        if (specs.length) overrides[wire] = specs;
+        return;
+      }
+      const values = Array.from(wrap.querySelectorAll("[data-launch-list] li"))
+        .map((li) => li.dataset.value || "")
+        .filter(Boolean);
+      if (values.length) overrides[wire] = values;
+    });
+    return Object.keys(overrides).length ? overrides : undefined;
+  }
+
+  function advancedOverrideValue(overrides, wireField) {
+    overrides = overrides || {};
+    return Object.prototype.hasOwnProperty.call(overrides, wireField) ? overrides[wireField] : "";
   }
 
   function init() {
@@ -475,9 +843,7 @@
     // harness retires it) before the user submits and hits a 503.
     validatePrefilledModel(form);
 
-    // Per-launch override list adds
-    attachListAdd("ovr-skill", "ovr-skill-add", "ovr-skill-list");
-    attachListAdd("ovr-plugin", "ovr-plugin-add", "ovr-plugin-list");
+    renderSchemaAdvanced();
 
     // Scroll the advanced section into view when it opens so the content
     // isn't clipped below the viewport.
@@ -569,16 +935,17 @@
         if (ta) ta.focus();
         return;
       }
+      const launchOverrides = collectAdvancedOverrides();
       const body = {
+        launch_overrides: launchOverrides,
         prompt: rawPrompt,
         harness: fd.get("harness") || "serf",
         model: fd.get("model") || "",
         working_dir: fd.get("working_dir") || "",
         branch: fd.get("branch") || "",
         access_mode: fd.get("access_mode") || "full",
-        agent: fd.get("agent_override") || fd.get("agent") || "default",
-        reasoning_effort: fd.get("reasoning_effort_override") || fd.get("reasoning_effort") || "",
-        launch_overrides: collectAdvancedOverrides(),
+        agent: advancedOverrideValue(launchOverrides, "agent") || fd.get("agent") || "default",
+        reasoning_effort: advancedOverrideValue(launchOverrides, "reasoningEffort") || fd.get("reasoning_effort") || "",
         // appwire.startThread reads body.attachments; the REST fallback
         // below converts the same set to base64-encoded items in the JSON
         // payload (the wire shape /api/spawn already accepts via

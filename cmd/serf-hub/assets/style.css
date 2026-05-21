@@ -624,13 +624,24 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .spawn-advanced summary { cursor: pointer; padding: 5px 0; }
 .spawn-advanced-body { display: flex; flex-direction: column; gap: 14px; padding: 12px 0; }
 .spawn-advanced-note { margin: 0 0 4px; }
-.spawn-advanced-group { border: 1px solid var(--rule); border-radius: 4px; padding: 10px 12px; display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-end; }
+.spawn-advanced-group { border: 1px solid var(--rule); border-radius: 4px; padding: 10px 12px; display: flex; flex-direction: column; gap: 12px; align-items: stretch; }
 .spawn-advanced-group legend { padding: 0 6px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px; }
 .spawn-advanced-body label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text-muted); }
 .spawn-advanced-body input,
+.spawn-advanced-body textarea,
 .spawn-advanced-body select,
 .spawn-advanced-body button { background: transparent; border: 1px solid var(--rule); border-radius: 4px; padding: 4px 8px; color: var(--text); font: inherit; font-size: 12px; outline: none; cursor: pointer; }
 .spawn-advanced-body button[type="button"] { background: var(--bg-elev, transparent); }
+.spawn-advanced-row { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.spawn-advanced-model { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.spawn-advanced-radio { display: flex; gap: 12px; flex-wrap: wrap; }
+.spawn-advanced-radio label { flex-direction: row; align-items: center; gap: 4px; }
+.spawn-advanced-field-label { font-size: 11px; color: var(--text-muted); }
+.spawn-advanced-env-fallback { color: var(--text-dim); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 11px; }
+.spawn-advanced-list-control { display: flex; flex-direction: column; gap: 6px; }
+.spawn-advanced-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; }
+.spawn-advanced-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; border: 1px solid var(--rule); border-radius: 4px; padding: 4px 8px; color: var(--text); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 11px; }
+.spawn-advanced-list li button { border: none; background: transparent; padding: 0 4px; color: var(--text-muted); cursor: pointer; }
 .spawn-advanced-chips { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 4px; width: 100%; }
 .spawn-advanced-chips li { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--rule); border-radius: 12px; padding: 2px 8px; font-size: 11px; }
 .spawn-advanced-chips li button { border: none; background: transparent; padding: 0 4px; color: var(--text-muted); cursor: pointer; }

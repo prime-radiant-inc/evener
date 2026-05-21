@@ -1678,6 +1678,7 @@ type spawnViewData struct {
 	DefaultPrompt          string // optional ?prompt= pre-fill
 	RecentPrompts          []string
 	Harnesses              []launchHarness
+	SafeEnv                map[string]string
 }
 
 type launchHarness struct {
@@ -1707,6 +1708,7 @@ func (s *WebServer) handleWorkspaceSpawn(w http.ResponseWriter, r *http.Request)
 		DefaultBranch:          "(default)",
 		DefaultAccessMode:      "full",
 		DefaultPrompt:          r.URL.Query().Get("prompt"),
+		SafeEnv:                safeSpawnEnv(),
 	}
 	for _, descriptor := range launchHarnessDescriptors(s.cfg) {
 		data.Harnesses = append(data.Harnesses, launchHarness{ID: descriptor.ID, Label: descriptor.Label})
@@ -1723,6 +1725,16 @@ func (s *WebServer) handleWorkspaceSpawn(w http.ResponseWriter, r *http.Request)
 	if err := s.spawnTmpl.ExecuteTemplate(w, "spawn", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
+}
+
+func safeSpawnEnv() map[string]string {
+	out := map[string]string{}
+	for _, name := range []string{"SERF_MODEL", "SERF_REASONING_EFFORT"} {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			out[name] = value
+		}
+	}
+	return out
 }
 
 func launchHarnessIDs(cfg WebConfig) []string {
