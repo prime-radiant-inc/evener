@@ -44,6 +44,28 @@
     return !opt.driverSupport || opt.driverSupport.serf === true;
   }
 
+  const spawnBasicWireFields = new Set(["agent", "model", "reasoningEffort"]);
+  const promptCompositeByMode = {
+    systemPromptMode: {
+      fileWire: "systemPromptFile",
+      textWire: "systemPromptText",
+      fileLabel: "System prompt from file",
+      textLabel: "System prompt text",
+    },
+    systemPromptAppendMode: {
+      fileWire: "systemPromptAppendFile",
+      textWire: "systemPromptAppendText",
+      fileLabel: "Append from file",
+      textLabel: "Append text",
+    },
+  };
+  const promptCompositeDependentWires = new Set([
+    "systemPromptFile",
+    "systemPromptText",
+    "systemPromptAppendFile",
+    "systemPromptAppendText",
+  ]);
+
   function controlClass(mode, name) {
     return mode === "spawn" ? "spawn-advanced-" + name : "settings-launch-" + name;
   }
@@ -172,6 +194,82 @@
     label.appendChild(hint);
   }
 
+  function radioNameFor(ctx, opt) {
+    return "launch-" + (ctx.rootId || "") + "-" + (opt.field || opt.wireField || "");
+  }
+
+  function selectedRadioValue(root, wire) {
+    const checked = root.querySelector('input[type="radio"][data-launch-wire-field="' + wire + '"]:checked');
+    return checked ? (checked.value || "") : "";
+  }
+
+  function inactivePromptDependent(root, wire) {
+    if (wire === "systemPromptFile") return selectedRadioValue(root, "systemPromptMode") !== "file";
+    if (wire === "systemPromptText") return selectedRadioValue(root, "systemPromptMode") !== "inline";
+    if (wire === "systemPromptAppendFile") return selectedRadioValue(root, "systemPromptAppendMode") !== "file";
+    if (wire === "systemPromptAppendText") return selectedRadioValue(root, "systemPromptAppendMode") !== "inline";
+    return false;
+  }
+
+  function choiceLabel(opt, value, fallback) {
+    const choices = opt && opt.choices ? opt.choices : [];
+    for (const choice of choices) {
+      if ((choice.value || "") === value) return choice.label || fallback;
+    }
+    return fallback;
+  }
+
+  function renderPromptCompositeControl(row, opt, ctx) {
+    const spec = promptCompositeByMode[opt.wireField];
+    const fileOpt = ctx.optionsByWire && ctx.optionsByWire[spec.fileWire];
+    const textOpt = ctx.optionsByWire && ctx.optionsByWire[spec.textWire];
+    const title = document.createElement("div");
+    title.className = ctx.mode === "spawn" ? "spawn-advanced-field-label" : "settings-launch-field-label";
+    title.textContent = opt.label || opt.field;
+    const wrap = document.createElement("div");
+    wrap.className = controlClass(ctx.mode, "radio") + " launch-radio-composite";
+    const name = radioNameFor(ctx, opt);
+
+    function addOption(value, labelText, control) {
+      const option = document.createElement("label");
+      option.className = control ? "launch-radio-option launch-radio-option-with-control" : "launch-radio-option";
+      const radio = document.createElement("input");
+      radio.type = "radio";
+      radio.name = name;
+      radio.value = value;
+      if (value === "") radio.checked = true;
+      setControlData(radio, opt);
+      option.appendChild(radio);
+      if (control) {
+        const body = document.createElement("span");
+        body.className = "launch-radio-option-body";
+        const text = document.createElement("span");
+        text.textContent = labelText;
+        body.appendChild(text);
+        body.appendChild(control);
+        option.appendChild(body);
+      } else {
+        option.appendChild(document.createTextNode(labelText));
+      }
+      wrap.appendChild(option);
+      return radio;
+    }
+
+    addOption("", choiceLabel(opt, "", ctx.layer === "project" ? "(use global default)" : "(default)"));
+    if (fileOpt) {
+      const fileInput = textInputForOption(fileOpt, ctx.mode, false);
+      fileInput.placeholder = ctx.layer === "project" ? "(use global default)" : "(path)";
+      addOption("file", spec.fileLabel, fileInput);
+    }
+    if (textOpt) {
+      const textInput = textInputForOption(textOpt, ctx.mode, true);
+      textInput.placeholder = "";
+      addOption("inline", spec.textLabel, textInput);
+    }
+    row.appendChild(title);
+    row.appendChild(wrap);
+  }
+
   function renderScalarControl(row, opt, ctx) {
     const label = document.createElement("label");
     label.textContent = opt.label || opt.field;
@@ -204,7 +302,7 @@
       const emptyLabel = document.createElement("label");
       const emptyRadio = document.createElement("input");
       emptyRadio.type = "radio";
-      emptyRadio.name = "launch-" + (ctx.rootId || "") + "-" + (opt.field || "");
+      emptyRadio.name = radioNameFor(ctx, opt);
       emptyRadio.value = "";
       emptyRadio.checked = true;
       setControlData(emptyRadio, opt);
@@ -473,7 +571,8 @@
     const row = document.createElement("div");
     row.className = ctx.mode === "spawn" ? "spawn-advanced-row" : "settings-launch-row";
     row.dataset.launchOption = opt.field || "";
-    if (opt.kind === "pathList" || opt.kind === "modelList") renderListControl(row, opt, ctx);
+    if (promptCompositeByMode[opt.wireField]) renderPromptCompositeControl(row, opt, ctx);
+    else if (opt.kind === "pathList" || opt.kind === "modelList") renderListControl(row, opt, ctx);
     else if (opt.kind === "envMap") renderEnvControl(row, opt, ctx);
     else if (opt.kind === "mcpServerList") renderMCPControl(row, opt, ctx);
     else renderScalarControl(row, opt, ctx);
@@ -485,9 +584,18 @@
     const mode = options.mode || (root && root.dataset.launchAdvancedRoot !== undefined ? "spawn" : "settings");
     const layer = options.layer || (root && root.dataset.launchSettingsLayer) || "";
     const groupsRoot = options.groupsRoot || root.querySelector("[data-launch-advanced-groups], [data-launch-settings-groups]") || root;
-    const opts = (options.options || []).filter((opt) => {
+    const supportedOptions = (options.options || []).filter((opt) => {
       if (mode === "spawn") return optionSupportsSpawn(opt);
       return optionSupportsLayer(opt, layer);
+    });
+    const optionsByWire = {};
+    supportedOptions.forEach((opt) => {
+      if (opt && opt.wireField) optionsByWire[opt.wireField] = opt;
+    });
+    const opts = supportedOptions.filter((opt) => {
+      if (mode === "spawn" && spawnBasicWireFields.has(opt.wireField)) return false;
+      if (promptCompositeDependentWires.has(opt.wireField)) return false;
+      return true;
     });
     groupsRoot.innerHTML = "";
     const ctx = {
@@ -495,6 +603,7 @@
       layer,
       rootId: root.id || Math.random().toString(36).slice(2),
       envFallbacks: options.includeEnvFallbacks ? (options.envFallbacks || {}) : null,
+      optionsByWire,
     };
     let currentGroup = "";
     let fieldset = null;
@@ -615,6 +724,7 @@
     clearValidation(root);
     const inputs = Array.from(root.querySelectorAll("input[data-launch-path-kind][data-launch-wire-field], textarea[data-launch-path-kind][data-launch-wire-field], select[data-launch-path-kind][data-launch-wire-field]"));
     for (const input of inputs) {
+      if (inactivePromptDependent(root, input.dataset.launchWireField)) continue;
       if (!(await validatePathInput(input))) return false;
     }
     const pathLists = Array.from(root.querySelectorAll(".spawn-advanced-list-control[data-launch-kind=\"pathList\"][data-launch-path-kind]"));
@@ -662,6 +772,7 @@
       const kind = el.dataset.launchKind;
       if (!wire || kind === "pathList" || kind === "modelList" || kind === "mcpServerList" || kind === "envMap") return;
       if (el.type === "radio" && !el.checked) return;
+      if (inactivePromptDependent(root, wire)) return;
       if (kind === "boolean") {
         if (el.value === "true") out[wire] = true;
         else if (el.value === "false") out[wire] = false;

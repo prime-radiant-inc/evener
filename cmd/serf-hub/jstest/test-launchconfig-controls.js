@@ -37,6 +37,17 @@ function assert(cond, msg) {
 
   const schema = [
     {
+      field: "agent",
+      wireField: "agent",
+      label: "Agent",
+      group: "Model",
+      kind: "select",
+      choices: [{ value: "serf", label: "Serf" }, { value: "codex", label: "Codex" }],
+      defaultableLayers: ["global", "project"],
+      perLaunch: true,
+      driverSupport: { serf: true },
+    },
+    {
       field: "model",
       wireField: "model",
       label: "Model",
@@ -45,6 +56,81 @@ function assert(cond, msg) {
       defaultableLayers: ["global", "project"],
       perLaunch: true,
       envFallback: { name: "SERF_MODEL" },
+      driverSupport: { serf: true },
+    },
+    {
+      field: "reasoning_effort",
+      wireField: "reasoningEffort",
+      label: "Reasoning effort",
+      group: "Model",
+      kind: "select",
+      choices: [{ value: "medium", label: "medium" }],
+      defaultableLayers: ["global", "project"],
+      perLaunch: true,
+      driverSupport: { serf: true },
+    },
+    {
+      field: "system_prompt_mode",
+      wireField: "systemPromptMode",
+      label: "System prompt source",
+      group: "Prompts",
+      kind: "radio",
+      choices: [{ value: "", label: "Serf default" }, { value: "file", label: "Pick a file" }, { value: "inline", label: "Fill in text" }],
+      defaultableLayers: ["global", "project"],
+      perLaunch: true,
+      driverSupport: { serf: true },
+    },
+    {
+      field: "system_prompt_file",
+      wireField: "systemPromptFile",
+      label: "System prompt file",
+      group: "Prompts",
+      kind: "path",
+      pathKind: "file",
+      defaultableLayers: ["global", "project"],
+      perLaunch: true,
+      driverSupport: { serf: true },
+    },
+    {
+      field: "system_prompt_text",
+      wireField: "systemPromptText",
+      label: "System prompt text",
+      group: "Prompts",
+      kind: "multilineText",
+      defaultableLayers: ["global", "project"],
+      perLaunch: true,
+      driverSupport: { serf: true },
+    },
+    {
+      field: "system_prompt_append_mode",
+      wireField: "systemPromptAppendMode",
+      label: "Append to system prompt",
+      group: "Prompts",
+      kind: "radio",
+      choices: [{ value: "", label: "Do not append anything" }, { value: "file", label: "Pick a file" }, { value: "inline", label: "Fill in text" }],
+      defaultableLayers: ["global", "project"],
+      perLaunch: true,
+      driverSupport: { serf: true },
+    },
+    {
+      field: "system_prompt_append_file",
+      wireField: "systemPromptAppendFile",
+      label: "Append file",
+      group: "Prompts",
+      kind: "path",
+      pathKind: "file",
+      defaultableLayers: ["global", "project"],
+      perLaunch: true,
+      driverSupport: { serf: true },
+    },
+    {
+      field: "system_prompt_append_text",
+      wireField: "systemPromptAppendText",
+      label: "Append text",
+      group: "Prompts",
+      kind: "multilineText",
+      defaultableLayers: ["global", "project"],
+      perLaunch: true,
       driverSupport: { serf: true },
     },
     {
@@ -112,6 +198,36 @@ function assert(cond, msg) {
     "pathKind should stay on rendered path control");
   assert(root.querySelector('[data-launch-wire-field="traceFile"]').value === "/tmp/trace.out",
     "path current value should populate");
+  assert(root.querySelectorAll('[data-launch-wire-field="systemPromptMode"]').length === 3,
+    "system prompt source should render as a composite radio group");
+  assert(root.querySelectorAll('[data-launch-option="system_prompt_file"]').length === 0,
+    "system prompt file should not render as a standalone row");
+  const promptFile = root.querySelector('input[data-launch-wire-field="systemPromptFile"]');
+  const promptText = root.querySelector('textarea[data-launch-wire-field="systemPromptText"]');
+  assert(promptFile && promptText,
+    "system prompt composite should include the file input and textarea");
+  assert(root.textContent.includes("Serf default"),
+    "system prompt composite should use the schema label for the default option");
+  assert(root.textContent.includes("Do not append anything"),
+    "append composite should use the schema label for the default option");
+  promptFile.value = "/missing/prompt.md";
+  promptText.value = "inline prompt";
+  const defaultPromptOut = dom.window.LaunchConfigControls.collect(root);
+  assert(!Object.prototype.hasOwnProperty.call(defaultPromptOut, "systemPromptFile") &&
+    !Object.prototype.hasOwnProperty.call(defaultPromptOut, "systemPromptText"),
+    "collect should ignore inactive system prompt dependent controls");
+  root.querySelector('input[data-launch-wire-field="systemPromptMode"][value="inline"]').checked = true;
+  const inlinePromptOut = dom.window.LaunchConfigControls.collect(root);
+  assert(inlinePromptOut.systemPromptMode === "inline" && inlinePromptOut.systemPromptText === "inline prompt" &&
+    !Object.prototype.hasOwnProperty.call(inlinePromptOut, "systemPromptFile"),
+    "collect should include only the active inline system prompt value");
+  root.querySelector('input[data-launch-wire-field="systemPromptMode"][value="file"]').checked = true;
+  const inactiveValid = await dom.window.LaunchConfigControls.validate(root);
+  assert(!inactiveValid, "validate should check the active system prompt file input");
+  promptFile.value = "";
+  promptFile.setCustomValidity("");
+  delete promptFile.dataset.launchInvalid;
+  root.querySelector('input[data-launch-wire-field="systemPromptMode"][value="inline"]').checked = true;
   const modelFallbackWrap = root.querySelector('[data-launch-kind="modelList"][data-launch-wire-field="modelFallbacks"]');
   assert(modelFallbackWrap.querySelector("[data-launch-explicit-empty]").checked,
     "explicit empty modelFallbacks should render no-fallbacks affordance as checked");
@@ -193,6 +309,12 @@ function assert(cond, msg) {
     current: { modelFallbacks: [] },
     includeEnvFallbacks: false,
   });
+  assert(!spawnRoot.querySelector('[data-launch-wire-field="agent"]'),
+    "spawn advanced controls should omit top-pane agent");
+  assert(!spawnRoot.querySelector('[data-launch-wire-field="model"]'),
+    "spawn advanced controls should omit top-pane model");
+  assert(!spawnRoot.querySelector('[data-launch-wire-field="reasoningEffort"]'),
+    "spawn advanced controls should omit top-pane reasoning effort");
   assert(!spawnRoot.querySelector("[data-launch-explicit-empty]"),
     "spawn controls should not render the settings-only no-fallbacks affordance");
   const spawnOut = dom.window.LaunchConfigControls.collect(spawnRoot);
