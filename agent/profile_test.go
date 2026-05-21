@@ -147,6 +147,31 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 	})
 }
 
+func TestProviderProfiles_AddPurposeToEveryToolSchema(t *testing.T) {
+	profiles := []ProviderProfile{
+		NewOpenAIProfile("gpt-5.2"),
+		NewAnthropicProfile("claude-test"),
+		NewGeminiProfile("gemini-test"),
+		NewOpenAICompatProfile("openrouter", "openai/gpt-test", 0),
+	}
+	for _, p := range profiles {
+		for _, td := range p.ToolDefinitions() {
+			props, _ := td.Parameters["properties"].(map[string]any)
+			if props == nil {
+				t.Fatalf("%s/%s has no properties schema", p.ID(), td.Name)
+			}
+			if _, ok := props["purpose"]; !ok {
+				t.Fatalf("%s/%s missing purpose parameter", p.ID(), td.Name)
+			}
+			if td.Name == "shell" || td.Name == "exec_command" || td.Name == "run_shell_command" {
+				if _, ok := props["description"]; ok {
+					t.Fatalf("%s/%s still exposes legacy description parameter", p.ID(), td.Name)
+				}
+			}
+		}
+	}
+}
+
 func TestSystemPrompt_ImplementerWarnsOnUnavailableTools(t *testing.T) {
 	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.4"), PromptData{
 		Agent:                       "implementer",

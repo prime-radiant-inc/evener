@@ -5,7 +5,14 @@ import (
 	"testing"
 )
 
-func TestSummarizeTool_Shell_WithDescription(t *testing.T) {
+func TestSummarizeTool_Shell_WithPurpose(t *testing.T) {
+	desc, _ := summarizeTool("shell", `{"command":"ls -la /tmp","purpose":"list temp files"}`)
+	if desc != "list temp files" {
+		t.Errorf("got %q", desc)
+	}
+}
+
+func TestSummarizeTool_Shell_WithLegacyDescription(t *testing.T) {
 	desc, _ := summarizeTool("shell", `{"command":"ls -la /tmp","description":"list temp files"}`)
 	if desc != "list temp files" {
 		t.Errorf("got %q", desc)

@@ -23,6 +23,67 @@ const (
 	TruncTail     TruncationStrategy = "tail"
 )
 
+const toolPurposeDescription = "Briefly explain why you are calling this tool and what you expect to learn or accomplish."
+
+func withPurposeParameter(td llm.ToolDefinition) llm.ToolDefinition {
+	params := cloneSchemaMap(td.Parameters)
+	if params == nil {
+		params = map[string]any{"type": "object"}
+	}
+	if params["type"] != nil && params["type"] != "object" {
+		td.Parameters = params
+		return td
+	}
+	params["type"] = "object"
+	props, _ := params["properties"].(map[string]any)
+	if props == nil {
+		props = map[string]any{}
+		params["properties"] = props
+	}
+	if _, exists := props["purpose"]; !exists {
+		props["purpose"] = map[string]any{
+			"type":        "string",
+			"description": toolPurposeDescription,
+		}
+	}
+	td.Parameters = params
+	return td
+}
+
+func cloneSchemaMap(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = cloneSchemaValue(v)
+	}
+	return out
+}
+
+func cloneSchemaValue(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		return cloneSchemaMap(x)
+	case []any:
+		out := make([]any, len(x))
+		for i, item := range x {
+			out[i] = cloneSchemaValue(item)
+		}
+		return out
+	case []string:
+		return append([]string(nil), x...)
+	case []int:
+		return append([]int(nil), x...)
+	case []float64:
+		return append([]float64(nil), x...)
+	case []bool:
+		return append([]bool(nil), x...)
+	default:
+		return v
+	}
+}
+
 type ToolOutputLimit struct {
 	MaxChars int                `json:"max_chars,omitempty"`
 	MaxLines int                `json:"max_lines,omitempty"`
@@ -165,6 +226,7 @@ func (r *ToolRegistry) Register(t RegisteredTool) error {
 	if err := llm.ValidateToolName(t.Definition.Name); err != nil {
 		return err
 	}
+	t.Definition = withPurposeParameter(t.Definition)
 	if strings.TrimSpace(t.Definition.Description) == "" {
 		log.Printf("WARNING: tool %q registered with empty description", t.Definition.Name)
 	}
@@ -279,7 +341,6 @@ func (r *ToolRegistry) Get(name string) *RegisteredTool {
 	return &t
 }
 
-
 func (r *ToolRegistry) Names() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -331,6 +392,9 @@ func (r *ToolRegistry) ExecuteCall(ctx context.Context, env ExecutionEnvironment
 		}
 	}
 
+	if name != "read_file" {
+		delete(args, "purpose")
+	}
 	v, err := t.Exec(ctx, env, args)
 	if err != nil {
 		full := ""

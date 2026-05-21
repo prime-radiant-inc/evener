@@ -59,6 +59,49 @@ func TestToolRegistry_ToolStateResult_CarriesStateAsSideChannel(t *testing.T) {
 	}
 }
 
+func TestToolRegistry_AddsAndStripsUniversalPurpose(t *testing.T) {
+	r := NewToolRegistry()
+	var gotArgs map[string]any
+	if err := r.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{
+			Name:        "echo",
+			Description: "echo args",
+			Parameters: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"value": map[string]any{"type": "string"},
+				},
+				"required": []string{"value"},
+			},
+		}},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = ctx
+			_ = env
+			gotArgs = args
+			return "ok", nil
+		},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	defs := r.Definitions()
+	props, _ := defs[0].Parameters["properties"].(map[string]any)
+	if _, ok := props["purpose"]; !ok {
+		t.Fatal("registered schema missing universal purpose")
+	}
+	res := r.ExecuteCall(context.Background(), NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
+		ID:        "c1",
+		Name:      "echo",
+		Arguments: json.RawMessage(`{"value":"x","purpose":"checking behavior"}`),
+	})
+	if res.IsError {
+		t.Fatalf("unexpected error: %q", res.Output)
+	}
+	if _, ok := gotArgs["purpose"]; ok {
+		t.Fatalf("purpose should be stripped before non-read_file execution: %#v", gotArgs)
+	}
+}
+
 func TestToolRegistry_UnknownTool_ReturnsErrorResult(t *testing.T) {
 	r := NewToolRegistry()
 	// No tools registered.

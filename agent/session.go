@@ -1983,12 +1983,15 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 		CallID:        call.ID,
 		ArgumentsJSON: string(argsJSON),
 	}
-	// Promote description to top-level event field for observability (shell tool).
+	// Promote purpose to the top-level event field for observability.
 	var args map[string]any
 	if len(call.Arguments) > 0 {
 		_ = json.Unmarshal(call.Arguments, &args)
 	}
-	if desc, ok := args["description"].(string); ok && desc != "" {
+	if purpose, ok := args["purpose"].(string); ok && purpose != "" {
+		startData.Description = purpose
+	} else if desc, ok := args["description"].(string); ok && desc != "" {
+		// Backward compatibility for older shell calls and transcripts.
 		startData.Description = desc
 	}
 	startEmitted := false
@@ -3744,6 +3747,9 @@ func (s *Session) rebuildToolDefsCache() {
 			}
 		}
 		defs = append(defs, td)
+	}
+	for i := range defs {
+		defs[i] = withPurposeParameter(defs[i])
 	}
 
 	s.cachedToolDefs = defs

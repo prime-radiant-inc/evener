@@ -91,6 +91,7 @@ func (p *baseProfile) ToolDefinitions() []llm.ToolDefinition {
 		if mapped, ok := p.toolNameMap[d.Name]; ok {
 			defs[i].Name = mapped
 		}
+		defs[i] = withPurposeParameter(defs[i])
 	}
 	return defs
 }
@@ -1009,9 +1010,8 @@ func defShell() llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"command":     map[string]any{"type": "string"},
-				"timeout_ms":  map[string]any{"type": "integer"},
-				"description": map[string]any{"type": "string"},
+				"command":    map[string]any{"type": "string"},
+				"timeout_ms": map[string]any{"type": "integer"},
 			},
 			"required": []string{"command"},
 		},

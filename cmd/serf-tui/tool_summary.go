@@ -43,7 +43,10 @@ func summarizeTool(toolName, argsJSON string) (desc, detail string) {
 	switch toolName {
 	case "shell":
 		cmd := str("command")
-		if d := str("description"); d != "" {
+		if d := str("purpose"); d != "" {
+			desc = trunc(d, 80)
+		} else if d := str("description"); d != "" {
+			// Backward compatibility for older transcripts.
 			desc = trunc(d, 80)
 		} else {
 			// Show first line as desc; full command as detail if multi-line.
