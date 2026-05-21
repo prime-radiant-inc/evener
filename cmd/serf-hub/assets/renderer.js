@@ -2293,6 +2293,12 @@
     return { wrap, pre };
   }
 
+  function updateExpandableSummary(summary, details, hiddenLineCount) {
+    summary.textContent = details.open
+      ? "hide " + hiddenLineCount + (hiddenLineCount === 1 ? " line" : " lines")
+      : "show " + hiddenLineCount + " more " + (hiddenLineCount === 1 ? "line" : "lines");
+  }
+
   function setExpandableOutput(body, text, opts) {
     if (!body || !body.pre || !body.wrap) return;
     opts = opts || {};
@@ -2310,7 +2316,9 @@
     morePre.className = (opts.outputClassName || body.pre.className || "") + " tool-output-rest";
     morePre.textContent = lines.slice(5).join("\n");
     const summary = document.createElement("summary");
-    summary.textContent = "show " + (lines.length - 5) + " more lines";
+    const hiddenLineCount = lines.length - 5;
+    moreWrap.addEventListener("toggle", () => updateExpandableSummary(summary, moreWrap, hiddenLineCount));
+    updateExpandableSummary(summary, moreWrap, hiddenLineCount);
     moreWrap.appendChild(morePre);
     moreWrap.appendChild(summary);
     body.wrap.appendChild(moreWrap);
@@ -2334,7 +2342,9 @@
     morePre.className = (opts.outputClassName || body.pre.className || "diff-body") + " tool-output-rest";
     renderDiffLines(morePre, lines.slice(5), false);
     const summary = document.createElement("summary");
-    summary.textContent = "show " + (lines.length - 5) + " more lines";
+    const hiddenLineCount = lines.length - 5;
+    moreWrap.addEventListener("toggle", () => updateExpandableSummary(summary, moreWrap, hiddenLineCount));
+    updateExpandableSummary(summary, moreWrap, hiddenLineCount);
     moreWrap.appendChild(morePre);
     moreWrap.appendChild(summary);
     body.wrap.appendChild(moreWrap);
