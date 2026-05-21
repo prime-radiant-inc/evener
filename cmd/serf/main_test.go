@@ -31,7 +31,7 @@ func TestNewSessionFromEnv(t *testing.T) {
 		t.Fatalf("NewFromEnv: %v", err)
 	}
 
-	profile := agent.NewOpenAIProfile("gpt-5-mini-2025-08-07")
+	profile := agent.NewOpenAIProfile("gpt-5.4-mini")
 	env := agent.NewLocalExecutionEnvironment(t.TempDir())
 
 	sess, err := agent.NewSession(client, profile, env, agent.SessionConfig{})
@@ -63,7 +63,7 @@ func TestProcessInputSimplePrompt(t *testing.T) {
 		t.Fatalf("NewFromEnv: %v", err)
 	}
 
-	profile := agent.NewOpenAIProfile("gpt-5-mini-2025-08-07")
+	profile := agent.NewOpenAIProfile("gpt-5.4-mini")
 	env := agent.NewLocalExecutionEnvironment(t.TempDir())
 
 	sess, err := agent.NewSession(client, profile, env, agent.SessionConfig{
@@ -99,7 +99,7 @@ func TestProcessInputWithToolUse(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	profile := agent.NewOpenAIProfile("gpt-5-mini-2025-08-07")
+	profile := agent.NewOpenAIProfile("gpt-5.4-mini")
 	env := agent.NewLocalExecutionEnvironment(tmpDir)
 
 	sess, err := agent.NewSession(client, profile, env, agent.SessionConfig{

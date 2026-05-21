@@ -1353,7 +1353,7 @@ func TestAdapter_Integration_WebSearch(t *testing.T) {
 	defer cancel()
 
 	resp, err := a.Complete(ctx, llm.Request{
-		Model:    "gpt-5-mini-2025-08-07",
+		Model:    "gpt-5.4-mini",
 		Messages: []llm.Message{llm.User("Search the web and tell me: what is the current population of Tokyo?")},
 		Tools: []llm.ToolDefinition{{
 			Name:        "shell",

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/internal/auth/openai/oaitest"
 	"primeradiant.com/serf/llm"
 )
 
@@ -23,7 +24,7 @@ func TestRunWithArgs(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
 		prompt:  "Reply with exactly the word PONG and nothing else.",
-		model:   "openai/gpt-5-mini-2025-08-07",
+		model:   "openai/gpt-5.4-mini",
 		workDir: t.TempDir(),
 		stdout:  &stdout,
 		stderr:  &stderr,
@@ -47,7 +48,7 @@ func TestRunEmitsToolEvents(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
 		prompt:  "Create a file called test.txt in " + tmpDir + " with content 'hello'. Use the write_file tool.",
-		model:   "openai/gpt-5-mini-2025-08-07",
+		model:   "openai/gpt-5.4-mini",
 		workDir: tmpDir,
 		stdout:  &stdout,
 		stderr:  &stderr,
@@ -77,7 +78,7 @@ func TestRunMissingPrompt(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
 		prompt: "",
-		model:  "openai/gpt-5-mini-2025-08-07",
+		model:  "openai/gpt-5.4-mini",
 		stdout: &stdout,
 		stderr: &stderr,
 	})
@@ -92,29 +93,15 @@ func TestRunMissingPrompt(t *testing.T) {
 // TestRunMissingAPIKey verifies that run returns an error when no API keys
 // are available.
 func TestRunMissingAPIKey(t *testing.T) {
-	// Temporarily clear all API key env vars.
-	keys := []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"}
-	saved := map[string]string{}
-	for _, k := range keys {
-		saved[k] = os.Getenv(k)
-		if err := os.Unsetenv(k); err != nil {
-			t.Fatal(err)
-		}
+	oaitest.IsolateOpenAIAuth(t)
+	for _, k := range []string{"ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"} {
+		t.Setenv(k, "")
 	}
-	defer func() {
-		for k, v := range saved {
-			if v != "" {
-				if err := os.Setenv(k, v); err != nil {
-					t.Fatal(err)
-				}
-			}
-		}
-	}()
 
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
 		prompt: "do something",
-		model:  "openai/gpt-5-mini-2025-08-07",
+		model:  "openai/gpt-5.4-mini",
 		stdout: &stdout,
 		stderr: &stderr,
 	})
@@ -514,7 +501,7 @@ func TestRunWithContextStrategy(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), runConfig{
 		prompt:          "Reply with exactly the word PONG and nothing else.",
-		model:           "openai/gpt-5-mini-2025-08-07",
+		model:           "openai/gpt-5.4-mini",
 		workDir:         t.TempDir(),
 		contextStrategy: "compact",
 		stdout:          &stdout,
