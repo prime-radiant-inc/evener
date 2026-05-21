@@ -468,7 +468,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .tool-call { margin: 0 0 6px 0; font-size: 12.5px; color: var(--text-muted); display: flex; column-gap: 8px; row-gap: 1px; flex-wrap: wrap; align-items: baseline; }
 .tool-call-cluster { margin-bottom: 12px; }
 .tool-call-cluster .tool-call:last-child { margin-bottom: 0; }
-.tool-call .tool-status { display: inline-block; width: 12px; text-align: center; font-size: 11px; line-height: 1; font-family: ui-monospace, "SFMono-Regular", monospace; }
+.tool-call .tool-status { display: inline-block; width: 12px; flex: 0 0 12px; margin-left: -20px; text-align: center; font-size: 11px; line-height: 1; font-family: ui-monospace, "SFMono-Regular", monospace; }
 .tool-call .tool-status-pending { color: var(--text-dim); }
 .tool-call .tool-status-good { color: var(--text-muted); }
 .tool-call .tool-status-bad { color: var(--state-awaiting); }
