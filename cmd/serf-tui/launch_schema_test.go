@@ -11,7 +11,7 @@ func TestSchemaRows_SettingsFiltersDefaultableLayerAndKeepsOrder(t *testing.T) {
 	schema := testLaunchSchema()
 	rows := launchSchemaRows(schema, appwire.LaunchConfigLayer{Agent: "serf", ReasoningEffort: "high", FastCheapModel: "mini"}, launchLayerProject, launchSchemaRowsSettings)
 	fields := rowFields(rows)
-	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "system_prompt_file", "verbose"}
+	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "system_prompt_file", "mcps", "verbose"}
 	if !reflect.DeepEqual(fields, want) {
 		t.Fatalf("fields=%v, want %v", fields, want)
 	}
@@ -21,7 +21,7 @@ func TestSchemaRows_OverrideFiltersPerLaunch(t *testing.T) {
 	schema := testLaunchSchema()
 	rows := launchSchemaRows(schema, appwire.LaunchConfigLayer{}, launchLayerLaunch, launchSchemaRowsOverride)
 	fields := rowFields(rows)
-	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "system_prompt_file", "verbose"}
+	want := []string{"agent", "model", "reasoning_effort", "fast_cheap_model", "system_prompt_file", "mcps", "verbose"}
 	if !reflect.DeepEqual(fields, want) {
 		t.Fatalf("fields=%v, want %v", fields, want)
 	}
@@ -51,6 +51,25 @@ func TestSchemaRows_ModelFallbacksDistinguishesUnsetAndExplicitEmpty(t *testing.
 	}
 }
 
+func TestSchemaRows_MCPsExposeEditableRows(t *testing.T) {
+	schema := []appwire.LaunchOption{
+		{Field: "mcps", Label: "MCP servers", Kind: "mcpServerList", DefaultableLayers: []string{"global"}, PerLaunch: true},
+	}
+	rows := launchSchemaRows(schema, appwire.LaunchConfigLayer{MCPs: []appwire.MCPServerSpec{
+		{Name: "docs", Command: "sh", Args: []string{"-c", "docs"}},
+		{Name: "files", Command: "/bin/sh"},
+	}}, launchLayerGlobal, launchSchemaRowsSettings)
+	if len(rows) != 1 {
+		t.Fatalf("rows=%+v, want one mcps row", rows)
+	}
+	if rows[0].value != "2 entries" {
+		t.Fatalf("row.value=%q, want entry count", rows[0].value)
+	}
+	if rows[0].editValue != "docs:sh -c docs; files:/bin/sh" {
+		t.Fatalf("row.editValue=%q, want serialized MCP rows", rows[0].editValue)
+	}
+}
+
 func rowFields(rows []layerRow) []string {
 	fields := make([]string, 0, len(rows))
 	for _, row := range rows {
@@ -69,6 +88,7 @@ func testLaunchSchema() []appwire.LaunchOption {
 		{Field: "fast_cheap_model", Label: "Fast cheap model", Kind: "modelPicker", DefaultableLayers: defaultable, PerLaunch: true},
 		{Field: "app_replay_size", Label: "App replay size", Kind: "integer", DefaultableLayers: []string{"global"}, PerLaunch: false},
 		{Field: "system_prompt_file", Label: "System prompt file", Kind: "path", PathKind: "file", DefaultableLayers: defaultable, PerLaunch: true},
+		{Field: "mcps", Label: "MCP servers", Kind: "mcpServerList", DefaultableLayers: defaultable, PerLaunch: true},
 		{Field: "verbose", Label: "Verbose event log", Kind: "boolean", DefaultableLayers: all, PerLaunch: true},
 	}
 }

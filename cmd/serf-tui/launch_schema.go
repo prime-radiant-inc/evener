@@ -135,7 +135,7 @@ func launchOptionValue(opt appwire.LaunchOption, l appwire.LaunchConfigLayer) (s
 	case "mcp_configs":
 		return listStr(l.MCPConfigs)
 	case "mcps":
-		return fmt.Sprintf("%d entries (read-only)", len(l.MCPs)), ""
+		return fmt.Sprintf("%d entries", len(l.MCPs)), mcpEditValue(l.MCPs)
 	case "model_fallbacks":
 		return modelFallbacksStr(l.ModelFallbacks)
 	case "env":

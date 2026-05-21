@@ -83,12 +83,30 @@ func TestLaunchOverridesModal_SchemaPathFieldRequestsCompletion(t *testing.T) {
 	}
 }
 
-func TestLaunchOverridesModal_MCPsRowIsReadOnly(t *testing.T) {
+func TestLaunchOverridesModal_MCPsRowRequestsEdit(t *testing.T) {
 	m := newLaunchOverridesModalWithSchema(appwire.LaunchConfigLayer{MCPs: []appwire.MCPServerSpec{{Name: "docs", Command: "docs-mcp"}}}, []appwire.LaunchOption{
 		{Field: "mcps", Label: "MCP servers", Kind: "mcpServerList", PerLaunch: true},
 	})
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd != nil {
-		t.Fatal("mcps row should be read-only until the TUI has a structured editor")
+	if cmd == nil {
+		t.Fatal("mcps row should request an edit")
+	}
+	req := cmd().(launchSettingsEditRequestMsg)
+	if req.Field != "mcps" || req.CurrentValue != "docs:docs-mcp" {
+		t.Fatalf("request=%+v, want serialized mcps edit value", req)
+	}
+}
+
+func TestLaunchOverridesModal_ApplyEditMCPs(t *testing.T) {
+	m := newLaunchOverridesModalWithSchema(appwire.LaunchConfigLayer{}, []appwire.LaunchOption{
+		{Field: "mcps", Label: "MCP servers", Kind: "mcpServerList", PerLaunch: true},
+	})
+	got, err := m.ApplyEdit("mcps", "docs:sh -c docs")
+	if err != nil {
+		t.Fatalf("ApplyEdit: %v", err)
+	}
+	cur := got.Current()
+	if len(cur.MCPs) != 1 || cur.MCPs[0].Name != "docs" || cur.MCPs[0].Command != "sh" || strings.Join(cur.MCPs[0].Args, " ") != "-c docs" {
+		t.Fatalf("MCPs=%+v", cur.MCPs)
 	}
 }

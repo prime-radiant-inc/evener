@@ -213,7 +213,7 @@ func layerRows(l appwire.LaunchConfigLayer) []layerRow {
 		{"skills_dirs", "skills_dirs", fmt.Sprintf("%d entries", len(l.SkillsDirs)), strings.Join(l.SkillsDirs, ", "), true},
 		{"plugin_dirs", "plugin_dirs", fmt.Sprintf("%d entries", len(l.PluginDirs)), strings.Join(l.PluginDirs, ", "), true},
 		{"mcp_configs", "mcp_configs", fmt.Sprintf("%d entries", len(l.MCPConfigs)), strings.Join(l.MCPConfigs, ", "), true},
-		{"mcps", "mcps", fmt.Sprintf("%d entries", len(l.MCPs)), "", false},
+		{"mcps", "mcps", fmt.Sprintf("%d entries", len(l.MCPs)), mcpEditValue(l.MCPs), false},
 		{"env", "env", fmt.Sprintf("%d entries", len(l.Env)), "", false},
 	}
 }
@@ -422,6 +422,12 @@ func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.La
 		case "system_prompt_append":
 			layer.SystemPromptAppend = entries
 		}
+	case "mcps":
+		mcps, err := parseMCPs(value)
+		if err != nil {
+			return layer, err
+		}
+		layer.MCPs = mcps
 	case "model_fallbacks":
 		layer.ModelFallbacks = parseModelFallbacks(value)
 	case "env":
@@ -472,7 +478,55 @@ func launchSettingsFieldUsesPathCompletion(field string) bool {
 }
 
 func launchSettingsFieldReadOnly(field string) bool {
-	return field == "mcps"
+	return false
+}
+
+func mcpEditValue(mcps []appwire.MCPServerSpec) string {
+	if len(mcps) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(mcps))
+	for _, mcp := range mcps {
+		line := strings.TrimSpace(mcp.Name) + ":" + strings.TrimSpace(mcp.Command)
+		if len(mcp.Args) > 0 {
+			line += " " + strings.Join(mcp.Args, " ")
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "; ")
+}
+
+func parseMCPs(value string) ([]appwire.MCPServerSpec, error) {
+	rows := strings.FieldsFunc(value, func(r rune) bool {
+		return r == '\n' || r == ';'
+	})
+	out := make([]appwire.MCPServerSpec, 0, len(rows))
+	for i, line := range rows {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		name, rest, ok := strings.Cut(line, ":")
+		name = strings.TrimSpace(name)
+		rest = strings.TrimSpace(rest)
+		if !ok || name == "" {
+			return nil, fmt.Errorf("mcp line %d must be name:command args...", i+1)
+		}
+		parts := strings.Fields(rest)
+		if len(parts) == 0 {
+			return nil, fmt.Errorf("mcp line %d missing command", i+1)
+		}
+		command := parts[0]
+		if err := validateLocalLaunchPath(command, "command"); err != nil {
+			return nil, fmt.Errorf("mcp line %d command %q: %w", i+1, command, err)
+		}
+		out = append(out, appwire.MCPServerSpec{
+			Name:    name,
+			Command: command,
+			Args:    append([]string(nil), parts[1:]...),
+		})
+	}
+	return out, nil
 }
 
 func validatePathEntries(entries []string, kind string) error {

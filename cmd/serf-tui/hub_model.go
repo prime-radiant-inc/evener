@@ -945,6 +945,9 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case launchSettingsEditRequestMsg:
 		if msg.Layer == "launch" {
 			prompt := fmt.Sprintf("Edit %s (current: %s):", msg.Field, msg.CurrentValue)
+			if msg.Field == "mcps" {
+				prompt = fmt.Sprintf("Edit %s as name:command args...; name2:command2 args... (current: %s):", msg.Field, msg.CurrentValue)
+			}
 			tag := "launch-override:" + msg.Field
 			var modal textInputModal
 			if msg.PathCompletion || launchSettingsFieldUsesPathCompletion(msg.Field) {
@@ -956,6 +959,9 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		prompt := fmt.Sprintf("Edit %s.%s (current: %s):", msg.Layer, msg.Field, msg.CurrentValue)
+		if msg.Field == "mcps" {
+			prompt = fmt.Sprintf("Edit %s.%s as name:command args...; name2:command2 args... (current: %s):", msg.Layer, msg.Field, msg.CurrentValue)
+		}
 		tag := fmt.Sprintf("settings-edit:%s:%s", msg.Layer, msg.Field)
 		var modal textInputModal
 		if msg.PathCompletion || launchSettingsFieldUsesPathCompletion(msg.Field) {

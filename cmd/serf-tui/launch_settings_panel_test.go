@@ -237,13 +237,64 @@ func TestValidateLocalLaunchPath_OutputFileRejectsNonWritableParent(t *testing.T
 	}
 }
 
-func TestApplyEdit_MCPsUnsupportedDoesNotClearExisting(t *testing.T) {
-	layer := appwire.LaunchConfigLayer{MCPs: []appwire.MCPServerSpec{{Name: "docs", Command: "docs-mcp"}}}
-	got, err := applyEdit(layer, "mcps", "")
-	if err == nil {
-		t.Fatal("expected mcps editing to be unsupported")
+func TestApplyEdit_MCPsParsesRowsAndPreservesArgs(t *testing.T) {
+	got, err := applyEdit(appwire.LaunchConfigLayer{}, "mcps", "docs:sh -c docs; files:sh")
+	if err != nil {
+		t.Fatalf("applyEdit: %v", err)
 	}
-	if len(got.MCPs) != 1 || got.MCPs[0].Name != "docs" {
-		t.Fatalf("MCPs=%+v, want existing MCP preserved", got.MCPs)
+	if len(got.MCPs) != 2 {
+		t.Fatalf("MCPs=%+v, want 2 entries", got.MCPs)
+	}
+	if got.MCPs[0].Name != "docs" || got.MCPs[0].Command != "sh" || strings.Join(got.MCPs[0].Args, " ") != "-c docs" {
+		t.Fatalf("first MCP=%+v", got.MCPs[0])
+	}
+	if got.MCPs[1].Name != "files" || got.MCPs[1].Command != "sh" || len(got.MCPs[1].Args) != 0 {
+		t.Fatalf("second MCP=%+v", got.MCPs[1])
+	}
+}
+
+func TestLaunchSettingsPanel_ApplyEditMCPs(t *testing.T) {
+	p := newLaunchSettingsPanel(nil, "/cwd")
+	p.global = appwire.LaunchConfigLayer{MCPs: []appwire.MCPServerSpec{{Name: "old", Command: "sh"}}}
+	gotPanel, updated, err := p.ApplyEdit("mcps", mcpEditValue(p.global.MCPs))
+	if err != nil {
+		t.Fatalf("ApplyEdit: %v", err)
+	}
+	if len(updated.MCPs) != 1 || updated.MCPs[0].Name != "old" || updated.MCPs[0].Command != "sh" {
+		t.Fatalf("updated MCPs=%+v", updated.MCPs)
+	}
+	if len(gotPanel.global.MCPs) != 1 || gotPanel.global.MCPs[0].Name != "old" {
+		t.Fatalf("panel MCPs=%+v", gotPanel.global.MCPs)
+	}
+}
+
+func TestApplyEdit_MCPsPreservesSerializedRows(t *testing.T) {
+	layer := appwire.LaunchConfigLayer{MCPs: []appwire.MCPServerSpec{{Name: "docs", Command: "docs-mcp"}}}
+	value := mcpEditValue([]appwire.MCPServerSpec{{Name: "docs", Command: "sh", Args: []string{"-c", "docs"}}})
+	got, err := applyEdit(layer, "mcps", value)
+	if err != nil {
+		t.Fatalf("applyEdit: %v", err)
+	}
+	if len(got.MCPs) != 1 || got.MCPs[0].Name != "docs" || got.MCPs[0].Command != "sh" || strings.Join(got.MCPs[0].Args, " ") != "-c docs" {
+		t.Fatalf("MCPs=%+v, want serialized row preserved", got.MCPs)
+	}
+}
+
+func TestApplyEdit_MCPsRejectsInvalidRows(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "missing name", value: ":sh", want: "name:command"},
+		{name: "missing command", value: "docs:", want: "missing command"},
+		{name: "invalid command", value: "docs:definitely-not-installed-xyz123", want: "executable file not found"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := applyEdit(appwire.LaunchConfigLayer{}, "mcps", tc.value)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err=%v, want %q", err, tc.want)
+			}
+		})
 	}
 }
