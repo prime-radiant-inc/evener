@@ -27,6 +27,7 @@ type launchSettingsPanel struct {
 	global         appwire.LaunchConfigLayer
 	project        appwire.LaunchConfigLayer
 	resolved       appwire.LaunchConfigResolved
+	schema         []appwire.LaunchOption
 	loadingGlobal  bool
 	loadingProj    bool
 	loadingResolve bool
@@ -47,6 +48,7 @@ func (p launchSettingsPanel) initialCmd() tea.Cmd {
 		)
 	}
 	return tea.Batch(
+		cmdLaunchSchema(p.client),
 		cmdGetLayer(p.client, p.cwd, "global"),
 		cmdGetLayer(p.client, p.cwd, "project"),
 		cmdResolveLaunch(p.client, p.cwd, nil),
@@ -69,6 +71,10 @@ func (p launchSettingsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "project":
 			p.project = m.Data
 			p.loadingProj = false
+		}
+	case launchSchemaResultMsg:
+		if m.Err == nil {
+			p.schema = m.Schema.Options
 		}
 	case launchResolveResultMsg:
 		p.resolved = m.Resolved
@@ -132,10 +138,10 @@ func (p launchSettingsPanel) View() string {
 	b.WriteString("\n\n")
 	switch p.tab {
 	case launchTabGlobal:
-		b.WriteString(renderLayerView("global", p.global, p.cursor))
+		b.WriteString(p.renderLayerView("global", p.global, p.cursor))
 	case launchTabProject:
 		b.WriteString("cwd: " + p.cwd + "\n")
-		b.WriteString(renderLayerView("project", p.project, p.cursor))
+		b.WriteString(p.renderLayerView("project", p.project, p.cursor))
 	case launchTabRepo:
 		b.WriteString(renderRepoView(p.resolved.Repo))
 	}
@@ -146,9 +152,9 @@ func (p launchSettingsPanel) View() string {
 	return b.String()
 }
 
-func renderLayerView(label string, l appwire.LaunchConfigLayer, cursor int) string {
+func (p launchSettingsPanel) renderLayerView(label string, l appwire.LaunchConfigLayer, cursor int) string {
 	var b strings.Builder
-	rows := layerRows(l)
+	rows := p.rowsForLayer(label, l)
 	for i, r := range rows {
 		c := "  "
 		if i == cursor {
@@ -159,11 +165,24 @@ func renderLayerView(label string, l appwire.LaunchConfigLayer, cursor int) stri
 	return b.String()
 }
 
+func renderLayerView(label string, l appwire.LaunchConfigLayer, cursor int) string {
+	p := launchSettingsPanel{}
+	return p.renderLayerView(label, l, cursor)
+}
+
 type layerRow struct {
-	field     string
-	label     string
-	value     string
-	editValue string
+	field          string
+	label          string
+	value          string
+	editValue      string
+	pathCompletion bool
+}
+
+func (p launchSettingsPanel) rowsForLayer(layerName string, l appwire.LaunchConfigLayer) []layerRow {
+	if len(p.schema) > 0 {
+		return launchSchemaRows(p.schema, l, layerName, launchSchemaRowsSettings)
+	}
+	return layerRows(l)
 }
 
 func layerRows(l appwire.LaunchConfigLayer) []layerRow {
@@ -183,19 +202,19 @@ func layerRows(l appwire.LaunchConfigLayer) []layerRow {
 		return "false"
 	}
 	return []layerRow{
-		{"model", "model", l.Model, l.Model},
-		{"fast_cheap_model", "fast_cheap_model", l.FastCheapModel, l.FastCheapModel},
-		{"agent", "agent", l.Agent, l.Agent},
-		{"reasoning_effort", "reasoning_effort", l.ReasoningEffort, l.ReasoningEffort},
-		{"context_strategy", "context_strategy", l.ContextStrategy, l.ContextStrategy},
-		{"max_rounds", "max_rounds", ptrIntStr(l.MaxRounds), ptrIntStr(l.MaxRounds)},
-		{"max_subagent_depth", "max_subagent_depth", ptrIntStr(l.MaxSubagentDepth), ptrIntStr(l.MaxSubagentDepth)},
-		{"no_project_prompts", "no_project_prompts", ptrBoolStr(l.NoProjectPrompts), ptrBoolStr(l.NoProjectPrompts)},
-		{"skills_dirs", "skills_dirs", fmt.Sprintf("%d entries", len(l.SkillsDirs)), strings.Join(l.SkillsDirs, ", ")},
-		{"plugin_dirs", "plugin_dirs", fmt.Sprintf("%d entries", len(l.PluginDirs)), strings.Join(l.PluginDirs, ", ")},
-		{"mcp_configs", "mcp_configs", fmt.Sprintf("%d entries", len(l.MCPConfigs)), strings.Join(l.MCPConfigs, ", ")},
-		{"mcps", "mcps", fmt.Sprintf("%d entries", len(l.MCPs)), ""},
-		{"env", "env", fmt.Sprintf("%d entries", len(l.Env)), ""},
+		{"model", "model", l.Model, l.Model, false},
+		{"fast_cheap_model", "fast_cheap_model", l.FastCheapModel, l.FastCheapModel, false},
+		{"agent", "agent", l.Agent, l.Agent, false},
+		{"reasoning_effort", "reasoning_effort", l.ReasoningEffort, l.ReasoningEffort, false},
+		{"context_strategy", "context_strategy", l.ContextStrategy, l.ContextStrategy, false},
+		{"max_rounds", "max_rounds", ptrIntStr(l.MaxRounds), ptrIntStr(l.MaxRounds), false},
+		{"max_subagent_depth", "max_subagent_depth", ptrIntStr(l.MaxSubagentDepth), ptrIntStr(l.MaxSubagentDepth), false},
+		{"no_project_prompts", "no_project_prompts", ptrBoolStr(l.NoProjectPrompts), ptrBoolStr(l.NoProjectPrompts), false},
+		{"skills_dirs", "skills_dirs", fmt.Sprintf("%d entries", len(l.SkillsDirs)), strings.Join(l.SkillsDirs, ", "), true},
+		{"plugin_dirs", "plugin_dirs", fmt.Sprintf("%d entries", len(l.PluginDirs)), strings.Join(l.PluginDirs, ", "), true},
+		{"mcp_configs", "mcp_configs", fmt.Sprintf("%d entries", len(l.MCPConfigs)), strings.Join(l.MCPConfigs, ", "), true},
+		{"mcps", "mcps", fmt.Sprintf("%d entries", len(l.MCPs)), "", false},
+		{"env", "env", fmt.Sprintf("%d entries", len(l.Env)), "", false},
 	}
 }
 
@@ -217,9 +236,10 @@ func renderRepoView(r *appwire.RepoLaunchConfigStatus) string {
 // launchSettingsEditRequestMsg is emitted when the user presses Enter on
 // an editable field; the hub model translates it into a textInputModal.
 type launchSettingsEditRequestMsg struct {
-	Layer        string
-	Field        string
-	CurrentValue string
+	Layer          string
+	Field          string
+	CurrentValue   string
+	PathCompletion bool
 }
 
 func (p launchSettingsPanel) editCurrent() (tea.Model, tea.Cmd) {
@@ -233,16 +253,17 @@ func (p launchSettingsPanel) editCurrent() (tea.Model, tea.Cmd) {
 		}
 		return p, nil
 	}
-	rows := layerRows(p.currentLayer())
+	rows := p.rowsForLayer(p.tabName(), p.currentLayer())
 	if p.cursor >= len(rows) {
 		return p, nil
 	}
 	row := rows[p.cursor]
 	return p, func() tea.Msg {
 		return launchSettingsEditRequestMsg{
-			Layer:        p.tabName(),
-			Field:        row.field,
-			CurrentValue: row.editValue,
+			Layer:          p.tabName(),
+			Field:          row.field,
+			CurrentValue:   row.editValue,
+			PathCompletion: row.pathCompletion,
 		}
 	}
 }
@@ -303,20 +324,81 @@ func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.La
 			return layer, err
 		}
 		layer.MaxSubagentDepth = v
-	case "no_project_prompts":
-		switch strings.TrimSpace(value) {
-		case "", "(default)":
-			layer.NoProjectPrompts = nil
-		case "true", "yes", "1":
-			t := true
-			layer.NoProjectPrompts = &t
-		case "false", "no", "0":
-			f := false
-			layer.NoProjectPrompts = &f
-		default:
-			return layer, fmt.Errorf("bool required, got %q", value)
+	case "app_replay_size":
+		v, err := parseOptionalInt(value)
+		if err != nil {
+			return layer, err
 		}
-	case "skills_dirs", "plugin_dirs", "mcp_configs", "system_prompt_append":
+		layer.AppReplaySize = v
+	case "no_project_prompts":
+		v, err := parseOptionalBool(value)
+		if err != nil {
+			return layer, err
+		}
+		layer.NoProjectPrompts = v
+	case "verbose":
+		v, err := parseOptionalBool(value)
+		if err != nil {
+			return layer, err
+		}
+		layer.Verbose = v
+	case "system_prompt_mode":
+		layer.SystemPromptMode = strings.TrimSpace(value)
+	case "system_prompt_file":
+		v := strings.TrimSpace(value)
+		if v != "" && v != "(default)" {
+			if err := validateLocalLaunchPath(v, "file"); err != nil {
+				return layer, err
+			}
+		}
+		if v == "(default)" {
+			v = ""
+		}
+		layer.SystemPromptFile = v
+	case "system_prompt_text":
+		if strings.TrimSpace(value) == "(default)" {
+			layer.SystemPromptText = ""
+		} else {
+			layer.SystemPromptText = value
+		}
+	case "system_prompt_append_mode":
+		layer.SystemPromptAppendMode = strings.TrimSpace(value)
+	case "system_prompt_append_file":
+		v := strings.TrimSpace(value)
+		if v != "" && v != "(default)" {
+			if err := validateLocalLaunchPath(v, "file"); err != nil {
+				return layer, err
+			}
+		}
+		if v == "(default)" {
+			v = ""
+		}
+		layer.SystemPromptAppendFile = v
+	case "system_prompt_append_text":
+		if strings.TrimSpace(value) == "(default)" {
+			layer.SystemPromptAppendText = ""
+		} else {
+			layer.SystemPromptAppendText = value
+		}
+	case "trace_file", "cpu_profile", "export_atif_path":
+		v := strings.TrimSpace(value)
+		if v != "" && v != "(default)" {
+			if err := validateLocalLaunchPath(v, "outputFile"); err != nil {
+				return layer, err
+			}
+		}
+		if v == "(default)" {
+			v = ""
+		}
+		switch field {
+		case "trace_file":
+			layer.TraceFile = v
+		case "cpu_profile":
+			layer.CPUProfile = v
+		case "export_atif_path":
+			layer.ExportATIFPath = v
+		}
+	case "skills_dirs", "plugin_dirs", "mcp_configs", "system_prompt_append", "model_fallbacks":
 		entries := splitTrim(value, ",")
 		switch field {
 		case "skills_dirs":
@@ -336,16 +418,45 @@ func applyEdit(layer appwire.LaunchConfigLayer, field, value string) (appwire.La
 			layer.MCPConfigs = entries
 		case "system_prompt_append":
 			layer.SystemPromptAppend = entries
+		case "model_fallbacks":
+			layer.ModelFallbacks = entries
 		}
+	case "env":
+		env, err := parseEnvMap(value)
+		if err != nil {
+			return layer, err
+		}
+		layer.Env = env
+	case "mcps":
+		mcps, err := parseMCPServers(value)
+		if err != nil {
+			return layer, err
+		}
+		layer.MCPs = mcps
 	default:
 		return layer, fmt.Errorf("editing %q in TUI not yet supported; use the web UI", field)
 	}
 	return layer, nil
 }
 
+func parseOptionalBool(value string) (*bool, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "(default)":
+		return nil, nil
+	case "true", "yes", "1":
+		t := true
+		return &t, nil
+	case "false", "no", "0":
+		f := false
+		return &f, nil
+	default:
+		return nil, fmt.Errorf("bool required, got %q", value)
+	}
+}
+
 func launchSettingsFieldUsesPathCompletion(field string) bool {
 	switch field {
-	case "skills_dirs", "plugin_dirs", "mcp_configs":
+	case "skills_dirs", "plugin_dirs", "mcp_configs", "system_prompt_file", "system_prompt_append_file", "trace_file", "cpu_profile", "export_atif_path":
 		return true
 	default:
 		return false
@@ -376,6 +487,17 @@ func validateLocalLaunchPath(path, kind string) error {
 	if !filepath.IsAbs(path) {
 		return fmt.Errorf("absolute path required")
 	}
+	if kind == "outputFile" {
+		parent := filepath.Dir(path)
+		info, err := os.Stat(parent)
+		if err != nil {
+			return fmt.Errorf("parent directory: %w", err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("parent path is not a directory")
+		}
+		return nil
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return err
@@ -398,6 +520,43 @@ func validateLocalLaunchPath(path, kind string) error {
 		}
 	}
 	return nil
+}
+
+func parseEnvMap(value string) (map[string]string, error) {
+	entries := splitTrim(value, ",")
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		key, val, ok := strings.Cut(entry, "=")
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			return nil, fmt.Errorf("env entries must be KEY=value")
+		}
+		out[key] = strings.TrimSpace(val)
+	}
+	return out, nil
+}
+
+func parseMCPServers(value string) ([]appwire.MCPServerSpec, error) {
+	entries := splitTrim(value, ",")
+	if len(entries) == 0 {
+		return nil, nil
+	}
+	out := make([]appwire.MCPServerSpec, 0, len(entries))
+	for _, entry := range entries {
+		name, rest, ok := strings.Cut(entry, "=")
+		if !ok {
+			return nil, fmt.Errorf("mcp entries must be name=command [args...]")
+		}
+		fields := strings.Fields(rest)
+		if strings.TrimSpace(name) == "" || len(fields) == 0 {
+			return nil, fmt.Errorf("mcp entries must be name=command [args...]")
+		}
+		out = append(out, appwire.MCPServerSpec{Name: strings.TrimSpace(name), Command: fields[0], Args: fields[1:]})
+	}
+	return out, nil
 }
 
 func parseOptionalInt(value string) (*int, error) {

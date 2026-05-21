@@ -29,6 +29,10 @@ type launchTrustResultMsg struct {
 	Resolved appwire.LaunchConfigResolved
 	Err      error
 }
+type launchSchemaResultMsg struct {
+	Schema appwire.LaunchOptionSchemaResponse
+	Err    error
+}
 type authListResultMsg struct {
 	List appwire.AuthListResponse
 	Err  error
@@ -85,6 +89,16 @@ func cmdTrustRepo(client *appwire.Client, cwd, hash string) tea.Cmd {
 		var resp appwire.LaunchConfigResolved
 		err := client.Request(ctx, appwire.MethodSerfLaunchTrustRepo, appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: hash}, &resp)
 		return launchTrustResultMsg{CWD: cwd, Resolved: resp, Err: err}
+	}
+}
+
+func cmdLaunchSchema(client *appwire.Client) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var resp appwire.LaunchOptionSchemaResponse
+		err := client.Request(ctx, appwire.MethodSerfLaunchSchema, appwire.EmptyParams{}, &resp)
+		return launchSchemaResultMsg{Schema: resp, Err: err}
 	}
 }
 

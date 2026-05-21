@@ -19,6 +19,7 @@ type launchOverridesOpenMsg struct {
 
 type launchOverridesModal struct {
 	cur       appwire.LaunchConfigLayer
+	schema    []appwire.LaunchOption
 	cursor    int
 	done      bool
 	cancelled bool
@@ -32,10 +33,18 @@ func newLaunchOverridesModalWith(initial appwire.LaunchConfigLayer) launchOverri
 	return launchOverridesModal{cur: initial}
 }
 
+func newLaunchOverridesModalWithSchema(initial appwire.LaunchConfigLayer, schema []appwire.LaunchOption) launchOverridesModal {
+	return launchOverridesModal{cur: initial, schema: schema}
+}
+
 func (m launchOverridesModal) Init() tea.Cmd { return nil }
 
 func (m launchOverridesModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
+	case launchSchemaResultMsg:
+		if v.Err == nil {
+			m.schema = v.Schema.Options
+		}
 	case tea.KeyMsg:
 		switch v.Type {
 		case tea.KeyEsc, tea.KeyCtrlC:
@@ -51,18 +60,18 @@ func (m launchOverridesModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cursor--
 			}
 		case tea.KeyDown:
-			rows := layerRows(m.cur)
+			rows := m.rows()
 			if m.cursor < len(rows)-1 {
 				m.cursor++
 			}
 		case tea.KeyEnter:
-			rows := layerRows(m.cur)
+			rows := m.rows()
 			if m.cursor >= len(rows) {
 				return m, nil
 			}
 			row := rows[m.cursor]
 			return m, func() tea.Msg {
-				return launchSettingsEditRequestMsg{Layer: "launch", Field: row.field, CurrentValue: row.value}
+				return launchSettingsEditRequestMsg{Layer: "launch", Field: row.field, CurrentValue: row.editValue, PathCompletion: row.pathCompletion}
 			}
 		}
 	}
@@ -72,7 +81,7 @@ func (m launchOverridesModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m launchOverridesModal) View() string {
 	var b strings.Builder
 	b.WriteString("Per-launch overrides for next thread\n\n")
-	rows := layerRows(m.cur)
+	rows := m.rows()
 	for i, r := range rows {
 		c := "  "
 		if i == m.cursor {
@@ -96,3 +105,10 @@ func (m launchOverridesModal) ApplyEdit(field, value string) (launchOverridesMod
 }
 
 func (m launchOverridesModal) Current() appwire.LaunchConfigLayer { return m.cur }
+
+func (m launchOverridesModal) rows() []layerRow {
+	if len(m.schema) > 0 {
+		return launchSchemaRows(m.schema, m.cur, launchLayerLaunch, launchSchemaRowsOverride)
+	}
+	return layerRows(m.cur)
+}

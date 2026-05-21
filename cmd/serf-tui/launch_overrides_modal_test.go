@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -54,5 +55,30 @@ func TestLaunchOverridesModal_EscapeCancels(t *testing.T) {
 	res := cmd().(launchOverridesResultMsg)
 	if !res.Cancelled {
 		t.Errorf("Esc should cancel")
+	}
+}
+
+func TestLaunchOverridesModal_UsesSchemaRows(t *testing.T) {
+	m := newLaunchOverridesModalWithSchema(appwire.LaunchConfigLayer{Agent: "serf"}, testLaunchSchema())
+	view := m.View()
+	if !strings.Contains(view, "Agent") {
+		t.Fatalf("view should use schema label:\n%s", view)
+	}
+	if strings.Contains(view, "App replay size") {
+		t.Fatalf("override view should exclude non-per-launch field:\n%s", view)
+	}
+}
+
+func TestLaunchOverridesModal_SchemaPathFieldRequestsCompletion(t *testing.T) {
+	m := newLaunchOverridesModalWithSchema(appwire.LaunchConfigLayer{}, []appwire.LaunchOption{
+		{Field: "system_prompt_file", Label: "System prompt file", Kind: "path", PathKind: "file", PerLaunch: true},
+	})
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("Enter should request edit")
+	}
+	req := cmd().(launchSettingsEditRequestMsg)
+	if req.Field != "system_prompt_file" || !req.PathCompletion {
+		t.Fatalf("request=%+v, want path completion", req)
 	}
 }

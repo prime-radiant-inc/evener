@@ -53,6 +53,32 @@ func TestLaunchSettingsPanel_EditEmitsModalRequest(t *testing.T) {
 	}
 }
 
+func TestLaunchSettingsPanel_UsesSchemaRowsWhenAvailable(t *testing.T) {
+	p := newLaunchSettingsPanel(nil, "/cwd")
+	updated, _ := p.Update(launchSchemaResultMsg{Schema: appwire.LaunchOptionSchemaResponse{Options: testLaunchSchema()}})
+	p = updated.(launchSettingsPanel)
+	updated, _ = p.Update(launchLayerResultMsg{Layer: "global", Data: appwire.LaunchConfigLayer{Agent: "serf"}})
+	view := updated.(launchSettingsPanel).View()
+	if !strings.Contains(view, "Agent") {
+		t.Fatalf("view should use schema labels:\n%s", view)
+	}
+	if !strings.Contains(view, "App replay size") {
+		t.Fatalf("global schema view should include global-only defaultable field:\n%s", view)
+	}
+}
+
+func TestLaunchSettingsPanel_ProjectSchemaRowsExcludeGlobalOnly(t *testing.T) {
+	p := newLaunchSettingsPanel(nil, "/cwd")
+	p.tab = launchTabProject
+	updated, _ := p.Update(launchSchemaResultMsg{Schema: appwire.LaunchOptionSchemaResponse{Options: testLaunchSchema()}})
+	p = updated.(launchSettingsPanel)
+	updated, _ = p.Update(launchLayerResultMsg{Layer: "project", Data: appwire.LaunchConfigLayer{Agent: "serf"}})
+	view := updated.(launchSettingsPanel).View()
+	if strings.Contains(view, "App replay size") {
+		t.Fatalf("project schema view should exclude global-only field:\n%s", view)
+	}
+}
+
 func TestLayerRows_IncludesFastCheapModel(t *testing.T) {
 	rows := layerRows(appwire.LaunchConfigLayer{FastCheapModel: "openai/gpt-5-mini"})
 	for _, row := range rows {
@@ -111,5 +137,52 @@ func TestApplyEdit_AcceptsExistingMCPConfigFile(t *testing.T) {
 	}
 	if len(got.MCPConfigs) != 1 || got.MCPConfigs[0] != path {
 		t.Fatalf("MCPConfigs=%v", got.MCPConfigs)
+	}
+}
+
+func TestApplyEdit_NewSchemaFields(t *testing.T) {
+	dir := t.TempDir()
+	prompt := filepath.Join(dir, "prompt.md")
+	if err := os.WriteFile(prompt, []byte("prompt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	trace := filepath.Join(dir, "trace.jsonl")
+	got, err := applyEdit(appwire.LaunchConfigLayer{}, "system_prompt_file", prompt)
+	if err != nil {
+		t.Fatalf("system_prompt_file: %v", err)
+	}
+	got, err = applyEdit(got, "system_prompt_text", "inline prompt")
+	if err != nil {
+		t.Fatalf("system_prompt_text: %v", err)
+	}
+	got, err = applyEdit(got, "model_fallbacks", "openai/gpt-5-mini, openai/gpt-5-nano")
+	if err != nil {
+		t.Fatalf("model_fallbacks: %v", err)
+	}
+	got, err = applyEdit(got, "verbose", "true")
+	if err != nil {
+		t.Fatalf("verbose: %v", err)
+	}
+	got, err = applyEdit(got, "trace_file", trace)
+	if err != nil {
+		t.Fatalf("trace_file: %v", err)
+	}
+	got, err = applyEdit(got, "cpu_profile", filepath.Join(dir, "cpu.pprof"))
+	if err != nil {
+		t.Fatalf("cpu_profile: %v", err)
+	}
+	got, err = applyEdit(got, "export_atif_path", filepath.Join(dir, "out.atif.json"))
+	if err != nil {
+		t.Fatalf("export_atif_path: %v", err)
+	}
+	if got.SystemPromptFile != prompt || got.SystemPromptText != "inline prompt" || len(got.ModelFallbacks) != 2 || got.Verbose == nil || !*got.Verbose || got.TraceFile != trace || got.CPUProfile == "" || got.ExportATIFPath == "" {
+		t.Fatalf("updated layer=%+v", got)
+	}
+}
+
+func TestApplyEdit_OutputFileRejectsMissingParent(t *testing.T) {
+	_, err := applyEdit(appwire.LaunchConfigLayer{}, "trace_file", filepath.Join(t.TempDir(), "missing", "trace.jsonl"))
+	if err == nil {
+		t.Fatal("expected missing parent error")
 	}
 }

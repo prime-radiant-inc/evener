@@ -932,6 +932,9 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			modal = newLaunchOverridesModal()
 		}
 		m.launchOverridesModal = &modal
+		if m.client != nil {
+			return m, cmdLaunchSchema(m.client)
+		}
 		return m, nil
 	case launchOverridesResultMsg:
 		m.launchOverridesModal = nil
@@ -941,18 +944,21 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case launchSettingsEditRequestMsg:
 		if msg.Layer == "launch" {
-			modal := newTextInputModalWithInput(
-				fmt.Sprintf("Edit %s (current: %s):", msg.Field, msg.CurrentValue),
-				"launch-override:"+msg.Field,
-				msg.CurrentValue,
-			)
+			prompt := fmt.Sprintf("Edit %s (current: %s):", msg.Field, msg.CurrentValue)
+			tag := "launch-override:" + msg.Field
+			var modal textInputModal
+			if msg.PathCompletion || launchSettingsFieldUsesPathCompletion(msg.Field) {
+				modal = newPathTextInputModal(prompt, tag, msg.CurrentValue)
+			} else {
+				modal = newTextInputModalWithInput(prompt, tag, msg.CurrentValue)
+			}
 			m.followupModal = &modal
 			return m, nil
 		}
 		prompt := fmt.Sprintf("Edit %s.%s (current: %s):", msg.Layer, msg.Field, msg.CurrentValue)
 		tag := fmt.Sprintf("settings-edit:%s:%s", msg.Layer, msg.Field)
 		var modal textInputModal
-		if launchSettingsFieldUsesPathCompletion(msg.Field) {
+		if msg.PathCompletion || launchSettingsFieldUsesPathCompletion(msg.Field) {
 			modal = newPathTextInputModal(prompt, tag, msg.CurrentValue)
 		} else {
 			modal = newTextInputModalWithInput(prompt, tag, msg.CurrentValue)
@@ -1061,7 +1067,13 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		return m, nil
-	case launchLayerResultMsg, launchResolveResultMsg, launchTrustResultMsg:
+	case launchLayerResultMsg, launchResolveResultMsg, launchTrustResultMsg, launchSchemaResultMsg:
+		if _, ok := msg.(launchSchemaResultMsg); ok && m.launchOverridesModal != nil {
+			updated, cmd := m.launchOverridesModal.Update(msg)
+			p := updated.(launchOverridesModal)
+			m.launchOverridesModal = &p
+			return m, cmd
+		}
 		if m.launchSettingsPanel != nil {
 			updated, cmd := m.launchSettingsPanel.Update(msg)
 			p := updated.(launchSettingsPanel)
