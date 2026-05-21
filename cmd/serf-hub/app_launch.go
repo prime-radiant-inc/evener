@@ -19,6 +19,39 @@ func newHubLaunchController(stateRoot string) *hubLaunchController {
 	return &hubLaunchController{stateRoot: stateRoot, now: time.Now}
 }
 
+func (c *hubLaunchController) Schema(ctx context.Context, params appwire.EmptyParams) (appwire.LaunchOptionSchemaResponse, error) {
+	opts := launchconfig.LaunchOptionSchema()
+	out := appwire.LaunchOptionSchemaResponse{
+		Options:  make([]appwire.LaunchOption, 0, len(opts)),
+		Excluded: launchconfig.LaunchOptionExclusions(),
+	}
+	for _, opt := range opts {
+		wire := appwire.LaunchOption{
+			Field:         opt.Field,
+			WireField:     opt.WireField,
+			Label:         opt.Label,
+			Group:         string(opt.Group),
+			Kind:          string(opt.Kind),
+			PathKind:      string(opt.PathKind),
+			Repeatable:    opt.Repeatable,
+			PerLaunch:     opt.PerLaunch,
+			DebugOnly:     opt.DebugOnly,
+			DriverSupport: cloneBoolMap(opt.DriverSupport),
+		}
+		for _, layer := range opt.DefaultableLayers {
+			wire.DefaultableLayers = append(wire.DefaultableLayers, string(layer))
+		}
+		if opt.EnvFallback != nil {
+			wire.EnvFallback = &appwire.LaunchOptionEnvFallback{Name: opt.EnvFallback.Name, Secret: opt.EnvFallback.Secret}
+		}
+		for _, choice := range opt.Choices {
+			wire.Choices = append(wire.Choices, appwire.LaunchOptionChoice{Value: choice.Value, Label: choice.Label, Disabled: choice.Disabled, Hint: choice.Hint})
+		}
+		out.Options = append(out.Options, wire)
+	}
+	return out, nil
+}
+
 func (c *hubLaunchController) Resolve(ctx context.Context, params appwire.LaunchConfigResolveParams) (appwire.LaunchConfigResolved, error) {
 	cwd, err := canonicalizeDir(params.CWD)
 	if err != nil {
@@ -33,6 +66,17 @@ func (c *hubLaunchController) Resolve(ctx context.Context, params appwire.Launch
 		return appwire.LaunchConfigResolved{}, err
 	}
 	return launchconfig.ResolvedToWire(resolved), nil
+}
+
+func cloneBoolMap(in map[string]bool) map[string]bool {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 func (c *hubLaunchController) GetLayer(ctx context.Context, params appwire.LaunchConfigGetLayerParams) (appwire.LaunchConfigLayer, error) {

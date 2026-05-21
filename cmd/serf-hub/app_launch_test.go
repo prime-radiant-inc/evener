@@ -11,6 +11,23 @@ import (
 	"primeradiant.com/serf/internal/launchconfig"
 )
 
+func TestHubLaunchControllerSchema(t *testing.T) {
+	c := newHubLaunchController(t.TempDir())
+	got, err := c.Schema(context.Background(), appwire.EmptyParams{})
+	if err != nil {
+		t.Fatalf("Schema: %v", err)
+	}
+	if len(got.Options) == 0 {
+		t.Fatal("expected schema options")
+	}
+	if got.Excluded["state_dir"] == "" {
+		t.Fatalf("expected state_dir exclusion, got %#v", got.Excluded)
+	}
+	if got.Options[0].Field != "agent" {
+		t.Fatalf("first schema field = %q, want agent", got.Options[0].Field)
+	}
+}
+
 func TestLaunchController_Resolve_Empty(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()

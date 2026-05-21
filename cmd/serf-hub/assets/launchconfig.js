@@ -6,6 +6,7 @@
   }
 
   global.launchconfig = {
+    schema: () => request("serf/launch/schema", {}),
     resolve: (cwd, overrides) =>
       request("serf/launch/resolve", { cwd, launchOverrides: overrides || undefined }),
     getLayer: (cwd, layer) => request("serf/launch/getLayer", { cwd, layer }),

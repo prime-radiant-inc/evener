@@ -477,6 +477,9 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchResolve, func(ctx context.Context, params appwire.LaunchConfigResolveParams) (appwire.LaunchConfigResolved, error) {
 		return launchController.Resolve(ctx, params)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchSchema, func(ctx context.Context, params appwire.EmptyParams) (appwire.LaunchOptionSchemaResponse, error) {
+		return launchController.Schema(ctx, params)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchGetLayer, func(ctx context.Context, params appwire.LaunchConfigGetLayerParams) (appwire.LaunchConfigLayer, error) {
 		return launchController.GetLayer(ctx, params)
 	})

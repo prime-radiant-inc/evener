@@ -35,6 +35,7 @@ const (
 	MethodSerfAuthList              = "serf/auth/list"
 	MethodSerfAuthApiKeySet         = "serf/auth/apiKey/set"
 	MethodSerfLaunchResolve         = "serf/launch/resolve"
+	MethodSerfLaunchSchema          = "serf/launch/schema"
 	MethodSerfLaunchGetLayer        = "serf/launch/getLayer"
 	MethodSerfLaunchSetLayer        = "serf/launch/setLayer"
 	MethodSerfLaunchTrustRepo       = "serf/launch/trustRepo"
@@ -642,6 +643,39 @@ type NotificationRef struct {
 
 // EmptyParams is the typed-empty params shape used by methods that take none.
 type EmptyParams struct{}
+
+type LaunchOptionChoice struct {
+	Value    string `json:"value"`
+	Label    string `json:"label"`
+	Disabled bool   `json:"disabled,omitempty"`
+	Hint     string `json:"hint,omitempty"`
+}
+
+type LaunchOptionEnvFallback struct {
+	Name   string `json:"name"`
+	Secret bool   `json:"secret,omitempty"`
+}
+
+type LaunchOption struct {
+	Field             string                   `json:"field"`
+	WireField         string                   `json:"wireField"`
+	Label             string                   `json:"label"`
+	Group             string                   `json:"group"`
+	Kind              string                   `json:"kind"`
+	PathKind          string                   `json:"pathKind,omitempty"`
+	Repeatable        bool                     `json:"repeatable,omitempty"`
+	DefaultableLayers []string                 `json:"defaultableLayers,omitempty"`
+	PerLaunch         bool                     `json:"perLaunch"`
+	DebugOnly         bool                     `json:"debugOnly,omitempty"`
+	EnvFallback       *LaunchOptionEnvFallback `json:"envFallback,omitempty"`
+	Choices           []LaunchOptionChoice     `json:"choices,omitempty"`
+	DriverSupport     map[string]bool          `json:"driverSupport,omitempty"`
+}
+
+type LaunchOptionSchemaResponse struct {
+	Options  []LaunchOption    `json:"options"`
+	Excluded map[string]string `json:"excluded,omitempty"`
+}
 
 // AuthListResponse is the result of serf/auth/list.
 type AuthListResponse struct {
