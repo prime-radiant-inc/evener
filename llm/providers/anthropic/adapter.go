@@ -187,6 +187,9 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 	if len(req.StopSequences) > 0 {
 		body["stop_sequences"] = req.StopSequences
 	}
+	if strings.TrimSpace(req.ServiceTier) != "" {
+		body["service_tier"] = strings.TrimSpace(req.ServiceTier)
+	}
 
 	includeTools := len(req.Tools) > 0
 	if req.ToolChoice != nil {

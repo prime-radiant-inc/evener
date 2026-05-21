@@ -218,12 +218,13 @@ func (c *SessionConfig) applyDefaults() {
 }
 
 type Session struct {
-	id       string
-	cfg      SessionConfig
-	client   *llm.Client
-	profile  ProviderProfile
-	env      ExecutionEnvironment
-	stateDir string
+	id        string
+	cfg       SessionConfig
+	client    *llm.Client
+	profile   ProviderProfile
+	env       ExecutionEnvironment
+	stateDir  string
+	installID string
 
 	events  chan SessionEvent
 	envInfo EnvironmentInfo
@@ -421,6 +422,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		depth:      cfg.Depth,
 		env:        env,
 		stateDir:   cfg.StateDir,
+		installID:  loadOrCreateInstallationID(cfg.StateDir),
 		state:      SessionIdle,
 		events:     make(chan SessionEvent, 256),
 		history:    []Turn{},
@@ -582,6 +584,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		depth:          cfg.Depth,
 		env:            env,
 		stateDir:       cfg.StateDir,
+		installID:      loadOrCreateInstallationID(cfg.StateDir),
 		state:          SessionIdle,
 		events:         make(chan SessionEvent, 256),
 		history:        resumeHistory,
@@ -728,6 +731,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 		depth:          cfg.Depth,
 		env:            env,
 		stateDir:       cfg.StateDir,
+		installID:      loadOrCreateInstallationID(cfg.StateDir),
 		state:          SessionIdle,
 		events:         make(chan SessionEvent, 256),
 		history:        resumeHistory,
@@ -1329,6 +1333,23 @@ func (s *Session) SteerWithImages(msg string, images []ImageAttachment) {
 	s.steeringQueue = append(s.steeringQueue, entry)
 }
 
+func (s *Session) applyModelRequestMetadata(req *llm.Request) {
+	if req == nil {
+		return
+	}
+	if strings.TrimSpace(s.id) != "" {
+		req.SessionID = s.id
+		req.ThreadID = s.id
+		req.PromptCacheKey = s.id
+	}
+	if strings.TrimSpace(s.installID) != "" {
+		if req.ClientMetadata == nil {
+			req.ClientMetadata = map[string]string{}
+		}
+		req.ClientMetadata[codexInstallationIDMetadataKey] = s.installID
+	}
+}
+
 // describeImage makes a side-channel API call with no tools to describe an image
 // using the model's native vision. Returns the text description, or "" on error.
 // The call includes context from the current task so the description is relevant.
@@ -1406,6 +1427,7 @@ func (s *Session) describeImage(ctx context.Context, r ToolExecResult) string {
 		effort = "high"
 	}
 	req.ReasoningEffort = &effort
+	s.applyModelRequestMetadata(&req)
 
 	resp, err := s.client.Complete(ctx, req)
 	if err != nil {
@@ -2528,6 +2550,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			v := strings.TrimSpace(s.cfg.ReasoningEffort)
 			req.ReasoningEffort = &v
 		}
+		s.applyModelRequestMetadata(&req)
 
 		// --- Phase: LLMCall ---
 		tPhaseStart = time.Now()

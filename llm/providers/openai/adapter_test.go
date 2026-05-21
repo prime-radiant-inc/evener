@@ -85,11 +85,91 @@ func TestAdapter_Complete_MapsToResponsesAPI(t *testing.T) {
 	if reasoningAny, ok := gotBody["reasoning"].(map[string]any); !ok || reasoningAny["effort"] != "low" {
 		t.Fatalf("reasoning: %#v", gotBody["reasoning"])
 	}
+	include, ok := gotBody["include"].([]any)
+	if !ok || len(include) != 1 || include[0] != encryptedReasoning {
+		t.Fatalf("include: %#v, want encrypted reasoning", gotBody["include"])
+	}
 	if toolsAny, ok := gotBody["tools"].([]any); !ok || len(toolsAny) != 1 {
 		t.Fatalf("tools: %#v", gotBody["tools"])
 	}
 	if inputAny, ok := gotBody["input"].([]any); !ok || len(inputAny) == 0 {
 		t.Fatalf("input: %#v", gotBody["input"])
+	}
+}
+
+func TestAdapter_BuildRequestBody_ResponsesControls(t *testing.T) {
+	a := &Adapter{}
+	maxToolCalls := 0
+	background := false
+	store := true
+
+	body, err := a.buildRequestBody(llm.Request{
+		Model:                "gpt-5.2",
+		Messages:             []llm.Message{llm.User("hi")},
+		PreviousResponseID:   " resp_123 ",
+		ConversationID:       " conv_456 ",
+		ServiceTier:          "flex",
+		SafetyIdentifier:     "user_789",
+		PromptCacheRetention: "24h",
+		Truncation:           "auto",
+		MaxToolCalls:         &maxToolCalls,
+		Background:           &background,
+		Store:                &store,
+	})
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+
+	want := map[string]any{
+		"previous_response_id":   "resp_123",
+		"conversation":           "conv_456",
+		"service_tier":           "flex",
+		"safety_identifier":      "user_789",
+		"prompt_cache_retention": "24h",
+		"truncation":             "auto",
+		"max_tool_calls":         0,
+		"background":             false,
+		"store":                  true,
+	}
+	for key, wantValue := range want {
+		gotValue, ok := body[key]
+		if !ok {
+			t.Fatalf("%s missing from body: %#v", key, body)
+		}
+		if gotValue != wantValue {
+			t.Fatalf("%s = %#v, want %#v", key, gotValue, wantValue)
+		}
+	}
+}
+
+func TestAdapter_BuildRequestBody_ResponsesControlsDefaultStoreFalse(t *testing.T) {
+	explicitFalse := false
+	cases := []struct {
+		name  string
+		store *bool
+	}{
+		{name: "nil", store: nil},
+		{name: "explicit false", store: &explicitFalse},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := (&Adapter{}).buildRequestBody(llm.Request{
+				Model:    "gpt-5.2",
+				Messages: []llm.Message{llm.User("hi")},
+				Store:    tc.store,
+			})
+			if err != nil {
+				t.Fatalf("buildRequestBody: %v", err)
+			}
+			got, ok := body["store"]
+			if !ok {
+				t.Fatalf("store missing from body: %#v", body)
+			}
+			if got != false {
+				t.Fatalf("store = %#v, want false", got)
+			}
+		})
 	}
 }
 
@@ -1868,12 +1948,22 @@ func TestAdapter_Complete_OAuthTransportUsesCodexEndpointAndAccountHeader(t *tes
 	var gotPath string
 	var gotAuth string
 	var gotAccount string
+	var gotOriginator string
+	var gotUserAgent string
+	var gotSessionID string
+	var gotThreadID string
+	var gotClientRequestID string
 	var gotStream bool
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotAuth = r.Header.Get("Authorization")
 		gotAccount = r.Header.Get("ChatGPT-Account-ID")
+		gotOriginator = r.Header.Get("originator")
+		gotUserAgent = r.Header.Get("User-Agent")
+		gotSessionID = r.Header.Get("session-id")
+		gotThreadID = r.Header.Get("thread-id")
+		gotClientRequestID = r.Header.Get("x-client-request-id")
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		gotStream, _ = body["stream"].(bool)
@@ -1899,8 +1989,10 @@ func TestAdapter_Complete_OAuthTransportUsesCodexEndpointAndAccountHeader(t *tes
 		Client:           srv.Client(),
 	}
 	_, err := a.Complete(context.Background(), llm.Request{
-		Model:    "gpt-5.2",
-		Messages: []llm.Message{llm.User("hi")},
+		Model:     "gpt-5.2",
+		Messages:  []llm.Message{llm.User("hi")},
+		SessionID: "sess_123",
+		ThreadID:  "thread_456",
 	})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
@@ -1913,6 +2005,21 @@ func TestAdapter_Complete_OAuthTransportUsesCodexEndpointAndAccountHeader(t *tes
 	}
 	if gotAccount != "acct_123" {
 		t.Fatalf("ChatGPT-Account-ID = %q", gotAccount)
+	}
+	if gotOriginator != defaultOriginator {
+		t.Fatalf("originator = %q", gotOriginator)
+	}
+	if !strings.HasPrefix(gotUserAgent, defaultOriginator+"/") {
+		t.Fatalf("User-Agent = %q, want serf prefix", gotUserAgent)
+	}
+	if gotSessionID != "sess_123" {
+		t.Fatalf("session-id = %q", gotSessionID)
+	}
+	if gotThreadID != "thread_456" {
+		t.Fatalf("thread-id = %q", gotThreadID)
+	}
+	if gotClientRequestID != "thread_456" {
+		t.Fatalf("x-client-request-id = %q", gotClientRequestID)
 	}
 	if !gotStream {
 		t.Fatal("stream = false, want true for OAuth transport")
@@ -1945,14 +2052,18 @@ func TestAdapter_Complete_OAuthTransportOmitsUnsupportedPublicResponsesFields(t 
 	maxTokens := 80
 	temp := 0.0
 	topP := 0.5
+	reasoning := "low"
 	_, err := a.Complete(context.Background(), llm.Request{
-		Model:         "gpt-5.5",
-		Messages:      []llm.Message{llm.User("hi")},
-		Temperature:   &temp,
-		TopP:          &topP,
-		MaxTokens:     &maxTokens,
-		StopSequences: []string{"STOP"},
-		Metadata:      map[string]string{"trace": "abc"},
+		Model:           "gpt-5.5",
+		Messages:        []llm.Message{llm.User("hi")},
+		Temperature:     &temp,
+		TopP:            &topP,
+		MaxTokens:       &maxTokens,
+		StopSequences:   []string{"STOP"},
+		ReasoningEffort: &reasoning,
+		Metadata:        map[string]string{"trace": "abc"},
+		ClientMetadata:  map[string]string{"x-codex-installation-id": "install_123"},
+		PromptCacheKey:  "thread_456",
 	})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
@@ -1966,8 +2077,15 @@ func TestAdapter_Complete_OAuthTransportOmitsUnsupportedPublicResponsesFields(t 
 		t.Fatalf("stream = %#v, want true", gotBody["stream"])
 	}
 	clientMetadata, ok := gotBody["client_metadata"].(map[string]any)
-	if !ok || clientMetadata["trace"] != "abc" {
-		t.Fatalf("client_metadata = %#v, want trace metadata", gotBody["client_metadata"])
+	if !ok || clientMetadata["trace"] != "abc" || clientMetadata["x-codex-installation-id"] != "install_123" {
+		t.Fatalf("client_metadata = %#v, want merged metadata", gotBody["client_metadata"])
+	}
+	if gotBody["prompt_cache_key"] != "thread_456" {
+		t.Fatalf("prompt_cache_key = %#v", gotBody["prompt_cache_key"])
+	}
+	include, ok := gotBody["include"].([]any)
+	if !ok || len(include) != 1 || include[0] != encryptedReasoning {
+		t.Fatalf("include = %#v, want encrypted reasoning", gotBody["include"])
 	}
 }
 
@@ -2971,6 +3089,40 @@ func TestFromResponses_NullPhase(t *testing.T) {
 	}
 }
 
+func TestFromResponses_EncryptedReasoning(t *testing.T) {
+	raw := map[string]any{
+		"id":    "r1",
+		"model": "gpt-5.2",
+		"output": []any{
+			map[string]any{
+				"type":              "reasoning",
+				"encrypted_content": "enc_reasoning_state",
+			},
+			map[string]any{
+				"type": "message",
+				"content": []any{
+					map[string]any{"type": "output_text", "text": "Visible answer"},
+				},
+			},
+		},
+	}
+
+	r := fromResponses(raw, "gpt-5.2")
+	if len(r.Message.Content) != 2 {
+		t.Fatalf("content parts: got %d want 2", len(r.Message.Content))
+	}
+	thinking := r.Message.Content[0]
+	if thinking.Kind != llm.ContentThinking || thinking.Thinking == nil {
+		t.Fatalf("part[0]: got %#v want encrypted thinking", thinking)
+	}
+	if thinking.Thinking.EncryptedContent != "enc_reasoning_state" {
+		t.Fatalf("encrypted_content: got %q", thinking.Thinking.EncryptedContent)
+	}
+	if got := r.ReasoningText(); got != "" {
+		t.Fatalf("ReasoningText: got %q want empty", got)
+	}
+}
+
 func TestToResponsesInput_PhaseReplayed(t *testing.T) {
 	msgs := []llm.Message{
 		llm.User("hello"),
@@ -3186,6 +3338,55 @@ func TestEmptyPhaseRoundTrip(t *testing.T) {
 	}
 	if assistantItems[0]["phase"] != "final_answer" {
 		t.Fatalf("phase: got %v want %q", assistantItems[0]["phase"], "final_answer")
+	}
+}
+
+func TestToResponsesInput_EncryptedReasoning(t *testing.T) {
+	msgs := []llm.Message{
+		llm.User("hello"),
+		{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{
+					Kind: llm.ContentThinking,
+					Thinking: &llm.ThinkingData{
+						EncryptedContent: "enc_reasoning_state",
+					},
+				},
+				{Kind: llm.ContentText, Text: "Visible answer"},
+			},
+		},
+	}
+
+	_, items, err := toResponsesInput(msgs, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("toResponsesInput: %v", err)
+	}
+
+	var reasoningItems []map[string]any
+	for _, itemAny := range items {
+		item, ok := itemAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		if item["type"] == "reasoning" {
+			reasoningItems = append(reasoningItems, item)
+		}
+		if item["role"] == "assistant" && item["type"] == "message" {
+			content, _ := item["content"].([]any)
+			for _, contentAny := range content {
+				contentItem, _ := contentAny.(map[string]any)
+				if contentItem["type"] == "reasoning" || contentItem["encrypted_content"] != nil {
+					t.Fatalf("encrypted reasoning serialized into assistant message content: %#v", contentItem)
+				}
+			}
+		}
+	}
+	if len(reasoningItems) != 1 {
+		t.Fatalf("reasoning items: got %d want 1; items=%v", len(reasoningItems), items)
+	}
+	if reasoningItems[0]["encrypted_content"] != "enc_reasoning_state" {
+		t.Fatalf("encrypted_content: got %v", reasoningItems[0]["encrypted_content"])
 	}
 }
 

@@ -10,11 +10,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"primeradiant.com/serf/buildinfo"
 	authopenai "primeradiant.com/serf/internal/auth/openai"
 	"primeradiant.com/serf/llm"
 )
@@ -33,6 +35,8 @@ const (
 	// ChatGPT Codex /models requires semver, and 0.0.0 is the Codex
 	// workspace development version without claiming a Codex release.
 	codexClientVersion = "0.0.0"
+	defaultOriginator  = "serf"
+	encryptedReasoning = "reasoning.encrypted_content"
 )
 
 type Config struct {
@@ -143,6 +147,14 @@ func (a *Adapter) setHeaders(req *http.Request) {
 	for k, v := range a.DefaultHeaders {
 		req.Header.Set(k, v)
 	}
+	if a.usesCodexBackend() {
+		if req.Header.Get("originator") == "" {
+			req.Header.Set("originator", defaultOriginator)
+		}
+		if req.Header.Get("User-Agent") == "" {
+			req.Header.Set("User-Agent", defaultUserAgent())
+		}
+	}
 	req.Header.Set("Authorization", "Bearer "+a.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 	if a.OrgID != "" {
@@ -154,6 +166,29 @@ func (a *Adapter) setHeaders(req *http.Request) {
 	if a.ChatGPTAccountID != "" {
 		req.Header.Set("ChatGPT-Account-ID", a.ChatGPTAccountID)
 	}
+}
+
+func (a *Adapter) setRequestHeaders(httpReq *http.Request, req llm.Request) {
+	a.setHeaders(httpReq)
+	if !a.usesCodexBackend() {
+		return
+	}
+	if strings.TrimSpace(req.SessionID) != "" {
+		httpReq.Header.Set("session-id", strings.TrimSpace(req.SessionID))
+	}
+	if strings.TrimSpace(req.ThreadID) != "" {
+		threadID := strings.TrimSpace(req.ThreadID)
+		httpReq.Header.Set("thread-id", threadID)
+		httpReq.Header.Set("x-client-request-id", threadID)
+	}
+}
+
+func defaultUserAgent() string {
+	version := strings.TrimSpace(buildinfo.Version())
+	if version == "" {
+		version = "dev"
+	}
+	return fmt.Sprintf("%s/%s (%s %s)", defaultOriginator, version, runtime.GOOS, runtime.GOARCH)
 }
 
 func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
@@ -199,13 +234,53 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 	if len(req.StopSequences) > 0 && !a.usesCodexBackend() {
 		body["stop"] = req.StopSequences
 	}
-	if len(req.Metadata) > 0 && a.usesCodexBackend() {
-		body["client_metadata"] = req.Metadata
+	if strings.TrimSpace(req.PromptCacheKey) != "" {
+		body["prompt_cache_key"] = strings.TrimSpace(req.PromptCacheKey)
+	}
+	if strings.TrimSpace(req.PreviousResponseID) != "" {
+		body["previous_response_id"] = strings.TrimSpace(req.PreviousResponseID)
+	}
+	if strings.TrimSpace(req.ConversationID) != "" {
+		body["conversation"] = strings.TrimSpace(req.ConversationID)
+	}
+	if strings.TrimSpace(req.ServiceTier) != "" {
+		body["service_tier"] = strings.TrimSpace(req.ServiceTier)
+	}
+	if strings.TrimSpace(req.SafetyIdentifier) != "" {
+		body["safety_identifier"] = strings.TrimSpace(req.SafetyIdentifier)
+	}
+	if strings.TrimSpace(req.PromptCacheRetention) != "" {
+		body["prompt_cache_retention"] = strings.TrimSpace(req.PromptCacheRetention)
+	}
+	if strings.TrimSpace(req.Truncation) != "" {
+		body["truncation"] = strings.TrimSpace(req.Truncation)
+	}
+	if req.MaxToolCalls != nil {
+		body["max_tool_calls"] = *req.MaxToolCalls
+	}
+	if req.Background != nil {
+		body["background"] = *req.Background
+	}
+	if req.Store != nil {
+		body["store"] = *req.Store
+	}
+	if a.usesCodexBackend() {
+		clientMetadata := mergeStringMaps(req.Metadata, req.ClientMetadata)
+		if len(clientMetadata) > 0 {
+			body["client_metadata"] = clientMetadata
+		}
 	} else if len(req.Metadata) > 0 {
 		body["metadata"] = req.Metadata
 	}
 	if req.ReasoningEffort != nil {
 		body["reasoning"] = map[string]any{"effort": *req.ReasoningEffort}
+	}
+	include := append([]string{}, req.Include...)
+	if req.ReasoningEffort != nil {
+		include = appendUniqueString(include, encryptedReasoning)
+	}
+	if len(include) > 0 {
+		body["include"] = include
 	}
 	if req.ResponseFormat != nil {
 		if rf := toResponsesResponseFormat(*req.ResponseFormat); rf != nil {
@@ -225,6 +300,28 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 		}
 	}
 	return body, nil
+}
+
+func mergeStringMaps(maps ...map[string]string) map[string]string {
+	var out map[string]string
+	for _, m := range maps {
+		for k, v := range m {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func appendUniqueString(values []string, value string) []string {
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
@@ -253,7 +350,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	if err != nil {
 		return llm.Response{}, err
 	}
-	a.setHeaders(httpReq)
+	a.setRequestHeaders(httpReq, req)
 
 	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
@@ -487,7 +584,7 @@ func (a *Adapter) streamResponses(ctx context.Context, req llm.Request) (llm.Str
 		cancel()
 		return nil, err
 	}
-	a.setHeaders(httpReq)
+	a.setRequestHeaders(httpReq, req)
 
 	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
@@ -839,7 +936,7 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 		cancel()
 		return nil, err
 	}
-	a.setHeaders(httpReq)
+	a.setRequestHeaders(httpReq, req)
 	// Chat Completions does not use the Responses-API-specific ChatGPT-Account-ID header.
 	// setHeaders already sets it from a.ChatGPTAccountID; we leave it for compatibility
 	// with non-standard deployments.
@@ -1696,6 +1793,12 @@ func toResponsesInput(msgs []llm.Message, model string) (instructions string, it
 				}
 			}
 			for _, p := range m.Content {
+				if p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.EncryptedContent != "" {
+					items = append(items, map[string]any{
+						"type":              "reasoning",
+						"encrypted_content": p.Thinking.EncryptedContent,
+					})
+				}
 				if p.Kind == llm.ContentToolCall && p.ToolCall != nil {
 					items = append(items, map[string]any{
 						"type":      "function_call",
@@ -1836,8 +1939,18 @@ func fromResponses(raw map[string]any, requestedModel string) llm.Response {
 						Raw:   raw,
 					},
 				})
+			case "reasoning":
+				encryptedContent, _ := item["encrypted_content"].(string)
+				if encryptedContent != "" {
+					msg.Content = append(msg.Content, llm.ContentPart{
+						Kind: llm.ContentThinking,
+						Thinking: &llm.ThinkingData{
+							EncryptedContent: encryptedContent,
+						},
+					})
+				}
 			default:
-				// ignore (reasoning, etc.)
+				// ignore
 			}
 		}
 	}

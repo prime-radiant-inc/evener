@@ -54,14 +54,28 @@ type GenerateOptions struct {
 	// A value of 0 disables automatic tool execution (passive tool mode).
 	MaxToolRounds *int
 
-	ResponseFormat  *ResponseFormat
-	Temperature     *float64
-	TopP            *float64
-	MaxTokens       *int
-	StopSequences   []string
-	ReasoningEffort *string
-	Metadata        map[string]string
-	ProviderOptions map[string]any
+	ResponseFormat       *ResponseFormat
+	Temperature          *float64
+	TopP                 *float64
+	MaxTokens            *int
+	StopSequences        []string
+	ReasoningEffort      *string
+	Metadata             map[string]string
+	ClientMetadata       map[string]string
+	Include              []string
+	PromptCacheKey       string
+	PreviousResponseID   string
+	ConversationID       string
+	ServiceTier          string
+	SafetyIdentifier     string
+	PromptCacheRetention string
+	Truncation           string
+	MaxToolCalls         *int
+	Background           *bool
+	Store                *bool
+	SessionID            string
+	ThreadID             string
+	ProviderOptions      map[string]any
 
 	// RepairToolCall is called when tool argument validation fails. If it returns
 	// repaired args (nil error), they are re-validated and used. If nil, validation
@@ -218,21 +232,35 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 	toolRoundsUsed := 0
 	for {
 		req := Request{
-			Model:           opts.Model,
-			Provider:        opts.Provider,
-			Messages:        append([]Message{}, history...),
-			Tools:           gs.toolDefs,
-			ToolChoice:      opts.ToolChoice,
-			ResponseFormat:  opts.ResponseFormat,
-			Temperature:     opts.Temperature,
-			TopP:            opts.TopP,
-			MaxTokens:       opts.MaxTokens,
-			StopSequences:   opts.StopSequences,
-			ReasoningEffort: opts.ReasoningEffort,
-			Metadata:        opts.Metadata,
-			ProviderOptions: opts.ProviderOptions,
-			WebSearch:       opts.WebSearch,
-			AdapterTimeout:  opts.AdapterTimeout,
+			Model:                opts.Model,
+			Provider:             opts.Provider,
+			Messages:             append([]Message{}, history...),
+			Tools:                gs.toolDefs,
+			ToolChoice:           opts.ToolChoice,
+			ResponseFormat:       opts.ResponseFormat,
+			Temperature:          opts.Temperature,
+			TopP:                 opts.TopP,
+			MaxTokens:            opts.MaxTokens,
+			StopSequences:        opts.StopSequences,
+			ReasoningEffort:      opts.ReasoningEffort,
+			Metadata:             opts.Metadata,
+			ClientMetadata:       opts.ClientMetadata,
+			Include:              opts.Include,
+			PromptCacheKey:       opts.PromptCacheKey,
+			PreviousResponseID:   opts.PreviousResponseID,
+			ConversationID:       opts.ConversationID,
+			ServiceTier:          opts.ServiceTier,
+			SafetyIdentifier:     opts.SafetyIdentifier,
+			PromptCacheRetention: opts.PromptCacheRetention,
+			Truncation:           opts.Truncation,
+			MaxToolCalls:         opts.MaxToolCalls,
+			Background:           opts.Background,
+			Store:                opts.Store,
+			SessionID:            opts.SessionID,
+			ThreadID:             opts.ThreadID,
+			ProviderOptions:      opts.ProviderOptions,
+			WebSearch:            opts.WebSearch,
+			AdapterTimeout:       opts.AdapterTimeout,
 		}
 
 		callCtx, cancelStep := WithTimeout(ctx, opts.TimeoutPerStep)

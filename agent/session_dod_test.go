@@ -694,6 +694,117 @@ func TestSession_ReasoningEffort_PassedThroughAndCanChange(t *testing.T) {
 	}
 }
 
+func TestSession_PopulatesModelRequestMetadata(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("ok") },
+	}}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	_, err = sess.ProcessInput(context.Background(), "run", nil)
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+
+	reqs := f.Requests()
+	if len(reqs) == 0 {
+		t.Fatal("requests: got 0 want at least 1")
+	}
+	req := reqs[0]
+	if req.SessionID != sess.ID() {
+		t.Fatalf("SessionID = %q, want %q", req.SessionID, sess.ID())
+	}
+	if req.ThreadID != sess.ID() {
+		t.Fatalf("ThreadID = %q, want %q", req.ThreadID, sess.ID())
+	}
+	if req.PromptCacheKey != sess.ID() {
+		t.Fatalf("PromptCacheKey = %q, want %q", req.PromptCacheKey, sess.ID())
+	}
+	if got := req.ClientMetadata[codexInstallationIDMetadataKey]; got == "" {
+		t.Fatalf("client metadata missing %s: %#v", codexInstallationIDMetadataKey, req.ClientMetadata)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "installation_id")); err != nil {
+		t.Fatalf("installation_id file: %v", err)
+	}
+}
+
+func TestSession_RetainsEncryptedReasoningAcrossToolRound(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return llm.Response{
+				Message: llm.Message{
+					Role: llm.RoleAssistant,
+					Content: []llm.ContentPart{
+						{
+							Kind: llm.ContentThinking,
+							Thinking: &llm.ThinkingData{
+								EncryptedContent: "enc_reasoning_123",
+							},
+						},
+						{
+							Kind: llm.ContentToolCall,
+							ToolCall: &llm.ToolCallData{
+								ID:        "call_1",
+								Name:      "noop",
+								Arguments: json.RawMessage(`{}`),
+							},
+						},
+					},
+				},
+			}
+		},
+		func(req llm.Request) llm.Response { return finalResponse("ok") },
+	}}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	_ = sess.reg.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "noop"}},
+		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = ctx
+			_ = env
+			_ = args
+			return "ok", nil
+		},
+	})
+
+	_, err = sess.ProcessInput(context.Background(), "run", nil)
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+
+	reqs := f.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("requests: got %d want 2", len(reqs))
+	}
+	for _, msg := range reqs[1].Messages {
+		if msg.Role != llm.RoleAssistant {
+			continue
+		}
+		for _, part := range msg.Content {
+			if part.Kind == llm.ContentThinking && part.Thinking != nil && part.Thinking.EncryptedContent == "enc_reasoning_123" {
+				return
+			}
+		}
+	}
+	t.Fatalf("second request missing encrypted reasoning in history: %#v", reqs[1].Messages)
+}
+
 type tinyProfile struct {
 	id   string
 	cw   int
