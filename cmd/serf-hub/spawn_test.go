@@ -99,7 +99,6 @@ func TestPrepareResolvedForSpawnMaterializesInlinePrompts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareResolvedForSpawn: %v", err)
 	}
-	defer cleanup()
 
 	if got.Effective.SystemPromptMode != "file" {
 		t.Fatalf("SystemPromptMode=%q, want file", got.Effective.SystemPromptMode)
@@ -113,6 +112,9 @@ func TestPrepareResolvedForSpawnMaterializesInlinePrompts(t *testing.T) {
 	if got.Effective.SystemPromptAppendText != "" {
 		t.Fatalf("SystemPromptAppendText=%q, want cleared", got.Effective.SystemPromptAppendText)
 	}
+	assertPromptFile(t, got.Effective.SystemPromptFile, stateDir, systemPrompt)
+	assertPromptFile(t, got.Effective.SystemPromptAppendFile, stateDir, appendPrompt)
+	cleanup()
 	assertPromptFile(t, got.Effective.SystemPromptFile, stateDir, systemPrompt)
 	assertPromptFile(t, got.Effective.SystemPromptAppendFile, stateDir, appendPrompt)
 }
@@ -131,7 +133,7 @@ func TestBuildSpawnArgsPreparedInlinePromptsUseFilesWithoutLeakingText(t *testin
 	if err != nil {
 		t.Fatalf("prepareResolvedForSpawn: %v", err)
 	}
-	defer cleanup()
+	cleanup()
 
 	args := buildSpawnArgs(SpawnRequest{Resolved: resolved, StateDir: stateDir})
 	joined := strings.Join(args, "\x00")

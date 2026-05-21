@@ -193,7 +193,7 @@ func prepareResolvedForSpawn(stateDir string, resolved launchconfig.Resolved) (l
 	if err != nil {
 		return launchconfig.Resolved{}, nil, fmt.Errorf("create inline prompt dir: %w", err)
 	}
-	cleanup := func() { _ = os.RemoveAll(tempDir) }
+	cleanupPartial := func() { _ = os.RemoveAll(tempDir) }
 	writePrompt := func(name, text string) (string, error) {
 		path := filepath.Join(tempDir, name)
 		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
@@ -205,7 +205,7 @@ func prepareResolvedForSpawn(stateDir string, resolved launchconfig.Resolved) (l
 	if effective.SystemPromptMode == "inline" {
 		path, err := writePrompt("system-prompt.md", effective.SystemPromptText)
 		if err != nil {
-			cleanup()
+			cleanupPartial()
 			return launchconfig.Resolved{}, nil, fmt.Errorf("write inline system prompt: %w", err)
 		}
 		effective.SystemPromptMode = "file"
@@ -215,14 +215,17 @@ func prepareResolvedForSpawn(stateDir string, resolved launchconfig.Resolved) (l
 	if effective.SystemPromptAppendMode == "inline" {
 		path, err := writePrompt("system-prompt-append.md", effective.SystemPromptAppendText)
 		if err != nil {
-			cleanup()
+			cleanupPartial()
 			return launchconfig.Resolved{}, nil, fmt.Errorf("write inline system prompt append: %w", err)
 		}
 		effective.SystemPromptAppendMode = "file"
 		effective.SystemPromptAppendFile = path
 		effective.SystemPromptAppendText = ""
 	}
-	return resolved, cleanup, nil
+	// Once preparation succeeds, the daemon/session state directory owns these
+	// files. They must remain available after the hub RPC returns because the
+	// daemon can reuse the resolved session config later.
+	return resolved, func() {}, nil
 }
 
 // buildSpawnArgs assembles the arg slice for `serf serve` from a SpawnRequest.
