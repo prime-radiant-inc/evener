@@ -158,10 +158,12 @@ type ToolResultData struct {
 }
 
 type ThinkingData struct {
-	Text             string `json:"text"`
-	Signature        string `json:"signature,omitempty"`
-	Redacted         bool   `json:"redacted,omitempty"`
-	EncryptedContent string `json:"encrypted_content,omitempty"`
+	ID               string   `json:"id,omitempty"`
+	Text             string   `json:"text"`
+	Signature        string   `json:"signature,omitempty"`
+	Redacted         bool     `json:"redacted,omitempty"`
+	EncryptedContent string   `json:"encrypted_content,omitempty"`
+	Summary          []string `json:"summary,omitempty"`
 }
 
 type WebSearchData struct {

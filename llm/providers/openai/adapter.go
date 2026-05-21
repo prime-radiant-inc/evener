@@ -1794,10 +1794,15 @@ func toResponsesInput(msgs []llm.Message, model string) (instructions string, it
 			}
 			for _, p := range m.Content {
 				if p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.EncryptedContent != "" {
-					items = append(items, map[string]any{
+					item := map[string]any{
 						"type":              "reasoning",
 						"encrypted_content": p.Thinking.EncryptedContent,
-					})
+						"summary":           reasoningSummaryInput(p.Thinking.Summary),
+					}
+					if strings.TrimSpace(p.Thinking.ID) != "" {
+						item["id"] = strings.TrimSpace(p.Thinking.ID)
+					}
+					items = append(items, item)
 				}
 				if p.Kind == llm.ContentToolCall && p.ToolCall != nil {
 					items = append(items, map[string]any{
@@ -1870,6 +1875,41 @@ func toResponsesInput(msgs []llm.Message, model string) (instructions string, it
 	return instructions, items, nil
 }
 
+func reasoningSummaryInput(summary []string) []any {
+	out := make([]any, 0, len(summary))
+	for _, text := range summary {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		out = append(out, map[string]any{
+			"type": "summary_text",
+			"text": text,
+		})
+	}
+	return out
+}
+
+func parseReasoningSummary(raw any) []string {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, itemAny := range items {
+		item, ok := itemAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		text, _ := item["text"].(string)
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		out = append(out, text)
+	}
+	return out
+}
+
 func fromResponses(raw map[string]any, requestedModel string) llm.Response {
 	// Best-effort mapping. OpenAI Responses output is a list of typed items.
 	r := llm.Response{
@@ -1940,12 +1980,15 @@ func fromResponses(raw map[string]any, requestedModel string) llm.Response {
 					},
 				})
 			case "reasoning":
+				id, _ := item["id"].(string)
 				encryptedContent, _ := item["encrypted_content"].(string)
 				if encryptedContent != "" {
 					msg.Content = append(msg.Content, llm.ContentPart{
 						Kind: llm.ContentThinking,
 						Thinking: &llm.ThinkingData{
+							ID:               id,
 							EncryptedContent: encryptedContent,
+							Summary:          parseReasoningSummary(item["summary"]),
 						},
 					})
 				}

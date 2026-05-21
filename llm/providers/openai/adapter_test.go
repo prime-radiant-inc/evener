@@ -3136,8 +3136,12 @@ func TestFromResponses_EncryptedReasoning(t *testing.T) {
 		"model": "gpt-5.2",
 		"output": []any{
 			map[string]any{
+				"id":                "rs_123",
 				"type":              "reasoning",
 				"encrypted_content": "enc_reasoning_state",
+				"summary": []any{
+					map[string]any{"type": "summary_text", "text": "Checked the constraints."},
+				},
 			},
 			map[string]any{
 				"type": "message",
@@ -3158,6 +3162,12 @@ func TestFromResponses_EncryptedReasoning(t *testing.T) {
 	}
 	if thinking.Thinking.EncryptedContent != "enc_reasoning_state" {
 		t.Fatalf("encrypted_content: got %q", thinking.Thinking.EncryptedContent)
+	}
+	if thinking.Thinking.ID != "rs_123" {
+		t.Fatalf("id: got %q", thinking.Thinking.ID)
+	}
+	if len(thinking.Thinking.Summary) != 1 || thinking.Thinking.Summary[0] != "Checked the constraints." {
+		t.Fatalf("summary: got %#v", thinking.Thinking.Summary)
 	}
 	if got := r.ReasoningText(); got != "" {
 		t.Fatalf("ReasoningText: got %q want empty", got)
@@ -3391,7 +3401,9 @@ func TestToResponsesInput_EncryptedReasoning(t *testing.T) {
 				{
 					Kind: llm.ContentThinking,
 					Thinking: &llm.ThinkingData{
+						ID:               "rs_123",
 						EncryptedContent: "enc_reasoning_state",
+						Summary:          []string{"Checked the constraints."},
 					},
 				},
 				{Kind: llm.ContentText, Text: "Visible answer"},
@@ -3428,6 +3440,57 @@ func TestToResponsesInput_EncryptedReasoning(t *testing.T) {
 	}
 	if reasoningItems[0]["encrypted_content"] != "enc_reasoning_state" {
 		t.Fatalf("encrypted_content: got %v", reasoningItems[0]["encrypted_content"])
+	}
+	if reasoningItems[0]["id"] != "rs_123" {
+		t.Fatalf("id: got %v", reasoningItems[0]["id"])
+	}
+	summary, ok := reasoningItems[0]["summary"].([]any)
+	if !ok || len(summary) != 1 {
+		t.Fatalf("summary: got %#v, want one summary_text item", reasoningItems[0]["summary"])
+	}
+	if summary[0].(map[string]any)["type"] != "summary_text" || summary[0].(map[string]any)["text"] != "Checked the constraints." {
+		t.Fatalf("summary item: %#v", summary[0])
+	}
+}
+
+func TestToResponsesInput_EncryptedReasoningAlwaysIncludesSummary(t *testing.T) {
+	msgs := []llm.Message{
+		llm.User("hello"),
+		{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{
+					Kind: llm.ContentThinking,
+					Thinking: &llm.ThinkingData{
+						EncryptedContent: "enc_reasoning_state",
+					},
+				},
+				{Kind: llm.ContentText, Text: "Visible answer"},
+			},
+		},
+	}
+
+	_, items, err := toResponsesInput(msgs, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("toResponsesInput: %v", err)
+	}
+
+	var reasoningItem map[string]any
+	for _, itemAny := range items {
+		item, _ := itemAny.(map[string]any)
+		if item["type"] == "reasoning" {
+			reasoningItem = item
+			break
+		}
+	}
+	if reasoningItem == nil {
+		t.Fatalf("reasoning item missing; items=%v", items)
+	}
+	if _, ok := reasoningItem["summary"]; !ok {
+		t.Fatalf("reasoning item missing required summary: %#v", reasoningItem)
+	}
+	if summary, ok := reasoningItem["summary"].([]any); !ok || len(summary) != 0 {
+		t.Fatalf("summary = %#v, want empty array when no summary text is available", reasoningItem["summary"])
 	}
 }
 
