@@ -60,7 +60,7 @@ async function run() {
   }
   if (readTools[0]) {
     pass(readTools[0].textContent.includes("/tmp/does-not-exist"), "failed tool target was not preserved");
-    pass(readTools[0].querySelector(".result-bad"), "failed tool did not render as an error result");
+    pass(readTools[0].querySelector(".tool-status-bad"), "failed tool did not render as an error status icon");
   }
   pass(assistantMessages.some((text) => text.includes("I need one more check.")), "interleaved assistant text was lost");
 

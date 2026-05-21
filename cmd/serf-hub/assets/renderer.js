@@ -1128,6 +1128,10 @@
 
       const el = document.createElement("div");
       el.className = "tool-call " + tool;
+      const status = document.createElement("span");
+      status.className = "tool-status tool-status-pending";
+      status.textContent = "…";
+      el.appendChild(status);
       const verb = document.createElement("span");
       verb.className = "verb";
       verb.textContent = renderer.friendly || tool;
@@ -1136,14 +1140,14 @@
       target.className = "target";
       target.textContent = renderer.target ? renderer.target(args, data) : "";
       el.appendChild(target);
-      const sep = document.createElement("span"); sep.className = "sep"; sep.textContent = "·";
+      const sep = document.createElement("span"); sep.className = "sep"; sep.textContent = "·"; sep.style.display = "none";
       const result = document.createElement("span");
-      result.className = "result";
-      result.textContent = "…";
+      result.className = "result-detail";
+      result.textContent = "";
       el.appendChild(sep); el.appendChild(result);
       parent.appendChild(el);
 
-      const state = { el, resultEl: result, outputBuf: "", tool, args, renderer, body: null, ids: [] };
+      const state = { el, statusEl: status, sepEl: sep, resultEl: result, outputBuf: "", tool, args, renderer, body: null, ids: [] };
       if (renderer.body) state.body = renderer.body(args, el, data);
       this.rememberToolAlias(state, callId);
       this.rememberToolAlias(state, data.item_id);
@@ -1161,14 +1165,18 @@
       if (!m) return;
       const out = data.output || m.outputBuf || "";
 
-      if (data.error) {
-        m.resultEl.textContent = "error";
-        m.resultEl.className = "result result-bad";
-      } else {
-        const text = m.renderer.result ? m.renderer.result(data, out, m) : "ok";
-        m.resultEl.textContent = text;
-        m.resultEl.className = "result " + (toolLooksGood(data) ? "result-good" : "result");
+      const ok = !data.error && toolLooksGood(data);
+      if (m.statusEl) {
+        m.statusEl.textContent = ok ? "✓" : "✕";
+        m.statusEl.className = "tool-status " + (ok ? "tool-status-good" : "tool-status-bad");
       }
+      if (data.error) {
+        m.resultEl.textContent = "";
+      } else {
+        const text = m.renderer.result ? m.renderer.result(data, out, m) : "";
+        m.resultEl.textContent = (text === "ok" || text === "done") ? "" : text;
+      }
+      if (m.sepEl) m.sepEl.style.display = m.resultEl.textContent ? "" : "none";
       if (m.renderer.bodyEnd) m.renderer.bodyEnd(m, data, out);
       if (m.renderer.replace) {
         const replacement = m.renderer.replace(m, data);
@@ -1396,7 +1404,8 @@
           if (this.lastSystemLineMentions(idNum)) return;
           const line = document.createElement("div");
           line.className = "system-line system-line-now";
-          line.textContent = 'now on "' + summary.taskTitle + '"';
+          appendTaskIcon(line, "in_progress");
+          line.appendChild(document.createTextNode('now on "' + summary.taskTitle + '"'));
           this.conversation.appendChild(line);
         }
         return;
@@ -1461,7 +1470,8 @@
       if (text) {
         const line = document.createElement("div");
         line.className = "system-line";
-        line.textContent = text;
+        appendTaskIcon(line, taskListIconKind(args));
+        line.appendChild(document.createTextNode(text));
         this.conversation.appendChild(line);
       }
       this.refreshTaskBadgeSoon();
@@ -2012,6 +2022,23 @@
     return { kind: "unknown", label: "steering injected", detail: "", cleanText: stripped };
   }
 
+  function appendTaskIcon(line, kind) {
+    const icon = document.createElement("span");
+    icon.className = "task-system-icon task-system-icon-" + (kind || "open");
+    icon.textContent = kind === "done" ? "✓" : "□";
+    line.appendChild(icon);
+  }
+
+  function taskListIconKind(args) {
+    if (!args) return "open";
+    if (args.action === "append") return "open";
+    if (args.action === "update" && Array.isArray(args.updates)) {
+      if (args.updates.some(u => u && u.status === "done")) return "done";
+      if (args.updates.some(u => u && u.status === "in_progress")) return "in_progress";
+    }
+    return "open";
+  }
+
   // formatTaskListAction renders task_list tool args as a single line of
   // English prose. Returns null/empty for no-op cases (view, empty updates).
   // Multiple updates in one call collapse into a comma-joined sentence
@@ -2140,22 +2167,92 @@
     if (!text.trim()) state.body.outputPre.style.display = "none";
   }
 
+  function readLineRange(args, out) {
+    args = args || {};
+    const start = Number.isFinite(Number(args.offset)) && Number(args.offset) > 0 ? Number(args.offset) : 1;
+    let count = Number(args.limit);
+    if (!Number.isFinite(count) || count <= 0) count = (String(out || "").match(/\n/g) || []).length;
+    if (!Number.isFinite(count) || count <= 0) return "lines " + start;
+    return "lines " + start + "-" + (start + count - 1);
+  }
+
+  function readToolBody(args, el) {
+    const wrap = document.createElement("div");
+    wrap.className = "tool-body cheap-tool-body read-tool-body";
+    const purpose = String((args && args.purpose) || "").trim();
+    if (purpose) {
+      const purposeEl = document.createElement("div");
+      purposeEl.className = "read-tool-purpose";
+      purposeEl.textContent = purpose;
+      wrap.appendChild(purposeEl);
+    }
+    const outputPre = document.createElement("pre");
+    outputPre.className = "cheap-tool-output read-tool-preview";
+    wrap.appendChild(outputPre);
+    el.appendChild(wrap);
+    return { wrap, outputPre };
+  }
+
+  function splitReadLines(text) {
+    text = String(text || "");
+    if (!text) return [];
+    const lines = text.split("\n");
+    if (lines.length && lines[lines.length - 1] === "") lines.pop();
+    return lines;
+  }
+
+  function setReadOutput(state, text) {
+    if (!state.body || !state.body.outputPre) return;
+    const lines = splitReadLines(text);
+    state.body.outputPre.textContent = lines.slice(0, 5).join("\n");
+    state.body.outputPre.style.display = lines.length ? "" : "none";
+    if (state.body.moreWrap) {
+      state.body.moreWrap.remove();
+      state.body.moreWrap = null;
+    }
+    if (lines.length <= 5) return;
+    const moreWrap = document.createElement("details");
+    moreWrap.className = "read-tool-more";
+    const summary = document.createElement("summary");
+    summary.textContent = "show " + (lines.length - 5) + " more lines";
+    const morePre = document.createElement("pre");
+    morePre.className = "cheap-tool-output read-tool-rest";
+    morePre.textContent = lines.slice(5).join("\n");
+    moreWrap.appendChild(summary);
+    moreWrap.appendChild(morePre);
+    state.body.wrap.appendChild(moreWrap);
+    state.body.moreWrap = moreWrap;
+  }
+
+  function readToolBodyDelta(state, out) {
+    setReadOutput(state, clip(out || "", 8000));
+  }
+
+  function readToolBodyEnd(state, data, out) {
+    setReadOutput(state, clip(data.error || out || "", 8000));
+  }
+
+  function grepTarget(a) {
+    const base = '"' + clip(a.pattern || "", 50) + '" in ' + (a.path || ".");
+    return a.glob_filter ? base + " (" + a.glob_filter + ")" : base;
+  }
+
+  function lsTarget(a) {
+    const base = a.path || ".";
+    return a.pattern ? base + " (" + a.pattern + ")" : base;
+  }
+
   const readRenderer = {
     mode: "cheap", friendly: "read",
     target: (a) => a.file_path || a.path || "",
-    result: (data, out) => {
-      const lines = (out.match(/\n/g) || []).length;
-      const total = parseToolState(data.tool_state);
-      if (total && total.total_lines) return lines + " of " + total.total_lines + " lines";
-      return lines + " lines";
-    },
-    body: cheapToolBody,
-    bodyDelta: cheapToolBodyDelta,
-    bodyEnd: cheapToolBodyEnd,
+    result: (data, out, state) => readLineRange(state && state.args, out),
+    body: readToolBody,
+    bodyDelta: readToolBodyDelta,
+    bodyEnd: readToolBodyEnd,
   };
   const grepRenderer = {
     mode: "cheap", friendly: "grep",
-    target: (a) => '"' + clip(a.pattern || "", 50) + '" in ' + (a.path || "."),
+    target: grepTarget,
     result: (data, out) => ((out.match(/\n/g) || []).length) + " hits",
     body: cheapToolBody,
     bodyDelta: cheapToolBodyDelta,
@@ -2163,7 +2260,7 @@
   };
   const lsRenderer = {
     mode: "cheap", friendly: "ls",
-    target: (a) => a.path || ".",
+    target: lsTarget,
     result: (data, out) => ((out.match(/\n/g) || []).length) + " entries",
     body: cheapToolBody,
     bodyDelta: cheapToolBodyDelta,
@@ -2221,21 +2318,45 @@
   };
 
   // Diff renderers for edit/write/apply_patch.
+  function diffResult(data, out) {
+    const adds = (out.match(/^\+/gm) || []).filter(l => !l.startsWith("+++")).length;
+    const dels = (out.match(/^-/gm) || []).filter(l => !l.startsWith("---")).length;
+    if (adds === 0 && dels === 0) return "ok";
+    return "+" + adds + " -" + dels;
+  }
+
   function diffRenderer(friendly) {
     return {
       mode: "card", friendly,
       target: (a) => a.file_path || a.path || "",
-      result: (data, out) => {
-        const adds = (out.match(/^\+/gm) || []).filter(l => !l.startsWith("+++")).length;
-        const dels = (out.match(/^-/gm) || []).filter(l => !l.startsWith("---")).length;
-        if (adds === 0 && dels === 0) return "ok";
-        return "+" + adds + " -" + dels;
-      },
+      result: diffResult,
       body: (args, conversation) => {
         const pre = document.createElement("pre");
         pre.className = "diff-body";
         conversation.appendChild(pre);
         return { pre };
+      },
+      bodyDelta: (state, out) => { if (state.body) renderDiff(state.body.pre, out); },
+      bodyEnd: (state, data, out) => { if (state.body) renderDiff(state.body.pre, out); },
+    };
+  }
+
+  function editRenderer() {
+    return {
+      mode: "card", friendly: "edit",
+      target: (a) => a.file_path || a.path || "",
+      result: diffResult,
+      body: (args, conversation) => {
+        const wrap = document.createElement("details");
+        wrap.className = "tool-body edit-body";
+        const summary = document.createElement("summary");
+        summary.textContent = "edit";
+        const pre = document.createElement("pre");
+        pre.className = "diff-body";
+        wrap.appendChild(summary);
+        wrap.appendChild(pre);
+        conversation.appendChild(wrap);
+        return { wrap, pre };
       },
       bodyDelta: (state, out) => { if (state.body) renderDiff(state.body.pre, out); },
       bodyEnd: (state, data, out) => { if (state.body) renderDiff(state.body.pre, out); },
@@ -2340,7 +2461,7 @@
     "shell": shellRenderer,
     "exec_command": shellRenderer,
     "run_shell_command": shellRenderer,
-    "edit_file": diffRenderer("edit"),
+    "edit_file": editRenderer(),
     "write_file": diffRenderer("write"),
     "apply_patch": diffRenderer("patch"),
     "web_fetch": webFetchRenderer,

@@ -76,29 +76,39 @@ async function streamingMarkdownScenario() {
 
 (async () => {
 
-// Cheap-cluster — read_file should land in .tool-call-cluster and expose output.
-await scenario("read_file in cheap cluster with disclosure body", [
+// Cheap-cluster — read_file should land in .tool-call-cluster and show read metadata inline.
+await scenario("read_file in cheap cluster with inline range, purpose, and five-line preview", [
   ["SESSION_START", { session_id: "01TEST" }],
-  ["TOOL_CALL_START", { call_id: "r1", tool_name: "read_file", arguments_json: JSON.stringify({ file_path: "src/main.go" }) }],
-  ["TOOL_CALL_END", { call_id: "r1", output: "line\nline\nline\n", tool_name: "read_file" }],
-], ({ conv }) => {
+  ["TOOL_CALL_START", { call_id: "r1", tool_name: "read_file", arguments_json: JSON.stringify({ file_path: "src/main.go", offset: 10, limit: 8, purpose: "Inspect main entry point." }) }],
+  ["TOOL_CALL_END", { call_id: "r1", output: "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\n", tool_name: "read_file" }],
+], ({ conv, window }) => {
   const cluster = conv.querySelector(".tool-call-cluster");
   if (!cluster) return { ok: false, detail: "no cheap cluster" };
   const call = cluster.querySelector(".tool-call.read_file");
   if (!call) return { ok: false, detail: "no read_file tool-call" };
   if (!call.textContent.includes("src/main.go")) return { ok: false, detail: "missing path" };
-  if (!call.textContent.includes("3 lines")) return { ok: false, detail: "missing line count" };
-  const body = cluster.querySelector(".cheap-tool-body");
-  if (!body) return { ok: false, detail: "no cheap tool disclosure body" };
-  const pre = body.querySelector(".cheap-tool-output");
-  if (!pre || !pre.textContent.includes("line\nline\nline")) return { ok: false, detail: "read output missing" };
-  if (!body.querySelector(".cheap-tool-args").textContent.includes("src/main.go")) return { ok: false, detail: "read args missing" };
+  if (!call.textContent.includes("lines 10-17")) return { ok: false, detail: "missing line range" };
+  if (!call.querySelector(".tool-status-good")) return { ok: false, detail: "missing read success icon" };
+  if (call.querySelector(".cheap-tool-args")) return { ok: false, detail: "read_file should not render JSON args" };
+  const body = call.querySelector(".read-tool-body");
+  if (!body) return { ok: false, detail: "no read tool body" };
+  const purpose = body.querySelector(".read-tool-purpose");
+  if (!purpose || purpose.textContent !== "Inspect main entry point.") return { ok: false, detail: "read purpose missing" };
+  if (!purpose.classList.contains("read-tool-purpose")) return { ok: false, detail: "read purpose class missing" };
+  const preview = body.querySelector(".read-tool-preview");
+  if (!preview || preview.textContent !== "one\ntwo\nthree\nfour\nfive") return { ok: false, detail: "read preview should contain first five lines" };
+  if (preview.textContent.includes("six")) return { ok: false, detail: "read preview includes more than five lines" };
+  const more = body.querySelector(".read-tool-more");
+  if (!more) return { ok: false, detail: "missing read more disclosure" };
+  if (!more.querySelector("summary") || !more.querySelector("summary").textContent.includes("3 more lines")) return { ok: false, detail: "missing read more summary" };
+  const rest = more.querySelector(".read-tool-rest");
+  if (!rest || rest.textContent !== "six\nseven\neight") return { ok: false, detail: "read rest output missing" };
   return { ok: true };
 });
 
 await scenario("grep in cheap cluster exposes output and args", [
   ["SESSION_START", { session_id: "01TEST" }],
-  ["TOOL_CALL_START", { call_id: "g1", tool_name: "grep_files", arguments_json: JSON.stringify({ pattern: "TODO", path: "agent" }) }],
+  ["TOOL_CALL_START", { call_id: "g1", tool_name: "grep_files", arguments_json: JSON.stringify({ pattern: "TODO", path: "agent", glob_filter: "*.go" }) }],
   ["TOOL_CALL_END", { call_id: "g1", output: "agent/a.go:12:TODO one\nagent/b.go:3:TODO two\n", tool_name: "grep_files" }],
 ], ({ conv }) => {
   const cluster = conv.querySelector(".tool-call-cluster");
@@ -106,6 +116,7 @@ await scenario("grep in cheap cluster exposes output and args", [
   const call = cluster.querySelector(".tool-call.grep_files");
   if (!call) return { ok: false, detail: "no grep_files tool-call" };
   if (!call.textContent.includes("2 hits")) return { ok: false, detail: "missing hit count" };
+  if (!call.textContent.includes("*.go")) return { ok: false, detail: "missing grep glob filter" };
   const body = cluster.querySelector(".cheap-tool-body");
   if (!body) return { ok: false, detail: "no grep disclosure body" };
   if (!body.querySelector(".cheap-tool-args").textContent.includes("TODO")) return { ok: false, detail: "grep args missing" };
@@ -115,12 +126,13 @@ await scenario("grep in cheap cluster exposes output and args", [
 
 await scenario("list_dir in cheap cluster exposes entries", [
   ["SESSION_START", { session_id: "01TEST" }],
-  ["TOOL_CALL_START", { call_id: "l1", tool_name: "list_dir", arguments_json: JSON.stringify({ path: "cmd/serf-hub" }) }],
+  ["TOOL_CALL_START", { call_id: "l1", tool_name: "list_dir", arguments_json: JSON.stringify({ path: "cmd/serf-hub", pattern: "*.go" }) }],
   ["TOOL_CALL_END", { call_id: "l1", output: "assets\njstest\nweb.go\n", tool_name: "list_dir" }],
 ], ({ conv }) => {
   const call = conv.querySelector(".tool-call.list_dir");
   if (!call) return { ok: false, detail: "no list_dir tool-call" };
   if (!call.textContent.includes("3 entries")) return { ok: false, detail: "missing entry count" };
+  if (!call.textContent.includes("*.go")) return { ok: false, detail: "missing list pattern" };
   const body = call.querySelector(".cheap-tool-body");
   if (!body) return { ok: false, detail: "no list disclosure body" };
   if (!body.querySelector(".cheap-tool-args").textContent.includes("cmd/serf-hub")) return { ok: false, detail: "list args missing" };
@@ -138,10 +150,14 @@ await scenario("edit_file diff body", [
   const card = conv.querySelector(".tool-call.edit_file");
   if (!card) return { ok: false, detail: "no edit tool-call" };
   if (!card.textContent.includes("x.go")) return { ok: false, detail: "missing target" };
-  const diff = conv.querySelector(".diff-body");
+  const disclosure = card.querySelector("details.edit-body");
+  if (!disclosure) return { ok: false, detail: "no edit disclosure" };
+  if (!disclosure.querySelector("summary") || !disclosure.querySelector("summary").textContent.includes("edit")) return { ok: false, detail: "no edit summary" };
+  const diff = disclosure.querySelector(".diff-body");
   if (!diff) return { ok: false, detail: "no diff body" };
   if (!diff.querySelector(".add")) return { ok: false, detail: "no .add lines" };
   if (!diff.querySelector(".del")) return { ok: false, detail: "no .del lines" };
+  if (!card.querySelector(".tool-status-good")) return { ok: false, detail: "missing left success icon" };
   return { ok: true };
 });
 
@@ -171,6 +187,7 @@ await scenario("shell with stdout and exit code", [
   if (!card) return { ok: false, detail: "no shell card" };
   if (!card.textContent.includes("ls -la")) return { ok: false, detail: "missing command" };
   if (!card.textContent.includes("exit 0")) return { ok: false, detail: "missing exit code" };
+  if (!card.querySelector(".tool-status-good")) return { ok: false, detail: "missing shell success icon" };
   const body = conv.querySelector(".shell-body");
   if (!body) return { ok: false, detail: "no shell body" };
   const pre = body.querySelector(".shell-output");

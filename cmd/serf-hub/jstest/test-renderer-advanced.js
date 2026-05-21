@@ -63,8 +63,9 @@ await scenario("append 3 tasks", [
     ],
   }) }],
   ["TOOL_CALL_END", { call_id: "c1", output: "ok", tool_name: "task_list" }],
-], ({ sysLines, steerings, toolCalls }) => {
+], ({ sysLines, steerings, toolCalls, conv }) => {
   if (sysLines.length !== 1) return { ok: false, detail: "expected 1 system-line, got " + sysLines.length };
+  if (!conv.querySelector(".task-system-icon")) return { ok: false, detail: "missing task system icon" };
   const t = sysLines[0];
   if (!t.includes("added 3 tasks")) return { ok: false, detail: "missing 'added 3 tasks': " + t };
   if (!t.includes("investigate spec") || !t.includes("write code") || !t.includes("run tests"))
