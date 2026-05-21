@@ -158,9 +158,10 @@ type ToolResultData struct {
 }
 
 type ThinkingData struct {
-	Text      string `json:"text"`
-	Signature string `json:"signature,omitempty"`
-	Redacted  bool   `json:"redacted,omitempty"`
+	Text             string `json:"text"`
+	Signature        string `json:"signature,omitempty"`
+	Redacted         bool   `json:"redacted,omitempty"`
+	EncryptedContent string `json:"encrypted_content,omitempty"`
 }
 
 type WebSearchData struct {
@@ -198,18 +199,27 @@ type Request struct {
 	Tools      []ToolDefinition `json:"tools,omitempty"`
 	ToolChoice *ToolChoice      `json:"tool_choice,omitempty"`
 
-	ResponseFormat  *ResponseFormat   `json:"response_format,omitempty"`
-	Temperature     *float64          `json:"temperature,omitempty"`
-	TopP            *float64          `json:"top_p,omitempty"`
-	MaxTokens       *int              `json:"max_tokens,omitempty"`
-	StopSequences   []string          `json:"stop_sequences,omitempty"`
-	ReasoningEffort *string           `json:"reasoning_effort,omitempty"` // low|medium|high|none
-	Metadata        map[string]string `json:"metadata,omitempty"`
-	ClientMetadata  map[string]string `json:"client_metadata,omitempty"`
-	Include         []string          `json:"include,omitempty"`
-	PromptCacheKey  string            `json:"prompt_cache_key,omitempty"`
-	SessionID       string            `json:"session_id,omitempty"`
-	ThreadID        string            `json:"thread_id,omitempty"`
+	ResponseFormat       *ResponseFormat   `json:"response_format,omitempty"`
+	Temperature          *float64          `json:"temperature,omitempty"`
+	TopP                 *float64          `json:"top_p,omitempty"`
+	MaxTokens            *int              `json:"max_tokens,omitempty"`
+	StopSequences        []string          `json:"stop_sequences,omitempty"`
+	ReasoningEffort      *string           `json:"reasoning_effort,omitempty"` // low|medium|high|none
+	Metadata             map[string]string `json:"metadata,omitempty"`
+	ClientMetadata       map[string]string `json:"client_metadata,omitempty"`
+	Include              []string          `json:"include,omitempty"`
+	PromptCacheKey       string            `json:"prompt_cache_key,omitempty"`
+	PreviousResponseID   string            `json:"previous_response_id,omitempty"`
+	ConversationID       string            `json:"conversation_id,omitempty"`
+	ServiceTier          string            `json:"service_tier,omitempty"`
+	SafetyIdentifier     string            `json:"safety_identifier,omitempty"`
+	PromptCacheRetention string            `json:"prompt_cache_retention,omitempty"`
+	Truncation           string            `json:"truncation,omitempty"`
+	MaxToolCalls         *int              `json:"max_tool_calls,omitempty"`
+	Background           *bool             `json:"background,omitempty"`
+	Store                *bool             `json:"store,omitempty"`
+	SessionID            string            `json:"session_id,omitempty"`
+	ThreadID             string            `json:"thread_id,omitempty"`
 
 	ProviderOptions map[string]any `json:"provider_options,omitempty"`
 

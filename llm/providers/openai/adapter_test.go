@@ -97,6 +97,82 @@ func TestAdapter_Complete_MapsToResponsesAPI(t *testing.T) {
 	}
 }
 
+func TestAdapter_BuildRequestBody_ResponsesControls(t *testing.T) {
+	a := &Adapter{}
+	maxToolCalls := 0
+	background := false
+	store := true
+
+	body, err := a.buildRequestBody(llm.Request{
+		Model:                "gpt-5.2",
+		Messages:             []llm.Message{llm.User("hi")},
+		PreviousResponseID:   " resp_123 ",
+		ConversationID:       " conv_456 ",
+		ServiceTier:          "flex",
+		SafetyIdentifier:     "user_789",
+		PromptCacheRetention: "24h",
+		Truncation:           "auto",
+		MaxToolCalls:         &maxToolCalls,
+		Background:           &background,
+		Store:                &store,
+	})
+	if err != nil {
+		t.Fatalf("buildRequestBody: %v", err)
+	}
+
+	want := map[string]any{
+		"previous_response_id":   "resp_123",
+		"conversation":           "conv_456",
+		"service_tier":           "flex",
+		"safety_identifier":      "user_789",
+		"prompt_cache_retention": "24h",
+		"truncation":             "auto",
+		"max_tool_calls":         0,
+		"background":             false,
+		"store":                  true,
+	}
+	for key, wantValue := range want {
+		gotValue, ok := body[key]
+		if !ok {
+			t.Fatalf("%s missing from body: %#v", key, body)
+		}
+		if gotValue != wantValue {
+			t.Fatalf("%s = %#v, want %#v", key, gotValue, wantValue)
+		}
+	}
+}
+
+func TestAdapter_BuildRequestBody_ResponsesControlsDefaultStoreFalse(t *testing.T) {
+	explicitFalse := false
+	cases := []struct {
+		name  string
+		store *bool
+	}{
+		{name: "nil", store: nil},
+		{name: "explicit false", store: &explicitFalse},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, err := (&Adapter{}).buildRequestBody(llm.Request{
+				Model:    "gpt-5.2",
+				Messages: []llm.Message{llm.User("hi")},
+				Store:    tc.store,
+			})
+			if err != nil {
+				t.Fatalf("buildRequestBody: %v", err)
+			}
+			got, ok := body["store"]
+			if !ok {
+				t.Fatalf("store missing from body: %#v", body)
+			}
+			if got != false {
+				t.Fatalf("store = %#v, want false", got)
+			}
+		})
+	}
+}
+
 func TestAdapter_Complete_ToolChoice_MappedPerSpec(t *testing.T) {
 	var gotBody map[string]any
 
@@ -3013,6 +3089,40 @@ func TestFromResponses_NullPhase(t *testing.T) {
 	}
 }
 
+func TestFromResponses_EncryptedReasoning(t *testing.T) {
+	raw := map[string]any{
+		"id":    "r1",
+		"model": "gpt-5.2",
+		"output": []any{
+			map[string]any{
+				"type":              "reasoning",
+				"encrypted_content": "enc_reasoning_state",
+			},
+			map[string]any{
+				"type": "message",
+				"content": []any{
+					map[string]any{"type": "output_text", "text": "Visible answer"},
+				},
+			},
+		},
+	}
+
+	r := fromResponses(raw, "gpt-5.2")
+	if len(r.Message.Content) != 2 {
+		t.Fatalf("content parts: got %d want 2", len(r.Message.Content))
+	}
+	thinking := r.Message.Content[0]
+	if thinking.Kind != llm.ContentThinking || thinking.Thinking == nil {
+		t.Fatalf("part[0]: got %#v want encrypted thinking", thinking)
+	}
+	if thinking.Thinking.EncryptedContent != "enc_reasoning_state" {
+		t.Fatalf("encrypted_content: got %q", thinking.Thinking.EncryptedContent)
+	}
+	if got := r.ReasoningText(); got != "" {
+		t.Fatalf("ReasoningText: got %q want empty", got)
+	}
+}
+
 func TestToResponsesInput_PhaseReplayed(t *testing.T) {
 	msgs := []llm.Message{
 		llm.User("hello"),
@@ -3228,6 +3338,55 @@ func TestEmptyPhaseRoundTrip(t *testing.T) {
 	}
 	if assistantItems[0]["phase"] != "final_answer" {
 		t.Fatalf("phase: got %v want %q", assistantItems[0]["phase"], "final_answer")
+	}
+}
+
+func TestToResponsesInput_EncryptedReasoning(t *testing.T) {
+	msgs := []llm.Message{
+		llm.User("hello"),
+		{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{
+					Kind: llm.ContentThinking,
+					Thinking: &llm.ThinkingData{
+						EncryptedContent: "enc_reasoning_state",
+					},
+				},
+				{Kind: llm.ContentText, Text: "Visible answer"},
+			},
+		},
+	}
+
+	_, items, err := toResponsesInput(msgs, "gpt-5.4")
+	if err != nil {
+		t.Fatalf("toResponsesInput: %v", err)
+	}
+
+	var reasoningItems []map[string]any
+	for _, itemAny := range items {
+		item, ok := itemAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		if item["type"] == "reasoning" {
+			reasoningItems = append(reasoningItems, item)
+		}
+		if item["role"] == "assistant" && item["type"] == "message" {
+			content, _ := item["content"].([]any)
+			for _, contentAny := range content {
+				contentItem, _ := contentAny.(map[string]any)
+				if contentItem["type"] == "reasoning" || contentItem["encrypted_content"] != nil {
+					t.Fatalf("encrypted reasoning serialized into assistant message content: %#v", contentItem)
+				}
+			}
+		}
+	}
+	if len(reasoningItems) != 1 {
+		t.Fatalf("reasoning items: got %d want 1; items=%v", len(reasoningItems), items)
+	}
+	if reasoningItems[0]["encrypted_content"] != "enc_reasoning_state" {
+		t.Fatalf("encrypted_content: got %v", reasoningItems[0]["encrypted_content"])
 	}
 }
 
