@@ -4030,7 +4030,7 @@ func settingsRequest(t *testing.T, web *WebServer, section string) string {
 	return rec.Body.String()
 }
 
-func TestWeb_SettingsLaunchFormsExposeFastCheapModel(t *testing.T) {
+func TestLaunchSerfSettings_UsesSchemaRoot(t *testing.T) {
 	web := NewWebServer(WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  NewRoster(t.TempDir(), nil),
@@ -4038,16 +4038,21 @@ func TestWeb_SettingsLaunchFormsExposeFastCheapModel(t *testing.T) {
 	})
 	globalBody := settingsRequest(t, web, "launch-serf")
 	for _, want := range []string{
-		`name="fastCheapModel"`,
-		`id="lf-fast-cheap-model-hidden"`,
-		`id="lf-fast-cheap-model-display"`,
-		`id="lf-fast-cheap-model-clear"`,
-		"data-settings-model-picker",
-		`setFastCheapModel(current.fastCheapModel || "")`,
-		"fastCheapModelHidden.value.trim()",
+		`data-launch-settings-root`,
+		`data-launch-settings-layer="global"`,
+		`data-launch-settings-groups`,
+		`launchconfig.schema()`,
+		`LaunchConfigControls.render`,
+		`includeEnvFallbacks: false`,
+		`launchconfig.setLayer("/", "global"`,
 	} {
 		if !strings.Contains(globalBody, want) {
 			t.Fatalf("global launch settings missing %q: %q", want, globalBody)
+		}
+	}
+	for _, blocked := range []string{`data-launch-env-fallback`, `SERF_MODEL`, `SERF_REASONING_EFFORT`} {
+		if strings.Contains(globalBody, blocked) {
+			t.Fatalf("global launch settings exposed env fallback %q: %q", blocked, globalBody)
 		}
 	}
 
@@ -4061,17 +4066,21 @@ func TestWeb_SettingsLaunchFormsExposeFastCheapModel(t *testing.T) {
 	}
 	projectBody := rec.Body.String()
 	for _, want := range []string{
-		`name="fastCheapModel"`,
-		`id="proj-fast-cheap-model-hidden"`,
-		`id="proj-fast-cheap-model-display"`,
-		`id="proj-fast-cheap-model-clear"`,
-		"data-settings-model-picker",
-		"current.fastCheapModel",
-		"launchDraft.fastCheapModel",
-		"#proj-fast-cheap-model-hidden",
+		`data-launch-settings-root`,
+		`data-launch-settings-layer="project"`,
+		`data-launch-settings-groups`,
+		`launchconfig.schema()`,
+		`LaunchConfigControls.render`,
+		`includeEnvFallbacks: false`,
+		`launchconfig.setLayer(cwd, "project"`,
 	} {
 		if !strings.Contains(projectBody, want) {
 			t.Fatalf("project launch settings missing %q: %q", want, projectBody)
+		}
+	}
+	for _, blocked := range []string{`data-launch-env-fallback`, `SERF_MODEL`, `SERF_REASONING_EFFORT`} {
+		if strings.Contains(projectBody, blocked) {
+			t.Fatalf("project launch settings exposed env fallback %q: %q", blocked, projectBody)
 		}
 	}
 }

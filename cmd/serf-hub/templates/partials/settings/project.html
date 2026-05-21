@@ -3,395 +3,70 @@
 {{if .ProjectCWD}}
 <p class="settings-help"><code>{{.ProjectCWD}}</code></p>
 <div id="project-settings-root" data-cwd="{{.ProjectCWD}}" data-loaded="false" hx-disable hx-disinherit="*">
-  <p>Loading…</p>
+  <h3 class="settings-h3">Launch defaults</h3>
+  <form id="proj-launch-form" class="settings-launch-form" data-launch-settings-root data-launch-settings-layer="project">
+    <div data-launch-schema-loading class="settings-help">Loading project launch settings…</div>
+    <div data-launch-settings-groups></div>
+    <div class="form-actions">
+      <button type="submit" id="proj-launch-save">Save launch defaults</button>
+      <p id="proj-status" class="settings-help" style="margin:0"></p>
+    </div>
+  </form>
 </div>
 <script>
   (async function () {
     const root = document.getElementById("project-settings-root");
     const cwd = root.dataset.cwd;
-
-    function escapeHtml(s) {
-      return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
-    }
-
-    let current = {};
-    let launchDraft = {};
+    const form = document.getElementById("proj-launch-form");
+    const status = document.getElementById("proj-status");
+    const loading = form.querySelector("[data-launch-schema-loading]");
     let statusClearTimer = 0;
+
+    function setStatus(text) {
+      if (statusClearTimer) {
+        clearTimeout(statusClearTimer);
+        statusClearTimer = 0;
+      }
+      status.textContent = text || "";
+      if (text && !text.startsWith("Error:")) {
+        statusClearTimer = setTimeout(() => {
+          if (status.textContent === text) status.textContent = "";
+          statusClearTimer = 0;
+        }, 5000);
+      }
+    }
+
     try {
-      current = await launchconfig.getLayer(cwd, "project");
-      resetLaunchDraftFromCurrent();
-    } catch (err) {
-      const p = document.createElement("p");
-      p.className = "settings-error";
-      p.textContent = `Failed to load: ${err && err.message ? err.message : err}`;
-      root.replaceChildren(p);
-      return;
-    }
-
-    function getField(name) { return root.querySelector(`[name="${name}"]`); }
-    function statusEl() { return root.querySelector("#proj-status"); }
-    async function saveProjectLayer(next) {
-      await launchconfig.setLayer(cwd, "project", next);
-      current = await launchconfig.getLayer(cwd, "project");
-      return current;
-    }
-
-    function resetLaunchDraftFromCurrent() {
-      launchDraft = {
-        model: current.model,
-        fastCheapModel: current.fastCheapModel,
-        agent: current.agent,
-        reasoningEffort: current.reasoningEffort,
-        contextStrategy: current.contextStrategy,
-        maxRounds: current.maxRounds,
-        maxSubagentDepth: current.maxSubagentDepth,
-        noProjectPrompts: current.noProjectPrompts,
-      };
-    }
-
-    // captureLaunchForm reads in-progress edits to the launch-form fields
-    // into a draft object so the next render() doesn't wipe them. The draft
-    // is not merged into the persisted project layer until Save is clicked.
-    function captureLaunchForm() {
-      const fld = (name) => root.querySelector(`[name="${name}"]`);
-      const mh = root.querySelector("#proj-model-hidden");
-      const fcmh = root.querySelector("#proj-fast-cheap-model-hidden");
-      if (mh) launchDraft.model = mh.value.trim() || undefined;
-      if (fcmh) launchDraft.fastCheapModel = fcmh.value.trim() || undefined;
-      if (fld("agent")) launchDraft.agent = fld("agent").value.trim() || undefined;
-      if (fld("reasoningEffort")) launchDraft.reasoningEffort = fld("reasoningEffort").value || undefined;
-      if (fld("contextStrategy")) launchDraft.contextStrategy = fld("contextStrategy").value || undefined;
-      if (fld("maxRounds")) launchDraft.maxRounds = fld("maxRounds").value === "" ? undefined : +fld("maxRounds").value;
-      if (fld("maxSubagentDepth")) launchDraft.maxSubagentDepth = fld("maxSubagentDepth").value === "" ? undefined : +fld("maxSubagentDepth").value;
-      if (fld("noProjectPrompts")) launchDraft.noProjectPrompts = fld("noProjectPrompts").checked || undefined;
-    }
-
-    // Event delegation — survives every render() because root persists.
-    // Captures launch-form edits to `launchDraft` on every keystroke / change
-    // so clicking Add (which triggers a re-render) doesn't wipe pending
-    // typed values.
-    root.addEventListener("input", (ev) => {
-      if (ev.target && ev.target.closest && ev.target.closest("#proj-launch-form")) {
-        captureLaunchForm();
-      }
-    });
-    root.addEventListener("change", (ev) => {
-      if (ev.target && ev.target.closest && ev.target.closest("#proj-launch-form")) {
-        captureLaunchForm();
-      }
-    });
-
-    function render() {
-      const launch = { ...current, ...launchDraft };
-      const pluginDirs = launch.pluginDirs || [];
-      const skillsDirs = launch.skillsDirs || [];
-      const mcps = launch.mcps || [];
-      const mcpConfigs = launch.mcpConfigs || [];
-      const systemPromptAppend = launch.systemPromptAppend || [];
-      const env = launch.env || {};
-      const modelVal = escapeHtml(launch.model || "");
-      const fastCheapModelVal = escapeHtml(launch.fastCheapModel || "");
-
-      root.innerHTML = `
-        <h3 class="settings-h3">Launch defaults</h3>
-        <div id="proj-launch-form" class="settings-launch-form">
-          <label>Model
-            <div class="sp-model-wrap">
-              <input type="hidden" name="model" id="proj-model-hidden" value="${modelVal}">
-              <button class="sp-model-btn" type="button" data-settings-model-picker>
-                <span class="sp-model-display" id="proj-model-display">${modelVal || "(inherit global)"}</span>
-                <span class="sp-model-caret">▾</span>
-              </button>
-              <button class="sp-clear-btn" type="button" id="proj-model-clear" title="clear">✕</button>
-            </div>
-          </label>
-          <label>Agent
-            <input type="text" name="agent" value="${escapeHtml(launch.agent || "")}" placeholder="(inherit global)">
-          </label>
-          <label>Fast cheap model
-            <div class="sp-model-wrap">
-              <input type="hidden" name="fastCheapModel" id="proj-fast-cheap-model-hidden" value="${fastCheapModelVal}">
-              <button class="sp-model-btn" type="button" data-settings-model-picker>
-                <span class="sp-model-display" id="proj-fast-cheap-model-display">${fastCheapModelVal || "(use active model)"}</span>
-                <span class="sp-model-caret">▾</span>
-              </button>
-              <button class="sp-clear-btn" type="button" id="proj-fast-cheap-model-clear" title="clear">✕</button>
-            </div>
-          </label>
-          <label>Reasoning effort
-            <select name="reasoningEffort">
-              <option value="">(use global default)</option>
-              <option ${launch.reasoningEffort === "low" ? "selected" : ""}>low</option>
-              <option ${launch.reasoningEffort === "medium" ? "selected" : ""}>medium</option>
-              <option ${launch.reasoningEffort === "high" ? "selected" : ""}>high</option>
-              <option ${launch.reasoningEffort === "xhigh" ? "selected" : ""}>xhigh</option>
-              <option ${launch.reasoningEffort === "none" ? "selected" : ""}>none</option>
-            </select>
-          </label>
-          <label>Context strategy
-            <select name="contextStrategy">
-              <option value="">(use global default)</option>
-              <option ${launch.contextStrategy === "compact" ? "selected" : ""}>compact</option>
-              <option ${launch.contextStrategy === "recall" ? "selected" : ""}>recall</option>
-              <option ${launch.contextStrategy === "session-log" ? "selected" : ""}>session-log</option>
-              <option ${launch.contextStrategy === "ooda" ? "selected" : ""}>ooda</option>
-            </select>
-          </label>
-          <label>Max rounds
-            <input type="number" name="maxRounds" min="0" step="1" value="${launch.maxRounds ?? ""}">
-          </label>
-          <label>Max subagent depth
-            <input type="number" name="maxSubagentDepth" min="0" step="1" value="${launch.maxSubagentDepth ?? ""}">
-          </label>
-          <label class="checkbox-label">
-            <input type="checkbox" name="noProjectPrompts" ${launch.noProjectPrompts ? "checked" : ""}> Suppress .serf/prompts loading
-          </label>
-          <div class="form-actions">
-            <button type="button" id="proj-launch-save">Save launch defaults</button>
-            <p id="proj-status" class="settings-help" style="margin:0"></p>
-          </div>
-        </div>
-
-        <h3 class="settings-h3">Plugin directories</h3>
-        <ul class="settings-items-list" id="proj-plugin-dirs">
-          ${pluginDirs.map((d, i) => `
-            <li><code>${escapeHtml(d)}</code> <button data-i="${i}" data-action="rm-plugin" class="danger">remove</button></li>
-          `).join("")}
-        </ul>
-        <div id="proj-plugins-add" class="settings-add-row">
-          <input type="text" name="dir" placeholder="/absolute/path" style="flex:1;min-width:200px;" data-settings-dir-input>
-          <button type="button" data-action="add-plugin">Add plugin dir</button>
-        </div>
-
-        <h3 class="settings-h3">Skill directories</h3>
-        <ul class="settings-items-list" id="proj-skill-dirs">
-          ${skillsDirs.map((d, i) => `
-            <li><code>${escapeHtml(d)}</code> <button data-i="${i}" data-action="rm-skill" class="danger">remove</button></li>
-          `).join("")}
-        </ul>
-        <div id="proj-skills-add" class="settings-add-row">
-          <input type="text" name="dir" placeholder="/absolute/path" style="flex:1;min-width:200px;" data-settings-dir-input>
-          <button type="button" data-action="add-skill">Add skill dir</button>
-        </div>
-
-        <h3 class="settings-h3">MCP servers</h3>
-        <ul class="settings-items-list" id="proj-mcps">
-          ${mcps.map((m, i) => `
-            <li>
-              <code>${escapeHtml(m.name)}</code>
-              <code>${escapeHtml(m.command)} ${(m.args || []).map(escapeHtml).join(" ")}</code>
-              <button data-i="${i}" data-action="rm-mcp" class="danger">remove</button>
-            </li>
-          `).join("")}
-        </ul>
-        <div id="proj-mcps-add" class="settings-add-row" style="flex-wrap:wrap;">
-          <input type="text" name="name" placeholder="name" style="width:120px;">
-          <input type="text" name="command" placeholder="command" style="flex:1;min-width:120px;">
-          <input type="text" name="args" placeholder="args (space-separated)" style="flex:1;min-width:120px;">
-          <button type="button" data-action="add-mcp">Add MCP server</button>
-        </div>
-
-        <h3 class="settings-h3">MCP config paths</h3>
-        <ul class="settings-items-list" id="proj-mcp-paths">
-          ${mcpConfigs.map((p, i) => `
-            <li><code>${escapeHtml(p)}</code> <button data-i="${i}" data-action="rm-mcp-path" class="danger">remove</button></li>
-          `).join("")}
-        </ul>
-        <div id="proj-mcp-paths-add" class="settings-add-row">
-          <input type="text" name="path" placeholder="/path/to/mcp.json" style="flex:1;min-width:200px;" data-settings-dir-input>
-          <button type="button" data-action="add-mcp-path">Add MCP config path</button>
-        </div>
-
-        <h3 class="settings-h3">System prompt append paths</h3>
-        <ul class="settings-items-list" id="proj-prompt-paths">
-          ${systemPromptAppend.map((p, i) => `
-            <li><code>${escapeHtml(p)}</code> <button data-i="${i}" data-action="rm-prompt-path" class="danger">remove</button></li>
-          `).join("")}
-        </ul>
-        <div id="proj-prompt-paths-add" class="settings-add-row">
-          <input type="text" name="path" placeholder="/path/to/prompt.txt" style="flex:1;min-width:200px;" data-settings-dir-input>
-          <button type="button" data-action="add-prompt-path">Add prompt path</button>
-        </div>
-
-        <h3 class="settings-h3">Environment variables</h3>
-        <ul class="settings-items-list" id="proj-env">
-          ${Object.entries(env).map(([k, v], i) => `
-            <li><code>${escapeHtml(k)}</code><span style="color:var(--text-muted);padding:0 4px;">=</span><code>${escapeHtml(v)}</code> <button data-k="${escapeHtml(k)}" data-action="rm-env" class="danger">remove</button></li>
-          `).join("")}
-        </ul>
-        <div id="proj-env-add" class="settings-add-row">
-          <input type="text" name="key" placeholder="KEY" style="width:140px;">
-          <input type="text" name="value" placeholder="value" style="flex:1;min-width:120px;">
-          <button type="button" data-action="add-env">Add env var</button>
-        </div>
-      `;
-
-      // Wire up model picker clear button
-      const modelHidden = root.querySelector("#proj-model-hidden");
-      const modelDisplay = root.querySelector("#proj-model-display");
-      root.querySelector("#proj-model-clear").addEventListener("click", () => {
-        modelHidden.value = "";
-        modelHidden.dispatchEvent(new Event("change", { bubbles: true }));
-        modelDisplay.textContent = "(inherit global)";
+      const schema = await launchconfig.schema();
+      const current = await launchconfig.getLayer(cwd, "project");
+      if (!window.LaunchConfigControls) throw new Error("launch settings controls unavailable");
+      window.LaunchConfigControls.render(form, {
+        mode: "settings",
+        layer: "project",
+        options: (schema && schema.options) || [],
+        current,
+        includeEnvFallbacks: false,
       });
-      const fastCheapModelHidden = root.querySelector("#proj-fast-cheap-model-hidden");
-      const fastCheapModelDisplay = root.querySelector("#proj-fast-cheap-model-display");
-      root.querySelector("#proj-fast-cheap-model-clear").addEventListener("click", () => {
-        fastCheapModelHidden.value = "";
-        fastCheapModelHidden.dispatchEvent(new Event("change", { bubbles: true }));
-        fastCheapModelDisplay.textContent = "(use active model)";
-      });
+      if (loading) loading.hidden = true;
+      root.dataset.loaded = "true";
 
-      // Init settings pickers (model + dir) for this render
-      if (window.SettingsPickers) window.SettingsPickers.init(root);
-
-      // Launch form save
-      root.querySelector("#proj-launch-save").addEventListener("click", async () => {
-        // captureLaunchForm() already runs on input/change; this is a
-        // belt-and-suspenders call in case the user clicks Save without
-        // ever moving focus out of a field.
-        captureLaunchForm();
-        const out = { ...current, ...launchDraft };
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        if (!(await window.LaunchConfigControls.validate(form))) return;
         try {
-          await saveProjectLayer(out);
-          resetLaunchDraftFromCurrent();
-          if (statusClearTimer) clearTimeout(statusClearTimer);
-          const savedMessage = "Saved at " + new Date().toLocaleTimeString();
-          statusEl().textContent = savedMessage;
-          statusClearTimer = setTimeout(() => {
-            const el = statusEl();
-            if (el && el.textContent === savedMessage) el.textContent = "";
-            statusClearTimer = 0;
-          }, 5000);
+          await launchconfig.setLayer(cwd, "project", window.LaunchConfigControls.collect(form));
+          setStatus("Saved at " + new Date().toLocaleTimeString());
         } catch (err) {
-          if (statusClearTimer) {
-            clearTimeout(statusClearTimer);
-            statusClearTimer = 0;
-          }
-          statusEl().textContent = "Error: " + (err && err.message ? err.message : err);
+          setStatus("Error: " + (err && err.message ? err.message : err));
         }
       });
-
-      // Plugin dirs
-      root.querySelectorAll("button[data-action=rm-plugin]").forEach(b => {
-        b.addEventListener("click", async () => {
-          const dirs = (current.pluginDirs || []);
-          dirs.splice(+b.dataset.i, 1);
-          await saveProjectLayer({ ...current, pluginDirs: dirs });
-          render();
-        });
-      });
-      root.querySelector("[data-action=add-plugin]").addEventListener("click", async () => {
-        const row = root.querySelector("#proj-plugins-add");
-        const v = row.querySelector("[name=dir]").value.trim();
-        if (!v) return;
-        const dirs = (current.pluginDirs || []);
-        dirs.push(v);
-        await saveProjectLayer({ ...current, pluginDirs: dirs });
-        render();
-      });
-
-      // Skill dirs
-      root.querySelectorAll("button[data-action=rm-skill]").forEach(b => {
-        b.addEventListener("click", async () => {
-          const dirs = (current.skillsDirs || []);
-          dirs.splice(+b.dataset.i, 1);
-          await saveProjectLayer({ ...current, skillsDirs: dirs });
-          render();
-        });
-      });
-      root.querySelector("[data-action=add-skill]").addEventListener("click", async () => {
-        const row = root.querySelector("#proj-skills-add");
-        const v = row.querySelector("[name=dir]").value.trim();
-        if (!v) return;
-        const dirs = (current.skillsDirs || []);
-        dirs.push(v);
-        await saveProjectLayer({ ...current, skillsDirs: dirs });
-        render();
-      });
-
-      // MCP servers
-      root.querySelectorAll("button[data-action=rm-mcp]").forEach(b => {
-        b.addEventListener("click", async () => {
-          const mcps = (current.mcps || []);
-          mcps.splice(+b.dataset.i, 1);
-          await saveProjectLayer({ ...current, mcps });
-          render();
-        });
-      });
-      root.querySelector("[data-action=add-mcp]").addEventListener("click", async () => {
-        const row = root.querySelector("#proj-mcps-add");
-        const name = row.querySelector("[name=name]").value.trim();
-        const command = row.querySelector("[name=command]").value.trim();
-        const args = row.querySelector("[name=args]").value.trim().split(/\s+/).filter(Boolean);
-        if (!name || !command) return;
-        const mcps = (current.mcps || []);
-        mcps.push({ name, command, args });
-        await saveProjectLayer({ ...current, mcps });
-        render();
-      });
-
-      // MCP config paths
-      root.querySelectorAll("button[data-action=rm-mcp-path]").forEach(b => {
-        b.addEventListener("click", async () => {
-          const paths = (current.mcpConfigs || []);
-          paths.splice(+b.dataset.i, 1);
-          await saveProjectLayer({ ...current, mcpConfigs: paths });
-          render();
-        });
-      });
-      root.querySelector("[data-action=add-mcp-path]").addEventListener("click", async () => {
-        const row = root.querySelector("#proj-mcp-paths-add");
-        const v = row.querySelector("[name=path]").value.trim();
-        if (!v) return;
-        const paths = (current.mcpConfigs || []);
-        paths.push(v);
-        await saveProjectLayer({ ...current, mcpConfigs: paths });
-        render();
-      });
-
-      // System prompt append paths
-      root.querySelectorAll("button[data-action=rm-prompt-path]").forEach(b => {
-        b.addEventListener("click", async () => {
-          const paths = (current.systemPromptAppend || []);
-          paths.splice(+b.dataset.i, 1);
-          await saveProjectLayer({ ...current, systemPromptAppend: paths });
-          render();
-        });
-      });
-      root.querySelector("[data-action=add-prompt-path]").addEventListener("click", async () => {
-        const row = root.querySelector("#proj-prompt-paths-add");
-        const v = row.querySelector("[name=path]").value.trim();
-        if (!v) return;
-        const paths = (current.systemPromptAppend || []);
-        paths.push(v);
-        await saveProjectLayer({ ...current, systemPromptAppend: paths });
-        render();
-      });
-
-      // Env vars
-      root.querySelectorAll("button[data-action=rm-env]").forEach(b => {
-        b.addEventListener("click", async () => {
-          const env = { ...(current.env || {}) };
-          delete env[b.dataset.k];
-          await saveProjectLayer({ ...current, env });
-          render();
-        });
-      });
-      root.querySelector("[data-action=add-env]").addEventListener("click", async () => {
-        const row = root.querySelector("#proj-env-add");
-        const k = row.querySelector("[name=key]").value.trim();
-        const v = row.querySelector("[name=value]").value;
-        if (!k) return;
-        const env = { ...(current.env || {}), [k]: v };
-        await saveProjectLayer({ ...current, env });
-        render();
-      });
-
-      root.dataset.loaded = "true";
+    } catch (err) {
+      if (loading) loading.textContent = "Failed to load project launch settings.";
+      const message = "Error: " + (err && err.message ? err.message : err);
+      status.textContent = message;
+      status.replaceChildren(document.createTextNode(message));
+      root.dataset.loaded = "error";
     }
-
-    render();
   })();
 </script>
 {{else}}

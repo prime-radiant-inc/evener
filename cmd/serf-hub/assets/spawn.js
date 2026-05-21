@@ -778,22 +778,32 @@
     try {
       const schema = await window.launchconfig.schema();
       const options = ((schema && schema.options) || []).filter(schemaSupportedForSpawn);
-      groupsRoot.innerHTML = "";
-      let currentGroup = "";
-      let fieldset = null;
-      options.forEach((opt) => {
-        if (opt.group !== currentGroup) {
-          currentGroup = opt.group || "";
-          fieldset = document.createElement("fieldset");
-          fieldset.className = "spawn-advanced-group";
-          fieldset.dataset.launchGroup = currentGroup;
-          const legend = document.createElement("legend");
-          legend.textContent = currentGroup;
-          fieldset.appendChild(legend);
-          groupsRoot.appendChild(fieldset);
-        }
-        renderSchemaOption(fieldset, opt);
-      });
+      if (window.LaunchConfigControls && window.LaunchConfigControls.render) {
+        window.LaunchConfigControls.render(root, {
+          mode: "spawn",
+          options,
+          groupsRoot,
+          includeEnvFallbacks: true,
+          envFallbacks: safeEnvFallbacks(),
+        });
+      } else {
+        groupsRoot.innerHTML = "";
+        let currentGroup = "";
+        let fieldset = null;
+        options.forEach((opt) => {
+          if (opt.group !== currentGroup) {
+            currentGroup = opt.group || "";
+            fieldset = document.createElement("fieldset");
+            fieldset.className = "spawn-advanced-group";
+            fieldset.dataset.launchGroup = currentGroup;
+            const legend = document.createElement("legend");
+            legend.textContent = currentGroup;
+            fieldset.appendChild(legend);
+            groupsRoot.appendChild(fieldset);
+          }
+          renderSchemaOption(fieldset, opt);
+        });
+      }
       if (loading) loading.hidden = true;
       if (window.SettingsPickers && window.SettingsPickers.init) {
         window.SettingsPickers.init(root);

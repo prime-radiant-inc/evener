@@ -4,51 +4,9 @@
   These values are applied to every serf spawn unless overridden by a project
   layer or per-launch.
 </p>
-<form id="launch-form" class="settings-launch-form" data-loaded="false">
-  <label>Model
-    <div class="sp-model-wrap">
-      <input type="hidden" name="model" id="lf-model-hidden">
-      <button class="sp-model-btn" type="button" data-settings-model-picker>
-        <span class="sp-model-display" id="lf-model-display">(none set)</span>
-        <span class="sp-model-caret">▾</span>
-      </button>
-      <button class="sp-clear-btn" type="button" id="lf-model-clear" title="clear">✕</button>
-    </div>
-  </label>
-  <label>Agent
-    <input type="text" name="agent" placeholder="default">
-  </label>
-  <label>Fast cheap model
-    <div class="sp-model-wrap">
-      <input type="hidden" name="fastCheapModel" id="lf-fast-cheap-model-hidden">
-      <button class="sp-model-btn" type="button" data-settings-model-picker>
-        <span class="sp-model-display" id="lf-fast-cheap-model-display">(use active model)</span>
-        <span class="sp-model-caret">▾</span>
-      </button>
-      <button class="sp-clear-btn" type="button" id="lf-fast-cheap-model-clear" title="clear">✕</button>
-    </div>
-  </label>
-  <label>Reasoning effort
-    <select name="reasoningEffort">
-      <option value="">(default)</option>
-      <option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>none</option>
-    </select>
-  </label>
-  <label>Context strategy
-    <select name="contextStrategy">
-      <option value="">(default)</option>
-      <option>compact</option><option>recall</option><option>session-log</option><option>ooda</option>
-    </select>
-  </label>
-  <label>Max rounds
-    <input type="number" name="maxRounds" min="0" step="1">
-  </label>
-  <label>Max subagent depth
-    <input type="number" name="maxSubagentDepth" min="0" step="1">
-  </label>
-  <label class="checkbox-label">
-    <input type="checkbox" name="noProjectPrompts"> Suppress .serf/prompts loading
-  </label>
+<form id="launch-form" class="settings-launch-form" data-loaded="false" data-launch-settings-root data-launch-settings-layer="global">
+  <div data-launch-schema-loading class="settings-help">Loading launch settings…</div>
+  <div data-launch-settings-groups></div>
   <div class="form-actions">
     <button type="submit">Save launch defaults</button>
     <p id="launch-form-status" class="settings-help" style="margin:0"></p>
@@ -58,73 +16,50 @@
   (async function () {
     const form = document.getElementById("launch-form");
     const status = document.getElementById("launch-form-status");
-    const modelHidden = document.getElementById("lf-model-hidden");
-    const modelDisplay = document.getElementById("lf-model-display");
-    const modelClear = document.getElementById("lf-model-clear");
-    const fastCheapModelHidden = document.getElementById("lf-fast-cheap-model-hidden");
-    const fastCheapModelDisplay = document.getElementById("lf-fast-cheap-model-display");
-    const fastCheapModelClear = document.getElementById("lf-fast-cheap-model-clear");
+    const loading = form.querySelector("[data-launch-schema-loading]");
+    let statusClearTimer = 0;
 
-    function setModel(v) {
-      modelHidden.value = v || "";
-      modelDisplay.textContent = v || "(none set)";
+    function setStatus(text) {
+      if (statusClearTimer) {
+        clearTimeout(statusClearTimer);
+        statusClearTimer = 0;
+      }
+      status.textContent = text || "";
+      if (text && !text.startsWith("Error:")) {
+        statusClearTimer = setTimeout(() => {
+          if (status.textContent === text) status.textContent = "";
+          statusClearTimer = 0;
+        }, 5000);
+      }
     }
-
-    function setFastCheapModel(v) {
-      fastCheapModelHidden.value = v || "";
-      fastCheapModelDisplay.textContent = v || "(use active model)";
-    }
-
-    modelClear.addEventListener("click", () => setModel(""));
-    fastCheapModelClear.addEventListener("click", () => setFastCheapModel(""));
-
-    // Re-init picker after DOM is ready (settings-pickers.js may have run before this block)
-    if (window.SettingsPickers) window.SettingsPickers.init(form);
 
     try {
+      const schema = await launchconfig.schema();
       const current = await launchconfig.getLayer("/", "global");
-      setModel(current.model || "");
-      setFastCheapModel(current.fastCheapModel || "");
-      form.agent.value = current.agent || "";
-      form.reasoningEffort.value = current.reasoningEffort || "";
-      form.contextStrategy.value = current.contextStrategy || "";
-      form.maxRounds.value = current.maxRounds ?? "";
-      form.maxSubagentDepth.value = current.maxSubagentDepth ?? "";
-      form.noProjectPrompts.checked = !!current.noProjectPrompts;
+      if (!window.LaunchConfigControls) throw new Error("launch settings controls unavailable");
+      window.LaunchConfigControls.render(form, {
+        mode: "settings",
+        layer: "global",
+        options: (schema && schema.options) || [],
+        current,
+        includeEnvFallbacks: false,
+      });
+      if (loading) loading.hidden = true;
       form.dataset.loaded = "true";
-      let statusClearTimer = 0;
 
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
-        const out = { ...current,
-          model: modelHidden.value.trim() || undefined,
-          agent: form.agent.value.trim() || undefined,
-          fastCheapModel: fastCheapModelHidden.value.trim() || undefined,
-          reasoningEffort: form.reasoningEffort.value || undefined,
-          contextStrategy: form.contextStrategy.value || undefined,
-          maxRounds: form.maxRounds.value === "" ? undefined : +form.maxRounds.value,
-          maxSubagentDepth: form.maxSubagentDepth.value === "" ? undefined : +form.maxSubagentDepth.value,
-          noProjectPrompts: form.noProjectPrompts.checked || undefined,
-        };
+        if (!(await window.LaunchConfigControls.validate(form))) return;
         try {
-          await launchconfig.setLayer("/", "global", out);
-          if (statusClearTimer) clearTimeout(statusClearTimer);
-          const savedMessage = "Saved at " + new Date().toLocaleTimeString();
-          status.textContent = savedMessage;
-          statusClearTimer = setTimeout(() => {
-            if (status.textContent === savedMessage) status.textContent = "";
-            statusClearTimer = 0;
-          }, 5000);
+          await launchconfig.setLayer("/", "global", window.LaunchConfigControls.collect(form));
+          setStatus("Saved at " + new Date().toLocaleTimeString());
         } catch (err) {
-          if (statusClearTimer) {
-            clearTimeout(statusClearTimer);
-            statusClearTimer = 0;
-          }
-          status.textContent = "Error: " + err.message;
+          setStatus("Error: " + (err && err.message ? err.message : err));
         }
       });
     } catch (err) {
-      status.textContent = "Failed to load: " + (err && err.message ? err.message : err);
+      if (loading) loading.textContent = "Failed to load launch settings.";
+      setStatus("Error: " + (err && err.message ? err.message : err));
     }
   })();
 </script>
