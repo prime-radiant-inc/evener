@@ -1043,6 +1043,8 @@ func TestSpawnTemplate_HasSchemaAdvancedRoot(t *testing.T) {
 		`document.querySelectorAll("[data-launch-env-fallback]")`,
 		`button.dataset.settingsModelPicker = "true"`,
 		`validateAdvancedPathScalars`,
+		`command.dataset.launchMcpCommand = "true"`,
+		`validateMCPCommandInput(command)`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Fatalf("spawn.js missing %q", want)

@@ -1946,6 +1946,23 @@ func validateLaunchPath(params appwire.PathValidateParams) appwire.PathValidateR
 	if !filepath.IsAbs(path) {
 		return appwire.PathValidateResponse{Path: path, Valid: false, Error: "absolute path required"}
 	}
+	if kind == "output-file" {
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			return appwire.PathValidateResponse{Path: path, Valid: false, Error: "path is a directory"}
+		}
+		parent := filepath.Dir(path)
+		info, err := os.Stat(parent)
+		if err != nil {
+			return appwire.PathValidateResponse{Path: path, Valid: false, Error: err.Error()}
+		}
+		if !info.IsDir() {
+			return appwire.PathValidateResponse{Path: path, Valid: false, Error: "parent path is not a directory"}
+		}
+		if info.Mode().Perm()&0o222 == 0 {
+			return appwire.PathValidateResponse{Path: path, Valid: false, Error: "parent directory is not writable"}
+		}
+		return appwire.PathValidateResponse{Path: path, Valid: true}
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		return appwire.PathValidateResponse{Path: path, Valid: false, Error: err.Error()}

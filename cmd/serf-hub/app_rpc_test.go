@@ -2556,6 +2556,28 @@ func TestValidateLaunchPathAcceptsExecutableCommand(t *testing.T) {
 	}
 }
 
+func TestValidateLaunchPathAcceptsMissingOutputFileWithWritableParent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trace.jsonl")
+	resp := validateLaunchPath(appwire.PathValidateParams{Path: path, Kind: "output-file"})
+	if !resp.Valid {
+		t.Fatalf("valid=false error=%q", resp.Error)
+	}
+	if resp.Path != path {
+		t.Fatalf("path=%q, want %q", resp.Path, path)
+	}
+}
+
+func TestValidateLaunchPathRejectsOutputFileWithMissingParent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "trace.jsonl")
+	resp := validateLaunchPath(appwire.PathValidateParams{Path: path, Kind: "output-file"})
+	if resp.Valid {
+		t.Fatalf("valid=true, want false")
+	}
+	if !strings.Contains(resp.Error, "no such file") {
+		t.Fatalf("error=%q", resp.Error)
+	}
+}
+
 func TestHubRPCThreadStartRejectsModelOutsideSerfLaunchContractBeforeSpawn(t *testing.T) {
 	runDir := t.TempDir()
 	var spawnCalled bool

@@ -705,15 +705,19 @@
     const command = document.createElement("input");
     command.type = "text";
     command.placeholder = "command";
+    command.dataset.launchMcpCommand = "true";
+    command.addEventListener("change", () => validateMCPCommandInput(command));
     const args = document.createElement("input");
     args.type = "text";
     args.placeholder = "args";
     const add = document.createElement("button");
     add.type = "button";
     add.textContent = "add";
-    add.addEventListener("click", () => {
+    add.addEventListener("click", async () => {
       const spec = { name: name.value.trim(), command: command.value.trim(), args: args.value.trim() ? args.value.trim().split(/\s+/) : [] };
       if (!spec.name || !spec.command) return;
+      if (!(await validateMCPCommandInput(command))) return;
+      spec.command = command.value.trim();
       const li = document.createElement("li");
       li.dataset.spec = JSON.stringify(spec);
       const span = document.createElement("span");
@@ -813,11 +817,52 @@
     return true;
   }
 
-  async function validateAdvancedPathScalars() {
+  function validateAdvancedPathScalars() {
     const inputs = Array.from(document.querySelectorAll("[data-launch-path-kind][data-launch-wire-field]"));
-    for (const input of inputs) {
-      if (!(await validatePathInput(input))) return false;
+    if (inputs.length === 0) return true;
+    return (async () => {
+      for (const input of inputs) {
+        if (!(await validatePathInput(input))) return false;
+      }
+      return true;
+    })();
+  }
+
+  async function validateMCPCommandInput(input) {
+    if (!input) return true;
+    const value = (input.value || "").trim();
+    input.dataset.launchInvalid = "";
+    input.setCustomValidity("");
+    if (!value) return true;
+    if (!window.launchconfig || !window.launchconfig.validatePath) return true;
+    const result = await window.launchconfig.validatePath(value, "command");
+    if (!result || !result.valid) {
+      input.dataset.launchInvalid = "true";
+      input.setCustomValidity((result && result.error) || "invalid command");
+      input.reportValidity();
+      return false;
     }
+    input.value = result.path || value;
+    input.setCustomValidity("");
+    return true;
+  }
+
+  function validateAdvancedMCPCommands() {
+    const commands = Array.from(document.querySelectorAll("[data-launch-mcp-command]"));
+    if (commands.length === 0) return true;
+    return (async () => {
+      for (const input of commands) {
+        if (!(await validateMCPCommandInput(input))) return false;
+      }
+      return true;
+    })();
+  }
+
+  async function validateAdvancedControls() {
+    const pathResult = validateAdvancedPathScalars();
+    if (pathResult !== true && !(await pathResult)) return false;
+    const mcpResult = validateAdvancedMCPCommands();
+    if (mcpResult !== true && !(await mcpResult)) return false;
     return true;
   }
 
@@ -917,7 +962,7 @@
     const showResolvedBtn = document.getElementById("ovr-show-resolved");
     if (showResolvedBtn) {
       showResolvedBtn.addEventListener("click", async () => {
-        if (!(await validateAdvancedPathScalars())) return;
+        if (!(await validateAdvancedControls())) return;
         const cwd = document.querySelector("[name=working_dir]").value;
         const overrides = collectAdvancedOverrides();
         const r = await launchconfig.resolve(cwd, overrides);
@@ -993,7 +1038,10 @@
         if (ta) ta.focus();
         return;
       }
-      if (!(await validateAdvancedPathScalars())) return;
+      const validationResult = validateAdvancedPathScalars();
+      if (validationResult !== true && !(await validationResult)) return;
+      const mcpValidation = validateAdvancedMCPCommands();
+      if (mcpValidation !== true && !(await mcpValidation)) return;
       const launchOverrides = collectAdvancedOverrides();
       const body = {
         launch_overrides: launchOverrides,
