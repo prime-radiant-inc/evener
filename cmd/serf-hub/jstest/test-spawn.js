@@ -259,6 +259,34 @@ assert(
   "branch input should update chip text",
 );
 
+let advancedModelStartBody = null;
+formDom.window.SerfAppwire = {
+  startThread(body) {
+    advancedModelStartBody = body;
+    return Promise.reject(new Error("advanced model test stop"));
+  },
+};
+formDom.window.document.querySelector('input[name="model"]').value = "openai/chip-model";
+const advancedModelInput = formDom.window.document.createElement("input");
+advancedModelInput.type = "hidden";
+advancedModelInput.dataset.launchWireField = "model";
+advancedModelInput.dataset.launchKind = "modelPicker";
+advancedModelInput.value = "openai/advanced-model";
+formDom.window.document.querySelector("[data-spawn-form]").appendChild(advancedModelInput);
+formDom.window.document.querySelector('textarea[name="prompt"]').value = "use advanced model";
+formDom.window.document.querySelector("[data-spawn-form]").dispatchEvent(new formDom.window.Event("submit", {
+  bubbles: true,
+  cancelable: true,
+}));
+assert(advancedModelStartBody && advancedModelStartBody.model === "openai/advanced-model",
+  "advanced schema model should win over chip model in appwire start payload");
+assert(advancedModelStartBody.launch_overrides && advancedModelStartBody.launch_overrides.model === "openai/advanced-model",
+  "advanced schema model should remain present in launch overrides");
+assert(formDom.window.localStorage.getItem("serf-hub.spawn-defaults.global.model") === "openai/chip-model",
+  "advanced per-launch model must not be persisted as sticky chip default");
+advancedModelInput.remove();
+formDom.window.document.querySelector('input[name="model"]').value = "";
+
 // Submitting with an empty prompt should be blocked by the defensive
 // guard and surface an in-page diagnostic rather than firing a request.
 let blockedFetchCalled = false;

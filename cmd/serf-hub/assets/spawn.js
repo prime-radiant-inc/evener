@@ -1048,11 +1048,12 @@
       const mcpValidation = validateAdvancedMCPCommands();
       if (mcpValidation !== true && !(await mcpValidation)) return;
       const launchOverrides = collectAdvancedOverrides();
+      const chipModel = fd.get("model") || "";
       const body = {
         launch_overrides: launchOverrides,
         prompt: rawPrompt,
         harness: fd.get("harness") || "serf",
-        model: fd.get("model") || "",
+        model: advancedOverrideValue(launchOverrides, "model") || chipModel,
         working_dir: fd.get("working_dir") || "",
         branch: fd.get("branch") || "",
         access_mode: fd.get("access_mode") || "full",
@@ -1067,7 +1068,7 @@
       // Persist sticky defaults (excluding the prompt override and the
       // ephemeral attachments list).
       saveDefaults({
-        model: body.model,
+        model: chipModel,
         harness: body.harness,
         working_dir: body.working_dir,
         branch: body.branch,
