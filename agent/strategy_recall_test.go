@@ -69,7 +69,7 @@ func TestRecallStrategy_AfterAction_Noop(t *testing.T) {
 
 func TestRecallStrategy_ManageContext_DelegatesToCompact(t *testing.T) {
 	client := llm.NewClient()
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewContextManager(profile, client)
 
 	rs := NewRecallStrategy(cm, nil)

@@ -79,7 +79,7 @@ func sessionNamerEnabled(profile ProviderProfile) bool {
 	if profile == nil {
 		return false
 	}
-	return sessionNamerModel(profile) != ""
+	return configuredSessionNamerModel(profile) != ""
 }
 
 func sessionNamerModel(profile ProviderProfile) string {

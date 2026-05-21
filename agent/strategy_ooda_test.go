@@ -42,7 +42,7 @@ func TestOODAStrategy_Tools_InheritsFromSessionLogStrategy(t *testing.T) {
 
 func TestOODAStrategy_ManageContext_NoOrientMessageWhenLogEmpty(t *testing.T) {
 	client := llm.NewClient()
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewContextManager(profile, client)
 
 	// Set thresholds high so no compaction occurs.
@@ -81,7 +81,7 @@ func TestOODAStrategy_ManageContext_NoOrientMessageWhenLogEmpty(t *testing.T) {
 
 func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *testing.T) {
 	client := llm.NewClient()
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewContextManager(profile, client)
 
 	// Set thresholds high so no compaction occurs.
@@ -155,7 +155,7 @@ func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *tes
 
 func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 	client := llm.NewClient()
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewContextManager(profile, client)
 
 	// Set thresholds high so no compaction occurs.
@@ -208,7 +208,7 @@ func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 
 func TestOODAStrategy_ManageContext_AppliesCompactionLayers(t *testing.T) {
 	client := llm.NewClient()
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewContextManager(profile, client)
 
 	// Set low thresholds to trigger compaction.
@@ -311,7 +311,7 @@ func TestOODAStrategy_AfterAction_InheritsFromSessionLogStrategy(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := testOpenAIProfileWithContextWindow(1000)
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")

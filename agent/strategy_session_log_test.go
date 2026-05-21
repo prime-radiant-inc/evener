@@ -47,7 +47,7 @@ func TestSessionLogStrategy_Tools_RegistersRecall(t *testing.T) {
 
 func TestSessionLogStrategy_ManageContext_ObservationMaskAtHighPressure(t *testing.T) {
 	client := llm.NewClient()
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewContextManager(profile, client)
 
 	// Set a low observation mask threshold so compaction triggers on our test data.
@@ -124,7 +124,7 @@ func TestSessionLogStrategy_ManageContext_ObservationMaskAtHighPressure(t *testi
 
 func TestSessionLogStrategy_ManageContext_SessionLogCheckpointAtHighPressure(t *testing.T) {
 	client := llm.NewClient()
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewContextManager(profile, client)
 
 	// Set thresholds so checkpoint triggers but not summarize.
@@ -251,7 +251,7 @@ func TestSessionLogStrategy_AfterAction_CallsForkSummarizeAndAppendsToLog(t *tes
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := testOpenAIProfileWithContextWindow(1000)
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
@@ -308,7 +308,7 @@ func TestSessionLogStrategy_AfterAction_LLMErrorIsNonFatal(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := testOpenAIProfileWithContextWindow(1000)
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
@@ -462,7 +462,7 @@ func TestSessionLogStrategy_SessionLogCheckpoint_TurnKind(t *testing.T) {
 
 func TestSessionLogStrategy_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 	client := llm.NewClient()
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewContextManager(profile, client)
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001
@@ -524,7 +524,7 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 	}
 	client.Register(f)
 
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewContextManager(profile, client)
 	// All thresholds very low so all layers fire.
 	cm.ObservationMaskThreshold = 0.0001

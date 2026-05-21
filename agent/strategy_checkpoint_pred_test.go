@@ -36,7 +36,7 @@ func TestCheckpointPredStrategy_AfterAction_Noop(t *testing.T) {
 
 func TestCheckpointPredStrategy_ManageContext_NoCompactionBelowThreshold(t *testing.T) {
 	client := llm.NewClient()
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewContextManager(profile, client)
 	s := NewCheckpointPredStrategy(cm)
 
@@ -61,7 +61,7 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_FallbackOnError(t *testing.
 	// When no LLM client is available, predictive checkpoint should fall back
 	// to deterministic checkpoint.
 	client := llm.NewClient()
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewContextManager(profile, client)
 	// Set very low thresholds so compaction fires.
 	cm.ObservationMaskThreshold = 0.0001
@@ -127,8 +127,8 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_WithLLM(t *testing.T) {
 			// Predictive checkpoint LLM call.
 			func(req llm.Request) llm.Response {
 				return llm.Response{
-					Model:  "gpt-4.1-mini",
-					Finish: llm.FinishReason{Reason: llm.FinishReasonStop},
+					Model:   "gpt-4.1-mini",
+					Finish:  llm.FinishReason{Reason: llm.FinishReasonStop},
 					Message: llm.Assistant("Task: Fix auth bug in auth.go. Progress: Read the file, identified the issue. Next: Apply fix and run tests."),
 				}
 			},
@@ -136,7 +136,7 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_WithLLM(t *testing.T) {
 	}
 	client.Register(f)
 
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewContextManager(profile, client)
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001
@@ -189,7 +189,7 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_TurnKind(t *testing.T) {
 	}
 	client.Register(f)
 
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewContextManager(profile, client)
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001
@@ -225,7 +225,7 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_FallbackCheckpoint(t *test
 	// When predictiveCheckpoint fails and falls back to deterministic checkpoint,
 	// the callback should fire with the checkpoint turn.
 	client := llm.NewClient()
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewContextManager(profile, client)
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001
@@ -283,7 +283,7 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_PredictiveCheckpoint(t *te
 	}
 	client.Register(f)
 
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewContextManager(profile, client)
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001
@@ -355,7 +355,7 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 	}
 	client.Register(f)
 
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewContextManager(profile, client)
 	// All thresholds very low so all layers fire.
 	cm.ObservationMaskThreshold = 0.0001

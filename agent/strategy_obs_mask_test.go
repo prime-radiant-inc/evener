@@ -36,7 +36,7 @@ func TestObsMaskStrategy_AfterAction_Noop(t *testing.T) {
 
 func TestObsMaskStrategy_ManageContext_NoCompactionBelowThreshold(t *testing.T) {
 	client := llm.NewClient()
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewContextManager(profile, client)
 	s := NewObsMaskStrategy(cm)
 
@@ -149,7 +149,7 @@ func TestAggressiveMaskObservations_SkipsAlreadyMasked(t *testing.T) {
 
 func TestObsMaskStrategy_ManageContext_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 	client := llm.NewClient()
-	profile := NewOpenAIProfile("gpt-5.2")
+	profile := testOpenAIProfileWithContextWindow(1000)
 	cm := NewContextManager(profile, client)
 	// Set thresholds so both layers fire.
 	cm.ObservationMaskThreshold = 0.0001
