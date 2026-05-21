@@ -159,3 +159,51 @@ decision = "trusted"
 		t.Errorf("expected diagnostic about ../outside, got %v", got.Diagnostics)
 	}
 }
+
+func TestResolve_GlobalProjectInvalidPathsReportDiagnostics(t *testing.T) {
+	stateRoot := t.TempDir()
+	cwd := t.TempDir()
+	pid := ProjectID(cwd)
+	writeFile(t, filepath.Join(stateRoot, "launch.toml"), `skills_dirs = ["relative-skills", "/global-ok"]
+system_prompt_mode = "file"
+system_prompt_file = "relative-system.md"
+trace_file = "relative-trace.out"
+`)
+	writeFile(t, filepath.Join(stateRoot, "projects", pid, "launch.toml"), `skills_dirs = ["project-relative-skills"]
+trace_file = "project-relative-trace.out"
+`)
+
+	got, err := Resolve(stateRoot, cwd, Layer{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.Effective.SystemPromptFile != "" {
+		t.Fatalf("SystemPromptFile = %q, want rejected", got.Effective.SystemPromptFile)
+	}
+	if got.Effective.TraceFile != "" {
+		t.Fatalf("TraceFile = %q, want rejected", got.Effective.TraceFile)
+	}
+	if len(got.Effective.SkillsDirs) != 1 || got.Effective.SkillsDirs[0] != "/global-ok" {
+		t.Fatalf("SkillsDirs = %#v, want only absolute global entry", got.Effective.SkillsDirs)
+	}
+	for _, want := range []Diagnostic{
+		{Layer: LayerGlobal, Field: "skills_dirs"},
+		{Layer: LayerGlobal, Field: "system_prompt_file"},
+		{Layer: LayerGlobal, Field: "trace_file"},
+		{Layer: LayerProject, Field: "skills_dirs"},
+		{Layer: LayerProject, Field: "trace_file"},
+	} {
+		if !hasDiagnostic(got.Diagnostics, want.Layer, want.Field) {
+			t.Fatalf("missing diagnostic for %s/%s in %#v", want.Layer, want.Field, got.Diagnostics)
+		}
+	}
+}
+
+func hasDiagnostic(diags []Diagnostic, layer LayerName, field string) bool {
+	for _, d := range diags {
+		if d.Layer == layer && d.Field == field {
+			return true
+		}
+	}
+	return false
+}

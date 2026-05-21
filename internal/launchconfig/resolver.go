@@ -13,12 +13,13 @@ import (
 func Resolve(stateRoot, cwd string, overrides Layer) (Resolved, error) {
 	paths := PathsFor(stateRoot, cwd)
 	layers := map[LayerName]Layer{}
+	var pathDiags []Diagnostic
 
 	g, err := LoadLayer(paths.Global)
 	if err != nil {
 		return Resolved{}, fmt.Errorf("global: %w", err)
 	}
-	g = validateAbsolutePaths(LayerGlobal, g, nil)
+	g = validateAbsolutePaths(LayerGlobal, g, &pathDiags)
 	layers[LayerGlobal] = g
 
 	// In-repo: load + hash + trust check.
@@ -31,13 +32,14 @@ func Resolve(stateRoot, cwd string, overrides Layer) (Resolved, error) {
 	if err != nil {
 		return Resolved{}, fmt.Errorf("project: %w", err)
 	}
-	p = validateAbsolutePaths(LayerProject, p, nil)
+	p = validateAbsolutePaths(LayerProject, p, &pathDiags)
 	layers[LayerProject] = p
 
 	layers[LayerLaunch] = overrides
 
 	resolved, _ := mergeLayers(layers)
 	resolved.Repo = repoStatus
+	resolved.Diagnostics = append(resolved.Diagnostics, pathDiags...)
 	resolved.Diagnostics = append(resolved.Diagnostics, repoDiags...)
 	resolved.Diagnostics = append(resolved.Diagnostics, projectDiags...)
 	return resolved, nil
