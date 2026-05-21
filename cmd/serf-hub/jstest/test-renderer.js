@@ -89,9 +89,11 @@ pass(steerings.length === 0, "expected 0 steering dividers, got " + steerings.le
 const sysLines = conv.querySelectorAll(".system-line");
 pass(sysLines.length === 2, "expected 2 system-lines, got " + sysLines.length + ": " + Array.from(sysLines).map(e => e.textContent).join(" | "));
 if (sysLines.length === 2) {
-  const t1 = sysLines[0].textContent;
-  pass(t1.includes("marked") && t1.includes("Understand task") && t1.includes("done"), "first system-line wrong: " + t1);
-  pass(!t1.includes("#1"), "first system-line should use description not #id: " + t1);
+  const detail1 = sysLines[0].querySelector(".task-system-details");
+  const t1 = sysLines[0].childNodes[1] && sysLines[0].childNodes[1].textContent;
+  pass(t1.includes("marked") && t1.includes("Understand task") && t1.includes("done"), "first system-line wrong: " + sysLines[0].textContent);
+  pass(!t1.includes("#1"), "first system-line prose should use description not #id: " + sysLines[0].textContent);
+  pass(detail1 && detail1.textContent.includes("Understand the task."), "first system-line should expose task prompt details");
   const t2 = sysLines[1].textContent;
   pass(t2.includes("now on") && t2.includes("Do the work"), "second system-line wrong: " + t2);
 }

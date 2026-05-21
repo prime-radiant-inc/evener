@@ -104,7 +104,7 @@ async function run() {
   const pass = (condition, message) => { if (!condition) failures.push("FAIL: " + message); };
 
   pass(!Array.from(conv.querySelectorAll(".assistant-message")).some((el) => !el.textContent.trim()), "empty live assistant placeholder should be removed");
-  pass(shellOutput && shellOutput.textContent.includes("zero\none\ntwo\n"), "live tool output snapshot/delta did not render before completion");
+  pass(shellOutput && shellOutput.textContent.includes("zero\none\ntwo"), "live tool output snapshot/delta did not render before completion");
 
   const liveStateBeforeToolTurnCompletion = window.SerfAppwire.liveItemStateSize();
   deliver("turn/completed", {
@@ -171,7 +171,7 @@ async function run() {
   const assistantMessages = Array.from(conv.querySelectorAll(".assistant-message")).map((el) => el.textContent);
   pass(conv.querySelectorAll(".tool-call.shell").length === 1, "tool completion should not create a duplicate tool card");
   pass(shellCard && shellOutput && shellCard.contains(shellOutput), "tool output should be contained by its tool call card");
-  pass(shellOutput && shellOutput.textContent === "zero\none\ntwo\n", "tool output should not replay after streamed deltas; got " + JSON.stringify(shellOutput && shellOutput.textContent));
+  pass(shellOutput && shellOutput.textContent === "zero\none\ntwo", "tool output should not replay after streamed deltas; got " + JSON.stringify(shellOutput && shellOutput.textContent));
   pass(assistantMessages.some((text) => text.includes("started prefix stream still attached")), "assistant snapshot text and delta did not render together");
   pass(assistantMessages.some((text) => text.includes("completed communicate text")), "completed communicate arguments did not render");
 

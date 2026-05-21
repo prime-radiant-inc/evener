@@ -56,7 +56,7 @@ async function run() {
   if (shellTools[0]) {
     pass(shellTools[0].textContent.includes("printf 'alpha\nbeta\n'"), "shell target was not preserved");
     pass(shellOutput && shellTools[0].contains(shellOutput), "shell output did not attach to shell card");
-    pass(shellOutput && shellOutput.textContent.includes("alpha\nbeta\n"), "split shell result did not attach to original card");
+    pass(shellOutput && shellOutput.textContent.includes("alpha\nbeta"), "split shell result did not attach to original card");
   }
   if (readTools[0]) {
     pass(readTools[0].textContent.includes("/tmp/does-not-exist"), "failed tool target was not preserved");

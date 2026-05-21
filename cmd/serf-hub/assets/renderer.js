@@ -279,7 +279,7 @@
       if (!Array.isArray(tasks)) return;
       for (const t of tasks) {
         if (t && t.id != null && t.description) {
-          taskDescriptions.set(t.id, t.description);
+          rememberTask(t);
         }
       }
       const done = tasks.filter(t => t.status === "done").length;
@@ -651,6 +651,7 @@
             this.suppressedToolCalls.clear();
             this.pendingTaskCalls.clear();
             taskDescriptions.clear();
+            taskDetails.clear();
             this.lastCurrentTaskId = null;
             this.userTurnIndex = 0;
             this.entryIndex = 0;
@@ -725,7 +726,7 @@
             if (args.action === "append" && Array.isArray(args.tasks)) {
               for (const t of args.tasks) {
                 if (t && t.id != null && t.description) {
-                  taskDescriptions.set(t.id, t.description);
+                  rememberTask(t);
                 }
               }
             }
@@ -1395,7 +1396,7 @@
         //     "started X. now on X" redundancy)
         const idNum = summary.taskID ? parseInt(summary.taskID, 10) : null;
         if (idNum && summary.taskTitle) {
-          taskDescriptions.set(idNum, summary.taskTitle);
+          rememberTask({ id: idNum, description: summary.taskTitle, prompt: summary.taskPrompt });
         }
         if (idNum && idNum !== this.lastCurrentTaskId) {
           const previousID = this.lastCurrentTaskId;
@@ -1406,6 +1407,7 @@
           line.className = "system-line system-line-now";
           appendTaskIcon(line, "in_progress");
           line.appendChild(document.createTextNode('now on "' + summary.taskTitle + '"'));
+          appendTaskDetailDisclosure(line, taskDetailFor(idNum));
           this.conversation.appendChild(line);
         }
         return;
@@ -1418,7 +1420,7 @@
         // Seed all descriptions from the parsed list.
         if (summary.tasks) {
           for (const t of summary.tasks) {
-            taskDescriptions.set(t.id, t.description);
+            rememberTask(t);
           }
         }
         const total = summary.tasks ? summary.tasks.length : 0;
@@ -1472,6 +1474,7 @@
         line.className = "system-line";
         appendTaskIcon(line, taskListIconKind(args));
         line.appendChild(document.createTextNode(text));
+        appendTaskListDetails(line, args);
         this.conversation.appendChild(line);
       }
       this.refreshTaskBadgeSoon();
@@ -1942,9 +1945,24 @@
   // background poller fires. Used by the system-line renderer to print
   // task transitions by description rather than by raw id.
   const taskDescriptions = new Map();
+  const taskDetails = new Map();
+  function rememberTask(t) {
+    if (!t || t.id == null) return;
+    const id = Number(t.id);
+    if (!Number.isFinite(id)) return;
+    const prev = taskDetails.get(id) || {};
+    const next = Object.assign({}, prev, t, { id });
+    if (!next.description && next.title) next.description = next.title;
+    if (next.description) taskDescriptions.set(id, next.description);
+    taskDetails.set(id, next);
+  }
   function taskDesc(id) {
     const d = taskDescriptions.get(id);
     return d ? '"' + d + '"' : "#" + id;
+  }
+  function taskDetailFor(id) {
+    const n = Number(id);
+    return Number.isFinite(n) ? taskDetails.get(n) : null;
   }
 
   function parseArgs(json) {
@@ -1969,15 +1987,21 @@
       .replace(/\s*<\/SYSTEM-REMINDER>\s*$/i, "")
       .trim();
 
-    const taskMatch = stripped.match(/<CURRENT-TASK\s+id="(\d+)">\s*<TITLE>([^<]+)<\/TITLE>/);
+    const taskMatch = stripped.match(/<CURRENT-TASK\s+id="(\d+)">([\s\S]*?)<\/CURRENT-TASK>/);
     if (taskMatch) {
+      const body = taskMatch[2] || "";
+      const titleMatch = body.match(/<TITLE>([\s\S]*?)<\/TITLE>/);
+      const instrMatch = body.match(/<INSTRUCTIONS>([\s\S]*?)<\/INSTRUCTIONS>/);
+      const title = titleMatch ? titleMatch[1].trim() : "";
+      const prompt = instrMatch ? instrMatch[1].trim() : "";
       return {
         kind: "current-task",
         label: "current task",
-        detail: "#" + taskMatch[1] + " " + taskMatch[2].trim(),
+        detail: "#" + taskMatch[1] + " " + title,
         cleanText: stripped,
         taskID: taskMatch[1],
-        taskTitle: taskMatch[2].trim(),
+        taskTitle: title,
+        taskPrompt: prompt,
       };
     }
     if (/^Task list:/m.test(stripped)) {
@@ -2027,6 +2051,83 @@
     icon.className = "task-system-icon task-system-icon-" + (kind || "open");
     icon.textContent = kind === "done" ? "✓" : "□";
     line.appendChild(icon);
+  }
+
+  function taskDetailRows(t) {
+    if (!t) return [];
+    const rows = [];
+    if (t.type) rows.push(["type", t.type]);
+    if (t.status) rows.push(["status", t.status]);
+    if (Array.isArray(t.depends_on) && t.depends_on.length) rows.push(["depends on", t.depends_on.map(x => "#" + x).join(", ")]);
+    if (t.reasoning_effort) rows.push(["reasoning", t.reasoning_effort]);
+    if (t.prompt) rows.push(["prompt", t.prompt]);
+    if (t.notes) rows.push(["notes", Array.isArray(t.notes) ? t.notes.join("\n") : t.notes]);
+    return rows;
+  }
+
+  function appendTaskDetailDisclosure(parent, task) {
+    const rows = taskDetailRows(task);
+    if (!rows.length) return;
+    const details = document.createElement("details");
+    details.className = "task-system-details";
+    const summary = document.createElement("summary");
+    summary.textContent = "details";
+    details.appendChild(summary);
+    const dl = document.createElement("dl");
+    dl.className = "task-system-detail";
+    for (const row of rows) {
+      const dt = document.createElement("dt");
+      dt.textContent = row[0];
+      const dd = document.createElement("dd");
+      dd.textContent = row[1];
+      dl.appendChild(dt);
+      dl.appendChild(dd);
+    }
+    details.appendChild(dl);
+    parent.appendChild(details);
+  }
+
+  function appendTaskListDetails(parent, args) {
+    if (!args) return;
+    const tasks = [];
+    if (args.action === "append" && Array.isArray(args.tasks)) {
+      for (const t of args.tasks) { rememberTask(t); if (t) tasks.push(t); }
+    } else if (args.action === "update" && Array.isArray(args.updates)) {
+      for (const u of args.updates) {
+        const cached = taskDetailFor(u && u.id) || {};
+        const merged = Object.assign({}, cached, u || {});
+        if (u && u.id != null) rememberTask(merged);
+        tasks.push(merged);
+      }
+    }
+    const useful = tasks.filter(t => taskDetailRows(t).length);
+    if (!useful.length) return;
+    const details = document.createElement("details");
+    details.className = "task-system-details";
+    const summary = document.createElement("summary");
+    summary.textContent = useful.length === 1 ? "task details" : useful.length + " task details";
+    details.appendChild(summary);
+    for (const t of useful) {
+      const section = document.createElement("div");
+      section.className = "task-system-detail-item";
+      const title = document.createElement("div");
+      title.className = "task-system-detail-title";
+      title.textContent = "#" + (t.id || "?") + (t.description ? ": " + t.description : "");
+      section.appendChild(title);
+      const dl = document.createElement("dl");
+      dl.className = "task-system-detail";
+      for (const row of taskDetailRows(t)) {
+        const dt = document.createElement("dt");
+        dt.textContent = row[0];
+        const dd = document.createElement("dd");
+        dd.textContent = row[1];
+        dl.appendChild(dt);
+        dl.appendChild(dd);
+      }
+      section.appendChild(dl);
+      details.appendChild(section);
+    }
+    parent.appendChild(details);
   }
 
   function taskListIconKind(args) {
@@ -2167,6 +2268,49 @@
     if (!text.trim()) state.body.outputPre.style.display = "none";
   }
 
+
+  function splitOutputLines(text) {
+    text = String(text || "");
+    if (!text) return [];
+    const lines = text.split("\n");
+    if (lines.length && lines[lines.length - 1] === "") lines.pop();
+    return lines;
+  }
+
+  function outputPreviewBody(className, outputClassName, el) {
+    const wrap = document.createElement("div");
+    wrap.className = "tool-body output-preview-body " + className;
+    const pre = document.createElement("pre");
+    pre.className = outputClassName + " output-preview";
+    wrap.appendChild(pre);
+    el.appendChild(wrap);
+    return { wrap, pre };
+  }
+
+  function setExpandableOutput(body, text, opts) {
+    if (!body || !body.pre || !body.wrap) return;
+    opts = opts || {};
+    const lines = splitOutputLines(text);
+    body.pre.textContent = lines.slice(0, 5).join("\n");
+    body.pre.style.display = lines.length ? "" : "none";
+    if (body.moreWrap) {
+      body.moreWrap.remove();
+      body.moreWrap = null;
+    }
+    if (lines.length <= 5) return;
+    const moreWrap = document.createElement("details");
+    moreWrap.className = "tool-output-more " + (opts.moreClass || "");
+    const morePre = document.createElement("pre");
+    morePre.className = (opts.outputClassName || body.pre.className || "") + " tool-output-rest";
+    morePre.textContent = lines.slice(5).join("\n");
+    const summary = document.createElement("summary");
+    summary.textContent = "show " + (lines.length - 5) + " more lines";
+    moreWrap.appendChild(morePre);
+    moreWrap.appendChild(summary);
+    body.wrap.appendChild(moreWrap);
+    body.moreWrap = moreWrap;
+  }
+
   function readLineRange(args, out) {
     args = args || {};
     const start = Number.isFinite(Number(args.offset)) && Number(args.offset) > 0 ? Number(args.offset) : 1;
@@ -2193,35 +2337,10 @@
     return { wrap, outputPre };
   }
 
-  function splitReadLines(text) {
-    text = String(text || "");
-    if (!text) return [];
-    const lines = text.split("\n");
-    if (lines.length && lines[lines.length - 1] === "") lines.pop();
-    return lines;
-  }
-
   function setReadOutput(state, text) {
     if (!state.body || !state.body.outputPre) return;
-    const lines = splitReadLines(text);
-    state.body.outputPre.textContent = lines.slice(0, 5).join("\n");
-    state.body.outputPre.style.display = lines.length ? "" : "none";
-    if (state.body.moreWrap) {
-      state.body.moreWrap.remove();
-      state.body.moreWrap = null;
-    }
-    if (lines.length <= 5) return;
-    const moreWrap = document.createElement("details");
-    moreWrap.className = "read-tool-more";
-    const summary = document.createElement("summary");
-    summary.textContent = "show " + (lines.length - 5) + " more lines";
-    const morePre = document.createElement("pre");
-    morePre.className = "cheap-tool-output read-tool-rest";
-    morePre.textContent = lines.slice(5).join("\n");
-    moreWrap.appendChild(summary);
-    moreWrap.appendChild(morePre);
-    state.body.wrap.appendChild(moreWrap);
-    state.body.moreWrap = moreWrap;
+    setExpandableOutput({ wrap: state.body.wrap, pre: state.body.outputPre, moreWrap: state.body.moreWrap }, text, { moreClass: "read-tool-more", outputClassName: "cheap-tool-output read-tool-rest" });
+    state.body.moreWrap = state.body.wrap.querySelector(":scope > .read-tool-more");
   }
 
   function readToolBodyDelta(state, out) {
@@ -2285,34 +2404,24 @@
       return data.error ? "error" : "ok";
     },
     body: (args, conversation) => {
-      const wrap = document.createElement("details");
-      wrap.className = "tool-body shell-body";
-      const summary = document.createElement("summary");
-      summary.textContent = "output";
-      const pre = document.createElement("pre");
-      pre.className = "shell-output";
-      wrap.appendChild(summary);
-      wrap.appendChild(pre);
-      conversation.appendChild(wrap);
-      return { wrap, pre };
+      return outputPreviewBody("shell-body", "shell-output", conversation);
     },
     bodyDelta: (state, out) => {
       if (state.body && state.body.pre) {
-        state.body.pre.textContent = clip(out, 8000);
+        setExpandableOutput(state.body, clip(out, 8000), { moreClass: "shell-output-more", outputClassName: "shell-output" });
       }
     },
     bodyEnd: (state, data, out) => {
       if (!state.body) return;
-      const pre = state.body.pre;
-      pre.textContent = clip(out, 8000);
+      setExpandableOutput(state.body, clip(out, 8000), { moreClass: "shell-output-more", outputClassName: "shell-output" });
       // Auto-open if non-empty and exit non-zero or output >2 lines.
       const st = parseToolState(data.tool_state);
       const lines = (out.match(/\n/g) || []).length;
       const failed = data.error || (st && st.exit_code && st.exit_code !== 0);
       if (out.trim() === "") {
         state.body.wrap.style.display = "none";
-      } else if (failed || lines > 2) {
-        state.body.wrap.open = true;
+      } else if (failed && state.body.moreWrap) {
+        state.body.moreWrap.open = true;
       }
     },
   };
@@ -2673,7 +2782,7 @@
     if (Array.isArray(tasks)) {
       for (const t of tasks) {
         if (t && t.id != null && t.description) {
-          taskDescriptions.set(t.id, t.description);
+          rememberTask(t);
         }
       }
     }

@@ -225,14 +225,17 @@ await scenario("auto-advance steering becomes 'now on X'", [
     action: "update", updates: [{ id: 1, status: "done" }],
   }) }],
   ["TOOL_CALL_END", { call_id: "u1", output: "ok", tool_name: "task_list" }],
-  ["STEERING_INJECTED", { text: "<SYSTEM-REMINDER>\n<CURRENT-TASK id=\"2\">\n<TITLE>Second</TITLE>\n</CURRENT-TASK>\n</SYSTEM-REMINDER>" }],
-], ({ sysLines }) => {
+  ["STEERING_INJECTED", { text: "<SYSTEM-REMINDER>\n<CURRENT-TASK id=\"2\">\n<TITLE>Second</TITLE>\n<INSTRUCTIONS>Do the second task carefully.</INSTRUCTIONS>\n</CURRENT-TASK>\n</SYSTEM-REMINDER>" }],
+], ({ sysLines, conv }) => {
   const nowOn = sysLines.find(l => l.includes("now on"));
   if (!nowOn) return { ok: false, detail: "expected a 'now on' line on auto-advance: " + sysLines.join(" | ") };
   if (!nowOn.includes("Second")) return { ok: false, detail: "should name the new task: " + nowOn };
   // Make sure the LEADING current-task steering didn't emit "now on First"
   if (sysLines.some(l => l.includes("now on") && l.includes("First")))
     return { ok: false, detail: "leading steering should NOT emit 'now on First'" };
+  const details = conv.querySelector(".system-line-now .task-system-details");
+  if (!details) return { ok: false, detail: "now-on line should include task details disclosure" };
+  if (!details.textContent.includes("Do the second task carefully.")) return { ok: false, detail: "task prompt missing from details" };
   return { ok: true };
 });
 
