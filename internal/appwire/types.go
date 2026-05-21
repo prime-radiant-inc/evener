@@ -691,23 +691,33 @@ type AuthApiKeySetParams struct {
 // LaunchConfigLayer is the wire-level partial layer (every field optional;
 // pointer-typed scalars so "not set" is distinguishable from zero).
 type LaunchConfigLayer struct {
-	Schema             *int              `json:"schema,omitempty"`
-	Model              string            `json:"model,omitempty"`
-	FastCheapModel     string            `json:"fastCheapModel,omitempty"`
-	Agent              string            `json:"agent,omitempty"`
-	ReasoningEffort    string            `json:"reasoningEffort,omitempty"`
-	ContextStrategy    string            `json:"contextStrategy,omitempty"`
-	MaxRounds          *int              `json:"maxRounds,omitempty"`
-	MaxSubagentDepth   *int              `json:"maxSubagentDepth,omitempty"`
-	NoProjectPrompts   *bool             `json:"noProjectPrompts,omitempty"`
-	AppReplaySize      *int              `json:"appReplaySize,omitempty"`
-	SkillsDirs         []string          `json:"skillsDirs,omitempty"`
-	PluginDirs         []string          `json:"pluginDirs,omitempty"`
-	MCPConfigs         []string          `json:"mcpConfigs,omitempty"`
-	SystemPromptAppend []string          `json:"systemPromptAppend,omitempty"`
-	ModelFallbacks     []string          `json:"modelFallbacks,omitempty"`
-	MCPs               []MCPServerSpec   `json:"mcps,omitempty"`
-	Env                map[string]string `json:"env,omitempty"`
+	Schema                 *int              `json:"schema,omitempty"`
+	Model                  string            `json:"model,omitempty"`
+	FastCheapModel         string            `json:"fastCheapModel,omitempty"`
+	Agent                  string            `json:"agent,omitempty"`
+	ReasoningEffort        string            `json:"reasoningEffort,omitempty"`
+	ContextStrategy        string            `json:"contextStrategy,omitempty"`
+	MaxRounds              *int              `json:"maxRounds,omitempty"`
+	MaxSubagentDepth       *int              `json:"maxSubagentDepth,omitempty"`
+	NoProjectPrompts       *bool             `json:"noProjectPrompts,omitempty"`
+	AppReplaySize          *int              `json:"appReplaySize,omitempty"`
+	SkillsDirs             []string          `json:"skillsDirs,omitempty"`
+	PluginDirs             []string          `json:"pluginDirs,omitempty"`
+	MCPConfigs             []string          `json:"mcpConfigs,omitempty"`
+	SystemPromptMode       string            `json:"systemPromptMode,omitempty"`
+	SystemPromptFile       string            `json:"systemPromptFile,omitempty"`
+	SystemPromptText       string            `json:"systemPromptText,omitempty"`
+	SystemPromptAppendMode string            `json:"systemPromptAppendMode,omitempty"`
+	SystemPromptAppendFile string            `json:"systemPromptAppendFile,omitempty"`
+	SystemPromptAppendText string            `json:"systemPromptAppendText,omitempty"`
+	SystemPromptAppend     []string          `json:"systemPromptAppend,omitempty"`
+	ModelFallbacks         []string          `json:"modelFallbacks,omitempty"`
+	MCPs                   []MCPServerSpec   `json:"mcps,omitempty"`
+	Env                    map[string]string `json:"env,omitempty"`
+	Verbose                *bool             `json:"verbose,omitempty"`
+	TraceFile              string            `json:"traceFile,omitempty"`
+	CPUProfile             string            `json:"cpuProfile,omitempty"`
+	ExportATIFPath         string            `json:"exportATIFPath,omitempty"`
 }
 
 func (l LaunchConfigLayer) MarshalJSON() ([]byte, error) {

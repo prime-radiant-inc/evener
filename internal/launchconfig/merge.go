@@ -104,6 +104,54 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 				nonEmpty = true
 			}
 		}
+		if l.SystemPromptMode != "" {
+			eff.SystemPromptMode = l.SystemPromptMode
+			eff.SystemPromptFile = ""
+			eff.SystemPromptText = ""
+			if l.SystemPromptMode == "file" {
+				eff.SystemPromptFile = l.SystemPromptFile
+			}
+			if l.SystemPromptMode == "inline" {
+				eff.SystemPromptText = l.SystemPromptText
+			}
+			prov["system_prompt_mode"] = name
+			nonEmpty = true
+		}
+		if l.SystemPromptAppendMode != "" {
+			eff.SystemPromptAppendMode = l.SystemPromptAppendMode
+			eff.SystemPromptAppendFile = ""
+			eff.SystemPromptAppendText = ""
+			eff.SystemPromptAppend = nil
+			if l.SystemPromptAppendMode == "file" {
+				eff.SystemPromptAppendFile = l.SystemPromptAppendFile
+			}
+			if l.SystemPromptAppendMode == "inline" {
+				eff.SystemPromptAppendText = l.SystemPromptAppendText
+			}
+			prov["system_prompt_append_mode"] = name
+			nonEmpty = true
+		}
+		if l.Verbose != nil {
+			v := *l.Verbose
+			eff.Verbose = &v
+			prov["verbose"] = name
+			nonEmpty = true
+		}
+		if l.TraceFile != "" {
+			eff.TraceFile = l.TraceFile
+			prov["trace_file"] = name
+			nonEmpty = true
+		}
+		if l.CPUProfile != "" {
+			eff.CPUProfile = l.CPUProfile
+			prov["cpu_profile"] = name
+			nonEmpty = true
+		}
+		if l.ExportATIFPath != "" {
+			eff.ExportATIFPath = l.ExportATIFPath
+			prov["export_atif_path"] = name
+			nonEmpty = true
+		}
 
 		// Lists: append in layer order.
 		if len(l.SkillsDirs) > 0 {
@@ -121,7 +169,7 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 			prov["mcp_configs"] = name
 			nonEmpty = true
 		}
-		if len(l.SystemPromptAppend) > 0 {
+		if len(l.SystemPromptAppend) > 0 && l.SystemPromptAppendMode == "" {
 			eff.SystemPromptAppend = append(eff.SystemPromptAppend, l.SystemPromptAppend...)
 			prov["system_prompt_append"] = name
 			nonEmpty = true

@@ -45,6 +45,19 @@ func TestMerge_ScalarPointerSemantics(t *testing.T) {
 	}
 }
 
+func TestMergeLayers_SystemPromptModesOverrideByLayer(t *testing.T) {
+	resolved, _ := mergeLayers(map[LayerName]Layer{
+		LayerGlobal:  {SystemPromptMode: "file", SystemPromptFile: "/global.md", SystemPromptAppendMode: "file", SystemPromptAppendFile: "/global-append.md"},
+		LayerProject: {SystemPromptMode: "inline", SystemPromptText: "project", SystemPromptAppendMode: "inline", SystemPromptAppendText: "project append"},
+	})
+	if resolved.Effective.SystemPromptMode != "inline" || resolved.Effective.SystemPromptText != "project" {
+		t.Fatalf("effective system prompt = %#v", resolved.Effective)
+	}
+	if resolved.Effective.SystemPromptAppendMode != "inline" || resolved.Effective.SystemPromptAppendText != "project append" {
+		t.Fatalf("effective append prompt = %#v", resolved.Effective)
+	}
+}
+
 func TestMerge_ListAppendInLayerOrder(t *testing.T) {
 	g := Layer{SkillsDirs: []string{"/g1", "/g2"}}
 	r := Layer{SkillsDirs: []string{"/r1"}}

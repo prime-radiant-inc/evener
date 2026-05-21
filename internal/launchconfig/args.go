@@ -42,6 +42,24 @@ func ToArgs(r Resolved) []string {
 	if e.AppReplaySize != nil {
 		add("--app-replay-size", fmt.Sprintf("%d", *e.AppReplaySize))
 	}
+	if e.SystemPromptMode == "file" && e.SystemPromptFile != "" {
+		add("--system-prompt", e.SystemPromptFile)
+	}
+	if e.SystemPromptAppendMode == "file" && e.SystemPromptAppendFile != "" {
+		add("--system-prompt-append", e.SystemPromptAppendFile)
+	}
+	if e.Verbose != nil && *e.Verbose {
+		out = append(out, "--verbose")
+	}
+	if e.TraceFile != "" {
+		add("--trace", e.TraceFile)
+	}
+	if e.CPUProfile != "" {
+		add("--cpu-profile", e.CPUProfile)
+	}
+	if e.ExportATIFPath != "" {
+		add("--export-atif", e.ExportATIFPath)
+	}
 	for _, d := range e.SkillsDirs {
 		add("--skills-dir", d)
 	}

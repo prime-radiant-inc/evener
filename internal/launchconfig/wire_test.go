@@ -63,6 +63,27 @@ func TestToWirePreservesExplicitEmptyModelFallbacks(t *testing.T) {
 	}
 }
 
+func TestWire_SystemPromptAndDebugFieldsRoundTrip(t *testing.T) {
+	verbose := true
+	in := Layer{
+		SystemPromptMode:       "inline",
+		SystemPromptText:       "base",
+		SystemPromptAppendMode: "file",
+		SystemPromptAppendFile: "/append.md",
+		Verbose:                &verbose,
+		TraceFile:              "/trace",
+		CPUProfile:             "/cpu",
+		ExportATIFPath:         "/atif",
+	}
+	got := FromWire(ToWire(in))
+	if got.SystemPromptMode != in.SystemPromptMode || got.SystemPromptText != in.SystemPromptText {
+		t.Fatalf("system prompt round trip = %#v", got)
+	}
+	if got.Verbose == nil || *got.Verbose != true || got.TraceFile != "/trace" || got.CPUProfile != "/cpu" || got.ExportATIFPath != "/atif" {
+		t.Fatalf("debug round trip = %#v", got)
+	}
+}
+
 func TestWireOmitsUnsetModelFallbacks(t *testing.T) {
 	raw, err := json.Marshal(appwire.LaunchConfigLayer{})
 	if err != nil {

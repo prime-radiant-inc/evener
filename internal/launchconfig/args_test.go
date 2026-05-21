@@ -8,20 +8,28 @@ import (
 
 func TestToArgs_AllFields(t *testing.T) {
 	r := Resolved{Effective: Layer{
-		Model:              "openai/gpt-5",
-		FastCheapModel:     "openai/gpt-5-mini",
-		Agent:              "default",
-		ReasoningEffort:    "medium",
-		ContextStrategy:    "compact",
-		MaxRounds:          ptrInt(200),
-		MaxSubagentDepth:   ptrInt(2),
-		NoProjectPrompts:   ptrBool(true),
-		AppReplaySize:      ptrInt(4096),
-		SkillsDirs:         []string{"/s1", "/s2"},
-		PluginDirs:         []string{"/p"},
-		MCPConfigs:         []string{"/m.json"},
-		SystemPromptAppend: []string{"/sp"},
-		ModelFallbacks:     []string{"openai/gpt-5.4", "anthropic/claude-haiku-4-5"},
+		Model:                  "openai/gpt-5",
+		FastCheapModel:         "openai/gpt-5-mini",
+		Agent:                  "default",
+		ReasoningEffort:        "medium",
+		ContextStrategy:        "compact",
+		MaxRounds:              ptrInt(200),
+		MaxSubagentDepth:       ptrInt(2),
+		NoProjectPrompts:       ptrBool(true),
+		AppReplaySize:          ptrInt(4096),
+		SystemPromptMode:       "file",
+		SystemPromptFile:       "/system.md",
+		SystemPromptAppendMode: "file",
+		SystemPromptAppendFile: "/append.md",
+		Verbose:                ptrBool(true),
+		TraceFile:              "/tmp/trace.out",
+		CPUProfile:             "/tmp/cpu.pprof",
+		ExportATIFPath:         "/tmp/session.atif.json",
+		SkillsDirs:             []string{"/s1", "/s2"},
+		PluginDirs:             []string{"/p"},
+		MCPConfigs:             []string{"/m.json"},
+		SystemPromptAppend:     []string{"/sp"},
+		ModelFallbacks:         []string{"openai/gpt-5.4", "anthropic/claude-haiku-4-5"},
 		MCPs: []MCPServerSpec{
 			{Name: "github", Command: "gh-mcp", Args: []string{"--token-from-env", "GITHUB_TOKEN"}},
 		},
@@ -37,6 +45,12 @@ func TestToArgs_AllFields(t *testing.T) {
 		"--max-subagent-depth", "2",
 		"--no-project-prompts",
 		"--app-replay-size", "4096",
+		"--system-prompt", "/system.md",
+		"--system-prompt-append", "/append.md",
+		"--verbose",
+		"--trace", "/tmp/trace.out",
+		"--cpu-profile", "/tmp/cpu.pprof",
+		"--export-atif", "/tmp/session.atif.json",
 		"--skills-dir", "/s1",
 		"--skills-dir", "/s2",
 		"--plugin-dir", "/p",
@@ -48,6 +62,20 @@ func TestToArgs_AllFields(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("ToArgs =\n%s\nwant\n%s", strings.Join(got, " "), strings.Join(want, " "))
+	}
+}
+
+func TestToArgs_InlinePromptTextDoesNotEmitArgv(t *testing.T) {
+	got := ToArgs(Resolved{Effective: Layer{
+		SystemPromptMode:       "inline",
+		SystemPromptText:       "do not leak me",
+		SystemPromptAppendMode: "inline",
+		SystemPromptAppendText: "also secret-ish",
+	}})
+	for _, arg := range got {
+		if strings.Contains(arg, "do not leak") || strings.Contains(arg, "also secret") {
+			t.Fatalf("ToArgs leaked inline prompt text in argv: %#v", got)
+		}
 	}
 }
 

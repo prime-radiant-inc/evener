@@ -128,10 +128,25 @@ func validateAndExpandRepoLayer(repoRoot string, in Layer) (Layer, []Diagnostic)
 		}
 		return out
 	}
+	expandOne := func(field, value string) string {
+		if value == "" {
+			return ""
+		}
+		if err := ValidateRepoRelativePath(repoRoot, value); err != nil {
+			diags = append(diags, Diagnostic{Layer: LayerRepo, Field: field, Message: err.Error()})
+			return ""
+		}
+		return filepath.Clean(filepath.Join(repoRoot, value))
+	}
 	in.SkillsDirs = expand("skills_dirs", in.SkillsDirs)
 	in.PluginDirs = expand("plugin_dirs", in.PluginDirs)
 	in.MCPConfigs = expand("mcp_configs", in.MCPConfigs)
+	in.SystemPromptFile = expandOne("system_prompt_file", in.SystemPromptFile)
+	in.SystemPromptAppendFile = expandOne("system_prompt_append_file", in.SystemPromptAppendFile)
 	in.SystemPromptAppend = expand("system_prompt_append", in.SystemPromptAppend)
+	in.TraceFile = expandOne("trace_file", in.TraceFile)
+	in.CPUProfile = expandOne("cpu_profile", in.CPUProfile)
+	in.ExportATIFPath = expandOne("export_atif_path", in.ExportATIFPath)
 	return in, diags
 }
 
@@ -151,9 +166,26 @@ func validateAbsolutePaths(layer LayerName, in Layer, diags *[]Diagnostic) Layer
 		}
 		return out
 	}
+	checkOne := func(field, value string) string {
+		if value == "" {
+			return ""
+		}
+		if err := ValidateAbsolutePath(value); err != nil {
+			if diags != nil {
+				*diags = append(*diags, Diagnostic{Layer: layer, Field: field, Message: err.Error()})
+			}
+			return ""
+		}
+		return value
+	}
 	in.SkillsDirs = check("skills_dirs", in.SkillsDirs)
 	in.PluginDirs = check("plugin_dirs", in.PluginDirs)
 	in.MCPConfigs = check("mcp_configs", in.MCPConfigs)
+	in.SystemPromptFile = checkOne("system_prompt_file", in.SystemPromptFile)
+	in.SystemPromptAppendFile = checkOne("system_prompt_append_file", in.SystemPromptAppendFile)
 	in.SystemPromptAppend = check("system_prompt_append", in.SystemPromptAppend)
+	in.TraceFile = checkOne("trace_file", in.TraceFile)
+	in.CPUProfile = checkOne("cpu_profile", in.CPUProfile)
+	in.ExportATIFPath = checkOne("export_atif_path", in.ExportATIFPath)
 	return in
 }
