@@ -193,7 +193,7 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 	if req.TopP != nil {
 		body["top_p"] = *req.TopP
 	}
-	if req.MaxTokens != nil {
+	if req.MaxTokens != nil && !a.usesCodexBackend() {
 		body["max_output_tokens"] = *req.MaxTokens
 	}
 	if len(req.StopSequences) > 0 {
