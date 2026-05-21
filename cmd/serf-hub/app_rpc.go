@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -508,6 +509,9 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfDirsComplete, func(_ context.Context, params appwire.DirsCompleteParams) (appwire.DirsCompleteResponse, error) {
 		return completeDirs(params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfPathValidate, func(_ context.Context, params appwire.PathValidateParams) (appwire.PathValidateResponse, error) {
+		return validateLaunchPath(params), nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
 		return appwire.HarnessListResponse{Data: launchHarnessDescriptors(cfg)}, nil
@@ -1497,7 +1501,7 @@ func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Regis
 		Provider:   modelRef.Provider,
 	})
 	if err != nil {
-		return appwire.ThreadStartResponse{}, err
+		return appwire.ThreadStartResponse{}, appwire.HubLaunchError(err.Error())
 	}
 	if cfg.Roster != nil {
 		cfg.Roster.Refresh()
@@ -1751,7 +1755,7 @@ func hubThreadResume(ctx context.Context, cfg WebConfig, sources *appsource.Regi
 	}
 	entry, err := cfg.Spawner.Resume(ctx, resumeRequestForConfig(cfg, sessionID))
 	if err != nil {
-		return appwire.ThreadResumeResponse{}, err
+		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(err.Error())
 	}
 	if cfg.Roster != nil {
 		cfg.Roster.Refresh()
@@ -1918,6 +1922,59 @@ func completeDirs(params appwire.DirsCompleteParams) (appwire.DirsCompleteRespon
 	}
 	sort.Strings(results)
 	return appwire.DirsCompleteResponse{Data: results}, nil
+}
+
+func validateLaunchPath(params appwire.PathValidateParams) appwire.PathValidateResponse {
+	path := strings.TrimSpace(params.Path)
+	kind := strings.TrimSpace(params.Kind)
+	if path == "" {
+		return appwire.PathValidateResponse{Valid: false, Error: "path is required"}
+	}
+	if strings.HasPrefix(path, "~/") || path == "~" {
+		path = filepath.Join(os.Getenv("HOME"), strings.TrimPrefix(path, "~"))
+	}
+	if kind == "command" && !strings.ContainsRune(path, filepath.Separator) {
+		resolved, err := exec.LookPath(path)
+		if err != nil {
+			return appwire.PathValidateResponse{Path: path, Valid: false, Error: err.Error()}
+		}
+		return appwire.PathValidateResponse{Path: resolved, Valid: true}
+	}
+	if !filepath.IsAbs(path) {
+		return appwire.PathValidateResponse{Path: path, Valid: false, Error: "absolute path required"}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return appwire.PathValidateResponse{Path: path, Valid: false, Error: err.Error()}
+	}
+	switch kind {
+	case "", "any":
+	case "command":
+		if info.IsDir() {
+			return appwire.PathValidateResponse{Path: path, Valid: false, Error: "path is a directory"}
+		}
+		if info.Mode()&0o111 == 0 {
+			return appwire.PathValidateResponse{Path: path, Valid: false, Error: "path is not executable"}
+		}
+	case "dir":
+		if !info.IsDir() {
+			return appwire.PathValidateResponse{Path: path, Valid: false, Error: "path is not a directory"}
+		}
+	case "file":
+		if info.IsDir() {
+			return appwire.PathValidateResponse{Path: path, Valid: false, Error: "path is a directory"}
+		}
+	case "executable":
+		if info.IsDir() {
+			return appwire.PathValidateResponse{Path: path, Valid: false, Error: "path is a directory"}
+		}
+		if info.Mode()&0o111 == 0 {
+			return appwire.PathValidateResponse{Path: path, Valid: false, Error: "path is not executable"}
+		}
+	default:
+		return appwire.PathValidateResponse{Path: path, Valid: false, Error: "unknown path kind: " + kind}
+	}
+	return appwire.PathValidateResponse{Path: path, Valid: true}
 }
 
 // notifyAuthUpdated broadcasts a serf/auth/updated notification to all connected clients.

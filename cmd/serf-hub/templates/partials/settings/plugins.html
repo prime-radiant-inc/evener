@@ -30,16 +30,26 @@
         });
         const form = document.createElement("form");
         form.id = "plugins-add";
+        form.className = "sp-dir-wrap";
         const input = document.createElement("input");
         input.type = "text";
         input.name = "dir";
         input.placeholder = "/absolute/path";
         input.required = true;
+        input.setAttribute("data-settings-dir-input", "");
+        const pick = document.createElement("button");
+        pick.type = "button";
+        pick.setAttribute("data-settings-dir-picker", "");
+        pick.textContent = "Browse";
         const add = document.createElement("button");
         add.type = "submit";
         add.textContent = "Add";
-        form.append(input, add);
+        const error = document.createElement("p");
+        error.className = "settings-error";
+        error.hidden = true;
+        form.append(input, pick, add, error);
         root.append(list, form);
+        if (window.SettingsPickers) window.SettingsPickers.init(form);
         root.querySelectorAll("button[data-action=rm]").forEach(b => {
           b.addEventListener("click", async () => {
             dirs.splice(+b.dataset.i, 1);
@@ -51,7 +61,14 @@
           e.preventDefault();
           const v = e.target.dir.value.trim();
           if (!v) return;
-          dirs.push(v);
+          const valid = await launchconfig.validatePath(v, "dir");
+          if (!valid || !valid.valid) {
+            error.textContent = (valid && valid.error) ? valid.error : "path does not exist";
+            error.hidden = false;
+            return;
+          }
+          error.hidden = true;
+          dirs.push(valid.path || v);
           await launchconfig.setLayer("/", "global", { ...current, pluginDirs: dirs });
           e.target.dir.value = "";
           render();

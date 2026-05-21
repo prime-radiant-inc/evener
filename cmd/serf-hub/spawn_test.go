@@ -165,7 +165,11 @@ func TestWaitForRendezvous_IgnoresStaleEntryFromBeforeStart(t *testing.T) {
 func TestSpawnDaemonReturnsWhenProcessExitsBeforeRendezvous(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "fake-serf")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 42\n"), 0o755); err != nil {
+	script := `#!/bin/sh
+echo 'serf serve: session creation: plugin initialization: resolving plugin dir "/Users/jesse/git/superpowers/superpowers": lstat /Users: no such file or directory' >&2
+exit 42
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	start := time.Now()
@@ -180,6 +184,9 @@ func TestSpawnDaemonReturnsWhenProcessExitsBeforeRendezvous(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "exited before rendezvous") {
 		t.Fatalf("error=%v", err)
+	}
+	if !strings.Contains(err.Error(), "plugin initialization: resolving plugin dir") {
+		t.Fatalf("spawn error did not include daemon stderr: %v", err)
 	}
 }
 

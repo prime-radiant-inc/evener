@@ -10,8 +10,46 @@
     try {
       const current = await launchconfig.getLayer("/", "global");
       const mcps = current.mcps || [];
+      const mcpConfigs = current.mcpConfigs || [];
       function render() {
         root.replaceChildren();
+        const configsTitle = document.createElement("h3");
+        configsTitle.textContent = "MCP config files";
+        root.append(configsTitle);
+        const configList = document.createElement("ul");
+        configList.className = "settings-list";
+        mcpConfigs.forEach((p, i) => {
+          const item = document.createElement("li");
+          const code = document.createElement("code");
+          code.textContent = p;
+          const button = document.createElement("button");
+          button.type = "button";
+          button.dataset.i = String(i);
+          button.dataset.action = "rm-config";
+          button.textContent = "remove";
+          item.append(code, " ", button);
+          configList.appendChild(item);
+        });
+        const configForm = document.createElement("form");
+        configForm.id = "mcp-configs-add";
+        const configInput = document.createElement("input");
+        configInput.type = "text";
+        configInput.name = "path";
+        configInput.placeholder = "/absolute/path/to/mcp.json";
+        configInput.required = true;
+        configInput.setAttribute("data-settings-dir-input", "");
+        const configAdd = document.createElement("button");
+        configAdd.type = "submit";
+        configAdd.textContent = "Add";
+        const configError = document.createElement("p");
+        configError.className = "settings-error";
+        configError.hidden = true;
+        configForm.append(configInput, configAdd, configError);
+        root.append(configList, configForm);
+
+        const inlineTitle = document.createElement("h3");
+        inlineTitle.textContent = "Inline MCP servers";
+        root.append(inlineTitle);
         const list = document.createElement("ul");
         list.className = "settings-list";
         mcps.forEach((m, i) => {
@@ -47,8 +85,19 @@
         const add = document.createElement("button");
         add.type = "submit";
         add.textContent = "Add";
-        form.append(nameInput, commandInput, argsInput, add);
+        const error = document.createElement("p");
+        error.className = "settings-error";
+        error.hidden = true;
+        form.append(nameInput, commandInput, argsInput, add, error);
         root.append(list, form);
+        if (window.SettingsPickers) window.SettingsPickers.init(configForm);
+        root.querySelectorAll("button[data-action=rm-config]").forEach(b => {
+          b.addEventListener("click", async () => {
+            mcpConfigs.splice(+b.dataset.i, 1);
+            await launchconfig.setLayer("/", "global", { ...current, mcpConfigs });
+            render();
+          });
+        });
         root.querySelectorAll("button[data-action=rm]").forEach(b => {
           b.addEventListener("click", async () => {
             mcps.splice(+b.dataset.i, 1);
@@ -56,11 +105,34 @@
             render();
           });
         });
+        root.querySelector("#mcp-configs-add").addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const v = e.target.path.value.trim();
+          if (!v) return;
+          const valid = await launchconfig.validatePath(v, "file");
+          if (!valid || !valid.valid) {
+            configError.textContent = (valid && valid.error) ? valid.error : "path does not exist";
+            configError.hidden = false;
+            return;
+          }
+          configError.hidden = true;
+          mcpConfigs.push(valid.path || v);
+          await launchconfig.setLayer("/", "global", { ...current, mcpConfigs });
+          e.target.reset();
+          render();
+        });
         root.querySelector("#mcps-add").addEventListener("submit", async (e) => {
           e.preventDefault();
           const name = e.target.name.value.trim();
           const command = e.target.command.value.trim();
           const args = e.target.args.value.trim().split(/\s+/).filter(Boolean);
+          const valid = await launchconfig.validatePath(command, "command");
+          if (!valid || !valid.valid) {
+            error.textContent = (valid && valid.error) ? valid.error : "command not found";
+            error.hidden = false;
+            return;
+          }
+          error.hidden = true;
           mcps.push({ name, command, args });
           await launchconfig.setLayer("/", "global", { ...current, mcps });
           e.target.reset();

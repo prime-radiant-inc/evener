@@ -2504,6 +2504,58 @@ func TestHubRPCThreadStartKeepsProviderForModelIDsWithSlashes(t *testing.T) {
 	}
 }
 
+func TestHubRPCThreadStartPropagatesSpawnerStderrAsHubLaunchError(t *testing.T) {
+	runDir := t.TempDir()
+	spawnErr := strings.Join([]string{
+		"daemon spawn timed out",
+		"process exited before rendezvous",
+		"exit status 1",
+		`serf serve: session creation: plugin initialization: resolving plugin dir "/Users/jesse/git/superpowers/superpowers": lstat /Users: no such file or directory`,
+	}, ": ")
+	spawner := &fakeRPCSpawner{
+		spawn: func(_ context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+			return rendezvous.Entry{}, errors.New(spawnErr)
+		},
+	}
+	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Spawner: spawner, Past: NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		ModelProvider: "openai",
+		Model:         "gpt-5",
+		CWD:           "/tmp",
+	})
+	assertHubLaunchError(t, err)
+	if !strings.Contains(err.Error(), "plugin initialization: resolving plugin dir") {
+		t.Fatalf("error did not include daemon stderr: %v", err)
+	}
+}
+
+func TestValidateLaunchPathRejectsMissingPluginDir(t *testing.T) {
+	resp := validateLaunchPath(appwire.PathValidateParams{Path: filepath.Join(t.TempDir(), "missing"), Kind: "dir"})
+	if resp.Valid {
+		t.Fatalf("valid=%v, want false", resp.Valid)
+	}
+	if !strings.Contains(resp.Error, "no such file") {
+		t.Fatalf("error=%q", resp.Error)
+	}
+}
+
+func TestValidateLaunchPathAcceptsExecutableCommand(t *testing.T) {
+	resp := validateLaunchPath(appwire.PathValidateParams{Path: "sh", Kind: "command"})
+	if !resp.Valid {
+		t.Fatalf("valid=false error=%q", resp.Error)
+	}
+	if resp.Path == "" || !filepath.IsAbs(resp.Path) {
+		t.Fatalf("resolved command path=%q, want absolute", resp.Path)
+	}
+}
+
 func TestHubRPCThreadStartRejectsModelOutsideSerfLaunchContractBeforeSpawn(t *testing.T) {
 	runDir := t.TempDir()
 	var spawnCalled bool

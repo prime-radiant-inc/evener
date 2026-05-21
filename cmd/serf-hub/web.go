@@ -166,6 +166,7 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/api/spawn", s.handleApiSpawn)
 	mux.HandleFunc("/api/models", s.handleApiModels)
 	mux.HandleFunc("/api/dirs", s.handleApiDirs)
+	mux.HandleFunc("/api/path/validate", s.handleAPIPathValidate)
 	mux.HandleFunc("/api/git/head", s.handleApiGitHead)
 	mux.HandleFunc("/api/search", s.handleApiSearch)
 	mux.HandleFunc("/api/health", s.handleAPIHealth)
@@ -2077,6 +2078,18 @@ func (s *WebServer) handleApiDirs(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{"results": results}) //nolint:errcheck
+}
+
+func (s *WebServer) handleAPIPathValidate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET required", http.StatusMethodNotAllowed)
+		return
+	}
+	resp := validateLaunchPath(appwire.PathValidateParams{
+		Path: r.URL.Query().Get("path"),
+		Kind: r.URL.Query().Get("kind"),
+	})
+	writeAPIJSON(w, http.StatusOK, resp)
 }
 
 // gitHeadBranch runs `git rev-parse --abbrev-ref HEAD` in dir and returns

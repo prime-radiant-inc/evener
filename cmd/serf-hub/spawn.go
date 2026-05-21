@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -21,6 +22,7 @@ import (
 )
 
 const serfLaunchCheckTimeout = 30 * time.Second
+const daemonLaunchStderrLimit = 64 * 1024
 
 // SpawnRequest carries the per-spawn knobs passed directly from the caller.
 type SpawnRequest struct {
@@ -199,8 +201,10 @@ func SpawnDaemon(ctx context.Context, serfBinary string, runDir string, req Spaw
 
 	cmd := exec.Command(serfBinary, args...)
 	cmd.Env = req.Env
+	var stderr tailBuffer
+	stderr.limit = daemonLaunchStderrLimit
 	cmd.Stdout = os.Stderr // forward to hub stderr for now
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 
 	startedAt := time.Now()
 	if err := cmd.Start(); err != nil {
@@ -216,7 +220,7 @@ func SpawnDaemon(ctx context.Context, serfBinary string, runDir string, req Spaw
 	entry, err := waitForRendezvousOrExit(waitCtx, runDir, cmd.Process.Pid, exited, WithStartedAfter(startedAt))
 	if err != nil {
 		_ = cmd.Process.Kill()
-		return rendezvous.Entry{}, fmt.Errorf("daemon spawn timed out: %w", err)
+		return rendezvous.Entry{}, launchFailureError("daemon spawn timed out", err, stderr.String())
 	}
 	return entry, nil
 }
@@ -288,8 +292,10 @@ func ResumeDaemon(ctx context.Context, serfBinary, runDir string, req ResumeRequ
 	args = append(args, launchconfig.ToArgs(req.Resolved)...)
 	cmd := exec.Command(serfBinary, args...)
 	cmd.Env = req.Env
+	var stderr tailBuffer
+	stderr.limit = daemonLaunchStderrLimit
 	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
 	startedAt := time.Now()
 	if err := cmd.Start(); err != nil {
 		return rendezvous.Entry{}, fmt.Errorf("start daemon: %w", err)
@@ -303,9 +309,42 @@ func ResumeDaemon(ctx context.Context, serfBinary, runDir string, req ResumeRequ
 	entry, err := waitForRendezvousOrExit(waitCtx, runDir, cmd.Process.Pid, exited, WithStartedAfter(startedAt))
 	if err != nil {
 		_ = cmd.Process.Kill()
-		return rendezvous.Entry{}, fmt.Errorf("resume timed out: %w", err)
+		return rendezvous.Entry{}, launchFailureError("resume timed out", err, stderr.String())
 	}
 	return entry, nil
+}
+
+type tailBuffer struct {
+	buf   []byte
+	limit int
+}
+
+func (b *tailBuffer) Write(p []byte) (int, error) {
+	if b.limit <= 0 {
+		return len(p), nil
+	}
+	if len(p) >= b.limit {
+		b.buf = append(b.buf[:0], p[len(p)-b.limit:]...)
+		return len(p), nil
+	}
+	if extra := len(b.buf) + len(p) - b.limit; extra > 0 {
+		copy(b.buf, b.buf[extra:])
+		b.buf = b.buf[:len(b.buf)-extra]
+	}
+	b.buf = append(b.buf, p...)
+	return len(p), nil
+}
+
+func (b *tailBuffer) String() string {
+	return string(b.buf)
+}
+
+func launchFailureError(prefix string, err error, stderr string) error {
+	detail := strings.TrimSpace(stderr)
+	if detail == "" || strings.Contains(err.Error(), detail) {
+		return fmt.Errorf("%s: %w", prefix, err)
+	}
+	return fmt.Errorf("%s: %w: %s", prefix, err, detail)
 }
 
 func resolveSerfStateDir(workDir, override string) string {

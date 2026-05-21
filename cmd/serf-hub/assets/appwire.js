@@ -18,6 +18,7 @@
     turnDrainAsSteer: "turn/drainAsSteer",
     tasksList: "serf/tasks/list",
     dirsComplete: "serf/dirs/complete",
+    pathValidate: "serf/path/validate",
     modelList: "model/list",
   };
 
@@ -250,6 +251,10 @@
     return request(METHOD.dirsComplete, { prefix: prefix || "" }).then((resp) => ({
       results: (resp.data || []).map((path) => ({ path, is_git: false })),
     }));
+  }
+
+  function validatePath(path, kind) {
+    return request(METHOD.pathValidate, { path: path || "", kind: kind || "" });
   }
 
   function startThread(body) {
@@ -767,6 +772,7 @@
     search,
     listModels,
     completeDirs,
+    validatePath,
     startThread,
     readThread,
     tasks,

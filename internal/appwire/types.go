@@ -26,6 +26,7 @@ const (
 	MethodSerfTasksList             = "serf/tasks/list"
 	MethodSerfThreadTranscriptsList = "serf/thread/transcripts/list"
 	MethodSerfDirsComplete          = "serf/dirs/complete"
+	MethodSerfPathValidate          = "serf/path/validate"
 	MethodSerfHarnessesList         = "serf/harnesses/list"
 	MethodSerfAuthStatus            = "serf/auth/status"
 	MethodSerfAuthLoginStart        = "serf/auth/login/start"
@@ -500,6 +501,17 @@ type DirsCompleteParams struct {
 
 type DirsCompleteResponse struct {
 	Data []string `json:"data"`
+}
+
+type PathValidateParams struct {
+	Path string `json:"path"`
+	Kind string `json:"kind,omitempty"`
+}
+
+type PathValidateResponse struct {
+	Path  string `json:"path"`
+	Valid bool   `json:"valid"`
+	Error string `json:"error,omitempty"`
 }
 
 type HarnessListParams struct{}

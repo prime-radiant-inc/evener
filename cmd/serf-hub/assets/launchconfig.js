@@ -11,6 +11,14 @@
     getLayer: (cwd, layer) => request("serf/launch/getLayer", { cwd, layer }),
     setLayer: (cwd, layer, config) => request("serf/launch/setLayer", { cwd, layer, config }),
     trustRepo: (cwd, hash) => request("serf/launch/trustRepo", { cwd, hash }),
+    validatePath: (path, kind) => {
+      if (global.SerfAppwire && global.SerfAppwire.validatePath) {
+        return global.SerfAppwire.validatePath(path, kind);
+      }
+      return fetch("/api/path/validate?path=" + encodeURIComponent(path || "") + "&kind=" + encodeURIComponent(kind || ""), {
+        credentials: "same-origin",
+      }).then(r => r.json());
+    },
 
     authList: () => request("serf/auth/list", {}),
     authStatus: (provider) => request("serf/auth/status", { provider }),
