@@ -462,6 +462,15 @@
     return type;
   }
 
+  function toolTimingPayload(item) {
+    item = item || {};
+    const out = {};
+    if (item.startedAt != null && item.startedAt !== "") out.startedAt = item.startedAt;
+    if (item.completedAt != null && item.completedAt !== "") out.completedAt = item.completedAt;
+    if (item.durationMs != null && item.durationMs !== "") out.durationMs = item.durationMs;
+    return out;
+  }
+
   function eventsFromItem(item, turnStatus) {
     if (!item) return [];
     const type = internalItemType(item.type);
@@ -485,10 +494,10 @@
       const callID = firstNonEmpty(item.callId, item.id);
       const itemID = item.id || "";
       const completed = terminalStatus(item.status) || (!runningStatus(item.status) && (!!item.output || !!item.error));
-      const out = [["TOOL_CALL_START", { call_id: callID, item_id: itemID, tool_name: item.toolName || "", arguments_json: item.argumentsJson || "" }]];
+      const out = [["TOOL_CALL_START", Object.assign({ call_id: callID, item_id: itemID, tool_name: item.toolName || "", arguments_json: item.argumentsJson || "" }, toolTimingPayload(item))]];
       if (item.output) out.push(["TOOL_CALL_OUTPUT_DELTA", { call_id: callID, item_id: itemID, delta: item.output }]);
       if (!completed) return out;
-      out.push(["TOOL_CALL_END", { call_id: callID, item_id: itemID, tool_name: item.toolName || "", output: item.output || "", error: item.error || "", tool_state: item.raw || "" }]);
+      out.push(["TOOL_CALL_END", Object.assign({ call_id: callID, item_id: itemID, tool_name: item.toolName || "", output: item.output || "", error: item.error || "", tool_state: item.raw || "" }, toolTimingPayload(item))]);
       return out;
     }
     return [];
@@ -546,14 +555,14 @@
       const itemID = item.id || "";
       const out = [];
       if (!state.started) {
-        out.push(["TOOL_CALL_START", {
+        out.push(["TOOL_CALL_START", Object.assign({
           call_id: callID,
           item_id: itemID,
           tool_name: item.toolName || "",
           arguments_json: item.argumentsJson || "",
-        }]);
+        }, toolTimingPayload(item))]);
       }
-      out.push(["TOOL_CALL_END", {
+      out.push(["TOOL_CALL_END", Object.assign({
         call_id: callID,
         item_id: itemID,
         tool_name: item.toolName || "",
@@ -561,7 +570,7 @@
         output: item.output || "",
         error: item.error || "",
         tool_state: item.raw || "",
-      }]);
+      }, toolTimingPayload(item))]);
       return out;
     }
     return [];
@@ -593,14 +602,14 @@
           const itemID = item.id || "";
           const completed = terminalStatus(item.status) || (!runningStatus(item.status) && (!!item.output || !!item.error));
           if (completed && activeToolCalls.has(callID)) {
-            events.push(["TOOL_CALL_END", {
+            events.push(["TOOL_CALL_END", Object.assign({
               call_id: callID,
               item_id: itemID,
               tool_name: item.toolName || "",
               output: item.output || "",
               error: item.error || "",
               tool_state: item.raw || "",
-            }]);
+            }, toolTimingPayload(item))]);
             activeToolCalls.delete(callID);
             continue;
           }
@@ -677,12 +686,12 @@
       if (type === "commandExecution") {
         const callID = firstNonEmpty(item.callId, item.id);
         const itemID = item.id || "";
-        const out = [["TOOL_CALL_START", {
+        const out = [["TOOL_CALL_START", Object.assign({
           call_id: callID,
           item_id: itemID,
           tool_name: item.toolName || "",
           arguments_json: item.argumentsJson || "",
-        }]];
+        }, toolTimingPayload(item))]];
         if (item.output) out.push(["TOOL_CALL_OUTPUT_DELTA", { call_id: callID, item_id: itemID, delta: item.output }]);
         return out;
       }
@@ -694,7 +703,7 @@
       const type = internalItemType(item.type);
       if (type === "userMessage" && previousState && previousState.started) return [];
       if (type === "userMessage") return eventsFromItem(item);
-      if (type === "commandExecution") return [["TOOL_CALL_END", {
+      if (type === "commandExecution") return [["TOOL_CALL_END", Object.assign({
         call_id: firstNonEmpty(item.callId, item.id),
         item_id: item.id || "",
         tool_name: item.toolName || "",
@@ -702,7 +711,7 @@
         output: item.output || "",
         error: item.error || "",
         tool_state: item.raw || "",
-      }]];
+      }, toolTimingPayload(item))]];
       if (type === "agentMessage") return [["ASSISTANT_TEXT_END", { text: item.text || "" }]];
       return eventsFromItem(item);
     }

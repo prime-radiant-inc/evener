@@ -190,17 +190,21 @@ await scenario("apply_patch diff body with five-line preview", [
 });
 
 // shell — collapsible details body, exit code result.
-await scenario("shell with stdout and exit code", [
+await scenario("shell with stdout, exit code, and right-aligned timing", [
   ["SESSION_START", { session_id: "01TEST" }],
-  ["TOOL_CALL_START", { call_id: "s1", tool_name: "shell", arguments_json: JSON.stringify({ command: "ls -la" }) }],
+  ["TOOL_CALL_START", { call_id: "s1", tool_name: "shell", arguments_json: JSON.stringify({ command: "ls -la" }), startedAt: 1763714096 }],
   ["TOOL_CALL_OUTPUT_DELTA", { call_id: "s1", delta: "total 8\nfile1\nfile2\n" }],
-  ["TOOL_CALL_END", { call_id: "s1", output: "total 8\nfile1\nfile2\n", tool_state: JSON.stringify({ exit_code: 0 }), tool_name: "shell" }],
+  ["TOOL_CALL_END", { call_id: "s1", output: "total 8\nfile1\nfile2\n", tool_state: JSON.stringify({ exit_code: 0 }), tool_name: "shell", completedAt: 1763714098, durationMs: 1250 }],
 ], ({ conv }) => {
   const card = conv.querySelector(".tool-call.shell");
   if (!card) return { ok: false, detail: "no shell card" };
   if (!card.textContent.includes("ls -la")) return { ok: false, detail: "missing command" };
   if (!card.textContent.includes("exit 0")) return { ok: false, detail: "missing exit code" };
   if (!card.querySelector(".tool-status-good")) return { ok: false, detail: "missing shell success icon" };
+  const meta = card.querySelector(".tool-meta");
+  if (!meta) return { ok: false, detail: "missing tool metadata" };
+  if (!meta.textContent.includes("1.3s")) return { ok: false, detail: "missing duration metadata: " + meta.textContent };
+  if (!/\d{1,2}:\d{2}:\d{2}/.test(meta.textContent)) return { ok: false, detail: "missing timestamp metadata: " + meta.textContent };
   const body = conv.querySelector(".shell-body");
   if (!body) return { ok: false, detail: "no shell body" };
   const pre = body.querySelector(".shell-output");

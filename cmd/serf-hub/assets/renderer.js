@@ -1145,10 +1145,15 @@
       const result = document.createElement("span");
       result.className = "result-detail";
       result.textContent = "";
-      el.appendChild(sep); el.appendChild(result);
+      const meta = document.createElement("span");
+      meta.className = "tool-meta";
+      meta.textContent = "";
+      el.appendChild(sep); el.appendChild(result); el.appendChild(meta);
       parent.appendChild(el);
 
-      const state = { el, statusEl: status, sepEl: sep, resultEl: result, outputBuf: "", tool, args, renderer, body: null, ids: [] };
+      const startedAt = toolEventTime(data) || new Date();
+      const state = { el, statusEl: status, sepEl: sep, resultEl: result, metaEl: meta, outputBuf: "", tool, args, renderer, body: null, ids: [], startedAt, durationMs: toolDuration(data) };
+      this.renderToolMeta(state, null);
       if (renderer.body) state.body = renderer.body(args, el, data);
       this.rememberToolAlias(state, callId);
       this.rememberToolAlias(state, data.item_id);
@@ -1178,6 +1183,10 @@
         m.resultEl.textContent = (text === "ok" || text === "done") ? "" : text;
       }
       if (m.sepEl) m.sepEl.style.display = m.resultEl.textContent ? "" : "none";
+      const endedAt = toolEventTime(data) || new Date();
+      const duration = toolDuration(data);
+      if (duration != null) m.durationMs = duration;
+      this.renderToolMeta(m, endedAt);
       if (m.renderer.bodyEnd) m.renderer.bodyEnd(m, data, out);
       if (m.renderer.replace) {
         const replacement = m.renderer.replace(m, data);
@@ -1198,6 +1207,15 @@
       if (!state.ids) state.ids = [];
       if (!state.ids.includes(id)) state.ids.push(id);
       this.activeTools.set(id, state);
+    },
+
+    renderToolMeta(state, endedAt) {
+      if (!state || !state.metaEl) return;
+      const parts = [];
+      if (state.startedAt) parts.push(formatToolClock(state.startedAt));
+      const duration = state.durationMs != null ? state.durationMs : (endedAt && state.startedAt ? endedAt - state.startedAt : null);
+      if (duration != null) parts.push(formatToolDuration(duration));
+      state.metaEl.textContent = parts.join(" · ");
     },
 
     beginSubagentRef(data) {
@@ -2208,6 +2226,35 @@
     const st = parseToolState(data.tool_state);
     if (st && st.exit_code && st.exit_code !== 0) return false;
     return true;
+  }
+
+  function toolEventTime(data) {
+    if (!data) return null;
+    const raw = data.timestamp || data.time || data.created_at || data.createdAt || data.started_at || data.startedAt || data.completed_at || data.completedAt || data.ended_at || data.endedAt;
+    if (raw == null || raw === "") return null;
+    const d = typeof raw === "number" ? new Date(raw > 1e12 ? raw : raw * 1000) : new Date(raw);
+    return Number.isFinite(d.getTime()) ? d : null;
+  }
+
+  function toolDuration(data) {
+    if (!data) return null;
+    const raw = data.durationMs || data.duration_ms || data.durationMS;
+    if (raw == null || raw === "") return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  }
+
+  function formatToolClock(d) {
+    if (!d || !Number.isFinite(d.getTime())) return "";
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
+
+  function formatToolDuration(ms) {
+    if (!Number.isFinite(ms) || ms < 0) return "";
+    if (ms < 1000) return Math.max(1, Math.round(ms)) + "ms";
+    const seconds = ms / 1000;
+    if (seconds < 10) return seconds.toFixed(1).replace(/\.0$/, "") + "s";
+    return Math.round(seconds) + "s";
   }
 
   function clip(s, n) {
