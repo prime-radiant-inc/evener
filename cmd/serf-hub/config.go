@@ -37,6 +37,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		Addr:               "127.0.0.1:9180",
+		HubStateRoot:       DefaultHubStateRoot(),
 		StateGlob:          "",
 		RunDir:             "",
 		StatusPollInterval: 2 * time.Second,
@@ -44,6 +45,15 @@ func DefaultConfig() Config {
 		SpawnTimeout:       30 * time.Second,
 		PastResultsPerPage: 50,
 	}
+}
+
+// DefaultHubStateRoot returns ~/.serf.
+func DefaultHubStateRoot() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = "."
+	}
+	return filepath.Join(home, ".serf")
 }
 
 // DefaultConfigPath returns ~/.serf/hub.toml.
@@ -90,6 +100,11 @@ func LoadConfig(path string) (Config, error) {
 	if err := toml.Unmarshal(data, &cfg); err != nil {
 		return cfg, fmt.Errorf("parse config: %w", err)
 	}
+	applyConfigDefaults(&cfg)
+	return cfg, nil
+}
+
+func applyConfigDefaults(cfg *Config) {
 	if cfg.Addr == "" {
 		cfg.Addr = "127.0.0.1:9180"
 	}
@@ -106,11 +121,6 @@ func LoadConfig(path string) (Config, error) {
 		cfg.PastResultsPerPage = 50
 	}
 	if cfg.HubStateRoot == "" {
-		home, err := os.UserHomeDir()
-		if err != nil || home == "" {
-			home = "."
-		}
-		cfg.HubStateRoot = filepath.Join(home, ".serf")
+		cfg.HubStateRoot = DefaultHubStateRoot()
 	}
-	return cfg, nil
 }

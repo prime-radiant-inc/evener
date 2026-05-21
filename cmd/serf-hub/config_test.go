@@ -9,6 +9,7 @@ import (
 
 func TestLoadConfig_DefaultsWhenMissing(t *testing.T) {
 	dir := t.TempDir()
+	t.Setenv("HOME", filepath.Join(dir, "home"))
 	cfg, err := LoadConfig(filepath.Join(dir, "nope.toml"))
 	if err != nil {
 		t.Fatalf("LoadConfig missing: %v", err)
@@ -22,8 +23,45 @@ func TestLoadConfig_DefaultsWhenMissing(t *testing.T) {
 	if cfg.PastResultsPerPage != 50 {
 		t.Errorf("PastResultsPerPage default: got %d", cfg.PastResultsPerPage)
 	}
+	wantHubStateRoot := filepath.Join(dir, "home", ".serf")
+	if cfg.HubStateRoot != wantHubStateRoot {
+		t.Errorf("HubStateRoot default: got %q, want %q", cfg.HubStateRoot, wantHubStateRoot)
+	}
 	if len(cfg.Providers) != 0 {
 		t.Errorf("expected no providers by default, got %d", len(cfg.Providers))
+	}
+}
+
+func TestLoadConfig_DefaultsHubStateRootWhenOmitted(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", filepath.Join(dir, "home"))
+	path := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(path, []byte(`addr = "127.0.0.1:9191"`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	want := filepath.Join(dir, "home", ".serf")
+	if cfg.HubStateRoot != want {
+		t.Fatalf("HubStateRoot = %q, want %q", cfg.HubStateRoot, want)
+	}
+}
+
+func TestLoadConfig_PreservesExplicitHubStateRoot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hub.toml")
+	explicit := filepath.Join(dir, "explicit-state")
+	if err := os.WriteFile(path, []byte(`hub_state_root = "`+explicit+`"`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.HubStateRoot != explicit {
+		t.Fatalf("HubStateRoot = %q, want %q", cfg.HubStateRoot, explicit)
 	}
 }
 

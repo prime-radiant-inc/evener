@@ -49,8 +49,15 @@ chmod 700 "$HOME/.serf" "$HOME/.serf/run" "$HOME/.local/state/serf"
 
 ## Hub Config
 
-Create `~/.serf/hub.toml`. This command expands `$HOME` before writing the file;
-TOML itself does not expand shell variables.
+`~/.serf/hub.toml` is optional. If it is absent, Hub uses defaults:
+`hub_state_root = ~/.serf`, `run_dir` from the rendezvous default,
+`state_glob = ~/.local/state/serf/projects/*`, and `past_index_db =
+~/.serf/index.db`. Missing config does not create a default launch stanza;
+launch defaults still come from the layered launch files described below.
+
+Create `~/.serf/hub.toml` when you need to override those paths or configure
+Codex app-server sources/launches. This command expands `$HOME` before writing
+the file; TOML itself does not expand shell variables.
 
 ```bash
 cat > "$HOME/.serf/hub.toml" <<EOF
