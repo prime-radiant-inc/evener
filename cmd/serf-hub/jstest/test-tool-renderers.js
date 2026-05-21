@@ -195,6 +195,22 @@ await scenario("shell with stdout and exit code", [
   return { ok: true };
 });
 
+await scenario("failed shell shows error output", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "s2", tool_name: "shell", arguments_json: JSON.stringify({ command: "false" }) }],
+  ["TOOL_CALL_END", { call_id: "s2", output: "", error: "boom\nstderr detail\n", tool_state: JSON.stringify({ exit_code: 1 }), tool_name: "shell" }],
+], ({ conv }) => {
+  const card = conv.querySelector(".tool-call.shell");
+  if (!card) return { ok: false, detail: "no shell card" };
+  if (!card.querySelector(".tool-status-bad")) return { ok: false, detail: "missing shell error icon" };
+  const body = conv.querySelector(".shell-body");
+  if (!body) return { ok: false, detail: "no failed shell body" };
+  const pre = body.querySelector(".shell-output");
+  if (!pre || !pre.textContent.includes("stderr detail")) return { ok: false, detail: "stderr/error output missing" };
+  if (body.style.display === "none") return { ok: false, detail: "failed shell body hidden" };
+  return { ok: true };
+});
+
 // web_search — list of result lines.
 await scenario("web_search renders top results", [
   ["SESSION_START", { session_id: "01TEST" }],

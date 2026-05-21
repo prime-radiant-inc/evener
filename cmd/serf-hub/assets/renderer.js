@@ -2413,12 +2413,12 @@
     },
     bodyEnd: (state, data, out) => {
       if (!state.body) return;
-      setExpandableOutput(state.body, clip(out, 8000), { moreClass: "shell-output-more", outputClassName: "shell-output" });
+      const text = data.error || out || "";
+      setExpandableOutput(state.body, clip(text, 8000), { moreClass: "shell-output-more", outputClassName: "shell-output" });
       // Auto-open if non-empty and exit non-zero or output >2 lines.
       const st = parseToolState(data.tool_state);
-      const lines = (out.match(/\n/g) || []).length;
       const failed = data.error || (st && st.exit_code && st.exit_code !== 0);
-      if (out.trim() === "") {
+      if (text.trim() === "") {
         state.body.wrap.style.display = "none";
       } else if (failed && state.body.moreWrap) {
         state.body.moreWrap.open = true;

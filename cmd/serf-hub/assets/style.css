@@ -499,10 +499,10 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .read-tool-purpose { margin: 0 0 3px; color: var(--text-muted); font-style: italic; }
 .read-tool-body .cheap-tool-output { margin-top: 0; }
 .output-preview-body { display: flex; flex-direction: column; }
-.tool-output-more { margin-top: 4px; display: flex; flex-direction: column; }
+.tool-output-more { margin-top: 0; display: flex; flex-direction: column; }
 .tool-output-more summary { cursor: pointer; color: var(--text-muted); padding: 0; user-select: none; order: 2; }
 .tool-output-more summary:hover { color: var(--text); }
-.tool-output-rest { margin-top: 4px; order: 1; }
+.tool-output-rest { margin-top: 0; order: 1; }
 .task-list-body { list-style: none; margin: 0 0 12px 36px; padding: 6px 0 6px 10px; border-left: 1px solid var(--rule); display: flex; flex-direction: column; gap: 3px; }
 .task-list-body .task-row { padding: 2px 0; background: transparent; border: none; font-size: 12px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .task-list-body .task-id { color: var(--text-muted); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 11px; }
