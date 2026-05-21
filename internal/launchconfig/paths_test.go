@@ -29,7 +29,8 @@ func TestPathsFor(t *testing.T) {
 	cwd := "/proj"
 	p := PathsFor(root, cwd)
 	wantGlobal := filepath.Join(root, "launch.toml")
-	wantProject := filepath.Join(root, "projects", ProjectID(cwd), "launch.toml")
+	wantProject := filepath.Join(cwd, ".serf", "launch.local.toml")
+	wantLegacyProject := filepath.Join(root, "projects", ProjectID(cwd), "launch.toml")
 	wantMeta := filepath.Join(root, "projects", ProjectID(cwd), "meta.toml")
 	wantRepo := filepath.Join(cwd, ".serf", "launch.toml")
 	if p.Global != wantGlobal {
@@ -37,6 +38,9 @@ func TestPathsFor(t *testing.T) {
 	}
 	if p.Project != wantProject {
 		t.Errorf("Project = %q, want %q", p.Project, wantProject)
+	}
+	if p.LegacyProject != wantLegacyProject {
+		t.Errorf("LegacyProject = %q, want %q", p.LegacyProject, wantLegacyProject)
 	}
 	if p.Meta != wantMeta {
 		t.Errorf("Meta = %q, want %q", p.Meta, wantMeta)

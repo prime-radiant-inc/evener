@@ -124,9 +124,10 @@ func TestE2E_LayeredLaunchConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Hub-side per-project layer.
+	// Local per-project layer.
+	paths := launchconfig.PathsFor(stateRoot, cwd)
 	pid := launchconfig.ProjectID(cwd)
-	if err := launchconfig.SaveLayer(filepath.Join(stateRoot, "projects", pid, "launch.toml"), launchconfig.Layer{
+	if err := launchconfig.SaveLayer(paths.Project, launchconfig.Layer{
 		PluginDirs: []string{"/proj/plugins"},
 	}); err != nil {
 		t.Fatal(err)

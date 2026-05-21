@@ -32,7 +32,7 @@ cwd = "`+cwd+`"
 hash = "`+repoHash+`"
 decision = "trusted"
 `)
-	writeFile(t, filepath.Join(stateRoot, "projects", pid, "launch.toml"), `skills_dirs = ["/p"]`)
+	writeFile(t, filepath.Join(cwd, ".serf", "launch.local.toml"), `skills_dirs = ["/p"]`)
 
 	overrides := Layer{Model: "l", SkillsDirs: []string{"/l"}}
 	got, err := Resolve(stateRoot, cwd, overrides)
@@ -49,6 +49,45 @@ decision = "trusted"
 	}
 	if got.Repo == nil || got.Repo.Trust != TrustTrusted {
 		t.Errorf("repo trust = %v, want trusted", got.Repo)
+	}
+}
+
+func TestResolve_LegacyProjectLayerFallback(t *testing.T) {
+	stateRoot := t.TempDir()
+	cwd := t.TempDir()
+	paths := PathsFor(stateRoot, cwd)
+	writeFile(t, paths.LegacyProject, `model = "legacy-project"`)
+
+	got, err := Resolve(stateRoot, cwd, Layer{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.Effective.Model != "legacy-project" {
+		t.Fatalf("Model = %q, want legacy-project", got.Effective.Model)
+	}
+	if len(got.Diagnostics) != 1 || got.Diagnostics[0].Layer != LayerProject {
+		t.Fatalf("Diagnostics = %#v, want project legacy diagnostic", got.Diagnostics)
+	}
+}
+
+func TestResolve_ProjectLayerPrefersLocalFileOverLegacy(t *testing.T) {
+	stateRoot := t.TempDir()
+	cwd := t.TempDir()
+	paths := PathsFor(stateRoot, cwd)
+	writeFile(t, paths.LegacyProject, `model = "legacy-project"`)
+	writeFile(t, paths.Project, `model = "local-project"`)
+
+	got, err := Resolve(stateRoot, cwd, Layer{})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.Effective.Model != "local-project" {
+		t.Fatalf("Model = %q, want local-project", got.Effective.Model)
+	}
+	for _, d := range got.Diagnostics {
+		if d.Layer == LayerProject && d.Field == "launch.local.toml" {
+			t.Fatalf("unexpected legacy diagnostic when local project file exists: %#v", got.Diagnostics)
+		}
 	}
 }
 

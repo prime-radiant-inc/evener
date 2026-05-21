@@ -52,6 +52,44 @@ func TestLaunchController_SetLayer_GlobalRoundtrip(t *testing.T) {
 	}
 }
 
+func TestLaunchController_SetLayer_ProjectWritesLocalFile(t *testing.T) {
+	stateRoot := t.TempDir()
+	cwd := t.TempDir()
+	c := newHubLaunchController(stateRoot)
+	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
+		CWD:    cwd,
+		Layer:  "project",
+		Config: appwire.LaunchConfigLayer{Model: "openai/gpt-5"},
+	})
+	if err != nil {
+		t.Fatalf("SetLayer: %v", err)
+	}
+	paths := launchconfig.PathsFor(stateRoot, cwd)
+	if _, err := os.Stat(paths.Project); err != nil {
+		t.Fatalf("project layer was not written to %s: %v", paths.Project, err)
+	}
+	if _, err := os.Stat(paths.LegacyProject); !os.IsNotExist(err) {
+		t.Fatalf("legacy project layer should not be written, stat err=%v", err)
+	}
+}
+
+func TestLaunchController_GetLayer_ProjectReadsLegacyFallback(t *testing.T) {
+	stateRoot := t.TempDir()
+	cwd := t.TempDir()
+	c := newHubLaunchController(stateRoot)
+	paths := launchconfig.PathsFor(stateRoot, cwd)
+	if err := launchconfig.SaveLayer(paths.LegacyProject, launchconfig.Layer{Model: "legacy-project"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.GetLayer(context.Background(), appwire.LaunchConfigGetLayerParams{CWD: cwd, Layer: "project"})
+	if err != nil {
+		t.Fatalf("GetLayer: %v", err)
+	}
+	if got.Model != "legacy-project" {
+		t.Fatalf("Model = %q, want legacy-project", got.Model)
+	}
+}
+
 func TestLaunchController_TrustRepo_RecordsDecision(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()

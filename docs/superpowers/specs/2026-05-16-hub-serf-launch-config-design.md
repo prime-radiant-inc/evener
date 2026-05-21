@@ -82,8 +82,10 @@ Layer precedence, most-general to most-specific:
 1. **Global**: `~/.serf/launch.toml`. Hub-writable via UI.
 2. **In-repo**: `<cwd>/.serf/launch.toml`. Read-only from the UI's perspective,
    gated by trust-on-first-use.
-3. **Hub-side per-project**: `~/.serf/projects/<id>/launch.toml` where
-   `id = sha256(canonicalized-cwd)[:16]`. Hub-writable via UI.
+3. **Local per-project**: `<cwd>/.serf/launch.local.toml`. Hub-writable via
+   UI and intended to stay out of version control. Legacy
+   `~/.serf/projects/<id>/launch.toml` files are read only as a fallback
+   when the local file is absent.
 4. **Per-launch overrides**: passed in `ThreadStartParams.launchOverrides`.
    Ephemeral; never written to disk.
 
@@ -99,13 +101,17 @@ they're hub-global, and the protocol family for them already exists. Launch
 config and credentials are deliberately *not* unified into a single
 namespace.
 
-Per-project state lives at:
+Per-project trust state lives at:
 
 ```
 ~/.serf/projects/<id>/
   meta.toml         # cwd, created_at, trust state
-  launch.toml       # the hub-side per-project layer
 ```
+
+Personal per-project launch defaults live in
+`<cwd>/.serf/launch.local.toml`. Legacy
+`~/.serf/projects/<id>/launch.toml` files are read as a fallback when the
+local file is absent.
 
 ## 4. Schema
 
@@ -181,7 +187,7 @@ file someone might commit.
 - Paths in the in-repo file: relative to the repo root. The resolver computes
   `filepath.Rel(repoRoot, path)`; if the result starts with `..` or is
   absolute, the entry is rejected with a diagnostic and skipped.
-- Paths in the hub-side per-project file: absolute.
+- Paths in the local per-project file: absolute.
 - Paths in per-launch overrides: absolute. The hub validates that the caller
   has the right to point at them by requiring them to exist and be readable
   by the hub user; symlinks are followed but not validated transitively.
@@ -399,8 +405,8 @@ breakdown with provenance.
 **`/settings`** (new route):
 
 - **Global tab**: edits `~/.serf/launch.toml`. Form-based.
-- **Project tab**: edits `~/.serf/projects/<id>/launch.toml`. Only shown
-  when a project is selected. Form-based.
+- **Project tab**: edits `<cwd>/.serf/launch.local.toml`. Only shown when a
+  project is selected. Form-based.
 - **In-repo tab**: read-only view of `.serf/launch.toml`. Banner appears
   when `trust ∈ {untrusted, changed}` with a preview and an "Apply and
   trust" button calling `serf/launch/trustRepo`. When `trust = rejected`,

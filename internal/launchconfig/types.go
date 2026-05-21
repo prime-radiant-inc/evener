@@ -1,6 +1,6 @@
 // Package launchconfig owns the layered configuration that hub-serf
 // passes when launching a serf serve subprocess. Layers (global, in-repo,
-// hub-side-per-project, per-launch) are merged into a single Resolved
+// local per-project, per-launch) are merged into a single Resolved
 // value which is then turned into argv + env via ToArgs/ToEnv.
 package launchconfig
 

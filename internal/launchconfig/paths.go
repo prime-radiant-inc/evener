@@ -18,10 +18,11 @@ func ProjectID(cwd string) string {
 // Paths bundles the canonical layer-file paths for a given hub state root
 // and cwd.
 type Paths struct {
-	Global  string // <root>/launch.toml
-	Repo    string // <cwd>/.serf/launch.toml
-	Project string // <root>/projects/<id>/launch.toml
-	Meta    string // <root>/projects/<id>/meta.toml
+	Global        string // <root>/launch.toml
+	Repo          string // <cwd>/.serf/launch.toml
+	Project       string // <cwd>/.serf/launch.local.toml
+	LegacyProject string // <root>/projects/<id>/launch.toml
+	Meta          string // <root>/projects/<id>/meta.toml
 }
 
 // PathsFor computes layer paths given the hub state root (typically
@@ -30,10 +31,11 @@ func PathsFor(stateRoot, cwd string) Paths {
 	id := ProjectID(cwd)
 	projectDir := filepath.Join(stateRoot, "projects", id)
 	return Paths{
-		Global:  filepath.Join(stateRoot, "launch.toml"),
-		Repo:    filepath.Join(cwd, ".serf", "launch.toml"),
-		Project: filepath.Join(projectDir, "launch.toml"),
-		Meta:    filepath.Join(projectDir, "meta.toml"),
+		Global:        filepath.Join(stateRoot, "launch.toml"),
+		Repo:          filepath.Join(cwd, ".serf", "launch.toml"),
+		Project:       filepath.Join(cwd, ".serf", "launch.local.toml"),
+		LegacyProject: filepath.Join(projectDir, "launch.toml"),
+		Meta:          filepath.Join(projectDir, "meta.toml"),
 	}
 }
 

@@ -27,7 +27,7 @@ func Resolve(stateRoot, cwd string, overrides Layer) (Resolved, error) {
 		layers[LayerRepo] = repoLayer
 	}
 
-	p, err := LoadLayer(paths.Project)
+	p, projectDiags, err := LoadProjectLayer(paths)
 	if err != nil {
 		return Resolved{}, fmt.Errorf("project: %w", err)
 	}
@@ -39,7 +39,37 @@ func Resolve(stateRoot, cwd string, overrides Layer) (Resolved, error) {
 	resolved, _ := mergeLayers(layers)
 	resolved.Repo = repoStatus
 	resolved.Diagnostics = append(resolved.Diagnostics, repoDiags...)
+	resolved.Diagnostics = append(resolved.Diagnostics, projectDiags...)
 	return resolved, nil
+}
+
+// LoadProjectLayer reads the local project layer. The canonical path is
+// <cwd>/.serf/launch.local.toml; the old hub-state path remains a read-only
+// fallback so existing project defaults continue to apply until the layer is
+// saved again.
+func LoadProjectLayer(paths Paths) (Layer, []Diagnostic, error) {
+	if _, err := os.Stat(paths.Project); err == nil {
+		layer, err := LoadLayer(paths.Project)
+		return layer, nil, err
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Layer{}, nil, err
+	}
+
+	if _, err := os.Stat(paths.LegacyProject); err == nil {
+		layer, err := LoadLayer(paths.LegacyProject)
+		if err != nil {
+			return Layer{}, nil, err
+		}
+		return layer, []Diagnostic{{
+			Layer:   LayerProject,
+			Field:   "launch.local.toml",
+			Message: fmt.Sprintf("using legacy project launch config at %s; save the project layer to migrate to %s", paths.LegacyProject, paths.Project),
+		}}, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Layer{}, nil, err
+	}
+
+	return Layer{}, nil, nil
 }
 
 func loadRepoLayer(cwd, stateRoot string) (*RepoStatus, Layer, []Diagnostic) {

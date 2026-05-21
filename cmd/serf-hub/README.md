@@ -104,9 +104,11 @@ Hub-spawned `serf serve` daemons get their flags from a layered config:
 - **In-repo**: `<cwd>/.serf/launch.toml` — per-project config shipped in
   the working directory. Trust-on-first-use: the Hub UI prompts to review
   and approve before applying. Untrusted in-repo files are skipped.
-- **Hub-side per-project**: `~/.serf/projects/<id>/launch.toml` — per-project
-  config that doesn't pollute the working directory. The `<id>` is
-  `sha256(cwd)[:16]`.
+- **Local per-project**: `<cwd>/.serf/launch.local.toml` — personal
+  per-project defaults. Keep this file out of version control; this repo's
+  `.gitignore` ignores it while still allowing shared `.serf/launch.toml`.
+  Existing `~/.serf/projects/<id>/launch.toml` files are read as a fallback
+  until the project layer is saved in the new location.
 - **Per-launch overrides**: `launchOverrides` on `ThreadStart` — applied to
   a single spawn only.
 

@@ -46,7 +46,11 @@ func (c *hubLaunchController) GetLayer(ctx context.Context, params appwire.Launc
 	case "global":
 		path = paths.Global
 	case "project":
-		path = paths.Project
+		layer, _, err := launchconfig.LoadProjectLayer(paths)
+		if err != nil {
+			return appwire.LaunchConfigLayer{}, err
+		}
+		return launchconfig.ToWire(layer), nil
 	default:
 		return appwire.LaunchConfigLayer{}, appwire.InvalidParams(fmt.Sprintf("layer %q is not writable", params.Layer))
 	}
