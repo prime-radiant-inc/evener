@@ -61,6 +61,12 @@
     if (opt.pathKind) el.dataset.launchPathKind = opt.pathKind;
   }
 
+  function listSupportsExplicitEmpty(optOrWrap) {
+    return !!optOrWrap && optOrWrap.dataset
+      ? optOrWrap.dataset.launchWireField === "modelFallbacks"
+      : !!optOrWrap && optOrWrap.wireField === "modelFallbacks";
+  }
+
   function fieldWrapFor(el) {
     if (!el || !el.closest) return null;
     if (el.classList && el.classList.contains("spawn-advanced-list-control")) return el;
@@ -322,6 +328,8 @@
       } else {
         appendListRow(list, value);
       }
+      const explicitEmpty = wrap.querySelector("[data-launch-explicit-empty]");
+      if (explicitEmpty) explicitEmpty.checked = false;
       input.value = "";
       const display = controls.querySelector(".sp-model-display");
       if (display) display.textContent = "(add model)";
@@ -331,6 +339,20 @@
     wrap.appendChild(title);
     wrap.appendChild(list);
     wrap.appendChild(controls);
+    if (ctx.mode === "settings" && listSupportsExplicitEmpty(opt)) {
+      const explicitEmptyLabel = document.createElement("label");
+      explicitEmptyLabel.className = "checkbox-label";
+      const explicitEmpty = document.createElement("input");
+      explicitEmpty.type = "checkbox";
+      explicitEmpty.dataset.launchExplicitEmpty = "true";
+      explicitEmpty.addEventListener("change", () => {
+        if (!explicitEmpty.checked) return;
+        list.querySelectorAll("li").forEach((li) => li.remove());
+      });
+      explicitEmptyLabel.appendChild(explicitEmpty);
+      explicitEmptyLabel.appendChild(document.createTextNode("No model fallbacks"));
+      wrap.appendChild(explicitEmptyLabel);
+    }
     errorElFor(wrap);
     row.appendChild(wrap);
   }
@@ -537,7 +559,12 @@
         (current[wire] || []).forEach((spec) => appendMCPRow(list, spec));
       } else {
         const list = wrap.querySelector("[data-launch-list]");
-        (current[wire] || []).forEach((value) => appendListRow(list, value));
+        const values = current[wire];
+        if (listSupportsExplicitEmpty(wrap) && Object.prototype.hasOwnProperty.call(current, wire) && Array.isArray(values) && values.length === 0) {
+          const explicitEmpty = wrap.querySelector("[data-launch-explicit-empty]");
+          if (explicitEmpty) explicitEmpty.checked = true;
+        }
+        (values || []).forEach((value) => appendListRow(list, value));
       }
     });
   }
@@ -669,6 +696,7 @@
         .map((li) => li.dataset.value || "")
         .filter(Boolean);
       if (values.length) out[wire] = values;
+      else if (listSupportsExplicitEmpty(wrap) && wrap.querySelector("[data-launch-explicit-empty]:checked")) out[wire] = [];
     });
     return out;
   }

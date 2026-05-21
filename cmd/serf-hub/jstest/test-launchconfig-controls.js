@@ -59,6 +59,16 @@ function assert(cond, msg) {
       driverSupport: { serf: true },
     },
     {
+      field: "model_fallbacks",
+      wireField: "modelFallbacks",
+      label: "Model fallbacks",
+      group: "Resources",
+      kind: "modelList",
+      defaultableLayers: ["global", "project"],
+      perLaunch: true,
+      driverSupport: { serf: true },
+    },
+    {
       field: "trace_file",
       wireField: "traceFile",
       label: "Trace file",
@@ -89,6 +99,7 @@ function assert(cond, msg) {
     current: {
       model: "openai/gpt-5",
       pluginDirs: ["/missing/plugin", "/raw/plugin"],
+      modelFallbacks: [],
       traceFile: "/tmp/trace.out",
       env: { FOO: "bar" },
     },
@@ -101,6 +112,9 @@ function assert(cond, msg) {
     "pathKind should stay on rendered path control");
   assert(root.querySelector('[data-launch-wire-field="traceFile"]').value === "/tmp/trace.out",
     "path current value should populate");
+  const modelFallbackWrap = root.querySelector('[data-launch-kind="modelList"][data-launch-wire-field="modelFallbacks"]');
+  assert(modelFallbackWrap.querySelector("[data-launch-explicit-empty]").checked,
+    "explicit empty modelFallbacks should render no-fallbacks affordance as checked");
   assert(!root.textContent.includes("SERF_MODEL"), "settings controls must not render env fallback values");
   assert(!root.querySelector("[data-launch-env-fallback]"), "settings controls must not expose env fallback nodes");
 
@@ -151,7 +165,39 @@ function assert(cond, msg) {
   assert(out.model === "openai/gpt-5", "collect should include populated model");
   assert(out.traceFile === "/tmp/trace.out", "collect should include output-file field with wire name");
   assert(out.pluginDirs && out.pluginDirs[0] === "/canonical/plugin", "collect should include canonicalized path list");
+  assert(Array.isArray(out.modelFallbacks) && out.modelFallbacks.length === 0,
+    "collect should preserve explicit empty modelFallbacks");
   assert(out.env && out.env.FOO === "bar", "collect should include env map values");
+
+  const inheritRoot = dom.window.document.createElement("form");
+  inheritRoot.dataset.launchSettingsRoot = "";
+  inheritRoot.dataset.launchSettingsLayer = "global";
+  dom.window.document.body.appendChild(inheritRoot);
+  dom.window.LaunchConfigControls.render(inheritRoot, {
+    mode: "settings",
+    layer: "global",
+    options: schema,
+    current: {},
+    includeEnvFallbacks: false,
+  });
+  const inheritOut = dom.window.LaunchConfigControls.collect(inheritRoot);
+  assert(!Object.prototype.hasOwnProperty.call(inheritOut, "modelFallbacks"),
+    "collect should omit unset modelFallbacks so settings inherit defaults");
+
+  const spawnRoot = dom.window.document.createElement("form");
+  spawnRoot.dataset.launchAdvancedRoot = "";
+  dom.window.document.body.appendChild(spawnRoot);
+  dom.window.LaunchConfigControls.render(spawnRoot, {
+    mode: "spawn",
+    options: schema,
+    current: { modelFallbacks: [] },
+    includeEnvFallbacks: false,
+  });
+  assert(!spawnRoot.querySelector("[data-launch-explicit-empty]"),
+    "spawn controls should not render the settings-only no-fallbacks affordance");
+  const spawnOut = dom.window.LaunchConfigControls.collect(spawnRoot);
+  assert(!Object.prototype.hasOwnProperty.call(spawnOut, "modelFallbacks"),
+    "spawn collect with no fallback rows should keep existing empty-list omission behavior");
 })().catch((err) => {
   console.error(err && err.stack ? err.stack : err);
   process.exit(1);
