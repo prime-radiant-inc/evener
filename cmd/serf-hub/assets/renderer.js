@@ -2223,8 +2223,14 @@
 
   // Diff preview helper, used by edit/write/apply_patch.
   function renderDiff(el, content) {
+    renderDiffLines(el, splitOutputLines(content), true);
+  }
+
+  function renderDiffLines(el, lines, truncate) {
+    lines = Array.isArray(lines) ? lines : [];
     const max = 1600;
-    const trimmed = content.length > max ? content.slice(0, max) + "\n…" : content;
+    let trimmed = lines.join("\n");
+    if (truncate && trimmed.length > max) trimmed = trimmed.slice(0, max) + "\n…";
     el.innerHTML = "";
     trimmed.split("\n").forEach(line => {
       const span = document.createElement("span");
@@ -2303,6 +2309,30 @@
     const morePre = document.createElement("pre");
     morePre.className = (opts.outputClassName || body.pre.className || "") + " tool-output-rest";
     morePre.textContent = lines.slice(5).join("\n");
+    const summary = document.createElement("summary");
+    summary.textContent = "show " + (lines.length - 5) + " more lines";
+    moreWrap.appendChild(morePre);
+    moreWrap.appendChild(summary);
+    body.wrap.appendChild(moreWrap);
+    body.moreWrap = moreWrap;
+  }
+
+  function setExpandableDiff(body, text, opts) {
+    if (!body || !body.pre || !body.wrap) return;
+    opts = opts || {};
+    const lines = splitOutputLines(text);
+    renderDiffLines(body.pre, lines.slice(0, 5), false);
+    body.pre.style.display = lines.length ? "" : "none";
+    if (body.moreWrap) {
+      body.moreWrap.remove();
+      body.moreWrap = null;
+    }
+    if (lines.length <= 5) return;
+    const moreWrap = document.createElement("details");
+    moreWrap.className = "tool-output-more " + (opts.moreClass || "");
+    const morePre = document.createElement("pre");
+    morePre.className = (opts.outputClassName || body.pre.className || "diff-body") + " tool-output-rest";
+    renderDiffLines(morePre, lines.slice(5), false);
     const summary = document.createElement("summary");
     summary.textContent = "show " + (lines.length - 5) + " more lines";
     moreWrap.appendChild(morePre);
@@ -2472,6 +2502,43 @@
     };
   }
 
+  function patchRenderer() {
+    return {
+      mode: "card", friendly: "patch",
+      target: (a) => patchTargets(a.patch).join(", "),
+      result: (data, out, state) => diffResult(data, state && state.args && state.args.patch || out || ""),
+      body: (args, conversation) => {
+        const wrap = document.createElement("div");
+        wrap.className = "tool-body output-preview-body patch-body";
+        const pre = document.createElement("pre");
+        pre.className = "diff-body patch-preview";
+        wrap.appendChild(pre);
+        conversation.appendChild(wrap);
+        setExpandableDiff({ wrap, pre }, (args && args.patch) || "", { moreClass: "patch-output-more", outputClassName: "diff-body patch-rest" });
+        return { wrap, pre };
+      },
+      bodyDelta: (state) => {
+        if (state.body) setExpandableDiff(state.body, (state.args && state.args.patch) || "", { moreClass: "patch-output-more", outputClassName: "diff-body patch-rest" });
+      },
+      bodyEnd: (state) => {
+        if (state.body) setExpandableDiff(state.body, (state.args && state.args.patch) || "", { moreClass: "patch-output-more", outputClassName: "diff-body patch-rest" });
+      },
+    };
+  }
+
+  function patchTargets(patch) {
+    const targets = [];
+    const seen = new Set();
+    for (const line of splitOutputLines(patch)) {
+      const m = line.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/);
+      if (m && !seen.has(m[1])) {
+        seen.add(m[1]);
+        targets.push(m[1]);
+      }
+    }
+    return targets;
+  }
+
   // task_list is intentionally not in the tool-renderer registry — it's
   // intercepted in handle() (TOOL_CALL_START/END) and rendered as inline
   // system-line prose via appendTaskListSystemLine.
@@ -2572,7 +2639,7 @@
     "run_shell_command": shellRenderer,
     "edit_file": editRenderer(),
     "write_file": diffRenderer("write"),
-    "apply_patch": diffRenderer("patch"),
+    "apply_patch": patchRenderer(),
     "web_fetch": webFetchRenderer,
     "web_search": webSearchRenderer,
     "spawn_agent": spawnAgentRenderer,

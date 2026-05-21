@@ -161,18 +161,26 @@ await scenario("edit_file diff body", [
   return { ok: true };
 });
 
-await scenario("apply_patch diff body", [
+await scenario("apply_patch diff body with five-line preview", [
   ["SESSION_START", { session_id: "01TEST" }],
-  ["TOOL_CALL_START", { call_id: "p1", tool_name: "apply_patch", arguments_json: JSON.stringify({ patch: "*** Begin Patch\n*** Update File: x.go\n@@\n-old\n+new\n*** End Patch" }) }],
-  ["TOOL_CALL_OUTPUT_DELTA", { call_id: "p1", delta: "@@\n-old\n+new\n" }],
-  ["TOOL_CALL_END", { call_id: "p1", output: "@@\n-old\n+new\n", tool_name: "apply_patch" }],
+  ["TOOL_CALL_START", { call_id: "p1", tool_name: "apply_patch", arguments_json: JSON.stringify({ patch: "*** Begin Patch\n*** Update File: x.go\n@@\n-old\n+new\n-context\n+added\n*** End Patch" }) }],
+  ["TOOL_CALL_END", { call_id: "p1", output: "applied patch to:\nx.go", tool_name: "apply_patch" }],
 ], ({ conv }) => {
   const card = conv.querySelector(".tool-call.apply_patch");
   if (!card) return { ok: false, detail: "no apply_patch tool-call" };
-  const diff = card.querySelector(".diff-body");
-  if (!diff) return { ok: false, detail: "no patch diff body" };
-  if (!diff.querySelector(".add")) return { ok: false, detail: "no patch add lines" };
-  if (!diff.querySelector(".del")) return { ok: false, detail: "no patch del lines" };
+  if (!card.textContent.includes("x.go")) return { ok: false, detail: "missing patch target" };
+  const body = card.querySelector(".patch-body");
+  if (!body) return { ok: false, detail: "no patch body" };
+  const preview = body.querySelector(".patch-preview");
+  if (!preview) return { ok: false, detail: "no patch preview" };
+  if (!preview.textContent.includes("*** Begin Patch")) return { ok: false, detail: "preview should render patch content, not apply_patch stdout" };
+  if (preview.textContent.includes("+added")) return { ok: false, detail: "preview should be capped to first five lines" };
+  if (!preview.querySelector(".add")) return { ok: false, detail: "no patch add lines" };
+  if (!preview.querySelector(".del")) return { ok: false, detail: "no patch del lines" };
+  const more = body.querySelector(".patch-output-more");
+  if (!more) return { ok: false, detail: "missing patch more disclosure" };
+  if (!more.querySelector("summary") || !more.querySelector("summary").textContent.includes("3 more lines")) return { ok: false, detail: "wrong patch more summary" };
+  if (!more.querySelector(".patch-rest") || !more.querySelector(".patch-rest").textContent.includes("+added")) return { ok: false, detail: "patch rest missing hidden diff lines" };
   return { ok: true };
 });
 
