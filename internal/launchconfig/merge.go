@@ -170,9 +170,18 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 			nonEmpty = true
 		}
 		if len(l.SystemPromptAppend) > 0 && l.SystemPromptAppendMode == "" {
-			eff.SystemPromptAppend = append(eff.SystemPromptAppend, l.SystemPromptAppend...)
-			prov["system_prompt_append"] = name
+			eff.SystemPromptAppendMode = "file"
+			eff.SystemPromptAppendFile = l.SystemPromptAppend[0]
+			eff.SystemPromptAppendText = ""
+			eff.SystemPromptAppend = nil
+			prov["system_prompt_append_mode"] = name
 			nonEmpty = true
+			if len(l.SystemPromptAppend) > 1 {
+				diags = append(diags, Diagnostic{
+					Layer: name, Field: "system_prompt_append",
+					Message: "legacy system_prompt_append has multiple entries; UI supports one append source, using the first entry",
+				})
+			}
 		}
 		// ModelFallbacks: higher-precedence layers REPLACE rather than append.
 		// A user explicitly setting a fallback chain at the launch layer means

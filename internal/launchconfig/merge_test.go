@@ -2,6 +2,7 @@ package launchconfig
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -55,6 +56,61 @@ func TestMergeLayers_SystemPromptModesOverrideByLayer(t *testing.T) {
 	}
 	if resolved.Effective.SystemPromptAppendMode != "inline" || resolved.Effective.SystemPromptAppendText != "project append" {
 		t.Fatalf("effective append prompt = %#v", resolved.Effective)
+	}
+}
+
+func TestMergeLayers_LegacySystemPromptAppendMigratesOneEntry(t *testing.T) {
+	resolved, diags := mergeLayers(map[LayerName]Layer{
+		LayerGlobal: {SystemPromptAppend: []string{"/legacy-append.md"}},
+	})
+	if len(diags) != 0 {
+		t.Fatalf("diagnostics = %v, want none", diags)
+	}
+	if resolved.Effective.SystemPromptAppendMode != "file" || resolved.Effective.SystemPromptAppendFile != "/legacy-append.md" {
+		t.Fatalf("effective append prompt = %#v", resolved.Effective)
+	}
+	if len(resolved.Effective.SystemPromptAppend) != 0 {
+		t.Fatalf("legacy append list should not remain effective: %#v", resolved.Effective.SystemPromptAppend)
+	}
+	if resolved.Provenance["system_prompt_append_mode"] != LayerGlobal {
+		t.Fatalf("provenance[system_prompt_append_mode] = %q, want global", resolved.Provenance["system_prompt_append_mode"])
+	}
+}
+
+func TestMergeLayers_LegacySystemPromptAppendMultiEntryUsesFirstWithDiagnostic(t *testing.T) {
+	resolved, diags := mergeLayers(map[LayerName]Layer{
+		LayerProject: {SystemPromptAppend: []string{"/first.md", "/second.md"}},
+	})
+	if resolved.Effective.SystemPromptAppendMode != "file" || resolved.Effective.SystemPromptAppendFile != "/first.md" {
+		t.Fatalf("effective append prompt = %#v", resolved.Effective)
+	}
+	var seen bool
+	for _, d := range diags {
+		if d.Layer == LayerProject && d.Field == "system_prompt_append" && strings.Contains(d.Message, "UI supports one append source") {
+			seen = true
+		}
+	}
+	if !seen {
+		t.Fatalf("expected multi-entry legacy diagnostic, got %v", diags)
+	}
+}
+
+func TestMergeLayers_ExplicitAppendModeBeatsLegacyAppendSameLayer(t *testing.T) {
+	resolved, diags := mergeLayers(map[LayerName]Layer{
+		LayerLaunch: {
+			SystemPromptAppendMode: "inline",
+			SystemPromptAppendText: "new append",
+			SystemPromptAppend:     []string{"/legacy.md", "/ignored.md"},
+		},
+	})
+	if len(diags) != 0 {
+		t.Fatalf("diagnostics = %v, want none", diags)
+	}
+	if resolved.Effective.SystemPromptAppendMode != "inline" || resolved.Effective.SystemPromptAppendText != "new append" {
+		t.Fatalf("effective append prompt = %#v", resolved.Effective)
+	}
+	if resolved.Effective.SystemPromptAppendFile != "" || len(resolved.Effective.SystemPromptAppend) != 0 {
+		t.Fatalf("legacy append should not contribute with explicit mode: %#v", resolved.Effective)
 	}
 }
 
