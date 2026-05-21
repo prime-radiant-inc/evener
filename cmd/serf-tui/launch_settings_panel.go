@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -485,18 +486,49 @@ func mcpEditValue(mcps []appwire.MCPServerSpec) string {
 	if len(mcps) == 0 {
 		return ""
 	}
-	lines := make([]string, 0, len(mcps))
+	specs := make([]mcpEditSpec, 0, len(mcps))
 	for _, mcp := range mcps {
-		line := strings.TrimSpace(mcp.Name) + ":" + strings.TrimSpace(mcp.Command)
-		if len(mcp.Args) > 0 {
-			line += " " + strings.Join(mcp.Args, " ")
-		}
-		lines = append(lines, line)
+		specs = append(specs, mcpEditSpec{Name: mcp.Name, Command: mcp.Command, Args: mcp.Args})
 	}
-	return strings.Join(lines, "; ")
+	data, err := json.Marshal(specs)
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+type mcpEditSpec struct {
+	Name    string   `json:"name"`
+	Command string   `json:"command"`
+	Args    []string `json:"args"`
 }
 
 func parseMCPs(value string) ([]appwire.MCPServerSpec, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	if strings.HasPrefix(value, "[") {
+		var mcps []appwire.MCPServerSpec
+		if err := json.Unmarshal([]byte(value), &mcps); err != nil {
+			return nil, fmt.Errorf("mcps JSON: %w", err)
+		}
+		if err := validateMCPs(mcps); err != nil {
+			return nil, err
+		}
+		return mcps, nil
+	}
+	if strings.HasPrefix(value, "{") {
+		var mcp appwire.MCPServerSpec
+		if err := json.Unmarshal([]byte(value), &mcp); err != nil {
+			return nil, fmt.Errorf("mcp JSON: %w", err)
+		}
+		mcps := []appwire.MCPServerSpec{mcp}
+		if err := validateMCPs(mcps); err != nil {
+			return nil, err
+		}
+		return mcps, nil
+	}
 	rows := strings.FieldsFunc(value, func(r rune) bool {
 		return r == '\n' || r == ';'
 	})
@@ -527,6 +559,23 @@ func parseMCPs(value string) ([]appwire.MCPServerSpec, error) {
 		})
 	}
 	return out, nil
+}
+
+func validateMCPs(mcps []appwire.MCPServerSpec) error {
+	for i, mcp := range mcps {
+		name := strings.TrimSpace(mcp.Name)
+		command := strings.TrimSpace(mcp.Command)
+		if name == "" {
+			return fmt.Errorf("mcp entry %d missing name", i+1)
+		}
+		if command == "" {
+			return fmt.Errorf("mcp entry %d missing command", i+1)
+		}
+		if err := validateLocalLaunchPath(command, "command"); err != nil {
+			return fmt.Errorf("mcp entry %d command %q: %w", i+1, command, err)
+		}
+	}
+	return nil
 }
 
 func validatePathEntries(entries []string, kind string) error {

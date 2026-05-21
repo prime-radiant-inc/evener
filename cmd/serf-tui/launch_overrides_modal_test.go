@@ -92,7 +92,7 @@ func TestLaunchOverridesModal_MCPsRowRequestsEdit(t *testing.T) {
 		t.Fatal("mcps row should request an edit")
 	}
 	req := cmd().(launchSettingsEditRequestMsg)
-	if req.Field != "mcps" || req.CurrentValue != "docs:docs-mcp" {
+	if req.Field != "mcps" || req.CurrentValue != `[{"name":"docs","command":"docs-mcp","args":null}]` {
 		t.Fatalf("request=%+v, want serialized mcps edit value", req)
 	}
 }

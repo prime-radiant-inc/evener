@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -277,6 +278,21 @@ func TestApplyEdit_MCPsPreservesSerializedRows(t *testing.T) {
 	}
 	if len(got.MCPs) != 1 || got.MCPs[0].Name != "docs" || got.MCPs[0].Command != "sh" || strings.Join(got.MCPs[0].Args, " ") != "-c docs" {
 		t.Fatalf("MCPs=%+v, want serialized row preserved", got.MCPs)
+	}
+}
+
+func TestMCPsEditValueRoundTripsArgsWithSpaces(t *testing.T) {
+	want := []appwire.MCPServerSpec{
+		{Name: "docs", Command: "sh", Args: []string{"-c", "echo hi"}},
+		{Name: "empty", Command: "sh", Args: []string{}},
+		{Name: "nil", Command: "sh"},
+	}
+	got, err := parseMCPs(mcpEditValue(want))
+	if err != nil {
+		t.Fatalf("parseMCPs: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("round-trip MCPs=%#v, want %#v", got, want)
 	}
 }
 

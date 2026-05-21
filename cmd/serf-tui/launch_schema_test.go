@@ -65,7 +65,7 @@ func TestSchemaRows_MCPsExposeEditableRows(t *testing.T) {
 	if rows[0].value != "2 entries" {
 		t.Fatalf("row.value=%q, want entry count", rows[0].value)
 	}
-	if rows[0].editValue != "docs:sh -c docs; files:/bin/sh" {
+	if rows[0].editValue != `[{"name":"docs","command":"sh","args":["-c","docs"]},{"name":"files","command":"/bin/sh","args":null}]` {
 		t.Fatalf("row.editValue=%q, want serialized MCP rows", rows[0].editValue)
 	}
 }

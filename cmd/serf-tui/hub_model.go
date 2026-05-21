@@ -946,7 +946,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Layer == "launch" {
 			prompt := fmt.Sprintf("Edit %s (current: %s):", msg.Field, msg.CurrentValue)
 			if msg.Field == "mcps" {
-				prompt = fmt.Sprintf("Edit %s as name:command args...; name2:command2 args... (current: %s):", msg.Field, msg.CurrentValue)
+				prompt = fmt.Sprintf("Edit %s as JSON array, or name:command args... (current: %s):", msg.Field, msg.CurrentValue)
 			}
 			tag := "launch-override:" + msg.Field
 			var modal textInputModal
@@ -960,7 +960,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		prompt := fmt.Sprintf("Edit %s.%s (current: %s):", msg.Layer, msg.Field, msg.CurrentValue)
 		if msg.Field == "mcps" {
-			prompt = fmt.Sprintf("Edit %s.%s as name:command args...; name2:command2 args... (current: %s):", msg.Layer, msg.Field, msg.CurrentValue)
+			prompt = fmt.Sprintf("Edit %s.%s as JSON array, or name:command args... (current: %s):", msg.Layer, msg.Field, msg.CurrentValue)
 		}
 		tag := fmt.Sprintf("settings-edit:%s:%s", msg.Layer, msg.Field)
 		var modal textInputModal
