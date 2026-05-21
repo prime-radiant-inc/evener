@@ -415,7 +415,7 @@
 
   function safeEnvFallbacks() {
     const out = {};
-    document.querySelectorAll("[data-spawn-safe-env]").forEach((el) => {
+    document.querySelectorAll("[data-launch-env-fallback]").forEach((el) => {
       const name = el.dataset.envName || "";
       if (name) out[name] = el.value || "";
     });
@@ -441,6 +441,7 @@
     if (opt.pathKind) {
       input.dataset.launchPathKind = opt.pathKind;
       input.dataset.settingsDirInput = "true";
+      input.addEventListener("change", () => validatePathInput(input));
     }
     if (opt.kind === "integer") {
       input.min = "0";
@@ -459,6 +460,33 @@
     hint.className = "spawn-advanced-env-fallback";
     hint.textContent = "env " + fallback.name + ": " + value;
     label.appendChild(hint);
+  }
+
+  function modelPickerControl(opt) {
+    const wrap = document.createElement("span");
+    wrap.className = "sp-model-wrap spawn-advanced-model";
+    const hidden = document.createElement("input");
+    hidden.type = "hidden";
+    hidden.dataset.launchField = opt.field || "";
+    hidden.dataset.launchWireField = opt.wireField || "";
+    hidden.dataset.launchKind = opt.kind || "";
+    const display = document.createElement("span");
+    display.className = "sp-model-display";
+    display.textContent = "(default)";
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.settingsModelPicker = "true";
+    button.textContent = "pick";
+    wrap.appendChild(hidden);
+    wrap.appendChild(display);
+    wrap.appendChild(button);
+    return { wrap, hidden, display };
+  }
+
+  function addControlsWrap() {
+    const wrap = document.createElement("div");
+    wrap.className = "spawn-advanced-add-controls";
+    return wrap;
   }
 
   function renderScalarControl(row, opt) {
@@ -526,24 +554,7 @@
     }
 
     if (opt.kind === "modelPicker") {
-      const wrap = document.createElement("span");
-      wrap.className = "sp-model-wrap spawn-advanced-model";
-      const hidden = document.createElement("input");
-      hidden.type = "hidden";
-      hidden.dataset.launchField = opt.field || "";
-      hidden.dataset.launchWireField = opt.wireField || "";
-      hidden.dataset.launchKind = opt.kind || "";
-      const display = document.createElement("span");
-      display.className = "sp-model-display";
-      display.textContent = "(default)";
-      const button = document.createElement("button");
-      button.type = "button";
-      button.dataset.settingsModelPicker = "true";
-      button.textContent = "pick";
-      wrap.appendChild(hidden);
-      wrap.appendChild(display);
-      wrap.appendChild(button);
-      label.appendChild(wrap);
+      label.appendChild(modelPickerControl(opt).wrap);
       appendEnvFallback(label, opt);
       row.appendChild(label);
       return;
@@ -577,17 +588,25 @@
     wrap.dataset.launchKind = opt.kind || "";
     if (opt.pathKind) wrap.dataset.launchPathKind = opt.pathKind;
 
-    const label = document.createElement("label");
-    label.textContent = opt.label || opt.field;
-    const input = document.createElement("input");
-    input.type = "text";
-    if (opt.pathKind) input.dataset.settingsDirInput = "true";
-    label.appendChild(input);
-
+    const title = document.createElement("div");
+    title.className = "spawn-advanced-field-label";
+    title.textContent = opt.label || opt.field;
     const list = document.createElement("ul");
     list.className = "spawn-advanced-list";
     list.dataset.launchList = "true";
 
+    const controls = addControlsWrap();
+    let input;
+    if (opt.kind === "modelList") {
+      const modelControl = modelPickerControl(opt);
+      input = modelControl.hidden;
+      controls.appendChild(modelControl.wrap);
+    } else {
+      input = document.createElement("input");
+      input.type = "text";
+      if (opt.pathKind) input.dataset.settingsDirInput = "true";
+      controls.appendChild(input);
+    }
     const add = document.createElement("button");
     add.type = "button";
     add.textContent = "add";
@@ -607,11 +626,14 @@
         appendListRow(list, value);
       }
       input.value = "";
+      const display = controls.querySelector(".sp-model-display");
+      if (display) display.textContent = "(default)";
     });
+    controls.appendChild(add);
 
-    wrap.appendChild(label);
+    wrap.appendChild(title);
     wrap.appendChild(list);
-    wrap.appendChild(add);
+    wrap.appendChild(controls);
     row.appendChild(wrap);
   }
 
@@ -624,15 +646,16 @@
     const title = document.createElement("div");
     title.className = "spawn-advanced-field-label";
     title.textContent = opt.label || opt.field;
+    const list = document.createElement("ul");
+    list.className = "spawn-advanced-list";
+    list.dataset.launchEnvList = "true";
+    const controls = addControlsWrap();
     const name = document.createElement("input");
     name.type = "text";
     name.placeholder = "NAME";
     const value = document.createElement("input");
     value.type = "text";
     value.placeholder = "value";
-    const list = document.createElement("ul");
-    list.className = "spawn-advanced-list";
-    list.dataset.launchEnvList = "true";
     const add = document.createElement("button");
     add.type = "button";
     add.textContent = "add";
@@ -654,11 +677,12 @@
       name.value = "";
       value.value = "";
     });
+    controls.appendChild(name);
+    controls.appendChild(value);
+    controls.appendChild(add);
     wrap.appendChild(title);
-    wrap.appendChild(name);
-    wrap.appendChild(value);
     wrap.appendChild(list);
-    wrap.appendChild(add);
+    wrap.appendChild(controls);
     row.appendChild(wrap);
   }
 
@@ -671,6 +695,10 @@
     const title = document.createElement("div");
     title.className = "spawn-advanced-field-label";
     title.textContent = opt.label || opt.field;
+    const list = document.createElement("ul");
+    list.className = "spawn-advanced-list";
+    list.dataset.launchMcpList = "true";
+    const controls = addControlsWrap();
     const name = document.createElement("input");
     name.type = "text";
     name.placeholder = "name";
@@ -680,9 +708,6 @@
     const args = document.createElement("input");
     args.type = "text";
     args.placeholder = "args";
-    const list = document.createElement("ul");
-    list.className = "spawn-advanced-list";
-    list.dataset.launchMcpList = "true";
     const add = document.createElement("button");
     add.type = "button";
     add.textContent = "add";
@@ -704,12 +729,13 @@
       command.value = "";
       args.value = "";
     });
+    controls.appendChild(name);
+    controls.appendChild(command);
+    controls.appendChild(args);
+    controls.appendChild(add);
     wrap.appendChild(title);
-    wrap.appendChild(name);
-    wrap.appendChild(command);
-    wrap.appendChild(args);
     wrap.appendChild(list);
-    wrap.appendChild(add);
+    wrap.appendChild(controls);
     row.appendChild(wrap);
   }
 
@@ -730,18 +756,20 @@
   }
 
   async function renderSchemaAdvanced() {
-    const root = document.querySelector("[data-spawn-advanced-schema-root]");
+    const root = document.querySelector("[data-launch-advanced-root]");
     if (!root || root.__schemaRendered) return;
     root.__schemaRendered = true;
+    const loading = root.querySelector("[data-launch-schema-loading]");
+    const groupsRoot = root.querySelector("[data-launch-advanced-groups]") || root;
     if (!window.launchconfig || !window.launchconfig.schema) {
-      root.textContent = "Advanced launch schema unavailable.";
+      if (loading) loading.textContent = "Advanced launch schema unavailable.";
       return;
     }
-    root.textContent = "Loading advanced options...";
+    if (loading) loading.hidden = false;
     try {
       const schema = await window.launchconfig.schema();
       const options = ((schema && schema.options) || []).filter(schemaSupportedForSpawn);
-      root.innerHTML = "";
+      groupsRoot.innerHTML = "";
       let currentGroup = "";
       let fieldset = null;
       options.forEach((opt) => {
@@ -753,16 +781,44 @@
           const legend = document.createElement("legend");
           legend.textContent = currentGroup;
           fieldset.appendChild(legend);
-          root.appendChild(fieldset);
+          groupsRoot.appendChild(fieldset);
         }
         renderSchemaOption(fieldset, opt);
       });
+      if (loading) loading.hidden = true;
       if (window.SettingsPickers && window.SettingsPickers.init) {
         window.SettingsPickers.init(root);
       }
     } catch (err) {
-      root.textContent = "Advanced launch schema unavailable.";
+      if (loading) loading.textContent = "Advanced launch schema unavailable.";
     }
+  }
+
+  async function validatePathInput(input) {
+    if (!input || !input.dataset.launchPathKind) return true;
+    const value = (input.value || "").trim();
+    input.dataset.launchInvalid = "";
+    input.setCustomValidity("");
+    if (!value) return true;
+    if (!window.launchconfig || !window.launchconfig.validatePath) return true;
+    const result = await window.launchconfig.validatePath(value, schemaPathKind(input.dataset.launchPathKind));
+    if (!result || !result.valid) {
+      input.dataset.launchInvalid = "true";
+      input.setCustomValidity((result && result.error) || "invalid path");
+      input.reportValidity();
+      return false;
+    }
+    input.value = result.path || value;
+    input.setCustomValidity("");
+    return true;
+  }
+
+  async function validateAdvancedPathScalars() {
+    const inputs = Array.from(document.querySelectorAll("[data-launch-path-kind][data-launch-wire-field]"));
+    for (const input of inputs) {
+      if (!(await validatePathInput(input))) return false;
+    }
+    return true;
   }
 
   function collectAdvancedOverrides() {
@@ -777,6 +833,7 @@
         if (el.value === "false") overrides[wire] = false;
         return;
       }
+      if (el.dataset.launchInvalid === "true") return;
       const value = (el.value || "").trim();
       if (!value) return;
       overrides[wire] = kind === "integer" ? Number(value) : value;
@@ -860,6 +917,7 @@
     const showResolvedBtn = document.getElementById("ovr-show-resolved");
     if (showResolvedBtn) {
       showResolvedBtn.addEventListener("click", async () => {
+        if (!(await validateAdvancedPathScalars())) return;
         const cwd = document.querySelector("[name=working_dir]").value;
         const overrides = collectAdvancedOverrides();
         const r = await launchconfig.resolve(cwd, overrides);
@@ -935,6 +993,7 @@
         if (ta) ta.focus();
         return;
       }
+      if (!(await validateAdvancedPathScalars())) return;
       const launchOverrides = collectAdvancedOverrides();
       const body = {
         launch_overrides: launchOverrides,

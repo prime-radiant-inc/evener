@@ -1011,19 +1011,46 @@ func TestSpawnTemplate_HasSchemaAdvancedRoot(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		`data-spawn-advanced-schema-root`,
+		`data-launch-advanced-root`,
+		`data-launch-schema-loading`,
+		`data-launch-env-fallbacks`,
+		`data-launch-advanced-groups`,
 		`id="spawn-advanced-schema"`,
-		`data-spawn-safe-env data-env-name="SERF_MODEL" value="openai/gpt-5"`,
-		`data-spawn-safe-env data-env-name="SERF_REASONING_EFFORT" value="high"`,
+		`data-launch-env-fallback data-env-name="SERF_MODEL" value="openai/gpt-5"`,
+		`data-launch-env-fallback data-env-name="SERF_REASONING_EFFORT" value="high"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("spawn advanced missing %q:\n%s", want, body)
 		}
 	}
+	if strings.Contains(body, `data-spawn-advanced-schema-root`) {
+		t.Fatalf("spawn advanced still uses old root hook:\n%s", body)
+	}
 	for _, blocked := range []string{"OPENAI_API_KEY", "SERF_API_TOKEN", "secret-token"} {
 		if strings.Contains(body, blocked) {
 			t.Fatalf("spawn advanced exposed blocked env %q:\n%s", blocked, body)
 		}
+	}
+	js, err := os.ReadFile("assets/spawn.js")
+	if err != nil {
+		t.Fatalf("read spawn.js: %v", err)
+	}
+	src := string(js)
+	for _, want := range []string{
+		`document.querySelector("[data-launch-advanced-root]")`,
+		`root.querySelector("[data-launch-schema-loading]")`,
+		`root.querySelector("[data-launch-advanced-groups]")`,
+		`document.querySelectorAll("[data-launch-env-fallback]")`,
+		`button.dataset.settingsModelPicker = "true"`,
+		`validateAdvancedPathScalars`,
+	} {
+		if !strings.Contains(src, want) {
+			t.Fatalf("spawn.js missing %q", want)
+		}
+	}
+	listBeforeControls := strings.Index(src, "wrap.appendChild(list);\n    wrap.appendChild(controls);")
+	if listBeforeControls < 0 {
+		t.Fatalf("spawn.js does not append list before add controls")
 	}
 }
 

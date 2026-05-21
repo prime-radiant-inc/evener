@@ -60,8 +60,11 @@
           <a href="/settings/launch">Launch defaults</a> and any per-project layers.
         </p>
 
-        {{range $name, $value := .SafeEnv}}<input type="hidden" data-spawn-safe-env data-env-name="{{$name}}" value="{{$value}}">{{end}}
-        <div id="spawn-advanced-schema" data-spawn-advanced-schema-root aria-live="polite"></div>
+        <div data-launch-env-fallbacks hidden>{{range $name, $value := .SafeEnv}}<input type="hidden" data-launch-env-fallback data-env-name="{{$name}}" value="{{$value}}">{{end}}</div>
+        <div id="spawn-advanced-schema" data-launch-advanced-root aria-live="polite">
+          <div data-launch-schema-loading>Loading advanced options...</div>
+          <div data-launch-advanced-groups></div>
+        </div>
 
         <div class="spawn-advanced-actions">
           <button type="button" id="ovr-show-resolved">show resolved config</button>
