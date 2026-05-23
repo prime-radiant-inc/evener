@@ -17,6 +17,7 @@
   --state-subagent: #bb9af7;
   --surface-secondary: #1c1c24;
   --accent-secondary: #bb9af7;
+  --btn-primary-text: var(--bg);
   --diagnostic-provider: var(--state-awaiting);
   --diagnostic-serf: var(--state-warning);
   --diagnostic-hub: var(--state-processing);
@@ -118,6 +119,7 @@
     --state-subagent: #5e35b6;
     --surface-secondary: #e6e6e8;
     --accent-secondary: #5e35b6;
+    --btn-primary-text: #fafafa;
 
     --panel: var(--bg-raised);
     --panel-2: var(--surface-secondary);
@@ -147,6 +149,7 @@
   --state-subagent: #bb9af7;
   --surface-secondary: #1c1c24;
   --accent-secondary: #bb9af7;
+  --btn-primary-text: var(--bg);
   --panel: var(--bg-raised);
   --panel-2: var(--surface-secondary);
   --border: var(--rule);
@@ -174,6 +177,7 @@
   --state-subagent: #5e35b6;
   --surface-secondary: #e6e6e8;
   --accent-secondary: #5e35b6;
+  --btn-primary-text: #fafafa;
   --panel: var(--bg-raised);
   --panel-2: var(--surface-secondary);
   --border: var(--rule);
