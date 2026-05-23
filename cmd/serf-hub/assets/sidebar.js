@@ -81,7 +81,7 @@
     if (staggerApplied) return;
     var live = (scope || document).querySelector(".sidebar-live-section");
     if (!live) return;
-    var rows = live.querySelectorAll(".live-row");
+    var rows = live.querySelectorAll(".sb-row");
     if (!rows.length) return;
     live.classList.add("stagger");
     for (var i = 0; i < rows.length && i < 10; i++) {
