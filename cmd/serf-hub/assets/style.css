@@ -1683,7 +1683,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 /* Credentials pane */
 .credentials-pane { padding: var(--space-5) var(--space-5); }
 .credentials-help { color: var(--muted-fg, #888); }
-.credentials-row { display: block; padding: var(--space-3) 0; border-bottom: 1px solid var(--border-subtle, var(--rule, #2a2a2a)); }
+.credentials-row { padding: var(--space-3) 0; border-bottom: 1px solid var(--border-subtle, var(--rule, #2a2a2a)); }
 .credentials-row-main { display: grid; grid-template-columns: 8rem 1fr auto; align-items: center; gap: var(--space-5); }
 .credentials-row-name { font-weight: 600; }
 .credentials-row-status { color: var(--text-muted, #888); font-family: var(--font-mono); font-size: var(--text-sm); }

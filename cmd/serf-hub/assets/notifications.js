@@ -334,7 +334,7 @@
       const credsRows = document.getElementById("credentials-rows");
       if (credsRows && window.launchconfig && typeof launchconfig.authList === "function") {
         launchconfig.authList().then(function (list) {
-          credsRows.dispatchEvent(new CustomEvent("credentials-reload", { detail: list }));
+          credsRows.dispatchEvent(new CustomEvent("credentials-reload", { bubbles: true, detail: list }));
         });
       }
       // Refresh providers settings tab if it is the active settings pane.
