@@ -1364,6 +1364,35 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 }
 .btn-chip[data-mode] .val { color: var(--state-warning); }
 
+/* ── Status badge (Pass 5) ────────────────────────────────────────────────
+   Typographic small-caps mono in state color. No background fill — replaces
+   the rgba-tinted .status-pill which read as generic SaaS chrome. See
+   design language §3.3. */
+
+/* Status badge variants used in settings rows: alias the legacy
+   .status-running / .status-available / .status-stopped / .status-error
+   / .status-missing / .status-unreachable / .status-unknown markers
+   onto the same color logic so settings/providers.html's
+   "status-${activeSource}" form keeps working. */
+.status-badge.status-running,
+.status-badge.status-available { color: var(--state-idle); }
+.status-badge.status-error,
+.status-badge.status-missing   { color: var(--state-awaiting); }
+.status-badge.status-unreachable { color: var(--state-warning); }
+.status-badge.status-stopped,
+.status-badge.status-unknown,
+.status-badge.status-absent,
+.status-badge.status-file,
+.status-badge.status-env,
+.status-badge.status-oauth,
+.status-badge.status-none      { color: var(--text-muted); }
+
+/* Add coverage for status dots in [data-state="errored|closed|notLoaded"]
+   so dots in templates that don't get a normalized state still render. */
+.status-dot[data-state="errored"]   { background: var(--state-awaiting); }
+.status-dot[data-state="closed"],
+.status-dot[data-state="notLoaded"] { background: var(--state-ended); }
+
 /* Optimistic rendering: applied to any conversation entry that has
    been issued but not yet reconciled with an authoritative event.
    Reconcile removes .optimistic-pending; failure adds .optimistic-failed. */
