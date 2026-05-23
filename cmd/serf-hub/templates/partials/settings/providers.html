@@ -5,25 +5,41 @@
   <a href="/credentials" hx-get="/_partials/credentials" hx-target="#workspace" hx-push-url="/credentials">credentials</a>
   page.
 </p>
-<div id="providers-rows" data-loaded="false">
-  <p>Loading…</p>
-</div>
+<dl id="providers-rows" class="settings-table" data-loaded="false">
+  <div class="row"><dt>Loading…</dt><dd></dd></div>
+</dl>
 <script>
   (async function () {
     const rows = document.getElementById("providers-rows");
+    function escapeHtml(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
+    function badgeState(source) {
+      // map activeSource → data-state for the typographic badge
+      switch (source) {
+        case "file": case "oauth": case "env": return "idle";
+        case "absent": return "ended";
+        case "none": return "ended";
+        case "error": case "missing": return "awaiting";
+        case "unreachable": return "warning";
+        default: return "ended";
+      }
+    }
     try {
       const data = await launchconfig.authList();
-      rows.innerHTML = data.providers.map(p => `
-        <div class="settings-row">
-          <div class="settings-row-title">${p.provider}
-            <span class="status-badge status-${p.activeSource}" data-state="${p.activeSource === 'absent' || p.activeSource === 'none' ? 'closed' : 'idle'}">${p.activeSource}</span>
-          </div>
-          <div class="settings-row-meta">auth modes: ${(p.authModes || []).join(", ") || "—"}</div>
+      rows.innerHTML = (data.providers || []).map(p => `
+        <div class="row">
+          <dt>${escapeHtml(p.provider)}</dt>
+          <dd>
+            <span class="status-badge" data-state="${badgeState(p.activeSource)}">
+              <span class="status-dot" data-state="${badgeState(p.activeSource)}"></span>
+              ${escapeHtml(p.activeSource)}
+            </span>
+            <span class="val-text"><span class="dim">${(p.authModes || []).join(" · ") || "—"}</span></span>
+          </dd>
         </div>
       `).join("");
       rows.dataset.loaded = "true";
     } catch (err) {
-      rows.innerHTML = `<p class="settings-error">Failed to load: ${err && err.message ? err.message : err}</p>`;
+      rows.innerHTML = `<div class="row"><dt>Error</dt><dd><span class="val-text">Failed to load: ${escapeHtml(err && err.message ? err.message : String(err))}</span></dd></div>`;
     }
   })();
 </script>
