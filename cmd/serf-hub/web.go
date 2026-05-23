@@ -1554,7 +1554,14 @@ func (s *WebServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 
 func (s *WebServer) handleWorkspaceEmpty(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, `<div class="workspace-empty"><p>No session selected.</p><p style="margin-top:1em"><a href="/new" hx-get="/_partials/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ new session</a></p></div>`)
+	fmt.Fprint(w, `<div class="empty-state empty-state-workspace">
+  <p class="empty-state-title">Welcome to serf-hub</p>
+  <p class="empty-state-body">Spawn a session to start working with an agent, or search across live and past sessions. The hub keeps every session alive in the sidebar — pick one to jump in.</p>
+  <div class="empty-state-actions">
+    <a class="btn btn-secondary" href="/new" hx-get="/_partials/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ New session</a>
+    <button class="btn btn-ghost" type="button" data-search-trigger>⌘K search</button>
+  </div>
+</div>`)
 }
 
 type replayHeader struct {
