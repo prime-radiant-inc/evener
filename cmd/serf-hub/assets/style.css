@@ -1368,6 +1368,23 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   border-color: var(--rule);
 }
 
+.btn-icon {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: transparent;
+  padding: var(--space-2);
+  min-width: var(--tap-min);
+  justify-content: center;
+}
+.btn-icon:hover:not([disabled]):not(:disabled) {
+  background: var(--bg-raised);
+  border-color: var(--rule);
+  color: var(--text);
+}
+.btn-icon:active:not([disabled]):not(:disabled) {
+  background: var(--surface-secondary);
+}
+
 /* Optimistic rendering: applied to any conversation entry that has
    been issued but not yet reconciled with an authoritative event.
    Reconcile removes .optimistic-pending; failure adds .optimistic-failed. */
