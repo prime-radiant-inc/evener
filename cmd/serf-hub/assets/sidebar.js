@@ -72,6 +72,41 @@
     applyAll(e.target || document);
   });
 
+  // First-paint stagger on the Live section. Sidebar.html re-renders every
+  // 5s (hx-trigger="every 5s"), but only the very first paint earns the
+  // choreography. After that, .stagger is removed and individual rows
+  // appear instantly.
+  var staggerApplied = false;
+  function applyLiveStagger(scope) {
+    if (staggerApplied) return;
+    var live = (scope || document).querySelector(".sidebar-live-section");
+    if (!live) return;
+    var rows = live.querySelectorAll(".live-row");
+    if (!rows.length) return;
+    live.classList.add("stagger");
+    for (var i = 0; i < rows.length && i < 10; i++) {
+      rows[i].style.setProperty("--i", String(i));
+    }
+    staggerApplied = true;
+    // Strip the class after the longest animation finishes (10 rows × 30ms
+    // delay + 160ms duration = 460ms; round to 600ms for safety).
+    setTimeout(function () {
+      live.classList.remove("stagger");
+      for (var j = 0; j < rows.length; j++) {
+        rows[j].style.removeProperty("--i");
+      }
+    }, 600);
+  }
+
+  document.addEventListener("htmx:afterSwap", function (e) {
+    if (e && e.target && e.target.id === "sidebar") applyLiveStagger(e.target);
+  });
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", function () { applyLiveStagger(document); });
+  } else {
+    applyLiveStagger(document);
+  }
+
   document.addEventListener("click", onChevronClick);
 
   // Mobile hamburger: toggle a body[data-sidebar-open] flag that the
