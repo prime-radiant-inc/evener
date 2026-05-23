@@ -1,11 +1,15 @@
 {{define "settings"}}
 <header class="workspace-header">
   <div class="workspace-title">
+    <button type="button" class="btn-ghost settings-nav-back" hidden aria-label="Back to settings">‹ Settings</button>
     <span class="title" data-settings-section="{{.Active}}">{{.Active}}</span>
   </div>
 </header>
 <div class="settings-pane">
-  <nav class="settings-nav">
+  <nav class="settings-nav" aria-label="Settings sections">
+    <div class="settings-nav-filter">
+      <input type="search" class="val-input" placeholder="Filter settings…" data-settings-nav-filter aria-label="Filter settings">
+    </div>
     <a class="settings-nav-link {{if eq .Active "general"}}active{{end}}" href="/settings/general" hx-get="/_partials/settings/general" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/general">General</a>
     <a class="settings-nav-link {{if eq .Active "theme"}}active{{end}}" href="/settings/theme" hx-get="/_partials/settings/theme" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/theme">Theme</a>
     <a class="settings-nav-link {{if eq .Active "notifications"}}active{{end}}" href="/settings/notifications" hx-get="/_partials/settings/notifications" hx-target="#settings-content" hx-swap="innerHTML" hx-push-url="/settings/notifications">Notifications</a>

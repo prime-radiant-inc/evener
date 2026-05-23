@@ -1454,6 +1454,43 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .settings-row-desc { line-height: var(--leading-snug); max-width: 640px; }
 .settings-error { color: var(--state-awaiting); }
 
+/* Settings-nav search filter (≥12 entries → always shown) */
+.settings-nav-filter {
+  padding: var(--space-2) var(--space-4) var(--space-3);
+}
+.settings-nav-filter .val-input {
+  width: 100%;
+  font-size: var(--text-xs);
+}
+.settings-nav-link[hidden] { display: none; }
+.settings-nav-section[hidden] { display: none; }
+
+/* Phone: nav-as-page navigation
+   By default, both the nav and the content are visible side-by-side. On phone,
+   we show ONE at a time. The body carries data-settings-pane="nav" (index) or
+   data-settings-pane="content" (sub-page detail). The back chevron returns to
+   the nav. URL routing is unchanged — only visibility flips. */
+@media (max-width: 767px) {
+  .settings-pane {
+    display: block;
+    overflow: visible;
+  }
+  .settings-nav {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--rule);
+  }
+  .settings-content { padding: var(--space-5) var(--space-4); }
+
+  /* When pane=content, hide nav and show content (with back chevron) */
+  body[data-settings-pane="content"] .settings-nav { display: none; }
+  body[data-settings-pane="content"] .settings-nav-back { display: inline-flex; }
+
+  /* When pane=nav (default), hide the content area entirely on phone */
+  body[data-settings-pane="nav"] #settings-content { display: none; }
+  body:not([data-settings-pane="content"]) .settings-nav-back[hidden] { display: none; }
+}
+
 /* ── surface-inset — recessed/sunken surface variant ───────────────────── */
 .surface-inset {
   background: var(--bg);

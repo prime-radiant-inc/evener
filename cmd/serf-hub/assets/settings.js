@@ -106,3 +106,56 @@
   if (rail) document.body.dataset.sidebarRail = "";
   else delete document.body.dataset.sidebarRail;
 })();
+
+// Settings-nav filter
+(function () {
+  const input = document.querySelector("[data-settings-nav-filter]");
+  if (!input) return;
+  function applyFilter() {
+    const q = input.value.trim().toLowerCase();
+    const nav = input.closest(".settings-nav");
+    nav.querySelectorAll(".settings-nav-link").forEach(a => {
+      const visible = !q || a.textContent.toLowerCase().includes(q);
+      a.hidden = !visible;
+    });
+    // Hide section headers whose children are all hidden
+    nav.querySelectorAll(".settings-nav-section").forEach(h => {
+      let nxt = h.nextElementSibling;
+      let anyVisible = false;
+      while (nxt && !nxt.classList.contains("settings-nav-section")) {
+        if (nxt.classList.contains("settings-nav-link") && !nxt.hidden) { anyVisible = true; break; }
+        nxt = nxt.nextElementSibling;
+      }
+      h.hidden = !anyVisible;
+    });
+  }
+  input.addEventListener("input", applyFilter);
+})();
+
+// Phone nav-as-page wiring
+(function () {
+  const body = document.body;
+  const back = document.querySelector(".settings-nav-back");
+  function syncPane() {
+    // If we're in a settings route, default to content; if at /settings (root)
+    // with no Active section, show nav. The Active section is rendered into
+    // the title — use its presence as the signal.
+    const title = document.querySelector(".workspace-title .title[data-settings-section]");
+    body.dataset.settingsPane = title && title.textContent.trim() ? "content" : "nav";
+  }
+  syncPane();
+  if (back) {
+    back.addEventListener("click", () => {
+      body.dataset.settingsPane = "nav";
+      // Navigate to /settings root via history; HTMX is not used here because
+      // the visibility-only flip is local.
+      if (window.history && history.pushState) history.pushState({}, "", "/settings");
+    });
+  }
+  // After every htmx swap that targets #settings-content, update the pane.
+  document.body.addEventListener("htmx:afterSwap", (ev) => {
+    if (ev.detail && ev.detail.target && ev.detail.target.id === "settings-content") {
+      syncPane();
+    }
+  });
+})();
