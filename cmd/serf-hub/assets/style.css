@@ -546,7 +546,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .user-message-text { white-space: pre-wrap; word-wrap: break-word; }
 
 /* Image lightbox: full-screen overlay shown when a user-image card is clicked. */
-.image-lightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; flex-direction: column; gap: var(--space-4); z-index: 200; cursor: zoom-out; padding: var(--space-7); }
+.image-lightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; flex-direction: column; gap: var(--space-4); z-index: var(--z-drawer); cursor: zoom-out; padding: var(--space-7); }
 .image-lightbox img { max-width: 90vw; max-height: 85vh; object-fit: contain; border-radius: var(--radius-lg); box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
 .image-lightbox-caption { color: #fff; font-family: var(--font-mono); font-size: var(--text-sm); opacity: 0.75; }
 .assistant-message { margin-bottom: var(--space-6); max-width: 680px; font-size: var(--text-md); line-height: var(--leading-normal); color: var(--text); }
@@ -695,7 +695,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .chip-value { color: var(--text); font-family: var(--font-mono); font-size: var(--text-xs); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip-caret { color: var(--text-muted); font-size: 9px; }
 .chip-mode { background: rgba(224, 175, 104, 0.12); color: var(--state-warning); }
-.chip-picker { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-lg); padding: var(--space-2) 0; min-width: 220px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); z-index: 50; }
+.chip-picker { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-lg); padding: var(--space-2) 0; min-width: 220px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); z-index: var(--z-dropdown); }
 .chip-picker-option { padding: var(--space-3) var(--space-4); cursor: pointer; color: var(--text); font-family: var(--font-mono); font-size: var(--text-sm); }
 .chip-picker-option:hover { background: var(--rule); }
 .spawn-input-wrap { display: block; }
@@ -903,7 +903,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .title-action:hover { color: var(--text); }
 
 /* Details slide-over panel */
-.details-panel { position: fixed; top: 0; right: 0; bottom: 0; width: 360px; background: var(--bg-raised); border-left: 1px solid var(--rule); padding: var(--space-5) var(--space-6); overflow-y: auto; box-shadow: -8px 0 24px rgba(0,0,0,0.2); z-index: 100; }
+.details-panel { position: fixed; top: 0; right: 0; bottom: 0; width: 360px; background: var(--bg-raised); border-left: 1px solid var(--rule); padding: var(--space-5) var(--space-6); overflow-y: auto; box-shadow: -8px 0 24px rgba(0,0,0,0.2); z-index: var(--z-fixed-action); }
 .details-panel-header { display: flex; align-items: baseline; justify-content: space-between; padding-bottom: var(--space-4); border-bottom: 1px solid var(--rule); color: var(--text); font-weight: 500; font-size: var(--text-base); }
 .details-panel-close { color: var(--text-muted); font-size: var(--text-xs); }
 .details-loading { color: var(--text-muted); padding: var(--space-4) 0; font-size: var(--text-sm); }
@@ -969,7 +969,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
     top: 0; left: 0; bottom: 0;
     width: 80vw;
     max-width: 320px;
-    z-index: 200;
+    z-index: var(--z-drawer);
     transform: translateX(-100%);
     transition: transform var(--motion-base);
     box-shadow: 4px 0 24px rgba(0,0,0,0.4);
@@ -980,7 +980,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
     position: fixed;
     top: 0; left: 0; right: 0; bottom: 0;
     background: rgba(0,0,0,0.5);
-    z-index: 199;
+    z-index: var(--z-overlay);
   }
   #workspace { width: 100%; height: 100vh; }
 
@@ -1000,7 +1000,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
     color: var(--text);
     font-size: var(--text-xl);
     cursor: pointer;
-    z-index: 150;
+    z-index: var(--z-fixed-action);
   }
 
   /* Workspace header: leave room for the fixed hamburger; allow wrap. */
@@ -1041,7 +1041,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
   .search-dialog-header {
     position: sticky;
     top: 0;
-    z-index: 1;
+    z-index: var(--z-sticky);
     align-items: flex-start;
     flex-wrap: wrap;
     background: var(--bg-raised);
