@@ -7,20 +7,33 @@
 </p>
 {{if .CodexLaunches}}
   {{range .CodexLaunches}}
-  <div class="settings-card">
-    <h3 class="settings-h3">{{.ID}}</h3>
-    <table class="settings-table">
-      <tr><th>Binary</th><td><code>{{if .Binary}}{{.Binary}}{{else}}codex{{end}}</code></td></tr>
-      <tr><th>Working dir</th><td><code>{{if .WorkingDir}}{{.WorkingDir}}{{else}}(inherited){{end}}</code></td></tr>
-      <tr><th>Listen</th><td><code>{{if .Listen}}{{.Listen}}{{else}}ws://127.0.0.1:0{{end}}</code></td></tr>
-      <tr><th>Timeout</th><td>{{if .Timeout}}{{.Timeout}}{{else}}30s{{end}}</td></tr>
-      {{if .Env}}
-      <tr><th>Env</th><td>
-        {{range $k, $v := .Env}}<code>{{$k}}=…</code> {{end}}
-      </td></tr>
-      {{end}}
-    </table>
-  </div>
+  <h3 class="settings-h3">{{.ID}}</h3>
+  <dl class="settings-table">
+    <div class="row">
+      <dt>Binary</dt>
+      <dd>{{if .Binary}}{{.Binary}}{{else}}codex{{end}}</dd>
+    </div>
+    <div class="row">
+      <dt>Working dir</dt>
+      <dd>{{if .WorkingDir}}{{.WorkingDir}}{{else}}<span class="val-text"><span class="dim">(inherited)</span></span>{{end}}</dd>
+    </div>
+    <div class="row">
+      <dt>Listen</dt>
+      <dd>{{if .Listen}}{{.Listen}}{{else}}ws://127.0.0.1:0{{end}}</dd>
+    </div>
+    <div class="row">
+      <dt>Timeout</dt>
+      <dd>{{if .Timeout}}{{.Timeout}}{{else}}30s{{end}}</dd>
+    </div>
+    {{if .Env}}
+    <div class="row">
+      <dt>Env</dt>
+      <dd>
+        {{range $k, $v := .Env}}<span class="val-text">{{$k}}=…</span> {{end}}
+      </dd>
+    </div>
+    {{end}}
+  </dl>
   {{end}}
 {{else}}
 <div class="settings-empty">
