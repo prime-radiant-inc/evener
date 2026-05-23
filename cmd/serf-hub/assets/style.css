@@ -959,6 +959,25 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   flex: 0 0 100%;
   margin: 0;
 }
+/* Collapse tool-call body when data-expanded="false". */
+.tool-call[data-expanded="false"] .tool-body,
+.tool-call[data-expanded="false"] .diff-body,
+.tool-call[data-expanded="false"] .output-preview-body { display: none; }
+/* Expand caret button on tool-call row. */
+.tool-expand-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1;
+  flex-shrink: 0;
+}
+.tool-expand-btn:hover { color: var(--text-muted); }
+.tool-expand-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .diff-body {
   margin: 0 0 var(--space-4) var(--tool-indent);
   padding: var(--space-3) var(--space-4);

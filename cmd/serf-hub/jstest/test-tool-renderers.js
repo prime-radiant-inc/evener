@@ -140,7 +140,8 @@ await scenario("list_dir in cheap cluster exposes entries", [
   return { ok: true };
 });
 
-// edit_file — should produce a details disclosure with a diff from edit args.
+// edit_file — should produce a diff body, default expanded (diff IS the value),
+// with a caret expand button on the row.
 await scenario("edit_file details diff body", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "e1", tool_name: "edit_file", arguments_json: JSON.stringify({ file_path: "x.go", old_string: "old line\nkept line", new_string: "new line\nkept line" }) }],
@@ -149,16 +150,21 @@ await scenario("edit_file details diff body", [
   const card = conv.querySelector(".tool-call.edit_file");
   if (!card) return { ok: false, detail: "no edit tool-call" };
   if (!card.textContent.includes("x.go")) return { ok: false, detail: "missing target" };
-  const disclosure = card.querySelector("details.edit-body");
-  if (!disclosure) return { ok: false, detail: "no edit disclosure" };
-  if (!disclosure.querySelector("summary") || disclosure.querySelector("summary").textContent.trim() !== "details") return { ok: false, detail: "edit summary should be details" };
-  const diff = disclosure.querySelector(".diff-body");
+  // Diff body should be expanded by default for edit_file.
+  if (card.dataset.expanded !== "true") return { ok: false, detail: "edit body should be expanded by default, got data-expanded=" + card.dataset.expanded };
+  const body = card.querySelector(".edit-body");
+  if (!body) return { ok: false, detail: "no edit body" };
+  const diff = body.querySelector(".diff-body");
   if (!diff) return { ok: false, detail: "no diff body" };
   if (diff.textContent.includes("edited x.go")) return { ok: false, detail: "edit output shown instead of diff" };
   if (!diff.textContent.includes("-old line") || !diff.textContent.includes("+new line")) return { ok: false, detail: "argument diff text missing" };
   if (!diff.querySelector(".add")) return { ok: false, detail: "no .add lines" };
   if (!diff.querySelector(".del")) return { ok: false, detail: "no .del lines" };
   if (!card.querySelector(".tool-status-good")) return { ok: false, detail: "missing left success icon" };
+  // Caret button should exist and default to ▾ (expanded).
+  const caret = card.querySelector(".tool-expand-btn");
+  if (!caret) return { ok: false, detail: "no expand caret button" };
+  if (caret.textContent !== "▾") return { ok: false, detail: "caret should be ▾ when expanded, got " + caret.textContent };
   return { ok: true };
 });
 
@@ -407,6 +413,67 @@ await (async function () {
 
   if (failures.length === 0) {
     console.log("PASS — relativizePath home-dir tilde and middle-truncation (vh63)");
+  } else {
+    allPass = false;
+    for (const f of failures) console.log("FAIL — " + f);
+  }
+})();
+
+// x1gj: tool-call bodies collapsed by default; caret toggles; edit/write/patch expanded by default.
+await (async function () {
+  const { window, conv } = newHarness();
+  await new Promise(r => setTimeout(r, 30));
+  window.SerfRenderer.handleData("SESSION_START", { session_id: "01TEST" });
+
+  // read_file should be collapsed by default.
+  window.SerfRenderer.handleData("TOOL_CALL_START", { call_id: "x1", tool_name: "read_file", arguments_json: JSON.stringify({ file_path: "foo.go" }) });
+  window.SerfRenderer.handleData("TOOL_CALL_END", { call_id: "x1", output: "package main\n", tool_name: "read_file" });
+
+  // write_file should be expanded by default.
+  window.SerfRenderer.handleData("TOOL_CALL_START", { call_id: "x2", tool_name: "write_file", arguments_json: JSON.stringify({ file_path: "bar.go", content: "+package bar\n" }) });
+  window.SerfRenderer.handleData("TOOL_CALL_END", { call_id: "x2", output: "written", tool_name: "write_file" });
+
+  await new Promise(r => setTimeout(r, 10));
+
+  const failures = [];
+  const check = (desc, got, want) => {
+    if (got !== want) failures.push(desc + ": expected " + JSON.stringify(want) + " got " + JSON.stringify(got));
+  };
+
+  // read_file: data-expanded="false", caret shows ▸.
+  const readCall = conv.querySelector(".tool-call.read_file");
+  check("read_file data-expanded false", readCall && readCall.dataset.expanded, "false");
+  const readCaret = readCall && readCall.querySelector(".tool-expand-btn");
+  check("read_file caret exists", !!readCaret, true);
+  check("read_file caret glyph collapsed", readCaret && readCaret.textContent, "▸");
+
+  // write_file: data-expanded="true", caret shows ▾.
+  const writeCall = conv.querySelector(".tool-call.write_file");
+  check("write_file data-expanded true", writeCall && writeCall.dataset.expanded, "true");
+  const writeCaret = writeCall && writeCall.querySelector(".tool-expand-btn");
+  check("write_file caret glyph expanded", writeCaret && writeCaret.textContent, "▾");
+
+  // Click read_file caret to expand.
+  if (readCaret) {
+    readCaret.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    check("read_file expanded after click", readCall.dataset.expanded, "true");
+    check("read_file caret glyph after expand", readCaret.textContent, "▾");
+    // Click again to collapse.
+    readCaret.dispatchEvent(new window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    check("read_file collapsed after second click", readCall.dataset.expanded, "false");
+    check("read_file caret glyph after collapse", readCaret.textContent, "▸");
+  }
+
+  // Keyboard: Enter on caret triggers expand.
+  if (readCaret) {
+    const enterEvt = new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    readCaret.dispatchEvent(enterEvt);
+    // keydown listener calls .click(), which toggles.
+    check("read_file expanded after Enter", readCall.dataset.expanded, "true");
+  }
+
+  if (failures.length === 0) {
+    console.log("PASS — tool-call body collapsed by default; caret toggles; edit/write/patch expanded (x1gj)");
   } else {
     allPass = false;
     for (const f of failures) console.log("FAIL — " + f);

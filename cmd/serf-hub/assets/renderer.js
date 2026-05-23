@@ -1155,7 +1155,20 @@
       const startedAt = toolEventTime(data) || new Date();
       const state = { el, statusEl: status, resultEl: result, metaEl: meta, outputBuf: "", tool, args, renderer, body: null, ids: [], startedAt, durationMs: toolDuration(data) };
       this.renderToolMeta(state, null);
-      if (renderer.body) state.body = renderer.body(args, el, data);
+      if (renderer.body) {
+        state.body = renderer.body(args, el, data);
+        // Default expanded for diffs (edit/write/patch); collapsed for all others.
+        const defaultExpanded = renderer.expand === true;
+        el.dataset.expanded = defaultExpanded ? "true" : "false";
+        // Caret button — keyboard accessible, toggles data-expanded.
+        const caret = document.createElement("button");
+        caret.type = "button";
+        caret.className = "tool-expand-btn";
+        caret.setAttribute("aria-label", defaultExpanded ? "collapse body" : "expand body");
+        caret.dataset.expandToggle = "";
+        caret.textContent = defaultExpanded ? "▾" : "▸";
+        el.insertBefore(caret, el.firstChild);
+      }
       this.rememberToolAlias(state, callId);
       this.rememberToolAlias(state, data.item_id);
     },
@@ -2542,7 +2555,7 @@
 
   function diffRenderer(friendly) {
     return {
-      mode: "card", friendly,
+      mode: "card", friendly, expand: true,
       target: (a) => a.file_path || a.path || "",
       result: diffResult,
       body: (args, conversation) => {
@@ -2573,17 +2586,14 @@
 
   function editRenderer() {
     return {
-      mode: "card", friendly: "edit",
+      mode: "card", friendly: "edit", expand: true,
       target: (a) => a.file_path || a.path || "",
       result: (data, out, state) => diffResult(data, editDiffText(state && state.args, out)),
       body: (args, conversation) => {
-        const wrap = document.createElement("details");
+        const wrap = document.createElement("div");
         wrap.className = "tool-body edit-body";
-        const summary = document.createElement("summary");
-        summary.textContent = "details";
         const pre = document.createElement("pre");
         pre.className = "diff-body";
-        wrap.appendChild(summary);
         wrap.appendChild(pre);
         conversation.appendChild(wrap);
         return { wrap, pre };
@@ -2595,7 +2605,7 @@
 
   function patchRenderer() {
     return {
-      mode: "card", friendly: "patch",
+      mode: "card", friendly: "patch", expand: true,
       target: (a) => patchTargets(a.patch).join(", "),
       result: (data, out, state) => diffResult(data, state && state.args && state.args.patch || out || ""),
       body: (args, conversation) => {
@@ -2812,6 +2822,28 @@
     try { return JSON.parse(localStorage.getItem("serf-hub.notifications") || "{}"); }
     catch (e) { return {}; }
   }
+
+  // Tool-call expand/collapse caret. Delegated on document so it fires even
+  // after htmx swaps the conversation element.
+  document.addEventListener("click", (e) => {
+    const btn = e.target && (e.target.matches("[data-expand-toggle]") ? e.target : (e.target.closest && e.target.closest("[data-expand-toggle]")));
+    if (!btn) return;
+    e.preventDefault();
+    const toolCall = btn.closest(".tool-call");
+    if (!toolCall) return;
+    const expanded = toolCall.dataset.expanded === "true";
+    const next = !expanded;
+    toolCall.dataset.expanded = next ? "true" : "false";
+    btn.textContent = next ? "▾" : "▸";
+    btn.setAttribute("aria-label", next ? "collapse body" : "expand body");
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const btn = e.target && e.target.matches && e.target.matches("[data-expand-toggle]") ? e.target : null;
+    if (!btn) return;
+    e.preventDefault();
+    btn.click();
+  });
 
   // Copy-session-ID button.
   document.body && document.body.addEventListener("click", (e) => {
