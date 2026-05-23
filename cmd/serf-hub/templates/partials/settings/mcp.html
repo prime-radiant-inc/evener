@@ -3,113 +3,158 @@
 <p class="settings-help">
   MCP servers serf spawns alongside each session. Stored in the global launch layer.
 </p>
-<div id="mcps-form" data-loaded="false"><p>Loading…</p></div>
+<div id="mcps-form" data-loaded="false"><p class="settings-help">Loading…</p></div>
 <script>
   (async function () {
     const root = document.getElementById("mcps-form");
+    function escapeHtml(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
+
+    function makeCollectionShell(title, count) {
+      const section = document.createElement("section");
+      section.className = "settings-collection";
+      const head = document.createElement("header");
+      head.className = "settings-collection-head";
+      const h3 = document.createElement("h3");
+      h3.textContent = title;
+      const countSpan = document.createElement("span");
+      countSpan.className = "settings-collection-count";
+      countSpan.textContent = `${count} ${count === 1 ? "entry" : "entries"}`;
+      head.append(h3, countSpan);
+      const list = document.createElement("ul");
+      list.className = "settings-collection-list";
+      list.setAttribute("role", "list");
+      section.append(head, list);
+      return { section, list };
+    }
+
+    function makeRemoveButton(label, onClick) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "btn-icon";
+      button.setAttribute("aria-label", label);
+      button.textContent = "×";
+      button.addEventListener("click", onClick);
+      return button;
+    }
+
+    function emptyRow(text) {
+      const li = document.createElement("li");
+      li.className = "settings-collection-empty";
+      li.textContent = text;
+      return li;
+    }
+
     try {
       const current = await launchconfig.getLayer("/", "global");
       const mcps = current.mcps || [];
       const mcpConfigs = current.mcpConfigs || [];
+
       function render() {
         root.replaceChildren();
-        const configsTitle = document.createElement("h3");
-        configsTitle.textContent = "MCP config files";
-        root.append(configsTitle);
-        const configList = document.createElement("ul");
-        configList.className = "settings-list";
-        mcpConfigs.forEach((p, i) => {
-          const item = document.createElement("li");
-          const code = document.createElement("code");
-          code.textContent = p;
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = "btn btn-ghost";
-          button.dataset.i = String(i);
-          button.dataset.action = "rm-config";
-          button.textContent = "remove";
-          item.append(code, " ", button);
-          configList.appendChild(item);
-        });
+
+        // --- MCP config files ---
+        const { section: configsSection, list: configList } = makeCollectionShell("MCP config files", mcpConfigs.length);
+        if (mcpConfigs.length === 0) {
+          configList.appendChild(emptyRow("No MCP config files. Add one below."));
+        } else {
+          mcpConfigs.forEach((p, i) => {
+            const item = document.createElement("li");
+            item.className = "settings-collection-row";
+            const main = document.createElement("div");
+            const text = document.createElement("div");
+            text.className = "row-text";
+            text.textContent = p;
+            main.appendChild(text);
+            const actions = document.createElement("div");
+            actions.className = "row-actions";
+            actions.appendChild(makeRemoveButton("Remove " + p, async () => {
+              mcpConfigs.splice(i, 1);
+              await launchconfig.setLayer("/", "global", { ...current, mcpConfigs });
+              render();
+            }));
+            item.append(main, actions);
+            configList.appendChild(item);
+          });
+        }
         const configForm = document.createElement("form");
         configForm.id = "mcp-configs-add";
+        configForm.className = "settings-collection-add";
         const configInput = document.createElement("input");
         configInput.type = "text";
         configInput.name = "path";
+        configInput.className = "val-input";
         configInput.placeholder = "/absolute/path/to/mcp.json";
         configInput.required = true;
         configInput.setAttribute("data-settings-dir-input", "");
         const configAdd = document.createElement("button");
         configAdd.type = "submit";
         configAdd.className = "btn btn-primary";
-        configAdd.textContent = "Add";
+        configAdd.textContent = "＋ Add";
         const configError = document.createElement("p");
-        configError.className = "settings-error";
+        configError.className = "row-error";
         configError.hidden = true;
         configForm.append(configInput, configAdd, configError);
-        root.append(configList, configForm);
+        configsSection.appendChild(configForm);
+        root.append(configsSection);
 
-        const inlineTitle = document.createElement("h3");
-        inlineTitle.textContent = "Inline MCP servers";
-        root.append(inlineTitle);
-        const list = document.createElement("ul");
-        list.className = "settings-list";
-        mcps.forEach((m, i) => {
-          const item = document.createElement("li");
-          const name = document.createElement("code");
-          name.textContent = m.name || "";
-          const command = document.createElement("code");
-          command.textContent = [m.command || "", ...((m.args || []))].filter(Boolean).join(" ");
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = "btn btn-ghost";
-          button.dataset.i = String(i);
-          button.dataset.action = "rm";
-          button.textContent = "remove";
-          item.append(name, " \u2192 ", command, " ", button);
-          list.appendChild(item);
-        });
-        const form = document.createElement("form");
-        form.id = "mcps-add";
+        // --- Inline MCP servers ---
+        const { section: inlineSection, list: inlineList } = makeCollectionShell("Inline MCP servers", mcps.length);
+        if (mcps.length === 0) {
+          inlineList.appendChild(emptyRow("No inline MCP servers. Add one below."));
+        } else {
+          mcps.forEach((m, i) => {
+            const item = document.createElement("li");
+            item.className = "settings-collection-row";
+            const main = document.createElement("div");
+            const text = document.createElement("div");
+            text.className = "row-text";
+            text.textContent = (m.name || "") + " → " + [m.command || "", ...((m.args || []))].filter(Boolean).join(" ");
+            main.appendChild(text);
+            const actions = document.createElement("div");
+            actions.className = "row-actions";
+            actions.appendChild(makeRemoveButton("Remove " + (m.name || ""), async () => {
+              mcps.splice(i, 1);
+              await launchconfig.setLayer("/", "global", { ...current, mcps });
+              render();
+            }));
+            item.append(main, actions);
+            inlineList.appendChild(item);
+          });
+        }
+        const inlineForm = document.createElement("form");
+        inlineForm.id = "mcps-add";
+        inlineForm.className = "settings-collection-add";
         const nameInput = document.createElement("input");
         nameInput.type = "text";
         nameInput.name = "name";
+        nameInput.className = "val-input";
         nameInput.placeholder = "name";
         nameInput.required = true;
         const commandInput = document.createElement("input");
         commandInput.type = "text";
         commandInput.name = "command";
+        commandInput.className = "val-input";
         commandInput.placeholder = "command";
         commandInput.required = true;
         const argsInput = document.createElement("input");
         argsInput.type = "text";
         argsInput.name = "args";
+        argsInput.className = "val-input";
         argsInput.placeholder = "args (space-separated)";
-        const add = document.createElement("button");
-        add.type = "submit";
-        add.className = "btn btn-primary";
-        add.textContent = "Add";
-        const error = document.createElement("p");
-        error.className = "settings-error";
-        error.hidden = true;
-        form.append(nameInput, commandInput, argsInput, add, error);
-        root.append(list, form);
+        const inlineAdd = document.createElement("button");
+        inlineAdd.type = "submit";
+        inlineAdd.className = "btn btn-primary";
+        inlineAdd.textContent = "＋ Add";
+        const inlineError = document.createElement("p");
+        inlineError.className = "row-error";
+        inlineError.hidden = true;
+        inlineForm.append(nameInput, commandInput, argsInput, inlineAdd, inlineError);
+        inlineSection.appendChild(inlineForm);
+        root.append(inlineSection);
+
         if (window.SettingsPickers) window.SettingsPickers.init(configForm);
-        root.querySelectorAll("button[data-action=rm-config]").forEach(b => {
-          b.addEventListener("click", async () => {
-            mcpConfigs.splice(+b.dataset.i, 1);
-            await launchconfig.setLayer("/", "global", { ...current, mcpConfigs });
-            render();
-          });
-        });
-        root.querySelectorAll("button[data-action=rm]").forEach(b => {
-          b.addEventListener("click", async () => {
-            mcps.splice(+b.dataset.i, 1);
-            await launchconfig.setLayer("/", "global", { ...current, mcps });
-            render();
-          });
-        });
-        root.querySelector("#mcp-configs-add").addEventListener("submit", async (e) => {
+
+        configForm.addEventListener("submit", async (e) => {
           e.preventDefault();
           const v = e.target.path.value.trim();
           if (!v) return;
@@ -125,18 +170,19 @@
           e.target.reset();
           render();
         });
-        root.querySelector("#mcps-add").addEventListener("submit", async (e) => {
+
+        inlineForm.addEventListener("submit", async (e) => {
           e.preventDefault();
           const name = e.target.name.value.trim();
           const command = e.target.command.value.trim();
           const args = e.target.args.value.trim().split(/\s+/).filter(Boolean);
           const valid = await launchconfig.validatePath(command, "command");
           if (!valid || !valid.valid) {
-            error.textContent = (valid && valid.error) ? valid.error : "command not found";
-            error.hidden = false;
+            inlineError.textContent = (valid && valid.error) ? valid.error : "command not found";
+            inlineError.hidden = false;
             return;
           }
-          error.hidden = true;
+          inlineError.hidden = true;
           mcps.push({ name, command, args });
           await launchconfig.setLayer("/", "global", { ...current, mcps });
           e.target.reset();
@@ -148,7 +194,7 @@
     } catch (err) {
       const p = document.createElement("p");
       p.className = "settings-error";
-      p.textContent = `Failed to load: ${err && err.message ? err.message : err}`;
+      p.textContent = "Failed to load: " + (err && err.message ? err.message : err);
       root.replaceChildren(p);
     }
   })();
