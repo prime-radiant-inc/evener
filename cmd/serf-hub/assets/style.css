@@ -197,11 +197,19 @@
 [data-theme="light"] .sb-row[data-state="active"]   { background: color-mix(in srgb, var(--state-processing) 12%, transparent); }
 [data-theme="light"] .sb-row[data-state="warning"]  { background: color-mix(in srgb, var(--state-warning) 12%, transparent); }
 [data-theme="light"] .sb-row[data-active]            { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+/* Light-mode: --text is dark so the 2% text-mix reads as a noticeable grey.
+   Switch to an accent-based tint that reads the same in both themes. */
+[data-theme="light"] .settings-table .row.editable:hover {
+  background: color-mix(in srgb, var(--accent) 3%, transparent);
+}
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) .sb-row[data-state="awaiting"] { background: color-mix(in srgb, var(--state-awaiting) 12%, transparent); }
   :root:not([data-theme="dark"]) .sb-row[data-state="active"]   { background: color-mix(in srgb, var(--state-processing) 12%, transparent); }
   :root:not([data-theme="dark"]) .sb-row[data-state="warning"]  { background: color-mix(in srgb, var(--state-warning) 12%, transparent); }
   :root:not([data-theme="dark"]) .sb-row[data-active]           { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+  :root:not([data-theme="dark"]) .settings-table .row.editable:hover {
+    background: color-mix(in srgb, var(--accent) 3%, transparent);
+  }
 }
 /* Reduced-motion override — design language §1.5. This and the !important
    declarations inside it are one of the two !important uses allowed in the
