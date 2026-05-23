@@ -1324,6 +1324,28 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 }
 .settings-table .val-toggle:has(input[type="checkbox"]:checked) .state { color: var(--accent); }
 
+/* Section-header row — nested group header inside a settings-table.
+   Used by LaunchConfigControls to render fieldset legends in the flat
+   row primitive (design-language known-issues resolution, Pass 7). */
+.settings-table .row.section-header {
+  grid-template-columns: 1fr;
+  padding: var(--space-5) 0 var(--space-2);
+  border-bottom: none;
+}
+.settings-table .row.section-header dt { display: none; }
+.settings-table .row.section-header dd {
+  grid-column: 1 / -1;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+/* The section-header row has no border-bottom; restore the top hairline on
+   the immediately following regular row so the visual separation is intact. */
+.settings-table .row.section-header + .row { border-top: 1px solid var(--rule); }
+
 /* ── settings-collection primitive (design language §4.2) ──────────────── */
 
 .settings-collection {
