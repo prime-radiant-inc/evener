@@ -1841,6 +1841,17 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
     transform: translateX(-100%);
     transition: transform var(--motion-base);
     box-shadow: 4px 0 24px rgba(0,0,0,0.4);
+    /* Fully opaque background so the scrim behind the drawer does not bleed
+       through the sidebar content (or tinted sb-row backgrounds). */
+    background: var(--bg-raised);
+  }
+  /* Suppress sticky hover backgrounds on touch devices — they persist after
+     a tap and make the sidebar look gray/washed-out when re-opened. */
+  @media (hover: none) {
+    .sb-row:hover { background: transparent; }
+    .sb-row[data-state="awaiting"]:hover { background: color-mix(in srgb, var(--state-awaiting) 5%, transparent); }
+    .sb-row[data-state="active"]:hover   { background: color-mix(in srgb, var(--state-processing) 5%, transparent); }
+    .sb-row[data-state="warning"]:hover  { background: color-mix(in srgb, var(--state-warning) 5%, transparent); }
   }
   body.app[data-sidebar-open] #sidebar { transform: translateX(0); }
   body.app[data-sidebar-open]::before {
