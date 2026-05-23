@@ -239,7 +239,7 @@ section.panel h2 { margin-top: 0; font-family: var(--font-mono); font-size: var(
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
-  padding: 8px 4px;
+  padding: var(--space-3) var(--space-2);
   border-bottom: 1px solid var(--border);
   cursor: pointer;
   text-decoration: none;
@@ -269,7 +269,7 @@ button, input[type=submit], a.btn {
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 6px 10px;
+  padding: var(--space-3) var(--space-4);
   font-size: var(--text-base);
   cursor: pointer;
 }
@@ -280,7 +280,7 @@ input[type=text], textarea, select {
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 6px;
+  padding: var(--space-3);
   font-family: inherit;
   font-size: var(--text-base);
 }
@@ -290,14 +290,14 @@ textarea { width: 100%; min-height: 60px; resize: vertical; }
   display: flex;
   gap: var(--space-4);
   align-items: center;
-  padding: 8px var(--space-4);
+  padding: var(--space-3) var(--space-4);
   background: var(--panel-2);
   border-radius: 4px;
   font-size: var(--text-sm);
   color: var(--muted);
   margin-bottom: var(--space-4);
 }
-#status-bar .pill { padding: 2px 8px; background: var(--bg); border-radius: 12px; }
+#status-bar .pill { padding: var(--space-1) var(--space-3); background: var(--bg); border-radius: 12px; }
 #status-bar .pill.ok { color: var(--user); }
 
 #transcript {
@@ -308,28 +308,28 @@ textarea { width: 100%; min-height: 60px; resize: vertical; }
   height: 60vh;
   overflow-y: auto;
 }
-.msg { margin-bottom: var(--space-4); padding: 8px; border-radius: 4px; }
+.msg { margin-bottom: var(--space-4); padding: var(--space-3); border-radius: 4px; }
 .msg.user { background: rgba(158, 206, 106, 0.08); border-left: 2px solid var(--user); }
 .msg.assistant { background: var(--panel-2); border-left: 2px solid var(--accent); }
-.msg.tool { background: rgba(224, 175, 104, 0.05); border-left: 2px solid var(--tool); padding-left: 8px; font-family: var(--font-mono); font-size: var(--text-sm); }
+.msg.tool { background: rgba(224, 175, 104, 0.05); border-left: 2px solid var(--tool); padding-left: var(--space-3); font-family: var(--font-mono); font-size: var(--text-sm); }
 .msg.error { background: rgba(247, 118, 142, 0.08); border-left: 2px solid var(--error); color: var(--error); }
-.msg .role { font-size: var(--text-xs); text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+.msg .role { font-size: var(--text-xs); text-transform: uppercase; color: var(--muted); margin-bottom: var(--space-2); }
 .msg pre, .msg code { font-family: var(--font-mono); }
-.msg pre { background: var(--bg); padding: 8px; border-radius: 4px; overflow-x: auto; }
+.msg pre { background: var(--bg); padding: var(--space-3); border-radius: 4px; overflow-x: auto; }
 
 #input-area {
   margin-top: var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-3);
   padding: var(--space-4);
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 6px;
 }
-#input-buttons { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.hint { color: var(--muted); font-size: var(--text-xs); padding: 4px; }
-.empty { color: var(--muted); font-style: italic; padding: 16px; text-align: center; }
+#input-buttons { display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: center; }
+.hint { color: var(--muted); font-size: var(--text-xs); padding: var(--space-2); }
+.empty { color: var(--muted); font-style: italic; padding: var(--space-5); text-align: center; }
 
 /* App shell — single-page layout. Whole app is exactly the viewport.
    Inner panes scroll; the outer chrome doesn't. */
@@ -339,8 +339,8 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .mono { font-family: var(--font-mono); }
 #sidebar { width: 260px; flex-shrink: 0; height: 100vh; border-right: 1px solid var(--rule); overflow-y: auto; }
 #workspace { flex: 1; min-width: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-.sidebar-loading { padding: 24px; color: var(--text-muted); font-size: var(--text-sm); }
-.workspace-empty { padding: 64px; color: var(--text-muted); text-align: center; }
+.sidebar-loading { padding: var(--space-6); color: var(--text-muted); font-size: var(--text-sm); }
+.workspace-empty { padding: var(--space-9); color: var(--text-muted); text-align: center; }
 
 /* Sidebar */
 .sidebar { padding: 20px 0; font-size: var(--text-base); color: var(--text); }
