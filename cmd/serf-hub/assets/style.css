@@ -1473,6 +1473,8 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .settings-launch-form .launch-radio-option input[type=text]:focus { border-color: var(--accent); }
 .settings-launch-form label.checkbox-label { flex-direction: row; align-items: center; gap: var(--space-3); color: var(--text); font-size: var(--text-base); }
 .settings-launch-form .form-actions { margin-top: var(--space-3); display: flex; align-items: center; gap: var(--space-4); }
+.form-actions { margin-top: var(--space-4); display: flex; align-items: center; gap: var(--space-3); }
+.settings-form-status { margin: 0; font-family: var(--font-sans); font-size: var(--text-xs); color: var(--text-muted); }
 .settings-launch-textarea { width: 100%; min-height: 132px; line-height: var(--leading-snug); resize: vertical; cursor: text; }
 
 /* Model + dir picker widgets used in settings pages */
