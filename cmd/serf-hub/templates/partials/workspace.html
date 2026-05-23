@@ -104,4 +104,4 @@
 </form>
 {{end}}
 
-{{define "workspace_meta"}}{{if .SourceLabel}}<span class="source-label" data-source-label="{{.SourceLabel}}">{{.SourceLabel}}</span>{{end}}{{if .Branch}}<span class="branch">{{.Branch}}</span>{{end}}<span class="status-badge" data-state="{{.State}}"><span class="status-dot" data-state="{{.State}}"></span>{{.StateLabel}}</span><span class="turn-count">{{.TurnCount}} turn{{if ne .TurnCount 1}}s{{end}}</span>{{end}}
+{{define "workspace_meta"}}{{if .SourceLabel}}<span class="meta-key">src</span><span class="source-label" data-source-label="{{.SourceLabel}}">{{.SourceLabel}}</span>{{end}}{{if .Branch}}<span class="meta-key">branch</span><span class="branch">{{.Branch}}</span>{{end}}<span class="status-badge" data-state="{{.State}}"><span class="status-dot" data-state="{{.State}}"></span>{{.StateLabel}}</span><span class="turn-count">{{.TurnCount}} turn{{if ne .TurnCount 1}}s{{end}}</span>{{end}}

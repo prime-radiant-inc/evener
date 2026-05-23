@@ -693,6 +693,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .workspace-actions { display: flex; align-items: center; gap: var(--space-3); flex-shrink: 0; }
 .workspace-meta .branch,
 .workspace-meta .source-label { font-family: var(--font-mono); }
+.workspace-meta .meta-key { color: var(--text-dim); margin-right: var(--space-2); }
 /* Ensure the state badge in the meta strip carries its full state colour
    and is not dimmed by the surrounding muted text context. */
 .workspace-meta .status-badge { font-size: var(--text-xs); font-weight: 600; }
