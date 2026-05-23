@@ -1125,18 +1125,30 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
    spawn submit. Keyboard-reachable as a real <button>. */
 .spawn-attach-row { display: flex; gap: var(--space-3); }
 .spawn-form .diagnostic { margin: 0; max-width: none; }
+/* Spawn-advanced — compact mirror of settings-table for the per-launch
+   override panel inside the spawn page's <details>. Same two-voice rhythm
+   (sans labels, mono values) and same --bg-raised input fill as
+   settings-table; just denser. Fieldsets become row-delimited sections
+   (border-top) rather than boxed cards, matching the settings-table
+   "rows separated by hairlines" pattern. */
 .spawn-advanced { color: var(--text-muted); font-size: var(--text-sm); }
-.spawn-advanced summary { cursor: pointer; padding: var(--space-2) 0; font-family: var(--font-mono); }
-.spawn-advanced-body { display: flex; flex-direction: column; gap: var(--space-4); padding: var(--space-4) 0; }
+.spawn-advanced summary { cursor: pointer; padding: var(--space-2) 0; font-family: var(--font-mono); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: 0.16em; color: var(--text-muted); }
+.spawn-advanced[open] summary { color: var(--text); }
+.spawn-advanced-body { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4) 0; border-top: 1px solid var(--rule); }
 .spawn-advanced-note { margin: 0 0 var(--space-2); }
-.spawn-advanced-group { border: 1px solid var(--rule); border-radius: var(--radius-md); padding: var(--space-4) var(--space-4); display: flex; flex-direction: column; gap: var(--space-4); align-items: stretch; }
-.spawn-advanced-group legend { padding: 0 var(--space-3); color: var(--text-muted); font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.04em; font-size: var(--text-2xs); }
-.spawn-advanced-body label { display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--text-xs); color: var(--text-muted); }
-.spawn-advanced-body input,
+.spawn-advanced-group { padding: var(--space-3) 0; display: flex; flex-direction: column; gap: var(--space-3); align-items: stretch; border-top: 1px solid var(--rule); }
+.spawn-advanced-group:first-of-type { border-top: 0; padding-top: 0; }
+.spawn-advanced-group legend { padding: 0; color: var(--text-muted); font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.16em; font-size: var(--text-2xs); font-weight: 500; }
+.spawn-advanced-body label { display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--text-sm); color: var(--text); font-family: var(--font-sans); font-weight: 500; }
+.spawn-advanced-body label > input[type=text],
+.spawn-advanced-body label > input[type=number],
 .spawn-advanced-body textarea,
-.spawn-advanced-body select,
+.spawn-advanced-body select { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); color: var(--text); font: inherit; font-family: var(--font-mono); font-size: var(--text-sm); outline: none; transition: border-color var(--motion-fast); }
+.spawn-advanced-body label > input[type=text]:focus,
+.spawn-advanced-body label > input[type=number]:focus,
+.spawn-advanced-body textarea:focus,
+.spawn-advanced-body select:focus { border-color: var(--accent); }
 .spawn-advanced-body button { background: transparent; border: 1px solid var(--rule); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); color: var(--text); font: inherit; font-family: var(--font-mono); font-size: var(--text-sm); outline: none; cursor: pointer; }
-.spawn-advanced-body button[type="button"] { background: var(--bg-elev, transparent); }
 .spawn-advanced-textarea { width: 100%; min-height: 132px; line-height: var(--leading-snug); resize: vertical; cursor: text; }
 .spawn-advanced-row { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
 .spawn-advanced-model { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
@@ -1596,20 +1608,11 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 /* Sidebar settings link — pushed to the right */
 .sidebar-action.settings-link { margin-left: auto; }
 
-/* Settings launch-form field rows */
-.settings-launch-form { display: flex; flex-direction: column; gap: var(--space-4); max-width: 480px; margin-bottom: var(--space-6); }
-.settings-launch-form label { display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--text-sm); color: var(--text-muted); }
-.settings-launch-form label > input[type=text],
-.settings-launch-form label > input[type=number],
-.settings-launch-form label > select,
-.settings-launch-form textarea,
-.settings-launch-form .launch-radio-option input[type=text] { font-family: var(--font-mono); font-size: var(--text-base); color: var(--text); background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-md); padding: var(--space-3) var(--space-3); outline: none; }
-.settings-launch-form label > input[type=text]:focus,
-.settings-launch-form label > input[type=number]:focus,
-.settings-launch-form label > select:focus,
-.settings-launch-form textarea:focus,
-.settings-launch-form .launch-radio-option input[type=text]:focus { border-color: var(--accent); }
-.settings-launch-form label.checkbox-label { flex-direction: row; align-items: center; gap: var(--space-3); color: var(--text); font-size: var(--text-base); }
+/* Launch-form wrapper. The form is mostly just a flex container around a
+   <dl class="settings-table"> rendered by launchconfig.js (mode="settings");
+   the table primitive owns the field styling. The wrapper survives only for
+   the max-width clamp + bottom spacing + form-actions layout. */
+.settings-launch-form { display: flex; flex-direction: column; gap: var(--space-4); max-width: 640px; margin-bottom: var(--space-6); }
 .settings-launch-form .form-actions { margin-top: var(--space-3); display: flex; align-items: center; gap: var(--space-4); }
 .form-actions { margin-top: var(--space-4); display: flex; align-items: center; gap: var(--space-3); }
 .settings-form-status { margin: 0; font-family: var(--font-sans); font-size: var(--text-xs); color: var(--text-muted); }
