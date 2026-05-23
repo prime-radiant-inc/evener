@@ -657,7 +657,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .task-system-detail-title { color: var(--text); font-family: var(--font-mono); font-size: var(--text-xs); }
 .task-system-detail { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: var(--space-1) var(--space-3); margin: var(--space-2) 0 0; max-width: 680px; }
 .task-system-detail dt { color: var(--text-dim); font-family: var(--font-mono); }
-.task-system-detail dd { margin: 0; color: var(--text); white-space: pre-wrap; }
+.task-system-detail dd { margin: 0; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
 .system-line-pointer { display: inline-block; text-decoration: none; cursor: pointer; }
 .system-line-pointer:hover { color: var(--text); }
 
@@ -671,7 +671,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .steering > summary:hover { color: var(--text); }
 .steering .steering-verb { color: var(--state-warning); font-family: var(--font-mono); letter-spacing: 0.02em; }
 .steering .steering-detail { color: var(--text); }
-.steering .steering-body { margin: var(--space-4) 0 0; padding: var(--space-4) var(--space-4); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-snug); color: var(--text-muted); white-space: pre-wrap; word-break: break-word; }
+.steering .steering-body { margin: var(--space-4) 0 0; padding: var(--space-4) var(--space-4); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-snug); color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* Fork dialog */
 .fork-dialog { margin-bottom: var(--space-6); padding: var(--space-4) var(--space-5); background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-xl); max-width: 480px; margin-left: auto; }
@@ -942,7 +942,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .tasks-list .task-detail:empty { display: none; border: none; padding: 0; }
 .tasks-list .task-detail dt { color: var(--text-muted); }
 .tasks-list .task-detail dd { margin: 0; color: var(--text); word-break: break-word; }
-.tasks-list .task-prompt { font-family: var(--font-mono); font-size: var(--text-xs); line-height: var(--leading-snug); white-space: pre-wrap; color: var(--text); }
+.tasks-list .task-prompt { font-family: var(--font-mono); font-size: var(--text-xs); line-height: var(--leading-snug); white-space: pre-wrap; color: var(--text); overflow-wrap: anywhere; }
 .tasks-list .task-type-pill { display: inline-block; padding: var(--space-1) var(--space-3); font-family: var(--font-mono); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: 0.04em; background: var(--bg); border: 1px solid var(--rule); border-radius: var(--radius-sm); }
 .tasks-list .task-notes-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
 .tasks-list .task-note { display: grid; grid-template-columns: 16px 1fr; gap: var(--space-2); align-items: baseline; font-size: var(--text-xs); color: var(--text-muted); }
