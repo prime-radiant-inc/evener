@@ -1331,6 +1331,23 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   background: var(--surface-secondary);
   filter: brightness(0.96);
 }
+.btn-ghost {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: transparent;
+}
+.btn-ghost:hover:not([disabled]):not(:disabled) {
+  background: var(--bg-raised);
+  color: var(--text);
+}
+.btn-ghost:active:not([disabled]):not(:disabled) {
+  background: var(--surface-secondary);
+}
+.btn-ghost[data-active] {
+  background: var(--bg-raised);
+  color: var(--text);
+  border-color: var(--rule);
+}
 
 /* Optimistic rendering: applied to any conversation entry that has
    been issued but not yet reconciled with an authoritative event.
