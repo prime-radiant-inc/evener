@@ -307,5 +307,52 @@ await scenario("markdown communicate after assistant text is not duplicated", [
   return { ok: true };
 });
 
+// relativizePath: tool-call target shows cwd-relative path when data-cwd is set.
+await (async function () {
+  const dom = new JSDOM(`<!DOCTYPE html><html><body>
+    <div class="workspace-actions">
+      <button data-tasks-trigger><span class="panel-toggle-label">tasks</span></button>
+      <button data-details-trigger><span class="panel-toggle-label">details</span></button>
+    </div>
+    <header class="workspace-header" data-session-id="01CWD"></header>
+    <div id="conversation-cwd" data-session-id="01CWD" data-state="ended" data-cwd="/home/user/myproject"></div>
+    <form data-input-form data-session-id="01CWD"><textarea class="message-input"></textarea></form>
+  </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
+  const { window } = dom;
+  window.marked = { parse: t => String(t || "").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>") };
+  window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
+  window.eval(rendererSrc);
+  const conv = window.document.getElementById("conversation-cwd");
+  window.SerfRenderer.init(conv);
+
+  // Wait for renderer initialization (mirrors the pattern in scenario())
+  await new Promise(r => setTimeout(r, 30));
+
+  // Fire SESSION_START then a read_file of an absolute path under cwd
+  window.SerfRenderer.handleData("SESSION_START", { session_id: "01CWD" });
+  window.SerfRenderer.handleData("TOOL_CALL_START", {
+    call_id: "rel1",
+    tool_name: "read_file",
+    arguments_json: JSON.stringify({ file_path: "/home/user/myproject/handlers/signup.go" }),
+  });
+  window.SerfRenderer.handleData("TOOL_CALL_END", {
+    call_id: "rel1", output: "ok\n", tool_name: "read_file",
+  });
+
+  await new Promise(r => setTimeout(r, 10));
+
+  const cluster = conv.querySelector(".tool-call-cluster");
+  const call = cluster && cluster.querySelector(".tool-call.read_file");
+  const targetEl = call && call.querySelector(".target");
+  const targetText = targetEl ? targetEl.textContent : "(missing)";
+  const ok = targetText === "handlers/signup.go";
+  console.log((ok ? "PASS" : "FAIL") + " — read_file target shows cwd-relative path when data-cwd set");
+  if (!ok) {
+    allPass = false;
+    console.log("  expected: handlers/signup.go  got: " + targetText);
+    if (conv.innerHTML.length < 800) console.log("  HTML: " + conv.innerHTML);
+  }
+})();
+
 process.exit(allPass ? 0 : 1);
 })();

@@ -79,6 +79,7 @@
 
       this.conversation = conversationEl;
       this.sessionId = conversationEl.dataset.sessionId;
+      this.cwd = conversationEl.dataset.cwd || "";
       this.appwireRef = null;
       this.appwireThreadId = null;
       this.appwireHydrated = false;
@@ -1139,7 +1140,7 @@
       el.appendChild(verb);
       const target = document.createElement("span");
       target.className = "target";
-      target.textContent = renderer.target ? renderer.target(args, data) : "";
+      target.textContent = renderer.target ? this.relativizePath(renderer.target(args, data)) : "";
       el.appendChild(target);
       const result = document.createElement("span");
       result.className = "result-detail";
@@ -1205,6 +1206,18 @@
       if (!state.ids) state.ids = [];
       if (!state.ids.includes(id)) state.ids.push(id);
       this.activeTools.set(id, state);
+    },
+
+    // relativizePath strips the session cwd prefix from an absolute path so
+    // tool-call targets show project-relative paths (e.g. "handlers/signup.go"
+    // instead of "/home/user/project/handlers/signup.go"). Falls back to the
+    // original value when cwd is unknown or the path doesn't start with it.
+    relativizePath(p) {
+      if (!p || !this.cwd) return p;
+      const prefix = this.cwd.endsWith("/") ? this.cwd : this.cwd + "/";
+      if (p.startsWith(prefix)) return p.slice(prefix.length);
+      if (p === this.cwd) return ".";
+      return p;
     },
 
     renderToolMeta(state, endedAt) {
