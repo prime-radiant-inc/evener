@@ -35,6 +35,7 @@
       const prefs = readNotifPrefs();
       prefs[key] = target.checked;
       writeNotifPrefs(prefs);
+      syncToggleState(target);
       if (key === "os" && target.checked && "Notification" in window) {
         Notification.requestPermission().catch(() => {});
       }
@@ -67,8 +68,13 @@
     const notifBoxes = document.querySelectorAll("input[type=checkbox][data-notif]");
     if (notifBoxes.length) {
       const prefs = readNotifPrefs();
-      notifBoxes.forEach((b) => { b.checked = !!prefs[b.dataset.notif]; });
+      notifBoxes.forEach((b) => { b.checked = !!prefs[b.dataset.notif]; syncToggleState(b); });
     }
+  }
+
+  function syncToggleState(input) {
+    const span = input.parentElement.querySelector(".state");
+    if (span) span.textContent = input.checked ? "ON" : "OFF";
   }
 
   function readNotifPrefs() {

@@ -1,10 +1,46 @@
 {{define "settings-content"}}
 <h2 class="settings-h2">Notifications</h2>
 <p class="settings-help">All notifications default off. Saved per-browser.</p>
-<form class="settings-form" data-notif-form>
-  <label class="settings-toggle"><input type="checkbox" data-notif="title"> Title-bar count of awaiting sessions</label>
-  <label class="settings-toggle"><input type="checkbox" data-notif="favicon"> Favicon dot for highest-attention state</label>
-  <label class="settings-toggle"><input type="checkbox" data-notif="os"> OS notification on idle&rarr;awaiting and processing&rarr;errored</label>
-  <label class="settings-toggle"><input type="checkbox" data-notif="sound"> Short tone on the same transitions</label>
-</form>
+<dl class="settings-table" data-notif-form>
+  <div class="row editable">
+    <dt>Title bar count</dt>
+    <dd>
+      <label class="val-toggle">
+        <input type="checkbox" data-notif="title">
+        <span class="state">OFF</span>
+      </label>
+    </dd>
+    <p class="help">Show the count of awaiting sessions in the browser tab title.</p>
+  </div>
+  <div class="row editable">
+    <dt>Favicon dot</dt>
+    <dd>
+      <label class="val-toggle">
+        <input type="checkbox" data-notif="favicon">
+        <span class="state">OFF</span>
+      </label>
+    </dd>
+    <p class="help">Tint the favicon with the highest-attention session state.</p>
+  </div>
+  <div class="row editable">
+    <dt>OS notification</dt>
+    <dd>
+      <label class="val-toggle">
+        <input type="checkbox" data-notif="os">
+        <span class="state">OFF</span>
+      </label>
+    </dd>
+    <p class="help">Native notification on idle → awaiting and processing → errored.</p>
+  </div>
+  <div class="row editable">
+    <dt>Sound</dt>
+    <dd>
+      <label class="val-toggle">
+        <input type="checkbox" data-notif="sound">
+        <span class="state">OFF</span>
+      </label>
+    </dd>
+    <p class="help">Short tone on the same transitions.</p>
+  </div>
+</dl>
 {{end}}
