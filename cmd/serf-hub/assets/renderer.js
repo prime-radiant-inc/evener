@@ -2802,9 +2802,9 @@
       const id = t.getAttribute("data-copy-id");
       if (id && navigator.clipboard) {
         navigator.clipboard.writeText(id).then(() => {
-          const orig = t.textContent;
-          t.textContent = "✓";
-          setTimeout(() => { t.textContent = orig; }, 1200);
+          if (window.SerfToast) window.SerfToast.show("Session ID copied", "success");
+        }, () => {
+          if (window.SerfToast) window.SerfToast.show("Copy failed — clipboard blocked", "error");
         });
       }
     } else if (t.matches("[data-details-trigger]") || t.closest && t.closest("[data-details-trigger]")) {
