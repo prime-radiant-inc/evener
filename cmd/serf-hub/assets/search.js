@@ -818,7 +818,9 @@
 
   function renderRow(r, idx, query) {
     return '<a class="search-row" role="option" id="search-row-' + idx + '" data-idx="' + idx + '">' +
-           '<span class="status-dot" data-state="' + escapeHtml(r.state || "ended") + '"></span>' +
+           '<span class="status-dot" data-state="' + escapeHtml(r.state || "ended") + '"' +
+           ((r.state === "active" || r.state === "awaiting" || r.state === "errored") ? ' data-pulse=""' : '') +
+           '></span>' +
            '<span class="search-title">' + highlight(r.title || "", query) + '</span>' +
            '<span class="search-project">' + highlight(r.project || "", query) + '</span>' +
            '<span class="search-age">' + escapeHtml(r.age || "") + '</span>' +

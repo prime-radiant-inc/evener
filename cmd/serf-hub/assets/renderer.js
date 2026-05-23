@@ -2721,6 +2721,24 @@
     "close_agent": subagentControlRenderer("close"),
   };
 
+  // applyStatusDotPulse sets [data-pulse] on every .status-dot under root
+  // whose data-state is in the "should breathe" set. Idempotent. Called
+  // after any DOM change that may have introduced status dots.
+  function applyStatusDotPulse(root) {
+    const scope = root || document;
+    const dots = scope.querySelectorAll(".status-dot[data-state]");
+    dots.forEach(dot => {
+      const state = dot.getAttribute("data-state");
+      const shouldPulse = state === "active" || state === "awaiting" || state === "errored";
+      if (shouldPulse) {
+        dot.setAttribute("data-pulse", "");
+      } else {
+        dot.removeAttribute("data-pulse");
+      }
+    });
+  }
+  SerfRenderer.applyStatusDotPulse = applyStatusDotPulse;
+
   window.SerfRenderer = SerfRenderer;
 
   // Tab title — track sessions awaiting reply for the title-count notification
@@ -3141,4 +3159,25 @@
   }
   document.addEventListener("DOMContentLoaded", autoInit);
   document.body && document.body.addEventListener("htmx:afterSwap", autoInit);
+
+  // Drive [data-pulse] on status dots after every htmx swap.
+  document.addEventListener("htmx:afterSwap", () => {
+    if (window.SerfRenderer && window.SerfRenderer.applyStatusDotPulse) {
+      window.SerfRenderer.applyStatusDotPulse(document);
+    }
+  });
+  // Also apply on initial load in case dots are already in the page.
+  if (typeof window !== "undefined") {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", () => {
+        if (window.SerfRenderer && window.SerfRenderer.applyStatusDotPulse) {
+          window.SerfRenderer.applyStatusDotPulse(document);
+        }
+      });
+    } else {
+      if (window.SerfRenderer && window.SerfRenderer.applyStatusDotPulse) {
+        window.SerfRenderer.applyStatusDotPulse(document);
+      }
+    }
+  }
 })();

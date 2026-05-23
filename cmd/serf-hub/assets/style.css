@@ -1420,6 +1420,18 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   50%      { opacity: 0.65; }
 }
 
+/* ── Status-dot pulse (Pass 5) ────────────────────────────────────────────
+   JS sets [data-pulse] on .status-dot when [data-state] ∈
+   {active, awaiting, errored}. Reduced-motion override in the global
+   media query already neutralizes the animation. */
+.status-dot[data-pulse] {
+  animation: status-dot-pulse var(--pulse-cycle) ease-in-out infinite;
+}
+@keyframes status-dot-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.5; }
+}
+
 /* ── Pass 2 typography exceptions ────────────────────────────────────────
    Selectors deliberately keeping a non-token font-size or line-height:
 

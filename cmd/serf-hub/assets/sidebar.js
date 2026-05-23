@@ -275,5 +275,11 @@
     if (target.id === "workspace" || target.id === "sidebar" || (target.closest && target.closest("#sidebar"))) {
       syncActiveRow();
     }
+    // After a sidebar swap, update [data-pulse] on any status dots.
+    if (target.id === "sidebar" || (target.closest && target.closest("#sidebar"))) {
+      if (window.SerfRenderer && window.SerfRenderer.applyStatusDotPulse) {
+        window.SerfRenderer.applyStatusDotPulse(document.getElementById("sidebar") || document);
+      }
+    }
   });
 })();
