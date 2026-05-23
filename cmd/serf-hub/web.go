@@ -36,6 +36,7 @@ type WebConfig struct {
 	AuthToken     string // capability token gating every non-exempt route
 	HubStateRoot  string // root of hub-level state; defaults to $HOME/.serf
 	RunDir        string // run directory where rendezvous files live
+	PastIndexPath string // path to the SQLite past-index DB, for display in settings
 	Roster        *Roster
 	Past          *PastIndex
 	Spawner       Spawner            // optional; nil disables spawn
@@ -1171,6 +1172,11 @@ type settingsData struct {
 	McpsError         string
 	McpConfigPath     string
 	PastCount         int
+	PastIndexPath     string // path to past index SQLite file (e.g. ~/.serf/index.db)
+	PastIndexSize     string // human-readable size of the past index file, empty if unavailable
+	BearerTokenAge    string // human-readable age of the auth token file, empty if unavailable
+	HubVersion        string // Version constant (e.g. "0.1.0")
+	HubCommit         string // git commit hash injected at build time, empty in dev builds
 	CodexLaunches     []CodexLaunchConfig
 	ProjectCWD        string            // canonical cwd for the per-project settings page
 	AvailableProjects []projectListItem // known projects shown when ProjectCWD is empty
@@ -1303,6 +1309,14 @@ func (s *WebServer) renderSettingsPartial(w http.ResponseWriter, r *http.Request
 		})
 	}
 
+	// Compute display-only fields for the general/storage settings pages.
+	pastIndexPath := tildeHome(s.cfg.PastIndexPath)
+	pastIndexSize := fileSizeHuman(s.cfg.PastIndexPath)
+	bearerTokenAge := ""
+	if s.cfg.HubStateRoot != "" {
+		bearerTokenAge = fileAgeHuman(filepath.Join(s.cfg.HubStateRoot, authTokenFile))
+	}
+
 	data := settingsData{
 		Active:            section,
 		HubAddr:           s.cfg.HubAddr,
@@ -1310,6 +1324,11 @@ func (s *WebServer) renderSettingsPartial(w http.ResponseWriter, r *http.Request
 		StateDir:          s.cfg.StateDir,
 		SpawnTimeout:      "30s",
 		PastPerPage:       s.cfg.PastPerPage,
+		PastIndexPath:     pastIndexPath,
+		PastIndexSize:     pastIndexSize,
+		BearerTokenAge:    bearerTokenAge,
+		HubVersion:        Version,
+		HubCommit:         buildinfo.GitSHA,
 		Providers:         providers,
 		ModelDiagnostics:  launchModelList.Diagnostics,
 		Agents:            agents,
@@ -1390,6 +1409,62 @@ func errString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// tildeHome replaces the user's home directory prefix in path with "~".
+// Returns path unchanged if home is empty or path does not start with home.
+func tildeHome(path string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if strings.HasPrefix(path, home+"/") {
+		return "~" + path[len(home):]
+	}
+	if path == home {
+		return "~"
+	}
+	return path
+}
+
+// fileAgeHuman returns a short human-readable description of how long ago the
+// file at path was last modified (e.g. "created 3d ago"). Returns "" on error.
+func fileAgeHuman(path string) string {
+	info, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	d := time.Since(info.ModTime())
+	switch {
+	case d < 2*time.Minute:
+		return "just now"
+	case d < 2*time.Hour:
+		return fmt.Sprintf("created %dm ago", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("created %dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("created %dd ago", int(d.Hours()/24))
+	}
+}
+
+// fileSizeHuman returns a short human-readable file size string for path
+// (e.g. "48 MB"). Returns "" if the file does not exist or stat fails.
+func fileSizeHuman(path string) string {
+	info, err := os.Stat(path)
+	if err != nil {
+		return ""
+	}
+	sz := info.Size()
+	switch {
+	case sz < 1<<10:
+		return fmt.Sprintf("%d B", sz)
+	case sz < 1<<20:
+		return fmt.Sprintf("%d KB", sz>>10)
+	case sz < 1<<30:
+		return fmt.Sprintf("%d MB", sz>>20)
+	default:
+		return fmt.Sprintf("%d GB", sz>>30)
+	}
 }
 
 // defaultPluginsRoot is the conventional XDG location for serf plugins:

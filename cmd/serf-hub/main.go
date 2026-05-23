@@ -141,6 +141,7 @@ func main() {
 		AuthToken:     authToken,
 		HubStateRoot:  cfg.HubStateRoot,
 		RunDir:        runDir,
+		PastIndexPath: pastIndexDB,
 		Roster:        roster,
 		Past:          past,
 		Spawner:       spawner,

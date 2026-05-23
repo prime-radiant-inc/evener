@@ -1,21 +1,34 @@
 {{define "settings-content"}}
 <h2 class="settings-h2">General</h2>
+<p class="settings-help">Read-only summary of the hub's runtime configuration. Edit <code>~/.serf/hub.toml</code> to change these values.</p>
 <dl class="settings-table">
   <div class="row">
     <dt>Hub address</dt>
     <dd>{{.HubAddr}}</dd>
   </div>
   <div class="row">
+    <dt>Bearer token</dt>
+    <dd>•••••••••••• {{if .BearerTokenAge}}<span class="val-text"><span class="dim">{{.BearerTokenAge}}</span></span>{{end}}</dd>
+    <p class="help">Rotated daily; copy when authenticating the TUI or a remote browser. The hub regenerates the token on each daemon restart.</p>
+  </div>
+  <div class="row">
     <dt>Run dir</dt>
     <dd>{{.RunDir}}</dd>
+    <p class="help">Per-PID rendezvous files; the hub watches this directory to discover live daemons.</p>
   </div>
   <div class="row">
     <dt>State dir</dt>
     <dd>{{.StateDir}}</dd>
   </div>
   <div class="row">
+    <dt>Past index</dt>
+    <dd>{{.PastIndexPath}} {{if .PastIndexSize}}<span class="val-text"><span class="dim">{{.PastIndexSize}}</span></span>{{end}}</dd>
+    <p class="help">SQLite database of past session metadata. Search results in <code>⌘K</code> come from here.</p>
+  </div>
+  <div class="row">
     <dt>Spawn timeout</dt>
     <dd>{{.SpawnTimeout}}</dd>
+    <p class="help">How long the hub waits for a daemon to report ready after spawn before treating it as failed.</p>
   </div>
   <div class="row">
     <dt>Past results per page</dt>
@@ -24,6 +37,10 @@
   <div class="row">
     <dt>Hub config</dt>
     <dd>~/.serf/hub.toml <span class="val-text"><span class="dim">edit to change</span></span></dd>
+  </div>
+  <div class="row">
+    <dt>Hub version</dt>
+    <dd>{{.HubVersion}} {{if .HubCommit}}<span class="val-text"><span class="dim">({{.HubCommit}})</span></span>{{end}}</dd>
   </div>
 </dl>
 {{end}}

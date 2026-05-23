@@ -1,21 +1,26 @@
 {{define "settings-content"}}
 <h2 class="settings-h2">Storage</h2>
+<p class="settings-help">Paths and file locations used by the hub at runtime.</p>
 <dl class="settings-table">
   <div class="row">
     <dt>State dir</dt>
     <dd>{{.StateDir}}</dd>
+    <p class="help">Root directory for hub state: auth token, credentials, and project sub-directories.</p>
   </div>
   <div class="row">
     <dt>Run dir</dt>
     <dd>{{.RunDir}}</dd>
+    <p class="help">Per-PID rendezvous files; the hub watches this directory to discover live daemons.</p>
   </div>
   <div class="row">
     <dt>Hub config</dt>
     <dd>~/.serf/hub.toml</dd>
+    <p class="help">Main configuration file. Edit it to change addresses, providers, and spawn defaults.</p>
   </div>
   <div class="row">
     <dt>Past index</dt>
-    <dd>{{.PastCount}} session{{if ne .PastCount 1}}s{{end}}</dd>
+    <dd>{{.PastIndexPath}} {{if .PastIndexSize}}<span class="val-text"><span class="dim">{{.PastIndexSize}}</span></span>{{end}}</dd>
+    <p class="help">SQLite database of past session metadata. Search results in <code>⌘K</code> come from here. Currently tracking {{.PastCount}} session{{if ne .PastCount 1}}s{{end}}.</p>
   </div>
 </dl>
 {{end}}

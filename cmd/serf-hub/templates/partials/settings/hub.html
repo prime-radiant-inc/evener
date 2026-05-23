@@ -4,14 +4,17 @@
   <div class="row">
     <dt>Listen address</dt>
     <dd>{{.HubAddr}}</dd>
+    <p class="help">Address and port the hub HTTP server binds to. Change via <code>addr</code> in <code>~/.serf/hub.toml</code> or <code>--addr</code>.</p>
   </div>
   <div class="row">
     <dt>Run dir</dt>
     <dd>{{.RunDir}}</dd>
+    <p class="help">Per-PID rendezvous files; the hub watches this directory to discover live daemons.</p>
   </div>
   <div class="row">
     <dt>Spawn timeout</dt>
     <dd>{{.SpawnTimeout}}</dd>
+    <p class="help">How long the hub waits for a daemon to report ready after spawn before treating it as failed.</p>
   </div>
 </dl>
 {{end}}
