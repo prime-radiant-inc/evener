@@ -735,12 +735,48 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .running-indicator { display: inline-flex; align-items: center; gap: var(--space-3); color: var(--text); font-size: var(--text-sm); white-space: nowrap; }
 .running-dot { width: 7px; height: 7px; border-radius: var(--radius-full); background: var(--state-processing); box-shadow: 0 0 0 var(--space-2) rgba(122,162,247,0.12); }
 
-.input-status { display: flex; align-items: center; gap: var(--space-4); padding: var(--space-4) 0 0; margin-top: var(--space-3); border-top: 1px solid var(--rule); font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-muted); flex-wrap: wrap; }
-.input-status .cwd { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.input-status .status-spacer { flex: 1; }
-.input-status .context { display: inline-flex; align-items: center; gap: var(--space-3); }
-.input-status .context-bar { width: 80px; height: 3px; background: var(--bg); border-radius: var(--radius-sm); overflow: hidden; }
-.input-status .context-fill { display: block; height: 100%; background: var(--state-processing); }
+.input-status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  padding: var(--space-3) 0 0;
+  margin-top: var(--space-2);
+  border-top: 1px solid var(--rule);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text);
+  flex-wrap: wrap;
+}
+.input-status .status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  white-space: nowrap;
+}
+.input-status .status-key {
+  color: var(--text-dim);
+}
+.input-status .status-value {
+  color: var(--text);
+}
+.input-status .cwd .status-value {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.input-status .context-bar {
+  display: inline-block;
+  width: 80px;
+  height: 3px;
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.input-status .context-fill {
+  display: block;
+  height: 100%;
+  background: var(--state-processing);
+}
 
 /* Generic context/cost styling — kept for status_bar.html and other surfaces. */
 .context { display: inline-flex; align-items: center; gap: var(--space-3); }
