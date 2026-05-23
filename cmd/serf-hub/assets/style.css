@@ -941,7 +941,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .tasks-list .task-detail { margin: 0; padding: var(--space-2) var(--space-4) var(--space-4) var(--space-8); display: grid; grid-template-columns: 80px 1fr; gap: var(--space-2) var(--space-4); font-size: var(--text-xs); border-top: 1px dashed var(--rule); }
 .tasks-list .task-detail:empty { display: none; border: none; padding: 0; }
 .tasks-list .task-detail dt { color: var(--text-muted); }
-.tasks-list .task-detail dd { margin: 0; color: var(--text); word-break: break-word; }
+.tasks-list .task-detail dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
 .tasks-list .task-prompt { font-family: var(--font-mono); font-size: var(--text-xs); line-height: var(--leading-snug); white-space: pre-wrap; color: var(--text); overflow-wrap: anywhere; }
 .tasks-list .task-type-pill { display: inline-block; padding: var(--space-1) var(--space-3); font-family: var(--font-mono); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: 0.04em; background: var(--bg); border: 1px solid var(--rule); border-radius: var(--radius-sm); }
 .tasks-list .task-notes-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
