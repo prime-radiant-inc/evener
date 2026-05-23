@@ -672,7 +672,9 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .message-input { width: 100%; min-height: 36px; max-height: 50vh; background: transparent; border: none; resize: none; color: var(--text); font: inherit; font-family: var(--font-sans); font-size: var(--text-md); outline: none; line-height: var(--leading-snug); overflow-y: auto; }
 
 .input-controls { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) 0 0; flex-wrap: wrap; }
-.controls-spacer { flex: 1; }
+.controls-left,
+.controls-right { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.controls-center { flex: 1; display: flex; align-items: center; justify-content: flex-start; min-height: 1px; }
 .running-indicator { display: inline-flex; align-items: center; gap: var(--space-3); color: var(--text); font-size: var(--text-sm); white-space: nowrap; }
 .running-dot { width: 7px; height: 7px; border-radius: var(--radius-full); background: var(--state-processing); box-shadow: 0 0 0 var(--space-2) rgba(122,162,247,0.12); }
 
@@ -1231,7 +1233,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   /* Bottom strip: keep horizontal but allow wrap so chips reflow rather than overflow. */
   .workspace-input { padding: var(--space-3) var(--space-4) var(--space-4); }
   .input-controls { flex-wrap: wrap; gap: var(--space-3); }
-  .controls-spacer { display: none; }
+  .controls-center { flex: none; }
   .btn-primary kbd { display: none; }
   .input-status { flex-wrap: wrap; }
 

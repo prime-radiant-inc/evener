@@ -33,12 +33,17 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
       <textarea class="message-input" rows="1"></textarea>
     </div>
     <div class="input-controls">
-      <button type="button" class="btn btn-secondary" data-attach-trigger>＋</button>
-      <button type="button" class="btn btn-ghost" data-steer-trigger>send as steer</button>
-      <button type="submit" class="send-btn btn btn-primary"
-              data-capability-send="false"
-              data-capability-queue="true"
-              disabled>send</button>
+      <div class="controls-left">
+        <button type="button" class="btn btn-secondary" data-attach-trigger>＋</button>
+      </div>
+      <div class="controls-center"></div>
+      <div class="controls-right">
+        <button type="button" class="btn btn-ghost" data-steer-trigger>send as steer</button>
+        <button type="submit" class="send-btn btn btn-primary"
+                data-capability-send="false"
+                data-capability-queue="true"
+                disabled>send</button>
+      </div>
     </div>
     <div class="input-status" id="input-status"></div>
     <input type="file" data-file-picker hidden>
