@@ -3545,9 +3545,9 @@ func TestWeb_Sidebar_LiveRowDataState(t *testing.T) {
 	}
 }
 
-// TestWeb_Sidebar_ProjectHeader_HasChevronAndFolder verifies that the project
-// header renders with the compact collapsed ▸ 📁 <name> shape.
-func TestWeb_Sidebar_ProjectHeader_HasChevronAndFolder(t *testing.T) {
+// TestWeb_Sidebar_ProjectHeader_HasChevronAndName verifies that the project
+// header renders with the compact collapsed ▸ <name> shape.
+func TestWeb_Sidebar_ProjectHeader_HasChevronAndName(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
@@ -3579,7 +3579,7 @@ func TestWeb_Sidebar_ProjectHeader_HasChevronAndFolder(t *testing.T) {
 		t.Fatalf("status: %d", rec.Code)
 	}
 	body := rec.Body.String()
-	wants := []string{`class="project-header"`, "project-chevron", "▸", "📁", "project-name"}
+	wants := []string{`class="project-header"`, "project-chevron", "▸", "project-name"}
 	for _, w := range wants {
 		if !strings.Contains(body, w) {
 			t.Errorf("project-header missing %q: %q", w, body)

@@ -217,9 +217,23 @@
 /* ── Universal focus ring (Pass 5) ────────────────────────────────────────
    :where() gives this rule zero specificity so per-component overrides
    with negative offsets win. See design language §6.1. */
+/* Focus-visible ring. The previous 2px solid + 1px offset rendered as a
+   ~4px halo around any focused control — far heavier than the workshop-
+   log-v3 mockup, which uses subtle border-color changes for focus.
+   Switch to a soft 2px box-shadow halo (color-mixed accent at 50%) that
+   reads as focus indication without dominating the button visually. */
 :where(:focus-visible) {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 50%, transparent);
+}
+/* Inputs and textareas inside the design system use a border-color change
+   for focus instead of the box-shadow, matching the mockup. Suppress the
+   global box-shadow on those so they don't double up. */
+input:where(:focus-visible),
+textarea:where(:focus-visible),
+select:where(:focus-visible) {
+  box-shadow: none;
+  border-color: var(--accent);
 }
 
 * { box-sizing: border-box; }
@@ -587,10 +601,60 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 /* Project header icons (gear, new) inherit .btn-icon. Keep them dim by
    default and brighten on row hover; the .btn-icon hover state handles
    per-button hover. No hover-only-reveal (touch users see them too). */
-.project-new-btn,
-.project-gear-btn { color: var(--text-dim); text-decoration: none; }
-.project-section:hover .project-new-btn,
-.project-section:hover .project-gear-btn { color: var(--text-muted); }
+/* Project header action buttons (⚙ settings, + new session). Hidden by
+   default; revealed only when the project header is hovered or focused,
+   matching the workshop-log-v3 mockup which omits these from default
+   sidebar density. Touch users get them via long-press / focus.
+   :focus-within keeps them visible while a child button has focus, so
+   keyboard navigation still works.
+
+   Override .btn-icon's default 32x32 tap-min sizing here — the mockup
+   uses bare inline glyphs, not bordered icon-buttons. Without this,
+   they render as "big grey squares" on the project header. Tap-min
+   accessibility is preserved via the .btn-icon defaults on other
+   surfaces; the sidebar specifically reserves icon-button affordance
+   for the sb-row tap target (the whole row is the link). */
+.project-new-btn.btn-icon,
+.project-gear-btn.btn-icon {
+  color: var(--text-dim);
+  text-decoration: none;
+  opacity: 0;
+  transition: opacity var(--motion-fast), color var(--motion-fast);
+  background: transparent;
+  border: none;
+  min-width: 0;
+  padding: 0 var(--space-1);
+  font-size: var(--text-sm);
+  min-height: 0;
+}
+.project-new-btn.btn-icon:hover,
+.project-gear-btn.btn-icon:hover {
+  background: transparent;
+  border-color: transparent;
+}
+.project-chevron.btn-icon {
+  background: transparent;
+  border: none;
+  min-width: 0;
+  padding: 0 var(--space-1);
+  font-size: var(--text-xs);
+  min-height: 0;
+  color: var(--text-dim);
+}
+.project-chevron.btn-icon:hover {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text);
+}
+.project-header:hover .project-new-btn,
+.project-header:hover .project-gear-btn,
+.project-header:focus-within .project-new-btn,
+.project-header:focus-within .project-gear-btn {
+  opacity: 1;
+  color: var(--text-muted);
+}
+.project-header:hover .project-new-btn:hover,
+.project-header:hover .project-gear-btn:hover { color: var(--text); }
 
 /* Fork title-bar prefix: shown above the title for the dim, preserved-original
    side of a fork. */
@@ -2054,10 +2118,13 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   border-radius: var(--radius-pill);
   /* Pill-shaped chips read better with tighter horizontal padding than
      the .btn base. Inherit base font-weight 500 but suppress to 400 to
-     match workshop-log-v3 mockup — chip values are quiet, not bold. */
+     match workshop-log-v3 mockup — chip values are quiet, not bold.
+     align-items: center keeps key/val/caret visually centered when their
+     font-sizes differ (10px key, 11px val, 8px caret); baseline-align
+     was creating the "weirdly off-center" appearance the user flagged. */
   padding: var(--space-2) var(--space-3);
   font-weight: 400;
-  align-items: baseline;
+  align-items: center;
 }
 .btn-chip:hover:not([disabled]):not(:disabled) {
   border-color: var(--accent);
