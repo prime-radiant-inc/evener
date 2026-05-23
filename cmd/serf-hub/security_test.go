@@ -25,6 +25,15 @@ func TestCSPMiddleware_SetsStrictDefault(t *testing.T) {
 	for _, want := range []string{
 		"default-src 'self'",
 		"script-src 'self' 'unsafe-inline'",
+		// style-src allows fonts.googleapis.com so the Google Fonts CSS
+		// (loaded by app.html for Hanken Grotesk + JetBrains Mono) can be
+		// fetched. 'unsafe-inline' remains because settings partials and
+		// app.html use inline <style>/style attributes for data-driven
+		// values (e.g., context-bar fill width).
+		"style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+		// font-src allows fonts.gstatic.com so the WOFF2 font files
+		// referenced by the Google Fonts CSS can be downloaded.
+		"font-src 'self' https://fonts.gstatic.com",
 		// img-src must include data: (transcript-inline base64 thumbnails),
 		// blob: (composer-attachments reencodeToPng pipeline; kata 1pgw), and
 		// https: (URL-backed AppWire replay images).
