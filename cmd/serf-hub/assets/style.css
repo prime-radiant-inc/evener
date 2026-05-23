@@ -512,14 +512,11 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .chip-caret { color: var(--text-muted); margin-left: 2px; }
 
 .input-status { display: flex; align-items: center; gap: 14px; padding: 10px 0 0; margin-top: 6px; border-top: 1px solid var(--rule); font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-muted); flex-wrap: wrap; }
-.input-status .cwd, .input-status .branch { font-family: var(--font-mono); }
 .input-status .cwd { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .input-status .status-spacer { flex: 1; }
 .input-status .context { display: inline-flex; align-items: center; gap: 6px; }
 .input-status .context-bar { width: 80px; height: 3px; background: var(--bg); border-radius: 2px; overflow: hidden; }
 .input-status .context-fill { display: block; height: 100%; background: var(--state-processing); }
-.input-status .context-numbers { font-family: var(--font-mono); }
-.input-status .cost { font-family: var(--font-mono); }
 
 /* Generic context/cost styling — kept for status_bar.html and other surfaces. */
 .context { display: inline-flex; align-items: center; gap: 8px; }
@@ -1013,7 +1010,6 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
   .header-action,
   .panel-toggle { padding: 4px 8px; font-size: var(--text-xs); }
   .panel-toggle-icon { display: none; }
-  .workspace-meta { font-size: var(--text-xs); }
 
   /* Empty state and other workspace partials don't have a header to push;
      pad the content itself away from the fixed hamburger. */
