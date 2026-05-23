@@ -1067,6 +1067,10 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .diff-body .add { color: var(--state-idle); }
 .diff-body .del { color: var(--state-awaiting); }
 .diff-body .hunk { color: var(--text-dim); }
+/* Per-line background bars — data-line-kind set by renderDiffLines(). */
+.diff-body span[data-line-kind] { display: block; }
+.diff-body span[data-line-kind="add"] { background: color-mix(in srgb, var(--state-idle) 10%, transparent); }
+.diff-body span[data-line-kind="del"] { background: color-mix(in srgb, var(--state-awaiting) 10%, transparent); }
 
 /* Shared style for tool-body elements: diff, shell output, task list, etc. */
 .tool-body {

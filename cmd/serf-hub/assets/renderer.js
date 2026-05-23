@@ -2313,9 +2313,11 @@
     el.innerHTML = "";
     trimmed.split("\n").forEach(line => {
       const span = document.createElement("span");
-      if (line.startsWith("+") && !line.startsWith("+++")) span.className = "add";
-      else if (line.startsWith("-") && !line.startsWith("---")) span.className = "del";
-      else if (line.startsWith("@@")) span.className = "hunk";
+      let kind = "ctx";
+      if (line.startsWith("+") && !line.startsWith("+++")) { span.className = "add"; kind = "add"; }
+      else if (line.startsWith("-") && !line.startsWith("---")) { span.className = "del"; kind = "del"; }
+      else if (line.startsWith("@@")) { span.className = "hunk"; kind = "hunk"; }
+      span.dataset.lineKind = kind;
       span.textContent = line + "\n";
       el.appendChild(span);
     });
