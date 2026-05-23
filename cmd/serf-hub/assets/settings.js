@@ -12,6 +12,7 @@
     if (target.matches('input[name="theme"]')) {
       const v = target.value;
       window.serfHub.setTheme(v === "system" ? null : v);
+      if (window.SerfToast) window.SerfToast.show("Theme: " + v, "success");
       return;
     }
 
@@ -42,6 +43,7 @@
       document.dispatchEvent(new CustomEvent("serf-hub:notifications-changed", {
         detail: { key, value: target.checked },
       }));
+      if (window.SerfToast) window.SerfToast.show("Settings saved", "success");
       return;
     }
   });
