@@ -81,13 +81,29 @@
   // only armed while open — keeping it always-on caused double-fires
   // under mobile emulation where the synthetic click stack toggled
   // open then immediately closed.
+  var sidebarTrapHandle = null;
+
   function setSidebarOpen(open) {
     if (open) {
       document.body.setAttribute("data-sidebar-open", "");
       document.addEventListener("click", onOutsideClick, true);
+      // Only trap focus on phone — desktop sidebar isn't a drawer. Match
+      // the design-language breakpoint.
+      var isPhone = window.matchMedia && window.matchMedia("(max-width: 767px)").matches;
+      if (isPhone && window.SerfFocusTrap) {
+        var sidebar = document.getElementById("sidebar");
+        var trigger = document.querySelector("[data-sidebar-toggle]");
+        if (sidebar) {
+          sidebarTrapHandle = window.SerfFocusTrap.activate(sidebar, trigger);
+        }
+      }
     } else {
       document.body.removeAttribute("data-sidebar-open");
       document.removeEventListener("click", onOutsideClick, true);
+      if (sidebarTrapHandle && window.SerfFocusTrap) {
+        window.SerfFocusTrap.deactivate(sidebarTrapHandle);
+        sidebarTrapHandle = null;
+      }
     }
   }
 
