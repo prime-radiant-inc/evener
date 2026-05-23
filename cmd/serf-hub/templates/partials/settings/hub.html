@@ -1,8 +1,17 @@
 {{define "settings-content"}}
 <h2 class="settings-h2">Hub</h2>
-<dl class="settings-list">
-  <dt>Listen address</dt><dd><code>{{.HubAddr}}</code></dd>
-  <dt>Run dir</dt><dd><code>{{.RunDir}}</code></dd>
-  <dt>Spawn timeout</dt><dd>{{.SpawnTimeout}}</dd>
+<dl class="settings-table">
+  <div class="row">
+    <dt>Listen address</dt>
+    <dd>{{.HubAddr}}</dd>
+  </div>
+  <div class="row">
+    <dt>Run dir</dt>
+    <dd>{{.RunDir}}</dd>
+  </div>
+  <div class="row">
+    <dt>Spawn timeout</dt>
+    <dd>{{.SpawnTimeout}}</dd>
+  </div>
 </dl>
 {{end}}
