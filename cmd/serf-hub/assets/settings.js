@@ -107,13 +107,14 @@
   else delete document.body.dataset.sidebarRail;
 })();
 
-// Settings-nav filter
+// Settings-nav filter — delegated so it works after HTMX swaps the settings shell.
 (function () {
-  const input = document.querySelector("[data-settings-nav-filter]");
-  if (!input) return;
-  function applyFilter() {
+  document.body.addEventListener("input", (e) => {
+    const input = e.target && e.target.closest("[data-settings-nav-filter]");
+    if (!input) return;
     const q = input.value.trim().toLowerCase();
     const nav = input.closest(".settings-nav");
+    if (!nav) return;
     nav.querySelectorAll(".settings-nav-link").forEach(a => {
       const visible = !q || a.textContent.toLowerCase().includes(q);
       a.hidden = !visible;
@@ -128,34 +129,56 @@
       }
       h.hidden = !anyVisible;
     });
-  }
-  input.addEventListener("input", applyFilter);
+  });
 })();
 
-// Phone nav-as-page wiring
+// Phone nav-as-page wiring — delegated so it works after HTMX swaps the settings shell.
 (function () {
   const body = document.body;
-  const back = document.querySelector(".settings-nav-back");
+
   function syncPane() {
     // If we're in a settings route, default to content; if at /settings (root)
     // with no Active section, show nav. The Active section is rendered into
     // the title — use its presence as the signal.
     const title = document.querySelector(".workspace-title .title[data-settings-section]");
-    body.dataset.settingsPane = title && title.textContent.trim() ? "content" : "nav";
+    const isContent = !!(title && title.textContent.trim());
+    body.dataset.settingsPane = isContent ? "content" : "nav";
+
+    // Toggle the back button's hidden attribute — CSS display cannot override
+    // the HTML hidden attribute, so we must manage it explicitly.
+    const back = document.querySelector(".settings-nav-back");
+    if (back) {
+      if (isContent) {
+        back.removeAttribute("hidden");
+      } else {
+        back.setAttribute("hidden", "");
+      }
+    }
   }
-  syncPane();
-  if (back) {
-    back.addEventListener("click", () => {
-      body.dataset.settingsPane = "nav";
-      // Navigate to /settings root via history; HTMX is not used here because
-      // the visibility-only flip is local.
-      if (window.history && history.pushState) history.pushState({}, "", "/settings");
-    });
-  }
-  // After every htmx swap that targets #settings-content, update the pane.
-  document.body.addEventListener("htmx:afterSwap", (ev) => {
-    if (ev.detail && ev.detail.target && ev.detail.target.id === "settings-content") {
+
+  // Delegated click handler for the back button — survives DOM swaps.
+  document.body.addEventListener("click", (e) => {
+    if (!e.target || !e.target.closest) return;
+    const btn = e.target.closest(".settings-nav-back");
+    if (!btn) return;
+    body.dataset.settingsPane = "nav";
+    const back = document.querySelector(".settings-nav-back");
+    if (back) back.setAttribute("hidden", "");
+    // Navigate to /settings root via history; HTMX is not used here because
+    // the visibility-only flip is local.
+    if (window.history && history.pushState) history.pushState({}, "", "/settings");
+  });
+
+  // Run syncPane on initial load and after any HTMX swap that brings in the
+  // settings shell (#workspace) or updates the active content (#settings-content).
+  function onAfterSwap(ev) {
+    if (!ev.detail || !ev.detail.target) return;
+    const id = ev.detail.target.id;
+    if (id === "workspace" || id === "settings-content") {
       syncPane();
     }
-  });
+  }
+
+  document.addEventListener("DOMContentLoaded", syncPane);
+  document.body.addEventListener("htmx:afterSwap", onAfterSwap);
 })();
