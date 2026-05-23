@@ -255,7 +255,7 @@
     wrap.className = radioClass + " launch-radio-composite";
     const name = radioNameFor(ctx, opt);
 
-    function addOption(value, labelText, control) {
+    function addOption(value, labelText, control, controlOpt) {
       const option = document.createElement("label");
       if (ctx.mode === "settings") {
         option.className = control ? "val-radio launch-radio-option launch-radio-option-with-control" : "val-radio launch-radio-option";
@@ -276,6 +276,10 @@
         text.textContent = labelText;
         body.appendChild(text);
         body.appendChild(control);
+        // Inline default hint for the nested wireField (e.g. systemPromptText).
+        // Without this, the radio composite only shows the mode's default,
+        // not the actual inherited text/path the user would be inheriting.
+        if (controlOpt) appendGlobalDefault(body, controlOpt, ctx);
         option.appendChild(body);
       } else {
         option.appendChild(document.createTextNode(labelText));
@@ -288,12 +292,12 @@
     if (fileOpt) {
       const fileInput = textInputForOption(fileOpt, ctx.mode, false);
       fileInput.placeholder = ctx.layer === "project" ? "(use global default)" : "(path)";
-      addOption("file", spec.fileLabel, fileInput);
+      addOption("file", spec.fileLabel, fileInput, fileOpt);
     }
     if (textOpt) {
       const textInput = textInputForOption(textOpt, ctx.mode, true);
       textInput.placeholder = "";
-      addOption("inline", spec.textLabel, textInput);
+      addOption("inline", spec.textLabel, textInput, textOpt);
     }
     if (ctx.mode === "settings") {
       const dt = document.createElement("dt");

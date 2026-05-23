@@ -1337,6 +1337,18 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   flex-wrap: wrap;
   gap: var(--space-2);
 }
+/* Composite radio groups (e.g. systemPromptMode with nested file/text
+   controls) need to fill the dd column so their textareas have room. The
+   plain .val-radio-group is inline-flex (shrink-wraps to the widest
+   label), which makes nested controls only ~210px wide. Force block-flex
+   + full width for the composite variant. */
+.settings-table .val-radio-group.launch-radio-composite {
+  display: flex;
+  width: 100%;
+}
+.settings-table .launch-radio-composite .launch-radio-option-body { width: 100%; }
+.settings-table .launch-radio-composite textarea,
+.settings-table .launch-radio-composite input[type=text] { width: 100%; max-width: 100%; }
 .settings-table .val-radio {
   display: inline-flex;
   align-items: center;
