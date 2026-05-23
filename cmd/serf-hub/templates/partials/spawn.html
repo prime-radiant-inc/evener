@@ -10,36 +10,36 @@
     <h2 class="spawn-prompt">What should the agent do?</h2>
     <p class="spawn-subtitle">Leave blank to start a dormant session.</p>
     <div class="spawn-chips" id="spawn-chips">
-      <button class="chip" type="button" data-chip="harness">
-        <span class="chip-label">harness</span>
-        <span class="chip-value" data-chip-value-harness>{{.DefaultHarness}}</span>
-        <span class="chip-caret">▾</span>
+      <button class="btn btn-chip" type="button" data-chip="harness">
+        <span class="key chip-label">harness</span>
+        <span class="val chip-value" data-chip-value-harness>{{.DefaultHarness}}</span>
+        <span class="caret chip-caret">▾</span>
       </button>
-      <button class="chip" type="button" data-chip="model">
-        <span class="chip-label">model</span>
-        <span class="chip-value" data-chip-value-model>{{.DefaultModel}}</span>
-        <span class="chip-caret">▾</span>
+      <button class="btn btn-chip" type="button" data-chip="model">
+        <span class="key chip-label">model</span>
+        <span class="val chip-value" data-chip-value-model>{{.DefaultModel}}</span>
+        <span class="caret chip-caret">▾</span>
       </button>
-      <button class="chip" type="button" data-chip="working_dir">
-        <span class="chip-label">📁</span>
-        <span class="chip-value" data-chip-value-working_dir>{{.DefaultWorkingDir}}</span>
-        <span class="chip-caret">▾</span>
+      <button class="btn btn-chip" type="button" data-chip="working_dir">
+        <span class="key chip-label">📁</span>
+        <span class="val chip-value" data-chip-value-working_dir>{{.DefaultWorkingDir}}</span>
+        <span class="caret chip-caret">▾</span>
       </button>
-      <button class="chip" type="button" data-chip="branch" title="branch / worktree">
-        <span class="chip-label">branch</span>
-        <span class="chip-value" data-chip-value-branch>{{.DefaultBranch}}</span>
-        <span class="chip-caret">▾</span>
+      <button class="btn btn-chip" type="button" data-chip="branch" title="branch / worktree">
+        <span class="key chip-label">branch</span>
+        <span class="val chip-value" data-chip-value-branch>{{.DefaultBranch}}</span>
+        <span class="caret chip-caret">▾</span>
       </button>
-      <button class="chip chip-mode" type="button" data-chip="access_mode">
-        <span class="chip-value" data-chip-value-access_mode>{{.DefaultAccessMode}}</span>
-        <span class="chip-caret">▾</span>
+      <button class="btn btn-chip" type="button" data-chip="access_mode" data-mode="access_mode">
+        <span class="val chip-value" data-chip-value-access_mode>{{.DefaultAccessMode}}</span>
+        <span class="caret chip-caret">▾</span>
       </button>
     </div>
     <div class="spawn-input-wrap" data-drop-zone>
       <textarea class="spawn-input" name="prompt" placeholder="describe the prompt…" autofocus>{{.DefaultPrompt}}</textarea>
     </div>
     <div class="spawn-attach-row">
-      <button type="button" class="spawn-attach-btn" data-attach-trigger aria-label="attach image" title="attach image">📎</button>
+      <button type="button" class="btn btn-secondary spawn-attach-btn" data-attach-trigger aria-label="attach image" title="attach image">📎</button>
       <input type="file" data-file-picker accept="image/*" multiple hidden>
     </div>
     <div class="composer-attachments" data-composer-attachments></div>
@@ -67,13 +67,13 @@
         </div>
 
         <div class="spawn-advanced-actions">
-          <button type="button" id="ovr-show-resolved">show resolved config</button>
+          <button type="button" class="btn btn-secondary" id="ovr-show-resolved">show resolved config</button>
         </div>
         <pre id="ovr-resolved-out" class="settings-code"></pre>
       </div>
     </details>
     <div class="spawn-actions">
-      <button class="spawn-btn" type="submit">spawn <kbd>⌘↵</kbd></button>
+      <button class="btn btn-primary spawn-btn" type="submit">spawn <kbd>⌘↵</kbd></button>
     </div>
   </form>
 

@@ -36,13 +36,13 @@ assert(
 const formDom = new JSDOM(`<!DOCTYPE html><html><body>
   <form data-spawn-form>
     <div id="spawn-chips">
-      <button class="chip" type="button" data-chip="harness">
+      <button class="btn btn-chip" type="button" data-chip="harness">
         <span class="chip-value" data-chip-value-harness>serf</span>
       </button>
-      <button class="chip" type="button" data-chip="model">
+      <button class="btn btn-chip" type="button" data-chip="model">
         <span class="chip-value" data-chip-value-model>(pick a model)</span>
       </button>
-      <button class="chip" type="button" data-chip="branch">
+      <button class="btn btn-chip" type="button" data-chip="branch">
         <span class="chip-value" data-chip-value-branch>(default)</span>
       </button>
     </div>
@@ -56,7 +56,7 @@ const formDom = new JSDOM(`<!DOCTYPE html><html><body>
     <input type="hidden" name="access_mode" value="full">
     <input type="hidden" name="agent" value="default">
     <input type="hidden" name="reasoning_effort" value="">
-    <button class="spawn-btn" type="submit">spawn</button>
+    <button class="btn btn-primary spawn-btn" type="submit">spawn</button>
   </form>
   <a data-recent-prompt="ship the rename"></a>
 </body></html>`, {
@@ -160,8 +160,8 @@ assert(formDom.window.document.querySelector('input[name="working_dir"]').value 
 
 const staleModelDom = new JSDOM(`<!DOCTYPE html><html><body>
   <form data-spawn-form>
-    <button class="chip" type="button" data-chip="harness"><span class="chip-value" data-chip-value-harness>serf</span></button>
-    <button class="chip" type="button" data-chip="model"><span class="chip-value" data-chip-value-model>(pick a model)</span></button>
+    <button class="btn btn-chip" type="button" data-chip="harness"><span class="chip-value" data-chip-value-harness>serf</span></button>
+    <button class="btn btn-chip" type="button" data-chip="model"><span class="chip-value" data-chip-value-model>(pick a model)</span></button>
     <textarea name="prompt"></textarea>
     <input type="hidden" name="harness" value="serf">
     <input type="hidden" data-harness-option value="serf" data-label="serf">
@@ -171,7 +171,7 @@ const staleModelDom = new JSDOM(`<!DOCTYPE html><html><body>
     <input type="hidden" name="access_mode" value="full">
     <input type="hidden" name="agent" value="default">
     <input type="hidden" name="reasoning_effort" value="">
-    <button class="spawn-btn" type="submit">spawn</button>
+    <button class="btn btn-primary spawn-btn" type="submit">spawn</button>
   </form>
 </body></html>`, {
   runScripts: "outside-only",

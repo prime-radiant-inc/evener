@@ -986,7 +986,7 @@
     }
 
     // Chip pickers
-    document.querySelectorAll(".chip").forEach(chip => {
+    document.querySelectorAll(".btn-chip").forEach(chip => {
       chip.addEventListener("click", () => openPicker(chip));
     });
 
