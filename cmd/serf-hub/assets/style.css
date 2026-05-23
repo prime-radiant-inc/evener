@@ -574,18 +574,18 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
   flex: 0 0 100%;
   margin: 0;
 }
-.diff-body { margin: 0 0 var(--space-4) 36px; padding-left: var(--space-4); border-left: 1px solid var(--rule); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-snug); color: var(--text-muted); white-space: pre-wrap; }
+.diff-body { margin: 0 0 var(--space-4) 36px; padding-left: var(--space-4); border-left: 1px solid var(--rule); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-snug); color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .diff-body .add { color: var(--state-idle); }
 .diff-body .del { color: var(--state-awaiting); }
 .diff-body .hunk { color: var(--text-dim); }
 
 /* Shared style for tool-body elements: diff, shell output, task list, etc. */
-.tool-body { margin: 0 0 var(--space-4) 36px; padding-left: var(--space-4); border-left: 1px solid var(--rule); font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-muted); }
+.tool-body { margin: 0 0 var(--space-4) 36px; padding-left: var(--space-4); border-left: 1px solid var(--rule); font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-muted); overflow-wrap: anywhere; }
 .tool-body summary { cursor: pointer; color: var(--text-muted); padding: 0; user-select: none; }
 .tool-body summary:hover { color: var(--text); }
-.shell-output { margin: var(--space-2) 0 0; padding: var(--space-3) var(--space-3); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-tight); color: var(--text); white-space: pre-wrap; }
-.cheap-tool-args { margin: var(--space-2) 0 0; padding: var(--space-3) var(--space-3); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-tight); color: var(--text-muted); white-space: pre-wrap; }
-.cheap-tool-output { margin: var(--space-2) 0 0; padding: var(--space-3) var(--space-3); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-tight); color: var(--text); white-space: pre-wrap; }
+.shell-output { margin: var(--space-2) 0 0; padding: var(--space-3) var(--space-3); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-tight); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.cheap-tool-args { margin: var(--space-2) 0 0; padding: var(--space-3) var(--space-3); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-tight); color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.cheap-tool-output { margin: var(--space-2) 0 0; padding: var(--space-3) var(--space-3); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-tight); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
 .read-tool-purpose { margin: 0 0 var(--space-2); color: var(--text-muted); font-style: italic; }
 .read-tool-body .cheap-tool-output { margin-top: 0; }
 .output-preview-body { display: flex; flex-direction: column; }
