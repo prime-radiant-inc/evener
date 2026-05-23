@@ -251,14 +251,32 @@
       { id: "clear", title: "Clear context", hint: "start fresh in this session", keywords: [], scope: "session",
         run: (ctx) => postSession(ctx, "clear") },
       { id: "shutdown", title: "Shut down daemon", hint: "ends this session", keywords: ["kill"], scope: "session",
-        run: (ctx) => postSession(ctx, "shutdown") },
+        run: (ctx) => {
+          const p = postSession(ctx, "shutdown");
+          return Promise.resolve(p).then((r) => {
+            if (window.SerfToast) window.SerfToast.show("Session shut down", "success");
+            return r;
+          }, (err) => {
+            if (window.SerfToast) window.SerfToast.show("Shutdown failed", "error");
+            throw err;
+          });
+        } },
       { id: "model", title: "Switch model", hint: "", keywords: [], scope: "session",
         args: { kind: "enum", placeholder: "choose a model…",
           source: () => fetchModels(),
-          run: (ctx, item) => window.SerfAppwire ? window.SerfAppwire.setModel(ctx.sessionId, item.id) : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/model", {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ model: item.id }),
-          }) } },
+          run: (ctx, item) => {
+            const p = window.SerfAppwire ? window.SerfAppwire.setModel(ctx.sessionId, item.id) : fetch("/s/" + encodeURIComponent(ctx.sessionId) + "/model", {
+              method: "POST", headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ model: item.id }),
+            });
+            return Promise.resolve(p).then((r) => {
+              if (window.SerfToast) window.SerfToast.show("Model: " + item.id, "success");
+              return r;
+            }, (err) => {
+              if (window.SerfToast) window.SerfToast.show("Model change failed", "error");
+              throw err;
+            });
+          } } },
       { id: "steer", title: "Steer model", hint: "inject mid-turn", keywords: [], scope: "session",
         args: { kind: "free", placeholder: "steer text…",
           run: (ctx, text) => {
