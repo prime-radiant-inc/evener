@@ -682,7 +682,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .workspace-meta {
   margin-top: 3px;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   flex-wrap: wrap;
   gap: var(--space-4);
   color: var(--text-muted);
@@ -693,6 +693,9 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .workspace-actions { display: flex; align-items: center; gap: var(--space-3); flex-shrink: 0; }
 .workspace-meta .branch,
 .workspace-meta .source-label { font-family: var(--font-mono); }
+/* Ensure the state badge in the meta strip carries its full state colour
+   and is not dimmed by the surrounding muted text context. */
+.workspace-meta .status-badge { font-size: var(--text-xs); font-weight: 600; }
 /* Status badge — typographic small-caps mono in the state colour. No
    background fill: the badge IS the dot + label cluster. */
 .status-badge {
