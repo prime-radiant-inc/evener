@@ -4,6 +4,7 @@
   <div class="fork-original-banner">↳ original of {{if .ForkOfTitle}}<span class="fork-original-target">{{.ForkOfTitle}}</span>{{else}}fork{{end}}{{if .DivergenceTurn}}, divergence at turn {{.DivergenceTurn}}{{end}}</div>
   {{end}}
   <div class="workspace-title-row">
+    <button type="button" class="header-hamburger" data-sidebar-toggle title="open sidebar" aria-label="open sidebar">☰</button>
     <div class="workspace-title">
       <span class="title">{{.Title}}</span>
       <button class="title-action" type="button" data-copy-id="{{.ID}}" title="copy session ID">⧉</button>
@@ -77,4 +78,4 @@
 </form>
 {{end}}
 
-{{define "workspace_meta"}}{{if .SourceLabel}}<span class="source-label" data-source-label="{{.SourceLabel}}">{{.SourceLabel}}</span><span class="rule-dot">·</span>{{end}}{{if .Branch}}<span class="branch">{{.Branch}}</span><span class="rule-dot">·</span>{{end}}<span class="status-pill" data-state="{{.State}}"><span class="status-dot" data-state="{{.State}}"></span> {{.StateLabel}}</span><span class="rule-dot">·</span><span class="turn-count">{{.TurnCount}} turn{{if ne .TurnCount 1}}s{{end}}</span>{{end}}
+{{define "workspace_meta"}}{{if .SourceLabel}}<span class="source-label" data-source-label="{{.SourceLabel}}">{{.SourceLabel}}</span>{{end}}{{if .Branch}}<span class="branch">{{.Branch}}</span>{{end}}<span class="status-badge" data-state="{{.State}}"><span class="status-dot" data-state="{{.State}}"></span>{{.StateLabel}}</span><span class="turn-count">{{.TurnCount}} turn{{if ne .TurnCount 1}}s{{end}}</span>{{end}}
