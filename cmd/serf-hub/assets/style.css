@@ -586,20 +586,6 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 }
 .workspace-meta .turn-count { color: var(--text-dim); }
 .workspace-actions { display: flex; align-items: center; gap: var(--space-3); flex-shrink: 0; }
-.panel-toggle { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); background: transparent; border: 1px solid transparent; border-radius: var(--radius-md); color: var(--text-muted); font-size: var(--text-sm); font-family: inherit; cursor: pointer; transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast); }
-.panel-toggle:hover { color: var(--text); background: var(--bg-raised); border-color: var(--rule); }
-.panel-toggle.active { color: var(--text); background: var(--bg-raised); border-color: var(--rule); }
-.panel-toggle-icon { font-size: var(--text-base); line-height: 1; }
-.panel-toggle-label { font-size: var(--text-sm); }
-.header-action { display: inline-flex; align-items: center; padding: var(--space-2) var(--space-3); background: transparent; border: none; border-radius: var(--radius-md); color: var(--text-muted); font-size: var(--text-sm); font-family: inherit; cursor: pointer; transition: background var(--motion-fast), color var(--motion-fast); }
-.header-action:hover:not([disabled]) { color: var(--text); background: var(--bg-raised); }
-.header-action-danger { color: var(--state-awaiting); }
-.header-action-danger:hover:not([disabled]) { color: var(--state-awaiting); background: rgba(247, 118, 142, 0.1); }
-.header-action[disabled] { opacity: 0.4; cursor: not-allowed; }
-/* Disabled danger buttons should not look "active red" — drop the
-   danger tint and use the neutral muted color so an ended session's
-   shutdown button doesn't read as an inviting action. */
-.header-action-danger[disabled] { color: var(--text-muted); }
 .workspace-meta .branch,
 .workspace-meta .source-label { font-family: var(--font-mono); }
 /* Status badge — typographic small-caps mono in the state colour. No
@@ -679,18 +665,6 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .controls-spacer { flex: 1; }
 .running-indicator { display: inline-flex; align-items: center; gap: var(--space-3); color: var(--text); font-size: var(--text-sm); white-space: nowrap; }
 .running-dot { width: 7px; height: 7px; border-radius: var(--radius-full); background: var(--state-processing); box-shadow: 0 0 0 var(--space-2) rgba(122,162,247,0.12); }
-.input-btn { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); background: var(--bg); border: 1px solid var(--rule); border-radius: var(--radius-md); color: var(--text); font: inherit; font-size: var(--text-sm); cursor: pointer; }
-.input-btn:hover { background: var(--bg-raised); }
-.input-btn-ghost { color: var(--text-muted); }
-.input-btn-stop { color: var(--state-awaiting); border-color: rgba(247,118,142,0.45); background: rgba(247,118,142,0.08); margin-right: var(--space-4); }
-.input-btn-stop:hover:not([disabled]) { background: rgba(247,118,142,0.14); border-color: rgba(247,118,142,0.65); }
-.input-btn-stop[disabled] { opacity: 0.45; cursor: not-allowed; }
-.input-btn-primary { background: var(--state-processing); color: var(--bg); border-color: transparent; font-weight: 500; }
-.input-btn-primary:hover { background: var(--state-processing); filter: brightness(1.1); }
-.input-btn-primary kbd { background: rgba(0,0,0,0.2); border: 1px solid rgba(0,0,0,0.3); color: inherit; font-family: var(--font-mono); padding: 0 var(--space-2); border-radius: var(--radius-sm); }
-
-.input-chip { font-family: var(--font-mono); font-size: var(--text-xs); }
-.chip-caret { color: var(--text-muted); margin-left: var(--space-1); }
 
 .input-status { display: flex; align-items: center; gap: var(--space-4); padding: var(--space-4) 0 0; margin-top: var(--space-3); border-top: 1px solid var(--rule); font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-muted); flex-wrap: wrap; }
 .input-status .cwd { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -862,8 +836,6 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .fork-dialog-input { background: transparent; border: 1px solid var(--rule); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); color: var(--text); font: inherit; font-family: var(--font-mono); font-size: var(--text-sm); width: 220px; margin-left: var(--space-3); outline: none; }
 .fork-dialog-input:focus { border-color: var(--accent); }
 .fork-dialog-actions { display: flex; gap: var(--space-4); align-items: center; margin-top: var(--space-4); font-size: var(--text-sm); }
-.fork-cancel { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font: inherit; padding: var(--space-2) var(--space-3); }
-.fork-confirm { margin-left: auto; padding: var(--space-3) var(--space-4); background: var(--accent); color: var(--bg); border: none; border-radius: var(--radius-md); font-weight: 500; cursor: pointer; font: inherit; }
 
 /* ── Spawn surface ───────────────────────────────────────────────────────── */
 .spawn-pane { padding: var(--space-8) var(--space-9); max-width: 880px; margin: 0 auto; width: 100%; flex: 1; overflow-y: auto; min-height: 0; }
@@ -871,11 +843,6 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .spawn-prompt { font-size: var(--text-2xl); color: var(--text); font-weight: 600; letter-spacing: -0.018em; margin: 0; }
 .spawn-subtitle { color: var(--text-muted); font-size: var(--text-base); margin: 0; }
 .spawn-chips { display: flex; gap: var(--space-3); flex-wrap: wrap; margin-top: var(--space-2); }
-.chip { display: inline-flex; align-items: baseline; gap: var(--space-3); padding: var(--space-2) var(--space-4); background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-pill); color: var(--text); font-size: var(--text-sm); cursor: pointer; font: inherit; }
-.chip-label { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-2xs); }
-.chip-value { color: var(--text); font-family: var(--font-mono); font-size: var(--text-xs); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chip-caret { color: var(--text-muted); font-size: 9px; }
-.chip-mode { background: rgba(224, 175, 104, 0.12); color: var(--state-warning); }
 .chip-picker { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-lg); padding: var(--space-2) 0; min-width: 220px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); z-index: var(--z-dropdown); }
 .chip-picker-option { padding: var(--space-3) var(--space-4); cursor: pointer; color: var(--text); font-family: var(--font-mono); font-size: var(--text-sm); }
 .chip-picker-option:hover { background: var(--rule); }
@@ -886,9 +853,6 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
    inline send-style button family so "📎" sits visually adjacent to the
    spawn submit. Keyboard-reachable as a real <button>. */
 .spawn-attach-row { display: flex; gap: var(--space-3); }
-.spawn-attach-btn { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-md); color: var(--text); font: inherit; font-size: var(--text-base); cursor: pointer; }
-.spawn-attach-btn:hover { background: var(--bg); }
-.spawn-attach-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .spawn-form .diagnostic { margin: 0; max-width: none; }
 .spawn-advanced { color: var(--text-muted); font-size: var(--text-sm); }
 .spawn-advanced summary { cursor: pointer; padding: var(--space-2) 0; font-family: var(--font-mono); }
@@ -924,13 +888,10 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .spawn-advanced-chips li button { border: none; background: transparent; padding: 0 var(--space-2); color: var(--text-muted); cursor: pointer; }
 .spawn-advanced-actions { display: flex; gap: var(--space-3); }
 .spawn-actions { display: flex; align-items: center; }
-.spawn-btn { margin-left: auto; padding: var(--space-3) var(--space-5); background: var(--accent); color: var(--bg); border: none; border-radius: var(--radius-md); font-weight: 600; font-size: var(--text-base); cursor: pointer; font: inherit; }
-.spawn-btn kbd { font-family: var(--font-mono); font-weight: 600; opacity: 0.7; margin-left: var(--space-2); }
 .spawn-recent { margin-top: var(--space-7); }
 .spawn-recent-header { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-2xs); font-weight: 500; text-transform: uppercase; letter-spacing: 0.16em; margin-bottom: var(--space-3); }
 .spawn-recent-row { display: block; padding: var(--space-3) var(--space-4); border-radius: var(--radius-md); color: var(--text); cursor: pointer; font-size: var(--text-sm); text-decoration: none; }
 .spawn-recent-row:hover { background: var(--bg-raised); }
-.fork-confirm kbd { font-family: var(--font-mono); font-weight: 600; opacity: 0.7; margin-left: var(--space-2); }
 
 /* ── Model picker (two-pane) ─────────────────────────────────────────────── */
 .chip-picker-wide { width: 520px; max-height: 360px; display: flex; flex-direction: column; }
@@ -1079,9 +1040,6 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .settings-items-list li code { font-family: var(--font-mono); font-size: var(--text-sm); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .settings-items-list li button { flex-shrink: 0; font-size: var(--text-xs); padding: var(--space-1) var(--space-3); }
 
-/* Title-bar copy button */
-.title-action { background: transparent; border: none; color: var(--text-muted); font-size: var(--text-base); cursor: pointer; padding: 0 var(--space-2); }
-.title-action:hover { color: var(--text); }
 
 /* Details slide-over panel */
 .details-panel { position: fixed; top: 0; right: 0; bottom: 0; width: 360px; background: var(--bg-raised); border-left: 1px solid var(--rule); padding: var(--space-5) var(--space-6); overflow-y: auto; box-shadow: -8px 0 24px rgba(0,0,0,0.2); z-index: var(--z-fixed-action); }
@@ -1170,8 +1128,6 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   .workspace-header { padding: 10px 14px 8px; }
   .workspace-title-row { gap: 8px; flex-wrap: wrap; }
   .workspace-actions { gap: 4px; flex-wrap: wrap; }
-  .header-action,
-  .panel-toggle { padding: 4px 8px; font-size: 11px; }
   .panel-toggle-icon { display: none; }
   .workspace-meta { font-size: 11px; gap: var(--space-3); }
 
@@ -1190,7 +1146,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   .workspace-input { padding: var(--space-3) var(--space-4) var(--space-4); }
   .input-controls { flex-wrap: wrap; gap: var(--space-3); }
   .controls-spacer { display: none; }
-  .input-btn-primary kbd { display: none; }
+  .btn-primary kbd { display: none; }
   .input-status { flex-wrap: wrap; }
 
   /* Search palette: full-screen on mobile so the keyboard doesn't shove it. */
