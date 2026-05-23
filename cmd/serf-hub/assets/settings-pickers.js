@@ -107,7 +107,11 @@
             const val = m.provider + "/" + m.model;
             hiddenInput.value = val;
             hiddenInput.dispatchEvent(new Event("change", { bubbles: true }));
-            if (displayEl) displayEl.textContent = val;
+            if (displayEl) {
+              displayEl.textContent = (window.SerfSpawn && window.SerfSpawn.abbreviateModel)
+                ? window.SerfSpawn.abbreviateModel(val)
+                : val;
+            }
             picker.remove();
           });
           modelCol.appendChild(el);

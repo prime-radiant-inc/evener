@@ -69,13 +69,13 @@
     <div class="controls-left">
       <button type="button" class="btn btn-secondary" data-attach-trigger title="attach image">＋</button>
       {{if .Capabilities.ChangeModel}}
-      <button type="button" class="btn btn-chip model-chip" data-model-trigger>
-        <span class="val">{{if .Model}}{{.Model}}{{else}}—{{end}}</span>
+      <button type="button" class="btn btn-chip model-chip" data-model-trigger{{if .Model}} title="{{.Model}}"{{end}}>
+        <span class="val" data-model-display>{{if .Model}}{{.Model}}{{else}}—{{end}}</span>
         <span class="caret">▾</span>
       </button>
       {{else}}
-      <span class="btn btn-chip model-chip" title="model changes unavailable">
-        <span class="val">{{if .Model}}{{.Model}}{{else}}—{{end}}</span>
+      <span class="btn btn-chip model-chip" title="{{if .Model}}{{.Model}}{{else}}model changes unavailable{{end}}">
+        <span class="val" data-model-display>{{if .Model}}{{.Model}}{{else}}—{{end}}</span>
       </span>
       {{end}}
     </div>

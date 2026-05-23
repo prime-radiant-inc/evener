@@ -184,3 +184,22 @@
   document.addEventListener("DOMContentLoaded", syncPane);
   document.body.addEventListener("htmx:afterSwap", onAfterSwap);
 })();
+
+// Workspace model chip abbreviation — shorten server-rendered full model IDs
+// (e.g. "anthropic/claude-haiku-4-5-20251001") to compact display names
+// (e.g. "claude-haiku-4-5") while preserving the full ID in title for tooltip.
+(function () {
+  function applyModelAbbreviations() {
+    if (!window.SerfSpawn || !window.SerfSpawn.abbreviateModel) return;
+    document.querySelectorAll("[data-model-display]").forEach(function (el) {
+      var text = el.textContent || "";
+      var abbr = window.SerfSpawn.abbreviateModel(text);
+      if (abbr !== text) el.textContent = abbr;
+    });
+  }
+  document.addEventListener("DOMContentLoaded", applyModelAbbreviations);
+  document.body && document.body.addEventListener("htmx:afterSwap", applyModelAbbreviations);
+  document.addEventListener("DOMContentLoaded", function () {
+    document.body.addEventListener("htmx:afterSwap", applyModelAbbreviations);
+  });
+})();

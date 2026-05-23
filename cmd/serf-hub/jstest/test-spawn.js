@@ -201,7 +201,8 @@ assert(staleCurrentAfter && !("model" in staleCurrentAfter) && staleCurrentAfter
 
 const modelDisplay = () => formDom.window.document.querySelector("[data-chip-value-model]").textContent.trim();
 const modelValue = () => formDom.window.document.querySelector('input[name="model"]').value;
-assert(modelDisplay() === "openai/gpt-5.2", "serf spawn should apply stored serf model default");
+// abbreviateModel strips the "openai/" prefix so the chip shows the short form.
+assert(modelDisplay() === "gpt-5.2", "serf spawn should apply stored serf model default (abbreviated)");
 
 // validatePrefilledModel calls listModels at init when the chip has a
 // pre-filled value; reset the counter so subsequent picker-open assertions

@@ -281,10 +281,34 @@
     return harnessUsesSerfModels(harness) ? "(pick a model)" : harness + " default";
   }
 
+  // abbreviateModel strips the provider prefix and trailing date suffix from
+  // a full model identifier so it fits in a narrow chip.
+  //   "anthropic/claude-haiku-4-5-20251001" → "claude-haiku-4-5"
+  //   "openai/gpt-5.5"                      → "gpt-5.5"
+  //   "google/gemini-2.5-flash-20250417"    → "gemini-2.5-flash"
+  //   "openrouter/anthropic/claude-opus-4"  → "anthropic/claude-opus-4"
+  // Returns the input unchanged when it doesn't start with a known provider.
+  function abbreviateModel(id) {
+    if (!id || typeof id !== "string") return id;
+    var s = id;
+    // Strip known single-segment provider prefixes.
+    var knownProviders = ["anthropic/", "openai/", "google/", "openrouter/"];
+    for (var i = 0; i < knownProviders.length; i++) {
+      if (s.indexOf(knownProviders[i]) === 0) {
+        s = s.slice(knownProviders[i].length);
+        break;
+      }
+    }
+    // Strip trailing date suffix of the form -YYYYMMDD (8 digits).
+    s = s.replace(/-\d{8}$/, "");
+    return s;
+  }
+
   function setModelValue(value, displayValue) {
     const display = document.querySelector("[data-chip-value-model]");
     const hidden = document.querySelector('input[type=hidden][name="model"]');
-    if (display) display.textContent = displayValue || value || modelPlaceholder(currentHarness());
+    var shown = displayValue || (value ? abbreviateModel(value) : null) || modelPlaceholder(currentHarness());
+    if (display) display.textContent = shown;
     if (hidden) hidden.value = value || "";
   }
 
@@ -1578,5 +1602,6 @@
   window.SerfSpawn = {
     sessionPath,
     spawnErrorMessage,
+    abbreviateModel,
   };
 })();

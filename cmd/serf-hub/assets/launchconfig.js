@@ -931,7 +931,13 @@
       }
       if (kind === "modelPicker") {
         const display = el.closest(".sp-model-wrap") && el.closest(".sp-model-wrap").querySelector(".sp-model-display");
-        if (display) display.textContent = value || display.textContent;
+        if (display && value) {
+          display.textContent = (window.SerfSpawn && window.SerfSpawn.abbreviateModel)
+            ? window.SerfSpawn.abbreviateModel(value)
+            : value;
+        } else if (display && !value) {
+          // keep the current display text unchanged
+        }
       }
     });
     root.querySelectorAll(".spawn-advanced-list-control[data-launch-wire-field], .settings-collection[data-launch-wire-field]").forEach((wrap) => {
