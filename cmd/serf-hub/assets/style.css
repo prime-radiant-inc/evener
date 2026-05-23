@@ -208,6 +208,14 @@
   }
 }
 
+/* ── Universal focus ring (Pass 5) ────────────────────────────────────────
+   :where() gives this rule zero specificity so per-component overrides
+   with negative offsets win. See design language §6.1. */
+:where(:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 * { box-sizing: border-box; }
 body {
   background: var(--bg);
@@ -1446,4 +1454,27 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
    Everything else uses --text-* / --leading-* tokens. If you find another
    literal, file it as a Pass 3 cleanup; do not add to this list without
    calling it out in the design-language doc.
+
+/* Per-component focus offset overrides — rounded rows where the +1px
+   ring would visually escape the radius. Specificity beats the
+   zero-specificity :where() rule above. */
+.search-row:focus-visible,
+.sb-row:focus-visible,
+.settings-nav-link:focus-visible,
+.row-icon-btn:focus-visible,
+.spawn-recent-row:focus-visible,
+.tasks-list .task-row-details > summary:focus-visible,
+.search-cmd-pill-back:focus-visible,
+.composer-attachment-remove:focus-visible,
+.attachment-chip .att-remove:focus-visible {
+  outline-offset: -2px;
+}
+
+/* Chip picker option needs a snug inset to match other rounded rows. */
+.chip-picker-option:focus-visible,
+.chip-picker-model:focus-visible,
+.chip-picker-provider:focus-visible,
+.chip-picker-dir-row:focus-visible {
+  outline-offset: -2px;
+}
    ──────────────────────────────────────────────────────────────────────── */
