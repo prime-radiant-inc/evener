@@ -29,6 +29,13 @@ window.fetch = (url) => {
   return Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve("") });
 };
 
+// Stub SerfFocusTrap — the renderer calls it but the panel test doesn't
+// verify focus-trap behaviour (that's covered by test-focus-trap.js).
+window.SerfFocusTrap = {
+  activate: function () { return { handle: true }; },
+  deactivate: function () { /* no-op */ },
+};
+
 window.eval(rendererSrc);
 
 const failures = [];

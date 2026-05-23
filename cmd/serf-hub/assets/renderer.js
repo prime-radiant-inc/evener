@@ -1446,7 +1446,7 @@
         line.className = "system-line system-line-pointer";
         line.href = "#";
         line.textContent = "task list reloaded · " + total + " item" + (total === 1 ? "" : "s");
-        line.onclick = (e) => { e.preventDefault(); toggleTasksPanel(); };
+        line.onclick = (e) => { e.preventDefault(); toggleTasksPanel(null); };
         this.conversation.appendChild(line);
         return;
       }
@@ -2792,10 +2792,12 @@
       }
     } else if (t.matches("[data-details-trigger]") || t.closest && t.closest("[data-details-trigger]")) {
       e.preventDefault();
-      toggleDetailsPanel();
+      var detailsTrigger = t.matches("[data-details-trigger]") ? t : t.closest("[data-details-trigger]");
+      toggleDetailsPanel(detailsTrigger);
     } else if (t.matches("[data-tasks-trigger]") || t.closest && t.closest("[data-tasks-trigger]")) {
       e.preventDefault();
-      toggleTasksPanel();
+      var tasksTrigger = t.matches("[data-tasks-trigger]") ? t : t.closest("[data-tasks-trigger]");
+      toggleTasksPanel(tasksTrigger);
     } else {
       const actionBtn = t.matches("[data-action-trigger]") ? t : (t.closest && t.closest("[data-action-trigger]"));
       if (actionBtn) {
@@ -2865,23 +2867,33 @@
     document.addEventListener("mousedown", onDown, true);
   }
 
-  function toggleTasksPanel() {
+  function toggleTasksPanel(trigger) {
     const existing = document.getElementById("tasks-panel");
     if (existing) {
       if (existing.__pollTimer) clearInterval(existing.__pollTimer);
+      if (existing.__trapHandle && window.SerfFocusTrap) {
+        window.SerfFocusTrap.deactivate(existing.__trapHandle);
+      }
       existing.remove();
       setPanelToggleActive("[data-tasks-trigger]", false);
       return;
     }
     // Close details panel if open — they share the same slot.
     const details = document.getElementById("details-panel");
-    if (details) details.remove();
+    if (details) {
+      if (details.__trapHandle && window.SerfFocusTrap) {
+        window.SerfFocusTrap.deactivate(details.__trapHandle);
+      }
+      details.remove();
+    }
     setPanelToggleActive("[data-details-trigger]", false);
 
     const header = document.querySelector(".workspace-header");
     if (!header) return;
     const id = header.dataset.sessionId;
     if (!id) return;
+
+    const triggerEl = trigger || document.querySelector("[data-tasks-trigger]");
 
     const panel = document.createElement("aside");
     panel.id = "tasks-panel";
@@ -2903,8 +2915,15 @@
     panel.__pollTimer = setInterval(refresh, 2000);
     setPanelToggleActive("[data-tasks-trigger]", true);
 
+    if (window.SerfFocusTrap) {
+      panel.__trapHandle = window.SerfFocusTrap.activate(panel, triggerEl);
+    }
+
     const close = () => {
       if (panel.__pollTimer) clearInterval(panel.__pollTimer);
+      if (panel.__trapHandle && window.SerfFocusTrap) {
+        window.SerfFocusTrap.deactivate(panel.__trapHandle);
+      }
       panel.remove();
       setPanelToggleActive("[data-tasks-trigger]", false);
     };
@@ -3036,9 +3055,12 @@
       .replace(/"/g, "&quot;");
   }
 
-  function toggleDetailsPanel() {
+  function toggleDetailsPanel(trigger) {
     const existing = document.getElementById("details-panel");
     if (existing) {
+      if (existing.__trapHandle && window.SerfFocusTrap) {
+        window.SerfFocusTrap.deactivate(existing.__trapHandle);
+      }
       existing.remove();
       setPanelToggleActive("[data-details-trigger]", false);
       return;
@@ -3047,6 +3069,9 @@
     const tasks = document.getElementById("tasks-panel");
     if (tasks) {
       if (tasks.__pollTimer) clearInterval(tasks.__pollTimer);
+      if (tasks.__trapHandle && window.SerfFocusTrap) {
+        window.SerfFocusTrap.deactivate(tasks.__trapHandle);
+      }
       tasks.remove();
       setPanelToggleActive("[data-tasks-trigger]", false);
     }
@@ -3055,6 +3080,8 @@
     const id = header.dataset.sessionId;
     if (!id) return;
 
+    const triggerEl = trigger || document.querySelector("[data-details-trigger]");
+
     const panel = document.createElement("aside");
     panel.id = "details-panel";
     panel.className = "details-panel";
@@ -3062,10 +3089,23 @@
     document.body.appendChild(panel);
     partialFetch(sessionPartialPath(id, "details")).then(r => r.text()).then(html => {
       panel.innerHTML = html;
+      if (window.SerfFocusTrap && !panel.__trapHandle) {
+        // Re-activate now that the panel has real focusable children.
+        panel.__trapHandle = window.SerfFocusTrap.activate(panel, triggerEl);
+      }
     }).catch(() => { panel.innerHTML = "<div class='details-loading'>failed to load</div>"; });
     setPanelToggleActive("[data-details-trigger]", true);
 
+    // Initial activation (may have no focusable children until fetch resolves;
+    // helper falls back to focusing the panel itself).
+    if (window.SerfFocusTrap) {
+      panel.__trapHandle = window.SerfFocusTrap.activate(panel, triggerEl);
+    }
+
     const close = () => {
+      if (panel.__trapHandle && window.SerfFocusTrap) {
+        window.SerfFocusTrap.deactivate(panel.__trapHandle);
+      }
       panel.remove();
       setPanelToggleActive("[data-details-trigger]", false);
     };
