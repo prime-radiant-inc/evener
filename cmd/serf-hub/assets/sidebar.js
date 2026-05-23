@@ -156,6 +156,7 @@
     } catch (e) {
       // localStorage may be disabled; flip still works for this session.
     }
+    syncRailToggleLabel();
   }
 
   function toggleRail() {
@@ -211,6 +212,10 @@
     btn.setAttribute("aria-label", railed ? "expand sidebar" : "collapse sidebar");
     btn.setAttribute("title", railed ? "expand sidebar (⌘B)" : "collapse sidebar (⌘B)");
   }
-  document.addEventListener("DOMContentLoaded", syncRailToggleLabel);
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", syncRailToggleLabel);
+  } else {
+    syncRailToggleLabel();
+  }
   document.addEventListener("htmx:afterSwap", syncRailToggleLabel);
 })();
