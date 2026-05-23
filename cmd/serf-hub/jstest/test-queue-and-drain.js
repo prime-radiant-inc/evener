@@ -33,9 +33,9 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
       <textarea class="message-input" rows="1"></textarea>
     </div>
     <div class="input-controls">
-      <button type="button" class="input-btn" data-attach-trigger>＋</button>
-      <button type="button" class="input-btn input-btn-ghost" data-steer-trigger>send as steer</button>
-      <button type="submit" class="send-btn input-btn input-btn-primary"
+      <button type="button" class="btn btn-secondary" data-attach-trigger>＋</button>
+      <button type="button" class="btn btn-ghost" data-steer-trigger>send as steer</button>
+      <button type="submit" class="send-btn btn btn-primary"
               data-capability-send="false"
               data-capability-queue="true"
               disabled>send</button>

@@ -211,11 +211,11 @@ func TestWeb_WorkspaceRendersBottomStopForActiveSession(t *testing.T) {
 		strings.Contains(body, `data-action-trigger="shutdown"`) {
 		t.Fatalf("workspace rendered removed header controls:\n%s", body)
 	}
-	if !strings.Contains(body, `class="input-btn input-btn-stop stop-btn" data-action-trigger="interrupt"`) ||
+	if !strings.Contains(body, `class="btn btn-danger stop-btn" data-action-trigger="interrupt"`) ||
 		!strings.Contains(body, `>Stop<`) {
 		t.Fatalf("workspace missing bottom Stop control:\n%s", body)
 	}
-	if strings.Contains(body, `class="input-btn input-btn-stop stop-btn" data-action-trigger="interrupt" title="stop the in-flight turn" disabled`) {
+	if strings.Contains(body, `class="btn btn-danger stop-btn" data-action-trigger="interrupt" title="stop the in-flight turn" disabled`) {
 		t.Fatalf("bottom Stop should be enabled for active session:\n%s", body)
 	}
 	if !strings.Contains(body, `data-running-indicator`) {

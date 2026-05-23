@@ -7,13 +7,13 @@
     <button type="button" class="header-hamburger" data-sidebar-toggle title="open sidebar" aria-label="open sidebar">☰</button>
     <div class="workspace-title">
       <span class="title">{{.Title}}</span>
-      <button class="title-action" type="button" data-copy-id="{{.ID}}" title="copy session ID">⧉</button>
+      <button class="btn btn-icon title-action" type="button" data-copy-id="{{.ID}}" title="copy session ID">⧉</button>
     </div>
     <div class="workspace-actions">
-      <button type="button" class="panel-toggle" data-tasks-trigger title="task list">
+      <button type="button" class="btn btn-ghost panel-toggle" data-tasks-trigger title="task list">
         <span class="panel-toggle-icon">☑</span><span class="panel-toggle-label">tasks</span>
       </button>
-      <button type="button" class="panel-toggle" data-details-trigger title="session details">
+      <button type="button" class="btn btn-ghost panel-toggle" data-details-trigger title="session details">
         <span class="panel-toggle-icon">ⓘ</span><span class="panel-toggle-label">details</span>
       </button>
     </div>
@@ -49,21 +49,26 @@
     <textarea class="message-input" placeholder="message the agent…" autofocus rows="1"></textarea>
   </div>
   <div class="input-controls">
-    <button type="button" class="input-btn" data-attach-trigger title="attach image">＋</button>
+    <button type="button" class="btn btn-secondary" data-attach-trigger title="attach image">＋</button>
     {{if .Capabilities.ChangeModel}}
-    <button type="button" class="input-chip model-chip" data-model-trigger>{{if .Model}}{{.Model}}{{else}}—{{end}} <span class="chip-caret">▾</span></button>
+    <button type="button" class="btn btn-chip model-chip" data-model-trigger>
+      <span class="val">{{if .Model}}{{.Model}}{{else}}—{{end}}</span>
+      <span class="caret">▾</span>
+    </button>
     {{else}}
-    <span class="input-chip model-chip" title="model changes unavailable">{{if .Model}}{{.Model}}{{else}}—{{end}}</span>
+    <span class="btn btn-chip model-chip" title="model changes unavailable">
+      <span class="val">{{if .Model}}{{.Model}}{{else}}—{{end}}</span>
+    </span>
     {{end}}
     {{if or (eq .State "active") (eq .State "awaiting")}}
     <span class="running-indicator" data-running-indicator><span class="running-dot"></span>running{{if .RunningFor}} · {{.RunningFor}}{{end}}</span>
     {{end}}
     <span class="controls-spacer"></span>
     {{if .Capabilities.Interrupt}}
-    <button type="button" class="input-btn input-btn-stop stop-btn" data-action-trigger="interrupt" data-capability-interrupt="{{.Capabilities.Interrupt}}" title="stop the in-flight turn"{{if and (ne .State "awaiting") (ne .State "active")}} disabled{{end}}>Stop</button>
+    <button type="button" class="btn btn-danger stop-btn" data-action-trigger="interrupt" data-capability-interrupt="{{.Capabilities.Interrupt}}" title="stop the in-flight turn"{{if and (ne .State "awaiting") (ne .State "active")}} disabled{{end}}>Stop</button>
     {{end}}
     {{if or .Capabilities.Steer .Capabilities.Send .Capabilities.Queue}}
-    <button type="button" class="input-btn input-btn-ghost" data-steer-trigger data-capability-steer="{{.Capabilities.Steer}}" title="drain the queue as a steering message — or steer with the textarea text when the queue is empty"{{if or (not .Capabilities.Steer) (eq .ActiveTurnID "") (and (ne .State "awaiting") (ne .State "active"))}} disabled{{end}}>send as steer <kbd>⇧↵</kbd></button>
+    <button type="button" class="btn btn-ghost" data-steer-trigger data-capability-steer="{{.Capabilities.Steer}}" title="drain the queue as a steering message — or steer with the textarea text when the queue is empty"{{if or (not .Capabilities.Steer) (eq .ActiveTurnID "") (and (ne .State "awaiting") (ne .State "active"))}} disabled{{end}}>send as steer <kbd>⇧↵</kbd></button>
     {{end}}
     <button type="submit" class="btn btn-primary send-btn" data-capability-send="{{.Capabilities.Send}}" data-capability-queue="{{.Capabilities.Queue}}"{{if and (not .Capabilities.Send) (not .Capabilities.Queue)}} disabled title="send unavailable"{{end}}>send <kbd>⌘↵</kbd></button>
   </div>
