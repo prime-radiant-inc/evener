@@ -422,18 +422,18 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .fork-original-target { color: var(--text); }
 
 /* Workspace pane */
-.workspace-header { padding: 12px 24px 10px; border-bottom: 1px solid var(--rule); }
-.workspace-title-row { display: flex; align-items: center; gap: 12px; }
-.workspace-title { display: flex; align-items: baseline; gap: 8px; flex: 1; min-width: 0; }
+.workspace-header { padding: var(--space-4) var(--space-6) var(--space-4); border-bottom: 1px solid var(--rule); }
+.workspace-title-row { display: flex; align-items: center; gap: var(--space-4); }
+.workspace-title { display: flex; align-items: baseline; gap: var(--space-3); flex: 1; min-width: 0; }
 .workspace-title .title { font-weight: 600; font-size: var(--text-lg); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.workspace-meta { margin-top: 3px; display: flex; align-items: baseline; gap: 8px; color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
-.workspace-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-.panel-toggle { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; background: transparent; border: 1px solid transparent; border-radius: 4px; color: var(--text-muted); font-size: var(--text-sm); font-family: inherit; cursor: pointer; transition: background 0.1s, color 0.1s, border-color 0.1s; }
+.workspace-meta { margin-top: var(--space-2); display: flex; align-items: baseline; gap: var(--space-3); color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
+.workspace-actions { display: flex; align-items: center; gap: var(--space-3); flex-shrink: 0; }
+.panel-toggle { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); background: transparent; border: 1px solid transparent; border-radius: 4px; color: var(--text-muted); font-size: var(--text-sm); font-family: inherit; cursor: pointer; transition: background 0.1s, color 0.1s, border-color 0.1s; }
 .panel-toggle:hover { color: var(--text); background: var(--bg-raised); border-color: var(--rule); }
 .panel-toggle.active { color: var(--text); background: var(--bg-raised); border-color: var(--rule); }
 .panel-toggle-icon { font-size: var(--text-base); line-height: 1; }
 .panel-toggle-label { font-size: var(--text-sm); }
-.header-action { display: inline-flex; align-items: center; padding: 4px 8px; background: transparent; border: none; border-radius: 4px; color: var(--text-muted); font-size: var(--text-sm); font-family: inherit; cursor: pointer; transition: background 0.1s, color 0.1s; }
+.header-action { display: inline-flex; align-items: center; padding: var(--space-2) var(--space-3); background: transparent; border: none; border-radius: 4px; color: var(--text-muted); font-size: var(--text-sm); font-family: inherit; cursor: pointer; transition: background 0.1s, color 0.1s; }
 .header-action:hover:not([disabled]) { color: var(--text); background: var(--bg-raised); }
 .header-action-danger { color: var(--state-awaiting); }
 .header-action-danger:hover:not([disabled]) { color: var(--state-awaiting); background: rgba(247, 118, 142, 0.1); }
@@ -445,7 +445,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .workspace-meta .branch,
 .workspace-meta .source-label { font-family: var(--font-mono); }
 .rule-dot { color: var(--text-dim); }
-.status-pill { display: inline-flex; align-items: baseline; gap: 6px; font-family: var(--font-mono); font-size: var(--text-xs); font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; }
+.status-pill { display: inline-flex; align-items: baseline; gap: var(--space-3); font-family: var(--font-mono); font-size: var(--text-xs); font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; }
 .conversation { flex: 1; min-height: 0; padding: 32px 64px; overflow-y: auto; font-size: var(--text-md); line-height: var(--leading-normal); color: var(--text); }
 .workspace-input { padding: 12px 24px 14px; border-top: 1px solid var(--rule); }
 
