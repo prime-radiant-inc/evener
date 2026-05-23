@@ -648,16 +648,73 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
    become fresh user turns when the active turn completes (kata 111a). The
    "send as steer" button (and ⇧↵) drain these into a single STEERING
    injection (kata 0bq1). Hidden via the [hidden] attribute when empty. */
-.queue-preview { padding: var(--space-3) var(--space-4); margin-bottom: var(--space-3); background: var(--bg); border: 1px solid var(--rule); border-radius: var(--radius-md); font-size: var(--text-xs); }
-.queue-preview-header { display: flex; align-items: baseline; gap: var(--space-4); color: var(--text-muted); margin-bottom: var(--space-2); }
+.queue-preview {
+  padding: var(--space-3) var(--space-3);
+  margin-bottom: var(--space-3);
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  font-size: var(--text-xs);
+}
+.queue-preview-header {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  color: var(--text-muted);
+  margin-bottom: var(--space-2);
+}
 .queue-preview-label { font-weight: 500; color: var(--text); }
 .queue-preview-label [data-queue-depth] { font-family: var(--font-mono); }
-.queue-preview-hint { flex: 1; }
-.queue-preview-hint kbd { font-family: var(--font-mono); font-weight: 600; padding: 0 var(--space-2); background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-sm); }
-.queue-preview-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
-.queue-preview-item { display: flex; gap: var(--space-3); align-items: baseline; padding: var(--space-2) var(--space-3); background: var(--bg-raised); border-radius: var(--radius-sm); }
-.queue-preview-item .qp-idx { color: var(--text-dim); font-family: var(--font-mono); font-size: var(--text-2xs); }
-.queue-preview-item .qp-text { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.queue-preview-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-full);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1;
+  cursor: help;
+}
+.queue-preview-help:hover,
+.queue-preview-help:focus-visible {
+  color: var(--text);
+  border-color: var(--text-muted);
+  outline: none;
+}
+.queue-preview-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.queue-preview-item {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  padding: 3px var(--space-3);
+  background: var(--bg-raised);
+  border-radius: var(--radius-sm);
+}
+.queue-preview-item .qp-idx {
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+}
+.queue-preview-item .qp-text {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
 
 .input-card { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-lg); padding: var(--space-4) var(--space-4); min-height: 80px; transition: border-color var(--motion-fast); }
 /* kata 65mm: drop-active is set by the shared composer-attachments helper

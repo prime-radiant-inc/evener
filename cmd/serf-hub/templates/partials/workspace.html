@@ -40,7 +40,10 @@
   <div class="queue-preview" data-queue-preview hidden>
     <div class="queue-preview-header">
       <span class="queue-preview-label">queued <span data-queue-depth>0</span></span>
-      <span class="queue-preview-hint">processes after current turn — <kbd>⇧↵</kbd> or "send as steer" drains as steering</span>
+      <button type="button"
+              class="queue-preview-help"
+              aria-label="queue help"
+              title="Queued messages process after the current turn. Press ⇧↵ or click &quot;send as steer&quot; to drain them as a steering message.">?</button>
     </div>
     <ul class="queue-preview-list" data-queue-list></ul>
   </div>
