@@ -1071,6 +1071,13 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
   .user-message .pill { max-width: 90%; }
   .conversation { padding: var(--space-4) var(--space-4); }
   .diagnostic { margin-left: 0; max-width: none; }
+
+  /* Tool-call rows: allow .target (and other flex children) to shrink below
+     their intrinsic content width so long file paths break instead of
+     overflowing the conversation container on narrow viewports. */
+  .tool-call .target,
+  .tool-call .verb,
+  .tool-call .tool-meta { min-width: 0; }
 }
 
 /* Credentials pane */
