@@ -1,17 +1,25 @@
-{{define "settings-content"}}
-<h2 class="settings-h2">Project settings</h2>
+{{define "project_settings"}}
+<header class="workspace-header">
+  <div class="workspace-title">
+    <span class="title">project settings</span>
+    {{if .ProjectCWD}}<span class="workspace-title-meta">{{.ProjectCWD}}</span>{{end}}
+  </div>
+</header>
+<div class="project-settings-pane">
 {{if .ProjectCWD}}
-<p class="settings-help">{{.ProjectCWD}}</p>
 <div id="project-settings-root" data-cwd="{{.ProjectCWD}}" data-loaded="false" hx-disable hx-disinherit="*">
-  <h3 class="settings-h3">Launch defaults</h3>
-  <form id="proj-launch-form" class="settings-launch-form" data-launch-settings-root data-launch-settings-layer="project">
-    <div data-launch-schema-loading class="settings-help">Loading project launch settings…</div>
-    <dl class="settings-table" data-launch-settings-groups></dl>
-    <div class="form-actions">
-      <button type="submit" class="btn btn-primary" id="proj-launch-save">Save launch defaults</button>
-      <p id="proj-status" class="settings-form-status" aria-live="polite"></p>
-    </div>
-  </form>
+  <section class="settings-section">
+    <h3 class="settings-h3">Launch defaults</h3>
+    <p class="settings-help">Layered on top of the global Serf and Codex launch settings. Only fields set here override the global defaults.</p>
+    <form id="proj-launch-form" class="settings-launch-form" data-launch-settings-root data-launch-settings-layer="project">
+      <div data-launch-schema-loading class="settings-help">Loading project launch settings…</div>
+      <dl class="settings-table" data-launch-settings-groups></dl>
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary" id="proj-launch-save">Save launch defaults</button>
+        <p id="proj-status" class="settings-form-status" aria-live="polite"></p>
+      </div>
+    </form>
+  </section>
 </div>
 <script>
   (async function () {
@@ -73,20 +81,27 @@
   })();
 </script>
 {{else}}
-<p class="settings-help">No project selected. Open this page via the ⚙ icon next to a project in the sidebar, or choose one below.</p>
-{{if .AvailableProjects}}
-<ul class="settings-project-list" role="list">
-  {{range .AvailableProjects}}
-  <li class="settings-project-list-item">
-    <a href="/settings/project?cwd={{.CWD | urlquery}}" hx-get="/_partials/settings/project?cwd={{.CWD | urlquery}}" hx-target="#settings-content" hx-push-url="/settings/project?cwd={{.CWD | urlquery}}">
-      <span class="settings-project-name">{{.Name}}</span>
-      <span class="settings-project-cwd">{{.CWD}}</span>
-    </a>
-  </li>
+<section class="settings-section">
+  <p class="settings-help">No project selected. Open this page via the ⚙ icon next to a project in the sidebar, or choose one below.</p>
+  {{if .AvailableProjects}}
+  <ul class="settings-project-list" role="list">
+    {{range .AvailableProjects}}
+    <li class="settings-project-list-item">
+      <a href="/settings/project?cwd={{.CWD | urlquery}}"
+         hx-get="/_partials/settings/project?cwd={{.CWD | urlquery}}"
+         hx-target="#workspace"
+         hx-swap="innerHTML"
+         hx-push-url="/settings/project?cwd={{.CWD | urlquery}}">
+        <span class="settings-project-name">{{.Name}}</span>
+        <span class="settings-project-cwd">{{.CWD}}</span>
+      </a>
+    </li>
+    {{end}}
+  </ul>
+  {{else}}
+  <p class="settings-help">No known projects yet. Spawn a session to register a project.</p>
   {{end}}
-</ul>
-{{else}}
-<p class="settings-help">No known projects yet. Spawn a session to register a project.</p>
+</section>
 {{end}}
-{{end}}
+</div>
 {{end}}

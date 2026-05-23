@@ -1713,6 +1713,20 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   .tool-call .target { min-width: 0; }
 }
 
+/* Project settings pane (per-project settings, opened from sidebar gear).
+   Renders as its own workspace partial — not inside the global settings shell. */
+.project-settings-pane { padding: var(--space-6) var(--space-6); max-width: 920px; }
+.project-settings-pane .settings-section + .settings-section { margin-top: var(--space-6); }
+.workspace-title-meta {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
 /* Credentials pane */
 .credentials-pane { padding: var(--space-5) var(--space-5); }
 .credentials-help { color: var(--muted-fg, #888); }

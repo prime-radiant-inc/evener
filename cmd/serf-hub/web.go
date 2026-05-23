@@ -71,8 +71,9 @@ type WebServer struct {
 	workspaceTmpl  *template.Template
 	spawnTmpl      *template.Template
 	inputStripTmpl *template.Template
-	credsTmpl      *template.Template
-	settingsTmpls  map[string]*template.Template
+	credsTmpl           *template.Template
+	projectSettingsTmpl *template.Template
+	settingsTmpls       map[string]*template.Template
 	appRPC         *appserver.Server
 	sources        *appsource.Registry
 	startedAt      time.Time
@@ -98,7 +99,10 @@ func NewWebServer(cfg WebConfig) *WebServer {
 	credsTmpl := template.Must(template.ParseFS(templatesFS,
 		"templates/partials/credentials.html",
 	))
-	settingsSections := []string{"general", "theme", "notifications", "providers", "agents", "launch-serf", "launch-codex", "inrepo", "plugins", "skills", "mcp", "hub", "storage", "project"}
+	projectSettingsTmpl := template.Must(template.ParseFS(templatesFS,
+		"templates/partials/settings/project.html",
+	))
+	settingsSections := []string{"general", "theme", "notifications", "providers", "agents", "launch-serf", "launch-codex", "inrepo", "plugins", "skills", "mcp", "hub", "storage"}
 	settingsTmpls := make(map[string]*template.Template, len(settingsSections))
 	for _, sec := range settingsSections {
 		settingsTmpls[sec] = template.Must(template.ParseFS(templatesFS,
@@ -113,8 +117,9 @@ func NewWebServer(cfg WebConfig) *WebServer {
 	web := &WebServer{
 		cfg: cfg, appTmpl: appTmpl, sidebarTmpl: sidebarTmpl,
 		workspaceTmpl: workspaceTmpl, spawnTmpl: spawnTmpl, inputStripTmpl: inputStripTmpl,
-		credsTmpl:     credsTmpl,
-		settingsTmpls: settingsTmpls,
+		credsTmpl:           credsTmpl,
+		projectSettingsTmpl: projectSettingsTmpl,
+		settingsTmpls:       settingsTmpls,
 		sources:       sources,
 		startedAt:     time.Now().UTC(),
 		resumeLocks:   map[string]*sync.Mutex{},
@@ -1217,6 +1222,12 @@ func (s *WebServer) renderSettingsPartial(w http.ResponseWriter, r *http.Request
 		http.Redirect(w, r, "/_partials/settings/launch-serf", http.StatusFound)
 		return
 	}
+	// Project settings is its own workspace page, not nested in the global
+	// settings shell.
+	if section == "project" {
+		s.renderProjectSettingsPartial(w, r)
+		return
+	}
 	settingsTmpl, ok := s.settingsTmpls[section]
 	if !ok {
 		http.NotFound(w, r)
@@ -1324,6 +1335,50 @@ func (s *WebServer) renderSettingsPartial(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := settingsTmpl.ExecuteTemplate(w, tmplName, data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// renderProjectSettingsPartial serves the per-project settings page as its
+// own workspace partial. It is not wrapped in the global settings shell —
+// project settings get their own header (with the project's cwd) and pane.
+func (s *WebServer) renderProjectSettingsPartial(w http.ResponseWriter, r *http.Request) {
+	var projectCWD string
+	if cwd := strings.TrimSpace(r.URL.Query().Get("cwd")); cwd != "" {
+		if abs, err := filepath.Abs(cwd); err == nil {
+			projectCWD = abs
+		} else {
+			projectCWD = cwd
+		}
+	}
+
+	var availableProjects []projectListItem
+	if projectCWD == "" && s.cfg.Past != nil {
+		seen := map[string]bool{}
+		for _, meta := range s.cfg.Past.AllMetas() {
+			cwd := meta.EnvInfo.WorkingDir
+			if cwd == "" || seen[cwd] {
+				continue
+			}
+			seen[cwd] = true
+			availableProjects = append(availableProjects, projectListItem{
+				CWD:  cwd,
+				Name: filepath.Base(cwd),
+			})
+		}
+		sort.Slice(availableProjects, func(i, j int) bool {
+			return availableProjects[i].Name < availableProjects[j].Name
+		})
+	}
+
+	data := settingsData{
+		Active:            "project",
+		ProjectCWD:        projectCWD,
+		AvailableProjects: availableProjects,
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := s.projectSettingsTmpl.ExecuteTemplate(w, "project_settings", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
