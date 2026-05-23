@@ -91,6 +91,22 @@ const wait = () => new Promise(resolve => setTimeout(resolve, 30));
   pass(chevron.textContent === "▸", "collapsed glyph should be ▸, got " + JSON.stringify(chevron.textContent));
   pass(window.localStorage.getItem(PERSISTED_KEY) === null, "localStorage entry should be cleared on collapse");
 
+  // --- Round 4: project containing an active row auto-expands on init (8cyn).
+  dom = buildDom();
+  window = dom.window;
+  // Mark a row in serf-hub as active before script runs.
+  const activeRow = window.document.querySelector('[data-project-key="serf-hub"] .sb-row');
+  activeRow.setAttribute("data-active", "");
+  window.eval(sidebarSrc);
+  await wait();
+
+  const activeSection = window.document.querySelector('[data-project-key="serf-hub"]');
+  pass(!activeSection.classList.contains("collapsed"), "project with active row should be auto-expanded");
+  pass(activeSection.querySelector(".project-chevron").textContent === "▾", "chevron should be ▾ for auto-expanded project");
+
+  const inactiveSection = window.document.querySelector('[data-project-key="other-proj"]');
+  pass(inactiveSection.classList.contains("collapsed"), "project without active row stays collapsed");
+
   if (failures.length === 0) {
     console.log("PASS: sidebar collapse — toggle, persist, restore");
     process.exit(0);

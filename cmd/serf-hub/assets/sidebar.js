@@ -41,9 +41,41 @@
   }
 
   function applyAll(root) {
-    var sections = (root || document).querySelectorAll("[data-project-key]");
+    var scope = root || document;
+    var sections = scope.querySelectorAll("[data-project-key]");
     for (var i = 0; i < sections.length; i++) {
       applyCollapseState(sections[i]);
+    }
+    // After applying localStorage-based state, expand the project containing
+    // the active session row so navigating to a session always reveals it.
+    var activeRow = scope.querySelector(".sb-row[data-active]");
+    if (!activeRow) {
+      // Fallback: match by current pathname if syncActiveRow hasn't run yet.
+      var path = (window.location && window.location.pathname) || "";
+      if (path && path.indexOf("/s/") === 0) {
+        var clean = path.replace(/\/+$/, "");
+        var rows = scope.querySelectorAll(".sb-row");
+        for (var j = 0; j < rows.length; j++) {
+          if ((rows[j].getAttribute("href") || "") === clean) {
+            activeRow = rows[j];
+            break;
+          }
+        }
+      }
+    }
+    if (activeRow) {
+      var activeSection = activeRow.closest("[data-project-key]");
+      if (activeSection && activeSection.classList.contains("collapsed")) {
+        var key = activeSection.getAttribute("data-project-key");
+        activeSection.classList.remove("collapsed");
+        var chevron = activeSection.querySelector(".project-chevron");
+        if (chevron) {
+          chevron.textContent = "▾";
+          chevron.setAttribute("aria-expanded", "true");
+        }
+        // Persist the expansion so it survives sidebar re-renders.
+        setCollapsed(key, false);
+      }
     }
   }
 
