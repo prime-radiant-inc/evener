@@ -1348,6 +1348,25 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   color: var(--text);
   border-color: var(--rule);
 }
+.btn-danger {
+  background: color-mix(in srgb, var(--state-awaiting) 5%, transparent);
+  color: var(--state-awaiting);
+  border-color: color-mix(in srgb, var(--state-awaiting) 40%, transparent);
+}
+.btn-danger:hover:not([disabled]):not(:disabled) {
+  background: color-mix(in srgb, var(--state-awaiting) 14%, transparent);
+  border-color: color-mix(in srgb, var(--state-awaiting) 65%, transparent);
+}
+.btn-danger:active:not([disabled]):not(:disabled) {
+  background: color-mix(in srgb, var(--state-awaiting) 20%, transparent);
+}
+/* Disabled danger should not look "active red" — neutral muted instead. */
+.btn-danger[disabled],
+.btn-danger:disabled {
+  color: var(--text-muted);
+  background: transparent;
+  border-color: var(--rule);
+}
 
 /* Optimistic rendering: applied to any conversation entry that has
    been issued but not yet reconciled with an authoritative event.
