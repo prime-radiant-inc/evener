@@ -3035,7 +3035,7 @@
     const parts = [];
     parts.push("<header class='details-panel-header'>");
     parts.push("<span>tasks · " + done + "/" + total + "</span>");
-    parts.push("<span class='details-panel-close'>esc to close</span>");
+    parts.push("<button class='details-panel-close' aria-label='close panel' onclick=\"document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))\">✕</button>");
     parts.push("</header>");
 
     if (total === 0) {
