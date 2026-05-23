@@ -35,6 +35,7 @@ type TreeNode struct {
 	ID        string
 	Title     string
 	Project   string
+	Branch    string // git branch at session start; empty when unknown
 	State     string // "awaiting" | "active" | "warning" | "idle" | "ended"
 	Kind      string // "session" | "subagent" | "fork"
 	CreatedAt time.Time
@@ -273,6 +274,7 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 				ID:        m.ID,
 				Title:     nodeTitle(m, kind),
 				Project:   pname,
+				Branch:    m.EnvInfo.GitBranch,
 				State:     stateFor(m.ID),
 				Kind:      kind,
 				CreatedAt: orderCreatedAt(m.CreatedAt, m.UpdatedAt),

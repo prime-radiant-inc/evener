@@ -1975,6 +1975,11 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
      11px body text, 10px tool-call/monospace text, snug leading.
      Comfortable density is the opt-in; compact is the default on phone. */
   body { font-size: var(--text-xs); line-height: var(--leading-snug); }
+  /* Conversation elements override desktop font-size so they must be
+     explicitly reduced here to inherit the compact phone density. */
+  .conversation { font-size: inherit; }
+  .assistant-message,
+  .user-message .pill { font-size: var(--text-sm); }
   .tool-call,
   .msg.tool,
   .tool-body,

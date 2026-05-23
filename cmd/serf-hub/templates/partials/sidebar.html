@@ -95,7 +95,7 @@
       <div class="dot-col"><span class="status-dot" data-state="{{.State}}"></span></div>
       <div class="text-col">
         <div class="title">{{.Title}}</div>
-        <div class="meta"><span>{{.Age}}</span></div>
+        <div class="meta">{{if .Branch}}<span>{{.Branch}}</span>{{end}}<span>{{.Age}}</span></div>
       </div>
     </a>
     {{range .Children}}
