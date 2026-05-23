@@ -1319,6 +1319,18 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   opacity: 0.85;
   margin-left: var(--space-2);
 }
+.btn-secondary {
+  background: var(--bg-raised);
+  color: var(--text);
+  border-color: var(--rule);
+}
+.btn-secondary:hover:not([disabled]):not(:disabled) {
+  background: var(--surface-secondary);
+}
+.btn-secondary:active:not([disabled]):not(:disabled) {
+  background: var(--surface-secondary);
+  filter: brightness(0.96);
+}
 
 /* Optimistic rendering: applied to any conversation entry that has
    been issued but not yet reconciled with an authoritative event.
