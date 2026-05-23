@@ -53,9 +53,11 @@
         try {
           await launchconfig.setLayer("/", "global", window.LaunchConfigControls.collect(form));
           setStatus("Saved at " + new Date().toLocaleTimeString());
+          if (window.SerfToast) window.SerfToast.show("Launch defaults saved", "success");
         } catch (err) {
           window.LaunchConfigControls.showBackendError(form, err);
           setStatus("Error: " + (err && err.message ? err.message : err));
+          if (window.SerfToast) window.SerfToast.show("Save failed", "error");
         }
       });
     } catch (err) {
