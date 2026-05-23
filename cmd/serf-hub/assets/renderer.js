@@ -80,6 +80,7 @@
       this.conversation = conversationEl;
       this.sessionId = conversationEl.dataset.sessionId;
       this.cwd = conversationEl.dataset.cwd || "";
+      this.home = conversationEl.dataset.home || "";
       this.appwireRef = null;
       this.appwireThreadId = null;
       this.appwireHydrated = false;
@@ -1210,14 +1211,31 @@
 
     // relativizePath strips the session cwd prefix from an absolute path so
     // tool-call targets show project-relative paths (e.g. "handlers/signup.go"
-    // instead of "/home/user/project/handlers/signup.go"). Falls back to the
-    // original value when cwd is unknown or the path doesn't start with it.
+    // instead of "/home/user/project/handlers/signup.go"). For paths outside
+    // cwd: replaces the home dir with "~", then middle-truncates if the result
+    // is still longer than 40 chars (keeping first ~14 and last ~24 chars).
     relativizePath(p) {
-      if (!p || !this.cwd) return p;
-      const prefix = this.cwd.endsWith("/") ? this.cwd : this.cwd + "/";
-      if (p.startsWith(prefix)) return p.slice(prefix.length);
-      if (p === this.cwd) return ".";
-      return p;
+      if (!p) return p;
+      if (this.cwd) {
+        const prefix = this.cwd.endsWith("/") ? this.cwd : this.cwd + "/";
+        if (p.startsWith(prefix)) return p.slice(prefix.length);
+        if (p === this.cwd) return ".";
+      }
+      // Substitute ~ for home directory.
+      let result = p;
+      if (this.home) {
+        const homePrefix = this.home.endsWith("/") ? this.home : this.home + "/";
+        if (p.startsWith(homePrefix)) {
+          result = "~/" + p.slice(homePrefix.length);
+        } else if (p === this.home) {
+          result = "~";
+        }
+      }
+      // Middle-truncate if still long.
+      if (result.length > 40) {
+        result = result.slice(0, 14) + "…" + result.slice(-24);
+      }
+      return result;
     },
 
     renderToolMeta(state, endedAt) {

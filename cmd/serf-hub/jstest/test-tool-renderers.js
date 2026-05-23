@@ -354,5 +354,64 @@ await (async function () {
   }
 })();
 
+// relativizePath: home-dir substitution and middle-truncation (vh63).
+await (async function () {
+  const dom = new JSDOM(`<!DOCTYPE html><html><body>
+    <div class="workspace-actions">
+      <button data-tasks-trigger><span class="panel-toggle-label">tasks</span></button>
+      <button data-details-trigger><span class="panel-toggle-label">details</span></button>
+    </div>
+    <header class="workspace-header" data-session-id="01HOME"></header>
+    <div id="conversation-home"
+         data-session-id="01HOME"
+         data-state="ended"
+         data-cwd="/home/user/myproject"
+         data-home="/home/user"></div>
+    <form data-input-form data-session-id="01HOME"><textarea class="message-input"></textarea></form>
+  </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
+  const { window } = dom;
+  window.marked = { parse: t => String(t || "") };
+  window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve([]) });
+  window.eval(rendererSrc);
+  const conv = window.document.getElementById("conversation-home");
+  window.SerfRenderer.init(conv);
+  await new Promise(r => setTimeout(r, 30));
+
+  const failures = [];
+  const check = (desc, got, want) => {
+    if (got !== want) failures.push(desc + ": expected " + JSON.stringify(want) + " got " + JSON.stringify(got));
+  };
+
+  const R = window.SerfRenderer;
+
+  // Under cwd: stays relative (unchanged from before).
+  check("under cwd", R.relativizePath("/home/user/myproject/src/main.go"), "src/main.go");
+
+  // Under home but outside cwd: tilde substitution.
+  check("under home outside cwd", R.relativizePath("/home/user/dotfiles/bashrc"), "~/.files/bashrc".replace("/.files/", "/dotfiles/"));
+  // Simpler: just check it starts with ~/
+  const hpath = R.relativizePath("/home/user/.config/app/settings.json");
+  check("home prefix becomes ~", hpath.startsWith("~/"), true);
+  check("home path value", hpath, "~/.config/app/settings.json");
+
+  // Path outside both cwd and home, length > 40: middle truncate.
+  const longPath = "/var/log/some/deeply/nested/application/service/output.log";
+  const truncated = R.relativizePath(longPath);
+  check("long path truncated length <= 40", truncated.length <= 40, true);
+  check("long path has ellipsis", truncated.includes("…"), true);
+  check("long path ends with basename", truncated.endsWith("output.log"), true);
+
+  // Short path outside cwd/home: returned unchanged.
+  const shortPath = "/etc/hosts";
+  check("short outside path unchanged", R.relativizePath(shortPath), "/etc/hosts");
+
+  if (failures.length === 0) {
+    console.log("PASS — relativizePath home-dir tilde and middle-truncation (vh63)");
+  } else {
+    allPass = false;
+    for (const f of failures) console.log("FAIL — " + f);
+  }
+})();
+
 process.exit(allPass ? 0 : 1);
 })();

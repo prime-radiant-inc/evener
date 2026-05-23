@@ -2373,6 +2373,7 @@ type WorkspaceData struct {
 	Title          string
 	Branch         string
 	WorkingDir     string
+	HomeDir        string
 	State          string
 	StateLabel     string
 	TurnCount      int
@@ -2399,6 +2400,11 @@ func (s *WebServer) renderWorkspacePartial(w http.ResponseWriter, r *http.Reques
 	if data.ID == "" {
 		http.NotFound(w, r)
 		return
+	}
+	if data.HomeDir == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			data.HomeDir = home
+		}
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.workspaceTmpl.ExecuteTemplate(w, "workspace", data); err != nil {
