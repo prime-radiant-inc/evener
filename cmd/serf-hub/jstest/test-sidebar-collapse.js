@@ -19,9 +19,9 @@ function buildDom() {
           <span class="project-rollup-dot" data-state="awaiting"></span>
         </header>
         <div class="project-children">
-          <a class="session-row">a</a>
-          <a class="session-row">b</a>
-          <a class="session-row">c</a>
+          <a class="sb-row">a</a>
+          <a class="sb-row">b</a>
+          <a class="sb-row">c</a>
         </div>
       </section>
       <section class="sidebar-section project-section" data-project-key="other-proj">
@@ -33,7 +33,7 @@ function buildDom() {
           <span class="project-rollup-dot" data-state=""></span>
         </header>
         <div class="project-children">
-          <a class="session-row">x</a>
+          <a class="sb-row">x</a>
         </div>
       </section>
     </nav>

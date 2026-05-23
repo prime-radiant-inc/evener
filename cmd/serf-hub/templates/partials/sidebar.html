@@ -1,6 +1,7 @@
 {{define "sidebar"}}
-<nav class="sidebar">
+<nav class="sidebar" aria-label="Sessions">
   <div class="sidebar-header">
+    <button type="button" class="sidebar-rail-toggle" data-sidebar-rail-toggle title="collapse sidebar (⌘B)" aria-label="collapse sidebar">⇤</button>
     <a class="sidebar-action" href="/new" hx-get="/_partials/workspace/spawn" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/new">＋ new</a>
     <a class="sidebar-action" href="#" data-search-trigger>search<kbd>⌘K</kbd></a>
     <a class="sidebar-action settings-link" href="/settings" hx-get="/_partials/settings/general" hx-target="#workspace" hx-swap="innerHTML" hx-push-url="/settings">settings</a>
@@ -10,20 +11,23 @@
   <section class="sidebar-section">
     <header class="sidebar-section-header">
       <span>Live</span>
-      <span class="row-meta">{{len .Live}}</span>
+      <span class="count">{{len .Live}}</span>
     </header>
     {{range .Live}}
-    <a class="live-row {{if eq .Kind "fork"}}fork-row{{else if eq .Kind "subagent"}}subagent-row{{else}}session-row{{end}}"
+    <a class="sb-row{{if eq .Kind "subagent"}} sub{{else if eq .Kind "fork"}} fork{{end}}"
        data-state="{{.State}}"
        href="/s/{{.ID}}"
        hx-get="/_partials/s/{{.ID}}/workspace"
        hx-target="#workspace"
        hx-swap="innerHTML"
        hx-push-url="/s/{{.ID}}">
-      {{if eq .Kind "fork"}}<span class="fork-glyph" data-state="{{.State}}">⎇</span>{{else}}<span class="status-dot{{if eq .Kind "subagent"}} subagent{{end}}" data-state="{{.State}}"></span>{{end}}
-      <span class="row-title">{{.Title}}</span>
-      <span class="row-meta">{{.Project}}</span>
-      <span class="row-age">{{.Age}}</span>
+      <div class="dot-col">
+        {{if eq .Kind "fork"}}<span class="fork-glyph" data-state="{{.State}}">⎇</span>{{else}}<span class="status-dot{{if eq .Kind "subagent"}} subagent{{end}}" data-state="{{.State}}"></span>{{end}}
+      </div>
+      <div class="text-col">
+        <div class="title">{{.Title}}</div>
+        <div class="meta"><span>{{.Project}}</span><span class="sep">·</span><span>{{.Age}}</span></div>
+      </div>
     </a>
     {{end}}
   </section>
@@ -32,10 +36,10 @@
   {{range .Projects}}
   <section class="sidebar-section project-section collapsed" data-project-key="{{.Name}}">
     <header class="project-header">
-      <span class="project-chevron" role="button" aria-label="expand project">▸</span>
+      <button type="button" class="project-chevron" aria-label="expand project" aria-expanded="false">▸</button>
       <span class="project-folder" aria-hidden="true">📁</span>
       <span class="project-name">{{.Name}}</span>
-      <span class="row-meta project-count">{{len .Sessions}}</span>
+      <span class="count project-count">{{len .Sessions}}</span>
       <span class="project-rollup-dot" data-state="{{.RollupState}}"></span>
       {{if .WorkingDir}}
       <a class="project-gear-btn"
@@ -56,41 +60,47 @@
     </header>
     <div class="project-children">
     {{range .Sessions}}
-    <a class="session-row"
+    <a class="sb-row"
        data-state="{{.State}}"
        href="/s/{{.ID}}"
        hx-get="/_partials/s/{{.ID}}/workspace"
        hx-target="#workspace"
        hx-swap="innerHTML"
        hx-push-url="/s/{{.ID}}">
-      <span class="status-dot" data-state="{{.State}}"></span>
-      <span class="row-title">{{.Title}}</span>
-      <span class="row-age">{{.Age}}</span>
+      <div class="dot-col"><span class="status-dot" data-state="{{.State}}"></span></div>
+      <div class="text-col">
+        <div class="title">{{.Title}}</div>
+        <div class="meta"><span>{{.Age}}</span></div>
+      </div>
     </a>
     {{range .Children}}
       {{if eq .Kind "subagent"}}
-      <a class="subagent-row"
+      <a class="sb-row sub"
          data-state="{{.State}}"
          href="/s/{{.ID}}"
          hx-get="/_partials/s/{{.ID}}/workspace"
          hx-target="#workspace"
          hx-swap="innerHTML"
          hx-push-url="/s/{{.ID}}">
-        <span class="status-dot subagent" data-state="{{.State}}"></span>
-        <span class="row-title">{{.Title}}</span>
-        <span class="row-age">{{.Age}}</span>
+        <div class="dot-col"><span class="status-dot subagent" data-state="{{.State}}"></span></div>
+        <div class="text-col">
+          <div class="title">{{.Title}}</div>
+          <div class="meta"><span>subagent</span><span class="sep">·</span><span>{{.Age}}</span></div>
+        </div>
       </a>
       {{else if eq .Kind "fork"}}
-      <a class="fork-row"
+      <a class="sb-row fork"
          data-state="{{.State}}"
          href="/s/{{.ID}}"
          hx-get="/_partials/s/{{.ID}}/workspace"
          hx-target="#workspace"
          hx-swap="innerHTML"
          hx-push-url="/s/{{.ID}}">
-        <span class="fork-glyph" data-state="{{.State}}">⎇</span>
-        <span class="row-title">{{.Title}}</span>
-        <span class="row-age">{{.Age}}</span>
+        <div class="dot-col"><span class="fork-glyph" data-state="{{.State}}">⎇</span></div>
+        <div class="text-col">
+          <div class="title">{{.Title}}</div>
+          <div class="meta"><span>fork</span><span class="sep">·</span><span>{{.Age}}</span></div>
+        </div>
       </a>
       {{end}}
     {{end}}

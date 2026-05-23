@@ -187,6 +187,16 @@
   --user: var(--state-idle);
   --error: var(--state-awaiting);
 }
+[data-theme="light"] .sb-row[data-state="awaiting"] { background: color-mix(in srgb, var(--state-awaiting) 12%, transparent); }
+[data-theme="light"] .sb-row[data-state="active"]   { background: color-mix(in srgb, var(--state-processing) 12%, transparent); }
+[data-theme="light"] .sb-row[data-state="warning"]  { background: color-mix(in srgb, var(--state-warning) 12%, transparent); }
+[data-theme="light"] .sb-row[data-active]            { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .sb-row[data-state="awaiting"] { background: color-mix(in srgb, var(--state-awaiting) 12%, transparent); }
+  :root:not([data-theme="dark"]) .sb-row[data-state="active"]   { background: color-mix(in srgb, var(--state-processing) 12%, transparent); }
+  :root:not([data-theme="dark"]) .sb-row[data-state="warning"]  { background: color-mix(in srgb, var(--state-warning) 12%, transparent); }
+  :root:not([data-theme="dark"]) .sb-row[data-active]           { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+}
 /* Reduced-motion override — design language §1.5. This and the !important
    declarations inside it are one of the two !important uses allowed in the
    codebase. The second is documented when introduced. */
@@ -350,26 +360,85 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .sidebar-action kbd { color: var(--text-dim); font-family: var(--font-mono); font-size: var(--text-2xs); margin-left: var(--space-2); }
 .sidebar-section { margin-bottom: var(--space-2); }
 .sidebar-section-header,
-.project-header { padding: var(--space-4) var(--space-6) var(--space-2); color: var(--text-dim); font-family: var(--font-mono); font-size: var(--text-2xs); font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; display: flex; align-items: baseline; gap: var(--space-4); }
-.sidebar-section-header { letter-spacing: 0.16em; }
-.sidebar-section-header .row-meta,
-.project-header .row-meta { margin-left: auto; letter-spacing: 0; }
-.session-row,
-.subagent-row,
-.fork-row,
-.live-row { display: flex; align-items: baseline; padding: var(--space-2) var(--space-6); gap: var(--space-3); color: var(--text); text-decoration: none; cursor: pointer; }
-.session-row { font-weight: 500; }
-.session-row .row-title { flex: 1; }
-.subagent-row { padding-left: var(--space-8); font-size: var(--text-sm); }
-.subagent-row .row-title { flex: 1; }
-.fork-row { color: var(--text-muted); }
-.fork-row .row-title { flex: 1; }
-.fork-glyph { font-family: var(--font-mono); color: var(--state-ended); width: 6px; }
-.fork-row[data-state="active"] .fork-glyph { color: var(--state-processing); }
-.fork-row[data-state="awaiting"] .fork-glyph { color: var(--state-awaiting); }
-.fork-row[data-state="warning"] .fork-glyph { color: var(--state-warning); }
-.fork-row[data-state="idle"] .fork-glyph { color: var(--state-idle); }
-.live-row .row-title { flex: 1; }
+.project-header { padding: 14px 20px 4px; color: var(--text-dim); font-family: var(--font-mono); font-size: var(--text-2xs); letter-spacing: 0.14em; text-transform: uppercase; display: flex; align-items: baseline; gap: var(--space-3); }
+.sidebar-section-header .count,
+.project-header .count { margin-left: auto; letter-spacing: 0; font-family: var(--font-mono); color: var(--text-muted); }
+/* Sidebar row — grid: dot column + text column. The 2-line title wrap is
+   the key design choice; full titles like "refactor auth middleware to use
+   the new session token store" stay readable. */
+.sb-row {
+  display: grid;
+  grid-template-columns: 10px 1fr;
+  gap: var(--space-3);
+  padding: 5px var(--space-4);
+  border-left: 2px solid transparent;
+  color: var(--text);
+  text-decoration: none;
+  cursor: pointer;
+  transition: background var(--motion-fast);
+}
+.sb-row:hover { background: var(--bg-raised); }
+.sb-row .dot-col { display: flex; align-items: center; justify-content: center; padding-top: 4px; }
+.sb-row .text-col { min-width: 0; }
+.sb-row .title {
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  color: var(--text);
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+.sb-row .meta {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+.sb-row .meta .sep { color: var(--text-dim); }
+
+/* State accents — left border + 5% tinted background. Dark theme reads
+   fine at 5%; light-theme bump lives in the per-theme override block. */
+.sb-row[data-state="awaiting"] {
+  background: color-mix(in srgb, var(--state-awaiting) 5%, transparent);
+  border-left-color: var(--state-awaiting);
+}
+.sb-row[data-state="active"] {
+  background: color-mix(in srgb, var(--state-processing) 5%, transparent);
+  border-left-color: var(--state-processing);
+}
+.sb-row[data-state="warning"] {
+  background: color-mix(in srgb, var(--state-warning) 5%, transparent);
+  border-left-color: var(--state-warning);
+}
+
+/* Active session marker — JS sets [data-active] on the row whose href
+   matches the currently-rendered workspace URL. */
+.sb-row[data-active] {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-left-color: var(--accent);
+}
+
+/* Subagent + fork variants — indent + dim. */
+.sb-row.sub  { padding-left: var(--space-7); }
+.sb-row.sub  .title { font-size: var(--text-sm); color: var(--text-muted); }
+.sb-row.fork { color: var(--text-muted); }
+.sb-row.fork .title { color: var(--text-muted); }
+
+/* Fork glyph colour follows row data-state. */
+.sb-row.fork .fork-glyph { color: var(--state-ended); }
+.sb-row.fork[data-state="active"]   .fork-glyph { color: var(--state-processing); }
+.sb-row.fork[data-state="awaiting"] .fork-glyph { color: var(--state-awaiting); }
+.sb-row.fork[data-state="warning"]  .fork-glyph { color: var(--state-warning); }
+.sb-row.fork[data-state="idle"]     .fork-glyph { color: var(--state-idle); }
+
 .status-dot { display: inline-block; width: 6px; height: 6px; border-radius: var(--radius-full); background: var(--state-ended); flex-shrink: 0; }
 .status-dot[data-state="active"] { background: var(--state-processing); }
 .status-dot[data-state="awaiting"] { background: var(--state-awaiting); }
@@ -377,17 +446,22 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .status-dot[data-state="idle"] { background: var(--state-idle); }
 .status-dot.subagent { background: var(--state-subagent); }
 .status-dot.rollup { margin-left: auto; }
-.row-meta { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-2xs); letter-spacing: 0.02em; }
-.row-age { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-2xs); margin-left: auto; }
-.live-row { background: transparent; border-left: 2px solid transparent; }
-.live-row[data-state="awaiting"]   { background: rgba(247,118,142,0.08); border-left: 2px solid var(--state-awaiting); }
-.live-row[data-state="active"] { background: rgba(122,162,247,0.08); border-left: 2px solid var(--state-processing); }
-.live-row[data-state="warning"]    { background: rgba(224,175,104,0.06); border-left: 2px solid var(--state-warning); }
 
 /* Project header glyphs: chevron + folder. Click target is the chevron;
    the count and rollup dot are passive (no toggle on click). */
 .project-header { cursor: default; }
-.project-chevron { display: inline-block; width: 12px; color: var(--text-muted); cursor: pointer; user-select: none; }
+.project-chevron {
+  display: inline-block;
+  width: 12px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font: inherit;
+  cursor: pointer;
+  user-select: none;
+}
+.project-chevron:hover { color: var(--text); }
 .project-folder { display: inline-block; }
 .project-name { color: var(--text-dim); }
 
@@ -409,17 +483,85 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
    next to the rollup dot. Always visible (mobile has no hover); kept dim
    by default so it doesn't compete with project state cues, and the touch
    target is ≥24×24 with padding for thumbs. */
-.project-new-btn { color: var(--text-dim); text-decoration: none; padding: var(--space-2) var(--space-3); font-size: var(--text-md); line-height: 1; cursor: pointer; transition: color var(--motion-fast), background var(--motion-fast); border-radius: var(--radius-md); }
-.project-new-btn:hover { color: var(--text); background: var(--bg-raised); }
-.project-section:hover .project-new-btn { color: var(--text-muted); }
-.project-gear-btn { color: var(--text-dim); text-decoration: none; padding: var(--space-2) var(--space-2); font-size: var(--text-xs); line-height: 1; cursor: pointer; transition: color var(--motion-fast), background var(--motion-fast); border-radius: var(--radius-md); opacity: 0; }
-.project-gear-btn:hover { color: var(--text); background: var(--bg-raised); opacity: 1; }
-.project-section:hover .project-gear-btn { opacity: 1; color: var(--text-muted); }
+.project-new-btn,
+.project-gear-btn {
+  color: var(--text-dim);
+  text-decoration: none;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-sm);
+  line-height: 1;
+  cursor: pointer;
+  border-radius: var(--radius-md);
+  transition: color var(--motion-fast), background var(--motion-fast);
+}
+.project-new-btn:hover,
+.project-gear-btn:hover {
+  color: var(--text);
+  background: var(--bg-raised);
+}
+.project-section:hover .project-new-btn,
+.project-section:hover .project-gear-btn {
+  color: var(--text-muted);
+}
 
 /* Fork title-bar prefix: shown above the title for the dim, preserved-original
    side of a fork. */
 .fork-original-banner { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-muted); margin-bottom: var(--space-2); padding: 0; }
 .fork-original-target { color: var(--text); }
+
+/* Rail-toggle button — lives in .sidebar-header. Default state is
+   "collapse"; rail mode flips the glyph to "expand". */
+.sidebar-rail-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  margin-right: var(--space-2);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+  cursor: pointer;
+  transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast);
+}
+.sidebar-rail-toggle:hover {
+  color: var(--text);
+  background: var(--bg-raised);
+  border-color: var(--rule);
+}
+
+/* Rail mode: collapse to 56px, hide text columns, hide most header actions. */
+body.app[data-sidebar-rail] #sidebar { width: 56px; }
+body.app[data-sidebar-rail] .sidebar-header .sidebar-action { display: none; }
+body.app[data-sidebar-rail] .sidebar-header { padding: 0 var(--space-3) var(--space-3); justify-content: center; gap: 0; }
+body.app[data-sidebar-rail] .sidebar-rail-toggle::before { content: "⇥"; }
+body.app[data-sidebar-rail] .sidebar-rail-toggle { font-size: 0; }
+body.app[data-sidebar-rail] .sidebar-rail-toggle::before { font-size: var(--text-base); }
+body.app[data-sidebar-rail] .sidebar-section-header,
+body.app[data-sidebar-rail] .project-header .project-name,
+body.app[data-sidebar-rail] .project-header .count,
+body.app[data-sidebar-rail] .project-header .project-folder,
+body.app[data-sidebar-rail] .project-gear-btn,
+body.app[data-sidebar-rail] .project-new-btn { display: none; }
+body.app[data-sidebar-rail] .sb-row { grid-template-columns: 1fr; padding: var(--space-2); justify-content: center; }
+body.app[data-sidebar-rail] .sb-row .text-col { display: none; }
+body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
+
+/* Container query — the same collapse triggered structurally if a parent
+   ever shrinks the sidebar below 80px independent of the rail attribute. */
+#sidebar { container-type: inline-size; container-name: sidebar; }
+@container sidebar (max-width: 80px) {
+  .sb-row .text-col,
+  .sidebar-section-header .count,
+  .project-header .project-name,
+  .project-header .count,
+  .project-header .project-folder { display: none; }
+  .sb-row { grid-template-columns: 1fr; justify-content: center; }
+}
 
 /* Workspace pane */
 .workspace-header { padding: var(--space-4) var(--space-6) var(--space-4); border-bottom: 1px solid var(--rule); }

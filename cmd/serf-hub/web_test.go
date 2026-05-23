@@ -825,8 +825,8 @@ func TestWeb_Sidebar_RendersTreeWithLiveAndProjects(t *testing.T) {
 	if !strings.Contains(body, "fix bug") {
 		t.Errorf("missing title")
 	}
-	if !strings.Contains(body, "session-row") {
-		t.Errorf("missing session-row class")
+	if !strings.Contains(body, "sb-row") {
+		t.Errorf("missing sb-row class")
 	}
 	if !strings.Contains(body, "/s/01PAST") {
 		t.Errorf("missing session URL")
@@ -3481,7 +3481,7 @@ func TestWeb_Send_RejectsOversizeImage(t *testing.T) {
 }
 
 // TestWeb_Sidebar_LiveRowDataState verifies that a live entry in the sidebar
-// renders with data-state on the .live-row anchor itself, so the CSS state
+// renders with data-state on the .sb-row anchor itself, so the CSS state
 // accents (left border + tinted background) can apply.
 func TestWeb_Sidebar_LiveRowDataState(t *testing.T) {
 	dir := t.TempDir()
@@ -3504,22 +3504,23 @@ func TestWeb_Sidebar_LiveRowDataState(t *testing.T) {
 		t.Fatalf("status: %d", rec.Code)
 	}
 	body := rec.Body.String()
-	// The live-row anchor must carry data-state="awaiting" so the state-accent
-	// CSS rules match. The template line-wraps the anchor, so flatten whitespace
-	// before looking for the two attributes adjacent on the same element.
-	if !strings.Contains(body, "live-row") {
-		t.Fatalf("body missing live-row class: %q", body)
+	// The sb-row anchor in the Live section must carry data-state="awaiting"
+	// so the state-accent CSS rules match. The template line-wraps the anchor,
+	// so flatten whitespace before looking for the two attributes adjacent on
+	// the same element.
+	if !strings.Contains(body, "sb-row") {
+		t.Fatalf("body missing sb-row class: %q", body)
 	}
 	flat := strings.Join(strings.Fields(body), " ")
-	if !strings.Contains(flat, `live-row`) || !strings.Contains(flat, `data-state="awaiting"`) {
-		t.Errorf("live-row missing data-state=\"awaiting\": %q", body)
+	if !strings.Contains(flat, `sb-row`) || !strings.Contains(flat, `data-state="awaiting"`) {
+		t.Errorf("sb-row missing data-state=\"awaiting\": %q", body)
 	}
 	// And confirm they're on the same opening tag: find <a ... > containing both.
 	tagFound := false
 	for _, chunk := range strings.Split(flat, "<a ") {
 		// The first split chunk is everything before the first <a; subsequent
 		// chunks each begin with the anchor's attribute list.
-		if !strings.HasPrefix(chunk, "class=\"live-row") {
+		if !strings.HasPrefix(chunk, `class="sb-row`) {
 			continue
 		}
 		end := strings.Index(chunk, ">")
@@ -3532,7 +3533,7 @@ func TestWeb_Sidebar_LiveRowDataState(t *testing.T) {
 		}
 	}
 	if !tagFound {
-		t.Errorf("data-state=\"awaiting\" not on the live-row <a> element: %q", body)
+		t.Errorf("data-state=\"awaiting\" not on the sb-row <a> element: %q", body)
 	}
 }
 
