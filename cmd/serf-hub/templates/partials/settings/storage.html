@@ -1,9 +1,21 @@
 {{define "settings-content"}}
 <h2 class="settings-h2">Storage</h2>
-<dl class="settings-list">
-  <dt>State dir</dt><dd><code>{{.StateDir}}</code></dd>
-  <dt>Run dir</dt><dd><code>{{.RunDir}}</code></dd>
-  <dt>Hub config</dt><dd><code>~/.serf/hub.toml</code></dd>
-  <dt>Past index size</dt><dd>{{.PastCount}} session{{if ne .PastCount 1}}s{{end}}</dd>
+<dl class="settings-table">
+  <div class="row">
+    <dt>State dir</dt>
+    <dd>{{.StateDir}}</dd>
+  </div>
+  <div class="row">
+    <dt>Run dir</dt>
+    <dd>{{.RunDir}}</dd>
+  </div>
+  <div class="row">
+    <dt>Hub config</dt>
+    <dd>~/.serf/hub.toml</dd>
+  </div>
+  <div class="row">
+    <dt>Past index</dt>
+    <dd>{{.PastCount}} session{{if ne .PastCount 1}}s{{end}}</dd>
+  </div>
 </dl>
 {{end}}
