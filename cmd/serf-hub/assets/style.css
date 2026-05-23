@@ -1157,6 +1157,17 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
    inline send-style button family so "📎" sits visually adjacent to the
    spawn submit. Keyboard-reachable as a real <button>. */
 .spawn-attach-row { display: flex; gap: var(--space-3); }
+/* Spawn attach button — paperclip + "attach ⌘V to paste" hint per mockup. */
+.spawn-attach-btn { color: var(--text-muted); font-weight: 400; }
+.spawn-attach-btn:hover:not([disabled]):not(:disabled) { color: var(--text); }
+.spawn-attach-btn .spawn-attach-icon { margin-right: var(--space-2); }
+.spawn-attach-btn .spawn-attach-label { font-family: var(--font-mono); font-size: var(--text-xs); }
+.spawn-attach-btn .spawn-attach-label kbd {
+  font-family: var(--font-mono); font-size: var(--text-2xs);
+  padding: 0 var(--space-1); margin: 0 1px;
+  border: 1px solid var(--rule); border-radius: var(--radius-sm);
+  background: var(--surface-secondary); color: var(--text-muted);
+}
 .spawn-form .diagnostic { margin: 0; max-width: none; }
 /* Spawn-advanced — compact mirror of settings-table for the per-launch
    override panel inside the spawn page's <details>. Same two-voice rhythm
@@ -1950,6 +1961,12 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   background: var(--accent);
   color: var(--btn-primary-text);
   border-color: var(--accent);
+  /* Primary CTAs deserve more visual weight than the base .btn — bump
+     to text-base (13px) at 600, with more horizontal padding. Matches
+     workshop-log-v3 mockup. */
+  font-size: var(--text-base);
+  font-weight: 600;
+  padding: var(--space-2) var(--space-5);
 }
 .btn-primary:hover:not([disabled]):not(:disabled) { filter: brightness(1.08); }
 .btn-primary:active:not([disabled]):not(:disabled) { filter: brightness(0.95); }
@@ -2035,7 +2052,11 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   color: var(--text);
   border-color: var(--rule);
   border-radius: var(--radius-pill);
-  padding: var(--space-2) var(--space-4);
+  /* Pill-shaped chips read better with tighter horizontal padding than
+     the .btn base. Inherit base font-weight 500 but suppress to 400 to
+     match workshop-log-v3 mockup — chip values are quiet, not bold. */
+  padding: var(--space-2) var(--space-3);
+  font-weight: 400;
   align-items: baseline;
 }
 .btn-chip:hover:not([disabled]):not(:disabled) {
