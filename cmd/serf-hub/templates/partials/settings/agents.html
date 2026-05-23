@@ -1,13 +1,18 @@
 {{define "settings-content"}}
 <h2 class="settings-h2">Agents</h2>
-<div class="settings-rows">
+{{if .Agents}}
+<dl class="settings-table">
   {{range .Agents}}
-  <div class="settings-row">
-    <div class="settings-row-title">{{.Name}}</div>
-    <div class="settings-row-detail">
-      {{if .EditPath}}<a class="settings-open-link" href="{{.EditPath}}" target="_blank" rel="noopener">open in editor ↗</a>{{else}}<span class="settings-row-meta">built-in</span>{{end}}
-    </div>
+  <div class="row">
+    <dt>{{.Name}}</dt>
+    <dd>
+      {{if .EditPath}}<a class="settings-open-link" href="{{.EditPath}}" target="_blank" rel="noopener">open in editor ↗</a>
+      {{else}}<span class="val-text"><span class="dim">built-in</span></span>{{end}}
+    </dd>
   </div>
   {{end}}
-</div>
+</dl>
+{{else}}
+<p class="settings-help">No agents discovered.</p>
+{{end}}
 {{end}}
