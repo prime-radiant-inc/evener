@@ -1320,6 +1320,93 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 }
 .settings-table .val-toggle:has(input[type="checkbox"]:checked) .state { color: var(--accent); }
 
+/* ── settings-collection primitive (design language §4.2) ──────────────── */
+
+.settings-collection {
+  margin: 0 0 var(--space-6);
+  max-width: 760px;
+}
+.settings-collection-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--rule);
+  margin-bottom: var(--space-2);
+}
+.settings-collection-head h3 {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  font-weight: 500;
+  color: var(--text);
+}
+.settings-collection-count {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+}
+.settings-collection-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.settings-collection-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  column-gap: var(--space-3);
+  align-items: baseline;
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--rule-soft);
+}
+.settings-collection-row:last-child { border-bottom: none; }
+.settings-collection-row .row-text {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text);
+  word-break: break-all;
+}
+.settings-collection-row .row-meta {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.settings-collection-row .row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.settings-collection-empty {
+  padding: var(--space-4) 0;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  font-style: italic;
+}
+.settings-collection-add {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  border-top: 1px solid var(--rule);
+  flex-wrap: wrap;
+}
+.settings-collection-add .val-input {
+  flex: 1;
+  min-width: 200px;
+}
+.settings-collection-add .val-input + .val-input { flex: 0 0 auto; min-width: 140px; }
+.settings-collection-add .row-error {
+  flex-basis: 100%;
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  color: var(--state-awaiting);
+}
+.settings-collection-add .row-error[hidden] { display: none; }
+
 .settings-form { display: flex; flex-direction: column; gap: var(--space-4); max-width: 480px; }
 .settings-radio,
 .settings-toggle { display: flex; align-items: center; gap: var(--space-4); color: var(--text); font-size: var(--text-base); cursor: pointer; }
