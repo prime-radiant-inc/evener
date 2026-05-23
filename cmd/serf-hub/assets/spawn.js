@@ -1477,8 +1477,8 @@
         const list = data.results || [];
         if (list.length === 0) {
           const empty = document.createElement("div");
-          empty.className = "chip-picker-empty";
-          empty.textContent = "no matching directories";
+          empty.className = "empty-state empty-state-picker";
+          empty.innerHTML = '<p class="empty-state-body">No matching directories</p>';
           results.appendChild(empty);
           return;
         }
