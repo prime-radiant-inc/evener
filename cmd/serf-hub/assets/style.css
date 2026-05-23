@@ -1453,6 +1453,26 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .settings-row-cmd { font-family: var(--font-mono); word-break: break-all; }
 .settings-row-desc { line-height: var(--leading-snug); max-width: 640px; }
 .settings-error { color: var(--state-awaiting); }
+
+/* ── surface-inset — recessed/sunken surface variant ───────────────────── */
+.surface-inset {
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+}
+
+/* ── In-repo trust panel ────────────────────────────────────────────────── */
+.inrepo-preview {
+  margin: var(--space-3) 0;
+  padding: var(--space-3) var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text);
+  white-space: pre;
+  overflow-x: auto;
+  border-radius: var(--radius-md);
+}
+.inrepo-status { margin-top: var(--space-4); }
 .settings-row-title .status-badge { margin-left: var(--space-3); }
 
 /* Sidebar settings link — pushed to the right */

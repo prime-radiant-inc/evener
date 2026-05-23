@@ -4,8 +4,16 @@
   Per-project launch config shipped inside the working directory. Hub
   only applies it after you confirm trust.
 </p>
-<label>Working dir: <input type="text" id="inrepo-cwd" placeholder="/path/to/project"></label>
-<div id="inrepo-status"><p>Enter a working directory above.</p></div>
+<dl class="settings-table">
+  <div class="row editable">
+    <dt>Working dir</dt>
+    <dd><input type="text" id="inrepo-cwd" class="val-input" placeholder="/path/to/project"></dd>
+    <p class="help">Enter an absolute path. The hub reads <code>.serf/launch.toml</code> from this directory.</p>
+  </div>
+</dl>
+<div id="inrepo-status" class="inrepo-status" aria-live="polite">
+  <p class="settings-help">Enter a working directory above.</p>
+</div>
 <script>
   (async function () {
     const cwdInput = document.getElementById("inrepo-cwd");
@@ -14,25 +22,25 @@
     function escapeHtml(s) { return s.replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
     async function refresh() {
       const cwd = cwdInput.value.trim();
-      if (!cwd) { status.innerHTML = "<p>Enter a working directory.</p>"; return; }
+      if (!cwd) { status.innerHTML = '<p class="settings-help">Enter a working directory.</p>'; return; }
       let r;
       try {
         r = await launchconfig.resolve(cwd);
       } catch (err) {
         const p = document.createElement("p");
         p.className = "settings-error";
-        p.textContent = `Failed to load: ${err && err.message ? err.message : err}`;
+        p.textContent = "Failed to load: " + (err && err.message ? err.message : err);
         status.replaceChildren(p);
         return;
       }
       const repo = r.repo || { trust: "absent" };
       if (repo.trust === "absent") {
-        status.innerHTML = `<p>No <code>.serf/launch.toml</code> in <code>${escapeHtml(cwd)}</code>.</p>`;
+        status.innerHTML = `<p class="settings-help">No <code>.serf/launch.toml</code> in <code>${escapeHtml(cwd)}</code>.</p>`;
         return;
       }
-      const preview = repo.preview ? `<pre class="settings-code">${escapeHtml(repo.preview)}</pre>` : "";
+      const preview = repo.preview ? `<pre class="surface-inset inrepo-preview">${escapeHtml(repo.preview)}</pre>` : "";
       const noteByTrust = {
-        trusted:   `<p class="settings-help">Trusted. Hash <code>${escapeHtml(repo.hash || "")}</code>.</p>`,
+        trusted:   `<p class="settings-help">Trusted. Hash <span class="val-text">${escapeHtml(repo.hash || "")}</span>.</p>`,
         untrusted: `<p class="settings-help">Untrusted — review and approve below.</p>`,
         changed:   `<p class="settings-help">Trusted before, but the file has changed. Review and approve again.</p>`,
         rejected:  `<p class="settings-help">Previously rejected. Trust to apply.</p>`,
@@ -41,7 +49,7 @@
       status.innerHTML = `
         ${noteByTrust[repo.trust] || ""}
         ${preview}
-        ${showApprove ? `<button type="button" class="btn btn-primary" id="approve">Trust this file</button>` : ""}
+        ${showApprove ? '<button type="button" id="approve" class="btn btn-primary">Trust this file</button>' : ""}
       `;
       if (showApprove) {
         document.getElementById("approve").addEventListener("click", async () => {
