@@ -534,6 +534,13 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   border-left-color: var(--accent);
 }
+/* On active rows the accent-tinted background can swallow the state dot
+   (especially --state-ended which is a dim grey). Add a thin outline ring
+   so the dot is always distinguishable regardless of its colour. */
+.sb-row[data-active] .status-dot {
+  outline: 1.5px solid color-mix(in srgb, var(--text) 30%, transparent);
+  outline-offset: 1px;
+}
 
 /* Subagent + fork variants — indent + dim. */
 .sb-row.sub  { padding-left: var(--space-7); }
