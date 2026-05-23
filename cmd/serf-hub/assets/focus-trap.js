@@ -42,9 +42,9 @@
       var n = nodes[i];
       if (n.hasAttribute("disabled")) continue;
       if (n.getAttribute("tabindex") === "-1") continue;
-      // Skip hidden elements — offsetParent is null for display:none subtrees
-      // in normal layout; JSDOM returns null too. inert subtrees are also
-      // skipped because their items report tabindex=-1.
+      // Tabbable = focusable AND not [tabindex='-1']. We don't filter hidden
+      // elements (display:none, etc.) — the selector excludes [disabled] and
+      // [tabindex='-1'], browsers refuse focus() on display:none anyway.
       out.push(n);
     }
     return out;
@@ -89,14 +89,18 @@
 
     // Initial focus: first tabbable inside the panel, else the panel itself.
     var initial = tabbable(panel)[0];
+    var addedPanelTabindex = false;
     if (initial) {
       initial.focus();
-    } else if (panel.tabIndex < 0) {
-      panel.setAttribute("tabindex", "-1");
+    } else {
+      if (panel.tabIndex < 0) {
+        panel.setAttribute("tabindex", "-1");
+        addedPanelTabindex = true;
+      }
       panel.focus();
     }
 
-    return { panel: panel, siblings: siblings, restoreTarget: restoreTarget, onKeyDown: onKeyDown };
+    return { panel: panel, siblings: siblings, restoreTarget: restoreTarget, onKeyDown: onKeyDown, addedPanelTabindex: addedPanelTabindex };
   }
 
   function deactivate(handle) {
@@ -104,6 +108,7 @@
     if (handle.panel && handle.onKeyDown) {
       handle.panel.removeEventListener("keydown", handle.onKeyDown);
     }
+    if (handle.addedPanelTabindex) handle.panel.removeAttribute("tabindex");
     for (var i = 0; i < handle.siblings.length; i++) {
       handle.siblings[i].removeAttribute("inert");
     }
