@@ -987,14 +987,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .settings-row-cmd { font-family: var(--font-mono); word-break: break-all; }
 .settings-row-desc { line-height: var(--leading-snug); max-width: 640px; }
 .settings-error { color: var(--state-awaiting); }
-.settings-row-title .status-pill { margin-left: var(--space-3); padding: 1px var(--space-3); border-radius: var(--radius-pill); font-family: var(--font-mono); font-size: var(--text-xs); font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; }
-.status-pill.status-running { background: rgba(158, 206, 106, 0.15); color: var(--state-idle); }
-.status-pill.status-available { background: rgba(158, 206, 106, 0.15); color: var(--state-idle); }
-.status-pill.status-stopped { background: var(--bg-raised); color: var(--text-muted); }
-.status-pill.status-error { background: rgba(247, 118, 142, 0.15); color: var(--state-awaiting); }
-.status-pill.status-missing { background: rgba(247, 118, 142, 0.15); color: var(--state-awaiting); }
-.status-pill.status-unreachable { background: rgba(224, 175, 104, 0.15); color: var(--state-warning); }
-.status-pill.status-unknown { background: var(--bg-raised); color: var(--text-muted); }
+.settings-row-title .status-badge { margin-left: var(--space-3); }
 
 /* Sidebar settings link — pushed to the right */
 .sidebar-action.settings-link { margin-left: auto; }

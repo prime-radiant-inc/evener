@@ -16,7 +16,7 @@
       rows.innerHTML = data.providers.map(p => `
         <div class="settings-row">
           <div class="settings-row-title">${p.provider}
-            <span class="status-pill status-${p.activeSource}">${p.activeSource}</span>
+            <span class="status-badge status-${p.activeSource}" data-state="${p.activeSource === 'absent' || p.activeSource === 'none' ? 'closed' : 'idle'}">${p.activeSource}</span>
           </div>
           <div class="settings-row-meta">auth modes: ${(p.authModes || []).join(", ") || "—"}</div>
         </div>
