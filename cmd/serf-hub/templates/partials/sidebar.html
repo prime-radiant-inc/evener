@@ -36,20 +36,20 @@
   {{range .Projects}}
   <section class="sidebar-section project-section collapsed" data-project-key="{{.Name}}">
     <header class="project-header">
-      <button type="button" class="project-chevron" aria-label="expand project" aria-expanded="false">▸</button>
+      <button type="button" class="btn btn-icon project-chevron" aria-label="expand project" aria-expanded="false">▸</button>
       <span class="project-folder" aria-hidden="true">📁</span>
       <span class="project-name">{{.Name}}</span>
       <span class="count project-count">{{len .Sessions}}</span>
       <span class="project-rollup-dot" data-state="{{.RollupState}}"></span>
       {{if .WorkingDir}}
-      <a class="project-gear-btn"
+      <a class="btn btn-icon project-gear-btn"
          title="project settings for {{.Name}}"
          href="/settings/project?cwd={{.WorkingDir | urlquery}}"
          hx-get="/_partials/settings/project?cwd={{.WorkingDir | urlquery}}"
          hx-target="#workspace"
          hx-swap="innerHTML"
          hx-push-url="/settings/project?cwd={{.WorkingDir | urlquery}}">⚙</a>
-      <a class="project-new-btn"
+      <a class="btn btn-icon project-new-btn"
          title="new session in {{.Name}}"
          href="/new?dir={{.WorkingDir | urlquery}}"
          hx-get="/_partials/workspace/spawn?dir={{.WorkingDir | urlquery}}"

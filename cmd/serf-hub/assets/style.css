@@ -479,30 +479,13 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .project-rollup-dot[data-state="warning"]    { background: var(--state-warning); }
 .project-rollup-dot[data-state="idle"]       { background: var(--state-idle); }
 
-/* Per-project "+ new session" button. Sits at the right of the project header
-   next to the rollup dot. Always visible (mobile has no hover); kept dim
-   by default so it doesn't compete with project state cues, and the touch
-   target is ≥24×24 with padding for thumbs. */
+/* Project header icons (gear, new) inherit .btn-icon. Keep them dim by
+   default and brighten on row hover; the .btn-icon hover state handles
+   per-button hover. No hover-only-reveal (touch users see them too). */
 .project-new-btn,
-.project-gear-btn {
-  color: var(--text-dim);
-  text-decoration: none;
-  padding: var(--space-1) var(--space-2);
-  font-size: var(--text-sm);
-  line-height: 1;
-  cursor: pointer;
-  border-radius: var(--radius-md);
-  transition: color var(--motion-fast), background var(--motion-fast);
-}
-.project-new-btn:hover,
-.project-gear-btn:hover {
-  color: var(--text);
-  background: var(--bg-raised);
-}
+.project-gear-btn { color: var(--text-dim); text-decoration: none; }
 .project-section:hover .project-new-btn,
-.project-section:hover .project-gear-btn {
-  color: var(--text-muted);
-}
+.project-section:hover .project-gear-btn { color: var(--text-muted); }
 
 /* Fork title-bar prefix: shown above the title for the dim, preserved-original
    side of a fork. */
