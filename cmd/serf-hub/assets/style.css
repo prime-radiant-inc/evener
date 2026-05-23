@@ -250,13 +250,13 @@ section.panel h2 { margin-top: 0; font-family: var(--font-mono); font-size: var(
 .row:last-child { border-bottom: none; }
 .row .meta {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   white-space: nowrap;
   flex-shrink: 0;
 }
 .row .wd {
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -270,7 +270,7 @@ button, input[type=submit], a.btn {
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 6px 10px;
-  font-size: 13px;
+  font-size: var(--text-base);
   cursor: pointer;
 }
 button:hover, a.btn:hover { background: var(--border); }
@@ -282,7 +282,7 @@ input[type=text], textarea, select {
   border-radius: 4px;
   padding: 6px;
   font-family: inherit;
-  font-size: 13px;
+  font-size: var(--text-base);
 }
 textarea { width: 100%; min-height: 60px; resize: vertical; }
 
@@ -293,7 +293,7 @@ textarea { width: 100%; min-height: 60px; resize: vertical; }
   padding: 8px var(--pad);
   background: var(--panel-2);
   border-radius: 4px;
-  font-size: 12px;
+  font-size: var(--text-sm);
   color: var(--muted);
   margin-bottom: var(--pad);
 }
@@ -311,10 +311,10 @@ textarea { width: 100%; min-height: 60px; resize: vertical; }
 .msg { margin-bottom: var(--pad); padding: 8px; border-radius: 4px; }
 .msg.user { background: rgba(158, 206, 106, 0.08); border-left: 2px solid var(--user); }
 .msg.assistant { background: var(--panel-2); border-left: 2px solid var(--accent); }
-.msg.tool { background: rgba(224, 175, 104, 0.05); border-left: 2px solid var(--tool); padding-left: 8px; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; }
+.msg.tool { background: rgba(224, 175, 104, 0.05); border-left: 2px solid var(--tool); padding-left: 8px; font-family: var(--font-mono); font-size: var(--text-sm); }
 .msg.error { background: rgba(247, 118, 142, 0.08); border-left: 2px solid var(--error); color: var(--error); }
-.msg .role { font-size: 11px; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
-.msg pre, .msg code { font-family: ui-monospace, SFMono-Regular, monospace; }
+.msg .role { font-size: var(--text-xs); text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+.msg pre, .msg code { font-family: var(--font-mono); }
 .msg pre { background: var(--bg); padding: 8px; border-radius: 4px; overflow-x: auto; }
 
 #input-area {
@@ -328,7 +328,7 @@ textarea { width: 100%; min-height: 60px; resize: vertical; }
   border-radius: 6px;
 }
 #input-buttons { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-.hint { color: var(--muted); font-size: 11px; padding: 4px; }
+.hint { color: var(--muted); font-size: var(--text-xs); padding: 4px; }
 .empty { color: var(--muted); font-style: italic; padding: 16px; text-align: center; }
 
 /* App shell — single-page layout. Whole app is exactly the viewport.
@@ -1001,7 +1001,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
     border: 1px solid var(--rule);
     border-radius: 6px;
     color: var(--text);
-    font-size: 18px;
+    font-size: var(--text-xl);
     cursor: pointer;
     z-index: 150;
   }
@@ -1011,9 +1011,9 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
   .workspace-title-row { gap: 8px; flex-wrap: wrap; }
   .workspace-actions { gap: 4px; flex-wrap: wrap; }
   .header-action,
-  .panel-toggle { padding: 4px 8px; font-size: 11px; }
+  .panel-toggle { padding: 4px 8px; font-size: var(--text-xs); }
   .panel-toggle-icon { display: none; }
-  .workspace-meta { font-size: 11px; }
+  .workspace-meta { font-size: var(--text-xs); }
 
   /* Empty state and other workspace partials don't have a header to push;
      pad the content itself away from the fixed hamburger. */
@@ -1063,7 +1063,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
   .search-cmd-pill {
     flex-wrap: wrap;
     max-width: 100%;
-    line-height: 1.3;
+    line-height: var(--leading-tight);
     border-radius: 8px;
   }
   .search-cmd-pill-label {
