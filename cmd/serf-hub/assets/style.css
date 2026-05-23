@@ -2032,3 +2032,58 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   outline-offset: -2px;
 }
    ──────────────────────────────────────────────────────────────────────── */
+
+/* Pass 8 — Toasts */
+#toast-region {
+  position: fixed;
+  top: var(--space-4);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  z-index: var(--z-toast);
+  pointer-events: none;
+  max-width: min(560px, calc(100vw - var(--space-4) * 2));
+}
+.toast {
+  pointer-events: auto;
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  animation: toast-enter var(--motion-base) both;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 240px;
+}
+.toast.toast-success { border-left: 3px solid var(--state-idle); }
+.toast.toast-error   { border-left: 3px solid var(--state-awaiting); }
+.toast.toast-info    { border-left: 3px solid var(--accent); }
+.toast.toast-dismissing { animation: toast-exit var(--motion-base) both; }
+.toast-close {
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  padding: 0 var(--space-1);
+  margin-left: auto;
+}
+.toast-close:hover { color: var(--text); }
+.toast-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@keyframes toast-enter {
+  from { opacity: 0; transform: translateY(-8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes toast-exit {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(-8px); }
+}
