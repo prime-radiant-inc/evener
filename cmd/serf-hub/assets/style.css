@@ -1126,3 +1126,20 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
   0%, 100% { opacity: 1; }
   50%      { opacity: 0.65; }
 }
+
+/* ── Pass 2 typography exceptions ────────────────────────────────────────
+   Selectors deliberately keeping a non-token font-size or line-height:
+
+     .chip-caret              font-size: 9px       (caret glyph, too tiny for --text-2xs)
+     .sp-model-caret          font-size: 9px       (same)
+     .sp-dir-caret            font-size: 9px       (same)
+     .assistant-message code  font-size: 0.85em    (relative to body so A/B works)
+     .settings-help code      font-size: 0.85em    (same)
+     .search-empty code       font-size: 0.85em    (same)
+     *                        line-height: 1       (icon-aligned chrome; optical)
+     .diagnostic-badge        line-height: 1.3 via --leading-tight (already token)
+
+   Everything else uses --text-* / --leading-* tokens. If you find another
+   literal, file it as a Pass 3 cleanup; do not add to this list without
+   calling it out in the design-language doc.
+   ──────────────────────────────────────────────────────────────────────── */
