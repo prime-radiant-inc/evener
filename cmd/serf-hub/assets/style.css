@@ -102,24 +102,24 @@
 @media (prefers-color-scheme: light) {
   :root {
     --bg: #fafafa;
-    --bg-raised: #f0f0f1;
+    --bg-raised: #f1f1f2;
     --text: #16161e;
-    --text-muted: #6a6a76;
-    --text-dim: #a0a0a8;
-    --rule: #e0e0e3;
-    --accent: #3b6fc9;
-    --state-awaiting: #c43755;
-    --state-processing: #3b6fc9;
-    --state-warning: #a06f1e;
-    --state-idle: #3f7a1e;
-    --state-ended: #c0c0c8;
-    --state-subagent: #7449c7;
+    --text-muted: #5e5e6a;
+    --text-dim: #8a8a92;
+    --rule: #dadadc;
+    --accent: #2e58b8;
+    --state-awaiting: #b62a48;
+    --state-processing: #2e58b8;
+    --state-warning: #8a5a14;
+    --state-idle: #336a14;
+    --state-ended: #7a7a82;
+    --state-subagent: #5e35b6;
 
     --panel: var(--bg-raised);
-    --panel-2: #e8e8ea;
+    --panel-2: #e6e6e8;
     --border: var(--rule);
     --muted: var(--text-muted);
-    --accent-2: #7449c7;
+    --accent-2: #5e35b6;
     --tool: var(--state-warning);
     --user: var(--state-idle);
     --error: var(--state-awaiting);
@@ -152,25 +152,25 @@
 }
 
 :root[data-theme="light"] {
-  /* Force light. */
+  /* Force light — values mirror @media (prefers-color-scheme: light) above. */
   --bg: #fafafa;
-  --bg-raised: #f0f0f1;
+  --bg-raised: #f1f1f2;
   --text: #16161e;
-  --text-muted: #6a6a76;
-  --text-dim: #a0a0a8;
-  --rule: #e0e0e3;
-  --accent: #3b6fc9;
-  --state-awaiting: #c43755;
-  --state-processing: #3b6fc9;
-  --state-warning: #a06f1e;
-  --state-idle: #3f7a1e;
-  --state-ended: #c0c0c8;
-  --state-subagent: #7449c7;
+  --text-muted: #5e5e6a;
+  --text-dim: #8a8a92;
+  --rule: #dadadc;
+  --accent: #2e58b8;
+  --state-awaiting: #b62a48;
+  --state-processing: #2e58b8;
+  --state-warning: #8a5a14;
+  --state-idle: #336a14;
+  --state-ended: #7a7a82;
+  --state-subagent: #5e35b6;
   --panel: var(--bg-raised);
-  --panel-2: #e8e8ea;
+  --panel-2: #e6e6e8;
   --border: var(--rule);
   --muted: var(--text-muted);
-  --accent-2: #7449c7;
+  --accent-2: #5e35b6;
   --tool: var(--state-warning);
   --user: var(--state-idle);
   --error: var(--state-awaiting);
