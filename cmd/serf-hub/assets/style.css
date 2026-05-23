@@ -409,10 +409,10 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
    next to the rollup dot. Always visible (mobile has no hover); kept dim
    by default so it doesn't compete with project state cues, and the touch
    target is ≥24×24 with padding for thumbs. */
-.project-new-btn { color: var(--text-dim); text-decoration: none; padding: var(--space-2) var(--space-3); font-size: var(--text-md); line-height: 1; cursor: pointer; transition: color 0.1s, background 0.1s; border-radius: var(--radius-md); }
+.project-new-btn { color: var(--text-dim); text-decoration: none; padding: var(--space-2) var(--space-3); font-size: var(--text-md); line-height: 1; cursor: pointer; transition: color var(--motion-fast), background var(--motion-fast); border-radius: var(--radius-md); }
 .project-new-btn:hover { color: var(--text); background: var(--bg-raised); }
 .project-section:hover .project-new-btn { color: var(--text-muted); }
-.project-gear-btn { color: var(--text-dim); text-decoration: none; padding: var(--space-2) var(--space-2); font-size: var(--text-xs); line-height: 1; cursor: pointer; transition: color 0.1s, background 0.1s; border-radius: var(--radius-md); opacity: 0; }
+.project-gear-btn { color: var(--text-dim); text-decoration: none; padding: var(--space-2) var(--space-2); font-size: var(--text-xs); line-height: 1; cursor: pointer; transition: color var(--motion-fast), background var(--motion-fast); border-radius: var(--radius-md); opacity: 0; }
 .project-gear-btn:hover { color: var(--text); background: var(--bg-raised); opacity: 1; }
 .project-section:hover .project-gear-btn { opacity: 1; color: var(--text-muted); }
 
@@ -428,12 +428,12 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .workspace-title .title { font-weight: 600; font-size: var(--text-lg); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .workspace-meta { margin-top: var(--space-2); display: flex; align-items: baseline; gap: var(--space-3); color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
 .workspace-actions { display: flex; align-items: center; gap: var(--space-3); flex-shrink: 0; }
-.panel-toggle { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); background: transparent; border: 1px solid transparent; border-radius: var(--radius-md); color: var(--text-muted); font-size: var(--text-sm); font-family: inherit; cursor: pointer; transition: background 0.1s, color 0.1s, border-color 0.1s; }
+.panel-toggle { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); background: transparent; border: 1px solid transparent; border-radius: var(--radius-md); color: var(--text-muted); font-size: var(--text-sm); font-family: inherit; cursor: pointer; transition: background var(--motion-fast), color var(--motion-fast), border-color var(--motion-fast); }
 .panel-toggle:hover { color: var(--text); background: var(--bg-raised); border-color: var(--rule); }
 .panel-toggle.active { color: var(--text); background: var(--bg-raised); border-color: var(--rule); }
 .panel-toggle-icon { font-size: var(--text-base); line-height: 1; }
 .panel-toggle-label { font-size: var(--text-sm); }
-.header-action { display: inline-flex; align-items: center; padding: var(--space-2) var(--space-3); background: transparent; border: none; border-radius: var(--radius-md); color: var(--text-muted); font-size: var(--text-sm); font-family: inherit; cursor: pointer; transition: background 0.1s, color 0.1s; }
+.header-action { display: inline-flex; align-items: center; padding: var(--space-2) var(--space-3); background: transparent; border: none; border-radius: var(--radius-md); color: var(--text-muted); font-size: var(--text-sm); font-family: inherit; cursor: pointer; transition: background var(--motion-fast), color var(--motion-fast); }
 .header-action:hover:not([disabled]) { color: var(--text); background: var(--bg-raised); }
 .header-action-danger { color: var(--state-awaiting); }
 .header-action-danger:hover:not([disabled]) { color: var(--state-awaiting); background: rgba(247, 118, 142, 0.1); }
@@ -482,7 +482,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .composer-attachment-remove { cursor: pointer; color: var(--text-muted); padding: 0 var(--space-1); border: none; background: transparent; font-size: var(--text-base); line-height: 1; }
 .composer-attachment-remove:hover { color: var(--text); }
 
-.input-card { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-lg); padding: var(--space-4) var(--space-4); min-height: 80px; transition: border-color 0.15s; }
+.input-card { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-lg); padding: var(--space-4) var(--space-4); min-height: 80px; transition: border-color var(--motion-fast); }
 /* kata 65mm: drop-active is set by the shared composer-attachments helper
    on dragenter. Visually subtle so dropping onto the existing .input-card
    keeps its border style; the dashed outline cues "drop here" without
@@ -809,7 +809,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .search-help-desc { color: var(--text-muted); }
 .search-snippet { font-size: var(--text-sm); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .search-results mark { background: var(--state-warning, #e0af68); color: var(--bg, #1a1b26); border-radius: var(--radius-sm); padding: 0 2px; }
-.search-hit { outline: 2px solid var(--state-warning, #e0af68); outline-offset: 4px; transition: outline-color 0.4s ease-out; animation: search-hit-flash 2s ease-out; }
+.search-hit { outline: 2px solid var(--state-warning, #e0af68); outline-offset: 4px; transition: outline-color var(--motion-slow); animation: search-hit-flash var(--flash-cycle); }
 @keyframes search-hit-flash {
   0%   { background-color: rgba(224, 175, 104, 0.35); }
   100% { background-color: transparent; }
@@ -936,7 +936,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .tasks-list .task-row-details > summary { display: grid; grid-template-columns: 14px 28px 1fr 14px; gap: var(--space-3); align-items: baseline; padding: var(--space-3) var(--space-3); cursor: pointer; list-style: none; user-select: none; }
 .tasks-list .task-row-details > summary::-webkit-details-marker { display: none; }
 .tasks-list .task-row-details > summary:hover { background: var(--bg-raised); }
-.tasks-list .task-row-chevron { color: var(--text-dim); font-size: var(--text-md); transition: transform 0.15s; transform: rotate(0deg); }
+.tasks-list .task-row-chevron { color: var(--text-dim); font-size: var(--text-md); transition: transform var(--motion-fast); transform: rotate(0deg); }
 .tasks-list .task-row-details[open] > summary > .task-row-chevron { transform: rotate(90deg); }
 .tasks-list .task-detail { margin: 0; padding: var(--space-2) var(--space-4) var(--space-4) var(--space-8); display: grid; grid-template-columns: 80px 1fr; gap: var(--space-2) var(--space-4); font-size: var(--text-xs); border-top: 1px dashed var(--rule); }
 .tasks-list .task-detail:empty { display: none; border: none; padding: 0; }
@@ -971,7 +971,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
     max-width: 320px;
     z-index: 200;
     transform: translateX(-100%);
-    transition: transform 0.2s ease;
+    transition: transform var(--motion-base);
     box-shadow: 4px 0 24px rgba(0,0,0,0.4);
   }
   body.app[data-sidebar-open] #sidebar { transform: translateX(0); }
@@ -1093,7 +1093,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
    been issued but not yet reconciled with an authoritative event.
    Reconcile removes .optimistic-pending; failure adds .optimistic-failed. */
 .optimistic-pending {
-  animation: optimistic-pulse 1.4s ease-in-out infinite;
+  animation: optimistic-pulse var(--pulse-cycle) infinite;
 }
 
 .optimistic-failed {
