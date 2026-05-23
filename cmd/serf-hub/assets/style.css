@@ -1847,6 +1847,10 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
    into full-screen drawers triggered by the inline header hamburger. */
 
 @media (max-width: 767px) {
+  /* Touch target floor — design language §4 override. Desktop default is 32px;
+     phone gets 44px per spec so all .btn elements meet minimum tap area. */
+  :root { --tap-min: 44px; }
+
   /* Single-column layout: workspace fills the screen, sidebar lives off-canvas. */
   body.app { display: block; }
   #sidebar {
