@@ -24,6 +24,7 @@
           code.textContent = p;
           const button = document.createElement("button");
           button.type = "button";
+          button.className = "btn btn-ghost";
           button.dataset.i = String(i);
           button.dataset.action = "rm-config";
           button.textContent = "remove";
@@ -40,6 +41,7 @@
         configInput.setAttribute("data-settings-dir-input", "");
         const configAdd = document.createElement("button");
         configAdd.type = "submit";
+        configAdd.className = "btn btn-primary";
         configAdd.textContent = "Add";
         const configError = document.createElement("p");
         configError.className = "settings-error";
@@ -60,6 +62,7 @@
           command.textContent = [m.command || "", ...((m.args || []))].filter(Boolean).join(" ");
           const button = document.createElement("button");
           button.type = "button";
+          button.className = "btn btn-ghost";
           button.dataset.i = String(i);
           button.dataset.action = "rm";
           button.textContent = "remove";
@@ -84,6 +87,7 @@
         argsInput.placeholder = "args (space-separated)";
         const add = document.createElement("button");
         add.type = "submit";
+        add.className = "btn btn-primary";
         add.textContent = "Add";
         const error = document.createElement("p");
         error.className = "settings-error";

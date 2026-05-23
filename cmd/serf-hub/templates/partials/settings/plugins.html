@@ -22,6 +22,7 @@
           code.textContent = d;
           const button = document.createElement("button");
           button.type = "button";
+          button.className = "btn btn-ghost";
           button.dataset.i = String(i);
           button.dataset.action = "rm";
           button.textContent = "remove";
@@ -39,10 +40,12 @@
         input.setAttribute("data-settings-dir-input", "");
         const pick = document.createElement("button");
         pick.type = "button";
+        pick.className = "btn btn-secondary";
         pick.setAttribute("data-settings-dir-picker", "");
         pick.textContent = "Browse";
         const add = document.createElement("button");
         add.type = "submit";
+        add.className = "btn btn-primary";
         add.textContent = "Add";
         const error = document.createElement("p");
         error.className = "settings-error";

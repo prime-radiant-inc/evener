@@ -41,7 +41,7 @@
       status.innerHTML = `
         ${noteByTrust[repo.trust] || ""}
         ${preview}
-        ${showApprove ? `<button type="button" id="approve">Trust this file</button>` : ""}
+        ${showApprove ? `<button type="button" class="btn btn-primary" id="approve">Trust this file</button>` : ""}
       `;
       if (showApprove) {
         document.getElementById("approve").addEventListener("click", async () => {
