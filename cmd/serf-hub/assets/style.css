@@ -621,10 +621,6 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .status-badge[data-state="ended"]     { color: var(--text-muted); }
 .status-badge[data-state="closed"]    { color: var(--text-muted); }
 .status-badge[data-state="notLoaded"] { color: var(--text-muted); }
-/* Transitional: input_strip.html still renders .rule-dot separators
-   until the Pass 6 composer migration. Kept here so they don't read
-   as raw text. */
-.rule-dot { color: var(--text-dim); font-family: var(--font-mono); }
 .conversation {
   flex: 1;
   min-height: 0;
