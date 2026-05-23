@@ -1695,6 +1695,41 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .credentials-editor-input { padding: var(--space-3) var(--space-3); font-family: var(--font-mono); font-size: var(--text-base); }
 .credentials-editor-error { margin: 0; color: var(--state-awaiting, var(--error, #c43755)); font-size: var(--text-sm); }
 .credentials-editor-actions { display: flex; gap: var(--space-3); }
+.credentials-row .row-text {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+.credentials-source-layer {
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.credentials-editor {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.credentials-editor-label {
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.credentials-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.credentials-editor-error {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  color: var(--state-awaiting);
+}
 
 /* ── Button system (Pass 5) ───────────────────────────────────────────────
    Base class + six variants. Replaces .input-btn*, .header-action*, .spawn-btn,
