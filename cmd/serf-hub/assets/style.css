@@ -2219,3 +2219,16 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .btn-danger:active { background: color-mix(in srgb, var(--state-awaiting) 10%, transparent); }
 .btn-icon:active { background: var(--surface-secondary); }
 .btn-chip:active { background: var(--surface-secondary); border-color: var(--accent); }
+
+/* Pass 8 — Reduced-motion non-animated alternatives.
+   The universal *::before/::after rule in §1.5 kills animations; without
+   these fallbacks the pulse signals become invisible. */
+@media (prefers-reduced-motion: reduce) {
+  .optimistic-pending {
+    border-left: 2px dashed var(--accent);
+    padding-left: var(--space-2);
+  }
+  .status-dot[data-pulse] {
+    box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 30%, transparent);
+  }
+}
