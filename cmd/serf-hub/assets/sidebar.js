@@ -36,6 +36,7 @@
     var chevron = section.querySelector(".project-chevron");
     if (chevron) {
       chevron.textContent = collapsed ? "▸" : "▾";
+      chevron.setAttribute("aria-expanded", collapsed ? "false" : "true");
     }
   }
 
@@ -57,6 +58,7 @@
     var nextCollapsed = !section.classList.contains("collapsed");
     section.classList.toggle("collapsed", nextCollapsed);
     chevron.textContent = nextCollapsed ? "▸" : "▾";
+    chevron.setAttribute("aria-expanded", nextCollapsed ? "false" : "true");
     setCollapsed(key, nextCollapsed);
   }
 
@@ -125,4 +127,90 @@
       setSidebarOpen(false);
     }
   });
+
+  // Sidebar rail mode — persisted to localStorage. The body[data-sidebar-rail]
+  // attribute is the single source of truth that CSS reads; the helper
+  // syncs that attribute to storage and back.
+  var RAIL_KEY = "serf-hub.sidebar.rail";
+
+  function isRailEnabled() {
+    try {
+      return window.localStorage.getItem(RAIL_KEY) === "true";
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function setRail(enabled) {
+    if (enabled) {
+      document.body.setAttribute("data-sidebar-rail", "");
+    } else {
+      document.body.removeAttribute("data-sidebar-rail");
+    }
+    try {
+      if (enabled) {
+        window.localStorage.setItem(RAIL_KEY, "true");
+      } else {
+        window.localStorage.removeItem(RAIL_KEY);
+      }
+    } catch (e) {
+      // localStorage may be disabled; flip still works for this session.
+    }
+  }
+
+  function toggleRail() {
+    setRail(!document.body.hasAttribute("data-sidebar-rail"));
+  }
+
+  // Apply persisted rail state ASAP — before first paint when possible.
+  if (isRailEnabled()) {
+    setRail(true);
+  }
+
+  document.addEventListener("click", function (e) {
+    var t = e.target;
+    if (!t || !t.closest) return;
+    var btn = t.closest("[data-sidebar-rail-toggle]");
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    toggleRail();
+  });
+
+  // ⌘B / Ctrl+B — toggle rail mode. Skip when the focus is on an editable
+  // surface (textarea, contenteditable, input) so the shortcut doesn't fire
+  // while the user is typing browser-native chords. Mobile (no
+  // matchMedia "(min-width: 768px)") ignores the shortcut because rail
+  // mode is a desktop affordance.
+  function isEditableTarget(el) {
+    if (!el) return false;
+    var tag = (el.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "select") return true;
+    if (el.isContentEditable) return true;
+    return false;
+  }
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "b" && e.key !== "B") return;
+    if (!(e.metaKey || e.ctrlKey)) return;
+    if (e.altKey || e.shiftKey) return;
+    if (isEditableTarget(e.target)) return;
+    // Desktop only — match the design-language breakpoint.
+    if (window.matchMedia && window.matchMedia("(max-width: 767px)").matches) return;
+    e.preventDefault();
+    toggleRail();
+  });
+
+  // Sync the rail-toggle button's aria-label so screen readers hear the
+  // correct direction after each flip. Runs on init + after each htmx
+  // swap (the sidebar partial re-renders frequently).
+  function syncRailToggleLabel() {
+    var btn = document.querySelector("[data-sidebar-rail-toggle]");
+    if (!btn) return;
+    var railed = document.body.hasAttribute("data-sidebar-rail");
+    btn.setAttribute("aria-label", railed ? "expand sidebar" : "collapse sidebar");
+    btn.setAttribute("title", railed ? "expand sidebar (⌘B)" : "collapse sidebar (⌘B)");
+  }
+  document.addEventListener("DOMContentLoaded", syncRailToggleLabel);
+  document.addEventListener("htmx:afterSwap", syncRailToggleLabel);
 })();
