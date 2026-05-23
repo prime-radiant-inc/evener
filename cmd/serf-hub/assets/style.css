@@ -58,7 +58,7 @@
   --text-xl:  18px;
   --text-2xl: 22px;
 
-  /* Leading scale — Pass 1. --leading-relaxed is reserved. */
+  /* Leading scale — Pass 1. */
   --leading-tight:   1.3;
   --leading-snug:    1.5;
   --leading-normal:  1.6;
