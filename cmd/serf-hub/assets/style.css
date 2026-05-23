@@ -557,18 +557,18 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .assistant-message pre { background: var(--bg-raised); padding: 12px 16px; border-radius: 6px; overflow-x: auto; font-family: var(--font-mono); font-size: var(--text-sm); }
 
 /* Annotation tier — tool calls, diffs, subagent references */
-.tool-call { margin: 0 0 6px 0; font-size: 12.5px; color: var(--text-muted); display: flex; column-gap: 8px; row-gap: 1px; flex-wrap: wrap; align-items: baseline; }
+.tool-call { margin: 0 0 6px 0; font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-muted); display: flex; column-gap: 8px; row-gap: 1px; flex-wrap: wrap; align-items: baseline; }
 .tool-call-cluster { margin-bottom: 12px; }
 .tool-call-cluster .tool-call:last-child { margin-bottom: 0; }
-.tool-call .tool-status { display: inline-block; width: 12px; flex: 0 0 12px; margin-left: -20px; text-align: center; font-size: 11px; line-height: 1; font-family: ui-monospace, "SFMono-Regular", monospace; }
+.tool-call .tool-status { display: inline-block; width: 12px; flex: 0 0 12px; margin-left: -20px; text-align: center; font-size: var(--text-xs); line-height: 1; font-family: var(--font-mono); }
 .tool-call .tool-status-pending { color: var(--text-dim); }
 .tool-call .tool-status-good { color: var(--text-muted); }
 .tool-call .tool-status-bad { color: var(--state-awaiting); }
-.tool-call .verb { color: var(--text-muted); font-family: ui-monospace, "SFMono-Regular", monospace; }
-.tool-call .target { color: var(--text); font-family: ui-monospace, "SFMono-Regular", monospace; word-break: break-all; }
+.tool-call .verb { color: var(--text-muted); font-family: var(--font-mono); }
+.tool-call .target { color: var(--text); font-family: var(--font-mono); word-break: break-all; }
 .tool-call .sep { color: var(--text-dim); }
 .tool-call .result-detail { color: var(--text-muted); }
-.tool-call .tool-meta { margin-left: auto; color: var(--text-dim); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 11px; white-space: nowrap; }
+.tool-call .tool-meta { margin-left: auto; color: var(--text-dim); font-family: var(--font-mono); font-size: var(--text-xs); white-space: nowrap; }
 .tool-call .result { color: var(--text-muted); }
 .tool-call .result-good { color: var(--state-idle); }
 .tool-call .result-bad { color: var(--state-awaiting); }
@@ -577,18 +577,18 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
   flex: 0 0 100%;
   margin: 0;
 }
-.diff-body { margin: 0 0 12px 36px; padding-left: 10px; border-left: 1px solid var(--rule); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.5; color: var(--text-muted); white-space: pre-wrap; }
+.diff-body { margin: 0 0 12px 36px; padding-left: 10px; border-left: 1px solid var(--rule); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-snug); color: var(--text-muted); white-space: pre-wrap; }
 .diff-body .add { color: var(--state-idle); }
 .diff-body .del { color: var(--state-awaiting); }
 .diff-body .hunk { color: var(--text-dim); }
 
 /* Shared style for tool-body elements: diff, shell output, task list, etc. */
-.tool-body { margin: 0 0 12px 36px; padding-left: 10px; border-left: 1px solid var(--rule); font-size: 12px; color: var(--text-muted); }
+.tool-body { margin: 0 0 12px 36px; padding-left: 10px; border-left: 1px solid var(--rule); font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-muted); }
 .tool-body summary { cursor: pointer; color: var(--text-muted); padding: 0; user-select: none; }
 .tool-body summary:hover { color: var(--text); }
-.shell-output { margin: 4px 0 0; padding: 6px 8px; background: var(--bg); border-radius: 4px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.4; color: var(--text); white-space: pre-wrap; }
-.cheap-tool-args { margin: 4px 0 0; padding: 6px 8px; background: var(--bg); border-radius: 4px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.4; color: var(--text-muted); white-space: pre-wrap; }
-.cheap-tool-output { margin: 4px 0 0; padding: 6px 8px; background: var(--bg); border-radius: 4px; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.4; color: var(--text); white-space: pre-wrap; }
+.shell-output { margin: 4px 0 0; padding: 6px 8px; background: var(--bg); border-radius: 4px; font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-tight); color: var(--text); white-space: pre-wrap; }
+.cheap-tool-args { margin: 4px 0 0; padding: 6px 8px; background: var(--bg); border-radius: 4px; font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-tight); color: var(--text-muted); white-space: pre-wrap; }
+.cheap-tool-output { margin: 4px 0 0; padding: 6px 8px; background: var(--bg); border-radius: 4px; font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-tight); color: var(--text); white-space: pre-wrap; }
 .read-tool-purpose { margin: 0 0 3px; color: var(--text-muted); font-style: italic; }
 .read-tool-body .cheap-tool-output { margin-top: 0; }
 .output-preview-body { display: flex; flex-direction: column; }
@@ -597,14 +597,14 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .tool-output-more summary:hover { color: var(--text); }
 .tool-output-rest { margin-top: 0; order: 1; }
 .task-list-body { list-style: none; margin: 0 0 12px 36px; padding: 6px 0 6px 10px; border-left: 1px solid var(--rule); display: flex; flex-direction: column; gap: 3px; }
-.task-list-body .task-row { padding: 2px 0; background: transparent; border: none; font-size: 12px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.task-list-body .task-id { color: var(--text-muted); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 11px; }
+.task-list-body .task-row { padding: 2px 0; background: transparent; border: none; font-family: var(--font-mono); font-size: var(--text-sm); display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.task-list-body .task-id { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
 .task-list-body .task-arrow { color: var(--text-dim); }
-.task-list-body .task-status-label { color: var(--text); font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 11px; }
-.task-list-body .task-notes { color: var(--text-muted); font-style: italic; font-size: 11px; }
-.task-list-body .task-type { color: var(--text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
-.fetch-body { margin: 0 0 12px 36px; padding-left: 10px; border-left: 1px solid var(--rule); font-size: 12px; color: var(--text-muted); font-style: italic; }
-.search-body { list-style: none; margin: 0 0 12px 36px; padding-left: 10px; border-left: 1px solid var(--rule); font-size: 12px; color: var(--text); }
+.task-list-body .task-status-label { color: var(--text); font-family: var(--font-mono); font-size: var(--text-xs); }
+.task-list-body .task-notes { color: var(--text-muted); font-style: italic; font-size: var(--text-xs); }
+.task-list-body .task-type { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: 0.04em; }
+.fetch-body { margin: 0 0 12px 36px; padding-left: 10px; border-left: 1px solid var(--rule); font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-muted); font-style: italic; }
+.search-body { list-style: none; margin: 0 0 12px 36px; padding-left: 10px; border-left: 1px solid var(--rule); font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text); }
 .search-body li { padding: 2px 0; }
 .subagent-reference { margin: 0 0 12px 22px; font-size: var(--text-sm); color: var(--text-muted); cursor: pointer; }
 .subagent-reference .verb { color: var(--state-subagent); font-family: var(--font-mono); }
