@@ -68,6 +68,19 @@
   <script src="/assets/diagnostics.js"></script>
   <script src="/assets/pending.js"></script>
   <script src="/assets/renderer.js"></script>
+  <script>
+    // Global htmx error → toast. Renderer-specific error handling continues
+    // to win because htmx:responseError bubbles and we never preventDefault.
+    document.body.addEventListener("htmx:responseError", function (e) {
+      if (!window.SerfToast) return;
+      var status = (e && e.detail && e.detail.xhr && e.detail.xhr.status) || 0;
+      var msg = status ? ("Request failed (" + status + ")") : "Request failed";
+      window.SerfToast.show(msg, "error");
+    });
+    document.body.addEventListener("htmx:sendError", function () {
+      if (window.SerfToast) window.SerfToast.show("Network error", "error");
+    });
+  </script>
 </body>
 </html>
 {{end}}
