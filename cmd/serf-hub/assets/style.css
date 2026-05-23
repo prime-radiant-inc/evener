@@ -2087,3 +2087,17 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   from { opacity: 1; transform: translateY(0); }
   to   { opacity: 0; transform: translateY(-8px); }
 }
+
+/* Pass 8 — Connection lost banner (paired with toast in appwire.js) */
+.connection-banner {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-fixed-action);
+  padding: var(--space-2) var(--space-4);
+  background: color-mix(in srgb, var(--state-awaiting) 12%, var(--bg-raised));
+  border-bottom: 1px solid var(--state-awaiting);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-align: center;
+}

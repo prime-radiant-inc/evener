@@ -28,8 +28,10 @@
   const pending = new Map();
   const notificationHandlers = new Set();
   const connectionLostHandlers = new Set();
+  const connectionRestoredHandlers = new Set();
   const liveItemState = new Map();
   let serverFeatures = {};
+  let wasDisconnected = false;
 
   function rpcURL() {
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -46,6 +48,7 @@
       const markDisconnected = (err) => {
         if (disconnected) return;
         disconnected = true;
+        wasDisconnected = true;
         notifyConnectionLost(err);
       };
       const rejectPending = (err) => {
@@ -59,6 +62,10 @@
           capabilities: {},
         }).then((resp) => {
           serverFeatures = (resp && resp.features) || {};
+          if (wasDisconnected) {
+            wasDisconnected = false;
+            notifyConnectionRestored();
+          }
           resolve(sock);
         }, (err) => {
           initializeFailed = true;
@@ -173,6 +180,19 @@
   function notifyConnectionLost(err) {
     for (const handler of Array.from(connectionLostHandlers)) {
       try { handler(err || new Error("appwire connection lost")); } catch (_) {}
+    }
+  }
+
+  // Connection-restored fires when initialize() succeeds after a previous
+  // markDisconnected(). The renderer (or any subscriber) can use it to
+  // clear stale banners.
+  function onConnectionRestored(handler) {
+    connectionRestoredHandlers.add(handler);
+    return () => connectionRestoredHandlers.delete(handler);
+  }
+  function notifyConnectionRestored() {
+    for (const handler of Array.from(connectionRestoredHandlers)) {
+      try { handler(); } catch (_) {}
     }
   }
 
@@ -767,6 +787,7 @@
     request,
     onNotification,
     onConnectionLost,
+    onConnectionRestored,
     refForSession,
     listThreads,
     search,
@@ -789,4 +810,31 @@
     liveItemStateSize() { return liveItemState.size; },
     setPendingRegistry,
   };
+
+  // Wire toast + persistent banner. The banner is required because a 3s
+  // toast does not cover the case where the user notices the UI is stale
+  // 30s later (Known Issues — Pass 8).
+  function ensureConnectionBanner() {
+    let banner = document.getElementById("connection-banner");
+    if (banner) return banner;
+    banner = document.createElement("div");
+    banner.id = "connection-banner";
+    banner.className = "connection-banner";
+    banner.setAttribute("role", "status");
+    banner.textContent = "Connection lost — reconnecting…";
+    document.body.insertBefore(banner, document.body.firstChild);
+    return banner;
+  }
+  function clearConnectionBanner() {
+    const banner = document.getElementById("connection-banner");
+    if (banner && banner.parentNode) banner.parentNode.removeChild(banner);
+  }
+  onConnectionLost(() => {
+    if (window.SerfToast) window.SerfToast.show("Connection lost — reconnecting…", "error", { timeout: 0 });
+    ensureConnectionBanner();
+  });
+  onConnectionRestored(() => {
+    if (window.SerfToast) window.SerfToast.show("Connection restored", "success");
+    clearConnectionBanner();
+  });
 })();
