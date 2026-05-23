@@ -621,7 +621,17 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
    until the Pass 6 composer migration. Kept here so they don't read
    as raw text. */
 .rule-dot { color: var(--text-dim); font-family: var(--font-mono); }
-.conversation { flex: 1; min-height: 0; padding: var(--space-7) var(--space-9); overflow-y: auto; font-size: var(--text-md); line-height: var(--leading-normal); color: var(--text); }
+.conversation {
+  flex: 1;
+  min-height: 0;
+  padding: var(--space-5) var(--space-6);
+  overflow-y: auto;
+  font-size: var(--text-md);
+  line-height: var(--leading-snug);
+  color: var(--text);
+  container-type: inline-size;
+  container-name: conversation;
+}
 .workspace-input { padding: var(--space-4) var(--space-6) var(--space-4); border-top: 1px solid var(--rule); }
 
 .input-attachments { display: flex; gap: var(--space-3); flex-wrap: wrap; padding-bottom: var(--space-3); }
@@ -694,8 +704,22 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
    that reserved region the cursor crosses an unhovered gap on the way up
    to the actions, hover drops, and the actions disappear before they can
    be clicked. */
-.user-message { display: flex; justify-content: flex-end; margin-bottom: var(--space-7); padding-top: var(--space-6); position: relative; }
-.user-message .pill { max-width: 62%; padding: var(--space-3) var(--space-4); background: var(--bg-raised); border-radius: var(--radius-pill); font-size: var(--text-md); color: var(--text); line-height: var(--leading-snug); }
+.user-message {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: var(--space-4);
+  padding-top: 22px;
+  position: relative;
+}
+.user-message .pill {
+  max-width: min(62%, 540px);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-raised);
+  border-radius: var(--radius-pill);
+  font-size: var(--text-md);
+  color: var(--text);
+  line-height: var(--leading-snug);
+}
 .user-message-actions { position: absolute; right: 0; top: var(--space-2); display: none; gap: var(--space-4); font-size: var(--text-xs); color: var(--text-muted); }
 .user-message:hover .user-message-actions { display: flex; }
 .user-message-actions .action { cursor: pointer; }
@@ -712,7 +736,13 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .image-lightbox { position: fixed; inset: 0; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; flex-direction: column; gap: var(--space-4); z-index: var(--z-drawer); cursor: zoom-out; padding: var(--space-7); }
 .image-lightbox img { max-width: 90vw; max-height: 85vh; object-fit: contain; border-radius: var(--radius-lg); box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
 .image-lightbox-caption { color: #fff; font-family: var(--font-mono); font-size: var(--text-sm); opacity: 0.75; }
-.assistant-message { margin-bottom: var(--space-6); max-width: 680px; font-size: var(--text-md); line-height: var(--leading-normal); color: var(--text); }
+.assistant-message {
+  margin-bottom: var(--space-4);
+  max-width: 680px;
+  font-size: var(--text-md);
+  line-height: var(--leading-snug);
+  color: var(--text);
+}
 .assistant-message code { background: var(--bg-raised); padding: 1px var(--space-3); border-radius: var(--radius-sm); font-family: var(--font-mono); font-size: 0.85em; color: var(--text); }
 .assistant-message pre { background: var(--bg-raised); padding: var(--space-4) var(--space-5); border-radius: var(--radius-lg); overflow-x: auto; font-family: var(--font-mono); font-size: var(--text-sm); }
 
