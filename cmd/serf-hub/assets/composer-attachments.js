@@ -341,7 +341,13 @@
       return;
     }
     const banner = findErrorBanner(anchorEl);
-    if (!banner) return;
+    if (!banner) {
+      // Even without a banner anchor we still want the user to know.
+      if (rejected && rejected.length && window.SerfToast) {
+        window.SerfToast.show("Attachment rejected", "error");
+      }
+      return;
+    }
     if (!rejected || rejected.length === 0) {
       banner.textContent = "";
       banner.hidden = true;
@@ -353,6 +359,7 @@
       : "Skipped " + rejected.length + " non-image files: " + names;
     banner.textContent = msg;
     banner.hidden = false;
+    if (window.SerfToast) window.SerfToast.show(msg, "error");
   }
 
   // attachComposerDropHandlers wires dragenter / dragover / dragleave / drop
