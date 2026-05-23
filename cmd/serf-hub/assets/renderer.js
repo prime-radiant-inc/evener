@@ -2862,7 +2862,12 @@
 
   function setPanelToggleActive(selector, active) {
     const btn = document.querySelector(selector);
-    if (btn) btn.classList.toggle("active", !!active);
+    if (!btn) return;
+    if (active) {
+      btn.setAttribute("data-active", "");
+    } else {
+      btn.removeAttribute("data-active");
+    }
   }
 
   // bindClickOutside dismisses a slide-over panel when the user clicks
