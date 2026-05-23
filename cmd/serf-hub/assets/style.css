@@ -60,6 +60,38 @@
   --leading-snug:    1.5;
   --leading-normal:  1.6;
   --leading-relaxed: 1.7;
+
+  /* Radius scale — Pass 1. See design language §1.4. */
+  --radius-sm:   3px;
+  --radius-md:   4px;
+  --radius-lg:   6px;
+  --radius-xl:   8px;
+  --radius-pill: 14px;
+  --radius-full: 50%;
+
+  /* Motion — three durations, one easing. See design language §1.5. */
+  --motion-fast: 100ms ease;
+  --motion-base: 160ms ease;
+  --motion-slow: 240ms ease;
+  --pulse-cycle: 1400ms ease-in-out;
+  --flash-cycle: 2000ms ease-out;
+
+  /* Z-index scale — see design language §1.6. */
+  --z-sticky:        10;
+  --z-fixed-action: 100;
+  --z-dropdown:     200;
+  --z-overlay:      800;
+  --z-drawer:       900;
+  --z-modal:       1000;
+  --z-toast:       1100;
+
+  /* Touch target floor — design language §1.8. Desktop default; phone
+     media query in Pass 3 overrides to 44px. */
+  --tap-min: 32px;
+
+  /* Paper-grain texture — design language §1.9. 5% white opacity.
+     Applied via ::after pseudo on raised surfaces in later passes. */
+  --noise: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='1' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1, 0 0 0 0 1, 0 0 0 0 1, 0 0 0 0.05 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
 }
 
 @media (prefers-color-scheme: light) {
