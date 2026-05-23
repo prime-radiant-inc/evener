@@ -40,6 +40,7 @@ function assert(cond, msg) {
       field: "agent",
       wireField: "agent",
       label: "Agent",
+      description: "Name of the agent binary to run.",
       group: "Model",
       kind: "select",
       choices: [{ value: "serf", label: "Serf" }, { value: "codex", label: "Codex" }],
@@ -51,6 +52,7 @@ function assert(cond, msg) {
       field: "model",
       wireField: "model",
       label: "Model",
+      description: "Primary model for the reasoning loop.",
       group: "Model",
       kind: "modelPicker",
       defaultableLayers: ["global", "project"],
@@ -276,6 +278,26 @@ function assert(cond, msg) {
   const envInline = envWrap.querySelector("[data-launch-validation-error]");
   assert(envInline && !envInline.hidden && envInline.textContent.includes("OPENAI_API_KEY"),
     "credential env backend errors should render inline near env control");
+
+  const helpRows = root.querySelectorAll("p.help");
+  assert(helpRows.length > 0, "settings mode should render <p class=\"help\"> for options with descriptions");
+  const agentHelpTexts = Array.from(helpRows).map(p => p.textContent);
+  assert(agentHelpTexts.some(t => t.includes("agent binary")),
+    "select option description should appear as help text");
+  assert(agentHelpTexts.some(t => t.includes("reasoning loop")),
+    "modelPicker option description should appear as help text");
+
+  const spawnRootForHelp = dom.window.document.createElement("form");
+  spawnRootForHelp.dataset.launchAdvancedRoot = "";
+  dom.window.document.body.appendChild(spawnRootForHelp);
+  dom.window.LaunchConfigControls.render(spawnRootForHelp, {
+    mode: "spawn",
+    options: schema,
+    current: {},
+    includeEnvFallbacks: false,
+  });
+  assert(spawnRootForHelp.querySelectorAll("p.help").length === 0,
+    "spawn mode must not render help text descriptions");
 
   const out = dom.window.LaunchConfigControls.collect(root);
   assert(out.model === "openai/gpt-5", "collect should include populated model");

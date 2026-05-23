@@ -12,18 +12,22 @@
     <div class="row">
       <dt>Binary</dt>
       <dd>{{if .Binary}}{{.Binary}}{{else}}codex{{end}}</dd>
+      <p class="help">Path to the codex executable serf-hub launches for this entry.</p>
     </div>
     <div class="row">
       <dt>Working dir</dt>
       <dd>{{if .WorkingDir}}{{.WorkingDir}}{{else}}<span class="val-text"><span class="dim">(inherited)</span></span>{{end}}</dd>
+      <p class="help">Default working directory for codex sessions. Inherited from hub defaults when blank.</p>
     </div>
     <div class="row">
       <dt>Listen</dt>
       <dd>{{if .Listen}}{{.Listen}}{{else}}ws://127.0.0.1:0{{end}}</dd>
+      <p class="help">WebSocket address codex binds to. Port 0 lets the OS pick a free port.</p>
     </div>
     <div class="row">
       <dt>Timeout</dt>
       <dd>{{if .Timeout}}{{.Timeout}}{{else}}30s{{end}}</dd>
+      <p class="help">How long the hub waits for codex to connect before declaring the launch failed.</p>
     </div>
     {{if .Env}}
     <div class="row">
@@ -31,6 +35,7 @@
       <dd>
         {{range $k, $v := .Env}}<span class="val-text">{{$k}}=…</span> {{end}}
       </dd>
+      <p class="help">Extra environment variables injected into the codex process. Values are redacted here.</p>
     </div>
     {{end}}
   </dl>

@@ -198,6 +198,14 @@
     label.appendChild(hint);
   }
 
+  function appendHelpText(row, opt) {
+    if (!opt || !opt.description) return;
+    const p = document.createElement("p");
+    p.className = "help";
+    p.textContent = opt.description;
+    row.appendChild(p);
+  }
+
   function appendGlobalDefault(parent, opt, ctx) {
     if (ctx.mode !== "settings" || ctx.layer !== "project" || !ctx.globalDefaults || !opt) return;
     const wire = opt.wireField || opt.field;
@@ -307,6 +315,7 @@
       appendGlobalDefault(dd, opt, ctx);
       row.appendChild(dt);
       row.appendChild(dd);
+      appendHelpText(row, opt);
     } else {
       row.appendChild(title);
       row.appendChild(wrap);
@@ -358,6 +367,7 @@
         appendGlobalDefault(dd, opt, ctx);
         row.appendChild(dt);
         row.appendChild(dd);
+        appendHelpText(row, opt);
       } else {
         const label = document.createElement("label");
         label.textContent = opt.label || opt.field;
@@ -402,6 +412,7 @@
         dd.appendChild(wrap);
         row.appendChild(dt);
         row.appendChild(dd);
+        appendHelpText(row, opt);
       } else {
         const label = document.createElement("label");
         label.textContent = opt.label || opt.field;
@@ -423,6 +434,7 @@
         select.appendChild(o);
       });
       appendLabelAndControl(select);
+      if (isSettings) appendHelpText(row, opt);
       return;
     }
 
@@ -437,6 +449,7 @@
         appendGlobalDefault(dd, opt, ctx);
         row.appendChild(dt);
         row.appendChild(dd);
+        appendHelpText(row, opt);
       } else {
         const label = document.createElement("label");
         label.textContent = opt.label || opt.field;
@@ -459,6 +472,7 @@
       appendGlobalDefault(dd, opt, ctx);
       row.appendChild(dt);
       row.appendChild(dd);
+      appendHelpText(row, opt);
     } else {
       const label = document.createElement("label");
       label.textContent = opt.label || opt.field;
@@ -606,6 +620,7 @@
       headerRow.appendChild(headerDt);
       headerRow.appendChild(headerDd);
       row.appendChild(headerRow);
+      appendHelpText(row, opt);
 
       const collectionRow = document.createElement("div");
       collectionRow.className = "row";
@@ -696,6 +711,7 @@
       headerRow.appendChild(headerDt);
       headerRow.appendChild(headerDd);
       row.appendChild(headerRow);
+      appendHelpText(row, opt);
 
       const collectionRow = document.createElement("div");
       collectionRow.className = "row";
@@ -778,6 +794,7 @@
       headerRow.appendChild(headerDt);
       headerRow.appendChild(headerDd);
       row.appendChild(headerRow);
+      appendHelpText(row, opt);
 
       const collectionRow = document.createElement("div");
       collectionRow.className = "row";
