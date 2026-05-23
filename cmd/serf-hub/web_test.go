@@ -2000,8 +2000,8 @@ func TestWeb_WorkspacePartial_PastSession_RendersTitleAndState(t *testing.T) {
 }
 
 // TestWeb_WorkspacePartial_RendersBottomStripAffordances verifies that the
-// workspace partial includes the new bordered-card bottom strip elements
-// (attach button, drop zone, mode chip, controls spacer, status row).
+// workspace partial includes the bottom strip elements
+// (attach button, drop zone, mode chip, three composer zones, status row).
 func TestWeb_WorkspacePartial_RendersBottomStripAffordances(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
@@ -2032,7 +2032,9 @@ func TestWeb_WorkspacePartial_RendersBottomStripAffordances(t *testing.T) {
 	wants := []string{
 		"data-attach-trigger",
 		"data-drop-zone",
-		"controls-spacer",
+		"controls-left",
+		"controls-center",
+		"controls-right",
 		"input-status",
 		"data-file-picker",
 	}
