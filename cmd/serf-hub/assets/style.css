@@ -414,7 +414,6 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
   align-items: baseline;
   gap: var(--space-2);
 }
-.sb-row .meta .sep { color: var(--text-dim); }
 
 /* State accents — left border + 5% tinted background. Dark theme reads
    fine at 5%; light-theme bump lives in the per-theme override block. */
@@ -852,7 +851,6 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .tool-call .tool-status-bad { color: var(--state-awaiting); }
 .tool-call .verb { color: var(--text-muted); font-family: var(--font-mono); }
 .tool-call .target { color: var(--text); font-family: var(--font-mono); word-break: break-all; }
-.tool-call .sep { color: var(--text-dim); }
 .tool-call .result-detail { color: var(--text-muted); }
 .tool-call .tool-meta { margin-left: auto; color: var(--text-dim); font-family: var(--font-mono); font-size: var(--text-xs); white-space: nowrap; }
 .tool-call .result { color: var(--text-muted); }
@@ -937,6 +935,11 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   font-size: var(--text-sm);
   color: var(--text-muted);
   cursor: pointer;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--space-2);
+  row-gap: 1px;
 }
 .subagent-reference .verb { color: var(--state-subagent); font-family: var(--font-mono); }
 .subagent-reference:hover { color: var(--text); }
@@ -2127,6 +2130,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 [data-loading] .skeleton-row .skeleton.dot { height: 6px; min-width: 6px; border-radius: 50%; }
 [data-loading] .skeleton-row .skeleton.title { height: 12px; width: 70%; }
 [data-loading] .skeleton-row .skeleton.meta  { height: 10px; width: 32px; }
+:not([data-loading]) .skeleton-row { display: none; }
 @keyframes skeleton-shimmer {
   0%   { background-position: 200% 0; }
   100% { background-position: -200% 0; }

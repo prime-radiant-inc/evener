@@ -1141,18 +1141,17 @@
       target.className = "target";
       target.textContent = renderer.target ? renderer.target(args, data) : "";
       el.appendChild(target);
-      const sep = document.createElement("span"); sep.className = "sep"; sep.textContent = "·"; sep.style.display = "none";
       const result = document.createElement("span");
       result.className = "result-detail";
       result.textContent = "";
       const meta = document.createElement("span");
       meta.className = "tool-meta";
       meta.textContent = "";
-      el.appendChild(sep); el.appendChild(result); el.appendChild(meta);
+      el.appendChild(result); el.appendChild(meta);
       parent.appendChild(el);
 
       const startedAt = toolEventTime(data) || new Date();
-      const state = { el, statusEl: status, sepEl: sep, resultEl: result, metaEl: meta, outputBuf: "", tool, args, renderer, body: null, ids: [], startedAt, durationMs: toolDuration(data) };
+      const state = { el, statusEl: status, resultEl: result, metaEl: meta, outputBuf: "", tool, args, renderer, body: null, ids: [], startedAt, durationMs: toolDuration(data) };
       this.renderToolMeta(state, null);
       if (renderer.body) state.body = renderer.body(args, el, data);
       this.rememberToolAlias(state, callId);
@@ -1182,7 +1181,6 @@
         const text = m.renderer.result ? m.renderer.result(data, out, m) : "";
         m.resultEl.textContent = (text === "ok" || text === "done") ? "" : text;
       }
-      if (m.sepEl) m.sepEl.style.display = m.resultEl.textContent ? "" : "none";
       const endedAt = toolEventTime(data) || new Date();
       const duration = toolDuration(data);
       if (duration != null) m.durationMs = duration;
@@ -1229,17 +1227,12 @@
       const target = document.createElement("span");
       target.className = "target";
       target.textContent = (data.task || "").slice(0, 80);
-      const sep = document.createElement("span"); sep.className = "sep"; sep.textContent = "·";
       const dot = document.createElement("span");
       dot.className = "status-indicator";
       dot.style.color = "var(--state-processing)";
       dot.textContent = "●";
       ref.appendChild(verb);
-      ref.appendChild(document.createTextNode(" "));
       ref.appendChild(target);
-      ref.appendChild(document.createTextNode(" "));
-      ref.appendChild(sep);
-      ref.appendChild(document.createTextNode(" "));
       ref.appendChild(dot);
       this.conversation.appendChild(ref);
       this.activeSubagents.set(agentId, ref);
@@ -1268,12 +1261,8 @@
       }
       // Append turns count
       if (data.turns_used != null) {
-        const sep2 = document.createElement("span"); sep2.className = "sep"; sep2.textContent = "·";
         const turns = document.createElement("span"); turns.className = "result";
         turns.textContent = data.turns_used + " turns";
-        ref.appendChild(document.createTextNode(" "));
-        ref.appendChild(sep2);
-        ref.appendChild(document.createTextNode(" "));
         ref.appendChild(turns);
       }
       // Make clickable if session_id is provided
@@ -2674,10 +2663,10 @@
       const ref = document.createElement("div");
       ref.className = "subagent-reference";
       ref.dataset.subagentId = st.session_id;
-      ref.innerHTML = '<span class="verb">subagent</span> <span class="target"></span>' +
-                      ' <span class="sep">·</span> <span class="result-good">●</span>' +
-                      ' <span class="result">' + (st.status || "done") + '</span>' +
-                      ' <span class="sep">·</span> <span class="result">' + (st.turns_used || 0) + ' turns</span>';
+      ref.innerHTML = '<span class="verb">subagent</span><span class="target"></span>' +
+                      '<span class="result-good">●</span>' +
+                      '<span class="result">' + (st.status || "done") + '</span>' +
+                      '<span class="result">' + (st.turns_used || 0) + ' turns</span>';
       ref.querySelector(".target").textContent = clip(st.task || state.args.task || "", 80);
       ref.onclick = () => { window.location.href = "/s/" + encodeURIComponent(st.session_id); };
       return ref;

@@ -26,7 +26,7 @@
       </div>
       <div class="text-col">
         <div class="title">{{.Title}}</div>
-        <div class="meta"><span>{{.Project}}</span><span class="sep">·</span><span>{{.Age}}</span></div>
+        <div class="meta"><span>{{.Project}}</span><span>{{.Age}}</span></div>
       </div>
     </a>
     {{end}}
@@ -112,7 +112,7 @@
         <div class="dot-col"><span class="status-dot subagent" data-state="{{.State}}"></span></div>
         <div class="text-col">
           <div class="title">{{.Title}}</div>
-          <div class="meta"><span>subagent</span><span class="sep">·</span><span>{{.Age}}</span></div>
+          <div class="meta"><span>subagent</span><span>{{.Age}}</span></div>
         </div>
       </a>
       {{else if eq .Kind "fork"}}
@@ -126,7 +126,7 @@
         <div class="dot-col"><span class="fork-glyph" data-state="{{.State}}">⎇</span></div>
         <div class="text-col">
           <div class="title">{{.Title}}</div>
-          <div class="meta"><span>fork</span><span class="sep">·</span><span>{{.Age}}</span></div>
+          <div class="meta"><span>fork</span><span>{{.Age}}</span></div>
         </div>
       </a>
       {{end}}
