@@ -2232,3 +2232,12 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
     box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 30%, transparent);
   }
 }
+
+.chip-overflow-more {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px dashed var(--rule);
+}
+.chip-overflow-more:hover { color: var(--text); border-color: var(--accent); }
