@@ -918,7 +918,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .tasks-summary { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); margin: var(--space-4) 0 var(--space-3); }
 .tasks-empty { color: var(--text-muted); font-size: var(--text-sm); padding: var(--space-4) 0; font-style: italic; }
 .tasks-list { list-style: none; margin: var(--space-3) 0 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-3); }
-.task-row { display: grid; grid-template-columns: 14px 28px auto 1fr auto; gap: 6px; align-items: baseline; padding: 6px 8px; border-radius: var(--radius-md); font-size: var(--text-sm); line-height: var(--leading-tight); background: var(--bg); border: 1px solid var(--rule); }
+.task-row { display: grid; grid-template-columns: 14px 28px auto 1fr auto; gap: var(--space-3); align-items: baseline; padding: var(--space-3) var(--space-3); border-radius: var(--radius-md); font-size: var(--text-sm); line-height: var(--leading-tight); background: var(--bg); border: 1px solid var(--rule); }
 .task-row .task-icon { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
 .task-row .task-id { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
 .task-row .task-type { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: 0.04em; }
