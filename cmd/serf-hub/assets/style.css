@@ -210,7 +210,7 @@ body {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  padding: var(--pad) calc(var(--pad) * 2);
+  padding: var(--space-4) var(--space-6);
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
@@ -220,17 +220,17 @@ body {
  * (which uses #workspace flex layout); otherwise it injects 24/48px
  * padding into the workspace and the input form floats off the bottom. */
 body:not(.app) main {
-  padding: calc(var(--pad) * 2);
-  padding-bottom: calc(var(--pad) * 4);
+  padding: var(--space-6);
+  padding-bottom: var(--space-8);
   max-width: 1400px;
   margin: 0 auto;
 }
-.cols { display: grid; grid-template-columns: 1fr 1fr; gap: calc(var(--pad) * 2); }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-6); }
 section.panel {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: var(--pad);
+  padding: var(--space-4);
   min-width: 0;
 }
 section.panel h2 { margin-top: 0; font-family: var(--font-mono); font-size: var(--text-md); color: var(--muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; }
@@ -238,7 +238,7 @@ section.panel h2 { margin-top: 0; font-family: var(--font-mono); font-size: var(
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--pad);
+  gap: var(--space-4);
   padding: 8px 4px;
   border-bottom: 1px solid var(--border);
   cursor: pointer;
@@ -288,14 +288,14 @@ textarea { width: 100%; min-height: 60px; resize: vertical; }
 
 #status-bar {
   display: flex;
-  gap: var(--pad);
+  gap: var(--space-4);
   align-items: center;
-  padding: 8px var(--pad);
+  padding: 8px var(--space-4);
   background: var(--panel-2);
   border-radius: 4px;
   font-size: var(--text-sm);
   color: var(--muted);
-  margin-bottom: var(--pad);
+  margin-bottom: var(--space-4);
 }
 #status-bar .pill { padding: 2px 8px; background: var(--bg); border-radius: 12px; }
 #status-bar .pill.ok { color: var(--user); }
@@ -304,11 +304,11 @@ textarea { width: 100%; min-height: 60px; resize: vertical; }
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: var(--pad);
+  padding: var(--space-4);
   height: 60vh;
   overflow-y: auto;
 }
-.msg { margin-bottom: var(--pad); padding: 8px; border-radius: 4px; }
+.msg { margin-bottom: var(--space-4); padding: 8px; border-radius: 4px; }
 .msg.user { background: rgba(158, 206, 106, 0.08); border-left: 2px solid var(--user); }
 .msg.assistant { background: var(--panel-2); border-left: 2px solid var(--accent); }
 .msg.tool { background: rgba(224, 175, 104, 0.05); border-left: 2px solid var(--tool); padding-left: 8px; font-family: var(--font-mono); font-size: var(--text-sm); }
@@ -318,11 +318,11 @@ textarea { width: 100%; min-height: 60px; resize: vertical; }
 .msg pre { background: var(--bg); padding: 8px; border-radius: 4px; overflow-x: auto; }
 
 #input-area {
-  margin-top: var(--pad);
+  margin-top: var(--space-4);
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: var(--pad);
+  padding: var(--space-4);
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 6px;
