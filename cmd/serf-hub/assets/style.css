@@ -1135,7 +1135,6 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
      .sp-dir-caret            font-size: 9px       (same)
      .assistant-message code  font-size: 0.85em    (relative to body so A/B works)
      .settings-help code      font-size: 0.85em    (same)
-     .search-empty code       font-size: 0.85em    (same)
      *                        line-height: 1       (icon-aligned chrome; optical)
      .diagnostic-badge        line-height: 1.3 via --leading-tight (already token)
 
