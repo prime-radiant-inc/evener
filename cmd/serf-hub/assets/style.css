@@ -2101,3 +2101,52 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   font-size: var(--text-xs);
   text-align: center;
 }
+
+/* Pass 8 — Skeleton loading */
+.skeleton {
+  display: block;
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  height: 12px;
+  min-width: 40px;
+  margin: var(--space-2) 0;
+}
+/* Shimmer only activates inside a [data-loading] swap target. Without
+   the attribute, .skeleton is an invisible spacer (height carries layout
+   so the eventual swap doesn't jump). */
+[data-loading] .skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--bg-raised) 0%,
+    var(--surface-secondary) 50%,
+    var(--bg-raised) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer var(--pulse-cycle) infinite linear;
+}
+[data-loading] .skeleton-row {
+  display: grid;
+  grid-template-columns: 6px 1fr 40px;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  align-items: center;
+}
+[data-loading] .skeleton-row .skeleton.dot { height: 6px; min-width: 6px; border-radius: 50%; }
+[data-loading] .skeleton-row .skeleton.title { height: 12px; width: 70%; }
+[data-loading] .skeleton-row .skeleton.meta  { height: 10px; width: 32px; }
+@keyframes skeleton-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Pass 8 — First-paint sidebar stagger.
+   sidebar.js adds .stagger to the Live section and sets --i on each row. */
+.stagger > * {
+  opacity: 0;
+  animation: enter var(--motion-base) ease-out forwards;
+  animation-delay: calc(30ms * var(--i, 0));
+}
+@keyframes enter {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
