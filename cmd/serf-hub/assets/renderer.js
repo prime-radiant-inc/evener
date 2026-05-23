@@ -2985,7 +2985,7 @@
     parts.push("</header>");
 
     if (total === 0) {
-      parts.push("<div class='tasks-empty'>no tasks for this session</div>");
+      parts.push("<div class='empty-state empty-state-tasks'><p class='empty-state-title'>No tasks yet</p><p class='empty-state-body'>The agent's task list is empty for this session.</p></div>");
       panel.innerHTML = parts.join("");
       return;
     }
