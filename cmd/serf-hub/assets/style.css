@@ -456,70 +456,70 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
    become fresh user turns when the active turn completes (kata 111a). The
    "send as steer" button (and ⇧↵) drain these into a single STEERING
    injection (kata 0bq1). Hidden via the [hidden] attribute when empty. */
-.queue-preview { padding: 8px 10px; margin-bottom: 8px; background: var(--bg); border: 1px solid var(--rule); border-radius: 4px; font-size: var(--text-xs); }
-.queue-preview-header { display: flex; align-items: baseline; gap: 12px; color: var(--text-muted); margin-bottom: 4px; }
+.queue-preview { padding: var(--space-3) var(--space-4); margin-bottom: var(--space-3); background: var(--bg); border: 1px solid var(--rule); border-radius: 4px; font-size: var(--text-xs); }
+.queue-preview-header { display: flex; align-items: baseline; gap: var(--space-4); color: var(--text-muted); margin-bottom: var(--space-2); }
 .queue-preview-label { font-weight: 500; color: var(--text); }
 .queue-preview-label [data-queue-depth] { font-family: var(--font-mono); }
 .queue-preview-hint { flex: 1; }
-.queue-preview-hint kbd { font-family: var(--font-mono); font-weight: 600; padding: 0 3px; background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 3px; }
-.queue-preview-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
-.queue-preview-item { display: flex; gap: 6px; align-items: baseline; padding: 3px 6px; background: var(--bg-raised); border-radius: 3px; }
+.queue-preview-hint kbd { font-family: var(--font-mono); font-weight: 600; padding: 0 var(--space-2); background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 3px; }
+.queue-preview-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-2); }
+.queue-preview-item { display: flex; gap: var(--space-3); align-items: baseline; padding: var(--space-2) var(--space-3); background: var(--bg-raised); border-radius: 3px; }
 .queue-preview-item .qp-idx { color: var(--text-dim); font-family: var(--font-mono); font-size: var(--text-2xs); }
 .queue-preview-item .qp-text { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.attachment-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; background: var(--bg); border: 1px solid var(--rule); border-radius: 4px; font-family: var(--font-mono); font-size: var(--text-xs); }
+.attachment-chip { display: inline-flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); background: var(--bg); border: 1px solid var(--rule); border-radius: 4px; font-family: var(--font-mono); font-size: var(--text-xs); }
 .attachment-chip .att-thumb { width: 18px; height: 18px; object-fit: cover; border-radius: 2px; }
-.attachment-chip .att-remove { cursor: pointer; color: var(--text-muted); padding: 0 2px; border: none; background: transparent; }
+.attachment-chip .att-remove { cursor: pointer; color: var(--text-muted); padding: 0 var(--space-1); border: none; background: transparent; }
 .attachment-chip .att-remove:hover { color: var(--text); }
 
 /* Composer paste chips (kata r6a1). Separate from .input-attachments above
    so the shared paste helper can render alongside the legacy file-picker /
    drag-drop pipeline without stomping its chips. Same visual language —
    minus the thumbnail — so both rows feel like one strip. */
-.composer-attachments { display: flex; gap: 6px; flex-wrap: wrap; padding-bottom: 8px; }
+.composer-attachments { display: flex; gap: var(--space-3); flex-wrap: wrap; padding-bottom: var(--space-3); }
 .composer-attachments:empty { display: none; }
-.composer-attachment { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; background: var(--bg); border: 1px solid var(--rule); border-radius: 4px; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text); }
+.composer-attachment { display: inline-flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); background: var(--bg); border: 1px solid var(--rule); border-radius: 4px; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text); }
 .composer-attachment-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
-.composer-attachment-remove { cursor: pointer; color: var(--text-muted); padding: 0 2px; border: none; background: transparent; font-size: var(--text-base); line-height: 1; }
+.composer-attachment-remove { cursor: pointer; color: var(--text-muted); padding: 0 var(--space-1); border: none; background: transparent; font-size: var(--text-base); line-height: 1; }
 .composer-attachment-remove:hover { color: var(--text); }
 
-.input-card { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; min-height: 80px; transition: border-color 0.15s; }
+.input-card { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 6px; padding: var(--space-4) var(--space-4); min-height: 80px; transition: border-color 0.15s; }
 /* kata 65mm: drop-active is set by the shared composer-attachments helper
    on dragenter. Visually subtle so dropping onto the existing .input-card
    keeps its border style; the dashed outline cues "drop here" without
    recoloring the whole composer. */
 .input-card.drop-active,
 .spawn-input-wrap.drop-active { outline: 2px dashed var(--accent, var(--state-processing)); outline-offset: -2px; }
-.composer-attachment-error { color: var(--state-danger, #c8553d); font-size: var(--text-xs); padding: 4px 0; }
+.composer-attachment-error { color: var(--state-danger, #c8553d); font-size: var(--text-xs); padding: var(--space-2) 0; }
 .composer-attachment-error:empty,
 .composer-attachment-error[hidden] { display: none; }
 .message-input { width: 100%; min-height: 36px; max-height: 50vh; background: transparent; border: none; resize: none; color: var(--text); font: inherit; font-family: var(--font-sans); font-size: var(--text-md); outline: none; line-height: var(--leading-snug); overflow-y: auto; }
 
-.input-controls { display: flex; align-items: center; gap: 8px; padding: 8px 0 0; flex-wrap: wrap; }
+.input-controls { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) 0 0; flex-wrap: wrap; }
 .controls-spacer { flex: 1; }
-.running-indicator { display: inline-flex; align-items: center; gap: 6px; color: var(--text); font-size: var(--text-sm); white-space: nowrap; }
-.running-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--state-processing); box-shadow: 0 0 0 4px rgba(122,162,247,0.12); }
-.input-btn { display: inline-flex; align-items: center; gap: 5px; padding: 4px 12px; background: var(--bg); border: 1px solid var(--rule); border-radius: 4px; color: var(--text); font: inherit; font-size: var(--text-sm); cursor: pointer; }
+.running-indicator { display: inline-flex; align-items: center; gap: var(--space-3); color: var(--text); font-size: var(--text-sm); white-space: nowrap; }
+.running-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--state-processing); box-shadow: 0 0 0 var(--space-2) rgba(122,162,247,0.12); }
+.input-btn { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); background: var(--bg); border: 1px solid var(--rule); border-radius: 4px; color: var(--text); font: inherit; font-size: var(--text-sm); cursor: pointer; }
 .input-btn:hover { background: var(--bg-raised); }
 .input-btn-ghost { color: var(--text-muted); }
-.input-btn-stop { color: var(--state-awaiting); border-color: rgba(247,118,142,0.45); background: rgba(247,118,142,0.08); margin-right: 10px; }
+.input-btn-stop { color: var(--state-awaiting); border-color: rgba(247,118,142,0.45); background: rgba(247,118,142,0.08); margin-right: var(--space-4); }
 .input-btn-stop:hover:not([disabled]) { background: rgba(247,118,142,0.14); border-color: rgba(247,118,142,0.65); }
 .input-btn-stop[disabled] { opacity: 0.45; cursor: not-allowed; }
 .input-btn-primary { background: var(--state-processing); color: var(--bg); border-color: transparent; font-weight: 500; }
 .input-btn-primary:hover { background: var(--state-processing); filter: brightness(1.1); }
-.input-btn-primary kbd { background: rgba(0,0,0,0.2); border: 1px solid rgba(0,0,0,0.3); color: inherit; font-family: var(--font-mono); padding: 0 4px; border-radius: 3px; }
+.input-btn-primary kbd { background: rgba(0,0,0,0.2); border: 1px solid rgba(0,0,0,0.3); color: inherit; font-family: var(--font-mono); padding: 0 var(--space-2); border-radius: 3px; }
 
 .input-chip { font-family: var(--font-mono); font-size: var(--text-xs); }
-.chip-caret { color: var(--text-muted); margin-left: 2px; }
+.chip-caret { color: var(--text-muted); margin-left: var(--space-1); }
 
-.input-status { display: flex; align-items: center; gap: 14px; padding: 10px 0 0; margin-top: 6px; border-top: 1px solid var(--rule); font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-muted); flex-wrap: wrap; }
+.input-status { display: flex; align-items: center; gap: var(--space-4); padding: var(--space-4) 0 0; margin-top: var(--space-3); border-top: 1px solid var(--rule); font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-muted); flex-wrap: wrap; }
 .input-status .cwd { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .input-status .status-spacer { flex: 1; }
-.input-status .context { display: inline-flex; align-items: center; gap: 6px; }
+.input-status .context { display: inline-flex; align-items: center; gap: var(--space-3); }
 .input-status .context-bar { width: 80px; height: 3px; background: var(--bg); border-radius: 2px; overflow: hidden; }
 .input-status .context-fill { display: block; height: 100%; background: var(--state-processing); }
 
 /* Generic context/cost styling — kept for status_bar.html and other surfaces. */
-.context { display: inline-flex; align-items: center; gap: 8px; }
+.context { display: inline-flex; align-items: center; gap: var(--space-3); }
 .context-bar { display: inline-block; width: 80px; height: 2px; background: var(--rule); vertical-align: middle; overflow: hidden; }
 .context-fill { display: block; height: 100%; background: var(--accent); }
 .context-numbers { font-family: var(--font-mono); }
@@ -674,15 +674,15 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 .steering .steering-body { margin: var(--space-4) 0 0; padding: var(--space-4) var(--space-4); background: var(--bg); border-radius: 4px; font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-snug); color: var(--text-muted); white-space: pre-wrap; word-break: break-word; }
 
 /* Fork dialog */
-.fork-dialog { margin-bottom: 24px; padding: 12px 16px; background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 8px; max-width: 480px; margin-left: auto; }
-.fork-dialog-title { font-weight: 500; color: var(--text); font-size: var(--text-base); margin-bottom: 6px; }
-.fork-dialog-body { color: var(--text-muted); font-size: var(--text-sm); line-height: var(--leading-snug); margin-bottom: 10px; }
+.fork-dialog { margin-bottom: var(--space-6); padding: var(--space-4) var(--space-5); background: var(--bg-raised); border: 1px solid var(--rule); border-radius: 8px; max-width: 480px; margin-left: auto; }
+.fork-dialog-title { font-weight: 500; color: var(--text); font-size: var(--text-base); margin-bottom: var(--space-3); }
+.fork-dialog-body { color: var(--text-muted); font-size: var(--text-sm); line-height: var(--leading-snug); margin-bottom: var(--space-4); }
 .fork-dialog-label { color: var(--text-muted); font-size: var(--text-sm); }
-.fork-dialog-input { background: transparent; border: 1px solid var(--rule); border-radius: 3px; padding: 4px 8px; color: var(--text); font: inherit; font-family: var(--font-mono); font-size: var(--text-sm); width: 220px; margin-left: 8px; outline: none; }
+.fork-dialog-input { background: transparent; border: 1px solid var(--rule); border-radius: 3px; padding: var(--space-2) var(--space-3); color: var(--text); font: inherit; font-family: var(--font-mono); font-size: var(--text-sm); width: 220px; margin-left: var(--space-3); outline: none; }
 .fork-dialog-input:focus { border-color: var(--accent); }
-.fork-dialog-actions { display: flex; gap: 14px; align-items: center; margin-top: 10px; font-size: var(--text-sm); }
-.fork-cancel { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font: inherit; padding: 4px 8px; }
-.fork-confirm { margin-left: auto; padding: 6px 14px; background: var(--accent); color: var(--bg); border: none; border-radius: 4px; font-weight: 500; cursor: pointer; font: inherit; }
+.fork-dialog-actions { display: flex; gap: var(--space-4); align-items: center; margin-top: var(--space-4); font-size: var(--text-sm); }
+.fork-cancel { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font: inherit; padding: var(--space-2) var(--space-3); }
+.fork-confirm { margin-left: auto; padding: var(--space-3) var(--space-4); background: var(--accent); color: var(--bg); border: none; border-radius: 4px; font-weight: 500; cursor: pointer; font: inherit; }
 
 /* ── Spawn surface ───────────────────────────────────────────────────────── */
 .spawn-pane { padding: 48px 64px; max-width: 880px; margin: 0 auto; width: 100%; flex: 1; overflow-y: auto; min-height: 0; }
