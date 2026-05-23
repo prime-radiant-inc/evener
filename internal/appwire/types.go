@@ -660,6 +660,7 @@ type LaunchOption struct {
 	Field             string                   `json:"field"`
 	WireField         string                   `json:"wireField"`
 	Label             string                   `json:"label"`
+	Description       string                   `json:"description,omitempty"`
 	Group             string                   `json:"group"`
 	Kind              string                   `json:"kind"`
 	PathKind          string                   `json:"pathKind,omitempty"`

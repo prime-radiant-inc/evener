@@ -30,6 +30,7 @@ func (c *hubLaunchController) Schema(ctx context.Context, params appwire.EmptyPa
 			Field:         opt.Field,
 			WireField:     opt.WireField,
 			Label:         opt.Label,
+			Description:   opt.Description,
 			Group:         string(opt.Group),
 			Kind:          string(opt.Kind),
 			PathKind:      string(opt.PathKind),
