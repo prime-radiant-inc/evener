@@ -220,16 +220,17 @@
   document.addEventListener("htmx:afterSwap", syncRailToggleLabel);
 
   // data-active marker — sync after every htmx swap into #workspace. The
-  // marker is the row whose href ends with the current pathname (e.g.,
+  // marker is the row whose href matches the current pathname exactly (e.g.,
   // "/s/01ABC"). /new and /settings URLs don't match any sb-row, so all
-  // rows clear. Matching is suffix-based because the href is server-side
-  // absolute but the pathname can pick up query strings.
+  // rows clear.
+  // Match by exact pathname: rows have href="/s/<id>" and window.location.pathname
+  // is "/s/<id>" (with any trailing slash stripped below).
   function syncActiveRow() {
     var path = window.location.pathname || "";
     var rows = document.querySelectorAll(".sb-row");
     var matched = null;
     if (path && path.indexOf("/s/") === 0) {
-      // Direct prefix — strip any trailing slashes for exact match.
+      // Strip trailing slash for exact match.
       var clean = path.replace(/\/+$/, "");
       for (var i = 0; i < rows.length; i++) {
         var href = rows[i].getAttribute("href") || "";
@@ -245,7 +246,11 @@
     }
   }
 
-  document.addEventListener("DOMContentLoaded", syncActiveRow);
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", syncActiveRow);
+  } else {
+    syncActiveRow();
+  }
   document.addEventListener("htmx:afterSwap", function (e) {
     // Only resync when the swap was into #workspace OR the sidebar itself.
     // (Sidebar swaps re-render the rows; the marker has to be re-applied.)
