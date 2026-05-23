@@ -506,7 +506,7 @@
       html += renderCommandRow(c, idx);
     });
     if (!items.length) {
-      html += '<div class="search-empty">no commands match.</div>';
+      html += '<div class="empty-state empty-state-search"><p class="empty-state-title">No commands match</p><p class="empty-state-body">Try a different keyword or open a session first.</p></div>';
     }
     active = items.length > 0 ? 0 : -1;
     results.innerHTML = html;
@@ -608,7 +608,9 @@
       active = items.length > 0 ? 0 : -1;
       let html = "";
       if (!items.length) {
-        html = '<div class="search-empty">' + (argsEnumLoaded ? "no matches." : "loading…") + '</div>';
+        html = argsEnumLoaded
+          ? '<div class="empty-state empty-state-search"><p class="empty-state-title">No matches</p></div>'
+          : '<div class="empty-state empty-state-search"><p class="empty-state-body">Loading…</p></div>';
       } else {
         items.forEach((it, idx) => { html += renderArgItemRow(it.argItem, idx); });
       }
@@ -625,7 +627,7 @@
     try { val = source(ctx); } catch (_) { val = []; }
     if (val && typeof val.then === "function") {
       // initial loading frame
-      results.innerHTML = '<div class="search-empty">loading…</div>';
+      results.innerHTML = '<div class="empty-state empty-state-search"><p class="empty-state-body">Loading…</p></div>';
       items = [];
       active = -1;
       val.then(list => { argsEnumLoaded = true; resolved(list); })
@@ -642,7 +644,7 @@
     const hint = (query || "").trim()
       ? 'press ↵ to run with: <code>' + escapeHtml(query) + '</code>'
       : 'type a value and press ↵';
-    results.innerHTML = '<div class="search-empty">' + hint + '</div>';
+    results.innerHTML = '<div class="empty-state empty-state-search"><p class="empty-state-body">' + hint + '</p></div>';
   }
 
   function renderArgItemRow(it, idx) {
@@ -745,7 +747,7 @@
       : fetch("/api/search?q=" + encodeURIComponent(query)).then(r => r.json());
     searchPromise
       .then(resp => render(resp, query))
-      .catch(() => { results.innerHTML = '<div class="search-empty">search failed</div>'; });
+      .catch(() => { results.innerHTML = '<div class="empty-state empty-state-search"><p class="empty-state-title">Search failed</p></div>'; });
   }
 
   function render(resp, query) {
@@ -777,7 +779,7 @@
       });
     }
     if (items.length === 0) {
-      html += '<div class="search-empty">no matches in live, past, or this session.</div>';
+      html += '<div class="empty-state empty-state-search"><p class="empty-state-title">No matches</p><p class="empty-state-body">Nothing in live, past, or this session.</p></div>';
     }
     results.innerHTML = html;
     active = items.length > 0 ? 0 : -1;

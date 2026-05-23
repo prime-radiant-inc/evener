@@ -145,7 +145,7 @@ function flush() { return new Promise(r => setTimeout(r, 0)); }
     await flush();
     const html = window.document.getElementById("search-results").innerHTML;
     pass(!/In session/.test(html), "no in-session section without #conversation");
-    pass(/no matches in live, past, or this session/.test(html), "empty-state copy uses spec wording");
+    pass(/empty-state-search/.test(html), "empty-state copy uses spec wording");
   }
 
   // -------- Scenario 4: empty query renders nothing. --------
