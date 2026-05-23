@@ -67,12 +67,16 @@
   ]);
 
   function controlClass(mode, name) {
-    return mode === "spawn" ? "spawn-advanced-" + name : "settings-launch-" + name;
+    return mode === "spawn" ? "spawn-advanced-" + name : "settings-table-" + name;
   }
 
   function addControlsWrap(mode) {
     const wrap = document.createElement("div");
-    wrap.className = controlClass(mode, "add-controls") + (mode === "settings" ? " settings-add-row" : "");
+    if (mode === "settings") {
+      wrap.className = "settings-collection-add";
+    } else {
+      wrap.className = "spawn-advanced-add-controls";
+    }
     return wrap;
   }
 
@@ -91,8 +95,8 @@
 
   function fieldWrapFor(el) {
     if (!el || !el.closest) return null;
-    if (el.classList && el.classList.contains("spawn-advanced-list-control")) return el;
-    return el.closest(".spawn-advanced-list-control[data-launch-wire-field], [data-launch-option]");
+    if (el.classList && (el.classList.contains("spawn-advanced-list-control") || el.classList.contains("settings-collection"))) return el;
+    return el.closest(".spawn-advanced-list-control[data-launch-wire-field], .settings-collection[data-launch-wire-field], [data-launch-option]");
   }
 
   function errorElFor(wrap) {
@@ -130,7 +134,7 @@
   function textInputForOption(opt, mode, multiline) {
     const input = document.createElement(multiline ? "textarea" : "input");
     if (multiline) {
-      input.className = mode === "spawn" ? "spawn-advanced-textarea" : "settings-launch-textarea";
+      input.className = mode === "spawn" ? "spawn-advanced-textarea" : "val-input";
       input.rows = 6;
     } else {
       input.type = opt.kind === "integer" ? "number" : "text";
@@ -150,7 +154,7 @@
 
   function modelPickerControl(opt, mode, placeholder) {
     const wrap = document.createElement("span");
-    wrap.className = "sp-model-wrap " + (mode === "spawn" ? "spawn-advanced-model" : "settings-launch-model");
+    wrap.className = "sp-model-wrap" + (mode === "spawn" ? " spawn-advanced-model" : "");
     const hidden = document.createElement("input");
     hidden.type = "hidden";
     hidden.name = opt.wireField || opt.field || "";
@@ -224,15 +228,20 @@
     const fileOpt = ctx.optionsByWire && ctx.optionsByWire[spec.fileWire];
     const textOpt = ctx.optionsByWire && ctx.optionsByWire[spec.textWire];
     const title = document.createElement("div");
-    title.className = ctx.mode === "spawn" ? "spawn-advanced-field-label" : "settings-launch-field-label";
+    title.className = ctx.mode === "spawn" ? "spawn-advanced-field-label" : "settings-table-field-label";
     title.textContent = opt.label || opt.field;
+    const radioClass = ctx.mode === "settings" ? "val-radio-group" : controlClass(ctx.mode, "radio");
     const wrap = document.createElement("div");
-    wrap.className = controlClass(ctx.mode, "radio") + " launch-radio-composite";
+    wrap.className = radioClass + " launch-radio-composite";
     const name = radioNameFor(ctx, opt);
 
     function addOption(value, labelText, control) {
       const option = document.createElement("label");
-      option.className = control ? "launch-radio-option launch-radio-option-with-control" : "launch-radio-option";
+      if (ctx.mode === "settings") {
+        option.className = control ? "val-radio launch-radio-option launch-radio-option-with-control" : "val-radio launch-radio-option";
+      } else {
+        option.className = control ? "launch-radio-option launch-radio-option-with-control" : "launch-radio-option";
+      }
       const radio = document.createElement("input");
       radio.type = "radio";
       radio.name = name;
@@ -266,18 +275,43 @@
       textInput.placeholder = "";
       addOption("inline", spec.textLabel, textInput);
     }
-    row.appendChild(title);
-    row.appendChild(wrap);
+    if (ctx.mode === "settings") {
+      const dt = document.createElement("dt");
+      dt.appendChild(title);
+      const dd = document.createElement("dd");
+      dd.appendChild(wrap);
+      row.appendChild(dt);
+      row.appendChild(dd);
+    } else {
+      row.appendChild(title);
+      row.appendChild(wrap);
+    }
   }
 
   function renderScalarControl(row, opt, ctx) {
-    const label = document.createElement("label");
-    label.textContent = opt.label || opt.field;
     const placeholder = ctx.layer === "project" ? "(use global default)" : "(default)";
+    const isSettings = ctx.mode === "settings";
+
+    function appendLabelAndControl(control) {
+      if (isSettings) {
+        const dt = document.createElement("dt");
+        dt.textContent = opt.label || opt.field;
+        const dd = document.createElement("dd");
+        dd.appendChild(control);
+        row.appendChild(dt);
+        row.appendChild(dd);
+      } else {
+        const label = document.createElement("label");
+        label.textContent = opt.label || opt.field;
+        label.appendChild(control);
+        row.appendChild(label);
+      }
+    }
 
     if (opt.kind === "select") {
       const select = document.createElement("select");
       select.name = opt.wireField || opt.field || "";
+      if (isSettings) select.className = "val-select";
       setControlData(select, opt);
       const empty = document.createElement("option");
       empty.value = "";
@@ -290,16 +324,30 @@
         if (choice.disabled) o.disabled = true;
         select.appendChild(o);
       });
-      label.appendChild(select);
-      appendEnvFallback(label, opt, ctx.envFallbacks);
-      row.appendChild(label);
+      if (isSettings) {
+        const dt = document.createElement("dt");
+        dt.textContent = opt.label || opt.field;
+        const dd = document.createElement("dd");
+        dd.appendChild(select);
+        appendEnvFallback(dd, opt, ctx.envFallbacks);
+        row.appendChild(dt);
+        row.appendChild(dd);
+      } else {
+        const label = document.createElement("label");
+        label.textContent = opt.label || opt.field;
+        label.appendChild(select);
+        appendEnvFallback(label, opt, ctx.envFallbacks);
+        row.appendChild(label);
+      }
       return;
     }
 
     if (opt.kind === "radio") {
+      const radioWrapClass = isSettings ? "val-radio-group" : controlClass(ctx.mode, "radio");
       const wrap = document.createElement("div");
-      wrap.className = controlClass(ctx.mode, "radio");
+      wrap.className = radioWrapClass;
       const emptyLabel = document.createElement("label");
+      if (isSettings) emptyLabel.className = "val-radio";
       const emptyRadio = document.createElement("input");
       emptyRadio.type = "radio";
       emptyRadio.name = radioNameFor(ctx, opt);
@@ -311,6 +359,7 @@
       wrap.appendChild(emptyLabel);
       (opt.choices || []).forEach((choice) => {
         const choiceLabel = document.createElement("label");
+        if (isSettings) choiceLabel.className = "val-radio";
         const radio = document.createElement("input");
         radio.type = "radio";
         radio.name = emptyRadio.name;
@@ -320,14 +369,26 @@
         choiceLabel.appendChild(document.createTextNode(choice.label || choice.value || "(default)"));
         wrap.appendChild(choiceLabel);
       });
-      label.appendChild(wrap);
-      row.appendChild(label);
+      if (isSettings) {
+        const dt = document.createElement("dt");
+        dt.textContent = opt.label || opt.field;
+        const dd = document.createElement("dd");
+        dd.appendChild(wrap);
+        row.appendChild(dt);
+        row.appendChild(dd);
+      } else {
+        const label = document.createElement("label");
+        label.textContent = opt.label || opt.field;
+        label.appendChild(wrap);
+        row.appendChild(label);
+      }
       return;
     }
 
     if (opt.kind === "boolean") {
       const select = document.createElement("select");
       select.name = opt.wireField || opt.field || "";
+      if (isSettings) select.className = "val-select";
       setControlData(select, opt);
       [[ "", placeholder ], [ "true", "true" ], [ "false", "false" ]].forEach(([value, text]) => {
         const o = document.createElement("option");
@@ -335,33 +396,74 @@
         o.textContent = text;
         select.appendChild(o);
       });
-      label.appendChild(select);
-      row.appendChild(label);
+      appendLabelAndControl(select);
       return;
     }
 
     if (opt.kind === "modelPicker") {
-      label.appendChild(modelPickerControl(opt, ctx.mode, placeholder).wrap);
-      appendEnvFallback(label, opt, ctx.envFallbacks);
-      row.appendChild(label);
+      const pickerResult = modelPickerControl(opt, ctx.mode, placeholder);
+      if (isSettings) {
+        const dt = document.createElement("dt");
+        dt.textContent = opt.label || opt.field;
+        const dd = document.createElement("dd");
+        dd.appendChild(pickerResult.wrap);
+        appendEnvFallback(dd, opt, ctx.envFallbacks);
+        row.appendChild(dt);
+        row.appendChild(dd);
+      } else {
+        const label = document.createElement("label");
+        label.textContent = opt.label || opt.field;
+        label.appendChild(pickerResult.wrap);
+        appendEnvFallback(label, opt, ctx.envFallbacks);
+        row.appendChild(label);
+      }
       return;
     }
 
     const input = textInputForOption(opt, ctx.mode, opt.kind === "multilineText");
     input.placeholder = placeholder;
-    label.appendChild(input);
-    appendEnvFallback(label, opt, ctx.envFallbacks);
-    row.appendChild(label);
+    if (isSettings && opt.kind !== "multilineText") input.className = "val-input";
+    if (isSettings) {
+      const dt = document.createElement("dt");
+      dt.textContent = opt.label || opt.field;
+      const dd = document.createElement("dd");
+      dd.appendChild(input);
+      appendEnvFallback(dd, opt, ctx.envFallbacks);
+      row.appendChild(dt);
+      row.appendChild(dd);
+    } else {
+      const label = document.createElement("label");
+      label.textContent = opt.label || opt.field;
+      label.appendChild(input);
+      appendEnvFallback(label, opt, ctx.envFallbacks);
+      row.appendChild(label);
+    }
   }
 
-  function appendListRow(list, value) {
+  function listMode(list) {
+    const wrap = list && list.closest
+      ? list.closest(".settings-collection[data-launch-wire-field], .spawn-advanced-list-control[data-launch-wire-field]")
+      : null;
+    if (wrap && wrap.classList.contains("settings-collection")) return "settings";
+    return "spawn";
+  }
+
+  function appendListRow(list, value, mode) {
+    if (mode === undefined) mode = listMode(list);
     const li = document.createElement("li");
     li.dataset.value = value;
+    if (mode === "settings") li.className = "settings-collection-row";
     const span = document.createElement("span");
     span.textContent = value;
     const rm = document.createElement("button");
     rm.type = "button";
-    rm.textContent = "remove";
+    if (mode === "settings") {
+      rm.className = "btn-icon";
+      rm.setAttribute("aria-label", "Remove");
+      rm.textContent = "×";
+    } else {
+      rm.textContent = "remove";
+    }
     rm.addEventListener("click", () => li.remove());
     li.appendChild(span);
     li.appendChild(rm);
@@ -379,15 +481,13 @@
   }
 
   function renderListControl(row, opt, ctx) {
+    const isSettings = ctx.mode === "settings";
     const wrap = document.createElement("div");
-    wrap.className = "spawn-advanced-list-control";
+    wrap.className = isSettings ? "settings-collection" : "spawn-advanced-list-control";
     setControlData(wrap, opt);
 
-    const title = document.createElement("div");
-    title.className = ctx.mode === "spawn" ? "spawn-advanced-field-label" : "settings-launch-field-label";
-    title.textContent = opt.label || opt.field;
     const list = document.createElement("ul");
-    list.className = ctx.mode === "spawn" ? "spawn-advanced-list" : "settings-items-list";
+    list.className = isSettings ? "settings-collection-list" : "spawn-advanced-list";
     list.dataset.launchList = "true";
 
     const controls = addControlsWrap(ctx.mode);
@@ -399,8 +499,12 @@
     } else {
       input = document.createElement("input");
       input.type = "text";
-      input.style.flex = "1";
-      input.style.minWidth = "160px";
+      if (isSettings) {
+        input.className = "val-input";
+      } else {
+        input.style.flex = "1";
+        input.style.minWidth = "160px";
+      }
       if (opt.pathKind) input.dataset.settingsDirInput = "true";
       controls.appendChild(input);
     }
@@ -408,7 +512,12 @@
     input.addEventListener("change", () => clearListAddValidation(input, wrap));
     const add = document.createElement("button");
     add.type = "button";
-    add.textContent = "add";
+    if (isSettings) {
+      add.className = "btn btn-secondary";
+      add.textContent = "Add";
+    } else {
+      add.textContent = "add";
+    }
     add.addEventListener("click", async () => {
       const value = (input.value || "").trim();
       if (!value) return;
@@ -422,9 +531,9 @@
           return;
         }
         input.setCustomValidity("");
-        appendListRow(list, result.path || value);
+        appendListRow(list, result.path || value, ctx.mode);
       } else {
-        appendListRow(list, value);
+        appendListRow(list, value, ctx.mode);
       }
       const explicitEmpty = wrap.querySelector("[data-launch-explicit-empty]");
       if (explicitEmpty) explicitEmpty.checked = false;
@@ -434,12 +543,13 @@
     });
     controls.appendChild(add);
 
-    wrap.appendChild(title);
     wrap.appendChild(list);
     wrap.appendChild(controls);
-    if (ctx.mode === "settings" && listSupportsExplicitEmpty(opt)) {
+    if (isSettings && listSupportsExplicitEmpty(opt)) {
       const explicitEmptyLabel = document.createElement("label");
-      explicitEmptyLabel.className = "checkbox-label";
+      explicitEmptyLabel.className = "val-toggle";
+      explicitEmptyLabel.dataset.launchExplicitEmptyWrap = "true";
+      explicitEmptyLabel.hidden = false;
       const explicitEmpty = document.createElement("input");
       explicitEmpty.type = "checkbox";
       explicitEmpty.dataset.launchExplicitEmpty = "true";
@@ -447,47 +557,94 @@
         if (!explicitEmpty.checked) return;
         list.querySelectorAll("li").forEach((li) => li.remove());
       });
+      const stateSpan = document.createElement("span");
+      stateSpan.className = "state";
+      stateSpan.textContent = "OFF";
+      const textSpan = document.createElement("span");
+      textSpan.textContent = "No model fallbacks";
       explicitEmptyLabel.appendChild(explicitEmpty);
-      explicitEmptyLabel.appendChild(document.createTextNode("No model fallbacks"));
+      explicitEmptyLabel.appendChild(stateSpan);
+      explicitEmptyLabel.appendChild(textSpan);
       wrap.appendChild(explicitEmptyLabel);
     }
     errorElFor(wrap);
-    row.appendChild(wrap);
+
+    if (isSettings) {
+      const headerRow = document.createElement("div");
+      headerRow.className = "row section-header";
+      const headerDt = document.createElement("dt");
+      const headerDd = document.createElement("dd");
+      headerDd.textContent = opt.label || opt.field;
+      headerRow.appendChild(headerDt);
+      headerRow.appendChild(headerDd);
+      row.appendChild(headerRow);
+
+      const collectionRow = document.createElement("div");
+      collectionRow.className = "row";
+      collectionRow.dataset.launchOption = opt.field || "";
+      const collDt = document.createElement("dt");
+      const collDd = document.createElement("dd");
+      collDd.appendChild(wrap);
+      collectionRow.appendChild(collDt);
+      collectionRow.appendChild(collDd);
+      row.appendChild(collectionRow);
+    } else {
+      const title = document.createElement("div");
+      title.className = "spawn-advanced-field-label";
+      title.textContent = opt.label || opt.field;
+      wrap.insertBefore(title, wrap.firstChild);
+      row.appendChild(wrap);
+    }
   }
 
   function renderEnvControl(row, opt, ctx) {
+    const isSettings = ctx.mode === "settings";
     const wrap = document.createElement("div");
-    wrap.className = "spawn-advanced-list-control";
+    wrap.className = isSettings ? "settings-collection" : "spawn-advanced-list-control";
     setControlData(wrap, opt);
-    const title = document.createElement("div");
-    title.className = ctx.mode === "spawn" ? "spawn-advanced-field-label" : "settings-launch-field-label";
-    title.textContent = opt.label || opt.field;
     const list = document.createElement("ul");
-    list.className = ctx.mode === "spawn" ? "spawn-advanced-list" : "settings-items-list";
+    list.className = isSettings ? "settings-collection-list" : "spawn-advanced-list";
     list.dataset.launchEnvList = "true";
     const controls = addControlsWrap(ctx.mode);
     const name = document.createElement("input");
     name.type = "text";
     name.placeholder = "NAME";
+    if (isSettings) name.className = "val-input";
     const value = document.createElement("input");
     value.type = "text";
     value.placeholder = "value";
-    value.style.flex = "1";
-    value.style.minWidth = "120px";
+    if (isSettings) {
+      value.className = "val-input";
+    } else {
+      value.style.flex = "1";
+      value.style.minWidth = "120px";
+    }
     const add = document.createElement("button");
     add.type = "button";
-    add.textContent = "add";
+    if (isSettings) {
+      add.className = "btn btn-secondary";
+      add.textContent = "Add";
+    } else {
+      add.textContent = "add";
+    }
     add.addEventListener("click", () => {
       const k = name.value.trim();
       if (!k) return;
       const li = document.createElement("li");
       li.dataset.name = k;
       li.dataset.value = value.value;
+      if (isSettings) li.className = "settings-collection-row";
       const span = document.createElement("span");
       span.textContent = k + "=" + value.value;
       const rm = document.createElement("button");
       rm.type = "button";
-      rm.textContent = "remove";
+      if (isSettings) {
+        rm.className = "btn-icon";
+        rm.setAttribute("aria-label", "Remove");
+        rm.textContent = "×";
+      } else {
+        rm.textContent = "remove";
+      }
       rm.addEventListener("click", () => li.remove());
       li.appendChild(span);
       li.appendChild(rm);
@@ -498,46 +655,80 @@
     controls.appendChild(name);
     controls.appendChild(value);
     controls.appendChild(add);
-    wrap.appendChild(title);
     wrap.appendChild(list);
     wrap.appendChild(controls);
     errorElFor(wrap);
-    row.appendChild(wrap);
+
+    if (isSettings) {
+      const headerRow = document.createElement("div");
+      headerRow.className = "row section-header";
+      const headerDt = document.createElement("dt");
+      const headerDd = document.createElement("dd");
+      headerDd.textContent = opt.label || opt.field;
+      headerRow.appendChild(headerDt);
+      headerRow.appendChild(headerDd);
+      row.appendChild(headerRow);
+
+      const collectionRow = document.createElement("div");
+      collectionRow.className = "row";
+      collectionRow.dataset.launchOption = opt.field || "";
+      const collDt = document.createElement("dt");
+      const collDd = document.createElement("dd");
+      collDd.appendChild(wrap);
+      collectionRow.appendChild(collDt);
+      collectionRow.appendChild(collDd);
+      row.appendChild(collectionRow);
+    } else {
+      const title = document.createElement("div");
+      title.className = "spawn-advanced-field-label";
+      title.textContent = opt.label || opt.field;
+      wrap.insertBefore(title, wrap.firstChild);
+      row.appendChild(wrap);
+    }
   }
 
   function renderMCPControl(row, opt, ctx) {
+    const isSettings = ctx.mode === "settings";
     const wrap = document.createElement("div");
-    wrap.className = "spawn-advanced-list-control";
+    wrap.className = isSettings ? "settings-collection" : "spawn-advanced-list-control";
     setControlData(wrap, opt);
-    const title = document.createElement("div");
-    title.className = ctx.mode === "spawn" ? "spawn-advanced-field-label" : "settings-launch-field-label";
-    title.textContent = opt.label || opt.field;
     const list = document.createElement("ul");
-    list.className = ctx.mode === "spawn" ? "spawn-advanced-list" : "settings-items-list";
+    list.className = isSettings ? "settings-collection-list" : "spawn-advanced-list";
     list.dataset.launchMcpList = "true";
     const controls = addControlsWrap(ctx.mode);
     const name = document.createElement("input");
     name.type = "text";
     name.placeholder = "name";
+    if (isSettings) name.className = "val-input";
     const command = document.createElement("input");
     command.type = "text";
     command.placeholder = "command";
+    if (isSettings) command.className = "val-input";
     command.dataset.launchMcpCommand = "true";
     command.addEventListener("change", () => validateMCPCommandInput(command));
     const args = document.createElement("input");
     args.type = "text";
     args.placeholder = "args";
-    args.style.flex = "1";
-    args.style.minWidth = "120px";
+    if (isSettings) {
+      args.className = "val-input";
+    } else {
+      args.style.flex = "1";
+      args.style.minWidth = "120px";
+    }
     const add = document.createElement("button");
     add.type = "button";
-    add.textContent = "add";
+    if (isSettings) {
+      add.className = "btn btn-secondary";
+      add.textContent = "Add";
+    } else {
+      add.textContent = "add";
+    }
     add.addEventListener("click", async () => {
       const spec = { name: name.value.trim(), command: command.value.trim(), args: args.value.trim() ? args.value.trim().split(/\s+/) : [] };
       if (!spec.name || !spec.command) return;
       if (!(await validateMCPCommandInput(command))) return;
       spec.command = command.value.trim();
-      appendMCPRow(list, spec);
+      appendMCPRow(list, spec, ctx.mode);
       name.value = "";
       command.value = "";
       args.value = "";
@@ -546,21 +737,54 @@
     controls.appendChild(command);
     controls.appendChild(args);
     controls.appendChild(add);
-    wrap.appendChild(title);
     wrap.appendChild(list);
     wrap.appendChild(controls);
     errorElFor(wrap);
-    row.appendChild(wrap);
+
+    if (isSettings) {
+      const headerRow = document.createElement("div");
+      headerRow.className = "row section-header";
+      const headerDt = document.createElement("dt");
+      const headerDd = document.createElement("dd");
+      headerDd.textContent = opt.label || opt.field;
+      headerRow.appendChild(headerDt);
+      headerRow.appendChild(headerDd);
+      row.appendChild(headerRow);
+
+      const collectionRow = document.createElement("div");
+      collectionRow.className = "row";
+      collectionRow.dataset.launchOption = opt.field || "";
+      const collDt = document.createElement("dt");
+      const collDd = document.createElement("dd");
+      collDd.appendChild(wrap);
+      collectionRow.appendChild(collDt);
+      collectionRow.appendChild(collDd);
+      row.appendChild(collectionRow);
+    } else {
+      const title = document.createElement("div");
+      title.className = "spawn-advanced-field-label";
+      title.textContent = opt.label || opt.field;
+      wrap.insertBefore(title, wrap.firstChild);
+      row.appendChild(wrap);
+    }
   }
 
-  function appendMCPRow(list, spec) {
+  function appendMCPRow(list, spec, mode) {
+    if (mode === undefined) mode = listMode(list);
     const li = document.createElement("li");
     li.dataset.spec = JSON.stringify(spec);
+    if (mode === "settings") li.className = "settings-collection-row";
     const span = document.createElement("span");
     span.textContent = spec.name + ": " + spec.command + (spec.args && spec.args.length ? " " + spec.args.join(" ") : "");
     const rm = document.createElement("button");
     rm.type = "button";
-    rm.textContent = "remove";
+    if (mode === "settings") {
+      rm.className = "btn-icon";
+      rm.setAttribute("aria-label", "Remove");
+      rm.textContent = "×";
+    } else {
+      rm.textContent = "remove";
+    }
     rm.addEventListener("click", () => li.remove());
     li.appendChild(span);
     li.appendChild(rm);
@@ -568,9 +792,16 @@
   }
 
   function renderSchemaOption(group, opt, ctx) {
+    const isSettings = ctx.mode === "settings";
+    const isCollection = opt.kind === "pathList" || opt.kind === "modelList" || opt.kind === "envMap" || opt.kind === "mcpServerList";
     const row = document.createElement("div");
-    row.className = ctx.mode === "spawn" ? "spawn-advanced-row" : "settings-launch-row";
-    row.dataset.launchOption = opt.field || "";
+    if (isSettings) {
+      row.className = "row";
+      if (!isCollection) row.dataset.launchOption = opt.field || "";
+    } else {
+      row.className = "spawn-advanced-row";
+      row.dataset.launchOption = opt.field || "";
+    }
     if (promptCompositeByMode[opt.wireField]) renderPromptCompositeControl(row, opt, ctx);
     else if (opt.kind === "pathList" || opt.kind === "modelList") renderListControl(row, opt, ctx);
     else if (opt.kind === "envMap") renderEnvControl(row, opt, ctx);
@@ -606,19 +837,33 @@
       optionsByWire,
     };
     let currentGroup = "";
-    let fieldset = null;
+    let groupContainer = null;
     opts.forEach((opt) => {
       if (opt.group !== currentGroup) {
         currentGroup = opt.group || "";
-        fieldset = document.createElement("fieldset");
-        fieldset.className = mode === "spawn" ? "spawn-advanced-group" : "settings-launch-group";
-        fieldset.dataset.launchGroup = currentGroup;
-        const legend = document.createElement("legend");
-        legend.textContent = currentGroup;
-        fieldset.appendChild(legend);
-        groupsRoot.appendChild(fieldset);
+        if (mode === "spawn") {
+          const fieldset = document.createElement("fieldset");
+          fieldset.className = "spawn-advanced-group";
+          fieldset.dataset.launchGroup = currentGroup;
+          const legend = document.createElement("legend");
+          legend.textContent = currentGroup;
+          fieldset.appendChild(legend);
+          groupsRoot.appendChild(fieldset);
+          groupContainer = fieldset;
+        } else {
+          const headerRow = document.createElement("div");
+          headerRow.className = "row section-header";
+          headerRow.dataset.launchGroup = currentGroup;
+          const dt = document.createElement("dt");
+          const dd = document.createElement("dd");
+          dd.textContent = currentGroup;
+          headerRow.appendChild(dt);
+          headerRow.appendChild(dd);
+          groupsRoot.appendChild(headerRow);
+          groupContainer = groupsRoot;
+        }
       }
-      renderSchemaOption(fieldset, opt, ctx);
+      renderSchemaOption(groupContainer, opt, ctx);
     });
     populate(root, options.current || {});
     if (global.SettingsPickers && global.SettingsPickers.init) global.SettingsPickers.init(root);
@@ -643,9 +888,10 @@
         if (display) display.textContent = value || display.textContent;
       }
     });
-    root.querySelectorAll(".spawn-advanced-list-control[data-launch-wire-field]").forEach((wrap) => {
+    root.querySelectorAll(".spawn-advanced-list-control[data-launch-wire-field], .settings-collection[data-launch-wire-field]").forEach((wrap) => {
       const wire = wrap.dataset.launchWireField;
       const kind = wrap.dataset.launchKind;
+      const wrapMode = wrap.classList.contains("settings-collection") ? "settings" : "spawn";
       if (!wire) return;
       if (kind === "envMap") {
         const list = wrap.querySelector("[data-launch-env-list]");
@@ -653,11 +899,18 @@
           const li = document.createElement("li");
           li.dataset.name = name;
           li.dataset.value = value;
+          if (wrapMode === "settings") li.className = "settings-collection-row";
           const span = document.createElement("span");
           span.textContent = name + "=" + value;
           const rm = document.createElement("button");
           rm.type = "button";
-          rm.textContent = "remove";
+          if (wrapMode === "settings") {
+            rm.className = "btn-icon";
+            rm.setAttribute("aria-label", "Remove");
+            rm.textContent = "×";
+          } else {
+            rm.textContent = "remove";
+          }
           rm.addEventListener("click", () => li.remove());
           li.appendChild(span);
           li.appendChild(rm);
@@ -665,7 +918,7 @@
         });
       } else if (kind === "mcpServerList") {
         const list = wrap.querySelector("[data-launch-mcp-list]");
-        (current[wire] || []).forEach((spec) => appendMCPRow(list, spec));
+        (current[wire] || []).forEach((spec) => appendMCPRow(list, spec, wrapMode));
       } else {
         const list = wrap.querySelector("[data-launch-list]");
         const values = current[wire];
@@ -673,7 +926,7 @@
           const explicitEmpty = wrap.querySelector("[data-launch-explicit-empty]");
           if (explicitEmpty) explicitEmpty.checked = true;
         }
-        (values || []).forEach((value) => appendListRow(list, value));
+        (values || []).forEach((value) => appendListRow(list, value, wrapMode));
       }
     });
   }
@@ -727,7 +980,7 @@
       if (inactivePromptDependent(root, input.dataset.launchWireField)) continue;
       if (!(await validatePathInput(input))) return false;
     }
-    const pathLists = Array.from(root.querySelectorAll(".spawn-advanced-list-control[data-launch-kind=\"pathList\"][data-launch-path-kind]"));
+    const pathLists = Array.from(root.querySelectorAll(".spawn-advanced-list-control[data-launch-kind=\"pathList\"][data-launch-path-kind], .settings-collection[data-launch-kind=\"pathList\"][data-launch-path-kind]"));
     for (const wrap of pathLists) {
       const kind = schemaPathKind(wrap.dataset.launchPathKind);
       const rows = Array.from(wrap.querySelectorAll("[data-launch-list] li"));
@@ -783,7 +1036,7 @@
       if (!value) return;
       out[wire] = kind === "integer" ? Number(value) : value;
     });
-    root.querySelectorAll(".spawn-advanced-list-control[data-launch-wire-field]").forEach((wrap) => {
+    root.querySelectorAll(".spawn-advanced-list-control[data-launch-wire-field], .settings-collection[data-launch-wire-field]").forEach((wrap) => {
       const wire = wrap.dataset.launchWireField;
       const kind = wrap.dataset.launchKind;
       if (!wire) return;

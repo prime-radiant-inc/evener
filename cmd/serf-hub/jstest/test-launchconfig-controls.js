@@ -251,8 +251,8 @@ function assert(cond, msg) {
   assert(pluginWrap.querySelector('[data-value="/canonical/plugin"]'),
     "valid pathList entries should update to canonical validated path");
 
-  const pendingPath = pluginWrap.querySelector(".settings-add-row input");
-  const addPath = pluginWrap.querySelector(".settings-add-row button");
+  const pendingPath = pluginWrap.querySelector(".settings-collection-add input");
+  const addPath = pluginWrap.querySelector(".settings-collection-add button");
   pendingPath.value = "/missing/pending";
   addPath.click();
   await new Promise(resolve => dom.window.setTimeout(resolve, 0));
