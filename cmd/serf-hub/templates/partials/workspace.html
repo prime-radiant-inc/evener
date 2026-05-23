@@ -22,9 +22,9 @@
        hx-get="/_partials/s/{{.ID}}/meta"
        hx-trigger="load, every 2s"
        hx-swap="innerHTML">
-    <span class="skeleton" style="width: 80px"></span>
-    <span class="skeleton" style="width: 60px"></span>
-    <span class="skeleton" style="width: 100px"></span>
+    <span class="skeleton skeleton-meta-pill"></span>
+    <span class="skeleton skeleton-meta-pill skeleton-meta-pill-short"></span>
+    <span class="skeleton skeleton-meta-pill skeleton-meta-pill-long"></span>
     {{template "workspace_meta" .}}
   </div>
 </header>
@@ -39,11 +39,11 @@
     <p class="empty-state-body">Type below to start the conversation.</p>
   </div>
   <div class="skeleton-turn skeleton-turn-user" aria-hidden="true">
-    <span class="skeleton" style="height: 14px; width: 60%"></span>
+    <span class="skeleton skeleton-line skeleton-line-60"></span>
   </div>
   <div class="skeleton-turn skeleton-turn-agent" aria-hidden="true">
-    <span class="skeleton" style="height: 14px; width: 80%"></span>
-    <span class="skeleton" style="height: 14px; width: 70%"></span>
+    <span class="skeleton skeleton-line skeleton-line-80"></span>
+    <span class="skeleton skeleton-line skeleton-line-70"></span>
   </div>
 </div>
 
