@@ -890,7 +890,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .user-message {
   display: flex;
   justify-content: flex-end;
-  margin-bottom: var(--space-4);
+  margin-bottom: var(--space-5);
   padding-top: 22px;
   position: relative;
 }
@@ -920,7 +920,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .image-lightbox img { max-width: 90vw; max-height: 85vh; object-fit: contain; border-radius: var(--radius-lg); box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
 .image-lightbox-caption { color: #fff; font-family: var(--font-mono); font-size: var(--text-sm); opacity: 0.75; }
 .assistant-message {
-  margin-bottom: var(--space-4);
+  margin-bottom: var(--space-5);
   max-width: 680px;
   font-size: var(--text-md);
   line-height: var(--leading-snug);
@@ -930,8 +930,8 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .assistant-message pre { background: var(--bg-raised); padding: var(--space-4) var(--space-5); border-radius: var(--radius-lg); overflow-x: auto; font-family: var(--font-mono); font-size: var(--text-sm); }
 
 /* Annotation tier — tool calls, diffs, subagent references */
-.tool-call { margin: 0 0 var(--space-3) 0; font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-muted); display: flex; column-gap: var(--space-3); row-gap: 1px; flex-wrap: wrap; align-items: baseline; }
-.tool-call-cluster { margin-bottom: var(--space-4); }
+.tool-call { margin: 0 0 var(--space-3) 0; font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-muted); display: flex; column-gap: var(--space-3); row-gap: var(--space-2); flex-wrap: wrap; align-items: baseline; }
+.tool-call-cluster { margin-bottom: var(--space-5); }
 .tool-call-cluster .tool-call:last-child { margin-bottom: 0; }
 .tool-call .tool-status {
   display: inline-block;
