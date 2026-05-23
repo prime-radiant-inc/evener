@@ -22,6 +22,9 @@
        hx-get="/_partials/s/{{.ID}}/meta"
        hx-trigger="load, every 2s"
        hx-swap="innerHTML">
+    <span class="skeleton" style="width: 80px"></span>
+    <span class="skeleton" style="width: 60px"></span>
+    <span class="skeleton" style="width: 100px"></span>
     {{template "workspace_meta" .}}
   </div>
 </header>
@@ -31,7 +34,17 @@
      data-session-id="{{.ID}}"
      data-active-turn-id="{{.ActiveTurnID}}"
      data-state="{{.State}}">
-  <div class="conversation-empty" data-empty-placeholder>no messages yet — type below to start the conversation</div>
+  <div class="empty-state empty-state-conversation" data-empty-placeholder>
+    <p class="empty-state-title">No messages yet</p>
+    <p class="empty-state-body">Type below to start the conversation.</p>
+  </div>
+  <div class="skeleton-turn skeleton-turn-user" aria-hidden="true">
+    <span class="skeleton" style="height: 14px; width: 60%"></span>
+  </div>
+  <div class="skeleton-turn skeleton-turn-agent" aria-hidden="true">
+    <span class="skeleton" style="height: 14px; width: 80%"></span>
+    <span class="skeleton" style="height: 14px; width: 70%"></span>
+  </div>
 </div>
 
 <form class="workspace-input" data-input-form data-session-id="{{.ID}}">
