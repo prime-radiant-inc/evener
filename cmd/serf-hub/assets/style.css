@@ -316,7 +316,7 @@ body::before {
 :root[data-theme="light"] .user-message .pill::after,
 :root[data-theme="light"] .banner::after {
   mix-blend-mode: multiply;
-  opacity: 0.35;
+  opacity: 0.5;
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) body::before,
@@ -327,7 +327,7 @@ body::before {
   :root:not([data-theme="dark"]) .user-message .pill::after,
   :root:not([data-theme="dark"]) .banner::after {
     mix-blend-mode: multiply;
-    opacity: 0.35;
+    opacity: 0.5;
   }
 }
 /* All content sits above the global grain. */
@@ -734,7 +734,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .workspace-header { padding: var(--space-4) var(--space-6) var(--space-4); border-bottom: 1px solid var(--rule); }
 .workspace-title-row { display: flex; align-items: center; gap: var(--space-4); }
 .workspace-title { display: flex; align-items: baseline; gap: var(--space-3); flex: 1; min-width: 0; }
-.workspace-title .title { font-weight: 600; font-size: var(--text-lg); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.workspace-title .title { font-weight: 600; font-size: var(--text-lg); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 /* Inline workspace-header hamburger — visible on phone only. The
    button takes the leftmost slot in .workspace-title-row so partials
    without a header (empty state, settings) don't need their own
@@ -1404,6 +1404,9 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   font-family: var(--font-mono);
   font-size: var(--text-sm);
   color: var(--text);
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-break: break-all;
 }
 .settings-table .help {
   grid-column: 1 / -1;
