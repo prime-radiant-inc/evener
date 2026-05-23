@@ -986,9 +986,9 @@
       const actions = document.createElement("div");
       actions.className = "fork-dialog-actions";
       const cancel = document.createElement("button");
-      cancel.className = "fork-cancel"; cancel.textContent = "cancel"; cancel.type = "button";
+      cancel.className = "btn btn-ghost fork-cancel"; cancel.textContent = "cancel"; cancel.type = "button";
       const confirm = document.createElement("button");
-      confirm.className = "fork-confirm"; confirm.type = "button";
+      confirm.className = "btn btn-primary fork-confirm"; confirm.type = "button";
       confirm.innerHTML = "fork <kbd>⌘↩</kbd>";
       actions.appendChild(cancel); actions.appendChild(confirm);
       dialog.appendChild(title); dialog.appendChild(body); dialog.appendChild(labelRow); dialog.appendChild(actions);
