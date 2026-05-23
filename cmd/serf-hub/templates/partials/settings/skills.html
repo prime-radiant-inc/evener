@@ -4,37 +4,68 @@
   Directories serf scans for skills at launch. Applied to every spawn.
 </p>
 <div id="skills-form" data-loaded="false">
-  <p>Loading…</p>
+  <p class="settings-help">Loading…</p>
 </div>
 <script>
   (async function () {
     const root = document.getElementById("skills-form");
+    function escapeHtml(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
     try {
       const current = await launchconfig.getLayer("/", "global");
       const dirs = current.skillsDirs || [];
       function render() {
         root.replaceChildren();
+        const section = document.createElement("section");
+        section.className = "settings-collection";
+
+        const head = document.createElement("header");
+        head.className = "settings-collection-head";
+        const h3 = document.createElement("h3");
+        h3.textContent = "Skill directories";
+        const count = document.createElement("span");
+        count.className = "settings-collection-count";
+        count.textContent = `${dirs.length} ${dirs.length === 1 ? "entry" : "entries"}`;
+        head.append(h3, count);
+
         const list = document.createElement("ul");
-        list.className = "settings-list";
-        dirs.forEach((d, i) => {
-          const item = document.createElement("li");
-          const code = document.createElement("code");
-          code.textContent = d;
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = "btn btn-ghost";
-          button.dataset.i = String(i);
-          button.dataset.action = "rm";
-          button.textContent = "remove";
-          item.append(code, " ", button);
-          list.appendChild(item);
-        });
+        list.className = "settings-collection-list";
+        list.setAttribute("role", "list");
+        if (dirs.length === 0) {
+          const empty = document.createElement("li");
+          empty.className = "settings-collection-empty";
+          empty.textContent = "No skill directories. Add one below.";
+          list.appendChild(empty);
+        } else {
+          dirs.forEach((d, i) => {
+            const item = document.createElement("li");
+            item.className = "settings-collection-row";
+            const main = document.createElement("div");
+            const text = document.createElement("div");
+            text.className = "row-text";
+            text.textContent = d;
+            main.appendChild(text);
+            const actions = document.createElement("div");
+            actions.className = "row-actions";
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "btn-icon";
+            button.dataset.i = String(i);
+            button.dataset.action = "rm";
+            button.setAttribute("aria-label", "Remove " + d);
+            button.textContent = "×";
+            actions.appendChild(button);
+            item.append(main, actions);
+            list.appendChild(item);
+          });
+        }
+
         const form = document.createElement("form");
         form.id = "skills-add";
-        form.className = "sp-dir-wrap";
+        form.className = "settings-collection-add sp-dir-wrap";
         const input = document.createElement("input");
         input.type = "text";
         input.name = "dir";
+        input.className = "val-input";
         input.placeholder = "/absolute/path";
         input.required = true;
         input.setAttribute("data-settings-dir-input", "");
@@ -46,12 +77,14 @@
         const add = document.createElement("button");
         add.type = "submit";
         add.className = "btn btn-primary";
-        add.textContent = "Add";
+        add.textContent = "＋ Add";
         const error = document.createElement("p");
-        error.className = "settings-error";
+        error.className = "row-error";
         error.hidden = true;
         form.append(input, pick, add, error);
-        root.append(list, form);
+        section.append(head, list, form);
+        root.append(section);
+
         if (window.SettingsPickers) window.SettingsPickers.init(form);
         root.querySelectorAll("button[data-action=rm]").forEach(b => {
           b.addEventListener("click", async () => {
@@ -82,7 +115,7 @@
     } catch (err) {
       const p = document.createElement("p");
       p.className = "settings-error";
-      p.textContent = `Failed to load: ${err && err.message ? err.message : err}`;
+      p.textContent = "Failed to load: " + (err && err.message ? err.message : err);
       root.replaceChildren(p);
     }
   })();
