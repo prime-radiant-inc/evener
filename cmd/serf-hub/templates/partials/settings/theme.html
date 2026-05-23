@@ -1,9 +1,37 @@
 {{define "settings-content"}}
 <h2 class="settings-h2">Theme</h2>
-<p class="settings-help">Both palettes ship; default follows your OS preference. Saved per-browser.</p>
-<form class="settings-form" data-theme-picker>
-  <label class="settings-radio"><input type="radio" name="theme" value="system"> System</label>
-  <label class="settings-radio"><input type="radio" name="theme" value="dark"> Dark</label>
-  <label class="settings-radio"><input type="radio" name="theme" value="light"> Light</label>
-</form>
+<p class="settings-help">Theme, density, and sidebar mode are saved per-browser.</p>
+<dl class="settings-table" data-theme-form>
+  <div class="row">
+    <dt>Color theme</dt>
+    <dd>
+      <div class="val-radio-group" data-theme-picker>
+        <label class="val-radio"><input type="radio" name="theme" value="system"> System</label>
+        <label class="val-radio"><input type="radio" name="theme" value="dark"> Dark</label>
+        <label class="val-radio"><input type="radio" name="theme" value="light"> Light</label>
+      </div>
+    </dd>
+    <p class="help">Both palettes ship; default follows your OS preference.</p>
+  </div>
+  <div class="row">
+    <dt>Phone density</dt>
+    <dd>
+      <div class="val-radio-group" data-phone-density-picker>
+        <label class="val-radio"><input type="radio" name="phone-density" value="compact"> Compact</label>
+        <label class="val-radio"><input type="radio" name="phone-density" value="comfortable"> Comfortable</label>
+      </div>
+    </dd>
+    <p class="help">Type-scale variant on phone (≤767px). Compact is the default.</p>
+  </div>
+  <div class="row">
+    <dt>Sidebar mode</dt>
+    <dd>
+      <div class="val-radio-group" data-sidebar-mode-picker>
+        <label class="val-radio"><input type="radio" name="sidebar-mode" value="pane"> Pane</label>
+        <label class="val-radio"><input type="radio" name="sidebar-mode" value="rail"> Rail</label>
+      </div>
+    </dd>
+    <p class="help">Desktop only. Rail mode collapses the sidebar to 56px (icons + dots). <code>⌘B</code> toggles.</p>
+  </div>
+</dl>
 {{end}}
