@@ -22,7 +22,7 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
        data-active-turn-id="turn_live"
        data-state="active"></div>
   <form class="workspace-input" data-input-form data-session-id="01TEST">
-    <div class="input-attachments" data-attachments></div>
+    <div class="composer-attachments" data-composer-attachments data-attachments></div>
     <div class="queue-preview" data-queue-preview hidden>
       <div class="queue-preview-header">
         <span class="queue-preview-label">queued <span data-queue-depth>0</span></span>

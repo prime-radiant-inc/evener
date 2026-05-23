@@ -635,8 +635,14 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 }
 .workspace-input { padding: var(--space-4) var(--space-6) var(--space-4); border-top: 1px solid var(--rule); }
 
-.input-attachments { display: flex; gap: var(--space-3); flex-wrap: wrap; padding-bottom: var(--space-3); }
-.input-attachments:empty { display: none; }
+/* Composer attachment rail — paste, drag-drop, and file-picker chips all
+   render here through SerfComposerAttachments. Hides itself when empty. */
+.composer-attachments { display: flex; gap: var(--space-3); flex-wrap: wrap; padding-bottom: var(--space-3); }
+.composer-attachments:empty { display: none; }
+.composer-attachment { display: inline-flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); background: var(--bg); border: 1px solid var(--rule); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text); }
+.composer-attachment-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
+.composer-attachment-remove { cursor: pointer; color: var(--text-muted); padding: 0 var(--space-1); border: none; background: transparent; font-size: var(--text-base); line-height: 1; }
+.composer-attachment-remove:hover { color: var(--text); }
 
 /* Queue preview: shows messages typed during a processing turn that will
    become fresh user turns when the active turn completes (kata 111a). The
@@ -652,21 +658,6 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .queue-preview-item { display: flex; gap: var(--space-3); align-items: baseline; padding: var(--space-2) var(--space-3); background: var(--bg-raised); border-radius: var(--radius-sm); }
 .queue-preview-item .qp-idx { color: var(--text-dim); font-family: var(--font-mono); font-size: var(--text-2xs); }
 .queue-preview-item .qp-text { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.attachment-chip { display: inline-flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); background: var(--bg); border: 1px solid var(--rule); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-xs); }
-.attachment-chip .att-thumb { width: 18px; height: 18px; object-fit: cover; border-radius: var(--radius-sm); }
-.attachment-chip .att-remove { cursor: pointer; color: var(--text-muted); padding: 0 var(--space-1); border: none; background: transparent; }
-.attachment-chip .att-remove:hover { color: var(--text); }
-
-/* Composer paste chips (kata r6a1). Separate from .input-attachments above
-   so the shared paste helper can render alongside the legacy file-picker /
-   drag-drop pipeline without stomping its chips. Same visual language —
-   minus the thumbnail — so both rows feel like one strip. */
-.composer-attachments { display: flex; gap: var(--space-3); flex-wrap: wrap; padding-bottom: var(--space-3); }
-.composer-attachments:empty { display: none; }
-.composer-attachment { display: inline-flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); background: var(--bg); border: 1px solid var(--rule); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text); }
-.composer-attachment-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 240px; }
-.composer-attachment-remove { cursor: pointer; color: var(--text-muted); padding: 0 var(--space-1); border: none; background: transparent; font-size: var(--text-base); line-height: 1; }
-.composer-attachment-remove:hover { color: var(--text); }
 
 .input-card { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-lg); padding: var(--space-4) var(--space-4); min-height: 80px; transition: border-color var(--motion-fast); }
 /* kata 65mm: drop-active is set by the shared composer-attachments helper

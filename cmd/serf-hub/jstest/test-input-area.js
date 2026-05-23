@@ -26,8 +26,7 @@ const dom = new JSDOM(`<!DOCTYPE html><html><body>
        data-active-turn-id="turn_steer"
        data-state="active"></div>
   <form class="workspace-input" data-input-form data-session-id="01TEST">
-    <div class="input-attachments" data-attachments></div>
-    <div class="composer-attachments" data-composer-attachments></div>
+    <div class="composer-attachments" data-composer-attachments data-attachments></div>
     <div class="composer-attachment-error" data-attachment-error hidden></div>
     <div class="input-card" data-drop-zone>
       <textarea class="message-input" rows="1"></textarea>

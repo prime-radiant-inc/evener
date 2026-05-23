@@ -1676,10 +1676,9 @@
       // SerfComposerAttachments (kata r6a1 + 65mm). The submit handler below
       // reads composerPasteState.items at send/queue/drain time and lets
       // appwire.js base64-encode the ArrayBuffer payloads at the wire
-      // boundary (kata v80q). The legacy addFiles / FileReader / data-URL
-      // pipeline was retired here — chips render via SerfComposerAttachments
-      // into [data-composer-attachments], rejection banners into
-      // [data-attachment-error].
+      // boundary (kata v80q). One container — [data-composer-attachments] —
+      // holds chips from every entry point; rejection banners go to the
+      // sibling [data-attachment-error] element.
       const filePicker = form.querySelector("[data-file-picker]");
       const attachTrigger = form.querySelector("[data-attach-trigger]");
       const dropZone = form.querySelector("[data-drop-zone]");
