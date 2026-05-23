@@ -8,6 +8,7 @@
   --text-muted: #7a7a86;
   --text-dim: #5a5a64;
   --rule: #1a1a20;
+  --rule-soft: color-mix(in srgb, var(--rule) 50%, transparent);
   --accent: #7aa2f7;
   --state-awaiting: #f7768e;
   --state-processing: #7aa2f7;
@@ -110,6 +111,7 @@
     --text-muted: #5e5e6a;
     --text-dim: #8a8a92;
     --rule: #dadadc;
+    --rule-soft: color-mix(in srgb, var(--rule) 50%, transparent);
     --accent: #2e58b8;
     --state-awaiting: #b62a48;
     --state-processing: #2e58b8;
@@ -140,6 +142,7 @@
   --text-muted: #7a7a86;
   --text-dim: #5a5a64;
   --rule: #1a1a20;
+  --rule-soft: color-mix(in srgb, var(--rule) 50%, transparent);
   --accent: #7aa2f7;
   --state-awaiting: #f7768e;
   --state-processing: #7aa2f7;
@@ -168,6 +171,7 @@
   --text-muted: #5e5e6a;
   --text-dim: #8a8a92;
   --rule: #dadadc;
+  --rule-soft: color-mix(in srgb, var(--rule) 50%, transparent);
   --accent: #2e58b8;
   --state-awaiting: #b62a48;
   --state-processing: #2e58b8;
