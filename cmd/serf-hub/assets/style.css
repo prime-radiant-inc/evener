@@ -1072,12 +1072,9 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
   .conversation { padding: var(--space-4) var(--space-4); }
   .diagnostic { margin-left: 0; max-width: none; }
 
-  /* Tool-call rows: allow .target (and other flex children) to shrink below
-     their intrinsic content width so long file paths break instead of
-     overflowing the conversation container on narrow viewports. */
-  .tool-call .target,
-  .tool-call .verb,
-  .tool-call .tool-meta { min-width: 0; }
+  /* Allow long file paths in .tool-call .target to shrink and wrap on
+     narrow viewports (flex child default min-width: auto blocks shrink). */
+  .tool-call .target { min-width: 0; }
 }
 
 /* Credentials pane */
