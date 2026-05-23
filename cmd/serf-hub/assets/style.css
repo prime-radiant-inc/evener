@@ -449,7 +449,7 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
 /* Sidebar */
 .sidebar { padding: var(--space-6) 0; font-size: var(--text-base); color: var(--text); }
 .sidebar-header { padding: 0 var(--space-6) var(--space-4); display: flex; gap: var(--space-5); }
-.sidebar-action { color: var(--text-muted); text-decoration: none; cursor: pointer; }
+.sidebar-action { color: var(--text-muted); text-decoration: none; cursor: pointer; white-space: nowrap; }
 .sidebar-action:hover { color: var(--text); }
 .sidebar-action kbd { color: var(--text-dim); font-family: var(--font-mono); font-size: var(--text-2xs); margin-left: var(--space-2); }
 .sidebar-section { margin-bottom: var(--space-2); }
@@ -557,8 +557,18 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
   user-select: none;
 }
 .project-chevron:hover { color: var(--text); }
-.project-folder { display: inline-block; }
-.project-name { color: var(--text-dim); }
+.project-folder { display: inline-block; flex-shrink: 0; }
+.project-name {
+  color: var(--text-dim);
+  /* Long project paths (e.g. "implementation-granite-sunrise-canyon-task-20")
+     used to wrap one word-segment per line because of the hyphen-separated
+     tokens. Truncate with ellipsis instead so each project header is one row. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+  flex: 1;
+}
 
 /* Per-project collapse: hide the children container. The rollup dot stays
    visible in the header so the collapsed row still communicates urgency. */
