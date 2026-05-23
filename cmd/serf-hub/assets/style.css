@@ -631,6 +631,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   color: var(--text);
   container-type: inline-size;
   container-name: conversation;
+  --tool-indent: 36px;
 }
 .workspace-input { padding: var(--space-4) var(--space-6) var(--space-4); border-top: 1px solid var(--rule); }
 
@@ -750,7 +751,16 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .tool-call { margin: 0 0 var(--space-3) 0; font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-muted); display: flex; column-gap: var(--space-3); row-gap: 1px; flex-wrap: wrap; align-items: baseline; }
 .tool-call-cluster { margin-bottom: var(--space-4); }
 .tool-call-cluster .tool-call:last-child { margin-bottom: 0; }
-.tool-call .tool-status { display: inline-block; width: 12px; flex: 0 0 12px; margin-left: calc(0px - var(--space-6)); text-align: center; font-size: var(--text-xs); line-height: 1; font-family: var(--font-mono); }
+.tool-call .tool-status {
+  display: inline-block;
+  width: 12px;
+  flex: 0 0 12px;
+  margin-left: calc(0 - var(--tool-indent) * 0.56);
+  text-align: center;
+  font-size: var(--text-xs);
+  line-height: 1;
+  font-family: var(--font-mono);
+}
 .tool-call .tool-status-pending { color: var(--text-dim); }
 .tool-call .tool-status-good { color: var(--text-muted); }
 .tool-call .tool-status-bad { color: var(--state-awaiting); }
@@ -767,13 +777,30 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   flex: 0 0 100%;
   margin: 0;
 }
-.diff-body { margin: 0 0 var(--space-4) 36px; padding-left: var(--space-4); border-left: 1px solid var(--rule); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-snug); color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff-body {
+  margin: 0 0 var(--space-4) var(--tool-indent);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface-secondary);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  line-height: var(--leading-snug);
+  color: var(--text-muted);
+  white-space: pre;
+  overflow-x: auto;
+}
 .diff-body .add { color: var(--state-idle); }
 .diff-body .del { color: var(--state-awaiting); }
 .diff-body .hunk { color: var(--text-dim); }
 
 /* Shared style for tool-body elements: diff, shell output, task list, etc. */
-.tool-body { margin: 0 0 var(--space-4) 36px; padding-left: var(--space-4); border-left: 1px solid var(--rule); font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-muted); overflow-wrap: anywhere; }
+.tool-body {
+  margin: 0 0 var(--space-4) var(--tool-indent);
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--rule);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
 .tool-body summary { cursor: pointer; color: var(--text-muted); padding: 0; user-select: none; }
 .tool-body summary:hover { color: var(--text); }
 .shell-output { margin: var(--space-2) 0 0; padding: var(--space-3) var(--space-3); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-tight); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -786,24 +813,52 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .tool-output-more summary { cursor: pointer; color: var(--text-muted); padding: 0; user-select: none; order: 2; }
 .tool-output-more summary:hover { color: var(--text); }
 .tool-output-rest { margin-top: 0; order: 1; }
-.task-list-body { list-style: none; margin: 0 0 var(--space-4) 36px; padding: var(--space-3) 0 var(--space-3) var(--space-4); border-left: 1px solid var(--rule); display: flex; flex-direction: column; gap: var(--space-2); }
+.task-list-body {
+  list-style: none;
+  margin: 0 0 var(--space-4) var(--tool-indent);
+  padding: var(--space-3) 0 var(--space-3) var(--space-3);
+  border-left: 1px solid var(--rule);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
 .task-list-body .task-row { padding: var(--space-1) 0; background: transparent; border: none; font-family: var(--font-mono); font-size: var(--text-sm); display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; }
 .task-list-body .task-id { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-xs); }
 .task-list-body .task-arrow { color: var(--text-dim); }
 .task-list-body .task-status-label { color: var(--text); font-family: var(--font-mono); font-size: var(--text-xs); }
 .task-list-body .task-notes { color: var(--text-muted); font-style: italic; font-size: var(--text-xs); }
 .task-list-body .task-type { color: var(--text-muted); font-family: var(--font-mono); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: 0.04em; }
-.fetch-body { margin: 0 0 var(--space-4) 36px; padding-left: var(--space-4); border-left: 1px solid var(--rule); font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-muted); font-style: italic; }
-.search-body { list-style: none; margin: 0 0 var(--space-4) 36px; padding-left: var(--space-4); border-left: 1px solid var(--rule); font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text); }
+.fetch-body {
+  margin: 0 0 var(--space-4) var(--tool-indent);
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--rule);
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.search-body {
+  list-style: none;
+  margin: 0 0 var(--space-4) var(--tool-indent);
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--rule);
+  font-size: var(--text-sm);
+  color: var(--text);
+}
 .search-body li { padding: var(--space-1) 0; }
-.subagent-reference { margin: 0 0 var(--space-4) var(--space-6); font-size: var(--text-sm); color: var(--text-muted); cursor: pointer; }
+.subagent-reference {
+  margin: 0 0 var(--space-4) calc(var(--tool-indent) - var(--space-4));
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+}
 .subagent-reference .verb { color: var(--state-subagent); font-family: var(--font-mono); }
 .subagent-reference:hover { color: var(--text); }
 .diagnostic {
   --diagnostic-accent: var(--state-warning);
-  margin: 0 0 var(--space-5) var(--space-7);
-  max-width: 720px;
-  padding: var(--space-4) var(--space-4) var(--space-4);
+  margin: 0 0 var(--space-5) var(--tool-indent);
+  max-width: min(720px, 100%);
+  padding: var(--space-3) var(--space-4) var(--space-3) var(--space-4);
   background: var(--bg-raised);
   border: 1px solid var(--rule);
   border-left: 3px solid var(--diagnostic-accent);
@@ -833,10 +888,15 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .diagnostic-message { color: var(--text); word-break: break-word; }
 .diagnostic-hint { margin-top: var(--space-2); color: var(--text-muted); word-break: break-word; }
 
-.banner { margin: 0 0 var(--space-5) var(--space-7); padding: var(--space-3) var(--space-4); font-size: var(--text-sm); border-radius: var(--radius-md); }
-.banner.error { color: var(--state-awaiting); border-left: 2px solid var(--state-awaiting); padding-left: var(--space-4); }
-.banner.warning { color: var(--state-warning); border-left: 2px solid var(--state-warning); padding-left: var(--space-4); }
-.banner.note { color: var(--text-muted); border-left: 2px solid var(--rule); padding-left: var(--space-4); }
+.banner {
+  margin: 0 0 var(--space-4) calc(var(--tool-indent) - var(--space-3));
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  border-radius: var(--radius-md);
+}
+.banner.error   { color: var(--state-awaiting); border-left: 2px solid var(--state-awaiting); padding-left: var(--space-3); }
+.banner.warning { color: var(--state-warning);  border-left: 2px solid var(--state-warning);  padding-left: var(--space-3); }
+.banner.note    { color: var(--text-muted);     border-left: 2px solid var(--rule);           padding-left: var(--space-3); }
 
 /* System-line: short prose narration between user and agent — used for
  * task_list transitions ("marked X done · started Y"), full-list pointers,
@@ -1122,6 +1182,10 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 /* Tasks button progress badge */
 .panel-toggle-badge { display: inline-flex; align-items: center; padding: var(--space-1) var(--space-3); margin-left: var(--space-2); font-family: var(--font-mono); font-size: var(--text-2xs); color: var(--text-muted); background: var(--bg); border: 1px solid var(--rule); border-radius: var(--radius-sm); }
 
+@container conversation (max-width: 599px) {
+  .conversation { --tool-indent: 20px; padding: var(--space-3); }
+}
+
 /* ----- Mobile (<= 767px): off-canvas sidebar, full-width panels, stacked input controls.
    Phone screens get ~390px viewport; the desktop two-pane layout collapses
    to single-pane workspace, with the sidebar and slide-over panels turned
@@ -1220,8 +1284,6 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 
   /* User-message pill: more breathing room because the screen is narrower. */
   .user-message .pill { max-width: 90%; }
-  .conversation { padding: var(--space-4) var(--space-4); }
-  .diagnostic { margin-left: 0; max-width: none; }
 
   /* Allow long file paths in .tool-call .target to shrink and wrap on
      narrow viewports (flex child default min-width: auto blocks shrink). */
