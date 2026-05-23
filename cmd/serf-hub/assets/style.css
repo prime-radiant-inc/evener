@@ -2203,3 +2203,19 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .empty-state-tasks .empty-state-title { font-size: var(--text-sm); }
 .empty-state-picker { padding: var(--space-3); align-items: flex-start; text-align: left; }
 .empty-state-picker .empty-state-body { font-size: var(--text-xs); }
+
+/* Pass 8 — :active press states (drop surface one step) */
+.btn:active,
+.btn-secondary:active,
+.btn-ghost:active,
+.btn-danger:active,
+.btn-icon:active,
+.btn-chip:active {
+  transform: translateY(0.5px);
+}
+.btn-primary:active { filter: brightness(0.95); transform: translateY(0.5px); }
+.btn-secondary:active { background: var(--surface-secondary); }
+.btn-ghost:active { background: var(--surface-secondary); color: var(--text); }
+.btn-danger:active { background: color-mix(in srgb, var(--state-awaiting) 10%, transparent); }
+.btn-icon:active { background: var(--surface-secondary); }
+.btn-chip:active { background: var(--surface-secondary); border-color: var(--accent); }
