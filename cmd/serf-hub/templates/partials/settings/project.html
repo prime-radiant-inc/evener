@@ -8,6 +8,7 @@
 <div class="project-settings-pane">
 {{if .ProjectCWD}}
 <div id="project-settings-root" data-cwd="{{.ProjectCWD}}" data-loaded="false" hx-disable hx-disinherit="*">
+  <div class="project-settings-content">
   <section class="settings-section">
     <h3 class="settings-h3">Launch defaults</h3>
     <p class="settings-help">Layered on top of the global Serf and Codex launch settings. Only fields set here override the global defaults.</p>
@@ -47,6 +48,7 @@
     try {
       const schema = await launchconfig.schema();
       const current = await launchconfig.getLayer(cwd, "project");
+      const globalLayer = await launchconfig.getLayer(cwd, "global");
       if (!window.LaunchConfigControls) throw new Error("launch settings controls unavailable");
       window.LaunchConfigControls.render(form, {
         mode: "settings",
@@ -54,6 +56,7 @@
         options: (schema && schema.options) || [],
         current,
         includeEnvFallbacks: false,
+        globalDefaults: globalLayer,
       });
       if (loading) loading.hidden = true;
       root.dataset.loaded = "true";
@@ -80,6 +83,8 @@
     }
   })();
 </script>
+  </div>
+</div>
 {{else}}
 <section class="settings-section">
   <p class="settings-help">No project selected. Open this page via the ⚙ icon next to a project in the sidebar, or choose one below.</p>

@@ -1257,7 +1257,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 
 .settings-table {
   margin: 0;
-  max-width: 760px;
+  max-width: 920px;
   border-top: 1px solid var(--rule);
 }
 .settings-table .row {
@@ -1367,6 +1367,14 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .settings-table .val-radio:has(input[type="radio"]:checked) {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.settings-table-default-hint {
+  display: block;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  margin-top: var(--space-1);
 }
 
 .settings-table .val-toggle {
@@ -1802,7 +1810,8 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 
 /* Project settings pane (per-project settings, opened from sidebar gear).
    Renders as its own workspace partial — not inside the global settings shell. */
-.project-settings-pane { padding: var(--space-6) var(--space-6); max-width: 920px; }
+.project-settings-pane { flex: 1; overflow-y: auto; padding: var(--space-6) var(--space-6); }
+.project-settings-content { max-width: 920px; }
 .project-settings-pane .settings-section + .settings-section { margin-top: var(--space-6); }
 .workspace-title-meta {
   font-family: var(--font-mono);

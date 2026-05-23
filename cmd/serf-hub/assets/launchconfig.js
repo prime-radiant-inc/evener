@@ -198,6 +198,26 @@
     label.appendChild(hint);
   }
 
+  function appendGlobalDefault(parent, opt, ctx) {
+    if (ctx.mode !== "settings" || ctx.layer !== "project" || !ctx.globalDefaults || !opt) return;
+    const wire = opt.wireField || opt.field;
+    if (!wire) return;
+    const globalValue = ctx.globalDefaults[wire];
+    if (globalValue == null || globalValue === "") return;
+    let displayValue = String(globalValue);
+    const maxLen = 80;
+    if (displayValue.length > maxLen) {
+      displayValue = displayValue.substring(0, maxLen) + "…";
+    }
+    const hint = document.createElement("span");
+    hint.className = "settings-table-default-hint";
+    hint.textContent = "default: " + displayValue;
+    if (String(globalValue).length > maxLen) {
+      hint.title = String(globalValue);
+    }
+    parent.appendChild(hint);
+  }
+
   function radioNameFor(ctx, opt) {
     return "launch-" + (ctx.rootId || "") + "-" + (opt.field || opt.wireField || "");
   }
@@ -280,6 +300,7 @@
       dt.appendChild(title);
       const dd = document.createElement("dd");
       dd.appendChild(wrap);
+      appendGlobalDefault(dd, opt, ctx);
       row.appendChild(dt);
       row.appendChild(dd);
     } else {
@@ -330,6 +351,7 @@
         const dd = document.createElement("dd");
         dd.appendChild(select);
         appendEnvFallback(dd, opt, ctx.envFallbacks);
+        appendGlobalDefault(dd, opt, ctx);
         row.appendChild(dt);
         row.appendChild(dd);
       } else {
@@ -408,6 +430,7 @@
         const dd = document.createElement("dd");
         dd.appendChild(pickerResult.wrap);
         appendEnvFallback(dd, opt, ctx.envFallbacks);
+        appendGlobalDefault(dd, opt, ctx);
         row.appendChild(dt);
         row.appendChild(dd);
       } else {
@@ -429,6 +452,7 @@
       const dd = document.createElement("dd");
       dd.appendChild(input);
       appendEnvFallback(dd, opt, ctx.envFallbacks);
+      appendGlobalDefault(dd, opt, ctx);
       row.appendChild(dt);
       row.appendChild(dd);
     } else {
@@ -834,6 +858,7 @@
       layer,
       rootId: root.id || Math.random().toString(36).slice(2),
       envFallbacks: options.includeEnvFallbacks ? (options.envFallbacks || {}) : null,
+      globalDefaults: options.globalDefaults || null,
       optionsByWire,
     };
     let currentGroup = "";
