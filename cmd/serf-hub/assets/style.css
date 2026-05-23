@@ -15,6 +15,8 @@
   --state-idle: #9ece6a;
   --state-ended: #3a3a44;
   --state-subagent: #bb9af7;
+  --surface-secondary: #1c1c24;
+  --accent-secondary: #bb9af7;
   --diagnostic-provider: var(--state-awaiting);
   --diagnostic-serf: var(--state-warning);
   --diagnostic-hub: var(--state-processing);
@@ -23,10 +25,10 @@
   /* Legacy aliases for the existing rule set; remove these once the rest
      of style.css migrates to the new token names. */
   --panel: var(--bg-raised);
-  --panel-2: #1c1c24;
+  --panel-2: var(--surface-secondary);
   --border: var(--rule);
   --muted: var(--text-muted);
-  --accent-2: #bb9af7;
+  --accent-2: var(--accent-secondary);
   --tool: var(--state-warning);
   --user: var(--state-idle);
   --error: var(--state-awaiting);
@@ -114,12 +116,14 @@
     --state-idle: #336a14;
     --state-ended: #7a7a82;
     --state-subagent: #5e35b6;
+    --surface-secondary: #e6e6e8;
+    --accent-secondary: #5e35b6;
 
     --panel: var(--bg-raised);
-    --panel-2: #e6e6e8;
+    --panel-2: var(--surface-secondary);
     --border: var(--rule);
     --muted: var(--text-muted);
-    --accent-2: #5e35b6;
+    --accent-2: var(--accent-secondary);
     --tool: var(--state-warning);
     --user: var(--state-idle);
     --error: var(--state-awaiting);
@@ -141,11 +145,13 @@
   --state-idle: #9ece6a;
   --state-ended: #3a3a44;
   --state-subagent: #bb9af7;
+  --surface-secondary: #1c1c24;
+  --accent-secondary: #bb9af7;
   --panel: var(--bg-raised);
-  --panel-2: #1c1c24;
+  --panel-2: var(--surface-secondary);
   --border: var(--rule);
   --muted: var(--text-muted);
-  --accent-2: #bb9af7;
+  --accent-2: var(--accent-secondary);
   --tool: var(--state-warning);
   --user: var(--state-idle);
   --error: var(--state-awaiting);
@@ -166,11 +172,13 @@
   --state-idle: #336a14;
   --state-ended: #7a7a82;
   --state-subagent: #5e35b6;
+  --surface-secondary: #e6e6e8;
+  --accent-secondary: #5e35b6;
   --panel: var(--bg-raised);
-  --panel-2: #e6e6e8;
+  --panel-2: var(--surface-secondary);
   --border: var(--rule);
   --muted: var(--text-muted);
-  --accent-2: #5e35b6;
+  --accent-2: var(--accent-secondary);
   --tool: var(--state-warning);
   --user: var(--state-idle);
   --error: var(--state-awaiting);
