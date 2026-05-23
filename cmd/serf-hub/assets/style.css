@@ -1950,6 +1950,15 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   /* Allow long file paths in .tool-call .target to shrink and wrap on
      narrow viewports (flex child default min-width: auto blocks shrink). */
   .tool-call .target { min-width: 0; }
+
+  /* Phone density — design language §1.5 §4. ≤767px defaults to compact:
+     11px body text, 10px tool-call/monospace text, snug leading.
+     Comfortable density is the opt-in; compact is the default on phone. */
+  body { font-size: var(--text-xs); line-height: var(--leading-snug); }
+  .tool-call,
+  .msg.tool,
+  .tool-body,
+  .diff-body { font-size: var(--text-2xs); }
 }
 
 /* Project settings pane (per-project settings, opened from sidebar gear).
