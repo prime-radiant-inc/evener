@@ -136,7 +136,7 @@ func TestWeb_CodexSessionRouteReadsConfiguredSource(t *testing.T) {
 			t.Fatalf("workspace rendered removed header action %q:\n%s", unsupportedHeader, body)
 		}
 	}
-	for _, supported := range []string{`class="input-btn input-btn-primary send-btn"`} {
+	for _, supported := range []string{`class="btn btn-primary send-btn"`} {
 		if !strings.Contains(body, supported) {
 			t.Fatalf("codex workspace missing supported control %q:\n%s", supported, body)
 		}

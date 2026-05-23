@@ -1274,6 +1274,52 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .credentials-editor-error { margin: 0; color: var(--state-awaiting, var(--error, #c43755)); font-size: var(--text-sm); }
 .credentials-editor-actions { display: flex; gap: var(--space-3); }
 
+/* ── Button system (Pass 5) ───────────────────────────────────────────────
+   Base class + six variants. Replaces .input-btn*, .header-action*, .spawn-btn,
+   .spawn-attach-btn, .fork-confirm, .fork-cancel, .title-action, .panel-toggle,
+   and the spawn .chip. See design language §3.1. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  min-height: var(--tap-min);
+  font: inherit;
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background var(--motion-fast),
+              color var(--motion-fast),
+              border-color var(--motion-fast),
+              filter var(--motion-fast);
+}
+.btn[disabled],
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--btn-primary-text);
+  border-color: var(--accent);
+}
+.btn-primary:hover:not([disabled]):not(:disabled) { filter: brightness(1.08); }
+.btn-primary:active:not([disabled]):not(:disabled) { filter: brightness(0.95); }
+.btn-primary kbd {
+  background: color-mix(in srgb, var(--btn-primary-text) 20%, transparent);
+  border: 1px solid color-mix(in srgb, var(--btn-primary-text) 30%, transparent);
+  color: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm, 3px);
+  opacity: 0.85;
+  margin-left: var(--space-2);
+}
+
 /* Optimistic rendering: applied to any conversation entry that has
    been issued but not yet reconciled with an authoritative event.
    Reconcile removes .optimistic-pending; failure adds .optimistic-failed. */
