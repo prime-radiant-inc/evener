@@ -2923,6 +2923,25 @@
     }
   }
 
+  // addPanelScrim inserts a semi-transparent overlay behind the slide-over panel.
+  // onClose is called when the user clicks the scrim directly (click-outside
+  // via the scrim element rather than bindClickOutside).
+  function addPanelScrim(onClose) {
+    removePanelScrim();
+    const scrim = document.createElement("div");
+    scrim.className = "panel-scrim";
+    scrim.id = "panel-scrim";
+    scrim.addEventListener("mousedown", (ev) => {
+      ev.stopPropagation();
+      onClose();
+    });
+    document.body.appendChild(scrim);
+  }
+  function removePanelScrim() {
+    const s = document.getElementById("panel-scrim");
+    if (s) s.remove();
+  }
+
   // bindClickOutside dismisses a slide-over panel when the user clicks
   // anywhere outside it AND outside the trigger button that opened it.
   // Capture-phase mousedown so a click that would otherwise land on a
@@ -2951,6 +2970,7 @@
         window.SerfFocusTrap.deactivate(existing.__trapHandle);
       }
       existing.remove();
+      removePanelScrim();
       setPanelToggleActive("[data-tasks-trigger]", false);
       return;
     }
@@ -2976,6 +2996,7 @@
     panel.className = "details-panel";
     panel.innerHTML = "<div class='details-loading'>loading…</div>";
     document.body.appendChild(panel);
+    addPanelScrim(closePanel);
 
     const refresh = () => {
       const tasksPromise = window.SerfAppwire
@@ -2995,21 +3016,22 @@
       panel.__trapHandle = window.SerfFocusTrap.activate(panel, triggerEl);
     }
 
-    const close = () => {
+    function closePanel() {
       if (panel.__pollTimer) clearInterval(panel.__pollTimer);
       if (panel.__trapHandle && window.SerfFocusTrap) {
         window.SerfFocusTrap.deactivate(panel.__trapHandle);
       }
       panel.remove();
+      removePanelScrim();
       setPanelToggleActive("[data-tasks-trigger]", false);
-    };
+    }
     document.addEventListener("keydown", function escClose(ev) {
       if (ev.key === "Escape") {
-        close();
+        closePanel();
         document.removeEventListener("keydown", escClose);
       }
     });
-    bindClickOutside(panel, "[data-tasks-trigger]", close);
+    bindClickOutside(panel, "[data-tasks-trigger]", closePanel);
   }
 
   function renderTasksInto(panel, tasks) {
@@ -3138,6 +3160,7 @@
         window.SerfFocusTrap.deactivate(existing.__trapHandle);
       }
       existing.remove();
+      removePanelScrim();
       setPanelToggleActive("[data-details-trigger]", false);
       return;
     }
@@ -3149,6 +3172,7 @@
         window.SerfFocusTrap.deactivate(tasks.__trapHandle);
       }
       tasks.remove();
+      removePanelScrim();
       setPanelToggleActive("[data-tasks-trigger]", false);
     }
     const header = document.querySelector(".workspace-header");
@@ -3163,6 +3187,7 @@
     panel.className = "details-panel";
     panel.innerHTML = "<div class='details-loading'>loading…</div>";
     document.body.appendChild(panel);
+    addPanelScrim(closePanel);
     partialFetch(sessionPartialPath(id, "details")).then(r => r.text()).then(html => {
       panel.innerHTML = html;
       if (window.SerfFocusTrap && !panel.__trapHandle) {
@@ -3178,20 +3203,21 @@
       panel.__trapHandle = window.SerfFocusTrap.activate(panel, triggerEl);
     }
 
-    const close = () => {
+    function closePanel() {
       if (panel.__trapHandle && window.SerfFocusTrap) {
         window.SerfFocusTrap.deactivate(panel.__trapHandle);
       }
       panel.remove();
+      removePanelScrim();
       setPanelToggleActive("[data-details-trigger]", false);
-    };
+    }
     document.addEventListener("keydown", function escClose(ev) {
       if (ev.key === "Escape") {
-        close();
+        closePanel();
         document.removeEventListener("keydown", escClose);
       }
     });
-    bindClickOutside(panel, "[data-details-trigger]", close);
+    bindClickOutside(panel, "[data-details-trigger]", closePanel);
   }
 
   document.addEventListener("DOMContentLoaded", refreshTabTitle);

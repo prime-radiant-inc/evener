@@ -1789,10 +1789,16 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 
 
 /* Details slide-over panel */
-.details-panel { position: fixed; top: 0; right: 0; bottom: 0; width: 360px; background: var(--bg-raised); border-left: 1px solid var(--rule); padding: var(--space-5) var(--space-6); overflow-y: auto; box-shadow: -8px 0 24px rgba(0,0,0,0.2); z-index: var(--z-fixed-action); animation: panel-slide-in var(--motion-base) ease-out both; }
+.details-panel { position: fixed; top: 0; right: 0; bottom: 0; width: 360px; background: var(--bg-raised); border-left: 1px solid var(--rule); padding: var(--space-5) var(--space-6); overflow-y: auto; box-shadow: -8px 0 24px rgba(0,0,0,0.2); z-index: var(--z-drawer); animation: panel-slide-in var(--motion-base) both; }
 @keyframes panel-slide-in {
   from { transform: translateX(100%); }
   to   { transform: translateX(0); }
+}
+/* Scrim behind the details/tasks panel — mirrors the sidebar drawer scrim pattern. */
+.panel-scrim { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.4); z-index: var(--z-overlay, 800); cursor: pointer; animation: panel-scrim-in var(--motion-base) both; }
+@keyframes panel-scrim-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 .details-panel-header { display: flex; align-items: center; justify-content: space-between; padding-bottom: var(--space-4); border-bottom: 1px solid var(--rule); color: var(--text); font-weight: 500; font-size: var(--text-base); }
 .details-panel-close { background: transparent; border: 0; cursor: pointer; color: var(--text-muted); font-size: var(--text-xs); font-family: var(--font-sans); min-width: var(--tap-min); min-height: var(--tap-min); display: inline-flex; align-items: center; justify-content: flex-end; padding: 0 var(--space-2); margin: 0; }
@@ -1892,7 +1898,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 
   /* Inline hamburger visible on phone, leftmost in the title row.
      Partials don't need to remember a 56px offset anymore. */
-  .header-hamburger { display: inline-flex; }
+  .header-hamburger { display: inline-flex; width: var(--tap-min); height: var(--tap-min); }
 
   /* Workspace header reverts to its standard padding; no fixed-overlay
      hamburger offset. */
