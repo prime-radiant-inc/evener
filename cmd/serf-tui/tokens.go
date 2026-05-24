@@ -35,6 +35,31 @@ func Themes() map[string]Theme {
 	return themeRegistry
 }
 
+var activeThemeNameV2 = "dark"
+
+var markdownInvalidationCount int
+
+// markdownInvalidator is wired by message.go init; placeholder counts calls.
+var markdownInvalidator = func() { markdownInvalidationCount++ }
+
+func activeThemeV2() Theme {
+	if th, ok := themeRegistry[activeThemeNameV2]; ok {
+		return th
+	}
+	return themeRegistry["dark"]
+}
+
+// setThemeV2 swaps the active theme. Not safe for concurrent use; called
+// only from bubbletea's main Update goroutine.
+func setThemeV2(name string) bool {
+	if _, ok := themeRegistry[name]; !ok {
+		return false
+	}
+	activeThemeNameV2 = name
+	markdownInvalidator()
+	return true
+}
+
 var darkThemeV2 = Theme{
 	Name:                "dark",
 	Bg:                  lipgloss.Color("#0a0a0e"),
