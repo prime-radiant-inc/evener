@@ -305,6 +305,7 @@ func toolInfoFromThreadItem(item appwire.ThreadItem, done bool) *toolCallInfo {
 		Name:        item.ToolName,
 		Description: desc,
 		Detail:      detail,
+		RawArgs:     item.ArgumentsJSON,
 		Output:      item.Output,
 		Error:       item.Error,
 		Done:        done,
@@ -326,6 +327,7 @@ func mergeThreadItemIntoToolInfo(info *toolCallInfo, item appwire.ThreadItem, do
 		desc, detail := summarizeTool(item.ToolName, item.ArgumentsJSON)
 		info.Description = desc
 		info.Detail = detail
+		info.RawArgs = item.ArgumentsJSON
 	}
 	if item.Output != "" {
 		info.Output = item.Output

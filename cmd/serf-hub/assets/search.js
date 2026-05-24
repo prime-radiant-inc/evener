@@ -35,8 +35,11 @@
         close();
       }
     });
-    document.querySelectorAll("[data-search-trigger]").forEach(el => {
-      el.addEventListener("click", (e) => { e.preventDefault(); open(); });
+    document.body.addEventListener("click", (e) => {
+      const trigger = e.target.closest("[data-search-trigger]");
+      if (!trigger) return;
+      e.preventDefault();
+      open();
     });
 
     const debouncedSearch = debounce((q) => search(q), 150);

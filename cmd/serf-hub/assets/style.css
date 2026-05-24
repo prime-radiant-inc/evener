@@ -2454,7 +2454,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 [data-loading] .skeleton-row .skeleton.dot { height: 6px; min-width: 6px; border-radius: 50%; }
 [data-loading] .skeleton-row .skeleton.title { height: 12px; width: 70%; }
 [data-loading] .skeleton-row .skeleton.meta  { height: 10px; width: 32px; }
-:not([data-loading]) .skeleton-row { display: none; }
+.skeleton-row { display: none; }
 
 /* Skeleton variants — header meta pills (workspace.html) and conversation
    lines (skeleton-turn). Sizes here keep all inline style attributes out
@@ -2491,7 +2491,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   padding: var(--space-3) 0;
 }
 [data-loading] .skeleton-turn { /* same shimmer cascade as .skeleton-row */ }
-:not([data-loading]) .skeleton-turn { display: none; }
+.skeleton-turn { display: none; }
 
 /* Pass 8 — Empty states (per design language §4.7) */
 .empty-state {

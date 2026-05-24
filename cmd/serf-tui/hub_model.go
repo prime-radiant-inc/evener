@@ -2087,6 +2087,7 @@ func (m *hubModel) returnToDashboard() {
 	m.credentialsPanel = nil
 	m.launchSettingsPanel = nil
 	m.followupModal = nil
+	m.launchOverridesModal = nil
 	m.session.scrollMode = false
 	m.session.focusedToolIdx = -1
 	m.browseSelected = -1
@@ -4179,8 +4180,10 @@ func (m hubModel) sessionView() string {
 			if rendered == "" {
 				continue
 			}
-			if prevRendered {
-				// Turn separator between clusters
+			// Only emit a turn separator at the start of a new user-turn cluster
+			// (i.e. before a msgUser message that isn't the first rendered one).
+			// This avoids separators between assistant text, tool calls, etc.
+			if prevRendered && msg.Kind == msgUser {
 				rule := lipgloss.NewStyle().Foreground(activeThemeV2().RuleSoft).Render(strings.Repeat("┄", width))
 				b.WriteString(rule)
 				b.WriteString("\n")

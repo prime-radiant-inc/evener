@@ -10,7 +10,7 @@
 
   function apply(host) {
     if (!host || host.dataset.chipOverflowApplied === "true") return;
-    var chips = Array.prototype.slice.call(host.querySelectorAll(".chip"));
+    var chips = Array.prototype.slice.call(host.querySelectorAll(".btn-chip, .chip"));
     if (chips.length <= CAP) return;
 
     // Sort by data-chip-modified descending (numeric). Chips with no

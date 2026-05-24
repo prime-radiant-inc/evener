@@ -700,13 +700,18 @@
 
   function renderSchemaOption(group, opt, ctx) {
     const isCollection = opt.kind === "pathList" || opt.kind === "modelList" || opt.kind === "envMap" || opt.kind === "mcpServerList";
+    if (isCollection) {
+      // Collection controls append multiple rows (section header + collection row)
+      // directly to the settings table root to avoid nesting .row inside .row.
+      if (opt.kind === "pathList" || opt.kind === "modelList") renderListControl(group, opt, ctx);
+      else if (opt.kind === "envMap") renderEnvControl(group, opt, ctx);
+      else if (opt.kind === "mcpServerList") renderMCPControl(group, opt, ctx);
+      return;
+    }
     const row = document.createElement("div");
     row.className = "row";
-    if (!isCollection) row.dataset.launchOption = opt.field || "";
+    row.dataset.launchOption = opt.field || "";
     if (promptCompositeByMode[opt.wireField]) renderPromptCompositeControl(row, opt, ctx);
-    else if (opt.kind === "pathList" || opt.kind === "modelList") renderListControl(row, opt, ctx);
-    else if (opt.kind === "envMap") renderEnvControl(row, opt, ctx);
-    else if (opt.kind === "mcpServerList") renderMCPControl(row, opt, ctx);
     else renderScalarControl(row, opt, ctx);
     group.appendChild(row);
   }

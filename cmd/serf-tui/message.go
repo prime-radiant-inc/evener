@@ -115,6 +115,7 @@ type toolCallInfo struct {
 	Name        string
 	Description string // compact one-liner header
 	Detail      string // rich multi-line body shown when expanded
+	RawArgs     string // raw JSON arguments string; preferred over Description for arg parsing
 	Output      string
 	Error       string
 	Duration    time.Duration
@@ -194,7 +195,13 @@ func renderSelectedMessage(rendered string, focused bool) string {
 
 func renderToolCall(tc toolCallInfo, width int, focused bool) string {
 	r, _ := lookupToolRenderer(tc.Name)
-	args := toolArgsFromJSON(argsJSONFromDescription(tc.Description))
+	// Prefer RawArgs (populated from source ArgumentsJSON). Fall back to
+	// extracting JSON from Description for legacy paths where RawArgs is empty.
+	rawJSON := tc.RawArgs
+	if rawJSON == "" {
+		rawJSON = argsJSONFromDescription(tc.Description)
+	}
+	args := toolArgsFromJSON(rawJSON)
 
 	verb := r.Verb(args)
 	target := r.Target(args)
@@ -422,6 +429,7 @@ func historyToMessages(turns []agent.Turn) []chatMessage {
 						Name:        tc.Name,
 						Description: toolDesc,
 						Detail:      toolDetail,
+						RawArgs:     argsJSON,
 						Output:      output,
 						Done:        true,
 						Expanded:    toolDetail != "",

@@ -1096,6 +1096,7 @@ func (m *model) handleStreamEvent(ev streamEvent) {
 				Name:        d.ToolName,
 				Description: toolDesc,
 				Detail:      toolDetail,
+				RawArgs:     d.ArgumentsJSON,
 				Hidden:      d.ToolName == "communicate",
 			},
 		})
