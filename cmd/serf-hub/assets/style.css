@@ -515,6 +515,15 @@ body.app { display: flex; background: var(--bg); color: var(--text); font-family
   align-items: baseline;
   gap: var(--space-2);
 }
+/* Dot separator between adjacent meta spans (project · age, branch · age,
+   subagent · age, fork · age). The mockup uses an explicit · glyph; we
+   reintroduce it via ::before on span+span pairs so the template stays
+   clean. Hidden when only one meta span is rendered. */
+.sb-row .meta > span + span::before {
+  content: "·";
+  color: var(--text-dim);
+  margin-right: var(--space-2);
+}
 
 /* State accents — left border + 5% tinted background. Dark theme reads
    fine at 5%; light-theme bump lives in the per-theme override block. */
