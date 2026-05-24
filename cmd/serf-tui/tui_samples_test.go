@@ -224,6 +224,27 @@ func runWithTheme(t *testing.T, name string, body func()) {
 	body()
 }
 
+func TestGoldenRendersAcrossThemes(t *testing.T) {
+	corpus := newHubTUISampleCorpus()
+	for _, theme := range []string{"dark", "light"} {
+		runWithTheme(t, theme, func() {
+			for _, sample := range corpus.Renders {
+				t.Run(theme+"/"+sample.Name, func(t *testing.T) {
+					actual, ok := sampleRenderFromRealWidget(sample.Name, sample.Width)
+					if !ok {
+						t.Skipf("no realtime renderer for %q", sample.Name)
+					}
+					for _, want := range sample.Contains {
+						if !strings.Contains(actual.View, want) {
+							t.Errorf("theme=%s sample=%s missing %q", theme, sample.Name, want)
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestSampleRenders_EachThemeProducesNonEmptyView(t *testing.T) {
 	corpus := newHubTUISampleCorpus()
 	for _, theme := range []string{"dark", "light"} {
