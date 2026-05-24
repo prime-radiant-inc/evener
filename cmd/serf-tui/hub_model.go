@@ -1110,6 +1110,12 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 	}
+	// Focus trap: when any overlay is open, non-escape-hatch keys are
+	// consumed by the topmost overlay only (wave 9 task 9.1).
+	if topmost := topmostOverlayName(m); topmost != "" && !keyAllowedThroughTrap(msg) {
+		return m.dispatchOverlayKey(topmost, msg)
+	}
+
 	if m.commandPalette != nil {
 		return m.updateCommandPaletteKey(msg)
 	}
