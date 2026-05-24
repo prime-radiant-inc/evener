@@ -35,6 +35,20 @@
     "summary",
   ].join(",");
 
+  function isRendered(el) {
+    if (el.hidden) return false;
+    // Walk up the DOM and check computed style on each ancestor to catch
+    // elements hidden by an ancestor's display:none or visibility:hidden.
+    var node = el;
+    while (node && node !== node.ownerDocument) {
+      var style = getComputedStyle(node);
+      if (style.display === "none") return false;
+      if (style.visibility === "hidden") return false;
+      node = node.parentElement;
+    }
+    return true;
+  }
+
   function tabbable(root) {
     var nodes = root.querySelectorAll(FOCUSABLE);
     var out = [];
@@ -42,9 +56,7 @@
       var n = nodes[i];
       if (n.hasAttribute("disabled")) continue;
       if (n.getAttribute("tabindex") === "-1") continue;
-      // Tabbable = focusable AND not [tabindex='-1']. We don't filter hidden
-      // elements (display:none, etc.) — the selector excludes [disabled] and
-      // [tabindex='-1'], browsers refuse focus() on display:none anyway.
+      if (!isRendered(n)) continue;
       out.push(n);
     }
     return out;

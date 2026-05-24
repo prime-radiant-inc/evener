@@ -308,9 +308,11 @@
     const placeholder = ctx.layer === "project" ? "(use global default)" : "(default)";
 
     if (opt.kind === "select") {
+      const labelId = "lbl-" + (opt.field || opt.wireField || "");
       const select = document.createElement("select");
       select.name = opt.wireField || opt.field || "";
       select.className = "val-select";
+      select.setAttribute("aria-labelledby", labelId);
       setControlData(select, opt);
       const empty = document.createElement("option");
       empty.value = "";
@@ -324,6 +326,7 @@
         select.appendChild(o);
       });
       const dt = document.createElement("dt");
+      dt.id = labelId;
       dt.textContent = opt.label || opt.field;
       const dd = document.createElement("dd");
       dd.appendChild(select);
@@ -336,8 +339,11 @@
     }
 
     if (opt.kind === "radio") {
+      const labelId = "lbl-" + (opt.field || opt.wireField || "");
       const wrap = document.createElement("div");
       wrap.className = "val-radio-group";
+      wrap.setAttribute("role", "group");
+      wrap.setAttribute("aria-labelledby", labelId);
       const emptyLabel = document.createElement("label");
       emptyLabel.className = "val-radio";
       const emptyRadio = document.createElement("input");
@@ -362,6 +368,7 @@
         wrap.appendChild(choiceLabel);
       });
       const dt = document.createElement("dt");
+      dt.id = labelId;
       dt.textContent = opt.label || opt.field;
       const dd = document.createElement("dd");
       dd.appendChild(wrap);
@@ -372,9 +379,11 @@
     }
 
     if (opt.kind === "boolean") {
+      const labelId = "lbl-" + (opt.field || opt.wireField || "");
       const select = document.createElement("select");
       select.name = opt.wireField || opt.field || "";
       select.className = "val-select";
+      select.setAttribute("aria-labelledby", labelId);
       setControlData(select, opt);
       [[ "", placeholder ], [ "true", "true" ], [ "false", "false" ]].forEach(([value, text]) => {
         const o = document.createElement("option");
@@ -383,6 +392,7 @@
         select.appendChild(o);
       });
       const dt = document.createElement("dt");
+      dt.id = labelId;
       dt.textContent = opt.label || opt.field;
       const dd = document.createElement("dd");
       dd.appendChild(select);
@@ -393,8 +403,11 @@
     }
 
     if (opt.kind === "modelPicker") {
+      const labelId = "lbl-" + (opt.field || opt.wireField || "");
       const pickerResult = modelPickerControl(opt, ctx.mode, placeholder);
+      pickerResult.wrap.setAttribute("aria-labelledby", labelId);
       const dt = document.createElement("dt");
+      dt.id = labelId;
       dt.textContent = opt.label || opt.field;
       const dd = document.createElement("dd");
       dd.appendChild(pickerResult.wrap);
@@ -406,10 +419,13 @@
       return;
     }
 
+    const labelId = "lbl-" + (opt.field || opt.wireField || "");
     const input = textInputForOption(opt, ctx.mode, opt.kind === "multilineText");
     input.placeholder = placeholder;
     if (opt.kind !== "multilineText") input.className = "val-input";
+    input.setAttribute("aria-labelledby", labelId);
     const dt = document.createElement("dt");
+    dt.id = labelId;
     dt.textContent = opt.label || opt.field;
     const dd = document.createElement("dd");
     dd.appendChild(input);

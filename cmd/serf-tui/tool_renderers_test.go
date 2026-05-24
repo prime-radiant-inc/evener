@@ -116,6 +116,47 @@ func TestApplyPatchRenderer(t *testing.T) {
 	}
 }
 
+func TestApplyPatchRendererUnifiedDiff(t *testing.T) {
+	r, _ := lookupToolRenderer("apply_patch")
+	args := ToolArgs{"patch": "--- a/src/main.go\n+++ b/src/main.go\n@@ -1,3 +1,4 @@\n+// new\n"}
+	if got := r.Target(args); got != "src/main.go" {
+		t.Errorf("apply_patch unified-diff target = %q; want src/main.go", got)
+	}
+}
+
+func TestApplyPatchRendererV4a(t *testing.T) {
+	r, _ := lookupToolRenderer("apply_patch")
+	tests := []struct {
+		name   string
+		patch  string
+		want   string
+	}{
+		{
+			name:  "Update File",
+			patch: "*** Begin Patch\n*** Update File: src/foo.go\n@@ -1,3 +1,4 @@\n+// new\n*** End Patch",
+			want:  "src/foo.go",
+		},
+		{
+			name:  "Add File",
+			patch: "*** Begin Patch\n*** Add File: cmd/bar/main.go\n+package main\n*** End Patch",
+			want:  "cmd/bar/main.go",
+		},
+		{
+			name:  "Delete File",
+			patch: "*** Begin Patch\n*** Delete File: old/legacy.go\n*** End Patch",
+			want:  "old/legacy.go",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			args := ToolArgs{"patch": tc.patch}
+			if got := r.Target(args); got != tc.want {
+				t.Errorf("apply_patch v4a target = %q; want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestWebFetchRenderer(t *testing.T) {
 	r, _ := lookupToolRenderer("web_fetch")
 	args := toolArgsFromJSON(`{"url":"https://example.com"}`)

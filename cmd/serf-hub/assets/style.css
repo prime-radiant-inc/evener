@@ -2327,7 +2327,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 
    Everything else uses --text-* / --leading-* tokens. If you find another
    literal, file it as a Pass 3 cleanup; do not add to this list without
-   calling it out in the design-language doc.
+   calling it out in the design-language doc. */
 
 /* Per-component focus offset overrides — rounded rows where the +1px
    ring would visually escape the radius. Specificity beats the
@@ -2351,7 +2351,6 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .chip-picker-dir-row:focus-visible {
   outline-offset: -2px;
 }
-   ──────────────────────────────────────────────────────────────────────── */
 
 /* Pass 8 — Toasts */
 #toast-region {

@@ -112,6 +112,18 @@
   }
 
   function open() {
+    // Deactivate any active panel focus traps so the search dialog is not
+    // rendered inert behind them. Panels re-trap when they regain focus on
+    // close; search dialog is a native <dialog> so no trap needed here.
+    if (window.SerfFocusTrap) {
+      ["tasks-panel", "details-panel"].forEach(function (id) {
+        var panel = document.getElementById(id);
+        if (panel && panel.__trapHandle) {
+          window.SerfFocusTrap.deactivate(panel.__trapHandle);
+          panel.__trapHandle = null;
+        }
+      });
+    }
     selectedCommand = null;
     hidePill();
     dialog.showModal();
@@ -276,6 +288,9 @@
               body: JSON.stringify({ model: item.id }),
             });
             return Promise.resolve(p).then((r) => {
+              if (r && typeof r.ok !== "undefined" && !r.ok) {
+                return blockedFromResponse("model change failed", r);
+              }
               if (window.SerfToast) window.SerfToast.show("Model: " + item.id, "success");
               return r;
             }, (err) => {

@@ -274,6 +274,16 @@ func init() {
 		Verb: func(_ ToolArgs) string { return "patch" },
 		Target: func(args ToolArgs) string {
 			patch := args.Str("patch")
+			// Try v4a format first: *** Update/Add/Delete File: <path>
+			for _, line := range strings.Split(patch, "\n") {
+				line = strings.TrimSpace(line)
+				for _, prefix := range []string{"*** Update File: ", "*** Add File: ", "*** Delete File: "} {
+					if strings.HasPrefix(line, prefix) {
+						return strings.TrimSpace(line[len(prefix):])
+					}
+				}
+			}
+			// Fall back to unified diff +++ b/... lines
 			for _, line := range strings.Split(patch, "\n") {
 				if strings.HasPrefix(line, "+++ b/") {
 					return line[len("+++ b/"):]
