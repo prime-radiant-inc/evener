@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1600,6 +1602,35 @@ func TestHubModelDashboardSpawnEditsWorkingDirBeforePosting(t *testing.T) {
 	}
 	if testInputText(gotSpawn.Input) != "spawn with custom cwd" {
 		t.Fatalf("spawn prompt=%q", testInputText(gotSpawn.Input))
+	}
+}
+
+func TestHubModelSpawnDirectoryTabCompletesPath(t *testing.T) {
+	root := t.TempDir()
+	alpha := filepath.Join(root, "alpha")
+	if err := os.Mkdir(alpha, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "alpine.txt"), []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := newHubModel(nil, "http://hub.test")
+	m.openSpawnForm()
+	m.setSpawnFocus(hubSpawnFieldDir)
+	m.setSpawnDir(filepath.Join(root, "a"))
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if cmd != nil {
+		t.Fatal("directory completion should not return an async command")
+	}
+	got := updated.(hubModel)
+	want := alpha + string(filepath.Separator)
+	if got.spawnDir != want {
+		t.Fatalf("spawn dir after tab = %q, want completed directory %q", got.spawnDir, want)
+	}
+	if got.spawnFocus != hubSpawnFieldDir {
+		t.Fatalf("spawn focus after completion = %v, want directory field", got.spawnFocus)
 	}
 }
 

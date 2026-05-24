@@ -1357,6 +1357,15 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.closeSpawnForm()
 		return m, nil
 	case "tab":
+		if m.spawnFocus == hubSpawnFieldDir {
+			current := m.spawnDirInput.Value()
+			completed := completeLastPathSegment(current)
+			if completed != current {
+				m.spawnDirInput.SetValue(completed)
+				m.spawnDir = strings.TrimSpace(completed)
+				return m, nil
+			}
+		}
 		m.advanceSpawnFocus(1)
 		return m, nil
 	case "shift+tab":
@@ -1552,7 +1561,7 @@ func (m hubModel) spawnFieldHint() string {
 		}
 		return "enter: choose model"
 	case hubSpawnFieldDir:
-		return "type path  enter: next  ctrl+u clear"
+		return "type path  tab: complete  enter: next  ctrl+u clear"
 	default:
 		return "enter: spawn  ctrl+j: newline"
 	}
