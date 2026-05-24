@@ -654,7 +654,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.clearSessionError()
 		m.detail = msg.detail
-		panel := hubSessionPanel{Body: renderHubSessionStatus(msg.detail, msg.tasks, msg.auth, msg.taskErr, msg.authErr)}
+		panel := hubSessionPanel{Body: renderHubSessionStatus(msg.detail, msg.tasks, msg.auth, msg.taskErr, msg.authErr, m.width)}
 		m.sessionPanel = &panel
 		m.session.refreshViewport()
 		return m, nil
