@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -46,8 +47,48 @@ func (p commandPalette) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return p, cmd
 }
 
+func (p commandPalette) renderItems() string {
+	th := activeThemeV2()
+	filtered := p.panel.filtered()
+	if len(filtered) == 0 {
+		return lipgloss.NewStyle().Foreground(th.TextDim).Render("  No matching commands.")
+	}
+	var rows []string
+	for i, item := range filtered {
+		cursor := "  "
+		if i == p.panel.cursor {
+			cursor = "> "
+		}
+		slash := lipgloss.NewStyle().Foreground(th.Accent).Bold(true).Render(item.Label)
+		detail := lipgloss.NewStyle().Foreground(th.TextDim).Render(item.Detail)
+		row := cursor + slash
+		if item.Detail != "" {
+			row += "  " + detail
+		}
+		if item.DisabledReason != "" {
+			row += "  " + lipgloss.NewStyle().Foreground(th.TextGhost).Render("disabled: "+item.DisabledReason)
+		}
+		rows = append(rows, row)
+	}
+	return strings.Join(rows, "\n")
+}
+
 func (p commandPalette) View() string {
-	return p.panel.View()
+	th := activeThemeV2()
+	var filterLine string
+	if p.panel.filter == "" {
+		filterLine = "Filter: " + lipgloss.NewStyle().Foreground(th.TextDim).Render("type to filter...")
+	} else {
+		filterLine = "Filter: " + p.panel.filter
+	}
+	body := filterLine + "\n\n" + p.renderItems()
+	width := p.panel.width
+	if width <= 0 {
+		width = 80
+	}
+	width = min(max(width, 44), 96)
+	footer := actionBarForWidth(width, KbdHint("↑↓", "navigate"), KbdHint("enter", "run"), KbdHint("esc", "cancel"))
+	return Overlay(OverlayOpts{Title: p.panel.title, Width: width, Body: body, Footer: footer})
 }
 
 func (p commandPalette) selectedEntry() (commandPaletteEntry, bool) {
