@@ -51,9 +51,14 @@ def read_jsonl(path):
             if not line:
                 continue
             try:
-                yield lineno, json.loads(line)
+                entry = json.loads(line)
             except json.JSONDecodeError:
                 print(f"warning: {path}:{lineno}: invalid JSON, skipping", file=sys.stderr)
+                continue
+            if not isinstance(entry, dict):
+                print(f"warning: {path}:{lineno}: malformed JSON row, skipping", file=sys.stderr)
+                continue
+            yield lineno, entry
 
 
 def read_entries(files):
@@ -67,7 +72,7 @@ def read_entries(files):
         for _, entry in read_jsonl(f):
             entry["_file"] = str(f)
             entries.append(entry)
-    return entries
+    return dedupe_entries(entries)
 
 
 def read_transcript_api_entries(path):
@@ -102,6 +107,58 @@ def usage_for(entry):
 
 def cache_read_tokens(usage):
     return usage.get("cache_read_tokens") or 0
+
+
+def cache_write_tokens(usage):
+    return usage.get("cache_write_tokens") or 0
+
+
+def cache_write_1h_tokens(usage):
+    return usage.get("cache_write_1h_tokens") or 0
+
+
+def dedupe_key(entry, index):
+    req = entry.get("request", {}) or {}
+    key = (
+        entry.get("session_id"),
+        entry.get("round"),
+        entry.get("ts"),
+        req.get("provider"),
+        req.get("model"),
+        entry.get("latency_ms"),
+    )
+    if any(part not in (None, "") for part in key):
+        return ("api_call",) + key
+    return ("path", entry.get("_file"), index)
+
+
+def context_score(entry):
+    return sum(
+        1
+        for field in (
+            "profile_id",
+            "system_prompt",
+            "source",
+            "title",
+            "hint",
+            "seq",
+        )
+        if entry.get(field) not in (None, "")
+    )
+
+
+def dedupe_entries(entries):
+    deduped = {}
+    order = []
+    for index, entry in enumerate(entries):
+        key = dedupe_key(entry, index)
+        if key not in deduped:
+            deduped[key] = entry
+            order.append(key)
+            continue
+        if context_score(entry) > context_score(deduped[key]):
+            deduped[key] = entry
+    return [deduped[key] for key in order]
 
 
 def is_empty(entry):
@@ -152,7 +209,9 @@ def print_summary(entries):
     """Print per-session summary."""
     sessions = defaultdict(lambda: {
         "calls": 0, "empties": 0, "errors": 0,
-        "in_tokens": 0, "cache_read_tokens": 0, "out_tokens": 0,
+        "in_tokens": 0, "cache_read_tokens": 0,
+        "cache_write_tokens": 0, "cache_write_1h_tokens": 0,
+        "out_tokens": 0,
         "latency_sum": 0, "model": "?",
     })
 
@@ -171,6 +230,8 @@ def print_summary(entries):
         usage = usage_for(entry)
         s["in_tokens"] += usage.get("input_tokens", 0)
         s["cache_read_tokens"] += cache_read_tokens(usage)
+        s["cache_write_tokens"] += cache_write_tokens(usage)
+        s["cache_write_1h_tokens"] += cache_write_1h_tokens(usage)
         s["out_tokens"] += usage.get("output_tokens", 0)
 
     print(f"{'Session':<14s}  {'Model':<30s}  {'Calls':>5s}  {'Empty':>5s}  "
@@ -180,7 +241,12 @@ def print_summary(entries):
 
     for sid, s in sorted(sessions.items()):
         avg_ms = s["latency_sum"] // max(s["calls"], 1)
-        prompt_tokens = s["in_tokens"] + s["cache_read_tokens"]
+        prompt_tokens = (
+            s["in_tokens"]
+            + s["cache_read_tokens"]
+            + s["cache_write_tokens"]
+            + s["cache_write_1h_tokens"]
+        )
         hit_pct = (s["cache_read_tokens"] / prompt_tokens * 100) if prompt_tokens else 0.0
         print(f"{sid[:14]:<14s}  {s['model']:<30s}  {s['calls']:>5d}  {s['empties']:>5d}  "
               f"{s['errors']:>6d}  {s['in_tokens']:>8d}  {s['cache_read_tokens']:>9d}  "
