@@ -88,11 +88,32 @@ Registry seeded with two hardcoded entries: `dark` (the existing dark palette, a
 | `Ended`     | dim gray        | Closed sessions, completed agents.                          |
 | `Subagent`  | violet          | Subagent rows, subagent-spawned tool calls.                 |
 
+**Tint tokens (precomputed bg fills).** lipgloss has no `color-mix` equivalent and runtime alpha-blending isn't reliable across terminals. Tint values are precomputed and stored as separate theme tokens:
+
+```go
+// Within Theme struct, per state:
+StateAwaitingTint   lipgloss.Color  // hex of state-awaiting mixed onto Bg at 12%
+StateProcessingTint lipgloss.Color  // ditto
+StateWarningTint    lipgloss.Color
+StateIdleTint       lipgloss.Color
+AccentTint          lipgloss.Color  // hex of accent mixed onto Bg at 6% — used for selected-row backgrounds
+```
+
+These are hardcoded hex values per theme. Computed once when the theme struct is defined. On terminals without truecolor support (lipgloss auto-detects), the tints degrade to the nearest 256-color cell or are dropped entirely — selection then reverts to the `Reverse` attribute on the state-bar glyph only.
+
+**Migration scope acknowledgement.** Wave 1 replaces ~20 package-level `lipgloss.Style` globals in `styles.go` (`statusBarStyle`, `userBlockStyle`, `thinkingStyle`, etc.) with getter functions reading from `activeTheme()`. ~50 callsites across `hub_model.go`, `message.go`, `composer_panel.go`, `picker_panel.go`, `credentials_panel.go`, `details_drawer.go`, `notice_panel.go`, `launch_settings_panel.go`, `launch_overrides_modal.go`, `text_input_modal.go` need their references updated. This is the deepest wave-1 work; budget accordingly. The migration preserves global accessibility — callers still write `styles().UserBlock` (one extra parenthesis) rather than `userBlockStyle`.
+
+**Thread safety.** `setTheme(name)` mutates package-level state. Bubbletea's `Update`/`View` run on a single goroutine; theme changes are dispatched as `tea.Msg` values handled in `Update`, so reads in `View` see a consistent value. We document this single-goroutine constraint inline and add a `// not safe for concurrent use` comment on `setTheme`. No mutex; we don't pay for one we don't need.
+
+**Markdown renderer invalidation.** Glamour-based `markdownRenderer` (in `message.go`) caches its theme at creation. `setTheme` must call `resetMarkdownRenderer()` so the next prose render rebuilds it with the new style. Cheap (one nil-out). Adds one line to the `setTheme` path.
+
 ### 3.2 · Primitives
 
 New file `primitives.go` exports small rendering helpers used across surfaces.
 
-**`StateBar(state lipgloss.Color, thickness int) string`** — returns `▍`, `▌`, `▋`, or `▊` from a state color. Thickness 1 by default; selected/focused rows use 2.
+**`StateBar(state lipgloss.Color) string`** — returns the 1-column `▍` glyph foreground-colored to `state`. Default for all session and dashboard rows.
+
+**`FocusedStateBar(state lipgloss.Color) string`** — returns `▍▍` (two 1-column glyphs concatenated, total visual width 2) for selected/focused rows. Layout math in the caller must account for the extra column when measuring right-aligned content. We do NOT use the wider single-character glyphs (`▌▋▊`) — their width-1 monospace cells render inconsistently across emulators.
 
 **`StatusBadge(state lipgloss.Color, label string) string`** — reverse-pill rendering. Example: `● AWAITING` in `StateAwaiting` bg with `Bg` fg, bold, mono uppercase. Falls back to non-reverse colored text on terminals that report no truecolor support.
 
@@ -170,13 +191,19 @@ Plus default-MCP and default-unknown:
 ### 4.3 · Body renderers
 
 **`diffBody`** (edit, write, apply_patch — `ExpandedByDefault = true`):
-- Split output on `\n`.
-- For each line, emit a 1-char prefix span + the line text inside a background-tinted block:
-  - `+ <line>` in `lipgloss.Background(color-mix(StateIdle, 12%))` background.
-  - `- <line>` in `lipgloss.Background(color-mix(StateAwaiting, 12%))` background.
-  - `@@ ... @@` in `StateWarning` color, bold.
-  - context (` <line>`) in `Text`, no background.
-- Render the whole body under the tool-call row, indented by `IndentToolBody`.
+
+Today, `tool_summary.go` already produces a chroma-syntax-highlighted unified diff for `edit_file` via `unifiedDiff()` + `highlightDiff()`. The new `diffBody` REPLACES that path with a two-layer renderer:
+
+1. **Layer 1 (line classification + background tint, the new behavior)**: split output on `\n`, classify each line by its first character, set a line-wide background:
+   - `+`-prefixed: bg = `StateIdleTint` (precomputed token; see §3.1).
+   - `-`-prefixed: bg = `StateAwaitingTint`.
+   - `@@`-prefixed: bold + fg `StateWarning`, no bg.
+   - context (space-prefixed or no prefix): fg `Text`, no bg.
+2. **Layer 2 (chroma syntax highlight, preserved from existing code)**: still runs over the per-line content AFTER stripping the prefix; the bg tint from layer 1 wraps the highlighted content. The existing `highlightDiff()` function gets refactored: extract a `highlightLine(content string, lang string) string` helper used by the new diff renderer; keep `unifiedDiff` as the input-builder.
+
+Net effect: green/pink row backgrounds on +/- lines AND syntax-highlighted code content within them. On terminals without truecolor (lipgloss auto-detects), bg tints fall back to ANSI background blocks of nearest-color or drop entirely; the chroma fg highlighting still works.
+
+Indent: render the whole body under the tool-call row by `IndentToolBody`.
 
 **`fileBody`** (read_file):
 - Chroma-highlight the output by extension (e.g. `.go` → `go` lexer). Falls back to plain text.
@@ -190,8 +217,17 @@ Plus default-MCP and default-unknown:
 - Per-task duration right-aligned in `TextGhost` if available.
 
 **`subagentBody`** (spawn_agent):
+
 - One-line summary above body: `subagent <kind> (<turns> turns, <status>) ▸ N tool calls`.
-- Expanded: render child turns indented under the parent's left bar, recursing through `renderMessage` for each child.
+- Expanded: render child turns indented under the parent's left bar.
+
+**Data source.** Child turns live in a separate transcript file (`<state_dir>/sessions/<child-session-id>.transcript.jsonl`) — they are NOT in the current session's `messages` slice. The renderer loads them on demand the first time the subagent body is expanded (cache hit on subsequent renders). Loading is sync today via `loadTranscriptMessages` (already used by transcript view); we extend it for subagents. No RPC or schema change — files exist on disk for any spawned subagent.
+
+**Recursion depth cap.** Subagents can themselves spawn subagents. Render up to depth 2 inline (parent → child → grandchild). Past depth 2, replace the body with `▸ N nested turns (open subagent to view)` — the user navigates into the subagent session for deeper inspection.
+
+**Width budget.** Each nesting level reduces effective width by `IndentSubagent` (2 chars). If `width - depth*IndentSubagent < 30`, suppress nested body for that branch and show `(N turns)` summary only. Prevents lipgloss panic on zero/negative widths.
+
+**Failure.** If the child transcript file can't be loaded, render `(transcript unavailable: <err>)` in `StateWarning` instead of the body.
 
 **`shellBody`** (shell):
 - Render output chroma-highlighted as `bash` (or per-shell detection).
@@ -204,13 +240,23 @@ Plus default-MCP and default-unknown:
 
 Existing `toolCallInfo.Expanded bool` field carries state. Default `false` except for `ExpandedByDefault` renderers.
 
-Keyboard:
-- `Tab` from compose mode enters tool-focus mode: cycles `m.session.focusedToolIndex` through visible tool rows.
-- `Enter` on focused tool toggles `Expanded`.
-- `Esc` exits tool-focus mode back to compose.
-- Focused tool row carries `▍▍` double-bar in `Accent`.
+**Tool focus lives inside scroll-browse mode — no separate "tool-focus" mode.** The existing scroll-browse already cycles through messages (including tool messages) via `↑`/`↓`. We extend the existing model.
 
-Footer hint updates: `tab tools · enter expand · esc compose · …`.
+Keyboard:
+- `Esc` from compose enters scroll-browse (existing behavior, unchanged).
+- `↑`/`↓` cycle through visible messages, including tool messages. Already implemented.
+- `Enter` on a focused tool message toggles `Expanded`. New behavior. On non-tool messages, `Enter` is a no-op.
+- `Esc` from scroll-browse returns to compose. Existing.
+- `Tab` in compose mode keeps its existing behavior (toggle the most recent tool call's `Expanded` flag — see `model.go:406-415`). Power-user shortcut.
+- Focused tool row carries `FocusedStateBar(Accent)` (the `▍▍` double-bar).
+
+Footer hint updates in scroll-browse:
+- `↑↓ select · enter expand · f fork · c copy · esc compose · ⌘O dashboard`
+
+Footer hint in compose (unchanged):
+- `enter send · shift+enter newline · tab toggle last tool · ⌘P palette · esc browse · /help`
+
+The `tab toggle last tool` is added to the existing compose footer so the power-user keybinding is discoverable.
 
 ## 5 · Session view
 
@@ -282,7 +328,7 @@ Three rendered lines replace the current five.
 
 Entered via `Esc` in compose. Existing behavior; new visuals:
 
-- Selected turn: bar widens to `▍▍` in `Accent`, optional bg tint `color-mix(Accent, 4%)` on truecolor terminals.
+- Selected turn: bar widens to `FocusedStateBar(Accent)` (the `▍▍` glyph), optional bg tint via the `AccentTint` token on truecolor terminals.
 - Composer collapses to a one-line dim banner:
   ```
   ─ browse mode · ↑↓ select · enter expand · f fork · c copy · esc compose ┄
@@ -339,7 +385,7 @@ Entered via `f` on a user turn in scroll-browse. Existing behavior; new visuals:
   - Each in `TextDim`, except `state-label` which is in its state color when notable (`active`, `awaiting`).
 - Subagent rows: indent + 2, bar uses `StateSubagent`, glyph stays `●`.
 - Fork rows: glyph `⎇` in place of `●`, color by row state.
-- Selected row: `▍▍` double-bar in `Accent`, background tint `color-mix(Accent, 6%)` where truecolor available.
+- Selected row: `FocusedStateBar(Accent)`, background tint via the `AccentTint` token where truecolor available.
 - Drop the `├─` / `└─` tree connectors — indent + bar carries the hierarchy.
 
 ### 6.4 · Wide-mode details drawer
@@ -422,9 +468,14 @@ New persistent line below the kbd footer:
 - `●` health dot in `StateIdle` (connected) or `StateAwaiting` (disconnected).
 - Hub address in `TextGhost`.
 - Provider + inflight LLM request count in `TextDim`.
-- Context window usage `ctx 14k/200k` — colored `StateWarning` if > 75%, `StateAwaiting` if > 95%.
+- Context window usage `ctx 14k/200k` — color thresholds:
+  - `≥ compactThreshold` (currently `0.90` from `agent/context_manager.go`): `StateAwaiting`. This is the existing "compact soon" trigger; we use the same threshold to avoid a second source of truth.
+  - `0.75 ≤ usage < 0.90`: `StateWarning`. New soft-warning band, purely visual.
+  - `< 0.75`: `TextDim`.
 - Cost-so-far in `TextDim` (only when cost tracking is on).
 - TUI version right-aligned in `TextGhost`.
+
+The existing `statusbar.go` already renders context usage as `N to compact` text. The new design preserves that exact text but adds the color thresholds on top of it. The phrase `N to compact` stays as the value content; only the foreground color changes per band.
 
 Collapse-on-narrow priority: drop cost first, then version, then provider+queue, then hub address. Always retain `● connected` / `● disconnected`.
 
@@ -468,9 +519,11 @@ Render shape:
 | `launch_settings_panel` | Adopts primitive. Internal left-rail tab list (Serf / Codex / Per-project). |
 | `launch_overrides_modal`| Adopts primitive. Same field-list voice as launch_settings_panel.            |
 | `text_input_modal`      | Adopts primitive. Smaller width (60 cols). Single input + confirm/cancel.    |
-| `followup modal`        | Adopts primitive. Tiny (60 cols). Two-button footer.                          |
+| `followupModal`         | NOT a direct adoption. Already wraps `textInputModal` internally (`hub_model.go:130`); it inherits the new `Overlay` look automatically via that composition. No code change in `followupModal` itself unless we need to override the title/footer for confirmation prompts. |
 
-`notice_panel` is non-modal (renders inline above conversation); it adopts the workshop-log diagnostic voice instead of the overlay frame:
+`notice_panel` is non-modal (renders inline above conversation) and **does not participate in the focus-trap system** (§8.3). Notices coexist with normal session input: the user can press `⌘P` to open the palette, type into the composer, etc., while a notice is visible. To dismiss a notice, the user presses `n` in compose mode (existing binding) or it auto-dismisses on next state update.
+
+Notices adopt the workshop-log diagnostic voice instead of the overlay frame:
 ```
 ▍ ● spawn failed: model provider not reported by harness
   source serf · cause selected provider openai not in discovery
@@ -505,7 +558,35 @@ Reuse the existing golden-sample corpus (`tui_samples.go`, ~26 renders). Extend:
 - **Width coverage**: dashboard, session header, composer chip strip, overlays — each at widths 60, 100, 140.
 - **State coverage for tool renderers**: each renderer gets unit tests for `pending`, `done`, `error`, plus wide-output body variant.
 - **Token-isolation tests**: walk every theme, assert no token is empty + no value collides (`Bg != Text` etc.).
-- **Focus-trap tests**: per overlay, simulate `⌘P` / `⌘N` / `/` while open, assert no underlying mutation.
+- **Focus-trap tests** (see below for the measurable assertion shape).
+
+**Per-theme test isolation.** The active theme lives in a package-level global (`activeTheme`). Tests that render under a specific theme must:
+
+```go
+func runWithTheme(t *testing.T, name string, body func()) {
+    t.Helper()
+    prev := currentThemeName()
+    setTheme(name)
+    t.Cleanup(func() { setTheme(prev) })
+    body()
+}
+```
+
+Goldens loop over `[]string{"dark", "light"}` and call `runWithTheme` so each rendered `View` reflects the named theme. Tests are not `t.Parallel()` while the theme global is in play — a comment in the helper makes this explicit.
+
+**Focus-trap test shape.** The trivial `m == m` check is insufficient. Each focus-trap test:
+
+1. Constructs a `hubModel` with the target overlay open.
+2. Captures a snapshot of the mutable session state that the trapped key WOULD normally mutate (e.g. for `⌘P`: `m.commandPalette == nil`; for `/`: `m.dashboardFilter.Value()`; for `↑`/`↓`: `m.selected`).
+3. Sends the key via `m.Update(tea.KeyMsg{...})`.
+4. Asserts the snapshot is unchanged (`m.commandPalette == nil` still, `m.dashboardFilter.Value()` still empty, `m.selected` unchanged).
+5. Asserts the overlay's own state IS allowed to change (e.g. if `↑` is the overlay's own selection key, the overlay's internal index moves — that's expected; only the underlying model is what's frozen).
+
+The trap-test helper makes this a one-liner per (overlay, key) pair:
+
+```go
+assertTrapped(t, modelWithOverlay, tea.KeyMsg{Type: tea.KeyCtrlP}, "m.commandPalette stays nil")
+```
 
 Golden file format: `tuiSampleRender{Name, Theme, Width, View, Contains}`. `View` is raw ANSI-bearing output so theme changes show as visible diffs.
 
@@ -513,10 +594,11 @@ Golden file format: `tuiSampleRender{Name, Theme, Width, View, Contains}`. `View
 
 | Wave | Scope                                                                     | Files                                                                                | User-visible |
 |------|---------------------------------------------------------------------------|--------------------------------------------------------------------------------------|--------------|
-| 1    | Theme registry + token tier (`TextGhost`, etc.). Existing styles rewired. | `tokens.go` (new), `styles.go`                                                       | No           |
+| 1    | Theme registry + token tier (`TextGhost`, tints). Existing styles rewired. `setTheme` invalidates markdown renderer. Tint tokens precomputed. ~50 callsite migration. | `tokens.go` (new), `styles.go`, `message.go` (glamour cache invalidation hook)        | No           |
+| 1.5  | Golden corpus extended with `Theme string` field; `runWithTheme` test helper added; existing renders rerun under dark+light to establish baseline.                  | `tui_samples.go`, `tui_samples_test.go`                                              | No (test-only)|
 | 2    | Primitives.                                                               | `primitives.go` (new)                                                                | No (unused)  |
 | 3    | Dashboard rewrite using primitives.                                       | `hub_model.go` (dashboard funcs), goldens                                            | Yes          |
-| 4    | Session header rewrite + meta strip + statusbar.                          | `hub_model.go` (session funcs), `statusbar.go`, goldens                              | Yes          |
+| 4    | Session header rewrite + meta strip + statusbar (existing `statusbar.go` is rewritten in place, not added). | `hub_model.go` (session funcs), `statusbar.go` (modify), goldens                              | Yes          |
 | 5    | Tool renderer registry replaces switch; existing 14+ tools migrated.      | `tool_renderers.go` (new), `tool_summary.go` (thin), `message.go`                    | Yes          |
 | 6    | Per-tool body renderers (diff coloring, file preview, task list, subagent).| `tool_renderers.go`                                                                 | Yes          |
 | 7    | Composer chip strip + mode chip.                                          | `composer_panel.go`, `hub_model.go`                                                  | Yes          |
