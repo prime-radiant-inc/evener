@@ -82,16 +82,20 @@ func renderComposerChipStrip(ctx composerContext) string {
 }
 
 // composerFooterHints returns the mode-appropriate keyboard hint bar.
-func composerFooterHints(mode string, width int) string {
+// canSteer controls whether the ctrl+s steer hint is included in queue mode.
+func composerFooterHints(mode string, width int, canSteer bool) string {
 	switch mode {
 	case "queue":
-		return actionBarForWidth(width,
-			KbdHint("enter", "queue"),
-			KbdHint("ctrl+s", "steer"),
+		hints := []string{KbdHint("enter", "queue")}
+		if canSteer {
+			hints = append(hints, KbdHint("ctrl+s", "steer"))
+		}
+		hints = append(hints,
 			KbdHint("esc", "browse"),
 			KbdHint("⌘P", "palette"),
 			KbdHint("⌘O", "dashboard"),
 		)
+		return actionBarForWidth(width, hints...)
 	case "fork":
 		return actionBarForWidth(width,
 			KbdHint("enter", "fork"),

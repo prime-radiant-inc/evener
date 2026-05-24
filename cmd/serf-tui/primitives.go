@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // StateBar returns a single 1-column glyph foreground-colored to state.
@@ -141,10 +142,17 @@ func Overlay(opts OverlayOpts) string {
 		Padding(1, 2).
 		Width(opts.Width)
 
+	// 4 = 2 padding columns on each side from Padding(1,2) above.
+	contentWidth := opts.Width - 4
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+
 	titleLine := lipgloss.NewStyle().Bold(true).Foreground(accent).Render(opts.Title)
-	body := opts.Body
+	body := ansi.Wrap(opts.Body, contentWidth, "")
 	if opts.Footer != "" {
-		body += "\n\n" + lipgloss.NewStyle().Foreground(th.TextDim).Render(opts.Footer)
+		footer := ansi.Truncate(opts.Footer, contentWidth, "…")
+		body += "\n\n" + lipgloss.NewStyle().Foreground(th.TextDim).Render(footer)
 	}
 	content := titleLine + "\n\n" + body
 	return frame.Render(content)

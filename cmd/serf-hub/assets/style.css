@@ -2453,13 +2453,13 @@ body.has-connection-banner #workspace { height: calc(100vh - 32px); }
 .skeleton {
   display: block;
   border-radius: var(--radius-sm);
-  background: var(--bg-raised);
+  background: transparent;
   height: 12px;
   min-width: 40px;
   margin: var(--space-2) 0;
 }
-/* Shimmer only activates inside a [data-loading] swap target. Without
-   the attribute, .skeleton is an invisible spacer (height carries layout
+/* Shimmer and background only activate inside a [data-loading] swap target.
+   Outside loading, .skeleton is an invisible spacer (height carries layout
    so the eventual swap doesn't jump). */
 [data-loading] .skeleton {
   background: linear-gradient(

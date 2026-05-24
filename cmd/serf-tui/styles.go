@@ -223,7 +223,17 @@ func setTheme(name string) bool {
 		return false
 	}
 	applyTheme(activeTheme)
-	setThemeV2(name)
+	// V2 theme registry only has "dark" and "light". Resolve "system" to
+	// the correct V2 name so the V2-tokenized UI follows the system theme.
+	v2Name := name
+	if name == "system" {
+		if termenv.HasDarkBackground() {
+			v2Name = "dark"
+		} else {
+			v2Name = "light"
+		}
+	}
+	setThemeV2(v2Name)
 	return true
 }
 

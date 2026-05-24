@@ -10,6 +10,9 @@ type composerPanel struct {
 	Keys           []string
 	ShowInput      bool
 	Width          int
+	// CanSteer indicates the session supports Ctrl+S force-steer. Used by
+	// composerFooterHints to conditionally include the steer hint.
+	CanSteer bool
 	// QueuePreview is the list of queued user messages (first line truncated,
 	// head-first) rendered above the composer when depth > 0. Set by
 	// sessionComposerPanel from the model's local queue.
@@ -116,6 +119,7 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 		// sources may someday advertise queue without steer.
 		if m.detail.Capabilities.Steer {
 			queueHints = append(queueHints, "ctrl+s: send as steer")
+			panel.CanSteer = true
 		}
 		panel.Keys = append(queueHints, keys...)
 		queueDepth := len(m.sessionQueue)
@@ -199,7 +203,7 @@ func (p composerPanel) View() string {
 	// contexts that do not supply a ChipContext (e.g. tests building
 	// composerPanel directly with only Keys set).
 	if p.ChipContext.Harness != "" || p.ChipContext.Model != "" || p.ChipContext.Branch != "" {
-		footer := composerFooterHints(p.composerModeForFooter(), p.Width)
+		footer := composerFooterHints(p.composerModeForFooter(), p.Width, p.CanSteer)
 		if footer != "" {
 			b.WriteString(styles.Muted.Render(footer))
 			b.WriteString("\n")

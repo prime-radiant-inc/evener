@@ -32,16 +32,27 @@ func TestComposerChipStripIncludesModeChip(t *testing.T) {
 }
 
 func TestComposerFooterHintsAreModeAware(t *testing.T) {
-	compose := composerFooterHints("compose", 100)
+	compose := composerFooterHints("compose", 100, false)
 	if !strings.Contains(compose, "send") {
 		t.Errorf("compose mode footer should include send: %q", compose)
 	}
-	queue := composerFooterHints("queue", 100)
+	queue := composerFooterHints("queue", 100, false)
 	if !strings.Contains(queue, "queue") {
 		t.Errorf("queue mode footer should include queue: %q", queue)
 	}
-	fork := composerFooterHints("fork", 100)
+	fork := composerFooterHints("fork", 100, false)
 	if !strings.Contains(fork, "fork") {
 		t.Errorf("fork mode footer should include fork: %q", fork)
+	}
+}
+
+func TestComposerFooterHintsQueueCanSteer(t *testing.T) {
+	withSteer := composerFooterHints("queue", 100, true)
+	if !strings.Contains(withSteer, "steer") {
+		t.Errorf("queue mode with canSteer=true should include steer hint: %q", withSteer)
+	}
+	withoutSteer := composerFooterHints("queue", 100, false)
+	if strings.Contains(withoutSteer, "steer") {
+		t.Errorf("queue mode with canSteer=false should not include steer hint: %q", withoutSteer)
 	}
 }

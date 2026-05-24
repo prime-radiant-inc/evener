@@ -2318,7 +2318,7 @@
       else if (line.startsWith("-") && !line.startsWith("---")) { span.className = "del"; kind = "del"; }
       else if (line.startsWith("@@")) { span.className = "hunk"; kind = "hunk"; }
       span.dataset.lineKind = kind;
-      span.textContent = line + "\n";
+      span.textContent = line;
       el.appendChild(span);
     });
   }
