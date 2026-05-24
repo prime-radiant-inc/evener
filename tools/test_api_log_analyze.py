@@ -292,3 +292,33 @@ def test_non_object_jsonl_rows_warn_and_skip(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "sess-valid" in result.stdout
     assert "malformed JSON row, skipping" in result.stderr
+
+
+def test_summary_pipe_to_head_exits_without_broken_pipe_traceback(tmp_path):
+    rows = []
+    for i in range(100):
+        rows.append(
+            {
+                "session_id": f"sess-{i:03d}",
+                "round": 1,
+                "request": {"model": "gpt-5.2"},
+                "response": {
+                    "usage": {"input_tokens": 10, "output_tokens": 1},
+                    "finish_reason": "stop",
+                    "text_length": 1,
+                    "tool_call_count": 0,
+                },
+            }
+        )
+    write_jsonl(tmp_path / "api.jsonl", rows)
+
+    result = subprocess.run(
+        f"{sys.executable} {SCRIPT} {tmp_path} --summary | head -5",
+        shell=True,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "BrokenPipeError" not in result.stderr
