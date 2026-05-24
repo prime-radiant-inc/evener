@@ -126,7 +126,7 @@ func (p launchSettingsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return p, nil
 }
 
-func (p launchSettingsPanel) View() string {
+func (p launchSettingsPanel) renderTabs() string {
 	var b strings.Builder
 	tabs := []string{"Global", "Project", "In-Repo"}
 	for i, name := range tabs {
@@ -136,7 +136,11 @@ func (p launchSettingsPanel) View() string {
 			fmt.Fprintf(&b, " %s  ", name)
 		}
 	}
-	b.WriteString("\n\n")
+	return b.String()
+}
+
+func (p launchSettingsPanel) renderActiveTab() string {
+	var b strings.Builder
 	switch p.tab {
 	case launchTabGlobal:
 		b.WriteString(p.renderLayerView("global", p.global, p.cursor))
@@ -149,8 +153,14 @@ func (p launchSettingsPanel) View() string {
 	if p.statusMessage != "" {
 		fmt.Fprintf(&b, "\n%s", p.statusMessage)
 	}
-	b.WriteString("\n[←/→] tab  [↑/↓] field  [Enter] edit  [Esc] close")
 	return b.String()
+}
+
+func (p launchSettingsPanel) View() string {
+	body := p.renderTabs() + "\n\n" + p.renderActiveTab()
+	width := 80
+	footer := actionBarForWidth(width, KbdHint("←→", "tab"), KbdHint("↑↓", "field"), KbdHint("enter", "edit"), KbdHint("esc", "close"))
+	return Overlay(OverlayOpts{Title: "Launch settings", Width: width, Body: body, Footer: footer})
 }
 
 func (p launchSettingsPanel) renderLayerView(label string, l appwire.LaunchConfigLayer, cursor int) string {

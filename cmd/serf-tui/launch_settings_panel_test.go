@@ -11,6 +11,20 @@ import (
 	"primeradiant.com/serf/internal/appwire"
 )
 
+func TestLaunchSettingsPanelUsesOverlay(t *testing.T) {
+	withTestColorProfile(t)
+	p := newLaunchSettingsPanel(nil, "/cwd")
+	updated, _ := p.Update(launchLayerResultMsg{Layer: "global", Data: appwire.LaunchConfigLayer{Model: "openai/gpt-5"}})
+	got := updated.(launchSettingsPanel).View()
+	plain := ansiPattern.ReplaceAllString(got, "")
+	if !strings.Contains(plain, "╭") {
+		t.Errorf("launch_settings should use Overlay primitive: %q", plain)
+	}
+	if !strings.Contains(plain, "Launch settings") {
+		t.Errorf("launch_settings should show title: %q", plain)
+	}
+}
+
 func TestLaunchSettingsPanel_TabSwitch(t *testing.T) {
 	p := newLaunchSettingsPanel(nil, "/cwd")
 	updated, _ := p.Update(launchLayerResultMsg{Layer: "global", Data: appwire.LaunchConfigLayer{Model: "openai/gpt-5"}})
