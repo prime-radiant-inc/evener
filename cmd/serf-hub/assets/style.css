@@ -2325,7 +2325,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
    {active, awaiting, errored}. Reduced-motion override in the global
    media query already neutralizes the animation. */
 .status-dot[data-pulse] {
-  animation: status-dot-pulse var(--pulse-cycle) ease-in-out infinite;
+  animation: status-dot-pulse var(--pulse-cycle) infinite;
 }
 @keyframes status-dot-pulse {
   0%, 100% { opacity: 1; }
@@ -2469,7 +2469,7 @@ body.has-connection-banner #workspace { height: calc(100vh - 32px); }
     var(--bg-raised) 100%
   );
   background-size: 200% 100%;
-  animation: skeleton-shimmer var(--pulse-cycle) infinite linear;
+  animation: skeleton-shimmer 1400ms linear infinite;
 }
 [data-loading] .skeleton-row {
   display: grid;
@@ -2502,7 +2502,7 @@ body.has-connection-banner #workspace { height: calc(100vh - 32px); }
    sidebar.js adds .stagger to the Live section and sets --i on each row. */
 .stagger > * {
   opacity: 0;
-  animation: enter var(--motion-base) ease-out forwards;
+  animation: enter var(--motion-base) forwards;
   animation-delay: calc(30ms * var(--i, 0));
 }
 @keyframes enter {

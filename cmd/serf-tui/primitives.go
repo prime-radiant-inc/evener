@@ -105,9 +105,9 @@ func DotLeader(left, right string, width int) string {
 	if fill < 1 {
 		maxLeft := width - rw - 2
 		if maxLeft < 1 {
-			return truncateText(right, width)
+			return ansi.Truncate(right, width, "…")
 		}
-		return truncateText(left, maxLeft) + "  " + right
+		return ansi.Truncate(left, maxLeft, "…") + "  " + right
 	}
 	dots := lipgloss.NewStyle().Foreground(th.TextGhost).Render(strings.Repeat("·", fill))
 	return left + " " + dots + " " + right

@@ -79,11 +79,7 @@
       </span>
       {{end}}
     </div>
-    <div class="controls-center">
-      {{if or (eq .State "active") (eq .State "awaiting")}}
-      <span class="running-indicator" data-running-indicator><span class="running-dot"></span>running{{if .RunningFor}} · {{.RunningFor}}{{end}}</span>
-      {{end}}
-    </div>
+    <div class="controls-center"></div>
     <div class="controls-right">
       {{if .Capabilities.Interrupt}}
       <button type="button" class="btn btn-danger stop-btn" data-action-trigger="interrupt" data-capability-interrupt="{{.Capabilities.Interrupt}}" title="stop the in-flight turn"{{if and (ne .State "awaiting") (ne .State "active")}} disabled{{end}}>Stop</button>

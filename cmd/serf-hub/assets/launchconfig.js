@@ -85,6 +85,12 @@
       : !!optOrWrap && optOrWrap.wireField === "modelFallbacks";
   }
 
+  function syncToggleState(checkbox) {
+    if (!checkbox) return;
+    const stateEl = checkbox.parentElement?.querySelector(".state");
+    if (stateEl) stateEl.textContent = checkbox.checked ? "ON" : "OFF";
+  }
+
   function fieldWrapFor(el) {
     if (!el || !el.closest) return null;
     if (el.classList && el.classList.contains("settings-collection")) return el;
@@ -509,7 +515,7 @@
         appendListRow(list, value, ctx.mode);
       }
       const explicitEmpty = wrap.querySelector("[data-launch-explicit-empty]");
-      if (explicitEmpty) explicitEmpty.checked = false;
+      if (explicitEmpty) { explicitEmpty.checked = false; syncToggleState(explicitEmpty); }
       input.value = "";
       const display = controls.querySelector(".sp-model-display");
       if (display) display.textContent = "(add model)";
@@ -527,8 +533,7 @@
       explicitEmpty.type = "checkbox";
       explicitEmpty.dataset.launchExplicitEmpty = "true";
       explicitEmpty.addEventListener("change", () => {
-        const stateEl = explicitEmpty.parentElement?.querySelector(".state");
-        if (stateEl) stateEl.textContent = explicitEmpty.checked ? "ON" : "OFF";
+        syncToggleState(explicitEmpty);
         if (!explicitEmpty.checked) return;
         list.querySelectorAll("li").forEach((li) => li.remove());
       });
@@ -863,8 +868,7 @@
           const explicitEmpty = wrap.querySelector("[data-launch-explicit-empty]");
           if (explicitEmpty) {
             explicitEmpty.checked = true;
-            const stateEl = explicitEmpty.parentElement?.querySelector(".state");
-            if (stateEl) stateEl.textContent = "ON";
+            syncToggleState(explicitEmpty);
           }
         }
         (values || []).forEach((value) => appendListRow(list, value));
