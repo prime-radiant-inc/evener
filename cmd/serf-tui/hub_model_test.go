@@ -652,7 +652,7 @@ func TestHubModelEndedSessionCanResumeOnSend(t *testing.T) {
 			t.Fatalf("ended resumable session should not render %q:\n%s", unwanted, got)
 		}
 	}
-	if !strings.Contains(got, "enter: send") {
+	if !strings.Contains(got, "send") {
 		t.Fatalf("ended resumable session should accept a new message:\n%s", got)
 	}
 

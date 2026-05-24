@@ -18,6 +18,8 @@ type composerPanel struct {
 	// between the composer textarea and the queue preview. Each chip
 	// renders as "📎 <name> (WxH) [×]".
 	Attachments []*PastedImage
+	// ChipContext provides metadata for the chip strip rendered above the textarea.
+	ChipContext composerContext
 }
 
 type hubComposerMode int
@@ -92,11 +94,19 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 		Width:         m.width,
 		QueuePreview:  m.sessionQueuePreview(),
 		Attachments:   m.pendingAttachments,
+		ChipContext: composerContext{
+			Harness:    m.detail.SourceLabel,
+			Model:      m.detail.Model,
+			Branch:     m.detail.Branch,
+			WorkingDir: m.detail.WorkingDir,
+			Width:      m.width,
+		},
 	}
 	switch m.sessionComposerMode() {
 	case hubComposerModeFork:
 		panel.Label = "fork draft"
 		panel.Keys = []string{"enter: fork", "esc: cancel", "ctrl+o: dashboard"}
+		panel.ChipContext.Mode = "FORK DRAFT"
 		// Fork mode shouldn't surface the live-session queue.
 		panel.QueuePreview = nil
 	case hubComposerModeQueue:
@@ -108,6 +118,12 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 			queueHints = append(queueHints, "ctrl+s: send as steer")
 		}
 		panel.Keys = append(queueHints, keys...)
+		queueDepth := len(m.sessionQueue)
+		if queueDepth > 0 {
+			panel.ChipContext.Mode = "QUEUE " + itoa(queueDepth)
+		} else {
+			panel.ChipContext.Mode = "QUEUE"
+		}
 	case hubComposerModeReadOnly:
 		panel.Label = "read-only"
 		panel.ReadOnlyReason = m.sessionComposerReadOnlyReason()
@@ -134,9 +150,30 @@ func (m hubModel) sessionQueuePreview() []string {
 	return out
 }
 
+// composerModeForFooter maps the composer label/mode chip to the string key
+// used by composerFooterHints.
+func (p composerPanel) composerModeForFooter() string {
+	switch p.Label {
+	case "queue":
+		return "queue"
+	case "fork draft":
+		return "fork"
+	}
+	// Default compose mode.
+	return "compose"
+}
+
 func (p composerPanel) View() string {
 	var b strings.Builder
 	styles := defaultTUIStyles()
+
+	// Chip strip: always show if ChipContext has any content.
+	if p.ChipContext.Harness != "" || p.ChipContext.Model != "" || p.ChipContext.Branch != "" {
+		strip := renderComposerChipStrip(p.ChipContext)
+		b.WriteString(strip)
+		b.WriteString("\n")
+	}
+
 	if len(p.QueuePreview) > 0 {
 		b.WriteString(renderQueuePreview(p.QueuePreview, p.Width, styles))
 	}
@@ -158,7 +195,16 @@ func (p composerPanel) View() string {
 	if len(p.Attachments) > 0 {
 		b.WriteString(renderAttachmentChips(p.Attachments, styles))
 	}
-	if len(p.Keys) > 0 {
+	// Use mode-aware footer hints when available; fall back to Keys for
+	// contexts that do not supply a ChipContext (e.g. tests building
+	// composerPanel directly with only Keys set).
+	if p.ChipContext.Harness != "" || p.ChipContext.Model != "" || p.ChipContext.Branch != "" {
+		footer := composerFooterHints(p.composerModeForFooter(), p.Width)
+		if footer != "" {
+			b.WriteString(styles.Muted.Render(footer))
+			b.WriteString("\n")
+		}
+	} else if len(p.Keys) > 0 {
 		b.WriteString(styles.Muted.Render(actionBarForWidth(p.Width, p.Keys...)))
 		b.WriteString("\n")
 	}

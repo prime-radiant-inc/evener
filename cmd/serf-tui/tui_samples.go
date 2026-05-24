@@ -310,7 +310,7 @@ func sampleRenders() []tuiSampleRender {
 		{name: "dashboard-wide", width: 140, contains: []string{"SERF LIVE", "─", "┄", "Codex app-server smoke"}},
 		{name: "session-idle", width: 100, contains: []string{"SERF / SESSION", "IDLE", "draft stays visible"}},
 		{name: "session-streaming", width: 100, contains: []string{"SERF / SESSION", "The running agent harness", "all task steps completed"}},
-		{name: "session-busy-steer", width: 100, contains: []string{"SERF / SESSION", "queue", "ctrl+s: send as steer", "Please also check"}},
+		{name: "session-busy-steer", width: 100, contains: []string{"SERF / SESSION", "queue", "ctrl+s", "steer", "Please also check"}},
 		{name: "session-busy-readonly", width: 100, contains: []string{"SERF / SESSION", "read-only", "source does not advertise queue"}},
 		{name: "session-browse", width: 100, contains: []string{"SERF / SESSION", "esc/i/q: compose", "f: fork"}},
 		{name: "session-fork", width: 100, contains: []string{"SERF / SESSION", "fork draft", "edited prompt"}},
