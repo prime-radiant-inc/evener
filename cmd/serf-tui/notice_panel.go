@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -14,6 +15,33 @@ type noticePanel struct {
 	Source     string
 	Reason     string
 	NextAction string
+	State      string // optional; used by View() for state-colored bar
+}
+
+// View renders the diagnostic voice: state-colored ▍ left bar + ● dot,
+// followed by 3 indented key/value lines. This is a non-modal inline render.
+func (n noticePanel) View() string {
+	th := activeThemeV2()
+	state := strings.TrimSpace(n.State)
+	if state == "" {
+		state = "idle"
+	}
+	stateClr := stateColor(state)
+	bar := lipgloss.NewStyle().Foreground(stateClr).Render("▍")
+	dot := lipgloss.NewStyle().Foreground(stateClr).Render("●")
+	ruleSoft := lipgloss.NewStyle().Foreground(th.RuleSoft).Render(" · ")
+	dim := func(s string) string { return lipgloss.NewStyle().Foreground(th.TextDim).Render(s) }
+	text := func(s string) string { return lipgloss.NewStyle().Foreground(th.Text).Render(s) }
+
+	summary := strings.TrimSpace(n.Summary)
+	if summary == "" {
+		summary = strings.TrimSpace(n.Title)
+	}
+	line1 := bar + " " + dot + " " + text(summary)
+	line2 := "  " + dim("source ") + text(strings.TrimSpace(n.Source)) +
+		ruleSoft + dim("cause ") + text(strings.TrimSpace(n.Reason))
+	line3 := "  " + dim("next  ") + text(strings.TrimSpace(n.NextAction))
+	return strings.Join([]string{line1, line2, line3}, "\n")
 }
 
 func (n noticePanel) Text() string {
