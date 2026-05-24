@@ -3553,11 +3553,12 @@ func stateColor(state string) lipgloss.Color {
 }
 
 func renderDashboardSessionRow(row hubRow, selected bool, width int, compact bool, _ string) string {
-	stateClr := stateColor(row.state)
-	marker := StateBar(stateClr)
-	if selected {
-		marker = FocusedStateBar(activeTheme().Accent)
-	}
+	// Single-glyph marker either way. FocusedStateBar would render
+	// ▍▍ which, after ANSI-stripping for the selected highlight,
+	// shifts the row content one cell right on selection. The
+	// SurfaceSecondary bg highlight is the selection indicator;
+	// the marker stays one cell wide for column stability.
+	marker := StateBar(stateColor(row.state))
 	styles := defaultTUIStyles()
 	line := strings.Join(nonEmptyStrings([]string{
 		marker,
