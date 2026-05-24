@@ -193,7 +193,6 @@ func composerFooterHints(mode string, width int, canSteer bool) string {
 		return actionBarForWidth(width,
 			KbdHint("enter", "send"),
 			KbdHint("shift+enter", "newline"),
-			KbdHint("tab", "toggle last tool"),
 			KbdHint("⌘P", "palette"),
 			KbdHint("esc", "browse"),
 			KbdHint("/help", ""),
