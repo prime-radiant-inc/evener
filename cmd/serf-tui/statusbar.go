@@ -81,6 +81,12 @@ func renderStatusBar(info statusBarInfo) string {
 			return left + strings.Repeat(" ", gap) + right
 		}
 	}
+	// Enforce width on all paths — hub sessions pass no Version but can
+	// still produce a left side wider than the terminal if the URL or
+	// provider string is long.
+	if info.Width > 0 && lipgloss.Width(left) > info.Width {
+		return truncateText(left, info.Width)
+	}
 	return left
 }
 

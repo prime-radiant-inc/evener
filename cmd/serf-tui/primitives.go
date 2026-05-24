@@ -47,10 +47,30 @@ func SectionDivider(width int, left, right string) string {
 	suffixW := lipgloss.Width(suffix)
 	fill := width - prefixW - suffixW - 2
 	if fill < 1 {
-		// Narrow: drop the fill mid-section and truncate prefix if needed.
+		// Narrow: drop the fill mid-section and truncate on unstyled text
+		// before applying styles so we never slice through ANSI escapes.
 		combined := prefix + " " + suffix
 		if lipgloss.Width(combined) > width {
-			return truncateText(combined, width)
+			// Build the plain (unstyled) equivalent to measure and truncate.
+			plainLeft := strings.ToUpper(left)
+			plainRight := right
+			plain := "─ " + plainLeft + " " + plainRight + " " + th.RuleGlyph
+			// Truncate the plain version, then re-render truncated parts with styles.
+			if len([]rune(plain)) > width {
+				// Keep as much of the left label as possible, then the trail glyph.
+				trailPlain := " " + th.RuleGlyph
+				trailW := lipgloss.Width(trailPlain)
+				leadPlain := "─ "
+				leadW := lipgloss.Width(leadPlain)
+				available := width - leadW - trailW
+				if available < 0 {
+					available = 0
+				}
+				truncatedLeft := truncateText(strings.ToUpper(left), available)
+				return lipgloss.NewStyle().Foreground(th.RuleSoft).Render("─ ") +
+					lipgloss.NewStyle().Foreground(th.TextDim).Bold(true).Render(truncatedLeft) +
+					lipgloss.NewStyle().Foreground(th.Rule).Render(trailPlain)
+			}
 		}
 		return combined
 	}

@@ -824,11 +824,13 @@
     banner.setAttribute("role", "status");
     banner.textContent = "Connection lost — reconnecting…";
     document.body.insertBefore(banner, document.body.firstChild);
+    document.body.classList.add("has-connection-banner");
     return banner;
   }
   function clearConnectionBanner() {
     const banner = document.getElementById("connection-banner");
     if (banner && banner.parentNode) banner.parentNode.removeChild(banner);
+    document.body.classList.remove("has-connection-banner");
   }
   function showConnectionLost() {
     if (connectionLostToastHandle) return; // already showing

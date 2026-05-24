@@ -2410,9 +2410,11 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 
 /* Pass 8 — Connection lost banner (paired with toast in appwire.js) */
 .connection-banner {
-  position: sticky;
+  position: fixed;
   top: 0;
-  z-index: var(--z-fixed-action);
+  left: 0;
+  right: 0;
+  z-index: var(--z-toast);
   padding: var(--space-2) var(--space-4);
   background: color-mix(in srgb, var(--state-awaiting) 12%, var(--bg-raised));
   border-bottom: 1px solid var(--state-awaiting);
@@ -2421,6 +2423,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   font-size: var(--text-xs);
   text-align: center;
 }
+body.has-connection-banner { padding-top: 32px; }
 
 /* Pass 8 — Skeleton loading */
 .skeleton {
@@ -2484,14 +2487,13 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 }
 
 /* Pass 8 — Skeleton transcript turns */
-.skeleton-turn {
+.skeleton-turn { display: none; }
+[data-loading] .skeleton-turn {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3) 0;
 }
-[data-loading] .skeleton-turn { /* same shimmer cascade as .skeleton-row */ }
-.skeleton-turn { display: none; }
 
 /* Pass 8 — Empty states (per design language §4.7) */
 .empty-state {
