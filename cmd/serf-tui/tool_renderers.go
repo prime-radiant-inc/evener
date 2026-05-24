@@ -364,4 +364,9 @@ func init() {
 	taskListR := toolRenderers["task_list"]
 	taskListR.Body = taskListBody
 	toolRenderers["task_list"] = taskListR
+
+	// Wave 6, task 6.4: wire subagentBody into spawn_agent renderer.
+	spawnR := toolRenderers["spawn_agent"]
+	spawnR.Body = subagentBody
+	toolRenderers["spawn_agent"] = spawnR
 }

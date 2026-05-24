@@ -173,3 +173,29 @@ func taskListBody(_ ToolArgs, output string, width int) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// subagentBody renders a summary line for a spawned subagent.  At narrow
+// widths (< 30 cols) only the summary is returned.  Full nested inline
+// rendering of child transcripts is deferred to a follow-up kata.
+func subagentBody(args ToolArgs, _ string, width int) string {
+	th := activeThemeV2()
+	agentID := args.Str("agent_id")
+	turns := 0
+	if v, ok := args["turns_used"].(float64); ok {
+		turns = int(v)
+	}
+	status := args.Str("status")
+	if status == "" {
+		status = "running"
+	}
+
+	summary := fmt.Sprintf("subagent %s (%d turns, %s)", shortID(agentID), turns, status)
+	styled := lipgloss.NewStyle().Foreground(th.StateSubagent).Render(summary)
+
+	if width < 30 {
+		return styled // suppress nested body at narrow widths
+	}
+
+	// On-demand child transcript loading deferred to follow-up kata.
+	return styled
+}
