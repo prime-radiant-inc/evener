@@ -55,7 +55,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app := startTUITmux(t, bin, hub.URL())
 	defer app.Close()
 
-	screen := app.WaitFor("SERF LIVE", hub.URL(), "Launch New Session", "▾", "└─", "serf", "live task", "ops task", "1 recent")
+	screen := app.WaitFor("SERF LIVE", hub.URL(), "Launch New Session", "▾", "▍", "serf", "live task", "ops task", "1 recent")
 	if strings.Contains(screen, "ended maintenance") {
 		t.Fatalf("dashboard should fold ended sessions by default:\n%s", screen)
 	}

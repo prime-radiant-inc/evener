@@ -3425,7 +3425,7 @@ func renderDashboardRowsWindow(rows []hubRow, selected int, width int, compact b
 			b.WriteString("\n")
 			continue
 		}
-		b.WriteString(renderDashboardSessionRow(row, i == selected, width, compact, dashboardSessionBranch(rows, i)))
+		b.WriteString(renderDashboardSessionRow(row, i == selected, width, compact, ""))
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -3517,10 +3517,29 @@ func renderDashboardRecentToggleRow(row hubRow, expanded bool, selected bool, wi
 	return defaultTUIStyles().Muted.Render(line)
 }
 
-func renderDashboardSessionRow(row hubRow, selected bool, width int, compact bool, branch string) string {
-	marker := branch
+func stateColor(state string) lipgloss.Color {
+	th := activeThemeV2()
+	switch state {
+	case "awaiting":
+		return th.StateAwaiting
+	case "active":
+		return th.StateProcessing
+	case "warning":
+		return th.StateWarning
+	case "idle":
+		return th.StateIdle
+	case "ended":
+		return th.StateEnded
+	default:
+		return th.TextDim
+	}
+}
+
+func renderDashboardSessionRow(row hubRow, selected bool, width int, compact bool, _ string) string {
+	stateClr := stateColor(row.state)
+	marker := StateBar(stateClr)
 	if selected {
-		marker = ">"
+		marker = FocusedStateBar(activeThemeV2().Accent)
 	}
 	styles := defaultTUIStyles()
 	if compact {
@@ -3570,21 +3589,6 @@ func dashboardTitle(text string) string {
 	return dashboardCell(text)
 }
 
-func dashboardSessionBranch(rows []hubRow, index int) string {
-	if index < 0 || index >= len(rows) || rows[index].kind != hubRowSession {
-		return ""
-	}
-	projectKey := rows[index].projectKey
-	for i := index + 1; i < len(rows); i++ {
-		if rows[i].kind == hubRowProject {
-			break
-		}
-		if rows[i].kind == hubRowSession && rows[i].projectKey == projectKey {
-			return "├─"
-		}
-	}
-	return "└─"
-}
 
 func dashboardRecentExpanded(rows []hubRow, index int) bool {
 	if index < 0 || index >= len(rows) || rows[index].kind != hubRowRecentToggle {

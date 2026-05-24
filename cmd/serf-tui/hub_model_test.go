@@ -155,9 +155,14 @@ func TestHubModelDashboardRendersProjectTreeHierarchy(t *testing.T) {
 	m.rows = buildDashboardRows(m.tree)
 
 	got := m.dashboardView()
-	for _, want := range []string{"Launch New Session", "▾", "├─", "└─", "alpha task", "codex-local"} {
+	for _, want := range []string{"Launch New Session", "▾", "▍", "alpha task", "codex-local"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("dashboard tree missing %q:\n%s", want, got)
+		}
+	}
+	for _, bad := range []string{"├─", "└─"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("dashboard tree should not contain tree connector %q:\n%s", bad, got)
 		}
 	}
 }
