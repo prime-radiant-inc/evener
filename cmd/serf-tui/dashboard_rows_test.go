@@ -5,6 +5,15 @@ import (
 	"testing"
 )
 
+func TestSessionRowAwaitingHasStateColor(t *testing.T) {
+	withTestColorProfile(t)
+	row := hubRow{kind: hubRowSession, project: "serf", title: "X", state: "awaiting"}
+	got := renderDashboardSessionRow(row, false, 80, false, "")
+	if !strings.Contains(got, "\x1b[") {
+		t.Errorf("awaiting row should carry color; got plain: %q", got)
+	}
+}
+
 func TestSessionRowsHaveNoTreeConnectors(t *testing.T) {
 	rows := []hubRow{
 		{kind: hubRowProject, project: "serf", state: "active"},

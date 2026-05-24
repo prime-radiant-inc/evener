@@ -3557,6 +3557,10 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 		if selected {
 			return styles.Selected.Render(line)
 		}
+		if row.state == "awaiting" || row.state == "active" || row.state == "warning" {
+			clr := stateColor(row.state)
+			line = lipgloss.NewStyle().Foreground(clr).Render(line)
+		}
 		return line
 	}
 	line := strings.Join(nonEmptyStrings([]string{
@@ -3572,6 +3576,10 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 	line = truncateText(line, width)
 	if selected {
 		return styles.Selected.Render(line)
+	}
+	if row.state == "awaiting" || row.state == "active" || row.state == "warning" {
+		clr := stateColor(row.state)
+		line = lipgloss.NewStyle().Foreground(clr).Render(line)
 	}
 	return line
 }
