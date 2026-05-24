@@ -1880,6 +1880,17 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		m.lastCtrlC = now
+		// First ctrl+c during an active turn interrupts the turn (matching
+		// muscle-memory from the legacy standalone TUI). Second ctrl+c
+		// within hubCtrlCQuitWindow always quits, regardless of state.
+		if m.client != nil && m.detail.Capabilities.Interrupt {
+			if turnID := strings.TrimSpace(m.detail.ActiveTurnID); turnID != "" {
+				if ref, ok := m.currentRef(); ok {
+					m.addSessionSystem("Interrupting active turn. Press ctrl+c again to quit.")
+					return m, sendHubAction(m.client, ref, "interrupt", turnID)
+				}
+			}
+		}
 		return m, nil
 	case "esc":
 		m.enterSessionBrowse(false)

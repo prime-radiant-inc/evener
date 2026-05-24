@@ -3674,6 +3674,70 @@ func TestHubModelCtrlCWarningExpires(t *testing.T) {
 	}
 }
 
+// TestHubModelFirstCtrlCInterruptsActiveTurn ensures ctrl+c during an active
+// turn dispatches an interrupt (matching the legacy standalone TUI), while
+// a second ctrl+c within the quit window still quits regardless.
+func TestHubModelFirstCtrlCInterruptsActiveTurn(t *testing.T) {
+	var interrupted appwire.TurnInterruptParams
+	var calls int
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnInterrupt, func(_ context.Context, params appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
+			calls++
+			interrupted = params
+			return appwire.EmptyResponse{}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.detail.ActiveTurnID = "turn_busy"
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("first ctrl+c with active turn should dispatch interrupt cmd")
+	}
+	if _, ok := cmd().(hubActionMsg); !ok {
+		t.Fatalf("interrupt cmd should produce hubActionMsg")
+	}
+	if calls != 1 || interrupted.Ref != "local:01SEND" || interrupted.ExpectedTurnID != "turn_busy" {
+		t.Fatalf("TurnInterrupt calls=%d params=%+v", calls, interrupted)
+	}
+
+	got := updated.(hubModel)
+	if view := got.View(); !strings.Contains(view, "Interrupting active turn") {
+		t.Fatalf("session should announce interrupt:\n%s", view)
+	}
+
+	updated, cmd = got.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	requireQuitCommand(t, cmd)
+}
+
+// TestHubModelFirstCtrlCWithoutInterruptCapabilityDoesNotDispatch guards that
+// we don't surprise the user by sending an interrupt to a source that doesn't
+// advertise the capability.
+func TestHubModelFirstCtrlCWithoutInterruptCapabilityDoesNotDispatch(t *testing.T) {
+	var calls int
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnInterrupt, func(_ context.Context, _ appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
+			calls++
+			return appwire.EmptyResponse{}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
+	m.detail.ActiveTurnID = "turn_busy"
+	m.detail.Capabilities.Interrupt = false
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd != nil {
+		t.Fatalf("ctrl+c without interrupt capability should arm quit silently, got cmd=%v", cmd)
+	}
+	if calls != 0 {
+		t.Fatalf("no TurnInterrupt expected, got %d calls", calls)
+	}
+}
+
 func TestHubModelCtrlCQuitsOutsideSessionButArmsQuitInSession(t *testing.T) {
 	cases := []struct {
 		name  string
