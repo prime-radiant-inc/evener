@@ -48,6 +48,43 @@ func renderHubSessionStatus(detail hubSessionDetail, tasks []agent.Task, auth ap
 	return strings.TrimSpace(b.String())
 }
 
+// formatContextFragment renders the meta-strip "ctx" value. Returns "" when
+// the source supplies no context info.
+//
+// Forms (richest first; degrades gracefully):
+//   - "45k/200k (23%, 110k to compact)" — full ContextUsed/Window known
+//   - "45k (23%)"                       — used + pressure, no window
+//   - "23%"                             — pressure only (legacy thin form)
+//   - ""                                — nothing known
+//
+// The "to compact" hint uses the compactThreshold constant shared with the
+// standalone status bar (statusbar.go), matching agent/context_manager.go's
+// SummarizeThreshold so the threshold the user reads is the one the agent
+// will act on.
+func formatContextFragment(detail hubSessionDetail) string {
+	used := detail.ContextUsed
+	window := detail.ContextWindow
+	pressure := detail.ContextPressure
+
+	if used > 0 && window > 0 {
+		pct := float64(used) / float64(window) * 100
+		compactAt := int(float64(window) * compactThreshold)
+		remaining := compactAt - used
+		if remaining < 0 {
+			remaining = 0
+		}
+		return fmt.Sprintf("%s/%s (%.0f%%, %s to compact)",
+			formatTokens(used), formatTokens(window), pct, formatTokens(remaining))
+	}
+	if used > 0 && pressure > 0 {
+		return fmt.Sprintf("%s (%.0f%%)", formatTokens(used), pressure*100)
+	}
+	if pressure > 0 {
+		return fmt.Sprintf("%.0f%%", pressure*100)
+	}
+	return ""
+}
+
 // appendDiagnosticsSections writes the tool/MCP/skill/plugin/hook/subagent/agent
 // breakdown that the legacy standalone TUI showed under /status. The data is
 // already on the wire (appwire.SerfDiagnostics) — this just renders it.

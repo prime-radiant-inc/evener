@@ -108,6 +108,47 @@ func TestRenderHubSessionStatusRendersDiagnosticsSections(t *testing.T) {
 	}
 }
 
+func TestFormatContextFragment(t *testing.T) {
+	cases := []struct {
+		name   string
+		detail hubSessionDetail
+		want   string
+	}{
+		{
+			name:   "nothing-known",
+			detail: hubSessionDetail{},
+			want:   "",
+		},
+		{
+			name:   "pressure-only",
+			detail: hubSessionDetail{ContextPressure: 0.23},
+			want:   "23%",
+		},
+		{
+			name:   "used-plus-pressure-no-window",
+			detail: hubSessionDetail{ContextUsed: 45000, ContextPressure: 0.23},
+			want:   "45k (23%)",
+		},
+		{
+			name:   "full-rich-form",
+			detail: hubSessionDetail{ContextUsed: 46000, ContextWindow: 200000, ContextPressure: 0.23},
+			want:   "46k/200k (23%, 134k to compact)",
+		},
+		{
+			name:   "past-compact-threshold-clamps-remaining",
+			detail: hubSessionDetail{ContextUsed: 195000, ContextWindow: 200000, ContextPressure: 0.975},
+			want:   "195k/200k (98%, 0 to compact)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := formatContextFragment(tc.detail); got != tc.want {
+				t.Errorf("formatContextFragment(%+v) = %q, want %q", tc.detail, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestWriteWrappedStatusListWrapsAtWidth ensures the tool list helper wraps
 // across multiple rows when the items don't fit on one line.
 func TestWriteWrappedStatusListWrapsAtWidth(t *testing.T) {

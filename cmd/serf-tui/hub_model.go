@@ -4122,8 +4122,8 @@ func (m hubModel) sessionHeaderLines() []string {
 	if m.detail.WorkingDir != "" {
 		addPart("dir", abbreviatePath(m.detail.WorkingDir, 32))
 	}
-	if m.detail.ContextPressure > 0 {
-		addPart("ctx", fmt.Sprintf("%.0f%%", m.detail.ContextPressure*100))
+	if ctx := formatContextFragment(m.detail); ctx != "" {
+		addPart("ctx", ctx)
 	}
 	sep := lipgloss.NewStyle().Foreground(th.RuleSoft).Render(" · ")
 	meta := "  " + strings.Join(parts, sep)

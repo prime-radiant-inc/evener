@@ -67,6 +67,9 @@ type hubSessionDetail struct {
 	Branch          string
 	TurnCount       int
 	ContextPressure float64
+	ContextUsed     int
+	ContextWindow   int
+	ContextRemaining int
 	ActiveTurnID    string
 	RecentErrors    []string
 	Diagnostics     *appwire.SerfDiagnostics
@@ -217,9 +220,12 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		WorkingDir:      thread.CWD,
 		Project:         node.Project,
 		Branch:          gitBranchFromThread(thread),
-		TurnCount:       len(thread.Turns),
-		ActiveTurnID:    activeTurnIDFromThread(thread),
-		ContextPressure: thread.Serf.ContextPressure,
+		TurnCount:        len(thread.Turns),
+		ActiveTurnID:     activeTurnIDFromThread(thread),
+		ContextPressure:  thread.Serf.ContextPressure,
+		ContextUsed:      thread.Serf.ContextUsed,
+		ContextWindow:    thread.Serf.ContextWindow,
+		ContextRemaining: thread.Serf.ContextRemaining,
 		RecentErrors:    recentTurnErrors(thread),
 		Diagnostics:     thread.Serf.Diagnostics,
 		Live:            node.Live,
