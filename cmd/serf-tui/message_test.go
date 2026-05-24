@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/llm"
@@ -148,5 +149,25 @@ func TestRenderMessage_KeepsPlainAssistantTextSearchable(t *testing.T) {
 
 	if !strings.Contains(got, "main transcript answer") {
 		t.Fatalf("plain assistant text should remain contiguous:\n%q", got)
+	}
+}
+
+func TestRenderToolCallUsesRegistry(t *testing.T) {
+	tc := toolCallInfo{
+		Name:        "read_file",
+		Description: `{"file_path":"src/x.go"}`,
+		Output:      "line1\nline2\nline3",
+		Duration:    50 * time.Millisecond,
+		Done:        true,
+	}
+	got := renderToolCall(tc, 100, false)
+	if !strings.Contains(got, "read") {
+		t.Errorf("output should include verb 'read': %q", got)
+	}
+	if !strings.Contains(got, "src/x.go") {
+		t.Errorf("output should include target: %q", got)
+	}
+	if !strings.Contains(got, "3 lines") {
+		t.Errorf("output should include result: %q", got)
 	}
 }

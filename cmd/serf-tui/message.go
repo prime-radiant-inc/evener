@@ -193,86 +193,119 @@ func renderSelectedMessage(rendered string, focused bool) string {
 }
 
 func renderToolCall(tc toolCallInfo, width int, focused bool) string {
-	// Show a distinct arrow when focused.
-	arrow := "▸"
-	if tc.Expanded {
-		arrow = "▾"
-	}
-	if focused {
-		arrow = "▶"
-	}
+	r, _ := lookupToolRenderer(tc.Name)
+	args := toolArgsFromJSON(argsJSONFromDescription(tc.Description))
 
-	dur := ""
+	verb := r.Verb(args)
+	target := r.Target(args)
+	result := r.Result(args, tc.Output, tc.Error, tc.Duration)
+
+	th := activeThemeV2()
+	stateClr := stateColorForToolDone(tc.Done, tc.Error)
+	bar := StateBar(stateClr)
+	check := lipgloss.NewStyle().Foreground(stateClr).Render(checkmarkFor(tc.Done, tc.Error))
+	verbStyled := lipgloss.NewStyle().Foreground(th.Accent).Bold(true).Render(verb)
+	targetStyled := lipgloss.NewStyle().Foreground(th.Text).Render(target)
+
+	durText := ""
 	if tc.Done {
-		dur = toolDurationStyle.Render(fmt.Sprintf("[%.1fs]", tc.Duration.Seconds()))
+		durText = formatDur(tc.Duration)
 	} else {
-		dur = toolDurationStyle.Render("...")
+		durText = "…"
 	}
 
-	name := toolNameStyle.Render(tc.Name)
+	left := bar + " " + check + " " + verbStyled + "  " + targetStyled
+	right := lipgloss.NewStyle().Foreground(th.TextDim).Render(result) + "  " +
+		lipgloss.NewStyle().Foreground(th.TextGhost).Render(durText)
 
-	// Prefix width: "arrow SP name  " (2 spaces after name before desc)
-	prefixWidth := lipgloss.Width(arrow) + 1 + lipgloss.Width(name) + 2
-	durWidth := lipgloss.Width(dur)
-	indent := strings.Repeat(" ", prefixWidth)
-
-	// Wrap the description across lines.
-	// First line budget: width - prefixWidth - 2 (gap before dur) - durWidth
-	// Continuation line budget: width - prefixWidth
-	// dur is appended after a 2-space gap on the last line.
-	firstBudget := width - prefixWidth - 2 - durWidth
-	contBudget := width - prefixWidth
-	if firstBudget < 1 {
-		firstBudget = 1
-	}
-	if contBudget < 1 {
-		contBudget = 1
+	header := DotLeader(left, right, width)
+	if focused {
+		// Replace the single state bar with the double focus bar.
+		header = strings.Replace(header, bar, FocusedStateBar(th.Accent), 1)
 	}
 
-	descLines := wrapText(tc.Description, firstBudget, contBudget)
+	// Show expanded body: renderer Body func takes priority; fall back to
+	// tc.Detail / tc.Output / tc.Error for backward compatibility.
+	expanded := tc.Expanded || r.ExpandedByDefault
+	if !expanded {
+		return header
+	}
 
-	var headerLines []string
-	for i, dl := range descLines {
-		var line string
-		if i == 0 {
-			line = fmt.Sprintf("%s %s  %s", arrow, name, dl)
-		} else {
-			line = indent + dl
+	var bodyLines []string
+	if r.Body != nil {
+		body := r.Body(args, tc.Output, width-th.IndentToolBody)
+		if body != "" {
+			bodyLines = append(bodyLines, indentBlock(body, th.IndentToolBody))
 		}
-		// Append dur after the last description line.
-		if i == len(descLines)-1 {
-			line = line + "  " + dur
+	} else {
+		// Legacy fallback: show Detail / Output / Error.
+		if tc.Detail != "" {
+			bodyLines = append(bodyLines, toolExpandedStyle.Width(width-4).Render(tc.Detail))
 		}
-		headerLines = append(headerLines, line)
-	}
-	// Edge case: empty description — just show arrow name dur.
-	if len(descLines) == 0 {
-		headerLines = []string{fmt.Sprintf("%s %s  %s", arrow, name, dur)}
+		if tc.Output != "" {
+			bodyLines = append(bodyLines, toolExpandedStyle.Width(width-4).Render(tc.Output))
+		}
+		if tc.Error != "" {
+			bodyLines = append(bodyLines, toolExpandedStyle.Width(width-4).Render("error: "+tc.Error))
+		}
 	}
 
-	header := strings.Join(headerLines, "\n")
+	if len(bodyLines) == 0 {
+		return header
+	}
+	return header + "\n" + strings.Join(bodyLines, "\n")
+}
 
-	if !tc.Expanded || (tc.Detail == "" && tc.Output == "" && tc.Error == "") {
-		return toolCollapsedStyle.Render(header)
+func stateColorForToolDone(done bool, errStr string) lipgloss.Color {
+	th := activeThemeV2()
+	if errStr != "" {
+		return th.StateAwaiting
 	}
+	if done {
+		return th.StateIdle
+	}
+	return th.StateProcessing
+}
 
-	var body strings.Builder
-	if tc.Detail != "" {
-		body.WriteString(toolExpandedStyle.Width(width - 4).Render(tc.Detail))
+func checkmarkFor(done bool, errStr string) string {
+	if errStr != "" {
+		return "✕"
 	}
-	if tc.Output != "" {
-		if body.Len() > 0 {
-			body.WriteString("\n")
-		}
-		body.WriteString(toolExpandedStyle.Width(width - 4).Render(tc.Output))
+	if done {
+		return "✓"
 	}
-	if tc.Error != "" {
-		if body.Len() > 0 {
-			body.WriteString("\n")
-		}
-		body.WriteString(toolExpandedStyle.Width(width - 4).Render("error: " + tc.Error))
+	return "·"
+}
+
+func formatDur(d time.Duration) string {
+	if d < time.Millisecond {
+		return "<1ms"
 	}
-	return header + "\n" + body.String()
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d/time.Millisecond)
+	}
+	return fmt.Sprintf("%.1fs", d.Seconds())
+}
+
+func indentBlock(s string, indent int) string {
+	pad := strings.Repeat(" ", indent)
+	lines := strings.Split(s, "\n")
+	for i := range lines {
+		lines[i] = pad + lines[i]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// argsJSONFromDescription extracts the embedded JSON args from a
+// toolCallInfo.Description if present, else returns "".
+// The existing toolCallInfo.Description is a human summary or raw JSON.
+// We detect JSON by checking if the string starts with '{'.
+func argsJSONFromDescription(s string) string {
+	trimmed := strings.TrimSpace(s)
+	if strings.HasPrefix(trimmed, "{") {
+		return trimmed
+	}
+	return ""
 }
 
 // wrapText splits text into lines. The first line is at most firstBudget runes

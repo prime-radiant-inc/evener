@@ -78,7 +78,9 @@ func TestToolGroupRendersErrorResult(t *testing.T) {
 		Expanded:    true,
 	}, 100, false)
 
-	for _, want := range []string{"read_file", "error:", "open missing.go"} {
+	// New format: verb "read" (from registry), error shown as "error" result
+	// and full error text in expanded body fallback.
+	for _, want := range []string{"read", "error:", "open missing.go"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("tool group missing %q:\n%s", want, got)
 		}
@@ -104,8 +106,11 @@ func TestHubModelBrowseSelectedToolRendersFocusedAndToggles(t *testing.T) {
 	m.session.focusedToolIdx = -1
 	m.browseSelected = 1
 
-	if got := m.sessionView(); !strings.Contains(got, "▶") {
-		t.Fatalf("selected tool group should render focused:\n%s", got)
+	// New format: focused tool shows double state bar ▍▍ (FocusedStateBar)
+	// instead of the old ▶ arrow.
+	view := m.sessionView()
+	if strings.Count(view, "▍") < 2 {
+		t.Fatalf("selected tool group should render focused (double ▍▍):\n%s", view)
 	}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})

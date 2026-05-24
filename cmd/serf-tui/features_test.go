@@ -26,17 +26,17 @@ func TestRenderToolCall_Collapsed(t *testing.T) {
 	}
 	out := renderToolCall(tc, 80, false)
 
-	// Collapsed tool uses ▸ arrow
-	if !strings.Contains(out, "▸") {
-		t.Errorf("collapsed tool should show ▸, got: %s", out)
+	// New format uses state bar ▍ and checkmark ✓
+	if !strings.Contains(out, "▍") {
+		t.Errorf("collapsed tool should show ▍ state bar, got: %s", out)
 	}
-	// Duration should be shown
-	if !strings.Contains(out, "[1.0s]") {
+	// Duration should be shown (new format: "1.0s" not "[1.0s]")
+	if !strings.Contains(out, "1.0s") {
 		t.Errorf("collapsed tool should show duration, got: %s", out)
 	}
-	// Name should be present
+	// Verb should be present (shell renderer returns verb "shell")
 	if !strings.Contains(out, "shell") {
-		t.Errorf("collapsed tool should show name, got: %s", out)
+		t.Errorf("collapsed tool should show verb, got: %s", out)
 	}
 }
 
@@ -52,11 +52,12 @@ func TestRenderToolCall_Expanded(t *testing.T) {
 	}
 	out := renderToolCall(tc, 80, false)
 
-	// Expanded tool uses ▾ arrow
-	if !strings.Contains(out, "▾") {
-		t.Errorf("expanded tool should show ▾, got: %s", out)
+	// New format: state bar ▍ and checkmark ✓ (no longer ▾ arrow)
+	if !strings.Contains(out, "▍") {
+		t.Errorf("expanded tool should show ▍ state bar, got: %s", out)
 	}
-	// Detail and output should be visible
+	// Legacy fallback: Detail and output should be visible when expanded
+	// (shell has no Body renderer, so legacy path is used)
 	if !strings.Contains(out, "full args here") {
 		t.Errorf("expanded tool should show detail, got: %s", out)
 	}
@@ -74,23 +75,24 @@ func TestRenderToolCall_FocusedChangesArrow(t *testing.T) {
 		Duration:    1 * time.Second,
 	}
 
-	// Unfocused: uses ▸ or ▾ depending on expanded state
+	// Unfocused: single state bar ▍
 	unfocused := renderToolCall(tc, 80, false)
 
-	// Focused: uses ▶ regardless of expanded state
+	// Focused: double state bar ▍▍ (FocusedStateBar)
 	tc.Expanded = false
 	focusedCollapsed := renderToolCall(tc, 80, true)
-	if !strings.Contains(focusedCollapsed, "▶") {
-		t.Errorf("focused collapsed tool should show ▶, got: %s", focusedCollapsed)
+	// FocusedStateBar renders the glyph twice
+	if strings.Count(focusedCollapsed, "▍") < 2 {
+		t.Errorf("focused collapsed tool should show double ▍▍, got: %s", focusedCollapsed)
 	}
 
 	tc.Expanded = true
 	focusedExpanded := renderToolCall(tc, 80, true)
-	if !strings.Contains(focusedExpanded, "▶") {
-		t.Errorf("focused expanded tool should show ▶, got: %s", focusedExpanded)
+	if strings.Count(focusedExpanded, "▍") < 2 {
+		t.Errorf("focused expanded tool should show double ▍▍, got: %s", focusedExpanded)
 	}
 
-	// Unfocused and focused must differ (different arrow)
+	// Unfocused and focused must differ (different bar width)
 	if unfocused == focusedCollapsed {
 		t.Error("unfocused and focused output should differ")
 	}
@@ -103,13 +105,13 @@ func TestRenderToolCall_DoneVsInProgress(t *testing.T) {
 	doneOut := renderToolCall(done, 80, false)
 	pendingOut := renderToolCall(pending, 80, false)
 
-	// Done shows duration
-	if !strings.Contains(doneOut, "[1.0s]") {
+	// Done shows duration (new format: "1.0s" not "[1.0s]")
+	if !strings.Contains(doneOut, "1.0s") {
 		t.Errorf("done tool should show duration: %s", doneOut)
 	}
-	// Pending shows "..."
-	if !strings.Contains(pendingOut, "...") {
-		t.Errorf("pending tool should show ...: %s", pendingOut)
+	// Pending shows "…" (ellipsis character)
+	if !strings.Contains(pendingOut, "…") {
+		t.Errorf("pending tool should show …: %s", pendingOut)
 	}
 }
 
@@ -499,16 +501,16 @@ func TestRenderMessage_PassesFocusedToTool(t *testing.T) {
 		},
 	}
 
-	// Unfocused rendering
+	// Unfocused rendering: single state bar ▍
 	unfocused := renderMessage(msg, 80, false)
-	if !strings.Contains(unfocused, "▸") {
-		t.Errorf("unfocused should use ▸, got: %s", unfocused)
+	if !strings.Contains(unfocused, "▍") {
+		t.Errorf("unfocused should use ▍ state bar, got: %s", unfocused)
 	}
 
-	// Focused rendering
+	// Focused rendering: double state bar ▍▍
 	focused := renderMessage(msg, 80, true)
-	if !strings.Contains(focused, "▶") {
-		t.Errorf("focused should use ▶, got: %s", focused)
+	if strings.Count(focused, "▍") < 2 {
+		t.Errorf("focused should use double ▍▍ bar, got: %s", focused)
 	}
 }
 
