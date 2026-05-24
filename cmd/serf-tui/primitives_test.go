@@ -80,6 +80,29 @@ func TestDotLeaderHandlesOverflow(t *testing.T) {
 	}
 }
 
+func TestOverlayContainsTitleBodyFooter(t *testing.T) {
+	out := Overlay(OverlayOpts{
+		Title:  "Select model",
+		Width:  60,
+		Body:   "the body content",
+		Footer: "enter select  esc cancel",
+	})
+	for _, want := range []string{"Select model", "the body content", "enter select  esc cancel"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("Overlay missing %q in output:\n%s", want, out)
+		}
+	}
+}
+
+func TestOverlayDrawsRoundedBorder(t *testing.T) {
+	out := Overlay(OverlayOpts{Title: "X", Width: 40, Body: "body"})
+	for _, glyph := range []string{"╭", "╮", "╰", "╯"} {
+		if !strings.Contains(out, glyph) {
+			t.Errorf("Overlay missing border glyph %q", glyph)
+		}
+	}
+}
+
 func TestStatusBadgeContainsLabelAndDot(t *testing.T) {
 	out := StatusBadge(lipgloss.Color("#f7768e"), "AWAITING")
 	if !strings.Contains(out, "●") {
