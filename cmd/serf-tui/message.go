@@ -232,13 +232,18 @@ func renderToolCall(tc toolCallInfo, width int, focused bool) string {
 	}
 
 	var bodyLines []string
+	bodyFromRenderer := false
 	if r.Body != nil {
 		body := r.Body(args, tc.Output, width-th.IndentToolBody)
 		if body != "" {
 			bodyLines = append(bodyLines, indentBlock(body, th.IndentToolBody))
+			bodyFromRenderer = true
 		}
-	} else {
+	}
+	if !bodyFromRenderer {
 		// Legacy fallback: show Detail / Output / Error.
+		// Used when there is no Body renderer, or the renderer returned empty
+		// (e.g. read_file Body on an errored call with no output).
 		if tc.Detail != "" {
 			bodyLines = append(bodyLines, toolExpandedStyle.Width(width-4).Render(tc.Detail))
 		}

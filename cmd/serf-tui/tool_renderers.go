@@ -354,4 +354,9 @@ func init() {
 		return diffBody(args, args.Str("patch"), w)
 	}
 	toolRenderers["apply_patch"] = applyPatchRenderer
+
+	// Wave 6, task 6.2: wire fileBody into read_file renderer.
+	readFileRenderer := toolRenderers["read_file"]
+	readFileRenderer.Body = fileBody
+	toolRenderers["read_file"] = readFileRenderer
 }

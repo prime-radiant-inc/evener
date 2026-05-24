@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -29,5 +30,20 @@ func TestDiffBodyHandlesEmptyInput(t *testing.T) {
 	got := diffBody(ToolArgs{}, "", 60)
 	if got != "" {
 		t.Errorf("diffBody on empty input should be empty; got %q", got)
+	}
+}
+
+func TestFileBodyShowsFirstLines(t *testing.T) {
+	lines := []string{}
+	for i := 1; i <= 20; i++ {
+		lines = append(lines, "line"+strconv.Itoa(i))
+	}
+	args := ToolArgs{"file_path": "x.txt"}
+	got := fileBody(args, strings.Join(lines, "\n"), 60)
+	if !strings.Contains(got, "line1") {
+		t.Errorf("fileBody should contain first lines: %q", got)
+	}
+	if !strings.Contains(got, "show 15 more lines") && !strings.Contains(got, "more lines") {
+		t.Errorf("fileBody should show truncation hint: %q", got)
 	}
 }
