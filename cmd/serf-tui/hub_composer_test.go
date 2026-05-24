@@ -15,7 +15,7 @@ func TestHubModelSessionComposerIsVisibleWhenEmpty(t *testing.T) {
 	m := newSessionHubModel(nil)
 
 	got := m.sessionView()
-	for _, want := range []string{"message", "> "} {
+	for _, want := range []string{"> "} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("session composer missing %q:\n%s", want, got)
 		}
@@ -71,7 +71,7 @@ func TestHubModelBusyComposerShowsQueueOrReadOnlyMode(t *testing.T) {
 	// advertise queue.
 	m.detail.Capabilities.Queue = false
 	got = m.sessionView()
-	for _, want := range []string{"message", "enter: send", "> nudge the running turn"} {
+	for _, want := range []string{"enter: send", "> nudge the running turn"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("busy send composer missing %q:\n%s", want, got)
 		}

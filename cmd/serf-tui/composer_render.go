@@ -22,34 +22,34 @@ type composerContext struct {
 	Width     int
 }
 
-// renderComposerChipStrip renders a horizontal chip strip above the composer
-// textarea. Left side: harness/model/branch/dir chips separated by ·.
-// Right side: connection status, then mode chip (state-colored via
-// StatusBadge) when Mode is non-empty. The whole line is laid out as a
-// divider: ─ <chips> ──…──── [status]  [mode] ┄
+// renderComposerChipStrip renders the live-context band above the composer
+// textarea. Left: harness/model/branch/dir chips separated by ·. Right:
+// connection status and, when in queue/fork/awaiting mode, a state-colored
+// mode chip. The whole line is painted as a solid SurfaceSecondary band so
+// it reads as a distinct accent strip rather than a divider.
 func renderComposerChipStrip(ctx composerContext) string {
 	th := activeTheme()
 
-	parts := []string{}
+	// Left side: harness/model/branch/dir
+	leftParts := []string{}
 	add := func(key, value string) {
 		if value == "" {
 			return
 		}
 		k := lipgloss.NewStyle().Foreground(th.TextDim).Render(key)
 		v := lipgloss.NewStyle().Foreground(th.Text).Render(value)
-		parts = append(parts, k+" "+v)
+		leftParts = append(leftParts, k+" "+v)
 	}
 	add("harness", ctx.Harness)
 	add("model", abbreviateModel(ctx.Model))
 	add("branch", ctx.Branch)
 	if ctx.WorkingDir != "" {
-		parts = append(parts, lipgloss.NewStyle().Foreground(th.TextDim).Render(abbreviatePath(ctx.WorkingDir, 32)))
+		leftParts = append(leftParts, lipgloss.NewStyle().Foreground(th.TextDim).Render(abbreviatePath(ctx.WorkingDir, 32)))
 	}
+	sep := lipgloss.NewStyle().Foreground(th.TextGhost).Render(" · ")
+	leftContent := strings.Join(leftParts, sep)
 
-	sep := lipgloss.NewStyle().Foreground(th.RuleSoft).Render(" · ")
-	chipsText := strings.Join(parts, sep)
-
-	// Right-side status fragment.
+	// Right side: status + optional mode chip
 	rightParts := []string{}
 	if status := renderChipStatus(ctx, th); status != "" {
 		rightParts = append(rightParts, status)
@@ -68,29 +68,40 @@ func renderComposerChipStrip(ctx composerContext) string {
 	}
 	rightContent := strings.Join(rightParts, "  ")
 
-	// Build the divider line manually so that chip labels are NOT uppercased
-	// (SectionDivider upper-cases its left argument).
 	width := ctx.Width
 	if width <= 0 {
 		width = 80
 	}
-	leadGlyph := lipgloss.NewStyle().Foreground(th.RuleSoft).Render("─ ")
-	trailGlyph := lipgloss.NewStyle().Foreground(th.Rule).Render(" " + activeTheme().RuleGlyph)
 
-	prefix := leadGlyph + chipsText
-	suffix := rightContent + trailGlyph
-	prefixW := lipgloss.Width(prefix)
-	suffixW := lipgloss.Width(suffix)
-	fill := width - prefixW - suffixW - 2
-	if fill < 1 {
-		combined := prefix + " " + suffix
-		if lipgloss.Width(combined) > width {
-			return truncateText(combined, width)
-		}
-		return combined
+	band := lipgloss.NewStyle().
+		Background(th.SurfaceSecondary).
+		Foreground(th.Text).
+		Width(width).
+		Padding(0, 1)
+
+	// Content fits in width-2 cells after padding.
+	inner := width - 2
+	if inner < 1 {
+		inner = 1
 	}
-	mid := lipgloss.NewStyle().Foreground(th.RuleSoft).Render(strings.Repeat("─", fill))
-	return prefix + " " + mid + " " + suffix
+	leftW := lipgloss.Width(leftContent)
+	rightW := lipgloss.Width(rightContent)
+	if leftW+rightW+1 > inner {
+		// Too tight: prioritize left content, drop or truncate the right.
+		if leftW >= inner {
+			leftContent = truncateText(leftContent, inner)
+			return band.Render(leftContent)
+		}
+		// Show left + as much right as fits.
+		room := inner - leftW - 1
+		rightContent = truncateText(rightContent, room)
+		return band.Render(leftContent + " " + rightContent)
+	}
+	gap := inner - leftW - rightW
+	if gap < 1 {
+		gap = 1
+	}
+	return band.Render(leftContent + strings.Repeat(" ", gap) + rightContent)
 }
 
 // renderChipStatus produces the right-side connection/provider fragment
@@ -116,7 +127,7 @@ func renderChipStatus(ctx composerContext, th Theme) string {
 	if ctx.Provider != "" {
 		fragments = append(fragments, lipgloss.NewStyle().Foreground(th.TextDim).Render(ctx.Provider))
 	}
-	sep := lipgloss.NewStyle().Foreground(th.RuleSoft).Render(" · ")
+	sep := lipgloss.NewStyle().Foreground(th.TextGhost).Render(" · ")
 	return strings.Join(fragments, sep)
 }
 

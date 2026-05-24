@@ -139,7 +139,9 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 		panel.Label = "read-only"
 		panel.ReadOnlyReason = m.sessionComposerReadOnlyReason()
 	default:
-		panel.Label = "message"
+		// No section label in default compose mode — the chip strip
+		// already carries all the live context; an extra "message" line
+		// is redundant chrome.
 		if m.sessionCanStartTurn() {
 			panel.Keys = append([]string{"enter: send"}, keys...)
 		}

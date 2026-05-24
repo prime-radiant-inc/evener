@@ -2330,7 +2330,7 @@ func TestHubModelSessionPanelRendersAsCenteredModalOverlay(t *testing.T) {
 			t.Fatalf("details modal missing %q:\n%s", want, got)
 		}
 	}
-	requireOrderedText(t, got, "details", "main transcript answer", "message")
+	requireOrderedText(t, got, "details", "main transcript answer")
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEscape})
 	if cmd != nil {

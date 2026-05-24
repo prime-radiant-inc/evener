@@ -20,7 +20,7 @@ func TestHubModelAppShellSessionTopBarAndComposerRegion(t *testing.T) {
 	m.session.messages = []chatMessage{{Kind: msgAssistant, Text: "Ready for shell work."}}
 
 	got := m.View()
-	requireOrderedText(t, got, "serf / session / send task", "Ready for shell work.", "message", "> ")
+	requireOrderedText(t, got, "serf / session / send task", "Ready for shell work.", "> ")
 }
 
 func TestHubModelAppShellAddsSubtleChromeStyles(t *testing.T) {

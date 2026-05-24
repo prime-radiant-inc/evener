@@ -83,13 +83,14 @@ func applyThemeName(name string) bool {
 
 var darkTheme = Theme{
 	Name: "dark",
-	// Softened dark grey — lighter than near-black so painted surfaces
-	// don't bottom-out as a black void. Faint cool cast.
-	Bg:               lipgloss.Color("#15151a"),
-	BgRaised:         lipgloss.Color("#1d1d22"),
-	SurfaceSecondary: lipgloss.Color("#25252a"),
-	Rule:             lipgloss.Color("#20202a"),
-	RuleSoft:         lipgloss.Color("#1a1a1e"),
+	// Dark slate-grey with a hint of cool blue — softer than near-black
+	// so painted surfaces sit calmly without bottoming out as a void.
+	// Raised surfaces preserve the slight blue cast.
+	Bg:               lipgloss.Color("#191D27"),
+	BgRaised:         lipgloss.Color("#232838"),
+	SurfaceSecondary: lipgloss.Color("#2d3349"),
+	Rule:             lipgloss.Color("#262c3d"),
+	RuleSoft:         lipgloss.Color("#1e2230"),
 	// Neutral cream-leaning ink, tiers stepping down in lightness with
 	// minimal hue shift so the eye reads them as "less" rather than
 	// "different".
