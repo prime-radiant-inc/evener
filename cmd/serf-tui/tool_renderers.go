@@ -342,4 +342,16 @@ func init() {
 			return "ok"
 		},
 	}
+
+	// Wave 6, task 6.1: wire diffBody into diff-producing renderers.
+	editFileRenderer.Body = diffBody
+	toolRenderers["edit_file"] = editFileRenderer
+
+	writeFileRenderer.Body = diffBody
+	toolRenderers["write_file"] = writeFileRenderer
+
+	applyPatchRenderer.Body = func(args ToolArgs, _ string, w int) string {
+		return diffBody(args, args.Str("patch"), w)
+	}
+	toolRenderers["apply_patch"] = applyPatchRenderer
 }
