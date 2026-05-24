@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -14,10 +15,27 @@ type detailsDrawer struct {
 	HubURL string
 }
 
+func sectionLabel(text string) string {
+	th := activeThemeV2()
+	return lipgloss.NewStyle().Foreground(th.TextDim).Bold(true).Render(strings.ToUpper(text))
+}
+
+func ghostText(text string) string {
+	th := activeThemeV2()
+	return lipgloss.NewStyle().Foreground(th.TextGhost).Render(text)
+}
+
 func (d detailsDrawer) View() string {
 	var b strings.Builder
-	b.WriteString("details\n")
 	detail := d.Detail
+
+	// Header: section label + state badge.
+	b.WriteString(sectionLabel("details"))
+	if state := strings.TrimSpace(detail.State); state != "" {
+		b.WriteString("  " + StatusBadge(stateColor(state), state))
+	}
+	b.WriteString("\n")
+
 	if detail.SessionID != "" {
 		fmt.Fprintf(&b, "Session:  %s\n", detail.SessionID)
 	}
@@ -35,10 +53,10 @@ func (d detailsDrawer) View() string {
 		fmt.Fprintf(&b, "Branch:   %s\n", detail.Branch)
 	}
 	if detail.TurnCount > 0 {
-		fmt.Fprintf(&b, "Turns:    %d\n", detail.TurnCount)
+		fmt.Fprintf(&b, "Turns:    %s\n", ghostText(fmt.Sprintf("%d", detail.TurnCount)))
 	}
 	if detail.ContextPressure > 0 {
-		fmt.Fprintf(&b, "Context:  %.0f%% used\n", detail.ContextPressure*100)
+		fmt.Fprintf(&b, "Context:  %s\n", ghostText(fmt.Sprintf("%.0f%% used", detail.ContextPressure*100)))
 	}
 	if d.HubURL != "" && detail.Ref != "" {
 		base := strings.TrimRight(d.HubURL, "/")
@@ -49,13 +67,13 @@ func (d detailsDrawer) View() string {
 		fmt.Fprintf(&b, "Capabilities: %s\n", caps)
 	}
 	if len(detail.RecentErrors) > 0 {
-		b.WriteString("Recent errors:\n")
+		b.WriteString(sectionLabel("recent errors") + "\n")
 		for _, err := range detail.RecentErrors {
 			fmt.Fprintf(&b, "  %s\n", err)
 		}
 	}
 	if detail.Diagnostics == nil {
-		b.WriteString("Diagnostics: not reported by source\n")
+		b.WriteString(ghostText("Diagnostics: not reported by source") + "\n")
 		return strings.TrimSpace(b.String())
 	}
 	writeSerfDiagnostics(&b, detail.Diagnostics)

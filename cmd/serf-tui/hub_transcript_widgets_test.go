@@ -155,7 +155,8 @@ func TestDetailsDrawerShowsCapabilities(t *testing.T) {
 	}
 
 	got := m.renderSessionDetails()
-	for _, want := range []string{"details", "Source:   codex-local", "Capabilities: send, steer, compact"} {
+	// "details" header is now an uppercase section label (DETAILS).
+	for _, want := range []string{"DETAILS", "Source:   codex-local", "Capabilities: send, steer, compact"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("details drawer missing %q:\n%s", want, got)
 		}
@@ -204,7 +205,7 @@ func TestDetailsDrawerShowsHubDiagnostics(t *testing.T) {
 		"Hooks (1):",
 		"Subagents (1):",
 		"Agents (1):",
-		"Recent errors:",
+		"RECENT ERRORS",
 		"turn_2: provider quota exceeded",
 	} {
 		if !strings.Contains(got, want) {
