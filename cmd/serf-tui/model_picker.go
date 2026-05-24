@@ -194,11 +194,18 @@ func (m modelPicker) View() string {
 	if title == "" {
 		title = "Select model"
 	}
+	// Match old renderPopupPane width logic: popup is min(max(termWidth,44),96)
+	// so content at 90 chars won't be word-wrapped by the Overlay frame.
+	w := m.width
+	if w <= 0 {
+		w = 96
+	}
+	w = min(max(w, 44), 96)
 	body := m.renderBody()
-	footer := actionBarForWidth(m.width, KbdHint("↑↓", "navigate"), KbdHint("enter", "select"), KbdHint("esc", "cancel"))
+	footer := actionBarForWidth(w, KbdHint("↑↓", "navigate"), KbdHint("enter", "select"), KbdHint("esc", "cancel"))
 	return Overlay(OverlayOpts{
 		Title:  title,
-		Width:  m.width,
+		Width:  w,
 		Body:   body,
 		Footer: footer,
 	})

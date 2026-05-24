@@ -48,12 +48,8 @@ func (p themePicker) Update(msg tea.Msg) (themePicker, tea.Cmd) {
 	return p, nil
 }
 
-func (p themePicker) View() string {
+func (p themePicker) renderItems() string {
 	var b strings.Builder
-
-	b.WriteString(mpTitleStyle.Render("Select theme"))
-	b.WriteString("\n\n")
-
 	for i, name := range themePickerItems {
 		cursor := "  "
 		style := mpNormalStyle
@@ -68,8 +64,12 @@ func (p themePicker) View() string {
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
+	return b.String()
+}
 
-	b.WriteString("\n")
-	b.WriteString(mpDimStyle.Render("up/down navigate  enter select  esc cancel"))
-	return renderPopupPane(b.String(), 44)
+func (p themePicker) View() string {
+	width := 44
+	body := p.renderItems()
+	footer := actionBarForWidth(width, KbdHint("↑↓", "navigate"), KbdHint("enter", "select"), KbdHint("esc", "cancel"))
+	return Overlay(OverlayOpts{Title: "Select theme", Width: width, Body: body, Footer: footer})
 }
