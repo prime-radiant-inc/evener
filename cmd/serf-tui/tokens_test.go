@@ -2,6 +2,8 @@ package main
 
 import (
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestThemeRegistryHasDarkAndLight(t *testing.T) {
@@ -94,5 +96,43 @@ func TestMarkdownInvalidatorIsWired(t *testing.T) {
 	setThemeV2("light")
 	if markdownRendererCached() != nil {
 		t.Errorf("setThemeV2 should have invalidated markdownRenderer cache")
+	}
+}
+
+func TestNoTokenIsEmpty(t *testing.T) {
+	for name, th := range Themes() {
+		fields := map[string]lipgloss.Color{
+			"Bg":               th.Bg,
+			"BgRaised":         th.BgRaised,
+			"SurfaceSecondary": th.SurfaceSecondary,
+			"Rule":             th.Rule,
+			"RuleSoft":         th.RuleSoft,
+			"Text":             th.Text,
+			"TextMuted":        th.TextMuted,
+			"TextDim":          th.TextDim,
+			"TextGhost":        th.TextGhost,
+			"Accent":           th.Accent,
+			"AccentSecondary":  th.AccentSecondary,
+			"StateAwaiting":    th.StateAwaiting,
+			"StateProcessing":  th.StateProcessing,
+			"StateWarning":     th.StateWarning,
+			"StateIdle":        th.StateIdle,
+			"StateEnded":       th.StateEnded,
+			"StateSubagent":    th.StateSubagent,
+			"BtnPrimaryText":   th.BtnPrimaryText,
+		}
+		for field, c := range fields {
+			if string(c) == "" {
+				t.Errorf("theme %q field %q is empty", name, field)
+			}
+		}
+	}
+}
+
+func TestBgNotEqualText(t *testing.T) {
+	for name, th := range Themes() {
+		if string(th.Bg) == string(th.Text) {
+			t.Errorf("theme %q: Bg == Text (%q); content invisible", name, th.Bg)
+		}
 	}
 }
