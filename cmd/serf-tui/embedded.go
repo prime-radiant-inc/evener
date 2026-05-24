@@ -29,6 +29,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+var embeddedNewLLMClientFromEnv = llm.NewFromEnv
+
 // embeddedConfig holds options for the embedded server.
 type embeddedConfig struct {
 	model              string
@@ -75,6 +77,8 @@ type embeddedServer struct {
 	env        agent.ExecutionEnvironment
 	sessionCfg agent.SessionConfig
 
+	closeAPILog func() error
+
 	eventObserver func(agent.SessionEvent)
 }
 
@@ -111,10 +115,20 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 		return nil, err
 	}
 
-	client, err := llm.NewFromEnv(llm.WithStateDir(sd))
+	client, err := embeddedNewLLMClientFromEnv(llm.WithStateDir(sd))
 	if err != nil {
 		return nil, fmt.Errorf("LLM client: %w", err)
 	}
+	closeAPILog, err := cmdutil.AttachAPILogger(client, sd, nil)
+	if err != nil {
+		return nil, err
+	}
+	keepAPILog := false
+	defer func() {
+		if !keepAPILog {
+			_ = closeAPILog()
+		}
+	}()
 
 	profile, err := cmdutil.SelectProfile(modelRef.Provider, modelRef.Model, "")
 	if err != nil {
@@ -211,8 +225,10 @@ func startEmbedded(ctx context.Context, cfg embeddedConfig) (*embeddedServer, er
 		profile:       profile,
 		env:           env,
 		sessionCfg:    sessionCfg,
+		closeAPILog:   closeAPILog,
 		eventObserver: eventObserver,
 	}
+	keepAPILog = true
 
 	e.wireSession(sess)
 
@@ -373,6 +389,9 @@ func (e *embeddedServer) Close() {
 	e.cancel()
 	e.httpSrv.Close()
 	e.currentSession().Close()
+	if e.closeAPILog != nil {
+		_ = e.closeAPILog()
+	}
 }
 
 // stateDir returns the resolved runtime state directory.

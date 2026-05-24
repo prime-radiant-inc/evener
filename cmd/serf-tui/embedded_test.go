@@ -4,11 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/serf/llm"
 )
 
 func TestEmbeddedServer_StartsAndResponds(t *testing.T) {
@@ -77,4 +82,66 @@ func TestWaitForEmbeddedReady(t *testing.T) {
 	if err := waitForEmbeddedReady(addr, time.Second); err != nil {
 		t.Fatalf("waitForEmbeddedReady() error = %v", err)
 	}
+}
+
+func TestEmbeddedServer_APILogFlushesOnClose(t *testing.T) {
+	stateDir := t.TempDir()
+	workDir := t.TempDir()
+
+	oldNewClient := embeddedNewLLMClientFromEnv
+	embeddedNewLLMClientFromEnv = func(...llm.EnvOption) (*llm.Client, error) {
+		client := llm.NewClient()
+		client.Register(embeddedLoggingAdapter{})
+		return client, nil
+	}
+	t.Cleanup(func() {
+		embeddedNewLLMClientFromEnv = oldNewClient
+	})
+
+	embedded, err := startEmbedded(context.Background(), embeddedConfig{
+		model:    "openai/gpt-test",
+		workDir:  workDir,
+		stateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("startEmbedded: %v", err)
+	}
+
+	_, err = embedded.client.Complete(llm.WithAPILogContext(context.Background(), "embedded-session", 3), llm.Request{
+		Provider: "openai",
+		Model:    "gpt-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	embedded.Close()
+
+	data, err := os.ReadFile(filepath.Join(stateDir, "api.jsonl"))
+	if err != nil {
+		t.Fatalf("read api.jsonl: %v", err)
+	}
+	for _, want := range []string{`"session_id":"embedded-session"`, `"round":3`, `"model":"gpt-test"`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("api.jsonl missing %s:\n%s", want, string(data))
+		}
+	}
+}
+
+type embeddedLoggingAdapter struct{}
+
+func (embeddedLoggingAdapter) Name() string { return "openai" }
+
+func (embeddedLoggingAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+	return llm.Response{
+		Provider: req.Provider,
+		Model:    req.Model,
+		Message:  llm.Assistant("ok"),
+		Finish:   llm.FinishReason{Reason: llm.FinishReasonStop},
+		Usage:    llm.Usage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
+	}, nil
+}
+
+func (embeddedLoggingAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, io.EOF
 }
