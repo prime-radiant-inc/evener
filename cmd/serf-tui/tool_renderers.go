@@ -359,4 +359,9 @@ func init() {
 	readFileRenderer := toolRenderers["read_file"]
 	readFileRenderer.Body = fileBody
 	toolRenderers["read_file"] = readFileRenderer
+
+	// Wave 6, task 6.3: wire taskListBody into task_list renderer.
+	taskListR := toolRenderers["task_list"]
+	taskListR.Body = taskListBody
+	toolRenderers["task_list"] = taskListR
 }

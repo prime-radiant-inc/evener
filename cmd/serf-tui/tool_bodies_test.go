@@ -47,3 +47,18 @@ func TestFileBodyShowsFirstLines(t *testing.T) {
 		t.Errorf("fileBody should show truncation hint: %q", got)
 	}
 }
+
+func TestTaskListBodyRendersPerTaskRows(t *testing.T) {
+	// task_list output is JSON-shaped: array of {name, status}.
+	output := `[
+		{"name":"Understand task","status":"done"},
+		{"name":"Do the work","status":"in_progress"},
+		{"name":"Verify","status":"pending"}
+	]`
+	got := taskListBody(ToolArgs{}, output, 60)
+	for _, want := range []string{"Understand task", "Do the work", "Verify", "[✓]", "[ ]"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("taskListBody missing %q in: %q", want, got)
+		}
+	}
+}
