@@ -41,7 +41,7 @@ func renderStatusBar(info statusBarInfo) string {
 
 	// Hub address
 	if info.HubAddr != "" {
-		parts = append(parts, lipgloss.NewStyle().Foreground(th.TextGhost).Render(info.HubAddr))
+		parts = append(parts, lipgloss.NewStyle().Foreground(th.TextDim).Render(info.HubAddr))
 	}
 
 	// Provider + queued

@@ -66,7 +66,7 @@ func (p commandPalette) renderItems() string {
 			row += "  " + detail
 		}
 		if item.DisabledReason != "" {
-			row += "  " + lipgloss.NewStyle().Foreground(th.TextGhost).Render("disabled: "+item.DisabledReason)
+			row += "  " + lipgloss.NewStyle().Foreground(th.TextDim).Render("disabled: "+item.DisabledReason)
 		}
 		rows = append(rows, row)
 	}
