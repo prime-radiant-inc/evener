@@ -216,7 +216,7 @@ func TestHubModelAgentsPickerShowsCodexSourceAndLiveSubagent(t *testing.T) {
 		t.Fatalf("read refs=%v, want codex:01LIVE", readRefs)
 	}
 	got = m.View()
-	for _, want := range []string{"source: codex", "Viewing live subagent [codex]", "live codex subagent answer"} {
+	for _, want := range []string{"src codex", "Viewing live subagent [codex]", "live codex subagent answer"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("Codex transcript view missing %q:\n%s", want, got)
 		}

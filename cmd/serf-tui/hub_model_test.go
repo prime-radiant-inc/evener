@@ -939,7 +939,7 @@ func TestHubModelEnterOpensSessionDetail(t *testing.T) {
 	}
 	updated, _ = updated.(hubModel).Update(cmd())
 	got := updated.(hubModel).View()
-	for _, want := range []string{"live task", "01LIVE", "/tmp/serf"} {
+	for _, want := range []string{"live task", "src serf", "/tmp/serf"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("view missing %q:\n%s", want, got)
 		}
@@ -973,13 +973,12 @@ func TestHubModelSessionHeaderShowsCodexMetadata(t *testing.T) {
 	got := m.sessionView()
 	for _, want := range []string{
 		"codex task",
-		"source: codex-local",
-		"state: active",
-		"model: gpt-5.3-codex",
-		"project: serf",
-		"cwd: /tmp/serf",
-		"turns: 2",
-		"ctx: 73%",
+		"src codex-local",
+		"ACTIVE",
+		"model gpt-5.3-codex",
+		"dir /tmp/serf",
+		"2 turns",
+		"ctx 73%",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("session header missing %q:\n%s", want, got)
@@ -1041,12 +1040,9 @@ func TestHubModelSessionHeaderHandlesMissingMetadata(t *testing.T) {
 	got := m.sessionView()
 	for _, want := range []string{
 		"local:01MISSING",
-		"source: serf",
-		"state: unknown",
-		"model: unknown",
-		"project: unknown",
-		"cwd: unknown",
-		"turns: 0",
+		"src serf",
+		"IDLE",
+		"0 turns",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing-metadata session header missing %q:\n%s", want, got)

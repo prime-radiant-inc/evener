@@ -3956,32 +3956,56 @@ func (m hubModel) spawnView() string {
 }
 
 func (m hubModel) sessionHeaderLines() []string {
-	width := m.sessionHeaderWidth()
+	th := activeThemeV2()
 	title := firstNonEmptyString(m.detail.Title, m.detail.SessionID, m.detail.Ref, "untitled session")
-	source := firstNonEmptyString(m.detail.SourceLabel, sourceLabelFromRefText(m.detail.Ref))
 	state := strings.TrimSpace(m.detail.State)
 	if state == "" {
-		state = "unknown"
-	} else {
-		state = stateLabel(state)
+		state = "idle"
 	}
-	model := sessionHeaderModelSummary(m.detail)
-	project := firstNonEmptyString(m.detail.Project, "unknown")
-	cwd := firstNonEmptyString(m.detail.WorkingDir, "unknown")
-	ref := firstNonEmptyString(m.detail.Ref, "unknown")
 
-	meta := fmt.Sprintf("source: %s  ref: %s  state: %s  %s", source, ref, state, model)
-	location := fmt.Sprintf("project: %s  cwd: %s  turns: %d", project, cwd, m.detail.TurnCount)
+	// Line 1: section divider rule with breadcrumb + turn count
+	rule := SectionDivider(m.sessionHeaderWidth(), "SERF / SESSION", fmt.Sprintf("%d turns", m.detail.TurnCount))
+
+	// Line 2: title + state badge (truncate title if needed to fit width)
+	badge := StatusBadge(stateColor(state), state)
+	badgeW := lipgloss.Width(badge)
+	maxTitleW := m.sessionHeaderWidth() - 2 - 3 - badgeW // 2-space indent + 3-space gap
+	if maxTitleW < 4 {
+		maxTitleW = 4
+	}
+	displayTitle := title
+	if lipgloss.Width(displayTitle) > maxTitleW {
+		displayTitle = truncateSessionLine(displayTitle, maxTitleW)
+	}
+	titleLine := "  " + lipgloss.NewStyle().Bold(true).Foreground(th.Text).Render(displayTitle) + "   " + badge
+
+	// Line 3: meta strip — key/value pairs separated by ·
+	var parts []string
+	addPart := func(key, value string) {
+		if value == "" {
+			return
+		}
+		k := lipgloss.NewStyle().Foreground(th.TextDim).Render(key)
+		v := lipgloss.NewStyle().Foreground(th.Text).Render(value)
+		parts = append(parts, k+" "+v)
+	}
+	addPart("src", firstNonEmptyString(m.detail.SourceLabel, sourceLabelFromRefText(m.detail.Ref)))
+	addPart("branch", m.detail.Branch)
+	addPart("model", abbreviateModel(m.detail.Model))
+	if m.detail.WorkingDir != "" {
+		addPart("dir", abbreviatePath(m.detail.WorkingDir, 32))
+	}
 	if m.detail.ContextPressure > 0 {
-		location += fmt.Sprintf("  ctx: %.0f%%", m.detail.ContextPressure*100)
+		addPart("ctx", fmt.Sprintf("%.0f%%", m.detail.ContextPressure*100))
+	}
+	sep := lipgloss.NewStyle().Foreground(th.RuleSoft).Render(" · ")
+	meta := "  " + strings.Join(parts, sep)
+	// Truncate meta line to header width to prevent overflow
+	if lipgloss.Width(meta) > m.sessionHeaderWidth() {
+		meta = truncateSessionLine(meta, m.sessionHeaderWidth())
 	}
 
-	return []string{
-		truncateSessionLine(title, width),
-		truncateSessionLine(meta, width),
-		truncateSessionLine(location, width),
-		truncateSessionLine(m.sessionStatusLine(), width),
-	}
+	return []string{rule, titleLine, meta}
 }
 
 func sessionHeaderModelSummary(detail hubSessionDetail) string {
@@ -4092,6 +4116,11 @@ func (m hubModel) sessionView() string {
 	var b strings.Builder
 	for _, line := range m.sessionHeaderLines() {
 		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	// Status line (connection, auth, capability, busy, error) rendered below header.
+	if statusLine := m.sessionStatusLine(); statusLine != "" {
+		b.WriteString(statusLine)
 		b.WriteString("\n")
 	}
 	if m.err != nil {

@@ -258,7 +258,7 @@ func TestTUITmuxE2E_ProjectHistoryReadOnlyAndResume(t *testing.T) {
 	}
 
 	app.SendKeys("Down", "Down", "Enter", "Down", "Enter")
-	screen = app.WaitFor("ended maintenance", "local:01PAST", "enter: send")
+	screen = app.WaitFor("ended maintenance", "src serf", "enter: send")
 	if strings.Contains(screen, "read-only") || strings.Contains(screen, "source does not support send") {
 		t.Fatalf("ended resumable session should not render read-only:\n%s", screen)
 	}

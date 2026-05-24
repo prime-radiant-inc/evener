@@ -1,0 +1,55 @@
+package main
+
+import "strings"
+
+// abbreviateModel strips provider prefixes and trailing date suffixes from
+// model IDs, e.g. "anthropic/claude-haiku-4-5-20250115" → "claude-haiku-4-5".
+func abbreviateModel(id string) string {
+	if id == "" {
+		return ""
+	}
+	// Strip known provider prefixes
+	for _, prefix := range []string{"anthropic/", "openai/", "google/", "openrouter/", "openai-compatible/"} {
+		if strings.HasPrefix(id, prefix) {
+			id = id[len(prefix):]
+			break
+		}
+	}
+	// Strip trailing -YYYYMMDD date suffix
+	if len(id) >= 9 && id[len(id)-9] == '-' {
+		tail := id[len(id)-8:]
+		allDigits := true
+		for _, r := range tail {
+			if r < '0' || r > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			id = id[:len(id)-9]
+		}
+	}
+	return id
+}
+
+// abbreviatePath shortens a filesystem path to at most max characters,
+// replacing $HOME prefix with ~ and middle-truncating if needed.
+func abbreviatePath(p string, max int) string {
+	if len(p) <= max {
+		return p
+	}
+	// Replace /home/<user> prefix with ~
+	if strings.HasPrefix(p, "/home/") {
+		if i := strings.IndexByte(p[len("/home/"):], '/'); i >= 0 {
+			p = "~" + p[len("/home/")+i:]
+		}
+	}
+	if len(p) <= max {
+		return p
+	}
+	// Middle-truncate
+	keep := max - 1
+	head := keep / 2
+	tail := keep - head
+	return p[:head] + "…" + p[len(p)-tail:]
+}
