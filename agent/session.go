@@ -2648,10 +2648,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// Log API call to transcript (both success and error paths).
 		if s.transcript != nil {
 			apiCall := TranscriptAPICall{
-				Round:        round,
-				Timestamp:    roundStart.UTC().Format(time.RFC3339),
-				LatencyMs:    timings.LLMCall.Milliseconds(),
-				SystemPrompt: sys,
+				Round:               round,
+				Timestamp:           roundStart.UTC().Format(time.RFC3339),
+				LatencyMs:           timings.LLMCall.Milliseconds(),
+				SystemPrompt:        sys,
+				ContextHistoryTurns: len(history),
+				SystemPromptBytes:   len(sys),
 				Request: llm.APILogRequest{
 					Model:        req.Model,
 					Provider:     req.Provider,
