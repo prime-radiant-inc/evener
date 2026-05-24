@@ -22,6 +22,34 @@ func TestFocusedStateBarReturnsDoubleGlyph(t *testing.T) {
 	}
 }
 
+func TestSectionDividerEmitsLeftRight(t *testing.T) {
+	out := SectionDivider(60, "SERF / SESSION", "12 turns")
+	if !strings.Contains(out, "SERF / SESSION") {
+		t.Errorf("SectionDivider missing left label: %q", out)
+	}
+	if !strings.Contains(out, "12 turns") {
+		t.Errorf("SectionDivider missing right label: %q", out)
+	}
+}
+
+func TestSectionDividerUsesRuleGlyphs(t *testing.T) {
+	out := SectionDivider(60, "X", "Y")
+	if !strings.Contains(out, "─") {
+		t.Errorf("SectionDivider missing fill glyph ─: %q", out)
+	}
+	if !strings.Contains(out, "┄") {
+		t.Errorf("SectionDivider missing trailing ┄ glyph: %q", out)
+	}
+}
+
+func TestSectionDividerTruncatesAtNarrowWidth(t *testing.T) {
+	out := SectionDivider(20, "VERY LONG LEFT", "VERY LONG RIGHT")
+	visible := lipgloss.Width(out)
+	if visible > 25 {
+		t.Errorf("SectionDivider too wide at narrow width; got width %d", visible)
+	}
+}
+
 func TestStatusBadgeContainsLabelAndDot(t *testing.T) {
 	out := StatusBadge(lipgloss.Color("#f7768e"), "AWAITING")
 	if !strings.Contains(out, "●") {

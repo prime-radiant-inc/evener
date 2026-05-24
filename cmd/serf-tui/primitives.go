@@ -47,7 +47,12 @@ func SectionDivider(width int, left, right string) string {
 	suffixW := lipgloss.Width(suffix)
 	fill := width - prefixW - suffixW - 2
 	if fill < 1 {
-		return prefix + " " + suffix
+		// Narrow: drop the fill mid-section and truncate prefix if needed.
+		combined := prefix + " " + suffix
+		if lipgloss.Width(combined) > width {
+			return truncateText(combined, width)
+		}
+		return combined
 	}
 	mid := lipgloss.NewStyle().Foreground(th.RuleSoft).Render(strings.Repeat("─", fill))
 	return prefix + " " + mid + " " + suffix
