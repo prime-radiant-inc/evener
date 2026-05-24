@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type composerPanel struct {
@@ -206,7 +207,7 @@ func (p composerPanel) View() string {
 		b.WriteString("\n")
 	}
 	if p.ShowInput {
-		b.WriteString(renderComposerDraft(p.Draft, p.MaxDraftLines))
+		b.WriteString(renderComposerDraft(p.Draft, p.Width, p.MaxDraftLines))
 	}
 	if len(p.Attachments) > 0 {
 		b.WriteString(renderAttachmentChips(p.Attachments))
@@ -324,34 +325,64 @@ func itoa(n int) string {
 	return string(buf[i:])
 }
 
-func renderComposerDraft(draft string, maxLines ...int) string {
-	var b strings.Builder
-	lines := strings.Split(draft, "\n")
-	if len(lines) == 0 {
-		lines = []string{""}
+// renderComposerDraft renders the user's in-progress message. Long logical
+// lines are soft-wrapped to the available column width so the composer
+// reflects what will actually be sent and grows as the user types. The cursor
+// glyph (█) is placed at the end of the last visual row.
+//
+// width is the total column budget for the composer (including the 2-column
+// "> " / "  " prefix). maxLines caps the number of visual rows; when the
+// content exceeds the cap, an ellipsis row is shown at the top and the most
+// recent rows are kept at the bottom. width <= 2 disables soft-wrap (used by
+// tests that don't care about wrap geometry).
+func renderComposerDraft(draft string, width, maxLines int) string {
+	// Reserve the 2-column gutter ("> " on the first row, "  " on the rest).
+	inner := width - 2
+	logical := strings.Split(draft, "\n")
+	if len(logical) == 0 {
+		logical = []string{""}
 	}
-	limit := 0
-	if len(maxLines) > 0 {
-		limit = maxLines[0]
-	}
-	if limit > 0 && len(lines) > limit {
-		if limit == 1 {
-			lines = []string{"..."}
+
+	var rows []string
+	for _, line := range logical {
+		if inner > 0 && uniWidth(line) > inner {
+			wrapped := ansi.Hardwrap(ansi.Wordwrap(line, inner, ""), inner, true)
+			rows = append(rows, strings.Split(wrapped, "\n")...)
 		} else {
-			lines = append([]string{"..."}, lines[len(lines)-(limit-1):]...)
+			rows = append(rows, line)
 		}
 	}
-	for i, line := range lines {
+	if len(rows) == 0 {
+		rows = []string{""}
+	}
+
+	if maxLines > 0 && len(rows) > maxLines {
+		if maxLines == 1 {
+			rows = []string{"..."}
+		} else {
+			rows = append([]string{"..."}, rows[len(rows)-(maxLines-1):]...)
+		}
+	}
+
+	var b strings.Builder
+	for i, text := range rows {
 		if i == 0 {
 			b.WriteString("> ")
 		} else {
 			b.WriteString("  ")
 		}
-		if i == len(lines)-1 {
-			line += "█"
+		if i == len(rows)-1 {
+			text += "█"
 		}
-		b.WriteString(line)
+		b.WriteString(text)
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// uniWidth measures a string's display width. We rely on ansi's Wordwrap/
+// Hardwrap which already account for grapheme clusters internally; the only
+// reason to measure here is to skip the wrap call for short lines.
+func uniWidth(s string) int {
+	return ansi.StringWidth(s)
 }

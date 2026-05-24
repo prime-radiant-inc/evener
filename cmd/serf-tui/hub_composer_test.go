@@ -667,7 +667,7 @@ func TestHubModelSessionComposerBoundsRenderedDraftHeight(t *testing.T) {
 	m.session.setInputValue("one\ntwo\nthree\nfour\nfive\nsix\nseven")
 
 	got := m.sessionComposerPanel().View()
-	renderedDraft := renderComposerDraft(m.session.input.Value(), m.session.input.MaxHeight)
+	renderedDraft := renderComposerDraft(m.session.input.Value(), 0, m.session.input.MaxHeight)
 	if gotLines := strings.Count(renderedDraft, "\n"); gotLines > m.session.input.MaxHeight {
 		t.Fatalf("rendered draft lines=%d, want at most %d:\n%s", gotLines, m.session.input.MaxHeight, renderedDraft)
 	}
@@ -682,9 +682,32 @@ func TestHubModelSessionComposerBoundsRenderedDraftHeight(t *testing.T) {
 }
 
 func TestHubModelSessionComposerShowsStaticCursorWhenEmpty(t *testing.T) {
-	got := renderComposerDraft("")
+	got := renderComposerDraft("", 0, 0)
 	if !strings.Contains(got, "> █") {
 		t.Fatalf("empty composer should show a visible cursor:\n%q", got)
+	}
+}
+
+// TestRenderComposerDraftSoftWrapsLongLines ensures a long logical line wraps
+// to multiple visual rows when a column width is supplied. Without wrap the
+// composer would run off the right edge and never grow as the user types.
+func TestRenderComposerDraftSoftWrapsLongLines(t *testing.T) {
+	long := strings.Repeat("word ", 30) // 150 chars, no newlines
+	got := renderComposerDraft(long, 30, 0)
+	lines := strings.Split(strings.TrimRight(got, "\n"), "\n")
+	if len(lines) < 4 {
+		t.Fatalf("expected long line to wrap to multiple rows, got %d row(s):\n%s", len(lines), got)
+	}
+	if !strings.HasPrefix(lines[0], "> ") {
+		t.Fatalf("first row should start with \"> \": %q", lines[0])
+	}
+	for i, line := range lines[1:] {
+		if !strings.HasPrefix(line, "  ") {
+			t.Fatalf("continuation row %d should start with \"  \": %q", i+1, line)
+		}
+	}
+	if !strings.HasSuffix(lines[len(lines)-1], "█") {
+		t.Fatalf("cursor block should land on the last visual row: %q", lines[len(lines)-1])
 	}
 }
 
