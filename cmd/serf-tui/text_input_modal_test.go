@@ -1,10 +1,24 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+func TestTextInputModalUsesOverlay(t *testing.T) {
+	withTestColorProfile(t)
+	m := newTextInputModalWithTitle("Set OpenAI API key", "Paste the key:", "")
+	got := m.View()
+	plain := ansiPattern.ReplaceAllString(got, "")
+	if !strings.Contains(plain, "╭") {
+		t.Errorf("text input modal should use Overlay primitive: %q", plain)
+	}
+	if !strings.Contains(plain, "Set OpenAI API key") {
+		t.Errorf("text input modal should show title: %q", plain)
+	}
+}
 
 func TestTextInputModal_CapturesAndSubmits(t *testing.T) {
 	m := newTextInputModal("API key for anthropic", "")

@@ -16,15 +16,21 @@ type textInputResultMsg struct {
 
 type textInputModal struct {
 	tag    string
+	title  string
 	prompt string
 	input  string
 	mask   bool
 	paths  bool
 	done   bool
+	width  int
 }
 
 func newTextInputModal(prompt, tag string) textInputModal {
 	return textInputModal{prompt: prompt, tag: tag}
+}
+
+func newTextInputModalWithTitle(title, prompt, tag string) textInputModal {
+	return textInputModal{title: title, prompt: prompt, tag: tag, width: 60}
 }
 
 func newTextInputModalWithInput(prompt, tag, input string) textInputModal {
@@ -66,7 +72,7 @@ func (m textInputModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m textInputModal) View() string {
+func (m textInputModal) inputView() string {
 	display := m.input
 	if m.mask {
 		display = ""
@@ -74,11 +80,29 @@ func (m textInputModal) View() string {
 			display += "•"
 		}
 	}
+	return "> " + display + "_"
+}
+
+func (m textInputModal) View() string {
+	if m.title != "" {
+		body := m.prompt + "\n\n" + m.inputView()
+		width := m.width
+		if width <= 0 {
+			width = 60
+		}
+		hints := []string{KbdHint("enter", "confirm"), KbdHint("esc", "cancel")}
+		if m.paths {
+			hints = append([]string{KbdHint("tab", "complete path")}, hints...)
+		}
+		footer := actionBarForWidth(width, hints...)
+		return Overlay(OverlayOpts{Title: m.title, Width: width, Body: body, Footer: footer})
+	}
+	// Legacy plain view (no title set).
 	help := "[Enter] confirm  [Esc] cancel"
 	if m.paths {
 		help = "[Tab] complete path  " + help
 	}
-	return m.prompt + "\n" + "> " + display + "_\n" + help
+	return m.prompt + "\n" + m.inputView() + "\n" + help
 }
 
 func completeLastPathSegment(input string) string {
