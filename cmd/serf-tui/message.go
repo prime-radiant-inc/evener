@@ -53,6 +53,9 @@ func renderMarkdown(text string, width int) string {
 	return strings.TrimSpace(rendered)
 }
 
+// markdownRendererCached returns the current renderer cache; nil means
+// the cache is empty. For testing only — exposed to verify that
+// setThemeV2 invalidates the renderer cache.
 func markdownRendererCached() *glamour.TermRenderer {
 	return markdownRenderer
 }

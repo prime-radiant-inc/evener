@@ -75,10 +75,7 @@ func TestSetThemeCallsMarkdownInvalidator(t *testing.T) {
 }
 
 func TestLegacySetThemeAlsoUpdatesV2(t *testing.T) {
-	t.Cleanup(func() {
-		setTheme("dark")
-		setThemeV2("dark")
-	})
+	t.Cleanup(func() { setTheme("dark") })
 	setTheme("light")
 	if activeThemeV2().Name != "light" {
 		t.Errorf("legacy setTheme(light) did not update v2 active theme")
@@ -120,6 +117,11 @@ func TestNoTokenIsEmpty(t *testing.T) {
 			"StateEnded":       th.StateEnded,
 			"StateSubagent":    th.StateSubagent,
 			"BtnPrimaryText":   th.BtnPrimaryText,
+			"StateAwaitingTint":   th.StateAwaitingTint,
+			"StateProcessingTint": th.StateProcessingTint,
+			"StateWarningTint":    th.StateWarningTint,
+			"StateIdleTint":       th.StateIdleTint,
+			"AccentTint":          th.AccentTint,
 		}
 		for field, c := range fields {
 			if string(c) == "" {

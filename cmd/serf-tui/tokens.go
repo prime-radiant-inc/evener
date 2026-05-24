@@ -2,6 +2,10 @@ package main
 
 import "github.com/charmbracelet/lipgloss"
 
+// TODO(wave-3): rename V2 symbols (activeThemeNameV2, activeThemeV2,
+// setThemeV2, darkThemeV2, lightThemeV2) to drop the suffix once the
+// legacy colorTheme + setTheme path in styles.go is fully retired.
+
 type Theme struct {
 	Name string
 
@@ -37,11 +41,16 @@ func Themes() map[string]Theme {
 
 var activeThemeNameV2 = "dark"
 
+// markdownInvalidationCount is a test hook counting invalidator calls.
+// For testing only — not part of the API surface.
 var markdownInvalidationCount int
 
 // markdownInvalidator is wired by message.go init; placeholder counts calls.
 var markdownInvalidator = func() { markdownInvalidationCount++ }
 
+// activeThemeV2 returns the currently selected v2 Theme. Consumers are
+// added in wave 2 (primitives.go); during wave 1 this is wired up but
+// not yet read from production code, which is intentional.
 func activeThemeV2() Theme {
 	if th, ok := themeRegistry[activeThemeNameV2]; ok {
 		return th
