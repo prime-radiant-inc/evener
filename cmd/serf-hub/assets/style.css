@@ -1996,17 +1996,18 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 
   /* Phone density — design language §1.5 §4. ≤767px defaults to compact:
      11px body text, 10px tool-call/monospace text, snug leading.
-     Comfortable density is the opt-in; compact is the default on phone. */
-  body { font-size: var(--text-xs); line-height: var(--leading-snug); }
+     Comfortable density is the opt-in via body[data-phone-density="comfortable"];
+     compact is the default (no attribute, or explicit "compact"). */
+  body:not([data-phone-density="comfortable"]) { font-size: var(--text-xs); line-height: var(--leading-snug); }
   /* Conversation elements override desktop font-size so they must be
      explicitly reduced here to inherit the compact phone density. */
-  .conversation { font-size: inherit; }
-  .assistant-message,
-  .user-message .pill { font-size: var(--text-sm); }
-  .tool-call,
-  .msg.tool,
-  .tool-body,
-  .diff-body { font-size: var(--text-2xs); }
+  body:not([data-phone-density="comfortable"]) .conversation { font-size: inherit; }
+  body:not([data-phone-density="comfortable"]) .assistant-message,
+  body:not([data-phone-density="comfortable"]) .user-message .pill { font-size: var(--text-sm); }
+  body:not([data-phone-density="comfortable"]) .tool-call,
+  body:not([data-phone-density="comfortable"]) .msg.tool,
+  body:not([data-phone-density="comfortable"]) .tool-body,
+  body:not([data-phone-density="comfortable"]) .diff-body { font-size: var(--text-2xs); }
 }
 
 /* Project settings pane (per-project settings, opened from sidebar gear).
@@ -2422,7 +2423,14 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   font-size: var(--text-xs);
   text-align: center;
 }
-body.has-connection-banner { padding-top: 32px; }
+/* When the connection banner is visible the fixed-height shell containers
+   must shrink so the bottom 32 px is not clipped behind the banner. The
+   banner itself is position:fixed, so only height adjustments are needed —
+   no padding-top shift on body is required. body.app and body.has-connection-banner
+   are the same element, hence the standalone selector. */
+body.app.has-connection-banner,
+body.has-connection-banner #sidebar,
+body.has-connection-banner #workspace { height: calc(100vh - 32px); }
 
 /* Pass 8 — Skeleton loading */
 .skeleton {

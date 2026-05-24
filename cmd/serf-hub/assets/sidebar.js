@@ -349,4 +349,10 @@
       }
     }
   });
+
+  // Expose close so other modules (e.g. search) can fully close the mobile
+  // sidebar drawer — deactivating its focus trap — before opening their own
+  // overlay. Using the internal setSidebarOpen(false) ensures the trap is
+  // properly torn down and the click-outside listener is removed.
+  window.SerfSidebar = { close: function () { setSidebarOpen(false); } };
 })();

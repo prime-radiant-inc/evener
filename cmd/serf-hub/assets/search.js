@@ -112,6 +112,12 @@
   }
 
   function open() {
+    // Close the mobile sidebar drawer first — it activates a focus trap and
+    // inerts #search-dialog on phone. Call the global helper so the trap is
+    // properly deactivated and the click-outside listener is cleaned up.
+    if (window.SerfSidebar) {
+      window.SerfSidebar.close();
+    }
     // Deactivate any active panel focus traps so the search dialog is not
     // rendered inert behind them. Panels re-trap when they regain focus on
     // close; search dialog is a native <dialog> so no trap needed here.

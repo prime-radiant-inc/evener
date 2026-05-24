@@ -3,41 +3,41 @@
 <p class="settings-help">All notifications default off. Saved per-browser.</p>
 <dl class="settings-table" data-notif-form>
   <div class="row editable">
-    <dt>Title bar count</dt>
+    <dt id="lbl-notif-title">Title bar count</dt>
     <dd>
       <label class="val-toggle">
-        <input type="checkbox" data-notif="title">
-        <span class="state">OFF</span>
+        <input type="checkbox" data-notif="title" aria-labelledby="lbl-notif-title">
+        <span class="state" aria-hidden="true">OFF</span>
       </label>
     </dd>
     <p class="help">Show the count of awaiting sessions in the browser tab title.</p>
   </div>
   <div class="row editable">
-    <dt>Favicon dot</dt>
+    <dt id="lbl-notif-favicon">Favicon dot</dt>
     <dd>
       <label class="val-toggle">
-        <input type="checkbox" data-notif="favicon">
-        <span class="state">OFF</span>
+        <input type="checkbox" data-notif="favicon" aria-labelledby="lbl-notif-favicon">
+        <span class="state" aria-hidden="true">OFF</span>
       </label>
     </dd>
     <p class="help">Tint the favicon with the highest-attention session state.</p>
   </div>
   <div class="row editable">
-    <dt>OS notification</dt>
+    <dt id="lbl-notif-os">OS notification</dt>
     <dd>
       <label class="val-toggle">
-        <input type="checkbox" data-notif="os">
-        <span class="state">OFF</span>
+        <input type="checkbox" data-notif="os" aria-labelledby="lbl-notif-os">
+        <span class="state" aria-hidden="true">OFF</span>
       </label>
     </dd>
     <p class="help">Native notification on idle → awaiting and processing → errored.</p>
   </div>
   <div class="row editable">
-    <dt>Sound</dt>
+    <dt id="lbl-notif-sound">Sound</dt>
     <dd>
       <label class="val-toggle">
-        <input type="checkbox" data-notif="sound">
-        <span class="state">OFF</span>
+        <input type="checkbox" data-notif="sound" aria-labelledby="lbl-notif-sound">
+        <span class="state" aria-hidden="true">OFF</span>
       </label>
     </dd>
     <p class="help">Short tone on the same transitions.</p>

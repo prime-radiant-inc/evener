@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 const compactThreshold = 0.90 // must match agent/context_manager.go SummarizeThreshold
@@ -83,9 +84,10 @@ func renderStatusBar(info statusBarInfo) string {
 	}
 	// Enforce width on all paths — hub sessions pass no Version but can
 	// still produce a left side wider than the terminal if the URL or
-	// provider string is long.
+	// provider string is long. Use ANSI-aware truncation to avoid slicing
+	// mid-escape-sequence inside the styled spans that make up left.
 	if info.Width > 0 && lipgloss.Width(left) > info.Width {
-		return truncateText(left, info.Width)
+		return ansi.Truncate(left, info.Width, "...")
 	}
 	return left
 }
