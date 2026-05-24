@@ -775,72 +775,326 @@ func TestHubModelBrowseSelectionHighlightsSelectedMessage(t *testing.T) {
 	m.browseSelected = 0
 
 	got := m.sessionView()
-	// Focused user message gets double-bar (┃┃) in new wave 4 format.
-	if !strings.Contains(got, "┃┃") {
-		t.Fatalf("selected user message not highlighted:\n%s", got)
+	if strings.Contains(got, "┃┃") {
+		t.Fatalf("selected user message should not render a double chip/bar:\n%s", got)
+	}
+	plain := ansiPattern.ReplaceAllString(got, "")
+	if !strings.Contains(plain, "▶") || !strings.Contains(plain, "first request") {
+		t.Fatalf("selected user message should have a visible non-double selection affordance:\n%s", plain)
 	}
 	if strings.Contains(got, "▶ first response") {
 		t.Fatalf("unselected assistant message was highlighted:\n%s", got)
 	}
 }
 
-func TestHubModelBrowsePageKeysMoveSelection(t *testing.T) {
+func TestHubModelBrowsePageKeysScrollDisplayedLines(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.width = 100
+	m.height = 12
 	m.session.width = 100
-	m.session.viewport.Height = 3
-	for i := 1; i <= 8; i++ {
+	m.session.height = 12
+	for i := 1; i <= 16; i++ {
 		m.session.messages = append(m.session.messages, chatMessage{Kind: msgUser, Text: fmt.Sprintf("request %d", i), TurnIndex: i})
 	}
+	m.session.refreshViewport()
+	m.sessionView() // populate transcript viewport in compose mode before entering browse
 	m.enterSessionBrowse(false)
-	if m.browseSelected != 7 {
+	m.sessionView() // sizes and fills the hub session viewport
+	bottom := m.session.viewport.YOffset
+	if bottom == 0 {
+		t.Fatal("test setup expected scrollable transcript at bottom")
+	}
+	if m.browseSelected != 15 {
 		t.Fatalf("initial browse selection=%d, want last message", m.browseSelected)
 	}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
 	got := updated.(hubModel)
-	if got.browseSelected != 4 {
-		t.Fatalf("pgup selection=%d, want 4", got.browseSelected)
+	if got.session.viewport.YOffset >= bottom {
+		t.Fatalf("pgup should scroll viewport upward, offset=%d bottom=%d", got.session.viewport.YOffset, bottom)
+	}
+	if got.browseSelected != 15 {
+		t.Fatalf("pgup should not move selected entry, selection=%d want 15", got.browseSelected)
 	}
 
 	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 	got = updated.(hubModel)
-	if got.browseSelected != 7 {
-		t.Fatalf("pgdown selection=%d, want 7", got.browseSelected)
+	if got.session.viewport.YOffset != bottom {
+		t.Fatalf("pgdown should scroll viewport back down, offset=%d want %d", got.session.viewport.YOffset, bottom)
 	}
 }
 
-func TestHubModelBrowseLineKeysMoveSelection(t *testing.T) {
+func TestHubModelSessionBrowsePageUpShowsEarlierTranscript(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.session.messages = []chatMessage{
-		{Kind: msgUser, Text: "first", TurnIndex: 1},
-		{Kind: msgAssistant, Text: "middle"},
-		{Kind: msgUser, Text: "last", TurnIndex: 2},
+	m.width = 100
+	m.height = 12
+	m.session.width = 100
+	m.session.height = 12
+	for i := 1; i <= 12; i++ {
+		m.session.messages = append(m.session.messages, chatMessage{Kind: msgUser, Text: fmt.Sprintf("request %02d", i), TurnIndex: i})
 	}
+	m.session.refreshViewport()
+	initial := ansiPattern.ReplaceAllString(m.sessionView(), "")
+	if lines := renderedLineCount(initial); lines > m.height {
+		t.Fatalf("session view should fit terminal height before browsing: lines=%d height=%d\n%s", lines, m.height, initial)
+	}
+	if strings.Contains(initial, "request 01") || !strings.Contains(initial, "request 12") {
+		t.Fatalf("initial session view should show latest transcript content only:\n%s", initial)
+	}
+
 	m.enterSessionBrowse(false)
-	if m.browseSelected != 2 {
-		t.Fatalf("initial browse selection=%d, want last message", m.browseSelected)
+	m.sessionView() // resize for browse-mode composer/footer before paging
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	for i := 0; i < 1; i++ {
+		updated, _ = updated.(hubModel).Update(tea.KeyMsg{Type: tea.KeyPgUp})
 	}
+	got := updated.(hubModel)
+	view := ansiPattern.ReplaceAllString(got.sessionView(), "")
+	if lines := renderedLineCount(view); lines > got.height {
+		t.Fatalf("session view should fit terminal height while browsing: lines=%d height=%d\n%s", lines, got.height, view)
+	}
+	if !strings.Contains(view, "request 08") {
+		t.Fatalf("page up in browse mode should reveal older transcript content:\n%s", view)
+	}
+	if strings.Contains(view, "...") {
+		t.Fatalf("browse mode should render viewport content, not fixed ellipsis truncation:\n%s", view)
+	}
+}
+
+func TestHubModelBrowseArrowKeysStayWithComposer(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.width = 100
+	m.height = 12
+	m.session.width = 100
+	m.session.height = 12
+	m.session.messages = []chatMessage{{Kind: msgUser, Text: "request", TurnIndex: 1}}
+	m.session.setInputValue("abcd")
+	m.session.refreshViewport()
+	m.enterSessionBrowse(false)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	got := updated.(hubModel)
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("X")})
+	got = updated.(hubModel)
+	if got.session.input.Value() != "abcXd" {
+		t.Fatalf("left arrow while browsing should move composer cursor, draft=%q", got.session.input.Value())
+	}
+
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyRight})
+	got = updated.(hubModel)
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Y")})
+	got = updated.(hubModel)
+	if got.session.input.Value() != "abcXdY" {
+		t.Fatalf("right arrow while browsing should move composer cursor, draft=%q", got.session.input.Value())
+	}
+	if !got.session.scrollMode {
+		t.Fatal("cursor movement while browsing should keep transcript browse active")
+	}
+}
+
+func TestHubModelEscBrowseArrowKeysScrollTranscriptWhenComposerEmpty(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.width = 100
+	m.height = 12
+	m.session.width = 100
+	m.session.height = 12
+	for i := 1; i <= 12; i++ {
+		m.session.messages = append(m.session.messages, chatMessage{Kind: msgUser, Text: fmt.Sprintf("request %02d", i), TurnIndex: i})
+	}
+	m.session.refreshViewport()
+	m.sessionView() // populate transcript viewport at bottom before Escape enters browse
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	got := updated.(hubModel)
+	if !got.session.scrollMode {
+		t.Fatal("escape should enter transcript browse")
+	}
+	got.sessionView() // resize and fill browse viewport
+	bottom := got.session.viewport.YOffset
+	if bottom == 0 {
+		t.Fatal("test setup expected scrollable transcript at bottom")
+	}
+
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyUp})
+	got = updated.(hubModel)
+	if got.session.viewport.YOffset != bottom-1 {
+		t.Fatalf("up arrow after escape should scroll transcript one line, offset=%d want %d", got.session.viewport.YOffset, bottom-1)
+	}
+	if got.session.input.Value() != "" {
+		t.Fatalf("up arrow transcript scroll should not edit empty composer, got %q", got.session.input.Value())
+	}
+
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyDown})
+	got = updated.(hubModel)
+	if got.session.viewport.YOffset != bottom {
+		t.Fatalf("down arrow after escape should scroll transcript one line down, offset=%d want %d", got.session.viewport.YOffset, bottom)
+	}
+}
+
+func TestHubModelBrowseUpDownUseComposerHistory(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.session.messages = []chatMessage{{Kind: msgUser, Text: "request", TurnIndex: 1}}
+	m.session.history = []string{"first request", "second request"}
+	m.session.setInputValue("")
+	m.enterSessionBrowse(false)
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyUp})
 	got := updated.(hubModel)
-	if got.browseSelected != 1 {
-		t.Fatalf("up selection=%d, want 1", got.browseSelected)
+	if got.session.input.Value() != "second request" {
+		t.Fatalf("up arrow while browsing should navigate composer history, got %q", got.session.input.Value())
 	}
-	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
-	got = updated.(hubModel)
-	if got.browseSelected != 0 {
-		t.Fatalf("k selection=%d, want 0", got.browseSelected)
-	}
+
 	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyDown})
 	got = updated.(hubModel)
-	if got.browseSelected != 1 {
-		t.Fatalf("down selection=%d, want 1", got.browseSelected)
+	if got.session.input.Value() != "" {
+		t.Fatalf("down arrow while browsing should restore composer draft, got %q", got.session.input.Value())
 	}
-	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+}
+
+func TestHubModelBrowseMouseWheelScrollsViewport(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.width = 100
+	m.height = 12
+	m.session.width = 100
+	m.session.height = 12
+	for i := 1; i <= 12; i++ {
+		m.session.messages = append(m.session.messages, chatMessage{Kind: msgUser, Text: fmt.Sprintf("request %02d", i), TurnIndex: i})
+	}
+	m.session.refreshViewport()
+	m.enterSessionBrowse(false)
+	m.sessionView() // sizes and fills the hub session viewport
+	bottom := m.session.viewport.YOffset
+	if bottom == 0 {
+		t.Fatal("test setup expected scrollable transcript at bottom")
+	}
+
+	updated, _ := m.Update(tea.MouseMsg{Type: tea.MouseWheelUp, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	got := updated.(hubModel)
+	if got.session.viewport.YOffset >= bottom {
+		t.Fatalf("wheel up should scroll viewport upward, offset=%d bottom=%d", got.session.viewport.YOffset, bottom)
+	}
+
+	updated, _ = got.Update(tea.MouseMsg{Type: tea.MouseWheelDown, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
 	got = updated.(hubModel)
-	if got.browseSelected != 2 {
-		t.Fatalf("j selection=%d, want 2", got.browseSelected)
+	if got.session.viewport.YOffset <= bottom-1 {
+		t.Fatalf("wheel down should scroll viewport downward, offset=%d previous upper bound=%d", got.session.viewport.YOffset, bottom-1)
+	}
+}
+
+func TestHubModelMouseWheelFromComposeEntersBrowseAndScrolls(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.width = 100
+	m.height = 12
+	m.session.width = 100
+	m.session.height = 12
+	for i := 1; i <= 12; i++ {
+		m.session.messages = append(m.session.messages, chatMessage{Kind: msgUser, Text: fmt.Sprintf("request %02d", i), TurnIndex: i})
+	}
+	m.session.refreshViewport()
+	m.sessionView() // sizes and fills the hub session viewport at the bottom
+	bottom := m.session.viewport.YOffset
+	if bottom == 0 {
+		t.Fatal("test setup expected scrollable transcript at bottom")
+	}
+	if m.session.scrollMode {
+		t.Fatal("test setup should start in compose mode")
+	}
+
+	updated, _ := m.Update(tea.MouseMsg{Type: tea.MouseWheelUp, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	got := updated.(hubModel)
+	if !got.session.scrollMode {
+		t.Fatal("wheel up from compose should enter transcript browse")
+	}
+	if got.session.viewport.YOffset >= bottom {
+		t.Fatalf("wheel up from compose should scroll transcript upward, offset=%d bottom=%d", got.session.viewport.YOffset, bottom)
+	}
+}
+
+func TestHubModelBrowseKeepsComposerVisibleAndTyping(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.width = 100
+	m.height = 12
+	m.session.width = 100
+	m.session.height = 12
+	m.session.messages = []chatMessage{{Kind: msgUser, Text: "request", TurnIndex: 1}}
+	m.enterSessionBrowse(false)
+
+	if view := ansiPattern.ReplaceAllString(m.sessionView(), ""); !strings.Contains(view, "> █") {
+		t.Fatalf("browse mode should keep empty composer visible:\n%s", view)
+	}
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("draft")})
+	got := updated.(hubModel)
+	if !got.session.scrollMode {
+		t.Fatal("typing while viewing history should not leave transcript browse")
+	}
+	if got.session.input.Value() != "draft" {
+		t.Fatalf("typing while viewing history should update composer, got %q", got.session.input.Value())
+	}
+	if view := ansiPattern.ReplaceAllString(got.sessionView(), ""); !strings.Contains(view, "> draft█") {
+		t.Fatalf("typed draft should remain visible in composer while browsing:\n%s", view)
+	}
+}
+
+func TestHubModelBrowseCtrlTTogglesAllToolEntries(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.width = 100
+	m.session.width = 100
+	m.session.messages = []chatMessage{
+		{Kind: msgAssistant, Text: "before tool"},
+		{
+			Kind: msgTool,
+			Tool: &toolCallInfo{
+				Name:        "shell",
+				Description: "run test",
+				Output:      "expanded output",
+				Done:        true,
+				Expanded:    false,
+			},
+		},
+		{Kind: msgAssistant, Text: "between tools"},
+		{
+			Kind: msgTool,
+			Tool: &toolCallInfo{
+				Name:        "read_file",
+				Description: "inspect file",
+				Output:      "second expanded output",
+				Done:        true,
+				Expanded:    false,
+			},
+		},
+	}
+	m.session.scrollMode = true
+	m.browseSelected = 1
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	got := updated.(hubModel)
+	if got.session.messages[1].Tool.Expanded {
+		t.Fatalf("right arrow should not expand selected entry: %+v", got.session.messages[1].Tool)
+	}
+
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyTab})
+	got = updated.(hubModel)
+	if got.session.messages[1].Tool.Expanded || got.session.messages[3].Tool.Expanded {
+		t.Fatalf("tab should not expand tool entries; first=%+v second=%+v", got.session.messages[1].Tool, got.session.messages[3].Tool)
+	}
+
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	got = updated.(hubModel)
+	if !got.session.messages[1].Tool.Expanded || !got.session.messages[3].Tool.Expanded {
+		t.Fatalf("ctrl+t should expand all tool entries; first=%+v second=%+v", got.session.messages[1].Tool, got.session.messages[3].Tool)
+	}
+
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	got = updated.(hubModel)
+	if !got.session.messages[1].Tool.Expanded || !got.session.messages[3].Tool.Expanded {
+		t.Fatalf("left arrow should not collapse tool entries; first=%+v second=%+v", got.session.messages[1].Tool, got.session.messages[3].Tool)
+	}
+
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	got = updated.(hubModel)
+	if got.session.messages[1].Tool.Expanded || got.session.messages[3].Tool.Expanded {
+		t.Fatalf("ctrl+t should collapse all tool entries; first=%+v second=%+v", got.session.messages[1].Tool, got.session.messages[3].Tool)
 	}
 }
 

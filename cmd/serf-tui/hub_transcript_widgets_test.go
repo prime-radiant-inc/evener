@@ -87,7 +87,7 @@ func TestToolGroupRendersErrorResult(t *testing.T) {
 	}
 }
 
-func TestHubModelBrowseSelectedToolRendersFocusedAndToggles(t *testing.T) {
+func TestHubModelBrowseSelectedToolRendersFocusedAndCtrlTToggles(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.session.messages = []chatMessage{
 		{Kind: msgAssistant, Text: "before tool"},
@@ -106,23 +106,31 @@ func TestHubModelBrowseSelectedToolRendersFocusedAndToggles(t *testing.T) {
 	m.session.focusedToolIdx = -1
 	m.browseSelected = 1
 
-	// New format: focused tool shows double state bar ▍▍ (FocusedStateBar)
-	// instead of the old ▶ arrow.
 	view := m.sessionView()
-	if strings.Count(view, "▍") < 2 {
-		t.Fatalf("selected tool group should render focused (double ▍▍):\n%s", view)
+	plain := ansiPattern.ReplaceAllString(view, "")
+	if !strings.Contains(plain, "▶") {
+		t.Fatalf("selected tool group should render a selection marker:\n%s", plain)
+	}
+	if strings.Contains(view, "▍▍") {
+		t.Fatalf("selected tool group should not render double state bar:\n%s", view)
 	}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
 	got := updated.(hubModel)
-	if !got.session.messages[1].Tool.Expanded {
-		t.Fatalf("tab should expand selected tool: %+v", got.session.messages[1].Tool)
+	if got.session.messages[1].Tool.Expanded {
+		t.Fatalf("tab should not expand selected tool: %+v", got.session.messages[1].Tool)
 	}
 
-	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
+	got = updated.(hubModel)
+	if !got.session.messages[1].Tool.Expanded {
+		t.Fatalf("ctrl+t should expand selected tool: %+v", got.session.messages[1].Tool)
+	}
+
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyCtrlT})
 	got = updated.(hubModel)
 	if got.session.messages[1].Tool.Expanded {
-		t.Fatalf("enter should collapse selected tool: %+v", got.session.messages[1].Tool)
+		t.Fatalf("ctrl+t should collapse selected tool: %+v", got.session.messages[1].Tool)
 	}
 }
 

@@ -396,6 +396,8 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		return m.updateKey(msg)
+	case tea.MouseMsg:
+		return m.updateMouse(msg)
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -1296,6 +1298,75 @@ func (m hubModel) updateCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m hubModel) updateMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.mode == hubModeSession && (m.session.scrollMode || m.transcriptView != nil || mouseWheelScrollsTranscript(msg)) {
+		if m.transcriptView == nil && !m.session.scrollMode {
+			m.enterSessionBrowse(false)
+		}
+		var cmd tea.Cmd
+		m.session.viewport, cmd = m.session.viewport.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+func mouseWheelScrollsTranscript(msg tea.MouseMsg) bool {
+	if msg.Action != tea.MouseActionPress {
+		return false
+	}
+	switch msg.Button {
+	case tea.MouseButtonWheelUp, tea.MouseButtonWheelDown:
+		return true
+	default:
+		return false
+	}
+}
+
+func (m hubModel) updateSessionBrowseComposerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up":
+		if m.session.input.Value() == "" && m.session.historyIdx < 0 && len(m.session.history) == 0 {
+			m.session.viewport.ScrollUp(1)
+			return m, nil
+		}
+		if len(m.session.history) > 0 {
+			if m.session.historyIdx >= 0 {
+				if m.session.historyIdx > 0 {
+					m.session.historyIdx--
+				}
+			} else if m.session.input.Value() == "" {
+				m.session.historyDraft = m.session.input.Value()
+				m.session.historyIdx = len(m.session.history) - 1
+			} else {
+				return m, nil
+			}
+			m.session.setInputValue(unescapeHistory(m.session.history[m.session.historyIdx]))
+			return m, nil
+		}
+	case "down":
+		if m.session.input.Value() == "" && m.session.historyIdx < 0 && len(m.session.history) == 0 {
+			m.session.viewport.ScrollDown(1)
+			return m, nil
+		}
+		if m.session.historyIdx >= 0 {
+			if m.session.historyIdx < len(m.session.history)-1 {
+				m.session.historyIdx++
+				m.session.setInputValue(unescapeHistory(m.session.history[m.session.historyIdx]))
+			} else {
+				m.session.historyIdx = -1
+				m.session.setInputValue(m.session.historyDraft)
+				m.session.historyDraft = ""
+			}
+			return m, nil
+		}
+	}
+	prevHeight := m.session.input.Height()
+	var cmd tea.Cmd
+	m.session.input, cmd = m.session.input.Update(msg)
+	m.resizeSessionInputFrom(prevHeight)
+	return m, cmd
+}
+
 func (m hubModel) runCommandPaletteCommand(command string) (tea.Model, tea.Cmd) {
 	definition, ok := hubCommandByName(command)
 	if !ok {
@@ -1712,26 +1783,28 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "esc", "i", "q":
 			m.exitSessionBrowse()
-		case "up", "k":
-			m.moveBrowseSelection(-1)
-		case "down", "j":
-			m.moveBrowseSelection(1)
+		case "up", "down", "left", "right":
+			return m.updateSessionBrowseComposerKey(msg)
+		case "k":
+			m.session.viewport.ScrollUp(1)
+		case "j":
+			m.session.viewport.ScrollDown(1)
 		case "pgup":
 			m.moveBrowsePage(-1)
 		case "pgdown":
 			m.moveBrowsePage(1)
 		case "f":
 			m.startForkDraft()
-		case "tab", "enter":
-			if m.browseSelected >= 0 && m.browseSelected < len(m.session.messages) {
-				msg := &m.session.messages[m.browseSelected]
-				if msg.Kind == msgTool && msg.Tool != nil && msg.Tool.Done {
-					msg.Tool.Expanded = !msg.Tool.Expanded
-					m.session.refreshViewport()
-					m.session.scrollToMessage(m.browseSelected)
-				}
-			}
+		case "ctrl+t":
+			m.toggleAllBrowseToolEntries()
 		default:
+			if msg.Type == tea.KeyRunes || msg.Paste {
+				prevHeight := m.session.input.Height()
+				var cmd tea.Cmd
+				m.session.input, cmd = m.session.input.Update(msg)
+				m.resizeSessionInputFrom(prevHeight)
+				return m, cmd
+			}
 			m.session.viewport, _ = m.session.viewport.Update(msg)
 		}
 		return m, nil
@@ -2064,11 +2137,15 @@ func (m *hubModel) handleBracketedPaste(text string) (tea.Cmd, bool) {
 }
 
 func (m *hubModel) enterSessionBrowse(pageUp bool) {
+	wasComposing := !m.session.scrollMode && m.transcriptView == nil
 	m.session.scrollMode = true
 	m.session.focusedToolIdx = -1
-	m.session.input.Blur()
+	m.session.input.Focus()
 	if m.browseSelected < 0 || m.browseSelected >= len(m.session.messages) {
 		m.browseSelected = m.lastBrowseMessageIndex()
+	}
+	if wasComposing {
+		m.session.viewport.GotoBottom()
 	}
 	if pageUp {
 		m.session.viewport, _ = m.session.viewport.Update(tea.KeyMsg{Type: tea.KeyPgUp})
@@ -2393,13 +2470,11 @@ func (m *hubModel) moveBrowsePage(direction int) {
 	if step < 1 {
 		step = 5
 	}
-	for i := 0; i < step; i++ {
-		before := m.browseSelected
-		m.moveBrowseSelection(direction)
-		if m.browseSelected == before {
-			return
-		}
+	if direction < 0 {
+		m.session.viewport.ScrollUp(step)
+		return
 	}
+	m.session.viewport.ScrollDown(step)
 }
 
 func (m hubModel) selectedBrowseMessage() (int, chatMessage, bool) {
@@ -2407,6 +2482,42 @@ func (m hubModel) selectedBrowseMessage() (int, chatMessage, bool) {
 		return -1, chatMessage{}, false
 	}
 	return m.browseSelected, m.session.messages[m.browseSelected], true
+}
+
+func (m *hubModel) toggleSelectedBrowseEntry() {
+	idx, msg, ok := m.selectedBrowseMessage()
+	if !ok || msg.Kind != msgTool || msg.Tool == nil || !msg.Tool.Done {
+		return
+	}
+	m.setSelectedBrowseEntryExpanded(!msg.Tool.Expanded)
+	m.session.scrollToMessage(idx)
+}
+
+func (m *hubModel) setSelectedBrowseEntryExpanded(expanded bool) {
+	idx, msg, ok := m.selectedBrowseMessage()
+	if !ok || msg.Kind != msgTool || msg.Tool == nil || !msg.Tool.Done {
+		return
+	}
+	m.session.messages[idx].Tool.Expanded = expanded
+	m.session.refreshViewport()
+}
+
+func (m *hubModel) toggleAllBrowseToolEntries() {
+	expand := false
+	for _, msg := range m.session.messages {
+		if msg.Kind == msgTool && msg.Tool != nil && msg.Tool.Done && !msg.Tool.Expanded {
+			expand = true
+			break
+		}
+	}
+	for i := range m.session.messages {
+		msg := &m.session.messages[i]
+		if msg.Kind != msgTool || msg.Tool == nil || !msg.Tool.Done {
+			continue
+		}
+		msg.Tool.Expanded = expand
+	}
+	m.session.refreshViewport()
 }
 
 func (m *hubModel) startForkDraft() {
@@ -3601,7 +3712,6 @@ func dashboardTitle(text string) string {
 	return dashboardCell(text)
 }
 
-
 func dashboardRecentExpanded(rows []hubRow, index int) bool {
 	if index < 0 || index >= len(rows) || rows[index].kind != hubRowRecentToggle {
 		return false
@@ -3931,7 +4041,7 @@ func (m hubModel) spawnView() string {
 	}
 	fmt.Fprintf(&b, "%s Dir:      %s\n", m.spawnFieldPrefix(hubSpawnFieldDir), m.spawnDirView())
 	fmt.Fprintf(&b, "%s Prompt (optional):\n", m.spawnFieldPrefix(hubSpawnFieldPrompt))
-	for _, line := range strings.Split(strings.TrimSuffix(renderComposerDraft(m.session.input.Value()), "\n"), "\n") {
+	for _, line := range strings.Split(strings.TrimSuffix(renderComposerDraft(m.session.input.Value(), m.width-2, 0), "\n"), "\n") {
 		b.WriteString("  ")
 		b.WriteString(line)
 		b.WriteString("\n")
@@ -4124,7 +4234,7 @@ func (m hubModel) sessionStatusErrorText() string {
 	return strings.TrimSpace(m.sessionStatusError)
 }
 
-func (m hubModel) sessionView() string {
+func (m *hubModel) sessionView() string {
 	title := firstNonEmptyString(m.detail.Title, m.detail.SessionID, m.detail.Ref, "untitled session")
 	topBar := truncateSessionLine(fmt.Sprintf("serf / session / %s", title), m.sessionHeaderWidth())
 	var b strings.Builder
@@ -4167,10 +4277,13 @@ func (m hubModel) sessionView() string {
 		}
 		prevRendered := false
 		for i, msg := range messages {
-			focused := m.transcriptView == nil && (m.session.isToolFocused(i) || (m.session.scrollMode && m.browseSelected == i))
+			focused := false
 			rendered := renderMessage(msg, width, focused)
 			if rendered == "" {
 				continue
+			}
+			if m.transcriptView == nil && m.session.scrollMode && m.browseSelected == i {
+				rendered = renderSelectedMessage(rendered, true)
 			}
 			// Only emit a turn separator at the start of a new user-turn cluster
 			// (i.e. before a msgUser message that isn't the first rendered one).
@@ -4221,12 +4334,12 @@ func (m hubModel) sessionView() string {
 	case m.transcriptView != nil:
 		kbdFooter = actionBarForWidth(m.width, "esc/i/q: return to chat", "ctrl+o: dashboard")
 	case m.session.scrollMode:
-		keys := []string{"esc/i/q: compose"}
+		keys := []string{"esc/i/q: compose", "ctrl+t: expand tools"}
 		if m.detail.Capabilities.Fork {
 			keys = append(keys, "f: fork selected user turn")
 		}
 		keys = append(keys, "ctrl+o: dashboard")
-		kbdFooter = actionBarForWidth(m.width, keys...)
+		kbdFooter = actionBarForWidth(m.width, keys...) + "\n" + m.sessionComposerPanel().View()
 	default:
 		kbdFooter = m.sessionComposerPanel().View()
 	}
@@ -4250,14 +4363,17 @@ func (m hubModel) renderSessionDetails() string {
 	return detailsDrawer{Detail: m.detail, HubURL: m.hubURL}.View()
 }
 
-func (m hubModel) sessionBody(mainBody string, bodyHeight int, hasOverlay bool) string {
-	if !hasOverlay && m.sessionPanel == nil {
-		return mainBody
-	}
+func (m *hubModel) sessionBody(mainBody string, bodyHeight int, hasOverlay bool) string {
 	if bodyHeight <= 0 {
 		return mainBody
 	}
-	return limitSessionBodyLines(mainBody, bodyHeight)
+	m.session.viewport.Width = max(1, m.width)
+	m.session.viewport.Height = bodyHeight
+	m.session.viewport.SetContent(strings.TrimRight(mainBody, "\n"))
+	if !m.session.scrollMode && m.transcriptView == nil {
+		m.session.viewport.GotoBottom()
+	}
+	return m.session.viewport.View()
 }
 
 func (m hubModel) sessionPanelOverlay() string {

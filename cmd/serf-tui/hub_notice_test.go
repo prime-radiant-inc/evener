@@ -49,7 +49,8 @@ func TestHubModelNoticesPersistUntilDismissed(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("dismissing a notice should be synchronous")
 	}
-	if got := updated.(hubModel).sessionView(); strings.Contains(got, "AppWire error") {
+	updatedModel := updated.(hubModel)
+	if got := updatedModel.sessionView(); strings.Contains(got, "AppWire error") {
 		t.Fatalf("notice remained after dismissal:\n%s", got)
 	}
 }
@@ -89,7 +90,8 @@ func TestHubModelClearsActionUnavailableNoticeWhenSessionChanges(t *testing.T) {
 			State:       "ended",
 		},
 	})
-	got := updated.(hubModel).sessionView()
+	updatedModel := updated.(hubModel)
+	got := updatedModel.sessionView()
 	if strings.Contains(got, "Action unavailable") || strings.Contains(got, "source: codex-local") {
 		t.Fatalf("session-scoped notice leaked after session change:\n%s", got)
 	}
@@ -186,7 +188,8 @@ func TestHubModelAppWireAndProviderErrorsRenderStructuredNotices(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newSessionHubModel(nil)
 			updated, _ := m.Update(tc.msg)
-			got := updated.(hubModel).sessionView()
+			updatedModel := updated.(hubModel)
+			got := updatedModel.sessionView()
 			for _, want := range tc.want {
 				if !strings.Contains(got, want) {
 					t.Fatalf("notice missing %q:\n%s", want, got)
