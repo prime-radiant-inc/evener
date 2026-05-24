@@ -106,6 +106,9 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 			Model:      m.detail.Model,
 			Branch:     m.detail.Branch,
 			WorkingDir: m.detail.WorkingDir,
+			Connected:  m.client != nil,
+			HubAddr:    m.hubURL,
+			Provider:   firstNonEmptyString(m.detail.Profile, providerFromModel(m.detail.Model)),
 			Width:      m.width,
 		},
 	}

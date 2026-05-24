@@ -4243,16 +4243,10 @@ func (m hubModel) sessionView() string {
 	default:
 		kbdFooter = m.sessionComposerPanel().View()
 	}
-	// Persistent statusbar below kbd footer
-	statusBar := renderStatusBar(statusBarInfo{
-		Connected: m.client != nil,
-		HubAddr:   m.hubURL,
-		Provider:  firstNonEmptyString(m.detail.Profile, providerFromModel(m.detail.Model)),
-		CtxUsed:   int(m.detail.ContextPressure * float64(200000)), // approximation; limit unknown
-		CtxLimit:  0,                                                // hide ctx bar in hub session (shown in header)
-		Width:     m.width,
-	})
-	footer := kbdFooter + "\n" + statusBar
+	// Hub-session connection/provider info is rendered right-justified
+	// on the composer chip strip (see renderComposerChipStrip), so the
+	// session view no longer carries a separate bottom status bar.
+	footer := kbdFooter
 	overlayText := overlay.String()
 	bodyHeight := sessionShellBodyHeight(m.height, topBar, overlayText, footer)
 	body := m.sessionBody(mainBody, bodyHeight, overlayText != "")

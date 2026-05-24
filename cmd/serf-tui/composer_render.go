@@ -13,13 +13,20 @@ type composerContext struct {
 	Branch     string
 	WorkingDir string
 	Mode       string // QUEUE 2, FORK DRAFT, AWAITING, etc.; empty for default compose
-	Width      int
+	// Right-side status. Previously lived in a separate persistent
+	// status bar below the composer; consolidated here so the chip
+	// strip is the single live-context line.
+	Connected bool
+	HubAddr   string
+	Provider  string
+	Width     int
 }
 
 // renderComposerChipStrip renders a horizontal chip strip above the composer
 // textarea. Left side: harness/model/branch/dir chips separated by ·.
-// Right side: mode chip (state-colored via StatusBadge) when Mode is non-empty.
-// The whole line is laid out as a divider: ─ <chips> ──…──── <mode> ┄
+// Right side: connection status, then mode chip (state-colored via
+// StatusBadge) when Mode is non-empty. The whole line is laid out as a
+// divider: ─ <chips> ──…──── [status]  [mode] ┄
 func renderComposerChipStrip(ctx composerContext) string {
 	th := activeTheme()
 
@@ -42,7 +49,11 @@ func renderComposerChipStrip(ctx composerContext) string {
 	sep := lipgloss.NewStyle().Foreground(th.RuleSoft).Render(" · ")
 	chipsText := strings.Join(parts, sep)
 
-	var modeChip string
+	// Right-side status fragment.
+	rightParts := []string{}
+	if status := renderChipStatus(ctx, th); status != "" {
+		rightParts = append(rightParts, status)
+	}
 	if ctx.Mode != "" {
 		modeColor := th.Accent
 		switch {
@@ -53,8 +64,9 @@ func renderComposerChipStrip(ctx composerContext) string {
 		case strings.HasPrefix(ctx.Mode, "AWAITING"):
 			modeColor = th.StateAwaiting
 		}
-		modeChip = StatusBadge(modeColor, ctx.Mode)
+		rightParts = append(rightParts, StatusBadge(modeColor, ctx.Mode))
 	}
+	rightContent := strings.Join(rightParts, "  ")
 
 	// Build the divider line manually so that chip labels are NOT uppercased
 	// (SectionDivider upper-cases its left argument).
@@ -66,7 +78,7 @@ func renderComposerChipStrip(ctx composerContext) string {
 	trailGlyph := lipgloss.NewStyle().Foreground(th.Rule).Render(" " + activeTheme().RuleGlyph)
 
 	prefix := leadGlyph + chipsText
-	suffix := modeChip + trailGlyph
+	suffix := rightContent + trailGlyph
 	prefixW := lipgloss.Width(prefix)
 	suffixW := lipgloss.Width(suffix)
 	fill := width - prefixW - suffixW - 2
@@ -79,6 +91,33 @@ func renderComposerChipStrip(ctx composerContext) string {
 	}
 	mid := lipgloss.NewStyle().Foreground(th.RuleSoft).Render(strings.Repeat("─", fill))
 	return prefix + " " + mid + " " + suffix
+}
+
+// renderChipStatus produces the right-side connection/provider fragment
+// of the composer chip strip. Returns "" when there is no connection
+// context to surface.
+func renderChipStatus(ctx composerContext, th Theme) string {
+	if ctx.HubAddr == "" && !ctx.Connected && ctx.Provider == "" {
+		return ""
+	}
+	var fragments []string
+	healthClr := th.StateAwaiting
+	healthLabel := "disconnected"
+	if ctx.Connected {
+		healthClr = th.StateIdle
+		healthLabel = "connected"
+	}
+	health := lipgloss.NewStyle().Foreground(healthClr).Bold(true).Render("●") +
+		" " + lipgloss.NewStyle().Foreground(th.TextDim).Render(healthLabel)
+	fragments = append(fragments, health)
+	if ctx.HubAddr != "" {
+		fragments = append(fragments, lipgloss.NewStyle().Foreground(th.TextDim).Render(ctx.HubAddr))
+	}
+	if ctx.Provider != "" {
+		fragments = append(fragments, lipgloss.NewStyle().Foreground(th.TextDim).Render(ctx.Provider))
+	}
+	sep := lipgloss.NewStyle().Foreground(th.RuleSoft).Render(" · ")
+	return strings.Join(fragments, sep)
 }
 
 // composerFooterHints returns the mode-appropriate keyboard hint bar.

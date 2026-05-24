@@ -83,19 +83,20 @@ func applyThemeName(name string) bool {
 
 var darkTheme = Theme{
 	Name: "dark",
-	// Near-neutral dark grey, very slight cool cast.
-	Bg:               lipgloss.Color("#0f0f11"),
-	BgRaised:         lipgloss.Color("#171719"),
-	SurfaceSecondary: lipgloss.Color("#1f1f22"),
-	Rule:             lipgloss.Color("#1a1a1c"),
-	RuleSoft:         lipgloss.Color("#141416"),
+	// Softened dark grey — lighter than near-black so painted surfaces
+	// don't bottom-out as a black void. Faint cool cast.
+	Bg:               lipgloss.Color("#15151a"),
+	BgRaised:         lipgloss.Color("#1d1d22"),
+	SurfaceSecondary: lipgloss.Color("#25252a"),
+	Rule:             lipgloss.Color("#20202a"),
+	RuleSoft:         lipgloss.Color("#1a1a1e"),
 	// Neutral cream-leaning ink, tiers stepping down in lightness with
 	// minimal hue shift so the eye reads them as "less" rather than
 	// "different".
 	Text:      lipgloss.Color("#e8e8ea"),
 	TextMuted: lipgloss.Color("#a0a0a4"),
 	TextDim:   lipgloss.Color("#76767c"),
-	TextGhost: lipgloss.Color("#54545a"),
+	TextGhost: lipgloss.Color("#5e5e66"),
 	// Slate-blue accent with a hint of warmth, warm-tan secondary. No
 	// neon, no candy.
 	Accent:          lipgloss.Color("#6b9ec8"),
@@ -105,7 +106,7 @@ var darkTheme = Theme{
 	StateProcessing: lipgloss.Color("#6b9ec8"),
 	StateWarning:    lipgloss.Color("#c4a06a"),
 	StateIdle:       lipgloss.Color("#88a878"),
-	StateEnded:      lipgloss.Color("#56565c"),
+	StateEnded:      lipgloss.Color("#5e5e64"),
 	StateSubagent:   lipgloss.Color("#a8927a"),
 	BtnPrimaryText:  lipgloss.Color("#0f0f11"),
 	// Tints — faint elevated darks, used as backgrounds on tinted rows.
