@@ -47,6 +47,17 @@ func diffBody(_ ToolArgs, output string, width int) string {
 	return strings.Join(out, "\n")
 }
 
+// chromaStyleForActiveTheme returns the chroma style name that matches
+// the active TUI theme. monokai is a dark style — its pale syntax colors
+// render as near-white on light terminals. github is a light-mode style
+// with strong contrast on light backgrounds.
+func chromaStyleForActiveTheme() string {
+	if activeThemeV2().Name == "light" {
+		return "github"
+	}
+	return "monokai"
+}
+
 // highlightBlockByFilename returns chroma-highlighted text for the language
 // inferred from filename, or empty string on any failure.
 func highlightBlockByFilename(text, filename string) string {
@@ -54,7 +65,7 @@ func highlightBlockByFilename(text, filename string) string {
 	if lexer == nil {
 		lexer = lexers.Fallback
 	}
-	style := styles.Get("monokai")
+	style := styles.Get(chromaStyleForActiveTheme())
 	if style == nil {
 		style = styles.Fallback
 	}
@@ -80,7 +91,7 @@ func highlightBlock(text, lang string) string {
 	if lexer == nil {
 		return ""
 	}
-	style := styles.Get("monokai")
+	style := styles.Get(chromaStyleForActiveTheme())
 	if style == nil {
 		style = styles.Fallback
 	}
