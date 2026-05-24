@@ -56,13 +56,10 @@ func TestRenderToolCall_Expanded(t *testing.T) {
 	if !strings.Contains(out, "▍") {
 		t.Errorf("expanded tool should show ▍ state bar, got: %s", out)
 	}
-	// Legacy fallback: Detail and output should be visible when expanded
-	// (shell has no Body renderer, so legacy path is used)
-	if !strings.Contains(out, "full args here") {
-		t.Errorf("expanded tool should show detail, got: %s", out)
-	}
+	// Shell now has a Body renderer (shellBody) which renders Output via chroma.
+	// Output content is shown (possibly ANSI-escaped); Detail is suppressed by Body.
 	if !strings.Contains(out, "file1.go") {
-		t.Errorf("expanded tool should show output, got: %s", out)
+		t.Errorf("expanded tool should show output via shellBody, got: %s", out)
 	}
 }
 
@@ -623,7 +620,9 @@ func TestRenderToolCall_OutputShownWhenExpanded(t *testing.T) {
 	}
 	out := renderToolCall(tc, 80, false)
 
-	if !strings.Contains(out, "OUTPUT HERE") {
+	// shellBody renders output via chroma, which may split tokens across ANSI codes.
+	// Check for both words to confirm output is present.
+	if !strings.Contains(out, "OUTPUT") || !strings.Contains(out, "HERE") {
 		t.Errorf("expanded tool should show output, got: %s", out)
 	}
 }

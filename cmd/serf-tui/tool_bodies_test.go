@@ -78,3 +78,21 @@ func TestSubagentBodyHandlesNarrowWidth(t *testing.T) {
 		t.Errorf("subagentBody should not panic at narrow width")
 	}
 }
+
+func TestShellBodyHighlightsOutput(t *testing.T) {
+	got := shellBody(ToolArgs{"command": "ls"}, "file1.go\nfile2.go\nfile3.go", 60)
+	if got == "" {
+		t.Errorf("shellBody should return non-empty for non-empty output")
+	}
+}
+
+func TestWebSearchBodyFormatsResults(t *testing.T) {
+	output := strings.Join([]string{
+		"Result 1 title — https://a.com",
+		"Result 2 title — https://b.com",
+	}, "\n")
+	got := webSearchBody(ToolArgs{}, output, 60)
+	if !strings.Contains(got, "Result 1") || !strings.Contains(got, "Result 2") {
+		t.Errorf("webSearchBody should include results: %q", got)
+	}
+}

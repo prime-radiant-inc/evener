@@ -199,3 +199,19 @@ func subagentBody(args ToolArgs, _ string, width int) string {
 	// On-demand child transcript loading deferred to follow-up kata.
 	return styled
 }
+
+// shellBody renders shell command output, optionally with bash chroma highlighting.
+func shellBody(_ ToolArgs, output string, width int) string {
+	if output == "" {
+		return ""
+	}
+	if h := highlightBlock(output, "bash"); h != "" {
+		return h
+	}
+	return output
+}
+
+// webSearchBody passes through web search output unchanged.
+func webSearchBody(_ ToolArgs, output string, width int) string {
+	return output
+}

@@ -369,4 +369,15 @@ func init() {
 	spawnR := toolRenderers["spawn_agent"]
 	spawnR.Body = subagentBody
 	toolRenderers["spawn_agent"] = spawnR
+
+	// Wave 6, task 6.5: wire shellBody + webSearchBody.
+	shellR := toolRenderers["shell"]
+	shellR.Body = shellBody
+	toolRenderers["shell"] = shellR
+	toolRenderers["exec_command"] = shellR
+	toolRenderers["run_shell_command"] = shellR
+
+	wsR := toolRenderers["web_search"]
+	wsR.Body = webSearchBody
+	toolRenderers["web_search"] = wsR
 }
