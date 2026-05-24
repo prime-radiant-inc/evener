@@ -1,3 +1,12 @@
+// tokens.go — central theme registry for serf-tui.
+//
+// Established in the TUI deep UX pass (2026-05-24). The Theme struct
+// holds every color and layout token; the `themes` registry binds names
+// to Theme structs. Active theme is swapped via setThemeV2(name) which
+// also invalidates the cached markdown renderer.
+//
+// To add a new theme: define a Theme struct literal, register it in
+// themeRegistry. No other code changes needed.
 package main
 
 import "github.com/charmbracelet/lipgloss"
