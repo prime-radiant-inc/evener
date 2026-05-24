@@ -211,3 +211,28 @@ func containsMessageKind(messages []chatMessage, kind messageKind) bool {
 	}
 	return false
 }
+
+// runWithTheme switches the active theme for the duration of body() and
+// restores it afterward. NOT safe for parallel tests — theme is a global.
+func runWithTheme(t *testing.T, name string, body func()) {
+	t.Helper()
+	prev := currentThemeName()
+	if !setTheme(name) {
+		t.Fatalf("unknown theme %q", name)
+	}
+	defer setTheme(prev)
+	body()
+}
+
+func TestSampleRenders_EachThemeProducesNonEmptyView(t *testing.T) {
+	corpus := newHubTUISampleCorpus()
+	for _, theme := range []string{"dark", "light"} {
+		runWithTheme(t, theme, func() {
+			for _, sample := range corpus.Renders {
+				if sample.View == "" {
+					t.Errorf("theme=%s sample=%s: empty View", theme, sample.Name)
+				}
+			}
+		})
+	}
+}
