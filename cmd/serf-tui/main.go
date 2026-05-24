@@ -41,6 +41,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Probe the terminal's default fg/bg BEFORE any setTheme call, so
+	// (a) "system" theme detection has cached probe data and (b) the
+	// deferred restore on exit can return the exact originals.
+	probeTerminalDefaults()
 	initThemeFromStateDir(startupOpts.StateDir)
 	applyTerminalBg()
 	defer resetTerminalBg()

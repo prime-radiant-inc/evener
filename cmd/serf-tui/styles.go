@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/termenv"
 )
 
 // tuiStyles holds composed lipgloss.Style values derived from the active
@@ -108,11 +107,9 @@ func setTheme(name string) bool {
 	}
 	resolved := name
 	if name == "system" {
-		if termenv.HasDarkBackground() {
-			resolved = "dark"
-		} else {
-			resolved = "light"
-		}
+		// Uses cached probe from probeTerminalDefaults() when available;
+		// falls back to termenv.HasDarkBackground() otherwise.
+		resolved = detectSystemThemeKey()
 	}
 	applyThemeName(resolved)
 	rebuildDerivedStyles()
