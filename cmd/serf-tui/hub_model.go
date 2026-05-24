@@ -393,6 +393,15 @@ func (m hubModel) Init() tea.Cmd {
 }
 
 func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.updateImpl(msg)
+	if hm, ok := next.(hubModel); ok && hm.mode == hubModeSession {
+		hm.syncSessionViewport()
+		return hm, cmd
+	}
+	return next, cmd
+}
+
+func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		return m.updateKey(msg)
@@ -4245,15 +4254,14 @@ func (m hubModel) sessionStatusErrorText() string {
 	return strings.TrimSpace(m.sessionStatusError)
 }
 
-func (m *hubModel) sessionView() string {
-	title := firstNonEmptyString(m.detail.Title, m.detail.SessionID, m.detail.Ref, "untitled session")
-	topBar := truncateSessionLine(fmt.Sprintf("serf / session / %s", title), m.sessionHeaderWidth())
+// renderSessionMainBody returns the scrollable body content for the session view:
+// header lines, status, errors, notices, fork draft header, and message list.
+func (m hubModel) renderSessionMainBody() string {
 	var b strings.Builder
 	for _, line := range m.sessionHeaderLines() {
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
-	// Status line (connection, auth, capability, busy, error) rendered below header.
 	if statusLine := m.sessionStatusLine(); statusLine != "" {
 		b.WriteString(statusLine)
 		b.WriteString("\n")
@@ -4265,7 +4273,6 @@ func (m *hubModel) sessionView() string {
 		b.WriteString("\n")
 		b.WriteString(notices)
 	}
-	// Fork draft section divider when in fork mode
 	if m.forkDraft != nil {
 		branch := firstNonEmptyString(m.detail.Branch, "fork")
 		b.WriteString("\n")
@@ -4296,9 +4303,6 @@ func (m *hubModel) sessionView() string {
 			if m.transcriptView == nil && m.session.scrollMode && m.browseSelected == i {
 				rendered = renderSelectedMessage(rendered, true)
 			}
-			// Only emit a turn separator at the start of a new user-turn cluster
-			// (i.e. before a msgUser message that isn't the first rendered one).
-			// This avoids separators between assistant text, tool calls, etc.
 			if prevRendered && msg.Kind == msgUser {
 				rule := lipgloss.NewStyle().Foreground(activeTheme().RuleSoft).Render(strings.Repeat("┄", width))
 				b.WriteString(rule)
@@ -4310,7 +4314,15 @@ func (m *hubModel) sessionView() string {
 			prevRendered = true
 		}
 	}
-	mainBody := b.String()
+	return b.String()
+}
+
+// sessionChromeText returns the overlay and footer strings used for body-height
+// computation and the appShell. Extracted so syncSessionViewport and sessionView
+// share the same chrome calculation.
+func (m *hubModel) sessionChromeText() (topBar, overlayText, footer string) {
+	title := firstNonEmptyString(m.detail.Title, m.detail.SessionID, m.detail.Ref, "untitled session")
+	topBar = truncateSessionLine(fmt.Sprintf("serf / session / %s", title), m.sessionHeaderWidth())
 	var overlay strings.Builder
 	if m.sessionModelPicker != nil {
 		overlay.WriteString(m.sessionModelPicker.View())
@@ -4340,6 +4352,7 @@ func (m *hubModel) sessionView() string {
 		overlay.WriteString(m.followupModal.View())
 		overlay.WriteString("\n\n")
 	}
+	overlayText = overlay.String()
 	var kbdFooter string
 	switch {
 	case m.transcriptView != nil:
@@ -4354,13 +4367,38 @@ func (m *hubModel) sessionView() string {
 	default:
 		kbdFooter = m.sessionComposerPanel().View()
 	}
-	// Hub-session connection/provider info is rendered right-justified
-	// on the composer chip strip (see renderComposerChipStrip), so the
-	// session view no longer carries a separate bottom status bar.
-	footer := kbdFooter
-	overlayText := overlay.String()
+	footer = kbdFooter
+	return
+}
+
+// syncSessionViewport writes the current mainBody and correct geometry into
+// m.session.viewport so that browse-mode scroll handlers (moveBrowsePage,
+// updateSessionKey j/k/pgup/pgdown) operate against the same content and
+// dimensions the user actually sees. Must be called on an addressable *hubModel
+// so mutations persist. Called from Update (session mode) and from
+// enterSessionBrowse / exitSessionBrowse.
+func (m *hubModel) syncSessionViewport() {
+	topBar, overlayText, footer := m.sessionChromeText()
 	bodyHeight := sessionShellBodyHeight(m.height, topBar, overlayText, footer)
-	body := m.sessionBody(mainBody, bodyHeight, overlayText != "")
+	if bodyHeight <= 0 {
+		return
+	}
+	mainBody := m.renderSessionMainBody()
+	m.session.viewport.Width = max(1, m.width)
+	m.session.viewport.Height = bodyHeight
+	m.session.viewport.SetContent(strings.TrimRight(mainBody, "\n"))
+	if !m.session.scrollMode && m.transcriptView == nil {
+		m.session.viewport.GotoBottom()
+	}
+}
+
+func (m *hubModel) sessionView() string {
+	// Sync viewport so the body reflects current state (needed when sessionView
+	// is called outside Update, e.g. in tests or via View()).
+	m.syncSessionViewport()
+	topBar, overlayText, footer := m.sessionChromeText()
+	bodyHeight := sessionShellBodyHeight(m.height, topBar, overlayText, footer)
+	body := m.sessionBody("", bodyHeight, overlayText != "")
 	return appShell{
 		TopBar:  topBar,
 		Body:    body,
@@ -4374,34 +4412,13 @@ func (m hubModel) renderSessionDetails() string {
 	return detailsDrawer{Detail: m.detail, HubURL: m.hubURL}.View()
 }
 
-// sessionBody renders mainBody through the session viewport so browse-mode
-// scrolling and overflow handling go through one code path.
-//
-// KNOWN LIMITATION (roborev #885 MEDIUM): the receiver is *hubModel here for
-// historical reasons — sessionBody was always written to mutate the
-// viewport during render. In production tea.NewProgram(m, ...) holds the
-// model by value, so View() takes a copy and any mutation here applies to
-// that throwaway copy, leaving the persisted viewport stale. Browse-mode
-// scroll handlers in Update read the persisted viewport's content/dims to
-// compute scroll steps, so they can drift from what the user actually sees.
-// In tests `m` is addressable and the mutations persist, which is why
-// scroll-related test coverage stays green.
-//
-// The proper fix is to compute mainBody + bodyHeight in Update and sync the
-// persisted viewport there, then make this function pure. That's a wider
-// refactor than a single roborev-fix pass: bodyHeight needs the same chrome
-// composition sessionView does (topBar, overlay, footer); ~24 Update paths
-// currently call session.refreshViewport() which sets messages-only content
-// and must be redirected. Tracked separately.
-func (m *hubModel) sessionBody(mainBody string, bodyHeight int, hasOverlay bool) string {
+// sessionBody is a pure renderer: viewport state is managed by syncSessionViewport.
+// The mainBody arg is ignored; bodyHeight guards against the zero-height case
+// (e.g. tests that don't set m.height) by falling back to rendering the main
+// body directly so content is still visible.
+func (m hubModel) sessionBody(_ string, bodyHeight int, _ bool) string {
 	if bodyHeight <= 0 {
-		return mainBody
-	}
-	m.session.viewport.Width = max(1, m.width)
-	m.session.viewport.Height = bodyHeight
-	m.session.viewport.SetContent(strings.TrimRight(mainBody, "\n"))
-	if !m.session.scrollMode && m.transcriptView == nil {
-		m.session.viewport.GotoBottom()
+		return m.renderSessionMainBody()
 	}
 	return m.session.viewport.View()
 }
