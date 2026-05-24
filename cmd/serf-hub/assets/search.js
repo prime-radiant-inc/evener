@@ -257,6 +257,9 @@
         run: (ctx) => {
           const p = postSession(ctx, "shutdown");
           return Promise.resolve(p).then((r) => {
+            if (r && typeof r.ok !== "undefined" && !r.ok) {
+              return blockedFromResponse("shutdown failed", r);
+            }
             if (window.SerfToast) window.SerfToast.show("Session shut down", "success");
             return r;
           }, (err) => {

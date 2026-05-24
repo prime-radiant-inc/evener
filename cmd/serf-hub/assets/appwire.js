@@ -814,6 +814,7 @@
   // Wire toast + persistent banner. The banner is required because a 3s
   // toast does not cover the case where the user notices the UI is stale
   // 30s later (Known Issues — Pass 8).
+  let connectionLostToastHandle = null;
   function ensureConnectionBanner() {
     let banner = document.getElementById("connection-banner");
     if (banner) return banner;
@@ -829,11 +830,22 @@
     const banner = document.getElementById("connection-banner");
     if (banner && banner.parentNode) banner.parentNode.removeChild(banner);
   }
+  function showConnectionLost() {
+    if (connectionLostToastHandle) return; // already showing
+    if (window.SerfToast) connectionLostToastHandle = window.SerfToast.show("Connection lost — reconnecting…", "error", { timeout: 0 });
+  }
+  function clearConnectionLost() {
+    if (connectionLostToastHandle) {
+      if (window.SerfToast) window.SerfToast.dismiss(connectionLostToastHandle);
+      connectionLostToastHandle = null;
+    }
+  }
   onConnectionLost(() => {
-    if (window.SerfToast) window.SerfToast.show("Connection lost — reconnecting…", "error", { timeout: 0 });
+    showConnectionLost();
     ensureConnectionBanner();
   });
   onConnectionRestored(() => {
+    clearConnectionLost();
     if (window.SerfToast) window.SerfToast.show("Connection restored", "success");
     clearConnectionBanner();
   });

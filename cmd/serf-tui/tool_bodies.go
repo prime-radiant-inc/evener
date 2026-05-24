@@ -138,8 +138,9 @@ func fileBody(args ToolArgs, output string, width int) string {
 
 // taskItem is the JSON shape emitted by the task_list tool's output.
 type taskItem struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	Description string `json:"description"`
+	Name        string `json:"name"` // fallback for older shapes
+	Status      string `json:"status"`
 }
 
 // taskListBody renders a list of tasks with per-status glyphs and colors.
@@ -167,8 +168,12 @@ func taskListBody(_ ToolArgs, output string, width int) string {
 			glyph = "[ ]"
 			clr = th.TextDim
 		}
+		label := item.Description
+		if label == "" {
+			label = item.Name
+		}
 		g := lipgloss.NewStyle().Foreground(clr).Render(glyph)
-		name := lipgloss.NewStyle().Foreground(th.Text).Render(item.Name)
+		name := lipgloss.NewStyle().Foreground(th.Text).Render(label)
 		lines = append(lines, g+" "+name)
 	}
 	return strings.Join(lines, "\n")
@@ -177,18 +182,46 @@ func taskListBody(_ ToolArgs, output string, width int) string {
 // subagentBody renders a summary line for a spawned subagent.  At narrow
 // widths (< 30 cols) only the summary is returned.  Full nested inline
 // rendering of child transcripts is deferred to a follow-up kata.
-func subagentBody(args ToolArgs, _ string, width int) string {
-	th := activeThemeV2()
-	agentID := args.Str("agent_id")
-	turns := 0
-	if v, ok := args["turns_used"].(float64); ok {
-		turns = int(v)
+//
+// Metadata is sourced from the tool output (preferred) or args (fallback for
+// older shapes where spawn_agent put metadata in args instead of output).
+func subagentBody(args ToolArgs, output string, width int) string {
+	var agentID, status string
+	var turns int
+
+	// Try to parse metadata from output first.
+	if output != "" {
+		var meta struct {
+			AgentID   string `json:"agent_id"`
+			Status    string `json:"status"`
+			TurnsUsed int    `json:"turns_used"`
+			SessionID string `json:"session_id"`
+			Task      string `json:"task"`
+		}
+		if err := json.Unmarshal([]byte(output), &meta); err == nil && (meta.AgentID != "" || meta.SessionID != "") {
+			agentID = meta.AgentID
+			if agentID == "" {
+				agentID = meta.SessionID
+			}
+			status = meta.Status
+			turns = meta.TurnsUsed
+		}
 	}
-	status := args.Str("status")
+
+	// Fall back to args for older shapes.
+	if agentID == "" {
+		agentID = args.Str("agent_id")
+		if v, ok := args["turns_used"].(float64); ok {
+			turns = int(v)
+		}
+		status = args.Str("status")
+	}
+
 	if status == "" {
 		status = "running"
 	}
 
+	th := activeThemeV2()
 	summary := fmt.Sprintf("subagent %s (%d turns, %s)", shortID(agentID), turns, status)
 	styled := lipgloss.NewStyle().Foreground(th.StateSubagent).Render(summary)
 

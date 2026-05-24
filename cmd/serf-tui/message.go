@@ -205,7 +205,10 @@ func renderToolCall(tc toolCallInfo, width int, focused bool) string {
 
 	verb := r.Verb(args)
 	target := r.Target(args)
-	result := r.Result(args, tc.Output, tc.Error, tc.Duration)
+	var result string
+	if tc.Done || tc.Error != "" {
+		result = r.Result(args, tc.Output, tc.Error, tc.Duration)
+	}
 
 	th := activeThemeV2()
 	stateClr := stateColorForToolDone(tc.Done, tc.Error)
