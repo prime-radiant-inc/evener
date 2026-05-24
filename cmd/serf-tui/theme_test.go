@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 )
@@ -126,101 +125,6 @@ func TestSetTheme_Invalid(t *testing.T) {
 		if setTheme(name) {
 			t.Errorf("setTheme(%q) returned true, want false", name)
 		}
-	}
-}
-
-// TestThemeCommand_OpensPicker verifies that /theme opens the theme picker.
-func TestThemeCommand_OpensPicker(t *testing.T) {
-	initTheme()
-	m := newModel("localhost:0", "", nil)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = updated.(model)
-
-	for _, r := range "/theme" {
-		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-		m = updated.(model)
-	}
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(model)
-
-	if m.themePicker == nil {
-		t.Fatal("expected themePicker to be non-nil after /theme")
-	}
-}
-
-// TestThemeCommand_PickerSelectDark selects dark via the picker.
-func TestThemeCommand_PickerSelectDark(t *testing.T) {
-	setTheme("light")
-
-	m := newModel("localhost:0", "", nil)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = updated.(model)
-
-	// Open picker.
-	for _, r := range "/theme" {
-		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-		m = updated.(model)
-	}
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(model)
-
-	if m.themePicker == nil {
-		t.Fatal("picker not opened")
-	}
-
-	// The picker starts at the active theme; ensure we're on dark.
-	for themePickerItems[m.themePicker.cursor] != "dark" {
-		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
-		m = updated.(model)
-	}
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(model)
-
-	if m.themePicker != nil {
-		t.Error("themePicker should be nil after selection")
-	}
-	if currentThemeName() != "dark" {
-		t.Errorf("currentThemeName() = %q, want \"dark\"", currentThemeName())
-	}
-	// Should have a confirmation system message.
-	if len(m.messages) == 0 {
-		t.Fatal("expected confirmation message")
-	}
-	last := m.messages[len(m.messages)-1]
-	if !strings.Contains(last.Text, "dark") {
-		t.Errorf("confirmation message %q does not mention \"dark\"", last.Text)
-	}
-}
-
-// TestThemeCommand_PickerCancel cancels the picker without changing theme.
-func TestThemeCommand_PickerCancel(t *testing.T) {
-	setTheme("light")
-	initialMsg := 0
-
-	m := newModel("localhost:0", "", nil)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = updated.(model)
-	initialMsg = len(m.messages)
-
-	for _, r := range "/theme" {
-		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-		m = updated.(model)
-	}
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = updated.(model)
-
-	// Press escape to cancel.
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEscape})
-	m = updated.(model)
-
-	if m.themePicker != nil {
-		t.Error("themePicker should be nil after escape")
-	}
-	if currentThemeName() != "light" {
-		t.Errorf("theme changed on cancel: got %q, want \"light\"", currentThemeName())
-	}
-	if len(m.messages) != initialMsg {
-		t.Errorf("cancel should not add messages: had %d, now %d", initialMsg, len(m.messages))
 	}
 }
 

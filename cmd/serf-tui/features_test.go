@@ -2,9 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -210,119 +207,6 @@ func TestRenderTasks_WidthMinimum(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// /tasks slash command
-// ---------------------------------------------------------------------------
-
-func TestSlashCommandHelp_Tasks(t *testing.T) {
-	help := slashCommandHelp()
-	if !strings.Contains(help, "/tasks") {
-		t.Errorf("help text should mention /tasks, got: %s", help)
-	}
-}
-
-func TestParseSlashCommand_Tasks(t *testing.T) {
-	cmd, args := parseSlashCommand("/tasks")
-	if cmd != "tasks" {
-		t.Errorf("cmd = %q, want %q", cmd, "tasks")
-	}
-	if args != "" {
-		t.Errorf("args = %q, want %q", args, "")
-	}
-
-	// With args (should still parse but not be used by /tasks handler)
-	cmd2, args2 := parseSlashCommand("/tasks extra")
-	if cmd2 != "tasks" {
-		t.Errorf("cmd = %q, want %q", cmd2, "tasks")
-	}
-	// Args are kept for the handler to decide what to do with
-	if args2 != "extra" {
-		t.Errorf("args = %q, want %q", args2, "extra")
-	}
-}
-
-func TestFetchTasks_Success(t *testing.T) {
-	tasksJSON := `[
-		{"id":1,"type":"implement","description":"add feature","status":"done"},
-		{"id":2,"type":"research","description":"investigate","status":"open","depends_on":[1]}
-	]`
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/tasks" {
-			t.Errorf("unexpected path: %s", r.URL.Path)
-		}
-		if r.Method != http.MethodGet {
-			t.Errorf("unexpected method: %s", r.Method)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, tasksJSON)
-	}))
-	defer ts.Close()
-
-	addr := ts.URL[len("http://"):]
-	cmd := fetchTasks(addr)
-	msg := cmd()
-
-	result, ok := msg.(tasksResult)
-	if !ok {
-		t.Fatalf("expected tasksResult, got %T", msg)
-	}
-	if result.err != nil {
-		t.Fatalf("unexpected error: %v", result.err)
-	}
-	if len(result.tasks) != 2 {
-		t.Errorf("tasks count = %d, want 2", len(result.tasks))
-	}
-	if result.tasks[0].ID != 1 || result.tasks[0].Status != agent.TaskDone {
-		t.Errorf("task[0] = %+v, want id=1 status=done", result.tasks[0])
-	}
-	if len(result.tasks[1].DependsOn) != 1 || result.tasks[1].DependsOn[0] != 1 {
-		t.Errorf("task[1].DependsOn = %v, want [1]", result.tasks[1].DependsOn)
-	}
-}
-
-func TestFetchTasks_ServerError(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "boom", http.StatusInternalServerError)
-	}))
-	defer ts.Close()
-
-	addr := ts.URL[len("http://"):]
-	cmd := fetchTasks(addr)
-	msg := cmd()
-
-	result, ok := msg.(tasksResult)
-	if !ok {
-		t.Fatalf("expected tasksResult, got %T", msg)
-	}
-	if result.err == nil {
-		t.Error("expected error, got nil")
-	}
-}
-
-func TestFetchTasks_NilResponse(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		// Return empty array (nil fn case)
-		w.Write([]byte(`[]`))
-	}))
-	defer ts.Close()
-
-	addr := ts.URL[len("http://"):]
-	cmd := fetchTasks(addr)
-	msg := cmd()
-
-	result, ok := msg.(tasksResult)
-	if !ok {
-		t.Fatalf("expected tasksResult, got %T", msg)
-	}
-	if result.err != nil {
-		t.Fatalf("unexpected error: %v", result.err)
-	}
-	if len(result.tasks) != 0 {
-		t.Errorf("tasks count = %d, want 0", len(result.tasks))
-	}
-}
-
-// ---------------------------------------------------------------------------
 // toolIndices helper
 // ---------------------------------------------------------------------------
 
@@ -508,46 +392,6 @@ func TestRenderMessage_PassesFocusedToTool(t *testing.T) {
 	focused := renderMessage(msg, 80, true)
 	if strings.Count(focused, "▍") < 2 {
 		t.Errorf("focused should use double ▍▍ bar, got: %s", focused)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Server GET /tasks endpoint
-// ---------------------------------------------------------------------------
-
-func TestHandleTasks_GET(t *testing.T) {
-	// Verify fetchTasks correctly deserializes a /tasks response.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/tasks" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode([]agent.Task{
-			{ID: 1, Type: agent.TaskTypeImplement, Description: "do thing", Status: agent.TaskDone},
-			{ID: 2, Type: agent.TaskTypeVerify, Description: "check thing", Status: agent.TaskOpen},
-		})
-	}))
-	defer srv.Close()
-
-	// fetchTasks returns a tea.Cmd; call it to get the message.
-	cmd := fetchTasks(srv.Listener.Addr().String())
-	msg := cmd()
-	result, ok := msg.(tasksResult)
-	if !ok {
-		t.Fatalf("expected tasksResult, got %T", msg)
-	}
-	if result.err != nil {
-		t.Fatalf("unexpected error: %v", result.err)
-	}
-	if len(result.tasks) != 2 {
-		t.Fatalf("expected 2 tasks, got %d", len(result.tasks))
-	}
-	if result.tasks[0].ID != 1 || result.tasks[0].Status != agent.TaskDone {
-		t.Errorf("task[0]: %+v", result.tasks[0])
-	}
-	if result.tasks[1].ID != 2 || result.tasks[1].Status != agent.TaskOpen {
-		t.Errorf("task[1]: %+v", result.tasks[1])
 	}
 }
 

@@ -15,12 +15,9 @@ func TestHubModelDisablesLegacySessionBackends(t *testing.T) {
 	if m.session.stateDir != "" {
 		t.Fatalf("hub session stateDir = %q, want no direct state dir", m.session.stateDir)
 	}
-	if m.session.embedded != nil {
-		t.Fatal("hub session should not carry an embedded daemon")
-	}
-	if m.session.authController != nil {
-		t.Fatal("hub session should not carry the legacy auth controller")
-	}
+	// embedded and authController fields were removed from model in the
+	// ac2c07b..1922318 pruning pass — their absence at the type level is a
+	// stronger guarantee than a nil-check.
 }
 
 func TestHubCommandRoutingStaysInsideAppWireClientBoundary(t *testing.T) {

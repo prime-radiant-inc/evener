@@ -355,7 +355,6 @@ func newHubModel(client *appwire.Client, hubURL string, stateDirs ...string) hub
 		stateDir = strings.TrimSpace(stateDirs[0])
 	}
 	session := newModel("", "", nil)
-	session.authController = nil
 	model := hubModel{client: client, hubURL: hubURL, stateDir: stateDir, session: session, browseSelected: -1, dashboardFilter: newHubFilterInput(), dashboardRecentOpen: map[string]bool{}, dashboardProjectClosed: map[string]bool{}, spawnDirInput: newSpawnDirInput()}
 	// Construct the pending coordinator with a buffering placeholder
 	// send. main.go calls model.pending.setSend(program.Send) after
@@ -1983,7 +1982,6 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		reducer := m.sessionTranscriptReducer()
 		reducer.applyUserMessageEcho(text)
 		m.applySessionTranscriptReducer(reducer)
-		m.session.lastSentText = text
 		if text != "" {
 			m.session.addHistory(text)
 		}
