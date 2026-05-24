@@ -1,6 +1,10 @@
 package main
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 type composerPanel struct {
 	Label          string
@@ -169,7 +173,10 @@ func (p composerPanel) composerModeForFooter() string {
 
 func (p composerPanel) View() string {
 	var b strings.Builder
-	styles := defaultTUIStyles()
+	th := activeThemeV2()
+	sectionStyle := lipgloss.NewStyle().Bold(true).Foreground(th.Accent)
+	mutedStyle := lipgloss.NewStyle().Foreground(th.TextDim)
+	errorStyle := lipgloss.NewStyle().Foreground(th.StateAwaiting).Bold(true)
 
 	// Chip strip: always show if ChipContext has any content.
 	if p.ChipContext.Harness != "" || p.ChipContext.Model != "" || p.ChipContext.Branch != "" {
@@ -179,7 +186,7 @@ func (p composerPanel) View() string {
 	}
 
 	if len(p.QueuePreview) > 0 {
-		b.WriteString(renderQueuePreview(p.QueuePreview, p.Width, styles))
+		b.WriteString(renderQueuePreview(p.QueuePreview, p.Width))
 	}
 	label := strings.TrimSpace(p.Label)
 	reason := strings.TrimSpace(p.ReadOnlyReason)
@@ -187,17 +194,17 @@ func (p composerPanel) View() string {
 		if label == "" {
 			label = "read-only"
 		}
-		b.WriteString(styles.Error.Render(label + ": " + reason))
+		b.WriteString(errorStyle.Render(label + ": " + reason))
 		b.WriteString("\n")
 	} else if label != "" {
-		b.WriteString(styles.Section.Render(label))
+		b.WriteString(sectionStyle.Render(label))
 		b.WriteString("\n")
 	}
 	if p.ShowInput {
 		b.WriteString(renderComposerDraft(p.Draft, p.MaxDraftLines))
 	}
 	if len(p.Attachments) > 0 {
-		b.WriteString(renderAttachmentChips(p.Attachments, styles))
+		b.WriteString(renderAttachmentChips(p.Attachments))
 	}
 	// Use mode-aware footer hints when available; fall back to Keys for
 	// contexts that do not supply a ChipContext (e.g. tests building
@@ -205,11 +212,11 @@ func (p composerPanel) View() string {
 	if p.ChipContext.Harness != "" || p.ChipContext.Model != "" || p.ChipContext.Branch != "" {
 		footer := composerFooterHints(p.composerModeForFooter(), p.Width, p.CanSteer)
 		if footer != "" {
-			b.WriteString(styles.Muted.Render(footer))
+			b.WriteString(mutedStyle.Render(footer))
 			b.WriteString("\n")
 		}
 	} else if len(p.Keys) > 0 {
-		b.WriteString(styles.Muted.Render(actionBarForWidth(p.Width, p.Keys...)))
+		b.WriteString(mutedStyle.Render(actionBarForWidth(p.Width, p.Keys...)))
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -220,10 +227,13 @@ func (p composerPanel) View() string {
 // what's queued. The header advertises Alt+Backspace as the way to
 // drop the most recent chip (kata 5vxd) — the [×] marker is still
 // rendered to signal the chip is removable.
-func renderAttachmentChips(atts []*PastedImage, styles tuiStyles) string {
+func renderAttachmentChips(atts []*PastedImage) string {
+	th := activeThemeV2()
+	sectionStyle := lipgloss.NewStyle().Bold(true).Foreground(th.Accent)
+	mutedStyle := lipgloss.NewStyle().Foreground(th.TextDim)
 	var b strings.Builder
-	b.WriteString(styles.Section.Render("attachments"))
-	b.WriteString(styles.Muted.Render("  alt+backspace: drop last"))
+	b.WriteString(sectionStyle.Render("attachments"))
+	b.WriteString(mutedStyle.Render("  alt+backspace: drop last"))
 	b.WriteString("\n")
 	for _, att := range atts {
 		if att == nil {
@@ -234,7 +244,7 @@ func renderAttachmentChips(atts []*PastedImage, styles tuiStyles) string {
 		if att.Width > 0 && att.Height > 0 {
 			dims = " (" + itoa(att.Width) + "x" + itoa(att.Height) + ")"
 		}
-		b.WriteString(styles.Muted.Render("📎 " + name + dims + " [×]"))
+		b.WriteString(mutedStyle.Render("📎 " + name + dims + " [×]"))
 		b.WriteString("\n")
 	}
 	return b.String()
@@ -258,13 +268,16 @@ func filepathBase(p string) string {
 // Each entry is shown as `[N] first-line` with the first line truncated to
 // roughly the composer width. Returns the lines including the section header
 // and a trailing newline.
-func renderQueuePreview(preview []string, width int, styles tuiStyles) string {
+func renderQueuePreview(preview []string, width int) string {
+	th := activeThemeV2()
+	sectionStyle := lipgloss.NewStyle().Bold(true).Foreground(th.Accent)
+	mutedStyle := lipgloss.NewStyle().Foreground(th.TextDim)
 	var b strings.Builder
 	header := "queued"
 	if n := len(preview); n > 0 {
 		header = "queued (" + itoa(n) + ")"
 	}
-	b.WriteString(styles.Section.Render(header))
+	b.WriteString(sectionStyle.Render(header))
 	b.WriteString("\n")
 	maxLine := width - 6
 	if maxLine < 20 {
@@ -276,7 +289,7 @@ func renderQueuePreview(preview []string, width int, styles tuiStyles) string {
 			first = string(runes[:maxLine-1]) + "…"
 		}
 		line := "  " + itoa(i+1) + ". " + first
-		b.WriteString(styles.Muted.Render(line))
+		b.WriteString(mutedStyle.Render(line))
 		b.WriteString("\n")
 	}
 	return b.String()

@@ -10,43 +10,9 @@ import (
 	"github.com/muesli/termenv"
 )
 
-// theme holds all color tokens for one mode (dark or light).
-type colorTheme struct {
-	// Chrome / background
-	statusBarBg lipgloss.Color
-	statusBarFg lipgloss.Color
-	viewportBg  lipgloss.Color
-	inputBg     lipgloss.Color
-
-	// Status indicators
-	connected    lipgloss.Color
-	disconnected lipgloss.Color
-
-	// Message kinds
-	userBlockBg   lipgloss.Color
-	userBlockFg   lipgloss.Color
-	thinkingFg    lipgloss.Color
-	communicateFg lipgloss.Color
-	systemFg      lipgloss.Color
-
-	// Tool calls
-	toolFg       lipgloss.Color
-	toolBorderFg lipgloss.Color
-	toolNameFg   lipgloss.Color
-	toolDurFg    lipgloss.Color
-
-	// Input / borders
-	inputBorderFg lipgloss.Color
-	inputFg       lipgloss.Color
-
-	// Pickers
-	pickerTitleFg    lipgloss.Color
-	pickerSelectedFg lipgloss.Color
-	pickerNormalFg   lipgloss.Color
-	pickerDimFg      lipgloss.Color
-	pickerActiveFg   lipgloss.Color
-}
-
+// tuiStyles holds composed lipgloss.Style values derived from the active V2
+// Theme. defaultTUIStyles() rebuilds this from activeThemeV2() on each call so
+// runtime theme switches take effect immediately.
 type tuiStyles struct {
 	Title      lipgloss.Style
 	Section    lipgloss.Style
@@ -61,97 +27,28 @@ type tuiStyles struct {
 	Ended      lipgloss.Style
 }
 
-var darkTheme = colorTheme{
-	statusBarBg: lipgloss.Color("235"),
-	statusBarFg: lipgloss.Color("252"),
-	viewportBg:  lipgloss.Color(""),
-	inputBg:     lipgloss.Color(""),
-
-	connected:    lipgloss.Color("42"),
-	disconnected: lipgloss.Color("196"),
-
-	userBlockBg:   lipgloss.Color("236"),
-	userBlockFg:   lipgloss.Color("252"),
-	thinkingFg:    lipgloss.Color("244"),
-	communicateFg: lipgloss.Color("255"),
-	systemFg:      lipgloss.Color("240"),
-
-	toolFg:       lipgloss.Color("244"),
-	toolBorderFg: lipgloss.Color("238"),
-	toolNameFg:   lipgloss.Color("179"),
-	toolDurFg:    lipgloss.Color("240"),
-
-	inputBorderFg: lipgloss.Color("238"),
-	inputFg:       lipgloss.Color("252"),
-
-	pickerTitleFg:    lipgloss.Color("42"),
-	pickerSelectedFg: lipgloss.Color("42"),
-	pickerNormalFg:   lipgloss.Color("252"),
-	pickerDimFg:      lipgloss.Color("240"),
-	pickerActiveFg:   lipgloss.Color("240"),
-}
-
-var lightTheme = colorTheme{
-	statusBarBg: lipgloss.Color("254"),
-	statusBarFg: lipgloss.Color("236"),
-	viewportBg:  lipgloss.Color(""),
-	inputBg:     lipgloss.Color(""),
-
-	connected:    lipgloss.Color("28"),
-	disconnected: lipgloss.Color("160"),
-
-	userBlockBg:   lipgloss.Color("253"),
-	userBlockFg:   lipgloss.Color("236"),
-	thinkingFg:    lipgloss.Color("244"),
-	communicateFg: lipgloss.Color("236"),
-	systemFg:      lipgloss.Color("244"),
-
-	toolFg:       lipgloss.Color("243"),
-	toolBorderFg: lipgloss.Color("250"),
-	toolNameFg:   lipgloss.Color("130"),
-	toolDurFg:    lipgloss.Color("246"),
-
-	inputBorderFg: lipgloss.Color("250"),
-	inputFg:       lipgloss.Color("236"),
-
-	pickerTitleFg:    lipgloss.Color("28"),
-	pickerSelectedFg: lipgloss.Color("28"),
-	pickerNormalFg:   lipgloss.Color("236"),
-	pickerDimFg:      lipgloss.Color("244"),
-	pickerActiveFg:   lipgloss.Color("244"),
-}
-
+// defaultTUIStyles builds a tuiStyles from the currently active V2 Theme.
 func defaultTUIStyles() tuiStyles {
-	t := effectiveTUITheme()
+	th := activeThemeV2()
 	return tuiStyles{
-		Title:      lipgloss.NewStyle().Bold(true).Foreground(t.statusBarFg).Background(t.statusBarBg),
-		Section:    lipgloss.NewStyle().Bold(true).Foreground(t.pickerTitleFg),
-		Muted:      lipgloss.NewStyle().Foreground(t.pickerDimFg),
-		Selected:   lipgloss.NewStyle().Foreground(t.userBlockFg).Background(t.userBlockBg).Bold(true),
-		Pane:       lipgloss.NewStyle().Foreground(t.statusBarFg).Background(t.statusBarBg).PaddingLeft(2).PaddingRight(1),
-		Modal:      lipgloss.NewStyle().Foreground(t.statusBarFg).Background(t.statusBarBg).Border(lipgloss.RoundedBorder()).BorderForeground(t.inputBorderFg).PaddingLeft(2).PaddingRight(2),
-		Error:      lipgloss.NewStyle().Foreground(t.disconnected).Bold(true),
-		Idle:       lipgloss.NewStyle().Foreground(t.connected),
-		Processing: lipgloss.NewStyle().Foreground(lipgloss.Color("111")),
-		Waiting:    lipgloss.NewStyle().Foreground(lipgloss.Color("210")),
-		Ended:      lipgloss.NewStyle().Foreground(t.pickerDimFg),
+		Title:      lipgloss.NewStyle().Bold(true).Foreground(th.Text).Background(th.BgRaised),
+		Section:    lipgloss.NewStyle().Bold(true).Foreground(th.Accent),
+		Muted:      lipgloss.NewStyle().Foreground(th.TextDim),
+		Selected:   lipgloss.NewStyle().Foreground(th.Text).Background(th.SurfaceSecondary).Bold(true),
+		Pane:       lipgloss.NewStyle().Foreground(th.Text).Background(th.BgRaised).PaddingLeft(2).PaddingRight(1),
+		Modal:      lipgloss.NewStyle().Foreground(th.Text).Background(th.BgRaised).Border(lipgloss.RoundedBorder()).BorderForeground(th.Rule).PaddingLeft(2).PaddingRight(2),
+		Error:      lipgloss.NewStyle().Foreground(th.StateAwaiting).Bold(true),
+		Idle:       lipgloss.NewStyle().Foreground(th.StateIdle),
+		Processing: lipgloss.NewStyle().Foreground(th.StateProcessing),
+		Waiting:    lipgloss.NewStyle().Foreground(th.StateWarning),
+		Ended:      lipgloss.NewStyle().Foreground(th.StateEnded),
 	}
 }
-
-func effectiveTUITheme() colorTheme {
-	if activeTheme.statusBarFg == "" && activeTheme.statusBarBg == "" {
-		return darkTheme
-	}
-	return activeTheme
-}
-
-// activeTheme is set once at startup by initTheme().
-var activeTheme colorTheme
 
 // activeThemeName tracks the selected theme ("system", "dark", or "light").
 var activeThemeName string
 
-// Derived style vars — re-initialized by initTheme().
+// Derived style vars — re-initialized by setTheme() via applyThemeV2().
 var (
 	statusBarStyle     lipgloss.Style
 	statusConnected    lipgloss.Style
@@ -200,31 +97,15 @@ func initThemeFromStateDir(stateDir string) {
 	setTheme("system")
 }
 
-func systemTheme() colorTheme {
-	if termenv.HasDarkBackground() {
-		return darkTheme
-	}
-	return lightTheme
-}
-
 // setTheme switches to the named theme. Returns false if the name is unrecognised.
+// This is the public entry point; internally it routes to setThemeV2.
 func setTheme(name string) bool {
 	switch name {
-	case "system":
-		activeTheme = systemTheme()
-		activeThemeName = "system"
-	case "dark":
-		activeTheme = darkTheme
-		activeThemeName = "dark"
-	case "light":
-		activeTheme = lightTheme
-		activeThemeName = "light"
+	case "system", "dark", "light":
+		activeThemeName = name
 	default:
 		return false
 	}
-	applyTheme(activeTheme)
-	// V2 theme registry only has "dark" and "light". Resolve "system" to
-	// the correct V2 name so the V2-tokenized UI follows the system theme.
 	v2Name := name
 	if name == "system" {
 		if termenv.HasDarkBackground() {
@@ -234,6 +115,7 @@ func setTheme(name string) bool {
 		}
 	}
 	setThemeV2(v2Name)
+	applyThemeV2()
 	return true
 }
 
@@ -248,6 +130,91 @@ func setThemeAndPersist(stateDir, name string) bool {
 // currentThemeName returns the name of the active theme.
 func currentThemeName() string {
 	return activeThemeName
+}
+
+// applyThemeV2 rebuilds all derived style vars from the currently active V2 Theme.
+func applyThemeV2() {
+	th := activeThemeV2()
+
+	statusBarStyle = lipgloss.NewStyle().
+		Background(th.BgRaised).
+		Foreground(th.Text)
+
+	statusConnected = lipgloss.NewStyle().
+		Foreground(th.StateIdle).
+		Bold(true)
+
+	statusDisconnected = lipgloss.NewStyle().
+		Foreground(th.StateAwaiting).
+		Bold(true)
+
+	scrollModeStyle = lipgloss.NewStyle().
+		Foreground(th.BgRaised).
+		Background(th.StateIdle).
+		Bold(true)
+
+	userBlockStyle = lipgloss.NewStyle().
+		Background(th.SurfaceSecondary).
+		Foreground(th.Text).
+		PaddingLeft(1).
+		PaddingRight(1)
+
+	thinkingStyle = lipgloss.NewStyle().
+		Foreground(th.TextDim).
+		Italic(true)
+
+	communicateStyle = lipgloss.NewStyle().
+		Foreground(th.Text)
+
+	systemStyle = lipgloss.NewStyle().
+		Foreground(th.TextMuted).
+		Italic(true)
+
+	toolCollapsedStyle = lipgloss.NewStyle().
+		Foreground(th.TextDim)
+
+	toolExpandedStyle = lipgloss.NewStyle().
+		Foreground(th.TextDim).
+		Border(lipgloss.NormalBorder(), false, false, false, true).
+		BorderForeground(th.Rule).
+		PaddingLeft(1)
+
+	toolNameStyle = lipgloss.NewStyle().
+		Foreground(th.Accent).
+		Bold(true)
+
+	toolDurationStyle = lipgloss.NewStyle().
+		Foreground(th.TextGhost)
+
+	inputBorderStyle = lipgloss.NewStyle().
+		Border(lipgloss.NormalBorder(), true, false, false, false).
+		BorderForeground(th.Rule)
+
+	viewportStyle = lipgloss.NewStyle().
+		Background(th.Bg)
+
+	pickerTitle = lipgloss.NewStyle().
+		Bold(true).
+		Foreground(th.Accent).
+		MarginBottom(1)
+
+	pickerSelected = lipgloss.NewStyle().
+		Foreground(th.Accent).
+		Bold(true)
+
+	pickerNormal = lipgloss.NewStyle().
+		Foreground(th.Text)
+
+	pickerDim = lipgloss.NewStyle().
+		Foreground(th.TextDim)
+
+	mpTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(th.Accent)
+	mpFilterStyle = lipgloss.NewStyle().Foreground(th.Text)
+	mpActiveStyle = lipgloss.NewStyle().Foreground(th.Accent).Bold(true)
+	mpNormalStyle = lipgloss.NewStyle().Foreground(th.Text)
+	mpCursorStyle = lipgloss.NewStyle().Foreground(th.Accent).Bold(true)
+	mpDimStyle = lipgloss.NewStyle().Foreground(th.TextDim)
+	mpActiveTag = lipgloss.NewStyle().Foreground(th.AccentSecondary)
 }
 
 type tuiPreferences struct {
@@ -305,86 +272,4 @@ func validThemeName(name string) bool {
 	default:
 		return false
 	}
-}
-
-func applyTheme(t colorTheme) {
-	statusBarStyle = lipgloss.NewStyle().
-		Background(t.statusBarBg).
-		Foreground(t.statusBarFg)
-
-	statusConnected = lipgloss.NewStyle().
-		Foreground(t.connected).
-		Bold(true)
-
-	statusDisconnected = lipgloss.NewStyle().
-		Foreground(t.disconnected).
-		Bold(true)
-
-	scrollModeStyle = lipgloss.NewStyle().
-		Foreground(t.statusBarBg).
-		Background(t.connected).
-		Bold(true)
-
-	userBlockStyle = lipgloss.NewStyle().
-		Background(t.userBlockBg).
-		Foreground(t.userBlockFg).
-		PaddingLeft(1).
-		PaddingRight(1)
-
-	thinkingStyle = lipgloss.NewStyle().
-		Foreground(t.thinkingFg).
-		Italic(true)
-
-	communicateStyle = lipgloss.NewStyle().
-		Foreground(t.communicateFg)
-
-	systemStyle = lipgloss.NewStyle().
-		Foreground(t.systemFg).
-		Italic(true)
-
-	toolCollapsedStyle = lipgloss.NewStyle().
-		Foreground(t.toolFg)
-
-	toolExpandedStyle = lipgloss.NewStyle().
-		Foreground(t.toolFg).
-		Border(lipgloss.NormalBorder(), false, false, false, true).
-		BorderForeground(t.toolBorderFg).
-		PaddingLeft(1)
-
-	toolNameStyle = lipgloss.NewStyle().
-		Foreground(t.toolNameFg).
-		Bold(true)
-
-	toolDurationStyle = lipgloss.NewStyle().
-		Foreground(t.toolDurFg)
-
-	inputBorderStyle = lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder(), true, false, false, false).
-		BorderForeground(t.inputBorderFg)
-
-	viewportStyle = lipgloss.NewStyle().
-		Background(t.viewportBg)
-
-	pickerTitle = lipgloss.NewStyle().
-		Bold(true).
-		Foreground(t.pickerTitleFg).
-		MarginBottom(1)
-
-	pickerSelected = lipgloss.NewStyle().
-		Foreground(t.pickerSelectedFg).
-		Bold(true)
-
-	pickerNormal = lipgloss.NewStyle().
-		Foreground(t.pickerNormalFg)
-
-	pickerDim = lipgloss.NewStyle().
-		Foreground(t.pickerDimFg)
-
-	mpTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(t.pickerTitleFg)
-	mpFilterStyle = lipgloss.NewStyle().Foreground(t.pickerNormalFg)
-	mpActiveStyle = lipgloss.NewStyle().Foreground(t.pickerSelectedFg).Bold(true)
-	mpNormalStyle = lipgloss.NewStyle().Foreground(t.pickerNormalFg)
-	mpCursorStyle = lipgloss.NewStyle().Foreground(t.pickerSelectedFg).Bold(true)
-	mpDimStyle = lipgloss.NewStyle().Foreground(t.pickerDimFg)
-	mpActiveTag = lipgloss.NewStyle().Foreground(t.pickerActiveFg)
 }

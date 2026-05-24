@@ -86,20 +86,21 @@ type model struct {
 // applyInputTheme sets the textarea's style to match the active theme colours.
 // Must be called after initTheme() and again whenever the theme changes.
 func applyInputTheme(ta *textarea.Model) {
+	th := activeThemeV2()
 	base := lipgloss.NewStyle().
-		Background(activeTheme.inputBg).
-		Foreground(activeTheme.inputFg)
-	textStyle := lipgloss.NewStyle().Foreground(activeTheme.inputFg)
+		Background(th.BgRaised).
+		Foreground(th.Text)
+	textStyle := lipgloss.NewStyle().Foreground(th.Text)
 	for _, s := range []*textarea.Style{&ta.FocusedStyle, &ta.BlurredStyle} {
 		s.Base = base
 		s.Text = textStyle
 		s.CursorLine = base
 	}
 	// The cursor block uses Reverse(true) which swaps fg/bg. Set the cursor
-	// Style foreground to inputFg so the reversed block is visible on the
+	// Style foreground to Text so the reversed block is visible on the
 	// themed background.
-	ta.Cursor.Style = lipgloss.NewStyle().Foreground(activeTheme.inputFg)
-	ta.Cursor.TextStyle = lipgloss.NewStyle().Foreground(activeTheme.inputFg)
+	ta.Cursor.Style = lipgloss.NewStyle().Foreground(th.Text)
+	ta.Cursor.TextStyle = lipgloss.NewStyle().Foreground(th.Text)
 }
 
 func newModel(addr, stateDir string, initialMessages []chatMessage) model {
@@ -1345,7 +1346,7 @@ func (m model) View() string {
 	}
 
 	bgStyle := lipgloss.NewStyle().
-		Background(activeTheme.viewportBg).
+		Background(activeThemeV2().Bg).
 		Width(m.width).
 		Height(m.height)
 

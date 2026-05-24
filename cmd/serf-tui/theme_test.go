@@ -10,10 +10,10 @@ import (
 )
 
 // TestApplyTheme_DarkAndLightDiffer checks that dark and light themes produce
-// different statusBar background colors.
+// different background colors.
 func TestApplyTheme_DarkAndLightDiffer(t *testing.T) {
-	if darkTheme.statusBarBg == lightTheme.statusBarBg {
-		t.Errorf("dark and light statusBarBg are the same: %q", darkTheme.statusBarBg)
+	if darkThemeV2.BgRaised == lightThemeV2.BgRaised {
+		t.Errorf("dark and light BgRaised are the same: %q", darkThemeV2.BgRaised)
 	}
 }
 
@@ -62,8 +62,7 @@ func withTestColorProfile(t *testing.T) {
 
 // TestSetTheme_Dark switches to dark theme and checks the name.
 func TestSetTheme_Dark(t *testing.T) {
-	applyTheme(lightTheme)
-	activeThemeName = "light"
+	setTheme("light")
 
 	ok := setTheme("dark")
 	if !ok {
@@ -72,15 +71,14 @@ func TestSetTheme_Dark(t *testing.T) {
 	if currentThemeName() != "dark" {
 		t.Errorf("currentThemeName() = %q, want %q", currentThemeName(), "dark")
 	}
-	if activeTheme.statusBarBg != darkTheme.statusBarBg {
-		t.Errorf("activeTheme.statusBarBg = %q, want %q", activeTheme.statusBarBg, darkTheme.statusBarBg)
+	if activeThemeV2().BgRaised != darkThemeV2.BgRaised {
+		t.Errorf("activeThemeV2().BgRaised = %q, want %q", activeThemeV2().BgRaised, darkThemeV2.BgRaised)
 	}
 }
 
 // TestSetTheme_Light switches to light theme and checks the name.
 func TestSetTheme_Light(t *testing.T) {
-	applyTheme(darkTheme)
-	activeThemeName = "dark"
+	setTheme("dark")
 
 	ok := setTheme("light")
 	if !ok {
@@ -89,14 +87,13 @@ func TestSetTheme_Light(t *testing.T) {
 	if currentThemeName() != "light" {
 		t.Errorf("currentThemeName() = %q, want %q", currentThemeName(), "light")
 	}
-	if activeTheme.statusBarBg != lightTheme.statusBarBg {
-		t.Errorf("activeTheme.statusBarBg = %q, want %q", activeTheme.statusBarBg, lightTheme.statusBarBg)
+	if activeThemeV2().BgRaised != lightThemeV2.BgRaised {
+		t.Errorf("activeThemeV2().BgRaised = %q, want %q", activeThemeV2().BgRaised, lightThemeV2.BgRaised)
 	}
 }
 
 func TestSetTheme_System(t *testing.T) {
-	applyTheme(darkTheme)
-	activeThemeName = "dark"
+	setTheme("dark")
 
 	ok := setTheme("system")
 	if !ok {
