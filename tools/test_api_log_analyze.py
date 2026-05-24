@@ -199,6 +199,37 @@ def test_directory_deduplicates_when_transcript_timestamp_and_latency_differ(tmp
     assert fields[8] == "30"
 
 
+def test_same_api_jsonl_shape_with_different_timing_keeps_both_calls(tmp_path):
+    first = {
+        "ts": "2026-05-24T12:00:00Z",
+        "latency_ms": 500,
+        "request": {"provider": "openai", "model": "gpt-5.2"},
+        "response": {
+            "usage": {
+                "input_tokens": 120,
+                "cache_read_tokens": 80,
+                "output_tokens": 30,
+            },
+            "finish_reason": "stop",
+            "text_length": 8,
+            "tool_call_count": 0,
+        },
+    }
+    second = dict(first)
+    second.update({"ts": "2026-05-24T12:00:02Z", "latency_ms": 700})
+    write_jsonl(tmp_path / "api.jsonl", [first, second])
+
+    result = run_analyzer(tmp_path, "--summary")
+
+    assert result.returncode == 0, result.stderr
+    row = next(line for line in result.stdout.splitlines() if line.startswith("(no session)"))
+    fields = row.split()
+    assert fields[3] == "2"
+    assert fields[6] == "240"
+    assert fields[7] == "160"
+    assert fields[9] == "60"
+
+
 def test_summary_hit_percent_includes_cache_write_tokens(tmp_path):
     api_log = tmp_path / "api.jsonl"
     write_jsonl(

@@ -27,6 +27,10 @@ from collections import defaultdict
 from pathlib import Path
 
 
+SOURCE_API_JSONL = "api_jsonl"
+SOURCE_TRANSCRIPT = "transcript"
+
+
 def find_log_files(path):
     """Find all supported API log files at the given path."""
     p = Path(path)
@@ -69,8 +73,10 @@ def read_entries(files):
             entries.extend(read_transcript_api_entries(f))
             continue
 
-        for _, entry in read_jsonl(f):
+        for lineno, entry in read_jsonl(f):
             entry["_file"] = str(f)
+            entry["_line"] = lineno
+            entry["_source_kind"] = SOURCE_API_JSONL
             entries.append(entry)
     return dedupe_entries(entries)
 
@@ -79,7 +85,7 @@ def read_transcript_api_entries(path):
     """Read only api_call records from a transcript JSONL file."""
     entries = []
     header = {}
-    for _, entry in read_jsonl(path):
+    for lineno, entry in read_jsonl(path):
         kind = entry.get("kind")
         if kind == "header":
             header = entry
@@ -88,6 +94,8 @@ def read_transcript_api_entries(path):
             continue
 
         entry["_file"] = str(path)
+        entry["_line"] = lineno
+        entry["_source_kind"] = SOURCE_TRANSCRIPT
         if header:
             if not entry.get("session_id") and header.get("session_id"):
                 entry["session_id"] = header["session_id"]
@@ -172,6 +180,19 @@ def dedupe_key(entry, index):
     return ("path", entry.get("_file"), index)
 
 
+def source_pair(entry):
+    return (entry.get("_source_kind"), entry.get("_file"))
+
+
+def is_cross_api_transcript_duplicate(left, right):
+    if source_pair(left) == source_pair(right):
+        return False
+    return {left.get("_source_kind"), right.get("_source_kind")} == {
+        SOURCE_API_JSONL,
+        SOURCE_TRANSCRIPT,
+    }
+
+
 def context_score(entry):
     return sum(
         1
@@ -188,17 +209,25 @@ def context_score(entry):
 
 
 def dedupe_entries(entries):
-    deduped = {}
-    order = []
+    deduped = []
+    seen = defaultdict(list)
     for index, entry in enumerate(entries):
         key = dedupe_key(entry, index)
-        if key not in deduped:
-            deduped[key] = entry
-            order.append(key)
+        duplicate_index = next(
+            (
+                kept_index
+                for kept_index in seen[key]
+                if is_cross_api_transcript_duplicate(entry, deduped[kept_index])
+            ),
+            None,
+        )
+        if duplicate_index is None:
+            seen[key].append(len(deduped))
+            deduped.append(entry)
             continue
-        if context_score(entry) > context_score(deduped[key]):
-            deduped[key] = entry
-    return [deduped[key] for key in order]
+        if context_score(entry) > context_score(deduped[duplicate_index]):
+            deduped[duplicate_index] = entry
+    return deduped
 
 
 def is_empty(entry):
