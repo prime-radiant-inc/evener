@@ -3398,16 +3398,8 @@ func (m hubModel) dashboardUsesWideLayout() bool {
 }
 
 func dashboardHeader(hubURL string, liveCount int, width int) string {
-	left := "serf live"
 	right := fmt.Sprintf("%s · %d live", hubURL, liveCount)
-	if width <= 0 {
-		return left + "  " + right
-	}
-	gap := width - len([]rune(left)) - len([]rune(right))
-	if gap < 2 {
-		return truncateText(left+"  "+right, width)
-	}
-	return left + strings.Repeat(" ", gap) + right
+	return SectionDivider(width, "SERF LIVE", right)
 }
 
 func renderDashboardRows(rows []hubRow, selected int, width int, compact bool) string {

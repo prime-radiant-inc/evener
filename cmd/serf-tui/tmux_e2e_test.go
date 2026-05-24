@@ -55,7 +55,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app := startTUITmux(t, bin, hub.URL())
 	defer app.Close()
 
-	screen := app.WaitFor("serf live", hub.URL(), "Launch New Session", "▾", "└─", "serf", "live task", "ops task", "1 recent")
+	screen := app.WaitFor("SERF LIVE", hub.URL(), "Launch New Session", "▾", "└─", "serf", "live task", "ops task", "1 recent")
 	if strings.Contains(screen, "ended maintenance") {
 		t.Fatalf("dashboard should fold ended sessions by default:\n%s", screen)
 	}
@@ -66,21 +66,21 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 		t.Fatalf("dashboard palette should hide non-matching sessions:\n%s", screen)
 	}
 	app.SendKeys("Escape")
-	app.WaitFor("serf live", "live task", "ops task")
+	app.WaitFor("SERF LIVE", "live task", "ops task")
 
 	initialTreeRequests := hub.WaitForTreeRequests(t, 1)
 	app.SendKeys("r")
 	hub.WaitForTreeRequests(t, initialTreeRequests+1)
 
 	app.SendKeys("Enter")
-	screen = app.WaitFor("serf live", "▸ ● serf", "Project:  serf", "Action:   enter toggles project")
+	screen = app.WaitFor("SERF LIVE", "▸ ● serf", "Project:  serf", "Action:   enter toggles project")
 	if strings.Contains(screen, "live task") || strings.Contains(screen, "ended maintenance") {
 		t.Fatalf("collapsed project should hide child sessions:\n%s", screen)
 	}
 	app.SendKeys("Right")
-	app.WaitFor("serf live", "live task", "1 recent")
+	app.WaitFor("SERF LIVE", "live task", "1 recent")
 	app.SendKeys("Down", "Down", "Enter")
-	app.WaitFor("serf live", "live task", "ended maintenance")
+	app.WaitFor("SERF LIVE", "live task", "ended maintenance")
 	app.SendKeys("/")
 	app.TypeText("ended")
 	screen = app.WaitFor("Command palette", "Filter: ended", "ended maintenance")
@@ -88,7 +88,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 		t.Fatalf("dashboard palette should hide non-matching live session:\n%s", screen)
 	}
 	app.SendKeys("Escape")
-	app.WaitFor("serf live", "live task", "ended maintenance")
+	app.WaitFor("SERF LIVE", "live task", "ended maintenance")
 
 	app.SendKeys("Down", "n")
 	app.WaitFor("serf / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):")
@@ -110,7 +110,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	}
 
 	app.SendKeys("C-o")
-	app.WaitFor("serf live", "live task")
+	app.WaitFor("SERF LIVE", "live task")
 	app.SendKeys("n")
 	app.WaitFor("serf / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):")
 	app.TypeLine("spawn from project")
@@ -127,7 +127,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	}
 
 	app.SendKeys("C-o")
-	app.WaitFor("serf live", "live task")
+	app.WaitFor("SERF LIVE", "live task")
 	app.SendKeys("q")
 	app.WaitForExit()
 }
@@ -140,28 +140,28 @@ func TestTUITmuxE2E_AppShellPreservesLayoutAcrossWidths(t *testing.T) {
 	app := startTUITmux(t, bin, hub.URL())
 	defer app.Close()
 
-	screen := app.WaitFor("serf live", "live task", "ctrl+o dashboard")
-	requirePaneOrder(t, screen, "serf live", "live task", "ctrl+o dashboard")
+	screen := app.WaitFor("SERF LIVE", "live task", "ctrl+o dashboard")
+	requirePaneOrder(t, screen, "SERF LIVE", "live task", "ctrl+o dashboard")
 
 	app.SendKeys("/")
 	screen = app.WaitFor("Command palette", "ctrl+o dashboard")
-	requirePaneOrder(t, screen, "serf live", "Command palette", "ctrl+o dashboard")
+	requirePaneOrder(t, screen, "SERF LIVE", "Command palette", "ctrl+o dashboard")
 
 	app.Resize(60, 30)
 	screen = app.WaitFor("Command palette", "ctrl+o dashboard")
-	requirePaneOrder(t, screen, "serf live", "Command palette", "ctrl+o dashboard")
+	requirePaneOrder(t, screen, "SERF LIVE", "Command palette", "ctrl+o dashboard")
 
 	app.SendKeys("C-o")
-	screen = app.WaitFor("serf live", "live task", "ctrl+o dashboard")
-	requirePaneOrder(t, screen, "serf live", "live task", "ctrl+o dashboard")
+	screen = app.WaitFor("SERF LIVE", "live task", "ctrl+o dashboard")
+	requirePaneOrder(t, screen, "SERF LIVE", "live task", "ctrl+o dashboard")
 
 	app.SendKeys("n")
 	screen = app.WaitFor("serf / new session", "Prompt (optional):", "ctrl+o: dashboard")
 	requirePaneOrder(t, screen, "serf / new session", "Prompt (optional):", "ctrl+o: dashboard")
 
 	app.SendKeys("C-o")
-	screen = app.WaitFor("serf live", "live task", "ctrl+o dashboard")
-	requirePaneOrder(t, screen, "serf live", "live task", "ctrl+o dashboard")
+	screen = app.WaitFor("SERF LIVE", "live task", "ctrl+o dashboard")
+	requirePaneOrder(t, screen, "SERF LIVE", "live task", "ctrl+o dashboard")
 }
 
 func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
@@ -174,7 +174,7 @@ func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
 
 	wide := startTUITmuxSized(t, bin, hub.URL(), 140, 40)
 	defer wide.Close()
-	wideScreen := wide.WaitFor("serf live", "details", "Project:  serf", "Live:     1", "Dir:      "+tuiE2EProjectDir)
+	wideScreen := wide.WaitFor("SERF LIVE", "details", "Project:  serf", "Live:     1", "Dir:      "+tuiE2EProjectDir)
 	if strings.Contains(wideScreen, "Prompt (optional):") || strings.Contains(wideScreen, "enter: send") {
 		t.Fatalf("wide dashboard rendered a composer:\n%s", wideScreen)
 	}
@@ -184,7 +184,7 @@ func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
 
 	narrow := startTUITmuxSized(t, bin, hub.URL(), 60, 30)
 	defer narrow.Close()
-	narrowScreen := narrow.WaitFor("serf live", "keys: up/down enter n new / palette ctrl+o dashboard q", "...")
+	narrowScreen := narrow.WaitFor("SERF LIVE", "keys: up/down enter n new / palette ctrl+o dashboard q", "...")
 	if strings.Contains(narrowScreen, "details") {
 		t.Fatalf("narrow dashboard rendered details drawer:\n%s", narrowScreen)
 	}
@@ -204,7 +204,7 @@ func TestTUITmuxE2E_DashboardFooterAnchorsToBottom(t *testing.T) {
 	app := startTUITmuxSized(t, bin, hub.URL(), 124, 18)
 	defer app.Close()
 
-	screen := app.WaitFor("serf live", "up/down select")
+	screen := app.WaitFor("SERF LIVE", "up/down select")
 	lines := strings.Split(strings.TrimSuffix(screen, "\n"), "\n")
 	lastNonEmpty := -1
 	for i, line := range lines {
@@ -226,7 +226,7 @@ func TestTUITmuxE2E_DashboardRecentOnlyState(t *testing.T) {
 	app := startTUITmux(t, bin, hub.URL())
 	defer app.Close()
 
-	screen := app.WaitFor("serf live", "0 live", "2 recent", "1 recent", "/ palette")
+	screen := app.WaitFor("SERF LIVE", "0 live", "2 recent", "1 recent", "/ palette")
 	if strings.Contains(screen, "ended maintenance") || strings.Contains(screen, "ops task") {
 		t.Fatalf("recent-only dashboard should fold ended sessions by default:\n%s", screen)
 	}
@@ -236,7 +236,7 @@ func TestTUITmuxE2E_DashboardRecentOnlyState(t *testing.T) {
 	t.Logf("recent-only dashboard capture:\n%s", screen)
 
 	app.SendKeys("Down", "Enter")
-	app.WaitFor("serf live", "ended maintenance")
+	app.WaitFor("SERF LIVE", "ended maintenance")
 	app.SendKeys("q")
 	app.WaitForExit()
 }
@@ -249,8 +249,8 @@ func TestTUITmuxE2E_ProjectHistoryReadOnlyAndResume(t *testing.T) {
 	app := startTUITmux(t, bin, hub.URL())
 	defer app.Close()
 
-	app.WaitFor("serf live", "live task")
-	screen := app.WaitFor("serf live", "live task", "1 recent")
+	app.WaitFor("SERF LIVE", "live task")
+	screen := app.WaitFor("SERF LIVE", "live task", "1 recent")
 	for _, unwanted := range []string{"enter: send", "Prompt (optional):"} {
 		if strings.Contains(screen, unwanted) {
 			t.Fatalf("dashboard rendered composer/spawn text %q:\n%s", unwanted, screen)
@@ -281,7 +281,7 @@ func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
 	app := startTUITmux(t, bin, hub.URL())
 	defer app.Close()
 
-	app.WaitFor("serf live", "live task")
+	app.WaitFor("SERF LIVE", "live task")
 	app.SendKeys("n")
 	app.WaitFor("Harness:  serf", "Model:    openai/gpt-5")
 	app.SendKeys("Tab", "Enter")
@@ -332,9 +332,9 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	app.WaitFor("Unknown command: /wat. Type /help for available commands.")
 
 	app.TypeLine("/project")
-	app.WaitFor("serf live", "Project:  serf", "live task")
+	app.WaitFor("SERF LIVE", "Project:  serf", "live task")
 	app.SendKeys("Down", "Down", "Enter")
-	app.WaitFor("serf live", "ended maintenance")
+	app.WaitFor("SERF LIVE", "ended maintenance")
 	app.SendKeys("/")
 	app.WaitFor("Command palette", "live task", "ended maintenance")
 	app.TypeText("ended")
@@ -407,12 +407,12 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	}
 
 	app.TypeLine("/project")
-	app.WaitFor("serf live", "Project:  serf")
+	app.WaitFor("SERF LIVE", "Project:  serf")
 	app.SendKeys("Down", "Enter")
 	app.WaitFor("live task", "local:01LIVE")
 
 	app.TypeLine("/dashboard")
-	app.WaitFor("serf live", "live task")
+	app.WaitFor("SERF LIVE", "live task")
 	openLiveSession(t, app)
 	app.WaitFor("live task", "local:01LIVE")
 
@@ -465,7 +465,7 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 		t.Fatalf("fork edited input=%q, want initial question", forks[0].EditedInput)
 	}
 	app.SendKeys("C-o")
-	app.WaitFor("serf live", "live task")
+	app.WaitFor("SERF LIVE", "live task")
 }
 
 func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
@@ -703,7 +703,7 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 
 	hub.SetSessionState("01LIVE", appwire.ThreadStatusIdle)
 	app.SendKeys("C-o")
-	app.WaitFor("serf live")
+	app.WaitFor("SERF LIVE")
 	openLiveSession(t, app)
 	app.WaitFor("state: idle", "send: ready")
 
@@ -712,7 +712,7 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 	app.WaitFor("Send failed: appwire turn/start: send failed", "error: Send failed: appwire turn/start: send failed", "> send failure draft")
 
 	app.SendKeys("C-o")
-	app.WaitFor("serf live")
+	app.WaitFor("SERF LIVE")
 	app.SendKeys("Down", "Enter", "Down", "Enter")
 	screen := app.WaitFor("ended maintenance", "state: ended", "enter: send")
 	if strings.Contains(screen, "read-only") || strings.Contains(screen, "source does not support send") {
@@ -739,7 +739,7 @@ func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
 
 	hub.AppendAssistantFinal("01LIVE", "partial live answer done")
 	app.SendKeys("C-o")
-	app.WaitFor("serf live", "live task")
+	app.WaitFor("SERF LIVE", "live task")
 	openLiveSession(t, app)
 	app.WaitFor("partial live answer done")
 }
@@ -763,7 +763,7 @@ func TestTUITmuxE2E_HubStreamingToolGroupBeforeRefresh(t *testing.T) {
 
 	hub.AppendToolFinal("01LIVE")
 	app.SendKeys("C-o")
-	app.WaitFor("serf live", "live task")
+	app.WaitFor("SERF LIVE", "live task")
 	openLiveSession(t, app)
 	app.WaitFor("read_file", "tmux tool output")
 }
@@ -789,7 +789,7 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 	app.WaitFor("Send failed", "category: appwire", "reason: appwire turn/start: send failed", "> send should fail")
 
 	app.SendKeys("C-o")
-	app.WaitFor("serf live", "live task")
+	app.WaitFor("SERF LIVE", "live task")
 	hub.SetFailSpawn(true)
 	app.SendKeys("n")
 	app.WaitFor("serf / new session", "Prompt (optional):")
@@ -799,12 +799,12 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 
 func openLiveSession(t *testing.T, app *tmuxTUI) {
 	t.Helper()
-	app.WaitFor("serf live", "serf", "live task")
+	app.WaitFor("SERF LIVE", "serf", "live task")
 	app.SendKeys("/")
 	app.TypeText("Project: serf")
 	app.WaitFor("Command palette", "Project: serf")
 	app.SendKeys("Enter")
-	app.WaitFor("serf live", "Project:  serf", "live task")
+	app.WaitFor("SERF LIVE", "Project:  serf", "live task")
 	app.SendKeys("Down", "Enter")
 }
 
@@ -847,7 +847,7 @@ func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmu
 	runTmux(t, "new-session", "-d", "-x", fmt.Sprint(width), "-y", fmt.Sprint(height), "-s", session, command)
 	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
 	app := &tmuxTUI{t: t, session: session}
-	app.WaitFor("serf live")
+	app.WaitFor("SERF LIVE")
 	return app
 }
 
@@ -858,7 +858,7 @@ func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) 
 	runTmux(t, "new-session", "-d", "-x", fmt.Sprint(width), "-y", fmt.Sprint(height), "-s", session, command)
 	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
 	app := &tmuxTUI{t: t, session: session}
-	app.WaitFor("serf live")
+	app.WaitFor("SERF LIVE")
 	return app
 }
 

@@ -12,7 +12,7 @@ func TestHubModelAppShellKeepsDashboardFooterUnderPaletteOverlay(t *testing.T) {
 	m.openCommandPalette()
 
 	got := m.View()
-	requireOrderedText(t, got, "serf live", "Command palette", "ctrl+o dashboard")
+	requireOrderedText(t, got, "SERF LIVE", "Command palette", "ctrl+o dashboard")
 }
 
 func TestHubModelAppShellSessionTopBarAndComposerRegion(t *testing.T) {
@@ -108,6 +108,16 @@ func TestDashboardFooterUsesTextKeyNames(t *testing.T) {
 	}
 	if !strings.Contains(got, "up/down select") {
 		t.Fatalf("dashboard footer missing text select hint:\n%s", got)
+	}
+}
+
+func TestDashboardHeaderUsesSectionDivider(t *testing.T) {
+	withTestColorProfile(t)
+	got := dashboardHeader("http://hub.test", 3, 100)
+	for _, want := range []string{"SERF LIVE", "http://hub.test", "─", "┄"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("dashboardHeader missing %q in: %q", want, got)
+		}
 	}
 }
 
