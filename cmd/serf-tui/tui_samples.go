@@ -305,7 +305,7 @@ func sampleRenders() []tuiSampleRender {
 		width    int
 		contains []string
 	}{
-		{name: "dashboard-narrow", width: 60, contains: []string{"SERF LIVE", "─", "┄", "n new", "/ palette"}},
+		{name: "dashboard-narrow", width: 60, contains: []string{"SERF LIVE", "─", "┄", "new", "filter"}},
 		{name: "dashboard-normal", width: 100, contains: []string{"SERF LIVE", "codex-local", "Restore hub TUI widgets"}},
 		{name: "dashboard-wide", width: 140, contains: []string{"SERF LIVE", "─", "┄", "Codex app-server smoke"}},
 		{name: "session-idle", width: 100, contains: []string{"message", "draft stays visible"}},

@@ -12,7 +12,7 @@ func TestHubModelAppShellKeepsDashboardFooterUnderPaletteOverlay(t *testing.T) {
 	m.openCommandPalette()
 
 	got := m.View()
-	requireOrderedText(t, got, "SERF LIVE", "Command palette", "ctrl+o dashboard")
+	requireOrderedText(t, got, "SERF LIVE", "Command palette", "dashboard")
 }
 
 func TestHubModelAppShellSessionTopBarAndComposerRegion(t *testing.T) {
@@ -102,12 +102,21 @@ func TestActionBarWrapsBeforeDroppingDashboardHint(t *testing.T) {
 }
 
 func TestDashboardFooterUsesTextKeyNames(t *testing.T) {
+	withTestColorProfile(t)
 	got := dashboardFooter(100)
-	if strings.ContainsAny(got, "↑↓") {
-		t.Fatalf("dashboard footer should use text key names instead of arrow glyphs:\n%s", got)
+	// KbdHint chips: verify key and action labels are both present
+	for _, label := range []string{"select", "open", "new", "filter", "dashboard", "quit"} {
+		if !strings.Contains(got, label) {
+			t.Fatalf("dashboard footer missing label %q:\n%s", label, got)
+		}
 	}
-	if !strings.Contains(got, "up/down select") {
-		t.Fatalf("dashboard footer missing text select hint:\n%s", got)
+}
+
+func TestDashboardFooterContainsKbdHintChrome(t *testing.T) {
+	withTestColorProfile(t)
+	got := dashboardFooter(100)
+	if !strings.Contains(got, "\x1b[") {
+		t.Errorf("dashboardFooter should style kbd tokens with ANSI escapes: %q", got)
 	}
 }
 

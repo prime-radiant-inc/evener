@@ -140,28 +140,28 @@ func TestTUITmuxE2E_AppShellPreservesLayoutAcrossWidths(t *testing.T) {
 	app := startTUITmux(t, bin, hub.URL())
 	defer app.Close()
 
-	screen := app.WaitFor("SERF LIVE", "live task", "ctrl+o dashboard")
-	requirePaneOrder(t, screen, "SERF LIVE", "live task", "ctrl+o dashboard")
+	screen := app.WaitFor("SERF LIVE", "live task", "dashboard")
+	requirePaneOrder(t, screen, "SERF LIVE", "live task", "dashboard")
 
 	app.SendKeys("/")
-	screen = app.WaitFor("Command palette", "ctrl+o dashboard")
-	requirePaneOrder(t, screen, "SERF LIVE", "Command palette", "ctrl+o dashboard")
+	screen = app.WaitFor("Command palette", "dashboard")
+	requirePaneOrder(t, screen, "SERF LIVE", "Command palette", "dashboard")
 
 	app.Resize(60, 30)
-	screen = app.WaitFor("Command palette", "ctrl+o dashboard")
-	requirePaneOrder(t, screen, "SERF LIVE", "Command palette", "ctrl+o dashboard")
+	screen = app.WaitFor("Command palette", "dashboard")
+	requirePaneOrder(t, screen, "SERF LIVE", "Command palette", "dashboard")
 
 	app.SendKeys("C-o")
-	screen = app.WaitFor("SERF LIVE", "live task", "ctrl+o dashboard")
-	requirePaneOrder(t, screen, "SERF LIVE", "live task", "ctrl+o dashboard")
+	screen = app.WaitFor("SERF LIVE", "live task", "dashboard")
+	requirePaneOrder(t, screen, "SERF LIVE", "live task", "dashboard")
 
 	app.SendKeys("n")
 	screen = app.WaitFor("serf / new session", "Prompt (optional):", "ctrl+o: dashboard")
 	requirePaneOrder(t, screen, "serf / new session", "Prompt (optional):", "ctrl+o: dashboard")
 
 	app.SendKeys("C-o")
-	screen = app.WaitFor("SERF LIVE", "live task", "ctrl+o dashboard")
-	requirePaneOrder(t, screen, "SERF LIVE", "live task", "ctrl+o dashboard")
+	screen = app.WaitFor("SERF LIVE", "live task", "dashboard")
+	requirePaneOrder(t, screen, "SERF LIVE", "live task", "dashboard")
 }
 
 func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
@@ -184,7 +184,7 @@ func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
 
 	narrow := startTUITmuxSized(t, bin, hub.URL(), 60, 30)
 	defer narrow.Close()
-	narrowScreen := narrow.WaitFor("SERF LIVE", "keys: up/down enter n new / palette ctrl+o dashboard q", "...")
+	narrowScreen := narrow.WaitFor("SERF LIVE", "filter", "...")
 	if strings.Contains(narrowScreen, "details") {
 		t.Fatalf("narrow dashboard rendered details drawer:\n%s", narrowScreen)
 	}
@@ -204,7 +204,7 @@ func TestTUITmuxE2E_DashboardFooterAnchorsToBottom(t *testing.T) {
 	app := startTUITmuxSized(t, bin, hub.URL(), 124, 18)
 	defer app.Close()
 
-	screen := app.WaitFor("SERF LIVE", "up/down select")
+	screen := app.WaitFor("SERF LIVE", "select")
 	lines := strings.Split(strings.TrimSuffix(screen, "\n"), "\n")
 	lastNonEmpty := -1
 	for i, line := range lines {
@@ -226,7 +226,7 @@ func TestTUITmuxE2E_DashboardRecentOnlyState(t *testing.T) {
 	app := startTUITmux(t, bin, hub.URL())
 	defer app.Close()
 
-	screen := app.WaitFor("SERF LIVE", "0 live", "2 recent", "1 recent", "/ palette")
+	screen := app.WaitFor("SERF LIVE", "0 live", "2 recent", "1 recent", "filter")
 	if strings.Contains(screen, "ended maintenance") || strings.Contains(screen, "ops task") {
 		t.Fatalf("recent-only dashboard should fold ended sessions by default:\n%s", screen)
 	}

@@ -3623,10 +3623,15 @@ func dashboardProjectExpanded(rows []hubRow, index int) bool {
 }
 
 func dashboardFooter(width int) string {
-	if width <= 72 {
-		return truncateText("keys: up/down enter n new / palette ctrl+o dashboard q", width)
+	tokens := []string{
+		KbdHint("↑↓", "select"),
+		KbdHint("enter", "open"),
+		KbdHint("n", "new"),
+		KbdHint("/", "filter"),
+		KbdHint("⌘O", "dashboard"),
+		KbdHint("q", "quit"),
 	}
-	return truncateText("up/down select  enter open/toggle  n new  / palette  ctrl+o dashboard  q quit", width)
+	return actionBarForWidth(width, tokens...)
 }
 
 func emptyDashboardFooter(width int) string {

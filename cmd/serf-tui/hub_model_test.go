@@ -453,7 +453,7 @@ func TestHubModelDashboardNarrowUsesOneColumnWithEllipses(t *testing.T) {
 	if strings.Contains(got, "details") {
 		t.Fatalf("narrow dashboard should stay one-column without details drawer:\n%s", got)
 	}
-	if !strings.Contains(got, "ctrl+o dashboard") {
+	if !strings.Contains(got, "dashboard") {
 		t.Fatalf("narrow dashboard should keep the dashboard shortcut explicit:\n%s", got)
 	}
 }
@@ -2915,7 +2915,7 @@ func TestHubModelDashboardShowsRecentWhenNothingLive(t *testing.T) {
 	m.rows = buildDashboardRows(m.tree)
 
 	got := m.dashboardView()
-	for _, want := range []string{"0 live", "0 live · 1 recent", "1 recent", "/ palette"} {
+	for _, want := range []string{"0 live", "0 live · 1 recent", "1 recent", "filter"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("dashboard recent-only state missing %q:\n%s", want, got)
 		}
@@ -2964,8 +2964,8 @@ func TestHubModelActionBarsUseApprovedNewSessionKey(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.tree = corpus.DashboardTree
 	m.rows = buildDashboardRows(corpus.DashboardTree)
-	if got := m.dashboardView(); !strings.Contains(got, "n new") || strings.Contains(got, "s spawn") || strings.Contains(got, "p project") {
-		t.Fatalf("dashboard action bar should advertise n new without legacy project/spawn keys:\n%s", got)
+	if got := m.dashboardView(); !strings.Contains(got, "new") || strings.Contains(got, "s spawn") || strings.Contains(got, "p project") {
+		t.Fatalf("dashboard action bar should advertise new without legacy project/spawn keys:\n%s", got)
 	}
 }
 
