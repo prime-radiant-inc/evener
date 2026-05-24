@@ -120,15 +120,8 @@ func (m modelPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m modelPicker) View() string {
+func (m modelPicker) renderBody() string {
 	var b strings.Builder
-
-	title := m.title
-	if title == "" {
-		title = "Select model"
-	}
-	b.WriteString(mpTitleStyle.Render(title))
-	b.WriteString("\n")
 
 	filterText := m.filter
 	if filterText == "" {
@@ -193,12 +186,20 @@ func (m modelPicker) View() string {
 			b.WriteString("\n")
 		}
 	}
+	return b.String()
+}
 
-	b.WriteString("\n")
-	footer := m.footer
-	if footer == "" {
-		footer = "up/down navigate  enter select  esc cancel"
+func (m modelPicker) View() string {
+	title := m.title
+	if title == "" {
+		title = "Select model"
 	}
-	b.WriteString(mpDimStyle.Render(footer))
-	return renderPopupPane(b.String(), m.width)
+	body := m.renderBody()
+	footer := actionBarForWidth(m.width, KbdHint("↑↓", "navigate"), KbdHint("enter", "select"), KbdHint("esc", "cancel"))
+	return Overlay(OverlayOpts{
+		Title:  title,
+		Width:  m.width,
+		Body:   body,
+		Footer: footer,
+	})
 }

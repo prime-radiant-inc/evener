@@ -174,7 +174,20 @@ func TestModelPickerRendersAsPopupPane(t *testing.T) {
 		t.Fatalf("model picker popup should render terminal styling:\n%s", view)
 	}
 	plain := ansiPattern.ReplaceAllString(view, "")
-	if !strings.Contains(plain, "  Select model") {
-		t.Fatalf("model picker popup should have pane padding:\n%s", plain)
+	if !strings.Contains(plain, "Select model") {
+		t.Fatalf("model picker popup should have title:\n%s", plain)
+	}
+}
+
+func TestModelPickerUsesOverlayBorder(t *testing.T) {
+	withTestColorProfile(t)
+	p := newModelPicker([]modelPickerItem{{id: "x", display: "openai/gpt-5.5"}}, "x", 80)
+	got := p.View()
+	plain := ansiPattern.ReplaceAllString(got, "")
+	if !strings.Contains(plain, "╭") || !strings.Contains(plain, "╯") {
+		t.Errorf("model picker should use rounded border (Overlay primitive): %q", plain)
+	}
+	if !strings.Contains(plain, "Select model") {
+		t.Errorf("title should be in border: %q", plain)
 	}
 }
