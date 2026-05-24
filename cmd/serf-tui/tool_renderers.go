@@ -105,13 +105,14 @@ func sortedToolArgKeys(m ToolArgs) []string {
 func unknownToolRenderer(tool string) ToolRenderer {
 	return ToolRenderer{
 		Verb:   func(_ ToolArgs) string { return tool },
-		Target: func(_ ToolArgs) string { return "" },
-		Result: func(_ ToolArgs, _ string, errStr string, _ time.Duration) string {
+		Target: func(args ToolArgs) string { return "" },
+		Result: func(_ ToolArgs, _, errStr string, _ time.Duration) string {
 			if errStr != "" {
 				return "error"
 			}
 			return "ok"
 		},
+		Body: jsonBody,
 	}
 }
 

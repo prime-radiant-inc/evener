@@ -198,3 +198,10 @@ func TestMCPFallbackTargetIncludesFirstArgs(t *testing.T) {
 		t.Errorf("MCP target should include first string arg: %q", target)
 	}
 }
+
+func TestUnknownToolHasJSONBody(t *testing.T) {
+	r, _ := lookupToolRenderer("unknown_tool_xyz")
+	if r.Body == nil {
+		t.Errorf("unknown tool renderer should have jsonBody")
+	}
+}
