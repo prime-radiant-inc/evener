@@ -57,13 +57,31 @@ func TestSetThemeIgnoresUnknown(t *testing.T) {
 }
 
 func TestSetThemeCallsMarkdownInvalidator(t *testing.T) {
+	// Save and restore the real invalidator so we can intercept calls.
+	saved := markdownInvalidator
 	t.Cleanup(func() {
+		markdownInvalidator = saved
 		setThemeV2("dark")
 		markdownInvalidationCount = 0
 	})
 	markdownInvalidationCount = 0
+	markdownInvalidator = func() { markdownInvalidationCount++ }
 	setThemeV2("light")
 	if markdownInvalidationCount != 1 {
 		t.Errorf("expected 1 invalidation, got %d", markdownInvalidationCount)
+	}
+}
+
+func TestMarkdownInvalidatorIsWired(t *testing.T) {
+	t.Cleanup(func() { setThemeV2("dark") })
+
+	_ = renderMarkdown("# hello", 40)
+	if markdownRendererCached() == nil {
+		t.Fatalf("renderMarkdown did not populate cache")
+	}
+
+	setThemeV2("light")
+	if markdownRendererCached() != nil {
+		t.Errorf("setThemeV2 should have invalidated markdownRenderer cache")
 	}
 }

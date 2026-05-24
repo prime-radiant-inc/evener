@@ -53,6 +53,18 @@ func renderMarkdown(text string, width int) string {
 	return strings.TrimSpace(rendered)
 }
 
+func markdownRendererCached() *glamour.TermRenderer {
+	return markdownRenderer
+}
+
+func resetMarkdownRenderer() {
+	markdownRenderer = nil
+}
+
+func init() {
+	markdownInvalidator = resetMarkdownRenderer
+}
+
 func containsMarkdownSyntax(text string) bool {
 	if strings.ContainsAny(text, "`*_[]") {
 		return true
