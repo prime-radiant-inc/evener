@@ -223,6 +223,7 @@ func setTheme(name string) bool {
 		return false
 	}
 	applyTheme(activeTheme)
+	setThemeV2(name)
 	return true
 }
 
