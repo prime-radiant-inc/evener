@@ -257,4 +257,89 @@ func init() {
 		ExpandedByDefault: true,
 	}
 	toolRenderers["apply_patch"] = applyPatchRenderer
+
+	// web_fetch
+	toolRenderers["web_fetch"] = ToolRenderer{
+		Verb:   func(_ ToolArgs) string { return "fetch" },
+		Target: func(args ToolArgs) string { return args.Str("url") },
+		Result: func(_ ToolArgs, output, errStr string, _ time.Duration) string {
+			if errStr != "" {
+				return "error"
+			}
+			return strconv.Itoa(len(output)) + " bytes"
+		},
+	}
+
+	// web_search
+	toolRenderers["web_search"] = ToolRenderer{
+		Verb:   func(_ ToolArgs) string { return "search" },
+		Target: func(args ToolArgs) string { return args.Str("query") },
+		Result: func(_ ToolArgs, output, errStr string, _ time.Duration) string {
+			if errStr != "" {
+				return "error"
+			}
+			results := strings.Count(output, "\n") + 1
+			return strconv.Itoa(results) + " results"
+		},
+	}
+
+	// spawn_agent
+	toolRenderers["spawn_agent"] = ToolRenderer{
+		Verb: func(_ ToolArgs) string { return "spawn" },
+		Target: func(args ToolArgs) string {
+			task := args.Str("task")
+			if len(task) > 80 {
+				task = task[:80] + "…"
+			}
+			return task
+		},
+		Result: func(_ ToolArgs, _ string, errStr string, _ time.Duration) string {
+			if errStr != "" {
+				return "error"
+			}
+			return "ok"
+		},
+	}
+
+	// resume_agent / wait / close_agent — agent control factory
+	agentControl := func(verb string) ToolRenderer {
+		return ToolRenderer{
+			Verb:   func(_ ToolArgs) string { return verb },
+			Target: func(args ToolArgs) string { return shortID(args.Str("agent_id")) },
+			Result: func(_ ToolArgs, _ string, errStr string, _ time.Duration) string {
+				if errStr != "" {
+					return "error"
+				}
+				return "ok"
+			},
+		}
+	}
+	toolRenderers["resume_agent"] = agentControl("resume")
+	toolRenderers["wait"] = agentControl("wait")
+	toolRenderers["close_agent"] = agentControl("close")
+
+	// task_list
+	toolRenderers["task_list"] = ToolRenderer{
+		Verb:   func(_ ToolArgs) string { return "tasks" },
+		Target: func(_ ToolArgs) string { return "" },
+		Result: func(_ ToolArgs, _ string, errStr string, _ time.Duration) string {
+			if errStr != "" {
+				return "error"
+			}
+			return ""
+		},
+		ExpandedByDefault: true,
+	}
+
+	// use_skill
+	toolRenderers["use_skill"] = ToolRenderer{
+		Verb:   func(_ ToolArgs) string { return "skill" },
+		Target: func(args ToolArgs) string { return args.Str("name") },
+		Result: func(_ ToolArgs, _ string, errStr string, _ time.Duration) string {
+			if errStr != "" {
+				return "error"
+			}
+			return "ok"
+		},
+	}
 }

@@ -115,3 +115,74 @@ func TestApplyPatchRenderer(t *testing.T) {
 		t.Errorf("apply_patch verb = %q", r.Verb(args))
 	}
 }
+
+func TestWebFetchRenderer(t *testing.T) {
+	r, _ := lookupToolRenderer("web_fetch")
+	args := toolArgsFromJSON(`{"url":"https://example.com"}`)
+	if r.Verb(args) != "fetch" || r.Target(args) != "https://example.com" {
+		t.Errorf("web_fetch wrong: verb=%q target=%q", r.Verb(args), r.Target(args))
+	}
+}
+
+func TestWebSearchRenderer(t *testing.T) {
+	r, _ := lookupToolRenderer("web_search")
+	args := toolArgsFromJSON(`{"query":"foo bar"}`)
+	if r.Verb(args) != "search" || r.Target(args) != "foo bar" {
+		t.Errorf("web_search wrong: verb=%q target=%q", r.Verb(args), r.Target(args))
+	}
+}
+
+func TestSpawnAgentRenderer(t *testing.T) {
+	r, _ := lookupToolRenderer("spawn_agent")
+	args := toolArgsFromJSON(`{"task":"do something useful"}`)
+	if r.Verb(args) != "spawn" {
+		t.Errorf("spawn_agent verb = %q", r.Verb(args))
+	}
+	if !strings.Contains(r.Target(args), "do something") {
+		t.Errorf("spawn_agent target should include task: %q", r.Target(args))
+	}
+}
+
+func TestResumeAgentRenderer(t *testing.T) {
+	r, _ := lookupToolRenderer("resume_agent")
+	args := toolArgsFromJSON(`{"agent_id":"01ABCD"}`)
+	if r.Verb(args) != "resume" {
+		t.Errorf("resume_agent verb = %q", r.Verb(args))
+	}
+}
+
+func TestWaitRenderer(t *testing.T) {
+	r, _ := lookupToolRenderer("wait")
+	if r.Verb(toolArgsFromJSON(`{}`)) != "wait" {
+		t.Errorf("wait verb wrong")
+	}
+}
+
+func TestCloseAgentRenderer(t *testing.T) {
+	r, _ := lookupToolRenderer("close_agent")
+	if r.Verb(toolArgsFromJSON(`{}`)) != "close" {
+		t.Errorf("close_agent verb wrong")
+	}
+}
+
+func TestTaskListRenderer(t *testing.T) {
+	r, _ := lookupToolRenderer("task_list")
+	args := toolArgsFromJSON(`{}`)
+	if r.Verb(args) != "tasks" {
+		t.Errorf("task_list verb = %q", r.Verb(args))
+	}
+	if !r.ExpandedByDefault {
+		t.Errorf("task_list should default expanded")
+	}
+}
+
+func TestUseSkillRenderer(t *testing.T) {
+	r, _ := lookupToolRenderer("use_skill")
+	args := toolArgsFromJSON(`{"name":"brainstorming"}`)
+	if r.Verb(args) != "skill" {
+		t.Errorf("use_skill verb = %q", r.Verb(args))
+	}
+	if r.Target(args) != "brainstorming" {
+		t.Errorf("use_skill target = %q", r.Target(args))
+	}
+}
