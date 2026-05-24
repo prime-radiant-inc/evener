@@ -231,8 +231,16 @@ func init() {
 			if errStr != "" {
 				return "error"
 			}
-			matches := strings.Count(output, "\n")
-			return strconv.Itoa(matches) + " matches"
+			// glob returns newline-joined matches without a trailing newline,
+			// so counting newlines under-counts by 1. Split and filter empty.
+			parts := strings.Split(strings.TrimSpace(output), "\n")
+			n := 0
+			for _, p := range parts {
+				if strings.TrimSpace(p) != "" {
+					n++
+				}
+			}
+			return strconv.Itoa(n) + " matches"
 		},
 	}
 
@@ -244,8 +252,24 @@ func init() {
 			if errStr != "" {
 				return "error"
 			}
-			entries := strings.Count(output, "\n")
-			return strconv.Itoa(entries) + " entries"
+			// list_dir returns a JSON array of DirEntry objects.
+			var entries []struct {
+				Name  string `json:"name"`
+				IsDir bool   `json:"is_dir"`
+				Size  int64  `json:"size,omitempty"`
+			}
+			if err := json.Unmarshal([]byte(output), &entries); err == nil {
+				return strconv.Itoa(len(entries)) + " entries"
+			}
+			// Fallback: count non-empty lines for unexpected text output.
+			parts := strings.Split(strings.TrimSpace(output), "\n")
+			n := 0
+			for _, p := range parts {
+				if strings.TrimSpace(p) != "" {
+					n++
+				}
+			}
+			return strconv.Itoa(n) + " entries"
 		},
 	}
 	toolRenderers["list_dir"] = listRenderer
@@ -371,8 +395,14 @@ func init() {
 
 	// use_skill
 	toolRenderers["use_skill"] = ToolRenderer{
-		Verb:   func(_ ToolArgs) string { return "skill" },
-		Target: func(args ToolArgs) string { return args.Str("name") },
+		Verb: func(_ ToolArgs) string { return "skill" },
+		Target: func(args ToolArgs) string {
+			// The tool schema uses "skill_name"; fall back to "name" for legacy calls.
+			if n := args.Str("skill_name"); n != "" {
+				return n
+			}
+			return args.Str("name")
+		},
 		Result: func(_ ToolArgs, _ string, errStr string, _ time.Duration) string {
 			if errStr != "" {
 				return "error"

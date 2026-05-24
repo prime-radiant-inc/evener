@@ -2425,10 +2425,10 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 }
 /* When the connection banner is visible the fixed-height shell containers
    must shrink so the bottom 32 px is not clipped behind the banner. The
-   banner itself is position:fixed, so only height adjustments are needed —
-   no padding-top shift on body is required. body.app and body.has-connection-banner
+   banner itself is position:fixed so we also push the flex shell down by 32px
+   to prevent it from being overlaid. body.app and body.has-connection-banner
    are the same element, hence the standalone selector. */
-body.app.has-connection-banner,
+body.app.has-connection-banner { margin-top: 32px; height: calc(100vh - 32px); }
 body.has-connection-banner #sidebar,
 body.has-connection-banner #workspace { height: calc(100vh - 32px); }
 

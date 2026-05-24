@@ -624,10 +624,18 @@
     const headerDt = document.createElement("dt");
     const headerDd = document.createElement("dd");
     headerDd.textContent = opt.label || opt.field;
+    // Help text goes inside the header row's dd so no non-row nodes land
+    // between .row.section-header and the collection .row — preserving the
+    // CSS adjacency rule (.settings-table .row.section-header + .row).
+    if (opt && opt.description) {
+      const helpP = document.createElement("p");
+      helpP.className = "help";
+      helpP.textContent = opt.description;
+      headerDd.appendChild(helpP);
+    }
     headerRow.appendChild(headerDt);
     headerRow.appendChild(headerDd);
     row.appendChild(headerRow);
-    appendHelpText(row, opt);
 
     const collectionRow = document.createElement("div");
     collectionRow.className = "row";
@@ -689,10 +697,18 @@
     const headerDt = document.createElement("dt");
     const headerDd = document.createElement("dd");
     headerDd.textContent = opt.label || opt.field;
+    // Help text goes inside the header row's dd so no non-row nodes land
+    // between .row.section-header and the collection .row — preserving the
+    // CSS adjacency rule (.settings-table .row.section-header + .row).
+    if (opt && opt.description) {
+      const helpP = document.createElement("p");
+      helpP.className = "help";
+      helpP.textContent = opt.description;
+      headerDd.appendChild(helpP);
+    }
     headerRow.appendChild(headerDt);
     headerRow.appendChild(headerDd);
     row.appendChild(headerRow);
-    appendHelpText(row, opt);
 
     const collectionRow = document.createElement("div");
     collectionRow.className = "row";

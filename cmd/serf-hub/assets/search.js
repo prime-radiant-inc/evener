@@ -10,6 +10,7 @@
   let dialog, input, results, pill, pillLabel;
   let items = [], active = -1;
   let selectedCommand = null;   // non-null only in command-args mode
+  let suspendedPanelTraps = []; // panel IDs whose traps were deactivated on open
   let argsEnumLoaded = false;   // tracks whether async enum source resolved
   let preArgsFilter = "/";       // input value before entering args mode; restored on back-out
   const recentCommandsKey = "serf.search.recentCommands";
@@ -82,6 +83,20 @@
     dialog.addEventListener("click", (e) => {
       if (e.target === dialog) close();
     });
+    // When the search dialog closes, reactivate any panel focus traps that were
+    // suspended on open. This restores keyboard containment for slide-over panels
+    // that may still be visually open behind the dialog.
+    dialog.addEventListener("close", () => {
+      if (window.SerfFocusTrap && suspendedPanelTraps.length > 0) {
+        suspendedPanelTraps.forEach(function (id) {
+          var panel = document.getElementById(id);
+          if (panel && panel.isConnected && !panel.__trapHandle) {
+            panel.__trapHandle = window.SerfFocusTrap.activate(panel, null);
+          }
+        });
+      }
+      suspendedPanelTraps = [];
+    });
   }
 
   // installPill adds the command-args header pill into the dialog header
@@ -119,14 +134,16 @@
       window.SerfSidebar.close();
     }
     // Deactivate any active panel focus traps so the search dialog is not
-    // rendered inert behind them. Panels re-trap when they regain focus on
-    // close; search dialog is a native <dialog> so no trap needed here.
+    // rendered inert behind them. Track which panels were suspended so we
+    // can reactivate them when the dialog closes.
+    suspendedPanelTraps = [];
     if (window.SerfFocusTrap) {
       ["tasks-panel", "details-panel"].forEach(function (id) {
         var panel = document.getElementById(id);
         if (panel && panel.__trapHandle) {
           window.SerfFocusTrap.deactivate(panel.__trapHandle);
           panel.__trapHandle = null;
+          suspendedPanelTraps.push(id);
         }
       });
     }

@@ -76,6 +76,22 @@ func TestGlobRenderer(t *testing.T) {
 	if r.Verb(args) != "glob" {
 		t.Errorf("glob verb = %q", r.Verb(args))
 	}
+	// Result counts entries, not newlines.
+	tests := []struct {
+		output string
+		want   string
+	}{
+		{"", "0 matches"},
+		{"a.go", "1 matches"},
+		{"a.go\nb.go", "2 matches"},
+		{"a.go\nb.go\nc.go", "3 matches"},
+	}
+	for _, tc := range tests {
+		got := r.Result(args, tc.output, "", 0)
+		if got != tc.want {
+			t.Errorf("glob Result(%q) = %q; want %q", tc.output, got, tc.want)
+		}
+	}
 }
 
 func TestListDirRenderer(t *testing.T) {
@@ -86,6 +102,21 @@ func TestListDirRenderer(t *testing.T) {
 	}
 	if r.Target(args) != "/tmp" {
 		t.Errorf("list_dir target = %q", r.Target(args))
+	}
+	// Result parses JSON array of DirEntry.
+	tests := []struct {
+		output string
+		want   string
+	}{
+		{`[]`, "0 entries"},
+		{`[{"name":"file.txt","is_dir":false}]`, "1 entries"},
+		{`[{"name":"a","is_dir":true},{"name":"b","is_dir":false},{"name":"c","is_dir":false}]`, "3 entries"},
+	}
+	for _, tc := range tests {
+		got := r.Result(args, tc.output, "", 0)
+		if got != tc.want {
+			t.Errorf("list_dir Result(%q) = %q; want %q", tc.output, got, tc.want)
+		}
 	}
 }
 
@@ -219,12 +250,18 @@ func TestTaskListRenderer(t *testing.T) {
 
 func TestUseSkillRenderer(t *testing.T) {
 	r, _ := lookupToolRenderer("use_skill")
-	args := toolArgsFromJSON(`{"name":"brainstorming"}`)
+	// Primary key: skill_name (current tool schema).
+	args := toolArgsFromJSON(`{"skill_name":"brainstorming"}`)
 	if r.Verb(args) != "skill" {
 		t.Errorf("use_skill verb = %q", r.Verb(args))
 	}
 	if r.Target(args) != "brainstorming" {
-		t.Errorf("use_skill target = %q", r.Target(args))
+		t.Errorf("use_skill target (skill_name) = %q", r.Target(args))
+	}
+	// Legacy fallback: name key.
+	argsLegacy := toolArgsFromJSON(`{"name":"debugging"}`)
+	if r.Target(argsLegacy) != "debugging" {
+		t.Errorf("use_skill target (legacy name) = %q", r.Target(argsLegacy))
 	}
 }
 
