@@ -1352,7 +1352,7 @@ func (m model) View() string {
 	if m.isOpenAIProvider() && m.authStatusSeen {
 		authHintText = authHint(m.authStatus)
 	}
-	statusBar := renderStatusBar(m.connected, m.activeModelName(), m.sessionID, authHintText, m.turns, m.contextTokens, m.contextWindowSize, m.processing, m.turnInputTokens, m.turnOutputTokens, m.scrollMode, m.width)
+	statusBar := renderStandaloneStatusBar(m.connected, m.activeModelName(), m.sessionID, authHintText, m.turns, m.contextTokens, m.contextWindowSize, m.processing, m.turnInputTokens, m.turnOutputTokens, m.scrollMode, m.width)
 
 	var body string
 	if m.picker != nil {

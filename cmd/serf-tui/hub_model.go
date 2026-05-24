@@ -4103,6 +4103,14 @@ func (m hubModel) sessionCapabilityStatusLabel() string {
 	}
 }
 
+// providerFromModel extracts the provider prefix from "provider/model" strings.
+func providerFromModel(model string) string {
+	if provider, _, ok := strings.Cut(strings.TrimSpace(model), "/"); ok {
+		return strings.TrimSpace(provider)
+	}
+	return ""
+}
+
 func (m hubModel) sessionStatusErrorText() string {
 	if m.err != nil {
 		return m.err.Error()
@@ -4185,20 +4193,30 @@ func (m hubModel) sessionView() string {
 		overlay.WriteString(m.followupModal.View())
 		overlay.WriteString("\n\n")
 	}
-	var footer string
+	var kbdFooter string
 	switch {
 	case m.transcriptView != nil:
-		footer = actionBarForWidth(m.width, "esc/i/q: return to chat", "ctrl+o: dashboard")
+		kbdFooter = actionBarForWidth(m.width, "esc/i/q: return to chat", "ctrl+o: dashboard")
 	case m.session.scrollMode:
 		keys := []string{"esc/i/q: compose"}
 		if m.detail.Capabilities.Fork {
 			keys = append(keys, "f: fork selected user turn")
 		}
 		keys = append(keys, "ctrl+o: dashboard")
-		footer = actionBarForWidth(m.width, keys...)
+		kbdFooter = actionBarForWidth(m.width, keys...)
 	default:
-		footer = m.sessionComposerPanel().View()
+		kbdFooter = m.sessionComposerPanel().View()
 	}
+	// Persistent statusbar below kbd footer
+	statusBar := renderStatusBar(statusBarInfo{
+		Connected: m.client != nil,
+		HubAddr:   m.hubURL,
+		Provider:  firstNonEmptyString(m.detail.Profile, providerFromModel(m.detail.Model)),
+		CtxUsed:   int(m.detail.ContextPressure * float64(200000)), // approximation; limit unknown
+		CtxLimit:  0,                                                // hide ctx bar in hub session (shown in header)
+		Width:     m.width,
+	})
+	footer := kbdFooter + "\n" + statusBar
 	overlayText := overlay.String()
 	bodyHeight := sessionShellBodyHeight(m.height, topBar, overlayText, footer)
 	body := m.sessionBody(mainBody, bodyHeight, overlayText != "")
