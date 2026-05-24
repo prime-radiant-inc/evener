@@ -273,14 +273,22 @@ func renderToolCall(tc toolCallInfo, width int, focused bool) string {
 		header = strings.Replace(header, bar, FocusedStateBar(th.Accent), 1)
 	}
 
+	var bodyLines []string
+	if purpose := strings.TrimSpace(args.Str("purpose")); purpose != "" {
+		purposeLine := lipgloss.NewStyle().Italic(true).Render(purpose)
+		bodyLines = append(bodyLines, indentBlock(purposeLine, th.IndentToolBody))
+	}
+
 	// Show expanded body: renderer Body func takes priority; fall back to
 	// tc.Detail / tc.Output / tc.Error for backward compatibility.
 	expanded := tc.Expanded || r.ExpandedByDefault
 	if !expanded {
-		return header
+		if len(bodyLines) == 0 {
+			return header
+		}
+		return header + "\n" + strings.Join(bodyLines, "\n")
 	}
 
-	var bodyLines []string
 	bodyFromRenderer := false
 	if r.Body != nil {
 		body := r.Body(args, tc.Output, width-th.IndentToolBody)

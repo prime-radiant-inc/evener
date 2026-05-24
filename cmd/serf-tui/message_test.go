@@ -171,3 +171,27 @@ func TestRenderToolCallUsesRegistry(t *testing.T) {
 		t.Errorf("output should include result: %q", got)
 	}
 }
+
+func TestRenderToolCallShowsPurposeAsFirstBodyLine(t *testing.T) {
+	withTestColorProfile(t)
+	tc := toolCallInfo{
+		Name:     "exec_command",
+		RawArgs:  `{"command":"go test ./cmd/serf-tui","purpose":"Verify tool renderer purpose display"}`,
+		Output:   "ok",
+		Duration: 50 * time.Millisecond,
+		Done:     true,
+		Expanded: true,
+	}
+
+	got := renderToolCall(tc, 100, false)
+	lines := strings.Split(got, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected purpose body line under header, got %q", got)
+	}
+	if !strings.Contains(lines[1], "Verify tool renderer purpose display") {
+		t.Fatalf("first body line = %q, want purpose text; full render:\n%q", lines[1], got)
+	}
+	if !strings.Contains(lines[1], "\x1b[3m") {
+		t.Fatalf("first body line should be italic-styled, got %q", lines[1])
+	}
+}
