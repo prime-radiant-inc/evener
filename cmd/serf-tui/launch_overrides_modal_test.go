@@ -8,6 +8,16 @@ import (
 	"primeradiant.com/serf/internal/appwire"
 )
 
+func TestLaunchOverridesModalUsesOverlay(t *testing.T) {
+	withTestColorProfile(t)
+	m := newLaunchOverridesModal()
+	got := m.View()
+	plain := ansiPattern.ReplaceAllString(got, "")
+	if !strings.Contains(plain, "╭") {
+		t.Errorf("launch_overrides should use Overlay primitive: %q", plain)
+	}
+}
+
 func TestLaunchOverridesModal_AddsField(t *testing.T) {
 	m := newLaunchOverridesModalWith(appwire.LaunchConfigLayer{})
 	// cursor starts at 0 ("model"); press Enter to request an edit

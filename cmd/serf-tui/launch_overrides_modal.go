@@ -81,9 +81,8 @@ func (m launchOverridesModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m launchOverridesModal) View() string {
+func (m launchOverridesModal) renderFields() string {
 	var b strings.Builder
-	b.WriteString("Per-launch overrides for next thread\n\n")
 	rows := m.rows()
 	for i, r := range rows {
 		c := "  "
@@ -92,8 +91,14 @@ func (m launchOverridesModal) View() string {
 		}
 		fmt.Fprintf(&b, "%s%-22s %s\n", c, r.label, r.value)
 	}
-	b.WriteString("\n[Enter] edit  [Ctrl-S] save  [Esc] cancel")
 	return b.String()
+}
+
+func (m launchOverridesModal) View() string {
+	body := "Per-launch overrides for next thread\n\n" + m.renderFields()
+	width := 80
+	footer := actionBarForWidth(width, KbdHint("enter", "edit"), KbdHint("ctrl-s", "save"), KbdHint("esc", "cancel"))
+	return Overlay(OverlayOpts{Title: "Launch overrides", Width: width, Body: body, Footer: footer})
 }
 
 // ApplyEdit returns a copy of the modal with the field updated. Used by
