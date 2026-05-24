@@ -726,8 +726,9 @@ func TestSession_PopulatesModelRequestMetadata(t *testing.T) {
 	if req.ThreadID != sess.ID() {
 		t.Fatalf("ThreadID = %q, want %q", req.ThreadID, sess.ID())
 	}
-	if req.PromptCacheKey != sess.ID() {
-		t.Fatalf("PromptCacheKey = %q, want %q", req.PromptCacheKey, sess.ID())
+	wantPromptCacheKey := "serf-session-" + sess.ID()
+	if req.PromptCacheKey != wantPromptCacheKey {
+		t.Fatalf("PromptCacheKey = %q, want %q", req.PromptCacheKey, wantPromptCacheKey)
 	}
 	if got := req.ClientMetadata[codexInstallationIDMetadataKey]; got == "" {
 		t.Fatalf("client metadata missing %s: %#v", codexInstallationIDMetadataKey, req.ClientMetadata)
