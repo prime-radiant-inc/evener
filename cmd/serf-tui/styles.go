@@ -116,6 +116,10 @@ func setTheme(name string) bool {
 	}
 	applyThemeName(resolved)
 	rebuildDerivedStyles()
+	// Refresh the terminal's default background to match the new theme so
+	// runtime theme swaps (e.g. via the theme picker) repaint every cell,
+	// not just the ones we re-render.
+	applyTerminalBg()
 	return true
 }
 

@@ -42,6 +42,9 @@ func main() {
 	}
 
 	initThemeFromStateDir(startupOpts.StateDir)
+	applyTerminalBg()
+	defer resetTerminalBg()
+
 	m := newHubModel(runtime.Client, runtime.Address.BaseURL, startupOpts.StateDir)
 	var programOpts []tea.ProgramOption
 	if !startupOpts.Debug {
