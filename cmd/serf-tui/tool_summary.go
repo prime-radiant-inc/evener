@@ -15,6 +15,11 @@ import (
 
 // summarizeTool returns a compact one-line description and an optional
 // multi-line detail body for a tool call.
+//
+// Deprecated: renderToolCall now uses the toolRenderers registry (tool_renderers.go)
+// for display. This function is still called by historyToMessages, model.go, and
+// hub_types.go to populate toolCallInfo.Description / Detail fields. Those callers
+// will be updated in a follow-up wave; until then this function must remain.
 func summarizeTool(toolName, argsJSON string) (desc, detail string) {
 	if argsJSON == "" {
 		return "", ""
