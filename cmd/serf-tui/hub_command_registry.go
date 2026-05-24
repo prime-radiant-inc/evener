@@ -335,6 +335,16 @@ var hubCommandRegistry = []hubCommandDefinition{
 			return p.initialCmd()
 		},
 	},
+	{
+		Name:          "quit",
+		Summary:       "Exit serf-tui",
+		PaletteLabel:  "/quit",
+		PaletteDetail: "exit serf-tui",
+		Scopes:        hubCommandDashboard | hubCommandSession,
+		Run: func(_ *hubModel, _ string) tea.Cmd {
+			return tea.Quit
+		},
+	},
 }
 
 func capabilityAvailable(check func(hubSessionCapabilities) bool, reason string) func(hubCommandContext) (bool, string) {
