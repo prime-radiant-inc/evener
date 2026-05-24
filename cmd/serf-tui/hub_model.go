@@ -3559,27 +3559,6 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 		marker = FocusedStateBar(activeTheme().Accent)
 	}
 	styles := defaultTUIStyles()
-	if compact {
-		line := strings.Join(nonEmptyStrings([]string{
-			marker,
-			statusDot(row.state),
-			stateLabel(row.state),
-			dashboardCell(row.sourceLabel),
-			dashboardCell(row.project),
-			dashboardTitle(row.title),
-			dashboardCell(row.model),
-			dashboardCell(row.age),
-		}), " ")
-		line = truncateText(line, width)
-		if selected {
-			return styles.Selected.Render(line)
-		}
-		if row.state == "awaiting" || row.state == "active" || row.state == "warning" {
-			clr := stateColor(row.state)
-			line = lipgloss.NewStyle().Foreground(clr).Render(line)
-		}
-		return line
-	}
 	line := strings.Join(nonEmptyStrings([]string{
 		marker,
 		statusDot(row.state),
@@ -3590,9 +3569,16 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 		dashboardCell(row.model),
 		dashboardCell(row.age),
 	}), " ")
+	_ = compact // compact/non-compact share layout today; keep param for the call sites
 	line = truncateText(line, width)
 	if selected {
-		return styles.Selected.Render(line)
+		// Strip inner ANSI styling so the Selected style's background
+		// paints the whole row. Inner styled spans (StateBar, statusDot)
+		// emit \x1b[0m resets that would otherwise break the parent's bg
+		// after the first colored fragment, leaving most of the row
+		// without the highlight. The selection bg itself is now the
+		// indicator; inner state colors are not needed on selected rows.
+		return styles.Selected.Width(width).Render(ansi.Strip(line))
 	}
 	if row.state == "awaiting" || row.state == "active" || row.state == "warning" {
 		clr := stateColor(row.state)
