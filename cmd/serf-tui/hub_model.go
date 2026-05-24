@@ -4103,6 +4103,13 @@ func (m hubModel) sessionCapabilityStatusLabel() string {
 	}
 }
 
+// forkDraftHeader returns a SectionDivider for the fork-draft UI surface,
+// showing the branch name and diverge-turn info as the right label.
+func forkDraftHeader(branch string, divergeTurn int, width int) string {
+	right := fmt.Sprintf("%s@diverge:%d", branch, divergeTurn)
+	return SectionDivider(width, "fork draft", right)
+}
+
 // providerFromModel extracts the provider prefix from "provider/model" strings.
 func providerFromModel(model string) string {
 	if provider, _, ok := strings.Cut(strings.TrimSpace(model), "/"); ok {
@@ -4137,6 +4144,13 @@ func (m hubModel) sessionView() string {
 	if notices := m.renderNotices(); notices != "" {
 		b.WriteString("\n")
 		b.WriteString(notices)
+	}
+	// Fork draft section divider when in fork mode
+	if m.forkDraft != nil {
+		branch := firstNonEmptyString(m.detail.Branch, "fork")
+		b.WriteString("\n")
+		b.WriteString(forkDraftHeader(branch, m.forkDraft.Turn, m.sessionHeaderWidth()))
+		b.WriteString("\n")
 	}
 	messages := m.session.messages
 	if m.transcriptView != nil {
