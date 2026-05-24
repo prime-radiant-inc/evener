@@ -50,6 +50,36 @@ func TestSectionDividerTruncatesAtNarrowWidth(t *testing.T) {
 	}
 }
 
+func TestKbdHintFormatsKeyAndAction(t *testing.T) {
+	out := KbdHint("enter", "send")
+	if !strings.Contains(out, "enter") {
+		t.Errorf("KbdHint missing key: %q", out)
+	}
+	if !strings.Contains(out, "send") {
+		t.Errorf("KbdHint missing action: %q", out)
+	}
+}
+
+func TestDotLeaderFillsMiddle(t *testing.T) {
+	out := DotLeader("read", "12 lines", 50)
+	if !strings.Contains(out, "·") {
+		t.Errorf("DotLeader missing fill char ·: %q", out)
+	}
+	if !strings.Contains(out, "read") || !strings.Contains(out, "12 lines") {
+		t.Errorf("DotLeader missing label or result: %q", out)
+	}
+	if lipgloss.Width(out) != 50 {
+		t.Errorf("DotLeader should equal target width 50, got %d", lipgloss.Width(out))
+	}
+}
+
+func TestDotLeaderHandlesOverflow(t *testing.T) {
+	out := DotLeader("verylongverb", "and result text here", 10)
+	if lipgloss.Width(out) > 10 {
+		t.Errorf("DotLeader exceeded width on overflow: width=%d", lipgloss.Width(out))
+	}
+}
+
 func TestStatusBadgeContainsLabelAndDot(t *testing.T) {
 	out := StatusBadge(lipgloss.Color("#f7768e"), "AWAITING")
 	if !strings.Contains(out, "●") {
