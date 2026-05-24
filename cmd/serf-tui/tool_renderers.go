@@ -168,7 +168,11 @@ func init() {
 			if errStr != "" {
 				return "error"
 			}
-			lines := strings.Count(output, "\n") + 1
+			if output == "" {
+				return "0 lines"
+			}
+			trimmed := strings.TrimSuffix(output, "\n")
+			lines := strings.Count(trimmed, "\n") + 1
 			return formatLineCount(lines)
 		},
 	}

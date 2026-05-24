@@ -527,6 +527,8 @@
       explicitEmpty.type = "checkbox";
       explicitEmpty.dataset.launchExplicitEmpty = "true";
       explicitEmpty.addEventListener("change", () => {
+        const stateEl = explicitEmpty.parentElement?.querySelector(".state");
+        if (stateEl) stateEl.textContent = explicitEmpty.checked ? "ON" : "OFF";
         if (!explicitEmpty.checked) return;
         list.querySelectorAll("li").forEach((li) => li.remove());
       });
@@ -859,7 +861,11 @@
         const values = current[wire];
         if (listSupportsExplicitEmpty(wrap) && Object.prototype.hasOwnProperty.call(current, wire) && Array.isArray(values) && values.length === 0) {
           const explicitEmpty = wrap.querySelector("[data-launch-explicit-empty]");
-          if (explicitEmpty) explicitEmpty.checked = true;
+          if (explicitEmpty) {
+            explicitEmpty.checked = true;
+            const stateEl = explicitEmpty.parentElement?.querySelector(".state");
+            if (stateEl) stateEl.textContent = "ON";
+          }
         }
         (values || []).forEach((value) => appendListRow(list, value));
       }

@@ -234,14 +234,23 @@ func subagentBody(args ToolArgs, output string, width int) string {
 }
 
 // shellBody renders shell command output, optionally with bash chroma highlighting.
-func shellBody(_ ToolArgs, output string, width int) string {
-	if output == "" {
-		return ""
+// It prepends the command (from args) as a styled prompt line so that long or
+// multi-line commands are visible in the expanded view.
+func shellBody(args ToolArgs, output string, width int) string {
+	var lines []string
+	if cmd := strings.TrimSpace(args.Str("command")); cmd != "" {
+		cmdStyled := lipgloss.NewStyle().Foreground(activeThemeV2().TextMuted).Render("$ " + cmd)
+		lines = append(lines, cmdStyled)
 	}
-	if h := highlightBlock(output, "bash"); h != "" {
-		return h
+	if output != "" {
+		highlighted := highlightBlock(output, "bash")
+		if highlighted != "" {
+			lines = append(lines, highlighted)
+		} else {
+			lines = append(lines, output)
+		}
 	}
-	return output
+	return strings.Join(lines, "\n")
 }
 
 // webSearchBody passes through web search output unchanged.

@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -4038,14 +4039,7 @@ func truncateSessionLine(line string, width int) string {
 	if width <= 0 {
 		return line
 	}
-	runes := []rune(line)
-	if len(runes) <= width {
-		return line
-	}
-	if width <= 3 {
-		return string(runes[:width])
-	}
-	return string(runes[:width-3]) + "..."
+	return ansi.Truncate(line, width, "…")
 }
 
 func (m hubModel) sessionStatusLine() string {

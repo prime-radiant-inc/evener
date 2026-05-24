@@ -20,6 +20,38 @@ func TestRendererRegistryHasReadFile(t *testing.T) {
 	}
 }
 
+func TestReadFileResultLineCount(t *testing.T) {
+	r, ok := lookupToolRenderer("read_file")
+	if !ok {
+		t.Fatalf("no renderer for read_file")
+	}
+	args := ToolArgs{}
+	tests := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{"empty", "", "0 lines"},
+		{"single line no newline", "hello", "1 line"},
+		{"single line with trailing newline", "hello\n", "1 line"},
+		{"two lines", "hello\nworld", "2 lines"},
+		{"two lines with trailing newline", "hello\nworld\n", "2 lines"},
+		{"error", "", "error"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			errStr := ""
+			if tc.want == "error" {
+				errStr = "read failed"
+			}
+			got := r.Result(args, tc.output, errStr, 0)
+			if got != tc.want {
+				t.Errorf("read_file Result(%q) = %q; want %q", tc.output, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestRendererRegistryFallback(t *testing.T) {
 	// Unknown tool gets fallback renderer.
 	r, ok := lookupToolRenderer("totally_unknown_tool")
