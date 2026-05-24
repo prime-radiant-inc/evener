@@ -47,12 +47,12 @@ func themedGlamourStyle() ansi.StyleConfig {
 	}
 
 	bgRaised := string(th.BgRaised)
-	surface := string(th.SurfaceSecondary)
 	text := string(th.Text)
 	textMuted := string(th.TextMuted)
 
-	// Inline code: tinted surface, no white-on-white in light mode.
-	base.Code.BackgroundColor = strPtr(surface)
+	// Inline code: very subtle raised tone — just enough to register as a
+	// distinct span without reading as a highlighted block.
+	base.Code.BackgroundColor = strPtr(bgRaised)
 	base.Code.Color = strPtr(text)
 
 	// Code block container: deep-clone Chroma so we don't mutate the

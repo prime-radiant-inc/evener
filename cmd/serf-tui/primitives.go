@@ -79,14 +79,15 @@ func SectionDivider(width int, left, right string) string {
 	return prefix + " " + mid + " " + suffix
 }
 
-// KbdHint renders "<reverse-key> action" — key in reverse video,
-// action in TextDim.
+// KbdHint renders "key action" — key in bold Accent, action in
+// TextDim. No background fill: a reverse-video pill reads as a hard
+// black/white rectangle that fights the surrounding paper, and the
+// typography alone is enough to mark the key apart from the action.
 func KbdHint(key, action string) string {
 	th := activeTheme()
 	keyStyled := lipgloss.NewStyle().
-		Reverse(true).
-		Foreground(th.Text).
-		Padding(0, 1).
+		Foreground(th.Accent).
+		Bold(true).
 		Render(key)
 	actionStyled := lipgloss.NewStyle().Foreground(th.TextDim).Render(action)
 	return keyStyled + " " + actionStyled
