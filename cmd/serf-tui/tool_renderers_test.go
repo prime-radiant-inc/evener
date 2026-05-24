@@ -186,3 +186,15 @@ func TestUseSkillRenderer(t *testing.T) {
 		t.Errorf("use_skill target = %q", r.Target(args))
 	}
 }
+
+func TestMCPFallbackTargetIncludesFirstArgs(t *testing.T) {
+	r, _ := lookupToolRenderer("linear__search")
+	args := toolArgsFromJSON(`{"query":"oncall","filter":"open"}`)
+	target := r.Target(args)
+	if !strings.Contains(target, "search") {
+		t.Errorf("MCP target should include operation: %q", target)
+	}
+	if !strings.Contains(target, "oncall") {
+		t.Errorf("MCP target should include first string arg: %q", target)
+	}
+}

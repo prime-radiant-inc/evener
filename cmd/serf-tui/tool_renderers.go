@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -64,15 +65,41 @@ func lookupToolRenderer(tool string) (ToolRenderer, bool) {
 func mcpFallbackRenderer(tool string) ToolRenderer {
 	provider, op, _ := strings.Cut(tool, "__")
 	return ToolRenderer{
-		Verb:   func(_ ToolArgs) string { return provider },
-		Target: func(_ ToolArgs) string { return op },
-		Result: func(_ ToolArgs, _ string, errStr string, _ time.Duration) string {
+		Verb: func(_ ToolArgs) string { return provider },
+		Target: func(args ToolArgs) string {
+			parts := []string{op}
+			added := 0
+			for _, k := range sortedToolArgKeys(args) {
+				if added >= 3 {
+					break
+				}
+				if v, ok := args[k].(string); ok && v != "" {
+					if len(v) > 40 {
+						v = v[:40] + "…"
+					}
+					parts = append(parts, v)
+					added++
+				}
+			}
+			return strings.Join(parts, " ")
+		},
+		Result: func(_ ToolArgs, output, errStr string, _ time.Duration) string {
 			if errStr != "" {
 				return "error"
 			}
 			return "ok"
 		},
+		Body: jsonBody,
 	}
+}
+
+func sortedToolArgKeys(m ToolArgs) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func unknownToolRenderer(tool string) ToolRenderer {

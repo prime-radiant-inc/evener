@@ -215,3 +215,18 @@ func shellBody(_ ToolArgs, output string, width int) string {
 func webSearchBody(_ ToolArgs, output string, width int) string {
 	return output
 }
+
+// jsonBody renders pretty-printed, chroma-highlighted JSON output.
+func jsonBody(_ ToolArgs, output string, width int) string {
+	if output == "" {
+		return ""
+	}
+	var pretty bytes.Buffer
+	if err := json.Indent(&pretty, []byte(output), "", "  "); err != nil {
+		return output
+	}
+	if h := highlightBlock(pretty.String(), "json"); h != "" {
+		return h
+	}
+	return pretty.String()
+}
