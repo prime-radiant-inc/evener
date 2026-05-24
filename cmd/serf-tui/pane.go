@@ -16,12 +16,31 @@ func renderPopupPane(text string, width int) string {
 		width = 96
 	}
 	terminalWidth := width
-	popupWidth := min(max(width, 44), 96)
-	innerWidth := max(1, popupWidth-6)
+	popupWidth := popupPaneWidth(width)
+	innerWidth := popupPaneContentWidth(width)
 	body := truncateMultilineText(text, innerWidth)
 	pane := defaultTUIStyles().Modal.Width(popupWidth).Render(body)
 	if terminalWidth > popupWidth {
 		return lipgloss.PlaceHorizontal(terminalWidth, lipgloss.Center, pane)
 	}
 	return pane
+}
+
+// popupPaneWidth returns the outer width of a popup pane rendered into a
+// terminal of the given width. Mirrors the clamp inside renderPopupPane so
+// callers that need to lay out text for the popup can wrap at the same width
+// the pane will actually render at.
+func popupPaneWidth(termWidth int) int {
+	if termWidth <= 0 {
+		termWidth = 96
+	}
+	return min(max(termWidth, 44), 96)
+}
+
+// popupPaneContentWidth returns the inner content width (i.e. after the
+// pane's horizontal padding/border) for a popup at the given terminal width.
+// Use this when sizing wrapped text destined for renderPopupPane so long
+// lines wrap inside the pane instead of being truncated by the pane.
+func popupPaneContentWidth(termWidth int) int {
+	return max(1, popupPaneWidth(termWidth)-6)
 }

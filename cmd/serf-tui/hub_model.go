@@ -654,7 +654,7 @@ func (m hubModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.clearSessionError()
 		m.detail = msg.detail
-		panel := hubSessionPanel{Body: renderHubSessionStatus(msg.detail, msg.tasks, msg.auth, msg.taskErr, msg.authErr, m.width)}
+		panel := hubSessionPanel{Body: renderHubSessionStatus(msg.detail, msg.tasks, msg.auth, msg.taskErr, msg.authErr, popupPaneContentWidth(m.width))}
 		m.sessionPanel = &panel
 		m.session.refreshViewport()
 		return m, nil
@@ -4374,6 +4374,25 @@ func (m hubModel) renderSessionDetails() string {
 	return detailsDrawer{Detail: m.detail, HubURL: m.hubURL}.View()
 }
 
+// sessionBody renders mainBody through the session viewport so browse-mode
+// scrolling and overflow handling go through one code path.
+//
+// KNOWN LIMITATION (roborev #885 MEDIUM): the receiver is *hubModel here for
+// historical reasons — sessionBody was always written to mutate the
+// viewport during render. In production tea.NewProgram(m, ...) holds the
+// model by value, so View() takes a copy and any mutation here applies to
+// that throwaway copy, leaving the persisted viewport stale. Browse-mode
+// scroll handlers in Update read the persisted viewport's content/dims to
+// compute scroll steps, so they can drift from what the user actually sees.
+// In tests `m` is addressable and the mutations persist, which is why
+// scroll-related test coverage stays green.
+//
+// The proper fix is to compute mainBody + bodyHeight in Update and sync the
+// persisted viewport there, then make this function pure. That's a wider
+// refactor than a single roborev-fix pass: bodyHeight needs the same chrome
+// composition sessionView does (topBar, overlay, footer); ~24 Update paths
+// currently call session.refreshViewport() which sets messages-only content
+// and must be redirected. Tracked separately.
 func (m *hubModel) sessionBody(mainBody string, bodyHeight int, hasOverlay bool) string {
 	if bodyHeight <= 0 {
 		return mainBody

@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // composerContext holds the metadata used to render the composer chip strip.
@@ -98,12 +99,17 @@ func renderComposerChipStrip(ctx composerContext) string {
 	leftW := lipgloss.Width(leftContent)
 	rightW := lipgloss.Width(rightContent)
 	if leftW+rightW+1 > inner {
+		// Chip-strip fragments are ANSI-styled (each span declares the band
+		// bg explicitly to survive the parent's reset boundaries). Use
+		// ansi.Truncate so the underlying SGR escapes stay intact and the
+		// band bg keeps painting through the truncation tail. truncateText
+		// slices raw runes and would chop through escape sequences.
 		if leftW >= inner {
-			leftContent = truncateText(leftContent, inner)
+			leftContent = ansi.Truncate(leftContent, inner, "…")
 			return band.Render(leftContent)
 		}
 		room := inner - leftW - 1
-		rightContent = truncateText(rightContent, room)
+		rightContent = ansi.Truncate(rightContent, room, "…")
 		return band.Render(leftContent + bgOnly.Render(" ") + rightContent)
 	}
 	gap := inner - leftW - rightW
@@ -145,10 +151,20 @@ func renderChipStatus(ctx composerContext, th Theme) string {
 }
 
 // composeProviderModel returns "<provider>/<abbreviated-model>" when a
-// provider is known, or just the abbreviated model otherwise. The
-// abbreviateModel helper already strips the prefix from full IDs, so we
-// re-attach the provider explicitly here.
+// provider is known, or just the abbreviated model otherwise.
+//
+// abbreviateModel only strips a small hardcoded list of provider prefixes
+// (anthropic/, openai/, google/, openrouter/, openai-compatible/), so for
+// providers it doesn't know about (e.g. ollama/, mistral/, custom labels)
+// a model like "ollama/llama3" would round-trip unchanged and then get
+// re-prefixed here as "ollama/ollama/llama3". Strip "<provider>/" explicitly
+// before re-attaching so any provider works.
 func composeProviderModel(provider, model string) string {
+	model = strings.TrimSpace(model)
+	provider = strings.TrimSpace(provider)
+	if provider != "" {
+		model = strings.TrimPrefix(model, provider+"/")
+	}
 	abbr := abbreviateModel(model)
 	if provider == "" {
 		return abbr
