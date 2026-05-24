@@ -3535,7 +3535,7 @@ func renderDashboardRecentToggleRow(row hubRow, expanded bool, selected bool, wi
 }
 
 func stateColor(state string) lipgloss.Color {
-	th := activeThemeV2()
+	th := activeTheme()
 	switch state {
 	case "awaiting":
 		return th.StateAwaiting
@@ -3556,7 +3556,7 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 	stateClr := stateColor(row.state)
 	marker := StateBar(stateClr)
 	if selected {
-		marker = FocusedStateBar(activeThemeV2().Accent)
+		marker = FocusedStateBar(activeTheme().Accent)
 	}
 	styles := defaultTUIStyles()
 	if compact {
@@ -3973,7 +3973,7 @@ func (m hubModel) spawnView() string {
 }
 
 func (m hubModel) sessionHeaderLines() []string {
-	th := activeThemeV2()
+	th := activeTheme()
 	title := firstNonEmptyString(m.detail.Title, m.detail.SessionID, m.detail.Ref, "untitled session")
 	state := strings.TrimSpace(m.detail.State)
 	if state == "" {
@@ -4189,7 +4189,7 @@ func (m hubModel) sessionView() string {
 			// (i.e. before a msgUser message that isn't the first rendered one).
 			// This avoids separators between assistant text, tool calls, etc.
 			if prevRendered && msg.Kind == msgUser {
-				rule := lipgloss.NewStyle().Foreground(activeThemeV2().RuleSoft).Render(strings.Repeat("┄", width))
+				rule := lipgloss.NewStyle().Foreground(activeTheme().RuleSoft).Render(strings.Repeat("┄", width))
 				b.WriteString(rule)
 				b.WriteString("\n")
 			}

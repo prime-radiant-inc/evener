@@ -12,8 +12,8 @@ import (
 // TestApplyTheme_DarkAndLightDiffer checks that dark and light themes produce
 // different background colors.
 func TestApplyTheme_DarkAndLightDiffer(t *testing.T) {
-	if darkThemeV2.BgRaised == lightThemeV2.BgRaised {
-		t.Errorf("dark and light BgRaised are the same: %q", darkThemeV2.BgRaised)
+	if darkTheme.BgRaised == lightTheme.BgRaised {
+		t.Errorf("dark and light BgRaised are the same: %q", darkTheme.BgRaised)
 	}
 }
 
@@ -71,8 +71,8 @@ func TestSetTheme_Dark(t *testing.T) {
 	if currentThemeName() != "dark" {
 		t.Errorf("currentThemeName() = %q, want %q", currentThemeName(), "dark")
 	}
-	if activeThemeV2().BgRaised != darkThemeV2.BgRaised {
-		t.Errorf("activeThemeV2().BgRaised = %q, want %q", activeThemeV2().BgRaised, darkThemeV2.BgRaised)
+	if activeTheme().BgRaised != darkTheme.BgRaised {
+		t.Errorf("activeTheme().BgRaised = %q, want %q", activeTheme().BgRaised, darkTheme.BgRaised)
 	}
 }
 
@@ -87,8 +87,8 @@ func TestSetTheme_Light(t *testing.T) {
 	if currentThemeName() != "light" {
 		t.Errorf("currentThemeName() = %q, want %q", currentThemeName(), "light")
 	}
-	if activeThemeV2().BgRaised != lightThemeV2.BgRaised {
-		t.Errorf("activeThemeV2().BgRaised = %q, want %q", activeThemeV2().BgRaised, lightThemeV2.BgRaised)
+	if activeTheme().BgRaised != lightTheme.BgRaised {
+		t.Errorf("activeTheme().BgRaised = %q, want %q", activeTheme().BgRaised, lightTheme.BgRaised)
 	}
 }
 

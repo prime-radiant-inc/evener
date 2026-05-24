@@ -9,14 +9,14 @@ import (
 
 // StateBar returns a single 1-column glyph foreground-colored to state.
 func StateBar(state lipgloss.Color) string {
-	return lipgloss.NewStyle().Foreground(state).Render(activeThemeV2().LeftBarGlyph)
+	return lipgloss.NewStyle().Foreground(state).Render(activeTheme().LeftBarGlyph)
 }
 
 // FocusedStateBar returns the same glyph twice for selected/focused rows.
 // Total visual width is 2 columns; callers must account for this in
 // right-alignment math.
 func FocusedStateBar(state lipgloss.Color) string {
-	g := activeThemeV2().LeftBarGlyph
+	g := activeTheme().LeftBarGlyph
 	return lipgloss.NewStyle().Foreground(state).Render(g + g)
 }
 
@@ -33,7 +33,7 @@ func StatusBadge(state lipgloss.Color, label string) string {
 // SectionDivider renders "─ LEFT ──…────── RIGHT ┄" filling middle with
 // theme.Rule, label tone via theme.TextDim, trailing ┄ in theme.Rule.
 func SectionDivider(width int, left, right string) string {
-	th := activeThemeV2()
+	th := activeTheme()
 	if width <= 0 {
 		width = 60
 	}
@@ -82,7 +82,7 @@ func SectionDivider(width int, left, right string) string {
 // KbdHint renders "<reverse-key> action" — key in reverse video,
 // action in TextDim.
 func KbdHint(key, action string) string {
-	th := activeThemeV2()
+	th := activeTheme()
 	keyStyled := lipgloss.NewStyle().
 		Reverse(true).
 		Foreground(th.Text).
@@ -95,7 +95,7 @@ func KbdHint(key, action string) string {
 // DotLeader returns "left ········ right" exactly `width` columns wide
 // (best-effort). Dots are TextGhost color.
 func DotLeader(left, right string, width int) string {
-	th := activeThemeV2()
+	th := activeTheme()
 	lw := lipgloss.Width(left)
 	rw := lipgloss.Width(right)
 	if width <= 0 {
@@ -124,7 +124,7 @@ type OverlayOpts struct {
 
 // Overlay renders a rounded-border modal with title, body, and optional footer.
 func Overlay(opts OverlayOpts) string {
-	th := activeThemeV2()
+	th := activeTheme()
 	accent := opts.Accent
 	if accent == "" {
 		accent = th.Accent

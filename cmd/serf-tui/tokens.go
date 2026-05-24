@@ -2,7 +2,7 @@
 //
 // Established in the TUI deep UX pass (2026-05-24). The Theme struct
 // holds every color and layout token; the `themes` registry binds names
-// to Theme structs. Active theme is swapped via setThemeV2(name) which
+// to Theme structs. Active theme is swapped via applyThemeName(name) which
 // also invalidates the cached markdown renderer.
 //
 // To add a new theme: define a Theme struct literal, register it in
@@ -10,10 +10,6 @@
 package main
 
 import "github.com/charmbracelet/lipgloss"
-
-// TODO(wave-3): rename V2 symbols (activeThemeNameV2, activeThemeV2,
-// setThemeV2, darkThemeV2, lightThemeV2) to drop the suffix once the
-// legacy colorTheme + setTheme path in styles.go is fully retired.
 
 type Theme struct {
 	Name string
@@ -40,15 +36,18 @@ type Theme struct {
 }
 
 var themeRegistry = map[string]Theme{
-	"dark":  darkThemeV2,
-	"light": lightThemeV2,
+	"dark":  darkTheme,
+	"light": lightTheme,
 }
 
 func Themes() map[string]Theme {
 	return themeRegistry
 }
 
-var activeThemeNameV2 = "dark"
+// activeThemeKey is the resolved registry key ("dark" or "light").
+// Distinct from activeThemeName in styles.go which holds the user-picked value
+// ("system", "dark", or "light") — "system" resolves to one of these two keys.
+var activeThemeKey = "dark"
 
 // markdownInvalidationCount is a test hook counting invalidator calls.
 // For testing only — not part of the API surface.
@@ -57,28 +56,26 @@ var markdownInvalidationCount int
 // markdownInvalidator is wired by message.go init; placeholder counts calls.
 var markdownInvalidator = func() { markdownInvalidationCount++ }
 
-// activeThemeV2 returns the currently selected v2 Theme. Consumers are
-// added in wave 2 (primitives.go); during wave 1 this is wired up but
-// not yet read from production code, which is intentional.
-func activeThemeV2() Theme {
-	if th, ok := themeRegistry[activeThemeNameV2]; ok {
+// activeTheme returns the currently selected Theme.
+func activeTheme() Theme {
+	if th, ok := themeRegistry[activeThemeKey]; ok {
 		return th
 	}
 	return themeRegistry["dark"]
 }
 
-// setThemeV2 swaps the active theme. Not safe for concurrent use; called
-// only from bubbletea's main Update goroutine.
-func setThemeV2(name string) bool {
+// applyThemeName swaps the active theme by registry key. Not safe for
+// concurrent use; called only from setTheme() on bubbletea's main goroutine.
+func applyThemeName(name string) bool {
 	if _, ok := themeRegistry[name]; !ok {
 		return false
 	}
-	activeThemeNameV2 = name
+	activeThemeKey = name
 	markdownInvalidator()
 	return true
 }
 
-var darkThemeV2 = Theme{
+var darkTheme = Theme{
 	Name:                "dark",
 	Bg:                  lipgloss.Color("#0a0a0e"),
 	BgRaised:            lipgloss.Color("#16161e"),
@@ -112,7 +109,7 @@ var darkThemeV2 = Theme{
 	RuleGlyph:           "┄",
 }
 
-var lightThemeV2 = Theme{
+var lightTheme = Theme{
 	Name:                "light",
 	Bg:                  lipgloss.Color("#fafafa"),
 	BgRaised:            lipgloss.Color("#f1f1f2"),

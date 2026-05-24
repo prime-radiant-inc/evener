@@ -85,7 +85,7 @@ func (p credentialsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (p credentialsPanel) sourceBadgeColor(source string) lipgloss.Color {
-	th := activeThemeV2()
+	th := activeTheme()
 	switch source {
 	case "oauth", "env":
 		return th.StateIdle
@@ -97,7 +97,7 @@ func (p credentialsPanel) sourceBadgeColor(source string) lipgloss.Color {
 }
 
 func (p credentialsPanel) View() string {
-	th := activeThemeV2()
+	th := activeTheme()
 	var body string
 	if p.loading {
 		body = lipgloss.NewStyle().Foreground(th.TextDim).Render("Loading credentials…")

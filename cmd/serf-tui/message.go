@@ -38,7 +38,7 @@ func initMarkdownRenderer(width int) {
 // inline-code backgrounds, which ship as fixed dark greys ("#373737") even
 // in the "light" style.
 func themedGlamourStyle() ansi.StyleConfig {
-	th := activeThemeV2()
+	th := activeTheme()
 	var base ansi.StyleConfig
 	if th.Name == "light" {
 		base = styles.LightStyleConfig
@@ -94,7 +94,7 @@ func renderMarkdown(text string, width int) string {
 
 // markdownRendererCached returns the current renderer cache; nil means
 // the cache is empty. For testing only — exposed to verify that
-// setThemeV2 invalidates the renderer cache.
+// applyThemeName invalidates the renderer cache.
 func markdownRendererCached() *glamour.TermRenderer {
 	return markdownRenderer
 }
@@ -188,7 +188,7 @@ func renderMessage(msg chatMessage, width int, focused bool) string {
 
 	switch msg.Kind {
 	case msgUser:
-		th := activeThemeV2()
+		th := activeTheme()
 		barClr := th.Accent
 		bar := lipgloss.NewStyle().Foreground(barClr).Render("┃")
 		if focused {
@@ -201,7 +201,7 @@ func renderMessage(msg chatMessage, width int, focused bool) string {
 		if text == "" {
 			return ""
 		}
-		th := activeThemeV2()
+		th := activeTheme()
 		bar := StateBar(th.StateProcessing)
 		barW := lipgloss.Width(bar)
 		rendered := thinkingStyle.Width(max(1, messageWidth-barW-1)).Render(renderMarkdown(text, max(1, messageWidth-barW-1)))
@@ -249,7 +249,7 @@ func renderToolCall(tc toolCallInfo, width int, focused bool) string {
 		result = r.Result(args, tc.Output, tc.Error, tc.Duration)
 	}
 
-	th := activeThemeV2()
+	th := activeTheme()
 	stateClr := stateColorForToolDone(tc.Done, tc.Error)
 	bar := StateBar(stateClr)
 	check := lipgloss.NewStyle().Foreground(stateClr).Render(checkmarkFor(tc.Done, tc.Error))
@@ -288,7 +288,7 @@ func renderToolCall(tc toolCallInfo, width int, focused bool) string {
 			// Append error after renderer body so errors from unknown/MCP tools
 			// are always visible even when JSON output is also present.
 			if tc.Error != "" {
-				errStyle := lipgloss.NewStyle().Foreground(activeThemeV2().StateAwaiting)
+				errStyle := lipgloss.NewStyle().Foreground(activeTheme().StateAwaiting)
 				body = body + "\n" + errStyle.Render(tc.Error)
 			}
 			bodyLines = append(bodyLines, indentBlock(body, th.IndentToolBody))
@@ -317,7 +317,7 @@ func renderToolCall(tc toolCallInfo, width int, focused bool) string {
 }
 
 func stateColorForToolDone(done bool, errStr string) lipgloss.Color {
-	th := activeThemeV2()
+	th := activeTheme()
 	if errStr != "" {
 		return th.StateAwaiting
 	}

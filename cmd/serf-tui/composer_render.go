@@ -21,7 +21,7 @@ type composerContext struct {
 // Right side: mode chip (state-colored via StatusBadge) when Mode is non-empty.
 // The whole line is laid out as a divider: ─ <chips> ──…──── <mode> ┄
 func renderComposerChipStrip(ctx composerContext) string {
-	th := activeThemeV2()
+	th := activeTheme()
 
 	parts := []string{}
 	add := func(key, value string) {
@@ -63,7 +63,7 @@ func renderComposerChipStrip(ctx composerContext) string {
 		width = 80
 	}
 	leadGlyph := lipgloss.NewStyle().Foreground(th.RuleSoft).Render("─ ")
-	trailGlyph := lipgloss.NewStyle().Foreground(th.Rule).Render(" " + activeThemeV2().RuleGlyph)
+	trailGlyph := lipgloss.NewStyle().Foreground(th.Rule).Render(" " + activeTheme().RuleGlyph)
 
 	prefix := leadGlyph + chipsText
 	suffix := modeChip + trailGlyph

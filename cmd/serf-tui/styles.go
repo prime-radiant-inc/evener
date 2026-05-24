@@ -10,8 +10,8 @@ import (
 	"github.com/muesli/termenv"
 )
 
-// tuiStyles holds composed lipgloss.Style values derived from the active V2
-// Theme. defaultTUIStyles() rebuilds this from activeThemeV2() on each call so
+// tuiStyles holds composed lipgloss.Style values derived from the active
+// Theme. defaultTUIStyles() rebuilds this from activeTheme() on each call so
 // runtime theme switches take effect immediately.
 type tuiStyles struct {
 	Title      lipgloss.Style
@@ -27,9 +27,9 @@ type tuiStyles struct {
 	Ended      lipgloss.Style
 }
 
-// defaultTUIStyles builds a tuiStyles from the currently active V2 Theme.
+// defaultTUIStyles builds a tuiStyles from the currently active Theme.
 func defaultTUIStyles() tuiStyles {
-	th := activeThemeV2()
+	th := activeTheme()
 	return tuiStyles{
 		Title:      lipgloss.NewStyle().Bold(true).Foreground(th.Text).Background(th.BgRaised),
 		Section:    lipgloss.NewStyle().Bold(true).Foreground(th.Accent),
@@ -48,7 +48,7 @@ func defaultTUIStyles() tuiStyles {
 // activeThemeName tracks the selected theme ("system", "dark", or "light").
 var activeThemeName string
 
-// Derived style vars — re-initialized by setTheme() via applyThemeV2().
+// Derived style vars — re-initialized by setTheme() via rebuildDerivedStyles().
 var (
 	statusBarStyle     lipgloss.Style
 	statusConnected    lipgloss.Style
@@ -98,7 +98,7 @@ func initThemeFromStateDir(stateDir string) {
 }
 
 // setTheme switches to the named theme. Returns false if the name is unrecognised.
-// This is the public entry point; internally it routes to setThemeV2.
+// This is the public entry point; internally it routes to applyThemeName.
 func setTheme(name string) bool {
 	switch name {
 	case "system", "dark", "light":
@@ -106,16 +106,16 @@ func setTheme(name string) bool {
 	default:
 		return false
 	}
-	v2Name := name
+	resolved := name
 	if name == "system" {
 		if termenv.HasDarkBackground() {
-			v2Name = "dark"
+			resolved = "dark"
 		} else {
-			v2Name = "light"
+			resolved = "light"
 		}
 	}
-	setThemeV2(v2Name)
-	applyThemeV2()
+	applyThemeName(resolved)
+	rebuildDerivedStyles()
 	return true
 }
 
@@ -132,9 +132,9 @@ func currentThemeName() string {
 	return activeThemeName
 }
 
-// applyThemeV2 rebuilds all derived style vars from the currently active V2 Theme.
-func applyThemeV2() {
-	th := activeThemeV2()
+// rebuildDerivedStyles rebuilds all derived style vars from the currently active Theme.
+func rebuildDerivedStyles() {
+	th := activeTheme()
 
 	statusBarStyle = lipgloss.NewStyle().
 		Background(th.BgRaised).

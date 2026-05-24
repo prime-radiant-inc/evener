@@ -25,7 +25,7 @@ type statusBarInfo struct {
 
 // renderStatusBar renders a persistent status bar using the hub session theme.
 func renderStatusBar(info statusBarInfo) string {
-	th := activeThemeV2()
+	th := activeTheme()
 	parts := []string{}
 
 	// Health dot + label

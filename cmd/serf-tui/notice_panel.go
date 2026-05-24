@@ -21,7 +21,7 @@ type noticePanel struct {
 // View renders the diagnostic voice: state-colored ▍ left bar + ● dot,
 // followed by 3 indented key/value lines. This is a non-modal inline render.
 func (n noticePanel) View() string {
-	th := activeThemeV2()
+	th := activeTheme()
 	state := strings.TrimSpace(n.State)
 	if state == "" {
 		state = "idle"

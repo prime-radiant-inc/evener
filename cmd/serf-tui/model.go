@@ -86,7 +86,7 @@ type model struct {
 // applyInputTheme sets the textarea's style to match the active theme colours.
 // Must be called after initTheme() and again whenever the theme changes.
 func applyInputTheme(ta *textarea.Model) {
-	th := activeThemeV2()
+	th := activeTheme()
 	base := lipgloss.NewStyle().
 		Background(th.BgRaised).
 		Foreground(th.Text)
@@ -1346,7 +1346,7 @@ func (m model) View() string {
 	}
 
 	bgStyle := lipgloss.NewStyle().
-		Background(activeThemeV2().Bg).
+		Background(activeTheme().Bg).
 		Width(m.width).
 		Height(m.height)
 

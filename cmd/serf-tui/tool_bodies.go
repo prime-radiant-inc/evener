@@ -21,7 +21,7 @@ func diffBody(_ ToolArgs, output string, width int) string {
 	if output == "" {
 		return ""
 	}
-	th := activeThemeV2()
+	th := activeTheme()
 	lines := strings.Split(output, "\n")
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
@@ -52,7 +52,7 @@ func diffBody(_ ToolArgs, output string, width int) string {
 // render as near-white on light terminals. github is a light-mode style
 // with strong contrast on light backgrounds.
 func chromaStyleForActiveTheme() string {
-	if activeThemeV2().Name == "light" {
+	if activeTheme().Name == "light" {
 		return "github"
 	}
 	return "monokai"
@@ -129,7 +129,7 @@ func fileBody(args ToolArgs, output string, width int) string {
 	if output == "" {
 		return ""
 	}
-	th := activeThemeV2()
+	th := activeTheme()
 	lines := strings.Split(output, "\n")
 	preview := lines
 	more := 0
@@ -163,7 +163,7 @@ func taskListBody(_ ToolArgs, output string, width int) string {
 	if err := json.Unmarshal([]byte(output), &items); err != nil {
 		return ""
 	}
-	th := activeThemeV2()
+	th := activeTheme()
 	lines := make([]string, 0, len(items))
 	for _, item := range items {
 		var glyph string
@@ -232,7 +232,7 @@ func subagentBody(args ToolArgs, output string, width int) string {
 		status = "running"
 	}
 
-	th := activeThemeV2()
+	th := activeTheme()
 	summary := fmt.Sprintf("subagent %s (%d turns, %s)", shortID(agentID), turns, status)
 	styled := lipgloss.NewStyle().Foreground(th.StateSubagent).Render(summary)
 
@@ -250,7 +250,7 @@ func subagentBody(args ToolArgs, output string, width int) string {
 func shellBody(args ToolArgs, output string, width int) string {
 	var lines []string
 	if cmd := strings.TrimSpace(args.Str("command")); cmd != "" {
-		cmdStyled := lipgloss.NewStyle().Foreground(activeThemeV2().TextMuted).Render("$ " + cmd)
+		cmdStyled := lipgloss.NewStyle().Foreground(activeTheme().TextMuted).Render("$ " + cmd)
 		lines = append(lines, cmdStyled)
 	}
 	if output != "" {

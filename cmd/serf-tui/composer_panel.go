@@ -173,7 +173,7 @@ func (p composerPanel) composerModeForFooter() string {
 
 func (p composerPanel) View() string {
 	var b strings.Builder
-	th := activeThemeV2()
+	th := activeTheme()
 	sectionStyle := lipgloss.NewStyle().Bold(true).Foreground(th.Accent)
 	mutedStyle := lipgloss.NewStyle().Foreground(th.TextDim)
 	errorStyle := lipgloss.NewStyle().Foreground(th.StateAwaiting).Bold(true)
@@ -228,7 +228,7 @@ func (p composerPanel) View() string {
 // drop the most recent chip (kata 5vxd) — the [×] marker is still
 // rendered to signal the chip is removable.
 func renderAttachmentChips(atts []*PastedImage) string {
-	th := activeThemeV2()
+	th := activeTheme()
 	sectionStyle := lipgloss.NewStyle().Bold(true).Foreground(th.Accent)
 	mutedStyle := lipgloss.NewStyle().Foreground(th.TextDim)
 	var b strings.Builder
@@ -269,7 +269,7 @@ func filepathBase(p string) string {
 // roughly the composer width. Returns the lines including the section header
 // and a trailing newline.
 func renderQueuePreview(preview []string, width int) string {
-	th := activeThemeV2()
+	th := activeTheme()
 	sectionStyle := lipgloss.NewStyle().Bold(true).Foreground(th.Accent)
 	mutedStyle := lipgloss.NewStyle().Foreground(th.TextDim)
 	var b strings.Builder

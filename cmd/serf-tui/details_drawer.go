@@ -16,12 +16,12 @@ type detailsDrawer struct {
 }
 
 func sectionLabel(text string) string {
-	th := activeThemeV2()
+	th := activeTheme()
 	return lipgloss.NewStyle().Foreground(th.TextDim).Bold(true).Render(strings.ToUpper(text))
 }
 
 func ghostText(text string) string {
-	th := activeThemeV2()
+	th := activeTheme()
 	return lipgloss.NewStyle().Foreground(th.TextGhost).Render(text)
 }
 
