@@ -1381,8 +1381,26 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   font-size: var(--text-sm);
   color: var(--text);
   min-width: 0;
-  overflow-wrap: break-word;
-  word-break: break-all;
+  /* overflow-wrap: anywhere lets long unbroken strings (file paths) wrap to
+     prevent horizontal overflow on narrow viewports — but only when overflow
+     would actually happen. The prior `word-break: break-all` broke EVERY
+     character of short text like "Add" and "No model fallbacks", stacking
+     them one-per-line. */
+  overflow-wrap: anywhere;
+}
+/* overflow-wrap inherits, so the dd's `anywhere` cascades into buttons and
+   toggle labels — which then break their (short) text character-by-character
+   when the flex container squeezes them. Restore `normal` wrap on controls
+   inside dd; the path use case is covered by direct-text content + .val-text. */
+.settings-table dd .btn,
+.settings-table dd .val-toggle,
+.settings-table dd .val-toggle * {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+.settings-table dd .btn {
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .settings-table .help {
   grid-column: 1 / -1;
