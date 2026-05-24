@@ -32,7 +32,7 @@ func initMarkdownRenderer(width int) {
 	}
 }
 
-// themedGlamourStyle builds a glamour StyleConfig from the active V2 theme,
+// themedGlamourStyle builds a glamour StyleConfig from the active theme,
 // starting from glamour's stock light/dark config and overriding the bits
 // that don't follow the surrounding theme — chiefly the code-block and
 // inline-code backgrounds, which ship as fixed dark greys ("#373737") even

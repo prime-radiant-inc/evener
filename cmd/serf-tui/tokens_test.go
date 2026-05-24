@@ -107,11 +107,11 @@ func TestSetThemeCallsMarkdownInvalidator(t *testing.T) {
 	}
 }
 
-func TestLegacySetThemeAlsoUpdatesV2(t *testing.T) {
+func TestSetThemeUpdatesActiveTheme(t *testing.T) {
 	t.Cleanup(func() { setTheme("dark") })
 	setTheme("light")
 	if activeTheme().Name != "light" {
-		t.Errorf("legacy setTheme(light) did not update v2 active theme")
+		t.Errorf("setTheme(light) did not update active theme")
 	}
 }
 
