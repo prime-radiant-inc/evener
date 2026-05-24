@@ -144,4 +144,82 @@ func init() {
 			return formatLineCount(lines)
 		},
 	}
+
+	// shell + aliases
+	shellRenderer := ToolRenderer{
+		Verb: func(_ ToolArgs) string { return "shell" },
+		Target: func(args ToolArgs) string {
+			cmd := args.Str("command")
+			if firstLine, _, ok := strings.Cut(cmd, "\n"); ok {
+				cmd = firstLine
+			}
+			if len(cmd) > 80 {
+				cmd = cmd[:80] + "…"
+			}
+			return cmd
+		},
+		Result: func(_ ToolArgs, _ string, errStr string, _ time.Duration) string {
+			if errStr != "" {
+				return "error"
+			}
+			return "ok"
+		},
+	}
+	toolRenderers["shell"] = shellRenderer
+	toolRenderers["exec_command"] = shellRenderer
+	toolRenderers["run_shell_command"] = shellRenderer
+
+	// grep + aliases
+	grepRenderer := ToolRenderer{
+		Verb: func(_ ToolArgs) string { return "grep" },
+		Target: func(args ToolArgs) string {
+			pat := args.Str("pattern")
+			path := args.Str("path")
+			if path != "" {
+				return pat + "  in  " + path
+			}
+			return pat
+		},
+		Result: func(_ ToolArgs, output, errStr string, _ time.Duration) string {
+			if errStr != "" {
+				return "error"
+			}
+			if output == "" {
+				return "0 hits"
+			}
+			hits := strings.Count(output, "\n") + 1
+			return strconv.Itoa(hits) + " hits"
+		},
+	}
+	toolRenderers["grep"] = grepRenderer
+	toolRenderers["grep_files"] = grepRenderer
+	toolRenderers["grep_search"] = grepRenderer
+
+	// glob
+	toolRenderers["glob"] = ToolRenderer{
+		Verb:   func(_ ToolArgs) string { return "glob" },
+		Target: func(args ToolArgs) string { return args.Str("pattern") },
+		Result: func(_ ToolArgs, output, errStr string, _ time.Duration) string {
+			if errStr != "" {
+				return "error"
+			}
+			matches := strings.Count(output, "\n")
+			return strconv.Itoa(matches) + " matches"
+		},
+	}
+
+	// list_dir + aliases
+	listRenderer := ToolRenderer{
+		Verb:   func(_ ToolArgs) string { return "ls" },
+		Target: func(args ToolArgs) string { return args.Str("path") },
+		Result: func(_ ToolArgs, output, errStr string, _ time.Duration) string {
+			if errStr != "" {
+				return "error"
+			}
+			entries := strings.Count(output, "\n")
+			return strconv.Itoa(entries) + " entries"
+		},
+	}
+	toolRenderers["list_dir"] = listRenderer
+	toolRenderers["list_directory"] = listRenderer
 }
