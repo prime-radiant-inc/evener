@@ -773,7 +773,8 @@ func TestHubModelBrowseSelectionHighlightsSelectedMessage(t *testing.T) {
 	m.browseSelected = 0
 
 	got := m.sessionView()
-	if !strings.Contains(got, "▶ > first request") {
+	// Focused user message gets double-bar (┃┃) in new wave 4 format.
+	if !strings.Contains(got, "┃┃") {
 		t.Fatalf("selected user message not highlighted:\n%s", got)
 	}
 	if strings.Contains(got, "▶ first response") {

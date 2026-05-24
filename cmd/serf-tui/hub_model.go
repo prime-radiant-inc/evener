@@ -4152,15 +4152,23 @@ func (m hubModel) sessionView() string {
 		if width == 0 {
 			width = 100
 		}
+		prevRendered := false
 		for i, msg := range messages {
 			focused := m.transcriptView == nil && (m.session.isToolFocused(i) || (m.session.scrollMode && m.browseSelected == i))
 			rendered := renderMessage(msg, width, focused)
 			if rendered == "" {
 				continue
 			}
+			if prevRendered {
+				// Turn separator between clusters
+				rule := lipgloss.NewStyle().Foreground(activeThemeV2().RuleSoft).Render(strings.Repeat("┄", width))
+				b.WriteString(rule)
+				b.WriteString("\n")
+			}
 			b.WriteString("\n")
 			b.WriteString(rendered)
 			b.WriteString("\n")
+			prevRendered = true
 		}
 	}
 	mainBody := b.String()

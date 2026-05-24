@@ -148,13 +148,24 @@ func renderMessage(msg chatMessage, width int, focused bool) string {
 
 	switch msg.Kind {
 	case msgUser:
-		return renderSelectedMessage(userBlockStyle.Width(messageWidth).Render("> "+body), focused)
+		th := activeThemeV2()
+		barClr := th.Accent
+		bar := lipgloss.NewStyle().Foreground(barClr).Render("┃")
+		if focused {
+			bar = lipgloss.NewStyle().Foreground(barClr).Render("┃┃")
+		}
+		rendered := userBlockStyle.Width(max(1, messageWidth-lipgloss.Width(bar)-1)).Render("> " + body)
+		return bar + " " + rendered
 	case msgAssistant:
 		text := strings.TrimSpace(msg.Text)
 		if text == "" {
 			return ""
 		}
-		return renderSelectedMessage(thinkingStyle.Width(messageWidth).Render(renderMarkdown(text, messageWidth)), focused)
+		th := activeThemeV2()
+		bar := StateBar(th.StateProcessing)
+		barW := lipgloss.Width(bar)
+		rendered := thinkingStyle.Width(max(1, messageWidth-barW-1)).Render(renderMarkdown(text, max(1, messageWidth-barW-1)))
+		return bar + " " + renderSelectedMessage(rendered, focused)
 	case msgCommunicate:
 		return renderSelectedMessage(communicateStyle.Width(messageWidth).Render(renderMarkdown(msg.Text, messageWidth)), focused)
 	case msgTool:
