@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/glamour/ansi"
+	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/llm"
@@ -19,8 +21,9 @@ func initMarkdownRenderer(width int) {
 	if width <= 0 {
 		width = 80
 	}
+	style := themedGlamourStyle()
 	r, err := glamour.NewTermRenderer(
-		glamour.WithStandardStyle(markdownStyleName()),
+		glamour.WithStyles(style),
 		glamour.WithWordWrap(max(1, width-4)),
 	)
 	if err == nil {
@@ -29,12 +32,48 @@ func initMarkdownRenderer(width int) {
 	}
 }
 
-func markdownStyleName() string {
-	if effectiveTUITheme() == lightTheme {
-		return "light"
+// themedGlamourStyle builds a glamour StyleConfig from the active V2 theme,
+// starting from glamour's stock light/dark config and overriding the bits
+// that don't follow the surrounding theme — chiefly the code-block and
+// inline-code backgrounds, which ship as fixed dark greys ("#373737") even
+// in the "light" style.
+func themedGlamourStyle() ansi.StyleConfig {
+	th := activeThemeV2()
+	var base ansi.StyleConfig
+	if th.Name == "light" {
+		base = styles.LightStyleConfig
+	} else {
+		base = styles.DarkStyleConfig
 	}
-	return "dark"
+
+	bgRaised := string(th.BgRaised)
+	surface := string(th.SurfaceSecondary)
+	text := string(th.Text)
+	textMuted := string(th.TextMuted)
+
+	// Inline code: tinted surface, no white-on-white in light mode.
+	base.Code.BackgroundColor = strPtr(surface)
+	base.Code.Color = strPtr(text)
+
+	// Code block container: deep-clone Chroma so we don't mutate the
+	// package-level styles.LightStyleConfig / DarkStyleConfig.
+	if base.CodeBlock.Chroma != nil {
+		chromaCopy := *base.CodeBlock.Chroma
+		chromaCopy.Background.BackgroundColor = strPtr(bgRaised)
+		chromaCopy.Background.Color = strPtr(text)
+		chromaCopy.Text.Color = strPtr(text)
+		base.CodeBlock.Chroma = &chromaCopy
+	}
+	base.CodeBlock.BackgroundColor = strPtr(bgRaised)
+	base.CodeBlock.Color = strPtr(text)
+
+	// Block quote: muted text in the theme tone.
+	base.BlockQuote.Color = strPtr(textMuted)
+
+	return base
 }
+
+func strPtr(s string) *string { return &s }
 
 func renderMarkdown(text string, width int) string {
 	if !containsMarkdownSyntax(text) {
