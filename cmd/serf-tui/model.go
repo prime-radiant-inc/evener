@@ -404,16 +404,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input.Blur()
 			m.viewport, _ = m.viewport.Update(msg)
 			return m, nil
-		case "tab":
-			// Toggle the most recent tool call's expanded state (default behavior outside scroll mode).
-			for i := len(m.messages) - 1; i >= 0; i-- {
-				if m.messages[i].Kind == msgTool && m.messages[i].Tool != nil && m.messages[i].Tool.Done {
-					m.messages[i].Tool.Expanded = !m.messages[i].Tool.Expanded
-					m.refreshViewport()
-					break
-				}
-			}
-			return m, nil
 		case "enter":
 			text := strings.TrimSpace(m.input.Value())
 			if text == "" {
