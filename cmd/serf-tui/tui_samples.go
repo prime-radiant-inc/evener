@@ -56,6 +56,7 @@ type tuiSampleRender struct {
 	Width    int
 	View     string
 	Contains []string
+	Theme    string // "dark" or "light"; empty defaults to dark
 }
 
 type tuiInteractionSample struct {
@@ -362,6 +363,7 @@ func renderSample(name string, width int, view string, contains ...string) tuiSa
 		Width:    width,
 		View:     strings.TrimSpace(view),
 		Contains: contains,
+		Theme:    "dark",
 	}
 }
 
