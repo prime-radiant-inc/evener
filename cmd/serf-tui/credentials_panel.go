@@ -1,10 +1,10 @@
 package main
 
 import (
-	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -84,22 +84,39 @@ func (p credentialsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return p, nil
 }
 
+func (p credentialsPanel) sourceBadgeColor(source string) lipgloss.Color {
+	th := activeThemeV2()
+	switch source {
+	case "oauth", "env":
+		return th.StateIdle
+	case "absent":
+		return th.StateEnded
+	default:
+		return th.TextDim
+	}
+}
+
 func (p credentialsPanel) View() string {
+	th := activeThemeV2()
+	var body string
 	if p.loading {
-		return "Loading credentials…"
-	}
-	if p.err != nil {
-		return fmt.Sprintf("Error: %v\n[Esc] close", p.err)
-	}
-	var b strings.Builder
-	b.WriteString("Credentials\n\n")
-	for i, pv := range p.providers {
-		cursor := "  "
-		if i == p.cursor {
-			cursor = "> "
+		body = lipgloss.NewStyle().Foreground(th.TextDim).Render("Loading credentials…")
+	} else if p.err != nil {
+		body = lipgloss.NewStyle().Foreground(th.StateEnded).Render("Error: " + p.err.Error())
+	} else {
+		var rows []string
+		for i, pv := range p.providers {
+			cursor := "  "
+			if i == p.cursor {
+				cursor = "> "
+			}
+			name := lipgloss.NewStyle().Foreground(th.Text).Render(pv.Provider)
+			badge := StatusBadge(p.sourceBadgeColor(pv.ActiveSource), pv.ActiveSource)
+			rows = append(rows, cursor+name+"  "+badge)
 		}
-		fmt.Fprintf(&b, "%s%-22s  source: %-10s  modes: %s\n", cursor, pv.Provider, pv.ActiveSource, strings.Join(pv.AuthModes, ","))
+		body = strings.Join(rows, "\n")
 	}
-	b.WriteString("\n[Enter] set api key  [O] OAuth sign-in  [C] clear  [Esc] close")
-	return b.String()
+	width := 60
+	footer := actionBarForWidth(width, KbdHint("enter", "set api key"), KbdHint("o", "OAuth"), KbdHint("c", "clear"), KbdHint("esc", "close"))
+	return Overlay(OverlayOpts{Title: "Credentials", Width: width, Body: body, Footer: footer})
 }
