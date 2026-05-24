@@ -1580,6 +1580,17 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 /* The section-header row has no border-bottom; restore the top hairline on
    the immediately following regular row so the visual separation is intact. */
 .settings-table .row.section-header + .row { border-top: 1px solid var(--rule); }
+/* Help text inside a section-header dd must not inherit the uppercase/mono
+   header treatment — reset to standard .help styling. */
+.settings-table .row.section-header .help,
+.settings-table .row.section-header p.help {
+  text-transform: none;
+  letter-spacing: normal;
+  font-family: var(--font-sans);
+  font-weight: 350;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
 
 /* Compact modifier — used by the spawn-advanced panel where density matches
    the old .spawn-advanced-* visual rhythm. Tighter padding, no top border on
@@ -1910,6 +1921,12 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
     .sb-row[data-state="warning"]:hover  { background: color-mix(in srgb, var(--state-warning) 5%, transparent); }
   }
   body.app[data-sidebar-open] #sidebar { transform: translateX(0); }
+  /* Connection banner offset for mobile sidebar drawer — the fixed drawer
+     must start below the 32px banner so it is not covered. */
+  body.has-connection-banner #sidebar {
+    top: 32px;
+    height: calc(100vh - 32px);
+  }
   body.app[data-sidebar-open]::before {
     content: "";
     position: fixed;

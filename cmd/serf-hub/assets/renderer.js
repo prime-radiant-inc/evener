@@ -2956,6 +2956,10 @@
       }
       if (panel.contains(ev.target)) return;
       if (ev.target.closest && ev.target.closest(triggerSelector)) return;
+      // Do not close the panel when the click is inside the search dialog.
+      if (ev.target.closest && ev.target.closest("#search-dialog")) return;
+      const dlg = document.getElementById("search-dialog");
+      if (dlg && dlg.open) return;
       closeFn();
       document.removeEventListener("mousedown", onDown, true);
     };
@@ -3027,6 +3031,10 @@
     }
     document.addEventListener("keydown", function escClose(ev) {
       if (ev.key === "Escape") {
+        // Do not close the panel if the event originated inside the search dialog.
+        if (ev.target && ev.target.closest && ev.target.closest("#search-dialog")) return;
+        const dlg = document.getElementById("search-dialog");
+        if (dlg && dlg.open) return;
         closePanel();
         document.removeEventListener("keydown", escClose);
       }
@@ -3213,6 +3221,10 @@
     }
     document.addEventListener("keydown", function escClose(ev) {
       if (ev.key === "Escape") {
+        // Do not close the panel if the event originated inside the search dialog.
+        if (ev.target && ev.target.closest && ev.target.closest("#search-dialog")) return;
+        const dlg = document.getElementById("search-dialog");
+        if (dlg && dlg.open) return;
         closePanel();
         document.removeEventListener("keydown", escClose);
       }

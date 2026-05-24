@@ -138,7 +138,8 @@ func TestHubModelActionUnavailableNoticeIncludesSourceAndReason(t *testing.T) {
 		t.Fatal("unavailable clear should not call hub")
 	}
 	got := updated.(hubModel).View()
-	for _, want := range []string{"Action unavailable", "Clear is not available for this session.", "source: codex-local", "reason: source does not advertise clear"} {
+	// View() format: summary on first line, source·cause on second, next on third.
+	for _, want := range []string{"Clear is not available for this session.", "codex-local", "source does not advertise clear"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("notice missing %q:\n%s", want, got)
 		}

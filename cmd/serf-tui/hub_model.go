@@ -3643,7 +3643,7 @@ func dashboardFooter(width int) string {
 		KbdHint("enter", "open"),
 		KbdHint("n", "new"),
 		KbdHint("/", "filter"),
-		KbdHint("⌘O", "dashboard"),
+		KbdHint("ctrl+o", "dashboard"),
 		KbdHint("q", "quit"),
 	}
 	return actionBarForWidth(width, tokens...)
@@ -3974,7 +3974,9 @@ func (m hubModel) sessionHeaderLines() []string {
 	rule := SectionDivider(m.sessionHeaderWidth(), "SERF / SESSION", fmt.Sprintf("%d turns", m.detail.TurnCount))
 
 	// Line 2: title + state badge (truncate title if needed to fit width)
-	badge := StatusBadge(stateColor(state), state)
+	// Use stateLabel to normalize raw states (e.g. "closed" → "ended").
+	normalizedState := stateLabel(state)
+	badge := StatusBadge(stateColor(normalizedState), normalizedState)
 	badgeW := lipgloss.Width(badge)
 	maxTitleW := m.sessionHeaderWidth() - 2 - 3 - badgeW // 2-space indent + 3-space gap
 	if maxTitleW < 4 {

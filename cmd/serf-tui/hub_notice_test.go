@@ -39,7 +39,8 @@ func TestHubModelNoticesPersistUntilDismissed(t *testing.T) {
 	first := m.sessionView()
 	second := m.sessionView()
 	for _, view := range []string{first, second} {
-		if !strings.Contains(view, "AppWire error") || !strings.Contains(view, "category: appwire") || !strings.Contains(view, "ctrl+x: dismiss notice") {
+		// View() format: summary on first line, source·cause on second, next on third.
+		if !strings.Contains(view, "Hub request failed.") || !strings.Contains(view, "method not found") || !strings.Contains(view, "ctrl+x: dismiss notice") {
 			t.Fatalf("notice did not persist in view:\n%s", view)
 		}
 	}
@@ -68,7 +69,8 @@ func TestHubModelNoticesRenderAsPane(t *testing.T) {
 		t.Fatalf("notice pane should render terminal styling:\n%s", got)
 	}
 	plain := ansiPattern.ReplaceAllString(got, "")
-	if !strings.Contains(plain, "  AppWire error") || !strings.Contains(plain, "  ctrl+x: dismiss notice") {
+	// View() format: summary on first line (with ▍ ● prefix), ctrl+x hint at the end.
+	if !strings.Contains(plain, "Hub request failed.") || !strings.Contains(plain, "ctrl+x: dismiss notice") {
 		t.Fatalf("notice pane should have pane padding:\n%s", plain)
 	}
 }
@@ -100,7 +102,8 @@ func TestHubModelAuthErrorsRenderStructuredNoticeAndClearOnSuccess(t *testing.T)
 	updated, _ := m.Update(hubAuthStatusMsg{err: appwire.Unavailable("auth endpoint unavailable")})
 	m = updated.(hubModel)
 	got := m.sessionView()
-	for _, want := range []string{"Auth error", "category: auth", "source: serf", "reason: auth endpoint unavailable", "next: Retry /auth openai or check Hub auth configuration."} {
+	// View() format: summary line contains the notice summary/title, source·cause on second line.
+	for _, want := range []string{"auth endpoint unavailable", "serf", "Retry /auth openai or check Hub auth configuration."} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("auth error notice missing %q:\n%s", want, got)
 		}
@@ -164,17 +167,18 @@ func TestHubModelAppWireAndProviderErrorsRenderStructuredNotices(t *testing.T) {
 		{
 			name: "send",
 			msg:  hubSendMsg{text: "draft", err: appwire.SessionUnavailable("local daemon unavailable")},
-			want: []string{"Send failed", "category: appwire", "reason: local daemon unavailable", "next: Check the hub connection and retry the action."},
+			// View() format: source·cause line and next line are visible.
+			want: []string{"local daemon unavailable", "Check the hub connection and retry the action."},
 		},
 		{
 			name: "action",
 			msg:  hubActionMsg{action: "compact", err: appwire.Unavailable("codex source does not support compact")},
-			want: []string{"Action failed", "category: action", "reason: codex source does not support compact"},
+			want: []string{"codex source does not support compact"},
 		},
 		{
 			name: "provider",
 			msg:  hubSessionModelsMsg{err: appwire.WireError{Code: appwire.CodeUnavailable, Message: "OpenAI login required", Data: appwire.ErrorData{SerfErrorInfo: appwire.ErrorProviderUnavailable}}},
-			want: []string{"Provider unavailable", "category: provider", "reason: OpenAI login required", "next: Check provider auth and model availability."},
+			want: []string{"OpenAI login required", "Check provider auth and model availability."},
 		},
 	}
 

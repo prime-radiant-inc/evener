@@ -246,6 +246,12 @@ func renderToolCall(tc toolCallInfo, width int, focused bool) string {
 	if r.Body != nil {
 		body := r.Body(args, tc.Output, width-th.IndentToolBody)
 		if body != "" {
+			// Append error after renderer body so errors from unknown/MCP tools
+			// are always visible even when JSON output is also present.
+			if tc.Error != "" {
+				errStyle := lipgloss.NewStyle().Foreground(activeThemeV2().StateAwaiting)
+				body = body + "\n" + errStyle.Render(tc.Error)
+			}
 			bodyLines = append(bodyLines, indentBlock(body, th.IndentToolBody))
 			bodyFromRenderer = true
 		}

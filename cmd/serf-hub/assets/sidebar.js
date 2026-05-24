@@ -207,6 +207,10 @@
 
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape" && isSidebarOpen()) {
+      // Do not close the mobile sidebar when the event originated inside the search dialog.
+      if (e.target && e.target.closest && e.target.closest("#search-dialog")) return;
+      var dlg = document.getElementById("search-dialog");
+      if (dlg && dlg.open) return;
       setSidebarOpen(false);
     }
   });

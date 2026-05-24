@@ -74,7 +74,7 @@ func (m hubModel) renderNotices() string {
 	}
 	var lines []string
 	for _, notice := range m.notices {
-		lines = append(lines, notice.Text())
+		lines = append(lines, notice.View())
 	}
 	lines = append(lines, "ctrl+x: dismiss notice")
 	return renderPopupPane(strings.Join(lines, "\n\n"), m.width) + "\n"
