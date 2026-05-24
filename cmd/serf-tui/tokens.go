@@ -75,31 +75,49 @@ func applyThemeName(name string) bool {
 	return true
 }
 
+// Workshop-log palette. Warm paper-and-ink in light mode, warm noir in
+// dark mode. Surfaces are subtle (≤4% delta from Bg) so painted regions
+// sit quietly against whatever terminal background the user has, rather
+// than reading as a cold-grey rectangle floating on cream.
+//
+// Accents lean rust/amber rather than blue, and states are slightly
+// desaturated — pink/red/blue/green tuned to feel inked, not neon.
+
 var darkTheme = Theme{
-	Name:                "dark",
-	Bg:                  lipgloss.Color("#0a0a0e"),
-	BgRaised:            lipgloss.Color("#16161e"),
-	SurfaceSecondary:    lipgloss.Color("#1c1c24"),
-	Rule:                lipgloss.Color("#1a1a20"),
-	RuleSoft:            lipgloss.Color("#14141a"),
-	Text:                lipgloss.Color("#ececf0"),
-	TextMuted:           lipgloss.Color("#a8a8b4"),
-	TextDim:             lipgloss.Color("#7a7a86"),
-	TextGhost:           lipgloss.Color("#56565f"),
-	Accent:              lipgloss.Color("#7aa2f7"),
-	AccentSecondary:     lipgloss.Color("#bb9af7"),
-	StateAwaiting:       lipgloss.Color("#f7768e"),
-	StateProcessing:     lipgloss.Color("#7aa2f7"),
-	StateWarning:        lipgloss.Color("#e0af68"),
-	StateIdle:           lipgloss.Color("#9ece6a"),
-	StateEnded:          lipgloss.Color("#5a5a64"),
-	StateSubagent:       lipgloss.Color("#bb9af7"),
-	BtnPrimaryText:      lipgloss.Color("#0a0a0e"),
-	StateAwaitingTint:   lipgloss.Color("#28171b"),
-	StateProcessingTint: lipgloss.Color("#161e2c"),
-	StateWarningTint:    lipgloss.Color("#26201a"),
-	StateIdleTint:       lipgloss.Color("#181f17"),
-	AccentTint:          lipgloss.Color("#16192c"),
+	Name: "dark",
+	// Warm noir surfaces — slight reddish-brown cast vs the previous
+	// blue-grey. Stays dark enough for a Solarized Dark or true-black
+	// terminal config to coexist.
+	Bg:               lipgloss.Color("#0d0c0a"),
+	BgRaised:         lipgloss.Color("#1a1814"),
+	SurfaceSecondary: lipgloss.Color("#26221c"),
+	Rule:             lipgloss.Color("#1f1d18"),
+	RuleSoft:         lipgloss.Color("#181612"),
+	// Warm cream text on warm-dark bg reads as paper-ink-inverted, not
+	// digital. TextMuted/Dim/Ghost step down in lightness AND saturation.
+	Text:      lipgloss.Color("#ede5d4"),
+	TextMuted: lipgloss.Color("#a89e8a"),
+	TextDim:   lipgloss.Color("#7a7261"),
+	TextGhost: lipgloss.Color("#5a5448"),
+	// Amber accent + sepia secondary; both warm tones that pair with cream
+	// text without going neon.
+	Accent:          lipgloss.Color("#e0a04a"),
+	AccentSecondary: lipgloss.Color("#bf8e62"),
+	// Slightly desaturated state palette — coral/slate/gold/sage, plus a
+	// muted brown for ended sessions.
+	StateAwaiting:   lipgloss.Color("#e07a72"),
+	StateProcessing: lipgloss.Color("#7d9ee0"),
+	StateWarning:    lipgloss.Color("#e0b870"),
+	StateIdle:       lipgloss.Color("#a8c87a"),
+	StateEnded:      lipgloss.Color("#5a564e"),
+	StateSubagent:   lipgloss.Color("#bf8e62"),
+	BtnPrimaryText:  lipgloss.Color("#0d0c0a"),
+	// Tints — barely-perceptible washes for state-tinted rows.
+	StateAwaitingTint:   lipgloss.Color("#241612"),
+	StateProcessingTint: lipgloss.Color("#13192a"),
+	StateWarningTint:    lipgloss.Color("#241e14"),
+	StateIdleTint:       lipgloss.Color("#171f14"),
+	AccentTint:          lipgloss.Color("#241e10"),
 	IndentToolBody:      4,
 	IndentSubagent:      2,
 	GapTurn:             1,
@@ -110,30 +128,39 @@ var darkTheme = Theme{
 }
 
 var lightTheme = Theme{
-	Name:                "light",
-	Bg:                  lipgloss.Color("#fafafa"),
-	BgRaised:            lipgloss.Color("#f1f1f2"),
-	SurfaceSecondary:    lipgloss.Color("#e6e6e8"),
-	Rule:                lipgloss.Color("#dadadc"),
-	RuleSoft:            lipgloss.Color("#e6e6e8"),
-	Text:                lipgloss.Color("#16161e"),
-	TextMuted:           lipgloss.Color("#3a3a44"),
-	TextDim:             lipgloss.Color("#5e5e6a"),
-	TextGhost:           lipgloss.Color("#8a8a92"),
-	Accent:              lipgloss.Color("#2e58b8"),
-	AccentSecondary:     lipgloss.Color("#5e35b6"),
-	StateAwaiting:       lipgloss.Color("#b62a48"),
-	StateProcessing:     lipgloss.Color("#2e58b8"),
-	StateWarning:        lipgloss.Color("#8a5a14"),
-	StateIdle:           lipgloss.Color("#336a14"),
-	StateEnded:          lipgloss.Color("#7a7a82"),
-	StateSubagent:       lipgloss.Color("#5e35b6"),
-	BtnPrimaryText:      lipgloss.Color("#fafafa"),
-	StateAwaitingTint:   lipgloss.Color("#f6e8eb"),
-	StateProcessingTint: lipgloss.Color("#e8edf6"),
-	StateWarningTint:    lipgloss.Color("#f5efe1"),
-	StateIdleTint:       lipgloss.Color("#e8efe1"),
-	AccentTint:          lipgloss.Color("#e8edf6"),
+	Name: "light",
+	// Warm paper. Bg is a soft cream rather than cold #fafafa, so painted
+	// surfaces sit quietly against typical light terminals without
+	// flashing as a colder rectangle.
+	Bg:               lipgloss.Color("#fbf8f2"),
+	BgRaised:         lipgloss.Color("#f5f0e6"),
+	SurfaceSecondary: lipgloss.Color("#ebe4d2"),
+	Rule:             lipgloss.Color("#d8d0bc"),
+	RuleSoft:         lipgloss.Color("#ebe4d2"),
+	// Warm near-black ink. Tiers desaturate toward sepia rather than blue
+	// grey.
+	Text:      lipgloss.Color("#1d1a14"),
+	TextMuted: lipgloss.Color("#4a443a"),
+	TextDim:   lipgloss.Color("#6e6759"),
+	TextGhost: lipgloss.Color("#9a917f"),
+	// Rust accent + olive secondary — workshop-log ink stamps.
+	Accent:          lipgloss.Color("#9a4515"),
+	AccentSecondary: lipgloss.Color("#5a4d2a"),
+	// Desaturated states. StateAwaiting is a deeper less-neon red; idle
+	// is a deeper forest green; processing is a slate blue with warmth.
+	StateAwaiting:   lipgloss.Color("#a3293e"),
+	StateProcessing: lipgloss.Color("#3d5ca6"),
+	StateWarning:    lipgloss.Color("#8a5a14"),
+	StateIdle:       lipgloss.Color("#446d28"),
+	StateEnded:      lipgloss.Color("#7a7367"),
+	StateSubagent:   lipgloss.Color("#5a4d2a"),
+	BtnPrimaryText:  lipgloss.Color("#fbf8f2"),
+	// Tints — gentle warm washes.
+	StateAwaitingTint:   lipgloss.Color("#f1e1dd"),
+	StateProcessingTint: lipgloss.Color("#e3e7f0"),
+	StateWarningTint:    lipgloss.Color("#f0e9d5"),
+	StateIdleTint:       lipgloss.Color("#e5ead7"),
+	AccentTint:          lipgloss.Color("#f1e6d9"),
 	IndentToolBody:      4,
 	IndentSubagent:      2,
 	GapTurn:             1,

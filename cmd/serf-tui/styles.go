@@ -153,8 +153,10 @@ func rebuildDerivedStyles() {
 		Background(th.StateIdle).
 		Bold(true)
 
+	// User messages: no background fill — the left bar marker (added in
+	// renderMessage) and bold-ish text are sufficient to demarcate, and
+	// avoiding a painted block keeps us off the terminal background.
 	userBlockStyle = lipgloss.NewStyle().
-		Background(th.SurfaceSecondary).
 		Foreground(th.Text).
 		PaddingLeft(1).
 		PaddingRight(1)
@@ -190,8 +192,10 @@ func rebuildDerivedStyles() {
 		Border(lipgloss.NormalBorder(), true, false, false, false).
 		BorderForeground(th.Rule)
 
-	viewportStyle = lipgloss.NewStyle().
-		Background(th.Bg)
+	// Viewport: no background fill — let the terminal's own background
+	// show through. Painting our Bg over the entire viewport creates a
+	// rectangle that fights any non-matching terminal config.
+	viewportStyle = lipgloss.NewStyle()
 
 	pickerTitle = lipgloss.NewStyle().
 		Bold(true).
