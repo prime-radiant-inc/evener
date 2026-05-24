@@ -1256,50 +1256,18 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   background: var(--surface-secondary); color: var(--text-muted);
 }
 .spawn-form .diagnostic { margin: 0; max-width: none; }
-/* Spawn-advanced — compact mirror of settings-table for the per-launch
-   override panel inside the spawn page's <details>. Same two-voice rhythm
-   (sans labels, mono values) and same --bg-raised input fill as
-   settings-table; just denser. Fieldsets become row-delimited sections
-   (border-top) rather than boxed cards, matching the settings-table
-   "rows separated by hairlines" pattern. */
+/* Spawn-advanced — the <details> toggle for the per-launch override panel. */
 .spawn-advanced { color: var(--text-muted); font-size: var(--text-sm); }
 .spawn-advanced summary { cursor: pointer; padding: var(--space-2) 0; font-family: var(--font-mono); font-size: var(--text-2xs); text-transform: uppercase; letter-spacing: 0.16em; color: var(--text-muted); }
 .spawn-advanced[open] summary { color: var(--text); }
 .spawn-advanced-body { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4) 0; border-top: 1px solid var(--rule); }
 .spawn-advanced-note { margin: 0 0 var(--space-2); }
-.spawn-advanced-group { padding: var(--space-3) 0; display: flex; flex-direction: column; gap: var(--space-3); align-items: stretch; border-top: 1px solid var(--rule); }
-.spawn-advanced-group:first-of-type { border-top: 0; padding-top: 0; }
-.spawn-advanced-group legend { padding: 0; color: var(--text-muted); font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.16em; font-size: var(--text-2xs); font-weight: 500; }
-.spawn-advanced-body label { display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--text-sm); color: var(--text); font-family: var(--font-sans); font-weight: 500; }
-.spawn-advanced-body label > input[type=text],
-.spawn-advanced-body label > input[type=number],
-.spawn-advanced-body textarea,
-.spawn-advanced-body select { background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); color: var(--text); font: inherit; font-family: var(--font-mono); font-size: var(--text-sm); outline: none; transition: border-color var(--motion-fast); }
-.spawn-advanced-body label > input[type=text]:focus,
-.spawn-advanced-body label > input[type=number]:focus,
-.spawn-advanced-body textarea:focus,
-.spawn-advanced-body select:focus { border-color: var(--accent); }
-.spawn-advanced-body button { background: transparent; border: 1px solid var(--rule); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); color: var(--text); font: inherit; font-family: var(--font-mono); font-size: var(--text-sm); outline: none; cursor: pointer; }
-.spawn-advanced-textarea { width: 100%; min-height: 132px; line-height: var(--leading-snug); resize: vertical; cursor: text; }
-.spawn-advanced-row { display: flex; flex-direction: column; gap: var(--space-3); min-width: 0; }
-.spawn-advanced-model { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
-.spawn-advanced-radio { display: flex; gap: var(--space-4); flex-wrap: wrap; }
-.spawn-advanced-radio label { flex-direction: row; align-items: center; gap: var(--space-2); }
 .launch-radio-composite { flex-direction: column; align-items: stretch; gap: var(--space-3); }
 .launch-radio-composite .launch-radio-option { display: flex; flex-direction: row; align-items: center; gap: var(--space-3); color: var(--text-muted); }
 .launch-radio-composite .launch-radio-option-with-control { align-items: flex-start; }
 .launch-radio-composite .launch-radio-option-with-control > input[type=radio] { margin-top: var(--space-3); }
 .launch-radio-option-body { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; flex: 1; }
-.spawn-advanced-field-label { font-size: var(--text-xs); color: var(--text-muted); }
-.spawn-advanced-env-fallback { color: var(--text-dim); font-family: var(--font-mono); font-size: var(--text-xs); }
-.spawn-advanced-list-control { display: flex; flex-direction: column; gap: var(--space-3); }
-.spawn-advanced-add-controls { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
-.spawn-advanced-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: var(--space-2); }
-.spawn-advanced-list li { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); border: 1px solid var(--rule); border-radius: var(--radius-md); padding: var(--space-2) var(--space-3); color: var(--text); font-family: var(--font-mono); font-size: var(--text-xs); }
-.spawn-advanced-list li button { border: none; background: transparent; padding: 0 var(--space-2); color: var(--text-muted); cursor: pointer; }
-.spawn-advanced-chips { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: var(--space-2); width: 100%; }
-.spawn-advanced-chips li { display: inline-flex; align-items: center; gap: var(--space-2); border: 1px solid var(--rule); border-radius: var(--radius-pill); padding: var(--space-1) var(--space-3); font-family: var(--font-mono); font-size: var(--text-xs); }
-.spawn-advanced-chips li button { border: none; background: transparent; padding: 0 var(--space-2); color: var(--text-muted); cursor: pointer; }
+.settings-env-fallback { color: var(--text-dim); font-family: var(--font-mono); font-size: var(--text-xs); }
 .spawn-advanced-actions { display: flex; gap: var(--space-3); }
 .spawn-actions { display: flex; align-items: center; }
 .spawn-recent { margin-top: var(--space-7); }
@@ -1594,6 +1562,34 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 /* The section-header row has no border-bottom; restore the top hairline on
    the immediately following regular row so the visual separation is intact. */
 .settings-table .row.section-header + .row { border-top: 1px solid var(--rule); }
+
+/* Compact modifier — used by the spawn-advanced panel where density matches
+   the old .spawn-advanced-* visual rhythm. Tighter padding, no top border on
+   the table itself (the <details> border-top already provides separation), and
+   a narrower label column to fit the narrower spawn pane. */
+.settings-table.compact {
+  border-top: none;
+  max-width: none;
+}
+.settings-table.compact .row {
+  grid-template-columns: 140px 1fr;
+  padding: var(--space-2) 0;
+}
+.settings-table.compact dt {
+  font-size: var(--text-sm);
+  font-weight: 400;
+  color: var(--text-muted);
+}
+.settings-table.compact .row.section-header {
+  padding: var(--space-3) 0 var(--space-1);
+}
+.settings-table.compact .val-input,
+.settings-table.compact .val-select {
+  max-width: 100%;
+}
+.settings-table.compact textarea.val-input {
+  max-width: 100%;
+}
 
 /* ── settings-collection primitive (design language §4.2) ──────────────── */
 

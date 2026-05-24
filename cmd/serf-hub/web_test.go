@@ -1045,7 +1045,7 @@ func TestSpawnTemplate_HasSchemaAdvancedRoot(t *testing.T) {
 		`validateAdvancedPathScalars`,
 		`command.dataset.launchMcpCommand = "true"`,
 		`validateMCPCommandInput(command)`,
-		`input.className = "spawn-advanced-textarea"`,
+		`input.className = "val-input"`,
 		`input.rows = 6`,
 	} {
 		if !strings.Contains(src, want) {
@@ -1057,7 +1057,7 @@ func TestSpawnTemplate_HasSchemaAdvancedRoot(t *testing.T) {
 		t.Fatalf("read style.css: %v", err)
 	}
 	for _, want := range []string{
-		`.spawn-advanced-textarea`,
+		`.settings-table.compact`,
 		`min-height: 132px`,
 		`resize: vertical`,
 	} {

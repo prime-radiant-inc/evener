@@ -63,7 +63,7 @@
         <div data-launch-env-fallbacks hidden>{{range $name, $value := .SafeEnv}}<input type="hidden" data-launch-env-fallback data-env-name="{{$name}}" value="{{$value}}">{{end}}</div>
         <div id="spawn-advanced-schema" data-launch-advanced-root aria-live="polite">
           <div data-launch-schema-loading>Loading advanced options...</div>
-          <div data-launch-advanced-groups></div>
+          <dl class="settings-table compact" data-launch-advanced-groups></dl>
         </div>
 
         <div class="spawn-advanced-actions">

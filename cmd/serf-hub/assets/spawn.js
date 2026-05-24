@@ -459,7 +459,7 @@
   function textInputForOption(opt, multiline) {
     const input = document.createElement(multiline ? "textarea" : "input");
     if (multiline) {
-      input.className = "spawn-advanced-textarea";
+      input.className = "val-input";
       input.rows = 6;
     } else {
       input.type = opt.kind === "integer" ? "number" : "text";
@@ -922,7 +922,7 @@
       if (!value) return;
       overrides[wire] = kind === "integer" ? Number(value) : value;
     });
-    document.querySelectorAll(".spawn-advanced-list-control[data-launch-wire-field]").forEach((wrap) => {
+    document.querySelectorAll(".settings-collection[data-launch-wire-field]").forEach((wrap) => {
       const wire = wrap.dataset.launchWireField;
       const kind = wrap.dataset.launchKind;
       if (!wire) return;
