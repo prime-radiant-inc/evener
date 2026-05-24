@@ -117,17 +117,57 @@ def cache_write_1h_tokens(usage):
     return usage.get("cache_write_1h_tokens") or 0
 
 
+def response_id(entry):
+    resp = entry.get("response", {}) or {}
+    raw = resp.get("raw", {}) or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    return resp.get("id") or raw.get("id")
+
+
+def usage_signature(entry):
+    usage = usage_for(entry)
+    return (
+        usage.get("input_tokens", 0),
+        usage.get("output_tokens", 0),
+        cache_read_tokens(usage),
+        cache_write_tokens(usage),
+        cache_write_1h_tokens(usage),
+        usage.get("total_tokens", 0),
+    )
+
+
+def response_shape(entry):
+    resp = entry.get("response", {}) or {}
+    err = entry.get("error", "")
+    return (
+        response_id(entry),
+        bool(err),
+        err,
+        resp.get("finish_reason"),
+        resp.get("text_length", 0),
+        resp.get("tool_call_count", 0),
+    )
+
+
 def dedupe_key(entry, index):
     req = entry.get("request", {}) or {}
+    identity = (
+        entry.get("session_id"),
+        entry.get("round"),
+        req.get("provider"),
+        req.get("model"),
+        response_id(entry),
+    )
     key = (
         entry.get("session_id"),
         entry.get("round"),
-        entry.get("ts"),
         req.get("provider"),
         req.get("model"),
-        entry.get("latency_ms"),
+        usage_signature(entry),
+        response_shape(entry),
     )
-    if any(part not in (None, "") for part in key):
+    if any(part not in (None, "") for part in identity):
         return ("api_call",) + key
     return ("path", entry.get("_file"), index)
 

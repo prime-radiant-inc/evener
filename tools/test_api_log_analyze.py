@@ -150,6 +150,55 @@ def test_directory_deduplicates_api_jsonl_and_transcript_api_call(tmp_path):
     assert row.split()[2] == "1"
 
 
+def test_directory_deduplicates_when_transcript_timestamp_and_latency_differ(tmp_path):
+    api_call = {
+        "session_id": "sess-drift",
+        "round": 8,
+        "ts": "2026-05-24T12:00:00Z",
+        "latency_ms": 500,
+        "request": {"provider": "openai", "model": "gpt-5.2"},
+        "response": {
+            "id": "resp-1",
+            "usage": {
+                "input_tokens": 120,
+                "cache_read_tokens": 80,
+                "output_tokens": 30,
+            },
+            "finish_reason": "stop",
+            "text_length": 8,
+            "tool_call_count": 0,
+        },
+    }
+    transcript_call = dict(api_call)
+    transcript_call.update(
+        {
+            "kind": "api_call",
+            "seq": 4,
+            "ts": "2026-05-24T12:00:01Z",
+            "latency_ms": 525,
+        }
+    )
+
+    write_jsonl(tmp_path / "api.jsonl", [api_call])
+    write_jsonl(
+        tmp_path / "sessions" / "sess-drift.transcript.jsonl",
+        [
+            {"kind": "header", "session_id": "sess-drift", "model": "gpt-5.2"},
+            transcript_call,
+        ],
+    )
+
+    result = run_analyzer(tmp_path, "--summary")
+
+    assert result.returncode == 0, result.stderr
+    row = next(line for line in result.stdout.splitlines() if line.startswith("sess-drift"))
+    fields = row.split()
+    assert fields[2] == "1"
+    assert fields[5] == "120"
+    assert fields[6] == "80"
+    assert fields[8] == "30"
+
+
 def test_summary_hit_percent_includes_cache_write_tokens(tmp_path):
     api_log = tmp_path / "api.jsonl"
     write_jsonl(
