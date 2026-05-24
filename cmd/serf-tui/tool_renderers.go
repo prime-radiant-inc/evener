@@ -222,4 +222,39 @@ func init() {
 	}
 	toolRenderers["list_dir"] = listRenderer
 	toolRenderers["list_directory"] = listRenderer
+
+	// edit_file (Body wired in Wave 6)
+	editFileRenderer := ToolRenderer{
+		Verb:              func(_ ToolArgs) string { return "edit" },
+		Target:            func(args ToolArgs) string { return args.Str("file_path") },
+		Result:            diffResultText,
+		ExpandedByDefault: true,
+	}
+	toolRenderers["edit_file"] = editFileRenderer
+
+	// write_file (Body wired in Wave 6)
+	writeFileRenderer := ToolRenderer{
+		Verb:              func(_ ToolArgs) string { return "write" },
+		Target:            func(args ToolArgs) string { return args.Str("file_path") },
+		Result:            diffResultText,
+		ExpandedByDefault: true,
+	}
+	toolRenderers["write_file"] = writeFileRenderer
+
+	// apply_patch (Body wired in Wave 6)
+	applyPatchRenderer := ToolRenderer{
+		Verb: func(_ ToolArgs) string { return "patch" },
+		Target: func(args ToolArgs) string {
+			patch := args.Str("patch")
+			for _, line := range strings.Split(patch, "\n") {
+				if strings.HasPrefix(line, "+++ b/") {
+					return line[len("+++ b/"):]
+				}
+			}
+			return ""
+		},
+		Result:            diffResultText,
+		ExpandedByDefault: true,
+	}
+	toolRenderers["apply_patch"] = applyPatchRenderer
 }

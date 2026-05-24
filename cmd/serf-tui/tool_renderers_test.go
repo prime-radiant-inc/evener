@@ -88,3 +88,30 @@ func TestListDirRenderer(t *testing.T) {
 		t.Errorf("list_dir target = %q", r.Target(args))
 	}
 }
+
+func TestEditFileRenderer(t *testing.T) {
+	r, _ := lookupToolRenderer("edit_file")
+	args := toolArgsFromJSON(`{"file_path":"src/main.go"}`)
+	if r.Verb(args) != "edit" {
+		t.Errorf("edit_file verb = %q", r.Verb(args))
+	}
+	if !r.ExpandedByDefault {
+		t.Errorf("edit_file should default to expanded")
+	}
+}
+
+func TestWriteFileRenderer(t *testing.T) {
+	r, _ := lookupToolRenderer("write_file")
+	args := toolArgsFromJSON(`{"file_path":"src/new.go"}`)
+	if r.Verb(args) != "write" {
+		t.Errorf("write_file verb = %q", r.Verb(args))
+	}
+}
+
+func TestApplyPatchRenderer(t *testing.T) {
+	r, _ := lookupToolRenderer("apply_patch")
+	args := toolArgsFromJSON(`{"patch":"--- a/x\n+++ b/x\n@@ ..."}`)
+	if r.Verb(args) != "patch" {
+		t.Errorf("apply_patch verb = %q", r.Verb(args))
+	}
+}
