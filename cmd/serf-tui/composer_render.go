@@ -25,10 +25,21 @@ type composerContext struct {
 // renderComposerChipStrip renders the live-context band above the composer
 // textarea. Left: harness/model/branch/dir chips separated by ·. Right:
 // connection status and, when in queue/fork/awaiting mode, a state-colored
-// mode chip. The whole line is painted as a solid SurfaceSecondary band so
-// it reads as a distinct accent strip rather than a divider.
+// mode chip. The whole line is painted as a solid SurfaceSecondary band.
+//
+// Every inner styled span explicitly sets Background(SurfaceSecondary) so
+// the band's bg paints through cleanly: nested lipgloss spans emit ANSI
+// resets at their boundaries, and unstyled join glue (separators, gap
+// spaces) would otherwise drop back to the terminal default between spans.
 func renderComposerChipStrip(ctx composerContext) string {
 	th := activeTheme()
+	bg := th.SurfaceSecondary
+
+	// All inner spans must declare the band bg.
+	dim := lipgloss.NewStyle().Background(bg).Foreground(th.TextDim)
+	text := lipgloss.NewStyle().Background(bg).Foreground(th.Text)
+	ghost := lipgloss.NewStyle().Background(bg).Foreground(th.TextGhost)
+	bgOnly := lipgloss.NewStyle().Background(bg)
 
 	// Left side: harness/model/branch/dir
 	leftParts := []string{}
@@ -36,17 +47,15 @@ func renderComposerChipStrip(ctx composerContext) string {
 		if value == "" {
 			return
 		}
-		k := lipgloss.NewStyle().Foreground(th.TextDim).Render(key)
-		v := lipgloss.NewStyle().Foreground(th.Text).Render(value)
-		leftParts = append(leftParts, k+" "+v)
+		leftParts = append(leftParts, dim.Render(key)+bgOnly.Render(" ")+text.Render(value))
 	}
 	add("harness", ctx.Harness)
-	add("model", abbreviateModel(ctx.Model))
+	add("model", composeProviderModel(ctx.Provider, ctx.Model))
 	add("branch", ctx.Branch)
 	if ctx.WorkingDir != "" {
-		leftParts = append(leftParts, lipgloss.NewStyle().Foreground(th.TextDim).Render(abbreviatePath(ctx.WorkingDir, 32)))
+		leftParts = append(leftParts, dim.Render(abbreviatePath(ctx.WorkingDir, 32)))
 	}
-	sep := lipgloss.NewStyle().Foreground(th.TextGhost).Render(" · ")
+	sep := ghost.Render(" · ")
 	leftContent := strings.Join(leftParts, sep)
 
 	// Right side: status + optional mode chip
@@ -64,9 +73,12 @@ func renderComposerChipStrip(ctx composerContext) string {
 		case strings.HasPrefix(ctx.Mode, "AWAITING"):
 			modeColor = th.StateAwaiting
 		}
-		rightParts = append(rightParts, StatusBadge(modeColor, ctx.Mode))
+		// Build a mode chip inline with the band bg (instead of using
+		// the shared StatusBadge, which has no band bg).
+		mode := lipgloss.NewStyle().Background(bg).Foreground(modeColor).Bold(true).Render("● " + strings.ToUpper(ctx.Mode))
+		rightParts = append(rightParts, mode)
 	}
-	rightContent := strings.Join(rightParts, "  ")
+	rightContent := strings.Join(rightParts, bgOnly.Render("  "))
 
 	width := ctx.Width
 	if width <= 0 {
@@ -74,12 +86,11 @@ func renderComposerChipStrip(ctx composerContext) string {
 	}
 
 	band := lipgloss.NewStyle().
-		Background(th.SurfaceSecondary).
+		Background(bg).
 		Foreground(th.Text).
 		Width(width).
 		Padding(0, 1)
 
-	// Content fits in width-2 cells after padding.
 	inner := width - 2
 	if inner < 1 {
 		inner = 1
@@ -87,30 +98,35 @@ func renderComposerChipStrip(ctx composerContext) string {
 	leftW := lipgloss.Width(leftContent)
 	rightW := lipgloss.Width(rightContent)
 	if leftW+rightW+1 > inner {
-		// Too tight: prioritize left content, drop or truncate the right.
 		if leftW >= inner {
 			leftContent = truncateText(leftContent, inner)
 			return band.Render(leftContent)
 		}
-		// Show left + as much right as fits.
 		room := inner - leftW - 1
 		rightContent = truncateText(rightContent, room)
-		return band.Render(leftContent + " " + rightContent)
+		return band.Render(leftContent + bgOnly.Render(" ") + rightContent)
 	}
 	gap := inner - leftW - rightW
 	if gap < 1 {
 		gap = 1
 	}
-	return band.Render(leftContent + strings.Repeat(" ", gap) + rightContent)
+	return band.Render(leftContent + bgOnly.Render(strings.Repeat(" ", gap)) + rightContent)
 }
 
 // renderChipStatus produces the right-side connection/provider fragment
 // of the composer chip strip. Returns "" when there is no connection
-// context to surface.
+// context to surface. All inner spans declare Background(SurfaceSecondary)
+// so the parent chip-strip band's bg paints through without ANSI-reset
+// gaps between fragments.
 func renderChipStatus(ctx composerContext, th Theme) string {
 	if ctx.HubAddr == "" && !ctx.Connected && ctx.Provider == "" {
 		return ""
 	}
+	bg := th.SurfaceSecondary
+	dim := lipgloss.NewStyle().Background(bg).Foreground(th.TextDim)
+	ghost := lipgloss.NewStyle().Background(bg).Foreground(th.TextGhost)
+	bgOnly := lipgloss.NewStyle().Background(bg)
+
 	var fragments []string
 	healthClr := th.StateAwaiting
 	healthLabel := "disconnected"
@@ -118,17 +134,29 @@ func renderChipStatus(ctx composerContext, th Theme) string {
 		healthClr = th.StateIdle
 		healthLabel = "connected"
 	}
-	health := lipgloss.NewStyle().Foreground(healthClr).Bold(true).Render("●") +
-		" " + lipgloss.NewStyle().Foreground(th.TextDim).Render(healthLabel)
+	health := lipgloss.NewStyle().Background(bg).Foreground(healthClr).Bold(true).Render("●") +
+		bgOnly.Render(" ") + dim.Render(healthLabel)
 	fragments = append(fragments, health)
 	if ctx.HubAddr != "" {
-		fragments = append(fragments, lipgloss.NewStyle().Foreground(th.TextDim).Render(ctx.HubAddr))
+		fragments = append(fragments, dim.Render(ctx.HubAddr))
 	}
-	if ctx.Provider != "" {
-		fragments = append(fragments, lipgloss.NewStyle().Foreground(th.TextDim).Render(ctx.Provider))
-	}
-	sep := lipgloss.NewStyle().Foreground(th.TextGhost).Render(" · ")
+	sep := ghost.Render(" · ")
 	return strings.Join(fragments, sep)
+}
+
+// composeProviderModel returns "<provider>/<abbreviated-model>" when a
+// provider is known, or just the abbreviated model otherwise. The
+// abbreviateModel helper already strips the prefix from full IDs, so we
+// re-attach the provider explicitly here.
+func composeProviderModel(provider, model string) string {
+	abbr := abbreviateModel(model)
+	if provider == "" {
+		return abbr
+	}
+	if abbr == "" {
+		return provider
+	}
+	return provider + "/" + abbr
 }
 
 // composerFooterHints returns the mode-appropriate keyboard hint bar.
