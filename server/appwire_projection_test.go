@@ -316,6 +316,21 @@ func TestAppEventProjectorKeepsToolEventsInActiveTurnAfterAssistantText(t *testi
 	}
 }
 
+func TestAppEventProjectorCarriesToolDescription(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	out := projector.Project(agent.SessionEvent{Kind: agent.EventToolCallStart, SessionID: "th_1", Data: agent.ToolCallStartData{
+		ToolName:      "shell",
+		CallID:        "call_1",
+		ArgumentsJSON: `{"command":"pwd"}`,
+		Description:   "Check the working directory.",
+	}})
+
+	item := notificationThreadItem(t, out, appwire.NotifyItemStarted)
+	if item.Description != "Check the working directory." {
+		t.Fatalf("tool description=%q", item.Description)
+	}
+}
+
 func TestAppEventProjectorProjectsCommunicateAsAssistantMessage(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})

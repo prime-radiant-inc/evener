@@ -519,10 +519,10 @@
       const callID = firstNonEmpty(item.callId, item.id);
       const itemID = item.id || "";
       const completed = terminalStatus(item.status) || (!runningStatus(item.status) && (!!item.output || !!item.error));
-      const out = [["TOOL_CALL_START", Object.assign({ call_id: callID, item_id: itemID, tool_name: item.toolName || "", arguments_json: item.argumentsJson || "" }, toolTimingPayload(item))]];
+      const out = [["TOOL_CALL_START", Object.assign({ call_id: callID, item_id: itemID, tool_name: item.toolName || "", arguments_json: item.argumentsJson || "", description: item.description || "" }, toolTimingPayload(item))]];
       if (item.output) out.push(["TOOL_CALL_OUTPUT_DELTA", { call_id: callID, item_id: itemID, delta: item.output }]);
       if (!completed) return out;
-      out.push(["TOOL_CALL_END", Object.assign({ call_id: callID, item_id: itemID, tool_name: item.toolName || "", output: item.output || "", error: item.error || "", tool_state: item.raw || "" }, toolTimingPayload(item))]);
+      out.push(["TOOL_CALL_END", Object.assign({ call_id: callID, item_id: itemID, tool_name: item.toolName || "", arguments_json: item.argumentsJson || "", description: item.description || "", output: item.output || "", error: item.error || "", tool_state: item.raw || "" }, toolTimingPayload(item))]);
       return out;
     }
     return [];
@@ -585,6 +585,7 @@
           item_id: itemID,
           tool_name: item.toolName || "",
           arguments_json: item.argumentsJson || "",
+          description: item.description || "",
         }, toolTimingPayload(item))]);
       }
       out.push(["TOOL_CALL_END", Object.assign({
@@ -592,6 +593,7 @@
         item_id: itemID,
         tool_name: item.toolName || "",
         arguments_json: item.argumentsJson || "",
+        description: item.description || "",
         output: item.output || "",
         error: item.error || "",
         tool_state: item.raw || "",
@@ -631,6 +633,8 @@
               call_id: callID,
               item_id: itemID,
               tool_name: item.toolName || "",
+              arguments_json: item.argumentsJson || "",
+              description: item.description || "",
               output: item.output || "",
               error: item.error || "",
               tool_state: item.raw || "",
@@ -716,6 +720,7 @@
           item_id: itemID,
           tool_name: item.toolName || "",
           arguments_json: item.argumentsJson || "",
+          description: item.description || "",
         }, toolTimingPayload(item))]];
         if (item.output) out.push(["TOOL_CALL_OUTPUT_DELTA", { call_id: callID, item_id: itemID, delta: item.output }]);
         return out;
@@ -733,6 +738,7 @@
         item_id: item.id || "",
         tool_name: item.toolName || "",
         arguments_json: item.argumentsJson || "",
+        description: item.description || "",
         output: item.output || "",
         error: item.error || "",
         tool_state: item.raw || "",

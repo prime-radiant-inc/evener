@@ -28,12 +28,13 @@ function dispatch(name, target, detail) {
   window.document.body.dispatchEvent(ev);
 }
 
-// htmx:beforeRequest with detail.target set to #sidebar.
+// Sidebar refreshes are background navigation updates. They should not flip
+// the whole sidebar into loading/skeleton chrome.
 const sidebar = window.document.getElementById("sidebar");
 dispatch("htmx:beforeRequest", sidebar, { target: sidebar });
-pass(sidebar.hasAttribute("data-loading"), "sidebar should have data-loading after htmx:beforeRequest");
+pass(!sidebar.hasAttribute("data-loading"), "sidebar should not get data-loading on refresh");
 
-// htmx:afterSwap clears it.
+// htmx:afterSwap remains harmless.
 dispatch("htmx:afterSwap", sidebar, { target: sidebar });
 pass(!sidebar.hasAttribute("data-loading"), "sidebar data-loading should be cleared after htmx:afterSwap");
 

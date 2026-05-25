@@ -293,6 +293,7 @@ type ThreadItem struct {
 	ToolName             string          `json:"toolName,omitempty"`
 	CallID               string          `json:"callId,omitempty"`
 	ArgumentsJSON        string          `json:"argumentsJson,omitempty"`
+	Description          string          `json:"description,omitempty"`
 	Output               string          `json:"output,omitempty"`
 	Error                string          `json:"error,omitempty"`
 	Status               string          `json:"status,omitempty"`

@@ -1302,6 +1302,7 @@ func appItemsFromReplayTurn(turnID string, turnIndex int, turn replayTurn, toolN
 						ToolName:      part.ToolCall.Name,
 						CallID:        part.ToolCall.ID,
 						ArgumentsJSON: string(part.ToolCall.Arguments),
+						Description:   toolIntentFromArguments(part.ToolCall.Arguments),
 						Status:        appwire.TurnStatusInProgress,
 					})
 				}

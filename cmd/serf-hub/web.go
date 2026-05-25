@@ -66,18 +66,18 @@ type modelDescriptor struct {
 
 // WebServer wires routes, templates, and middleware.
 type WebServer struct {
-	cfg            WebConfig
-	appTmpl        *template.Template
-	sidebarTmpl    *template.Template
-	workspaceTmpl  *template.Template
-	spawnTmpl      *template.Template
-	inputStripTmpl *template.Template
+	cfg                 WebConfig
+	appTmpl             *template.Template
+	sidebarTmpl         *template.Template
+	workspaceTmpl       *template.Template
+	spawnTmpl           *template.Template
+	inputStripTmpl      *template.Template
 	credsTmpl           *template.Template
 	projectSettingsTmpl *template.Template
 	settingsTmpls       map[string]*template.Template
-	appRPC         *appserver.Server
-	sources        *appsource.Registry
-	startedAt      time.Time
+	appRPC              *appserver.Server
+	sources             *appsource.Registry
+	startedAt           time.Time
 
 	resumeMu    sync.Mutex
 	resumeLocks map[string]*sync.Mutex // sessionID -> per-session lock
@@ -121,9 +121,9 @@ func NewWebServer(cfg WebConfig) *WebServer {
 		credsTmpl:           credsTmpl,
 		projectSettingsTmpl: projectSettingsTmpl,
 		settingsTmpls:       settingsTmpls,
-		sources:       sources,
-		startedAt:     time.Now().UTC(),
-		resumeLocks:   map[string]*sync.Mutex{},
+		sources:             sources,
+		startedAt:           time.Now().UTC(),
+		resumeLocks:         map[string]*sync.Mutex{},
 	}
 	web.appRPC = newHubAppServer(cfg, sources)
 	return web
@@ -1763,6 +1763,21 @@ func stringifyToolContent(v any) string {
 		return ""
 	}
 	return string(b)
+}
+
+func toolIntentFromArguments(raw json.RawMessage) string {
+	var args map[string]any
+	if len(raw) == 0 || json.Unmarshal(raw, &args) != nil {
+		return ""
+	}
+	for _, key := range []string{"intent", "purpose", "description"} {
+		if value, ok := args[key].(string); ok {
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				return trimmed
+			}
+		}
+	}
+	return ""
 }
 
 func communicateMessageFromArguments(raw json.RawMessage) string {

@@ -524,6 +524,9 @@ func mergeAppThreadItem(existing, incoming appwire.ThreadItem) appwire.ThreadIte
 	if incoming.ArgumentsJSON == "" {
 		incoming.ArgumentsJSON = existing.ArgumentsJSON
 	}
+	if incoming.Description == "" {
+		incoming.Description = existing.Description
+	}
 	if incoming.Output == "" {
 		incoming.Output = existing.Output
 	}

@@ -139,6 +139,43 @@
     applyLiveStagger(document);
   }
 
+  var sidebarRefreshTimer = null;
+  function scheduleSidebarRefresh() {
+    if (!window.htmx || !document.body) return;
+    if (sidebarRefreshTimer) clearTimeout(sidebarRefreshTimer);
+    sidebarRefreshTimer = setTimeout(function () {
+      sidebarRefreshTimer = null;
+      window.htmx.trigger(document.body, "sidebar:refresh");
+    }, 50);
+  }
+
+  function notificationAffectsSidebar(method) {
+    switch (method) {
+      case "thread/started":
+      case "thread/closed":
+      case "thread/status/changed":
+      case "thread/queueChanged":
+      case "turn/started":
+      case "turn/completed":
+      case "item/started":
+      case "item/completed":
+      case "serf/subagent/started":
+      case "serf/subagent/completed":
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  if (window.SerfAppwire && typeof window.SerfAppwire.onNotification === "function") {
+    window.SerfAppwire.onNotification(function (method) {
+      if (notificationAffectsSidebar(method)) scheduleSidebarRefresh();
+    });
+  }
+  if (window.SerfAppwire && typeof window.SerfAppwire.onConnectionRestored === "function") {
+    window.SerfAppwire.onConnectionRestored(scheduleSidebarRefresh);
+  }
+
   document.addEventListener("click", onChevronClick);
 
   // Mobile hamburger: toggle a body[data-sidebar-open] flag that the

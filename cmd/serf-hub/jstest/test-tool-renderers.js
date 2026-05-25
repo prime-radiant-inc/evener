@@ -5,7 +5,9 @@ const fs = require("fs");
 const { JSDOM } = require("jsdom");
 
 const RENDERER_PATH = "../assets/renderer.js";
+const STYLE_PATH = "../assets/style.css";
 const rendererSrc = fs.readFileSync(RENDERER_PATH, "utf8");
+const styleSrc = fs.readFileSync(STYLE_PATH, "utf8");
 
 function newHarness() {
   const dom = new JSDOM(`<!DOCTYPE html><html><body>
@@ -92,9 +94,8 @@ await scenario("read_file in cheap cluster with inline range, purpose, and five-
   if (call.querySelector(".cheap-tool-args")) return { ok: false, detail: "read_file should not render JSON args" };
   const body = call.querySelector(".read-tool-body");
   if (!body) return { ok: false, detail: "no read tool body" };
-  const purpose = body.querySelector(".read-tool-purpose");
-  if (!purpose || purpose.textContent !== "Inspect main entry point.") return { ok: false, detail: "read purpose missing" };
-  if (!purpose.classList.contains("read-tool-purpose")) return { ok: false, detail: "read purpose class missing" };
+  const intent = call.querySelector(".tool-intent");
+  if (!intent || intent.textContent !== "Inspect main entry point.") return { ok: false, detail: "read intent missing" };
   const preview = body.querySelector(".read-tool-preview");
   if (!preview || preview.textContent !== "one\ntwo\nthree\nfour\nfive") return { ok: false, detail: "read preview should contain first five lines" };
   if (preview.textContent.includes("six")) return { ok: false, detail: "read preview includes more than five lines" };
@@ -103,6 +104,26 @@ await scenario("read_file in cheap cluster with inline range, purpose, and five-
   if (!more.querySelector("summary") || !more.querySelector("summary").textContent.includes("3 more lines")) return { ok: false, detail: "missing read more summary" };
   const rest = more.querySelector(".read-tool-rest");
   if (!rest || rest.textContent !== "six\nseven\neight") return { ok: false, detail: "read rest output missing" };
+  return { ok: true };
+});
+
+await scenario("tool intent renders below header and above results", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "i1", tool_name: "shell", arguments_json: JSON.stringify({ command: "go test ./...", purpose: "Verify the repository before handing off." }) }],
+  ["TOOL_CALL_END", { call_id: "i1", output: "ok\n", tool_state: JSON.stringify({ exit_code: 0 }), tool_name: "shell" }],
+], ({ conv }) => {
+  const card = conv.querySelector(".tool-call.shell");
+  if (!card) return { ok: false, detail: "no shell card" };
+  const intent = card.querySelector(".tool-intent");
+  if (!intent) return { ok: false, detail: "missing tool intent" };
+  if (intent.textContent !== "Verify the repository before handing off.") return { ok: false, detail: "wrong intent text: " + intent.textContent };
+  const body = card.querySelector(".shell-body");
+  if (!body) return { ok: false, detail: "missing shell body" };
+  const children = Array.from(card.children);
+  if (children.indexOf(intent) < 0 || children.indexOf(body) < 0 || children.indexOf(intent) > children.indexOf(body)) {
+    return { ok: false, detail: "intent should be before tool results/body" };
+  }
+  if (!/\.tool-call \.tool-intent\s*\{[^}]*font-style:\s*italic/.test(styleSrc)) return { ok: false, detail: "intent stylesheet should set italic font style" };
   return { ok: true };
 });
 

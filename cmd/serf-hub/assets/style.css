@@ -1034,6 +1034,20 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .tool-call .target { color: var(--text); font-family: var(--font-mono); word-break: break-all; }
 .tool-call .result-detail { color: var(--text-muted); }
 .tool-call .tool-meta { margin-left: auto; color: var(--text-dim); font-family: var(--font-mono); font-size: var(--text-xs); white-space: nowrap; }
+.tool-call .tool-intent {
+  flex: 0 0 auto;
+  width: calc(100% - 12px - var(--space-3));
+  margin: 0 0 0 calc(12px + var(--space-3));
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-style: italic;
+  line-height: var(--leading-snug);
+}
+.tool-call[data-expanded] .tool-intent {
+  width: calc(100% - 12px - 1ch - var(--space-3) - var(--space-3));
+  margin-left: calc(12px + 1ch + var(--space-3) + var(--space-3));
+}
 .tool-call .result { color: var(--text-muted); }
 .tool-call .result-good { color: var(--state-idle); }
 .tool-call .result-bad { color: var(--state-awaiting); }
@@ -1094,7 +1108,6 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .shell-output { margin: var(--space-2) 0 0; padding: var(--space-3) var(--space-3); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-tight); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
 .cheap-tool-args { margin: var(--space-2) 0 0; padding: var(--space-3) var(--space-3); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-tight); color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
 .cheap-tool-output { margin: var(--space-2) 0 0; padding: var(--space-3) var(--space-3); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-tight); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
-.read-tool-purpose { margin: 0 0 var(--space-2); color: var(--text-muted); font-style: italic; }
 .read-tool-body .cheap-tool-output { margin-top: 0; }
 .output-preview-body { display: flex; flex-direction: column; }
 .tool-output-more { margin-top: 0; display: flex; flex-direction: column; }

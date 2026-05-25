@@ -1150,6 +1150,13 @@
       meta.className = "tool-meta";
       meta.textContent = "";
       el.appendChild(result); el.appendChild(meta);
+      const intent = toolIntent(data, args);
+      if (intent) {
+        const intentEl = document.createElement("div");
+        intentEl.className = "tool-intent";
+        intentEl.textContent = intent;
+        el.appendChild(intentEl);
+      }
       parent.appendChild(el);
 
       const startedAt = toolEventTime(data) || new Date();
@@ -2020,6 +2027,16 @@
     try { return JSON.parse(json); } catch (e) { return {}; }
   }
 
+  function toolIntent(data, args) {
+    data = data || {};
+    args = args || {};
+    for (const value of [data.description, data.intent, args.intent, args.purpose, args.description]) {
+      const text = String(value || "").trim();
+      if (text) return text;
+    }
+    return "";
+  }
+
   // classifySteering inspects steering text and returns:
   //   { kind, label, detail, cleanText, taskID?, taskTitle?, tasks? }
   // Recognized kinds:
@@ -2444,13 +2461,6 @@
   function readToolBody(args, el) {
     const wrap = document.createElement("div");
     wrap.className = "tool-body cheap-tool-body read-tool-body";
-    const purpose = String((args && args.purpose) || "").trim();
-    if (purpose) {
-      const purposeEl = document.createElement("div");
-      purposeEl.className = "read-tool-purpose";
-      purposeEl.textContent = purpose;
-      wrap.appendChild(purposeEl);
-    }
     const outputPre = document.createElement("pre");
     outputPre.className = "cheap-tool-output read-tool-preview";
     wrap.appendChild(outputPre);

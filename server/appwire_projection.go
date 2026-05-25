@@ -204,6 +204,7 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 				ToolName:      data.ToolName,
 				CallID:        data.CallID,
 				ArgumentsJSON: data.ArgumentsJSON,
+				Description:   data.Description,
 				Status:        appwire.TurnStatusInProgress,
 			},
 		})}

@@ -119,7 +119,7 @@ func TestAppItemsFromReplayTurnAcceptsCurrentToolCallKind(t *testing.T) {
 			ToolCall: &replayToolCall{
 				ID:        "call_read",
 				Name:      "read_file",
-				Arguments: []byte(`{"file_path":"/tmp/example.txt"}`),
+				Arguments: []byte(`{"file_path":"/tmp/example.txt","purpose":"Inspect example output."}`),
 			},
 		}}},
 	}, toolNames)
@@ -128,6 +128,9 @@ func TestAppItemsFromReplayTurnAcceptsCurrentToolCallKind(t *testing.T) {
 	}
 	if got := items[0]; got.Type != "commandExecution" || got.CallID != "call_read" || !strings.Contains(got.ArgumentsJSON, "/tmp/example.txt") {
 		t.Fatalf("tool item=%+v", got)
+	}
+	if items[0].Description != "Inspect example output." {
+		t.Fatalf("tool description=%q", items[0].Description)
 	}
 }
 

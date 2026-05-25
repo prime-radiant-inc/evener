@@ -737,6 +737,12 @@ func TestWeb_AppShell_RendersSidebarAndWorkspaceMounts(t *testing.T) {
 	if !strings.Contains(body, `hx-get="/_partials/sidebar"`) {
 		t.Errorf("missing sidebar hx-get")
 	}
+	if strings.Contains(body, `every 5s`) {
+		t.Errorf("sidebar should not poll on a fixed interval")
+	}
+	if !strings.Contains(body, `sidebar:refresh from:body`) {
+		t.Errorf("sidebar should refresh from explicit app events")
+	}
 	if !strings.Contains(body, `hx-get="/_partials/workspace/empty"`) {
 		t.Errorf("missing workspace partial hx-get")
 	}

@@ -15,6 +15,7 @@
   function set(e) {
     var t = targetOf(e);
     if (!t || !t.setAttribute) return;
+    if (t.id === "sidebar") return;
     t.setAttribute("data-loading", "");
   }
 
