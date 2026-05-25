@@ -7,17 +7,13 @@ import (
 )
 
 func TestHubModelDisablesLegacySessionBackends(t *testing.T) {
-	m := newHubModel(nil, "http://hub.test")
-
-	if m.session.addr != "" {
-		t.Fatalf("hub session addr = %q, want empty direct server address", m.session.addr)
-	}
-	if m.session.stateDir != "" {
-		t.Fatalf("hub session stateDir = %q, want no direct state dir", m.session.stateDir)
-	}
-	// embedded and authController fields were removed from model in the
-	// ac2c07b..1922318 pruning pass — their absence at the type level is a
-	// stronger guarantee than a nil-check.
+	// The model struct used to carry addr, stateDir, embedded, and
+	// authController fields that the standalone TUI populated. All four are
+	// gone from the type now; their absence is enforced at compile time, a
+	// stronger guarantee than the nil/empty-string checks this test used to
+	// make. Construction parity (hub creates a session) is still exercised
+	// indirectly by every hub_*_test that newHubModel a session.
+	_ = newHubModel(nil, "http://hub.test")
 }
 
 func TestHubCommandRoutingStaysInsideAppWireClientBoundary(t *testing.T) {

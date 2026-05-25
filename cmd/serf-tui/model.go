@@ -2,53 +2,44 @@ package main
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/server"
 )
 
+// model holds the per-session UI state that hubModel embeds as
+// `m.session`. It started life as a standalone bubbletea model with its own
+// Init/Update/View; those entry points are gone and what remains is a state
+// container for the hub's session view.
 type model struct {
-	addr      string
-	stateDir  string
-	connected bool
-	err       error
-	width     int
-	height    int
+	width  int
+	height int
 
-	// Session info (from appwire events)
-	sessionModel      string
-	sessionProfile    string
-	sessionID         string
-	turns             int
-	contextTokens     int // input tokens from last ASSISTANT_TEXT_END
-	contextWindowSize int // context window size from SESSION_START
-	processing        bool
-	turnInputTokens   int // input tokens accumulated since last USER_INPUT
-	turnOutputTokens  int // output tokens accumulated since last USER_INPUT
+	// Session metadata projected from the hub's ThreadRead notifications.
+	sessionModel   string
+	sessionProfile string
+	sessionID      string
+	processing     bool
 
-	// UI components
+	// UI components.
 	viewport viewport.Model
 	input    textarea.Model
 	messages []chatMessage
 
-	// Input history
-	history      []string // escaped entries (one per line)
+	// Input history (in-memory only; hub-mode does not persist it).
+	history      []string // escaped entries
 	historyIdx   int      // -1 = not browsing; len(history) = back to draft
 	historyDraft string   // saved current input when entering history browse
 
-	// Track active transcript items by item/call ID -> index in messages.
-	activeTools       map[string]int
-	activeMessages    map[string]int
-	picker           *modelPicker // non-nil when model picker is active
-	transcriptPicker *modelPicker // non-nil when transcript picker is active
-	themePicker      *themePicker // non-nil when theme picker is active
-	scrollMode       bool         // true when scrolling history; input is blurred
-	focusedToolIdx   int          // index into messages of focused tool call in scroll mode; -1 = none
+	// Active item maps for the transcript reducer.
+	activeTools    map[string]int
+	activeMessages map[string]int
+
+	scrollMode     bool // true when scrolling history; input is blurred
+	focusedToolIdx int  // index into messages of focused tool in scroll mode; -1 = none
 }
 
 // applyInputTheme sets the textarea's style to match the active theme colours.
@@ -71,7 +62,7 @@ func applyInputTheme(ta *textarea.Model) {
 	ta.Cursor.TextStyle = lipgloss.NewStyle().Foreground(th.Text)
 }
 
-func newModel(addr, stateDir string, initialMessages []chatMessage) model {
+func newModel(initialMessages []chatMessage) model {
 	ta := textarea.New()
 	ta.Placeholder = "Type a message..."
 	ta.Prompt = ""
@@ -85,13 +76,10 @@ func newModel(addr, stateDir string, initialMessages []chatMessage) model {
 	applyInputTheme(&ta)
 
 	return model{
-		addr:              addr,
-		stateDir:          stateDir,
-		input:             ta,
-		messages:          initialMessages,
+		input:          ta,
+		messages:       initialMessages,
 		activeTools:    make(map[string]int),
 		activeMessages: make(map[string]int),
-		history:        loadHistory(stateDir),
 		historyIdx:     -1,
 	}
 }
@@ -193,14 +181,15 @@ func (m *model) setInputValue(s string) {
 	m.viewport.Height = m.vpHeight()
 }
 
-// addHistory appends text to the in-memory history and persists it to disk.
+// addHistory appends text to the in-memory history. Hub-mode does not
+// persist history across sessions; entries are only kept for up-arrow
+// recall during the current run.
 func (m *model) addHistory(text string) {
 	escaped := strings.ReplaceAll(text, "\n", `\n`)
 	m.history = append(m.history, escaped)
 	if len(m.history) > maxHistoryEntries {
 		m.history = m.history[len(m.history)-maxHistoryEntries:]
 	}
-	appendHistory(m.stateDir, text)
 }
 
 // vpHeight computes the viewport height from window and input dimensions.
@@ -232,103 +221,6 @@ func (m *model) refreshViewport() {
 	if !m.scrollMode {
 		m.viewport.GotoBottom()
 	}
-}
-
-// renderDetailedStatus formats a StatusInfo into a multi-panel text display.
-// All sections are shown (with counts) even when empty.
-// Tool lists wrap at width to avoid horizontal scrolling.
-func renderDetailedStatus(info server.StatusInfo, width int) string {
-	if width <= 0 {
-		width = 80
-	}
-
-	var b strings.Builder
-
-	// Header section (always shown).
-	pressure := fmt.Sprintf("%.0f%%", info.ContextPressure*100)
-	b.WriteString(fmt.Sprintf("Session:  %s\nModel:    %s (%s)\nTurns:    %d\nContext:  %s used",
-		info.SessionID, info.Model, info.Profile, info.Turns, pressure))
-
-	ds := info.Detailed
-	if ds == nil {
-		return b.String()
-	}
-
-	// Tools section — group by source.
-	core := []string{}
-	mcp := map[string][]string{} // server name → tool names
-	custom := []string{}
-
-	for _, t := range ds.Tools {
-		switch {
-		case t.Source == "core":
-			core = append(core, t.Name)
-		case strings.HasPrefix(t.Source, "mcp:"):
-			srv := t.Source[4:]
-			mcp[srv] = append(mcp[srv], t.Name)
-		default:
-			custom = append(custom, t.Name)
-		}
-	}
-
-	b.WriteString(fmt.Sprintf("\n\nTools (%d):", len(ds.Tools)))
-	if len(core) > 0 {
-		writeWrappedList(&b, "Core:", core, width)
-	}
-	for srv, tools := range mcp {
-		writeWrappedList(&b, fmt.Sprintf("MCP [%s]:", srv), tools, width)
-	}
-	if len(custom) > 0 {
-		writeWrappedList(&b, "Custom:", custom, width)
-	}
-
-	// MCP Servers section.
-	b.WriteString(fmt.Sprintf("\n\nMCP Servers (%d):", len(ds.MCP)))
-	for _, srv := range ds.MCP {
-		b.WriteString(fmt.Sprintf("\n  %s (%d tools)", srv.Name, len(srv.Tools)))
-	}
-
-	// Skills section.
-	b.WriteString(fmt.Sprintf("\n\nSkills (%d):", len(ds.Skills)))
-	for _, skill := range ds.Skills {
-		b.WriteString(fmt.Sprintf("\n  %s", skill.Name))
-	}
-
-	// Plugins section.
-	b.WriteString(fmt.Sprintf("\n\nPlugins (%d):", len(ds.Plugins)))
-	for _, p := range ds.Plugins {
-		version := p.Version
-		if version == "" {
-			version = "?"
-		}
-		b.WriteString(fmt.Sprintf("\n  %s v%s (%d skills, %d agents, %d hooks)",
-			p.Name, version, p.SkillCount, p.AgentCount, p.HookCount))
-	}
-
-	// Hooks section.
-	b.WriteString(fmt.Sprintf("\n\nHooks (%d):", len(ds.Hooks)))
-	if len(ds.Hooks) > 0 {
-		parts := []string{}
-		for event, count := range ds.Hooks {
-			parts = append(parts, fmt.Sprintf("%s: %d", event, count))
-		}
-		sort.Strings(parts)
-		b.WriteString("\n  " + strings.Join(parts, "  "))
-	}
-
-	// Subagents section.
-	b.WriteString(fmt.Sprintf("\n\nSubagents (%d):", len(ds.Subagents)))
-	for _, sub := range ds.Subagents {
-		b.WriteString(fmt.Sprintf("\n  %s (%s, %d turns)", sub.ID, sub.Status, sub.TurnsUsed))
-	}
-
-	// Plugin agents section.
-	b.WriteString(fmt.Sprintf("\n\nAgents (%d):", len(ds.Agents)))
-	for _, name := range ds.Agents {
-		b.WriteString(fmt.Sprintf("\n  %s", name))
-	}
-
-	return b.String()
 }
 
 // writeWrappedList writes a labeled comma-separated list that wraps at width.

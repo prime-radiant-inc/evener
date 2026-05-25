@@ -354,7 +354,7 @@ func newHubModel(client *appwire.Client, hubURL string, stateDirs ...string) hub
 	if len(stateDirs) > 0 {
 		stateDir = strings.TrimSpace(stateDirs[0])
 	}
-	session := newModel("", "", nil)
+	session := newModel(nil)
 	model := hubModel{client: client, hubURL: hubURL, stateDir: stateDir, session: session, browseSelected: -1, dashboardFilter: newHubFilterInput(), dashboardRecentOpen: map[string]bool{}, dashboardProjectClosed: map[string]bool{}, spawnDirInput: newSpawnDirInput()}
 	// Construct the pending coordinator with a buffering placeholder
 	// send. main.go calls model.pending.setSend(program.Send) after
@@ -471,7 +471,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clearPendingAttachments(true)
 		m.mode = hubModeSession
 		m.detail = msg.detail
-		m.session = newModel("", "", nil)
+		m.session = newModel(nil)
 		m.session.width = m.width
 		m.session.height = m.height
 		m.session.sessionID = msg.detail.SessionID

@@ -519,7 +519,7 @@ func sampleSessionModel(width int, detail hubSessionDetail) hubModel {
 	m := sampleHubModel(width)
 	m.mode = hubModeSession
 	m.detail = detail
-	m.session = newModel("", "", nil)
+	m.session = newModel(nil)
 	m.session.width = width
 	m.session.height = 32
 	m.session.messages = []chatMessage{{Kind: msgAssistant, Text: "Ready for the next task."}}

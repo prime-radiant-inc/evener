@@ -645,7 +645,7 @@ func TestHubModelEndedSessionCanResumeOnSend(t *testing.T) {
 	m := newHubModel(client, "http://hub.test")
 	m.mode = hubModeSession
 	m.detail = detail
-	m.session = newModel("", "", nil)
+	m.session = newModel(nil)
 	m.session.messages = []chatMessage{{Kind: msgAssistant, Text: "finished transcript"}}
 
 	got := m.sessionView()
@@ -3867,7 +3867,7 @@ func TestHubModelIgnoresNotificationsForOtherSessions(t *testing.T) {
 			Ref:       "local:current",
 			SessionID: "current",
 		},
-		session: newModel("", "", nil),
+		session: newModel(nil),
 	}
 
 	m.applyHubNotification(*appwire.NotificationMessage(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{

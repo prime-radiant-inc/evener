@@ -179,31 +179,6 @@ func TestThemePickerRendersAsPopupPane(t *testing.T) {
 	}
 }
 
-// TestRenderStatusBar_Width verifies that the rendered status bar is exactly
-// terminal-width columns wide (no padding — spacing is embedded in the content string).
-func TestRenderStatusBar_Width(t *testing.T) {
-	initTheme()
-	for _, w := range []int{40, 80, 120, 200} {
-		rendered := renderStandaloneStatusBar(true, "claude-3-5-sonnet", "sess-abc", "", 5, 42000, 200000, false, 0, 0, false, w)
-		got := lipgloss.Width(rendered)
-		if got != w {
-			t.Errorf("renderStatusBar width=%d: lipgloss.Width = %d, want %d", w, got, w)
-		}
-	}
-}
-
-// TestRenderStatusBar_Width_Disconnected tests width with no model set.
-func TestRenderStatusBar_Width_Disconnected(t *testing.T) {
-	initTheme()
-	for _, w := range []int{40, 80, 120} {
-		rendered := renderStandaloneStatusBar(false, "", "", "", 0, 0, 0, false, 0, 0, false, w)
-		got := lipgloss.Width(rendered)
-		if got != w {
-			t.Errorf("renderStatusBar (disconnected) width=%d: lipgloss.Width = %d, want %d", w, got, w)
-		}
-	}
-}
-
 // TestWrapText_FitsOnOneLine checks no wrapping when text fits.
 func TestWrapText_FitsOnOneLine(t *testing.T) {
 	lines := wrapText("hello world", 20, 20)
