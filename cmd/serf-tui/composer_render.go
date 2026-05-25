@@ -153,19 +153,26 @@ func renderChipStatus(ctx composerContext, th Theme) string {
 // composeProviderModel returns "<provider>/<abbreviated-model>" when a
 // provider is known, or just the abbreviated model otherwise.
 //
-// abbreviateModel only strips a small hardcoded list of provider prefixes
-// (anthropic/, openai/, google/, openrouter/, openai-compatible/), so for
-// providers it doesn't know about (e.g. ollama/, mistral/, custom labels)
-// a model like "ollama/llama3" would round-trip unchanged and then get
-// re-prefixed here as "ollama/ollama/llama3". Strip "<provider>/" explicitly
-// before re-attaching so any provider works.
+// abbreviateModel strips a small hardcoded list of provider prefixes
+// (anthropic/, openai/, google/, openrouter/, openai-compatible/), so we
+// abbreviate first and then strip only a *duplicate* outer provider prefix
+// from the result. That keeps two cases right:
+//   - Unknown provider ("ollama/llama3" via provider="ollama"):
+//     abbreviateModel leaves it alone, then we trim the duplicate outer
+//     "ollama/" so the chip shows "ollama/llama3", not "ollama/ollama/llama3".
+//   - Nested routing ("openrouter/anthropic/claude-opus-4" via
+//     provider="openrouter"): abbreviateModel strips only the outer
+//     "openrouter/" (its for-loop breaks after the first match), so the
+//     result is "anthropic/claude-opus-4"; there's no duplicate outer
+//     "openrouter/" left to trim, and we return
+//     "openrouter/anthropic/claude-opus-4", preserving the sub-provider.
 func composeProviderModel(provider, model string) string {
 	model = strings.TrimSpace(model)
 	provider = strings.TrimSpace(provider)
-	if provider != "" {
-		model = strings.TrimPrefix(model, provider+"/")
-	}
 	abbr := abbreviateModel(model)
+	if provider != "" {
+		abbr = strings.TrimPrefix(abbr, provider+"/")
+	}
 	if provider == "" {
 		return abbr
 	}

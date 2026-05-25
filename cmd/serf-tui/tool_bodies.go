@@ -130,7 +130,10 @@ func fileBody(args ToolArgs, output string, width int) string {
 		return ""
 	}
 	th := activeTheme()
-	lines := strings.Split(output, "\n")
+	// Strip exactly one terminal newline so a file ending with "\n" doesn't
+	// register as having an empty trailing line (which would inflate the
+	// preview count and trigger a bogus "show 1 more lines" hint).
+	lines := strings.Split(strings.TrimSuffix(output, "\n"), "\n")
 	preview := lines
 	more := 0
 	if len(lines) > fileBodyPreviewLines {

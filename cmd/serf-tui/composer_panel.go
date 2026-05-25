@@ -93,7 +93,12 @@ func (m hubModel) sessionTurnActionState() bool {
 }
 
 func (m hubModel) sessionComposerPanel() composerPanel {
-	keys := []string{"esc: browse", "ctrl+p: palette", "ctrl+o: dashboard", hubCommandHint("help")}
+	// "/help" is inlined rather than routed through hubCommandHint("help")
+	// because syncSessionViewport (called from enterSessionBrowse) reaches
+	// this function via sessionChromeText; routing through hubCommandHint
+	// would close an init cycle hubCommandRegistry → enterSessionBrowse →
+	// syncSessionViewport → … → hubCommandByName → hubCommandRegistry.
+	keys := []string{"esc: browse", "ctrl+p: palette", "ctrl+o: dashboard", "/help"}
 	panel := composerPanel{
 		Draft:         m.session.input.Value(),
 		MaxDraftLines: m.session.input.MaxHeight,

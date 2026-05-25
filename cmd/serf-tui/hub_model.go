@@ -2162,6 +2162,12 @@ func (m *hubModel) enterSessionBrowse(pageUp bool) {
 	if m.browseSelected < 0 || m.browseSelected >= len(m.session.messages) {
 		m.browseSelected = m.lastBrowseMessageIndex()
 	}
+	// Re-sync the viewport before any scroll work below — flipping to
+	// browse mode changes the chrome composition (composer panel vs.
+	// browse-mode footer), so bodyHeight and content differ from the
+	// compose-mode state the viewport was last synced to. Without this,
+	// the GotoBottom / PgUp call would operate against stale geometry.
+	m.syncSessionViewport()
 	if wasComposing {
 		m.session.viewport.GotoBottom()
 	}

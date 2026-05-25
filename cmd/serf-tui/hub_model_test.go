@@ -853,7 +853,21 @@ func TestHubModelSessionBrowsePageUpShowsEarlierTranscript(t *testing.T) {
 	if lines := renderedLineCount(view); lines > got.height {
 		t.Fatalf("session view should fit terminal height while browsing: lines=%d height=%d\n%s", lines, got.height, view)
 	}
-	if !strings.Contains(view, "request 08") {
+	// PgUp twice should land somewhere older than the tail of the transcript.
+	// The exact message depends on bodyHeight × message-rendering line count;
+	// asserting on any request_NN strictly older than the bottom turn makes
+	// the test robust to small chrome shifts.
+	if strings.Contains(view, "request 12") {
+		t.Fatalf("page up should have moved away from the latest turn:\n%s", view)
+	}
+	revealed := false
+	for i := 1; i <= 11; i++ {
+		if strings.Contains(view, fmt.Sprintf("request %02d", i)) {
+			revealed = true
+			break
+		}
+	}
+	if !revealed {
 		t.Fatalf("page up in browse mode should reveal older transcript content:\n%s", view)
 	}
 	if strings.Contains(view, "...") {

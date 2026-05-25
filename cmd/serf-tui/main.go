@@ -13,14 +13,22 @@ import (
 )
 
 func main() {
+	// All shutdown work goes through run() so deferred cleanup (notably
+	// resetTerminalBg, which restores OSC 10/11 colors the user expected
+	// before we started) actually fires on every exit path. Calling
+	// os.Exit directly from main would skip those defers.
+	os.Exit(run())
+}
+
+func run() int {
 	startupOpts, err := parseTUIStartupOptions(os.Args[1:], os.Getenv)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			// Usage has already been printed by the flag package via fs.Usage.
-			return
+			return 0
 		}
 		fmt.Fprintf(os.Stderr, "serf-tui: %v\n", err)
-		os.Exit(2)
+		return 2
 	}
 
 	authToken := resolveAuthToken(startupOpts.AuthToken, startupOpts.StateDir)
@@ -38,7 +46,7 @@ func main() {
 	})
 	if err != nil {
 		fmt.Fprint(os.Stderr, startupErrorScreen(err))
-		os.Exit(1)
+		return 1
 	}
 
 	// Probe the terminal's default fg/bg BEFORE any setTheme call, so
@@ -61,11 +69,12 @@ func main() {
 	finalModel, err := program.Run()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "serf-tui: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	if message := postQuitMessageFromModel(finalModel); message != "" {
 		fmt.Fprintln(os.Stdout, message)
 	}
+	return 0
 }
 
 func postQuitMessageFromModel(model tea.Model) string {
