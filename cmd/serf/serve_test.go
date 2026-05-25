@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -139,4 +143,74 @@ func TestServe_WritesAndRemovesRendezvousFile(t *testing.T) {
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
 		t.Fatalf("rendezvous file should be removed, stat err=%v", err)
 	}
+}
+
+func TestServeClient_APILogWritesJSONL(t *testing.T) {
+	stateDir := t.TempDir()
+	called := make(chan struct{}, 1)
+
+	oldNewClient := serveNewLLMClientFromEnv
+	serveNewLLMClientFromEnv = func(...llm.EnvOption) (*llm.Client, error) {
+		client := llm.NewClient()
+		client.Register(serveLoggingAdapter{called: called})
+		return client, nil
+	}
+	t.Cleanup(func() {
+		serveNewLLMClientFromEnv = oldNewClient
+	})
+
+	client, closeAPILog, err := newServeLLMClient(stateDir, nil)
+	if err != nil {
+		t.Fatalf("newServeLLMClient: %v", err)
+	}
+	_, err = client.Complete(llm.WithAPILogContext(context.Background(), "serve-session", 4), llm.Request{
+		Provider: "openai",
+		Model:    "gpt-test",
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if err := closeAPILog(); err != nil {
+		t.Fatalf("closeAPILog: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(stateDir, "api.jsonl"))
+	if err != nil {
+		t.Fatalf("read api.jsonl: %v", err)
+	}
+	for _, want := range []string{`"provider":"openai"`, `"model":"gpt-test"`, `"session_id":"serve-session"`, `"round":4`} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("api.jsonl missing %s:\n%s", want, string(data))
+		}
+	}
+	select {
+	case <-called:
+	default:
+		t.Fatal("fake adapter was not called")
+	}
+}
+
+type serveLoggingAdapter struct {
+	called chan<- struct{}
+}
+
+func (a serveLoggingAdapter) Name() string { return "openai" }
+
+func (a serveLoggingAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
+	select {
+	case a.called <- struct{}{}:
+	default:
+	}
+	return llm.Response{
+		Provider: req.Provider,
+		Model:    req.Model,
+		Message:  llm.Assistant("ok"),
+		Finish:   llm.FinishReason{Reason: llm.FinishReasonStop},
+		Usage:    llm.Usage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2},
+	}, nil
+}
+
+func (a serveLoggingAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, io.EOF
 }

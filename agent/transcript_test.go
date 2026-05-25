@@ -1041,6 +1041,55 @@ func TestSession_TranscriptRecordsTurns(t *testing.T) {
 	}
 }
 
+func TestSession_ContextDiagnosticsRecordedOnAPICall(t *testing.T) {
+	dir := t.TempDir()
+	stateDir := t.TempDir()
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return finalResponse("hello back")
+			},
+		},
+	})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: stateDir,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+
+	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
+	data, err := ReadTranscriptFull(tpath)
+	if err != nil {
+		t.Fatalf("ReadTranscriptFull: %v", err)
+	}
+	if len(data.APICalls) != 1 {
+		t.Fatalf("expected 1 api_call, got %d", len(data.APICalls))
+	}
+
+	call := data.APICalls[0]
+	if call.ContextHistoryTurns != 1 {
+		t.Errorf("context_history_turns = %d, want 1", call.ContextHistoryTurns)
+	}
+	if call.SystemPromptBytes != len(call.SystemPrompt) {
+		t.Errorf("system_prompt_bytes = %d, want %d", call.SystemPromptBytes, len(call.SystemPrompt))
+	}
+	if call.SystemPromptBytes == 0 {
+		t.Fatal("system_prompt_bytes = 0, want non-zero")
+	}
+}
+
 func TestSession_TranscriptClosedOnSessionClose(t *testing.T) {
 	dir := t.TempDir()
 	stateDir := t.TempDir()
@@ -2232,10 +2281,12 @@ func TestTranscriptWriter_AppendAPICallWritesValidLine(t *testing.T) {
 	defer w.Close()
 
 	call := TranscriptAPICall{
-		Round:        1,
-		Timestamp:    "2026-03-25T12:00:00Z",
-		LatencyMs:    1500,
-		SystemPrompt: "You are a helpful assistant.",
+		Round:               1,
+		Timestamp:           "2026-03-25T12:00:00Z",
+		LatencyMs:           1500,
+		SystemPrompt:        "You are a helpful assistant.",
+		ContextHistoryTurns: 3,
+		SystemPromptBytes:   len("You are a helpful assistant."),
 		Request: llm.APILogRequest{
 			Model:        "gpt-5.2",
 			Provider:     "openai",
@@ -2279,6 +2330,12 @@ func TestTranscriptWriter_AppendAPICallWritesValidLine(t *testing.T) {
 	}
 	if got.SystemPrompt != "You are a helpful assistant." {
 		t.Errorf("system_prompt = %q, want %q", got.SystemPrompt, "You are a helpful assistant.")
+	}
+	if got.ContextHistoryTurns != 3 {
+		t.Errorf("context_history_turns = %d, want 3", got.ContextHistoryTurns)
+	}
+	if got.SystemPromptBytes != len("You are a helpful assistant.") {
+		t.Errorf("system_prompt_bytes = %d, want %d", got.SystemPromptBytes, len("You are a helpful assistant."))
 	}
 	if got.Request.Model != "gpt-5.2" {
 		t.Errorf("request.model = %q, want %q", got.Request.Model, "gpt-5.2")

@@ -1351,10 +1351,16 @@ func (s *Session) applyModelRequestMetadata(req *llm.Request) {
 	if req == nil {
 		return
 	}
+	openAIPromptCacheSupported := req.Provider == "openai" && openAIModelSupports24hPromptCache(req.Model)
 	if strings.TrimSpace(s.id) != "" {
 		req.SessionID = s.id
 		req.ThreadID = s.id
-		req.PromptCacheKey = s.id
+		if openAIPromptCacheSupported && strings.TrimSpace(req.PromptCacheKey) == "" {
+			req.PromptCacheKey = "serf-session-" + s.id
+		}
+	}
+	if openAIPromptCacheSupported && strings.TrimSpace(req.PromptCacheRetention) == "" {
+		req.PromptCacheRetention = "24h"
 	}
 	if strings.TrimSpace(s.installID) != "" {
 		if req.ClientMetadata == nil {
@@ -1362,6 +1368,18 @@ func (s *Session) applyModelRequestMetadata(req *llm.Request) {
 		}
 		req.ClientMetadata[codexInstallationIDMetadataKey] = s.installID
 	}
+}
+
+func openAIModelSupports24hPromptCache(model string) bool {
+	model = strings.TrimSpace(model)
+	return openAIModelFamilyMatch(model, "gpt-5") || openAIModelFamilyMatch(model, "gpt-4.1")
+}
+
+func openAIModelFamilyMatch(model, family string) bool {
+	if model == family {
+		return true
+	}
+	return strings.HasPrefix(model, family+"-") || strings.HasPrefix(model, family+".")
 }
 
 // describeImage makes a side-channel API call with no tools to describe an image
@@ -2604,6 +2622,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				fbReq.Provider = fbProfile.ID()
 				fbReq.WebSearch = fbProfile.SupportsWebSearch()
 				fbReq.ProviderOptions = fbProfile.ProviderOptions()
+				fbReq.PromptCacheKey = ""
+				fbReq.PromptCacheRetention = ""
+				s.applyModelRequestMetadata(&fbReq)
 				modelResp, err = s.callModel(callCtx, policy, fbProfile, fbReq)
 				if err == nil {
 					// Reflect the model that actually answered in the
@@ -2627,10 +2648,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// Log API call to transcript (both success and error paths).
 		if s.transcript != nil {
 			apiCall := TranscriptAPICall{
-				Round:        round,
-				Timestamp:    roundStart.UTC().Format(time.RFC3339),
-				LatencyMs:    timings.LLMCall.Milliseconds(),
-				SystemPrompt: sys,
+				Round:               round,
+				Timestamp:           roundStart.UTC().Format(time.RFC3339),
+				LatencyMs:           timings.LLMCall.Milliseconds(),
+				SystemPrompt:        sys,
+				ContextHistoryTurns: len(history),
+				SystemPromptBytes:   len(sys),
 				Request: llm.APILogRequest{
 					Model:        req.Model,
 					Provider:     req.Provider,

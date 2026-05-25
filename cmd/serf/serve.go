@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -31,6 +32,20 @@ import (
 	"primeradiant.com/serf/rendezvous"
 	"primeradiant.com/serf/server"
 )
+
+var serveNewLLMClientFromEnv = llm.NewFromEnv
+
+func newServeLLMClient(stateDir string, warnings io.Writer) (*llm.Client, func() error, error) {
+	client, err := serveNewLLMClientFromEnv(llm.WithStateDir(stateDir))
+	if err != nil {
+		return nil, nil, fmt.Errorf("LLM client: %w", err)
+	}
+	closeAPILog, err := cmdutil.AttachAPILogger(client, stateDir, warnings)
+	if err != nil {
+		return nil, nil, err
+	}
+	return client, closeAPILog, nil
+}
 
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
@@ -142,10 +157,11 @@ func runServe(args []string) error {
 	}
 
 	// Create LLM client and session.
-	client, err := llm.NewFromEnv(llm.WithStateDir(sd))
+	client, closeAPILog, err := newServeLLMClient(sd, os.Stderr)
 	if err != nil {
-		return fmt.Errorf("LLM client: %w", err)
+		return err
 	}
+	defer closeAPILog() //nolint:errcheck
 	profile, err := cmdutil.SelectProfile(modelRef.Provider, modelRef.Model, *outputSchema)
 	if err != nil {
 		return err

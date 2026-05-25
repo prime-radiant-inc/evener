@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
-	"time"
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmdutil"
@@ -131,22 +129,11 @@ func run(ctx context.Context, cfg runConfig) error {
 		return fmt.Errorf("LLM client setup: %w", err)
 	}
 
-	// API call logging — one file per invocation, captures all sessions.
-	apiLogPath := filepath.Join(stateDir, "api.jsonl")
-	apiLog, apiLogErr := llm.NewAPILogger(apiLogPath)
-	if apiLogErr != nil {
-		fmt.Fprintf(cfg.stderr, "warning: API logging disabled: %v\n", apiLogErr) //nolint:errcheck
-	} else {
-		apiLog.SyncInterval = 2 * time.Second
-		if llm.RawBodyEnabled() {
-			rawLogPath := filepath.Join(stateDir, "api-raw.jsonl")
-			if err := apiLog.EnableRawLogging(rawLogPath); err != nil {
-				fmt.Fprintf(cfg.stderr, "warning: raw API logging disabled: %v\n", err) //nolint:errcheck
-			}
-		}
-		client.Use(apiLog)
-		defer apiLog.Close()
+	closeAPILog, err := cmdutil.AttachAPILogger(client, stateDir, cfg.stderr)
+	if err != nil {
+		return err
 	}
+	defer closeAPILog() //nolint:errcheck
 
 	profile, err := cmdutil.SelectProfile(modelRef.Provider, modelRef.Model, cfg.outputSchema)
 	if err != nil {

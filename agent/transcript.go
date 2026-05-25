@@ -50,18 +50,20 @@ type TranscriptEntry struct {
 
 // TranscriptAPICall records an LLM API call in the transcript JSONL file.
 type TranscriptAPICall struct {
-	Kind         string              `json:"kind"` // Always "api_call"
-	Seq          int                 `json:"seq"`
-	Round        int                 `json:"round"`
-	Timestamp    string              `json:"ts"`
-	LatencyMs    int64               `json:"latency_ms"`
-	SystemPrompt string              `json:"system_prompt"`
-	Request      llm.APILogRequest   `json:"request"`
-	Response     *llm.APILogResponse `json:"response,omitempty"`
-	Error        string              `json:"error,omitempty"`
-	Source       string              `json:"source,omitempty"`
-	Title        string              `json:"title,omitempty"`
-	Hint         string              `json:"hint,omitempty"`
+	Kind                string              `json:"kind"` // Always "api_call"
+	Seq                 int                 `json:"seq"`
+	Round               int                 `json:"round"`
+	Timestamp           string              `json:"ts"`
+	LatencyMs           int64               `json:"latency_ms"`
+	SystemPrompt        string              `json:"system_prompt"`
+	ContextHistoryTurns int                 `json:"context_history_turns,omitempty"`
+	SystemPromptBytes   int                 `json:"system_prompt_bytes,omitempty"`
+	Request             llm.APILogRequest   `json:"request"`
+	Response            *llm.APILogResponse `json:"response,omitempty"`
+	Error               string              `json:"error,omitempty"`
+	Source              string              `json:"source,omitempty"`
+	Title               string              `json:"title,omitempty"`
+	Hint                string              `json:"hint,omitempty"`
 }
 
 // TranscriptWriter appends turns to an immutable JSONL transcript file.
