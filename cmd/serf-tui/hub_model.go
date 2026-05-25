@@ -1438,7 +1438,10 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab":
 		if m.spawnFocus == hubSpawnFieldDir {
 			current := m.spawnDirInput.Value()
-			completed := completeLastPathSegment(current)
+			// Spawn working-dir accepts directories only; without this
+			// filter Tab could land a file path in the field which the
+			// later submit validation would reject.
+			completed := completeLastPathSegment(current, dirEntry())
 			if completed != current {
 				m.spawnDirInput.SetValue(completed)
 				m.spawnDir = strings.TrimSpace(completed)
@@ -3706,7 +3709,12 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 		dashboardCell(row.age),
 	}), " ")
 	_ = compact // compact/non-compact share layout today; keep param for the call sites
-	line = truncateText(line, width)
+	// Use ANSI-aware truncation: the joined line carries SGR escapes from
+	// StateBar and dashboardCell helpers. truncateText slices raw runes
+	// and would chop through escape sequences (a tail-end \x1b[0m or fg
+	// switch gets cut, leaking style into the next row), and the selected
+	// branch below relies on ANSI being intact before it strips them.
+	line = ansi.Truncate(line, width, "")
 	if selected {
 		// Strip inner ANSI styling so the Selected style's background
 		// paints the whole row. Inner styled spans (StateBar, statusDot)

@@ -254,7 +254,12 @@
   }
 
   // Pref-change handler: re-read prefs and re-apply title + favicon now.
-  // If the user just turned on OS notifications, request permission.
+  // If the user just turned on OS notifications, request permission. This
+  // is defensive: settings.js now also gates the toggle commit on the
+  // permission request, so by the time this handler fires permission is
+  // typically already granted (and the guard below short-circuits). The
+  // remaining edge cases (something else dispatches the event without
+  // going through settings.js) still need the revert path here.
   function onPrefsChanged() {
     const prefs = readPrefs();
     if (prefs.os && "Notification" in window && Notification.permission === "default") {
@@ -265,7 +270,14 @@
             cur.os = false;
             writePrefs(cur);
             const box = document.querySelector('input[type=checkbox][data-notif="os"]');
-            if (box) box.checked = false;
+            if (box) {
+              box.checked = false;
+              // Keep the visible ON/OFF label in step with the checkbox;
+              // otherwise the box looks unchecked while the label still
+              // claims ON for a setting the browser just refused.
+              const span = box.parentElement && box.parentElement.querySelector(".state");
+              if (span) span.textContent = "OFF";
+            }
           }
         });
       } catch (e) {}

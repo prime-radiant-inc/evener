@@ -33,17 +33,47 @@
 
     if (target.matches("input[type=checkbox][data-notif]")) {
       const key = target.dataset.notif;
-      const prefs = readNotifPrefs();
-      prefs[key] = target.checked;
-      writeNotifPrefs(prefs);
-      syncToggleState(target);
-      if (key === "os" && target.checked && "Notification" in window) {
-        Notification.requestPermission().catch(() => {});
+      const desired = target.checked;
+
+      // commit is the "yes the toggle stuck" finisher: persist prefs,
+      // update the visible ON/OFF label, fire the change event, and toast.
+      // It is split out so the OS-notification branch can defer it until
+      // the browser permission prompt resolves (we don't want a success
+      // toast or ON label for a setting the browser is about to deny).
+      const commit = () => {
+        const cur = readNotifPrefs();
+        cur[key] = desired;
+        writeNotifPrefs(cur);
+        syncToggleState(target);
+        document.dispatchEvent(new CustomEvent("serf-hub:notifications-changed", {
+          detail: { key, value: desired },
+        }));
+        if (window.SerfToast) window.SerfToast.show("Settings saved", "success");
+      };
+
+      // revertToOff undoes a not-yet-committed OS toggle when the browser
+      // denies the permission request. We use the same syncToggleState
+      // path so the label stays in sync with the checkbox — the previous
+      // code path left an "ON" label next to an unchecked box.
+      const revertToOff = (reason) => {
+        target.checked = false;
+        const cur = readNotifPrefs();
+        cur[key] = false;
+        writeNotifPrefs(cur);
+        syncToggleState(target);
+        if (reason && window.SerfToast) window.SerfToast.show(reason, "warning");
+      };
+
+      if (key === "os" && desired && "Notification" in window && Notification.permission === "default") {
+        Notification.requestPermission()
+          .then((perm) => {
+            if (perm === "granted") commit();
+            else revertToOff("Browser denied notification permission");
+          })
+          .catch(() => revertToOff(""));
+        return;
       }
-      document.dispatchEvent(new CustomEvent("serf-hub:notifications-changed", {
-        detail: { key, value: target.checked },
-      }));
-      if (window.SerfToast) window.SerfToast.show("Settings saved", "success");
+      commit();
       return;
     }
   });

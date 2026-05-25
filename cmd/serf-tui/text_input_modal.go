@@ -63,7 +63,7 @@ func (m textInputModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case tea.KeyTab:
 			if m.paths {
-				m.input = completeLastPathSegment(m.input)
+				m.input = completeLastPathSegment(m.input, nil)
 			}
 		case tea.KeyRunes:
 			m.input += string(v.Runes)
@@ -105,7 +105,12 @@ func (m textInputModal) View() string {
 	return m.prompt + "\n" + m.inputView() + "\n" + help
 }
 
-func completeLastPathSegment(input string) string {
+// completeLastPathSegment completes the last comma-separated path-like
+// segment of input by reading the parent directory and returning the first
+// entry whose name has the segment as a prefix. Hidden entries are skipped
+// when there's no prefix filter. accept, when non-nil, gates which entries
+// are eligible — pass nil to accept any entry.
+func completeLastPathSegment(input string, accept func(os.DirEntry) bool) string {
 	start := strings.LastIndex(input, ",") + 1
 	prefix := input[start:]
 	leading := prefix[:len(prefix)-len(strings.TrimLeft(prefix, " \t"))]
@@ -139,6 +144,9 @@ func completeLastPathSegment(input string) string {
 		if strings.HasPrefix(entry.Name(), ".") && filter == "" {
 			continue
 		}
+		if accept != nil && !accept(entry) {
+			continue
+		}
 		full := filepath.Join(listDir, entry.Name())
 		if entry.IsDir() {
 			full += string(filepath.Separator)
@@ -146,4 +154,11 @@ func completeLastPathSegment(input string) string {
 		return input[:start] + leading + full
 	}
 	return input
+}
+
+// dirEntry returns a predicate suitable for completeLastPathSegment that
+// only accepts directory entries. Used by the spawn-form working-dir field
+// where files would land in a field that later rejects them on submit.
+func dirEntry() func(os.DirEntry) bool {
+	return func(e os.DirEntry) bool { return e.IsDir() }
 }
