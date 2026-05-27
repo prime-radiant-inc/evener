@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -159,6 +160,48 @@ func TestLaunchCheckAcceptsModelWhenProviderCannotEnumerateModels(t *testing.T) 
 		t.Fatalf("launch check output=%+v", out)
 	}
 }
+
+func TestLaunchCheckModelListUnavailableClassifiesTransientFailures(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "context deadline",
+			err:  context.DeadlineExceeded,
+			want: true,
+		},
+		{
+			name: "provider deadline string",
+			err:  errors.New(`Get "https://chatgpt.com/backend-api/codex/models?client_version=0.0.0": context deadline exceeded`),
+			want: true,
+		},
+		{
+			name: "net timeout",
+			err:  launchCheckTimeoutError{},
+			want: true,
+		},
+		{
+			name: "definite model failure",
+			err:  errors.New("model openai/gpt-stale is not available"),
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := launchCheckModelListUnavailable(tt.err); got != tt.want {
+				t.Fatalf("launchCheckModelListUnavailable(%v)=%v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+type launchCheckTimeoutError struct{}
+
+func (launchCheckTimeoutError) Error() string   { return "timeout" }
+func (launchCheckTimeoutError) Timeout() bool   { return true }
+func (launchCheckTimeoutError) Temporary() bool { return true }
 
 func TestLaunchCheckRejectsUnsupportedProvider(t *testing.T) {
 	var stdout, stderr bytes.Buffer

@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"sort"
 	"strings"
@@ -188,10 +190,21 @@ func launchCheckModelListUnavailable(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "http 403") ||
 		strings.Contains(msg, "http 404") ||
-		strings.Contains(msg, "does not support listing models")
+		strings.Contains(msg, "does not support listing models") ||
+		strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "client.timeout exceeded") ||
+		strings.Contains(msg, "timeout awaiting response headers")
 }
 
 func launchCheckModelVisible(provider, modelID string, cat *llm.ModelCatalog) bool {
