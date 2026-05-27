@@ -38,11 +38,14 @@ func TestMerge_ScalarPrecedence(t *testing.T) {
 }
 
 func TestMerge_ScalarPointerSemantics(t *testing.T) {
-	g := Layer{MaxRounds: ptrInt(200)}
-	l := Layer{}
+	g := Layer{MaxRounds: ptrInt(200), NonInteractive: ptrBool(true)}
+	l := Layer{NonInteractive: ptrBool(false)}
 	got, _ := mergeLayers(map[LayerName]Layer{LayerGlobal: g, LayerLaunch: l})
 	if got.Effective.MaxRounds == nil || *got.Effective.MaxRounds != 200 {
 		t.Errorf("MaxRounds = %v, want 200 (launch did not override)", got.Effective.MaxRounds)
+	}
+	if got.Effective.NonInteractive == nil || *got.Effective.NonInteractive {
+		t.Errorf("NonInteractive = %v, want explicit launch false", got.Effective.NonInteractive)
 	}
 }
 

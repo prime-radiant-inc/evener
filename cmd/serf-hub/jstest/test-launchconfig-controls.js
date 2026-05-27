@@ -177,6 +177,15 @@ function assert(cond, msg) {
       perLaunch: true,
       driverSupport: { serf: true },
     },
+    {
+      field: "non_interactive",
+      wireField: "nonInteractive",
+      label: "Non-interactive mode",
+      group: "Limits",
+      kind: "boolean",
+      perLaunch: true,
+      driverSupport: { serf: true },
+    },
   ];
 
   const root = dom.window.document.getElementById("settings");
@@ -337,9 +346,14 @@ function assert(cond, msg) {
     "spawn advanced controls should omit top-pane model");
   assert(!spawnRoot.querySelector('[data-launch-wire-field="reasoningEffort"]'),
     "spawn advanced controls should omit top-pane reasoning effort");
+  const nonInteractive = spawnRoot.querySelector('[data-launch-wire-field="nonInteractive"]');
+  assert(nonInteractive, "spawn advanced controls should render non-interactive mode");
+  nonInteractive.value = "true";
   assert(!spawnRoot.querySelector("[data-launch-explicit-empty]"),
     "spawn controls should not render the settings-only no-fallbacks affordance");
   const spawnOut = dom.window.LaunchConfigControls.collect(spawnRoot);
+  assert(spawnOut.nonInteractive === true,
+    "spawn collect should include explicit non-interactive mode");
   assert(!Object.prototype.hasOwnProperty.call(spawnOut, "modelFallbacks"),
     "spawn collect with no fallback rows should keep existing empty-list omission behavior");
 })().catch((err) => {

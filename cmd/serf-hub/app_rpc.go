@@ -1586,6 +1586,10 @@ func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Regis
 	if params.ReasoningEffort != "" {
 		overrides.ReasoningEffort = params.ReasoningEffort
 	}
+	if params.NonInteractive != nil {
+		v := *params.NonInteractive
+		overrides.NonInteractive = &v
+	}
 	spawnResolved, resolveErr := launchconfig.Resolve(cfg.HubStateRoot, workingDir, overrides)
 	if resolveErr != nil {
 		return appwire.ThreadStartResponse{}, resolveErr

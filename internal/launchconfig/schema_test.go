@@ -10,7 +10,7 @@ func TestLaunchOptionSchema_FieldCoverage(t *testing.T) {
 	want := []string{
 		"agent", "model", "reasoning_effort", "fast_cheap_model",
 		"context_strategy", "max_rounds", "max_subagent_depth",
-		"no_project_prompts", "app_replay_size",
+		"no_project_prompts", "non_interactive", "app_replay_size",
 		"system_prompt_mode", "system_prompt_file", "system_prompt_text",
 		"system_prompt_append_mode", "system_prompt_append_file", "system_prompt_append_text",
 		"skills_dirs", "plugin_dirs", "mcp_configs", "mcps",

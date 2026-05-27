@@ -2587,6 +2587,80 @@ func TestHubRPCThreadStartKeepsProviderForModelIDsWithSlashes(t *testing.T) {
 	}
 }
 
+func TestHubRPCThreadStartPassesExplicitNonInteractive(t *testing.T) {
+	runDir := t.TempDir()
+	var got SpawnRequest
+	spawner := &fakeRPCSpawner{
+		spawn: func(_ context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+			got = req
+			return rendezvous.Entry{
+				PID:       107,
+				Protocol:  appwire.ProtocolVersion,
+				SourceID:  "local",
+				ThreadID:  "th_noninteractive",
+				SessionID: "sess_noninteractive",
+			}, nil
+		},
+	}
+	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Spawner: spawner, Past: NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	nonInteractive := true
+	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		Model:          "openai/gpt-5.2",
+		CWD:            "/tmp",
+		NonInteractive: &nonInteractive,
+	}); err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	if got.Resolved.Effective.NonInteractive == nil || !*got.Resolved.Effective.NonInteractive {
+		t.Fatalf("spawn non_interactive = %v, want true", got.Resolved.Effective.NonInteractive)
+	}
+}
+
+func TestHubRPCThreadStartPassesNonInteractiveLaunchOverride(t *testing.T) {
+	runDir := t.TempDir()
+	var got SpawnRequest
+	spawner := &fakeRPCSpawner{
+		spawn: func(_ context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+			got = req
+			return rendezvous.Entry{
+				PID:       108,
+				Protocol:  appwire.ProtocolVersion,
+				SourceID:  "local",
+				ThreadID:  "th_noninteractive_override",
+				SessionID: "sess_noninteractive_override",
+			}, nil
+		},
+	}
+	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Spawner: spawner, Past: NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	nonInteractive := true
+	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		Model: "openai/gpt-5.2",
+		CWD:   "/tmp",
+		LaunchOverrides: &appwire.LaunchConfigLayer{
+			NonInteractive: &nonInteractive,
+		},
+	}); err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	if got.Resolved.Effective.NonInteractive == nil || !*got.Resolved.Effective.NonInteractive {
+		t.Fatalf("spawn non_interactive = %v, want true", got.Resolved.Effective.NonInteractive)
+	}
+}
+
 func TestHubRPCThreadStartPropagatesSpawnerStderrAsHubLaunchError(t *testing.T) {
 	runDir := t.TempDir()
 	spawnErr := strings.Join([]string{

@@ -39,6 +39,9 @@ func ToArgs(r Resolved) []string {
 	if e.NoProjectPrompts != nil && *e.NoProjectPrompts {
 		out = append(out, "--no-project-prompts")
 	}
+	if e.NonInteractive != nil && *e.NonInteractive {
+		out = append(out, "--non-interactive")
+	}
 	if e.AppReplaySize != nil {
 		add("--app-replay-size", fmt.Sprintf("%d", *e.AppReplaySize))
 	}

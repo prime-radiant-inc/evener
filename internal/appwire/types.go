@@ -395,6 +395,7 @@ type ThreadStartParams struct {
 	Model           string             `json:"model,omitempty"`
 	Profile         string             `json:"profile,omitempty"`
 	ReasoningEffort string             `json:"reasoningEffort,omitempty"`
+	NonInteractive  *bool              `json:"nonInteractive,omitempty"`
 	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
 }
 
@@ -702,6 +703,7 @@ type LaunchConfigLayer struct {
 	MaxRounds              *int              `json:"maxRounds,omitempty"`
 	MaxSubagentDepth       *int              `json:"maxSubagentDepth,omitempty"`
 	NoProjectPrompts       *bool             `json:"noProjectPrompts,omitempty"`
+	NonInteractive         *bool             `json:"nonInteractive,omitempty"`
 	AppReplaySize          *int              `json:"appReplaySize,omitempty"`
 	SkillsDirs             []string          `json:"skillsDirs,omitempty"`
 	PluginDirs             []string          `json:"pluginDirs,omitempty"`

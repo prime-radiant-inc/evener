@@ -84,6 +84,36 @@ func TestBuildSpawnArgs_FromResolved(t *testing.T) {
 	}
 }
 
+func TestBuildSpawnArgsNonInteractiveOnlyWhenRequested(t *testing.T) {
+	interactive := buildSpawnArgs(SpawnRequest{Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5"}}})
+	if hasArg(interactive, "--non-interactive") {
+		t.Fatalf("interactive spawn args unexpectedly included --non-interactive: %v", interactive)
+	}
+	enabled := true
+	nonInteractive := buildSpawnArgs(SpawnRequest{
+		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5", NonInteractive: &enabled}},
+	})
+	if !hasArg(nonInteractive, "--non-interactive") {
+		t.Fatalf("non-interactive spawn args missing --non-interactive: %v", nonInteractive)
+	}
+	disabled := false
+	explicitInteractive := buildSpawnArgs(SpawnRequest{
+		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5", NonInteractive: &disabled}},
+	})
+	if hasArg(explicitInteractive, "--non-interactive") {
+		t.Fatalf("explicit interactive spawn args unexpectedly included --non-interactive: %v", explicitInteractive)
+	}
+}
+
+func hasArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestApplyLaunchDefaultsForSpawnAddsPluginDirsWhenUnset(t *testing.T) {
 	got := applyLaunchDefaultsForSpawn(
 		launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5.2"}},

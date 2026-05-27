@@ -19,6 +19,7 @@ type Layer struct {
 	MaxRounds              *int              `toml:"max_rounds,omitempty"`
 	MaxSubagentDepth       *int              `toml:"max_subagent_depth,omitempty"`
 	NoProjectPrompts       *bool             `toml:"no_project_prompts,omitempty"`
+	NonInteractive         *bool             `toml:"non_interactive,omitempty"`
 	AppReplaySize          *int              `toml:"app_replay_size,omitempty"`
 	SkillsDirs             []string          `toml:"skills_dirs,omitempty"`
 	PluginDirs             []string          `toml:"plugin_dirs,omitempty"`

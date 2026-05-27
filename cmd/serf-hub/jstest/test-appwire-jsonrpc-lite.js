@@ -102,6 +102,8 @@ vm.runInContext(SRC, context);
     prompt: "hello serf",
     model: "openai/gpt-5.2",
     working_dir: "/work/project",
+    non_interactive: true,
+    launch_overrides: { nonInteractive: true },
   });
   assert(localStart.ref === "local:01LOCAL", "local appwire start should preserve canonical ref");
   assert(localStart.session_id === "01LOCAL", "local appwire start should read snake_case session_id");
@@ -127,6 +129,10 @@ vm.runInContext(SRC, context);
   assert(start.params.launchOverrides && start.params.launchOverrides.maxRounds === 4, "browser appwire start should pass launch overrides");
   assert(start.params.launchOverrides.appReplaySize === 128, "browser appwire start should preserve launch override fields");
   assert(start.params.input && start.params.input[0] && start.params.input[0].text === "hello codex", "browser appwire start should pass input");
+  const localStartRequest = sent.find((msg) => msg.method === "thread/start" && msg.params.harness === "serf");
+  assert(localStartRequest && localStartRequest.params.nonInteractive === true, "browser appwire start should pass explicit non-interactive mode");
+  assert(localStartRequest.params.launchOverrides && localStartRequest.params.launchOverrides.nonInteractive === true,
+    "browser appwire start should preserve non-interactive launch override");
   const results = await context.window.SerfAppwire.search("codex");
   assert(results.live.length === 1, "browser appwire search did not return live Codex result");
   assert(results.live[0].id === "codex:th_codex", "browser appwire search should navigate by canonical ref");

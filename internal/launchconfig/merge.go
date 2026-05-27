@@ -91,6 +91,12 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 			prov["no_project_prompts"] = name
 			nonEmpty = true
 		}
+		if l.NonInteractive != nil {
+			v := *l.NonInteractive
+			eff.NonInteractive = &v
+			prov["non_interactive"] = name
+			nonEmpty = true
+		}
 		if l.AppReplaySize != nil {
 			if name != LayerGlobal {
 				diags = append(diags, Diagnostic{

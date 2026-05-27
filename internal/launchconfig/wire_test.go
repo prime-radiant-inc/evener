@@ -65,11 +65,13 @@ func TestToWirePreservesExplicitEmptyModelFallbacks(t *testing.T) {
 
 func TestWire_SystemPromptAndDebugFieldsRoundTrip(t *testing.T) {
 	verbose := true
+	nonInteractive := true
 	in := Layer{
 		SystemPromptMode:       "inline",
 		SystemPromptText:       "base",
 		SystemPromptAppendMode: "file",
 		SystemPromptAppendFile: "/append.md",
+		NonInteractive:         &nonInteractive,
 		Verbose:                &verbose,
 		TraceFile:              "/trace",
 		CPUProfile:             "/cpu",
@@ -78,6 +80,9 @@ func TestWire_SystemPromptAndDebugFieldsRoundTrip(t *testing.T) {
 	got := FromWire(ToWire(in))
 	if got.SystemPromptMode != in.SystemPromptMode || got.SystemPromptText != in.SystemPromptText {
 		t.Fatalf("system prompt round trip = %#v", got)
+	}
+	if got.NonInteractive == nil || *got.NonInteractive != true {
+		t.Fatalf("non_interactive round trip = %#v", got.NonInteractive)
 	}
 	if got.Verbose == nil || *got.Verbose != true || got.TraceFile != "/trace" || got.CPUProfile != "/cpu" || got.ExportATIFPath != "/atif" {
 		t.Fatalf("debug round trip = %#v", got)

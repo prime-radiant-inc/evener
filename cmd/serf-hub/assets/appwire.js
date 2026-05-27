@@ -278,7 +278,7 @@
   }
 
   function startThread(body) {
-    return request(METHOD.threadStart, {
+    const params = {
       harness: body.harness || "",
       cwd: body.working_dir || "",
       input: inputItemsForTextAndAttachments(body.prompt || "", body.attachments),
@@ -287,7 +287,13 @@
       profile: body.agent || "",
       reasoningEffort: body.reasoning_effort || "",
       launchOverrides: body.launch_overrides || body.launchOverrides || null,
-    }).then((resp) => {
+    };
+    if (Object.prototype.hasOwnProperty.call(body, "non_interactive")) {
+      params.nonInteractive = !!body.non_interactive;
+    } else if (Object.prototype.hasOwnProperty.call(body, "nonInteractive")) {
+      params.nonInteractive = !!body.nonInteractive;
+    }
+    return request(METHOD.threadStart, params).then((resp) => {
       const thread = resp.thread || {};
       return { ref: threadRef(thread), session_id: threadID(thread) };
     });

@@ -72,6 +72,7 @@ func runServe(args []string) error {
 	verbose := fs.Bool("verbose", false, "emit NDJSON events to stderr")
 	appReplaySize := fs.Int("app-replay-size", 0, "AppWire notification replay ring size (default 1000)")
 	noProjectPrompts := fs.Bool("no-project-prompts", false, "suppress .serf/prompts/ loading")
+	nonInteractive := fs.Bool("non-interactive", false, "mark this daemon session as headless/non-interactive")
 	agentName := fs.String("agent", "", "agent persona name (default: default)")
 	var skillsDirs cmdutil.StringSliceFlag
 	fs.Var(&skillsDirs, "skills-dir", "extra skill directory (repeatable)")
@@ -186,7 +187,7 @@ func runServe(args []string) error {
 		PluginDirs:             []string(pluginDirs),
 		ContextStrategy:        *contextStrategy,
 		ExportATIFPath:         *exportATIF,
-		NonInteractive:         true,
+		NonInteractive:         *nonInteractive,
 		SystemPromptAsUser:     *systemPromptAsUser,
 		ModelFallbacks:         []string(modelFallbacks),
 	}

@@ -16,6 +16,7 @@ func TestToArgs_AllFields(t *testing.T) {
 		MaxRounds:              ptrInt(200),
 		MaxSubagentDepth:       ptrInt(2),
 		NoProjectPrompts:       ptrBool(true),
+		NonInteractive:         ptrBool(true),
 		AppReplaySize:          ptrInt(4096),
 		SystemPromptMode:       "file",
 		SystemPromptFile:       "/system.md",
@@ -44,6 +45,7 @@ func TestToArgs_AllFields(t *testing.T) {
 		"--max-rounds", "200",
 		"--max-subagent-depth", "2",
 		"--no-project-prompts",
+		"--non-interactive",
 		"--app-replay-size", "4096",
 		"--system-prompt", "/system.md",
 		"--system-prompt-append", "/append.md",
@@ -88,10 +90,13 @@ func TestToArgs_SkipsUnset(t *testing.T) {
 }
 
 func TestToArgs_BoolFalseDoesNotEmitFlag(t *testing.T) {
-	got := ToArgs(Resolved{Effective: Layer{NoProjectPrompts: ptrBool(false)}})
+	got := ToArgs(Resolved{Effective: Layer{NoProjectPrompts: ptrBool(false), NonInteractive: ptrBool(false)}})
 	for _, a := range got {
 		if a == "--no-project-prompts" {
 			t.Errorf("ToArgs should not emit --no-project-prompts when value is false; got %v", got)
+		}
+		if a == "--non-interactive" {
+			t.Errorf("ToArgs should not emit --non-interactive when value is false; got %v", got)
 		}
 	}
 }

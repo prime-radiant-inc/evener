@@ -1910,6 +1910,7 @@ type spawnRequest struct {
 	AccessMode      string                     `json:"access_mode"`
 	Agent           string                     `json:"agent"`
 	ReasoningEffort string                     `json:"reasoning_effort"`
+	NonInteractive  *bool                      `json:"non_interactive,omitempty"`
 	LaunchOverrides *appwire.LaunchConfigLayer `json:"launch_overrides,omitempty"`
 	Items           []appwire.InputItem        `json:"items,omitempty"`
 }
@@ -1947,6 +1948,7 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 		Model:           req.Model,
 		Profile:         req.Agent,
 		ReasoningEffort: req.ReasoningEffort,
+		NonInteractive:  req.NonInteractive,
 		LaunchOverrides: req.LaunchOverrides,
 	})
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
 )
@@ -143,6 +144,89 @@ func TestServe_WritesAndRemovesRendezvousFile(t *testing.T) {
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
 		t.Fatalf("rendezvous file should be removed, stat err=%v", err)
 	}
+}
+
+func TestRunServeNonInteractiveFlagControlsPromptAddendum(t *testing.T) {
+	oldNewClient := serveNewLLMClientFromEnv
+	serveNewLLMClientFromEnv = func(...llm.EnvOption) (*llm.Client, error) {
+		client := llm.NewClient()
+		client.Register(serveLoggingAdapter{})
+		return client, nil
+	}
+	t.Cleanup(func() {
+		serveNewLLMClientFromEnv = oldNewClient
+	})
+
+	for _, tc := range []struct {
+		name string
+		flag bool
+		want bool
+	}{
+		{name: "default interactive", flag: false, want: false},
+		{name: "explicit non-interactive", flag: true, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runDir := t.TempDir()
+			stateDir := t.TempDir()
+			args := []string{
+				"--model", "openai/gpt-5.2",
+				"--addr", "127.0.0.1:0",
+				"--dir", t.TempDir(),
+				"--state-dir", stateDir,
+				"--run-dir", runDir,
+			}
+			if tc.flag {
+				args = append(args, "--non-interactive")
+			}
+
+			done := make(chan error, 1)
+			go func() {
+				done <- runServe(args)
+			}()
+
+			entry := waitForServeTestRendezvous(t, runDir)
+			resp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
+			if err != nil {
+				t.Fatalf("post /shutdown: %v", err)
+			}
+			resp.Body.Close()
+
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("runServe: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("runServe did not exit after /shutdown")
+			}
+
+			path := filepath.Join(stateDir, "sessions", entry.SessionID+".transcript.jsonl")
+			data, err := agent.ReadTranscriptFull(path)
+			if err != nil {
+				t.Fatalf("ReadTranscriptFull: %v", err)
+			}
+			got := strings.Contains(data.Header.SystemPrompt, "Non-interactive mode")
+			if got != tc.want {
+				t.Fatalf("non-interactive prompt addendum present=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func waitForServeTestRendezvous(t *testing.T, runDir string) rendezvous.Entry {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		entries, _ := rendezvous.List(runDir)
+		for _, entry := range entries {
+			if entry.Address != "" && entry.SessionID != "" {
+				return entry
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("no rendezvous entry in %s", runDir)
+	return rendezvous.Entry{}
 }
 
 func TestServeClient_APILogWritesJSONL(t *testing.T) {
