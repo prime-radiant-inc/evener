@@ -508,6 +508,10 @@
     if (type === "steering") {
       return [["STEERING_INJECTED", { text: item.text || "", images: item.images || [] }]];
     }
+    if (type === "systemMessage") {
+      if (!item.text) return [];
+      return [["SYSTEM_MESSAGE", { title: item.description || "System", text: item.text || "" }]];
+    }
     if (type === "agentMessage") {
       if (!item.text) return [];
       if (terminalStatus(turnStatus) || terminalStatus(item.status) || (!runningStatus(turnStatus) && !runningStatus(item.status))) {

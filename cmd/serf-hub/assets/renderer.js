@@ -771,6 +771,9 @@
         case "ERROR":
           this.appendBanner("error", data.error || data.message || "", data);
           break;
+        case "SYSTEM_MESSAGE":
+          this.appendSystemMessage(data);
+          break;
         case "STEERING_INJECTED":
           this.appendSteeringMessage(data.text || imagePlaceholderForCount((data.images || []).length));
           break;
@@ -796,6 +799,30 @@
           break;
       }
       this.scrollToBottom();
+    },
+
+    appendSystemMessage(data) {
+      data = data || {};
+      const text = String(data.text || "");
+      if (!text.trim()) return;
+      const title = String(data.title || "System");
+      const el = document.createElement("details");
+      el.className = "steering system-message";
+
+      const summary = document.createElement("summary");
+      const verb = document.createElement("span");
+      verb.className = "steering-verb";
+      verb.textContent = title;
+      const detail = document.createElement("span");
+      detail.className = "steering-detail";
+      detail.textContent = text.length > 1000 ? Math.round(text.length / 100) / 10 + " KB" : text.length + " chars";
+      summary.append(verb, detail);
+
+      const body = document.createElement("div");
+      body.className = "steering-body";
+      body.textContent = text;
+      el.append(summary, body);
+      this.conversation.appendChild(el);
     },
 
     appendUserMessage(text, entryIdx, images) {

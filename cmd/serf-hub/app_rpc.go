@@ -1186,6 +1186,7 @@ func pastEntryThread(entry PastEntry, includeTurns bool) appwire.Thread {
 
 func pastEntryTurns(entry PastEntry) []appwire.Turn {
 	transcriptPath := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
+	header, firstCall := scanTranscriptPrelude(transcriptPath, transcriptJSONLMaxLineBytes)
 	f, err := os.Open(transcriptPath)
 	if err != nil {
 		return nil
@@ -1196,16 +1197,33 @@ func pastEntryTurns(entry PastEntry) []appwire.Turn {
 	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
 	toolNames := map[string]string{}
 	var turns []appwire.Turn
+	preludeEmitted := false
 	entryIndex := 0
+	emitPrelude := func() {
+		if preludeEmitted {
+			return
+		}
+		preludeEmitted = true
+		if prelude := transcriptPreludeTurn(header, firstCall); prelude != nil {
+			turns = append(turns, *prelude)
+		}
+	}
 	for scanner.Scan() {
 		raw := scanner.Bytes()
 		var head struct {
 			Kind string `json:"kind"`
 		}
-		if err := json.Unmarshal(raw, &head); err != nil || head.Kind != "entry" {
-			if head.Kind == "api_call" {
-				var call agent.TranscriptAPICall
-				if err := json.Unmarshal(raw, &call); err == nil && strings.TrimSpace(call.Error) != "" {
+		if err := json.Unmarshal(raw, &head); err != nil {
+			continue
+		}
+		if head.Kind == "header" {
+			continue
+		}
+		if head.Kind == "api_call" {
+			var call agent.TranscriptAPICall
+			if err := json.Unmarshal(raw, &call); err == nil {
+				if strings.TrimSpace(call.Error) != "" {
+					emitPrelude()
 					info := diagnostic.FromFields(call.Source, call.Title, call.Hint, call.Error)
 					entryIndex++
 					turns = append(turns, appwire.Turn{
@@ -1223,6 +1241,10 @@ func pastEntryTurns(entry PastEntry) []appwire.Turn {
 			}
 			continue
 		}
+		if head.Kind != "entry" {
+			continue
+		}
+		emitPrelude()
 		var entryRec replayEntry
 		if err := json.Unmarshal(raw, &entryRec); err != nil {
 			continue
@@ -1235,7 +1257,87 @@ func pastEntryTurns(entry PastEntry) []appwire.Turn {
 		}
 		turns = append(turns, appwire.Turn{ID: turnID, Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted})
 	}
+	emitPrelude()
 	return turns
+}
+
+func scanTranscriptPrelude(path string, maxLineBytes int) (agent.TranscriptHeader, *agent.TranscriptAPICall) {
+	f, err := os.Open(path)
+	if err != nil {
+		return agent.TranscriptHeader{}, nil
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
+	var header agent.TranscriptHeader
+	for scanner.Scan() {
+		raw := scanner.Bytes()
+		var head struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(raw, &head); err != nil {
+			continue
+		}
+		switch head.Kind {
+		case "header":
+			_ = json.Unmarshal(raw, &header)
+		case "api_call":
+			var call agent.TranscriptAPICall
+			if err := json.Unmarshal(raw, &call); err == nil {
+				return header, &call
+			}
+		}
+	}
+	return header, nil
+}
+
+func transcriptPreludeTurn(header agent.TranscriptHeader, firstCall *agent.TranscriptAPICall) *appwire.Turn {
+	var items []appwire.ThreadItem
+	systemPrompt := strings.TrimSpace(header.SystemPrompt)
+	if systemPrompt == "" && firstCall != nil {
+		systemPrompt = strings.TrimSpace(firstCall.SystemPrompt)
+	}
+	if systemPrompt != "" {
+		items = append(items, appwire.ThreadItem{
+			Type:        "systemMessage",
+			ID:          "item_system_prompt",
+			TurnID:      "turn_system",
+			Description: "System prompt",
+			Text:        systemPrompt,
+			Status:      "completed",
+		})
+	}
+	if firstCall != nil && len(firstCall.Request.ToolNames) > 0 {
+		items = append(items, appwire.ThreadItem{
+			Type:        "systemMessage",
+			ID:          "item_tools",
+			TurnID:      "turn_system",
+			Description: fmt.Sprintf("Tools (%d)", len(firstCall.Request.ToolNames)),
+			Text:        formatTranscriptToolNames(firstCall.Request.ToolNames),
+			Status:      "completed",
+		})
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	return &appwire.Turn{ID: "turn_system", Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}
+}
+
+func formatTranscriptToolNames(names []string) string {
+	var b strings.Builder
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString("- ")
+		b.WriteString(name)
+	}
+	return b.String()
 }
 
 func appItemsFromReplayTurn(turnID string, turnIndex int, turn replayTurn, toolNames map[string]string) []appwire.ThreadItem {

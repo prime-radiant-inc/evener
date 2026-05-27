@@ -1231,6 +1231,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .steering .steering-verb { color: var(--state-warning); font-family: var(--font-mono); letter-spacing: 0.02em; }
 .steering .steering-detail { color: var(--text); }
 .steering .steering-body { margin: var(--space-4) 0 0; padding: var(--space-4) var(--space-4); background: var(--bg); border-radius: var(--radius-md); font-family: var(--font-mono); font-size: var(--text-sm); line-height: var(--leading-snug); color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.system-message .steering-verb { color: var(--text-muted); }
 
 /* Fork dialog */
 .fork-dialog { margin-bottom: var(--space-6); padding: var(--space-4) var(--space-5); background: var(--bg-raised); border: 1px solid var(--rule); border-radius: var(--radius-xl); max-width: 480px; margin-left: auto; }

@@ -110,12 +110,13 @@ func main() {
 		fmt.Fprintf(os.Stderr, "[hub] resolved serf at %s\n", resolvedSerfBinary)
 	}
 	spawner := &HubSpawner{
-		Cfg:        cfg,
-		SerfBinary: resolvedSerfBinary,
-		RunDir:     runDir,
-		HubToken:   hubToken,
-		Creds:      credsStore,
-		StateRoot:  hubStateRoot,
+		Cfg:            cfg,
+		SerfBinary:     resolvedSerfBinary,
+		RunDir:         runDir,
+		HubToken:       hubToken,
+		Creds:          credsStore,
+		StateRoot:      hubStateRoot,
+		LaunchDefaults: defaultHubLaunchDefaults(),
 	}
 	var codexLauncher *CodexLauncher
 	if len(cfg.CodexLaunches) > 0 {

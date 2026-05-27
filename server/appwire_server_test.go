@@ -809,6 +809,52 @@ func TestAppTurnsFromTranscriptFilePreservesToolCallArguments(t *testing.T) {
 	}
 }
 
+func TestAppTurnsFromTranscriptFileIncludesPrelude(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := agent.NewTranscriptWriter(path, agent.TranscriptHeader{
+		SessionID:    "th_1",
+		SystemPrompt: "You are Serf.",
+	})
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+	if err := w.Append(agent.NewTurn(agent.TurnUserInput, llm.User("hello"))); err != nil {
+		t.Fatalf("append user: %v", err)
+	}
+	if err := w.AppendAPICall(agent.TranscriptAPICall{
+		Round: 1,
+		Request: llm.APILogRequest{
+			Provider:  "openai",
+			Model:     "gpt-5",
+			ToolCount: 2,
+			ToolNames: []string{"read_file", "apply_patch"},
+		},
+	}); err != nil {
+		t.Fatalf("append api call: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close transcript: %v", err)
+	}
+
+	turns := appTurnsFromTranscriptFile(path)
+	if len(turns) != 2 {
+		t.Fatalf("turns=%+v", turns)
+	}
+	prelude := turns[0]
+	if prelude.ID != "turn_system" || len(prelude.Items) != 2 {
+		t.Fatalf("prelude=%+v", prelude)
+	}
+	if got := prelude.Items[0]; got.Type != "systemMessage" || got.Description != "System prompt" || got.Text != "You are Serf." {
+		t.Fatalf("system item=%+v", got)
+	}
+	if got := prelude.Items[1]; got.Type != "systemMessage" || got.Description != "Tools (2)" || !strings.Contains(got.Text, "- read_file") || !strings.Contains(got.Text, "- apply_patch") {
+		t.Fatalf("tools item=%+v", got)
+	}
+	if got := turns[1].Items[0]; got.Type != "userMessage" || got.Text != "hello" {
+		t.Fatalf("first user item=%+v", got)
+	}
+}
+
 func TestServerAppWireThreadReadUsesTranscriptWhenReplayBufferDroppedPrefix(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
 	w, err := agent.NewTranscriptWriter(path, agent.TranscriptHeader{SessionID: "th_1"})

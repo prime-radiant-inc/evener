@@ -328,7 +328,7 @@ func TestExecuteCommandHook_ExitCode2(t *testing.T) {
 func TestExecuteCommandHook_Environment(t *testing.T) {
 	hook := RegisteredHook{
 		Type:      "command",
-		Command:   "echo PLUGIN=$CLAUDE_PLUGIN_ROOT PROJECT=$CLAUDE_PROJECT_DIR",
+		Command:   "echo CLAUDE_PLUGIN=$CLAUDE_PLUGIN_ROOT PLUGIN=$PLUGIN_ROOT PROJECT=$CLAUDE_PROJECT_DIR",
 		Timeout:   5,
 		PluginDir: "/my/plugin/dir",
 	}
@@ -340,6 +340,9 @@ func TestExecuteCommandHook_Environment(t *testing.T) {
 	result, err := executeCommandHook(context.Background(), hook, input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result.Stdout, "CLAUDE_PLUGIN=/my/plugin/dir") {
+		t.Errorf("stdout should contain CLAUDE_PLUGIN=/my/plugin/dir, got %q", result.Stdout)
 	}
 	if !strings.Contains(result.Stdout, "PLUGIN=/my/plugin/dir") {
 		t.Errorf("stdout should contain PLUGIN=/my/plugin/dir, got %q", result.Stdout)

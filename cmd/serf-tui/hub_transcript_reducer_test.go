@@ -46,6 +46,26 @@ func TestHubTranscriptReducerKeepsImageOnlyUserMessage(t *testing.T) {
 	}
 }
 
+func TestHubTranscriptReducerRendersSystemMessage(t *testing.T) {
+	reducer := newHubTranscriptReducer(nil, nil, nil)
+
+	reducer.applyThreadItem(appwire.ThreadItem{
+		Type:        "systemMessage",
+		ID:          "item_system_prompt",
+		TurnID:      "turn_system",
+		Description: "System prompt",
+		Text:        "You are Serf.",
+	}, 0, true)
+
+	if len(reducer.messages) != 1 {
+		t.Fatalf("messages len=%d, want 1", len(reducer.messages))
+	}
+	msg := reducer.messages[0]
+	if msg.Kind != msgSystem || msg.Text != "System prompt\nYou are Serf." || msg.ItemID != "item_system_prompt" {
+		t.Fatalf("system message = %+v", msg)
+	}
+}
+
 func TestHubTranscriptReducerSuppressesReplayedCompletedTool(t *testing.T) {
 	reducer := newHubTranscriptReducer(nil, nil, nil)
 	started := appwire.ThreadItem{

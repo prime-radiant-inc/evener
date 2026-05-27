@@ -641,6 +641,86 @@ func TestHubRPCThreadReadReturnsPastTranscript(t *testing.T) {
 	}
 }
 
+func TestHubRPCThreadReadIncludesTranscriptPrelude(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "prelude")
+	sessionID := "01PRELUDE00000000000001"
+	transcriptPath := filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl")
+	writer, err := agent.NewTranscriptWriter(transcriptPath, agent.TranscriptHeader{
+		SessionID:    sessionID,
+		CreatedAt:    time.Now().UTC(),
+		ProfileID:    "openai",
+		Model:        "gpt-5",
+		WorkingDir:   "/tmp/project",
+		SystemPrompt: "You are Serf.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Append(agent.NewTurn(agent.TurnUserInput, llm.User("hello"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.AppendAPICall(agent.TranscriptAPICall{
+		Round: 1,
+		Request: llm.APILogRequest{
+			Provider:  "openai",
+			Model:     "gpt-5",
+			ToolCount: 2,
+			ToolNames: []string{"read_file", "apply_patch"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := agent.SaveSessionMeta(stateDir, agent.SessionMeta{
+		ID:             sessionID,
+		ProfileID:      "openai",
+		Model:          "gpt-5",
+		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/tmp/project"},
+		CreatedAt:      now,
+		UpdatedAt:      now,
+		TurnCount:      1,
+		OriginalPrompt: "hello",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	hub := newHubRPCTestServer(t, WebConfig{Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, ItemsView: "full"})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if len(resp.Thread.Turns) != 2 {
+		t.Fatalf("turns=%+v", resp.Thread.Turns)
+	}
+	prelude := resp.Thread.Turns[0]
+	if prelude.ID != "turn_system" || len(prelude.Items) != 2 {
+		t.Fatalf("prelude=%+v", prelude)
+	}
+	if got := prelude.Items[0]; got.Type != "systemMessage" || got.Description != "System prompt" || got.Text != "You are Serf." {
+		t.Fatalf("system item=%+v", got)
+	}
+	if got := prelude.Items[1]; got.Type != "systemMessage" || got.Description != "Tools (2)" || !strings.Contains(got.Text, "- read_file") || !strings.Contains(got.Text, "- apply_patch") {
+		t.Fatalf("tools item=%+v", got)
+	}
+	if got := resp.Thread.Turns[1].Items[0]; got.Type != "userMessage" || got.Text != "hello" {
+		t.Fatalf("first user item=%+v", got)
+	}
+}
+
 func TestHubRPCThreadReadIncludesAPICallErrorAsFailedTurn(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "failed")

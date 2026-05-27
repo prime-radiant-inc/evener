@@ -152,6 +152,14 @@ vm.runInContext(SRC, context);
   const replayAssistantStart = replayedAssistantEvents.findIndex(([kind]) => kind === "ASSISTANT_TEXT_START");
   const replayAssistantEnd = replayedAssistantEvents.findIndex(([kind, data]) => kind === "ASSISTANT_TEXT_END" && data.text === "CODEX_REPLAY_OK");
   assert(replayAssistantStart >= 0 && replayAssistantStart < replayAssistantEnd, "browser appwire replay should start completed assistant text before ending it");
+  const replayedSystemEvents = context.window.SerfAppwire.eventsFromThread({
+    id: "th_serf",
+    sessionId: "th_serf",
+    serf: { ref: "local:th_serf" },
+    turns: [{ items: [{ type: "systemMessage", description: "System prompt", text: "You are Serf." }] }],
+  });
+  const systemEvent = replayedSystemEvents.find(([kind]) => kind === "SYSTEM_MESSAGE");
+  assert(systemEvent && systemEvent[1].title === "System prompt" && systemEvent[1].text === "You are Serf.", "browser appwire replay should preserve system transcript blocks");
   const completedTurnEvents = context.window.SerfAppwire.eventsFromNotification("turn/completed", {
     threadId: "th_codex",
     turn: {

@@ -57,17 +57,18 @@ func ParsePluginManifest(data []byte) (PluginManifest, error) {
 	return m, nil
 }
 
-// expandPluginRoot replaces ${CLAUDE_PLUGIN_ROOT} with pluginDir in s.
+// expandPluginRoot replaces plugin-root placeholders with pluginDir in s.
 func expandPluginRoot(s string, pluginDir string) string {
-	return strings.ReplaceAll(s, "${CLAUDE_PLUGIN_ROOT}", pluginDir)
+	s = strings.ReplaceAll(s, "${CLAUDE_PLUGIN_ROOT}", pluginDir)
+	return strings.ReplaceAll(s, "${PLUGIN_ROOT}", pluginDir)
 }
 
 // LoadedPlugin represents a plugin that has been loaded from disk.
 type LoadedPlugin struct {
 	Manifest   PluginManifest
-	Dir        string                        // absolute path = CLAUDE_PLUGIN_ROOT
-	Skills     map[string]SkillMeta          // namespaced as "plugin-name:skill-name"
-	Agents     map[string]PluginAgent        // namespaced as "plugin-name:agent-name"
+	Dir        string                         // absolute path = CLAUDE_PLUGIN_ROOT
+	Skills     map[string]SkillMeta           // namespaced as "plugin-name:skill-name"
+	Agents     map[string]PluginAgent         // namespaced as "plugin-name:agent-name"
 	Hooks      map[HookEvent][]RegisteredHook // keyed by event type
 	MCPConfigs []MCPServerConfig              // namespaced as "plugin_<name>_<server>"
 }
@@ -167,8 +168,9 @@ func parseMCPServerMap(servers map[string]json.RawMessage, source string) ([]MCP
 	return configs, nil
 }
 
-// LoadPlugin reads a plugin manifest from <dir>/.claude-plugin/plugin.json,
-// parses it, and returns a LoadedPlugin with Dir set to the resolved absolute path.
+// LoadPlugin reads a plugin manifest from <dir>/.codex-plugin/plugin.json
+// or <dir>/.claude-plugin/plugin.json, parses it, and returns a LoadedPlugin
+// with Dir set to the resolved absolute path.
 func LoadPlugin(dir string) (LoadedPlugin, error) {
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
@@ -179,7 +181,13 @@ func LoadPlugin(dir string) (LoadedPlugin, error) {
 		return LoadedPlugin{}, fmt.Errorf("resolving plugin dir %q: %w", dir, err)
 	}
 
-	manifestPath := filepath.Join(resolved, ".claude-plugin", "plugin.json")
+	manifestPath := filepath.Join(resolved, ".codex-plugin", "plugin.json")
+	if _, err := os.Stat(manifestPath); err != nil {
+		if !os.IsNotExist(err) {
+			return LoadedPlugin{}, fmt.Errorf("reading plugin manifest %q: %w", manifestPath, err)
+		}
+		manifestPath = filepath.Join(resolved, ".claude-plugin", "plugin.json")
+	}
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
 		return LoadedPlugin{}, fmt.Errorf("reading plugin manifest %q: %w", manifestPath, err)

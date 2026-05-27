@@ -51,6 +51,18 @@ async function scenario(name, eventSeq, expectations) {
 
 (async () => {
 
+await scenario("system transcript blocks", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["SYSTEM_MESSAGE", { title: "System prompt", text: "You are Serf." }],
+  ["SYSTEM_MESSAGE", { title: "Tools (2)", text: "- read_file\n- apply_patch" }],
+], ({ conv }) => {
+  const blocks = Array.from(conv.querySelectorAll(".system-message"));
+  if (blocks.length !== 2) return { ok: false, detail: "expected 2 system blocks, got " + blocks.length };
+  if (!blocks[0].textContent.includes("System prompt") || !blocks[0].textContent.includes("You are Serf.")) return { ok: false, detail: "missing system prompt block" };
+  if (!blocks[1].textContent.includes("Tools (2)") || !blocks[1].textContent.includes("apply_patch")) return { ok: false, detail: "missing tools block" };
+  return { ok: true };
+});
+
 // 1. Append action with multiple tasks
 await scenario("append 3 tasks", [
   ["SESSION_START", { session_id: "01TEST" }],

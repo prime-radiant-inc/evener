@@ -73,7 +73,7 @@ type hookSpec struct {
 
 // ParsePluginHooks parses hook configuration from JSON data.
 // Accepts wrapper format ({"hooks": {...}}) or direct format (events at top level).
-// Expands ${CLAUDE_PLUGIN_ROOT} in Command and Prompt fields.
+// Expands plugin-root placeholders in Command and Prompt fields.
 func ParsePluginHooks(data []byte, pluginDir, pluginName string) (map[HookEvent][]RegisteredHook, error) {
 	// Try wrapper format first: {"hooks": {...}} or {"description": "...", "hooks": {...}}
 	var wrapper struct {
@@ -185,7 +185,6 @@ func discoverPluginHooks(pluginDir string, manifestHooks json.RawMessage, plugin
 	return ParsePluginHooks(data, pluginDir, pluginName)
 }
 
-
 // HookInput is the JSON payload piped to command hooks via stdin.
 type HookInput struct {
 	SessionID     string         `json:"session_id"`
@@ -222,6 +221,7 @@ func executeCommandHook(ctx context.Context, hook RegisteredHook, input HookInpu
 	cmd.Stdin = bytes.NewReader(inputJSON)
 	cmd.Env = append(os.Environ(),
 		"CLAUDE_PLUGIN_ROOT="+hook.PluginDir,
+		"PLUGIN_ROOT="+hook.PluginDir,
 		"CLAUDE_PROJECT_DIR="+input.CWD,
 	)
 

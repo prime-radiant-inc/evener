@@ -166,6 +166,11 @@ func TestExpandPluginRoot(t *testing.T) {
 			"/home/user/.plugins/my-plugin/bin/tool",
 		},
 		{
+			"${PLUGIN_ROOT}/bin/tool",
+			"/home/user/.plugins/my-plugin",
+			"/home/user/.plugins/my-plugin/bin/tool",
+		},
+		{
 			"no variable here",
 			"/some/dir",
 			"no variable here",
@@ -224,6 +229,40 @@ func TestLoadPlugin_Valid(t *testing.T) {
 	// Dir should be absolute
 	if !filepath.IsAbs(lp.Dir) {
 		t.Errorf("Dir %q is not absolute", lp.Dir)
+	}
+}
+
+func TestLoadPlugin_PrefersCodexManifest(t *testing.T) {
+	dir := makePluginDir(t, "claude-plugin")
+	metaDir := filepath.Join(dir, ".codex-plugin")
+	if err := os.MkdirAll(metaDir, 0755); err != nil {
+		t.Fatalf("mkdir .codex-plugin: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(metaDir, "plugin.json"), []byte(`{"name":"codex-plugin","hooks":"./hooks/hooks-codex.json"}`), 0644); err != nil {
+		t.Fatalf("write codex manifest: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "hooks"), 0755); err != nil {
+		t.Fatalf("mkdir hooks: %v", err)
+	}
+	hooks := `{"hooks":{"SessionStart":[{"matcher":"startup","hooks":[{"type":"command","command":"\"${PLUGIN_ROOT}/hooks/session-start-codex\""}]}]}}`
+	if err := os.WriteFile(filepath.Join(dir, "hooks", "hooks-codex.json"), []byte(hooks), 0644); err != nil {
+		t.Fatalf("write codex hooks: %v", err)
+	}
+
+	lp, err := LoadPlugin(dir)
+	if err != nil {
+		t.Fatalf("LoadPlugin: %v", err)
+	}
+	if lp.Manifest.Name != "codex-plugin" {
+		t.Fatalf("manifest name = %q, want codex-plugin", lp.Manifest.Name)
+	}
+	got := lp.Hooks[HookSessionStart]
+	if len(got) != 1 {
+		t.Fatalf("SessionStart hook count = %d, want 1", len(got))
+	}
+	wantCommand := filepath.Join(dir, "hooks", "session-start-codex")
+	if got[0].Command != `"`+wantCommand+`"` {
+		t.Fatalf("hook command = %q, want quoted %q", got[0].Command, wantCommand)
 	}
 }
 
