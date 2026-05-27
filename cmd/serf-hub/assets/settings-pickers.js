@@ -1,7 +1,7 @@
 /* settings-pickers.js — lightweight model autocomplete for settings pages.
    Works by fetching /api/models and populating a <datalist> and a custom
    inline picker attached to any element with [data-settings-model-picker].
-   Also wires /api/dirs autocomplete to inputs with [data-settings-dir-picker]. */
+   Also wires shared directory picker behavior to settings dir controls. */
 (function () {
   "use strict";
 
@@ -174,127 +174,36 @@
 
   // ---------- dir picker ----------
 
-  function buildDirPicker(anchorBtn, input) {
-    const existing = document.querySelector(".sp-picker");
-    if (existing) { existing.remove(); return; }
-
-    const picker = document.createElement("div");
-    picker.className = "sp-picker chip-picker chip-picker-dir";
-    picker.style.position = "absolute";
-    picker.style.zIndex = "50";
-    picker.style.minWidth = "360px";
-
-    const search = document.createElement("input");
-    search.className = "chip-picker-search";
-    search.placeholder = "/path/to/dir";
-    search.value = input.value || "";
-    picker.appendChild(search);
-
-    const results = document.createElement("div");
-    results.className = "chip-picker-results";
-    picker.appendChild(results);
-
-    let timer = null;
-
-    function fetchDirs(prefix) {
-      const p = window.SerfAppwire
-        ? window.SerfAppwire.completeDirs(prefix)
-        : fetch("/api/dirs?prefix=" + encodeURIComponent(prefix), { credentials: "same-origin" }).then(r => r.json());
-      p.then(data => {
-        results.innerHTML = "";
-        const list = (data && data.results) || [];
-        if (list.length === 0) {
-          const empty = document.createElement("div");
-          empty.className = "empty-state empty-state-picker";
-          empty.innerHTML = '<p class="empty-state-body">No matching directories</p>';
-          results.appendChild(empty);
-          return;
-        }
-        list.forEach(r => {
-          const el = document.createElement("div");
-          el.className = "chip-picker-dir-row";
-          const path = document.createElement("span");
-          path.className = "chip-picker-dir-path";
-          path.textContent = r.path;
-          el.appendChild(path);
-          if (r.is_git) {
-            const tag = document.createElement("span");
-            tag.className = "chip-picker-dir-tag";
-            tag.textContent = "git";
-            el.appendChild(tag);
-          }
-          el.addEventListener("click", () => {
-            input.value = r.path;
-            search.value = r.path;
-            picker.remove();
-          });
-          results.appendChild(el);
-        });
-      }).catch(() => {});
-    }
-
-    search.addEventListener("input", () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => fetchDirs(search.value), 150);
-    });
-
-    search.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        const first = results.querySelector(".chip-picker-dir-row");
-        if (first) first.click();
-        else if (search.value) {
-          input.value = search.value;
-          picker.remove();
-        }
-      } else if (e.key === "Tab") {
-        e.preventDefault();
-        const first = results.querySelector(".chip-picker-dir-path");
-        if (first) search.value = first.textContent + "/";
-      }
-    });
-
-    anchorBtn.parentNode.style.position = "relative";
-    anchorBtn.parentNode.appendChild(picker);
-    picker.style.top = (anchorBtn.offsetTop + anchorBtn.offsetHeight + 4) + "px";
-    picker.style.left = anchorBtn.offsetLeft + "px";
-    search.focus();
-    fetchDirs(search.value);
-    attachDismiss(picker);
+  function writeDirInput(input, value) {
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
-  // ---------- inline dir autocomplete ----------
+  function openSharedDirPicker(anchor, input) {
+    if (!anchor || !input) return;
+    if (!window.SerfDirPicker || typeof window.SerfDirPicker.open !== "function") return;
+    window.SerfDirPicker.open({
+      anchor,
+      currentValue: input.value || "",
+      placeholder: input.placeholder || "/path/to/repo",
+      minWidth: "360px",
+      onAccept(value) { writeDirInput(input, value); },
+    });
+  }
 
   function wireDirInput(input) {
     if (input.__spDirInit) return;
     input.__spDirInit = true;
 
-    // Create a datalist for suggestions
-    const listId = "sp-dir-list-" + Math.random().toString(36).slice(2);
-    const dl = document.createElement("datalist");
-    dl.id = listId;
-    input.setAttribute("list", listId);
-    input.parentNode.insertBefore(dl, input.nextSibling);
-
-    let timer = null;
-    input.addEventListener("input", () => {
-      if (timer) clearTimeout(timer);
-      const prefix = input.value;
-      if (!prefix) { dl.innerHTML = ""; return; }
-      timer = setTimeout(() => {
-        const p = window.SerfAppwire
-          ? window.SerfAppwire.completeDirs(prefix)
-          : fetch("/api/dirs?prefix=" + encodeURIComponent(prefix), { credentials: "same-origin" }).then(r => r.json());
-        p.then(data => {
-          const list = (data && data.results) || [];
-          dl.innerHTML = "";
-          list.forEach(r => {
-            const opt = document.createElement("option");
-            opt.value = r.path;
-            dl.appendChild(opt);
-          });
-        }).catch(() => {});
-      }, 150);
+    input.addEventListener("focus", () => {
+      openSharedDirPicker(input, input);
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowDown" && e.key !== "Enter") return;
+      if (document.querySelector(".chip-picker-dir")) return;
+      e.preventDefault();
+      openSharedDirPicker(input, input);
     });
   }
 
@@ -328,12 +237,12 @@
       const input = container.querySelector("input[type=text]");
       btn.addEventListener("click", (e) => {
         e.preventDefault();
-        buildDirPicker(btn, input);
+        openSharedDirPicker(btn, input);
       });
     });
 
-    // Inline dir autocomplete: input[data-settings-dir-input] gets a datalist
-    // wired to /api/dirs completions, no separate picker button needed.
+    // Inline dir autocomplete: input[data-settings-dir-input] opens the
+    // shared directory picker, no separate picker button needed.
     root.querySelectorAll("input[data-settings-dir-input]").forEach(input => {
       wireDirInput(input);
     });

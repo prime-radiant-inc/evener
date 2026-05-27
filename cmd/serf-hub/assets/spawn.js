@@ -1471,115 +1471,22 @@
   }
 
   function openDirPicker(chip) {
-    const existing = document.querySelector(".chip-picker");
-    if (existing) { existing.remove(); return; }
+    if (!window.SerfDirPicker || typeof window.SerfDirPicker.open !== "function") return;
 
     const display = chip.querySelector(".chip-value");
-    const current = (display.textContent.trim() === "(pick a directory)") ? "" : display.textContent.trim();
+    const chipText = display ? display.textContent.trim() : "";
+    const current = (chipText === "(pick a directory)") ? "" : chipText;
+    const fallback = window.localStorage.getItem("serf-hub.spawn-defaults.global.last-working-dir") || "";
 
-    const picker = document.createElement("div");
-    picker.className = "chip-picker chip-picker-dir";
-
-    const input = document.createElement("input");
-    input.className = "chip-picker-search";
-    input.placeholder = "/path/to/repo";
-    input.value = current || (window.localStorage.getItem("serf-hub.spawn-defaults.global.last-working-dir") || "");
-    picker.appendChild(input);
-
-    const results = document.createElement("div");
-    results.className = "chip-picker-results";
-    picker.appendChild(results);
-
-    let timer = null;
-
-    function fetchDirs(prefix) {
-      const dirsPromise = window.SerfAppwire
-        ? window.SerfAppwire.completeDirs(prefix)
-        : fetch("/api/dirs?prefix=" + encodeURIComponent(prefix)).then(r => r.json());
-      dirsPromise.then(data => {
-        results.innerHTML = "";
-        const list = data.results || [];
-        if (list.length === 0) {
-          const empty = document.createElement("div");
-          empty.className = "empty-state empty-state-picker";
-          empty.innerHTML = '<p class="empty-state-body">No matching directories</p>';
-          results.appendChild(empty);
-          return;
-        }
-        list.forEach(r => {
-          const el = document.createElement("div");
-          el.className = "chip-picker-dir-row";
-          const path = document.createElement("span");
-          path.className = "chip-picker-dir-path";
-          path.textContent = r.path;
-          el.appendChild(path);
-          if (r.is_git) {
-            const tag = document.createElement("span");
-            tag.className = "chip-picker-dir-tag";
-            tag.textContent = "git";
-            el.appendChild(tag);
-          }
-          el.addEventListener("click", () => {
-            setChipValue("working_dir", r.path);
-            window.localStorage.setItem("serf-hub.spawn-defaults.global.last-working-dir", r.path);
-            picker.remove();
-          });
-          results.appendChild(el);
-        });
-      });
-    }
-
-    input.addEventListener("input", () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => fetchDirs(input.value), 150);
+    window.SerfDirPicker.open({
+      anchor: chip,
+      currentValue: current || fallback,
+      placeholder: "/path/to/repo",
+      onAccept(value) {
+        setChipValue("working_dir", value);
+        window.localStorage.setItem("serf-hub.spawn-defaults.global.last-working-dir", value);
+      },
     });
-
-    // Tab autocompletes to first result + "/". Enter prefers an exact
-    // match (typed path == suggested path) and otherwise commits the
-    // typed literal so we don't silently send the wrong directory.
-    input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        const typed = input.value;
-        if (!typed.trim()) return;
-        const rows = results.querySelectorAll(".chip-picker-dir-row");
-        let exact = null;
-        for (const row of rows) {
-          const p = row.querySelector(".chip-picker-dir-path");
-          if (p && p.textContent === typed) { exact = row; break; }
-        }
-        if (exact) {
-          exact.click();
-        } else {
-          setChipValue("working_dir", typed);
-          picker.remove();
-        }
-      } else if (e.key === "Tab") {
-        e.preventDefault();
-        const first = results.querySelector(".chip-picker-dir-path");
-        if (first) input.value = first.textContent + "/";
-      }
-    });
-
-    chip.parentNode.style.position = "relative";
-    chip.parentNode.appendChild(picker);
-    picker.style.position = "absolute";
-    picker.style.top = (chip.offsetTop + chip.offsetHeight + 4) + "px";
-    picker.style.left = chip.offsetLeft + "px";
-    picker.style.zIndex = "50";
-
-    input.focus();
-    fetchDirs(input.value);
-
-    setTimeout(() => {
-      const offClick = (e) => {
-        if (!picker.contains(e.target)) {
-          picker.remove();
-          document.removeEventListener("click", offClick);
-        }
-      };
-      document.addEventListener("click", offClick);
-    }, 0);
   }
 
   // Re-init whenever a spawn form appears in the DOM (initial load or

@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const { JSDOM } = require("jsdom");
 
+const dirPickerSrc = fs.readFileSync(path.resolve(__dirname, "../assets/dir-picker.js"), "utf8");
 const spawnSrc = fs.readFileSync(path.resolve(__dirname, "../assets/spawn.js"), "utf8");
 
 function assert(cond, msg) {
@@ -11,12 +12,14 @@ function assert(cond, msg) {
   }
 }
 
+(async function main() {
 const dom = new JSDOM(`<!DOCTYPE html><html><body></body></html>`, {
   runScripts: "outside-only",
   pretendToBeVisual: true,
   url: "http://127.0.0.1:9180/new",
 });
 
+dom.window.eval(dirPickerSrc);
 dom.window.eval(spawnSrc);
 
 assert(dom.window.SerfSpawn, "spawn helpers were not exported");
@@ -45,6 +48,9 @@ const formDom = new JSDOM(`<!DOCTYPE html><html><body>
       <button class="btn btn-chip" type="button" data-chip="branch">
         <span class="chip-value" data-chip-value-branch>(default)</span>
       </button>
+      <button class="btn btn-chip" type="button" data-chip="working_dir">
+        <span class="chip-value" data-chip-value-working-dir>/tmp/project-with-oauth</span>
+      </button>
     </div>
     <textarea name="prompt"></textarea>
     <input type="hidden" name="harness" value="serf">
@@ -67,6 +73,7 @@ const formDom = new JSDOM(`<!DOCTYPE html><html><body>
 
 let listModelsCalls = 0;
 let listModelsParams = null;
+const dirCompletionPrefixes = [];
 // The validate-prefilled-model fetch resolves with a list whose serf
 // provider enumerates `openai/gpt-5.2`. That keeps the current cwd's
 // chip valid while still exercising the sweep against retired models
@@ -84,6 +91,12 @@ formDom.window.SerfAppwire = {
         return { catch() {} };
       },
     };
+  },
+  completeDirs(prefix) {
+    dirCompletionPrefixes.push(prefix);
+    return Promise.resolve({
+      results: [{ path: "/tmp/project-with-oauth", is_git: true }],
+    });
   },
 };
 formDom.window.localStorage.setItem("serf-hub.spawn-defaults.global.model", "openai/gpt-5.2");
@@ -128,6 +141,7 @@ formDom.window.localStorage.setItem(unrelatedKey,
 formDom.window.localStorage.setItem("serf-hub.spawn-defaults.global.working_dir", "/tmp/global-sticky-dir");
 formDom.window.localStorage.setItem("serf-hub.spawn-defaults.global.last-working-dir", "/tmp/some-other-dir");
 
+formDom.window.eval(dirPickerSrc);
 formDom.window.eval(spawnSrc);
 formDom.window.document.dispatchEvent(new formDom.window.Event("DOMContentLoaded", { bubbles: true }));
 
@@ -157,6 +171,17 @@ assert(formDom.window.localStorage.getItem("serf-hub.spawn-defaults.global.last-
   "sweep must not touch global.last-working-dir scalar");
 assert(formDom.window.document.querySelector('input[name="working_dir"]').value === "/tmp/project-with-oauth",
   "server-provided working_dir must not be overwritten by global sticky default");
+
+const workingDirChip = formDom.window.document.querySelector('button[data-chip="working_dir"]');
+assert(workingDirChip, "working_dir chip should exist in spawn chips test fixture");
+workingDirChip.click();
+await new Promise((r) => setTimeout(r, 0));
+assert(formDom.window.document.querySelector(".chip-picker-dir"), "working_dir chip should open shared directory picker");
+assert(dirCompletionPrefixes[0] === "/tmp/project-with-oauth",
+  "working_dir picker should fetch initial suggestions for current chip value, got " + dirCompletionPrefixes[0]);
+formDom.window.document.querySelector(".chip-picker-dir-row").click();
+assert(formDom.window.localStorage.getItem("serf-hub.spawn-defaults.global.last-working-dir") === "/tmp/project-with-oauth",
+  "clicking working_dir suggestion should persist last working directory");
 
 const staleModelDom = new JSDOM(`<!DOCTYPE html><html><body>
   <form data-spawn-form>
@@ -191,6 +216,7 @@ staleModelDom.window.SerfAppwire = {
 staleModelDom.window.localStorage.setItem("serf-hub.spawn-defaults.global.model", "openai/gpt-5.2");
 staleModelDom.window.localStorage.setItem("serf-hub.spawn-defaults./tmp/current-stale",
   JSON.stringify({ model: "openai/gpt-5-mini", working_dir: "/tmp/current-stale" }));
+staleModelDom.window.eval(dirPickerSrc);
 staleModelDom.window.eval(spawnSrc);
 staleModelDom.window.document.dispatchEvent(new staleModelDom.window.Event("DOMContentLoaded", { bubbles: true }));
 assert(staleModelDom.window.localStorage.getItem("serf-hub.spawn-defaults.global.model") === "openai/gpt-5.2",
@@ -361,17 +387,20 @@ formDom.window.document.querySelector("[data-spawn-form]").dispatchEvent(new for
   cancelable: true,
 }));
 
-setTimeout(() => {
-  assert(sentSpawnBody.prompt === "ship the rename", "spawn request should send prompt field");
-  assert(!Object.prototype.hasOwnProperty.call(sentSpawnBody, "task"), "spawn request should not send legacy task field");
-  assert(!alertCalled, "spawn failure should not call window.alert");
-  const diagnostic = formDom.window.document.querySelector('[role="alert"]');
-  assert(diagnostic, "spawn failure should render an in-page diagnostic");
-  assert(
-    diagnostic.textContent.includes("start codex app-server: no such file or directory"),
-    "spawn diagnostic should show structured error message, got " + diagnostic.textContent,
-  );
-  const spawnButton = formDom.window.document.querySelector(".spawn-btn");
-  assert(!spawnButton.disabled, "spawn button should be re-enabled after failed spawn");
-  console.log("PASS: spawn navigation and harness-aware model defaults");
-}, 0);
+await new Promise((r) => setTimeout(r, 0));
+assert(sentSpawnBody.prompt === "ship the rename", "spawn request should send prompt field");
+assert(!Object.prototype.hasOwnProperty.call(sentSpawnBody, "task"), "spawn request should not send legacy task field");
+assert(!alertCalled, "spawn failure should not call window.alert");
+const diagnostic = formDom.window.document.querySelector('[role="alert"]');
+assert(diagnostic, "spawn failure should render an in-page diagnostic");
+assert(
+  diagnostic.textContent.includes("start codex app-server: no such file or directory"),
+  "spawn diagnostic should show structured error message, got " + diagnostic.textContent,
+);
+const spawnButton = formDom.window.document.querySelector(".spawn-btn");
+assert(!spawnButton.disabled, "spawn button should be re-enabled after failed spawn");
+console.log("PASS: spawn navigation and harness-aware model defaults");
+})().catch((err) => {
+  console.error(err && err.stack ? err.stack : err);
+  process.exit(1);
+});

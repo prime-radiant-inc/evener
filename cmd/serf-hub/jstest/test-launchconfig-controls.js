@@ -209,6 +209,8 @@ function assert(cond, msg) {
     "pathKind should stay on rendered path control");
   assert(root.querySelector('[data-launch-wire-field="traceFile"]').value === "/tmp/trace.out",
     "path current value should populate");
+  assert(root.querySelector('[data-launch-wire-field="traceFile"]').dataset.settingsDirInput === "true",
+    "generated path controls should opt into the shared settings directory picker");
   assert(root.querySelectorAll('[data-launch-wire-field="systemPromptMode"]').length === 3,
     "system prompt source should render as a composite radio group");
   assert(root.querySelectorAll('[data-launch-option="system_prompt_file"]').length === 0,
@@ -250,6 +252,8 @@ function assert(cond, msg) {
   assert(validateCalls.some(c => c.value === "/missing/plugin" && c.kind === "dir"),
     "pathList validation should use schema pathKind");
   const pluginWrap = root.querySelector('[data-launch-kind="pathList"][data-launch-wire-field="pluginDirs"]');
+  assert(pluginWrap.querySelector("input[data-settings-dir-input]"),
+    "generated pathList controls should opt into the shared settings directory picker");
   const pluginError = pluginWrap.querySelector("[data-launch-validation-error]");
   assert(pluginError && !pluginError.hidden && pluginError.textContent.includes("missing path"),
     "pathList validation should render inline error");
