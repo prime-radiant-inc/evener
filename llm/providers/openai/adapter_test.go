@@ -2050,31 +2050,71 @@ func TestAdapter_Complete_OAuthTransportOmitsUnsupportedPublicResponsesFields(t 
 		Client:           srv.Client(),
 	}
 	maxTokens := 80
+	maxToolCalls := 4
 	temp := 0.0
 	topP := 0.5
 	reasoning := "low"
+	background := false
 	_, err := a.Complete(context.Background(), llm.Request{
-		Model:           "gpt-5.5",
-		Messages:        []llm.Message{llm.User("hi")},
-		Temperature:     &temp,
-		TopP:            &topP,
-		MaxTokens:       &maxTokens,
-		StopSequences:   []string{"STOP"},
-		ReasoningEffort: &reasoning,
-		Metadata:        map[string]string{"trace": "abc"},
-		ClientMetadata:  map[string]string{"x-codex-installation-id": "install_123"},
-		PromptCacheKey:  "thread_456",
+		Model:                "gpt-5.5",
+		Messages:             []llm.Message{llm.User("hi")},
+		Temperature:          &temp,
+		TopP:                 &topP,
+		MaxTokens:            &maxTokens,
+		StopSequences:        []string{"STOP"},
+		ReasoningEffort:      &reasoning,
+		Metadata:             map[string]string{"trace": "abc"},
+		ClientMetadata:       map[string]string{"x-codex-installation-id": "install_123"},
+		PromptCacheKey:       "thread_456",
+		PromptCacheRetention: "24h",
+		SafetyIdentifier:     "user_123",
+		Truncation:           "auto",
+		MaxToolCalls:         &maxToolCalls,
+		Background:           &background,
+		ServiceTier:          "auto",
+		ProviderOptions: map[string]any{
+			"openai": map[string]any{
+				"parallel_tool_calls":     false,
+				"temperature":             0.2,
+				"prompt_cache_retention":  "24h",
+				"service_tier":            "auto",
+				"safety_identifier":       "provider_user_123",
+				"truncation":              "auto",
+				"max_tool_calls":          4,
+				"background":              false,
+				"metadata":                map[string]any{"trace": "provider"},
+				"unsupported_custom_test": "kept",
+			},
+		},
 	})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
-	for _, key := range []string{"temperature", "top_p", "max_output_tokens", "stop", "metadata"} {
+	for _, key := range []string{
+		"temperature",
+		"top_p",
+		"max_output_tokens",
+		"stop",
+		"metadata",
+		"prompt_cache_retention",
+		"safety_identifier",
+		"truncation",
+		"max_tool_calls",
+		"background",
+		"service_tier",
+	} {
 		if _, ok := gotBody[key]; ok {
 			t.Fatalf("%s should be omitted for Codex backend: %#v", key, gotBody)
 		}
 	}
 	if gotBody["stream"] != true {
 		t.Fatalf("stream = %#v, want true", gotBody["stream"])
+	}
+	if gotBody["parallel_tool_calls"] != false {
+		t.Fatalf("parallel_tool_calls = %#v, want provider option override", gotBody["parallel_tool_calls"])
+	}
+	if gotBody["unsupported_custom_test"] != "kept" {
+		t.Fatalf("custom provider option = %#v, want kept", gotBody["unsupported_custom_test"])
 	}
 	clientMetadata, ok := gotBody["client_metadata"].(map[string]any)
 	if !ok || clientMetadata["trace"] != "abc" || clientMetadata["x-codex-installation-id"] != "install_123" {

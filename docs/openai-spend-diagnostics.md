@@ -77,9 +77,12 @@ request boundary:
   already set one.
 - OpenAI requests for those same allowlisted model families receive
   `prompt_cache_retention=24h` when the request does not already set retention.
-- Explicit `prompt_cache_key` and `prompt_cache_retention` values are preserved.
+- Explicit `prompt_cache_key` values are preserved. Explicit
+  `prompt_cache_retention` values are preserved for public API-key transport.
 - The allowlist is intentionally conservative: `gpt-5*` and `gpt-4.1*` model
   families.
+- OAuth-backed ChatGPT/Codex transport omits `prompt_cache_retention` on the
+  wire because that backend rejects the public Responses API field.
 
 The intent is to keep long agent sessions on a stable cache namespace without
 changing callers that already selected explicit prompt-cache behavior.

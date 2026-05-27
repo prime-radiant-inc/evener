@@ -243,22 +243,22 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 	if strings.TrimSpace(req.ConversationID) != "" {
 		body["conversation"] = strings.TrimSpace(req.ConversationID)
 	}
-	if strings.TrimSpace(req.ServiceTier) != "" {
+	if strings.TrimSpace(req.ServiceTier) != "" && !a.usesCodexBackend() {
 		body["service_tier"] = strings.TrimSpace(req.ServiceTier)
 	}
-	if strings.TrimSpace(req.SafetyIdentifier) != "" {
+	if strings.TrimSpace(req.SafetyIdentifier) != "" && !a.usesCodexBackend() {
 		body["safety_identifier"] = strings.TrimSpace(req.SafetyIdentifier)
 	}
-	if strings.TrimSpace(req.PromptCacheRetention) != "" {
+	if strings.TrimSpace(req.PromptCacheRetention) != "" && !a.usesCodexBackend() {
 		body["prompt_cache_retention"] = strings.TrimSpace(req.PromptCacheRetention)
 	}
-	if strings.TrimSpace(req.Truncation) != "" {
+	if strings.TrimSpace(req.Truncation) != "" && !a.usesCodexBackend() {
 		body["truncation"] = strings.TrimSpace(req.Truncation)
 	}
-	if req.MaxToolCalls != nil {
+	if req.MaxToolCalls != nil && !a.usesCodexBackend() {
 		body["max_tool_calls"] = *req.MaxToolCalls
 	}
-	if req.Background != nil {
+	if req.Background != nil && !a.usesCodexBackend() {
 		body["background"] = *req.Background
 	}
 	if req.Store != nil {
@@ -295,11 +295,33 @@ func (a *Adapter) buildRequestBody(req llm.Request) (map[string]any, error) {
 	if req.ProviderOptions != nil {
 		if ov, ok := req.ProviderOptions["openai"].(map[string]any); ok {
 			for k, v := range ov {
+				if a.usesCodexBackend() && openAICodexUnsupportedRequestField(k) {
+					continue
+				}
 				body[k] = v
 			}
 		}
 	}
 	return body, nil
+}
+
+func openAICodexUnsupportedRequestField(key string) bool {
+	switch key {
+	case "temperature",
+		"top_p",
+		"max_output_tokens",
+		"stop",
+		"metadata",
+		"service_tier",
+		"safety_identifier",
+		"prompt_cache_retention",
+		"truncation",
+		"max_tool_calls",
+		"background":
+		return true
+	default:
+		return false
+	}
 }
 
 func mergeStringMaps(maps ...map[string]string) map[string]string {
