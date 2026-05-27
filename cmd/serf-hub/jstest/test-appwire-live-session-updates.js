@@ -9,7 +9,7 @@ const rendererSrc = fs.readFileSync(path.resolve(__dirname, "../assets/renderer.
 
 const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <div class="workspace-actions">
-    <button data-action-trigger="interrupt" disabled>interrupt</button>
+    <button data-action-trigger="interrupt" data-capability-interrupt="false" disabled>interrupt</button>
     <button data-action-trigger="compact">compact</button>
     <button data-action-trigger="shutdown">shutdown</button>
     <button data-tasks-trigger><span class="panel-toggle-label">tasks</span></button>
@@ -31,6 +31,8 @@ window.confirm = () => true;
 
 let notificationHandler = null;
 let startTurnTarget = "";
+let threadStatus = "idle";
+let threadCapabilities = { send: true, queue: false, steer: false, interrupt: false };
 
 window.SerfAppwire = {
   tasks: () => Promise.resolve([]),
@@ -47,18 +49,25 @@ window.SerfAppwire = {
     thread: {
       id: "thread-live",
       sessionId: "sess-route",
-      serf: { ref: "local:thread-live" },
-      turns: [],
+      status: { type: threadStatus },
+      serf: { ref: "local:thread-live", capabilities: threadCapabilities },
+      turns: threadStatus === "active" ? [{ id: "turn_1", status: "inProgress" }] : [],
     },
   }),
   eventsFromThread: (thread) => [["SESSION_START", {
     session_id: thread.sessionId,
-    status: "idle",
-    capabilities: { send: true, queue: false },
+    status: thread.status && thread.status.type || "idle",
+    capabilities: thread.serf && thread.serf.capabilities || {},
     restored: true,
   }]],
   eventsFromNotification: (method, params) => {
-    if (method === "thread/status/changed") return [["THREAD_STATUS_CHANGED", { status: params.status && params.status.type || "" }]];
+    if (method === "thread/status/changed") {
+      threadStatus = params.status && params.status.type || "";
+      threadCapabilities = threadStatus === "active"
+        ? { send: false, queue: false, steer: true, interrupt: true }
+        : { send: true, queue: false, steer: false, interrupt: false };
+      return [["THREAD_STATUS_CHANGED", { status: threadStatus }]];
+    }
     if (method === "turn/started") return [["TURN_STARTED", { turnId: params.turn && params.turn.id || "" }]];
     if (method === "turn/completed") return [["TURN_COMPLETED", { turnId: params.turn && params.turn.id || "" }]];
     if (method === "item/started") return [["ASSISTANT_TEXT_START", {}]];

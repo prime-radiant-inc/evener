@@ -89,6 +89,7 @@
       this.liveSendCap = null;
       this.liveQueueCap = null;
       this.liveSteerCap = null;
+      this.liveInterruptCap = null;
       this.liveCapabilitiesStatus = "";
       this.statusUpdateSeq = 0;
 
@@ -167,6 +168,7 @@
             if (typeof caps.send === "boolean") this.liveSendCap = caps.send;
             if (typeof caps.queue === "boolean") this.liveQueueCap = caps.queue;
             if (typeof caps.steer === "boolean") this.liveSteerCap = caps.steer;
+            if (typeof caps.interrupt === "boolean") this.liveInterruptCap = caps.interrupt;
             this.liveCapabilitiesStatus = refreshedStatus;
           }
           this.updateThreadState(refreshedStatus);
@@ -183,6 +185,7 @@
       this.liveSendCap = null;
       this.liveQueueCap = null;
       this.liveSteerCap = null;
+      this.liveInterruptCap = null;
       this.liveCapabilitiesStatus = "";
     },
 
@@ -246,8 +249,9 @@
       const turnAcceptsActions = this.turnAcceptsActions(this.state);
       const interrupt = document.querySelector('[data-action-trigger="interrupt"]');
       if (interrupt) {
-        const canInterrupt = interrupt.getAttribute("data-capability-interrupt") !== "false";
-        interrupt.disabled = !canInterrupt || !turnAcceptsActions;
+        const canInterrupt = typeof this.liveInterruptCap === "boolean" ? this.liveInterruptCap : interrupt.getAttribute("data-capability-interrupt") !== "false";
+        interrupt.setAttribute("data-capability-interrupt", canInterrupt ? "true" : "false");
+        interrupt.disabled = !canInterrupt || !hasActiveTurn || !turnAcceptsActions;
       }
       const steer = document.querySelector("[data-steer-trigger]");
       if (steer) {
@@ -640,12 +644,12 @@
             if (this.turnAcceptsActions(this.state)) this.updateThreadState("idle");
           }
           break;
-	        case "SESSION_START":
-	          this.statusUpdateSeq++;
-	          if (data.session_id && data.session_id !== this.sessionId) {
-	            this.sessionId = data.session_id;
-	            this.resetLiveCapabilities();
-	            history.replaceState(null, "", "/s/" + encodeURIComponent(data.session_id));
+        case "SESSION_START":
+          this.statusUpdateSeq++;
+          if (data.session_id && data.session_id !== this.sessionId) {
+            this.sessionId = data.session_id;
+            this.resetLiveCapabilities();
+            history.replaceState(null, "", "/s/" + encodeURIComponent(data.session_id));
             this.conversation.innerHTML = "";
             this.activeMessages.clear();
             this.activeTools.clear();
@@ -663,19 +667,20 @@
             this.renderComposerChips();
             // Reset to empty; the next QUEUE_CHANGED event (cold-load or
             // notification) will fill in authoritative state from the wire.
-	            this.queueState = { depth: 0, preview: [] };
-	            this.renderQueuePreview();
-	          }
-	          if (data.capabilities) {
-	            if (typeof data.capabilities.send === "boolean") this.liveSendCap = data.capabilities.send;
-	            if (typeof data.capabilities.queue === "boolean") this.liveQueueCap = data.capabilities.queue;
-	            if (typeof data.capabilities.steer === "boolean") this.liveSteerCap = data.capabilities.steer;
-	            this.liveCapabilitiesStatus = data.status || "";
-	          }
-	          if (data.status) {
-	            this.updateThreadState(data.status);
-	          }
-	          break;
+            this.queueState = { depth: 0, preview: [] };
+            this.renderQueuePreview();
+          }
+          if (data.capabilities) {
+            if (typeof data.capabilities.send === "boolean") this.liveSendCap = data.capabilities.send;
+            if (typeof data.capabilities.queue === "boolean") this.liveQueueCap = data.capabilities.queue;
+            if (typeof data.capabilities.steer === "boolean") this.liveSteerCap = data.capabilities.steer;
+            if (typeof data.capabilities.interrupt === "boolean") this.liveInterruptCap = data.capabilities.interrupt;
+            this.liveCapabilitiesStatus = data.status || "";
+          }
+          if (data.status) {
+            this.updateThreadState(data.status);
+          }
+          break;
         case "QUEUE_CHANGED":
           // Authoritative queue state from the daemon (kata r80p). The
           // depth + preview are stored verbatim; renderQueuePreview reads

@@ -81,8 +81,8 @@
     </div>
     <div class="controls-center"></div>
     <div class="controls-right">
-      {{if .Capabilities.Interrupt}}
-      <button type="button" class="btn btn-danger stop-btn" data-action-trigger="interrupt" data-capability-interrupt="{{.Capabilities.Interrupt}}" title="stop the in-flight turn"{{if and (ne .State "awaiting") (ne .State "active")}} disabled{{end}}>Stop</button>
+      {{if and (ne .State "ended") (ne .State "closed") (or .Capabilities.Interrupt .Capabilities.Steer .Capabilities.Send .Capabilities.Queue)}}
+      <button type="button" class="btn btn-danger stop-btn" data-action-trigger="interrupt" data-capability-interrupt="{{.Capabilities.Interrupt}}" title="stop the in-flight turn"{{if or (not .Capabilities.Interrupt) (eq .ActiveTurnID "") (and (ne .State "awaiting") (ne .State "active"))}} disabled{{end}}>Stop</button>
       {{end}}
       {{if or .Capabilities.Steer .Capabilities.Send .Capabilities.Queue}}
       <button type="button" class="btn btn-ghost" data-steer-trigger data-capability-steer="{{.Capabilities.Steer}}" title="drain the queue as a steering message — or steer with the textarea text when the queue is empty"{{if or (not .Capabilities.Steer) (eq .ActiveTurnID "") (and (ne .State "awaiting") (ne .State "active"))}} disabled{{end}}>send as steer <kbd>⇧↵</kbd></button>

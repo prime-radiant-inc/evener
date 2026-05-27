@@ -172,6 +172,10 @@ func TestWeb_WorkspaceRendersDisabledSteerControlForIdleSendCapableAppThread(t *
 	if !strings.Contains(body, `data-steer-trigger data-capability-steer="false"`) || !strings.Contains(body, `disabled>send as steer`) {
 		t.Fatalf("workspace should render disabled steer control for idle send-capable app thread:\n%s", body)
 	}
+	if !strings.Contains(body, `class="btn btn-danger stop-btn" data-action-trigger="interrupt" data-capability-interrupt="false"`) ||
+		!strings.Contains(body, `disabled>Stop</button>`) {
+		t.Fatalf("workspace should render disabled stop control for idle send-capable app thread:\n%s", body)
+	}
 }
 
 func TestWeb_WorkspaceRendersBottomStopForActiveSession(t *testing.T) {
