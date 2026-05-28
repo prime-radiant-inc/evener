@@ -468,3 +468,25 @@ func TestAuth_OpenAI_Status_CorruptOAuthFallsBackToFile(t *testing.T) {
 		t.Fatalf("status=%+v, want signed-in file (corrupt oauth treated as absent)", got)
 	}
 }
+
+func TestAuth_OpenAI_ApiKeySet_PersistsAndReportsFile(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	credsPath := filepath.Join(dir, "credentials.toml")
+	store, _ := credentials.LoadStore(credsPath)
+	c := newHubAuthControllerWithStore(dir, store)
+	c.stateDir = t.TempDir() // no OAuth record
+
+	got, err := c.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "openai", Value: "sk-openai-XXX"})
+	if err != nil {
+		t.Fatalf("ApiKeySet(openai): %v", err)
+	}
+	if got.ActiveSource != string(credentials.SourceFile) || !got.HasStoredFile {
+		t.Fatalf("status=%+v, want file active with HasStoredFile", got)
+	}
+	store2, _ := credentials.LoadStore(credsPath)
+	v, src := store2.Get("openai")
+	if v != "sk-openai-XXX" || src != credentials.SourceFile {
+		t.Errorf("after ApiKeySet: v=%q src=%q, want sk-openai-XXX/file", v, src)
+	}
+}

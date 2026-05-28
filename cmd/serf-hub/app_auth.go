@@ -271,9 +271,6 @@ func (c *hubAuthController) List(_ appwire.EmptyParams) (appwire.AuthListRespons
 
 func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
 	provider := normalizeAuthProvider(params.Provider)
-	if provider == "openai" {
-		return appwire.AuthStatusResponse{}, appwire.InvalidParams("openai api keys must be configured via env or hub.env; use serf/auth/login/start for OAuth")
-	}
 	if strings.TrimSpace(params.Value) == "" {
 		return appwire.AuthStatusResponse{}, appwire.InvalidParams("value is required")
 	}
