@@ -297,7 +297,9 @@ func runServe(args []string) error {
 	srv.SetTasksFunc(func() any { return getSession().Tasks() })
 	srv.SetClearFunc(func(ctx context.Context) error {
 		oldSess := getSession()
-		newSess, err := agent.NewSession(client, profile, env, sessionCfg)
+		clearCfg := sessionCfg
+		clearCfg.SessionStartKind = agent.SessionStartKindClear
+		newSess, err := agent.NewSession(client, profile, env, clearCfg)
 		if err != nil {
 			return fmt.Errorf("new session: %w", err)
 		}

@@ -31,6 +31,18 @@ const (
 	HookNotification     HookEvent = "Notification"
 )
 
+// SessionStartKind is the matcher target used for SessionStart hooks.
+// Claude Code-style hooks distinguish ordinary startup from resume, clear,
+// and compaction lifecycle boundaries.
+type SessionStartKind string
+
+const (
+	SessionStartKindStartup SessionStartKind = "startup"
+	SessionStartKindResume  SessionStartKind = "resume"
+	SessionStartKindClear   SessionStartKind = "clear"
+	SessionStartKindCompact SessionStartKind = "compact"
+)
+
 // validHookEvents is the set of recognized event names.
 var validHookEvents = map[HookEvent]bool{
 	HookPreToolUse:       true,
@@ -618,11 +630,18 @@ func (r *HookRunner) RunUserPromptSubmit(ctx context.Context, input HookInput) H
 	return collectSystemMessages(outputs)
 }
 
-// RunSessionStart dispatches SessionStart hooks.
-// The matchTarget is "startup" to match Claude Code's convention where
-// SessionStart matchers match startup types (startup|resume|clear|compact).
+// RunSessionStart dispatches startup SessionStart hooks.
 func (r *HookRunner) RunSessionStart(ctx context.Context, input HookInput) HookRunResult {
-	outputs := r.runAll(ctx, HookSessionStart, "startup", input)
+	return r.RunSessionStartFor(ctx, input, SessionStartKindStartup)
+}
+
+// RunSessionStartFor dispatches SessionStart hooks for a specific startup kind.
+func (r *HookRunner) RunSessionStartFor(ctx context.Context, input HookInput, kind SessionStartKind) HookRunResult {
+	target := strings.TrimSpace(string(kind))
+	if target == "" {
+		target = string(SessionStartKindStartup)
+	}
+	outputs := r.runAll(ctx, HookSessionStart, target, input)
 	return collectSystemMessages(outputs)
 }
 

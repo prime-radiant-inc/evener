@@ -78,6 +78,59 @@ func TestInitPlugins_BuildsHookRunner(t *testing.T) {
 	}
 }
 
+func TestRestoreSessionFromMeta_DoesNotMatchStartupSessionStartHooks(t *testing.T) {
+	dir := makePluginDir(t, "session-start-plugin")
+	hooksDir := filepath.Join(dir, "hooks")
+	if err := os.MkdirAll(hooksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	hooksJSON := `{
+		"hooks": {
+			"SessionStart": [
+				{
+					"matcher": "startup|clear|compact",
+					"hooks": [{"type": "command", "command": "echo startup-bootstrap"}]
+				}
+			]
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(hooksDir, "hooks.json"), []byte(hooksJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	client := llm.NewClient()
+	workDir := t.TempDir()
+	stateDir := t.TempDir()
+	cfg := SessionConfig{
+		PluginDirs: []string{dir},
+		StateDir:   stateDir,
+	}
+
+	fresh, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(workDir), cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer fresh.Close()
+	if got := fresh.SteeringQueueSnapshot(); len(got) != 1 || got[0].Text != "startup-bootstrap" {
+		t.Fatalf("fresh session bootstrap steering = %+v, want startup-bootstrap", got)
+	}
+
+	meta := SessionMeta{
+		ID:        "resume-session",
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    cfg,
+	}
+	restored, err := RestoreSessionFromMeta(client, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(workDir), meta, stateDir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+	if got := restored.SteeringQueueSnapshot(); len(got) != 0 {
+		t.Fatalf("restored session matched startup-only SessionStart hook: %+v", got)
+	}
+}
+
 func TestInitPlugins_MergesAgents(t *testing.T) {
 	dir := makePluginDir(t, "agent-plugin")
 	agentsDir := filepath.Join(dir, "agents")

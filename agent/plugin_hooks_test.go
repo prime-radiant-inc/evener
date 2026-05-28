@@ -539,6 +539,31 @@ func TestHookRunner_ParallelExecution(t *testing.T) {
 	_ = result // result type checked by compiler
 }
 
+func TestHookRunner_SessionStartUsesExplicitKind(t *testing.T) {
+	runner := NewHookRunner(nil, "")
+	runner.Add(HookSessionStart, RegisteredHook{
+		Matcher: "startup|clear|compact",
+		Type:    "command",
+		Command: "echo lifecycle-bootstrap",
+		Timeout: 5,
+	})
+
+	input := HookInput{
+		CWD:           "/tmp",
+		HookEventName: "SessionStart",
+	}
+
+	if got := runner.RunSessionStartFor(context.Background(), input, SessionStartKindResume); len(got.SystemMessages) != 0 {
+		t.Fatalf("resume SessionStart matched startup-only hook: %+v", got.SystemMessages)
+	}
+	if got := runner.RunSessionStartFor(context.Background(), input, SessionStartKindStartup); len(got.SystemMessages) != 1 {
+		t.Fatalf("startup SessionStart messages = %d, want 1", len(got.SystemMessages))
+	}
+	if got := runner.RunSessionStartFor(context.Background(), input, SessionStartKindClear); len(got.SystemMessages) != 1 {
+		t.Fatalf("clear SessionStart messages = %d, want 1", len(got.SystemMessages))
+	}
+}
+
 func TestHookRunner_PreToolUse_Deny(t *testing.T) {
 	runner := NewHookRunner(nil, "")
 	// A command hook that outputs a deny JSON
