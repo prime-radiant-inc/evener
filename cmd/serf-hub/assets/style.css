@@ -1257,7 +1257,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 /* kata 65mm: file-picker affordance for the spawn form. Matches the
    inline send-style button family so "📎" sits visually adjacent to the
    spawn submit. Keyboard-reachable as a real <button>. */
-.spawn-attach-row { display: flex; gap: var(--space-3); }
+.spawn-attach-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 /* Spawn attach button — paperclip + "attach ⌘V to paste" hint per mockup. */
 .spawn-attach-btn { color: var(--text-muted); font-weight: 400; }
 .spawn-attach-btn:hover:not([disabled]):not(:disabled) { color: var(--text); }

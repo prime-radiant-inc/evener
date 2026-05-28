@@ -15,9 +15,18 @@ function assert(cond, msg) {
 
 const spawnActionsIndex = spawnTemplateSrc.indexOf('<div class="spawn-actions">');
 const spawnAdvancedIndex = spawnTemplateSrc.indexOf('<details class="spawn-advanced">');
+const spawnAttachRowIndex = spawnTemplateSrc.indexOf('<div class="spawn-attach-row">');
+const spawnAttachButtonIndex = spawnTemplateSrc.indexOf('data-attach-trigger');
+const composerAttachmentsIndex = spawnTemplateSrc.indexOf('<div class="composer-attachments"');
 assert(spawnActionsIndex !== -1, "spawn template should include launch actions");
 assert(spawnAdvancedIndex !== -1, "spawn template should include advanced toggle");
+assert(spawnAttachRowIndex !== -1, "spawn template should include attach row");
+assert(spawnAttachButtonIndex !== -1, "spawn template should include attach button");
+assert(composerAttachmentsIndex !== -1, "spawn template should include attachments list after controls");
 assert(spawnActionsIndex < spawnAdvancedIndex, "launch button should appear above advanced toggle");
+assert(spawnAttachRowIndex < spawnAttachButtonIndex, "attach button should appear inside attach row");
+assert(spawnAttachButtonIndex < spawnActionsIndex, "launch button should appear after attach button");
+assert(spawnActionsIndex < composerAttachmentsIndex, "launch button should share the attach row above attachments list");
 
 (async function main() {
 const dom = new JSDOM(`<!DOCTYPE html><html><body></body></html>`, {

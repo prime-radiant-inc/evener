@@ -41,6 +41,9 @@
     <div class="spawn-attach-row">
       <button type="button" class="btn btn-secondary spawn-attach-btn" data-attach-trigger aria-label="attach image" title="attach image"><span class="spawn-attach-icon">📎</span><span class="spawn-attach-label">attach <kbd>⌘V</kbd> to paste</span></button>
       <input type="file" data-file-picker accept="image/*" multiple hidden>
+      <div class="spawn-actions">
+        <button class="btn btn-primary spawn-btn" type="submit">spawn <kbd>⌘↵</kbd></button>
+      </div>
     </div>
     <div class="composer-attachments" data-composer-attachments></div>
     <div class="composer-attachment-error" data-attachment-error hidden></div>
@@ -52,9 +55,6 @@
     <input type="hidden" name="access_mode" value="{{.DefaultAccessMode}}">
     <input type="hidden" name="agent" value="default">
     <input type="hidden" name="reasoning_effort" value="">
-    <div class="spawn-actions">
-      <button class="btn btn-primary spawn-btn" type="submit">spawn <kbd>⌘↵</kbd></button>
-    </div>
     <details class="spawn-advanced">
       <summary>advanced</summary>
       <div class="spawn-advanced-body">
