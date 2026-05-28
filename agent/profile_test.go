@@ -103,6 +103,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"task_list",
 			"web_fetch",
 			"communicate",
+			"use_skill",
 		})
 	})
 	t.Run("anthropic", func(t *testing.T) {
@@ -145,6 +146,25 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"use_skill",
 		})
 	})
+}
+
+func TestProviderProfiles_AllIncludeUseSkill(t *testing.T) {
+	profiles := []ProviderProfile{
+		NewOpenAIProfile("gpt-5.2"),
+		NewAnthropicProfile("claude-test"),
+		NewGeminiProfile("gemini-test"),
+		NewMiniMaxProfile("MiniMax-M2.7"),
+		NewOpenRouterAnthropicProfile("anthropic/claude-test"),
+		NewOpenAICompatProfile("openrouter", "openai/gpt-test", 0),
+		NewOpenAICompatProfile("kimi", "kimi-test", 0),
+		NewOpenAICompatProfile("glm", "glm-test", 0),
+		NewOpenAICompatProfile("ollama", "llama3", 0),
+	}
+	for _, p := range profiles {
+		t.Run(p.ID(), func(t *testing.T) {
+			assertHasTool(t, p, "use_skill")
+		})
+	}
 }
 
 func TestProviderProfiles_AddPurposeToEveryToolSchema(t *testing.T) {
@@ -1351,10 +1371,9 @@ func assertMissingTool(t *testing.T, p ProviderProfile, name string) {
 	}
 }
 
-// TestOpenAIProfile_SystemPromptContainsApplyPatchFormat verifies that the
 // TestAllProfiles_SystemPromptContainsSkillsGuidance verifies that all
 // profiles include skills guidance when skills are provided.
-// Anthropic/Gemini use use_skill tool, OpenAI uses read_file with file paths.
+// All provider profiles use the use_skill tool with directory paths.
 func TestAllProfiles_SystemPromptContainsSkillsGuidance(t *testing.T) {
 	profiles := map[string]ProviderProfile{
 		"openai":    NewOpenAIProfile("gpt-5.2"),
@@ -1371,7 +1390,7 @@ func TestAllProfiles_SystemPromptContainsSkillsGuidance(t *testing.T) {
 			Platform:    "linux",
 			Today:       "2026-02-09",
 			Skills:      skills,
-			HasUseSkill: name != "openai",
+			HasUseSkill: true,
 		})
 
 		// All profiles should render <skills> when skills are provided.
@@ -1379,24 +1398,11 @@ func TestAllProfiles_SystemPromptContainsSkillsGuidance(t *testing.T) {
 			t.Errorf("profile %q system prompt missing <skills> section", name)
 		}
 
-		// Anthropic and Gemini use the use_skill tool with directory paths.
-		if name != "openai" {
-			if !strings.Contains(prompt, "use_skill") {
-				t.Errorf("profile %q system prompt missing use_skill guidance", name)
-			}
-			if !strings.Contains(prompt, "/tmp/skills/test-skill]") {
-				t.Errorf("profile %q system prompt missing skill directory path", name)
-			}
+		if !strings.Contains(prompt, "use_skill") {
+			t.Errorf("profile %q system prompt missing use_skill guidance", name)
 		}
-
-		// OpenAI uses read_file with SKILL.md file paths.
-		if name == "openai" {
-			if !strings.Contains(prompt, "read_file") {
-				t.Errorf("profile %q system prompt missing read_file guidance for skills", name)
-			}
-			if !strings.Contains(prompt, "/tmp/skills/test-skill/SKILL.md") {
-				t.Errorf("profile %q system prompt missing skill file path", name)
-			}
+		if !strings.Contains(prompt, "/tmp/skills/test-skill]") {
+			t.Errorf("profile %q system prompt missing skill directory path", name)
 		}
 	}
 }
@@ -1433,7 +1439,7 @@ func TestBuildSystemPrompt_IncludesSkillsList(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPrompt_OpenAI_SkillsWithFilePaths(t *testing.T) {
+func TestBuildSystemPrompt_OpenAI_SkillsWithUseSkill(t *testing.T) {
 	p := NewOpenAIProfile("gpt-5.2")
 	skills := []SkillEntry{
 		{Name: "greet", Description: "Greeting skill", Dir: "/tmp/skills/greet", SkillFile: "/tmp/skills/greet/SKILL.md"},
@@ -1443,16 +1449,17 @@ func TestBuildSystemPrompt_OpenAI_SkillsWithFilePaths(t *testing.T) {
 		Platform:   "linux",
 		Today:      "2026-02-09",
 		Skills:     skills,
+		HasUseSkill: true,
 	})
 
 	if !strings.Contains(prompt, "<skill-catalog>") {
 		t.Error("OpenAI prompt should contain <skills> section")
 	}
-	if !strings.Contains(prompt, "/tmp/skills/greet/SKILL.md") {
-		t.Error("OpenAI prompt should include skill file paths for read_file")
+	if !strings.Contains(prompt, "Load a skill by calling use_skill with its name") {
+		t.Error("OpenAI prompt should instruct model to use use_skill for skills")
 	}
-	if !strings.Contains(prompt, "read_file") {
-		t.Error("OpenAI prompt should instruct model to use read_file for skills")
+	if !strings.Contains(prompt, "- greet: Greeting skill [/tmp/skills/greet]") {
+		t.Error("OpenAI prompt should include skill directory path for use_skill")
 	}
 }
 

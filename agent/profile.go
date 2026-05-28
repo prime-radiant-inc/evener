@@ -83,6 +83,211 @@ type baseProfile struct {
 	cheapModel      string
 }
 
+type toolCapability string
+
+const (
+	capabilityFiles            toolCapability = "files"
+	capabilityCodexEditing     toolCapability = "codex_editing"
+	capabilityExactEditing     toolCapability = "exact_editing"
+	capabilityShellSearch      toolCapability = "shell_search"
+	capabilityDirectoryListing toolCapability = "directory_listing"
+	capabilityAgentControl     toolCapability = "agent_control"
+	capabilityWorkflow         toolCapability = "workflow"
+	capabilityWebFetch         toolCapability = "web_fetch"
+	capabilityWebSearch        toolCapability = "web_search"
+)
+
+type profileSpec struct {
+	id              string
+	model           string
+	parallel        bool
+	contextWindow   int
+	docFiles        []string
+	reasoning       bool
+	streaming       bool
+	webSearch       bool
+	defaultTimeout  int
+	knowledgeCutoff string
+	defaultEfforts  []string
+	resolvedEfforts []string
+	providerOpts    map[string]any
+	toolNameMap     map[string]string
+	capabilities    []toolCapability
+	cheapModel      string
+}
+
+var (
+	openAICodexCapabilities = []toolCapability{
+		capabilityFiles,
+		capabilityCodexEditing,
+		capabilityShellSearch,
+		capabilityAgentControl,
+		capabilityWorkflow,
+		capabilityWebFetch,
+	}
+	anthropicStyleCapabilities = []toolCapability{
+		capabilityFiles,
+		capabilityExactEditing,
+		capabilityShellSearch,
+		capabilityAgentControl,
+		capabilityWorkflow,
+		capabilityWebFetch,
+	}
+	geminiStyleCapabilities = []toolCapability{
+		capabilityFiles,
+		capabilityExactEditing,
+		capabilityShellSearch,
+		capabilityDirectoryListing,
+		capabilityAgentControl,
+		capabilityWorkflow,
+		capabilityWebFetch,
+		capabilityWebSearch,
+	}
+)
+
+func cloneStringSlice(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	return append([]string(nil), in...)
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+// cloneAnyMap/cloneAnyValue copy provider option data. Tool schemas use
+// cloneSchemaMap via cloneToolDefinition instead.
+func cloneAnyMap(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = cloneAnyValue(v)
+	}
+	return out
+}
+
+func cloneAnyValue(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		return cloneAnyMap(x)
+	case []map[string]any:
+		out := make([]map[string]any, len(x))
+		for i := range x {
+			out[i] = cloneAnyMap(x[i])
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i := range x {
+			out[i] = cloneAnyValue(x[i])
+		}
+		return out
+	case []string:
+		return append([]string(nil), x...)
+	default:
+		return v
+	}
+}
+
+func cloneToolDefinition(td llm.ToolDefinition) llm.ToolDefinition {
+	td.Parameters = cloneSchemaMap(td.Parameters)
+	return td
+}
+
+func toolDefinitionsForCapabilities(capabilities []toolCapability, efforts []string) []llm.ToolDefinition {
+	enabled := make(map[toolCapability]bool, len(capabilities))
+	for _, capability := range capabilities {
+		enabled[capability] = true
+	}
+
+	var defs []llm.ToolDefinition
+	add := func(td llm.ToolDefinition) {
+		defs = append(defs, cloneToolDefinition(td))
+	}
+
+	if enabled[capabilityFiles] {
+		add(defReadFile())
+	}
+	if enabled[capabilityCodexEditing] {
+		add(defApplyPatch())
+	}
+	if enabled[capabilityFiles] {
+		add(defWriteFile())
+	}
+	if enabled[capabilityExactEditing] {
+		add(defEditFile())
+	}
+	if enabled[capabilityShellSearch] {
+		add(defShell())
+		add(defGrep())
+		add(defGlob())
+	}
+	if enabled[capabilityDirectoryListing] {
+		add(defListDir())
+	}
+	if enabled[capabilityAgentControl] {
+		add(defSpawnAgent())
+		add(defSendInput())
+		add(defWait())
+		add(defCloseAgent())
+	}
+	if enabled[capabilityWorkflow] {
+		add(defTaskList(efforts))
+	}
+	if enabled[capabilityWebFetch] {
+		add(defWebFetch())
+	}
+	if enabled[capabilityWebSearch] {
+		add(defWebSearch())
+	}
+	if enabled[capabilityWorkflow] {
+		add(defCommunicate())
+		add(defUseSkill())
+	}
+	return defs
+}
+
+func buildBaseProfile(spec profileSpec) baseProfile {
+	model := strings.TrimSpace(spec.model)
+	efforts := spec.resolvedEfforts
+	if efforts == nil {
+		efforts = resolveEffortLevels(model, spec.defaultEfforts)
+	}
+
+	defaultTimeout := spec.defaultTimeout
+	if defaultTimeout == 0 {
+		defaultTimeout = 120_000
+	}
+
+	return baseProfile{
+		id:              spec.id,
+		model:           model,
+		parallel:        spec.parallel,
+		contextWindow:   spec.contextWindow,
+		docFiles:        cloneStringSlice(spec.docFiles),
+		reasoning:       spec.reasoning,
+		streaming:       spec.streaming,
+		webSearch:       spec.webSearch,
+		defaultTimeout:  defaultTimeout,
+		knowledgeCutoff: spec.knowledgeCutoff,
+		effortLevels:    cloneStringSlice(efforts),
+		providerOpts:    cloneAnyMap(spec.providerOpts),
+		toolNameMap:     cloneStringMap(spec.toolNameMap),
+		toolDefs:        toolDefinitionsForCapabilities(spec.capabilities, efforts),
+		cheapModel:      spec.cheapModel,
+	}
+}
+
 func (p *baseProfile) ID() string    { return p.id }
 func (p *baseProfile) Model() string { return p.model }
 func (p *baseProfile) ToolDefinitions() []llm.ToolDefinition {
@@ -370,10 +575,7 @@ func (p *baseProfile) WithModel(model string) ProviderProfile {
 }
 
 func NewOpenAIProfile(model string) ProviderProfile {
-	model = strings.TrimSpace(model)
-	defaultEfforts := []string{"low", "medium", "high", "xhigh"}
-	efforts := resolveEffortLevels(model, defaultEfforts)
-	return &baseProfile{
+	bp := buildBaseProfile(profileSpec{
 		id:              "openai",
 		model:           model,
 		parallel:        true,
@@ -384,7 +586,7 @@ func NewOpenAIProfile(model string) ProviderProfile {
 		webSearch:       true,
 		defaultTimeout:  120_000,
 		knowledgeCutoff: "2025-06-01",
-		effortLevels:    efforts,
+		defaultEfforts:  []string{"low", "medium", "high", "xhigh"},
 		providerOpts: map[string]any{
 			"openai": map[string]any{
 				"parallel_tool_calls": true,
@@ -395,22 +597,9 @@ func NewOpenAIProfile(model string) ProviderProfile {
 			"grep":  "grep_files",
 			"glob":  "list_dir",
 		},
-		toolDefs: []llm.ToolDefinition{
-			defReadFile(),
-			defApplyPatch(),
-			defWriteFile(),
-			defShell(),
-			defGrep(),
-			defGlob(),
-			defSpawnAgent(),
-			defSendInput(),
-			defWait(),
-			defCloseAgent(),
-			defTaskList(efforts),
-			defWebFetch(),
-			defCommunicate(),
-		},
-	}
+		capabilities: openAICodexCapabilities,
+	})
+	return &bp
 }
 
 const anthropicSuffix1M = "[1m]"
@@ -485,47 +674,28 @@ func NewAnthropicProfile(model string) ProviderProfile {
 	if has1M {
 		ctxWindow = 1_000_000
 	}
-	defaultEfforts := []string{"low", "medium", "high", "max"}
-	efforts := resolveEffortLevels(model, defaultEfforts)
+	bp := buildBaseProfile(profileSpec{
+		id:              "anthropic",
+		model:           model,
+		parallel:        true,
+		contextWindow:   ctxWindow,
+		docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
+		reasoning:       true,
+		streaming:       true,
+		webSearch:       true,
+		defaultTimeout:  120_000,
+		knowledgeCutoff: "2025-04-01",
+		defaultEfforts:  []string{"low", "medium", "high", "max"},
+		providerOpts:    anthropicProviderOpts(has1M),
+		capabilities:    anthropicStyleCapabilities,
+	})
 	return &anthropicProfile{
-		baseProfile: baseProfile{
-			id:              "anthropic",
-			model:           model,
-			parallel:        true,
-			contextWindow:   ctxWindow,
-			docFiles:        []string{"CLAUDE.md", "AGENTS.md"},
-			reasoning:       true,
-			streaming:       true,
-			webSearch:       true,
-			defaultTimeout:  120_000,
-			knowledgeCutoff: "2025-04-01",
-			effortLevels:    efforts,
-			providerOpts:    anthropicProviderOpts(has1M),
-			toolDefs: []llm.ToolDefinition{
-				defReadFile(),
-				defWriteFile(),
-				defEditFile(),
-				defShell(),
-				defGrep(),
-				defGlob(),
-				defSpawnAgent(),
-				defSendInput(),
-				defWait(),
-				defCloseAgent(),
-				defTaskList(efforts),
-				defWebFetch(),
-				defCommunicate(),
-				defUseSkill(),
-			},
-		},
+		baseProfile: bp,
 	}
 }
 
 func NewGeminiProfile(model string) ProviderProfile {
-	model = strings.TrimSpace(model)
-	defaultEfforts := []string{"low", "medium", "high"}
-	efforts := resolveEffortLevels(model, defaultEfforts)
-	return &baseProfile{
+	bp := buildBaseProfile(profileSpec{
 		id:              "gemini",
 		model:           model,
 		parallel:        true,
@@ -536,7 +706,7 @@ func NewGeminiProfile(model string) ProviderProfile {
 		webSearch:       true,
 		defaultTimeout:  120_000,
 		knowledgeCutoff: "2025-03-01",
-		effortLevels:    efforts,
+		defaultEfforts:  []string{"low", "medium", "high"},
 		providerOpts: map[string]any{
 			"gemini": map[string]any{
 				"safetySettings": []map[string]any{
@@ -552,32 +722,13 @@ func NewGeminiProfile(model string) ProviderProfile {
 			"grep":     "grep_search",
 			"list_dir": "list_directory",
 		},
-		toolDefs: []llm.ToolDefinition{
-			defReadFile(),
-			defWriteFile(),
-			defEditFile(),
-			defShell(),
-			defGrep(),
-			defGlob(),
-			defListDir(),
-			defSpawnAgent(),
-			defSendInput(),
-			defWait(),
-			defCloseAgent(),
-			defTaskList(efforts),
-			defWebFetch(),
-			defWebSearch(),
-			defCommunicate(),
-			defUseSkill(),
-		},
-	}
+		capabilities: geminiStyleCapabilities,
+	})
+	return &bp
 }
 
 func NewMiniMaxProfile(model string) ProviderProfile {
-	model = strings.TrimSpace(model)
-	defaultEfforts := []string{"low", "medium", "high", "max"}
-	efforts := resolveEffortLevels(model, defaultEfforts)
-	return &baseProfile{
+	bp := buildBaseProfile(profileSpec{
 		id:              "minimax",
 		model:           model,
 		parallel:        true,
@@ -587,24 +738,10 @@ func NewMiniMaxProfile(model string) ProviderProfile {
 		streaming:       true,
 		defaultTimeout:  120_000,
 		knowledgeCutoff: "2025-06-01",
-		effortLevels:    efforts,
-		toolDefs: []llm.ToolDefinition{
-			defReadFile(),
-			defWriteFile(),
-			defEditFile(),
-			defShell(),
-			defGrep(),
-			defGlob(),
-			defSpawnAgent(),
-			defSendInput(),
-			defWait(),
-			defCloseAgent(),
-			defTaskList(efforts),
-			defWebFetch(),
-			defCommunicate(),
-			defUseSkill(),
-		},
-	}
+		defaultEfforts:  []string{"low", "medium", "high", "max"},
+		capabilities:    anthropicStyleCapabilities,
+	})
+	return &bp
 }
 
 // NewOpenRouterAnthropicProfile creates a profile that routes any OpenRouter-
@@ -752,7 +889,7 @@ func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 	if efforts == nil {
 		efforts = resolveEffortLevels(model, defaultEfforts)
 	}
-	return &baseProfile{
+	bp := buildBaseProfile(profileSpec{
 		id:              "openrouter-anthropic",
 		model:           model,
 		parallel:        true,
@@ -763,29 +900,16 @@ func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 		webSearch:       ws,
 		defaultTimeout:  120_000,
 		knowledgeCutoff: "2025-06-01",
-		effortLevels:    efforts,
+		defaultEfforts:  defaultEfforts,
+		resolvedEfforts: efforts,
 		providerOpts: map[string]any{
 			"anthropic": map[string]any{
 				"max_tokens": 16384,
 			},
 		},
-		toolDefs: []llm.ToolDefinition{
-			defReadFile(),
-			defWriteFile(),
-			defEditFile(),
-			defShell(),
-			defGrep(),
-			defGlob(),
-			defSpawnAgent(),
-			defSendInput(),
-			defWait(),
-			defCloseAgent(),
-			defTaskList(efforts),
-			defWebFetch(),
-			defCommunicate(),
-			defUseSkill(),
-		},
-	}
+		capabilities: anthropicStyleCapabilities,
+	})
+	return &bp
 }
 
 // suppressBareCatalogLookup reports whether a provider should skip the
@@ -887,7 +1011,7 @@ func NewOpenAICompatProfile(id, model string, contextWindow int) ProviderProfile
 			},
 		}
 	}
-	return &baseProfile{
+	bp := buildBaseProfile(profileSpec{
 		id:              id,
 		model:           model,
 		parallel:        true,
@@ -895,26 +1019,16 @@ func NewOpenAICompatProfile(id, model string, contextWindow int) ProviderProfile
 		docFiles:        []string{"AGENTS.md"},
 		reasoning:       true,
 		streaming:       true,
+		webSearch:       false,
 		defaultTimeout:  120_000,
 		knowledgeCutoff: "2025-06-01",
-		effortLevels:    efforts,
+		defaultEfforts:  defaultEfforts,
+		resolvedEfforts: efforts,
 		providerOpts:    providerOpts,
-		toolDefs: []llm.ToolDefinition{
-			defReadFile(),
-			defApplyPatch(),
-			defWriteFile(),
-			defShell(),
-			defGrep(),
-			defGlob(),
-			defSpawnAgent(),
-			defSendInput(),
-			defWait(),
-			defCloseAgent(),
-			defTaskList(efforts),
-			defWebFetch(),
-			defCommunicate(),
-		},
-	}
+		toolNameMap:     nil,
+		capabilities:    openAICodexCapabilities,
+	})
+	return &bp
 }
 
 func envInfoFromEnv(env ExecutionEnvironment) EnvironmentInfo {

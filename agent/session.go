@@ -4898,8 +4898,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 	})
 
 	// use_skill (progressive disclosure of skill instructions).
-	// Only present for profiles that include the use_skill tool definition
-	// (Anthropic, Gemini). OpenAI models use read_file on SKILL.md paths instead.
+	// Present for provider profiles that include the use_skill tool definition.
 	if reg.Get("use_skill") != nil {
 		_ = reg.Register(RegisteredTool{
 			Tool: llm.Tool{Definition: defUseSkill()},

@@ -23,7 +23,7 @@ func useSkillCall(id, skillName string) llm.ToolCallData {
 	}
 }
 
-// use_skill tests use Anthropic profile because OpenAI uses read_file for skills.
+// use_skill tests exercise provider profiles that expose the use_skill tool.
 
 func TestUseSkill_ReturnsBody(t *testing.T) {
 	root := t.TempDir()
@@ -199,7 +199,7 @@ func TestUseSkill_SystemPromptContainsSkillList(t *testing.T) {
 	}
 }
 
-func TestOpenAI_SkillsSectionWithFilePaths(t *testing.T) {
+func TestOpenAI_SkillsSectionUsesUseSkill(t *testing.T) {
 	root := t.TempDir()
 	initGitRepo(t, root)
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nBody.\n")
@@ -230,28 +230,60 @@ func TestOpenAI_SkillsSectionWithFilePaths(t *testing.T) {
 	_, _ = sess.ProcessInput(ctx, "hi", nil)
 	sess.Close()
 
-	// OpenAI should have skills listed with file paths for read_file access.
 	if !strings.Contains(capturedSystem, "<skill-catalog>") {
 		t.Error("OpenAI system prompt should contain <skills> section")
+	}
+	if !strings.Contains(capturedSystem, "Load a skill by calling use_skill with its name") {
+		t.Error("OpenAI system prompt should instruct model to use use_skill for skills")
 	}
 	if !strings.Contains(capturedSystem, "greet: Greeting skill") {
 		t.Error("OpenAI system prompt missing greet skill entry")
 	}
-	if !strings.Contains(capturedSystem, "read_file") {
-		t.Error("OpenAI system prompt should instruct model to use read_file for skills")
-	}
-	// OpenAI should NOT have use_skill tool listed.
-	if strings.Contains(capturedSystem, "- use_skill:") {
-		t.Error("OpenAI should not have use_skill tool")
+	if !strings.Contains(capturedSystem, "[") || !strings.Contains(capturedSystem, filepath.Join("skills", "greet")) {
+		t.Error("OpenAI system prompt should list the skill directory for use_skill profiles")
 	}
 }
 
-func TestOpenAI_NoUseSkillTool(t *testing.T) {
+func TestOpenAI_IncludesUseSkillTool(t *testing.T) {
 	p := NewOpenAIProfile("gpt-5.2")
 	for _, td := range p.ToolDefinitions() {
 		if td.Name == "use_skill" {
-			t.Error("OpenAI profile should not include use_skill tool definition")
+			return
 		}
+	}
+	t.Fatal("OpenAI profile should include use_skill tool definition")
+}
+
+func TestOpenAIUseSkillToolExecutes(t *testing.T) {
+	root := t.TempDir()
+	initGitRepo(t, root)
+	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nUse greeting style.\n")
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	tool := sess.reg.Get("use_skill")
+	if tool == nil {
+		t.Fatal("OpenAI session registry missing use_skill executor")
+	}
+
+	result := sess.reg.ExecuteCall(context.Background(), NewLocalExecutionEnvironment(root), llm.ToolCallData{
+		ID:        "call_use_skill",
+		Name:      "use_skill",
+		Arguments: json.RawMessage(`{"skill_name":"greet","purpose":"test skill loading"}`),
+		Type:      "function",
+	})
+	if result.IsError {
+		t.Fatalf("use_skill returned error: %s", result.Output)
+	}
+	if !strings.Contains(result.Output, "Use greeting style.") {
+		t.Fatalf("use_skill output missing skill body: %q", result.Output)
 	}
 }
 
