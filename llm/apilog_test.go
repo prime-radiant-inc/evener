@@ -41,12 +41,24 @@ func TestAPILoggerWritesJSONL(t *testing.T) {
 	wrapped := logger.WrapComplete(fakeAdapter)
 
 	ctx := WithAPILogContext(context.Background(), "sess-abc", 5)
+	strict := true
 	req := Request{
 		Model:    "test-model",
 		Provider: "test",
 		Messages: []Message{User("hi"), Assistant("hello")},
 		Tools: []ToolDefinition{
-			{Name: "shell", Description: "run shell commands"},
+			{
+				Name:        "shell",
+				Description: "run shell commands",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"command": map[string]any{"type": "string"},
+					},
+					"required": []any{"command"},
+				},
+				Strict: &strict,
+			},
 			{Name: "read_file", Description: "read a file"},
 		},
 	}
@@ -101,6 +113,18 @@ func TestAPILoggerWritesJSONL(t *testing.T) {
 	}
 	if len(entry.Request.ToolNames) != 2 || entry.Request.ToolNames[0] != "shell" {
 		t.Errorf("request.tool_names = %v, want [shell read_file]", entry.Request.ToolNames)
+	}
+	if len(entry.Request.Tools) != 2 || entry.Request.Tools[0].Name != "shell" {
+		t.Fatalf("request.tools = %+v, want full tool definitions", entry.Request.Tools)
+	}
+	if entry.Request.Tools[0].Description != "run shell commands" {
+		t.Errorf("request.tools[0].description = %q", entry.Request.Tools[0].Description)
+	}
+	if entry.Request.Tools[0].Parameters["type"] != "object" {
+		t.Errorf("request.tools[0].parameters = %+v", entry.Request.Tools[0].Parameters)
+	}
+	if entry.Request.Tools[0].Strict == nil || !*entry.Request.Tools[0].Strict {
+		t.Errorf("request.tools[0].strict = %v, want true", entry.Request.Tools[0].Strict)
 	}
 
 	// Response.
@@ -327,9 +351,9 @@ func TestBuildLogResponse_EndpointURL(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			resp := Response{
-				ID:    "r1",
-				Model: "m",
-				Raw:   tc.raw,
+				ID:     "r1",
+				Model:  "m",
+				Raw:    tc.raw,
 				Finish: FinishReason{Reason: FinishReasonStop},
 			}
 			lr := buildLogResponse(resp)

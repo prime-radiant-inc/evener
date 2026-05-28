@@ -821,6 +821,7 @@ func TestAppTurnsFromTranscriptFileIncludesPrelude(t *testing.T) {
 	if err := w.Append(agent.NewTurn(agent.TurnUserInput, llm.User("hello"))); err != nil {
 		t.Fatalf("append user: %v", err)
 	}
+	strict := true
 	if err := w.AppendAPICall(agent.TranscriptAPICall{
 		Round: 1,
 		Request: llm.APILogRequest{
@@ -828,6 +829,21 @@ func TestAppTurnsFromTranscriptFileIncludesPrelude(t *testing.T) {
 			Model:     "gpt-5",
 			ToolCount: 2,
 			ToolNames: []string{"read_file", "apply_patch"},
+			Tools: []llm.ToolDefinition{
+				{
+					Name:        "read_file",
+					Description: "Read a file from disk.",
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"path": map[string]any{"type": "string"},
+						},
+						"required": []any{"path"},
+					},
+					Strict: &strict,
+				},
+				{Name: "apply_patch", Description: "Apply a patch."},
+			},
 		},
 	}); err != nil {
 		t.Fatalf("append api call: %v", err)
@@ -847,7 +863,7 @@ func TestAppTurnsFromTranscriptFileIncludesPrelude(t *testing.T) {
 	if got := prelude.Items[0]; got.Type != "systemMessage" || got.Description != "System prompt" || got.Text != "You are Serf." {
 		t.Fatalf("system item=%+v", got)
 	}
-	if got := prelude.Items[1]; got.Type != "systemMessage" || got.Description != "Tools (2)" || !strings.Contains(got.Text, "- read_file") || !strings.Contains(got.Text, "- apply_patch") {
+	if got := prelude.Items[1]; got.Type != "systemMessage" || got.Description != "Tools (2)" || !strings.Contains(got.Text, `"name": "read_file"`) || !strings.Contains(got.Text, `"parameters"`) || !strings.Contains(got.Text, `"strict": true`) || strings.Contains(got.Text, "- read_file") {
 		t.Fatalf("tools item=%+v", got)
 	}
 	if got := turns[1].Items[0]; got.Type != "userMessage" || got.Text != "hello" {

@@ -41,24 +41,25 @@ type APILogEntry struct {
 	LatencyMs int64           `json:"latency_ms"`
 }
 
-// APILogRequest captures request metadata (not full content).
+// APILogRequest captures request metadata and tool definitions.
 type APILogRequest struct {
-	Model           string   `json:"model"`
-	Provider        string   `json:"provider"`
-	MessageCount    int      `json:"message_count"`
-	ToolCount       int      `json:"tool_count"`
-	ToolNames       []string `json:"tool_names,omitempty"`
-	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
+	Model           string           `json:"model"`
+	Provider        string           `json:"provider"`
+	MessageCount    int              `json:"message_count"`
+	ToolCount       int              `json:"tool_count"`
+	ToolNames       []string         `json:"tool_names,omitempty"`
+	Tools           []ToolDefinition `json:"tools,omitempty"`
+	ReasoningEffort string           `json:"reasoning_effort,omitempty"`
 }
 
 // APILogResponse captures the full response including raw provider data.
 type APILogResponse struct {
-	ID            string         `json:"id,omitempty"`
-	Model         string         `json:"model"`
-	FinishReason  string         `json:"finish_reason"`
-	TextLength    int            `json:"text_length"`
-	ToolCallCount int            `json:"tool_call_count"`
-	Usage         Usage          `json:"usage"`
+	ID            string `json:"id,omitempty"`
+	Model         string `json:"model"`
+	FinishReason  string `json:"finish_reason"`
+	TextLength    int    `json:"text_length"`
+	ToolCallCount int    `json:"tool_call_count"`
+	Usage         Usage  `json:"usage"`
 	// EndpointURL is the full HTTP URL the adapter dialed for this call.
 	// Promoted from Raw["endpoint_url"] (string) so QA can tell, e.g., whether
 	// an OpenAI call went to /v1/responses (API key) vs /backend-api/codex/responses
@@ -140,7 +141,7 @@ func (l *APILogger) WrapComplete(next CompleteFunc) CompleteFunc {
 		entry := APILogEntry{
 			Timestamp: start.UTC().Format(time.RFC3339),
 			LatencyMs: time.Since(start).Milliseconds(),
-			Request:   buildLogRequest(req),
+			Request:   BuildAPILogRequest(req),
 		}
 
 		if lc, ok := getAPILogContext(ctx); ok {
@@ -242,7 +243,9 @@ func (l *APILogger) writeRaw(entry APIRawLogEntry) {
 	l.rawFile.Sync()                    //nolint:errcheck
 }
 
-func buildLogRequest(req Request) APILogRequest {
+// BuildAPILogRequest projects an LLM request into the metadata recorded in API
+// logs and transcript api_call entries.
+func BuildAPILogRequest(req Request) APILogRequest {
 	lr := APILogRequest{
 		Model:        req.Model,
 		Provider:     req.Provider,
@@ -258,6 +261,7 @@ func buildLogRequest(req Request) APILogRequest {
 			names[i] = t.Name
 		}
 		lr.ToolNames = names
+		lr.Tools = append([]ToolDefinition(nil), req.Tools...)
 	}
 	return lr
 }

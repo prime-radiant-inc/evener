@@ -1741,64 +1741,6 @@ type replayToolResult struct {
 	IsError    bool   `json:"is_error,omitempty"`
 }
 
-func joinText(parts []replayPart) string {
-	var b strings.Builder
-	for _, p := range parts {
-		if p.Kind == "text" {
-			b.WriteString(p.Text)
-		}
-	}
-	return b.String()
-}
-
-func stringifyToolContent(v any) string {
-	if v == nil {
-		return ""
-	}
-	if s, ok := v.(string); ok {
-		return s
-	}
-	b, err := json.Marshal(v)
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}
-
-func toolIntentFromArguments(raw json.RawMessage) string {
-	var args map[string]any
-	if len(raw) == 0 || json.Unmarshal(raw, &args) != nil {
-		return ""
-	}
-	for _, key := range []string{"intent", "purpose", "description"} {
-		if value, ok := args[key].(string); ok {
-			if trimmed := strings.TrimSpace(value); trimmed != "" {
-				return trimmed
-			}
-		}
-	}
-	return ""
-}
-
-func communicateMessageFromArguments(raw json.RawMessage) string {
-	var args struct {
-		Message string `json:"message"`
-		Output  *struct {
-			Message string `json:"message"`
-		} `json:"output"`
-	}
-	if err := json.Unmarshal(raw, &args); err != nil {
-		return ""
-	}
-	if strings.TrimSpace(args.Message) != "" {
-		return args.Message
-	}
-	if args.Output != nil && strings.TrimSpace(args.Output.Message) != "" {
-		return args.Output.Message
-	}
-	return ""
-}
-
 // findNewSession polls the roster up to 3s for a daemon with the given pid.
 // Returns the resolved session_id when found, or empty string on timeout.
 func (s *WebServer) findNewSession(pid int) string {

@@ -2746,22 +2746,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				SystemPrompt:        sys,
 				ContextHistoryTurns: len(history),
 				SystemPromptBytes:   len(sys),
-				Request: llm.APILogRequest{
-					Model:        req.Model,
-					Provider:     req.Provider,
-					MessageCount: len(req.Messages),
-					ToolCount:    len(req.Tools),
-				},
-			}
-			if req.ReasoningEffort != nil {
-				apiCall.Request.ReasoningEffort = *req.ReasoningEffort
-			}
-			if len(req.Tools) > 0 {
-				names := make([]string, len(req.Tools))
-				for i, t := range req.Tools {
-					names[i] = t.Name
-				}
-				apiCall.Request.ToolNames = names
+				Request:             llm.BuildAPILogRequest(req),
 			}
 			if err != nil {
 				apiCall.Error = err.Error()

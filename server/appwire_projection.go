@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/internal/apptranscript"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/diagnostic"
 )
@@ -313,7 +314,7 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 		images := projectUserInputImages(data.Images)
 		text := data.Text
 		if strings.TrimSpace(text) == "" {
-			text = imagePreviewText(len(images))
+			text = apptranscript.ImagePlaceholder(len(images))
 		}
 		return []AppNotification{p.notification(appwire.NotifySerfSteeringInjected, map[string]any{
 			"threadId": p.threadID,
@@ -323,7 +324,7 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 		})}
 	case agent.EventCompactionTurn:
 		data := eventData[agent.CompactionTurnData](event.Data)
-		return p.systemAnnouncement("compaction", compactionDescription(data.Kind), data.Text)
+		return p.systemAnnouncement("compaction", apptranscript.CompactionDescription(data.Kind), data.Text)
 	case agent.EventTurnLimit:
 		data := eventData[agent.TurnLimitData](event.Data)
 		return p.systemAnnouncement("turn_limit", "Turn limit", turnLimitAnnouncement(data))
@@ -483,26 +484,6 @@ func projectUserInputImages(images []agent.UserInputImage) []appwire.InputItem {
 		})
 	}
 	return out
-}
-
-func imagePreviewText(n int) string {
-	switch n {
-	case 0:
-		return ""
-	case 1:
-		return "[image]"
-	default:
-		return fmt.Sprintf("[%d images]", n)
-	}
-}
-
-func compactionDescription(kind string) string {
-	switch strings.ToUpper(strings.TrimSpace(kind)) {
-	case string(agent.TurnSummary):
-		return "Context summary"
-	default:
-		return "Context checkpoint"
-	}
 }
 
 func turnLimitAnnouncement(data agent.TurnLimitData) string {

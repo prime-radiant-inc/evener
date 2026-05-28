@@ -85,7 +85,7 @@ func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 	items := appItemsFromReplayTurn("turn_1", 1, replayTurn{
 		Kind: "ASSISTANT",
 		Message: replayMessage{Content: []replayPart{{
-			Kind: "commandExecution",
+			Kind: "tool_call",
 			ToolCall: &replayToolCall{
 				ID:        "call_1",
 				Name:      "communicate",
@@ -107,6 +107,24 @@ func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 	}, toolNames)
 	if len(results) != 0 {
 		t.Fatalf("communicate tool results should be hidden, got %+v", results)
+	}
+}
+
+func TestAppItemsFromReplayTurnDoesNotAcceptLegacyToolCallKind(t *testing.T) {
+	items := appItemsFromReplayTurn("turn_1", 1, replayTurn{
+		Kind: "ASSISTANT",
+		Message: replayMessage{Content: []replayPart{{
+			Kind: "commandExecution",
+			ToolCall: &replayToolCall{
+				ID:        "call_legacy",
+				Name:      "read_file",
+				Arguments: []byte(`{"file_path":"/tmp/example.txt"}`),
+			},
+		}}},
+	}, map[string]string{})
+
+	if len(items) != 0 {
+		t.Fatalf("legacy commandExecution transcript part should be ignored, got %+v", items)
 	}
 }
 
@@ -684,6 +702,7 @@ func TestHubRPCThreadReadIncludesTranscriptPrelude(t *testing.T) {
 	if err := writer.Append(agent.NewTurn(agent.TurnUserInput, llm.User("hello"))); err != nil {
 		t.Fatal(err)
 	}
+	strict := true
 	if err := writer.AppendAPICall(agent.TranscriptAPICall{
 		Round: 1,
 		Request: llm.APILogRequest{
@@ -691,6 +710,21 @@ func TestHubRPCThreadReadIncludesTranscriptPrelude(t *testing.T) {
 			Model:     "gpt-5",
 			ToolCount: 2,
 			ToolNames: []string{"read_file", "apply_patch"},
+			Tools: []llm.ToolDefinition{
+				{
+					Name:        "read_file",
+					Description: "Read a file from disk.",
+					Parameters: map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"path": map[string]any{"type": "string"},
+						},
+						"required": []any{"path"},
+					},
+					Strict: &strict,
+				},
+				{Name: "apply_patch", Description: "Apply a patch."},
+			},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -737,7 +771,7 @@ func TestHubRPCThreadReadIncludesTranscriptPrelude(t *testing.T) {
 	if got := prelude.Items[0]; got.Type != "systemMessage" || got.Description != "System prompt" || got.Text != "You are Serf." {
 		t.Fatalf("system item=%+v", got)
 	}
-	if got := prelude.Items[1]; got.Type != "systemMessage" || got.Description != "Tools (2)" || !strings.Contains(got.Text, "- read_file") || !strings.Contains(got.Text, "- apply_patch") {
+	if got := prelude.Items[1]; got.Type != "systemMessage" || got.Description != "Tools (2)" || !strings.Contains(got.Text, `"name": "read_file"`) || !strings.Contains(got.Text, `"parameters"`) || !strings.Contains(got.Text, `"strict": true`) || strings.Contains(got.Text, "- read_file") {
 		t.Fatalf("tools item=%+v", got)
 	}
 	if got := resp.Thread.Turns[1].Items[0]; got.Type != "userMessage" || got.Text != "hello" {

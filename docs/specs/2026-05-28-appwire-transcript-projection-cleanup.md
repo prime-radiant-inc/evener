@@ -17,8 +17,8 @@ tool definitions that were presented to the LLM.
 - Make the transcript prelude a single shared implementation.
 - Show the full tool definitions from the first LLM request in the `Tools (...)`
   stanza: name, description, JSON schema parameters, and strictness.
-- Preserve backward compatibility for old transcripts that only contain
-  `tool_names`.
+- Do not support legacy `tool_names`-only rendering. Transcripts without full
+  tool definitions should not emit a `Tools (...)` prelude block.
 - Keep web UI, TUI, live notification replay, and past transcript reads on the
   same AppWire `Turn`/`ThreadItem` shapes.
 - Reduce duplicate transcript replay code without a risky all-at-once rewrite.
@@ -41,8 +41,9 @@ Tools []llm.ToolDefinition `json:"tools,omitempty"`
 ```
 
 Populate it from the actual `llm.Request.Tools` used for the provider call,
-after profile/tool-name mapping and schema shaping. Keep `ToolNames` and
-`ToolCount` for compatibility and cheap indexing.
+after profile/tool-name mapping and schema shaping. Keep `ToolCount` for cheap
+indexing. `ToolNames` may remain request metadata, but it must not be used to
+render the transcript prelude.
 
 Also remove the current logging duplication by using one helper for request
 metadata construction in both the API logger and session transcript logging.
@@ -58,8 +59,7 @@ func FormatTools(req llm.APILogRequest) string
 ```
 
 Both `server/appwire_runtime.go` and `cmd/serf-hub/app_rpc.go` should call these
-helpers. `FormatTools` should prefer `req.Tools` and fall back to
-`req.ToolNames`.
+helpers. `FormatTools` should render only `req.Tools`.
 
 Recommended full-tool markdown:
 
@@ -118,14 +118,15 @@ metadata.
    tool payload.
 2. Add `llm.APILogRequest.Tools` and populate it from actual requests.
 3. Extract and use the shared prelude helpers.
-4. Add a regression test for old transcripts with only `tool_names`.
+4. Add a regression test proving `tool_names` alone does not render a Tools
+   block.
 5. Extract the shared scan loop.
 6. Consolidate turn projection after the scan loop is stable.
 
 ## Test Plan
 
-- Unit test `FormatTools` for full tools, strict tools, empty tools, and legacy
-  `tool_names`.
+- Unit test `FormatTools` for full tools, strict tools, empty tools, and
+  `tool_names` without full tool definitions.
 - Server test: `appTurnsFromTranscriptFile` includes the full tools JSON.
 - Hub RPC test: `ThreadRead` includes the same full tools JSON.
 - Session test: a real `ProcessInput` transcript records full tool definitions
@@ -142,5 +143,5 @@ metadata.
   If we need byte-for-byte provider payloads later, raw HTTP logging remains the
   authoritative source. This cleanup targets Serf's provider-normalized
   `llm.Request.Tools`.
-- Hub replay handles legacy transcript shapes. Preserve loose decoding until the
-  shared typed path proves it covers existing session files.
+- Hub replay handles loose transcript shapes. Preserve loose decoding until the
+  shared typed path proves it covers current session files.

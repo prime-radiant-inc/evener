@@ -4301,7 +4301,12 @@ func TestSession_QueueMutationWaitsForQueuePublicationSlot(t *testing.T) {
 func TestSession_DrainAsSteer_JoinsWithDoubleNewline(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{name: "openai"}
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("done") },
+		},
+	}
 	c.Register(f)
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
@@ -4641,6 +4646,65 @@ func TestSession_ProviderErrorStillRecordsTranscriptEntry(t *testing.T) {
 	if !strings.Contains(found.Error, "failed on both endpoints") &&
 		!strings.Contains(found.Error, "openai") {
 		t.Fatalf("api_call.Error does not contain provider failure text: %q", found.Error)
+	}
+}
+
+func TestSession_TranscriptAPICallRecordsFullToolDefinitions(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &streamingAdapter{
+		name:      "openai",
+		streamErr: llm.ErrorFromHTTPStatus("openai", 500, "boom", nil, nil),
+	}
+	c.Register(f)
+
+	policy := llm.RetryPolicy{MaxRetries: 0}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:       dir,
+		LLMRetryPolicy: &policy,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hi", nil); err == nil {
+		t.Fatalf("ProcessInput: got nil error, want provider error")
+	}
+	tpath := sess.TranscriptPath()
+	sess.Close()
+	if tpath == "" {
+		t.Fatal("TranscriptPath is empty")
+	}
+
+	data, err := ReadTranscriptFull(tpath)
+	if err != nil {
+		t.Fatalf("ReadTranscriptFull: %v", err)
+	}
+	if len(data.APICalls) == 0 {
+		t.Fatalf("no api calls recorded")
+	}
+	req := data.APICalls[0].Request
+	if req.ToolCount == 0 || len(req.Tools) != req.ToolCount {
+		t.Fatalf("request tools not fully recorded: count=%d tools=%+v", req.ToolCount, req.Tools)
+	}
+	var readFile *llm.ToolDefinition
+	for i := range req.Tools {
+		if req.Tools[i].Name == "read_file" {
+			readFile = &req.Tools[i]
+			break
+		}
+	}
+	if readFile == nil {
+		t.Fatalf("read_file tool missing from transcript tools: %+v", req.Tools)
+	}
+	if strings.TrimSpace(readFile.Description) == "" || readFile.Parameters["type"] != "object" {
+		t.Fatalf("read_file definition incomplete: %+v", *readFile)
 	}
 }
 

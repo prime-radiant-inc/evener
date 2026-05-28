@@ -20,9 +20,10 @@ import (
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appsource"
+	"primeradiant.com/serf/internal/apptranscript"
 	"primeradiant.com/serf/internal/appwire"
-	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/internal/launchconfig"
+	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -1211,317 +1212,86 @@ func pastEntryThread(entry PastEntry, includeTurns bool) appwire.Thread {
 
 func pastEntryTurns(entry PastEntry) []appwire.Turn {
 	transcriptPath := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
-	header, firstCall := scanTranscriptPrelude(transcriptPath, transcriptJSONLMaxLineBytes)
-	f, err := os.Open(transcriptPath)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
 	toolNames := map[string]string{}
-	var turns []appwire.Turn
-	preludeEmitted := false
-	entryIndex := 0
-	emitPrelude := func() {
-		if preludeEmitted {
-			return
-		}
-		preludeEmitted = true
-		if prelude := transcriptPreludeTurn(header, firstCall); prelude != nil {
-			turns = append(turns, *prelude)
-		}
-	}
-	for scanner.Scan() {
-		raw := scanner.Bytes()
-		var head struct {
-			Kind string `json:"kind"`
-		}
-		if err := json.Unmarshal(raw, &head); err != nil {
-			continue
-		}
-		if head.Kind == "header" {
-			continue
-		}
-		if head.Kind == "api_call" {
-			var call agent.TranscriptAPICall
-			if err := json.Unmarshal(raw, &call); err == nil {
-				if strings.TrimSpace(call.Error) != "" {
-					emitPrelude()
-					info := diagnostic.FromFields(call.Source, call.Title, call.Hint, call.Error)
-					entryIndex++
-					turns = append(turns, appwire.Turn{
-						ID:        fmt.Sprintf("turn_%d", entryIndex),
-						ItemsView: "full",
-						Status:    appwire.TurnStatusFailed,
-						Error: &appwire.TurnError{
-							Message: call.Error,
-							Source:  string(info.Source),
-							Title:   info.Title,
-							Hint:    info.Hint,
-						},
-					})
-				}
-			}
-			continue
-		}
-		if head.Kind != "entry" {
-			continue
-		}
-		emitPrelude()
+	return apptranscript.TurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(raw json.RawMessage, turnID string, entryIndex int) []appwire.ThreadItem {
 		var entryRec replayEntry
 		if err := json.Unmarshal(raw, &entryRec); err != nil {
-			continue
+			return nil
 		}
-		entryIndex++
-		turnID := fmt.Sprintf("turn_%d", entryIndex)
-		items := appItemsFromReplayTurn(turnID, entryIndex, entryRec.Turn, toolNames)
-		if len(items) == 0 {
-			continue
-		}
-		turns = append(turns, appwire.Turn{ID: turnID, Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted})
-	}
-	emitPrelude()
-	return turns
-}
-
-func scanTranscriptPrelude(path string, maxLineBytes int) (agent.TranscriptHeader, *agent.TranscriptAPICall) {
-	f, err := os.Open(path)
-	if err != nil {
-		return agent.TranscriptHeader{}, nil
-	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
-	var header agent.TranscriptHeader
-	for scanner.Scan() {
-		raw := scanner.Bytes()
-		var head struct {
-			Kind string `json:"kind"`
-		}
-		if err := json.Unmarshal(raw, &head); err != nil {
-			continue
-		}
-		switch head.Kind {
-		case "header":
-			_ = json.Unmarshal(raw, &header)
-		case "api_call":
-			var call agent.TranscriptAPICall
-			if err := json.Unmarshal(raw, &call); err == nil {
-				return header, &call
-			}
-		}
-	}
-	return header, nil
-}
-
-func transcriptPreludeTurn(header agent.TranscriptHeader, firstCall *agent.TranscriptAPICall) *appwire.Turn {
-	var items []appwire.ThreadItem
-	systemPrompt := strings.TrimSpace(header.SystemPrompt)
-	if systemPrompt == "" && firstCall != nil {
-		systemPrompt = strings.TrimSpace(firstCall.SystemPrompt)
-	}
-	if systemPrompt != "" {
-		items = append(items, appwire.ThreadItem{
-			Type:        "systemMessage",
-			ID:          "item_system_prompt",
-			TurnID:      "turn_system",
-			Description: "System prompt",
-			Text:        systemPrompt,
-			Status:      "completed",
-		})
-	}
-	if firstCall != nil && len(firstCall.Request.ToolNames) > 0 {
-		items = append(items, appwire.ThreadItem{
-			Type:        "systemMessage",
-			ID:          "item_tools",
-			TurnID:      "turn_system",
-			Description: fmt.Sprintf("Tools (%d)", len(firstCall.Request.ToolNames)),
-			Text:        formatTranscriptToolNames(firstCall.Request.ToolNames),
-			Status:      "completed",
-		})
-	}
-	if len(items) == 0 {
-		return nil
-	}
-	return &appwire.Turn{ID: "turn_system", Items: items, ItemsView: "full", Status: appwire.TurnStatusCompleted}
-}
-
-func formatTranscriptToolNames(names []string) string {
-	var b strings.Builder
-	for _, name := range names {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		if b.Len() > 0 {
-			b.WriteByte('\n')
-		}
-		b.WriteString("- ")
-		b.WriteString(name)
-	}
-	return b.String()
+		return appItemsFromReplayTurn(turnID, entryIndex, entryRec.Turn, toolNames)
+	})
 }
 
 func appItemsFromReplayTurn(turnID string, turnIndex int, turn replayTurn, toolNames map[string]string) []appwire.ThreadItem {
-	switch turn.Kind {
-	case "CHECKPOINT", "SUMMARY":
-		text := strings.TrimSpace(joinText(turn.Message.Content))
-		if text == "" {
-			return nil
+	agentTurn, imageNames := replayTurnToAgentTurn(turn)
+	return apptranscript.ProjectTurn(turnID, turnIndex, agentTurn, toolNames, func(image llm.ImageData) appwire.InputItem {
+		item := apptranscript.DefaultImageProjector(image)
+		if len(image.Data) == 0 {
+			return item
 		}
-		return []appwire.ThreadItem{{
-			Type:                 "systemMessage",
-			ID:                   fmt.Sprintf("item_compaction_%d", turnIndex),
-			TurnID:               turnID,
-			TranscriptEntryIndex: turnIndex,
-			Description:          replayCompactionDescription(turn.Kind),
-			Text:                 text,
-			Status:               "completed",
-		}}
-	case "USER_INPUT":
-		images := appInputImagesFromReplayContent(turn.Message.Content)
-		item := appwire.ThreadItem{
-			Type:                 "userMessage",
-			ID:                   fmt.Sprintf("item_user_%d", turnIndex),
-			TurnID:               turnID,
-			TranscriptEntryIndex: turnIndex,
-			Text:                 joinText(turn.Message.Content),
-			Images:               images,
-			Status:               "completed",
+		sha := imageSha(image.Data)
+		item.Name = imageNames[sha]
+		item.Metadata = map[string]string{
+			"sha":  sha,
+			"size": strconv.Itoa(len(image.Data)),
 		}
-		return []appwire.ThreadItem{item}
-	case "STEERING":
-		images := appInputImagesFromReplayContent(turn.Message.Content)
-		text := joinText(turn.Message.Content)
-		if text == "" && len(images) > 0 {
-			text = appImagePlaceholder(len(images))
-		}
-		return []appwire.ThreadItem{{
-			Type:   "steering",
-			ID:     fmt.Sprintf("item_steering_%d", turnIndex),
-			TurnID: turnID,
-			Text:   text,
-			Images: images,
-			Status: "completed",
-		}}
-	case "ASSISTANT":
-		var items []appwire.ThreadItem
-		for i, part := range turn.Message.Content {
-			switch part.Kind {
-			case "text":
-				if part.Text != "" {
-					items = append(items, appwire.ThreadItem{
-						Type:   "agentMessage",
-						ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
-						TurnID: turnID,
-						Text:   part.Text,
-						Status: "completed",
-					})
-				}
-			case "commandExecution", "tool_call":
-				if part.ToolCall != nil {
-					toolNames[part.ToolCall.ID] = part.ToolCall.Name
-					if part.ToolCall.Name == "communicate" {
-						if text := communicateMessageFromArguments(part.ToolCall.Arguments); text != "" {
-							items = append(items, appwire.ThreadItem{
-								Type:   "agentMessage",
-								ID:     fmt.Sprintf("item_assistant_%d_%d", turnIndex, i),
-								TurnID: turnID,
-								Text:   text,
-								Status: "completed",
-							})
-						}
-						continue
-					}
-					items = append(items, appwire.ThreadItem{
-						Type:          "commandExecution",
-						ID:            fmt.Sprintf("item_tool_%d_%d", turnIndex, i),
-						TurnID:        turnID,
-						ToolName:      part.ToolCall.Name,
-						CallID:        part.ToolCall.ID,
-						ArgumentsJSON: string(part.ToolCall.Arguments),
-						Description:   toolIntentFromArguments(part.ToolCall.Arguments),
-						Status:        appwire.TurnStatusInProgress,
-					})
-				}
-			}
-		}
-		return items
-	case "TOOL", "TOOL_RESULTS":
-		var items []appwire.ThreadItem
-		for i, part := range turn.Message.Content {
-			if part.Kind != "tool_result" || part.ToolResult == nil {
+		return item
+	})
+}
+
+func replayTurnToAgentTurn(turn replayTurn) (agent.Turn, map[string]string) {
+	imageNames := map[string]string{}
+	content := make([]llm.ContentPart, 0, len(turn.Message.Content))
+	for _, part := range turn.Message.Content {
+		switch part.Kind {
+		case string(llm.ContentText):
+			content = append(content, llm.ContentPart{Kind: llm.ContentText, Text: part.Text})
+		case string(llm.ContentImage):
+			if part.Image == nil {
 				continue
 			}
-			name := part.ToolResult.Name
-			if name == "" {
-				name = toolNames[part.ToolResult.ToolCallID]
+			image := llm.ImageData{
+				Data:      part.Image.Data,
+				MediaType: part.Image.MediaType,
 			}
-			if name == "communicate" {
-				delete(toolNames, part.ToolResult.ToolCallID)
+			if len(part.Image.Data) > 0 && part.Image.Name != "" {
+				imageNames[imageSha(part.Image.Data)] = part.Image.Name
+			}
+			content = append(content, llm.ContentPart{Kind: llm.ContentImage, Image: &image})
+		case string(llm.ContentToolCall):
+			if part.ToolCall == nil {
 				continue
 			}
-			item := appwire.ThreadItem{
-				Type:     "commandExecution",
-				ID:       fmt.Sprintf("item_tool_result_%d_%d", turnIndex, i),
-				TurnID:   turnID,
-				ToolName: name,
-				CallID:   part.ToolResult.ToolCallID,
-				Status:   "completed",
+			content = append(content, llm.ContentPart{
+				Kind: llm.ContentToolCall,
+				ToolCall: &llm.ToolCallData{
+					ID:        part.ToolCall.ID,
+					Name:      part.ToolCall.Name,
+					Arguments: part.ToolCall.Arguments,
+				},
+			})
+		case string(llm.ContentToolResult):
+			if part.ToolResult == nil {
+				continue
 			}
-			if part.ToolResult.IsError {
-				item.Error = stringifyToolContent(part.ToolResult.Content)
-			} else {
-				item.Output = stringifyToolContent(part.ToolResult.Content)
-			}
-			items = append(items, item)
+			content = append(content, llm.ContentPart{
+				Kind: llm.ContentToolResult,
+				ToolResult: &llm.ToolResultData{
+					ToolCallID: part.ToolResult.ToolCallID,
+					Name:       part.ToolResult.Name,
+					Content:    part.ToolResult.Content,
+					IsError:    part.ToolResult.IsError,
+				},
+			})
 		}
-		return items
-	default:
-		return nil
 	}
-}
-
-func replayCompactionDescription(kind string) string {
-	switch strings.ToUpper(strings.TrimSpace(kind)) {
-	case "SUMMARY":
-		return "Context summary"
-	default:
-		return "Context checkpoint"
-	}
-}
-
-func appInputImagesFromReplayContent(parts []replayPart) []appwire.InputItem {
-	var images []appwire.InputItem
-	for _, part := range parts {
-		if part.Kind != "image" || part.Image == nil || len(part.Image.Data) == 0 {
-			continue
-		}
-		images = append(images, appwire.InputItem{
-			Type:      "input_image",
-			MediaType: part.Image.MediaType,
-			Name:      part.Image.Name,
-			Metadata: map[string]string{
-				"sha":  imageSha(part.Image.Data),
-				"size": strconv.Itoa(len(part.Image.Data)),
-			},
-		})
-	}
-	return images
-}
-
-func appImagePlaceholder(count int) string {
-	switch count {
-	case 0:
-		return ""
-	case 1:
-		return "[image]"
-	default:
-		return fmt.Sprintf("[%d images]", count)
-	}
+	return agent.Turn{
+		Kind: agent.TurnKind(turn.Kind),
+		Message: llm.Message{
+			Role:    llm.Role(turn.Message.Role),
+			Content: content,
+		},
+	}, imageNames
 }
 
 func sourceForThread(sources *appsource.Registry, ref, threadID string) (appsource.Source, error) {
