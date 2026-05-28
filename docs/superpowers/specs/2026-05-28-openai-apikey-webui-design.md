@@ -175,7 +175,25 @@ render once the status response carries `HasStoredFile`/`EnvVar`.
 - **web** (`cmd/serf-hub/web_test.go` / app_rpc): the credentials RPC round
   trip for openai set/clear.
 
-## 7. Decisions (resolved)
+## 7. Documentation
+
+This change makes `cmd/serf-hub/README.md` § "Provider Credentials" stale — it
+currently frames OpenAI as OAuth-only (no `api_key`) and does not state the
+resolution model. Update that section (the evergreen home) as part of the
+implementation to capture the durable, cross-cutting knowledge:
+
+- OpenAI supports a stored `api_key` in `credentials.toml` in addition to
+  OAuth.
+- **Precedence:** `OAuth (openai.json)` > `credentials.toml` file >
+  provider env var.
+- OpenAI's two backends: OAuth routes to the ChatGPT/Codex backend; an API
+  key routes to the standard OpenAI API backend. They are not interchangeable
+  for one endpoint.
+
+This dated spec remains the historical design record; it is not maintained as
+the code evolves. Only the README section is kept ever-green.
+
+## 8. Decisions (resolved)
 
 - **Credential model:** independent layers like other providers — file key in
   `credentials.toml`, env separate, OAuth on top; shown with shadowing.
