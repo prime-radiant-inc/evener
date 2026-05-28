@@ -1187,11 +1187,6 @@ func (s *Session) buildCompactionMeta() CompactionMeta {
 		meta.TranscriptPath = filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
 	}
 
-	// Task list snapshot (if tasks have been used).
-	if s.taskStore != nil {
-		meta.TaskSnapshot = s.taskStore.View()
-	}
-
 	return meta
 }
 

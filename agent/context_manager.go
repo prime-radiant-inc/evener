@@ -16,7 +16,6 @@ import (
 // and summarize have access to data outside the turn history.
 type CompactionMeta struct {
 	TranscriptPath  string   // path to the full session transcript JSONL
-	TaskSnapshot    []Task   // current task list state (nil = no tasks)
 	ActivatedSkills []string // skill names activated during this session
 }
 
@@ -724,18 +723,6 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 		fixed.WriteString("Last shell results:\n")
 		for _, r := range lastShellResults[start:] {
 			fixed.WriteString(r + "\n")
-		}
-	}
-
-	// Task list status.
-	if meta != nil && len(meta.TaskSnapshot) > 0 {
-		fixed.WriteString("\nTask list:\n")
-		for _, t := range meta.TaskSnapshot {
-			line := fmt.Sprintf("  [%s] #%d: %s", string(t.Status), t.ID, t.Description)
-			if len(t.DependsOn) > 0 {
-				line += fmt.Sprintf(" (depends_on: %v)", t.DependsOn)
-			}
-			fixed.WriteString(line + "\n")
 		}
 	}
 

@@ -506,6 +506,53 @@ func TestCheckpoint_CreatesValidMessage(t *testing.T) {
 	}
 }
 
+// TestCheckpoint_DoesNotFreezeStaleTaskState is a regression test for the
+// frozen-state staleness bug: compaction metadata captures the task snapshot at
+// turn start, so a task completed during the round that triggers compaction
+// would otherwise be embedded in the checkpoint as still in_progress. The
+// checkpoint must not carry task state at all — live reminders are the canonical
+// post-compaction source, so they cannot contradict it.
+func TestCheckpoint_DoesNotFreezeStaleTaskState(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	profile := &baseProfile{id: "openai", model: "test", contextWindow: 100_000}
+	env := NewLocalExecutionEnvironment(dir)
+	sess, err := NewSession(c, profile, env, SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	store := sess.getOrCreateTaskStore()
+	if _, err := store.Append([]TaskInput{{Description: "Frobnicate the gizmo"}}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := store.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress}}); err != nil {
+		t.Fatalf("Update in_progress: %v", err)
+	}
+
+	// Turn start: the session freezes the task snapshot into compaction meta.
+	sess.contextMgr.Meta = sess.buildCompactionMeta()
+
+	// The task is completed during the same round that triggers compaction.
+	if err := store.Update([]TaskUpdate{{ID: 1, Status: TaskDone}}); err != nil {
+		t.Fatalf("Update done: %v", err)
+	}
+
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("do the work")},
+		{Kind: TurnAssistant, Message: llm.Assistant("working")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	}
+	result := checkpoint(history, 2, &sess.contextMgr.Meta, "communicate")
+	text := result[0].Message.Text()
+	if strings.Contains(text, "Frobnicate the gizmo") {
+		t.Fatalf("checkpoint froze stale task state; task must not appear in checkpoint: %q", text)
+	}
+}
+
 func TestCheckpoint_IncludesOriginalPrompt(t *testing.T) {
 	history := []Turn{
 		{Kind: TurnUserInput, Message: llm.User("Fix the auth bug in login.go")},
