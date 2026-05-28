@@ -1312,6 +1312,41 @@ func TestSummarizeWithLLM_TruncatesPromptForCheapModel(t *testing.T) {
 	}
 }
 
+func TestSummarizeWithLLM_RequestsInterleavedConversationTimeline(t *testing.T) {
+	var prompt string
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				for _, m := range req.Messages {
+					prompt += m.Text()
+				}
+				return llm.Response{Message: llm.Assistant("summary")}
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), client)
+
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("first request")},
+		{Kind: TurnAssistant, Message: llm.Assistant("first reply")},
+		{Kind: TurnUserInput, Message: llm.User("second request")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	}
+
+	if _, err := cm.summarizeWithLLM(context.Background(), history, 1); err != nil {
+		t.Fatalf("summarizeWithLLM: %v", err)
+	}
+	if !strings.Contains(prompt, "## Conversation Timeline") || !strings.Contains(prompt, "interleaved") {
+		t.Fatalf("summary prompt should request an interleaved conversation timeline:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "## User Messages") || strings.Contains(prompt, "## Agent Responses") {
+		t.Fatalf("summary prompt should not request bundled user/agent sections:\n%s", prompt)
+	}
+}
+
 // H5: summarizeWithLLM error path must be reliably testable.
 func TestSummarizeWithLLM_AdapterError_ReturnsError(t *testing.T) {
 	adapter := &errorAdapter{name: "openai"}
@@ -1397,6 +1432,72 @@ func TestCheckpoint_UserMessages_JSONRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(text2, "also add tests") {
 		t.Fatalf("second checkpoint lost third user message:\n%s", text2)
+	}
+}
+
+func TestCheckpoint_ConversationInterleavesUserMessagesAndAgentResponses(t *testing.T) {
+	reply1 := communicateCall("c1", "first reply")
+	reply2 := communicateCall("c2", "second reply")
+	history := []Turn{
+		{Kind: TurnUserInput, Message: llm.User("first request")},
+		{Kind: TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &reply1}}}},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "communicate", `{"delivered":true}`, false)},
+		{Kind: TurnUserInput, Message: llm.User("second request")},
+		{Kind: TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &reply2}}}},
+		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "communicate", `{"delivered":true}`, false)},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	}
+
+	result := checkpoint(history, 1, nil, "communicate")
+	text := result[0].Message.Text()
+
+	if strings.Contains(text, "<user_messages>") || strings.Contains(text, "<agent_responses>") {
+		t.Fatalf("checkpoint should not bundle user and agent messages separately:\n%s", text)
+	}
+	conversation := extractCheckpointConversation(text)
+	want := []checkpointConversationEntry{
+		{Role: "user", Text: "first request"},
+		{Role: "agent", Text: "first reply"},
+		{Role: "user", Text: "second request"},
+		{Role: "agent", Text: "second reply"},
+	}
+	if len(conversation) != len(want) {
+		t.Fatalf("conversation=%+v, want %+v\ncheckpoint:\n%s", conversation, want, text)
+	}
+	for i := range want {
+		if conversation[i] != want[i] {
+			t.Fatalf("conversation[%d]=%+v, want %+v\nall=%+v", i, conversation[i], want[i], conversation)
+		}
+	}
+}
+
+func TestCheckpoint_ConversationReadsLegacyBundledCompaction(t *testing.T) {
+	oldCheckpoint := `[CONTEXT CHECKPOINT]
+<user_messages>["first request","second request"]</user_messages>
+<agent_responses>["first reply","second reply"]</agent_responses>
+[END CHECKPOINT]`
+	history := []Turn{
+		{Kind: TurnCheckpoint, Message: llm.User(oldCheckpoint)},
+		{Kind: TurnUserInput, Message: llm.User("third request")},
+		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	}
+
+	result := checkpoint(history, 1, nil, "communicate")
+	conversation := extractCheckpointConversation(result[0].Message.Text())
+	want := []checkpointConversationEntry{
+		{Role: "user", Text: "first request"},
+		{Role: "user", Text: "second request"},
+		{Role: "agent", Text: "first reply"},
+		{Role: "agent", Text: "second reply"},
+		{Role: "user", Text: "third request"},
+	}
+	if len(conversation) != len(want) {
+		t.Fatalf("conversation=%+v, want %+v", conversation, want)
+	}
+	for i := range want {
+		if conversation[i] != want[i] {
+			t.Fatalf("conversation[%d]=%+v, want %+v\nall=%+v", i, conversation[i], want[i], conversation)
+		}
 	}
 }
 

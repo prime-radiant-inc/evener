@@ -544,8 +544,8 @@ func clearThinking(history []Turn, preserveRecent int) {
 //
 // The checkpoint is a deterministic extraction — no LLM call. It captures user
 // messages verbatim, agent responses, file/tool metadata, task list, and skills.
-// User messages are stored as JSON arrays for lossless round-tripping across
-// repeated compactions.
+// User messages and agent responses are stored as an interleaved JSON
+// conversation for lossless round-tripping across repeated compactions.
 func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, resultToolName string) []Turn {
 	if len(history) <= preserveRecent {
 		return history
@@ -570,8 +570,7 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 	activatedSkills := map[string]bool{}
 	toolCounts := map[string]int{}
 	var lastShellResults []string
-	var userMessages []string
-	var agentResponses []string
+	var conversation []checkpointConversationEntry
 	var workingNotes []string
 
 	for i := 0; i < cutoff; i++ {
@@ -580,7 +579,7 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 		case TurnCheckpoint, TurnSummary:
 			// Extract user messages and working notes from previous compaction turns
 			// so they survive across repeated compactions.
-			userMessages = append(userMessages, extractCheckpointJSON(t.Message.Text(), "user_messages")...)
+			conversation = append(conversation, extractCheckpointConversation(t.Message.Text())...)
 			workingNotes = append(workingNotes, extractCheckpointJSON(t.Message.Text(), "working_notes")...)
 
 		case TurnUserInput:
@@ -591,10 +590,10 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 			// Old-format checkpoint/summary stored as TurnUserInput — extract
 			// user messages from them just like typed compaction turns.
 			if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, "[CONTEXT SUMMARY]") {
-				userMessages = append(userMessages, extractCheckpointJSON(text, "user_messages")...)
+				conversation = append(conversation, extractCheckpointConversation(text)...)
 				continue
 			}
-			userMessages = append(userMessages, text)
+			conversation = append(conversation, checkpointConversationEntry{Role: "user", Text: text})
 
 		case TurnTool, TurnToolResults:
 			// Extract non-await communicate results (agent responses to the user).
@@ -605,7 +604,7 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 				if p.ToolResult.Name == resultToolName {
 					awaitReply, msg := communicateArgsFromHistory(history[:i+1], p.ToolResult.ToolCallID)
 					if !awaitReply && msg != "" {
-						agentResponses = append(agentResponses, msg)
+						conversation = append(conversation, checkpointConversationEntry{Role: "agent", Text: msg})
 					}
 					continue
 				}
@@ -761,7 +760,7 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 
 	fixedStr := fixed.String()
 
-	// Budget for variable content (user messages + agent responses as JSON).
+	// Budget for variable content (conversation + working notes as JSON).
 	// Reserve space for [CONTEXT CHECKPOINT], [END CHECKPOINT], fixed sections,
 	// and the JSON key names.
 	overhead := len("[CONTEXT CHECKPOINT]\n") + len(fixedStr) + len("[END CHECKPOINT]\n") + 200
@@ -770,22 +769,21 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 		variableBudget = 1000
 	}
 
-	// Encode user messages, agent responses, and working notes as JSON for
+	// Encode conversation and working notes as JSON for
 	// lossless round-tripping. Shed oldest notes first, then oldest user
-	// messages if needed to fit budget.
-	userJSON := marshalJSONCompact(userMessages)
-	respJSON := marshalJSONCompact(agentResponses)
+	// or agent messages if needed to fit budget.
+	conversationJSON := marshalJSONCompact(conversation)
 	notesJSON := marshalJSONCompact(workingNotes)
 
-	for len(userJSON)+len(respJSON)+len(notesJSON) > variableBudget {
+	for len(conversationJSON)+len(notesJSON) > variableBudget {
 		if len(workingNotes) > 1 {
 			workingNotes = workingNotes[1:] // drop oldest note first
 			notesJSON = marshalJSONCompact(workingNotes)
 			continue
 		}
-		if len(userMessages) > 1 {
-			userMessages = userMessages[1:] // then drop oldest user message
-			userJSON = marshalJSONCompact(userMessages)
+		if len(conversation) > 1 {
+			conversation = conversation[1:] // then drop oldest conversation entry
+			conversationJSON = marshalJSONCompact(conversation)
 			continue
 		}
 		break
@@ -795,11 +793,8 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 	var b strings.Builder
 	b.WriteString("[CONTEXT CHECKPOINT]\n")
 	b.WriteString(fixedStr)
-	if len(userMessages) > 0 {
-		b.WriteString(fmt.Sprintf("\n<user_messages>%s</user_messages>\n", userJSON))
-	}
-	if len(agentResponses) > 0 {
-		b.WriteString(fmt.Sprintf("\n<agent_responses>%s</agent_responses>\n", respJSON))
+	if len(conversation) > 0 {
+		b.WriteString(fmt.Sprintf("\n<conversation>%s</conversation>\n", conversationJSON))
 	}
 	if len(workingNotes) > 0 {
 		b.WriteString(fmt.Sprintf("\n<working_notes>%s</working_notes>\n", notesJSON))
@@ -919,8 +914,8 @@ func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 
 Your summary MUST include ALL of the following sections:
 
-## User Messages
-Reproduce ALL user messages verbatim. The next instance needs the full conversation context to understand the user's evolving intent across the session.
+## Conversation Timeline
+Reproduce user messages and agent replies in chronological, interleaved order. Preserve user messages verbatim. Summarize agent replies only when needed for brevity, but keep commitments, decisions, and final answers clear.
 
 ## Progress
 What has been accomplished so far. Be specific about:
@@ -934,9 +929,6 @@ Important decisions made during the session and why. Include:
 - Architecture or design choices
 - Trade-offs considered
 - User preferences or constraints discovered
-
-## Agent Responses
-Summarize key agent responses to the user, especially final answers, status updates, and any commitments made.
 
 ## Current State
 Precisely what was being worked on when context ran out:
@@ -1005,6 +997,57 @@ func safeCutoff(history []Turn, cutoff int) int {
 
 // --- Helper functions ---
 
+type checkpointConversationEntry struct {
+	Role string `json:"role"`
+	Text string `json:"text"`
+}
+
+func extractCheckpointConversation(text string) []checkpointConversationEntry {
+	open := "<conversation>"
+	close := "</conversation>"
+	if idx := strings.Index(text, open); idx >= 0 {
+		rest := text[idx+len(open):]
+		if end := strings.Index(rest, close); end >= 0 {
+			var entries []checkpointConversationEntry
+			if err := json.Unmarshal([]byte(rest[:end]), &entries); err == nil {
+				return cleanCheckpointConversation(entries)
+			}
+		}
+	}
+
+	// Backward compatibility for checkpoints that bundled user and agent text
+	// separately. The original relative ordering is unrecoverable, so preserve
+	// the old bundle order while migrating into the new conversation shape.
+	var entries []checkpointConversationEntry
+	for _, msg := range extractCheckpointJSON(text, "user_messages") {
+		entries = append(entries, checkpointConversationEntry{Role: "user", Text: msg})
+	}
+	for _, msg := range extractCheckpointJSON(text, "agent_responses") {
+		entries = append(entries, checkpointConversationEntry{Role: "agent", Text: msg})
+	}
+	return entries
+}
+
+func cleanCheckpointConversation(entries []checkpointConversationEntry) []checkpointConversationEntry {
+	out := make([]checkpointConversationEntry, 0, len(entries))
+	for _, entry := range entries {
+		role := strings.ToLower(strings.TrimSpace(entry.Role))
+		switch role {
+		case "user", "agent":
+		case "assistant":
+			role = "agent"
+		default:
+			continue
+		}
+		text := strings.TrimSpace(entry.Text)
+		if text == "" {
+			continue
+		}
+		out = append(out, checkpointConversationEntry{Role: role, Text: text})
+	}
+	return out
+}
+
 // extractCheckpointJSON extracts a JSON string array from a checkpoint text
 // stored in XML-style tags like <user_messages>[...]</user_messages>.
 // Falls back to legacy "Original task:" format for backward compatibility.
@@ -1038,9 +1081,9 @@ func extractCheckpointJSON(text, tag string) []string {
 	return nil
 }
 
-// marshalJSONCompact marshals a string slice as compact JSON.
-func marshalJSONCompact(ss []string) string {
-	b, _ := json.Marshal(ss)
+// marshalJSONCompact marshals a value as compact JSON.
+func marshalJSONCompact(v any) string {
+	b, _ := json.Marshal(v)
 	return string(b)
 }
 
