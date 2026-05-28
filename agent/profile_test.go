@@ -229,8 +229,55 @@ func TestProviderProfiles_BuildSystemPrompt_IncludesEnvironment(t *testing.T) {
 		if !strings.Contains(sys, "<environment>") {
 			t.Errorf("%s prompt missing <environment> block", p.ID())
 		}
-		if !strings.Contains(sys, "Tools:") {
-			t.Errorf("%s prompt missing Tools section", p.ID())
+		if !strings.Contains(sys, "## Tool usage") {
+			t.Errorf("%s prompt missing tool usage section", p.ID())
+		}
+	}
+}
+
+func TestBuildSystemPrompt_DoesNotDuplicateProviderToolDescriptions(t *testing.T) {
+	p := NewOpenAIProfile("gpt-5.2")
+	data := PromptData{
+		WorkingDir: "/tmp",
+		Platform:   "linux",
+	}
+	data.ProfileTools = toolEntriesFromDefinitions(p.ToolDefinitions())
+
+	prompt := renderPromptForTest(t, p, data)
+
+	if strings.Contains(prompt, "Tools:") {
+		t.Fatalf("system prompt should not include provider tool description list already present in tool definitions:\n%s", prompt)
+	}
+	for _, td := range p.ToolDefinitions() {
+		desc := strings.TrimSpace(td.Description)
+		if desc != "" && strings.Contains(prompt, desc) {
+			t.Fatalf("system prompt duplicates provider tool description for %s: %q", td.Name, desc)
+		}
+	}
+}
+
+func TestBuildSystemPrompt_DoesNotDuplicateMCPOrCustomToolDescriptions(t *testing.T) {
+	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.2"), PromptData{
+		WorkingDir: "/tmp",
+		Platform:   "linux",
+		MCPTools: []ToolEntry{{
+			Name:        "mcp__server__search",
+			Description: "Searches the remote index with an MCP-backed provider tool.",
+		}},
+		CustomTools: []ToolEntry{{
+			Name:        "project_custom",
+			Description: "Runs a project-specific custom tool.",
+		}},
+	})
+
+	for _, unwanted := range []string{
+		"MCP tools:",
+		"Custom tools:",
+		"Searches the remote index with an MCP-backed provider tool.",
+		"Runs a project-specific custom tool.",
+	} {
+		if strings.Contains(prompt, unwanted) {
+			t.Fatalf("system prompt duplicates tool description content %q:\n%s", unwanted, prompt)
 		}
 	}
 }
@@ -1796,7 +1843,7 @@ func TestGeminiProfile_ContextWindow_Is1M(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPrompt_ExtraToolsBeforeProjectDocs(t *testing.T) {
+func TestBuildSystemPrompt_ToolUsageBeforeProjectDocs(t *testing.T) {
 	p := NewOpenAIProfile("gpt-5.2")
 	prompt := renderPromptForTest(t, p, PromptData{
 		WorkingDir:  "/tmp",
@@ -1811,19 +1858,12 @@ func TestBuildSystemPrompt_ExtraToolsBeforeProjectDocs(t *testing.T) {
 	if beginIdx < 0 {
 		t.Fatal("prompt missing project doc BEGIN marker")
 	}
-	mcpIdx := strings.Index(prompt, "mcp__server__tool1")
-	if mcpIdx < 0 {
-		t.Fatal("prompt missing extra tool description for mcp__server__tool1")
+	toolUsageIdx := strings.Index(prompt, "## Tool usage")
+	if toolUsageIdx < 0 {
+		t.Fatal("prompt missing tool usage section")
 	}
-	customIdx := strings.Index(prompt, "my_custom_tool")
-	if customIdx < 0 {
-		t.Fatal("prompt missing extra tool description for my_custom_tool")
-	}
-	if mcpIdx > beginIdx {
-		t.Errorf("extra tools (pos %d) must appear before project docs (pos %d)", mcpIdx, beginIdx)
-	}
-	if customIdx > beginIdx {
-		t.Errorf("custom tool (pos %d) must appear before project docs (pos %d)", customIdx, beginIdx)
+	if toolUsageIdx > beginIdx {
+		t.Errorf("tool usage (pos %d) must appear before project docs (pos %d)", toolUsageIdx, beginIdx)
 	}
 }
 
