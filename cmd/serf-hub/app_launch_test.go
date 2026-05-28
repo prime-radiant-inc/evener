@@ -30,7 +30,7 @@ func TestHubLaunchControllerSchema(t *testing.T) {
 
 func TestLaunchController_Resolve_Empty(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := t.TempDir()
+	cwd := canonicalTempDir(t)
 	c := newHubLaunchController(stateRoot)
 	got, err := c.Resolve(context.Background(), appwire.LaunchConfigResolveParams{CWD: cwd})
 	if err != nil {
@@ -46,7 +46,7 @@ func TestLaunchController_Resolve_Empty(t *testing.T) {
 
 func TestLaunchController_SetLayer_GlobalRoundtrip(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := t.TempDir()
+	cwd := canonicalTempDir(t)
 	c := newHubLaunchController(stateRoot)
 	model := "openai/gpt-5"
 	fastCheapModel := "openai/gpt-5-mini"
@@ -71,7 +71,7 @@ func TestLaunchController_SetLayer_GlobalRoundtrip(t *testing.T) {
 
 func TestLaunchController_SetLayer_ProjectWritesLocalFile(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := t.TempDir()
+	cwd := canonicalTempDir(t)
 	c := newHubLaunchController(stateRoot)
 	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
 		CWD:    cwd,
@@ -92,7 +92,7 @@ func TestLaunchController_SetLayer_ProjectWritesLocalFile(t *testing.T) {
 
 func TestLaunchController_GetLayer_ProjectReadsLegacyFallback(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := t.TempDir()
+	cwd := canonicalTempDir(t)
 	c := newHubLaunchController(stateRoot)
 	paths := launchconfig.PathsFor(stateRoot, cwd)
 	if err := launchconfig.SaveLayer(paths.LegacyProject, launchconfig.Layer{Model: "legacy-project"}); err != nil {
@@ -109,7 +109,7 @@ func TestLaunchController_GetLayer_ProjectReadsLegacyFallback(t *testing.T) {
 
 func TestLaunchController_TrustRepo_RecordsDecision(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := t.TempDir()
+	cwd := canonicalTempDir(t)
 	repoPath := filepath.Join(cwd, ".serf", "launch.toml")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func TestLaunchController_TrustRepo_RecordsDecision(t *testing.T) {
 
 func TestLaunchController_TrustRepo_DoesNotCarryRejectedHashes(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := t.TempDir()
+	cwd := canonicalTempDir(t)
 	repoPath := filepath.Join(cwd, ".serf", "launch.toml")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		t.Fatal(err)
@@ -187,7 +187,7 @@ func TestLaunchController_TrustRepo_DoesNotCarryRejectedHashes(t *testing.T) {
 
 func TestLaunchController_TrustRepo_HashMismatch(t *testing.T) {
 	stateRoot := t.TempDir()
-	cwd := t.TempDir()
+	cwd := canonicalTempDir(t)
 	repoPath := filepath.Join(cwd, ".serf", "launch.toml")
 	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
 		t.Fatal(err)

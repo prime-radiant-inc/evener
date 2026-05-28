@@ -310,6 +310,9 @@ func TestPastIndex_SQLiteIndexUsesPrivateFilePermissions(t *testing.T) {
 	if err := os.MkdirAll(indexDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(indexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	dbPath := filepath.Join(indexDir, "index.db")
 	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
 	if err := idx.Rebuild(); err != nil {
