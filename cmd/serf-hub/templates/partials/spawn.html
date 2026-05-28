@@ -52,6 +52,9 @@
     <input type="hidden" name="access_mode" value="{{.DefaultAccessMode}}">
     <input type="hidden" name="agent" value="default">
     <input type="hidden" name="reasoning_effort" value="">
+    <div class="spawn-actions">
+      <button class="btn btn-primary spawn-btn" type="submit">spawn <kbd>⌘↵</kbd></button>
+    </div>
     <details class="spawn-advanced">
       <summary>advanced</summary>
       <div class="spawn-advanced-body">
@@ -72,9 +75,6 @@
         <pre id="ovr-resolved-out" class="settings-code"></pre>
       </div>
     </details>
-    <div class="spawn-actions">
-      <button class="btn btn-primary spawn-btn" type="submit">spawn <kbd>⌘↵</kbd></button>
-    </div>
   </form>
 
   {{if .RecentPrompts}}

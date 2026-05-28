@@ -4,6 +4,7 @@ const { JSDOM } = require("jsdom");
 
 const dirPickerSrc = fs.readFileSync(path.resolve(__dirname, "../assets/dir-picker.js"), "utf8");
 const spawnSrc = fs.readFileSync(path.resolve(__dirname, "../assets/spawn.js"), "utf8");
+const spawnTemplateSrc = fs.readFileSync(path.resolve(__dirname, "../templates/partials/spawn.html"), "utf8");
 
 function assert(cond, msg) {
   if (!cond) {
@@ -11,6 +12,12 @@ function assert(cond, msg) {
     process.exit(1);
   }
 }
+
+const spawnActionsIndex = spawnTemplateSrc.indexOf('<div class="spawn-actions">');
+const spawnAdvancedIndex = spawnTemplateSrc.indexOf('<details class="spawn-advanced">');
+assert(spawnActionsIndex !== -1, "spawn template should include launch actions");
+assert(spawnAdvancedIndex !== -1, "spawn template should include advanced toggle");
+assert(spawnActionsIndex < spawnAdvancedIndex, "launch button should appear above advanced toggle");
 
 (async function main() {
 const dom = new JSDOM(`<!DOCTYPE html><html><body></body></html>`, {
