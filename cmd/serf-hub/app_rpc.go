@@ -414,14 +414,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		return source.ClearThread(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadCompactStart, func(ctx context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
-		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
-		if err != nil {
-			return appwire.EmptyResponse{}, err
-		}
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "compact"); err != nil {
-			return appwire.EmptyResponse{}, err
-		}
-		return appwire.EmptyResponse{}, source.CompactThread(ctx, params)
+		return appwire.EmptyResponse{}, compactThreadWithResume(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadShutdown, func(ctx context.Context, params appwire.ThreadShutdownParams) (appwire.EmptyResponse, error) {
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
@@ -679,6 +672,10 @@ func sourceForModelHarness(ctx context.Context, cfg WebConfig, sources *appsourc
 }
 
 func shouldResumeAfterTurnStartError(err error) bool {
+	return shouldResumeAfterSessionUnavailable(err)
+}
+
+func shouldResumeAfterSessionUnavailable(err error) bool {
 	return isSessionUnavailableError(err)
 }
 
@@ -691,6 +688,34 @@ func isSessionUnavailableError(err error) bool {
 		return false
 	}
 	return wire.Code == appwire.CodeUnavailable && serfErrorInfoFromData(wire.Data) == string(appwire.ErrorSessionUnavailable)
+}
+
+func compactThreadWithResume(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadCompactStartParams) error {
+	err := compactThreadOnce(ctx, cfg, sources, params)
+	if err == nil {
+		return nil
+	}
+	if params.Ref != "" && !hubKnowsRef(cfg, params.Ref) {
+		return err
+	}
+	if !shouldResumeAfterSessionUnavailable(err) {
+		return err
+	}
+	if _, resumeErr := hubThreadResume(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref}); resumeErr != nil {
+		return resumeErr
+	}
+	return compactThreadOnce(ctx, cfg, sources, params)
+}
+
+func compactThreadOnce(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadCompactStartParams) error {
+	source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+	if err != nil {
+		return err
+	}
+	if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "compact"); err != nil {
+		return err
+	}
+	return source.CompactThread(ctx, params)
 }
 
 func ensureThreadActionAvailable(ctx context.Context, source appsource.Source, ref, threadID, action string) error {
@@ -1510,7 +1535,7 @@ func managedLaunchSourceIDForRef(cfg WebConfig, ref string) (string, bool) {
 
 // hubKnowsRef reports whether the hub recognizes ref: either as a
 // managed-launch source (e.g. codex) or as a thread tracked in the local past
-// index. Used to gate auto-resume retries after a TurnStart failure so that
+// index. Used to gate auto-resume retries after live-action failures so that
 // non-local refs (which never appear in the local past index) still get the
 // retry when their backing daemon dies.
 func hubKnowsRef(cfg WebConfig, ref string) bool {

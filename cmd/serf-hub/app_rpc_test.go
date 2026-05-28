@@ -2149,6 +2149,80 @@ func TestHubRPCThreadActionsRouteToDaemon(t *testing.T) {
 	}
 }
 
+func TestHubRPCThreadCompactStartResumesPastThread(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "past")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Source:    "local",
+			Serf: appwire.SerfThread{
+				Ref:          params.Ref,
+				Capabilities: appwire.ThreadCapabilities{Compact: true},
+			},
+		}}, nil
+	})
+	compactCalled := false
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadCompactStart, func(_ context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
+		if params.Ref != "local:"+sessionID {
+			t.Fatalf("compact ref=%q", params.Ref)
+		}
+		compactCalled = true
+		return appwire.EmptyResponse{}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	var gotReq ResumeRequest
+	resumeCalls := 0
+	spawner := &fakeRPCSpawner{
+		resume: func(_ context.Context, req ResumeRequest) (rendezvous.Entry, error) {
+			gotReq = req
+			resumeCalls++
+			entry := rendezvous.Entry{
+				PID:       106,
+				Protocol:  appwire.ProtocolVersion,
+				Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:  "local",
+				ThreadID:  sessionID,
+				SessionID: sessionID,
+			}
+			writeRendezvous(t, runDir, entry)
+			return entry, nil
+		},
+	}
+	roster := NewRoster(runDir, nil)
+	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if err := client.ThreadCompactStart(context.Background(), appwire.ThreadCompactStartParams{Ref: "local:" + sessionID}); err != nil {
+		t.Fatalf("ThreadCompactStart: %v", err)
+	}
+	if resumeCalls != 1 {
+		t.Fatalf("resume calls=%d, want 1", resumeCalls)
+	}
+	if gotReq.SessionID != sessionID || gotReq.StateDir != stateDir || gotReq.WorkingDir != "/tmp/project" {
+		t.Fatalf("resume request=%+v", gotReq)
+	}
+	if !compactCalled {
+		t.Fatal("compact was not routed after resume")
+	}
+}
+
 func TestHubRPCUnsupportedThreadActionReturnsStructuredUnavailable(t *testing.T) {
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	shutdownCalled := false

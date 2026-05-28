@@ -3778,6 +3778,78 @@ func TestWeb_SessionAction_CompactForwards(t *testing.T) {
 	}
 }
 
+func TestWeb_SessionAction_CompactResumesPastThread(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "past")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Source:    "local",
+			Serf: appwire.SerfThread{
+				Ref:          params.Ref,
+				Capabilities: appwire.ThreadCapabilities{Compact: true},
+			},
+		}}, nil
+	})
+	compactCalled := false
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadCompactStart, func(_ context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
+		if params.Ref != "local:"+sessionID {
+			t.Fatalf("compact ref=%q", params.Ref)
+		}
+		compactCalled = true
+		return appwire.EmptyResponse{}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	resumeCalls := 0
+	spawner := &fakeRPCSpawner{
+		resume: func(_ context.Context, req ResumeRequest) (rendezvous.Entry, error) {
+			if req.SessionID != sessionID || req.StateDir != stateDir {
+				t.Fatalf("resume request=%+v", req)
+			}
+			resumeCalls++
+			entry := rendezvous.Entry{
+				PID:       201,
+				Protocol:  appwire.ProtocolVersion,
+				Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:  "local",
+				ThreadID:  sessionID,
+				SessionID: sessionID,
+			}
+			writeRendezvous(t, runDir, entry)
+			return entry, nil
+		},
+	}
+	roster := NewRoster(runDir, nil)
+	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+
+	req := httptest.NewRequest(http.MethodPost, "/s/"+sessionID+"/compact", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("Origin", "http://127.0.0.1:9180")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status=%d, want 204 (body=%q)", rec.Code, rec.Body.String())
+	}
+	if resumeCalls != 1 {
+		t.Fatalf("resume calls=%d, want 1", resumeCalls)
+	}
+	if !compactCalled {
+		t.Fatal("compact appwire handler was not called after resume")
+	}
+}
+
 func TestWeb_SessionAction_ShutdownForwards(t *testing.T) {
 	var called bool
 	dir := t.TempDir()

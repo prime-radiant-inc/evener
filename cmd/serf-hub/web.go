@@ -3196,14 +3196,26 @@ func (s *WebServer) handleDrainAsSteer(w http.ResponseWriter, r *http.Request, i
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleSessionAction forwards an imperative action (interrupt/compact/
-// shutdown) to the live daemon for the given session. Unlike /send, these
-// actions do NOT auto-resume an ended session: if there is no roster entry
-// the action is a no-op and we return 404. The daemon's status code (204 or
-// 202) is forwarded to the client.
+// handleSessionAction forwards imperative actions to a daemon. Interrupt,
+// clear, and shutdown remain live-only; compact can resume a known past
+// session because it is a session-level maintenance action rather than an
+// in-flight turn action.
 func (s *WebServer) handleSessionAction(w http.ResponseWriter, r *http.Request, id, action string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	ref := appRefFromRouteID(id)
+	if action == "compact" {
+		if !s.isLive(id) && !hubKnowsRef(s.cfg, ref) {
+			http.NotFound(w, r)
+			return
+		}
+		if err := compactThreadWithResume(r.Context(), s.cfg, s.sources, appwire.ThreadCompactStartParams{Ref: ref}); err != nil {
+			writeSessionActionError(w, r, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	if !s.isLive(id) {
@@ -3214,7 +3226,6 @@ func (s *WebServer) handleSessionAction(w http.ResponseWriter, r *http.Request, 
 		writeSessionActionError(w, r, err)
 		return
 	}
-	ref := appRefFromRouteID(id)
 	source, err := sourceForThread(s.sources, ref, "")
 	if err != nil {
 		http.NotFound(w, r)
@@ -3227,8 +3238,6 @@ func (s *WebServer) handleSessionAction(w http.ResponseWriter, r *http.Request, 
 	switch action {
 	case "interrupt":
 		err = source.InterruptTurn(r.Context(), appwire.TurnInterruptParams{Ref: ref, ExpectedTurnID: strings.TrimSpace(body.TurnID)})
-	case "compact":
-		err = source.CompactThread(r.Context(), appwire.ThreadCompactStartParams{Ref: ref})
 	case "clear":
 		_, err = source.ClearThread(r.Context(), appwire.ThreadClearParams{Ref: ref})
 	case "shutdown":
