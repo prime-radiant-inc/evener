@@ -303,6 +303,20 @@ func formatTranscriptToolNames(names []string) string {
 
 func appItemsFromTranscriptTurn(turnID string, turnIndex int, turn agent.Turn, toolNames map[string]string) []appwire.ThreadItem {
 	switch turn.Kind {
+	case agent.TurnCheckpoint, agent.TurnSummary:
+		text := strings.TrimSpace(turn.Message.Text())
+		if text == "" {
+			return nil
+		}
+		return []appwire.ThreadItem{{
+			Type:                 "systemMessage",
+			ID:                   fmt.Sprintf("item_compaction_%d", turnIndex),
+			TurnID:               turnID,
+			TranscriptEntryIndex: turnIndex,
+			Description:          compactionDescription(string(turn.Kind)),
+			Text:                 text,
+			Status:               "completed",
+		}}
 	case agent.TurnUserInput:
 		images := appInputImagesFromContent(turn.Message.Content)
 		return []appwire.ThreadItem{{

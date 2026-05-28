@@ -500,24 +500,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 	}
 
 	applyThresholdScale(s.contextMgr, cfg.CompactionThresholdScale)
-	s.contextMgr.OnCompactionTurn = func(t Turn) {
-		if s.transcript != nil {
-			if err := s.transcript.Append(t); err != nil {
-				s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
-			}
-		}
-		s.launchCompactionNamer(s.sessionCtx, t)
-		// After compaction, inject full task list if tasks exist.
-		if s.taskStore != nil {
-			if reminder := taskReminderFull(s.taskStore); reminder != "" {
-				s.Steer(reminder)
-			}
-		}
-		// Tell the agent where to find the full pre-compaction transcript.
-		if tpath := s.TranscriptPath(); tpath != "" {
-			s.Steer("<SYSTEM-REMINDER>If you need the exact transcript of this session before compaction, you can read it at: " + tpath + "</SYSTEM-REMINDER>")
-		}
-	}
+	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
 
 	// Create context strategy.
 	strat, err := selectStrategy(cfg, s.contextMgr, s)
@@ -649,24 +632,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 	}
 
 	applyThresholdScale(s.contextMgr, cfg.CompactionThresholdScale)
-	s.contextMgr.OnCompactionTurn = func(t Turn) {
-		if s.transcript != nil {
-			if err := s.transcript.Append(t); err != nil {
-				s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
-			}
-		}
-		s.launchCompactionNamer(s.sessionCtx, t)
-		// After compaction, inject full task list if tasks exist.
-		if s.taskStore != nil {
-			if reminder := taskReminderFull(s.taskStore); reminder != "" {
-				s.Steer(reminder)
-			}
-		}
-		// Tell the agent where to find the full pre-compaction transcript.
-		if tpath := s.TranscriptPath(); tpath != "" {
-			s.Steer("<SYSTEM-REMINDER>If you need the exact transcript of this session before compaction, you can read it at: " + tpath + "</SYSTEM-REMINDER>")
-		}
-	}
+	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
 
 	// Create context strategy.
 	strat, err := selectStrategy(cfg, s.contextMgr, s)
@@ -804,23 +770,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 	}
 
 	applyThresholdScale(s.contextMgr, cfg.CompactionThresholdScale)
-	s.contextMgr.OnCompactionTurn = func(t Turn) {
-		if s.transcript != nil {
-			if err := s.transcript.Append(t); err != nil {
-				s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
-			}
-		}
-		s.launchCompactionNamer(s.sessionCtx, t)
-		if s.taskStore != nil {
-			if reminder := taskReminderFull(s.taskStore); reminder != "" {
-				s.Steer(reminder)
-			}
-		}
-		// Tell the agent where to find the full pre-compaction transcript.
-		if tpath := s.TranscriptPath(); tpath != "" {
-			s.Steer("<SYSTEM-REMINDER>If you need the exact transcript of this session before compaction, you can read it at: " + tpath + "</SYSTEM-REMINDER>")
-		}
-	}
+	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
 
 	// Create context strategy.
 	strat, err := selectStrategy(cfg, s.contextMgr, s)
@@ -1005,6 +955,28 @@ func (s *Session) nameSessionFromCompactionTurn(ctx context.Context, turn Turn) 
 
 func isSessionNameCompactionTurn(turn Turn) bool {
 	return turn.Kind == TurnSummary || turn.Kind == TurnCheckpoint
+}
+
+func (s *Session) handleCompactionTurn(t Turn) {
+	if s.transcript != nil {
+		if err := s.transcript.Append(t); err != nil {
+			s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
+		}
+	}
+	if isSessionNameCompactionTurn(t) {
+		s.emit(EventCompactionTurn, CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
+	}
+	s.launchCompactionNamer(s.sessionCtx, t)
+	// After compaction, inject full task list if tasks exist.
+	if s.taskStore != nil {
+		if reminder := taskReminderFull(s.taskStore); reminder != "" {
+			s.Steer(reminder)
+		}
+	}
+	// Tell the agent where to find the full pre-compaction transcript.
+	if tpath := s.TranscriptPath(); tpath != "" {
+		s.Steer("<SYSTEM-REMINDER>If you need the exact transcript of this session before compaction, you can read it at: " + tpath + "</SYSTEM-REMINDER>")
+	}
 }
 
 func (s *Session) shouldNameFromCompaction() bool {

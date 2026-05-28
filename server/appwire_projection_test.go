@@ -471,6 +471,54 @@ func TestAppEventProjectorProjectsSteeringInjected(t *testing.T) {
 	}
 }
 
+func TestAppEventProjectorProjectsCompactionTurn(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+
+	out := projector.Project(agent.SessionEvent{
+		Kind:      agent.EventCompactionTurn,
+		SessionID: "th_1",
+		Data: agent.CompactionTurnData{
+			Kind: string(agent.TurnSummary),
+			Text: "[CONTEXT SUMMARY]\nkept the useful state",
+		},
+	})
+
+	if len(out) != 1 || out[0].Method != appwire.NotifyTurnCompleted {
+		t.Fatalf("notifications=%+v", out)
+	}
+	turn := notificationTurn(t, out, appwire.NotifyTurnCompleted)
+	if turn.ID == "" || turn.Status != appwire.TurnStatusCompleted || turn.ItemsView != "full" || len(turn.Items) != 1 {
+		t.Fatalf("turn=%+v", turn)
+	}
+	item := turn.Items[0]
+	if item.TurnID != turn.ID || item.Type != "systemMessage" || item.Description != "Context summary" || item.Text != "[CONTEXT SUMMARY]\nkept the useful state" || item.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("item=%+v", item)
+	}
+}
+
+func TestAppEventProjectorProjectsCompactionTurnInActiveTurn(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	started := projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
+	turnID := notificationTurnID(t, started, appwire.NotifyTurnStarted)
+
+	out := projector.Project(agent.SessionEvent{
+		Kind:      agent.EventCompactionTurn,
+		SessionID: "th_1",
+		Data: agent.CompactionTurnData{
+			Kind: string(agent.TurnCheckpoint),
+			Text: "[CONTEXT CHECKPOINT]\nkept raw context",
+		},
+	})
+
+	if len(out) != 1 || out[0].Method != appwire.NotifyItemCompleted {
+		t.Fatalf("notifications=%+v", out)
+	}
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.TurnID != turnID || item.Type != "systemMessage" || item.Description != "Context checkpoint" || item.Text != "[CONTEXT CHECKPOINT]\nkept raw context" || item.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("item=%+v", item)
+	}
+}
+
 func TestAppEventProjectorProjectsImageOnlySteeringInjected(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	out := projector.Project(agent.SessionEvent{

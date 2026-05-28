@@ -321,6 +321,43 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			"text":     text,
 			"images":   images,
 		})}
+	case agent.EventCompactionTurn:
+		data := eventData[agent.CompactionTurnData](event.Data)
+		text := strings.TrimSpace(data.Text)
+		if text == "" {
+			return nil
+		}
+		turnID := p.activeTurnID
+		if turnID == "" {
+			p.nextTurn++
+			turnID = fmt.Sprintf("turn_%d", p.nextTurn)
+		}
+		item := appwire.ThreadItem{
+			Type:        "systemMessage",
+			ID:          p.nextItemID("compaction"),
+			TurnID:      turnID,
+			Description: compactionDescription(data.Kind),
+			Text:        text,
+			Status:      appwire.TurnStatusCompleted,
+		}
+		if p.activeTurnID == "" {
+			return []AppNotification{p.notification(appwire.NotifyTurnCompleted, map[string]any{
+				"threadId": p.threadID,
+				"ref":      p.ref,
+				"turn": appwire.Turn{
+					ID:        turnID,
+					Items:     []appwire.ThreadItem{item},
+					ItemsView: "full",
+					Status:    appwire.TurnStatusCompleted,
+				},
+			})}
+		}
+		return []AppNotification{p.notification(appwire.NotifyItemCompleted, map[string]any{
+			"threadId": p.threadID,
+			"ref":      p.ref,
+			"turnId":   turnID,
+			"item":     item,
+		})}
 	case agent.EventQueueChanged:
 		data := eventData[agent.QueueChangedData](event.Data)
 		return []AppNotification{p.notification(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
@@ -423,6 +460,15 @@ func imagePreviewText(n int) string {
 		return "[image]"
 	default:
 		return fmt.Sprintf("[%d images]", n)
+	}
+}
+
+func compactionDescription(kind string) string {
+	switch strings.ToUpper(strings.TrimSpace(kind)) {
+	case string(agent.TurnSummary):
+		return "Context summary"
+	default:
+		return "Context checkpoint"
 	}
 }
 

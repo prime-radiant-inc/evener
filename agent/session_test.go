@@ -1446,6 +1446,53 @@ func TestSession_PreCompactHookRunsAtCompactionBoundary(t *testing.T) {
 	}
 }
 
+func TestSession_CompactEmitsCompactionTurnEvent(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return finalResponse("forced summary")
+		},
+	}})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	sess.contextMgr.PreserveRecentTurns = 1
+	sess.history = []Turn{
+		NewTurn(TurnUserInput, llm.User("first task")),
+		NewTurn(TurnAssistant, llm.Assistant("I will inspect the project and report back with enough detail to become a working note.")),
+		NewTurn(TurnUserInput, llm.User("second task")),
+	}
+	eventsPtr, mu, doneCh := collectEvents(sess)
+
+	if err := sess.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	sess.Close()
+	<-doneCh
+
+	mu.Lock()
+	defer mu.Unlock()
+	var got []CompactionTurnData
+	for _, ev := range *eventsPtr {
+		if ev.Kind == EventCompactionTurn {
+			data, ok := ev.Data.(CompactionTurnData)
+			if !ok {
+				t.Fatalf("compaction turn data=%T", ev.Data)
+			}
+			got = append(got, data)
+		}
+	}
+	if len(got) == 0 {
+		t.Fatalf("missing %s event in %+v", EventCompactionTurn, *eventsPtr)
+	}
+	if got[0].Kind != string(TurnCheckpoint) || !strings.Contains(got[0].Text, "[CONTEXT CHECKPOINT]") {
+		t.Fatalf("first compaction event=%+v", got[0])
+	}
+}
+
 func TestSession_NotificationHookRunsOnWarning(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()

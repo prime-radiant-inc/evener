@@ -26,6 +26,7 @@ const (
 	EventCommunicate         EventKind = "COMMUNICATE"
 	EventSkillActivated      EventKind = "SKILL_ACTIVATED"
 	EventContextCompaction   EventKind = "CONTEXT_COMPACTION"
+	EventCompactionTurn      EventKind = "COMPACTION_TURN"
 	EventWarning             EventKind = "WARNING"
 	EventError               EventKind = "ERROR"
 	EventSubagentStart       EventKind = "SUBAGENT_START"
@@ -216,6 +217,11 @@ type ContextCompactionData struct {
 	TurnsAfter      int    `json:"turns_after,omitempty"`
 	EstTokensBefore int    `json:"est_tokens_before,omitempty"`
 	EstTokensAfter  int    `json:"est_tokens_after,omitempty"`
+}
+
+type CompactionTurnData struct {
+	Kind string `json:"kind"`
+	Text string `json:"text"`
 }
 
 type WarningData struct {

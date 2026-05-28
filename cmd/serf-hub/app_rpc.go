@@ -1367,6 +1367,20 @@ func formatTranscriptToolNames(names []string) string {
 
 func appItemsFromReplayTurn(turnID string, turnIndex int, turn replayTurn, toolNames map[string]string) []appwire.ThreadItem {
 	switch turn.Kind {
+	case "CHECKPOINT", "SUMMARY":
+		text := strings.TrimSpace(joinText(turn.Message.Content))
+		if text == "" {
+			return nil
+		}
+		return []appwire.ThreadItem{{
+			Type:                 "systemMessage",
+			ID:                   fmt.Sprintf("item_compaction_%d", turnIndex),
+			TurnID:               turnID,
+			TranscriptEntryIndex: turnIndex,
+			Description:          replayCompactionDescription(turn.Kind),
+			Text:                 text,
+			Status:               "completed",
+		}}
 	case "USER_INPUT":
 		images := appInputImagesFromReplayContent(turn.Message.Content)
 		item := appwire.ThreadItem{
@@ -1468,6 +1482,15 @@ func appItemsFromReplayTurn(turnID string, turnIndex int, turn replayTurn, toolN
 		return items
 	default:
 		return nil
+	}
+}
+
+func replayCompactionDescription(kind string) string {
+	switch strings.ToUpper(strings.TrimSpace(kind)) {
+	case "SUMMARY":
+		return "Context summary"
+	default:
+		return "Context checkpoint"
 	}
 }
 

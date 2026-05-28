@@ -160,6 +160,30 @@ func TestAppItemsFromReplayTurnSteeringCarriesImageMetadata(t *testing.T) {
 	}
 }
 
+func TestAppItemsFromReplayTurnIncludesCompactionTurns(t *testing.T) {
+	checkpoint := appItemsFromReplayTurn("turn_4", 4, replayTurn{
+		Kind:    "CHECKPOINT",
+		Message: replayMessage{Content: []replayPart{{Kind: "text", Text: "[CONTEXT CHECKPOINT]\nfirst compacted state"}}},
+	}, map[string]string{})
+	if len(checkpoint) != 1 {
+		t.Fatalf("checkpoint items=%+v", checkpoint)
+	}
+	if got := checkpoint[0]; got.Type != "systemMessage" || got.Description != "Context checkpoint" || !strings.Contains(got.Text, "first compacted state") {
+		t.Fatalf("checkpoint item=%+v", got)
+	}
+
+	summary := appItemsFromReplayTurn("turn_5", 5, replayTurn{
+		Kind:    "SUMMARY",
+		Message: replayMessage{Content: []replayPart{{Kind: "text", Text: "[CONTEXT SUMMARY]\nsecond compacted state"}}},
+	}, map[string]string{})
+	if len(summary) != 1 {
+		t.Fatalf("summary items=%+v", summary)
+	}
+	if got := summary[0]; got.Type != "systemMessage" || got.Description != "Context summary" || !strings.Contains(got.Text, "second compacted state") {
+		t.Fatalf("summary item=%+v", got)
+	}
+}
+
 func TestHubRPCThreadListUsesRosterStatusAndSessionID(t *testing.T) {
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{

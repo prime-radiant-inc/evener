@@ -855,6 +855,34 @@ func TestAppTurnsFromTranscriptFileIncludesPrelude(t *testing.T) {
 	}
 }
 
+func TestAppTurnsFromTranscriptFileIncludesCompactionTurns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := agent.NewTranscriptWriter(path, agent.TranscriptHeader{SessionID: "th_1"})
+	if err != nil {
+		t.Fatalf("NewTranscriptWriter: %v", err)
+	}
+	if err := w.Append(agent.NewTurn(agent.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]\nfirst compacted state"))); err != nil {
+		t.Fatalf("append checkpoint: %v", err)
+	}
+	if err := w.Append(agent.NewTurn(agent.TurnSummary, llm.User("[CONTEXT SUMMARY]\nsecond compacted state"))); err != nil {
+		t.Fatalf("append summary: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close transcript: %v", err)
+	}
+
+	turns := appTurnsFromTranscriptFile(path)
+	if len(turns) != 2 {
+		t.Fatalf("turns=%+v", turns)
+	}
+	if got := turns[0].Items[0]; got.Type != "systemMessage" || got.Description != "Context checkpoint" || !strings.Contains(got.Text, "first compacted state") {
+		t.Fatalf("checkpoint item=%+v", got)
+	}
+	if got := turns[1].Items[0]; got.Type != "systemMessage" || got.Description != "Context summary" || !strings.Contains(got.Text, "second compacted state") {
+		t.Fatalf("summary item=%+v", got)
+	}
+}
+
 func TestServerAppWireThreadReadUsesTranscriptWhenReplayBufferDroppedPrefix(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
 	w, err := agent.NewTranscriptWriter(path, agent.TranscriptHeader{SessionID: "th_1"})
