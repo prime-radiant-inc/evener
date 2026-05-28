@@ -1141,7 +1141,9 @@ func (s *Session) Compact(ctx context.Context) error {
 	histCopy := append([]Turn{}, s.history...)
 	s.mu.Unlock()
 
-	s.contextMgr.ForceCompact(ctx, &histCopy, s.emit)
+	emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &histCopy)
+	s.contextMgr.ForceCompact(ctx, &histCopy, emitFn)
+	flushCompactionHooks()
 
 	s.mu.Lock()
 	s.history = histCopy
@@ -1149,6 +1151,59 @@ func (s *Session) Compact(ctx context.Context) error {
 
 	s.maybeAutoSave()
 	return nil
+}
+
+type steeringTurnRecord struct {
+	turn Turn
+	text string
+}
+
+func (s *Session) compactionEmitFunc(ctx context.Context, history *[]Turn) (func(EventKind, any), func()) {
+	preCompactRan := false
+	var pendingSteering []steeringTurnRecord
+	emitFn := func(kind EventKind, data any) {
+		if kind == EventContextCompaction && !preCompactRan {
+			preCompactRan = true
+			pendingSteering = append(pendingSteering, s.runPreCompactHook(ctx, history)...)
+		}
+		s.emit(kind, data)
+	}
+	flush := func() {
+		s.flushSteeringTurnRecords(pendingSteering)
+	}
+	return emitFn, flush
+}
+
+func (s *Session) runPreCompactHook(ctx context.Context, history *[]Turn) []steeringTurnRecord {
+	if s.hookRunner == nil || history == nil {
+		return nil
+	}
+	result := s.hookRunner.RunPreCompact(ctx, s.hookInput(HookPreCompact))
+	return appendSteeringMessagesToHistory(history, result.SystemMessages)
+}
+
+func appendSteeringMessagesToHistory(history *[]Turn, messages []string) []steeringTurnRecord {
+	var records []steeringTurnRecord
+	for _, msg := range messages {
+		if strings.TrimSpace(msg) == "" {
+			continue
+		}
+		turn := NewTurn(TurnSteering, llm.User(msg))
+		*history = append(*history, turn)
+		records = append(records, steeringTurnRecord{turn: turn, text: msg})
+	}
+	return records
+}
+
+func (s *Session) flushSteeringTurnRecords(records []steeringTurnRecord) {
+	for _, record := range records {
+		if s.transcript != nil {
+			if err := s.transcript.Append(record.turn); err != nil {
+				s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+			}
+		}
+		s.emit(EventSteeringInjected, SteeringInjectedData{Text: record.text})
+	}
 }
 
 // buildCompactionMeta gathers session-level metadata for enriching compaction summaries.
@@ -1996,6 +2051,18 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 				IsError:    true,
 			}
 		}
+		if len(preResult.UpdatedInput) > 0 {
+			if err := applyUpdatedToolInput(&call, preResult.UpdatedInput); err != nil {
+				msg := "invalid hook updatedInput: " + err.Error()
+				return ToolExecResult{
+					ToolName:   call.Name,
+					CallID:     call.ID,
+					Output:     msg,
+					FullOutput: msg,
+					IsError:    true,
+				}
+			}
+		}
 	}
 	if err := s.abortIfClosing(ctx); err != nil {
 		return skippedToolResult(call, err)
@@ -2119,6 +2186,27 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 	}
 
 	return res
+}
+
+func applyUpdatedToolInput(call *llm.ToolCallData, updated map[string]any) error {
+	if call == nil || len(updated) == 0 {
+		return nil
+	}
+	args := map[string]any{}
+	if len(call.Arguments) > 0 {
+		if err := json.Unmarshal(call.Arguments, &args); err != nil {
+			return err
+		}
+	}
+	for k, v := range updated {
+		args[k] = v
+	}
+	b, err := json.Marshal(args)
+	if err != nil {
+		return err
+	}
+	call.Arguments = json.RawMessage(b)
+	return nil
 }
 
 func skippedToolResult(call llm.ToolCallData, err error) ToolExecResult {
@@ -2323,6 +2411,38 @@ func (s *Session) emit(kind EventKind, data any) {
 	default:
 		// Drop events if consumer is too slow; v1 is best-effort.
 	}
+	if kind == EventWarning {
+		s.runNotificationHook(context.Background(), warningHookMessage(data))
+	}
+}
+
+func warningHookMessage(data any) string {
+	switch v := data.(type) {
+	case WarningData:
+		return v.Message
+	case *WarningData:
+		if v != nil {
+			return v.Message
+		}
+	case map[string]any:
+		if msg, ok := v["message"].(string); ok {
+			return msg
+		}
+	}
+	return fmt.Sprint(data)
+}
+
+func (s *Session) runNotificationHook(ctx context.Context, message string) {
+	if s.hookRunner == nil {
+		return
+	}
+	input := s.hookInput(HookNotification)
+	input.Message = message
+	input.Reason = message
+	result := s.hookRunner.RunNotification(ctx, input)
+	for _, msg := range result.SystemMessages {
+		s.Steer(msg)
+	}
 }
 
 // hookInput creates a HookInput with the session's ID and working directory pre-filled.
@@ -2484,14 +2604,6 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// --- Phase: ContextMgmt ---
 		tPhaseStart = time.Now()
 
-		// PreCompact hooks
-		if s.hookRunner != nil {
-			preCompactResult := s.hookRunner.RunPreCompact(ctx, s.hookInput(HookPreCompact))
-			for _, msg := range preCompactResult.SystemMessages {
-				s.Steer(msg)
-			}
-		}
-
 		// Copy history once for both context management and message expansion.
 		s.mu.Lock()
 		historyTurns := append([]Turn{}, s.history...)
@@ -2510,9 +2622,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// Populate compaction metadata so checkpoint/summarize have session context.
 			s.contextMgr.Meta = s.buildCompactionMeta()
 
-			if err := s.strategy.ManageContext(ctx, &historyTurns, len(sys), s.emit); err != nil {
+			emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &historyTurns)
+			if err := s.strategy.ManageContext(ctx, &historyTurns, len(sys), emitFn); err != nil {
 				s.emit(EventWarning, warningDataFromError("context strategy error: "+err.Error(), err))
 			}
+			flushCompactionHooks()
 
 			s.mu.Lock()
 			s.history = historyTurns
@@ -2713,7 +2827,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				contentFilterRetried = true
 				s.emit(EventWarning, warningDataFromError("Content filter hit — compacting context and retrying", err))
 				s.mu.Lock()
-				s.contextMgr.ForceCompact(ctx, &s.history, s.emit)
+				histCopy := append([]Turn{}, s.history...)
+				s.mu.Unlock()
+				emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &histCopy)
+				s.contextMgr.ForceCompact(ctx, &histCopy, emitFn)
+				flushCompactionHooks()
+				s.mu.Lock()
+				s.history = histCopy
 				s.mu.Unlock()
 				continue
 			}

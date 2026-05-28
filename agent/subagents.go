@@ -458,6 +458,7 @@ func (a *subagent) run(ctx context.Context, input string) {
 	if shouldNudge {
 		res, err = a.sess.ProcessInput(ctx, communicateNudge(a.sess.resultToolName()), nil)
 	}
+	res, err = a.runSubagentStopHook(ctx, res, err)
 
 	a.sess.mu.Lock()
 	turns := a.sess.turns
@@ -491,6 +492,30 @@ func (a *subagent) run(ctx context.Context, input string) {
 			TurnsUsed: turnsUsed,
 		})
 	}
+}
+
+func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err error) (string, error) {
+	if a.sess == nil || a.sess.hookRunner == nil {
+		return res, err
+	}
+	input := a.sess.hookInput(HookSubagentStop)
+	if err != nil {
+		input.Reason = err.Error()
+	} else {
+		input.Reason = "complete"
+	}
+	stopResult := a.sess.hookRunner.RunSubagentStop(ctx, input)
+	for _, msg := range stopResult.SystemMessages {
+		a.sess.Steer(msg)
+	}
+	if !stopResult.Blocked {
+		return res, err
+	}
+	reason := strings.TrimSpace(stopResult.BlockReason)
+	if reason == "" {
+		reason = "SubagentStop hook blocked completion. Continue and address the hook feedback before stopping."
+	}
+	return a.sess.ProcessInput(ctx, reason, nil)
 }
 
 func (a *subagent) resultSnapshotLocked() SubAgentResult {

@@ -586,6 +586,28 @@ func TestHookRunner_PreToolUse_Deny(t *testing.T) {
 	}
 }
 
+func TestHookRunner_PreToolUse_ExitCode2Denies(t *testing.T) {
+	runner := NewHookRunner(nil, "")
+	runner.Add(HookPreToolUse, RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: `echo "blocked by hook" >&2; exit 2`,
+		Timeout: 5,
+	})
+
+	result := runner.RunPreToolUse(context.Background(), HookInput{
+		CWD:           "/tmp",
+		HookEventName: "PreToolUse",
+		ToolName:      "Write",
+	})
+	if !result.Denied {
+		t.Fatal("expected exit code 2 to deny PreToolUse")
+	}
+	if !strings.Contains(result.DenyMessage, "blocked by hook") {
+		t.Fatalf("DenyMessage = %q, want hook stderr", result.DenyMessage)
+	}
+}
+
 func TestHookRunner_NoHooks(t *testing.T) {
 	runner := NewHookRunner(nil, "")
 	input := HookInput{

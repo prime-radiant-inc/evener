@@ -56,6 +56,44 @@ func (a *fakeAdapter) Requests() []llm.Request {
 	return append([]llm.Request{}, a.requests...)
 }
 
+type compactionEventStrategy struct {
+	emitCompaction bool
+}
+
+func (s compactionEventStrategy) Name() string { return "compaction-event-test" }
+
+func (s compactionEventStrategy) Tools() []RegisteredTool { return nil }
+
+func (s compactionEventStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
+	_ = ctx
+	_ = history
+	_ = sysPromptChars
+	if s.emitCompaction {
+		emitFn(EventContextCompaction, ContextCompactionData{Layer: "test"})
+	}
+	return nil
+}
+
+func (s compactionEventStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
+	_ = ctx
+	_ = history
+	_ = client
+	return nil
+}
+
+func countHookStarts(events []SessionEvent, event HookEvent) int {
+	count := 0
+	for _, ev := range events {
+		if ev.Kind != EventHookStart {
+			continue
+		}
+		if data, ok := ev.Data.(HookStartData); ok && data.Event == string(event) {
+			count++
+		}
+	}
+	return count
+}
+
 type streamingAdapter struct {
 	name string
 
@@ -1284,6 +1322,209 @@ func TestSession_ToolLoop_ExecutesToolsAndContinues(t *testing.T) {
 		t.Fatalf("hello.txt: %q", string(b))
 	}
 	sess.Close()
+}
+
+func TestSession_PreToolUseUpdatedInputRewritesToolCall(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	runner := NewHookRunner(nil, "")
+	runner.Add(HookPreToolUse, RegisteredHook{
+		Matcher: "Write",
+		Type:    "command",
+		Command: `echo '{"hookSpecificOutput":{"updatedInput":{"content":"rewritten by hook"}}}'`,
+		Timeout: 5,
+	})
+	sess.hookRunner = runner
+
+	res := sess.execTool(context.Background(), llm.ToolCallData{
+		ID:        "c1",
+		Name:      "write_file",
+		Arguments: json.RawMessage(`{"file_path":"hook.txt","content":"original"}`),
+		Type:      "function",
+	})
+	if res.IsError {
+		t.Fatalf("write_file error: %s", res.FullOutput)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "hook.txt"))
+	if err != nil {
+		t.Fatalf("read hook.txt: %v", err)
+	}
+	if string(got) != "rewritten by hook" {
+		t.Fatalf("hook.txt = %q, want rewritten content", string(got))
+	}
+}
+
+func TestSession_PreCompactHookOnlyRunsWhenCompactionEmits(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("done") },
+	}})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		ContextStrategyOverride: compactionEventStrategy{},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	eventsPtr, mu, doneCh := collectEvents(sess)
+
+	runner := NewHookRunner(nil, "")
+	runner.SetEventCallback(func(kind EventKind, data any) {
+		sess.emit(kind, data)
+	})
+	runner.Add(HookPreCompact, RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: `echo precompact`,
+		Timeout: 5,
+	})
+	sess.hookRunner = runner
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+	<-doneCh
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got := countHookStarts(*eventsPtr, HookPreCompact); got != 0 {
+		t.Fatalf("PreCompact hook starts = %d, want 0 without compaction", got)
+	}
+}
+
+func TestSession_PreCompactHookRunsAtCompactionBoundary(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("done") },
+	}})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		ContextStrategyOverride: compactionEventStrategy{emitCompaction: true},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	eventsPtr, mu, doneCh := collectEvents(sess)
+
+	runner := NewHookRunner(nil, "")
+	runner.SetEventCallback(func(kind EventKind, data any) {
+		sess.emit(kind, data)
+	})
+	runner.Add(HookPreCompact, RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: `echo precompact`,
+		Timeout: 5,
+	})
+	sess.hookRunner = runner
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "hello", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+	<-doneCh
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got := countHookStarts(*eventsPtr, HookPreCompact); got != 1 {
+		t.Fatalf("PreCompact hook starts = %d, want 1", got)
+	}
+}
+
+func TestSession_NotificationHookRunsOnWarning(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	marker := filepath.Join(dir, "notification-hook")
+	runner := NewHookRunner(nil, "")
+	runner.Add(HookNotification, RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: "touch " + shellEscape(marker),
+		Timeout: 5,
+	})
+	sess.hookRunner = runner
+
+	sess.emit(EventWarning, WarningData{Message: "heads up"})
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("Notification hook did not run: %v", err)
+	}
+}
+
+func TestSession_SubagentStopHookRunsWhenSubagentFinishes(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "subagent-stop-hook")
+	plugin := makePluginDir(t, "subagent-stop-plugin")
+	hooksDir := filepath.Join(plugin, "hooks")
+	if err := os.MkdirAll(hooksDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	hooksJSON := `{
+		"hooks": {
+			"SubagentStop": [{
+				"matcher": "*",
+				"hooks": [{"type": "command", "command": "touch ` + shellEscape(marker) + `"}]
+			}]
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(hooksDir, "hooks.json"), []byte(hooksJSON), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("subagent done") },
+	}})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+		PluginDirs:       []string{plugin},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	result, err := sess.spawnAgent(context.Background(), "inspect", "", "", 1, "explorer", "", nil, nil)
+	if err != nil {
+		t.Fatalf("spawnAgent: %v", err)
+	}
+	var spawned struct {
+		AgentID string `json:"agent_id"`
+	}
+	if err := json.Unmarshal([]byte(result.(string)), &spawned); err != nil {
+		t.Fatalf("spawn result: %v", err)
+	}
+	if spawned.AgentID == "" {
+		t.Fatalf("spawn result missing agent_id: %s", result)
+	}
+	if _, err := sess.waitAgent(context.Background(), spawned.AgentID, 0); err != nil {
+		t.Fatalf("waitAgent: %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("SubagentStop hook did not run: %v", err)
+	}
 }
 
 func TestSession_ToolOutputTruncation_OverridesLimitsAndKeepsFullOutputInEvents(t *testing.T) {

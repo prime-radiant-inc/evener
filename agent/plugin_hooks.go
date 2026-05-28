@@ -206,6 +206,7 @@ type HookInput struct {
 	ToolInput     map[string]any `json:"tool_input,omitempty"`
 	ToolResult    string         `json:"tool_result,omitempty"`
 	UserPrompt    string         `json:"user_prompt,omitempty"`
+	Message       string         `json:"message,omitempty"`
 	Reason        string         `json:"reason,omitempty"`
 }
 
@@ -304,6 +305,7 @@ func substituteHookVariables(prompt string, input HookInput) string {
 		"$TOOL_INPUT", toolInputStr,
 		"$TOOL_RESULT", toolResultStr,
 		"$USER_PROMPT", userPromptStr,
+		"$MESSAGE", input.Message,
 		"$TOOL_NAME", input.ToolName,
 	)
 	return r.Replace(prompt)
@@ -577,17 +579,30 @@ func (r *HookRunner) RunPreToolUse(ctx context.Context, input HookInput) PreTool
 		if o.SystemMessage != "" {
 			result.SystemMessages = append(result.SystemMessages, o.SystemMessage)
 		}
-		if o.Denied {
+		if o.Denied || o.RawExitCode == 2 {
 			result.Denied = true
 			if result.DenyMessage == "" {
 				result.DenyMessage = o.SystemMessage
 			}
 		}
 		if o.UpdatedInput != nil {
-			result.UpdatedInput = o.UpdatedInput
+			result.UpdatedInput = mergeHookInputMaps(result.UpdatedInput, o.UpdatedInput)
 		}
 	}
 	return result
+}
+
+func mergeHookInputMaps(dst map[string]any, src map[string]any) map[string]any {
+	if len(src) == 0 {
+		return dst
+	}
+	if dst == nil {
+		dst = map[string]any{}
+	}
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 // RunPostToolUse dispatches PostToolUse hooks and aggregates system messages.
