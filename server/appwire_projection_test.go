@@ -2,7 +2,9 @@ package server
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/internal/appwire"
@@ -515,6 +517,145 @@ func TestAppEventProjectorProjectsCompactionTurnInActiveTurn(t *testing.T) {
 	}
 	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
 	if item.TurnID != turnID || item.Type != "systemMessage" || item.Description != "Context checkpoint" || item.Text != "[CONTEXT CHECKPOINT]\nkept raw context" || item.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("item=%+v", item)
+	}
+}
+
+func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testing.T) {
+	tests := []struct {
+		name        string
+		event       agent.SessionEvent
+		description string
+		contains    []string
+	}{
+		{
+			name:        "turn limit max turns",
+			event:       agent.SessionEvent{Kind: agent.EventTurnLimit, SessionID: "th_1", Data: agent.TurnLimitData{MaxTurns: 3}},
+			description: "Turn limit",
+			contains:    []string{"Maximum turns reached: 3"},
+		},
+		{
+			name:        "turn limit tool rounds",
+			event:       agent.SessionEvent{Kind: agent.EventTurnLimit, SessionID: "th_1", Data: agent.TurnLimitData{MaxToolRoundsPerInput: 7}},
+			description: "Turn limit",
+			contains:    []string{"Maximum tool rounds per input reached: 7"},
+		},
+		{
+			name:        "loop detection",
+			event:       agent.SessionEvent{Kind: agent.EventLoopDetection, SessionID: "th_1", Data: agent.LoopDetectionData{Message: "Repeated tool pattern detected"}},
+			description: "Loop detection",
+			contains:    []string{"Repeated tool pattern detected"},
+		},
+		{
+			name:        "skill activated",
+			event:       agent.SessionEvent{Kind: agent.EventSkillActivated, SessionID: "th_1", Data: agent.SkillActivatedData{Name: "using-superpowers"}},
+			description: "Skill activated",
+			contains:    []string{"using-superpowers"},
+		},
+		{
+			name: "context compaction",
+			event: agent.SessionEvent{Kind: agent.EventContextCompaction, SessionID: "th_1", Data: agent.ContextCompactionData{
+				Layer:           "L4",
+				TurnsBefore:     42,
+				TurnsAfter:      8,
+				EstTokensBefore: 120000,
+				EstTokensAfter:  23000,
+			}},
+			description: "Context compaction",
+			contains:    []string{"Layer: L4", "Turns: 42 -> 8", "Estimated tokens: 120000 -> 23000"},
+		},
+		{
+			name: "plugin loaded",
+			event: agent.SessionEvent{Kind: agent.EventPluginLoaded, SessionID: "th_1", Data: agent.PluginLoadedData{
+				Name: "superpowers", SkillCount: 5, AgentCount: 2, MCPCount: 1,
+			}},
+			description: "Plugin loaded",
+			contains:    []string{"superpowers", "5 skills", "2 agents", "1 MCP"},
+		},
+		{
+			name: "hook start",
+			event: agent.SessionEvent{Kind: agent.EventHookStart, SessionID: "th_1", Data: agent.HookStartData{
+				Event: "SessionStart", HookType: "command", Matcher: "using-superpowers", PluginName: "superpowers",
+			}},
+			description: "Hook started",
+			contains:    []string{"SessionStart", "using-superpowers", "superpowers", "command"},
+		},
+		{
+			name: "hook end",
+			event: agent.SessionEvent{Kind: agent.EventHookEnd, SessionID: "th_1", Data: agent.HookEndData{
+				Event: "SessionStart", HookType: "command", Matcher: "using-superpowers", PluginName: "superpowers", ExitCode: 0, DurationMS: 37,
+			}},
+			description: "Hook finished",
+			contains:    []string{"SessionStart", "using-superpowers", "superpowers", "exit 0", "37ms"},
+		},
+		{
+			name:        "fork summary",
+			event:       agent.SessionEvent{Kind: agent.EventForkSummary, SessionID: "th_1", Data: agent.ForkSummaryData{Turn: 12}},
+			description: "Fork summary",
+			contains:    []string{"turn 12"},
+		},
+		{
+			name:        "prompt loaded",
+			event:       agent.SessionEvent{Kind: agent.EventPromptLoaded, SessionID: "th_1", Data: agent.PromptLoadedData{Label: "system.md", Size: 2048}},
+			description: "Prompt loaded",
+			contains:    []string{"system.md", "2048 B"},
+		},
+		{
+			name: "round timings",
+			event: agent.SessionEvent{Kind: agent.EventRoundTimings, SessionID: "th_1", Data: agent.RoundTimings{
+				Round:        2,
+				TotalRound:   1500 * time.Millisecond,
+				LLMCall:      1200 * time.Millisecond,
+				ContextMgmt:  25 * time.Millisecond,
+				ToolExec:     40 * time.Millisecond,
+				LoopOverhead: 5 * time.Millisecond,
+			}},
+			description: "Round timings",
+			contains:    []string{"Round 2", "total=1.5s", "llm=1.2s", "context=25ms", "tools=40ms"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			projector := NewAppEventProjector("th_1", "local:th_1")
+			out := projector.Project(tt.event)
+
+			if len(out) != 1 || out[0].Method != appwire.NotifyTurnCompleted {
+				t.Fatalf("notifications=%+v", out)
+			}
+			turn := notificationTurn(t, out, appwire.NotifyTurnCompleted)
+			if turn.Status != appwire.TurnStatusCompleted || turn.ItemsView != "full" || len(turn.Items) != 1 {
+				t.Fatalf("turn=%+v", turn)
+			}
+			item := turn.Items[0]
+			if item.Type != "systemMessage" || item.Description != tt.description || item.Status != appwire.TurnStatusCompleted {
+				t.Fatalf("item=%+v", item)
+			}
+			for _, want := range tt.contains {
+				if !strings.Contains(item.Text, want) {
+					t.Fatalf("item text %q does not contain %q", item.Text, want)
+				}
+			}
+		})
+	}
+}
+
+func TestAppEventProjectorProjectsAgentOnlyAnnouncementInActiveTurn(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	started := projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
+	turnID := notificationTurnID(t, started, appwire.NotifyTurnStarted)
+
+	out := projector.Project(agent.SessionEvent{
+		Kind:      agent.EventSkillActivated,
+		SessionID: "th_1",
+		Data:      agent.SkillActivatedData{Name: "using-superpowers"},
+	})
+
+	if len(out) != 1 || out[0].Method != appwire.NotifyItemCompleted {
+		t.Fatalf("notifications=%+v", out)
+	}
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.TurnID != turnID || item.Type != "systemMessage" || item.Description != "Skill activated" || !strings.Contains(item.Text, "using-superpowers") {
 		t.Fatalf("item=%+v", item)
 	}
 }

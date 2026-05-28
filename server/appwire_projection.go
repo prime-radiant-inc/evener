@@ -323,41 +323,37 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 		})}
 	case agent.EventCompactionTurn:
 		data := eventData[agent.CompactionTurnData](event.Data)
-		text := strings.TrimSpace(data.Text)
-		if text == "" {
-			return nil
-		}
-		turnID := p.activeTurnID
-		if turnID == "" {
-			p.nextTurn++
-			turnID = fmt.Sprintf("turn_%d", p.nextTurn)
-		}
-		item := appwire.ThreadItem{
-			Type:        "systemMessage",
-			ID:          p.nextItemID("compaction"),
-			TurnID:      turnID,
-			Description: compactionDescription(data.Kind),
-			Text:        text,
-			Status:      appwire.TurnStatusCompleted,
-		}
-		if p.activeTurnID == "" {
-			return []AppNotification{p.notification(appwire.NotifyTurnCompleted, map[string]any{
-				"threadId": p.threadID,
-				"ref":      p.ref,
-				"turn": appwire.Turn{
-					ID:        turnID,
-					Items:     []appwire.ThreadItem{item},
-					ItemsView: "full",
-					Status:    appwire.TurnStatusCompleted,
-				},
-			})}
-		}
-		return []AppNotification{p.notification(appwire.NotifyItemCompleted, map[string]any{
-			"threadId": p.threadID,
-			"ref":      p.ref,
-			"turnId":   turnID,
-			"item":     item,
-		})}
+		return p.systemAnnouncement("compaction", compactionDescription(data.Kind), data.Text)
+	case agent.EventTurnLimit:
+		data := eventData[agent.TurnLimitData](event.Data)
+		return p.systemAnnouncement("turn_limit", "Turn limit", turnLimitAnnouncement(data))
+	case agent.EventLoopDetection:
+		data := eventData[agent.LoopDetectionData](event.Data)
+		return p.systemAnnouncement("loop_detection", "Loop detection", data.Message)
+	case agent.EventSkillActivated:
+		data := eventData[agent.SkillActivatedData](event.Data)
+		return p.systemAnnouncement("skill", "Skill activated", fmt.Sprintf("Activated skill: %s", data.Name))
+	case agent.EventContextCompaction:
+		data := eventData[agent.ContextCompactionData](event.Data)
+		return p.systemAnnouncement("context_compaction", "Context compaction", contextCompactionAnnouncement(data))
+	case agent.EventPluginLoaded:
+		data := eventData[agent.PluginLoadedData](event.Data)
+		return p.systemAnnouncement("plugin", "Plugin loaded", pluginLoadedAnnouncement(data))
+	case agent.EventHookStart:
+		data := eventData[agent.HookStartData](event.Data)
+		return p.systemAnnouncement("hook", "Hook started", hookStartAnnouncement(data))
+	case agent.EventHookEnd:
+		data := eventData[agent.HookEndData](event.Data)
+		return p.systemAnnouncement("hook", "Hook finished", hookEndAnnouncement(data))
+	case agent.EventForkSummary:
+		data := eventData[agent.ForkSummaryData](event.Data)
+		return p.systemAnnouncement("fork_summary", "Fork summary", forkSummaryAnnouncement(data))
+	case agent.EventPromptLoaded:
+		data := eventData[agent.PromptLoadedData](event.Data)
+		return p.systemAnnouncement("prompt", "Prompt loaded", promptLoadedAnnouncement(data))
+	case agent.EventRoundTimings:
+		data := eventData[agent.RoundTimings](event.Data)
+		return p.systemAnnouncement("round_timings", "Round timings", roundTimingsAnnouncement(data))
 	case agent.EventQueueChanged:
 		data := eventData[agent.QueueChangedData](event.Data)
 		return []AppNotification{p.notification(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
@@ -424,6 +420,44 @@ func (p *AppEventProjector) notification(method string, params any) AppNotificat
 	return AppNotification{ThreadID: p.threadID, Method: method, Params: params}
 }
 
+func (p *AppEventProjector) systemAnnouncement(prefix, description, text string) []AppNotification {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	turnID := p.activeTurnID
+	if turnID == "" {
+		p.nextTurn++
+		turnID = fmt.Sprintf("turn_%d", p.nextTurn)
+	}
+	item := appwire.ThreadItem{
+		Type:        "systemMessage",
+		ID:          p.nextItemID(prefix),
+		TurnID:      turnID,
+		Description: strings.TrimSpace(description),
+		Text:        text,
+		Status:      appwire.TurnStatusCompleted,
+	}
+	if p.activeTurnID == "" {
+		return []AppNotification{p.notification(appwire.NotifyTurnCompleted, map[string]any{
+			"threadId": p.threadID,
+			"ref":      p.ref,
+			"turn": appwire.Turn{
+				ID:        turnID,
+				Items:     []appwire.ThreadItem{item},
+				ItemsView: "full",
+				Status:    appwire.TurnStatusCompleted,
+			},
+		})}
+	}
+	return []AppNotification{p.notification(appwire.NotifyItemCompleted, map[string]any{
+		"threadId": p.threadID,
+		"ref":      p.ref,
+		"turnId":   turnID,
+		"item":     item,
+	})}
+}
+
 func isContextCanceledError(message string) bool {
 	return strings.TrimSpace(message) == context.Canceled.Error()
 }
@@ -470,6 +504,123 @@ func compactionDescription(kind string) string {
 	default:
 		return "Context checkpoint"
 	}
+}
+
+func turnLimitAnnouncement(data agent.TurnLimitData) string {
+	var lines []string
+	if data.MaxTurns > 0 {
+		lines = append(lines, fmt.Sprintf("Maximum turns reached: %d", data.MaxTurns))
+	}
+	if data.MaxToolRoundsPerInput > 0 {
+		lines = append(lines, fmt.Sprintf("Maximum tool rounds per input reached: %d", data.MaxToolRoundsPerInput))
+	}
+	if len(lines) == 0 {
+		return "Turn limit reached"
+	}
+	return strings.Join(lines, "\n")
+}
+
+func contextCompactionAnnouncement(data agent.ContextCompactionData) string {
+	var lines []string
+	if strings.TrimSpace(data.Layer) != "" {
+		lines = append(lines, "Layer: "+strings.TrimSpace(data.Layer))
+	}
+	if data.TurnsBefore > 0 || data.TurnsAfter > 0 {
+		lines = append(lines, fmt.Sprintf("Turns: %d -> %d", data.TurnsBefore, data.TurnsAfter))
+	}
+	if data.EstTokensBefore > 0 || data.EstTokensAfter > 0 {
+		lines = append(lines, fmt.Sprintf("Estimated tokens: %d -> %d", data.EstTokensBefore, data.EstTokensAfter))
+	}
+	if len(lines) == 0 {
+		return "Context compaction ran"
+	}
+	return strings.Join(lines, "\n")
+}
+
+func pluginLoadedAnnouncement(data agent.PluginLoadedData) string {
+	name := strings.TrimSpace(data.Name)
+	if name == "" {
+		name = "plugin"
+	}
+	return fmt.Sprintf("Loaded plugin %s (%d skills, %d agents, %d MCP servers)", name, data.SkillCount, data.AgentCount, data.MCPCount)
+}
+
+func hookStartAnnouncement(data agent.HookStartData) string {
+	return hookAnnouncement("started", data.Event, data.HookType, data.Matcher, data.PluginName, 0, 0, false)
+}
+
+func hookEndAnnouncement(data agent.HookEndData) string {
+	return hookAnnouncement("finished", data.Event, data.HookType, data.Matcher, data.PluginName, data.ExitCode, data.DurationMS, true)
+}
+
+func hookAnnouncement(verb, event, hookType, matcher, pluginName string, exitCode int, durationMS int64, includeResult bool) string {
+	event = fallbackLabel(event, "hook")
+	hookType = strings.TrimSpace(hookType)
+	matcher = strings.TrimSpace(matcher)
+	pluginName = strings.TrimSpace(pluginName)
+
+	var b strings.Builder
+	b.WriteString(event)
+	b.WriteString(" hook ")
+	b.WriteString(verb)
+	if includeResult {
+		b.WriteString(fmt.Sprintf(" in %dms (exit %d)", durationMS, exitCode))
+	}
+	var details []string
+	if matcher != "" {
+		details = append(details, "matcher="+matcher)
+	}
+	if pluginName != "" {
+		details = append(details, "plugin="+pluginName)
+	}
+	if hookType != "" {
+		details = append(details, "type="+hookType)
+	}
+	if len(details) > 0 {
+		b.WriteByte('\n')
+		b.WriteString(strings.Join(details, " "))
+	}
+	return b.String()
+}
+
+func forkSummaryAnnouncement(data agent.ForkSummaryData) string {
+	if data.Turn > 0 {
+		return fmt.Sprintf("Fork summary captured at transcript turn %d", data.Turn)
+	}
+	return "Fork summary captured"
+}
+
+func promptLoadedAnnouncement(data agent.PromptLoadedData) string {
+	label := fallbackLabel(data.Label, "prompt")
+	if data.Size > 0 {
+		return fmt.Sprintf("Loaded prompt %s (%d B)", label, data.Size)
+	}
+	return "Loaded prompt " + label
+}
+
+func roundTimingsAnnouncement(data agent.RoundTimings) string {
+	parts := []string{
+		fmt.Sprintf("Round %d", data.Round),
+		"total=" + data.TotalRound.String(),
+		"llm=" + data.LLMCall.String(),
+		"context=" + data.ContextMgmt.String(),
+		"tools=" + data.ToolExec.String(),
+		"prompt=" + data.SystemPrompt.String(),
+		"history=" + data.HistoryExpand.String(),
+		"tool_defs=" + data.ToolDefs.String(),
+		"persistence=" + data.Persistence.String(),
+		"after_action=" + data.AfterAction.String(),
+		"overhead=" + data.LoopOverhead.String(),
+	}
+	return strings.Join(parts, " ")
+}
+
+func fallbackLabel(value, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		return value
+	}
+	return fallback
 }
 
 func (p *AppEventProjector) startTurn() string {
