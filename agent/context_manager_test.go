@@ -1393,25 +1393,37 @@ func TestCheckpoint_RepeatedCheckpoint_PreservesOriginalPrompt(t *testing.T) {
 	}
 }
 
-// Verify user messages round-trip through JSON across repeated compactions,
+// Verify user messages round-trip through Markdown across repeated compactions,
 // including messages with newlines and special characters.
-func TestCheckpoint_UserMessages_JSONRoundTrip(t *testing.T) {
+func TestCheckpoint_UserMessages_MarkdownRoundTrip(t *testing.T) {
 	// First compaction: two user messages, one with embedded newline.
+	fencedMessage := "include this fence:\n```\nhello\n```"
 	h1 := []Turn{
 		{Kind: TurnUserInput, Message: llm.User("hi! ls the cwd please")},
 		{Kind: TurnAssistant, Message: llm.Assistant("done")},
 		{Kind: TurnUserInput, Message: llm.User("now fix the bug\nwith newlines")},
 		{Kind: TurnAssistant, Message: llm.Assistant("ok")},
+		{Kind: TurnUserInput, Message: llm.User(fencedMessage)},
 		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
 	}
 	r1 := checkpoint(h1, 1, nil, "communicate")
 	text1 := r1[0].Message.Text()
 
-	if !strings.Contains(text1, `"hi! ls the cwd please"`) {
+	if !strings.Contains(text1, "## Conversation") {
+		t.Fatalf("first checkpoint missing markdown conversation section:\n%s", text1)
+	}
+	if strings.Contains(text1, "<conversation>") || strings.Contains(text1, "<user_messages>") || strings.Contains(text1, "<agent_responses>") {
+		t.Fatalf("first checkpoint should not use XML/JSON conversation tags:\n%s", text1)
+	}
+	if !strings.Contains(text1, "hi! ls the cwd please") {
 		t.Fatalf("first checkpoint missing first user message:\n%s", text1)
 	}
-	if !strings.Contains(text1, `now fix the bug\nwith newlines`) {
+	if !strings.Contains(text1, "now fix the bug\nwith newlines") {
 		t.Fatalf("first checkpoint missing second user message with newline:\n%s", text1)
+	}
+	conversation1 := extractCheckpointConversation(text1)
+	if len(conversation1) != 3 || conversation1[2].Text != fencedMessage {
+		t.Fatalf("first checkpoint did not round-trip fenced markdown message: %+v", conversation1)
 	}
 
 	// Second compaction: feed checkpoint back in + new user message.
@@ -1423,7 +1435,7 @@ func TestCheckpoint_UserMessages_JSONRoundTrip(t *testing.T) {
 	r2 := checkpoint(h2, 1, nil, "communicate")
 	text2 := r2[0].Message.Text()
 
-	// All three user messages should survive.
+	// All four user messages should survive.
 	if !strings.Contains(text2, "hi! ls the cwd please") {
 		t.Fatalf("second checkpoint lost first user message:\n%s", text2)
 	}
@@ -1431,7 +1443,15 @@ func TestCheckpoint_UserMessages_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("second checkpoint lost second user message:\n%s", text2)
 	}
 	if !strings.Contains(text2, "also add tests") {
-		t.Fatalf("second checkpoint lost third user message:\n%s", text2)
+		t.Fatalf("second checkpoint lost fourth user message:\n%s", text2)
+	}
+	conversation2 := extractCheckpointConversation(text2)
+	var foundFence bool
+	for _, entry := range conversation2 {
+		foundFence = foundFence || entry.Text == fencedMessage
+	}
+	if !foundFence {
+		t.Fatalf("second checkpoint lost fenced markdown message: %+v", conversation2)
 	}
 }
 
@@ -1451,8 +1471,11 @@ func TestCheckpoint_ConversationInterleavesUserMessagesAndAgentResponses(t *test
 	result := checkpoint(history, 1, nil, "communicate")
 	text := result[0].Message.Text()
 
-	if strings.Contains(text, "<user_messages>") || strings.Contains(text, "<agent_responses>") {
-		t.Fatalf("checkpoint should not bundle user and agent messages separately:\n%s", text)
+	if strings.Contains(text, "<conversation>") || strings.Contains(text, "<user_messages>") || strings.Contains(text, "<agent_responses>") {
+		t.Fatalf("checkpoint should use markdown, not XML/JSON tags:\n%s", text)
+	}
+	if !strings.Contains(text, "## Conversation") || !strings.Contains(text, "### User") || !strings.Contains(text, "### Agent") {
+		t.Fatalf("checkpoint should contain markdown conversation headings:\n%s", text)
 	}
 	conversation := extractCheckpointConversation(text)
 	want := []checkpointConversationEntry{
@@ -1483,6 +1506,9 @@ func TestCheckpoint_ConversationReadsLegacyBundledCompaction(t *testing.T) {
 	}
 
 	result := checkpoint(history, 1, nil, "communicate")
+	if text := result[0].Message.Text(); strings.Contains(text, "<user_messages>") || strings.Contains(text, "<agent_responses>") {
+		t.Fatalf("legacy checkpoint should migrate to markdown conversation:\n%s", text)
+	}
 	conversation := extractCheckpointConversation(result[0].Message.Text())
 	want := []checkpointConversationEntry{
 		{Role: "user", Text: "first request"},
@@ -2142,25 +2168,20 @@ func TestCheckpoint_ExtractsWorkingNotes(t *testing.T) {
 	result := checkpoint(history, 1, nil, "communicate")
 	text := result[0].Message.Text()
 
-	// Should contain working_notes tag with the long analysis.
-	if !strings.Contains(text, "<working_notes>") {
-		t.Fatalf("checkpoint should contain <working_notes> tag:\n%s", text)
+	// Should contain a Markdown working notes section with the long analysis.
+	if !strings.Contains(text, "## Working Notes") {
+		t.Fatalf("checkpoint should contain markdown working notes:\n%s", text)
+	}
+	if strings.Contains(text, "<working_notes>") {
+		t.Fatalf("checkpoint should not use XML/JSON working notes:\n%s", text)
 	}
 	if !strings.Contains(text, longAnalysis) {
 		t.Fatalf("checkpoint should contain the long assistant analysis:\n%s", text)
 	}
 	// Short text should NOT appear in working notes.
-	if strings.Contains(text, `"ok"`) {
-		// Be careful — "ok" could appear in other contexts; check within the working_notes tag.
-		open := "<working_notes>"
-		close := "</working_notes>"
-		idx := strings.Index(text, open)
-		endIdx := strings.Index(text, close)
-		if idx >= 0 && endIdx > idx {
-			notes := text[idx+len(open) : endIdx]
-			if strings.Contains(notes, `"ok"`) {
-				t.Fatalf("working_notes should not contain short assistant text 'ok':\n%s", notes)
-			}
+	for _, note := range extractCheckpointWorkingNotes(text) {
+		if note == shortText {
+			t.Fatalf("working notes should not contain short assistant text %q:\n%v", shortText, note)
 		}
 	}
 }
@@ -2177,8 +2198,7 @@ func TestCheckpoint_WorkingNotes_CappedAt500Chars(t *testing.T) {
 	result := checkpoint(history, 1, nil, "communicate")
 	text := result[0].Message.Text()
 
-	// Extract the notes JSON.
-	notes := extractCheckpointJSON(text, "working_notes")
+	notes := extractCheckpointWorkingNotes(text)
 	if len(notes) == 0 {
 		t.Fatalf("expected working notes in checkpoint:\n%s", text)
 	}
@@ -2240,7 +2260,7 @@ func TestCheckpoint_WorkingNotes_ShedOldestFirst(t *testing.T) {
 	}
 
 	// Working notes should exist but some should be shed (not all 50 can fit).
-	notes := extractCheckpointJSON(text, "working_notes")
+	notes := extractCheckpointWorkingNotes(text)
 	if len(notes) == 0 {
 		t.Fatalf("expected working notes in checkpoint:\n%s", text)
 	}

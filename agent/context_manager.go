@@ -544,8 +544,8 @@ func clearThinking(history []Turn, preserveRecent int) {
 //
 // The checkpoint is a deterministic extraction — no LLM call. It captures user
 // messages verbatim, agent responses, file/tool metadata, task list, and skills.
-// User messages and agent responses are stored as an interleaved JSON
-// conversation for lossless round-tripping across repeated compactions.
+// User messages and agent responses are stored as an interleaved Markdown
+// conversation for readable round-tripping across repeated compactions.
 func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, resultToolName string) []Turn {
 	if len(history) <= preserveRecent {
 		return history
@@ -580,7 +580,7 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 			// Extract user messages and working notes from previous compaction turns
 			// so they survive across repeated compactions.
 			conversation = append(conversation, extractCheckpointConversation(t.Message.Text())...)
-			workingNotes = append(workingNotes, extractCheckpointJSON(t.Message.Text(), "working_notes")...)
+			workingNotes = append(workingNotes, extractCheckpointWorkingNotes(t.Message.Text())...)
 
 		case TurnUserInput:
 			text := t.Message.Text()
@@ -760,30 +760,29 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 
 	fixedStr := fixed.String()
 
-	// Budget for variable content (conversation + working notes as JSON).
+	// Budget for variable content (conversation + working notes as Markdown).
 	// Reserve space for [CONTEXT CHECKPOINT], [END CHECKPOINT], fixed sections,
-	// and the JSON key names.
+	// and the Markdown section headings.
 	overhead := len("[CONTEXT CHECKPOINT]\n") + len(fixedStr) + len("[END CHECKPOINT]\n") + 200
 	variableBudget := maxCheckpointChars - overhead
 	if variableBudget < 1000 {
 		variableBudget = 1000
 	}
 
-	// Encode conversation and working notes as JSON for
-	// lossless round-tripping. Shed oldest notes first, then oldest user
-	// or agent messages if needed to fit budget.
-	conversationJSON := marshalJSONCompact(conversation)
-	notesJSON := marshalJSONCompact(workingNotes)
+	// Encode conversation and working notes as Markdown. Shed oldest notes
+	// first, then oldest user or agent messages if needed to fit budget.
+	conversationMarkdown := renderCheckpointConversation(conversation)
+	notesMarkdown := renderCheckpointWorkingNotes(workingNotes)
 
-	for len(conversationJSON)+len(notesJSON) > variableBudget {
+	for len(conversationMarkdown)+len(notesMarkdown) > variableBudget {
 		if len(workingNotes) > 1 {
 			workingNotes = workingNotes[1:] // drop oldest note first
-			notesJSON = marshalJSONCompact(workingNotes)
+			notesMarkdown = renderCheckpointWorkingNotes(workingNotes)
 			continue
 		}
 		if len(conversation) > 1 {
 			conversation = conversation[1:] // then drop oldest conversation entry
-			conversationJSON = marshalJSONCompact(conversation)
+			conversationMarkdown = renderCheckpointConversation(conversation)
 			continue
 		}
 		break
@@ -793,11 +792,13 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 	var b strings.Builder
 	b.WriteString("[CONTEXT CHECKPOINT]\n")
 	b.WriteString(fixedStr)
-	if len(conversation) > 0 {
-		b.WriteString(fmt.Sprintf("\n<conversation>%s</conversation>\n", conversationJSON))
+	if conversationMarkdown != "" {
+		b.WriteString("\n")
+		b.WriteString(conversationMarkdown)
 	}
-	if len(workingNotes) > 0 {
-		b.WriteString(fmt.Sprintf("\n<working_notes>%s</working_notes>\n", notesJSON))
+	if notesMarkdown != "" {
+		b.WriteString("\n")
+		b.WriteString(notesMarkdown)
 	}
 	b.WriteString("[END CHECKPOINT]\n")
 
@@ -1002,7 +1003,88 @@ type checkpointConversationEntry struct {
 	Text string `json:"text"`
 }
 
+type checkpointMarkdownBlock struct {
+	Heading string
+	Text    string
+}
+
+func renderCheckpointConversation(entries []checkpointConversationEntry) string {
+	entries = cleanCheckpointConversation(entries)
+	if len(entries) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Conversation\n\n")
+	for _, entry := range entries {
+		switch entry.Role {
+		case "agent":
+			b.WriteString("### Agent\n\n")
+		default:
+			b.WriteString("### User\n\n")
+		}
+		writeMarkdownFence(&b, entry.Text)
+	}
+	return b.String()
+}
+
+func renderCheckpointWorkingNotes(notes []string) string {
+	clean := make([]string, 0, len(notes))
+	for _, note := range notes {
+		note = strings.TrimSpace(note)
+		if note != "" {
+			clean = append(clean, note)
+		}
+	}
+	if len(clean) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("## Working Notes\n\n")
+	for _, note := range clean {
+		b.WriteString("### Note\n\n")
+		writeMarkdownFence(&b, note)
+	}
+	return b.String()
+}
+
+func writeMarkdownFence(b *strings.Builder, text string) {
+	fence := markdownFence(text)
+	b.WriteString(fence)
+	b.WriteString("text\n")
+	b.WriteString(text)
+	if !strings.HasSuffix(text, "\n") {
+		b.WriteByte('\n')
+	}
+	b.WriteString(fence)
+	b.WriteString("\n\n")
+}
+
+func markdownFence(text string) string {
+	longest := 0
+	current := 0
+	for _, r := range text {
+		if r == '`' {
+			current++
+			if current > longest {
+				longest = current
+			}
+			continue
+		}
+		current = 0
+	}
+	if longest < 3 {
+		longest = 3
+	} else {
+		longest++
+	}
+	return strings.Repeat("`", longest)
+}
+
 func extractCheckpointConversation(text string) []checkpointConversationEntry {
+	if entries := extractMarkdownConversation(text); len(entries) > 0 {
+		return entries
+	}
+
 	open := "<conversation>"
 	close := "</conversation>"
 	if idx := strings.Index(text, open); idx >= 0 {
@@ -1026,6 +1108,133 @@ func extractCheckpointConversation(text string) []checkpointConversationEntry {
 		entries = append(entries, checkpointConversationEntry{Role: "agent", Text: msg})
 	}
 	return entries
+}
+
+func extractMarkdownConversation(text string) []checkpointConversationEntry {
+	section := markdownSection(text, "## Conversation")
+	if section == "" {
+		return nil
+	}
+	blocks := parseMarkdownBlocks(section)
+	entries := make([]checkpointConversationEntry, 0, len(blocks))
+	for _, block := range blocks {
+		role := strings.ToLower(strings.TrimSpace(block.Heading))
+		switch role {
+		case "user":
+			entries = append(entries, checkpointConversationEntry{Role: "user", Text: block.Text})
+		case "agent", "assistant":
+			entries = append(entries, checkpointConversationEntry{Role: "agent", Text: block.Text})
+		}
+	}
+	return cleanCheckpointConversation(entries)
+}
+
+func extractCheckpointWorkingNotes(text string) []string {
+	section := markdownSection(text, "## Working Notes")
+	if section != "" {
+		blocks := parseMarkdownBlocks(section)
+		notes := make([]string, 0, len(blocks))
+		for _, block := range blocks {
+			note := strings.TrimSpace(block.Text)
+			if note != "" {
+				notes = append(notes, note)
+			}
+		}
+		return notes
+	}
+	return extractCheckpointJSON(text, "working_notes")
+}
+
+func markdownSection(text, heading string) string {
+	start := -1
+	bodyStart := -1
+	prefix := heading + "\n"
+	if strings.HasPrefix(text, prefix) {
+		start = 0
+		bodyStart = len(prefix)
+	} else if idx := strings.Index(text, "\n"+prefix); idx >= 0 {
+		start = idx + 1
+		bodyStart = start + len(prefix)
+	}
+	if bodyStart < 0 {
+		return ""
+	}
+	rest := text[bodyStart:]
+	end := len(rest)
+	for _, marker := range []string{"\n## ", "\n[END CHECKPOINT]"} {
+		if idx := strings.Index(rest, marker); idx >= 0 && idx < end {
+			end = idx
+		}
+	}
+	return rest[:end]
+}
+
+func parseMarkdownBlocks(section string) []checkpointMarkdownBlock {
+	var blocks []checkpointMarkdownBlock
+	var heading string
+	var lines []string
+	inFence := false
+	fenceMarker := ""
+	sawFence := false
+
+	flush := func() {
+		if heading == "" {
+			return
+		}
+		text := strings.TrimSpace(strings.Join(lines, "\n"))
+		if text != "" {
+			blocks = append(blocks, checkpointMarkdownBlock{Heading: heading, Text: text})
+		}
+	}
+
+	for _, line := range strings.Split(section, "\n") {
+		if !inFence && strings.HasPrefix(line, "### ") {
+			flush()
+			heading = strings.TrimSpace(strings.TrimPrefix(line, "### "))
+			lines = nil
+			sawFence = false
+			continue
+		}
+		if heading == "" {
+			continue
+		}
+		if marker := markdownFenceMarker(line); marker != "" {
+			if !inFence {
+				inFence = true
+				fenceMarker = marker
+				sawFence = true
+				continue
+			}
+			if strings.TrimSpace(line) == fenceMarker {
+				inFence = false
+				fenceMarker = ""
+				continue
+			}
+		}
+		if inFence {
+			lines = append(lines, line)
+			continue
+		}
+		if !sawFence && strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+	flush()
+	return blocks
+}
+
+func markdownFenceMarker(line string) string {
+	count := 0
+	for _, r := range line {
+		if r != '`' {
+			break
+		}
+		count++
+	}
+	if count < 3 {
+		return ""
+	}
+	return strings.Repeat("`", count)
 }
 
 func cleanCheckpointConversation(entries []checkpointConversationEntry) []checkpointConversationEntry {
@@ -1079,12 +1288,6 @@ func extractCheckpointJSON(text, tag string) []string {
 	}
 
 	return nil
-}
-
-// marshalJSONCompact marshals a value as compact JSON.
-func marshalJSONCompact(v any) string {
-	b, _ := json.Marshal(v)
-	return string(b)
 }
 
 func countLines(s string) int {
