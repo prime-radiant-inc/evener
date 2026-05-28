@@ -502,6 +502,12 @@
     return out;
   }
 
+  function hookSystemLineText(item) {
+    item = item || {};
+    if (String(item.description || "").trim() !== "Hook") return "";
+    return String(item.text || "").replace(/\s+/g, " ").trim();
+  }
+
   function eventsFromItem(item, turnStatus) {
     if (!item) return [];
     const type = internalItemType(item.type);
@@ -516,6 +522,8 @@
     }
     if (type === "systemMessage") {
       if (!item.text) return [];
+      const hookLine = hookSystemLineText(item);
+      if (hookLine) return [["SYSTEM_LINE", { text: hookLine }]];
       return [["SYSTEM_MESSAGE", { title: item.description || "System", text: item.text || "" }]];
     }
     if (type === "agentMessage") {

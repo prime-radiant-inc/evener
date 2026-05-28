@@ -22,8 +22,10 @@ Covered agent events:
 - `SKILL_ACTIVATED`: a skill was activated.
 - `CONTEXT_COMPACTION`: compaction layer/count/token metadata.
 - `PLUGIN_LOADED`: plugin load summary.
-- `HOOK_START`: hook execution started.
-- `HOOK_END`: hook execution finished.
+- `HOOK_START`: not displayed; this is internal hook lifecycle/timing state.
+- `HOOK_END`: one-line completed-hook announcement for hooks that actually ran,
+  omitting duration/timing metadata. Clients render this as a slim system line
+  rather than an expandable system block.
 - `FORK_SUMMARY`: fork summary captured.
 - `PROMPT_LOADED`: prompt source loaded.
 - `ROUND_TIMINGS`: round-level timing telemetry.

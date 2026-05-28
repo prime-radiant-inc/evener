@@ -63,6 +63,16 @@ await scenario("system transcript blocks", [
   return { ok: true };
 });
 
+await scenario("slim system line", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["SYSTEM_LINE", { text: "SessionStart hook superpowers using-superpowers command exit 0" }],
+], ({ sysLines, steerings }) => {
+  if (sysLines.length !== 1) return { ok: false, detail: "expected 1 system-line, got " + sysLines.length };
+  if (sysLines[0] !== "SessionStart hook superpowers using-superpowers command exit 0") return { ok: false, detail: "wrong system-line: " + sysLines[0] };
+  if (steerings.length !== 0) return { ok: false, detail: "expected 0 steering blocks" };
+  return { ok: true };
+});
+
 // 1. Append action with multiple tasks
 await scenario("append 3 tasks", [
   ["SESSION_START", { session_id: "01TEST" }],

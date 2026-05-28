@@ -774,6 +774,9 @@
         case "SYSTEM_MESSAGE":
           this.appendSystemMessage(data);
           break;
+        case "SYSTEM_LINE":
+          this.appendSystemLine(data.text || data.message || "");
+          break;
         case "STEERING_INJECTED":
           this.appendSteeringMessage(data.text || imagePlaceholderForCount((data.images || []).length));
           break;
@@ -823,6 +826,16 @@
       body.textContent = text;
       el.append(summary, body);
       this.conversation.appendChild(el);
+    },
+
+    appendSystemLine(text) {
+      text = String(text || "").trim();
+      if (!text) return;
+      this.cheapToolCluster = null;
+      const line = document.createElement("div");
+      line.className = "system-line";
+      line.textContent = text;
+      this.conversation.appendChild(line);
     },
 
     appendUserMessage(text, entryIdx, images) {

@@ -340,11 +340,10 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 		data := eventData[agent.PluginLoadedData](event.Data)
 		return p.systemAnnouncement("plugin", "Plugin loaded", pluginLoadedAnnouncement(data))
 	case agent.EventHookStart:
-		data := eventData[agent.HookStartData](event.Data)
-		return p.systemAnnouncement("hook", "Hook started", hookStartAnnouncement(data))
+		return nil
 	case agent.EventHookEnd:
 		data := eventData[agent.HookEndData](event.Data)
-		return p.systemAnnouncement("hook", "Hook finished", hookEndAnnouncement(data))
+		return p.systemAnnouncement("hook", "Hook", hookEndAnnouncement(data))
 	case agent.EventForkSummary:
 		data := eventData[agent.ForkSummaryData](event.Data)
 		return p.systemAnnouncement("fork_summary", "Fork summary", forkSummaryAnnouncement(data))
@@ -545,42 +544,19 @@ func pluginLoadedAnnouncement(data agent.PluginLoadedData) string {
 	return fmt.Sprintf("Loaded plugin %s (%d skills, %d agents, %d MCP servers)", name, data.SkillCount, data.AgentCount, data.MCPCount)
 }
 
-func hookStartAnnouncement(data agent.HookStartData) string {
-	return hookAnnouncement("started", data.Event, data.HookType, data.Matcher, data.PluginName, 0, 0, false)
-}
-
 func hookEndAnnouncement(data agent.HookEndData) string {
-	return hookAnnouncement("finished", data.Event, data.HookType, data.Matcher, data.PluginName, data.ExitCode, data.DurationMS, true)
-}
-
-func hookAnnouncement(verb, event, hookType, matcher, pluginName string, exitCode int, durationMS int64, includeResult bool) string {
-	event = fallbackLabel(event, "hook")
-	hookType = strings.TrimSpace(hookType)
-	matcher = strings.TrimSpace(matcher)
-	pluginName = strings.TrimSpace(pluginName)
-
-	var b strings.Builder
-	b.WriteString(event)
-	b.WriteString(" hook ")
-	b.WriteString(verb)
-	if includeResult {
-		b.WriteString(fmt.Sprintf(" in %dms (exit %d)", durationMS, exitCode))
+	parts := []string{fallbackLabel(data.Event, "hook") + " hook"}
+	if pluginName := strings.TrimSpace(data.PluginName); pluginName != "" {
+		parts = append(parts, pluginName)
 	}
-	var details []string
-	if matcher != "" {
-		details = append(details, "matcher="+matcher)
+	if matcher := strings.TrimSpace(data.Matcher); matcher != "" {
+		parts = append(parts, matcher)
 	}
-	if pluginName != "" {
-		details = append(details, "plugin="+pluginName)
+	if hookType := strings.TrimSpace(data.HookType); hookType != "" {
+		parts = append(parts, hookType)
 	}
-	if hookType != "" {
-		details = append(details, "type="+hookType)
-	}
-	if len(details) > 0 {
-		b.WriteByte('\n')
-		b.WriteString(strings.Join(details, " "))
-	}
-	return b.String()
+	parts = append(parts, fmt.Sprintf("exit %d", data.ExitCode))
+	return strings.Join(parts, " ")
 }
 
 func forkSummaryAnnouncement(data agent.ForkSummaryData) string {

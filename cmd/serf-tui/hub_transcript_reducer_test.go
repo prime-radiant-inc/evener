@@ -2,6 +2,7 @@ package main
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/internal/appwire"
@@ -63,6 +64,26 @@ func TestHubTranscriptReducerRendersSystemMessage(t *testing.T) {
 	msg := reducer.messages[0]
 	if msg.Kind != msgSystem || msg.Text != "System prompt\nYou are Serf." || msg.ItemID != "item_system_prompt" {
 		t.Fatalf("system message = %+v", msg)
+	}
+}
+
+func TestHubTranscriptReducerRendersHookSystemMessageAsOneLine(t *testing.T) {
+	reducer := newHubTranscriptReducer(nil, nil, nil)
+
+	reducer.applyThreadItem(appwire.ThreadItem{
+		Type:        "systemMessage",
+		ID:          "item_hook_1",
+		TurnID:      "turn_1",
+		Description: "Hook",
+		Text:        "SessionStart hook superpowers using-superpowers command exit 0",
+	}, 1, true)
+
+	if len(reducer.messages) != 1 {
+		t.Fatalf("messages len=%d, want 1", len(reducer.messages))
+	}
+	msg := reducer.messages[0]
+	if msg.Kind != msgSystem || msg.Text != "SessionStart hook superpowers using-superpowers command exit 0" || strings.Contains(msg.Text, "\n") {
+		t.Fatalf("hook system message = %+v", msg)
 	}
 }
 

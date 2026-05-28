@@ -527,6 +527,8 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 		event       agent.SessionEvent
 		description string
 		contains    []string
+		notContains []string
+		singleLine  bool
 	}{
 		{
 			name:        "turn limit max turns",
@@ -573,20 +575,14 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 			contains:    []string{"superpowers", "5 skills", "2 agents", "1 MCP"},
 		},
 		{
-			name: "hook start",
-			event: agent.SessionEvent{Kind: agent.EventHookStart, SessionID: "th_1", Data: agent.HookStartData{
-				Event: "SessionStart", HookType: "command", Matcher: "using-superpowers", PluginName: "superpowers",
-			}},
-			description: "Hook started",
-			contains:    []string{"SessionStart", "using-superpowers", "superpowers", "command"},
-		},
-		{
 			name: "hook end",
 			event: agent.SessionEvent{Kind: agent.EventHookEnd, SessionID: "th_1", Data: agent.HookEndData{
 				Event: "SessionStart", HookType: "command", Matcher: "using-superpowers", PluginName: "superpowers", ExitCode: 0, DurationMS: 37,
 			}},
-			description: "Hook finished",
-			contains:    []string{"SessionStart", "using-superpowers", "superpowers", "exit 0", "37ms"},
+			description: "Hook",
+			contains:    []string{"SessionStart hook", "using-superpowers", "superpowers", "command", "exit 0"},
+			notContains: []string{"37ms"},
+			singleLine:  true,
 		},
 		{
 			name:        "fork summary",
@@ -636,7 +632,26 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 					t.Fatalf("item text %q does not contain %q", item.Text, want)
 				}
 			}
+			for _, unwanted := range tt.notContains {
+				if strings.Contains(item.Text, unwanted) {
+					t.Fatalf("item text %q contains unwanted %q", item.Text, unwanted)
+				}
+			}
+			if tt.singleLine && strings.Contains(item.Text, "\n") {
+				t.Fatalf("item text %q should be one line", item.Text)
+			}
 		})
+	}
+}
+
+func TestAppEventProjectorDoesNotDisplayHookStart(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	out := projector.Project(agent.SessionEvent{Kind: agent.EventHookStart, SessionID: "th_1", Data: agent.HookStartData{
+		Event: "SessionStart", HookType: "command", Matcher: "using-superpowers", PluginName: "superpowers",
+	}})
+
+	if len(out) != 0 {
+		t.Fatalf("hook start should not project appwire notifications: %+v", out)
 	}
 }
 

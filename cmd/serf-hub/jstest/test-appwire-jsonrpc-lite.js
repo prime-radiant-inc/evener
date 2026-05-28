@@ -166,6 +166,16 @@ vm.runInContext(SRC, context);
   });
   const systemEvent = replayedSystemEvents.find(([kind]) => kind === "SYSTEM_MESSAGE");
   assert(systemEvent && systemEvent[1].title === "System prompt" && systemEvent[1].text === "You are Serf.", "browser appwire replay should preserve system transcript blocks");
+  const replayedHookEvents = context.window.SerfAppwire.eventsFromThread({
+    id: "th_serf",
+    sessionId: "th_serf",
+    serf: { ref: "local:th_serf" },
+    turns: [{ items: [{ type: "systemMessage", description: "Hook", text: "SessionStart hook superpowers using-superpowers command exit 0" }] }],
+  });
+  assert(replayedHookEvents.some(([kind, data]) => kind === "SYSTEM_LINE" && data.text === "SessionStart hook superpowers using-superpowers command exit 0"),
+    "browser appwire replay should render hook messages as slim system lines");
+  assert(!replayedHookEvents.some(([kind]) => kind === "SYSTEM_MESSAGE"),
+    "browser appwire replay should not render hook messages as expandable system blocks");
   const completedTurnEvents = context.window.SerfAppwire.eventsFromNotification("turn/completed", {
     threadId: "th_codex",
     turn: {
