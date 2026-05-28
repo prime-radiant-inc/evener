@@ -450,8 +450,8 @@ func TestCachedSystemPromptComponents_SkillList(t *testing.T) {
 	}
 }
 
-func TestCachedSystemPromptComponents_ExtraToolsString(t *testing.T) {
-	// Verify the cached extra tools string is consistent.
+func TestCachedSystemPromptComponents_DoesNotDuplicateMCPToolDescriptions(t *testing.T) {
+	// Verify MCP tool descriptions stay in provider tool definitions, not duplicated in the cached prompt.
 	dir := t.TempDir()
 	c := llm.NewClient()
 	f := &fakeAdapter{name: "openai"}
@@ -476,12 +476,23 @@ func TestCachedSystemPromptComponents_ExtraToolsString(t *testing.T) {
 		},
 	})
 	sess.refreshSystemPromptCache()
+	sess.rebuildToolDefsCache()
 
-	if !strings.Contains(sess.cachedSystemPrompt, "mcp__test__tool") {
-		t.Errorf("cached system prompt should contain MCP tool name, got: %q", sess.cachedSystemPrompt)
+	if strings.Contains(sess.cachedSystemPrompt, "MCP tools:") {
+		t.Errorf("cached system prompt should not contain MCP tools header, got: %q", sess.cachedSystemPrompt)
 	}
-	if !strings.Contains(sess.cachedSystemPrompt, "MCP tools:") {
-		t.Errorf("cached system prompt should contain MCP tools header, got: %q", sess.cachedSystemPrompt)
+	if strings.Contains(sess.cachedSystemPrompt, "Test MCP tool") {
+		t.Errorf("cached system prompt should not duplicate MCP tool description, got: %q", sess.cachedSystemPrompt)
+	}
+
+	found := false
+	for _, td := range sess.allToolDefinitions(0) {
+		if td.Name == "mcp__test__tool" && td.Description == "Test MCP tool" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("MCP tool description should remain present in provider tool definitions")
 	}
 }
 

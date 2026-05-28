@@ -103,6 +103,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"task_list",
 			"web_fetch",
 			"communicate",
+			"use_skill",
 		})
 	})
 	t.Run("anthropic", func(t *testing.T) {
@@ -145,6 +146,25 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"use_skill",
 		})
 	})
+}
+
+func TestProviderProfiles_AllIncludeUseSkill(t *testing.T) {
+	profiles := []ProviderProfile{
+		NewOpenAIProfile("gpt-5.2"),
+		NewAnthropicProfile("claude-test"),
+		NewGeminiProfile("gemini-test"),
+		NewMiniMaxProfile("MiniMax-M2.7"),
+		NewOpenRouterAnthropicProfile("anthropic/claude-test"),
+		NewOpenAICompatProfile("openrouter", "openai/gpt-test", 0),
+		NewOpenAICompatProfile("kimi", "kimi-test", 0),
+		NewOpenAICompatProfile("glm", "glm-test", 0),
+		NewOpenAICompatProfile("ollama", "llama3", 0),
+	}
+	for _, p := range profiles {
+		t.Run(p.ID(), func(t *testing.T) {
+			assertHasTool(t, p, "use_skill")
+		})
+	}
 }
 
 func TestProviderProfiles_AddPurposeToEveryToolSchema(t *testing.T) {
@@ -229,8 +249,55 @@ func TestProviderProfiles_BuildSystemPrompt_IncludesEnvironment(t *testing.T) {
 		if !strings.Contains(sys, "<environment>") {
 			t.Errorf("%s prompt missing <environment> block", p.ID())
 		}
-		if !strings.Contains(sys, "Tools:") {
-			t.Errorf("%s prompt missing Tools section", p.ID())
+		if !strings.Contains(sys, "## Tool usage") {
+			t.Errorf("%s prompt missing tool usage section", p.ID())
+		}
+	}
+}
+
+func TestBuildSystemPrompt_DoesNotDuplicateProviderToolDescriptions(t *testing.T) {
+	p := NewOpenAIProfile("gpt-5.2")
+	data := PromptData{
+		WorkingDir: "/tmp",
+		Platform:   "linux",
+	}
+	data.ProfileTools = toolEntriesFromDefinitions(p.ToolDefinitions())
+
+	prompt := renderPromptForTest(t, p, data)
+
+	if strings.Contains(prompt, "Tools:") {
+		t.Fatalf("system prompt should not include provider tool description list already present in tool definitions:\n%s", prompt)
+	}
+	for _, td := range p.ToolDefinitions() {
+		desc := strings.TrimSpace(td.Description)
+		if desc != "" && strings.Contains(prompt, desc) {
+			t.Fatalf("system prompt duplicates provider tool description for %s: %q", td.Name, desc)
+		}
+	}
+}
+
+func TestBuildSystemPrompt_DoesNotDuplicateMCPOrCustomToolDescriptions(t *testing.T) {
+	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.2"), PromptData{
+		WorkingDir: "/tmp",
+		Platform:   "linux",
+		MCPTools: []ToolEntry{{
+			Name:        "mcp__server__search",
+			Description: "Searches the remote index with an MCP-backed provider tool.",
+		}},
+		CustomTools: []ToolEntry{{
+			Name:        "project_custom",
+			Description: "Runs a project-specific custom tool.",
+		}},
+	})
+
+	for _, unwanted := range []string{
+		"MCP tools:",
+		"Custom tools:",
+		"Searches the remote index with an MCP-backed provider tool.",
+		"Runs a project-specific custom tool.",
+	} {
+		if strings.Contains(prompt, unwanted) {
+			t.Fatalf("system prompt duplicates tool description content %q:\n%s", unwanted, prompt)
 		}
 	}
 }
@@ -1304,10 +1371,9 @@ func assertMissingTool(t *testing.T, p ProviderProfile, name string) {
 	}
 }
 
-// TestOpenAIProfile_SystemPromptContainsApplyPatchFormat verifies that the
 // TestAllProfiles_SystemPromptContainsSkillsGuidance verifies that all
 // profiles include skills guidance when skills are provided.
-// Anthropic/Gemini use use_skill tool, OpenAI uses read_file with file paths.
+// All provider profiles use the use_skill tool with directory paths.
 func TestAllProfiles_SystemPromptContainsSkillsGuidance(t *testing.T) {
 	profiles := map[string]ProviderProfile{
 		"openai":    NewOpenAIProfile("gpt-5.2"),
@@ -1324,7 +1390,7 @@ func TestAllProfiles_SystemPromptContainsSkillsGuidance(t *testing.T) {
 			Platform:    "linux",
 			Today:       "2026-02-09",
 			Skills:      skills,
-			HasUseSkill: name != "openai",
+			HasUseSkill: true,
 		})
 
 		// All profiles should render <skills> when skills are provided.
@@ -1332,24 +1398,11 @@ func TestAllProfiles_SystemPromptContainsSkillsGuidance(t *testing.T) {
 			t.Errorf("profile %q system prompt missing <skills> section", name)
 		}
 
-		// Anthropic and Gemini use the use_skill tool with directory paths.
-		if name != "openai" {
-			if !strings.Contains(prompt, "use_skill") {
-				t.Errorf("profile %q system prompt missing use_skill guidance", name)
-			}
-			if !strings.Contains(prompt, "/tmp/skills/test-skill]") {
-				t.Errorf("profile %q system prompt missing skill directory path", name)
-			}
+		if !strings.Contains(prompt, "use_skill") {
+			t.Errorf("profile %q system prompt missing use_skill guidance", name)
 		}
-
-		// OpenAI uses read_file with SKILL.md file paths.
-		if name == "openai" {
-			if !strings.Contains(prompt, "read_file") {
-				t.Errorf("profile %q system prompt missing read_file guidance for skills", name)
-			}
-			if !strings.Contains(prompt, "/tmp/skills/test-skill/SKILL.md") {
-				t.Errorf("profile %q system prompt missing skill file path", name)
-			}
+		if !strings.Contains(prompt, "/tmp/skills/test-skill]") {
+			t.Errorf("profile %q system prompt missing skill directory path", name)
 		}
 	}
 }
@@ -1386,7 +1439,7 @@ func TestBuildSystemPrompt_IncludesSkillsList(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPrompt_OpenAI_SkillsWithFilePaths(t *testing.T) {
+func TestBuildSystemPrompt_OpenAI_SkillsWithUseSkill(t *testing.T) {
 	p := NewOpenAIProfile("gpt-5.2")
 	skills := []SkillEntry{
 		{Name: "greet", Description: "Greeting skill", Dir: "/tmp/skills/greet", SkillFile: "/tmp/skills/greet/SKILL.md"},
@@ -1396,16 +1449,17 @@ func TestBuildSystemPrompt_OpenAI_SkillsWithFilePaths(t *testing.T) {
 		Platform:   "linux",
 		Today:      "2026-02-09",
 		Skills:     skills,
+		HasUseSkill: true,
 	})
 
 	if !strings.Contains(prompt, "<skill-catalog>") {
 		t.Error("OpenAI prompt should contain <skills> section")
 	}
-	if !strings.Contains(prompt, "/tmp/skills/greet/SKILL.md") {
-		t.Error("OpenAI prompt should include skill file paths for read_file")
+	if !strings.Contains(prompt, "Load a skill by calling use_skill with its name") {
+		t.Error("OpenAI prompt should instruct model to use use_skill for skills")
 	}
-	if !strings.Contains(prompt, "read_file") {
-		t.Error("OpenAI prompt should instruct model to use read_file for skills")
+	if !strings.Contains(prompt, "- greet: Greeting skill [/tmp/skills/greet]") {
+		t.Error("OpenAI prompt should include skill directory path for use_skill")
 	}
 }
 
@@ -1796,7 +1850,7 @@ func TestGeminiProfile_ContextWindow_Is1M(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPrompt_ExtraToolsBeforeProjectDocs(t *testing.T) {
+func TestBuildSystemPrompt_ToolUsageBeforeProjectDocs(t *testing.T) {
 	p := NewOpenAIProfile("gpt-5.2")
 	prompt := renderPromptForTest(t, p, PromptData{
 		WorkingDir:  "/tmp",
@@ -1811,19 +1865,12 @@ func TestBuildSystemPrompt_ExtraToolsBeforeProjectDocs(t *testing.T) {
 	if beginIdx < 0 {
 		t.Fatal("prompt missing project doc BEGIN marker")
 	}
-	mcpIdx := strings.Index(prompt, "mcp__server__tool1")
-	if mcpIdx < 0 {
-		t.Fatal("prompt missing extra tool description for mcp__server__tool1")
+	toolUsageIdx := strings.Index(prompt, "## Tool usage")
+	if toolUsageIdx < 0 {
+		t.Fatal("prompt missing tool usage section")
 	}
-	customIdx := strings.Index(prompt, "my_custom_tool")
-	if customIdx < 0 {
-		t.Fatal("prompt missing extra tool description for my_custom_tool")
-	}
-	if mcpIdx > beginIdx {
-		t.Errorf("extra tools (pos %d) must appear before project docs (pos %d)", mcpIdx, beginIdx)
-	}
-	if customIdx > beginIdx {
-		t.Errorf("custom tool (pos %d) must appear before project docs (pos %d)", customIdx, beginIdx)
+	if toolUsageIdx > beginIdx {
+		t.Errorf("tool usage (pos %d) must appear before project docs (pos %d)", toolUsageIdx, beginIdx)
 	}
 }
 

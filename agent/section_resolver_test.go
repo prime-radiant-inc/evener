@@ -548,10 +548,7 @@ func TestAnthropicProvider_UsesEditFile(t *testing.T) {
 		t.Fatalf("render error: %v", err)
 	}
 
-	// Anthropic should get edit_file docs, NOT apply_patch.
-	if !strings.Contains(result, "edit_file") {
-		t.Error("anthropic prompt should contain edit_file")
-	}
+	// Anthropic should not get OpenAI-specific apply_patch prompt text.
 	if strings.Contains(result, "apply_patch") {
 		t.Error("anthropic prompt should NOT contain apply_patch")
 	}
