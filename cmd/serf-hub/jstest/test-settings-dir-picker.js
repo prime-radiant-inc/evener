@@ -53,15 +53,28 @@ function assert(cond, msg) {
   inlineInput.addEventListener("input", () => { inlineInputEvents++; });
   inlineInput.addEventListener("change", () => { inlineChangeEvents++; });
 
-  inlineInput.dispatchEvent(new dom.window.FocusEvent("focus", { bubbles: true }));
+  inlineInput.focus();
   await new Promise((r) => setTimeout(r, 0));
+  assert(dom.window.document.activeElement === inlineInput,
+    "focusing inline dir input should keep focus on the original input so typing goes there");
+  assert(!dom.window.document.querySelector(".chip-picker-dir"),
+    "focusing inline dir input for typing should not open a secondary picker input");
+  inlineInput.value = "/typed";
+  inlineInput.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 180));
+  assert(inlineInput.value === "/typed", "typing should update the original inline dir input");
+  assert(dom.window.document.activeElement === inlineInput,
+    "typing in inline dir input should keep focus on the original input");
   let picker = dom.window.document.querySelector(".chip-picker-dir");
-  assert(picker, "focusing inline input should open shared .chip-picker-dir");
-  assert(calls[0] === "/tmp", "inline focus should call completeDirs with current input value, got " + calls[0]);
-  assert(picker.querySelector(".chip-picker-search").placeholder === "/custom/path",
-    "inline picker should use input placeholder");
+  assert(picker, "typing in inline input should open shared directory suggestions");
+  assert(!picker.querySelector(".chip-picker-search"),
+    "inline input suggestions should not create a secondary search input");
+  assert(calls[0] === "/typed", "inline autocomplete should call completeDirs with current input value, got " + calls[0]);
+  inlineInputEvents = 0;
+  inlineChangeEvents = 0;
+
   picker.querySelector(".chip-picker-dir-row").click();
-  assert(inlineInput.value === "/tmp/accepted", "clicking inline directory row should write accepted path to input");
+  assert(inlineInput.value === "/typed/accepted", "clicking inline directory row should write accepted path to input");
   assert(inlineInputEvents === 1, "clicking inline directory row should dispatch one input event");
   assert(inlineChangeEvents === 1, "clicking inline directory row should dispatch one change event");
   assert(!dom.window.document.querySelector(".chip-picker-dir"), "inline picker should close after accepting a row");

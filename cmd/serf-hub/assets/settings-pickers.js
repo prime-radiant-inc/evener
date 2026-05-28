@@ -176,18 +176,21 @@
 
   function writeDirInput(input, value) {
     input.value = value;
+    input.__spDirSuppressNextInput = true;
     input.dispatchEvent(new Event("input", { bubbles: true }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
-  function openSharedDirPicker(anchor, input) {
+  function openSharedDirPicker(anchor, input, opts) {
     if (!anchor || !input) return;
     if (!window.SerfDirPicker || typeof window.SerfDirPicker.open !== "function") return;
+    opts = opts || {};
     window.SerfDirPicker.open({
       anchor,
       currentValue: input.value || "",
       placeholder: input.placeholder || "/path/to/repo",
       minWidth: "360px",
+      inlineInput: opts.inline ? input : null,
       onAccept(value) { writeDirInput(input, value); },
     });
   }
@@ -196,14 +199,19 @@
     if (input.__spDirInit) return;
     input.__spDirInit = true;
 
-    input.addEventListener("focus", () => {
-      openSharedDirPicker(input, input);
+    input.addEventListener("input", () => {
+      if (input.__spDirSuppressNextInput) {
+        input.__spDirSuppressNextInput = false;
+        return;
+      }
+      if (!input.value) return;
+      openSharedDirPicker(input, input, { inline: true });
     });
     input.addEventListener("keydown", (e) => {
-      if (e.key !== "ArrowDown" && e.key !== "Enter") return;
+      if (e.key !== "ArrowDown") return;
       if (document.querySelector(".chip-picker-dir")) return;
       e.preventDefault();
-      openSharedDirPicker(input, input);
+      openSharedDirPicker(input, input, { inline: true });
     });
   }
 

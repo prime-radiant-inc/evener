@@ -55,11 +55,14 @@
     const picker = document.createElement("div");
     picker.className = "chip-picker chip-picker-dir";
 
-    const input = document.createElement("input");
-    input.className = "chip-picker-search";
-    input.placeholder = options.placeholder || "/path/to/repo";
-    input.value = options.currentValue || "";
-    picker.appendChild(input);
+    const inlineInput = options.inlineInput || null;
+    const input = inlineInput || document.createElement("input");
+    if (!inlineInput) {
+      input.className = "chip-picker-search";
+      input.placeholder = options.placeholder || "/path/to/repo";
+      input.value = options.currentValue || "";
+      picker.appendChild(input);
+    }
 
     const results = document.createElement("div");
     results.className = "chip-picker-results";
@@ -154,7 +157,7 @@
     picker.style.zIndex = "50";
     if (options.minWidth) picker.style.minWidth = options.minWidth;
 
-    input.focus();
+    if (!inlineInput) input.focus();
     fetchDirs(input.value);
     dismissOnOutsideClick(picker, close);
     return picker;
