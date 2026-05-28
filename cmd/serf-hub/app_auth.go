@@ -66,6 +66,12 @@ func newHubAuthControllerWithStore(_ string, store *credentials.Store) *hubAuthC
 	cfg := authopenai.DefaultConfig()
 	client := &http.Client{Timeout: cfg.HTTPTimeout}
 	stateDir := openAIStateDirFromEnv(authEnv)
+	// A nil store only occurs in tests that exercise read-only auth status;
+	// fall back to an empty in-memory store so status calls don't panic.
+	// Production always supplies a real store (writes to a "" path no-op).
+	if store == nil {
+		store, _ = credentials.LoadStore("")
+	}
 	return &hubAuthController{
 		stateDir:     stateDir,
 		authEnv:      authEnv,
@@ -278,40 +284,52 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 }
 
 func (c *hubAuthController) openAIStatus() (appwire.AuthStatusResponse, error) {
-	// Prefer a stored OAuth record over OPENAI_API_KEY: once a user explicitly
-	// signs in via `serf openai login`, that intent should win over an env
-	// fallback that may have been set globally. Mirrors the daemon-side
-	// Service.Status priority.
-	active := authopenai.AuthStatus{Source: authopenai.AuthSourceSignedOut}
+	// Precedence: stored OAuth record > credentials.toml file key >
+	// OPENAI_API_KEY env. OAuth wins so an explicit sign-in beats a stray
+	// file/env key; the file layer shadows env, like other providers.
 	record, err := authopenai.LoadAuth(c.stateDir)
 	hasRecord := false
 	switch {
 	case err == nil:
 		hasRecord = true
-		active = openAIStatusFromRecord(c.now(), record)
 	case errors.Is(err, authopenai.ErrAuthNotFound):
-		if strings.TrimSpace(c.authEnv["OPENAI_API_KEY"]) != "" {
-			active = authopenai.AuthStatus{
-				SignedIn: true,
-				Source:   authopenai.AuthSourceEnv,
-			}
-		}
+		// no OAuth layer
+	case errors.Is(err, authopenai.ErrAuthCorrupt):
+		// treat a corrupt record as absent; file/env layers still resolve
 	default:
 		return appwire.AuthStatusResponse{}, err
 	}
 
-	status := appwire.AuthStatusResponse{
-		Provider:     "openai",
-		Supported:    true,
-		SignedIn:     active.SignedIn,
-		ActiveSource: active.Source,
-		Email:        active.Email,
-		AccountID:    active.AccountID,
-		WorkspaceID:  active.WorkspaceID,
-		NeedsRefresh: active.NeedsRefresh,
-		NeedsLogin:   active.NeedsLogin,
+	hasFile, _ := c.creds.Layers("openai")
+	envSet := strings.TrimSpace(c.authEnv["OPENAI_API_KEY"]) != ""
+
+	var active authopenai.AuthStatus
+	switch {
+	case hasRecord:
+		active = openAIStatusFromRecord(c.now(), record)
+	case hasFile:
+		active = authopenai.AuthStatus{SignedIn: true, Source: string(credentials.SourceFile)}
+	case envSet:
+		active = authopenai.AuthStatus{SignedIn: true, Source: authopenai.AuthSourceEnv}
+	default:
+		active = authopenai.AuthStatus{Source: authopenai.AuthSourceSignedOut}
 	}
 
+	status := appwire.AuthStatusResponse{
+		Provider:      "openai",
+		Supported:     true,
+		SignedIn:      active.SignedIn,
+		ActiveSource:  active.Source,
+		Email:         active.Email,
+		AccountID:     active.AccountID,
+		WorkspaceID:   active.WorkspaceID,
+		NeedsRefresh:  active.NeedsRefresh,
+		NeedsLogin:    active.NeedsLogin,
+		HasStoredFile: hasFile,
+	}
+	if envSet {
+		status.EnvVar = "OPENAI_API_KEY"
+	}
 	if hasRecord {
 		status.HasStoredOAuth = true
 		status.StoredEmail = record.Email

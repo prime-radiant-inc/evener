@@ -396,3 +396,75 @@ func TestAuth_Status_AnthropicViaStore(t *testing.T) {
 		t.Errorf("AuthModes empty: %+v", got)
 	}
 }
+
+func TestAuth_OpenAI_Status_ReflectsStoredFileKey(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	c := newHubAuthControllerWithStore(dir, store)
+	c.stateDir = t.TempDir() // empty: no OAuth record
+	if err := store.Set("openai", "sk-test-123"); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
+	got, err := c.Status(appwire.AuthStatusParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !got.SignedIn || got.ActiveSource != string(credentials.SourceFile) || !got.HasStoredFile {
+		t.Fatalf("status=%+v, want signed-in file with HasStoredFile", got)
+	}
+	if got.HasStoredOAuth {
+		t.Fatalf("status=%+v, want no stored OAuth", got)
+	}
+}
+
+func TestAuth_OpenAI_Status_OAuthShadowsStoredFileKey(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	c := newHubAuthControllerWithStore(dir, store)
+	c.stateDir = t.TempDir()
+	if err := store.Set("openai", "sk-test-123"); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
+	if err := authopenai.SaveAuth(c.stateDir, authopenai.AuthRecord{
+		Version: 1, Provider: "openai", Source: authopenai.AuthSourceOAuth,
+		ObtainedAt: time.Now().Add(-time.Hour), TokenType: "Bearer",
+		AccessToken: "acc", RefreshToken: "ref",
+		Expiry: time.Now().Add(time.Hour), Email: "o@example.com",
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	got, err := c.Status(appwire.AuthStatusParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if got.ActiveSource != authopenai.AuthSourceOAuth || !got.HasStoredFile || !got.HasStoredOAuth {
+		t.Fatalf("status=%+v, want oauth active with file shadowed", got)
+	}
+}
+
+func TestAuth_OpenAI_Status_CorruptOAuthFallsBackToFile(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	c := newHubAuthControllerWithStore(dir, store)
+	c.stateDir = t.TempDir()
+	if err := store.Set("openai", "sk-test-123"); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
+	authPath := authopenai.AuthFilePath(c.stateDir)
+	if err := os.MkdirAll(filepath.Dir(authPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(authPath, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.Status(appwire.AuthStatusParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("Status returned error on corrupt record: %v", err)
+	}
+	if !got.SignedIn || got.ActiveSource != string(credentials.SourceFile) || !got.HasStoredFile {
+		t.Fatalf("status=%+v, want signed-in file (corrupt oauth treated as absent)", got)
+	}
+}
