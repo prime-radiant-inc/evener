@@ -1,8 +1,12 @@
 {{ if .IsGitRepo }}<git>
+This is a snapshot taken at session start and may be stale. Run git yourself for the current state.
 Branch: {{ .GitBranch }}
 Modified files: {{ .GitModifiedFiles }}
 Untracked files: {{ .GitUntrackedFiles }}
 {{ if .GitRecentCommitTitles }}Recent commits:
 {{ range .GitRecentCommitTitles }}- {{ . }}
 {{ end }}{{ end }}</git>
+{{ else }}<git>
+Not a git repository.
+</git>
 {{ end }}

@@ -1038,7 +1038,7 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs(t *testing.T) {
 		t.Fatalf("system prompt doc selection failed:\n%s", sys)
 	}
 	// Spec: system prompt includes environment context.
-	for _, want := range []string{"<environment>", "Working directory:", "Is git repository:", "Platform:", "Today's date:", "Knowledge cutoff:"} {
+	for _, want := range []string{"<environment>", "Working directory:", "Platform:", "Today's date:", "Knowledge cutoff:"} {
 		if !strings.Contains(sys, want) {
 			t.Fatalf("system prompt missing %q:\n%s", want, sys)
 		}
@@ -1956,9 +1956,8 @@ func TestSession_SystemPrompt_IncludesGitSnapshot_WhenInGitRepo(t *testing.T) {
 	}
 	sys := reqs[0].Messages[0].Text()
 	for _, want := range []string{
-		"Is git repository: true",
-		"Git branch:",
 		"<git>",
+		"Branch:",
 		"Modified files: 1",
 		"Untracked files: 1",
 		"Recent commits:",
@@ -1968,11 +1967,11 @@ func TestSession_SystemPrompt_IncludesGitSnapshot_WhenInGitRepo(t *testing.T) {
 			t.Fatalf("system prompt missing %q:\n%s", want, sys)
 		}
 	}
-	// Ensure Git branch has a value (not just an empty placeholder).
-	if i := strings.Index(sys, "Git branch: "); i >= 0 {
-		val := strings.TrimSpace(strings.Split(strings.TrimPrefix(sys[i:], "Git branch: "), "\n")[0])
+	// Ensure the branch has a value (not just an empty placeholder).
+	if i := strings.Index(sys, "Branch: "); i >= 0 {
+		val := strings.TrimSpace(strings.Split(strings.TrimPrefix(sys[i:], "Branch: "), "\n")[0])
 		if val == "" {
-			t.Fatalf("expected non-empty Git branch:\n%s", sys)
+			t.Fatalf("expected non-empty branch:\n%s", sys)
 		}
 	}
 }

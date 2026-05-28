@@ -445,6 +445,72 @@ func TestSystemTemplate_StructuralRegression(t *testing.T) {
 	}
 }
 
+// TestGitSection_SingleSourceAndLabeled verifies git state lives only in the
+// dedicated git section (never duplicated in the environment section), is labeled
+// as a session-start snapshot that may be stale, and reports when the working
+// directory is not a repository. The system prompt is cached, so an unlabeled
+// snapshot would be read as live.
+func TestGitSection_SingleSourceAndLabeled(t *testing.T) {
+	resolver := &SectionResolver{
+		provider: "openai",
+		agent:    "coordinator",
+		agentFS:  embeddedAgents,
+		sources:  []SectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+	}
+
+	inRepo := PromptData{Provider: "openai", Agent: "coordinator", WorkingDir: "/tmp/test", IsGitRepo: true, GitBranch: "main"}
+	git := resolver.Section("git", inRepo)
+	for _, want := range []string{"session start", "stale", "Branch: main"} {
+		if !strings.Contains(git, want) {
+			t.Errorf("git section missing %q, got:\n%s", want, git)
+		}
+	}
+
+	notRepo := PromptData{Provider: "openai", Agent: "coordinator", WorkingDir: "/tmp/test", IsGitRepo: false}
+	if git := resolver.Section("git", notRepo); !strings.Contains(git, "Not a git repository") {
+		t.Errorf("git section should report a non-repository working dir, got:\n%s", git)
+	}
+
+	// Git state must not be duplicated in the environment section.
+	env := resolver.Section("environment", inRepo)
+	for _, absent := range []string{"Git branch", "Is git repository"} {
+		if strings.Contains(env, absent) {
+			t.Errorf("environment section should not carry git state (%q), got:\n%s", absent, env)
+		}
+	}
+}
+
+// TestSubagentTemplate_IncludesGitSection verifies subagents receive the git
+// section — it is their only source of git state, so it must be present and
+// labeled rather than confined to the root system prompt.
+func TestSubagentTemplate_IncludesGitSection(t *testing.T) {
+	resolver := &SectionResolver{
+		provider: "openai",
+		agent:    "implementer",
+		agentFS:  embeddedAgents,
+		sources:  []SectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+	}
+	data := PromptData{
+		Provider:           "openai",
+		Agent:              "implementer",
+		RolePromptOverride: mustWorkflowAgent(t, "implementer").SystemPrompt,
+		WorkingDir:         "/tmp/test",
+		Model:              "gpt-5.4",
+		ResultToolName:     "communicate",
+		IsGitRepo:          true,
+		GitBranch:          "main",
+	}
+	result, _, err := resolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "subagent", data)
+	if err != nil {
+		t.Fatalf("render error: %v", err)
+	}
+	for _, want := range []string{"<git>", "Branch: main", "session start"} {
+		if !strings.Contains(result, want) {
+			t.Errorf("subagent prompt missing %q:\n%s", want, result)
+		}
+	}
+}
+
 func TestSubagentTemplate_StructuralRegression(t *testing.T) {
 	resolver := &SectionResolver{
 		provider: "openai",
