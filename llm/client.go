@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 type ProviderAdapter interface {
@@ -99,7 +100,9 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 		return adapter.Complete(ctx, req)
 	}
 	handler := applyMiddlewareComplete(base, c.middleware)
-	return handler(ctx, req)
+	resp, err := handler(ctx, req)
+	resp.Provider = prov
+	return resp, RewriteErrorProvider(err, prov)
 }
 
 func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
@@ -130,7 +133,11 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 		return adapter.Stream(ctx, req)
 	}
 	handler := applyMiddlewareStream(base, c.middleware)
-	return handler(ctx, req)
+	st, err := handler(ctx, req)
+	if err != nil {
+		return nil, RewriteErrorProvider(err, prov)
+	}
+	return newProviderStampStream(st, prov), nil
 }
 
 // Use appends middleware to the client. Middleware is applied in registration order
@@ -231,6 +238,51 @@ func (c *Client) ListModels(ctx context.Context, provider string) ([]ModelInfo, 
 		return nil, &ConfigurationError{Message: fmt.Sprintf("provider %s does not support listing models", provider)}
 	}
 	return lister.ListModels(ctx)
+}
+
+// providerStampStream wraps a Stream and rewrites the provider field on all
+// StreamEventResponse and StreamEventError events so that downstream consumers
+// see the instance name (req.Provider) rather than the adapter's hardcoded type.
+type providerStampStream struct {
+	inner    Stream
+	provider string
+	out      chan StreamEvent
+	once     sync.Once
+	done     chan struct{}
+}
+
+func newProviderStampStream(inner Stream, provider string) *providerStampStream {
+	s := &providerStampStream{
+		inner:    inner,
+		provider: provider,
+		out:      make(chan StreamEvent, 128),
+		done:     make(chan struct{}),
+	}
+	go s.pump()
+	return s
+}
+
+func (s *providerStampStream) pump() {
+	defer close(s.done)
+	defer close(s.out)
+	for ev := range s.inner.Events() {
+		if ev.Type == StreamEventError && ev.Err != nil {
+			ev.Err = RewriteErrorProvider(ev.Err, s.provider)
+		}
+		if ev.Type == StreamEventFinish && ev.Response != nil {
+			ev.Response.Provider = s.provider
+		}
+		s.out <- ev
+	}
+}
+
+func (s *providerStampStream) Events() <-chan StreamEvent { return s.out }
+
+func (s *providerStampStream) Close() error {
+	var err error
+	s.once.Do(func() { err = s.inner.Close() })
+	<-s.done
+	return err
 }
 
 func normalizeProviderName(name string) string {

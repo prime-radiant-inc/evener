@@ -460,6 +460,208 @@ func TestClient_SupportsToolChoice(t *testing.T) {
 	}
 }
 
+// --- Instance-name identity tests (PRI-1880) ---
+
+// instanceAdapter simulates an adapter that always hardcodes its own type
+// name ("openaicompat") into responses and errors, regardless of what instance
+// name it is registered under. The client must stamp the instance name
+// (req.Provider) over whatever the adapter returned.
+type instanceAdapter struct {
+	typeName string // hardcoded type, e.g. "openaicompat"
+	errToReturn error  // if set, Complete returns this error and Stream emits it
+}
+
+func (a *instanceAdapter) Name() string { return a.typeName }
+
+func (a *instanceAdapter) Complete(_ context.Context, req Request) (Response, error) {
+	if a.errToReturn != nil {
+		return Response{}, a.errToReturn
+	}
+	return Response{Provider: a.typeName, Model: req.Model, Message: Assistant("ok")}, nil
+}
+
+func (a *instanceAdapter) Stream(_ context.Context, req Request) (Stream, error) {
+	if a.errToReturn != nil {
+		// Emit the error as a stream event (as real adapters do at runtime).
+		sctx, cancel := context.WithCancel(context.Background())
+		_ = sctx
+		s := NewChanStream(cancel)
+		go func() {
+			defer s.CloseSend()
+			s.Send(StreamEvent{Type: StreamEventError, Err: a.errToReturn})
+		}()
+		return s, nil
+	}
+	sctx, cancel := context.WithCancel(context.Background())
+	_ = sctx
+	s := NewChanStream(cancel)
+	go func() {
+		defer s.CloseSend()
+		resp := Response{Provider: a.typeName, Model: req.Model, Message: Assistant("ok")}
+		s.Send(StreamEvent{Type: StreamEventFinish, Response: &resp})
+	}()
+	return s, nil
+}
+
+func TestClient_Complete_StampsInstanceNameOnResponse(t *testing.T) {
+	c := NewClient()
+	// Register adapter under instance name "work"; it hardcodes "openaicompat".
+	adapter := &instanceAdapter{typeName: "openaicompat"}
+	c.providers["work"] = adapter
+	c.defaultProvider = "work"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	resp, err := c.Complete(ctx, Request{Provider: "work", Model: "m", Messages: []Message{User("hi")}})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Provider != "work" {
+		t.Fatalf("resp.Provider = %q, want \"work\"", resp.Provider)
+	}
+}
+
+func TestClient_Complete_StampsInstanceNameOnError(t *testing.T) {
+	c := NewClient()
+	// Adapter hardcodes "openaicompat" in its error; instance name is "work".
+	adapterErr := ErrorFromHTTPStatus("openaicompat", 429, "rate limited", nil, nil)
+	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: adapterErr}
+	c.providers["work"] = adapter
+	c.defaultProvider = "work"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := c.Complete(ctx, Request{Provider: "work", Model: "m", Messages: []Message{User("hi")}})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var llmErr Error
+	if !errors.As(err, &llmErr) {
+		t.Fatalf("expected llm.Error, got %T: %v", err, err)
+	}
+	if llmErr.Provider() != "work" {
+		t.Fatalf("error provider = %q, want \"work\"", llmErr.Provider())
+	}
+}
+
+func TestClient_Complete_PreservesEmptyProviderError(t *testing.T) {
+	// Errors with empty Provider() (e.g. context.Canceled wrappers) must not
+	// be stamped — RewriteErrorProvider no-ops on them.
+	c := NewClient()
+	// A ConfigurationError has Provider()==""; the client must leave it alone.
+	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: &ConfigurationError{Message: "simulated"}}
+	c.providers["work"] = adapter
+	c.defaultProvider = "work"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := c.Complete(ctx, Request{Provider: "work", Model: "m", Messages: []Message{User("hi")}})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var llmErr Error
+	if !errors.As(err, &llmErr) {
+		t.Fatalf("expected llm.Error, got %T: %v", err, err)
+	}
+	if llmErr.Provider() != "" {
+		t.Fatalf("error provider = %q, want \"\" (empty provider must not be stamped)", llmErr.Provider())
+	}
+}
+
+func TestClient_Stream_StampsInstanceNameOnFinishResponse(t *testing.T) {
+	c := NewClient()
+	adapter := &instanceAdapter{typeName: "openaicompat"}
+	c.providers["work"] = adapter
+	c.defaultProvider = "work"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	st, err := c.Stream(ctx, Request{Provider: "work", Model: "m", Messages: []Message{User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer st.Close() //nolint:errcheck
+
+	var finishResp *Response
+	for ev := range st.Events() {
+		if ev.Type == StreamEventFinish && ev.Response != nil {
+			finishResp = ev.Response
+		}
+	}
+	if finishResp == nil {
+		t.Fatal("no StreamEventFinish with Response received")
+	}
+	if finishResp.Provider != "work" {
+		t.Fatalf("finish response provider = %q, want \"work\"", finishResp.Provider)
+	}
+}
+
+func TestClient_Stream_StampsInstanceNameOnErrorEvent(t *testing.T) {
+	c := NewClient()
+	adapterErr := ErrorFromHTTPStatus("openaicompat", 500, "server error", nil, nil)
+	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: adapterErr}
+	c.providers["work"] = adapter
+	c.defaultProvider = "work"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	st, err := c.Stream(ctx, Request{Provider: "work", Model: "m", Messages: []Message{User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream open: %v", err)
+	}
+	defer st.Close() //nolint:errcheck
+
+	var gotErr error
+	for ev := range st.Events() {
+		if ev.Type == StreamEventError {
+			gotErr = ev.Err
+		}
+	}
+	if gotErr == nil {
+		t.Fatal("expected StreamEventError, got none")
+	}
+	var llmErr Error
+	if !errors.As(gotErr, &llmErr) {
+		t.Fatalf("expected llm.Error, got %T: %v", gotErr, gotErr)
+	}
+	if llmErr.Provider() != "work" {
+		t.Fatalf("stream error provider = %q, want \"work\"", llmErr.Provider())
+	}
+}
+
+func TestClient_Stream_PreservesEmptyProviderErrorEvent(t *testing.T) {
+	c := NewClient()
+	// ConfigurationError has Provider()=="" — must not be stamped.
+	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: &ConfigurationError{Message: "simulated"}}
+	c.providers["work"] = adapter
+	c.defaultProvider = "work"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	st, err := c.Stream(ctx, Request{Provider: "work", Model: "m", Messages: []Message{User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream open: %v", err)
+	}
+	defer st.Close() //nolint:errcheck
+
+	var gotErr error
+	for ev := range st.Events() {
+		if ev.Type == StreamEventError {
+			gotErr = ev.Err
+		}
+	}
+	if gotErr == nil {
+		t.Fatal("expected StreamEventError, got none")
+	}
+	var llmErr Error
+	if !errors.As(gotErr, &llmErr) {
+		t.Fatalf("expected llm.Error, got %T: %v", gotErr, gotErr)
+	}
+	if llmErr.Provider() != "" {
+		t.Fatalf("stream error provider = %q, want \"\" (empty provider must not be stamped)", llmErr.Provider())
+	}
+}
+
 func TestClient_Stream_MiddlewareChainOrder(t *testing.T) {
 	c := NewClient()
 	a := &streamAdapter{name: "openai"}
