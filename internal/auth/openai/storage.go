@@ -11,8 +11,7 @@ import (
 )
 
 const (
-	authDirName  = "auth"
-	authFileName = "openai.json"
+	authDirName = "auth"
 )
 
 var (
@@ -37,8 +36,11 @@ type AuthRecord struct {
 	WorkspaceID  string    `json:"workspace_id,omitempty"`
 }
 
-func AuthFilePath(stateDir string) string {
-	return filepath.Join(stateDir, authDirName, authFileName)
+// AuthFilePath returns the path to the OAuth record for the given instance.
+// instanceName is the provider instance name (e.g. "openai", "work"); it
+// maps directly to the filename: auth/<instanceName>.json.
+func AuthFilePath(stateDir, instanceName string) string {
+	return filepath.Join(stateDir, authDirName, instanceName+".json")
 }
 
 func DefaultStateDir() string {
@@ -60,8 +62,8 @@ func DefaultStateDirWithStateHome(stateHome string) string {
 	return filepath.Join(base, "serf")
 }
 
-func LoadAuth(stateDir string) (AuthRecord, error) {
-	path := AuthFilePath(stateDir)
+func LoadAuth(stateDir, instanceName string) (AuthRecord, error) {
+	path := AuthFilePath(stateDir, instanceName)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -80,8 +82,8 @@ func LoadAuth(stateDir string) (AuthRecord, error) {
 	return record, nil
 }
 
-func SaveAuth(stateDir string, record AuthRecord) error {
-	path := AuthFilePath(stateDir)
+func SaveAuth(stateDir, instanceName string, record AuthRecord) error {
+	path := AuthFilePath(stateDir, instanceName)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create auth directory: %w", err)
 	}
@@ -92,7 +94,7 @@ func SaveAuth(stateDir string, record AuthRecord) error {
 	}
 	data = append(data, '\n')
 
-	tmp, err := os.CreateTemp(filepath.Dir(path), authFileName+".*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), instanceName+".json.*")
 	if err != nil {
 		return fmt.Errorf("create temp auth file: %w", err)
 	}
@@ -124,8 +126,8 @@ func SaveAuth(stateDir string, record AuthRecord) error {
 	return nil
 }
 
-func DeleteAuth(stateDir string) (bool, error) {
-	path := AuthFilePath(stateDir)
+func DeleteAuth(stateDir, instanceName string) (bool, error) {
+	path := AuthFilePath(stateDir, instanceName)
 	if err := os.Remove(path); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
@@ -139,8 +141,6 @@ func (r AuthRecord) Validate() error {
 	switch {
 	case r.Version != 1:
 		return fmt.Errorf("unsupported auth record version %d", r.Version)
-	case r.Provider != "openai":
-		return fmt.Errorf("unexpected auth provider %q", r.Provider)
 	case r.Source == "":
 		return fmt.Errorf("auth source is required")
 	case r.AccessToken == "":

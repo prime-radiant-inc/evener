@@ -229,7 +229,7 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 		record.AccountID = firstNonEmpty(claims.AccountID, record.AccountID)
 		record.WorkspaceID = firstNonEmpty(claims.WorkspaceID, record.WorkspaceID)
 	}
-	if err := authopenai.SaveAuth(c.stateDir, record); err != nil {
+	if err := authopenai.SaveAuth(c.stateDir, "openai", record); err != nil {
 		return appwire.AuthLoginCompleteResponse{}, err
 	}
 
@@ -257,11 +257,11 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 	// OpenAI: clear the effective layer only. An OAuth record (present or
 	// corrupt) shadows the stored file key, so remove it first; otherwise clear
 	// the file key. The env layer cannot be cleared.
-	_, loadErr := authopenai.LoadAuth(c.stateDir)
+	_, loadErr := authopenai.LoadAuth(c.stateDir, "openai")
 	hasRecord := loadErr == nil || errors.Is(loadErr, authopenai.ErrAuthCorrupt)
 	removed := false
 	if hasRecord {
-		r, delErr := authopenai.DeleteAuth(c.stateDir)
+		r, delErr := authopenai.DeleteAuth(c.stateDir, "openai")
 		if delErr != nil {
 			return appwire.AuthLogoutResponse{}, delErr
 		}
@@ -321,7 +321,7 @@ func (c *hubAuthController) openAIStatus() (appwire.AuthStatusResponse, error) {
 	// Precedence: stored OAuth record > credentials.toml file key >
 	// OPENAI_API_KEY env. OAuth wins so an explicit sign-in beats a stray
 	// file/env key; the file layer shadows env, like other providers.
-	record, err := authopenai.LoadAuth(c.stateDir)
+	record, err := authopenai.LoadAuth(c.stateDir, "openai")
 	hasRecord := false
 	switch {
 	case err == nil:
@@ -493,7 +493,7 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 		record.AccountID = firstNonEmpty(claims.AccountID, record.AccountID)
 		record.WorkspaceID = firstNonEmpty(claims.WorkspaceID, record.WorkspaceID)
 	}
-	if err := authopenai.SaveAuth(c.stateDir, record); err != nil {
+	if err := authopenai.SaveAuth(c.stateDir, "openai", record); err != nil {
 		return appwire.AuthDevicePollResponse{}, err
 	}
 	c.mu.Lock()

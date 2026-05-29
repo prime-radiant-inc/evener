@@ -396,7 +396,7 @@ func TestLoginWithDeviceEndToEnd(t *testing.T) {
 	svc := NewService(m.cfg(), m.server.Client())
 
 	var captured DeviceCode
-	status, err := svc.LoginWithDevice(context.Background(), stateDir, func(dc DeviceCode) {
+	status, err := svc.LoginWithDevice(context.Background(), stateDir, "openai", func(dc DeviceCode) {
 		captured = dc
 	})
 	if err != nil {
@@ -409,7 +409,7 @@ func TestLoginWithDeviceEndToEnd(t *testing.T) {
 		t.Fatalf("status = %+v, want signed-in oauth", status)
 	}
 
-	record, err := LoadAuth(stateDir)
+	record, err := LoadAuth(stateDir, "openai")
 	if err != nil {
 		t.Fatalf("LoadAuth: %v", err)
 	}
@@ -428,7 +428,7 @@ func TestLoginWithDeviceUsercodeFailureLeavesNoAuth(t *testing.T) {
 
 	svc := NewService(m.cfg(), m.server.Client())
 	called := false
-	_, err := svc.LoginWithDevice(context.Background(), stateDir, func(DeviceCode) { called = true })
+	_, err := svc.LoginWithDevice(context.Background(), stateDir, "openai", func(DeviceCode) { called = true })
 	if err == nil {
 		t.Fatal("LoginWithDevice() error = nil, want device-code disabled error")
 	}
@@ -436,7 +436,7 @@ func TestLoginWithDeviceUsercodeFailureLeavesNoAuth(t *testing.T) {
 		t.Fatal("showPrompt called despite usercode failure")
 	}
 
-	if _, err := LoadAuth(stateDir); !errors.Is(err, ErrAuthNotFound) {
+	if _, err := LoadAuth(stateDir, "openai"); !errors.Is(err, ErrAuthNotFound) {
 		t.Fatalf("LoadAuth error = %v, want ErrAuthNotFound", err)
 	}
 }
@@ -489,7 +489,7 @@ func TestLoginWithDeviceDetectsConcurrentSuccess(t *testing.T) {
 			Expiry:       time.Now().Add(time.Hour),
 			Email:        "parallel@example.com",
 		}
-		if err := SaveAuth(stateDir, record); err != nil {
+		if err := SaveAuth(stateDir, "openai", record); err != nil {
 			t.Errorf("SaveAuth(parallel record): %v", err)
 		}
 	}()
@@ -498,7 +498,7 @@ func TestLoginWithDeviceDetectsConcurrentSuccess(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	status, err := svc.LoginWithDevice(ctx, stateDir, func(DeviceCode) {})
+	status, err := svc.LoginWithDevice(ctx, stateDir, "openai", func(DeviceCode) {})
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("LoginWithDevice() error = %v, want nil", err)
@@ -554,7 +554,7 @@ func TestLoginWithDeviceDetectsConcurrentSuccessWrittenDuringPrompt(t *testing.T
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	status, err := svc.LoginWithDevice(ctx, stateDir, func(DeviceCode) {
+	status, err := svc.LoginWithDevice(ctx, stateDir, "openai", func(DeviceCode) {
 		record := AuthRecord{
 			Version:      1,
 			Provider:     "openai",
@@ -567,7 +567,7 @@ func TestLoginWithDeviceDetectsConcurrentSuccessWrittenDuringPrompt(t *testing.T
 			Expiry:       loginStart.Add(time.Hour),
 			Email:        "prompt-parallel@example.com",
 		}
-		if err := SaveAuth(stateDir, record); err != nil {
+		if err := SaveAuth(stateDir, "openai", record); err != nil {
 			t.Fatalf("SaveAuth(prompt parallel record): %v", err)
 		}
 	})
@@ -647,7 +647,7 @@ func TestLoginWithDeviceIgnoresPreExistingState(t *testing.T) {
 		Expiry:       time.Now().Add(time.Hour),
 		Email:        "stale@example.com",
 	}
-	if err := SaveAuth(stateDir, preExisting); err != nil {
+	if err := SaveAuth(stateDir, "openai", preExisting); err != nil {
 		t.Fatalf("SaveAuth(pre-existing) error = %v", err)
 	}
 
@@ -672,7 +672,7 @@ func TestLoginWithDeviceIgnoresPreExistingState(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	status, err := svc.LoginWithDevice(ctx, stateDir, func(DeviceCode) {})
+	status, err := svc.LoginWithDevice(ctx, stateDir, "openai", func(DeviceCode) {})
 	if err == nil {
 		t.Fatalf("LoginWithDevice() error = nil, want context cancellation; status = %+v", status)
 	}

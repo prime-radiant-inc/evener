@@ -15,17 +15,17 @@ import (
 	authopenai "primeradiant.com/serf/internal/auth/openai"
 )
 
-var openAILoginAction = func(ctx context.Context, stateDir string, openBrowser func(string) error, readRedirectURL func(context.Context) (string, error)) (authopenai.AuthStatus, error) {
+var openAILoginAction = func(ctx context.Context, stateDir, instanceName string, openBrowser func(string) error, readRedirectURL func(context.Context) (string, error)) (authopenai.AuthStatus, error) {
 	service := authopenai.NewService(authopenai.DefaultConfig(), nil).
 		WithBrowserOpener(openBrowser).
 		WithManualRedirectReader(readRedirectURL)
-	return service.Login(ctx, stateDir)
+	return service.Login(ctx, stateDir, instanceName)
 }
 
-var openAIDeviceLoginAction = func(ctx context.Context, stateDir string, showPrompt func(authopenai.DeviceCode), notifyConcurrentLogin func()) (authopenai.AuthStatus, error) {
+var openAIDeviceLoginAction = func(ctx context.Context, stateDir, instanceName string, showPrompt func(authopenai.DeviceCode), notifyConcurrentLogin func()) (authopenai.AuthStatus, error) {
 	service := authopenai.NewService(authopenai.DefaultConfig(), nil).
 		WithConcurrentLoginNotifier(notifyConcurrentLogin)
-	return service.LoginWithDevice(ctx, stateDir, showPrompt)
+	return service.LoginWithDevice(ctx, stateDir, instanceName, showPrompt)
 }
 
 var openAIBrowserOpener = func(rawURL string) error {
@@ -69,6 +69,7 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 
 	workDir := fs.String("dir", "", "working directory hint")
 	stateDir := fs.String("state-dir", "", "override OpenAI auth state directory")
+	instance := fs.String("instance", "openai", "instance name (default: openai)")
 	device := fs.Bool("device", false, "force device-code flow")
 	noDevice := fs.Bool("no-device", false, "force browser flow")
 	fs.Usage = func() {
@@ -83,6 +84,7 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 		fmt.Fprintf(stderr, "Flags:\n")
 		fmt.Fprintf(stderr, "  --dir <path>         Working directory hint\n")
 		fmt.Fprintf(stderr, "  --state-dir <path>   Override OpenAI auth state directory\n")
+		fmt.Fprintf(stderr, "  --instance <name>    Instance name (default: openai)\n")
 		fmt.Fprintf(stderr, "  --device             Force device-code flow (headless / remote sessions)\n")
 		fmt.Fprintf(stderr, "  --no-device          Force browser flow (overrides auto-detection)\n")
 	}
@@ -101,6 +103,10 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 	if err != nil {
 		return err
 	}
+	instanceName := strings.TrimSpace(*instance)
+	if instanceName == "" {
+		instanceName = "openai"
+	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
@@ -113,7 +119,7 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 	fmt.Fprintln(stdout)
 
 	if mode == "device" {
-		return runOpenAIDeviceLogin(ctx, resolvedStateDir, stdout, stderr)
+		return runOpenAIDeviceLogin(ctx, resolvedStateDir, instanceName, stdout, stderr)
 	}
 
 	openBrowser := func(rawURL string) error {
@@ -124,7 +130,7 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 		return nil
 	}
 
-	status, err := openAILoginAction(ctx, resolvedStateDir, openBrowser, makeRedirectURLReader(stdin, stderr))
+	status, err := openAILoginAction(ctx, resolvedStateDir, instanceName, openBrowser, makeRedirectURLReader(stdin, stderr))
 	if err != nil {
 		return err
 	}
@@ -181,7 +187,7 @@ func isHeadlessLoginFor(goos string, getenv func(string) string) bool {
 	}
 }
 
-func runOpenAIDeviceLogin(ctx context.Context, stateDir string, stdout, stderr io.Writer) error {
+func runOpenAIDeviceLogin(ctx context.Context, stateDir, instanceName string, stdout, stderr io.Writer) error {
 	prompt := func(dc authopenai.DeviceCode) {
 		// Machine-readable lines first, mirroring the browser flow's
 		// `url=` convention so scripts can parse stdout uniformly.
@@ -203,7 +209,7 @@ func runOpenAIDeviceLogin(ctx context.Context, stateDir string, stdout, stderr i
 		fmt.Fprintln(stderr, "Detected concurrent login; using existing OAuth state.")
 	}
 
-	status, err := openAIDeviceLoginAction(ctx, stateDir, prompt, notifyConcurrentLogin)
+	status, err := openAIDeviceLoginAction(ctx, stateDir, instanceName, prompt, notifyConcurrentLogin)
 	if err != nil {
 		return err
 	}

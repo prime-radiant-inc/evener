@@ -50,7 +50,7 @@ func TestLoginSucceedsViaCallbackPath(t *testing.T) {
 		}, nil
 	}
 
-	status, err := svc.Login(context.Background(), stateDir)
+	status, err := svc.Login(context.Background(), stateDir, "openai")
 	if err != nil {
 		t.Fatalf("Login() error = %v", err)
 	}
@@ -67,7 +67,7 @@ func TestLoginSucceedsViaCallbackPath(t *testing.T) {
 		t.Fatalf("callback port = %d, want %d", gotPort, DefaultCallbackPort)
 	}
 
-	record, err := LoadAuth(stateDir)
+	record, err := LoadAuth(stateDir, "openai")
 	if err != nil {
 		t.Fatalf("LoadAuth() error = %v", err)
 	}
@@ -109,7 +109,7 @@ func TestLoginSucceedsViaManualPastebackPath(t *testing.T) {
 		}, nil
 	}
 
-	status, err := svc.Login(context.Background(), stateDir)
+	status, err := svc.Login(context.Background(), stateDir, "openai")
 	if err != nil {
 		t.Fatalf("Login() error = %v", err)
 	}
@@ -120,7 +120,7 @@ func TestLoginSucceedsViaManualPastebackPath(t *testing.T) {
 		t.Fatalf("callback port = %d, want %d", gotPort, DefaultCallbackPort)
 	}
 
-	record, err := LoadAuth(stateDir)
+	record, err := LoadAuth(stateDir, "openai")
 	if err != nil {
 		t.Fatalf("LoadAuth() error = %v", err)
 	}
@@ -163,7 +163,7 @@ func TestLoginManualPastebackDoesNotWaitForCallbackTimeout(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	status, err := svc.Login(ctx, stateDir)
+	status, err := svc.Login(ctx, stateDir, "openai")
 	if err != nil {
 		t.Fatalf("Login() error = %v", err)
 	}
@@ -197,7 +197,7 @@ func TestLoginBrowserOpenFailureIsNonFatal(t *testing.T) {
 		}, nil
 	}
 
-	if _, err := svc.Login(context.Background(), stateDir); err != nil {
+	if _, err := svc.Login(context.Background(), stateDir, "openai"); err != nil {
 		t.Fatalf("Login() error = %v", err)
 	}
 }
@@ -206,7 +206,7 @@ func TestStatusSignedOutWhenNoEnvOrStoredAuth(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	svc := newTestService(time.Date(2026, 5, 7, 23, 30, 0, 0, time.UTC))
 
-	status, err := svc.Status(t.TempDir())
+	status, err := svc.Status(t.TempDir(), "openai")
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
@@ -224,7 +224,7 @@ func TestStatusUsesEnvWhenNoStoredAuth(t *testing.T) {
 	stateDir := t.TempDir()
 
 	svc := newTestService(time.Date(2026, 5, 7, 23, 35, 0, 0, time.UTC))
-	status, err := svc.Status(stateDir)
+	status, err := svc.Status(stateDir, "openai")
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
@@ -240,12 +240,12 @@ func TestStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	t.Setenv("OPENAI_API_KEY", "sk-env")
 	stateDir := t.TempDir()
-	if err := SaveAuth(stateDir, sampleAuthRecord()); err != nil {
+	if err := SaveAuth(stateDir, "openai", sampleAuthRecord()); err != nil {
 		t.Fatalf("SaveAuth() error = %v", err)
 	}
 
 	svc := newTestService(time.Date(2026, 5, 7, 23, 35, 0, 0, time.UTC))
-	status, err := svc.Status(stateDir)
+	status, err := svc.Status(stateDir, "openai")
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
@@ -260,12 +260,12 @@ func TestStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 func TestStatusReflectsStoredOAuthState(t *testing.T) {
 	stateDir := t.TempDir()
 	record := sampleAuthRecord()
-	if err := SaveAuth(stateDir, record); err != nil {
+	if err := SaveAuth(stateDir, "openai", record); err != nil {
 		t.Fatalf("SaveAuth() error = %v", err)
 	}
 
 	svc := newTestService(time.Date(2026, 5, 7, 23, 40, 0, 0, time.UTC))
-	status, err := svc.Status(stateDir)
+	status, err := svc.Status(stateDir, "openai")
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
@@ -282,19 +282,19 @@ func TestStatusReflectsStoredOAuthState(t *testing.T) {
 
 func TestLogoutDeletesStoredAuth(t *testing.T) {
 	stateDir := t.TempDir()
-	if err := SaveAuth(stateDir, sampleAuthRecord()); err != nil {
+	if err := SaveAuth(stateDir, "openai", sampleAuthRecord()); err != nil {
 		t.Fatalf("SaveAuth() error = %v", err)
 	}
 
 	svc := newTestService(time.Date(2026, 5, 7, 23, 45, 0, 0, time.UTC))
-	deleted, err := svc.Logout(stateDir)
+	deleted, err := svc.Logout(stateDir, "openai")
 	if err != nil {
 		t.Fatalf("Logout() error = %v", err)
 	}
 	if !deleted {
 		t.Fatal("Logout() deleted = false, want true")
 	}
-	if _, err := LoadAuth(stateDir); !errors.Is(err, ErrAuthNotFound) {
+	if _, err := LoadAuth(stateDir, "openai"); !errors.Is(err, ErrAuthNotFound) {
 		t.Fatalf("LoadAuth() error = %v, want ErrAuthNotFound", err)
 	}
 }
@@ -305,12 +305,12 @@ func TestRuntimeCredentialsStoredAuthWinsOverEnv(t *testing.T) {
 	stateDir := t.TempDir()
 	record := sampleAuthRecord()
 	record.AccessToken = "stored-access-token"
-	if err := SaveAuth(stateDir, record); err != nil {
+	if err := SaveAuth(stateDir, "openai", record); err != nil {
 		t.Fatalf("SaveAuth() error = %v", err)
 	}
 
 	svc := newTestService(time.Date(2026, 5, 7, 23, 50, 0, 0, time.UTC))
-	creds, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir)
+	creds, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir, "openai")
 	if err != nil {
 		t.Fatalf("ResolveRuntimeCredentials() error = %v", err)
 	}
@@ -328,7 +328,7 @@ func TestRuntimeCredentialsFallsBackToEnvWhenNoStoredAuth(t *testing.T) {
 	stateDir := t.TempDir()
 
 	svc := newTestService(time.Date(2026, 5, 7, 23, 50, 0, 0, time.UTC))
-	creds, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir)
+	creds, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir, "openai")
 	if err != nil {
 		t.Fatalf("ResolveRuntimeCredentials() error = %v", err)
 	}
@@ -345,12 +345,12 @@ func TestRuntimeCredentialsReturnsStoredTokenWhenFresh(t *testing.T) {
 	record := sampleAuthRecord()
 	record.AccessToken = "stored-access-token"
 	record.Expiry = time.Date(2026, 5, 8, 1, 0, 0, 0, time.UTC)
-	if err := SaveAuth(stateDir, record); err != nil {
+	if err := SaveAuth(stateDir, "openai", record); err != nil {
 		t.Fatalf("SaveAuth() error = %v", err)
 	}
 
 	svc := newTestService(time.Date(2026, 5, 7, 23, 55, 0, 0, time.UTC))
-	creds, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir)
+	creds, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir, "openai")
 	if err != nil {
 		t.Fatalf("ResolveRuntimeCredentials() error = %v", err)
 	}
@@ -369,7 +369,7 @@ func TestRuntimeCredentialsRefreshesNearExpiryToken(t *testing.T) {
 	record.AccessToken = "stale-access-token"
 	record.RefreshToken = "refresh-token"
 	record.Expiry = now.Add(2 * time.Minute)
-	if err := SaveAuth(stateDir, record); err != nil {
+	if err := SaveAuth(stateDir, "openai", record); err != nil {
 		t.Fatalf("SaveAuth() error = %v", err)
 	}
 
@@ -390,7 +390,7 @@ func TestRuntimeCredentialsRefreshesNearExpiryToken(t *testing.T) {
 		}, nil
 	}
 
-	creds, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir)
+	creds, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir, "openai")
 	if err != nil {
 		t.Fatalf("ResolveRuntimeCredentials() error = %v", err)
 	}
@@ -398,7 +398,7 @@ func TestRuntimeCredentialsRefreshesNearExpiryToken(t *testing.T) {
 		t.Fatalf("BearerToken = %q, want %q", creds.BearerToken, "fresh-access-token")
 	}
 
-	record, err = LoadAuth(stateDir)
+	record, err = LoadAuth(stateDir, "openai")
 	if err != nil {
 		t.Fatalf("LoadAuth() error = %v", err)
 	}
@@ -418,7 +418,7 @@ func TestRuntimeCredentialsRefreshFailureRequiresRelogin(t *testing.T) {
 	now := time.Date(2026, 5, 8, 0, 5, 0, 0, time.UTC)
 	record := sampleAuthRecord()
 	record.Expiry = now.Add(time.Minute)
-	if err := SaveAuth(stateDir, record); err != nil {
+	if err := SaveAuth(stateDir, "openai", record); err != nil {
 		t.Fatalf("SaveAuth() error = %v", err)
 	}
 
@@ -427,7 +427,7 @@ func TestRuntimeCredentialsRefreshFailureRequiresRelogin(t *testing.T) {
 		return TokenSet{}, errors.New("token endpoint returned status 400: invalid_grant")
 	}
 
-	_, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir)
+	_, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir, "openai")
 	if !errors.Is(err, ErrLoginRequired) {
 		t.Fatalf("ResolveRuntimeCredentials() error = %v, want ErrLoginRequired", err)
 	}
@@ -441,7 +441,7 @@ func TestRuntimeCredentialsTransientRefreshFailureDoesNotRequireRelogin(t *testi
 	now := time.Date(2026, 5, 8, 0, 10, 0, 0, time.UTC)
 	record := sampleAuthRecord()
 	record.Expiry = now.Add(time.Minute)
-	if err := SaveAuth(stateDir, record); err != nil {
+	if err := SaveAuth(stateDir, "openai", record); err != nil {
 		t.Fatalf("SaveAuth() error = %v", err)
 	}
 
@@ -450,7 +450,7 @@ func TestRuntimeCredentialsTransientRefreshFailureDoesNotRequireRelogin(t *testi
 		return TokenSet{}, errors.New("token endpoint returned status 503")
 	}
 
-	_, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir)
+	_, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir, "openai")
 	if err == nil {
 		t.Fatal("ResolveRuntimeCredentials() error = nil, want error")
 	}

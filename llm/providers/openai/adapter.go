@@ -75,17 +75,18 @@ func NewForInstance(params OpenAIInstanceParams) (*Adapter, error) {
 	// `serf openai login`, route through the ChatGPT/Codex backend instead of
 	// the key-based API. This mirrors the preference order in NewFromEnv.
 	authStateDir := authopenai.DefaultStateDirWithStateHome(params.StateHome)
+	instanceName := params.Name
 	service := authopenai.NewService(authopenai.DefaultConfig(), nil)
-	status, err := service.Status(authStateDir)
+	status, err := service.Status(authStateDir, instanceName)
 	if err != nil {
 		return nil, fmt.Errorf("load OpenAI auth: %w", err)
 	}
 	if status.SignedIn && status.Source == authopenai.AuthSourceOAuth {
-		creds, err := service.ResolveRuntimeCredentials(context.Background(), authStateDir)
+		creds, err := service.ResolveRuntimeCredentials(context.Background(), authStateDir, instanceName)
 		if err != nil {
 			return nil, fmt.Errorf("resolve OpenAI auth: %w", err)
 		}
-		status, err = service.Status(authStateDir)
+		status, err = service.Status(authStateDir, instanceName)
 		if err != nil {
 			return nil, fmt.Errorf("refresh OpenAI auth status: %w", err)
 		}
@@ -98,7 +99,7 @@ func NewForInstance(params OpenAIInstanceParams) (*Adapter, error) {
 			accountID = strings.TrimSpace(status.WorkspaceID)
 		}
 		if accountID == "" {
-			record, loadErr := authopenai.LoadAuth(authStateDir)
+			record, loadErr := authopenai.LoadAuth(authStateDir, instanceName)
 			if loadErr == nil {
 				if claims, parseErr := authopenai.ParseIDTokenClaims(record.IDToken); parseErr == nil {
 					accountID = strings.TrimSpace(claims.AccountID)

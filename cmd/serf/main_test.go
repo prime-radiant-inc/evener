@@ -133,7 +133,7 @@ func TestOpenAIDispatchesFromTopLevel(t *testing.T) {
 	origStatus := openAIStatusAction
 	t.Cleanup(func() { openAIStatusAction = origStatus })
 
-	openAIStatusAction = func(string) (authopenai.AuthStatus, error) {
+	openAIStatusAction = func(string, string) (authopenai.AuthStatus, error) {
 		return authopenai.AuthStatus{
 			SignedIn: true,
 			Source:   authopenai.AuthSourceEnv,
@@ -291,7 +291,7 @@ func TestOpenAILoginPrintsURLAndSupportsManualFallback(t *testing.T) {
 		}
 		return nil
 	}
-	openAILoginAction = func(ctx context.Context, gotStateDir string, openBrowser func(string) error, readRedirectURL func(context.Context) (string, error)) (authopenai.AuthStatus, error) {
+	openAILoginAction = func(ctx context.Context, gotStateDir string, _ string, openBrowser func(string) error, readRedirectURL func(context.Context) (string, error)) (authopenai.AuthStatus, error) {
 		if gotStateDir != stateDir {
 			t.Fatalf("stateDir = %q, want %q", gotStateDir, stateDir)
 		}
@@ -334,7 +334,7 @@ func TestOpenAIDeviceLoginPrintsCodeAndStatus(t *testing.T) {
 	origDevice := openAIDeviceLoginAction
 	t.Cleanup(func() { openAIDeviceLoginAction = origDevice })
 
-	openAIDeviceLoginAction = func(ctx context.Context, gotStateDir string, showPrompt func(authopenai.DeviceCode), notifyConcurrentLogin func()) (authopenai.AuthStatus, error) {
+	openAIDeviceLoginAction = func(ctx context.Context, gotStateDir string, _ string, showPrompt func(authopenai.DeviceCode), notifyConcurrentLogin func()) (authopenai.AuthStatus, error) {
 		if gotStateDir != stateDir {
 			t.Fatalf("stateDir = %q, want %q", gotStateDir, stateDir)
 		}
@@ -528,7 +528,7 @@ func TestOpenAILoginAutoSelectsDeviceWhenHeadless(t *testing.T) {
 	})
 
 	deviceCalled := false
-	openAIDeviceLoginAction = func(ctx context.Context, gotStateDir string, showPrompt func(authopenai.DeviceCode), _ func()) (authopenai.AuthStatus, error) {
+	openAIDeviceLoginAction = func(ctx context.Context, gotStateDir string, _ string, showPrompt func(authopenai.DeviceCode), _ func()) (authopenai.AuthStatus, error) {
 		deviceCalled = true
 		if gotStateDir != stateDir {
 			t.Fatalf("stateDir = %q, want %q", gotStateDir, stateDir)
@@ -543,7 +543,7 @@ func TestOpenAILoginAutoSelectsDeviceWhenHeadless(t *testing.T) {
 			Email:    "auto@example.com",
 		}, nil
 	}
-	openAILoginAction = func(ctx context.Context, _ string, _ func(string) error, _ func(context.Context) (string, error)) (authopenai.AuthStatus, error) {
+	openAILoginAction = func(ctx context.Context, _ string, _ string, _ func(string) error, _ func(context.Context) (string, error)) (authopenai.AuthStatus, error) {
 		t.Fatal("openAILoginAction (browser) called, want device path")
 		return authopenai.AuthStatus{}, nil
 	}
@@ -577,7 +577,7 @@ func TestOpenAIStatusIsCompactAndScriptFriendly(t *testing.T) {
 	t.Cleanup(func() { openAIStatusAction = origStatus })
 
 	expiry := time.Date(2026, 5, 8, 1, 2, 3, 0, time.UTC)
-	openAIStatusAction = func(gotStateDir string) (authopenai.AuthStatus, error) {
+	openAIStatusAction = func(gotStateDir string, _ string) (authopenai.AuthStatus, error) {
 		if gotStateDir != stateDir {
 			t.Fatalf("stateDir = %q, want %q", gotStateDir, stateDir)
 		}
@@ -612,7 +612,7 @@ func TestOpenAILogoutDeletesOnlySerfOwnedAuthState(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	stateDir := t.TempDir()
 
-	if err := authopenai.SaveAuth(stateDir, authopenai.AuthRecord{
+	if err := authopenai.SaveAuth(stateDir, "openai", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -636,7 +636,7 @@ func TestOpenAILogoutDeletesOnlySerfOwnedAuthState(t *testing.T) {
 		t.Fatalf("runOpenAI() error = %v", err)
 	}
 
-	if _, err := os.Stat(authopenai.AuthFilePath(stateDir)); !os.IsNotExist(err) {
+	if _, err := os.Stat(authopenai.AuthFilePath(stateDir, "openai")); !os.IsNotExist(err) {
 		t.Fatalf("auth file stat error = %v, want not exist", err)
 	}
 	if _, err := os.Stat(keepPath); err != nil {

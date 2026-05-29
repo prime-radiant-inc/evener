@@ -600,7 +600,7 @@ func TestProviderCredentialPreflightAcceptsStoredOpenAIOAuth(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", xdgStateHome)
 	t.Setenv("OPENAI_API_KEY", "")
 	stateDir := authopenai.DefaultStateDirWithStateHome(xdgStateHome)
-	if err := authopenai.SaveAuth(stateDir, authopenai.AuthRecord{
+	if err := authopenai.SaveAuth(stateDir, "openai", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -626,7 +626,7 @@ func TestProviderCredentialPreflightUsesLaunchHomeForOpenAIOAuth(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	home := t.TempDir()
 	stateDir := filepath.Join(home, ".local", "state", "serf")
-	if err := authopenai.SaveAuth(stateDir, authopenai.AuthRecord{
+	if err := authopenai.SaveAuth(stateDir, "openai", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -652,7 +652,7 @@ func TestProviderCredentialPreflightDoesNotUseHubEnvWhenLaunchClearsXDG(t *testi
 	oaitest.IsolateOpenAIAuth(t)
 	hubStateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", hubStateHome)
-	if err := authopenai.SaveAuth(authopenai.DefaultStateDirWithStateHome(hubStateHome), authopenai.AuthRecord{
+	if err := authopenai.SaveAuth(authopenai.DefaultStateDirWithStateHome(hubStateHome), "openai", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,

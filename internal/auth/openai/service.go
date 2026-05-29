@@ -128,7 +128,7 @@ func (s *Service) WithManualRedirectReader(readRedirectURL func(context.Context)
 	return s
 }
 
-func (s *Service) Login(ctx context.Context, stateDir string) (AuthStatus, error) {
+func (s *Service) Login(ctx context.Context, stateDir, instanceName string) (AuthStatus, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -209,7 +209,7 @@ func (s *Service) Login(ctx context.Context, stateDir string) (AuthStatus, error
 		applyClaims(&record, claims)
 	}
 
-	if err := SaveAuth(stateDir, record); err != nil {
+	if err := SaveAuth(stateDir, instanceName, record); err != nil {
 		return AuthStatus{}, err
 	}
 	return s.statusFromRecord(record), nil
@@ -220,7 +220,7 @@ func (s *Service) Login(ctx context.Context, stateDir string) (AuthStatus, error
 // verification URL and short user code that the user must enter on a separate
 // device. PollDeviceAuth then blocks until the user completes the flow or the
 // 15-minute window expires.
-func (s *Service) LoginWithDevice(ctx context.Context, stateDir string, showPrompt func(DeviceCode)) (AuthStatus, error) {
+func (s *Service) LoginWithDevice(ctx context.Context, stateDir, instanceName string, showPrompt func(DeviceCode)) (AuthStatus, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -268,7 +268,7 @@ func (s *Service) LoginWithDevice(ctx context.Context, stateDir string, showProm
 	watcherDone := make(chan struct{})
 	go func() {
 		defer close(watcherDone)
-		s.watchForConcurrentLogin(pollCtx, stateDir, startedAt, func(r AuthRecord) {
+		s.watchForConcurrentLogin(pollCtx, stateDir, instanceName, startedAt, func(r AuthRecord) {
 			markParallel(r)
 			cancelPoll()
 		})
@@ -299,7 +299,7 @@ func (s *Service) LoginWithDevice(ctx context.Context, stateDir string, showProm
 		applyClaims(&record, claims)
 	}
 
-	if err := SaveAuth(stateDir, record); err != nil {
+	if err := SaveAuth(stateDir, instanceName, record); err != nil {
 		return AuthStatus{}, err
 	}
 	return s.statusFromRecord(record), nil
@@ -315,7 +315,7 @@ func (s *Service) LoginWithDevice(ctx context.Context, stateDir string, showProm
 //
 // LoadAuth is used (rather than os.Stat + ModTime) so a half-written file
 // caught mid-rename simply fails validation and the watcher keeps polling.
-func (s *Service) watchForConcurrentLogin(ctx context.Context, stateDir string, startedAt time.Time, onDetected func(AuthRecord)) {
+func (s *Service) watchForConcurrentLogin(ctx context.Context, stateDir, instanceName string, startedAt time.Time, onDetected func(AuthRecord)) {
 	interval := s.concurrentLoginWatchInterval
 	if interval <= 0 {
 		interval = defaultConcurrentLoginWatchInterval
@@ -329,7 +329,7 @@ func (s *Service) watchForConcurrentLogin(ctx context.Context, stateDir string, 
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			record, err := LoadAuth(stateDir)
+			record, err := LoadAuth(stateDir, instanceName)
 			if err != nil {
 				// Missing, corrupt, or mid-write — nothing to do; the next
 				// tick will retry.
@@ -347,11 +347,11 @@ func (s *Service) watchForConcurrentLogin(ctx context.Context, stateDir string, 
 	}
 }
 
-func (s *Service) Status(stateDir string) (AuthStatus, error) {
+func (s *Service) Status(stateDir, instanceName string) (AuthStatus, error) {
 	// Prefer a stored OAuth record over OPENAI_API_KEY: once a user explicitly
 	// signs in via `serf openai login`, that intent should win over an env
 	// fallback that may have been set globally.
-	record, err := LoadAuth(stateDir)
+	record, err := LoadAuth(stateDir, instanceName)
 	switch {
 	case err == nil:
 		return s.statusFromRecord(record), nil
@@ -371,16 +371,16 @@ func (s *Service) Status(stateDir string) (AuthStatus, error) {
 	return AuthStatus{Source: AuthSourceSignedOut}, nil
 }
 
-func (s *Service) Logout(stateDir string) (bool, error) {
-	return DeleteAuth(stateDir)
+func (s *Service) Logout(stateDir, instanceName string) (bool, error) {
+	return DeleteAuth(stateDir, instanceName)
 }
 
-func (s *Service) ResolveRuntimeCredentials(ctx context.Context, stateDir string) (RuntimeCredentials, error) {
+func (s *Service) ResolveRuntimeCredentials(ctx context.Context, stateDir, instanceName string) (RuntimeCredentials, error) {
 	// Prefer a stored OAuth record over OPENAI_API_KEY. We only fall back to env
 	// when there is no stored auth at all; if a record exists but cannot be
 	// refreshed, surface that error instead of silently routing through env —
 	// the user explicitly signed in and would be surprised otherwise.
-	record, err := LoadAuth(stateDir)
+	record, err := LoadAuth(stateDir, instanceName)
 	if err != nil {
 		if errors.Is(err, ErrAuthNotFound) {
 			if envToken := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); envToken != "" {
@@ -421,7 +421,7 @@ func (s *Service) ResolveRuntimeCredentials(ctx context.Context, stateDir string
 		applyClaims(&refreshed, claims)
 	}
 
-	if err := SaveAuth(stateDir, refreshed); err != nil {
+	if err := SaveAuth(stateDir, instanceName, refreshed); err != nil {
 		return RuntimeCredentials{}, err
 	}
 	return RuntimeCredentials{

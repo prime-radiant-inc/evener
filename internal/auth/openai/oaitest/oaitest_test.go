@@ -22,10 +22,10 @@ func TestIsolateOpenAIAuthReturnsStateDirForStorage(t *testing.T) {
 		Email:        "user@example.com",
 	}
 
-	if err := authopenai.SaveAuth(stateDir, record); err != nil {
+	if err := authopenai.SaveAuth(stateDir, "openai", record); err != nil {
 		t.Fatalf("SaveAuth() error = %v", err)
 	}
-	loaded, err := authopenai.LoadAuth(stateDir)
+	loaded, err := authopenai.LoadAuth(stateDir, "openai")
 	if err != nil {
 		t.Fatalf("LoadAuth() error = %v", err)
 	}

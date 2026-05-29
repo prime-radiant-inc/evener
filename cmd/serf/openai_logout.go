@@ -9,8 +9,8 @@ import (
 	authopenai "primeradiant.com/serf/internal/auth/openai"
 )
 
-var openAILogoutAction = func(stateDir string) (bool, error) {
-	return authopenai.NewService(authopenai.DefaultConfig(), nil).Logout(stateDir)
+var openAILogoutAction = func(stateDir, instanceName string) (bool, error) {
+	return authopenai.NewService(authopenai.DefaultConfig(), nil).Logout(stateDir, instanceName)
 }
 
 func runOpenAILogout(args []string, stdout, stderr io.Writer) error {
@@ -19,12 +19,14 @@ func runOpenAILogout(args []string, stdout, stderr io.Writer) error {
 
 	workDir := fs.String("dir", "", "working directory hint")
 	stateDir := fs.String("state-dir", "", "override OpenAI auth state directory")
+	instance := fs.String("instance", "openai", "instance name (default: openai)")
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, "Usage: serf openai logout [flags]\n\n")
 		fmt.Fprintf(stderr, "Delete Serf's locally stored OpenAI OAuth state.\n\n")
 		fmt.Fprintf(stderr, "Flags:\n")
 		fmt.Fprintf(stderr, "  --dir <path>         Working directory hint\n")
 		fmt.Fprintf(stderr, "  --state-dir <path>   Override OpenAI auth state directory\n")
+		fmt.Fprintf(stderr, "  --instance <name>    Instance name (default: openai)\n")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -38,13 +40,17 @@ func runOpenAILogout(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	instanceName := strings.TrimSpace(*instance)
+	if instanceName == "" {
+		instanceName = "openai"
+	}
 
-	deleted, err := openAILogoutAction(resolvedStateDir)
+	deleted, err := openAILogoutAction(resolvedStateDir, instanceName)
 	if err != nil {
 		return err
 	}
 
-	status, err := openAIStatusAction(resolvedStateDir)
+	status, err := openAIStatusAction(resolvedStateDir, instanceName)
 	if err != nil {
 		return err
 	}

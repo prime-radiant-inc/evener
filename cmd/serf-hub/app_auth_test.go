@@ -23,7 +23,7 @@ func TestHubRPCAuthStatusUsesUserScopedOpenAIAuth(t *testing.T) {
 	xdgStateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", xdgStateHome)
 	userStateDir := authopenai.DefaultStateDirWithStateHome(xdgStateHome)
-	if err := authopenai.SaveAuth(userStateDir, authopenai.AuthRecord{
+	if err := authopenai.SaveAuth(userStateDir, "openai", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -67,7 +67,7 @@ func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "env-token")
 	xdgStateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", xdgStateHome)
-	if err := authopenai.SaveAuth(authopenai.DefaultStateDirWithStateHome(xdgStateHome), authopenai.AuthRecord{
+	if err := authopenai.SaveAuth(authopenai.DefaultStateDirWithStateHome(xdgStateHome), "openai", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -149,7 +149,7 @@ func TestHubRPCAuthStatusReportsOAuthRefreshAndLoginStates(t *testing.T) {
 			ctrl := newHubAuthController(map[string]string{"OPENAI_API_KEY": ""})
 			ctrl.stateDir = t.TempDir()
 			ctrl.now = func() time.Time { return now }
-			if err := authopenai.SaveAuth(ctrl.stateDir, authopenai.AuthRecord{
+			if err := authopenai.SaveAuth(ctrl.stateDir, "openai", authopenai.AuthRecord{
 				Version:      1,
 				Provider:     "openai",
 				Source:       authopenai.AuthSourceOAuth,
@@ -236,7 +236,7 @@ func TestHubRPCAuthLogoutRemovesUserScopedOpenAIAuth(t *testing.T) {
 	xdgStateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", xdgStateHome)
 	userStateDir := authopenai.DefaultStateDirWithStateHome(xdgStateHome)
-	if err := authopenai.SaveAuth(userStateDir, authopenai.AuthRecord{
+	if err := authopenai.SaveAuth(userStateDir, "openai", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -265,7 +265,7 @@ func TestHubRPCAuthLogoutRemovesUserScopedOpenAIAuth(t *testing.T) {
 	if !resp.Removed || resp.Status.ActiveSource != authopenai.AuthSourceSignedOut {
 		t.Fatalf("logout=%+v, want removed and signed out", resp)
 	}
-	if _, err := authopenai.LoadAuth(userStateDir); !errors.Is(err, authopenai.ErrAuthNotFound) {
+	if _, err := authopenai.LoadAuth(userStateDir, "openai"); !errors.Is(err, authopenai.ErrAuthNotFound) {
 		t.Fatalf("LoadAuth() err=%v, want ErrAuthNotFound", err)
 	}
 }
@@ -316,7 +316,7 @@ func TestHubAuthControllerManualPastebackSavesOpenAIAuth(t *testing.T) {
 	if !resp.Status.SignedIn || resp.Status.ActiveSource != authopenai.AuthSourceOAuth || resp.Status.Email != "oauth@example.com" {
 		t.Fatalf("status=%+v, want oauth status with email", resp.Status)
 	}
-	record, err := authopenai.LoadAuth(ctrl.stateDir)
+	record, err := authopenai.LoadAuth(ctrl.stateDir, "openai")
 	if err != nil {
 		t.Fatalf("LoadAuth: %v", err)
 	}
@@ -427,7 +427,7 @@ func TestAuth_OpenAI_Status_OAuthShadowsStoredFileKey(t *testing.T) {
 	if err := store.Set("openai", "sk-test-123"); err != nil {
 		t.Fatalf("store.Set: %v", err)
 	}
-	if err := authopenai.SaveAuth(c.stateDir, authopenai.AuthRecord{
+	if err := authopenai.SaveAuth(c.stateDir, "openai", authopenai.AuthRecord{
 		Version: 1, Provider: "openai", Source: authopenai.AuthSourceOAuth,
 		ObtainedAt: time.Now().Add(-time.Hour), TokenType: "Bearer",
 		AccessToken: "acc", RefreshToken: "ref",
@@ -453,7 +453,7 @@ func TestAuth_OpenAI_Status_CorruptOAuthFallsBackToFile(t *testing.T) {
 	if err := store.Set("openai", "sk-test-123"); err != nil {
 		t.Fatalf("store.Set: %v", err)
 	}
-	authPath := authopenai.AuthFilePath(c.stateDir)
+	authPath := authopenai.AuthFilePath(c.stateDir, "openai")
 	if err := os.MkdirAll(filepath.Dir(authPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -521,7 +521,7 @@ func TestAuth_OpenAI_Logout_OAuthRevealsStoredFileKey(t *testing.T) {
 	if err := store.Set("openai", "sk-test-123"); err != nil {
 		t.Fatalf("store.Set: %v", err)
 	}
-	if err := authopenai.SaveAuth(c.stateDir, authopenai.AuthRecord{
+	if err := authopenai.SaveAuth(c.stateDir, "openai", authopenai.AuthRecord{
 		Version: 1, Provider: "openai", Source: authopenai.AuthSourceOAuth,
 		ObtainedAt: time.Now().Add(-time.Hour), TokenType: "Bearer",
 		AccessToken: "acc", RefreshToken: "ref",
@@ -550,7 +550,7 @@ func TestAuth_OpenAI_Logout_CorruptOAuthDeletedRevealsFile(t *testing.T) {
 	if err := store.Set("openai", "sk-test-123"); err != nil {
 		t.Fatalf("store.Set: %v", err)
 	}
-	authPath := authopenai.AuthFilePath(c.stateDir)
+	authPath := authopenai.AuthFilePath(c.stateDir, "openai")
 	if err := os.MkdirAll(filepath.Dir(authPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -579,7 +579,7 @@ func TestAuth_OpenAI_Status_ExpiredOAuthStillShadowsFileKey(t *testing.T) {
 		t.Fatalf("store.Set: %v", err)
 	}
 	// Expired OAuth record (expiry in the past) alongside a stored file key.
-	if err := authopenai.SaveAuth(c.stateDir, authopenai.AuthRecord{
+	if err := authopenai.SaveAuth(c.stateDir, "openai", authopenai.AuthRecord{
 		Version: 1, Provider: "openai", Source: authopenai.AuthSourceOAuth,
 		ObtainedAt: time.Now().Add(-2 * time.Hour), TokenType: "Bearer",
 		AccessToken: "acc", RefreshToken: "ref",

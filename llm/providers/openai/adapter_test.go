@@ -1495,7 +1495,7 @@ func TestNewFromEnv_PrefersStoredOAuthOverAPIKey(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "sk-env-should-be-ignored")
 	t.Setenv("OPENAI_CHATGPT_BASE_URL", "https://chatgpt.example.test")
 	userStateDir := authopenai.DefaultStateDir()
-	if err := authopenai.SaveAuth(userStateDir, authopenai.AuthRecord{
+	if err := authopenai.SaveAuth(userStateDir, "openai", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
@@ -1531,7 +1531,7 @@ func TestNewFromEnv_UsesStoredOAuthTransportWhenAPIKeyAbsent(t *testing.T) {
 	userStateDir := authopenai.DefaultStateDir()
 	projectStateDir := filepath.Join(xdgStateHome, "serf", "projects", "repo")
 	t.Setenv("SERF_STATE_DIR", projectStateDir)
-	if err := authopenai.SaveAuth(userStateDir, authopenai.AuthRecord{
+	if err := authopenai.SaveAuth(userStateDir, "openai", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       "oauth",
@@ -1570,7 +1570,7 @@ func TestEnvFactoryUsesUserScopedOAuthWithProjectStateDir(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	userStateDir := authopenai.DefaultStateDir()
 	projectStateDir := filepath.Join(t.TempDir(), "project-state")
-	if err := authopenai.SaveAuth(userStateDir, authopenai.AuthRecord{
+	if err := authopenai.SaveAuth(userStateDir, "openai", authopenai.AuthRecord{
 		Version:      1,
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,

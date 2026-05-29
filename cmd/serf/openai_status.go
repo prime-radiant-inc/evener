@@ -9,8 +9,8 @@ import (
 	authopenai "primeradiant.com/serf/internal/auth/openai"
 )
 
-var openAIStatusAction = func(stateDir string) (authopenai.AuthStatus, error) {
-	return authopenai.NewService(authopenai.DefaultConfig(), nil).Status(stateDir)
+var openAIStatusAction = func(stateDir, instanceName string) (authopenai.AuthStatus, error) {
+	return authopenai.NewService(authopenai.DefaultConfig(), nil).Status(stateDir, instanceName)
 }
 
 func runOpenAIStatus(args []string, stdout, stderr io.Writer) error {
@@ -19,12 +19,14 @@ func runOpenAIStatus(args []string, stdout, stderr io.Writer) error {
 
 	workDir := fs.String("dir", "", "working directory hint")
 	stateDir := fs.String("state-dir", "", "override OpenAI auth state directory")
+	instance := fs.String("instance", "openai", "instance name (default: openai)")
 	fs.Usage = func() {
 		fmt.Fprintf(stderr, "Usage: serf openai status [flags]\n\n")
 		fmt.Fprintf(stderr, "Show the current OpenAI auth status.\n\n")
 		fmt.Fprintf(stderr, "Flags:\n")
 		fmt.Fprintf(stderr, "  --dir <path>         Working directory hint\n")
 		fmt.Fprintf(stderr, "  --state-dir <path>   Override OpenAI auth state directory\n")
+		fmt.Fprintf(stderr, "  --instance <name>    Instance name (default: openai)\n")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -38,8 +40,12 @@ func runOpenAIStatus(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	instanceName := strings.TrimSpace(*instance)
+	if instanceName == "" {
+		instanceName = "openai"
+	}
 
-	status, err := openAIStatusAction(resolvedStateDir)
+	status, err := openAIStatusAction(resolvedStateDir, instanceName)
 	if err != nil {
 		return err
 	}

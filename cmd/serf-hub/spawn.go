@@ -513,7 +513,7 @@ func openAICompatibleBaseURLInEnv(env []string) bool {
 }
 
 func openAIStoredOAuthUsable(env []string) bool {
-	record, err := authopenai.LoadAuth(openAIStateDirFromLaunchEnv(env))
+	record, err := authopenai.LoadAuth(openAIStateDirFromLaunchEnv(env), "openai")
 	if err != nil {
 		return false
 	}
