@@ -190,6 +190,8 @@ func runServe(args []string) error {
 		NonInteractive:         *nonInteractive,
 		SystemPromptAsUser:     *systemPromptAsUser,
 		ModelFallbacks:         []string(modelFallbacks),
+		// Task 1b-6 wires the loaded Config here:
+		//   if cfg != (providerconfig.Config{}) { return agent.ResolveProfileFromConfig(cfg, ref) }
 		ResolveProfile: func(ref string) (agent.ProviderProfile, error) {
 			mr, err := cmdutil.ParseModelRef(ref)
 			if err != nil {

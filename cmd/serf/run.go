@@ -169,6 +169,8 @@ func run(ctx context.Context, cfg runConfig) error {
 			ExportATIFPath:         cfg.exportATIF,
 			NonInteractive:         true,
 			SystemPromptAsUser:     cfg.systemPromptAsUser,
+			// Task 1b-6 wires the loaded Config here:
+			//   if cfg != (providerconfig.Config{}) { return agent.ResolveProfileFromConfig(cfg, ref) }
 			ResolveProfile: func(ref string) (agent.ProviderProfile, error) {
 				mr, err := cmdutil.ParseModelRef(ref)
 				if err != nil {
