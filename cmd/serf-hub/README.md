@@ -132,19 +132,36 @@ schema = 1
 [providers.anthropic]
 api_key = "sk-ant-..."
 
+[providers.openai]
+api_key = "sk-..."
+
 [providers.openrouter]
 api_key = "..."
 ```
 
 The Hub UI (`/credentials`) or TUI (`:credentials`) writes this file via
-the `serf/auth/apiKey/set` RPC. OpenAI OAuth state remains in the existing
-`~/.serf/auth/openai.json` file; OAuth flows are triggered from the same
-UIs via `serf/auth/login/start`.
+the `serf/auth/apiKey/set` RPC. Process-env credentials (e.g.,
+`ANTHROPIC_API_KEY` exported in the shell) still work as a fallback when no
+file entry exists for the provider — matching the `hub.env` style for users
+who prefer external secret management.
 
-Process-env credentials (e.g., `ANTHROPIC_API_KEY` exported in the shell)
-still work as a fallback when no file entry exists for the provider —
-matches the existing `hub.env` style for users who prefer external secret
-management.
+### OpenAI credential resolution
+
+OpenAI supports both an API key (stored in `credentials.toml` like any other
+provider, or via `OPENAI_API_KEY`) and OAuth (sign in via
+`serf/auth/login/start`; state stored in `~/.serf/auth/openai.json`).
+
+The effective credential is resolved by precedence:
+
+1. **OAuth** record (`openai.json`), if signed in;
+2. **file** key (`credentials.toml`);
+3. **`OPENAI_API_KEY`** env var.
+
+The file layer shadows env, like other providers; an explicit OAuth sign-in
+wins over both. The two routes hit **different backends**: OAuth routes to the
+ChatGPT/Codex backend (`OPENAI_CHATGPT_BASE_URL`), while an API key routes to
+the standard OpenAI API backend (`OPENAI_BASE_URL`). They are not
+interchangeable credentials for one endpoint.
 
 ## Start Hub
 
