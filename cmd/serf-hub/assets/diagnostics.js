@@ -106,10 +106,8 @@
   }
 
   function isProviderFailure(message) {
-    const providers = ["openai", "anthropic", "google", "gemini", "openrouter", "ollama", "kimi", "glm", "minimax"];
-    for (const provider of providers) {
-      if (message.includes(provider + " error")) return true;
-    }
+    // Structured errors are caught earlier via the typed cause field;
+    // this function handles keyword fallbacks for plain-string classification.
     return message.includes("provider unavailable") ||
       message.includes("api key") ||
       message.includes("rate limit") ||

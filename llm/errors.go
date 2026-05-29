@@ -13,6 +13,7 @@ import (
 type Error interface {
 	error
 	Provider() string
+	BehaviorTag() string
 	StatusCode() int
 	ErrorCode() string
 	Retryable() bool
@@ -29,6 +30,7 @@ func (e *ConfigurationError) Error() string {
 	return "configuration error: " + strings.TrimSpace(e.Message)
 }
 func (e *ConfigurationError) Provider() string           { return "" }
+func (e *ConfigurationError) BehaviorTag() string        { return "" }
 func (e *ConfigurationError) StatusCode() int            { return 0 }
 func (e *ConfigurationError) ErrorCode() string          { return "" }
 func (e *ConfigurationError) Retryable() bool            { return false }
@@ -38,6 +40,7 @@ func (e *ConfigurationError) Unwrap() error              { return e.Cause }
 
 type httpErrorBase struct {
 	provider    string
+	behaviorTag string
 	statusCode  int
 	message     string
 	errorCode   string
@@ -54,14 +57,16 @@ func (e *httpErrorBase) Error() string {
 	}
 	return fmt.Sprintf("%s error (status=%d): %s", e.provider, e.statusCode, msg)
 }
-func (e *httpErrorBase) Provider() string           { return e.provider }
-func (e *httpErrorBase) setProvider(name string)    { e.provider = strings.TrimSpace(name) }
-func (e *httpErrorBase) StatusCode() int            { return e.statusCode }
-func (e *httpErrorBase) ErrorCode() string          { return e.errorCode }
-func (e *httpErrorBase) Retryable() bool            { return e.retryable }
-func (e *httpErrorBase) RetryAfter() *time.Duration { return e.retryAfter }
-func (e *httpErrorBase) Raw() any                   { return e.rawResponse }
-func (e *httpErrorBase) Unwrap() error              { return e.cause }
+func (e *httpErrorBase) Provider() string            { return e.provider }
+func (e *httpErrorBase) setProvider(name string)     { e.provider = strings.TrimSpace(name) }
+func (e *httpErrorBase) BehaviorTag() string         { return e.behaviorTag }
+func (e *httpErrorBase) setBehaviorTag(tag string)   { e.behaviorTag = strings.TrimSpace(tag) }
+func (e *httpErrorBase) StatusCode() int             { return e.statusCode }
+func (e *httpErrorBase) ErrorCode() string           { return e.errorCode }
+func (e *httpErrorBase) Retryable() bool             { return e.retryable }
+func (e *httpErrorBase) RetryAfter() *time.Duration  { return e.retryAfter }
+func (e *httpErrorBase) Raw() any                    { return e.rawResponse }
+func (e *httpErrorBase) Unwrap() error               { return e.cause }
 
 type InvalidRequestError struct{ httpErrorBase }
 type AuthenticationError struct{ httpErrorBase }
@@ -101,6 +106,14 @@ type providerSetter interface {
 	setProvider(string)
 }
 
+// behaviorTagSetter is implemented by errors whose behavior tag can be
+// stamped in place. Used by Client to record the behavior tag (e.g. "openai")
+// associated with the provider instance that returned the error, so classifiers
+// can key on behavior type rather than instance name.
+type behaviorTagSetter interface {
+	setBehaviorTag(string)
+}
+
 // RewriteErrorProvider rewrites err's provider name in place if the error
 // (or any error in its Unwrap chain) supports it. Returns err unchanged
 // otherwise. Safe to call on nil. Thin wrappers should call this on every
@@ -124,6 +137,25 @@ func RewriteErrorProvider(err error, provider string) error {
 		return err
 	}
 	ps.setProvider(provider)
+	return err
+}
+
+// StampErrorBehaviorTag stamps the behavior tag onto err in place if the error
+// (or any error in its Unwrap chain) supports it. Returns err unchanged
+// otherwise. Safe to call on nil. Only stamps errors that already have a
+// non-empty Provider() — same no-op guard as RewriteErrorProvider.
+func StampErrorBehaviorTag(err error, tag string) error {
+	if err == nil || strings.TrimSpace(tag) == "" {
+		return err
+	}
+	var bs behaviorTagSetter
+	if !errors.As(err, &bs) {
+		return err
+	}
+	if getter, ok := bs.(interface{ Provider() string }); ok && getter.Provider() == "" {
+		return err
+	}
+	bs.setBehaviorTag(tag)
 	return err
 }
 

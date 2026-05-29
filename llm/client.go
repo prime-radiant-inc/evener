@@ -17,10 +17,19 @@ type Client struct {
 	providers       map[string]ProviderAdapter
 	defaultProvider string
 	middleware      []Middleware
+	nameToTag       map[string]string
 }
 
 func NewClient() *Client {
 	return &Client{providers: map[string]ProviderAdapter{}}
+}
+
+// SetNameToTag configures a mapping from provider instance names to behavior
+// tags (e.g. {"work": "openai"}). The client stamps the behavior tag onto
+// errors so classifiers can key on provider type rather than instance name.
+// A nil map means no tag is stamped (behavior tag remains empty).
+func (c *Client) SetNameToTag(m map[string]string) {
+	c.nameToTag = m
 }
 
 // NonDefaultEligible is implemented by adapters that should never be
@@ -96,13 +105,17 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 	}
 	req.Provider = prov
 
+	tag := c.behaviorTagFor(prov)
+
 	base := func(ctx context.Context, req Request) (Response, error) {
 		return adapter.Complete(ctx, req)
 	}
 	handler := applyMiddlewareComplete(base, c.middleware)
 	resp, err := handler(ctx, req)
 	resp.Provider = prov
-	return resp, RewriteErrorProvider(err, prov)
+	err = RewriteErrorProvider(err, prov)
+	err = StampErrorBehaviorTag(err, tag)
+	return resp, err
 }
 
 func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
@@ -129,15 +142,19 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 	}
 	req.Provider = prov
 
+	tag := c.behaviorTagFor(prov)
+
 	base := func(ctx context.Context, req Request) (Stream, error) {
 		return adapter.Stream(ctx, req)
 	}
 	handler := applyMiddlewareStream(base, c.middleware)
 	st, err := handler(ctx, req)
 	if err != nil {
-		return nil, RewriteErrorProvider(err, prov)
+		err = RewriteErrorProvider(err, prov)
+		err = StampErrorBehaviorTag(err, tag)
+		return nil, err
 	}
-	return newProviderStampStream(st, prov), nil
+	return newProviderStampStream(st, prov, tag), nil
 }
 
 // Use appends middleware to the client. Middleware is applied in registration order
@@ -240,23 +257,36 @@ func (c *Client) ListModels(ctx context.Context, provider string) ([]ModelInfo, 
 	return lister.ListModels(ctx)
 }
 
+// behaviorTagFor returns the behavior tag for a given provider instance name.
+// If no nameToTag mapping is configured, or the name is not in the map,
+// an empty string is returned (no tag is stamped).
+func (c *Client) behaviorTagFor(provName string) string {
+	if t, ok := c.nameToTag[provName]; ok {
+		return t
+	}
+	return ""
+}
+
 // providerStampStream wraps a Stream and rewrites the provider field on all
 // StreamEventResponse and StreamEventError events so that downstream consumers
 // see the instance name (req.Provider) rather than the adapter's hardcoded type.
+// It also stamps the behavior tag onto errors when a nameToTag mapping exists.
 type providerStampStream struct {
-	inner    Stream
-	provider string
-	out      chan StreamEvent
-	once     sync.Once
-	done     chan struct{}
+	inner       Stream
+	provider    string
+	behaviorTag string
+	out         chan StreamEvent
+	once        sync.Once
+	done        chan struct{}
 }
 
-func newProviderStampStream(inner Stream, provider string) *providerStampStream {
+func newProviderStampStream(inner Stream, provider, behaviorTag string) *providerStampStream {
 	s := &providerStampStream{
-		inner:    inner,
-		provider: provider,
-		out:      make(chan StreamEvent, 128),
-		done:     make(chan struct{}),
+		inner:       inner,
+		provider:    provider,
+		behaviorTag: behaviorTag,
+		out:         make(chan StreamEvent, 128),
+		done:        make(chan struct{}),
 	}
 	go s.pump()
 	return s
@@ -268,6 +298,7 @@ func (s *providerStampStream) pump() {
 	for ev := range s.inner.Events() {
 		if ev.Type == StreamEventError && ev.Err != nil {
 			ev.Err = RewriteErrorProvider(ev.Err, s.provider)
+			ev.Err = StampErrorBehaviorTag(ev.Err, s.behaviorTag)
 		}
 		if ev.Type == StreamEventFinish && ev.Response != nil {
 			ev.Response.Provider = s.provider

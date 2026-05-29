@@ -662,6 +662,89 @@ func TestClient_Stream_PreservesEmptyProviderErrorEvent(t *testing.T) {
 	}
 }
 
+// --- BehaviorTag stamping via nameToTag (PRI-1880) ---
+
+func TestClient_SetNameToTag_StampsBehaviorTagOnCompleteError(t *testing.T) {
+	c := NewClient()
+	adapterErr := ErrorFromHTTPStatus("openaicompat", 429, "rate limited", nil, nil)
+	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: adapterErr}
+	c.providers["work"] = adapter
+	c.defaultProvider = "work"
+	c.SetNameToTag(map[string]string{"work": "openai"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := c.Complete(ctx, Request{Provider: "work", Model: "m", Messages: []Message{User("hi")}})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var llmErr Error
+	if !errors.As(err, &llmErr) {
+		t.Fatalf("expected llm.Error, got %T", err)
+	}
+	if llmErr.BehaviorTag() != "openai" {
+		t.Fatalf("BehaviorTag() = %q, want \"openai\"", llmErr.BehaviorTag())
+	}
+}
+
+func TestClient_SetNameToTag_StampsBehaviorTagOnStreamError(t *testing.T) {
+	c := NewClient()
+	adapterErr := ErrorFromHTTPStatus("openaicompat", 500, "server error", nil, nil)
+	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: adapterErr}
+	c.providers["work"] = adapter
+	c.defaultProvider = "work"
+	c.SetNameToTag(map[string]string{"work": "openai"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	st, err := c.Stream(ctx, Request{Provider: "work", Model: "m", Messages: []Message{User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream open: %v", err)
+	}
+	defer st.Close() //nolint:errcheck
+
+	var gotErr error
+	for ev := range st.Events() {
+		if ev.Type == StreamEventError {
+			gotErr = ev.Err
+		}
+	}
+	if gotErr == nil {
+		t.Fatal("expected StreamEventError, got none")
+	}
+	var llmErr Error
+	if !errors.As(gotErr, &llmErr) {
+		t.Fatalf("expected llm.Error, got %T", gotErr)
+	}
+	if llmErr.BehaviorTag() != "openai" {
+		t.Fatalf("stream error BehaviorTag() = %q, want \"openai\"", llmErr.BehaviorTag())
+	}
+}
+
+func TestClient_NilNameToTag_BehaviorTagEmpty(t *testing.T) {
+	// With no nameToTag set, BehaviorTag() should be empty (nil map = identity, no tag set).
+	c := NewClient()
+	adapterErr := ErrorFromHTTPStatus("openai", 429, "rate limited", nil, nil)
+	adapter := &instanceAdapter{typeName: "openai", errToReturn: adapterErr}
+	c.providers["openai"] = adapter
+	c.defaultProvider = "openai"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := c.Complete(ctx, Request{Provider: "openai", Model: "m", Messages: []Message{User("hi")}})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var llmErr Error
+	if !errors.As(err, &llmErr) {
+		t.Fatalf("expected llm.Error, got %T", err)
+	}
+	// No nameToTag: BehaviorTag() should be "" (no explicit tag stamped).
+	if llmErr.BehaviorTag() != "" {
+		t.Fatalf("BehaviorTag() = %q, want empty when no nameToTag set", llmErr.BehaviorTag())
+	}
+}
+
 func TestClient_Stream_MiddlewareChainOrder(t *testing.T) {
 	c := NewClient()
 	a := &streamAdapter{name: "openai"}
