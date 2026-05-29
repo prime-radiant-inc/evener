@@ -352,12 +352,12 @@ func (p *baseProfile) CheapModel() string {
 	if strings.TrimSpace(p.cheapModel) != "" {
 		return strings.TrimSpace(p.cheapModel)
 	}
-	switch p.id {
+	switch p.behaviorTag {
 	case "openai":
 		return "gpt-4.1-nano"
 	case "anthropic":
 		return "claude-haiku-4-5-20251001"
-	case "gemini":
+	case "google":
 		return "gemini-2.5-flash-lite"
 	case "glm":
 		return "glm-4.7-flash"
@@ -367,7 +367,7 @@ func (p *baseProfile) CheapModel() string {
 }
 
 // prefixAction is the resolution of a slash-prefixed model string
-// "X/Y" passed to WithModel on a profile with id `id`. See decidePrefixAction.
+// "X/Y" passed to WithModel. See decidePrefixAction.
 type prefixAction int
 
 const (
@@ -391,23 +391,27 @@ const (
 // decidePrefixAction resolves what WithModel should do with a
 // slash-prefixed model string. Three outcomes:
 //
-//   - openrouter / openrouter-anthropic: prefix == id → strip (canonical
-//     wire model is the bare upstream form, e.g. "anthropic/claude-3"
+//   - openrouter / openrouter-anthropic (by behaviorTag): prefix == instanceName → strip
+//     (canonical wire model is the bare upstream form, e.g. "anthropic/claude-3"
 //     after stripping "openrouter/"). Switch when the prefix is an
 //     unambiguous Serf-internal provider that OpenRouter does NOT
 //     route to as an upstream (ollama, kimi, glm, the other
 //     openrouter* mode). All other prefixes (anthropic, openai,
 //     google, gemini, minimax, deepseek, ...) are upstream model
 //     namespaces — keep verbatim.
-//   - minimax: prefix == "minimax" → keep ("minimax/m2.7" is the
+//   - minimax (by behaviorTag): prefix == "minimax" → keep ("minimax/m2.7" is the
 //     canonical wire model on minimax). Other prefixes → switch (a
 //     legitimate cross-provider override).
-//   - everyone else: prefix == id → strip (existing convenience).
+//   - everyone else: prefix == instanceName → strip (existing convenience).
 //     Different prefix → switch.
-func decidePrefixAction(id, prefix string) prefixAction {
-	switch id {
+//
+// behaviorTag is the stable provider family (e.g. "openrouter", "kimi").
+// instanceName is the id of the specific profile instance — may differ from
+// behaviorTag when the instance was renamed via WithProviderID.
+func decidePrefixAction(behaviorTag, instanceName, prefix string) prefixAction {
+	switch behaviorTag {
 	case "openrouter", "openrouter-anthropic":
-		if prefix == id {
+		if prefix == instanceName {
 			return prefixActionStrip
 		}
 		// Unambiguous Serf-internal provider switches are allowed even
@@ -424,7 +428,7 @@ func decidePrefixAction(id, prefix string) prefixAction {
 		}
 		return prefixActionSwitch
 	}
-	if prefix == id {
+	if prefix == instanceName {
 		return prefixActionStrip
 	}
 	return prefixActionSwitch
@@ -497,6 +501,22 @@ func basePtrOf(p ProviderProfile) *baseProfile {
 	return nil
 }
 
+// restampInstanceIdentity sets the behaviorTag and id on a freshly rebuilt
+// profile so that a renamed instance (where id != behaviorTag, created via
+// WithProviderID) keeps its identity across WithModel rebuilds. The rebuild
+// constructor derives both id and behaviorTag from the behaviorTag argument
+// (ensuring correct tag), but the instance may carry a user-assigned id
+// distinct from the tag — re-stamp both so neither drifts.
+func restampInstanceIdentity(p ProviderProfile, behaviorTag, id string) ProviderProfile {
+	bp := basePtrOf(p)
+	if bp == nil {
+		return p
+	}
+	bp.behaviorTag = behaviorTag
+	bp.id = id
+	return p
+}
+
 // rebuildOnSameProviderChange reports whether a same-provider WithModel
 // override needs to rebuild the profile via its constructor (rather than
 // shallow-cloning) so that model-derived state — context window from
@@ -506,8 +526,8 @@ func basePtrOf(p ProviderProfile) *baseProfile {
 // openai-compat provider; openrouter-anthropic). False for providers
 // whose model-derived state is fixed at construction (openai, minimax)
 // or handled by their own WithModel (anthropicProfile).
-func rebuildOnSameProviderChange(id string) bool {
-	switch id {
+func rebuildOnSameProviderChange(behaviorTag string) bool {
+	switch behaviorTag {
 	case "kimi", "glm", "openrouter", "ollama", "openrouter-anthropic":
 		return true
 	}
@@ -527,7 +547,7 @@ func (p *baseProfile) WithModel(model string) ProviderProfile {
 	if parts := strings.SplitN(model, "/", 2); len(parts) == 2 {
 		provider := strings.ToLower(parts[0])
 		bareModel := parts[1]
-		switch decidePrefixAction(p.id, provider) {
+		switch decidePrefixAction(p.behaviorTag, p.id, provider) {
 		case prefixActionSwitch:
 			var switched ProviderProfile
 			switch provider {
@@ -570,14 +590,18 @@ func (p *baseProfile) WithModel(model string) ProviderProfile {
 	// schema to its constructor default. We also preserve any
 	// providerOpts the caller has layered on, since those can also be
 	// override-driven (e.g. test harnesses).
-	if rebuildOnSameProviderChange(p.id) {
+	if rebuildOnSameProviderChange(p.behaviorTag) {
 		var rebuilt ProviderProfile
-		switch p.id {
+		switch p.behaviorTag {
 		case "openrouter-anthropic":
 			rebuilt = NewOpenRouterAnthropicProfile(model)
 		default:
-			rebuilt = NewOpenAICompatProfile(p.id, model, 0)
+			rebuilt = NewOpenAICompatProfile(p.behaviorTag, model, 0)
 		}
+		// Re-stamp the instance identity onto the rebuilt profile so that a
+		// renamed instance (id != behaviorTag, via WithProviderID) keeps its
+		// id and correctly-derived tag across model changes.
+		rebuilt = restampInstanceIdentity(rebuilt, p.behaviorTag, p.id)
 		return preserveBaseOverrides(rebuilt, p)
 	}
 	clone := *p
@@ -942,8 +966,8 @@ func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 // the upstream's metadata is the right behavior. The prefixed-first
 // precedence still protects OpenRouter from overlap cases like
 // "openrouter/deepseek/deepseek-r1" vs bare "deepseek/deepseek-r1".
-func suppressBareCatalogLookup(id string) bool {
-	return id == "ollama"
+func suppressBareCatalogLookup(behaviorTag string) bool {
+	return behaviorTag == "ollama"
 }
 
 // resolveOpenAICompatCatalogModel runs the OpenAI-compatible catalog
@@ -953,7 +977,7 @@ func suppressBareCatalogLookup(id string) bool {
 // entries the embedded catalog ships.
 //
 // Precedence (first hit wins):
-//  1. "<id>/<model>" exact — covers openrouter (incl. overlapping cases
+//  1. "<behaviorTag>/<model>" exact — covers openrouter (incl. overlapping cases
 //     like "openrouter/deepseek/deepseek-r1" whose bare form
 //     "deepseek/deepseek-r1" is a different provider's entry) and any
 //     tagged ollama variant the catalog ships with its tag (e.g.
@@ -964,20 +988,20 @@ func suppressBareCatalogLookup(id string) bool {
 //     local Ollama models and bare upstream entries are unrelated by
 //     intent, so a bare match (e.g. asking ollama for "claude-3-haiku")
 //     would silently inherit Anthropic's 200K context window.
-//  3. "<id>/<base>" where base is `model` with any ":<tag>" suffix
+//  3. "<behaviorTag>/<base>" where base is `model` with any ":<tag>" suffix
 //     stripped — covers typical Ollama tagged variants whose catalog
 //     entry is the untagged family ("llama3.1:8b" -> "ollama/llama3.1")
-func resolveOpenAICompatCatalogModel(lookup func(string) *llm.ModelInfo, id, model string) *llm.ModelInfo {
-	if mi := lookup(id + "/" + model); mi != nil {
+func resolveOpenAICompatCatalogModel(lookup func(string) *llm.ModelInfo, behaviorTag, model string) *llm.ModelInfo {
+	if mi := lookup(behaviorTag + "/" + model); mi != nil {
 		return mi
 	}
-	if !suppressBareCatalogLookup(id) {
+	if !suppressBareCatalogLookup(behaviorTag) {
 		if mi := lookup(model); mi != nil {
 			return mi
 		}
 	}
 	if base, _, hasTag := strings.Cut(model, ":"); hasTag && base != "" {
-		if mi := lookup(id + "/" + base); mi != nil {
+		if mi := lookup(behaviorTag + "/" + base); mi != nil {
 			return mi
 		}
 	}
@@ -1015,10 +1039,10 @@ func NewOpenAICompatProfile(id, model string, contextWindow int) ProviderProfile
 	// MiniMax via OpenRouter uses reasoning_details for multi-turn reasoning
 	// (not OpenAI's reasoning_content). Set the provider option that tells the
 	// openai-compat adapter to serialize/deserialize reasoning_details.
-	// Gated on id=="openrouter" so other providers that route through this
-	// constructor (e.g. ollama, where a user could legitimately have a model
-	// named under a "minimax/..." namespace) don't get the OpenRouter-specific
-	// option injected.
+	// Gated on behaviorTag=="openrouter" so other providers that route through
+	// this constructor (e.g. ollama, where a user could legitimately have a
+	// model named under a "minimax/..." namespace) don't get the
+	// OpenRouter-specific option injected.
 	var providerOpts map[string]any
 	if id == "openrouter" && strings.HasPrefix(model, "minimax/") {
 		providerOpts = map[string]any{
