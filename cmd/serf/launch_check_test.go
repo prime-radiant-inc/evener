@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/auth/openai/oaitest"
+	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/openai"
 	_ "primeradiant.com/serf/llm/providers/openrouter"
 )
@@ -194,6 +195,25 @@ func TestLaunchCheckModelListUnavailableClassifiesTransientFailures(t *testing.T
 				t.Fatalf("launchCheckModelListUnavailable(%v)=%v, want %v", tt.err, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestLaunchCheckModelVisibleFiltersByBehaviorTag verifies that
+// launchCheckModelVisible filters models by the behavior tag passed in, not by a
+// literal provider instance name. A renamed openrouter instance (e.g.
+// "or-work") that is mapped to tag "openrouter" must be filtered the same way
+// as the canonical "openrouter" instance name — i.e. hidden when not in the
+// catalog or the catalog entry lacks SupportsTools.
+func TestLaunchCheckModelVisibleFiltersByBehaviorTag(t *testing.T) {
+	cat := llm.EmbeddedModelCatalog()
+
+	// With the canonical tag "openrouter", a model absent from the catalog is hidden.
+	if launchCheckModelVisible("openrouter", "not-in-catalog-xyz", cat) {
+		t.Error("model not in catalog should be hidden when behaviorTag is openrouter")
+	}
+	// With a non-openrouter tag, any non-media model is visible.
+	if !launchCheckModelVisible("some-other-tag", "not-in-catalog-xyz", cat) {
+		t.Error("model should be visible when behaviorTag is not openrouter")
 	}
 }
 

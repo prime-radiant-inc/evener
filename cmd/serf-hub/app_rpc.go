@@ -23,6 +23,7 @@ import (
 	"primeradiant.com/serf/internal/apptranscript"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/launchconfig"
+	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
 )
@@ -1515,7 +1516,7 @@ func validateSerfLaunchModel(ctx context.Context, cfg WebConfig, ref cmdutil.Mod
 		}
 	}
 	if !providerEnumerated {
-		if providerHasLaunchDiagnostic(contract.Diagnostics, ref.Provider) || launchProviderAllowsUnreportedModels(ref.Provider) {
+		if providerHasLaunchDiagnostic(contract.Diagnostics, ref.Provider) || launchProviderAllowsUnreportedModels(ref.Provider, cfg.ProviderConfig) {
 			return nil
 		}
 		return appwire.HubLaunchError("model provider is not reported by the Serf launch harness: " + ref.Provider)
@@ -1523,8 +1524,25 @@ func validateSerfLaunchModel(ctx context.Context, cfg WebConfig, ref cmdutil.Mod
 	return appwire.HubLaunchError("model is not configured for Serf launch: " + ref.Qualified())
 }
 
-func launchProviderAllowsUnreportedModels(provider string) bool {
-	return strings.EqualFold(strings.TrimSpace(provider), "openrouter-anthropic")
+// behaviorTagFromConfig resolves a provider instance name to its behavior tag
+// using cfg. When cfg is nil or the name is not present in the config, the
+// name itself is returned (identity fallback for the env path).
+func behaviorTagFromConfig(name string, cfg *providerconfig.Config) string {
+	if cfg != nil {
+		if tag, ok := providerconfig.NameToTag(*cfg)[name]; ok {
+			return tag
+		}
+	}
+	return name
+}
+
+// launchProviderAllowsUnreportedModels returns true when the provider's
+// behavior tag is "openrouter-anthropic". The tag is resolved from cfg when
+// available; when cfg is nil the provider name is used as-is (identity
+// fallback for the env path where instance name == type == tag).
+func launchProviderAllowsUnreportedModels(provider string, cfg *providerconfig.Config) bool {
+	tag := behaviorTagFromConfig(provider, cfg)
+	return strings.EqualFold(strings.TrimSpace(tag), "openrouter-anthropic")
 }
 
 func providerHasLaunchDiagnostic(diagnostics []appwire.ModelListDiagnostic, provider string) bool {

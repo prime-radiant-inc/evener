@@ -27,35 +27,31 @@ import (
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/internal/hubapi"
+	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
 )
 
 // WebConfig is everything the web server needs.
-//
-// Task 1b-6 seam: add a ProviderConfig providerconfig.Config field here (and
-// thread it from main.go via cmdutil.LoadClient at startup) once later tasks
-// need to filter models or routes by configured instances. fetchLiveModels
-// already calls cmdutil.LoadClient per-request so config is available; the
-// field would let handlers avoid the repeated call.
 type WebConfig struct {
-	HubAddr       string
-	AuthToken     string // capability token gating every non-exempt route
-	HubStateRoot  string // root of hub-level state; defaults to $HOME/.serf
-	RunDir        string // run directory where rendezvous files live
-	PastIndexPath string // path to the SQLite past-index DB, for display in settings
-	Roster        *Roster
-	Past          *PastIndex
-	Spawner       Spawner            // optional; nil disables spawn
-	Models        []modelDescriptor  // available models for the spawn chip
-	PastPerPage   int                // results per page for /past; defaults to 50 when zero
-	StateDir      string             // root of the projects/<sha> state directory; needed for ForkSession
-	CredsStore    *credentials.Store // credentials store; passed to auth controller
-	PluginDirs    []string           // explicit plugin dirs; when empty, default to ~/.config/serf/plugins/*
-	MCPConfigPath string             // MCP config file path; when empty, default to ~/.config/serf/mcp.json
-	CodexSources  []appsource.CodexSourceConfig
-	CodexLaunches []CodexLaunchConfig
-	CodexLauncher *CodexLauncher
+	HubAddr        string
+	AuthToken      string // capability token gating every non-exempt route
+	HubStateRoot   string // root of hub-level state; defaults to $HOME/.serf
+	RunDir         string // run directory where rendezvous files live
+	PastIndexPath  string // path to the SQLite past-index DB, for display in settings
+	Roster         *Roster
+	Past           *PastIndex
+	Spawner        Spawner            // optional; nil disables spawn
+	Models         []modelDescriptor  // available models for the spawn chip
+	PastPerPage    int                // results per page for /past; defaults to 50 when zero
+	StateDir       string             // root of the projects/<sha> state directory; needed for ForkSession
+	CredsStore     *credentials.Store // credentials store; passed to auth controller
+	PluginDirs     []string           // explicit plugin dirs; when empty, default to ~/.config/serf/plugins/*
+	MCPConfigPath  string             // MCP config file path; when empty, default to ~/.config/serf/mcp.json
+	ProviderConfig *providerconfig.Config // instance-to-tag mapping; nil when providers.toml absent (env path)
+	CodexSources   []appsource.CodexSourceConfig
+	CodexLaunches  []CodexLaunchConfig
+	CodexLauncher  *CodexLauncher
 }
 
 // Spawner forks a serf serve subprocess and waits for its rendezvous file to appear.
@@ -2036,13 +2032,14 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 
 	var out []map[string]any
 	for _, prov := range c.ProviderNames() {
+		tag := c.BehaviorTagOf(prov)
 		// Skip dual-route variants that surface the same models as their
-		// primary route. openrouter-anthropic exists for specific models
-		// whose tool-calling format requires the Anthropic-Messages endpoint,
-		// but it lists the same /models response as plain openrouter. The
-		// daemon picks the correct route based on the model name when
-		// spawning; the picker doesn't need to expose both.
-		if prov == "openrouter-anthropic" {
+		// primary route. openrouter-anthropic instances exist for specific
+		// models whose tool-calling format requires the Anthropic-Messages
+		// endpoint, but they list the same /models response as plain
+		// openrouter. The daemon picks the correct route based on the model
+		// name when spawning; the picker doesn't need to expose both.
+		if tag == "openrouter-anthropic" {
 			continue
 		}
 		listCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
@@ -2068,7 +2065,7 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 				continue
 			}
 			mi := catalogModelInfo(cat, m.ID)
-			if prov == "openrouter" && (mi == nil || !mi.SupportsTools) {
+			if tag == "openrouter" && (mi == nil || !mi.SupportsTools) {
 				continue
 			}
 			// Use the registered provider name (prov), not m.Provider — wrapper

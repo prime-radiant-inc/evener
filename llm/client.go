@@ -267,6 +267,18 @@ func (c *Client) behaviorTagFor(provName string) string {
 	return ""
 }
 
+// BehaviorTagOf returns the behavior tag for the given provider instance name.
+// When a nameToTag mapping is configured and the name is present, the mapped
+// tag is returned. Otherwise the name itself is returned (identity fallback),
+// so callers can compare against tag constants without special-casing the
+// env path (where instance name == type == tag).
+func (c *Client) BehaviorTagOf(name string) string {
+	if t, ok := c.nameToTag[name]; ok {
+		return t
+	}
+	return name
+}
+
 // providerStampStream wraps a Stream and rewrites the provider field on all
 // StreamEventResponse and StreamEventError events so that downstream consumers
 // see the instance name (req.Provider) rather than the adapter's hardcoded type.

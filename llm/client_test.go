@@ -764,6 +764,44 @@ func TestClient_NilNameToTag_BehaviorTagEmpty(t *testing.T) {
 	}
 }
 
+// --- BehaviorTagOf public accessor (PRI-1880 phase-1b) ---
+
+// TestClient_BehaviorTagOf_WithMapping verifies that BehaviorTagOf returns the
+// mapped tag when a nameToTag entry exists.
+func TestClient_BehaviorTagOf_WithMapping(t *testing.T) {
+	c := NewClient()
+	c.SetNameToTag(map[string]string{
+		"or-work":  "openrouter",
+		"ora-work": "openrouter-anthropic",
+	})
+	if got := c.BehaviorTagOf("or-work"); got != "openrouter" {
+		t.Fatalf("BehaviorTagOf(or-work) = %q, want \"openrouter\"", got)
+	}
+	if got := c.BehaviorTagOf("ora-work"); got != "openrouter-anthropic" {
+		t.Fatalf("BehaviorTagOf(ora-work) = %q, want \"openrouter-anthropic\"", got)
+	}
+}
+
+// TestClient_BehaviorTagOf_IdentityFallback verifies that BehaviorTagOf returns
+// the name itself when no mapping exists (identity fallback).
+func TestClient_BehaviorTagOf_IdentityFallback(t *testing.T) {
+	c := NewClient()
+	c.SetNameToTag(map[string]string{"or-work": "openrouter"})
+	if got := c.BehaviorTagOf("unknown"); got != "unknown" {
+		t.Fatalf("BehaviorTagOf(unknown) = %q, want \"unknown\" (identity fallback)", got)
+	}
+}
+
+// TestClient_BehaviorTagOf_NilMap verifies that BehaviorTagOf returns the name
+// itself when nameToTag is nil (env path / no config).
+func TestClient_BehaviorTagOf_NilMap(t *testing.T) {
+	c := NewClient()
+	// no SetNameToTag call → nameToTag is nil
+	if got := c.BehaviorTagOf("openrouter"); got != "openrouter" {
+		t.Fatalf("BehaviorTagOf(openrouter) nil map = %q, want \"openrouter\"", got)
+	}
+}
+
 func TestClient_Stream_MiddlewareChainOrder(t *testing.T) {
 	c := NewClient()
 	a := &streamAdapter{name: "openai"}

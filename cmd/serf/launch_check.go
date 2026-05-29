@@ -101,7 +101,8 @@ func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, err
 	out := []launchCheckModel{}
 	diagnostics := []appwire.ModelListDiagnostic{}
 	for _, provider := range providers {
-		if provider == "openrouter-anthropic" {
+		tag := client.BehaviorTagOf(provider)
+		if tag == "openrouter-anthropic" {
 			continue
 		}
 		models, err := client.ListModels(ctx, provider)
@@ -111,7 +112,7 @@ func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, err
 		}
 		sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 		for _, model := range models {
-			if !launchCheckModelVisible(provider, model.ID, cat) {
+			if !launchCheckModelVisible(tag, model.ID, cat) {
 				continue
 			}
 			out = append(out, launchCheckModel{Provider: provider, Model: model.ID})
@@ -178,8 +179,9 @@ func validateLaunchCheckModel(ref cmdutil.ModelRef) error {
 		return fmt.Errorf("validate model %s: %w", ref.Qualified(), err)
 	}
 	cat := llm.EmbeddedModelCatalog()
+	tag := client.BehaviorTagOf(ref.Provider)
 	for _, model := range models {
-		if model.ID == ref.Model && launchCheckModelVisible(ref.Provider, model.ID, cat) {
+		if model.ID == ref.Model && launchCheckModelVisible(tag, model.ID, cat) {
 			return nil
 		}
 	}
@@ -207,7 +209,11 @@ func launchCheckModelListUnavailable(err error) bool {
 		strings.Contains(msg, "timeout awaiting response headers")
 }
 
-func launchCheckModelVisible(provider, modelID string, cat *llm.ModelCatalog) bool {
+// launchCheckModelVisible reports whether modelID should appear in the launch
+// model list for a provider with the given behavior tag. It returns false for
+// non-chat model IDs (embedding, media, etc.) and, for the "openrouter" tag,
+// for models that are not in the catalog or lack tool support.
+func launchCheckModelVisible(behaviorTag, modelID string, cat *llm.ModelCatalog) bool {
 	lower := strings.ToLower(modelID)
 	if strings.Contains(lower, "embedding") ||
 		strings.Contains(lower, "whisper") ||
@@ -219,7 +225,7 @@ func launchCheckModelVisible(provider, modelID string, cat *llm.ModelCatalog) bo
 		strings.Contains(lower, "image") {
 		return false
 	}
-	if provider == "openrouter" {
+	if behaviorTag == "openrouter" {
 		mi := launchCheckCatalogModelInfo(cat, modelID)
 		return mi != nil && mi.SupportsTools
 	}

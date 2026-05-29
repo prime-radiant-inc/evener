@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/diagnostic"
+	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
 )
@@ -5031,6 +5032,31 @@ func waitLaunchedCodexExited(t *testing.T, launched *launchedCodex) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("timed out waiting for launched codex process to exit")
+}
+
+// TestLaunchProviderAllowsUnreportedModels_KeyedByBehaviorTag verifies that
+// launchProviderAllowsUnreportedModels returns true for any instance name
+// whose behavior tag is "openrouter-anthropic", not just the literal string.
+// A renamed instance like "ora-work" mapped to tag "openrouter-anthropic" must
+// behave identically to the canonical instance name.
+func TestLaunchProviderAllowsUnreportedModels_KeyedByBehaviorTag(t *testing.T) {
+	cfg := &providerconfig.Config{
+		Instances: []providerconfig.InstanceConfig{
+			{Name: "ora-work", Type: "openrouter-anthropic"},
+		},
+	}
+	// Renamed instance with tag "openrouter-anthropic" must allow unreported models.
+	if !launchProviderAllowsUnreportedModels("ora-work", cfg) {
+		t.Error("renamed openrouter-anthropic instance must allow unreported models")
+	}
+	// Identity fallback (no config): literal name "openrouter-anthropic" still works.
+	if !launchProviderAllowsUnreportedModels("openrouter-anthropic", nil) {
+		t.Error("canonical openrouter-anthropic must allow unreported models with nil config")
+	}
+	// A non-openrouter-anthropic instance must not allow unreported models.
+	if launchProviderAllowsUnreportedModels("openrouter", cfg) {
+		t.Error("openrouter instance must not allow unreported models")
+	}
 }
 
 func dialHubRPC(t *testing.T, hub *httptest.Server) *appwire.Client {
