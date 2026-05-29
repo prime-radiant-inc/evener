@@ -75,19 +75,28 @@ artifact, not a spec defect; rebase before implementing.
 
 ## II. No-back-compat migration design holes
 
-9. **[SERIOUS] Migration topology is unworkable across hub vs standalone serf.**
-   Standalone `serf` builds its client only from env (`serve.go:36
-   serveNewLLMClientFromEnv = llm.NewFromEnv`; **no** `credentials`/`HubStateRoot`
-   refs under `cmd/serf/`). The hub reads `~/.serf/credentials.toml`
-   (`main.go:103`, `HubStateRoot = ~/.serf`). OAuth is **not** in `~/.serf` —
-   `AuthFilePath` is `XDG_STATE_HOME/serf/auth/openai.json` (`storage.go:40`),
-   resolved **per-workspace** via `RuntimeDirWithStateHome(gitOrigin, workdir,…)`
-   (`spawn.go:428-445`). So: (a) there are *many* `openai.json` files, not one for
-   the hub to migrate; (b) a user who only ran standalone serf has no
-   `credentials.toml`; (c) "migrate once on absence" means whoever writes
-   `providers.toml` first wins — a standalone-serf env-only migration then makes
-   the hub *skip* migration, silently dropping the hub's `credentials.toml` keys.
-   *(Both — multiple angles.)*
+9. **[SERIOUS, PARTIALLY CORRECTED] Credential storage is fragmented across hub
+   vs standalone serf** — but the reviewers' "OAuth is per-workspace" sub-claim is
+   **wrong** (verified post-review).
+   - **Confirmed real:** standalone `serf` builds its client only from env
+     (`serve.go:39`/`run.go:127` → `llm.NewFromEnv`; **no** `credentials` import
+     under `cmd/serf/`). The hub reads `~/.serf/credentials.toml` (`main.go`,
+     `HubStateRoot = ~/.serf`). So API keys have two unrelated sources.
+   - **Corrected:** OAuth `openai.json` is **machine-global**, not per-workspace.
+     `serf openai login` writes `resolveOpenAIStateDir` which **ignores workDir**
+     and returns `DefaultStateDir()` = `$XDG_STATE_HOME/serf` (`openai_login.go:
+     216-220`); the adapter reads it via `DefaultStateDirWithStateHome(cfg.
+     StateHome)` where `cfg.StateHome ← env.StateHome ← XDG_STATE_HOME`
+     (`openai/adapter.go:80`, `env_registry.go:52`). The per-project
+     `RuntimeDir(origin,wd)` is the **transcript** `StateDir` (`WithStateDir` sets
+     `cfg.StateDir`, `env_registry.go:16-18`), which the OAuth path does **not**
+     use. So there is **one** global `~/.local/state/serf/auth/openai.json`, read
+     by both standalone and hub-spawned daemons.
+   - **Net for v4:** the migration reads three *global* sources (env +
+     `~/.serf/credentials.toml` + one global `openai.json`); the real fix is to
+     have **standalone serf also read the shared provider store**, not the
+     per-workspace OAuth scare. *(Reviewers flagged the fragmentation; the
+     per-workspace specifics were wrong.)*
 
 10. **[SERIOUS] §4.9 "`NewFromEnv` is no longer a runtime path" undercounts live
     consumers.** Callers: `cmd/serf/run.go:127` (the **standalone CLI**),
