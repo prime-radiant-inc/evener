@@ -1,7 +1,8 @@
 // Loads credentials.html's inline script into JSDOM, mocks the device-code RPC
-// wrappers, and asserts: the device editor renders the user code + verification
-// link and polls to "authorized"; and that a fallback response switches to the
-// paste-back (oauth-redirect) editor.
+// wrappers, and asserts the copy-first device flow: the editor shows the code
+// without auto-opening OpenAI, copying enables the "Send me to OpenAI" button
+// which opens the verification URL, polling reaches "authorized"; and that a
+// fallback response switches to the paste-back (oauth-redirect) editor.
 const fs = require("fs");
 const path = require("path");
 const { JSDOM } = require("jsdom");
@@ -23,18 +24,22 @@ const wait = (dom, ms) => new Promise((r) => dom.window.setTimeout(r, ms));
 const openaiRow = (dom) => dom.window.document.querySelector('li[data-provider="openai"]');
 
 (async function main() {
-  // Case 1: device flow renders code + verification link, polls to authorized.
+  // Case 1: copy-first device flow — no auto-open; copying the code enables the
+  // "Send me to OpenAI" button; clicking it opens the verification URL; polling
+  // then reaches authorized and closes the editor.
   {
     const dom = makeDom();
     let listed = [{ provider: "openai", supported: true, signedIn: false, activeSource: "absent", authModes: ["apiKey", "oauth"] }];
     let pollCalls = 0;
+    const opened = [];
     dom.window.launchconfig = {
       authList: async () => ({ providers: listed }),
       authDeviceStart: async () => ({ provider: "openai", flowId: "f1", userCode: "WXYZ-1234", verificationUrl: "https://auth.openai.com/codex/device", intervalSeconds: 1 }),
       authDevicePoll: async () => { pollCalls++; if (pollCalls >= 2) { listed = [{ provider: "openai", supported: true, signedIn: true, activeSource: "oauth", authModes: ["apiKey", "oauth"], hasStoredOAuth: true }]; return { state: "authorized", status: listed[0] }; } return { state: "pending" }; },
       authLoginStart: async () => ({ flowId: "x", url: "https://x" }),
     };
-    dom.window.open = () => null;
+    dom.window.open = (url) => { opened.push(url); return null; };
+    dom.window.document.execCommand = () => true; // legacy clipboard path (insecure http)
     dom.window.eval(src);
     const section = dom.window.document.getElementById("credentials-rows");
     for (let i = 0; i < 100 && section.dataset.loaded !== "true"; i++) await wait(dom, 0);
@@ -43,7 +48,18 @@ const openaiRow = (dom) => dom.window.document.querySelector('li[data-provider="
     const editor = openaiRow(dom).querySelector('[data-editor="device"]');
     assert(editor, "device editor should render after clicking Sign in");
     assert(/WXYZ-1234/.test(editor.textContent), "device editor should show the user code");
-    assert(editor.querySelector('a[href="https://auth.openai.com/codex/device"]'), "device editor should link to the verification URL");
+    assert(opened.length === 0, "must NOT auto-open OpenAI before the user copies the code");
+    assert(editor.querySelector('button[data-action="device-copy"]'), "Copy code button should be present");
+    const sendBefore = editor.querySelector('button[data-action="device-open"]');
+    assert(sendBefore && sendBefore.disabled, "Send-to-OpenAI button should be disabled before copy");
+    // copy the code → enables Send
+    openaiRow(dom).querySelector('button[data-action="device-copy"]').click();
+    for (let i = 0; i < 100 && openaiRow(dom).querySelector('button[data-action="device-open"]').disabled; i++) await wait(dom, 0);
+    assert(!openaiRow(dom).querySelector('button[data-action="device-open"]').disabled, "Send-to-OpenAI should enable after copying");
+    // clicking Send opens the verification URL
+    openaiRow(dom).querySelector('button[data-action="device-open"]').click();
+    assert(opened.includes("https://auth.openai.com/codex/device"), "Send-to-OpenAI should open the verification URL");
+    // polling completes
     for (let i = 0; i < 400 && openaiRow(dom).querySelector('[data-editor="device"]'); i++) await wait(dom, 10);
     assert(!openaiRow(dom).querySelector('[data-editor="device"]'), "device editor should close after authorized");
     assert(/oauth/.test(openaiRow(dom).textContent), "openai row should show oauth after authorized");
