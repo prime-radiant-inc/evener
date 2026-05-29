@@ -568,3 +568,34 @@ func TestAuth_OpenAI_Logout_CorruptOAuthDeletedRevealsFile(t *testing.T) {
 		t.Errorf("corrupt openai.json still present after logout: %v", statErr)
 	}
 }
+
+func TestAuth_OpenAI_Status_ExpiredOAuthStillShadowsFileKey(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	c := newHubAuthControllerWithStore(dir, store)
+	c.stateDir = t.TempDir()
+	if err := store.Set("openai", "sk-test-123"); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
+	// Expired OAuth record (expiry in the past) alongside a stored file key.
+	if err := authopenai.SaveAuth(c.stateDir, authopenai.AuthRecord{
+		Version: 1, Provider: "openai", Source: authopenai.AuthSourceOAuth,
+		ObtainedAt: time.Now().Add(-2 * time.Hour), TokenType: "Bearer",
+		AccessToken: "acc", RefreshToken: "ref",
+		Expiry: time.Now().Add(-time.Hour), Email: "o@example.com",
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	got, err := c.Status(appwire.AuthStatusParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	// Expired OAuth stays the effective source (NeedsLogin); must NOT downgrade to file.
+	if got.ActiveSource != authopenai.AuthSourceOAuth || !got.NeedsLogin {
+		t.Fatalf("status=%+v, want oauth active + NeedsLogin (expired record must not fall back to file)", got)
+	}
+	if !got.HasStoredFile {
+		t.Errorf("status=%+v, want HasStoredFile true (file shadowed beneath expired oauth)", got)
+	}
+}
