@@ -95,6 +95,25 @@ func TestToEnv_OpenAIStoredKeyInjectsOpenAIAPIKey(t *testing.T) {
 	}
 }
 
+func TestToEnv_ProvidersConfigPathSetsEnvVar(t *testing.T) {
+	got := envSliceToMap(ToEnv(EnvInputs{
+		ProvidersConfigPath: "/hub/.serf/providers.toml",
+		ParentEnv:           []string{"PATH=/usr/bin"},
+	}))
+	if got["SERF_PROVIDERS_CONFIG"] != "/hub/.serf/providers.toml" {
+		t.Errorf("SERF_PROVIDERS_CONFIG = %q, want /hub/.serf/providers.toml", got["SERF_PROVIDERS_CONFIG"])
+	}
+}
+
+func TestToEnv_NoProvidersConfigPathDoesNotSetEnvVar(t *testing.T) {
+	got := envSliceToMap(ToEnv(EnvInputs{
+		ParentEnv: []string{"PATH=/usr/bin"},
+	}))
+	if _, ok := got["SERF_PROVIDERS_CONFIG"]; ok {
+		t.Errorf("SERF_PROVIDERS_CONFIG should not be set when ProvidersConfigPath is empty, got %q", got["SERF_PROVIDERS_CONFIG"])
+	}
+}
+
 func envSliceToMap(env []string) map[string]string {
 	out := map[string]string{}
 	for _, kv := range env {

@@ -16,6 +16,7 @@ import (
 
 	"primeradiant.com/serf/internal/binresolve"
 	"primeradiant.com/serf/internal/credentials"
+	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/rendezvous"
 
 	// Side-effect imports register provider adapters. These are the same
@@ -105,18 +106,35 @@ func main() {
 		fmt.Fprintf(os.Stderr, "[hub] credentials store: %v\n", err)
 		os.Exit(1)
 	}
+	providersConfigPath := os.Getenv("SERF_PROVIDERS_CONFIG")
+	if providersConfigPath == "" {
+		providersConfigPath = filepath.Join(hubStateRoot, "providers.toml")
+	}
+	var loadedProviderConfig *providerconfig.Config
+	if pcfg, exists, pcfgErr := providerconfig.LoadFile(providersConfigPath); pcfgErr != nil {
+		fmt.Fprintf(os.Stderr, "[hub] providers config: %v\n", pcfgErr)
+		os.Exit(1)
+	} else if exists {
+		loadedProviderConfig = &pcfg
+	} else {
+		// File absent — no instance config; clear path so children don't
+		// try to load a non-existent file.
+		providersConfigPath = ""
+	}
 	resolvedSerfBinary := resolveSerfBinaryPath(*serfBinary, currentExecutable(), exec.LookPath)
 	if *serfBinary == "" && resolvedSerfBinary != "" && resolvedSerfBinary != "serf" {
 		fmt.Fprintf(os.Stderr, "[hub] resolved serf at %s\n", resolvedSerfBinary)
 	}
 	spawner := &HubSpawner{
-		Cfg:            cfg,
-		SerfBinary:     resolvedSerfBinary,
-		RunDir:         runDir,
-		HubToken:       hubToken,
-		Creds:          credsStore,
-		StateRoot:      hubStateRoot,
-		LaunchDefaults: defaultHubLaunchDefaults(),
+		Cfg:                 cfg,
+		SerfBinary:          resolvedSerfBinary,
+		RunDir:              runDir,
+		HubToken:            hubToken,
+		Creds:               credsStore,
+		StateRoot:           hubStateRoot,
+		ProviderConfig:      loadedProviderConfig,
+		ProvidersConfigPath: providersConfigPath,
+		LaunchDefaults:      defaultHubLaunchDefaults(),
 	}
 	var codexLauncher *CodexLauncher
 	if len(cfg.CodexLaunches) > 0 {

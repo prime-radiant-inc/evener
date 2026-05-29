@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/serf/internal/auth/openai/oaitest"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/internal/launchconfig"
+	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -550,7 +551,7 @@ func TestProviderCredentialPreflightRequiresOpenRouterKey(t *testing.T) {
 	// Empty store — no key in file or env.
 	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
 	t.Setenv("OPENROUTER_API_KEY", "") // ensure env is empty
-	err := validateProviderCredentials("openrouter", store, nil)
+	err := validateProviderCredentials("openrouter", store, nil, nil)
 	assertHubLaunchError(t, err)
 	if strings.Contains(err.Error(), "secret") {
 		t.Fatalf("error leaked secret-like value: %v", err)
@@ -560,7 +561,7 @@ func TestProviderCredentialPreflightRequiresOpenRouterKey(t *testing.T) {
 func TestProviderCredentialPreflightAcceptsConfiguredOpenRouterKey(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "configured-secret")
 	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	err := validateProviderCredentials("openrouter", store, nil)
+	err := validateProviderCredentials("openrouter", store, nil, nil)
 	if err != nil {
 		t.Fatalf("validateProviderCredentials: %v", err)
 	}
@@ -569,7 +570,7 @@ func TestProviderCredentialPreflightAcceptsConfiguredOpenRouterKey(t *testing.T)
 func TestProviderCredentialPreflightAcceptsLaunchEnvKey(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "")
 	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	err := validateProviderCredentials("openrouter", store, []string{"OPENROUTER_API_KEY=launch-secret"})
+	err := validateProviderCredentials("openrouter", store, []string{"OPENROUTER_API_KEY=launch-secret"}, nil)
 	if err != nil {
 		t.Fatalf("validateProviderCredentials with launch env key: %v", err)
 	}
@@ -579,7 +580,7 @@ func TestProviderCredentialPreflightAcceptsOpenAICompatibleBaseURLOnly(t *testin
 	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "")
 	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "")
 	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	err := validateProviderCredentials("openai-compatible", store, []string{"OPENAI_COMPATIBLE_BASE_URL=http://127.0.0.1:11434/v1"})
+	err := validateProviderCredentials("openai-compatible", store, []string{"OPENAI_COMPATIBLE_BASE_URL=http://127.0.0.1:11434/v1"}, nil)
 	if err != nil {
 		t.Fatalf("validateProviderCredentials with base-url-only openai-compatible env: %v", err)
 	}
@@ -590,7 +591,7 @@ func TestProviderCredentialPreflightRejectsLaunchEnvClearedStoreKey(t *testing.T
 	if err := store.Set("openrouter", "stored-secret"); err != nil {
 		t.Fatalf("store.Set: %v", err)
 	}
-	err := validateProviderCredentials("openrouter", store, []string{"OPENROUTER_API_KEY="})
+	err := validateProviderCredentials("openrouter", store, []string{"OPENROUTER_API_KEY="}, nil)
 	assertHubLaunchError(t, err)
 }
 
@@ -616,7 +617,7 @@ func TestProviderCredentialPreflightAcceptsStoredOpenAIOAuth(t *testing.T) {
 	}
 
 	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	err := validateProviderCredentials("openai", store, []string{"XDG_STATE_HOME=" + xdgStateHome})
+	err := validateProviderCredentials("openai", store, []string{"XDG_STATE_HOME=" + xdgStateHome}, nil)
 	if err != nil {
 		t.Fatalf("validateProviderCredentials(openai) with refreshable stored OAuth: %v", err)
 	}
@@ -642,7 +643,7 @@ func TestProviderCredentialPreflightUsesLaunchHomeForOpenAIOAuth(t *testing.T) {
 	}
 
 	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	err := validateProviderCredentials("openai", store, []string{"XDG_STATE_HOME=", "HOME=" + home})
+	err := validateProviderCredentials("openai", store, []string{"XDG_STATE_HOME=", "HOME=" + home}, nil)
 	if err != nil {
 		t.Fatalf("validateProviderCredentials(openai) with HOME-scoped OAuth: %v", err)
 	}
@@ -668,14 +669,14 @@ func TestProviderCredentialPreflightDoesNotUseHubEnvWhenLaunchClearsXDG(t *testi
 	}
 
 	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	err := validateProviderCredentials("openai", store, []string{"XDG_STATE_HOME=", "HOME=" + t.TempDir()})
+	err := validateProviderCredentials("openai", store, []string{"XDG_STATE_HOME=", "HOME=" + t.TempDir()}, nil)
 	assertHubLaunchError(t, err)
 }
 
 func TestProviderCredentialPreflightAcceptsInheritedGoogleAlias(t *testing.T) {
 	t.Setenv("GOOGLE_API_KEY", "google-secret")
 	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	err := validateProviderCredentials("google", store, nil)
+	err := validateProviderCredentials("google", store, nil, nil)
 	if err != nil {
 		t.Fatalf("validateProviderCredentials: %v", err)
 	}
@@ -683,7 +684,7 @@ func TestProviderCredentialPreflightAcceptsInheritedGoogleAlias(t *testing.T) {
 
 func TestProviderCredentialPreflightAcceptsOllama(t *testing.T) {
 	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	err := validateProviderCredentials("ollama", store, nil)
+	err := validateProviderCredentials("ollama", store, nil, nil)
 	if err != nil {
 		t.Fatalf("validateProviderCredentials for ollama: %v", err)
 	}
@@ -746,6 +747,89 @@ func TestResolveSerfStateDirMatchesServeDefaultForWorkingDir(t *testing.T) {
 	if !strings.Contains(got, "serf") {
 		t.Fatalf("state dir=%q, want serf runtime path", got)
 	}
+}
+
+// TestValidateProviderCredentials_ConfigInstanceOAuthPass verifies that
+// validateProviderCredentials accepts an openai-type instance named "work"
+// when a valid OAuth record exists at auth/work.json in the serf state dir.
+func TestValidateProviderCredentials_ConfigInstanceOAuthPass(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	xdgStateHome := t.TempDir()
+	stateDir := authopenai.DefaultStateDirWithStateHome(xdgStateHome)
+	// Write a usable OAuth record under auth/work.json.
+	if err := authopenai.SaveAuth(stateDir, "work", authopenai.AuthRecord{
+		Version:      1,
+		Provider:     "openai",
+		Source:       authopenai.AuthSourceOAuth,
+		ObtainedAt:   time.Now().Add(-time.Minute),
+		TokenType:    "Bearer",
+		Scope:        "openid profile email offline_access",
+		AccessToken:  "oauth-access-token",
+		RefreshToken: "oauth-refresh-token",
+		Expiry:       time.Now().Add(time.Hour),
+		Email:        "work@example.com",
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+
+	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	cfg := &providerconfig.Config{
+		Default: "work",
+		Instances: []providerconfig.InstanceConfig{
+			{Name: "work", Type: "openai"},
+		},
+	}
+	err := validateProviderCredentials("work", store, []string{"XDG_STATE_HOME=" + xdgStateHome}, cfg)
+	if err != nil {
+		t.Fatalf("validateProviderCredentials(work) with OAuth at auth/work.json: %v", err)
+	}
+}
+
+// TestValidateProviderCredentials_ConfigInstanceOAuthMissing verifies that
+// validateProviderCredentials rejects an openai-type instance named "work"
+// when no OAuth record exists at auth/work.json.
+func TestValidateProviderCredentials_ConfigInstanceOAuthMissing(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	xdgStateHome := t.TempDir()
+
+	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	cfg := &providerconfig.Config{
+		Default: "work",
+		Instances: []providerconfig.InstanceConfig{
+			{Name: "work", Type: "openai"},
+		},
+	}
+	t.Setenv("OPENAI_API_KEY", "")
+	err := validateProviderCredentials("work", store, []string{"XDG_STATE_HOME=" + xdgStateHome}, cfg)
+	assertHubLaunchError(t, err)
+	if !strings.Contains(err.Error(), "work") {
+		t.Fatalf("error should mention instance name 'work': %v", err)
+	}
+}
+
+// TestValidateProviderCredentials_ConfigInstanceInlineAPIKey verifies that
+// validateProviderCredentials accepts an instance with an inline api_key.
+func TestValidateProviderCredentials_ConfigInstanceInlineAPIKey(t *testing.T) {
+	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	cfg := &providerconfig.Config{
+		Default: "myopenai",
+		Instances: []providerconfig.InstanceConfig{
+			{Name: "myopenai", Type: "openai", APIKey: "sk-inline-key"},
+		},
+	}
+	err := validateProviderCredentials("myopenai", store, nil, cfg)
+	if err != nil {
+		t.Fatalf("validateProviderCredentials with inline api_key: %v", err)
+	}
+}
+
+// TestValidateProviderCredentials_NoConfigPathUnchanged verifies that the
+// no-config path (nil cfg) keeps existing behavior unchanged.
+func TestValidateProviderCredentials_NoConfigPathUnchanged(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "")
+	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	err := validateProviderCredentials("openrouter", store, nil, nil)
+	assertHubLaunchError(t, err)
 }
 
 func envFromMap(values map[string]string) []string {

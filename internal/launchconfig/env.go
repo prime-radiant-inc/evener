@@ -16,13 +16,14 @@ type CredentialResolver interface {
 
 // EnvInputs bundles everything ToEnv needs.
 type EnvInputs struct {
-	Resolved  Resolved
-	Provider  string
-	Creds     CredentialResolver
-	ParentEnv []string // typically os.Environ()
-	RunDir    string
-	StateDir  string
-	HubToken  string
+	Resolved            Resolved
+	Provider            string
+	Creds               CredentialResolver
+	ParentEnv           []string // typically os.Environ()
+	RunDir              string
+	StateDir            string
+	HubToken            string
+	ProvidersConfigPath string // if set, passed as SERF_PROVIDERS_CONFIG to spawned children
 }
 
 // providerEnvVar maps provider name → the canonical env var that serf
@@ -60,6 +61,9 @@ func ToEnv(in EnvInputs) []string {
 	}
 	if in.HubToken != "" {
 		out = setEnv(out, "SERF_HUB_TOKEN", in.HubToken)
+	}
+	if in.ProvidersConfigPath != "" {
+		out = setEnv(out, "SERF_PROVIDERS_CONFIG", in.ProvidersConfigPath)
 	}
 
 	// 2. Credentials store value.

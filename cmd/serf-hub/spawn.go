@@ -19,6 +19,7 @@ import (
 	authopenai "primeradiant.com/serf/internal/auth/openai"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/internal/launchconfig"
+	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -56,6 +57,11 @@ type HubSpawner struct {
 	HubToken   string
 	Creds      *credentials.Store // credentials store for provider key injection
 	StateRoot  string             // hub-level state root; used for resolving
+	// ProviderConfig is set when the hub loaded a valid providers.toml. When
+	// non-nil it is used for instance-aware credential checks and the config
+	// path is forwarded to spawned children via SERF_PROVIDERS_CONFIG.
+	ProviderConfig     *providerconfig.Config
+	ProvidersConfigPath string // path of the providers.toml the hub loaded
 	// LaunchDefaults are ambient defaults applied to hub-spawned daemons after
 	// layered launch config resolves. Explicit launch config still wins.
 	LaunchDefaults launchconfig.Layer
@@ -84,12 +90,13 @@ func (h *HubSpawner) ListLaunchModels(ctx context.Context) ([]appwire.ModelDescr
 func (h *HubSpawner) ListLaunchModelContract(ctx context.Context) (appwire.ModelListResponse, error) {
 	stateDir := resolveSerfLaunchStateDir("", nil)
 	env := launchconfig.ToEnv(launchconfig.EnvInputs{
-		Resolved:  launchconfig.Resolved{},
-		RunDir:    h.RunDir,
-		StateDir:  stateDir,
-		HubToken:  h.HubToken,
-		Creds:     h.Creds,
-		ParentEnv: os.Environ(),
+		Resolved:            launchconfig.Resolved{},
+		RunDir:              h.RunDir,
+		StateDir:            stateDir,
+		HubToken:            h.HubToken,
+		Creds:               h.Creds,
+		ParentEnv:           os.Environ(),
+		ProvidersConfigPath: h.ProvidersConfigPath,
 	})
 	return listSerfLaunchModelContract(ctx, h.SerfBinary, env)
 }
@@ -97,12 +104,13 @@ func (h *HubSpawner) ListLaunchModelContract(ctx context.Context) (appwire.Model
 func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, workingDir string) (appwire.ModelListResponse, error) {
 	stateDir := resolveSerfLaunchStateDir(workingDir, nil)
 	env := launchconfig.ToEnv(launchconfig.EnvInputs{
-		Resolved:  launchconfig.Resolved{},
-		RunDir:    h.RunDir,
-		StateDir:  stateDir,
-		HubToken:  h.HubToken,
-		Creds:     h.Creds,
-		ParentEnv: os.Environ(),
+		Resolved:            launchconfig.Resolved{},
+		RunDir:              h.RunDir,
+		StateDir:            stateDir,
+		HubToken:            h.HubToken,
+		Creds:               h.Creds,
+		ParentEnv:           os.Environ(),
+		ProvidersConfigPath: h.ProvidersConfigPath,
 	})
 	return listSerfLaunchModelContract(ctx, h.SerfBinary, env)
 }
@@ -127,15 +135,16 @@ func (h *HubSpawner) Spawn(ctx context.Context, req SpawnRequest) (rendezvous.En
 		req.AppReplaySize = *req.Resolved.Effective.AppReplaySize
 	}
 	req.Env = launchconfig.ToEnv(launchconfig.EnvInputs{
-		Resolved:  req.Resolved,
-		Provider:  req.Provider,
-		Creds:     h.Creds,
-		ParentEnv: os.Environ(),
-		RunDir:    h.RunDir,
-		StateDir:  req.StateDir,
-		HubToken:  h.HubToken,
+		Resolved:            req.Resolved,
+		Provider:            req.Provider,
+		Creds:               h.Creds,
+		ParentEnv:           os.Environ(),
+		RunDir:              h.RunDir,
+		StateDir:            req.StateDir,
+		HubToken:            h.HubToken,
+		ProvidersConfigPath: h.ProvidersConfigPath,
 	})
-	if err := validateProviderCredentials(req.Provider, h.Creds, req.Env); err != nil {
+	if err := validateProviderCredentials(req.Provider, h.Creds, req.Env, h.ProviderConfig); err != nil {
 		return rendezvous.Entry{}, err
 	}
 	if err := validateSerfLaunchContract(ctx, h.SerfBinary, req.Resolved.Effective.Model, req.Env); err != nil {
@@ -170,16 +179,17 @@ func (h *HubSpawner) Resume(ctx context.Context, req ResumeRequest) (rendezvous.
 		req.AppReplaySize = *req.Resolved.Effective.AppReplaySize
 	}
 	req.Env = launchconfig.ToEnv(launchconfig.EnvInputs{
-		Resolved:  req.Resolved,
-		Provider:  req.Provider,
-		Creds:     h.Creds,
-		ParentEnv: os.Environ(),
-		RunDir:    h.RunDir,
-		StateDir:  req.StateDir,
-		HubToken:  h.HubToken,
+		Resolved:            req.Resolved,
+		Provider:            req.Provider,
+		Creds:               h.Creds,
+		ParentEnv:           os.Environ(),
+		RunDir:              h.RunDir,
+		StateDir:            req.StateDir,
+		HubToken:            h.HubToken,
+		ProvidersConfigPath: h.ProvidersConfigPath,
 	})
 	if req.Provider != "" {
-		if err := validateProviderCredentials(req.Provider, h.Creds, req.Env); err != nil {
+		if err := validateProviderCredentials(req.Provider, h.Creds, req.Env, h.ProviderConfig); err != nil {
 			return rendezvous.Entry{}, err
 		}
 	}
@@ -463,10 +473,49 @@ func setEnvValue(env []string, key, value string) []string {
 //
 // If store is nil, credential validation is skipped (the spawned process
 // inherits env credentials or will fail at the LLM provider level instead).
-func validateProviderCredentials(provider string, store *credentials.Store, env []string) error {
+//
+// When cfg is non-nil and provider matches an instance name, the check is
+// instance-aware: inline api_key on the instance counts as a credential, and
+// for openai-type instances the per-instance OAuth file (auth/<name>.json) is
+// checked using the instance name, not the hard-coded "openai".
+// When cfg is nil, the original type-map behavior is used unchanged.
+func validateProviderCredentials(provider string, store *credentials.Store, env []string, cfg *providerconfig.Config) error {
 	if provider == "" || store == nil {
 		return nil
 	}
+
+	// Config-path: instance-aware credential check.
+	if cfg != nil {
+		for _, inst := range cfg.Instances {
+			if inst.Name != strings.ToLower(strings.TrimSpace(provider)) {
+				continue
+			}
+			// Inline api_key on the instance is always sufficient.
+			if strings.TrimSpace(inst.APIKey) != "" {
+				return nil
+			}
+			// For openai-type instances, check per-instance OAuth at auth/<name>.json.
+			if inst.Type == "openai" {
+				stateDir := openAIStateDirFromLaunchEnv(env)
+				if openAIInstanceOAuthUsable(stateDir, inst.Name) {
+					return nil
+				}
+			}
+			// Fall through to env-var check using the instance's behavior tag.
+			tag := providerconfig.BehaviorTag(string(inst.Type), string(inst.APIStyle))
+			if tag == "openai-compatible" && openAICompatibleBaseURLInEnv(env) {
+				return nil
+			}
+			if providerCredentialInEnv(tag, env) {
+				return nil
+			}
+			return appwire.HubLaunchError(fmt.Sprintf("provider credentials missing for %s: set via serf/auth/apiKey/set or set the matching env var", provider))
+		}
+		// Instance name not found in config — don't block launch.
+		return nil
+	}
+
+	// No-config path: original type-map behavior, unchanged.
 	if strings.EqualFold(strings.TrimSpace(provider), "openai") && openAIStoredOAuthUsable(env) {
 		return nil
 	}
@@ -491,6 +540,22 @@ func validateProviderCredentials(provider string, store *credentials.Store, env 
 	return nil
 }
 
+// openAIInstanceOAuthUsable reports whether a usable OAuth record exists for
+// the given instance name in stateDir (at auth/<instanceName>.json).
+func openAIInstanceOAuthUsable(stateDir, instanceName string) bool {
+	record, err := authopenai.LoadAuth(stateDir, instanceName)
+	if err != nil {
+		return false
+	}
+	if record.Source != authopenai.AuthSourceOAuth {
+		return false
+	}
+	if record.Expiry.IsZero() || record.Expiry.After(time.Now()) {
+		return true
+	}
+	return strings.TrimSpace(record.RefreshToken) != ""
+}
+
 func providerCredentialInEnv(provider string, env []string) bool {
 	for _, key := range credentials.EnvVars(provider) {
 		value, ok := envLookup(env, key)
@@ -513,17 +578,7 @@ func openAICompatibleBaseURLInEnv(env []string) bool {
 }
 
 func openAIStoredOAuthUsable(env []string) bool {
-	record, err := authopenai.LoadAuth(openAIStateDirFromLaunchEnv(env), "openai")
-	if err != nil {
-		return false
-	}
-	if record.Source != authopenai.AuthSourceOAuth {
-		return false
-	}
-	if record.Expiry.IsZero() || record.Expiry.After(time.Now()) {
-		return true
-	}
-	return strings.TrimSpace(record.RefreshToken) != ""
+	return openAIInstanceOAuthUsable(openAIStateDirFromLaunchEnv(env), "openai")
 }
 
 func openAIStateDirFromLaunchEnv(env []string) string {
