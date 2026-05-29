@@ -503,8 +503,16 @@ func validateProviderCredentials(provider string, store *credentials.Store, env 
 			}
 			// Fall through to env-var check using the instance's behavior tag.
 			tag := providerconfig.BehaviorTag(string(inst.Type), string(inst.APIStyle))
-			if tag == "openai-compatible" && openAICompatibleBaseURLInEnv(env) {
-				return nil
+			if tag == "openai-compatible" {
+				// A base_url set in providers.toml is sufficient: the openaicompat
+				// adapter reads it from config and does not require
+				// OPENAI_COMPATIBLE_BASE_URL in the environment.
+				if strings.TrimSpace(inst.BaseURL) != "" {
+					return nil
+				}
+				if openAICompatibleBaseURLInEnv(env) {
+					return nil
+				}
 			}
 			if providerCredentialInEnv(tag, env) {
 				return nil

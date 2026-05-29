@@ -68,8 +68,9 @@ type OpenAIInstanceParams struct {
 }
 
 // NewForInstance constructs an Adapter from explicit parameters.
-// OAuth resolution uses StateHome (per-instance OAuth filename is a later task).
-// Empty BaseURL/ChatGPTBaseURL fall back to the same defaults as the env path.
+// OAuth resolution uses StateHome and instanceName for per-instance OAuth files
+// (auth/<instanceName>.json). Empty BaseURL/ChatGPTBaseURL fall back to the
+// same defaults as the env path.
 func NewForInstance(params OpenAIInstanceParams) (*Adapter, error) {
 	// Prefer stored OAuth over APIKey: once a user has signed in via
 	// `serf openai login`, route through the ChatGPT/Codex backend instead of

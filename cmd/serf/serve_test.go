@@ -12,10 +12,79 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
 )
+
+// TestBuildInitialProfile_ConfigPath verifies that when a providers.toml is
+// loaded (hasProvConfig=true), buildInitialProfile resolves a custom instance
+// name to a profile whose ID matches the instance name, not the provider type.
+func TestBuildInitialProfile_ConfigPath(t *testing.T) {
+	cfg := providerconfig.Config{
+		Default: "work",
+		Instances: []providerconfig.InstanceConfig{
+			{Name: "work", Type: "openai"},
+		},
+	}
+	profile, err := buildInitialProfile(cfg, true, cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "")
+	if err != nil {
+		t.Fatalf("buildInitialProfile: %v", err)
+	}
+	if profile.ID() != "work" {
+		t.Fatalf("profile.ID() = %q, want %q", profile.ID(), "work")
+	}
+}
+
+// TestBuildInitialProfile_ConfigPathInvalidOutputSchema verifies that an invalid
+// --output-schema returns an error on the config path.
+func TestBuildInitialProfile_ConfigPathInvalidOutputSchema(t *testing.T) {
+	cfg := providerconfig.Config{
+		Default: "work",
+		Instances: []providerconfig.InstanceConfig{
+			{Name: "work", Type: "openai"},
+		},
+	}
+	_, err := buildInitialProfile(cfg, true, cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "{not json")
+	if err == nil {
+		t.Fatal("expected error for invalid --output-schema JSON")
+	}
+	if !strings.Contains(err.Error(), "invalid --output-schema") {
+		t.Fatalf("error=%q, want to contain 'invalid --output-schema'", err.Error())
+	}
+}
+
+// TestBuildInitialProfile_EnvPath verifies that when no providers.toml is
+// loaded (hasProvConfig=false), buildInitialProfile falls through to
+// SelectProfile and uses canonical provider type names.
+func TestBuildInitialProfile_EnvPath(t *testing.T) {
+	profile, err := buildInitialProfile(providerconfig.Config{}, false, cmdutil.ModelRef{Provider: "openai", Model: "gpt-5.2"}, "")
+	if err != nil {
+		t.Fatalf("buildInitialProfile: %v", err)
+	}
+	if profile.ID() != "openai" {
+		t.Fatalf("profile.ID() = %q, want %q", profile.ID(), "openai")
+	}
+}
+
+// TestBuildInitialProfile_UnknownInstanceError verifies that an unknown
+// instance name on the config path returns the expected error.
+func TestBuildInitialProfile_UnknownInstanceError(t *testing.T) {
+	cfg := providerconfig.Config{
+		Default: "work",
+		Instances: []providerconfig.InstanceConfig{
+			{Name: "work", Type: "openai"},
+		},
+	}
+	_, err := buildInitialProfile(cfg, true, cmdutil.ModelRef{Provider: "unknown", Model: "gpt-4o"}, "")
+	if err == nil {
+		t.Fatal("expected error for unknown instance name")
+	}
+	if !strings.Contains(err.Error(), "unknown instance") {
+		t.Fatalf("error=%q, want to contain 'unknown instance'", err.Error())
+	}
+}
 
 func TestRunServe_BareModelRejected(t *testing.T) {
 	err := runServe([]string{"--model", "gpt-5.2"})

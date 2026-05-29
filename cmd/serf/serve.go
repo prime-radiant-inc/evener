@@ -168,7 +168,7 @@ func runServe(args []string) error {
 		return err
 	}
 	defer closeAPILog() //nolint:errcheck
-	profile, err := cmdutil.SelectProfile(modelRef.Provider, modelRef.Model, *outputSchema)
+	profile, err := buildInitialProfile(provCfg, hasProvConfig, modelRef, *outputSchema)
 	if err != nil {
 		return err
 	}
@@ -425,6 +425,38 @@ func runServe(args []string) error {
 		return err
 	}
 	return nil
+}
+
+// buildInitialProfile constructs the session's initial ProviderProfile.
+//
+// When hasProvConfig is true the profile is resolved via
+// agent.ResolveProfileFromConfig so custom instance names (e.g. "work" defined
+// in providers.toml) are accepted. When false (env-only path) it delegates to
+// cmdutil.SelectProfile using the canonical type-based provider name.
+//
+// outputSchemaJSON and SERF_ALLOWED_DECISIONS are applied identically on both
+// paths so callers see the same communicate-tool schema regardless of which
+// configuration source is in use.
+func buildInitialProfile(cfg providerconfig.Config, hasProvConfig bool, modelRef cmdutil.ModelRef, outputSchemaJSON string) (agent.ProviderProfile, error) {
+	if hasProvConfig {
+		raw, err := agent.ResolveProfileFromConfig(cfg, modelRef.Qualified())
+		if err != nil {
+			return nil, err
+		}
+		// Apply the same output-schema + allowed-decisions wrappers that
+		// cmdutil.SelectProfile applies on the env path.
+		var outputSchema map[string]any
+		if trimmed := strings.TrimSpace(outputSchemaJSON); trimmed != "" {
+			if jsonErr := json.Unmarshal([]byte(trimmed), &outputSchema); jsonErr != nil {
+				return nil, fmt.Errorf("invalid --output-schema: %w", jsonErr)
+			}
+		}
+		p := agent.WithCommunicateOutputSchema(raw, outputSchema)
+		allowedDecisions := cmdutil.ParseAllowedDecisions(os.Getenv("SERF_ALLOWED_DECISIONS"))
+		p = agent.WithAllowedDecisions(p, allowedDecisions)
+		return p, nil
+	}
+	return cmdutil.SelectProfile(modelRef.Provider, modelRef.Model, outputSchemaJSON)
 }
 
 func applyFastCheapModel(profile agent.ProviderProfile, raw string) (agent.ProviderProfile, error) {

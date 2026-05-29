@@ -823,6 +823,43 @@ func TestValidateProviderCredentials_ConfigInstanceInlineAPIKey(t *testing.T) {
 	}
 }
 
+// TestValidateProviderCredentials_ConfigInstanceChatCompletionsBaseURLPasses
+// verifies that a chat-completions instance with base_url set in providers.toml
+// and no inline api_key passes credential validation. Such instances (e.g.
+// ollama-compatible) read the base URL from config and do not need
+// OPENAI_COMPATIBLE_BASE_URL in the environment.
+func TestValidateProviderCredentials_ConfigInstanceChatCompletionsBaseURLPasses(t *testing.T) {
+	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	cfg := &providerconfig.Config{
+		Default: "local",
+		Instances: []providerconfig.InstanceConfig{
+			{Name: "local", Type: "openai", APIStyle: providerconfig.StyleChatCompletions, BaseURL: "http://127.0.0.1:11434/v1"},
+		},
+	}
+	// No env key, no OPENAI_COMPATIBLE_BASE_URL in launch env — base_url is in config.
+	err := validateProviderCredentials("local", store, nil, cfg)
+	if err != nil {
+		t.Fatalf("validateProviderCredentials with base_url in config: %v", err)
+	}
+}
+
+// TestValidateProviderCredentials_ConfigInstanceChatCompletionsNoBaseURLFails
+// verifies that a chat-completions instance with neither base_url in config nor
+// env key nor env base URL fails credential validation.
+func TestValidateProviderCredentials_ConfigInstanceChatCompletionsNoBaseURLFails(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
+	cfg := &providerconfig.Config{
+		Default: "local",
+		Instances: []providerconfig.InstanceConfig{
+			{Name: "local", Type: "openai", APIStyle: providerconfig.StyleChatCompletions},
+		},
+	}
+	t.Setenv("OPENAI_API_KEY", "")
+	err := validateProviderCredentials("local", store, []string{"OPENAI_COMPATIBLE_BASE_URL="}, cfg)
+	assertHubLaunchError(t, err)
+}
+
 // TestValidateProviderCredentials_NoConfigPathUnchanged verifies that the
 // no-config path (nil cfg) keeps existing behavior unchanged.
 func TestValidateProviderCredentials_NoConfigPathUnchanged(t *testing.T) {

@@ -239,6 +239,10 @@ func ListModelsFunc(client *llm.Client, providerID string) func(context.Context)
 	}
 }
 
+// ParseAllowedDecisions parses the SERF_ALLOWED_DECISIONS value into a slice
+// of decision keys. It accepts JSON arrays and comma-separated values.
+func ParseAllowedDecisions(raw string) []string { return parseAllowedDecisions(raw) }
+
 func parseAllowedDecisions(raw string) []string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
