@@ -16,6 +16,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
+	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
 )
 
@@ -64,6 +65,16 @@ func init() {
 		}
 		return a, true, nil
 	})
+	for _, typ := range []string{"google", "gemini"} {
+		t := typ
+		llm.RegisterInstanceAdapterFactory(t, "", func(inst providerconfig.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
+			return NewForInstance(GoogleInstanceParams{
+				Name:    inst.Name,
+				BaseURL: inst.BaseURL,
+				APIKey:  inst.APIKey,
+			})
+		})
+	}
 }
 
 func NewFromEnv() (*Adapter, error) {

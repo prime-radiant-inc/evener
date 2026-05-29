@@ -18,6 +18,7 @@ import (
 
 	"primeradiant.com/serf/buildinfo"
 	authopenai "primeradiant.com/serf/internal/auth/openai"
+	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
 )
 
@@ -149,6 +150,17 @@ func init() {
 		}
 		return a, true, nil
 	})
+	// Register for config-driven construction: openai + responses (or empty) style.
+	factory := func(inst providerconfig.InstanceConfig, stateHome string) (llm.ProviderAdapter, error) {
+		return NewForInstance(OpenAIInstanceParams{
+			Name:      inst.Name,
+			BaseURL:   inst.BaseURL,
+			APIKey:    inst.APIKey,
+			StateHome: stateHome,
+		})
+	}
+	llm.RegisterInstanceAdapterFactory("openai", "responses", factory)
+	llm.RegisterInstanceAdapterFactory("openai", "", factory)
 }
 
 func NewFromEnv(cfgs ...Config) (*Adapter, error) {

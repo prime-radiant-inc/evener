@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
 )
 
@@ -60,6 +61,13 @@ func init() {
 			return nil, true, err
 		}
 		return a, true, nil
+	})
+	llm.RegisterInstanceAdapterFactory("anthropic", "", func(inst providerconfig.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
+		return NewForInstance(AnthropicInstanceParams{
+			Name:    inst.Name,
+			BaseURL: inst.BaseURL,
+			APIKey:  inst.APIKey,
+		})
 	})
 }
 

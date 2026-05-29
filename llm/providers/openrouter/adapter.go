@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providers/openaicompat"
 )
@@ -77,5 +78,12 @@ func init() {
 			BaseURL: base,
 			APIKey:  key,
 		}), true, nil
+	})
+	llm.RegisterInstanceAdapterFactory("openrouter", "", func(inst providerconfig.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
+		return NewForInstance(InstanceParams{
+			Name:    inst.Name,
+			BaseURL: inst.BaseURL,
+			APIKey:  inst.APIKey,
+		}), nil
 	})
 }

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
 )
 
@@ -116,6 +117,16 @@ func init() {
 			return nil, true, err
 		}
 		return a, true, nil
+	})
+	// Register for the openai+chat-completions fold-in: an openai instance with
+	// apiStyle=chat-completions routes through the openaicompat adapter.
+	llm.RegisterInstanceAdapterFactory("openai", "chat-completions", func(inst providerconfig.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
+		return NewForInstance(OpenAICompatInstanceParams{
+			Name:    inst.Name,
+			BaseURL: inst.BaseURL,
+			APIKey:  inst.APIKey,
+			Quirks:  QuirksPreset(inst.Quirks),
+		}), nil
 	})
 }
 
