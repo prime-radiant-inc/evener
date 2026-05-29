@@ -3471,14 +3471,13 @@ func TestHubRPCTurnStartEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
 	}
 }
 
-func TestResumeRequestForConfigDoesNotTreatProfileIDAsProvider(t *testing.T) {
-	root := t.TempDir()
-	sessionID := "01PROFILE0000000000000001"
-	stateDir := filepath.Join(root, "projects", "profile-id")
+func makeResumeSession(t *testing.T, root, sessionID, profileID, model string) (string, *PastIndex) {
+	t.Helper()
+	stateDir := filepath.Join(root, "projects", sessionID)
 	if err := agent.SaveSessionMeta(stateDir, agent.SessionMeta{
 		ID:        sessionID,
-		ProfileID: "openai-gpt-5",
-		Model:     "gpt-5.2",
+		ProfileID: profileID,
+		Model:     model,
 		EnvInfo:   agent.EnvironmentInfo{WorkingDir: "/tmp/project"},
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
@@ -3489,13 +3488,54 @@ func TestResumeRequestForConfigDoesNotTreatProfileIDAsProvider(t *testing.T) {
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
+	return stateDir, past
+}
 
-	req := resumeRequestForConfig(WebConfig{Past: past}, sessionID)
-	if req.Resolved.Effective.Model != "" {
-		t.Fatalf("resume model=%q, want empty for non-provider profile id", req.Resolved.Effective.Model)
+func TestResumeRequestForConfigPassesThroughOpenAIProfileID(t *testing.T) {
+	root := t.TempDir()
+	sessionID := "01PROFILE0000000000000001"
+	stateDir, past := makeResumeSession(t, root, sessionID, "openai", "gpt-4o")
+
+	req, err := resumeRequestForConfig(WebConfig{Past: past}, sessionID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.Provider != "openai" {
+		t.Fatalf("provider=%q, want %q", req.Provider, "openai")
+	}
+	if req.Resolved.Effective.Model != "openai/gpt-4o" {
+		t.Fatalf("model=%q, want %q", req.Resolved.Effective.Model, "openai/gpt-4o")
 	}
 	if req.WorkingDir != "/tmp/project" || req.StateDir != stateDir {
 		t.Fatalf("resume request=%+v", req)
+	}
+}
+
+func TestResumeRequestForConfigPassesThroughCustomProfileID(t *testing.T) {
+	root := t.TempDir()
+	sessionID := "01PROFILE0000000000000002"
+	_, past := makeResumeSession(t, root, sessionID, "work", "gpt-4o")
+
+	req, err := resumeRequestForConfig(WebConfig{Past: past}, sessionID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.Provider != "work" {
+		t.Fatalf("provider=%q, want %q", req.Provider, "work")
+	}
+	if req.Resolved.Effective.Model != "work/gpt-4o" {
+		t.Fatalf("model=%q, want %q", req.Resolved.Effective.Model, "work/gpt-4o")
+	}
+}
+
+func TestResumeRequestForConfigErrorsOnEmptyProfileID(t *testing.T) {
+	root := t.TempDir()
+	sessionID := "01PROFILE0000000000000003"
+	_, past := makeResumeSession(t, root, sessionID, "", "gpt-4o")
+
+	_, err := resumeRequestForConfig(WebConfig{Past: past}, sessionID)
+	if err == nil {
+		t.Fatal("expected error for empty profile id, got nil")
 	}
 }
 
