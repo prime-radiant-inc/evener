@@ -116,7 +116,7 @@ func TestOpenAIPromptCacheDefaults_FallbackUnsupportedModelClearsRetention(t *te
 }
 
 func TestOpenAIPromptCacheDefaults_PreserveExplicitRequestValues(t *testing.T) {
-	sess := &Session{id: "session-123"}
+	sess := &Session{id: "session-123", profile: NewOpenAIProfile("gpt-5.5")}
 	req := llm.Request{
 		Model:                "gpt-5.5",
 		Provider:             "openai",

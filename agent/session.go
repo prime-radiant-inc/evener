@@ -1379,7 +1379,7 @@ func (s *Session) applyModelRequestMetadata(req *llm.Request) {
 	if req == nil {
 		return
 	}
-	openAIPromptCacheSupported := req.Provider == "openai" && openAIModelSupports24hPromptCache(req.Model)
+	openAIPromptCacheSupported := s.profile.BehaviorTag() == "openai" && openAIModelSupports24hPromptCache(req.Model)
 	if strings.TrimSpace(s.id) != "" {
 		req.SessionID = s.id
 		req.ThreadID = s.id
@@ -3969,7 +3969,7 @@ func (s *Session) renderSystemPrompt() string {
 	}
 
 	resolver := &SectionResolver{
-		provider: s.profile.ID(),
+		provider: s.profile.BehaviorTag(),
 		agent:    s.cfg.AgentName,
 		agentFS:  embeddedAgents,
 		sources: []SectionSource{
@@ -4782,7 +4782,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 	// OpenAI and Anthropic handle web search natively via req.WebSearch;
 	// registering a function tool named "web_search" for those providers
 	// causes a duplicate name collision with the adapter-injected server tool.
-	if s.profile.ID() == "gemini" {
+	if s.profile.BehaviorTag() == "google" {
 		_ = reg.Register(RegisteredTool{
 			Tool: llm.Tool{Definition: defWebSearch()},
 			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
