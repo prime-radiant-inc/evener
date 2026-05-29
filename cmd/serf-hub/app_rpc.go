@@ -467,6 +467,16 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		}
 		return resp, err
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthDeviceStart, func(ctx context.Context, params appwire.AuthDeviceStartParams) (appwire.AuthDeviceStartResponse, error) {
+		return authController.DeviceStart(ctx, params)
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthDevicePoll, func(ctx context.Context, params appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
+		resp, err := authController.DevicePoll(ctx, params)
+		if err == nil && resp.State == "authorized" {
+			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource)
+		}
+		return resp, err
+	})
 	launchController := newHubLaunchController(hubStateRoot)
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchResolve, func(ctx context.Context, params appwire.LaunchConfigResolveParams) (appwire.LaunchConfigResolved, error) {
 		return launchController.Resolve(ctx, params)
