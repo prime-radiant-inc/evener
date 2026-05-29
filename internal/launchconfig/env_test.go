@@ -83,6 +83,18 @@ func TestToEnv_NoProviderNoInjection(t *testing.T) {
 	}
 }
 
+func TestToEnv_OpenAIStoredKeyInjectsOpenAIAPIKey(t *testing.T) {
+	creds := stubCreds{keys: map[string]string{"openai": "sk-FROM-FILE"}}
+	got := envSliceToMap(ToEnv(EnvInputs{
+		Provider:  "openai",
+		Creds:     creds,
+		ParentEnv: []string{"PATH=/usr/bin"},
+	}))
+	if got["OPENAI_API_KEY"] != "sk-FROM-FILE" {
+		t.Errorf("OPENAI_API_KEY = %q, want sk-FROM-FILE", got["OPENAI_API_KEY"])
+	}
+}
+
 func envSliceToMap(env []string) map[string]string {
 	out := map[string]string{}
 	for _, kv := range env {
