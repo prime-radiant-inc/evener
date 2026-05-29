@@ -124,7 +124,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		return err
 	}
 
-	client, err := llm.NewFromEnv(llm.WithStateDir(stateDir))
+	client, provCfg, hasProvConfig, err := cmdutil.LoadClient(llm.WithStateDir(stateDir))
 	if err != nil {
 		return fmt.Errorf("LLM client setup: %w", err)
 	}
@@ -169,15 +169,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			ExportATIFPath:         cfg.exportATIF,
 			NonInteractive:         true,
 			SystemPromptAsUser:     cfg.systemPromptAsUser,
-			// Task 1b-6 wires the loaded Config here:
-			//   if cfg != (providerconfig.Config{}) { return agent.ResolveProfileFromConfig(cfg, ref) }
-			ResolveProfile: func(ref string) (agent.ProviderProfile, error) {
-				mr, err := cmdutil.ParseModelRef(ref)
-				if err != nil {
-					return nil, err
-				}
-				return cmdutil.SelectProfile(mr.Provider, mr.Model, "")
-			},
+			ResolveProfile: cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
 		}
 		if cfg.maxSubagentDepth >= 0 {
 			sessionCfg.MaxSubagentDepth = cfg.maxSubagentDepth

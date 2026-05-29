@@ -91,7 +91,7 @@ func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, err
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
-	client, err := llm.NewFromEnv()
+	client, _, _, err := cmdutil.LoadClient()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -156,7 +156,7 @@ func validateLaunchCheckModel(ref cmdutil.ModelRef) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
-	client, err := llm.NewFromEnv()
+	client, _, _, err := cmdutil.LoadClient()
 	if err != nil {
 		return nil
 	}

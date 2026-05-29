@@ -19,6 +19,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/buildinfo"
+	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/frontmatter"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appsource"
@@ -31,6 +32,12 @@ import (
 )
 
 // WebConfig is everything the web server needs.
+//
+// Task 1b-6 seam: add a ProviderConfig providerconfig.Config field here (and
+// thread it from main.go via cmdutil.LoadClient at startup) once later tasks
+// need to filter models or routes by configured instances. fetchLiveModels
+// already calls cmdutil.LoadClient per-request so config is available; the
+// field would let handlers avoid the repeated call.
 type WebConfig struct {
 	HubAddr       string
 	AuthToken     string // capability token gating every non-exempt route
@@ -2021,7 +2028,7 @@ func (s *WebServer) fetchLiveModels(ctx context.Context) []map[string]any {
 	}
 	liveModelsCache.mu.Unlock()
 
-	c, err := llm.NewFromEnv()
+	c, _, _, err := cmdutil.LoadClient()
 	if err != nil || c == nil {
 		return nil
 	}

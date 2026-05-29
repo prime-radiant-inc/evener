@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/rendezvous"
 )
@@ -147,14 +148,14 @@ func TestServe_WritesAndRemovesRendezvousFile(t *testing.T) {
 }
 
 func TestRunServeNonInteractiveFlagControlsPromptAddendum(t *testing.T) {
-	oldNewClient := serveNewLLMClientFromEnv
-	serveNewLLMClientFromEnv = func(...llm.EnvOption) (*llm.Client, error) {
+	oldLoadClient := serveLoadClient
+	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providerconfig.Config, bool, error) {
 		client := llm.NewClient()
 		client.Register(serveLoggingAdapter{})
-		return client, nil
+		return client, providerconfig.Config{}, false, nil
 	}
 	t.Cleanup(func() {
-		serveNewLLMClientFromEnv = oldNewClient
+		serveLoadClient = oldLoadClient
 	})
 
 	for _, tc := range []struct {
@@ -233,17 +234,17 @@ func TestServeClient_APILogWritesJSONL(t *testing.T) {
 	stateDir := t.TempDir()
 	called := make(chan struct{}, 1)
 
-	oldNewClient := serveNewLLMClientFromEnv
-	serveNewLLMClientFromEnv = func(...llm.EnvOption) (*llm.Client, error) {
+	oldLoadClient := serveLoadClient
+	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providerconfig.Config, bool, error) {
 		client := llm.NewClient()
 		client.Register(serveLoggingAdapter{called: called})
-		return client, nil
+		return client, providerconfig.Config{}, false, nil
 	}
 	t.Cleanup(func() {
-		serveNewLLMClientFromEnv = oldNewClient
+		serveLoadClient = oldLoadClient
 	})
 
-	client, closeAPILog, err := newServeLLMClient(stateDir, nil)
+	client, _, _, closeAPILog, err := newServeLLMClient(stateDir, nil)
 	if err != nil {
 		t.Fatalf("newServeLLMClient: %v", err)
 	}

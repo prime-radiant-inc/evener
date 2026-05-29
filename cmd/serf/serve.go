@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
 	_ "primeradiant.com/serf/llm/providers/glm"
@@ -33,18 +34,22 @@ import (
 	"primeradiant.com/serf/server"
 )
 
-var serveNewLLMClientFromEnv = llm.NewFromEnv
+// serveLoadClient is the injectable hook for tests. Production code calls
+// cmdutil.LoadClient; tests may replace this to inject a stub client.
+var serveLoadClient = func(opts ...llm.EnvOption) (*llm.Client, providerconfig.Config, bool, error) {
+	return cmdutil.LoadClient(opts...)
+}
 
-func newServeLLMClient(stateDir string, warnings io.Writer) (*llm.Client, func() error, error) {
-	client, err := serveNewLLMClientFromEnv(llm.WithStateDir(stateDir))
+func newServeLLMClient(stateDir string, warnings io.Writer) (*llm.Client, providerconfig.Config, bool, func() error, error) {
+	client, cfg, hasConfig, err := serveLoadClient(llm.WithStateDir(stateDir))
 	if err != nil {
-		return nil, nil, fmt.Errorf("LLM client: %w", err)
+		return nil, providerconfig.Config{}, false, nil, fmt.Errorf("LLM client: %w", err)
 	}
 	closeAPILog, err := cmdutil.AttachAPILogger(client, stateDir, warnings)
 	if err != nil {
-		return nil, nil, err
+		return nil, providerconfig.Config{}, false, nil, err
 	}
-	return client, closeAPILog, nil
+	return client, cfg, hasConfig, closeAPILog, nil
 }
 
 func runServe(args []string) error {
@@ -158,7 +163,7 @@ func runServe(args []string) error {
 	}
 
 	// Create LLM client and session.
-	client, closeAPILog, err := newServeLLMClient(sd, os.Stderr)
+	client, provCfg, hasProvConfig, closeAPILog, err := newServeLLMClient(sd, os.Stderr)
 	if err != nil {
 		return err
 	}
@@ -190,15 +195,7 @@ func runServe(args []string) error {
 		NonInteractive:         *nonInteractive,
 		SystemPromptAsUser:     *systemPromptAsUser,
 		ModelFallbacks:         []string(modelFallbacks),
-		// Task 1b-6 wires the loaded Config here:
-		//   if cfg != (providerconfig.Config{}) { return agent.ResolveProfileFromConfig(cfg, ref) }
-		ResolveProfile: func(ref string) (agent.ProviderProfile, error) {
-			mr, err := cmdutil.ParseModelRef(ref)
-			if err != nil {
-				return nil, err
-			}
-			return cmdutil.SelectProfile(mr.Provider, mr.Model, "")
-		},
+		ResolveProfile: cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
 	}
 	if *maxSubagentDepth >= 0 {
 		sessionCfg.MaxSubagentDepth = *maxSubagentDepth
