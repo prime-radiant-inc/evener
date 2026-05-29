@@ -66,11 +66,12 @@ func newHubAuthControllerWithStore(_ string, store *credentials.Store) *hubAuthC
 	cfg := authopenai.DefaultConfig()
 	client := &http.Client{Timeout: cfg.HTTPTimeout}
 	stateDir := openAIStateDirFromEnv(authEnv)
-	// A nil store only occurs in tests that exercise read-only auth status;
-	// fall back to an empty in-memory store so status calls don't panic.
-	// Production always supplies a real store (writes to a "" path no-op).
+	// A nil store should never happen in production (main.go always supplies
+	// one). Fall back to the on-disk default store — the same path
+	// newHubAuthController uses — rather than a path-less store whose writes
+	// would silently no-op and lose credentials.
 	if store == nil {
-		store, _ = credentials.LoadStore("")
+		store, _ = credentials.LoadStore(filepath.Join(filepath.Dir(stateDir), "credentials.toml"))
 	}
 	return &hubAuthController{
 		stateDir:     stateDir,

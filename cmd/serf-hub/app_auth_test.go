@@ -599,3 +599,22 @@ func TestAuth_OpenAI_Status_ExpiredOAuthStillShadowsFileKey(t *testing.T) {
 		t.Errorf("status=%+v, want HasStoredFile true (file shadowed beneath expired oauth)", got)
 	}
 }
+
+func TestAuth_NewControllerWithNilStore_PersistsWritesToDefaultPath(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	c := newHubAuthControllerWithStore("", nil)
+	if _, err := c.ApiKeySet(appwire.AuthApiKeySetParams{Provider: "anthropic", Value: "sk-ant-PERSIST"}); err != nil {
+		t.Fatalf("ApiKeySet: %v", err)
+	}
+	// A nil store must fall back to the on-disk default, not a path-less store
+	// whose writes silently no-op. Verify the key actually reached disk.
+	credsPath := filepath.Join(filepath.Dir(c.stateDir), "credentials.toml")
+	reloaded, err := credentials.LoadStore(credsPath)
+	if err != nil {
+		t.Fatalf("LoadStore(%s): %v", credsPath, err)
+	}
+	if v, src := reloaded.Get("anthropic"); v != "sk-ant-PERSIST" || src != credentials.SourceFile {
+		t.Errorf("nil-store fallback did not persist to %s: v=%q src=%q", credsPath, v, src)
+	}
+}
