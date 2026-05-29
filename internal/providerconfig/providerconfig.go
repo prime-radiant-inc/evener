@@ -16,11 +16,12 @@ const (
 )
 
 type InstanceConfig struct {
-	Name     string
-	Type     Type
-	APIStyle APIStyle
-	BaseURL  string
-	APIKey   string
+	Name     string   `toml:"-"`
+	Type     Type     `toml:"type"`
+	APIStyle APIStyle `toml:"api_style"`
+	BaseURL  string   `toml:"base_url"`
+	APIKey   string   `toml:"api_key"`
+	Quirks   string   `toml:"quirks"`
 }
 
 type Config struct {
