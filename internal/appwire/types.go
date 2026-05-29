@@ -34,6 +34,8 @@ const (
 	MethodSerfAuthLogout            = "serf/auth/logout"
 	MethodSerfAuthList              = "serf/auth/list"
 	MethodSerfAuthApiKeySet         = "serf/auth/apiKey/set"
+	MethodSerfAuthDeviceStart       = "serf/auth/device/start"
+	MethodSerfAuthDevicePoll        = "serf/auth/device/poll"
 	MethodSerfLaunchResolve         = "serf/launch/resolve"
 	MethodSerfLaunchSchema          = "serf/launch/schema"
 	MethodSerfLaunchGetLayer        = "serf/launch/getLayer"
@@ -689,6 +691,36 @@ type AuthListResponse struct {
 type AuthApiKeySetParams struct {
 	Provider string `json:"provider"`
 	Value    string `json:"value"`
+}
+
+// AuthDeviceStartParams is the params for serf/auth/device/start.
+type AuthDeviceStartParams struct {
+	Provider string `json:"provider"`
+}
+
+// AuthDeviceStartResponse carries the device code to display, or Fallback=true
+// when the client doesn't support device-code and the caller should use the
+// redirect/paste-back flow instead.
+type AuthDeviceStartResponse struct {
+	Provider        string `json:"provider"`
+	FlowID          string `json:"flowId"`
+	UserCode        string `json:"userCode"`
+	VerificationURL string `json:"verificationUrl"`
+	IntervalSeconds int    `json:"intervalSeconds"`
+	Fallback        bool   `json:"fallback,omitempty"`
+}
+
+// AuthDevicePollParams is the params for serf/auth/device/poll.
+type AuthDevicePollParams struct {
+	Provider string `json:"provider"`
+	FlowID   string `json:"flowId"`
+}
+
+// AuthDevicePollResponse reports one poll attempt. State is "pending",
+// "authorized", or "expired". Status is populated only when authorized.
+type AuthDevicePollResponse struct {
+	State  string             `json:"state"`
+	Status AuthStatusResponse `json:"status,omitempty"`
 }
 
 // LaunchConfigLayer is the wire-level partial layer (every field optional;
