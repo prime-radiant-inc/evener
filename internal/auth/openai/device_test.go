@@ -582,6 +582,49 @@ func TestLoginWithDeviceDetectsConcurrentSuccessWrittenDuringPrompt(t *testing.T
 	}
 }
 
+func TestPollDeviceAuthOncePendingOnForbidden(t *testing.T) {
+	m := newDeviceMockServer(t)
+	m.token = func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusForbidden) }
+	_, pending, err := PollDeviceAuthOnce(context.Background(), m.server.Client(), m.cfg(), DeviceCode{DeviceAuthID: "d", UserCode: "C"})
+	if err != nil || !pending {
+		t.Fatalf("PollDeviceAuthOnce() pending=%v err=%v, want pending,no-error", pending, err)
+	}
+}
+
+func TestPollDeviceAuthOnceSuccess(t *testing.T) {
+	m := newDeviceMockServer(t)
+	m.token = func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"authorization_code": "auth-1", "code_challenge": "chal-1", "code_verifier": "ver-1",
+		})
+	}
+	got, pending, err := PollDeviceAuthOnce(context.Background(), m.server.Client(), m.cfg(), DeviceCode{DeviceAuthID: "d", UserCode: "C"})
+	if err != nil || pending {
+		t.Fatalf("pending=%v err=%v, want not-pending,no-error", pending, err)
+	}
+	if got.AuthorizationCode != "auth-1" || got.CodeVerifier != "ver-1" {
+		t.Fatalf("DeviceCodeSuccess = %+v", got)
+	}
+}
+
+func TestPollDeviceAuthOnceSurfacesUnexpectedStatus(t *testing.T) {
+	m := newDeviceMockServer(t)
+	m.token = func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusInternalServerError) }
+	_, pending, err := PollDeviceAuthOnce(context.Background(), m.server.Client(), m.cfg(), DeviceCode{DeviceAuthID: "d", UserCode: "C"})
+	if err == nil || pending {
+		t.Fatalf("pending=%v err=%v, want error,not-pending", pending, err)
+	}
+}
+
+func TestRequestDeviceCodeNotEnabledIsSentinel(t *testing.T) {
+	m := newDeviceMockServer(t)
+	m.usercode = func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) }
+	_, err := RequestDeviceCode(context.Background(), m.server.Client(), m.cfg())
+	if !errors.Is(err, ErrDeviceCodeNotEnabled) {
+		t.Fatalf("RequestDeviceCode() err = %v, want errors.Is ErrDeviceCodeNotEnabled", err)
+	}
+}
+
 // TestLoginWithDeviceIgnoresPreExistingState confirms the watcher does NOT
 // fire on auth state that pre-dates the current login attempt. A user who
 // explicitly invokes `serf openai login` while a stale record sits on disk

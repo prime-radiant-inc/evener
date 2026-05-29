@@ -21,6 +21,11 @@ const (
 	deviceRedirectPath     = "/deviceauth/callback"
 )
 
+// ErrDeviceCodeNotEnabled means the OpenAI client does not support the
+// device-code flow (the usercode endpoint returned 404). Callers can branch
+// on this to fall back to the browser/redirect flow.
+var ErrDeviceCodeNotEnabled = errors.New("device-code login is not enabled for this OpenAI client")
+
 // DeviceCode is the public handle returned by RequestDeviceCode. It carries
 // what the CLI needs to display to the user as well as the opaque values that
 // PollDeviceAuth needs to drive the polling loop.
@@ -124,7 +129,7 @@ func RequestDeviceCode(ctx context.Context, client *http.Client, cfg Config) (De
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return DeviceCode{}, errors.New("device-code login is not enabled for this OpenAI client; use the browser flow (`serf openai login`) instead")
+		return DeviceCode{}, fmt.Errorf("%w; use the browser flow (`serf openai login`) instead", ErrDeviceCodeNotEnabled)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return DeviceCode{}, fmt.Errorf("device code request failed with status %d", resp.StatusCode)
@@ -154,6 +159,51 @@ func RequestDeviceCode(ctx context.Context, client *http.Client, cfg Config) (De
 		DeviceAuthID:    payload.DeviceAuthID,
 		Interval:        interval,
 	}, nil
+}
+
+// PollDeviceAuthOnce makes a single poll attempt against the device token
+// endpoint. pending is true when the server reports the user has not finished
+// authorizing yet (HTTP 403/404). A non-2xx status that is not pending is
+// returned as err.
+func PollDeviceAuthOnce(ctx context.Context, client *http.Client, cfg Config, dc DeviceCode) (DeviceCodeSuccess, bool, error) {
+	cfg = mergeConfigDefaults(cfg)
+	if client == nil {
+		client = &http.Client{Timeout: cfg.HTTPTimeout}
+	}
+	body, err := json.Marshal(devicePollRequest{DeviceAuthID: dc.DeviceAuthID, UserCode: dc.UserCode})
+	if err != nil {
+		return DeviceCodeSuccess{}, false, fmt.Errorf("marshal device poll request: %w", err)
+	}
+	endpoint := strings.TrimRight(cfg.issuerBaseURL(), "/") + deviceAPIPath + "/token"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return DeviceCodeSuccess{}, false, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return DeviceCodeSuccess{}, false, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	status := resp.StatusCode
+	if status >= 200 && status < 300 {
+		var payload devicePollResponse
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			return DeviceCodeSuccess{}, false, fmt.Errorf("decode device poll response: %w", err)
+		}
+		if payload.AuthorizationCode == "" || payload.CodeVerifier == "" {
+			return DeviceCodeSuccess{}, false, errors.New("device poll response missing authorization_code or code_verifier")
+		}
+		return DeviceCodeSuccess{
+			AuthorizationCode: payload.AuthorizationCode,
+			CodeChallenge:     payload.CodeChallenge,
+			CodeVerifier:      payload.CodeVerifier,
+		}, false, nil
+	}
+	if status == http.StatusForbidden || status == http.StatusNotFound {
+		return DeviceCodeSuccess{}, true, nil
+	}
+	return DeviceCodeSuccess{}, false, fmt.Errorf("device auth failed with status %d", status)
 }
 
 // PollDeviceAuth blocks until the server reports authorization, the overall
@@ -197,8 +247,6 @@ func pollDeviceAuth(ctx context.Context, client *http.Client, cfg Config, dc Dev
 		interval = defaultDeviceInterval
 	}
 
-	base := strings.TrimRight(cfg.issuerBaseURL(), "/")
-	endpoint := base + deviceAPIPath + "/token"
 	start := now()
 
 	for {
@@ -206,54 +254,18 @@ func pollDeviceAuth(ctx context.Context, client *http.Client, cfg Config, dc Dev
 			return DeviceCodeSuccess{}, err
 		}
 
-		body, err := json.Marshal(devicePollRequest{
-			DeviceAuthID: dc.DeviceAuthID,
-			UserCode:     dc.UserCode,
-		})
-		if err != nil {
-			return DeviceCodeSuccess{}, fmt.Errorf("marshal device poll request: %w", err)
-		}
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		success, pending, err := PollDeviceAuthOnce(ctx, client, cfg, dc)
 		if err != nil {
 			return DeviceCodeSuccess{}, err
 		}
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := client.Do(req)
-		if err != nil {
-			return DeviceCodeSuccess{}, err
-		}
-
-		status := resp.StatusCode
-		if status >= 200 && status < 300 {
-			var payload devicePollResponse
-			err := json.NewDecoder(resp.Body).Decode(&payload)
-			_ = resp.Body.Close()
-			if err != nil {
-				return DeviceCodeSuccess{}, fmt.Errorf("decode device poll response: %w", err)
-			}
-			if payload.AuthorizationCode == "" || payload.CodeVerifier == "" {
-				return DeviceCodeSuccess{}, errors.New("device poll response missing authorization_code or code_verifier")
-			}
-			return DeviceCodeSuccess{
-				AuthorizationCode: payload.AuthorizationCode,
-				CodeChallenge:     payload.CodeChallenge,
-				CodeVerifier:      payload.CodeVerifier,
-			}, nil
-		}
-
-		_ = resp.Body.Close()
-
-		if status != http.StatusForbidden && status != http.StatusNotFound {
-			return DeviceCodeSuccess{}, fmt.Errorf("device auth failed with status %d", status)
+		if !pending {
+			return success, nil
 		}
 
 		elapsed := now().Sub(start)
 		if elapsed >= maxWait {
 			return DeviceCodeSuccess{}, errors.New("device auth timed out after 15 minutes")
 		}
-
 		wait := interval
 		if remaining := maxWait - elapsed; wait > remaining {
 			wait = remaining
