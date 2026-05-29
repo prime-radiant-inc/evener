@@ -192,6 +192,14 @@ type SessionConfig struct {
 	// task store. Set by spawnAgent when ShareTasksWithChildren is true.
 	SharedTaskStore *TaskStore `json:"-"`
 
+	// ResolveProfile, when non-nil, maps a "provider/model" ref to the
+	// corresponding ProviderProfile. Injected by cmd/serf so that
+	// Session.SetModel can perform cross-provider switches without
+	// importing the provider constructors directly (which would create a
+	// cycle). When nil the session falls back to profile.WithModel which
+	// only handles same-provider (or strip/keep) refs.
+	ResolveProfile func(ref string) (ProviderProfile, error) `json:"-"`
+
 	// Internal prompt/session shaping for restricted subagents and reviewer runs.
 	RolePromptOverride   string   `json:"-"`
 	ActivatedSkillBodies []string `json:"-"`
@@ -222,13 +230,14 @@ func (c *SessionConfig) applyDefaults() {
 }
 
 type Session struct {
-	id        string
-	cfg       SessionConfig
-	client    *llm.Client
-	profile   ProviderProfile
-	env       ExecutionEnvironment
-	stateDir  string
-	installID string
+	id             string
+	cfg            SessionConfig
+	client         *llm.Client
+	profile        ProviderProfile
+	resolveProfile func(ref string) (ProviderProfile, error) // cross-provider resolver; may be nil
+	env            ExecutionEnvironment
+	stateDir       string
+	installID      string
 
 	events  chan SessionEvent
 	envInfo EnvironmentInfo
@@ -420,21 +429,22 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 
 	sessCtx, sessCancel := context.WithCancel(context.Background())
 	s := &Session{
-		id:         ulid.Make().String(),
-		cfg:        cfg,
-		client:     client,
-		profile:    profile,
-		depth:      cfg.Depth,
-		env:        env,
-		stateDir:   cfg.StateDir,
-		installID:  loadOrCreateInstallationID(cfg.StateDir),
-		state:      SessionIdle,
-		events:     make(chan SessionEvent, 256),
-		history:    []Turn{},
-		subagents:  map[string]*subagent{},
-		readFiles:  map[string]bool{},
-		sessionCtx: sessCtx,
-		cancelFunc: sessCancel,
+		id:             ulid.Make().String(),
+		cfg:            cfg,
+		client:         client,
+		profile:        profile,
+		resolveProfile: cfg.ResolveProfile,
+		depth:          cfg.Depth,
+		env:            env,
+		stateDir:       cfg.StateDir,
+		installID:      loadOrCreateInstallationID(cfg.StateDir),
+		state:          SessionIdle,
+		events:         make(chan SessionEvent, 256),
+		history:        []Turn{},
+		subagents:      map[string]*subagent{},
+		readFiles:      map[string]bool{},
+		sessionCtx:     sessCtx,
+		cancelFunc:     sessCancel,
 	}
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind)
@@ -1266,6 +1276,52 @@ func (s *Session) isClosingOrClosed() bool {
 	return s.closingOrClosedLocked()
 }
 
+// resolveProfileForRef resolves a model ref to a ProviderProfile. When the
+// ref is classified as a cross-provider switch (prefixActionSwitch) AND the
+// session has a resolver, the resolver is called. Otherwise the current
+// profile's WithModel is used (handles same-provider, strip, and keep cases).
+func (s *Session) resolveProfileForRef(ref string) (ProviderProfile, bool, error) {
+	if parts := strings.SplitN(ref, "/", 2); len(parts) == 2 {
+		provider := strings.ToLower(parts[0])
+		action := decidePrefixAction(s.profile.BehaviorTag(), s.profile.ID(), provider)
+		if action == prefixActionSwitch && s.resolveProfile != nil {
+			resolved, err := s.resolveProfile(ref)
+			if err != nil {
+				return nil, false, err
+			}
+			if resolved != nil {
+				return resolved, true, nil
+			}
+		}
+	}
+	return s.profile.WithModel(ref), false, nil
+}
+
+// reapplyProviderSpecificTools updates the live tool registry when the session
+// switches between providers. Currently the only provider-specific function
+// tool is the Gemini web_search executor:
+//   - switching TO a google-tag profile: register the real web_search executor
+//   - switching AWAY from a google-tag profile: remove web_search from the
+//     registry so it doesn't collide with the adapter-injected server tool
+//     used by OpenAI/Anthropic native web search.
+func (s *Session) reapplyProviderSpecificTools(oldTag, newTag string) {
+	switch {
+	case newTag == "google" && oldTag != "google":
+		// Switching to Gemini: wire the real web_search executor.
+		_ = s.reg.Register(RegisteredTool{
+			Tool: llm.Tool{Definition: defWebSearch()},
+			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+				query := fmt.Sprint(args["query"])
+				return s.webSearch(ctx, query)
+			},
+		})
+	case oldTag == "google" && newTag != "google":
+		// Switching away from Gemini: remove the function tool so non-Gemini
+		// providers can use their own native web-search mechanism.
+		s.reg.Remove("web_search")
+	}
+}
+
 // SetModel changes the model used for future LLM calls.
 // Takes effect on the next request.
 func (s *Session) SetModel(model string) {
@@ -1274,7 +1330,15 @@ func (s *Session) SetModel(model string) {
 		s.mu.Unlock()
 		return
 	}
-	nextProfile := s.profile.WithModel(model)
+	oldTag := s.profile.BehaviorTag()
+	nextProfile, crossProvider, err := s.resolveProfileForRef(model)
+	if err != nil {
+		s.mu.Unlock()
+		return
+	}
+	if crossProvider {
+		nextProfile = preserveBaseOverrides(nextProfile, s.profile)
+	}
 	client := s.client
 	s.mu.Unlock()
 
@@ -1285,9 +1349,13 @@ func (s *Session) SetModel(model string) {
 		s.mu.Unlock()
 		return
 	}
+	newTag := nextProfile.BehaviorTag()
 	s.profile = nextProfile
 	if s.contextMgr != nil {
 		s.contextMgr.SetProfile(s.profile)
+	}
+	if crossProvider && s.reg != nil {
+		s.reapplyProviderSpecificTools(oldTag, newTag)
 	}
 	s.rebuildToolDefsCache()
 	s.refreshSystemPromptCache()
@@ -2703,7 +2771,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// callModel. Kata cxw8.
 		if err != nil && len(s.cfg.ModelFallbacks) > 0 && modelFallbackEligible(err) {
 			for _, fbModel := range s.cfg.ModelFallbacks {
-				fbProfile := s.profile.WithModel(fbModel)
+				// validateModelFallbacks already rejected cross-provider fallbacks,
+				// so resolveProfileForRef is guaranteed to return the WithModel path
+				// here. We call it anyway so the fallback always uses the same
+				// resolution logic as SetModel.
+				fbProfile, _, _ := s.resolveProfileForRef(fbModel)
 				fbReq := req
 				fbReq.Model = fbProfile.Model()
 				fbReq.Provider = fbProfile.ID()
@@ -4136,9 +4208,33 @@ func (s *Session) initSessionState(sessionStartKind SessionStartKind) ([]PromptS
 
 func (s *Session) validateModelFallbacks() error {
 	for _, fbModel := range s.cfg.ModelFallbacks {
-		fbProfile := s.profile.WithModel(fbModel)
-		if fbProfile.ID() != s.profile.ID() {
-			return fmt.Errorf("model_fallbacks entry %q switches provider from %q to %q; cross-provider fallbacks are not supported because provider prompt/tool surfaces differ", fbModel, s.profile.ID(), fbProfile.ID())
+		// Always check whether the ref is a cross-provider switch by inspecting
+		// decidePrefixAction, regardless of whether a resolver is present.
+		// Cross-provider fallbacks are unsupported because the prompt/tool
+		// surfaces differ between providers.
+		if parts := strings.SplitN(fbModel, "/", 2); len(parts) == 2 {
+			provider := strings.ToLower(parts[0])
+			if decidePrefixAction(s.profile.BehaviorTag(), s.profile.ID(), provider) == prefixActionSwitch {
+				// Resolve to get the target provider name for the error message.
+				targetTag := provider // best-effort for the error message
+				fbProfile, crossProvider, err := s.resolveProfileForRef(fbModel)
+				if err != nil {
+					return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
+				}
+				if crossProvider {
+					targetTag = fbProfile.BehaviorTag()
+				}
+				return fmt.Errorf("model_fallbacks entry %q switches provider from %q to %q; cross-provider fallbacks are not supported because provider prompt/tool surfaces differ", fbModel, s.profile.BehaviorTag(), targetTag)
+			}
+		}
+		fbProfile, _, err := s.resolveProfileForRef(fbModel)
+		if err != nil {
+			return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
+		}
+		// Same-provider resolution: guard on BehaviorTag rather than ID so
+		// renamed instances still pass.
+		if fbProfile.BehaviorTag() != s.profile.BehaviorTag() {
+			return fmt.Errorf("model_fallbacks entry %q switches provider from %q to %q; cross-provider fallbacks are not supported because provider prompt/tool surfaces differ", fbModel, s.profile.BehaviorTag(), fbProfile.BehaviorTag())
 		}
 	}
 	return nil

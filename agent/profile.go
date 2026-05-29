@@ -539,39 +539,20 @@ func (p *baseProfile) WithModel(model string) ProviderProfile {
 	if model == "" {
 		model = p.model
 	}
-	// Parse "provider/model" strings (e.g. "openai/gpt-5.4-mini") into
-	// the correct provider profile. This is the format used by harbor
-	// and the CLI (--model openai/gpt-5.4). Meta-providers whose model
-	// IDs include slashes by convention need different handling — see
-	// decidePrefixAction.
+	// Parse "provider/model" strings. decidePrefixAction classifies each
+	// slashed ref as strip (redundant self-prefix), keep (model namespace
+	// slash on meta-providers), or switch (cross-provider, now handled by
+	// the Session resolver). WithModel handles strip/keep; cross-provider
+	// refs that are NOT handled by a resolver fall through to a shallow
+	// clone with the model string unchanged rather than silently stripping.
 	if parts := strings.SplitN(model, "/", 2); len(parts) == 2 {
 		provider := strings.ToLower(parts[0])
 		bareModel := parts[1]
 		switch decidePrefixAction(p.behaviorTag, p.id, provider) {
 		case prefixActionSwitch:
-			var switched ProviderProfile
-			switch provider {
-			case "openai":
-				switched = NewOpenAIProfile(bareModel)
-			case "anthropic":
-				switched = NewAnthropicProfile(bareModel)
-			case "google", "gemini":
-				switched = NewGeminiProfile(bareModel)
-			case "minimax":
-				switched = NewMiniMaxProfile(bareModel)
-			case "openrouter-anthropic":
-				switched = NewOpenRouterAnthropicProfile(bareModel)
-			case "kimi", "glm", "openrouter", "ollama":
-				switched = NewOpenAICompatProfile(provider, bareModel, 0)
-			}
-			if switched != nil {
-				// Carry caller-applied tool-schema overrides forward
-				// across the cross-provider switch — the same
-				// preservation contract as same-provider rebuilds.
-				return preserveBaseOverrides(switched, p)
-			}
-			// Unknown provider name — fall through to clone with the
-			// model unchanged rather than silently stripping.
+			// Cross-provider switching is now the Session resolver's job.
+			// Fall through with model unchanged — the caller (SetModel or
+			// subagents.go) should have resolved this before calling WithModel.
 		case prefixActionStrip:
 			model = bareModel
 		case prefixActionKeep:
@@ -667,29 +648,19 @@ func (p *anthropicProfile) WithModel(model string) ProviderProfile {
 	if model == "" {
 		model = p.model
 	}
-	// Parse "provider/model" strings — delegate to the right profile type.
+	// Parse "provider/model" strings. Strip the redundant self-prefix
+	// ("anthropic/..."). Cross-provider refs (decidePrefixAction returns
+	// prefixActionSwitch) are now handled by the Session resolver; fall
+	// through with model unchanged so the caller can surface the error or
+	// handle the switch at the session level.
 	if parts := strings.SplitN(model, "/", 2); len(parts) == 2 {
 		provider := strings.ToLower(parts[0])
 		bareModel := parts[1]
-		if provider != "anthropic" {
-			var switched ProviderProfile
-			switch provider {
-			case "openai":
-				switched = NewOpenAIProfile(bareModel)
-			case "google", "gemini":
-				switched = NewGeminiProfile(bareModel)
-			case "minimax":
-				switched = NewMiniMaxProfile(bareModel)
-			case "openrouter-anthropic":
-				switched = NewOpenRouterAnthropicProfile(bareModel)
-			case "kimi", "glm", "openrouter", "ollama":
-				switched = NewOpenAICompatProfile(provider, bareModel, 0)
-			}
-			if switched != nil {
-				return preserveBaseOverrides(switched, p)
-			}
+		if provider == "anthropic" {
+			model = bareModel
 		}
-		model = bareModel
+		// prefixActionSwitch refs for non-anthropic providers: leave model
+		// unchanged — cross-provider switching is the Session resolver's job.
 	}
 	clone := *p
 	clone.model = model

@@ -363,58 +363,9 @@ func TestProviderProfile_WithModel_ResolvesProviderPrefix(t *testing.T) {
 	}
 }
 
-func TestProviderProfile_WithModel_CrossProvider(t *testing.T) {
-	// WithModel("anthropic/claude-opus-4-6") on an OpenAI profile should
-	// return an Anthropic profile.
-	orig := NewOpenAIProfile("gpt-5.4")
-	cloned := orig.WithModel("anthropic/claude-opus-4-6")
-	if cloned.Model() != "claude-opus-4-6" {
-		t.Fatalf("Model() = %q, want %q", cloned.Model(), "claude-opus-4-6")
-	}
-	if cloned.ID() != "anthropic" {
-		t.Fatalf("ID() = %q, want %q", cloned.ID(), "anthropic")
-	}
-}
-
-func TestAnthropicProfile_WithModel_ResolvesProviderPrefix(t *testing.T) {
-	orig := NewAnthropicProfile("claude-opus-4-6")
-	cloned := orig.WithModel("openai/gpt-5.4-mini")
-	if cloned.Model() != "gpt-5.4-mini" {
-		t.Fatalf("Model() = %q, want %q", cloned.Model(), "gpt-5.4-mini")
-	}
-	if cloned.ID() != "openai" {
-		t.Fatalf("ID() = %q, want %q", cloned.ID(), "openai")
-	}
-}
-
-// TestProviderProfile_WithModel_OllamaPrefix verifies that
-// WithModel("ollama/<model>") on an OpenAI profile returns an ollama
-// profile with the prefix stripped — required so subagent / model-override
-// paths that pass "ollama/<model>" don't end up sending the prefixed name
-// to the wire.
-func TestProviderProfile_WithModel_OllamaPrefix(t *testing.T) {
-	orig := NewOpenAIProfile("gpt-5.4")
-	cloned := orig.WithModel("ollama/llama3.1:8b")
-	if cloned.Model() != "llama3.1:8b" {
-		t.Fatalf("Model() = %q, want %q", cloned.Model(), "llama3.1:8b")
-	}
-	if cloned.ID() != "ollama" {
-		t.Fatalf("ID() = %q, want %q", cloned.ID(), "ollama")
-	}
-}
-
-// TestAnthropicProfile_WithModel_OllamaPrefix verifies the same dispatch
-// works from the anthropicProfile WithModel path.
-func TestAnthropicProfile_WithModel_OllamaPrefix(t *testing.T) {
-	orig := NewAnthropicProfile("claude-opus-4-6")
-	cloned := orig.WithModel("ollama/qwen2.5-coder:7b")
-	if cloned.Model() != "qwen2.5-coder:7b" {
-		t.Fatalf("Model() = %q, want %q", cloned.Model(), "qwen2.5-coder:7b")
-	}
-	if cloned.ID() != "ollama" {
-		t.Fatalf("ID() = %q, want %q", cloned.ID(), "ollama")
-	}
-}
+// TestProviderProfile_WithModel_CrossProvider and related cross-provider
+// WithModel tests have been moved to session_resolve_profile_test.go.
+// Cross-provider switching is now the responsibility of the Session resolver.
 
 func TestNewOpenAIProfile_UnknownModelUsesModernContextFallback(t *testing.T) {
 	p := NewOpenAIProfile("gpt-6-preview")
@@ -857,46 +808,10 @@ func TestNewOpenRouterAnthropicProfile_StripsBareUpstreamCtxFallback(t *testing.
 	}
 }
 
-// TestBaseProfile_WithModel_OpenRouterSwitchesToUnambiguousProvider
-// verifies that from meta-provider profiles (openrouter,
-// openrouter-anthropic), WithModel still does cross-provider switches
-// when the prefix is unambiguously a Serf-internal provider that
-// OpenRouter does NOT route to as an upstream — ollama (local), kimi,
-// glm (independent), and openrouter-anthropic (sister Serf mode).
-func TestBaseProfile_WithModel_OpenRouterSwitchesToUnambiguousProvider(t *testing.T) {
-	cases := []struct {
-		startProfile func() ProviderProfile
-		input        string
-		wantID       string
-		wantModel    string
-	}{
-		{func() ProviderProfile {
-			return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
-		}, "ollama/llama3.1", "ollama", "llama3.1"},
-		{func() ProviderProfile {
-			return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
-		}, "kimi/kimi-k2.5", "kimi", "kimi-k2.5"},
-		{func() ProviderProfile {
-			return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
-		}, "glm/glm-5", "glm", "glm-5"},
-		{func() ProviderProfile {
-			return NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
-		}, "openrouter-anthropic/claude-3-5-sonnet", "openrouter-anthropic", "claude-3-5-sonnet"},
-		{func() ProviderProfile { return NewOpenRouterAnthropicProfile("anthropic/claude-3-haiku-20240307") }, "ollama/llama3.1", "ollama", "llama3.1"},
-		{func() ProviderProfile { return NewOpenRouterAnthropicProfile("anthropic/claude-3-haiku-20240307") }, "kimi/kimi-k2.5", "kimi", "kimi-k2.5"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.input, func(t *testing.T) {
-			cloned := tc.startProfile().WithModel(tc.input)
-			if cloned.ID() != tc.wantID {
-				t.Errorf("ID() = %q, want %q (unambiguous Serf provider prefix should switch)", cloned.ID(), tc.wantID)
-			}
-			if cloned.Model() != tc.wantModel {
-				t.Errorf("Model() = %q, want %q", cloned.Model(), tc.wantModel)
-			}
-		})
-	}
-}
+// TestBaseProfile_WithModel_OpenRouterSwitchesToUnambiguousProvider has been
+// moved to session_resolve_profile_test.go. Cross-provider switching is now
+// routed through the Session resolver; WithModel handles only same-provider,
+// strip, and keep cases.
 
 // TestBaseProfile_WithModel_OpenRouterKeepsUpstreamNamespace verifies
 // the other half of the meta-provider rule: prefixes that COULD be
@@ -1147,42 +1062,9 @@ func TestBaseProfile_WithModel_RecomputesProviderOptsOnMetaProviders(t *testing.
 	}
 }
 
-// TestBaseProfile_WithModel_StillSwitchesFromNonMeta verifies the
-// existing prefix-switch feature still works from non-meta-provider
-// profiles. This is the original use case: harbor and the CLI pass
-// "provider/model" strings and expect WithModel to produce the right
-// profile type. The meta-provider gate must not affect this path.
-func TestBaseProfile_WithModel_StillSwitchesFromNonMeta(t *testing.T) {
-	cases := []struct {
-		startID   string
-		newOrig   func() ProviderProfile
-		input     string
-		wantID    string
-		wantModel string
-	}{
-		{"openai", func() ProviderProfile { return NewOpenAIProfile("gpt-5.4") }, "anthropic/claude-3-opus", "anthropic", "claude-3-opus"},
-		{"openai", func() ProviderProfile { return NewOpenAIProfile("gpt-5.4") }, "ollama/llama3.1", "ollama", "llama3.1"},
-		{"openai", func() ProviderProfile { return NewOpenAIProfile("gpt-5.4") }, "openrouter/anthropic/claude-3-haiku-20240307", "openrouter", "anthropic/claude-3-haiku-20240307"},
-		{"google", func() ProviderProfile { return NewGeminiProfile("gemini-3-flash") }, "openai/gpt-5.4", "openai", "gpt-5.4"},
-		{"kimi", func() ProviderProfile { return NewOpenAICompatProfile("kimi", "kimi-k2.5", 0) }, "openai/gpt-5.4", "openai", "gpt-5.4"},
-		{"ollama", func() ProviderProfile { return NewOpenAICompatProfile("ollama", "llama3.1", 0) }, "openai/gpt-5.4", "openai", "gpt-5.4"},
-		// Cross-provider switch from minimax must still work — only the
-		// same-provider "minimax/..." case is exempted from prefix parsing.
-		{"minimax", func() ProviderProfile { return NewMiniMaxProfile("minimax/minimax-m2.7") }, "anthropic/claude-opus", "anthropic", "claude-opus"},
-		{"minimax", func() ProviderProfile { return NewMiniMaxProfile("minimax/minimax-m2.7") }, "openai/gpt-5.4", "openai", "gpt-5.4"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.startID+"_"+tc.input, func(t *testing.T) {
-			cloned := tc.newOrig().WithModel(tc.input)
-			if cloned.ID() != tc.wantID {
-				t.Errorf("ID() = %q, want %q", cloned.ID(), tc.wantID)
-			}
-			if cloned.Model() != tc.wantModel {
-				t.Errorf("Model() = %q, want %q", cloned.Model(), tc.wantModel)
-			}
-		})
-	}
-}
+// TestBaseProfile_WithModel_StillSwitchesFromNonMeta has been moved to
+// session_resolve_profile_test.go. Cross-provider switching is now
+// handled by the Session resolver, not WithModel.
 
 // TestBaseProfile_WithModel_SameProviderStripStillWorksForKimiGlm
 // verifies the "WithModel('kimi/kimi-k2.5') on a kimi profile strips
@@ -1260,24 +1142,8 @@ func TestNewOpenAICompatProfile_OllamaTaggedModelEndToEnd(t *testing.T) {
 	}
 }
 
-// TestProviderProfile_WithModel_OllamaPrefix_PreservesCatalogMetadata is the
-// regression test the reviewer requested: WithModel("ollama/<model>") on an
-// OpenAI profile must surface the catalog-derived metadata, not silently
-// drop it. Combines the dispatch and catalog-resolution paths.
-func TestProviderProfile_WithModel_OllamaPrefix_PreservesCatalogMetadata(t *testing.T) {
-	orig := NewOpenAIProfile("gpt-5.4")
-	cloned := orig.WithModel("ollama/llama3.1")
-	if cloned.ID() != "ollama" {
-		t.Fatalf("ID() = %q, want ollama", cloned.ID())
-	}
-	if cloned.Model() != "llama3.1" {
-		t.Fatalf("Model() = %q, want llama3.1", cloned.Model())
-	}
-	if got := cloned.ContextWindowSize(); got != 8192 {
-		t.Fatalf("ContextWindowSize() = %d, want 8192 — catalog metadata for "+
-			"ollama/llama3.1 was not resolved through the WithModel dispatch", got)
-	}
-}
+// TestProviderProfile_WithModel_OllamaPrefix_PreservesCatalogMetadata has been
+// moved to session_resolve_profile_test.go (session-level cross-provider test).
 
 // TestNewOpenAICompatProfile_OpenRouterResolvesCatalogMetadata covers the
 // other half of the prefixed-key fallback in NewOpenAICompatProfile:
@@ -1295,62 +1161,12 @@ func TestNewOpenAICompatProfile_OpenRouterResolvesCatalogMetadata(t *testing.T) 
 	}
 }
 
-// TestProviderProfile_WithModel_OpenRouterPrefix_PreservesCatalogMetadata
-// covers the WithModel dispatch path for an OpenRouter model whose bare
-// form still contains a slash after provider stripping
-// ("anthropic/claude-3-haiku-20240307"). This is a slightly different
-// shape from the Ollama case — the SplitN must do exactly one split — so
-// regressions in either the dispatch (provider routing, prefix stripping)
-// or the catalog resolution would otherwise go uncaught.
-func TestProviderProfile_WithModel_OpenRouterPrefix_PreservesCatalogMetadata(t *testing.T) {
-	orig := NewOpenAIProfile("gpt-5.4")
-	cloned := orig.WithModel("openrouter/anthropic/claude-3-haiku-20240307")
-	if cloned.ID() != "openrouter" {
-		t.Fatalf("ID() = %q, want openrouter", cloned.ID())
-	}
-	if cloned.Model() != "anthropic/claude-3-haiku-20240307" {
-		t.Fatalf("Model() = %q, want anthropic/claude-3-haiku-20240307 (slash in remainder must be preserved)", cloned.Model())
-	}
-	if got := cloned.ContextWindowSize(); got != 200000 {
-		t.Fatalf("ContextWindowSize() = %d, want 200000 — catalog metadata for "+
-			"openrouter/anthropic/claude-3-haiku-20240307 was not resolved through the WithModel dispatch", got)
-	}
-}
+// TestProviderProfile_WithModel_OpenRouterPrefix_PreservesCatalogMetadata has
+// been moved to session_resolve_profile_test.go (session-level test).
 
-// TestAnthropicProfile_WithModel_CrossProviderPrefixes verifies that the
-// anthropicProfile.WithModel dispatch is symmetric with
-// baseProfile.WithModel: every provider prefix that baseProfile handles
-// (the OpenAI-compatibles plus openrouter-anthropic) must dispatch the
-// same way from an Anthropic-origin profile. Without this, an
-// Anthropic-origin WithModel("openrouter/...") or
-// WithModel("openrouter-anthropic/...") would silently stay on the
-// Anthropic adapter with the slash-prefixed model string, misrouting
-// requests and bypassing the correct provider path.
-func TestAnthropicProfile_WithModel_CrossProviderPrefixes(t *testing.T) {
-	cases := []struct {
-		input     string
-		wantID    string
-		wantModel string
-	}{
-		{"openrouter/anthropic/claude-3-haiku-20240307", "openrouter", "anthropic/claude-3-haiku-20240307"},
-		{"openrouter-anthropic/claude-3-5-sonnet", "openrouter-anthropic", "claude-3-5-sonnet"},
-		{"kimi/kimi-k2.5", "kimi", "kimi-k2.5"},
-		{"glm/glm-5", "glm", "glm-5"},
-		{"ollama/llama3.1", "ollama", "llama3.1"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.input, func(t *testing.T) {
-			orig := NewAnthropicProfile("claude-opus-4-6")
-			cloned := orig.WithModel(tc.input)
-			if cloned.ID() != tc.wantID {
-				t.Fatalf("ID() = %q, want %q", cloned.ID(), tc.wantID)
-			}
-			if cloned.Model() != tc.wantModel {
-				t.Fatalf("Model() = %q, want %q", cloned.Model(), tc.wantModel)
-			}
-		})
-	}
-}
+// TestAnthropicProfile_WithModel_CrossProviderPrefixes has been moved to
+// session_resolve_profile_test.go. Cross-provider switching is now the
+// Session resolver's responsibility.
 
 func assertHasTool(t *testing.T, p ProviderProfile, name string) {
 	t.Helper()
@@ -2127,31 +1943,9 @@ func TestMiniMaxProfile_ToolListExact(t *testing.T) {
 	})
 }
 
-func TestMiniMaxProfile_WithModel_CrossProvider(t *testing.T) {
-	// WithModel("anthropic/claude-opus-4-6") on a MiniMax profile should
-	// return an Anthropic profile.
-	orig := NewMiniMaxProfile("MiniMax-M2.7")
-	cloned := orig.WithModel("anthropic/claude-opus-4-6")
-	if cloned.ID() != "anthropic" {
-		t.Fatalf("ID() = %q, want anthropic", cloned.ID())
-	}
-	if cloned.Model() != "claude-opus-4-6" {
-		t.Fatalf("Model() = %q", cloned.Model())
-	}
-}
-
-func TestWithModel_CrossProviderToMiniMax(t *testing.T) {
-	// WithModel("minimax/MiniMax-M2.7") on an OpenAI profile should return
-	// a MiniMax profile.
-	orig := NewOpenAIProfile("gpt-5.2")
-	cloned := orig.WithModel("minimax/MiniMax-M2.7")
-	if cloned.ID() != "minimax" {
-		t.Fatalf("ID() = %q, want minimax", cloned.ID())
-	}
-	if cloned.Model() != "MiniMax-M2.7" {
-		t.Fatalf("Model() = %q", cloned.Model())
-	}
-}
+// TestMiniMaxProfile_WithModel_CrossProvider and TestWithModel_CrossProviderToMiniMax
+// have been moved to session_resolve_profile_test.go. Cross-provider switching
+// is now handled by the Session resolver.
 
 func TestResolveEffortLevels_CatalogHit(t *testing.T) {
 	// claude-opus-4-6 is in the catalog with [low, medium, high, max]

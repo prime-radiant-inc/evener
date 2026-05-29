@@ -156,11 +156,25 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 
 	subProfile := s.profile
 	if model = strings.TrimSpace(model); model != "" {
-		subProfile = s.profile.WithModel(model)
+		resolved, crossProvider, err := s.resolveProfileForRef(model)
+		if err != nil {
+			return "", fmt.Errorf("model override %q: %w", model, err)
+		}
+		if crossProvider {
+			resolved = preserveBaseOverrides(resolved, s.profile)
+		}
+		subProfile = resolved
 	}
 	// Plugin agent model takes precedence (unless "inherit" or empty).
 	if agent != nil && agent.Model != "inherit" && agent.Model != "" {
-		subProfile = s.profile.WithModel(agent.Model)
+		resolved, crossProvider, err := s.resolveProfileForRef(agent.Model)
+		if err != nil {
+			return "", fmt.Errorf("agent model %q: %w", agent.Model, err)
+		}
+		if crossProvider {
+			resolved = preserveBaseOverrides(resolved, s.profile)
+		}
+		subProfile = resolved
 	}
 
 	subCfg := s.cfg

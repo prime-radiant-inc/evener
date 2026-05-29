@@ -190,6 +190,13 @@ func runServe(args []string) error {
 		NonInteractive:         *nonInteractive,
 		SystemPromptAsUser:     *systemPromptAsUser,
 		ModelFallbacks:         []string(modelFallbacks),
+		ResolveProfile: func(ref string) (agent.ProviderProfile, error) {
+			mr, err := cmdutil.ParseModelRef(ref)
+			if err != nil {
+				return nil, err
+			}
+			return cmdutil.SelectProfile(mr.Provider, mr.Model, "")
+		},
 	}
 	if *maxSubagentDepth >= 0 {
 		sessionCfg.MaxSubagentDepth = *maxSubagentDepth

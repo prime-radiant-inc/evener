@@ -169,6 +169,13 @@ func run(ctx context.Context, cfg runConfig) error {
 			ExportATIFPath:         cfg.exportATIF,
 			NonInteractive:         true,
 			SystemPromptAsUser:     cfg.systemPromptAsUser,
+			ResolveProfile: func(ref string) (agent.ProviderProfile, error) {
+				mr, err := cmdutil.ParseModelRef(ref)
+				if err != nil {
+					return nil, err
+				}
+				return cmdutil.SelectProfile(mr.Provider, mr.Model, "")
+			},
 		}
 		if cfg.maxSubagentDepth >= 0 {
 			sessionCfg.MaxSubagentDepth = cfg.maxSubagentDepth
