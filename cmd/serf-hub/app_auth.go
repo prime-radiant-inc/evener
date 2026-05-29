@@ -24,9 +24,13 @@ type hubAuthController struct {
 	client       *http.Client
 	now          func() time.Time
 	exchangeCode func(context.Context, *http.Client, authopenai.Config, authopenai.TokenExchangeRequest) (authopenai.TokenSet, error)
+	requestDeviceCode func(context.Context, *http.Client, authopenai.Config) (authopenai.DeviceCode, error)
+	pollDeviceOnce    func(context.Context, *http.Client, authopenai.Config, authopenai.DeviceCode) (authopenai.DeviceCodeSuccess, bool, error)
+	exchangeDevice    func(context.Context, *http.Client, authopenai.Config, string, string) (authopenai.TokenSet, error)
 
-	mu    sync.Mutex
-	flows map[string]hubAuthFlow
+	mu          sync.Mutex
+	flows       map[string]hubAuthFlow
+	deviceFlows map[string]deviceFlow
 }
 
 type hubAuthFlow struct {
@@ -34,6 +38,12 @@ type hubAuthFlow struct {
 	State        string
 	CodeVerifier string
 	RedirectURI  string
+}
+
+type deviceFlow struct {
+	Provider  string
+	Code      authopenai.DeviceCode
+	StartedAt time.Time
 }
 
 func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
@@ -47,14 +57,18 @@ func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 	credsPath := filepath.Join(filepath.Dir(stateDir), "credentials.toml")
 	store, _ := credentials.LoadStore(credsPath)
 	return &hubAuthController{
-		stateDir:     stateDir,
-		authEnv:      authEnv,
-		creds:        store,
-		cfg:          cfg,
-		client:       client,
-		now:          time.Now,
-		exchangeCode: authopenai.ExchangeCode,
-		flows:        map[string]hubAuthFlow{},
+		stateDir:          stateDir,
+		authEnv:           authEnv,
+		creds:             store,
+		cfg:               cfg,
+		client:            client,
+		now:               time.Now,
+		exchangeCode:      authopenai.ExchangeCode,
+		requestDeviceCode: authopenai.RequestDeviceCode,
+		pollDeviceOnce:    authopenai.PollDeviceAuthOnce,
+		exchangeDevice:    authopenai.ExchangeDeviceCode,
+		flows:             map[string]hubAuthFlow{},
+		deviceFlows:       map[string]deviceFlow{},
 	}
 }
 
@@ -74,14 +88,18 @@ func newHubAuthControllerWithStore(_ string, store *credentials.Store) *hubAuthC
 		store, _ = credentials.LoadStore(filepath.Join(filepath.Dir(stateDir), "credentials.toml"))
 	}
 	return &hubAuthController{
-		stateDir:     stateDir,
-		authEnv:      authEnv,
-		creds:        store,
-		cfg:          cfg,
-		client:       client,
-		now:          time.Now,
-		exchangeCode: authopenai.ExchangeCode,
-		flows:        map[string]hubAuthFlow{},
+		stateDir:          stateDir,
+		authEnv:           authEnv,
+		creds:             store,
+		cfg:               cfg,
+		client:            client,
+		now:               time.Now,
+		exchangeCode:      authopenai.ExchangeCode,
+		requestDeviceCode: authopenai.RequestDeviceCode,
+		pollDeviceOnce:    authopenai.PollDeviceAuthOnce,
+		exchangeDevice:    authopenai.ExchangeDeviceCode,
+		flows:             map[string]hubAuthFlow{},
+		deviceFlows:       map[string]deviceFlow{},
 	}
 }
 
@@ -405,6 +423,88 @@ func (c *hubAuthController) authRecordFromTokens(tokens authopenai.TokenSet) aut
 		IDToken:      tokens.IDToken,
 		Expiry:       tokens.Expiry,
 	}
+}
+
+func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.AuthDeviceStartParams) (appwire.AuthDeviceStartResponse, error) {
+	provider := normalizeAuthProvider(params.Provider)
+	if provider != "openai" {
+		return appwire.AuthDeviceStartResponse{}, appwire.InvalidParams(fmt.Sprintf("auth is not supported for provider %q", provider))
+	}
+	dc, err := c.requestDeviceCode(ctx, c.client, c.config())
+	if err != nil {
+		if errors.Is(err, authopenai.ErrDeviceCodeNotEnabled) {
+			return appwire.AuthDeviceStartResponse{Provider: provider, Fallback: true}, nil
+		}
+		return appwire.AuthDeviceStartResponse{}, err
+	}
+	flowID, err := authopenai.GenerateState()
+	if err != nil {
+		return appwire.AuthDeviceStartResponse{}, fmt.Errorf("generate device flow id: %w", err)
+	}
+	c.mu.Lock()
+	if c.deviceFlows == nil {
+		c.deviceFlows = map[string]deviceFlow{}
+	}
+	c.deviceFlows[flowID] = deviceFlow{Provider: provider, Code: dc, StartedAt: c.now()}
+	c.mu.Unlock()
+	return appwire.AuthDeviceStartResponse{
+		Provider:        provider,
+		FlowID:          flowID,
+		UserCode:        dc.UserCode,
+		VerificationURL: dc.VerificationURL,
+		IntervalSeconds: int(dc.Interval / time.Second),
+	}, nil
+}
+
+func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
+	provider := normalizeAuthProvider(params.Provider)
+	if provider != "openai" {
+		return appwire.AuthDevicePollResponse{}, appwire.InvalidParams(fmt.Sprintf("auth is not supported for provider %q", provider))
+	}
+	flowID := strings.TrimSpace(params.FlowID)
+	c.mu.Lock()
+	flow, ok := c.deviceFlows[flowID]
+	c.mu.Unlock()
+	if !ok {
+		return appwire.AuthDevicePollResponse{State: "expired"}, nil
+	}
+	if c.now().Sub(flow.StartedAt) >= 15*time.Minute {
+		c.mu.Lock()
+		delete(c.deviceFlows, flowID)
+		c.mu.Unlock()
+		return appwire.AuthDevicePollResponse{State: "expired"}, nil
+	}
+
+	success, pending, err := c.pollDeviceOnce(ctx, c.client, c.config(), flow.Code)
+	if err != nil {
+		return appwire.AuthDevicePollResponse{}, err
+	}
+	if pending {
+		return appwire.AuthDevicePollResponse{State: "pending"}, nil
+	}
+
+	tokens, err := c.exchangeDevice(ctx, c.client, c.config(), success.AuthorizationCode, success.CodeVerifier)
+	if err != nil {
+		return appwire.AuthDevicePollResponse{}, err
+	}
+	record := c.authRecordFromTokens(tokens)
+	if claims, err := authopenai.ParseIDTokenClaims(tokens.IDToken); err == nil {
+		record.Email = firstNonEmpty(claims.Email, record.Email)
+		record.AccountID = firstNonEmpty(claims.AccountID, record.AccountID)
+		record.WorkspaceID = firstNonEmpty(claims.WorkspaceID, record.WorkspaceID)
+	}
+	if err := authopenai.SaveAuth(c.stateDir, record); err != nil {
+		return appwire.AuthDevicePollResponse{}, err
+	}
+	c.mu.Lock()
+	delete(c.deviceFlows, flowID)
+	c.mu.Unlock()
+
+	status, err := c.openAIStatus()
+	if err != nil {
+		return appwire.AuthDevicePollResponse{}, err
+	}
+	return appwire.AuthDevicePollResponse{State: "authorized", Status: status}, nil
 }
 
 func (c *hubAuthController) config() authopenai.Config {

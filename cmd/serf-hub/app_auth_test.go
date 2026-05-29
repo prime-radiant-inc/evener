@@ -618,3 +618,119 @@ func TestAuth_NewControllerWithNilStore_PersistsWritesToDefaultPath(t *testing.T
 		t.Errorf("nil-store fallback did not persist to %s: v=%q src=%q", credsPath, v, src)
 	}
 }
+
+func TestAuth_DeviceStart_ReturnsCodeAndStoresFlow(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	c := newHubAuthControllerWithStore(dir, store)
+	c.requestDeviceCode = func(context.Context, *http.Client, authopenai.Config) (authopenai.DeviceCode, error) {
+		return authopenai.DeviceCode{UserCode: "USER-1", VerificationURL: "https://auth.openai.com/codex/device", DeviceAuthID: "dev-1", Interval: 5 * time.Second}, nil
+	}
+	got, err := c.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("DeviceStart: %v", err)
+	}
+	if got.Fallback || got.UserCode != "USER-1" || got.VerificationURL == "" || got.IntervalSeconds != 5 || got.FlowID == "" {
+		t.Fatalf("resp=%+v, want code fields + interval 5 + flowId", got)
+	}
+}
+
+func TestAuth_DeviceStart_FallbackWhenNotEnabled(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	c := newHubAuthControllerWithStore(dir, store)
+	c.requestDeviceCode = func(context.Context, *http.Client, authopenai.Config) (authopenai.DeviceCode, error) {
+		return authopenai.DeviceCode{}, authopenai.ErrDeviceCodeNotEnabled
+	}
+	got, err := c.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("DeviceStart: %v", err)
+	}
+	if !got.Fallback {
+		t.Fatalf("resp=%+v, want Fallback=true", got)
+	}
+}
+
+func TestAuth_DevicePoll_PendingThenAuthorized(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	c := newHubAuthControllerWithStore(dir, store)
+	c.stateDir = t.TempDir()
+	c.requestDeviceCode = func(context.Context, *http.Client, authopenai.Config) (authopenai.DeviceCode, error) {
+		return authopenai.DeviceCode{UserCode: "U", VerificationURL: "https://x", DeviceAuthID: "d", Interval: time.Second}, nil
+	}
+	pending := true
+	c.pollDeviceOnce = func(context.Context, *http.Client, authopenai.Config, authopenai.DeviceCode) (authopenai.DeviceCodeSuccess, bool, error) {
+		if pending {
+			pending = false
+			return authopenai.DeviceCodeSuccess{}, true, nil
+		}
+		return authopenai.DeviceCodeSuccess{AuthorizationCode: "ac", CodeVerifier: "cv"}, false, nil
+	}
+	c.exchangeDevice = func(context.Context, *http.Client, authopenai.Config, string, string) (authopenai.TokenSet, error) {
+		return authopenai.TokenSet{AccessToken: "at", RefreshToken: "rt", TokenType: "Bearer", Expiry: time.Now().Add(time.Hour)}, nil
+	}
+	start, err := c.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("DeviceStart: %v", err)
+	}
+	p1, err := c.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "openai", FlowID: start.FlowID})
+	if err != nil || p1.State != "pending" {
+		t.Fatalf("first poll = %+v err=%v, want pending", p1, err)
+	}
+	p2, err := c.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "openai", FlowID: start.FlowID})
+	if err != nil {
+		t.Fatalf("second poll: %v", err)
+	}
+	if p2.State != "authorized" || p2.Status.ActiveSource != authopenai.AuthSourceOAuth {
+		t.Fatalf("second poll = %+v, want authorized + oauth", p2)
+	}
+}
+
+func TestAuth_DevicePoll_UnknownFlowExpired(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	c := newHubAuthControllerWithStore(dir, store)
+	got, err := c.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "openai", FlowID: "nope"})
+	if err != nil || got.State != "expired" {
+		t.Fatalf("got=%+v err=%v, want expired", got, err)
+	}
+}
+
+func TestAuth_DevicePoll_ExistingFlowExpiresAfter15Min(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	c := newHubAuthControllerWithStore(dir, store)
+	now := time.Now()
+	c.now = func() time.Time { return now }
+	c.requestDeviceCode = func(context.Context, *http.Client, authopenai.Config) (authopenai.DeviceCode, error) {
+		return authopenai.DeviceCode{UserCode: "U", VerificationURL: "https://x", DeviceAuthID: "d", Interval: time.Second}, nil
+	}
+	pollCalls := 0
+	c.pollDeviceOnce = func(context.Context, *http.Client, authopenai.Config, authopenai.DeviceCode) (authopenai.DeviceCodeSuccess, bool, error) {
+		pollCalls++
+		return authopenai.DeviceCodeSuccess{}, true, nil
+	}
+	start, err := c.DeviceStart(context.Background(), appwire.AuthDeviceStartParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("DeviceStart: %v", err)
+	}
+	now = now.Add(16 * time.Minute) // advance the clock past the 15-minute window
+	got, err := c.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "openai", FlowID: start.FlowID})
+	if err != nil || got.State != "expired" {
+		t.Fatalf("got=%+v err=%v, want expired", got, err)
+	}
+	if pollCalls != 0 {
+		t.Errorf("pollDeviceOnce called %d times, want 0 (expiry checked before polling)", pollCalls)
+	}
+	// the expired flow should be dropped — a second poll returns expired (unknown flow)
+	got2, _ := c.DevicePoll(context.Background(), appwire.AuthDevicePollParams{Provider: "openai", FlowID: start.FlowID})
+	if got2.State != "expired" {
+		t.Errorf("after expiry the flow should be dropped; got %+v", got2)
+	}
+}
