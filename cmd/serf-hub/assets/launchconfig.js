@@ -28,6 +28,8 @@
     authLoginComplete: (provider, flowId, redirectUrl) =>
       request("serf/auth/login/complete", { provider, flowId, redirectUrl }),
     authLogout: (provider) => request("serf/auth/logout", { provider }),
+    authDeviceStart: (provider) => request("serf/auth/device/start", { provider }),
+    authDevicePoll: (provider, flowId) => request("serf/auth/device/poll", { provider, flowId }),
   };
 
   function schemaPathKind(kind) {
