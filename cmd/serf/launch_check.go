@@ -9,16 +9,36 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/diagnostic"
+	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
 )
+
+// launchCheckLoadClient is the injectable hook for tests. Production code calls
+// cmdutil.LoadClient; tests may replace this to inject a stub client or config.
+var launchCheckLoadClient = func(opts ...llm.EnvOption) (*llm.Client, providerconfig.Config, bool, error) {
+	return cmdutil.LoadClient(opts...)
+}
+
+// launchCheckLoadConfig resolves the providers config path (same logic as
+// LoadClient) and parses it. Returns (cfg, true, nil) when the file exists and
+// is valid, (cfg{}, false, nil) when absent, or (cfg{}, _, err) on parse error.
+var launchCheckLoadConfig = func() (providerconfig.Config, bool, error) {
+	path := os.Getenv("SERF_PROVIDERS_CONFIG")
+	if path == "" {
+		path = filepath.Join(providerconfig.DefaultStateRoot(), "providers.toml")
+	}
+	return providerconfig.LoadFile(path)
+}
 
 type launchCheckModel struct {
 	Provider string `json:"provider"`
@@ -65,7 +85,7 @@ func runLaunchCheck(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if _, err := cmdutil.SelectProfile(ref.Provider, ref.Model, ""); err != nil {
+		if err := validateLaunchCheckProfile(ref); err != nil {
 			return err
 		}
 		if err := validateLaunchCheckModel(ref); err != nil {
@@ -87,11 +107,33 @@ func runLaunchCheck(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
+// validateLaunchCheckProfile checks that the model ref names a known provider
+// or config instance. When SERF_PROVIDERS_CONFIG is present (hasConfig=true),
+// it resolves via ResolveProfileFromConfig so custom instance names are valid;
+// otherwise it falls back to SelectProfile for the env-variable path.
+//
+// Profile validation only needs the config file, not a live client, so it uses
+// launchCheckLoadConfig rather than launchCheckLoadClient. This avoids
+// credential errors when no API keys are present (the launch contract must
+// resolve without credentials).
+func validateLaunchCheckProfile(ref cmdutil.ModelRef) error {
+	cfg, hasConfig, err := launchCheckLoadConfig()
+	if err != nil {
+		return err
+	}
+	if hasConfig {
+		_, err := agent.ResolveProfileFromConfig(cfg, ref.Qualified())
+		return err
+	}
+	_, err = cmdutil.SelectProfile(ref.Provider, ref.Model, "")
+	return err
+}
+
 func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
-	client, _, _, err := cmdutil.LoadClient()
+	client, _, _, err := launchCheckLoadClient()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -157,7 +199,7 @@ func validateLaunchCheckModel(ref cmdutil.ModelRef) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
-	client, _, _, err := cmdutil.LoadClient()
+	client, _, _, err := launchCheckLoadClient()
 	if err != nil {
 		return nil
 	}

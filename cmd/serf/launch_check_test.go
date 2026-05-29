@@ -7,6 +7,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -272,6 +274,117 @@ func TestLaunchCheckDispatchesFromTopLevel(t *testing.T) {
 	}
 	if label != "serf launch-check" {
 		t.Fatalf("label=%q, want serf launch-check", label)
+	}
+}
+
+// TestLaunchCheckAcceptsConfigInstanceModel verifies that when
+// SERF_PROVIDERS_CONFIG points to a valid config file, launch-check resolves
+// a custom instance name (e.g. "work2") without requiring credentials.
+func TestLaunchCheckAcceptsConfigInstanceModel(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "providers.toml")
+	if err := os.WriteFile(cfgPath, []byte(`schema = 1
+default = "work"
+[instances.work]
+type = "openai"
+[instances.work2]
+type = "openai"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SERF_PROVIDERS_CONFIG", cfgPath)
+	oaitest.IsolateOpenAIAuth(t)
+
+	var stdout, stderr bytes.Buffer
+	err := runLaunchCheck([]string{
+		"--protocol", appwire.ProtocolVersion,
+		"--model", "work2/gpt-5.2",
+		"--json",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
+	}
+	var out struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
+	}
+	if out.Provider != "work2" || out.Model != "gpt-5.2" {
+		t.Fatalf("launch check output=%+v", out)
+	}
+}
+
+// TestLaunchCheckAcceptsCompatInstanceModel verifies that a chat-completions
+// instance with a custom base_url is also accepted by the config path.
+func TestLaunchCheckAcceptsCompatInstanceModel(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "providers.toml")
+	if err := os.WriteFile(cfgPath, []byte(`schema = 1
+default = "work"
+[instances.work]
+type = "openai"
+[instances.compat-x]
+type = "openai"
+api_style = "chat-completions"
+base_url = "https://example.test/v1"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SERF_PROVIDERS_CONFIG", cfgPath)
+	oaitest.IsolateOpenAIAuth(t)
+
+	var stdout, stderr bytes.Buffer
+	err := runLaunchCheck([]string{
+		"--protocol", appwire.ProtocolVersion,
+		"--model", "compat-x/some-model",
+		"--json",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
+	}
+	var out struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
+	}
+	if out.Provider != "compat-x" || out.Model != "some-model" {
+		t.Fatalf("launch check output=%+v", out)
+	}
+}
+
+// TestLaunchCheckRejectsUnknownInstanceFromConfig verifies that a model ref
+// naming an instance not present in the providers.toml is rejected.
+func TestLaunchCheckRejectsUnknownInstanceFromConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "providers.toml")
+	if err := os.WriteFile(cfgPath, []byte(`schema = 1
+default = "work"
+[instances.work]
+type = "openai"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SERF_PROVIDERS_CONFIG", cfgPath)
+	oaitest.IsolateOpenAIAuth(t)
+
+	var stdout, stderr bytes.Buffer
+	err := runLaunchCheck([]string{
+		"--protocol", appwire.ProtocolVersion,
+		"--model", "missing/some-model",
+		"--json",
+	}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected unknown instance error")
+	}
+	if !strings.Contains(err.Error(), "unknown instance") {
+		t.Fatalf("error=%v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout=%q, want empty on failure", stdout.String())
 	}
 }
 
