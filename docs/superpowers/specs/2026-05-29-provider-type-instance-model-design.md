@@ -1,7 +1,7 @@
 # Provider Type/Instance Model
 
 Date: 2026-05-29
-Status: v6 — switching moved to the session, wiring pinned; pending re-review
+Status: v7 — refinements folded after the 6th review; cleared to build Phase 1a
 Ticket: PRI-1880
 
 > **Revision history.**
@@ -15,13 +15,18 @@ Ticket: PRI-1880
 > - **v5** dropped `WithModel` switching and migration (flag day). Review showed
 >   **dropping switching was wrong** — switching is load-bearing for interactive
 >   `/model`, subagent overrides, and the cross-provider-fallback guard.
-> - **v6** (this): **switching moves out of `WithModel` and up to the session**
->   (faithful to "drop *in-profile* switching"), via a plain
->   `agent.ResolveProfileFromConfig` + the session holding the config (cycle-free,
->   verified). Plus all v5 wiring fixes: streamed-error identity, profile-carried
->   tag (no `req.BehaviorTag`), synthesized env config, quirks-by-type, the
->   `classify.go` endpoint-fallback site, the pinned config path, catalog
->   ingest-vs-lookup, the resume signature.
+> - **v6**: switching moved out of `WithModel` up to the session via
+>   `agent.ResolveProfileFromConfig` (verified cycle-free + profile-swap-safe).
+> - **v7** (this): the 6th review **validated the architecture** (2 rounds running)
+>   and found refinements, now folded: fallback resolution goes through the
+>   selector (not `WithModel`); `preserveBaseOverrides` survives a switch; the
+>   env-fallback keeps `NewFromEnv` + identity `NameToTag` (no fragile env
+>   synthesis); stream-error identity is stamped at the `llm` layer (covers
+>   `StreamGenerate`); `diagnostic` classifies on the structured error;
+>   `AuthRecord.Validate` drops the `openai` check; `SetModel` re-runs
+>   provider-conditional tool registration; the `hubStateRoot` resolver moves to a
+>   shared package. Cleared to build Phase 1a **behind a renamed-instance
+>   integration test** (§7) — the completeness backstop that prose review can't be.
 
 ## 1. Goal
 
@@ -207,14 +212,15 @@ error's provider via `NameToTag`**.
 | Site | Today | After |
 |---|---|---|
 | `session.go:1382` prompt-cache | `req.Provider == "openai"` | `s.profile.BehaviorTag() == "openai"` |
-| `session.go:3873/3972` prompt sections | `= profile.ID()` | `= profile.BehaviorTag()` |
-| `session.go:4785` gemini | `profile.ID() == "gemini"` | `profile.BehaviorTag() == "google"` |
-| `session.go:4140` fallback guard | `fbProfile.ID() != profile.ID()` | `fbProfile.BehaviorTag() != profile.BehaviorTag()` (same-tag cross-instance fallback now allowed; cross-tag still errors) |
+| `session.go:3972` prompt sections (the file selector) | `= profile.ID()` | `= profile.BehaviorTag()` (`:3873 PromptData.Provider` feeds no section — leave or tag it, harmless) |
+| `session.go:4785` gemini | `profile.ID() == "gemini"` | `profile.BehaviorTag() == "google"`; **also re-run provider-conditional tool registration on switch** (§4.5) |
+| `session.go:4139` fallback guard + `:2706` fallback execution | `fbProfile := s.profile.WithModel(fbModel)`; `fbProfile.ID() != profile.ID()` | resolve `fbModel` via `ResolveProfileFromConfig` (§4.5), **not** `WithModel`; guard `fbProfile.BehaviorTag() != profile.BehaviorTag()` (same-tag cross-instance allowed; cross-tag errors). Both sites change — `WithModel` no longer switches, so leaving them on `WithModel` makes the guard a dead no-op |
+| `diagnostic.go:155` isProviderFailure (+ JS mirror `diagnostics.js:108`) | `strings.Contains(msg, provider+" error")` over a hardcoded list | classify on the **structured `llm.Error`** (provider + behavior tag), not the message string; re-key the JS mirror |
 | `profile.go:344` CheapModel | `switch p.id` incl `"gemini"` | `switch p.behaviorTag`, `case "google"` |
 | `profile.go:396` decidePrefixAction | id+prefix literals | takes **both** instance name (for self-prefix **strip**) and behavior tag (for meta-provider **keep**); **no switch** (§4.6) |
 | `profile.go:498` rebuildOnSameProviderChange | id literals | `behaviorTag` |
 | `profile.go:519/533/562` WithModel | `p.id`, switch-via-table | `p.behaviorTag`; **switch removed**, but **keep the same-instance catalog rebuild** at `:562` (recomputes context window/effort — removing it regresses to a stale window) |
-| `profile.go:649` anthropic WithModel | literals | `behaviorTag` |
+| `profile.go:649` anthropic WithModel | literals | `behaviorTag` for keep; **instance name** for self-prefix strip (like `decidePrefixAction`) |
 | `profile.go:699` NewGeminiProfile | `id: "gemini"` | `id = instanceName`; default Gemini instance named `google`, adapter registered under it |
 | `profile.go:930` suppress-bare | `id == "ollama"` | `behaviorTag == "ollama"` |
 | `profile.go:955/964` catalog lookup | `id + "/" + model` | `behaviorTag + "/" + model` |
@@ -234,25 +240,35 @@ keys (recipe↔adapter contract — for kimi/glm/openrouter the key stays
 - `resp.Provider`: set `= req.Provider` after the non-streaming `Complete` arm
   (`session.go:3358`) and inside `consumeModelStream` (`:3511`), and the vision
   path (`:1492`). Low value but cheap.
-- **Error labels (the real surface), both paths:** stamp the provider centrally
-  — (a) wrap the synchronous `Complete`/`Stream` returns in `llm.Client`, and (b)
-  stamp streamed errors where the session consumes them (`session.go:3493`, or by
-  wrapping the stream's `Events()`). Use `RewriteErrorProvider(err, req.Provider)`
-  but **keep its empty-Provider no-op** (so cancellations / no-object errors stay
-  unlabeled — removing it mislabels `context.Canceled`). Also stamp the
-  **behavior tag** on the error here (from `NameToTag`) so `classify.go` (§4.2)
-  can key on it.
+- **Error labels (the real surface), stamped in the `llm` layer (one place,
+  covers everything):** (a) wrap the synchronous `Complete`/`Stream` returns in
+  `llm.Client`, and (b) **wrap the stream's `Events()` channel in `llm.Client.Stream`**
+  so every `StreamEventError` is stamped before it leaves the client. (b) covers
+  both the session's `consumeModelStream` (`session.go:3493`) **and**
+  `llm.StreamGenerate`'s own drain (`stream_generate.go:208`, used by
+  `llmcall`/`serfeval`) — a single chokepoint, not a per-consumer fix. Use
+  `RewriteErrorProvider(err, req.Provider)` but **keep its empty-Provider no-op**
+  (so cancellations / no-object errors stay unlabeled). Stamp the **behavior tag**
+  on the error here too (from the client's `NameToTag`) so `classify.go` and
+  `diagnostic` (§4.2) key on the structured tag, not the message string.
 
 ### 4.4 Instance-settable profile id, adapter name, behavior tag; quirks by type
 
 Profile constructors take an explicit instance-name parameter (or a
 `WithProviderID` wrapper); each recipe stamps the behavior tag. **Adapters are
-built per instance by `adapterRecipe(type, instanceName, cfg)`** — the default
-base URL, quirks preset, and wrapper label come from the **type** (not the
-instance name; a renamed `kimi` instance must still get kimi's `QuirksPreset` and
-base URL, §3.2); `Name()` returns the instance name; the instance's `cfg` base
-URL overrides the type default. `WithModel` preserves the instance name + tag (it
-never switches, §4.6).
+built per instance by `adapterRecipe(type, instanceName, cfg)`**, where the
+**type** (not the instance name) selects the full recipe:
+- *which adapter to wrap* — `openaicompat` for kimi/glm/openrouter; the
+  `anthropic` adapter for `minimax` and `openrouter-anthropic` (Anthropic-Messages,
+  custom base URLs `api.minimax.io/anthropic`, `openrouter.ai/api`); the native
+  adapter for openai/anthropic/google;
+- *default base URL, quirks preset (`QuirksPreset`), and display label* — all
+  per type (a renamed `kimi` instance must still get kimi's quirks + base URL,
+  §3.2). The instance's `cfg.baseURL` overrides the type default.
+`Name()` returns the instance name. The `WithModel` same-instance rebuild
+(`profile.go:568`, kept §4.6) must thread **both** the instance name (routing id)
+**and** the behavior tag (catalog/Codex-gate) through the rebuild constructor.
+`WithModel` preserves the instance name + tag; it never switches (§4.6).
 
 ### 4.5 Instance-aware resolution; switching at the session; resume
 
@@ -270,9 +286,24 @@ Used by the daemon, the CLI (`cmdutil.SelectProfile` wraps it), and the
 swap `s.profile` (all instances' adapters are already registered by
 `NewFromProviders`, so routing works); else → `s.profile.WithModel(ref)`
 within-instance. Subagent overrides (`subagents.go:159,163`) and `model_fallbacks`
-(`session.go:2706`) resolve the same way; the fallback guard compares the
-resolved **behavior tags** (§4.2). This keeps cross-provider `/model`, subagents,
-and fallbacks working while `WithModel` itself never switches.
+(the guard `session.go:4139` **and** the execution `:2706`) resolve the same way;
+the fallback guard compares the resolved **behavior tags** (§4.2). This keeps
+cross-provider `/model`, subagents, and fallbacks working while `WithModel` itself
+never switches.
+
+Two things the resolver must carry that the old `WithModel` switch did
+implicitly:
+- **Session overrides.** `WithModel`'s switch arm calls `preserveBaseOverrides`
+  (`profile.go:540`, comment `:555-559`) to carry `WithCommunicateOutputSchema` /
+  `WithAllowedDecisions` across a switch. The session re-applies these after
+  `ResolveProfileFromConfig` (the session knows its own `--output-schema` /
+  `SERF_ALLOWED_DECISIONS`), so a cross-instance switch doesn't silently revert
+  the communicate schema.
+- **Provider-conditional tools.** Native tools registered per behavior tag (the
+  gemini `web_search` at `session.go:4785`, only set in `registerCoreTools`) must
+  be re-evaluated on a switch — `SetModel` re-runs the provider-conditional
+  registration / `rebuildToolDefsCache`, so switching to/from a `google` instance
+  adds/removes that tool.
 
 **Resume:** delete the `resumeProviderFromProfileID` allowlist; `Meta.ProfileID`
 is the instance name; reconstruct via `cfg` lookup. **`resumeRequestForConfig`
@@ -302,10 +333,12 @@ instance name is matched explicitly at the session; meta-provider namespaces sta
 `ProviderOptions["openai"]`; `chat-completions` → `NewOpenAICompatProfile` +
 `openaicompat` adapter, tag `openai-compatible`,
 `ProviderOptions["openai-compatible"]`. The existing standalone
-`openai-compatible` env provider (`OPENAI_COMPATIBLE_*`) is folded in: the env
-synthesis (§4.10) produces an `openai`-type, `chat-completions` instance named
-`openai-compatible`. `chat-completions` is not feature-equivalent (no Codex
-surface / reasoning `encrypted_content`) — documented in the UI.
+`openai-compatible` env provider (`OPENAI_COMPATIBLE_*`) is handled by the **env
+fallback's existing `NewFromEnv`** (its adapter already registers under
+`openai-compatible`, tag identity); in the **`providers.toml`** path the user
+expresses the same thing as an `openai`-type, `chat-completions` instance.
+`chat-completions` is not feature-equivalent (no Codex surface / reasoning
+`encrypted_content`) — documented in the UI.
 
 ### 4.8 `anthropic` instances
 
@@ -325,49 +358,65 @@ adapter recipe (`openai/adapter.go:80`), the hub auth controller
 (`app_auth.go`'s `openai` branches), the TUI (`serf-tui/auth.go:26,27,80` —
 `authStatus` gains the tag), `validateProviderCredentials` (`spawn.go:466`), and
 **`cmd/serf/openai_login.go`** (`resolveOpenAIStateDir` gains an instance-name
-param). **`AuthRecord.Validate()`** validates against behavior tag `openai`
-instead of hardcoding `Provider=="openai"`. OAuth offered only for tag `openai`.
+param). **`AuthRecord.Validate()` drops the `Provider == "openai"` check**
+(`storage.go:142-143`) — it's a method on the record alone and can't see the tag;
+the per-instance filename scopes the record and OAuth is gated to behavior tag
+`openai` at the service/UI layer, so the validator needn't re-check. OAuth offered
+only for tag `openai`.
 
 ### 4.10 Storage — pinned path, ephemeral env, flag day
 
 - **`$hubStateRoot/providers.toml`** (default **`~/.serf/providers.toml`**,
-  `config.go:51`; `chmod 600`), read by **both** the hub and standalone `serf`
-  (standalone resolves `hubStateRoot` the same way). OAuth stays under
-  `$XDG_STATE_HOME/serf` (§3.5) — separate root, unchanged. Format: `schema`,
-  `default` (instance name), `[instances.<name>]` with `type`, `base_url`,
-  `api_style`, inline `api_key` (omitted for OAuth/none).
+  `config.go:51`; `chmod 600`), read by **both** the hub and standalone `serf`.
+  The `hubStateRoot` resolver (currently `DefaultHubStateRoot` in `cmd/serf-hub`
+  `package main`) **moves to `internal/providerconfig`** so `cmd/serf` can resolve
+  the identical path. OAuth stays under `$XDG_STATE_HOME/serf` (§3.5) — separate
+  root, unchanged. Format: `schema`, `default` (instance name),
+  `[instances.<name>]` with `type`, `base_url`, `api_style`, inline `api_key`
+  (omitted for OAuth/none).
 - **No migration (flag day).** Old `credentials.toml`/env/`openai.json` are not
   converted (zero deployed instances).
-- **Ephemeral env fallback = a synthesized real config.** When `providers.toml` is
-  absent, build an in-memory **`providerconfig.Config`** from env (default
-  instances named == behavior tag: `openai`, `anthropic`, …; `OPENAI_COMPATIBLE_*`
-  → an `openai`/chat-completions instance named `openai-compatible`) and go
-  through `NewFromProviders`. So `NameToTag` and the selector exist in **both**
-  paths; nothing is written. Zero-config `OPENAI_API_KEY=… serf run` still works.
-  The file, when present, is authoritative (env is not a layer).
-- **Default:** the file's `default` field; for the env case, the first eligible
-  instance (today's behavior).
+- **Env fallback keeps the existing path (no synthesis).** When `providers.toml`
+  is absent, serf uses the **existing** `NewFromEnv` + the existing
+  `SelectProfile`-based resolution, with **`NameToTag` = identity** (env instances
+  are named after their type, which == their behavior tag; `openrouter` →
+  `openrouter`, etc.). This deliberately does **not** try to synthesize a
+  `providerconfig.Config` from env — that would mean re-implementing every opaque
+  `EnvAdapterFactory` (ollama's always-on registration, the openrouter
+  dual-registration, OpenAI's OAuth-first detection, the import-order default).
+  `NewFromEnv` already does all of that correctly; we reuse it. Zero-config
+  `OPENAI_API_KEY=… serf run` is unchanged. The new `Config` resolver +
+  config-derived `NameToTag` apply **only** when `providers.toml` exists (the file
+  is then authoritative; env is not a layer).
+- **Default:** the file's `default` field (file case); `NewFromEnv`'s existing
+  import-order default (env case) — unchanged, no new ordering to get wrong.
 
 ### 4.11 Client / daemon / hub / standalone construction
 
-One construction path: **load `providerconfig.Config`** (file at the pinned path,
-else synthesized from env, §4.10) → `llm.NewFromProviders(cfg)`; pass `cfg` into
-`SessionConfig` and `WebConfig`. Converted consumers: `serve.go:39`,
-`run.go:127`, `web.go:2024`, `launch_check.go:94` **and** `:159`,
-`DefaultClient()`; `llmcall`/`serfeval` adopt the same helper. The `Client` holds
-`NameToTag`; the client-only picker/launch sites read it (§4.2). Launch
-gating/credential validation read the **instance set** (not the five type maps);
-`validateProviderCredentials` resolves the instance named by `req.Provider` and
-checks its credential (inline key, or OAuth by instance name §4.9).
+One load helper, two branches: **if `providers.toml` exists** →
+`load(providerconfig.Config)` → `llm.NewFromProviders(cfg)` and a config-derived
+`NameToTag`; **else** → the existing `llm.NewFromEnv` with `NameToTag` = identity
+(§4.10). Either way the helper returns `(*llm.Client, NameToTag, *Config|nil)`;
+`cfg` (when present) is passed into `SessionConfig`/`WebConfig` so the session can
+re-resolve (§4.5), and `NameToTag` reaches the client-only picker/launch sites
+(§4.2). Converted consumers: `serve.go:39`, `run.go:127`, `web.go:2024`,
+`launch_check.go:94` **and** `:159`, `DefaultClient()`; `llmcall`/`serfeval` adopt
+the helper. Launch gating/credential validation read the **instance set** when a
+config exists (else the existing env-keyed maps); `validateProviderCredentials`
+resolves the instance named by `req.Provider` and checks its credential (inline
+key, or OAuth by instance name §4.9).
 
 ### 4.12 Spawn plumbing
 
 The hub threads `SERF_PROVIDERS_CONFIG=<path>` into `req.Env` via
 `launchconfig.ToEnv`, reaching **both** spawned `serf serve` and the `serf
 launch-check` subprocess (validate + `--models` paths). The load helper (§4.11)
-consults `SERF_PROVIDERS_CONFIG` first, then the default path, then env synthesis
-— so the spawned daemon uses exactly the hub's config. The single-provider env
-injection is removed.
+consults `SERF_PROVIDERS_CONFIG` first, then the default `$hubStateRoot` path,
+then the env fallback — so the spawned daemon uses exactly the hub's config. The
+single-provider env injection is removed. (A `hub.toml`-customized `hubStateRoot`
+reaches spawned daemons via `SERF_PROVIDERS_CONFIG`; a *directly* invoked
+`serf run` against a custom-root hub must set `SERF_PROVIDERS_CONFIG` itself —
+documented, §9.)
 
 ### 4.13 Unified UI (Phase 2)
 
@@ -390,19 +439,24 @@ not just display, so it lands with the picker work.
   session** (`SetModel`/subagents/fallbacks via `ResolveProfileFromConfig`,
   §4.5-4.6); resume via lookup with an error return. Proven with existing
   providers (instance == type). **Acceptance:** suite green; user-visible
-  cross-provider `/model` still switches (now via the session); new
-  renamed-instance tests assert every behavior site keys on the tag and a
-  `chat-completions` instance gets none of the `openai`-tag behavior.
-  **Note:** the `WithModel` cross-provider unit tests (`profile_test.go:366,379`)
-  are **rewritten** to test session-level switching — `WithModel` no longer
+  cross-provider `/model` still switches (now via the session); **the
+  renamed-instance integration test (§7) passes** — this is the completeness
+  backstop, not the per-site unit assertions.
+  **Note:** the `WithModel` cross-provider unit tests (`profile_test.go:366,379`,
+  `:658`) are **rewritten** to test session-level switching — `WithModel` no longer
   switches by design; this is the one intended behavior-location change in 1a.
+  **Method:** because five prose-review rounds each surfaced new provider-string
+  sites, 1a does not rely on a hand-enumerated list. After re-keying the known
+  §4.2 sites, run the renamed-instance integration test and `grep` the tree for
+  residual provider literals; the test failures + compiler errors enumerate the
+  rest. Treat the §4.2 table as a starting set, not a complete one.
 - **Phase 1b — config-driven instances.** `providerconfig` loader +
-  `providers.toml` + `NewFromProviders` + the load-or-synthesize helper
+  `providers.toml` + `NewFromProviders` + the load-or-env-fallback helper
   (§4.10-4.12); per-instance OAuth incl. `AuthRecord.Validate` + `openai_login`
   (§4.9); the openai apiStyle recipe + anthropic base-URL instances + the
   `openai-compatible` fold-in (§4.7-4.8); spawn/launch-check config plumbing.
   **Acceptance:** custom endpoints and multiple instances of a type work
-  end-to-end; absent file → env synthesis.
+  end-to-end; absent file → existing env fallback (§4.10).
 - **Phase 2 — unified CRUD UI + picker behavior** (§4.13).
 
 ## 6. Error handling
@@ -413,12 +467,23 @@ not just display, so it lands with the picker work.
   instances.
 - **Missing credential:** registers but "not configured"; launch gating surfaces.
 - **Default points at a removed instance:** first by sorted name, log.
-- **Corrupt `providers.toml`:** fail loudly; no env fallback (an *absent* file
-  uses env synthesis, §4.10).
+- **Corrupt `providers.toml`:** fail loudly; do not silently fall back to env (an
+  *absent* file uses the existing env path, §4.10).
 - **Vanished persisted instance (resume):** clear error + re-selection (§4.5).
 
 ## 7. Testing strategy
 
+- **Renamed-instance integration test (the completeness backstop).** A test that
+  configures a `providers.toml` with an `openai`-type instance named **`work`**
+  (and a second openai-type instance `work2`), runs a live session through it
+  (prompt assembly, a streamed call, an error, a `/model` switch to `work2`, a
+  resume), and asserts: the `openai` behavior fires by **tag** (prompt-cache,
+  the `tools.provider-openai_append.md` section, cheap model, Codex gate); the
+  response/error/diagnostic report the instance name `work`; the model picker and
+  launch-check accept `work`; switching `work → work2` preserves the
+  output-schema/decisions overrides. Any site still keyed on the literal `"openai"`
+  fails here. **This test — not the §4.2 list — is what proves completeness**, and
+  it is the gate every 1a task closes against.
 - **Behavior-tag + switching (1a):** for an `openai`-type instance named `work`,
   assert prompt-cache, the `tools.provider-openai_append.md` section, cheap model,
   fallback guard, Codex gate, **and the compat catalog context-window lookup** key
@@ -436,8 +501,8 @@ not just display, so it lands with the picker work.
 - **Quirks:** a renamed `kimi` instance still gets kimi's `QuirksPreset` + base
   URL (recipe keys on type).
 - **Storage:** parse/round-trip `providers.toml` at the pinned path; absent →
-  synthesized env config (incl. `OPENAI_COMPATIBLE_*` → `openai-compatible`
-  instance), no file written; corrupt → loud failure.
+  existing `NewFromEnv` path with identity `NameToTag`, no file written; corrupt →
+  loud failure (no silent env fallback).
 - **OAuth per instance:** `auth/<name>.json` round-trips; default `openai` keeps
   `openai.json`; `AuthRecord.Validate` accepts a non-`openai`-named openai-tag
   instance; `openai_login`/`validateProviderCredentials` resolve it.
@@ -446,42 +511,51 @@ not just display, so it lands with the picker work.
   `SERF_PROVIDERS_CONFIG`; the daemon uses it.
 - **Phase 2:** RPC round-trip + JSDOM for the screen + pickers.
 
-## 8. v5-review findings → v6 resolutions
+## 8. v6-review findings → v7 resolutions
 
-- **Switching (v5 #1-4)** → §4.5-4.6 move switching to the session
-  (`ResolveProfileFromConfig` + `SetModel`); `WithModel` within-instance only; the
-  fallback guard compares tags; `profile_test.go:366/379` rewritten (§5).
-- **#5 streamed errors** → §4.3 stamps both the return boundary and the stream
-  consumption site.
-- **#6 empty-Provider no-op** → §4.3 keeps it.
-- **#7 13-site req.BehaviorTag** → §4.2 tag on the profile + `NameToTag` on the
-  client; **no `req.BehaviorTag` field**.
-- **#8 classify.go** → §4.2 keyed via the tag stamped on the error (§4.3).
-- **#9 env-fallback has no config** → §4.10 synthesizes a real `Config`.
-- **#10 decidePrefixAction needs name+tag** → §4.2 takes both.
-- **#11 config path** → §3.5/§4.10 pin `$hubStateRoot/providers.toml`
-  (`~/.serf` default); note the `app_auth.go:57` inconsistency superseded.
-- **#12 quirks by type** → §4.4 `adapterRecipe(type, …)`.
-- **#13 openai-compatible adapter** → §4.7/§4.10 fold `OPENAI_COMPATIBLE_*` into a
-  synthesized `openai`/chat-completions instance.
-- **#14 resume signature** → §4.5 `resumeRequestForConfig` returns an error.
-- **#15 openai_login** → §4.9 included.
-- **#16 catalog ingest vs lookup** → §4.2 keep `:243`, drop `:67` + `client.go:236`.
+(The v3→v4→v5→v6 mappings live in the per-round `*-review-findings.md` docs +
+git history. v6 **validated the architecture**; these are the folded refinements.)
 
-**Carried forward (verified):** leaf package is cycle-free (`llm` imports no serf
-packages); finish-norm needs no change; catalog-by-tag works (type==tag for
-kimi/glm/openrouter/ollama).
+- **Fallback guard/execution still on `WithModel`** → §4.2/§4.5 resolve `fbModel`
+  via `ResolveProfileFromConfig` at **both** `session.go:4139` (guard) and `:2706`
+  (execution); guard compares resolved tags.
+- **`preserveBaseOverrides` dropped on switch** → §4.5 the session re-applies
+  output-schema / allowed-decisions after `ResolveProfileFromConfig`.
+- **Env synthesis re-implements opaque factories** → §4.10/§4.11 **keep
+  `NewFromEnv` + identity `NameToTag`** for the env case; the `Config` resolver
+  applies only with `providers.toml`. No synthesis.
+- **`StreamGenerate` streamed errors unstamped** → §4.3 stamp at the `llm.Client`
+  stream wrapper (one chokepoint covering session + `StreamGenerate`).
+- **`diagnostic.isProviderFailure` (+ JS mirror) hardcodes providers** → §4.2
+  classify on the structured `llm.Error` (provider + tag), re-key the JS mirror.
+- **`AuthRecord.Validate` can't see the tag** → §4.9 drop the `openai` check.
+- **Provider-conditional tools not re-run on switch** (gemini `web_search`) →
+  §4.5 `SetModel` re-runs the registration.
+- **`hubStateRoot` resolver unreachable from `cmd/serf`** → §4.10 move it to
+  `internal/providerconfig`; custom-root + direct `serf run` documented (§9).
+- **Same-instance rebuild needs the tag** → §4.4 thread name + tag through the
+  rebuild constructor.
+- **anthropic `WithModel` strip / minimax+openrouter-anthropic recipe / TUI
+  display literals / prompt-section `:3873`** → §4.2/§4.4/§4.13 refinements.
+
+**Carried forward (verified):** leaf package cycle-free; switching-to-session
+profile-swap-safe; finish-norm needs no change; catalog-by-tag works
+(type==tag for kimi/glm/openrouter/ollama); empty-Provider no-op kept.
 
 ## 9. Risks / open questions
 
-- **Inventory completeness:** five rounds have each found new *wiring* sites; the
-  1a renamed-instance test matrix is the guard, but prose enumeration has been
-  unreliable here — the compiler + tests during 1a are the real backstop.
+- **Inventory completeness:** six rounds each found new provider-string sites;
+  prose enumeration is asymptotic here. The 1a **renamed-instance integration
+  test (§7) + the compiler are the real backstop** — the §4.2 table is a starting
+  set, not a guarantee. This is the explicit reason we build 1a rather than run a
+  7th review.
 - **Same-tag cross-instance fallback (§4.2):** the guard now allows it (safe —
   identical surface). Confirm no caller depended on the stricter same-id rule.
-- **`config path` standalone resolution:** standalone serf must resolve
-  `hubStateRoot` (default `~/.serf`) — a new path it doesn't read today; confirm
-  the resolver matches the hub's exactly.
+- **Custom `hubStateRoot` + direct `serf run`:** hub-spawned daemons get the right
+  config via `SERF_PROVIDERS_CONFIG`; a *directly* invoked `serf run` against a
+  hub configured with a non-default root must set `SERF_PROVIDERS_CONFIG` itself
+  (it can't read `hub.toml`). Default-root setups need nothing. Documented
+  limitation, not a blocker.
 - **`chat-completions` feature gap (§4.7)** and **Anthropic-compatible variance
   (§4.8)** are accepted Phase 1 limitations.
 - **Scope:** Phase 1 is multi-week even sub-phased; 1a is independently testable.
