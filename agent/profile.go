@@ -704,7 +704,7 @@ func NewAnthropicProfile(model string) ProviderProfile {
 
 func NewGeminiProfile(model string) ProviderProfile {
 	bp := buildBaseProfile(profileSpec{
-		id:              "gemini",
+		id:              "google",
 		behaviorTag:     providerconfig.BehaviorTag("google", ""),
 		model:           model,
 		parallel:        true,

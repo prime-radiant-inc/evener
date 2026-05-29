@@ -317,12 +317,5 @@ func (s *providerStampStream) Close() error {
 }
 
 func normalizeProviderName(name string) string {
-	name = strings.ToLower(strings.TrimSpace(name))
-	switch name {
-	case "gemini":
-		// Serf uses "google" as the canonical provider key for Gemini.
-		return "google"
-	default:
-		return name
-	}
+	return strings.ToLower(strings.TrimSpace(name))
 }

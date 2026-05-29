@@ -75,7 +75,7 @@ func TestProviderProfiles_ToolsetsAndDocSelection(t *testing.T) {
 	assertMissingTool(t, anthropic, "apply_patch")
 
 	gemini := NewGeminiProfile("gemini-test")
-	if gemini.ID() != "gemini" {
+	if gemini.ID() != "google" {
 		t.Fatalf("gemini id: %q", gemini.ID())
 	}
 	if !gemini.SupportsParallelToolCalls() {

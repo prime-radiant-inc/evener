@@ -136,13 +136,17 @@ func TestClient_DefaultAdapterTimeout_DoesNotOverrideExplicit(t *testing.T) {
 	}
 }
 
-func TestClient_ProviderAlias_GeminiRoutesToGoogle(t *testing.T) {
+// TestClient_GoogleProviderRoutes verifies that the "google" provider key routes
+// to the registered "google" adapter directly. After PRI-1880, the Gemini profile
+// id is "google" so req.Provider=="google" hits c.providers["google"] without any
+// rewrite. The old gemini→google alias in normalizeProviderName is removed.
+func TestClient_GoogleProviderRoutes(t *testing.T) {
 	c := NewClient()
 	c.Register(&fakeAdapter{name: "google"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	resp, err := c.Complete(ctx, Request{Provider: "gemini", Model: "m", Messages: []Message{User("hi")}})
+	resp, err := c.Complete(ctx, Request{Provider: "google", Model: "gemini-2.5-pro", Messages: []Message{User("hi")}})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
@@ -421,8 +425,8 @@ func TestClient_LookupNormalizesProviderCase(t *testing.T) {
 	if got := normalizeProviderName("  OLLAMA  "); got != "ollama" {
 		t.Errorf("normalizeProviderName whitespace-trimmed lowercase = %q", got)
 	}
-	if got := normalizeProviderName("Gemini"); got != "google" {
-		t.Errorf("normalizeProviderName(\"Gemini\") = %q, want google (alias still works)", got)
+	if got := normalizeProviderName("Gemini"); got != "gemini" {
+		t.Errorf("normalizeProviderName(\"Gemini\") = %q, want gemini (lowercase only, no rewrite)", got)
 	}
 
 	// End-to-end: a non-streaming Complete with mixed-case provider must
@@ -437,6 +441,21 @@ func TestClient_LookupNormalizesProviderCase(t *testing.T) {
 	}
 	if resp.Provider != "ollama" {
 		t.Errorf("resp.Provider = %q, want ollama", resp.Provider)
+	}
+}
+
+// TestNormalizeProviderName_GeminiNoRewrite verifies that after removing the
+// gemini→google routing alias, normalizeProviderName("gemini") returns "gemini"
+// unchanged. Routing now relies on the profile id being "google" (PRI-1880).
+func TestNormalizeProviderName_GeminiNoRewrite(t *testing.T) {
+	if got := normalizeProviderName("gemini"); got != "gemini" {
+		t.Errorf("normalizeProviderName(\"gemini\") = %q, want \"gemini\" (no rewrite after PRI-1880)", got)
+	}
+	if got := normalizeProviderName("Gemini"); got != "gemini" {
+		t.Errorf("normalizeProviderName(\"Gemini\") = %q, want \"gemini\" (lowercase only, no rewrite)", got)
+	}
+	if got := normalizeProviderName("GEMINI"); got != "gemini" {
+		t.Errorf("normalizeProviderName(\"GEMINI\") = %q, want \"gemini\"", got)
 	}
 }
 
