@@ -44,6 +44,7 @@ type Config struct {
 }
 
 type Adapter struct {
+	name             string
 	APIKey           string
 	BaseURL          string
 	ResponsesPath    string
@@ -52,6 +53,89 @@ type Adapter struct {
 	ChatGPTAccountID string
 	Client           *http.Client
 	DefaultHeaders   map[string]string
+}
+
+// OpenAIInstanceParams holds the configuration for a single OpenAI adapter instance.
+type OpenAIInstanceParams struct {
+	Name           string
+	APIKey         string
+	BaseURL        string
+	OrgID          string
+	ProjectID      string
+	ChatGPTBaseURL string
+	StateHome      string
+}
+
+// NewForInstance constructs an Adapter from explicit parameters.
+// OAuth resolution uses StateHome (per-instance OAuth filename is a later task).
+// Empty BaseURL/ChatGPTBaseURL fall back to the same defaults as the env path.
+func NewForInstance(params OpenAIInstanceParams) (*Adapter, error) {
+	// Prefer stored OAuth over APIKey: once a user has signed in via
+	// `serf openai login`, route through the ChatGPT/Codex backend instead of
+	// the key-based API. This mirrors the preference order in NewFromEnv.
+	authStateDir := authopenai.DefaultStateDirWithStateHome(params.StateHome)
+	service := authopenai.NewService(authopenai.DefaultConfig(), nil)
+	status, err := service.Status(authStateDir)
+	if err != nil {
+		return nil, fmt.Errorf("load OpenAI auth: %w", err)
+	}
+	if status.SignedIn && status.Source == authopenai.AuthSourceOAuth {
+		creds, err := service.ResolveRuntimeCredentials(context.Background(), authStateDir)
+		if err != nil {
+			return nil, fmt.Errorf("resolve OpenAI auth: %w", err)
+		}
+		status, err = service.Status(authStateDir)
+		if err != nil {
+			return nil, fmt.Errorf("refresh OpenAI auth status: %w", err)
+		}
+		base := strings.TrimSpace(params.ChatGPTBaseURL)
+		if base == "" {
+			base = defaultChatGPTBaseURL
+		}
+		accountID := strings.TrimSpace(status.AccountID)
+		if accountID == "" {
+			accountID = strings.TrimSpace(status.WorkspaceID)
+		}
+		if accountID == "" {
+			record, loadErr := authopenai.LoadAuth(authStateDir)
+			if loadErr == nil {
+				if claims, parseErr := authopenai.ParseIDTokenClaims(record.IDToken); parseErr == nil {
+					accountID = strings.TrimSpace(claims.AccountID)
+					if accountID == "" {
+						accountID = strings.TrimSpace(claims.WorkspaceID)
+					}
+				}
+			}
+		}
+		return &Adapter{
+			name:             params.Name,
+			APIKey:           creds.BearerToken,
+			BaseURL:          strings.TrimRight(base, "/"),
+			ResponsesPath:    defaultCodexResponses,
+			ChatGPTAccountID: accountID,
+			Client:           &http.Client{Timeout: 0},
+		}, nil
+	}
+
+	key := strings.TrimSpace(params.APIKey)
+	if key != "" {
+		base := strings.TrimSpace(params.BaseURL)
+		if base == "" {
+			base = defaultAPIBaseURL
+		}
+		return &Adapter{
+			name:          params.Name,
+			APIKey:        key,
+			BaseURL:       strings.TrimRight(base, "/"),
+			ResponsesPath: defaultResponsesPath,
+			OrgID:         strings.TrimSpace(params.OrgID),
+			ProjectID:     strings.TrimSpace(params.ProjectID),
+			// Avoid short client-level timeouts; rely on request context deadlines instead.
+			Client: &http.Client{Timeout: 0},
+		}, nil
+	}
+
+	return nil, fmt.Errorf("no OpenAI credentials configured")
 }
 
 func init() {
@@ -74,73 +158,23 @@ func NewFromEnv(cfgs ...Config) (*Adapter, error) {
 			cfg.StateHome = next.StateHome
 		}
 	}
-	// Prefer stored OAuth over OPENAI_API_KEY: once a user has signed in via
-	// `serf openai login`, route through the ChatGPT/Codex backend instead of
-	// the env-key API. Service.Status reflects the same preference order.
-	authStateDir := authopenai.DefaultStateDirWithStateHome(cfg.StateHome)
-	service := authopenai.NewService(authopenai.DefaultConfig(), nil)
-	status, err := service.Status(authStateDir)
-	if err != nil {
-		return nil, fmt.Errorf("load OpenAI auth: %w", err)
-	}
-	if status.SignedIn && status.Source == authopenai.AuthSourceOAuth {
-		creds, err := service.ResolveRuntimeCredentials(context.Background(), authStateDir)
-		if err != nil {
-			return nil, fmt.Errorf("resolve OpenAI auth: %w", err)
-		}
-		status, err = service.Status(authStateDir)
-		if err != nil {
-			return nil, fmt.Errorf("refresh OpenAI auth status: %w", err)
-		}
-		base := strings.TrimSpace(os.Getenv("OPENAI_CHATGPT_BASE_URL"))
-		if base == "" {
-			base = defaultChatGPTBaseURL
-		}
-		accountID := strings.TrimSpace(status.AccountID)
-		if accountID == "" {
-			accountID = strings.TrimSpace(status.WorkspaceID)
-		}
-		if accountID == "" {
-			record, loadErr := authopenai.LoadAuth(authStateDir)
-			if loadErr == nil {
-				if claims, parseErr := authopenai.ParseIDTokenClaims(record.IDToken); parseErr == nil {
-					accountID = strings.TrimSpace(claims.AccountID)
-					if accountID == "" {
-						accountID = strings.TrimSpace(claims.WorkspaceID)
-					}
-				}
-			}
-		}
-		return &Adapter{
-			APIKey:           creds.BearerToken,
-			BaseURL:          strings.TrimRight(base, "/"),
-			ResponsesPath:    defaultCodexResponses,
-			ChatGPTAccountID: accountID,
-			Client:           &http.Client{Timeout: 0},
-		}, nil
-	}
-
-	key := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
-	if key != "" {
-		base := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL"))
-		if base == "" {
-			base = defaultAPIBaseURL
-		}
-		return &Adapter{
-			APIKey:        key,
-			BaseURL:       strings.TrimRight(base, "/"),
-			ResponsesPath: defaultResponsesPath,
-			OrgID:         strings.TrimSpace(os.Getenv("OPENAI_ORG_ID")),
-			ProjectID:     strings.TrimSpace(os.Getenv("OPENAI_PROJECT_ID")),
-			// Avoid short client-level timeouts; rely on request context deadlines instead.
-			Client: &http.Client{Timeout: 0},
-		}, nil
-	}
-
-	return nil, fmt.Errorf("no OpenAI credentials configured")
+	return NewForInstance(OpenAIInstanceParams{
+		Name:           "openai",
+		APIKey:         strings.TrimSpace(os.Getenv("OPENAI_API_KEY")),
+		BaseURL:        strings.TrimSpace(os.Getenv("OPENAI_BASE_URL")),
+		OrgID:          strings.TrimSpace(os.Getenv("OPENAI_ORG_ID")),
+		ProjectID:      strings.TrimSpace(os.Getenv("OPENAI_PROJECT_ID")),
+		ChatGPTBaseURL: strings.TrimSpace(os.Getenv("OPENAI_CHATGPT_BASE_URL")),
+		StateHome:      cfg.StateHome,
+	})
 }
 
-func (a *Adapter) Name() string { return "openai" }
+func (a *Adapter) Name() string {
+	if a.name != "" {
+		return a.name
+	}
+	return "openai"
+}
 
 func (a *Adapter) setHeaders(req *http.Request) {
 	// Apply default headers first so provider-specific headers take precedence.

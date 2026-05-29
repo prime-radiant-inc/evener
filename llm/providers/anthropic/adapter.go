@@ -17,10 +17,37 @@ import (
 )
 
 type Adapter struct {
+	name           string
 	APIKey         string
 	BaseURL        string
 	Client         *http.Client
 	DefaultHeaders map[string]string
+}
+
+// AnthropicInstanceParams holds the configuration for a single Anthropic adapter instance.
+type AnthropicInstanceParams struct {
+	Name    string
+	APIKey  string
+	BaseURL string
+}
+
+// NewForInstance constructs an Adapter from explicit parameters.
+// Empty BaseURL falls back to the default Anthropic API endpoint.
+func NewForInstance(params AnthropicInstanceParams) (*Adapter, error) {
+	if strings.TrimSpace(params.APIKey) == "" {
+		return nil, fmt.Errorf("ANTHROPIC_API_KEY is required")
+	}
+	base := strings.TrimSpace(params.BaseURL)
+	if base == "" {
+		base = "https://api.anthropic.com"
+	}
+	return &Adapter{
+		name:   params.Name,
+		APIKey: params.APIKey,
+		// Avoid short client-level timeouts; rely on request context deadlines instead.
+		BaseURL: strings.TrimRight(base, "/"),
+		Client:  &http.Client{Timeout: 0},
+	}, nil
 }
 
 func init() {
@@ -37,23 +64,19 @@ func init() {
 }
 
 func NewFromEnv() (*Adapter, error) {
-	key := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
-	if key == "" {
-		return nil, fmt.Errorf("ANTHROPIC_API_KEY is required")
-	}
-	base := strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL"))
-	if base == "" {
-		base = "https://api.anthropic.com"
-	}
-	return &Adapter{
-		APIKey:  key,
-		BaseURL: strings.TrimRight(base, "/"),
-		// Avoid short client-level timeouts; rely on request context deadlines instead.
-		Client: &http.Client{Timeout: 0},
-	}, nil
+	return NewForInstance(AnthropicInstanceParams{
+		Name:    "anthropic",
+		APIKey:  strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")),
+		BaseURL: strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")),
+	})
 }
 
-func (a *Adapter) Name() string { return "anthropic" }
+func (a *Adapter) Name() string {
+	if a.name != "" {
+		return a.name
+	}
+	return "anthropic"
+}
 
 func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 	if a.Client == nil {

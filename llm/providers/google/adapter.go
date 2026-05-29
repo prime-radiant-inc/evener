@@ -20,10 +20,37 @@ import (
 )
 
 type Adapter struct {
+	name           string
 	APIKey         string
 	BaseURL        string
 	Client         *http.Client
 	DefaultHeaders map[string]string
+}
+
+// GoogleInstanceParams holds the configuration for a single Google adapter instance.
+type GoogleInstanceParams struct {
+	Name    string
+	APIKey  string
+	BaseURL string
+}
+
+// NewForInstance constructs an Adapter from explicit parameters.
+// Empty BaseURL falls back to the default Gemini API endpoint.
+func NewForInstance(params GoogleInstanceParams) (*Adapter, error) {
+	if strings.TrimSpace(params.APIKey) == "" {
+		return nil, fmt.Errorf("GEMINI_API_KEY is required")
+	}
+	base := strings.TrimSpace(params.BaseURL)
+	if base == "" {
+		base = "https://generativelanguage.googleapis.com"
+	}
+	return &Adapter{
+		name:   params.Name,
+		APIKey: params.APIKey,
+		// Avoid short client-level timeouts; rely on request context deadlines instead.
+		BaseURL: strings.TrimRight(base, "/"),
+		Client:  &http.Client{Timeout: 0},
+	}, nil
 }
 
 func init() {
@@ -45,22 +72,19 @@ func NewFromEnv() (*Adapter, error) {
 		// Common alias.
 		key = strings.TrimSpace(os.Getenv("GOOGLE_API_KEY"))
 	}
-	if key == "" {
-		return nil, fmt.Errorf("GEMINI_API_KEY is required")
-	}
-	base := strings.TrimSpace(os.Getenv("GEMINI_BASE_URL"))
-	if base == "" {
-		base = "https://generativelanguage.googleapis.com"
-	}
-	return &Adapter{
+	return NewForInstance(GoogleInstanceParams{
+		Name:    "google",
 		APIKey:  key,
-		BaseURL: strings.TrimRight(base, "/"),
-		// Avoid short client-level timeouts; rely on request context deadlines instead.
-		Client: &http.Client{Timeout: 0},
-	}, nil
+		BaseURL: strings.TrimSpace(os.Getenv("GEMINI_BASE_URL")),
+	})
 }
 
-func (a *Adapter) Name() string { return "google" }
+func (a *Adapter) Name() string {
+	if a.name != "" {
+		return a.name
+	}
+	return "google"
+}
 
 func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 	if a.Client == nil {

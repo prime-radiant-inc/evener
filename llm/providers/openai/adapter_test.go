@@ -3730,3 +3730,27 @@ func TestAdapter_Complete_StampsEndpointURL_CodexBackend(t *testing.T) {
 		t.Fatalf("Raw[endpoint_url] = %q, want %q", got, want)
 	}
 }
+
+func TestNewForInstance_OpenAI_Name(t *testing.T) {
+	a, err := NewForInstance(OpenAIInstanceParams{
+		Name:   "work",
+		APIKey: "sk-x",
+	})
+	if err != nil {
+		t.Fatalf("NewForInstance: %v", err)
+	}
+	if a.Name() != "work" {
+		t.Fatalf("Name() = %q, want %q", a.Name(), "work")
+	}
+}
+
+func TestNewFromEnv_OpenAI_Name(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "sk-env")
+	a, err := NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	if a.Name() != "openai" {
+		t.Fatalf("Name() = %q, want %q", a.Name(), "openai")
+	}
+}

@@ -2832,3 +2832,27 @@ func TestComplete_ToolResultWithoutImageData_NoInlinePart(t *testing.T) {
 		t.Fatalf("only part should be functionResponse, got %v", part0)
 	}
 }
+
+func TestNewForInstance_Google_Name(t *testing.T) {
+	a, err := NewForInstance(GoogleInstanceParams{
+		Name:   "work",
+		APIKey: "gk-x",
+	})
+	if err != nil {
+		t.Fatalf("NewForInstance: %v", err)
+	}
+	if a.Name() != "work" {
+		t.Fatalf("Name() = %q, want %q", a.Name(), "work")
+	}
+}
+
+func TestNewFromEnv_Google_Name(t *testing.T) {
+	t.Setenv("GEMINI_API_KEY", "gk-env")
+	a, err := NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	if a.Name() != "google" {
+		t.Fatalf("Name() = %q, want %q", a.Name(), "google")
+	}
+}

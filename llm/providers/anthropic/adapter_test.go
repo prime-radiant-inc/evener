@@ -3543,3 +3543,27 @@ func TestClampEffort(t *testing.T) {
 		})
 	}
 }
+
+func TestNewForInstance_Anthropic_Name(t *testing.T) {
+	a, err := NewForInstance(AnthropicInstanceParams{
+		Name:   "work",
+		APIKey: "sk-x",
+	})
+	if err != nil {
+		t.Fatalf("NewForInstance: %v", err)
+	}
+	if a.Name() != "work" {
+		t.Fatalf("Name() = %q, want %q", a.Name(), "work")
+	}
+}
+
+func TestNewFromEnv_Anthropic_Name(t *testing.T) {
+	t.Setenv("ANTHROPIC_API_KEY", "sk-env")
+	a, err := NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	if a.Name() != "anthropic" {
+		t.Fatalf("Name() = %q, want %q", a.Name(), "anthropic")
+	}
+}
