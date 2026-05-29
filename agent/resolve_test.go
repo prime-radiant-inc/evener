@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"os"
 	"strings"
 	"testing"
 
 	"primeradiant.com/serf/internal/providerconfig"
+	"primeradiant.com/serf/llm"
 )
 
 func TestResolveProfileFromConfig_OpenAIResponses(t *testing.T) {
@@ -260,5 +262,62 @@ func TestResolveProfileFromConfig_ChatCompletionsTagNotDerivedFromInstanceName(t
 	}
 	if p.ID() != "work" {
 		t.Errorf("ID() = %q, want %q", p.ID(), "work")
+	}
+}
+
+// TestResolveProfileFromConfig_KimiContextWindowFromCatalog confirms that the
+// config path sources the context window from the embedded catalog keyed on the
+// behavior tag — not from KIMI_* env vars and not from a live /v1/models query.
+//
+// "moonshot/kimi-latest-128k" is present in the embedded catalog with a context
+// window of 131072.  The 128K default (131072 != 128000) is distinct, so any
+// slip back to the default exposes the gap.  No KIMI_* env must be set.
+func TestResolveProfileFromConfig_KimiContextWindowFromCatalog(t *testing.T) {
+	// Confirm no KIMI_* env is active — if it were, the test would be vacuous
+	// (the config path doesn't read env anyway, but we make the contract explicit).
+	for _, key := range []string{"KIMI_API_KEY", "KIMI_BASE_URL"} {
+		if v := os.Getenv(key); v != "" {
+			t.Setenv(key, "")
+		}
+	}
+
+	// Determine the expected context window from the catalog.
+	const catalogModel = "moonshot/kimi-latest-128k"
+	cat := llm.EmbeddedModelCatalog()
+	if cat == nil {
+		t.Fatal("embedded catalog is nil — cannot confirm catalog-keyed lookup")
+	}
+	mi := cat.GetModelInfo(catalogModel)
+	if mi == nil {
+		t.Fatalf("model %q not found in embedded catalog; pick a different model for this test", catalogModel)
+	}
+	wantCtx := mi.ContextWindow
+	if wantCtx == 0 {
+		t.Fatalf("catalog entry for %q has zero context window", catalogModel)
+	}
+	// Sanity: catalog window must differ from the 128K fallback so the test is meaningful.
+	const defaultWindow = 128_000
+	if wantCtx == defaultWindow {
+		t.Fatalf("catalog window %d == default %d; choose a model with a distinct window", wantCtx, defaultWindow)
+	}
+
+	cfg := providerconfig.Config{
+		Instances: []providerconfig.InstanceConfig{
+			{Name: "kc", Type: "kimi"},
+		},
+	}
+	p, err := ResolveProfileFromConfig(cfg, "kc/"+catalogModel)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.ID() != "kc" {
+		t.Errorf("ID() = %q, want %q", p.ID(), "kc")
+	}
+	if p.BehaviorTag() != "kimi" {
+		t.Errorf("BehaviorTag() = %q, want %q", p.BehaviorTag(), "kimi")
+	}
+	if got := p.ContextWindowSize(); got != wantCtx {
+		t.Errorf("ContextWindowSize() = %d, want %d (from catalog %q); config path must source window from catalog by tag, not from env",
+			got, wantCtx, catalogModel)
 	}
 }
