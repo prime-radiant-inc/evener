@@ -90,6 +90,36 @@ func WithAllowedDecisions(p ProviderProfile, decisions []string) ProviderProfile
 	return &clone
 }
 
+// WithProviderID returns a cloned profile with its id overridden to name,
+// preserving the behavior tag and all other profile state unchanged.
+// Passing an empty name returns p unchanged.
+func WithProviderID(p ProviderProfile, name string) ProviderProfile {
+	name = strings.TrimSpace(name)
+	if p == nil || name == "" {
+		return p
+	}
+
+	var bp *baseProfile
+	switch v := p.(type) {
+	case *baseProfile:
+		bp = v
+	case *anthropicProfile:
+		bp = &v.baseProfile
+	default:
+		return p
+	}
+
+	clone := *bp
+	clone.id = name
+
+	if ap, ok := p.(*anthropicProfile); ok {
+		apClone := *ap
+		apClone.baseProfile = clone
+		return &apClone
+	}
+	return &clone
+}
+
 // WithCheapModel returns a cloned profile whose CheapModel method returns the
 // supplied model. Passing an empty model returns p unchanged.
 func WithCheapModel(p ProviderProfile, model string) ProviderProfile {

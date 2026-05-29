@@ -7,11 +7,12 @@ import (
 )
 
 type nonHTTPErrorBase struct {
-	provider   string
-	message    string
-	retryable  bool
-	retryAfter *time.Duration
-	cause      error
+	provider    string
+	behaviorTag string
+	message     string
+	retryable   bool
+	retryAfter  *time.Duration
+	cause       error
 }
 
 func (e *nonHTTPErrorBase) Error() string {
@@ -26,6 +27,8 @@ func (e *nonHTTPErrorBase) Error() string {
 }
 func (e *nonHTTPErrorBase) Provider() string           { return e.provider }
 func (e *nonHTTPErrorBase) setProvider(name string)    { e.provider = strings.TrimSpace(name) }
+func (e *nonHTTPErrorBase) BehaviorTag() string        { return e.behaviorTag }
+func (e *nonHTTPErrorBase) setBehaviorTag(tag string)  { e.behaviorTag = strings.TrimSpace(tag) }
 func (e *nonHTTPErrorBase) StatusCode() int            { return 0 }
 func (e *nonHTTPErrorBase) ErrorCode() string          { return "" }
 func (e *nonHTTPErrorBase) Retryable() bool            { return e.retryable }

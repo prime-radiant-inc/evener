@@ -64,9 +64,6 @@ func (c *ModelCatalog) ListModels(provider string) []ModelInfo {
 		return nil
 	}
 	p := strings.ToLower(strings.TrimSpace(provider))
-	if p == "gemini" {
-		p = "google"
-	}
 	if p == "" {
 		return append([]ModelInfo{}, c.Models...)
 	}

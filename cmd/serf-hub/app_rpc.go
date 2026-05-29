@@ -1691,7 +1691,11 @@ func hubThreadResume(ctx context.Context, cfg WebConfig, sources *appsource.Regi
 	if sessionID == "" {
 		return appwire.ThreadResumeResponse{}, appwire.InvalidParams("sessionId or ref is required")
 	}
-	entry, err := cfg.Spawner.Resume(ctx, resumeRequestForConfig(cfg, sessionID))
+	resumeReq, err := resumeRequestForConfig(cfg, sessionID)
+	if err != nil {
+		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(err.Error())
+	}
+	entry, err := cfg.Spawner.Resume(ctx, resumeReq)
 	if err != nil {
 		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(err.Error())
 	}
@@ -1714,14 +1718,17 @@ func hubThreadResume(ctx context.Context, cfg WebConfig, sources *appsource.Regi
 	return appwire.ThreadResumeResponse{Thread: threadResp.Thread}, nil
 }
 
-func resumeRequestForConfig(cfg WebConfig, id string) ResumeRequest {
+func resumeRequestForConfig(cfg WebConfig, id string) (ResumeRequest, error) {
 	req := ResumeRequest{SessionID: id}
 	if cfg.Past != nil {
 		if pe, ok := cfg.Past.Find(id); ok {
 			req.WorkingDir = pe.Meta.EnvInfo.WorkingDir
 			req.StateDir = pe.StateDir
-			provider := resumeProviderFromProfileID(pe.Meta.ProfileID)
-			if provider != "" && pe.Meta.Model != "" {
+			provider := strings.TrimSpace(pe.Meta.ProfileID)
+			if provider == "" {
+				return ResumeRequest{}, fmt.Errorf("session %s has no provider profile: cannot resume", id)
+			}
+			if pe.Meta.Model != "" {
 				req.Provider = provider
 				req.Resolved = launchconfig.Resolved{Effective: launchconfig.Layer{
 					Model: provider + "/" + pe.Meta.Model,
@@ -1729,16 +1736,7 @@ func resumeRequestForConfig(cfg WebConfig, id string) ResumeRequest {
 			}
 		}
 	}
-	return req
-}
-
-func resumeProviderFromProfileID(profileID string) string {
-	switch provider := strings.ToLower(strings.TrimSpace(profileID)); provider {
-	case "openai", "anthropic", "google", "gemini", "minimax", "openrouter-anthropic", "kimi", "glm", "openrouter", "ollama":
-		return provider
-	default:
-		return ""
-	}
+	return req, nil
 }
 
 func hubThreadFork(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {

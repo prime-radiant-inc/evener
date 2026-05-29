@@ -112,7 +112,14 @@ func Classify(err error) ErrorClass {
 }
 
 func isEndpointFallbackSignal(err error, le Error) bool {
-	if !strings.EqualFold(strings.TrimSpace(le.Provider()), "openai") {
+	// Key on BehaviorTag when set (instance named "work" with tag "openai"
+	// must still trigger fallback); fall back to Provider() for the default
+	// identity case (tag empty, name==type=="openai").
+	tag := le.BehaviorTag()
+	if tag == "" {
+		tag = le.Provider()
+	}
+	if !strings.EqualFold(strings.TrimSpace(tag), "openai") {
 		return false
 	}
 	message := strings.ToLower(err.Error())

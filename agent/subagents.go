@@ -122,6 +122,13 @@ func baseSubagentToolPolicy(agent *PluginAgent) (allTools bool, allowed []string
 	}
 }
 
+func subagentNeedsCommunicateNudge(agent *PluginAgent) bool {
+	if agent == nil {
+		return true
+	}
+	return agent.PluginName == "builtin" && agent.Name == "subagent"
+}
+
 func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string, parentTasks []TaskTemplate, grantTools []string) (any, error) {
 	s.mu.Lock()
 	depth := s.depth
@@ -149,11 +156,25 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 
 	subProfile := s.profile
 	if model = strings.TrimSpace(model); model != "" {
-		subProfile = s.profile.WithModel(model)
+		resolved, crossProvider, err := s.resolveProfileForRef(model)
+		if err != nil {
+			return "", fmt.Errorf("model override %q: %w", model, err)
+		}
+		if crossProvider {
+			resolved = preserveBaseOverrides(resolved, s.profile)
+		}
+		subProfile = resolved
 	}
 	// Plugin agent model takes precedence (unless "inherit" or empty).
 	if agent != nil && agent.Model != "inherit" && agent.Model != "" {
-		subProfile = s.profile.WithModel(agent.Model)
+		resolved, crossProvider, err := s.resolveProfileForRef(agent.Model)
+		if err != nil {
+			return "", fmt.Errorf("agent model %q: %w", agent.Model, err)
+		}
+		if crossProvider {
+			resolved = preserveBaseOverrides(resolved, s.profile)
+		}
+		subProfile = resolved
 	}
 
 	subCfg := s.cfg
@@ -289,7 +310,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		running:      true,
 		status:       SubAgentRunning,
 		done:         make(chan struct{}),
-		nudgeEnabled: agent == nil, // default subagents get nudged to communicate
+		nudgeEnabled: subagentNeedsCommunicateNudge(agent),
 	}
 
 	s.mu.Lock()
@@ -519,9 +540,13 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 }
 
 func (a *subagent) resultSnapshotLocked() SubAgentResult {
+	output := a.result
+	if strings.TrimSpace(output) == "" && a.err != nil {
+		output = a.err.Error()
+	}
 	return SubAgentResult{
 		Status:     a.status,
-		Output:     a.result,
+		Output:     output,
 		Success:    a.err == nil,
 		TurnsUsed:  a.turnsUsed,
 		Transcript: a.sess.TranscriptPath(),

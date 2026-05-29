@@ -136,13 +136,17 @@ func TestClient_DefaultAdapterTimeout_DoesNotOverrideExplicit(t *testing.T) {
 	}
 }
 
-func TestClient_ProviderAlias_GeminiRoutesToGoogle(t *testing.T) {
+// TestClient_GoogleProviderRoutes verifies that the "google" provider key routes
+// to the registered "google" adapter directly. After PRI-1880, the Gemini profile
+// id is "google" so req.Provider=="google" hits c.providers["google"] without any
+// rewrite. The old gemini→google alias in normalizeProviderName is removed.
+func TestClient_GoogleProviderRoutes(t *testing.T) {
 	c := NewClient()
 	c.Register(&fakeAdapter{name: "google"})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	resp, err := c.Complete(ctx, Request{Provider: "gemini", Model: "m", Messages: []Message{User("hi")}})
+	resp, err := c.Complete(ctx, Request{Provider: "google", Model: "gemini-2.5-pro", Messages: []Message{User("hi")}})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
@@ -421,8 +425,8 @@ func TestClient_LookupNormalizesProviderCase(t *testing.T) {
 	if got := normalizeProviderName("  OLLAMA  "); got != "ollama" {
 		t.Errorf("normalizeProviderName whitespace-trimmed lowercase = %q", got)
 	}
-	if got := normalizeProviderName("Gemini"); got != "google" {
-		t.Errorf("normalizeProviderName(\"Gemini\") = %q, want google (alias still works)", got)
+	if got := normalizeProviderName("Gemini"); got != "gemini" {
+		t.Errorf("normalizeProviderName(\"Gemini\") = %q, want gemini (lowercase only, no rewrite)", got)
 	}
 
 	// End-to-end: a non-streaming Complete with mixed-case provider must
@@ -437,6 +441,21 @@ func TestClient_LookupNormalizesProviderCase(t *testing.T) {
 	}
 	if resp.Provider != "ollama" {
 		t.Errorf("resp.Provider = %q, want ollama", resp.Provider)
+	}
+}
+
+// TestNormalizeProviderName_GeminiNoRewrite verifies that after removing the
+// gemini→google routing alias, normalizeProviderName("gemini") returns "gemini"
+// unchanged. Routing now relies on the profile id being "google" (PRI-1880).
+func TestNormalizeProviderName_GeminiNoRewrite(t *testing.T) {
+	if got := normalizeProviderName("gemini"); got != "gemini" {
+		t.Errorf("normalizeProviderName(\"gemini\") = %q, want \"gemini\" (no rewrite after PRI-1880)", got)
+	}
+	if got := normalizeProviderName("Gemini"); got != "gemini" {
+		t.Errorf("normalizeProviderName(\"Gemini\") = %q, want \"gemini\" (lowercase only, no rewrite)", got)
+	}
+	if got := normalizeProviderName("GEMINI"); got != "gemini" {
+		t.Errorf("normalizeProviderName(\"GEMINI\") = %q, want \"gemini\"", got)
 	}
 }
 
@@ -457,6 +476,291 @@ func TestClient_SupportsToolChoice(t *testing.T) {
 	c.Register(&fakeAdapter{name: "plain"})
 	if !c.SupportsToolChoice("plain", "auto") {
 		t.Fatalf("expected default true for non-implementing adapter")
+	}
+}
+
+// --- Instance-name identity tests (PRI-1880) ---
+
+// instanceAdapter simulates an adapter that always hardcodes its own type
+// name ("openaicompat") into responses and errors, regardless of what instance
+// name it is registered under. The client must stamp the instance name
+// (req.Provider) over whatever the adapter returned.
+type instanceAdapter struct {
+	typeName string // hardcoded type, e.g. "openaicompat"
+	errToReturn error  // if set, Complete returns this error and Stream emits it
+}
+
+func (a *instanceAdapter) Name() string { return a.typeName }
+
+func (a *instanceAdapter) Complete(_ context.Context, req Request) (Response, error) {
+	if a.errToReturn != nil {
+		return Response{}, a.errToReturn
+	}
+	return Response{Provider: a.typeName, Model: req.Model, Message: Assistant("ok")}, nil
+}
+
+func (a *instanceAdapter) Stream(_ context.Context, req Request) (Stream, error) {
+	if a.errToReturn != nil {
+		// Emit the error as a stream event (as real adapters do at runtime).
+		sctx, cancel := context.WithCancel(context.Background())
+		_ = sctx
+		s := NewChanStream(cancel)
+		go func() {
+			defer s.CloseSend()
+			s.Send(StreamEvent{Type: StreamEventError, Err: a.errToReturn})
+		}()
+		return s, nil
+	}
+	sctx, cancel := context.WithCancel(context.Background())
+	_ = sctx
+	s := NewChanStream(cancel)
+	go func() {
+		defer s.CloseSend()
+		resp := Response{Provider: a.typeName, Model: req.Model, Message: Assistant("ok")}
+		s.Send(StreamEvent{Type: StreamEventFinish, Response: &resp})
+	}()
+	return s, nil
+}
+
+func TestClient_Complete_StampsInstanceNameOnResponse(t *testing.T) {
+	c := NewClient()
+	// Register adapter under instance name "work"; it hardcodes "openaicompat".
+	adapter := &instanceAdapter{typeName: "openaicompat"}
+	c.providers["work"] = adapter
+	c.defaultProvider = "work"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	resp, err := c.Complete(ctx, Request{Provider: "work", Model: "m", Messages: []Message{User("hi")}})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Provider != "work" {
+		t.Fatalf("resp.Provider = %q, want \"work\"", resp.Provider)
+	}
+}
+
+func TestClient_Complete_StampsInstanceNameOnError(t *testing.T) {
+	c := NewClient()
+	// Adapter hardcodes "openaicompat" in its error; instance name is "work".
+	adapterErr := ErrorFromHTTPStatus("openaicompat", 429, "rate limited", nil, nil)
+	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: adapterErr}
+	c.providers["work"] = adapter
+	c.defaultProvider = "work"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := c.Complete(ctx, Request{Provider: "work", Model: "m", Messages: []Message{User("hi")}})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var llmErr Error
+	if !errors.As(err, &llmErr) {
+		t.Fatalf("expected llm.Error, got %T: %v", err, err)
+	}
+	if llmErr.Provider() != "work" {
+		t.Fatalf("error provider = %q, want \"work\"", llmErr.Provider())
+	}
+}
+
+func TestClient_Complete_PreservesEmptyProviderError(t *testing.T) {
+	// Errors with empty Provider() (e.g. context.Canceled wrappers) must not
+	// be stamped — RewriteErrorProvider no-ops on them.
+	c := NewClient()
+	// A ConfigurationError has Provider()==""; the client must leave it alone.
+	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: &ConfigurationError{Message: "simulated"}}
+	c.providers["work"] = adapter
+	c.defaultProvider = "work"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := c.Complete(ctx, Request{Provider: "work", Model: "m", Messages: []Message{User("hi")}})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var llmErr Error
+	if !errors.As(err, &llmErr) {
+		t.Fatalf("expected llm.Error, got %T: %v", err, err)
+	}
+	if llmErr.Provider() != "" {
+		t.Fatalf("error provider = %q, want \"\" (empty provider must not be stamped)", llmErr.Provider())
+	}
+}
+
+func TestClient_Stream_StampsInstanceNameOnFinishResponse(t *testing.T) {
+	c := NewClient()
+	adapter := &instanceAdapter{typeName: "openaicompat"}
+	c.providers["work"] = adapter
+	c.defaultProvider = "work"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	st, err := c.Stream(ctx, Request{Provider: "work", Model: "m", Messages: []Message{User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer st.Close() //nolint:errcheck
+
+	var finishResp *Response
+	for ev := range st.Events() {
+		if ev.Type == StreamEventFinish && ev.Response != nil {
+			finishResp = ev.Response
+		}
+	}
+	if finishResp == nil {
+		t.Fatal("no StreamEventFinish with Response received")
+	}
+	if finishResp.Provider != "work" {
+		t.Fatalf("finish response provider = %q, want \"work\"", finishResp.Provider)
+	}
+}
+
+func TestClient_Stream_StampsInstanceNameOnErrorEvent(t *testing.T) {
+	c := NewClient()
+	adapterErr := ErrorFromHTTPStatus("openaicompat", 500, "server error", nil, nil)
+	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: adapterErr}
+	c.providers["work"] = adapter
+	c.defaultProvider = "work"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	st, err := c.Stream(ctx, Request{Provider: "work", Model: "m", Messages: []Message{User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream open: %v", err)
+	}
+	defer st.Close() //nolint:errcheck
+
+	var gotErr error
+	for ev := range st.Events() {
+		if ev.Type == StreamEventError {
+			gotErr = ev.Err
+		}
+	}
+	if gotErr == nil {
+		t.Fatal("expected StreamEventError, got none")
+	}
+	var llmErr Error
+	if !errors.As(gotErr, &llmErr) {
+		t.Fatalf("expected llm.Error, got %T: %v", gotErr, gotErr)
+	}
+	if llmErr.Provider() != "work" {
+		t.Fatalf("stream error provider = %q, want \"work\"", llmErr.Provider())
+	}
+}
+
+func TestClient_Stream_PreservesEmptyProviderErrorEvent(t *testing.T) {
+	c := NewClient()
+	// ConfigurationError has Provider()=="" — must not be stamped.
+	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: &ConfigurationError{Message: "simulated"}}
+	c.providers["work"] = adapter
+	c.defaultProvider = "work"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	st, err := c.Stream(ctx, Request{Provider: "work", Model: "m", Messages: []Message{User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream open: %v", err)
+	}
+	defer st.Close() //nolint:errcheck
+
+	var gotErr error
+	for ev := range st.Events() {
+		if ev.Type == StreamEventError {
+			gotErr = ev.Err
+		}
+	}
+	if gotErr == nil {
+		t.Fatal("expected StreamEventError, got none")
+	}
+	var llmErr Error
+	if !errors.As(gotErr, &llmErr) {
+		t.Fatalf("expected llm.Error, got %T: %v", gotErr, gotErr)
+	}
+	if llmErr.Provider() != "" {
+		t.Fatalf("stream error provider = %q, want \"\" (empty provider must not be stamped)", llmErr.Provider())
+	}
+}
+
+// --- BehaviorTag stamping via nameToTag (PRI-1880) ---
+
+func TestClient_SetNameToTag_StampsBehaviorTagOnCompleteError(t *testing.T) {
+	c := NewClient()
+	adapterErr := ErrorFromHTTPStatus("openaicompat", 429, "rate limited", nil, nil)
+	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: adapterErr}
+	c.providers["work"] = adapter
+	c.defaultProvider = "work"
+	c.SetNameToTag(map[string]string{"work": "openai"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := c.Complete(ctx, Request{Provider: "work", Model: "m", Messages: []Message{User("hi")}})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var llmErr Error
+	if !errors.As(err, &llmErr) {
+		t.Fatalf("expected llm.Error, got %T", err)
+	}
+	if llmErr.BehaviorTag() != "openai" {
+		t.Fatalf("BehaviorTag() = %q, want \"openai\"", llmErr.BehaviorTag())
+	}
+}
+
+func TestClient_SetNameToTag_StampsBehaviorTagOnStreamError(t *testing.T) {
+	c := NewClient()
+	adapterErr := ErrorFromHTTPStatus("openaicompat", 500, "server error", nil, nil)
+	adapter := &instanceAdapter{typeName: "openaicompat", errToReturn: adapterErr}
+	c.providers["work"] = adapter
+	c.defaultProvider = "work"
+	c.SetNameToTag(map[string]string{"work": "openai"})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	st, err := c.Stream(ctx, Request{Provider: "work", Model: "m", Messages: []Message{User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream open: %v", err)
+	}
+	defer st.Close() //nolint:errcheck
+
+	var gotErr error
+	for ev := range st.Events() {
+		if ev.Type == StreamEventError {
+			gotErr = ev.Err
+		}
+	}
+	if gotErr == nil {
+		t.Fatal("expected StreamEventError, got none")
+	}
+	var llmErr Error
+	if !errors.As(gotErr, &llmErr) {
+		t.Fatalf("expected llm.Error, got %T", gotErr)
+	}
+	if llmErr.BehaviorTag() != "openai" {
+		t.Fatalf("stream error BehaviorTag() = %q, want \"openai\"", llmErr.BehaviorTag())
+	}
+}
+
+func TestClient_NilNameToTag_BehaviorTagEmpty(t *testing.T) {
+	// With no nameToTag set, BehaviorTag() should be empty (nil map = identity, no tag set).
+	c := NewClient()
+	adapterErr := ErrorFromHTTPStatus("openai", 429, "rate limited", nil, nil)
+	adapter := &instanceAdapter{typeName: "openai", errToReturn: adapterErr}
+	c.providers["openai"] = adapter
+	c.defaultProvider = "openai"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := c.Complete(ctx, Request{Provider: "openai", Model: "m", Messages: []Message{User("hi")}})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var llmErr Error
+	if !errors.As(err, &llmErr) {
+		t.Fatalf("expected llm.Error, got %T", err)
+	}
+	// No nameToTag: BehaviorTag() should be "" (no explicit tag stamped).
+	if llmErr.BehaviorTag() != "" {
+		t.Fatalf("BehaviorTag() = %q, want empty when no nameToTag set", llmErr.BehaviorTag())
 	}
 }
 

@@ -264,6 +264,31 @@ func TestSelectProfile_NormalizesProviderCase(t *testing.T) {
 	}
 }
 
+// TestSelectProfile_GeminiIDIsGoogle verifies that both "google" and "gemini"
+// prefixes yield a profile whose ID() is "google" — the canonical provider key
+// after the id/adapter-name unification (PRI-1880).
+func TestSelectProfile_GeminiIDIsGoogle(t *testing.T) {
+	cases := []struct {
+		provider string
+	}{
+		{"google"},
+		{"gemini"},
+		{"GEMINI"},
+		{"Google"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.provider, func(t *testing.T) {
+			p, err := SelectProfile(tc.provider, "gemini-2.5-pro", "")
+			if err != nil {
+				t.Fatalf("SelectProfile(%q): %v", tc.provider, err)
+			}
+			if got := p.ID(); got != "google" {
+				t.Fatalf("profile ID = %q, want \"google\"", got)
+			}
+		})
+	}
+}
+
 func TestStringSliceFlag(t *testing.T) {
 	var f StringSliceFlag
 	if err := f.Set("a"); err != nil {

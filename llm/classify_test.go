@@ -125,6 +125,52 @@ func TestClassifyAbortErrorIsPermanent(t *testing.T) {
 	}
 }
 
+// --- BehaviorTag-based fallback tests (PRI-1880) ---
+
+// TestClassify_BehaviorTagOpenAI_Fallback verifies that an error from an
+// instance named "work" with behavior tag "openai" still classifies as
+// ErrorClassFallback when it carries the Responses-endpoint signal.
+// This is the core of PRI-1880 task 3: classify.go must key on BehaviorTag,
+// not Provider(), so renaming the instance doesn't break the fallback path.
+func TestClassify_BehaviorTagOpenAI_Fallback(t *testing.T) {
+	// Build a 404 from a "work" instance that has behavior tag "openai".
+	err := ErrorFromHTTPStatus("work", 404, "responses.create(stream) failed: model not found", nil, nil)
+	var bs behaviorTagSetter
+	if !errors.As(err, &bs) {
+		t.Fatalf("expected behaviorTagSetter, got %T", err)
+	}
+	bs.setBehaviorTag("openai")
+
+	if got := Classify(err); got != ErrorClassFallback {
+		t.Fatalf("Classify(work/tag=openai responses 404) = %v, want Fallback", got)
+	}
+}
+
+// TestClassify_ProviderNameOpenAI_NoTagFallback verifies the default identity
+// case: when BehaviorTag() is empty, isEndpointFallbackSignal should still
+// work if Provider()=="openai" (backwards compat / tag==name case).
+func TestClassify_ProviderNameOpenAI_NoTag_Fallback(t *testing.T) {
+	err := ErrorFromHTTPStatus("openai", 404, "responses.create(stream) failed: model not found", nil, nil)
+	// No behavior tag set — tag defaults to provider name via the lookup helper.
+	if got := Classify(err); got != ErrorClassFallback {
+		t.Fatalf("Classify(provider=openai, no tag, responses 404) = %v, want Fallback", got)
+	}
+}
+
+// TestClassify_NonOpenAI_BehaviorTag_NotFallback verifies that an instance
+// with tag "anthropic" does NOT produce ErrorClassFallback for a 404.
+func TestClassify_NonOpenAI_BehaviorTag_NotFallback(t *testing.T) {
+	err := ErrorFromHTTPStatus("work", 404, "responses.create failed", nil, nil)
+	var bs behaviorTagSetter
+	if !errors.As(err, &bs) {
+		t.Fatalf("expected behaviorTagSetter, got %T", err)
+	}
+	bs.setBehaviorTag("anthropic")
+	if got := Classify(err); got == ErrorClassFallback {
+		t.Fatalf("Classify(work/tag=anthropic 404) = Fallback, want Permanent")
+	}
+}
+
 func TestClassifyStringerHasName(t *testing.T) {
 	// ErrorClass should stringify legibly for logs.
 	got := fmt.Sprintf("%s/%s/%s", ErrorClassRetryable, ErrorClassPermanent, ErrorClassFallback)

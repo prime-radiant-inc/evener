@@ -74,9 +74,9 @@ func TestLoadModelCatalogFromLiteLLMJSON_GetListLatest(t *testing.T) {
 	if got, want := len(opens), 2; got != want {
 		t.Fatalf("openai models: got %d want %d", got, want)
 	}
-	gems := c.ListModels("gemini") // alias => google
+	gems := c.ListModels("google") // catalog stores gemini models under "google"
 	if got, want := len(gems), 1; got != want {
-		t.Fatalf("gemini/google models: got %d want %d", got, want)
+		t.Fatalf("google models: got %d want %d", got, want)
 	}
 	if gems[0].Provider != "google" {
 		t.Fatalf("gemini provider normalized: got %q want %q", gems[0].Provider, "google")
@@ -93,6 +93,43 @@ func TestLoadModelCatalogFromLiteLLMJSON_GetListLatest(t *testing.T) {
 	latestReasoning := c.GetLatestModel("google", "reasoning")
 	if latestReasoning != nil {
 		t.Fatalf("expected no google reasoning model in sample catalog; got %+v", latestReasoning)
+	}
+}
+
+// TestModelCatalog_GeminiStoredUnderGoogle verifies that after removing the
+// gemini→google lookup alias in ListModels, Gemini models loaded from the
+// litellm catalog (where litellm_provider is "gemini") are stored under the
+// "google" provider key and are retrievable via ListModels("google") (PRI-1880).
+// The alias ListModels("gemini") is removed; callers must use "google".
+func TestModelCatalog_GeminiStoredUnderGoogle(t *testing.T) {
+	body := `{
+  "gemini-2.5-pro": {
+    "litellm_provider":"gemini","mode":"chat",
+    "max_input_tokens":1000000,"max_output_tokens":8192,
+    "supports_function_calling":true,"supports_vision":true
+  }
+}`
+	cat, err := parseLiteLLMCatalog([]byte(body))
+	if err != nil {
+		t.Fatalf("parseLiteLLMCatalog: %v", err)
+	}
+	// The model must be stored under "google" (normalizeCatalogProvider maps "gemini"→"google").
+	mi := cat.GetModelInfo("gemini-2.5-pro")
+	if mi == nil {
+		t.Fatal("gemini-2.5-pro not found in catalog")
+	}
+	if mi.Provider != "google" {
+		t.Fatalf("Provider = %q, want \"google\"", mi.Provider)
+	}
+	// ListModels("google") must return it.
+	googleModels := cat.ListModels("google")
+	if len(googleModels) != 1 {
+		t.Fatalf("ListModels(\"google\") returned %d models, want 1", len(googleModels))
+	}
+	// ListModels("gemini") must NOT return it (alias removed).
+	geminiModels := cat.ListModels("gemini")
+	if len(geminiModels) != 0 {
+		t.Fatalf("ListModels(\"gemini\") returned %d models, want 0 (alias removed)", len(geminiModels))
 	}
 }
 

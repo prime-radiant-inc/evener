@@ -153,22 +153,8 @@ func isHubFailure(message string) bool {
 }
 
 func isProviderFailure(message string) bool {
-	providers := []string{
-		"openai",
-		"anthropic",
-		"google",
-		"gemini",
-		"openrouter",
-		"ollama",
-		"kimi",
-		"glm",
-		"minimax",
-	}
-	for _, provider := range providers {
-		if strings.Contains(message, provider+" error") {
-			return true
-		}
-	}
+	// Structured llm.Errors are caught earlier by FromError; this function
+	// handles keyword fallbacks for plain-string classification.
 	return strings.Contains(message, "provider unavailable") ||
 		strings.Contains(message, "api key") ||
 		strings.Contains(message, "rate limit") ||

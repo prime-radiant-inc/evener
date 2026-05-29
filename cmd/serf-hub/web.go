@@ -2892,7 +2892,11 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		if le, ok := s.cfg.Roster.Find(id); ok && !forceResume {
 			return le, nil
 		}
-		entry, err := s.cfg.Spawner.Resume(r.Context(), s.resumeRequestFor(id))
+		resumeReq, err := s.resumeRequestFor(id)
+		if err != nil {
+			return LiveEntry{}, fmt.Errorf("resume: %w", err)
+		}
+		entry, err := s.cfg.Spawner.Resume(r.Context(), resumeReq)
 		if err != nil {
 			return LiveEntry{}, fmt.Errorf("resume: %w", err)
 		}
@@ -2960,7 +2964,7 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (s *WebServer) resumeRequestFor(id string) ResumeRequest {
+func (s *WebServer) resumeRequestFor(id string) (ResumeRequest, error) {
 	return resumeRequestForConfig(s.cfg, id)
 }
 
