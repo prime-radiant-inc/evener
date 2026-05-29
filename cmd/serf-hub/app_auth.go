@@ -234,13 +234,31 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 		status, _ := c.Status(appwire.AuthStatusParams{Provider: provider})
 		return appwire.AuthLogoutResponse{Removed: true, Status: status}, nil
 	}
-	removed, err := authopenai.DeleteAuth(c.stateDir)
-	if err != nil {
-		return appwire.AuthLogoutResponse{}, err
+
+	// OpenAI: clear the effective layer only. An OAuth record (present or
+	// corrupt) shadows the stored file key, so remove it first; otherwise clear
+	// the file key. The env layer cannot be cleared.
+	_, loadErr := authopenai.LoadAuth(c.stateDir)
+	hasRecord := loadErr == nil || errors.Is(loadErr, authopenai.ErrAuthCorrupt)
+	removed := false
+	if hasRecord {
+		r, delErr := authopenai.DeleteAuth(c.stateDir)
+		if delErr != nil {
+			return appwire.AuthLogoutResponse{}, delErr
+		}
+		removed = r
+	} else {
+		hasFile, _ := c.creds.Layers("openai")
+		if hasFile {
+			if clrErr := c.creds.Clear("openai"); clrErr != nil {
+				return appwire.AuthLogoutResponse{}, clrErr
+			}
+			removed = true
+		}
 	}
-	status, err := c.openAIStatus()
-	if err != nil {
-		return appwire.AuthLogoutResponse{}, err
+	status, statusErr := c.openAIStatus()
+	if statusErr != nil {
+		return appwire.AuthLogoutResponse{}, statusErr
 	}
 	return appwire.AuthLogoutResponse{Removed: removed, Status: status}, nil
 }

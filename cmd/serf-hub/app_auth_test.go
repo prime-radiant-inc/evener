@@ -490,3 +490,81 @@ func TestAuth_OpenAI_ApiKeySet_PersistsAndReportsFile(t *testing.T) {
 		t.Errorf("after ApiKeySet: v=%q src=%q, want sk-openai-XXX/file", v, src)
 	}
 }
+
+func TestAuth_OpenAI_Logout_ClearsStoredFileKey(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	c := newHubAuthControllerWithStore(dir, store)
+	c.stateDir = t.TempDir() // no OAuth record
+	if err := store.Set("openai", "sk-test-123"); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
+	resp, err := c.Logout(appwire.AuthLogoutParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("Logout: %v", err)
+	}
+	if !resp.Removed || resp.Status.ActiveSource != authopenai.AuthSourceSignedOut {
+		t.Fatalf("resp=%+v, want removed + signed-out", resp)
+	}
+	if v, _ := store.Get("openai"); v != "" {
+		t.Errorf("file key still present: %q", v)
+	}
+}
+
+func TestAuth_OpenAI_Logout_OAuthRevealsStoredFileKey(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	c := newHubAuthControllerWithStore(dir, store)
+	c.stateDir = t.TempDir()
+	if err := store.Set("openai", "sk-test-123"); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
+	if err := authopenai.SaveAuth(c.stateDir, authopenai.AuthRecord{
+		Version: 1, Provider: "openai", Source: authopenai.AuthSourceOAuth,
+		ObtainedAt: time.Now().Add(-time.Hour), TokenType: "Bearer",
+		AccessToken: "acc", RefreshToken: "ref",
+		Expiry: time.Now().Add(time.Hour), Email: "o@example.com",
+	}); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	resp, err := c.Logout(appwire.AuthLogoutParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("Logout: %v", err)
+	}
+	if !resp.Removed || resp.Status.ActiveSource != string(credentials.SourceFile) {
+		t.Fatalf("resp=%+v, want removed OAuth revealing file", resp)
+	}
+	if resp.Status.HasStoredOAuth {
+		t.Errorf("OAuth record still present after logout")
+	}
+}
+
+func TestAuth_OpenAI_Logout_CorruptOAuthDeletedRevealsFile(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	store, _ := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
+	c := newHubAuthControllerWithStore(dir, store)
+	c.stateDir = t.TempDir()
+	if err := store.Set("openai", "sk-test-123"); err != nil {
+		t.Fatalf("store.Set: %v", err)
+	}
+	authPath := authopenai.AuthFilePath(c.stateDir)
+	if err := os.MkdirAll(filepath.Dir(authPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(authPath, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := c.Logout(appwire.AuthLogoutParams{Provider: "openai"})
+	if err != nil {
+		t.Fatalf("Logout: %v", err)
+	}
+	if !resp.Removed || resp.Status.ActiveSource != string(credentials.SourceFile) {
+		t.Fatalf("resp=%+v, want corrupt oauth removed revealing file", resp)
+	}
+	if _, statErr := os.Stat(authPath); !os.IsNotExist(statErr) {
+		t.Errorf("corrupt openai.json still present after logout: %v", statErr)
+	}
+}
