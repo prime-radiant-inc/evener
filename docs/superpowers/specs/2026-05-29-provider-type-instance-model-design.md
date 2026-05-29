@@ -1,7 +1,10 @@
 # Provider Type/Instance Model
 
 Date: 2026-05-29
-Status: v7 — refinements folded after the 6th review; cleared to build Phase 1a
+Status: v7 — **Phase 1a IMPLEMENTED & merged to main** (behavior-tag separation +
+switching-to-session, behavior-preserving); Phase 1b & 2 pending. See the
+evergreen docs ([`docs/llm-providers.md`](../../llm-providers.md)) for the
+as-built architecture; this spec remains the design record for 1b/2.
 Ticket: PRI-1880
 
 > **Revision history.**

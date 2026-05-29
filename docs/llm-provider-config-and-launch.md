@@ -10,10 +10,14 @@ Companion docs:
   `provider/model` string is routed to an adapter, profiles, wire protocols.
 - [`ollama.md`](ollama.md) — the Ollama adapter and its env-var discovery.
 
-The one invariant to carry over from `llm-providers.md`: a provider is a single
-string that is simultaneously the routing key, `profile.ID()`, `adapter.Name()`,
-and the behavior selector. This doc is about *where the credentials for that
-string live* and *which process reads them*.
+The model to carry over from `llm-providers.md` (post-Phase-1a): a provider has
+**two identities** — the instance **name** (`req.Provider`/`profile.ID()`/the
+adapter registration name) routes and identifies, while the behavior **tag**
+(`profile.BehaviorTag()`) drives provider-conditional behavior. In Phase 1a they
+still coincide at runtime (one instance per type), so credential lookup below is
+keyed by the type name; Phase 1b adds named/custom instances (and a
+`providers.toml`). This doc is about *where the credentials live* and *which
+process reads them*.
 
 ---
 
@@ -341,26 +345,24 @@ registered.
 
 ## Resume & persistence
 
-- Session metadata persists `ProfileID`, which today equals `profile.ID()` —
-  i.e. the provider/type name (see the invariant in
-  [`llm-providers.md`](llm-providers.md)). Written by `agent/snapshot.go` and
+- Session metadata persists `ProfileID`, which equals `profile.ID()` — i.e. the
+  instance name (the type name in Phase 1a). Written by `agent/snapshot.go` and
   `agent/transcript.go`.
-- On **hub resume**, `resumeRequestForConfig` (`cmd/serf-hub/app_rpc.go:1717`)
-  reads the past index entry and maps the stored `ProfileID` back to a provider
-  via `resumeProviderFromProfileID` (`app_rpc.go:1735`), a hardcoded whitelist:
-  `openai, anthropic, google, gemini, minimax, openrouter-anthropic, kimi, glm,
-  openrouter, ollama` (`app_rpc.go:1737`). The resolved provider + model then
-  drive the spawn (`app_rpc.go:1724-1729`).
+- On **hub resume**, `resumeRequestForConfig` (`cmd/serf-hub/app_rpc.go`) reads
+  the past index entry and **passes the stored `ProfileID` through as the
+  provider** (Phase 1a, PRI-1880); it errors on an empty `ProfileID` rather than
+  silently dropping it. The old hardcoded whitelist (which omitted
+  `openai-compatible` and would silently drop unknown names) was **removed** —
+  downstream `serf`'s `SelectProfile` validates/canonicalizes (so a legacy
+  `ProfileID == "gemini"` still resolves to the `google` adapter). The resolved
+  provider + model then drive the spawn.
 - On **CLI resume**, the stored `meta.ProfileID` is fed into
-  `cmdutil.ResolveModelRef` → `SelectProfile` (`cmd/serf/serve.go:150`,
-  `cmd/serf/run.go:122`).
+  `cmdutil.ResolveModelRef` → `SelectProfile` (`cmd/serf/serve.go`,
+  `cmd/serf/run.go`).
 
-> Discrepancy worth knowing: the resume whitelist (`app_rpc.go:1737`) is missing
-> `openai-compatible`, even though it is a valid provider everywhere else
-> (credentials store, launchconfig, the credential pre-check). A session run
-> against `openai-compatible` therefore won't have its provider recovered by the
-> hub's resume path. (Confirmed against the current source — flagging, not
-> fixing.)
+> Phase 1b note: once custom instances exist, resume's pass-through will rely on
+> the instance still being present in `providers.toml`; a vanished instance
+> should surface a clear re-selection error.
 
 ---
 
@@ -399,6 +401,13 @@ code strips a **hardcoded** provider-prefix allowlist before showing the model:
 > Minor discrepancy: the two allowlists differ — the web one omits
 > `openai-compatible/`, so an `openai-compatible/...` model keeps its prefix in
 > the web UI but not in the TUI.
+>
+> These display allowlists, and the picker/launch **behavior** filters that key
+> on a literal provider name (`launch_check.go` openrouter/openrouter-anthropic,
+> `web.go`, `app_rpc.go launchProviderAllowsUnreportedModels`), are **deferred to
+> Phase 1b** — they are no-ops while instance name == type, and become meaningful
+> (and testable) only once custom instances exist. 1b re-keys them via
+> `providerconfig.NameToTag`.
 
 The web picker classifies a stored model as valid / stale / unknown by comparing
 against the live enumerated list (`spawn.js:119-139`); providers that can't be

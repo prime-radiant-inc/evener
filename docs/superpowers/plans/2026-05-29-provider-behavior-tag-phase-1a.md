@@ -1,5 +1,14 @@
 # Provider Behavior-Tag Separation (Phase 1a) Implementation Plan
 
+> **STATUS: COMPLETED & merged to main (2026-05-29).** All tasks landed via
+> subagent-driven TDD with two-stage review; the renamed-instance integration
+> backstop + a full-tree grep sweep found zero residual bugs; full suite green.
+> Execution notes: Task 2 (failing-backstop-first) was folded into Task 10 to
+> keep the suite green per task; the gemini id/alias coupling was pulled out as
+> Task 9.0; the picker/launch behavior filters were deferred to 1b (no-ops under
+> instance==type). The as-built architecture is documented in
+> [`docs/llm-providers.md`](../../llm-providers.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Separate the provider *behavior* (a `behaviorTag`) from the provider/instance *name* (`profile.ID()`/`req.Provider`), and move provider *switching* out of `WithModel` up to the session — as a **behavior-preserving refactor** (every default instance is still named after its type, so `instanceName == type == behaviorTag` and nothing changes observably). This is Phase 1a of the type/instance model; it introduces **no** `providers.toml`, no custom instances, no UI.
