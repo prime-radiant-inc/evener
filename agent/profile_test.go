@@ -2270,3 +2270,48 @@ func stringSliceEqual(a, b []string) bool {
 	}
 	return true
 }
+
+// TestProviderProfile_BehaviorTag verifies that each constructor stamps the
+// correct behavior tag on the profile.
+func TestProviderProfile_BehaviorTag(t *testing.T) {
+	cases := []struct {
+		name    string
+		profile ProviderProfile
+		want    string
+	}{
+		{"openai", NewOpenAIProfile("gpt-5.2"), "openai"},
+		{"anthropic", NewAnthropicProfile("claude-test"), "anthropic"},
+		{"gemini", NewGeminiProfile("gemini-test"), "google"},
+		{"minimax", NewMiniMaxProfile("MiniMax-M2.7"), "minimax"},
+		{"openrouter-anthropic", NewOpenRouterAnthropicProfile("anthropic/claude-test"), "openrouter-anthropic"},
+		{"openrouter (compat)", NewOpenAICompatProfile("openrouter", "openai/gpt-test", 0), "openrouter"},
+		{"kimi (compat)", NewOpenAICompatProfile("kimi", "kimi-test", 0), "kimi"},
+		{"glm (compat)", NewOpenAICompatProfile("glm", "glm-test", 0), "glm"},
+		{"ollama (compat)", NewOpenAICompatProfile("ollama", "llama3", 0), "ollama"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.profile.BehaviorTag()
+			if got != tc.want {
+				t.Fatalf("BehaviorTag() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWithProviderID verifies that WithProviderID overrides the id but preserves
+// the behavior tag and all other profile state.
+func TestWithProviderID(t *testing.T) {
+	orig := NewOpenAIProfile("gpt-5.2")
+	renamed := WithProviderID(orig, "work")
+	if renamed.ID() != "work" {
+		t.Fatalf("ID() = %q, want %q", renamed.ID(), "work")
+	}
+	if renamed.BehaviorTag() != "openai" {
+		t.Fatalf("BehaviorTag() = %q, want %q", renamed.BehaviorTag(), "openai")
+	}
+	// Original must be unchanged.
+	if orig.ID() != "openai" {
+		t.Fatalf("original ID mutated: got %q", orig.ID())
+	}
+}

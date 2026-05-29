@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
 )
 
@@ -39,6 +40,12 @@ type EnvironmentInfo struct {
 
 type ProviderProfile interface {
 	ID() string
+	// BehaviorTag returns the stable behavior identity for this profile.
+	// It equals the provider type for all providers except openai with the
+	// chat-completions style, which returns "openai-compatible". The tag
+	// is preserved across WithModel and WithProviderID calls so code that
+	// keys on provider-specific behavior can use the tag instead of the id.
+	BehaviorTag() string
 	Model() string
 	ToolDefinitions() []llm.ToolDefinition
 	SupportsParallelToolCalls() bool
@@ -67,6 +74,7 @@ type ProviderProfile interface {
 
 type baseProfile struct {
 	id              string
+	behaviorTag     string
 	model           string
 	parallel        bool
 	contextWindow   int
@@ -99,6 +107,7 @@ const (
 
 type profileSpec struct {
 	id              string
+	behaviorTag     string
 	model           string
 	parallel        bool
 	contextWindow   int
@@ -271,6 +280,7 @@ func buildBaseProfile(spec profileSpec) baseProfile {
 
 	return baseProfile{
 		id:              spec.id,
+		behaviorTag:     spec.behaviorTag,
 		model:           model,
 		parallel:        spec.parallel,
 		contextWindow:   spec.contextWindow,
@@ -288,8 +298,9 @@ func buildBaseProfile(spec profileSpec) baseProfile {
 	}
 }
 
-func (p *baseProfile) ID() string    { return p.id }
-func (p *baseProfile) Model() string { return p.model }
+func (p *baseProfile) ID() string          { return p.id }
+func (p *baseProfile) BehaviorTag() string { return p.behaviorTag }
+func (p *baseProfile) Model() string       { return p.model }
 func (p *baseProfile) ToolDefinitions() []llm.ToolDefinition {
 	defs := append([]llm.ToolDefinition{}, p.toolDefs...)
 	for i, d := range defs {
@@ -577,6 +588,7 @@ func (p *baseProfile) WithModel(model string) ProviderProfile {
 func NewOpenAIProfile(model string) ProviderProfile {
 	bp := buildBaseProfile(profileSpec{
 		id:              "openai",
+		behaviorTag:     providerconfig.BehaviorTag("openai", string(providerconfig.StyleResponses)),
 		model:           model,
 		parallel:        true,
 		contextWindow:   400_000,
@@ -676,6 +688,7 @@ func NewAnthropicProfile(model string) ProviderProfile {
 	}
 	bp := buildBaseProfile(profileSpec{
 		id:              "anthropic",
+		behaviorTag:     providerconfig.BehaviorTag("anthropic", ""),
 		model:           model,
 		parallel:        true,
 		contextWindow:   ctxWindow,
@@ -697,6 +710,7 @@ func NewAnthropicProfile(model string) ProviderProfile {
 func NewGeminiProfile(model string) ProviderProfile {
 	bp := buildBaseProfile(profileSpec{
 		id:              "gemini",
+		behaviorTag:     providerconfig.BehaviorTag("google", ""),
 		model:           model,
 		parallel:        true,
 		contextWindow:   1_000_000,
@@ -730,6 +744,7 @@ func NewGeminiProfile(model string) ProviderProfile {
 func NewMiniMaxProfile(model string) ProviderProfile {
 	bp := buildBaseProfile(profileSpec{
 		id:              "minimax",
+		behaviorTag:     providerconfig.BehaviorTag("minimax", ""),
 		model:           model,
 		parallel:        true,
 		contextWindow:   204_800,
@@ -891,6 +906,7 @@ func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 	}
 	bp := buildBaseProfile(profileSpec{
 		id:              "openrouter-anthropic",
+		behaviorTag:     providerconfig.BehaviorTag("openrouter-anthropic", ""),
 		model:           model,
 		parallel:        true,
 		contextWindow:   contextWindow,
@@ -1013,6 +1029,7 @@ func NewOpenAICompatProfile(id, model string, contextWindow int) ProviderProfile
 	}
 	bp := buildBaseProfile(profileSpec{
 		id:              id,
+		behaviorTag:     providerconfig.BehaviorTag(id, ""),
 		model:           model,
 		parallel:        true,
 		contextWindow:   contextWindow,

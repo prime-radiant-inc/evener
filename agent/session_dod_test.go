@@ -814,6 +814,7 @@ type tinyProfile struct {
 }
 
 func (p tinyProfile) ID() string                            { return p.id }
+func (p tinyProfile) BehaviorTag() string                   { return p.id }
 func (p tinyProfile) Model() string                         { return p.mod }
 func (p tinyProfile) ToolDefinitions() []llm.ToolDefinition { return nil }
 func (p tinyProfile) SupportsParallelToolCalls() bool       { return false }
