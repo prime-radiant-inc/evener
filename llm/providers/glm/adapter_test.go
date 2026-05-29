@@ -52,3 +52,24 @@ func TestAdapter_DefaultBaseURL(t *testing.T) {
 		t.Fatalf("defaultBaseURL: %q", defaultBaseURL)
 	}
 }
+
+func TestNewForInstance_Name(t *testing.T) {
+	a := NewForInstance(InstanceParams{Name: "gc", APIKey: "k"})
+	if a.Name() != "gc" {
+		t.Fatalf("Name() = %q, want gc", a.Name())
+	}
+}
+
+func TestNewForInstance_DefaultBaseURL(t *testing.T) {
+	a := NewForInstance(InstanceParams{Name: "gc", APIKey: "k"})
+	if a.inner.BaseURL != defaultBaseURL {
+		t.Fatalf("inner.BaseURL = %q, want %q", a.inner.BaseURL, defaultBaseURL)
+	}
+}
+
+func TestNewForInstance_DefaultQuirks(t *testing.T) {
+	a := NewForInstance(InstanceParams{Name: "gc", APIKey: "k"})
+	if !a.inner.Quirks.StripEmptyContent {
+		t.Fatal("expected glm quirks (StripEmptyContent) to be applied")
+	}
+}

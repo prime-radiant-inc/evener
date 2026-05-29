@@ -35,10 +35,16 @@ const defaultBaseURL = "http://localhost:11434/v1"
 const providerName = "ollama"
 
 type adapter struct {
+	name  string
 	inner *openaicompat.Adapter
 }
 
-func (a *adapter) Name() string { return providerName }
+func (a *adapter) Name() string {
+	if a.name != "" {
+		return a.name
+	}
+	return providerName
+}
 
 // NonDefaultEligible marks the ollama adapter as ineligible for the
 // client's auto-selected default provider. This adapter is always
@@ -182,6 +188,30 @@ func normalizeHost(h string) string {
 	return "http://" + h + "/v1"
 }
 
+// InstanceParams holds the configuration for a single ollama adapter instance.
+type InstanceParams struct {
+	Name    string
+	BaseURL string
+	APIKey  string
+}
+
+// NewForInstance constructs an ollama adapter from explicit parameters.
+// Empty BaseURL falls back to the ollama default (http://localhost:11434/v1).
+func NewForInstance(params InstanceParams) *adapter {
+	base := strings.TrimSpace(params.BaseURL)
+	if base == "" {
+		base = defaultBaseURL
+	}
+	return &adapter{
+		name: params.Name,
+		inner: openaicompat.NewForInstance(openaicompat.OpenAICompatInstanceParams{
+			Name:    params.Name,
+			BaseURL: base,
+			APIKey:  params.APIKey,
+		}),
+	}
+}
+
 func init() {
 	llm.RegisterEnvAdapterFactory(func(_ llm.EnvConfig) (llm.ProviderAdapter, bool, error) {
 		baseEnv := strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL"))
@@ -190,10 +220,12 @@ func init() {
 		// Always register: ollama implements NonDefaultEligible, so the
 		// "silent default provider" concern is handled at the client
 		// level. Explicit --provider ollama works zero-config.
-		return &adapter{inner: &openaicompat.Adapter{
-			APIKey:  keyEnv,
-			BaseURL: resolveBaseURL(baseEnv, hostEnv),
-			Client:  &http.Client{Timeout: 0},
-		}}, true, nil
+		return &adapter{
+			inner: &openaicompat.Adapter{
+				APIKey:  keyEnv,
+				BaseURL: resolveBaseURL(baseEnv, hostEnv),
+				Client:  &http.Client{Timeout: 0},
+			},
+		}, true, nil
 	})
 }

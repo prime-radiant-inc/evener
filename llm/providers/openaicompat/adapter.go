@@ -78,11 +78,31 @@ func QuirksPreset(name string) ProviderQuirks {
 }
 
 type Adapter struct {
+	name           string
 	APIKey         string
 	BaseURL        string
 	Client         *http.Client
 	DefaultHeaders map[string]string
 	Quirks         ProviderQuirks
+}
+
+// OpenAICompatInstanceParams holds the configuration for a single openai-compatible adapter instance.
+type OpenAICompatInstanceParams struct {
+	Name    string
+	BaseURL string
+	APIKey  string
+	Quirks  ProviderQuirks
+}
+
+// NewForInstance constructs an Adapter from explicit parameters.
+func NewForInstance(params OpenAICompatInstanceParams) *Adapter {
+	return &Adapter{
+		name:    params.Name,
+		APIKey:  params.APIKey,
+		BaseURL: strings.TrimRight(params.BaseURL, "/"),
+		Client:  &http.Client{Timeout: 0},
+		Quirks:  params.Quirks,
+	}
 }
 
 func init() {
@@ -111,15 +131,20 @@ func NewFromEnv() (*Adapter, error) {
 		quirks = QuirksPreset(preset)
 	}
 
-	return &Adapter{
+	return NewForInstance(OpenAICompatInstanceParams{
+		Name:    "openai-compatible",
+		BaseURL: base,
 		APIKey:  key,
-		BaseURL: strings.TrimRight(base, "/"),
-		Client:  &http.Client{Timeout: 0},
 		Quirks:  quirks,
-	}, nil
+	}), nil
 }
 
-func (a *Adapter) Name() string { return "openai-compatible" }
+func (a *Adapter) Name() string {
+	if a.name != "" {
+		return a.name
+	}
+	return "openai-compatible"
+}
 
 // ListModels fetches available models from the /v1/models endpoint.
 func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {

@@ -27,10 +27,16 @@ import (
 const defaultBaseURL = "https://openrouter.ai/api"
 
 type adapter struct {
+	name  string
 	inner *anthropic.Adapter
 }
 
-func (a *adapter) Name() string { return "openrouter-anthropic" }
+func (a *adapter) Name() string {
+	if a.name != "" {
+		return a.name
+	}
+	return "openrouter-anthropic"
+}
 
 func (a *adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	return a.inner.Complete(ctx, req)
@@ -44,6 +50,30 @@ func (a *adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 // OpenRouter's Anthropic-compatible /models endpoint.
 func (a *adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 	return a.inner.ListModels(ctx)
+}
+
+// InstanceParams holds the configuration for a single openrouter-anthropic adapter instance.
+type InstanceParams struct {
+	Name    string
+	BaseURL string
+	APIKey  string
+}
+
+// NewForInstance constructs an openrouter-anthropic adapter from explicit parameters.
+// Empty BaseURL falls back to the openrouter-anthropic default.
+func NewForInstance(params InstanceParams) *adapter {
+	base := strings.TrimSpace(params.BaseURL)
+	if base == "" {
+		base = defaultBaseURL
+	}
+	return &adapter{
+		name: params.Name,
+		inner: &anthropic.Adapter{
+			APIKey:  params.APIKey,
+			BaseURL: strings.TrimRight(base, "/"),
+			Client:  &http.Client{Timeout: 0},
+		},
+	}
 }
 
 // newTestAdapter constructs an adapter for testing with a custom base URL and client.
@@ -62,13 +92,10 @@ func init() {
 			return nil, false, nil
 		}
 		base := strings.TrimSpace(os.Getenv("OPENROUTER_BASE_URL"))
-		if base == "" {
-			base = defaultBaseURL
-		}
-		return &adapter{inner: &anthropic.Adapter{
+		return NewForInstance(InstanceParams{
+			Name:    "openrouter-anthropic",
+			BaseURL: base,
 			APIKey:  key,
-			BaseURL: strings.TrimRight(base, "/"),
-			Client:  &http.Client{Timeout: 0},
-		}}, true, nil
+		}), true, nil
 	})
 }

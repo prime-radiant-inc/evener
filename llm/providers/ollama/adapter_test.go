@@ -187,6 +187,27 @@ func TestDefaultBaseURL(t *testing.T) {
 	}
 }
 
+func TestNewForInstance_Name(t *testing.T) {
+	a := NewForInstance(InstanceParams{Name: "ol"})
+	if a.Name() != "ol" {
+		t.Fatalf("Name() = %q, want ol", a.Name())
+	}
+}
+
+func TestNewForInstance_DefaultBaseURL(t *testing.T) {
+	a := NewForInstance(InstanceParams{Name: "ol"})
+	if a.inner.BaseURL != defaultBaseURL {
+		t.Fatalf("inner.BaseURL = %q, want %q", a.inner.BaseURL, defaultBaseURL)
+	}
+}
+
+func TestNewForInstance_CustomBaseURL(t *testing.T) {
+	a := NewForInstance(InstanceParams{Name: "ol", BaseURL: "http://custom/v1"})
+	if a.inner.BaseURL != "http://custom/v1" {
+		t.Fatalf("inner.BaseURL = %q, want http://custom/v1", a.inner.BaseURL)
+	}
+}
+
 // TestAdapter_Stream_DelegatesAndStampsProvider verifies Stream() forwards to
 // the embedded openaicompat adapter, returns parseable text events, and
 // rewrites Response.Provider on the FINISH event to "ollama".

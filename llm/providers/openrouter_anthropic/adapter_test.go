@@ -69,3 +69,17 @@ func TestAdapter_DefaultBaseURL(t *testing.T) {
 		t.Fatalf("defaultBaseURL: %q, want https://openrouter.ai/api", defaultBaseURL)
 	}
 }
+
+func TestNewForInstance_Name(t *testing.T) {
+	a := NewForInstance(InstanceParams{Name: "ora", APIKey: "k"})
+	if a.Name() != "ora" {
+		t.Fatalf("Name() = %q, want ora", a.Name())
+	}
+}
+
+func TestNewForInstance_DefaultBaseURL(t *testing.T) {
+	a := NewForInstance(InstanceParams{Name: "ora", APIKey: "k"})
+	if a.inner.BaseURL != defaultBaseURL {
+		t.Fatalf("inner.BaseURL = %q, want %q", a.inner.BaseURL, defaultBaseURL)
+	}
+}

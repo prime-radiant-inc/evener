@@ -2251,3 +2251,41 @@ func TestBuildRequestBody_OtherEffortLevels_NoTranslation(t *testing.T) {
 		})
 	}
 }
+
+func TestNewForInstance_Name(t *testing.T) {
+	a := NewForInstance(OpenAICompatInstanceParams{
+		Name:    "work",
+		BaseURL: "http://x",
+		APIKey:  "k",
+		Quirks:  QuirksPreset("kimi"),
+	})
+	if a.Name() != "work" {
+		t.Fatalf("Name() = %q, want work", a.Name())
+	}
+}
+
+func TestNewForInstance_QuirksApplied(t *testing.T) {
+	a := NewForInstance(OpenAICompatInstanceParams{
+		Name:    "work",
+		BaseURL: "http://x",
+		APIKey:  "k",
+		Quirks:  QuirksPreset("kimi"),
+	})
+	if !a.Quirks.LockTemperature {
+		t.Fatal("expected kimi quirks (LockTemperature) to be applied")
+	}
+}
+
+func TestNewForInstance_EnvPathPreservesName(t *testing.T) {
+	// The env factory still names the adapter "openai-compatible".
+	t.Setenv("OPENAI_COMPATIBLE_BASE_URL", "http://env-test")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "envkey")
+	t.Setenv("OPENAI_COMPATIBLE_PROVIDER_QUIRKS", "")
+	a, err := NewFromEnv()
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	if a.Name() != "openai-compatible" {
+		t.Fatalf("Name() = %q, want openai-compatible", a.Name())
+	}
+}

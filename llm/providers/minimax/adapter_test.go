@@ -110,3 +110,17 @@ func TestAdapter_DefaultBaseURL(t *testing.T) {
 		t.Fatalf("defaultBaseURL: %q", defaultBaseURL)
 	}
 }
+
+func TestNewForInstance_Name(t *testing.T) {
+	a := NewForInstance(InstanceParams{Name: "mm", APIKey: "k"})
+	if a.Name() != "mm" {
+		t.Fatalf("Name() = %q, want mm", a.Name())
+	}
+}
+
+func TestNewForInstance_DefaultBaseURL(t *testing.T) {
+	a := NewForInstance(InstanceParams{Name: "mm", APIKey: "k"})
+	if a.inner.BaseURL != defaultBaseURL {
+		t.Fatalf("inner.BaseURL = %q, want %q", a.inner.BaseURL, defaultBaseURL)
+	}
+}

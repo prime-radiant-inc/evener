@@ -16,10 +16,16 @@ import (
 const defaultBaseURL = "https://api.minimax.io/anthropic"
 
 type adapter struct {
+	name  string
 	inner *anthropic.Adapter
 }
 
-func (a *adapter) Name() string { return "minimax" }
+func (a *adapter) Name() string {
+	if a.name != "" {
+		return a.name
+	}
+	return "minimax"
+}
 
 func (a *adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	return a.inner.Complete(ctx, req)
@@ -27,6 +33,30 @@ func (a *adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 
 func (a *adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	return a.inner.Stream(ctx, req)
+}
+
+// InstanceParams holds the configuration for a single minimax adapter instance.
+type InstanceParams struct {
+	Name    string
+	BaseURL string
+	APIKey  string
+}
+
+// NewForInstance constructs a minimax adapter from explicit parameters.
+// Empty BaseURL falls back to the minimax default.
+func NewForInstance(params InstanceParams) *adapter {
+	base := strings.TrimSpace(params.BaseURL)
+	if base == "" {
+		base = defaultBaseURL
+	}
+	return &adapter{
+		name: params.Name,
+		inner: &anthropic.Adapter{
+			APIKey:  params.APIKey,
+			BaseURL: strings.TrimRight(base, "/"),
+			Client:  &http.Client{Timeout: 0},
+		},
+	}
 }
 
 // newTestAdapter constructs an adapter for testing with a custom base URL and client.
@@ -45,13 +75,10 @@ func init() {
 			return nil, false, nil
 		}
 		base := strings.TrimSpace(os.Getenv("MINIMAX_BASE_URL"))
-		if base == "" {
-			base = defaultBaseURL
-		}
-		return &adapter{inner: &anthropic.Adapter{
+		return NewForInstance(InstanceParams{
+			Name:    "minimax",
+			BaseURL: base,
 			APIKey:  key,
-			BaseURL: strings.TrimRight(base, "/"),
-			Client:  &http.Client{Timeout: 0},
-		}}, true, nil
+		}), true, nil
 	})
 }
