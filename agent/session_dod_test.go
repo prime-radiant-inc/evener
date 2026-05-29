@@ -1913,8 +1913,10 @@ func TestSession_WaitAgent_FailedSubagentReturnsResult(t *testing.T) {
 	}
 	c.Register(ad)
 
+	policy := llm.RetryPolicy{MaxRetries: 0}
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 1,
+		LLMRetryPolicy:   &policy,
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -1954,6 +1956,9 @@ func TestSession_WaitAgent_FailedSubagentReturnsResult(t *testing.T) {
 	if result.Status != SubAgentFailed {
 		t.Fatalf("expected status=%q, got %q", SubAgentFailed, result.Status)
 	}
+	if !strings.Contains(result.Output, "simulated child failure") {
+		t.Fatalf("expected failed result output to include child error, got %q", result.Output)
+	}
 }
 
 func TestSession_SpawnAgent_BlockingFailureReturnsResult(t *testing.T) {
@@ -1970,8 +1975,10 @@ func TestSession_SpawnAgent_BlockingFailureReturnsResult(t *testing.T) {
 	}
 	c.Register(ad)
 
+	policy := llm.RetryPolicy{MaxRetries: 0}
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 1,
+		LLMRetryPolicy:   &policy,
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -1996,6 +2003,101 @@ func TestSession_SpawnAgent_BlockingFailureReturnsResult(t *testing.T) {
 	}
 	if result.Status != SubAgentFailed {
 		t.Fatalf("expected status=%q, got %q", SubAgentFailed, result.Status)
+	}
+	if !strings.Contains(result.Output, "simulated child failure") {
+		t.Fatalf("expected failed result output to include child error, got %q", result.Output)
+	}
+}
+
+func TestSession_Subagent_AutoNudgeExplicitBuiltinSubagent(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	var mu sync.Mutex
+	callCount := 0
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				mu.Lock()
+				callCount++
+				mu.Unlock()
+				return emptyResponse()
+			},
+			func(req llm.Request) llm.Response {
+				mu.Lock()
+				callCount++
+				mu.Unlock()
+				return emptyResponse()
+			},
+			func(req llm.Request) llm.Response {
+				mu.Lock()
+				callCount++
+				mu.Unlock()
+				return emptyResponse()
+			},
+			func(req llm.Request) llm.Response {
+				mu.Lock()
+				callCount++
+				mu.Unlock()
+				return emptyResponse()
+			},
+			func(req llm.Request) llm.Response {
+				mu.Lock()
+				callCount++
+				mu.Unlock()
+				return finalResponse("Explicit subagent recovered after nudge")
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.3-codex"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+	defer sess.Close()
+
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"survey the project","agent_type":"subagent"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatal(spawnRes.Output)
+	}
+	var parsed map[string]any
+	json.Unmarshal([]byte(spawnRes.Output), &parsed)
+	agentID := fmt.Sprint(parsed["agent_id"])
+
+	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":120000}`, agentID)),
+	})
+	if waitRes.IsError {
+		t.Fatalf("wait error: %s", waitRes.Output)
+	}
+
+	var result SubAgentResult
+	json.Unmarshal([]byte(waitRes.Output), &result)
+	if !result.Success {
+		t.Fatalf("expected explicit builtin subagent to recover, got failure: %+v", result)
+	}
+	if !strings.Contains(result.Output, "Explicit subagent recovered after nudge") {
+		t.Errorf("expected nudged explicit subagent to report findings via communicate, got: %q", result.Output)
+	}
+	mu.Lock()
+	cc := callCount
+	mu.Unlock()
+	if cc != 5 {
+		t.Errorf("expected 5 LLM calls (4 empty + nudge), got %d", cc)
 	}
 }
 

@@ -122,6 +122,13 @@ func baseSubagentToolPolicy(agent *PluginAgent) (allTools bool, allowed []string
 	}
 }
 
+func subagentNeedsCommunicateNudge(agent *PluginAgent) bool {
+	if agent == nil {
+		return true
+	}
+	return agent.PluginName == "builtin" && agent.Name == "subagent"
+}
+
 func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string, parentTasks []TaskTemplate, grantTools []string) (any, error) {
 	s.mu.Lock()
 	depth := s.depth
@@ -289,7 +296,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		running:      true,
 		status:       SubAgentRunning,
 		done:         make(chan struct{}),
-		nudgeEnabled: agent == nil, // default subagents get nudged to communicate
+		nudgeEnabled: subagentNeedsCommunicateNudge(agent),
 	}
 
 	s.mu.Lock()
@@ -519,9 +526,13 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 }
 
 func (a *subagent) resultSnapshotLocked() SubAgentResult {
+	output := a.result
+	if strings.TrimSpace(output) == "" && a.err != nil {
+		output = a.err.Error()
+	}
 	return SubAgentResult{
 		Status:     a.status,
-		Output:     a.result,
+		Output:     output,
 		Success:    a.err == nil,
 		TurnsUsed:  a.turnsUsed,
 		Transcript: a.sess.TranscriptPath(),
