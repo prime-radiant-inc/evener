@@ -123,6 +123,12 @@ for the full schema and semantics.
 
 ## Provider Credentials
 
+> Architecture reference:
+> [`docs/llm-providers.md`](../../docs/llm-providers.md) (provider routing,
+> profiles, adapters) and
+> [`docs/llm-provider-config-and-launch.md`](../../docs/llm-provider-config-and-launch.md)
+> (credentials, OAuth, and the hub launch/spawn model).
+
 Hub-managed at `~/.serf/credentials.toml` (chmod 600). The file's format
 is a small TOML document:
 

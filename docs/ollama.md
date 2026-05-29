@@ -173,3 +173,12 @@ its advertised context window. See the **Context length** section above.
 **Slow responses** — local inference is bound by your hardware. Use a
 quantized model (`:q4_K_M` etc.), a smaller model, or run Ollama on a
 machine with a GPU and point Serf at it via `OLLAMA_HOST`.
+
+## See also
+
+- [`llm-providers.md`](llm-providers.md) — how the `ollama` provider fits the
+  overall LLM provider architecture (it's a thin wrapper over the
+  OpenAI-compatible Chat Completions adapter).
+- [`llm-provider-config-and-launch.md`](llm-provider-config-and-launch.md) —
+  the `OLLAMA_HOST`/`OLLAMA_BASE_URL` env vars and how credentials/config reach
+  spawned sessions.
