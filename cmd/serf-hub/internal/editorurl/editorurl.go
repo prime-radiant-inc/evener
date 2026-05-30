@@ -1,4 +1,6 @@
-package main
+// Package editorurl builds URLs that ask the OS to open a file path in an
+// editor when the URL is opened by a browser.
+package editorurl
 
 import (
 	"html/template"
@@ -7,7 +9,7 @@ import (
 	"strings"
 )
 
-// editorURL returns a URL that, when opened by the browser, asks the OS to
+// EditorURL returns a URL that, when opened by the browser, asks the OS to
 // open the given absolute file path in an editor. The default scheme is
 // vscode://file/<path>, which both VS Code and Cursor honor (Cursor also
 // honors cursor://file/<path>).
@@ -23,7 +25,7 @@ import (
 // When the path is not absolute or the env override is malformed, falls back
 // to the file:// scheme (which on macOS opens whatever app the user has
 // associated with the file extension).
-func editorURL(absPath string) template.URL {
+func EditorURL(absPath string) template.URL {
 	if absPath == "" {
 		return template.URL("")
 	}

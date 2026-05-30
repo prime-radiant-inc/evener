@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
+	"primeradiant.com/serf/cmd/serf-hub/internal/editorurl"
 	"primeradiant.com/serf/cmd/serf-hub/internal/httpsec"
 	"primeradiant.com/serf/cmd/serf-hub/internal/mcpstatus"
 	"primeradiant.com/serf/cmdutil"
@@ -1556,7 +1557,7 @@ func (s *WebServer) discoverPluginsForSettings() ([]pluginDisplay, error) {
 				Mcps:   len(lp.MCPConfigs),
 				Hooks:  countHooks(lp.Hooks),
 			},
-			EditPath: editorURL(filepath.Join(lp.Dir, ".claude-plugin", "plugin.json")),
+			EditPath: editorurl.EditorURL(filepath.Join(lp.Dir, ".claude-plugin", "plugin.json")),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -1611,7 +1612,7 @@ func collectSkillsForPlugin(p pluginDisplay) []skillDisplay {
 			Name:        name,
 			Plugin:      p.Name,
 			Description: desc,
-			EditPath:    editorURL(skillFile),
+			EditPath:    editorurl.EditorURL(skillFile),
 		})
 	}
 	return out
@@ -1673,7 +1674,7 @@ func (s *WebServer) discoverMCPsForSettings(path string) ([]mcpDisplay, error) {
 			Status:   mcpstatus.ProbeMCPStatus(c),
 			Tools:    0,
 			Agents:   nil,
-			EditPath: editorURL(path),
+			EditPath: editorurl.EditorURL(path),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
