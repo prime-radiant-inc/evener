@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/binresolve"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/internal/providerconfig"
@@ -117,9 +118,16 @@ func main() {
 	} else if exists {
 		loadedProviderConfig = &pcfg
 	} else {
-		// File absent — no instance config; clear path so children don't
-		// try to load a non-existent file.
-		providersConfigPath = ""
+		// File absent — materialize a descriptors-only providers.toml from the
+		// environment so the hub has a single source of truth and spawned
+		// children load the same file via SERF_PROVIDERS_CONFIG.
+		materialized, matErr := cmdutil.MaterializeProvidersConfig(providersConfigPath)
+		if matErr != nil {
+			fmt.Fprintf(os.Stderr, "[hub] materialize providers config: %v\n", matErr)
+			os.Exit(1)
+		}
+		loadedProviderConfig = &materialized
+		fmt.Fprintf(os.Stderr, "[hub] materialized %s\n", providersConfigPath)
 	}
 	resolvedSerfBinary := resolveSerfBinaryPath(*serfBinary, currentExecutable(), exec.LookPath)
 	if *serfBinary == "" && resolvedSerfBinary != "" && resolvedSerfBinary != "serf" {
