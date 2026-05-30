@@ -597,40 +597,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			}
 		}
 
-		// Log API call to transcript (both success and error paths).
-		if s.transcript != nil {
-			apiCall := TranscriptAPICall{
-				Round:               round,
-				Timestamp:           roundStart.UTC().Format(time.RFC3339),
-				LatencyMs:           timings.LLMCall.Milliseconds(),
-				SystemPrompt:        sys,
-				ContextHistoryTurns: len(history),
-				SystemPromptBytes:   len(sys),
-				Request:             llm.BuildAPILogRequest(req),
-			}
-			if err != nil {
-				apiCall.Error = err.Error()
-				setAPICallDiagnostic(&apiCall, err)
-			} else {
-				var endpoint string
-				if resp.Raw != nil {
-					if v, ok := resp.Raw["endpoint_url"].(string); ok {
-						endpoint = v
-					}
-				}
-				apiCall.Response = &llm.APILogResponse{
-					ID:            resp.ID,
-					Model:         resp.Model,
-					FinishReason:  resp.Finish.Reason,
-					TextLength:    len(resp.Text()),
-					ToolCallCount: len(resp.ToolCalls()),
-					Usage:         resp.Usage,
-					EndpointURL:   endpoint,
-					Raw:           resp.Raw,
-				}
-			}
-			s.transcript.AppendAPICall(apiCall)
-		}
+		s.logAPICall(round, roundStart, timings.LLMCall, sys, len(history), req, resp, err)
 
 		if err != nil {
 			if isTurnCancellation(ctx, err) {
@@ -1283,6 +1250,43 @@ func (s *Session) callModelWithFallback(ctx context.Context, req llm.Request, ro
 		}
 	}
 	return modelResp, req, err
+}
+
+// logAPICall records one round's request/response (or error) to the transcript.
+func (s *Session) logAPICall(round int, roundStart time.Time, llmLatency time.Duration, sys string, historyLen int, req llm.Request, resp llm.Response, err error) {
+	if s.transcript != nil {
+		apiCall := TranscriptAPICall{
+			Round:               round,
+			Timestamp:           roundStart.UTC().Format(time.RFC3339),
+			LatencyMs:           llmLatency.Milliseconds(),
+			SystemPrompt:        sys,
+			ContextHistoryTurns: historyLen,
+			SystemPromptBytes:   len(sys),
+			Request:             llm.BuildAPILogRequest(req),
+		}
+		if err != nil {
+			apiCall.Error = err.Error()
+			setAPICallDiagnostic(&apiCall, err)
+		} else {
+			var endpoint string
+			if resp.Raw != nil {
+				if v, ok := resp.Raw["endpoint_url"].(string); ok {
+					endpoint = v
+				}
+			}
+			apiCall.Response = &llm.APILogResponse{
+				ID:            resp.ID,
+				Model:         resp.Model,
+				FinishReason:  resp.Finish.Reason,
+				TextLength:    len(resp.Text()),
+				ToolCallCount: len(resp.ToolCalls()),
+				Usage:         resp.Usage,
+				EndpointURL:   endpoint,
+				Raw:           resp.Raw,
+			}
+		}
+		s.transcript.AppendAPICall(apiCall)
+	}
 }
 
 // expandHistory flattens conversation turns into the per-message slice sent to
