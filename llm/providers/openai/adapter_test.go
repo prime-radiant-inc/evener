@@ -3754,3 +3754,51 @@ func TestNewFromEnv_OpenAI_Name(t *testing.T) {
 		t.Fatalf("Name() = %q, want %q", a.Name(), "openai")
 	}
 }
+
+// TestInstanceParamsFromConfig_EnvTunables verifies that the instance factory
+// path threads OPENAI_ORG_ID, OPENAI_PROJECT_ID, and OPENAI_CHATGPT_BASE_URL
+// from the environment into OpenAIInstanceParams, mirroring NewFromEnv.
+func TestInstanceParamsFromConfig_EnvTunables(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "k")
+	t.Setenv("OPENAI_ORG_ID", "org-x")
+	t.Setenv("OPENAI_PROJECT_ID", "proj-y")
+	t.Setenv("OPENAI_CHATGPT_BASE_URL", "https://chatgpt.example.com")
+
+	// instanceParamsFromConfig is the helper extracted from the factory closure.
+	params := instanceParamsFromConfig(
+		"openai",  // inst.Name
+		"",        // inst.BaseURL (not set)
+		"k",       // inst.APIKey (injected by loader)
+		"/tmp",    // stateHome
+	)
+
+	if params.OrgID != "org-x" {
+		t.Fatalf("OrgID = %q, want %q", params.OrgID, "org-x")
+	}
+	if params.ProjectID != "proj-y" {
+		t.Fatalf("ProjectID = %q, want %q", params.ProjectID, "proj-y")
+	}
+	if params.ChatGPTBaseURL != "https://chatgpt.example.com" {
+		t.Fatalf("ChatGPTBaseURL = %q, want %q", params.ChatGPTBaseURL, "https://chatgpt.example.com")
+	}
+}
+
+// TestInstanceFactory_EnvTunables_APIKeyPath verifies that an adapter built via
+// the instance factory (API-key path) populates OrgID and ProjectID from env.
+func TestInstanceFactory_EnvTunables_APIKeyPath(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "k")
+	t.Setenv("OPENAI_ORG_ID", "org-x")
+	t.Setenv("OPENAI_PROJECT_ID", "proj-y")
+
+	params := instanceParamsFromConfig("openai", "", "k", t.TempDir())
+	a, err := NewForInstance(params)
+	if err != nil {
+		t.Fatalf("NewForInstance: %v", err)
+	}
+	if a.OrgID != "org-x" {
+		t.Fatalf("OrgID = %q, want %q", a.OrgID, "org-x")
+	}
+	if a.ProjectID != "proj-y" {
+		t.Fatalf("ProjectID = %q, want %q", a.ProjectID, "proj-y")
+	}
+}

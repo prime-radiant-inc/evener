@@ -154,15 +154,26 @@ func init() {
 	})
 	// Register for config-driven construction: openai + responses (or empty) style.
 	factory := func(inst providerconfig.InstanceConfig, stateHome string) (llm.ProviderAdapter, error) {
-		return NewForInstance(OpenAIInstanceParams{
-			Name:      inst.Name,
-			BaseURL:   inst.BaseURL,
-			APIKey:    inst.APIKey,
-			StateHome: stateHome,
-		})
+		return NewForInstance(instanceParamsFromConfig(inst.Name, inst.BaseURL, inst.APIKey, stateHome))
 	}
 	llm.RegisterInstanceAdapterFactory("openai", "responses", factory)
 	llm.RegisterInstanceAdapterFactory("openai", "", factory)
+}
+
+// instanceParamsFromConfig builds OpenAIInstanceParams for a config-driven
+// instance, threading OPENAI_ORG_ID, OPENAI_PROJECT_ID, and
+// OPENAI_CHATGPT_BASE_URL from the environment to mirror NewFromEnv. The API
+// key is injected by the loader (never read from env here).
+func instanceParamsFromConfig(name, baseURL, apiKey, stateHome string) OpenAIInstanceParams {
+	return OpenAIInstanceParams{
+		Name:           name,
+		BaseURL:        baseURL,
+		APIKey:         apiKey,
+		OrgID:          strings.TrimSpace(os.Getenv("OPENAI_ORG_ID")),
+		ProjectID:      strings.TrimSpace(os.Getenv("OPENAI_PROJECT_ID")),
+		ChatGPTBaseURL: strings.TrimSpace(os.Getenv("OPENAI_CHATGPT_BASE_URL")),
+		StateHome:      stateHome,
+	}
 }
 
 func NewFromEnv(cfgs ...Config) (*Adapter, error) {
