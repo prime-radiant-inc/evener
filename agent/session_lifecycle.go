@@ -586,45 +586,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// --- Phase: LLMCall ---
 		tPhaseStart = time.Now()
 
-		policy := llm.DefaultRetryPolicy()
-		if s.cfg.LLMRetryPolicy != nil {
-			policy = *s.cfg.LLMRetryPolicy
-		}
-		callCtx := llm.WithAPILogContext(ctx, s.id, round)
-		modelResp, err := s.callModel(callCtx, policy, s.profile, req)
-		// Fallback chain: when the primary model returns a Permanent-class
-		// provider error (403/404/422/...) or an endpoint-fallback signal,
-		// try each configured fallback in literal order. Stops at the first
-		// success; if all fallbacks also fail, the LAST attempt's error is
-		// returned to the caller. Retryable errors (429/5xx) burn the
-		// existing retry budget on the same model and DO NOT trigger the
-		// fallback chain — they are handled by the retry loop inside
-		// callModel. Kata cxw8.
-		if err != nil && len(s.cfg.ModelFallbacks) > 0 && modelFallbackEligible(err) {
-			for _, fbModel := range s.cfg.ModelFallbacks {
-				// validateModelFallbacks already rejected cross-provider fallbacks,
-				// so resolveProfileForRef is guaranteed to return the WithModel path
-				// here. We call it anyway so the fallback always uses the same
-				// resolution logic as SetModel.
-				fbProfile, _, _ := s.resolveProfileForRef(fbModel)
-				fbReq := req
-				fbReq.Model = fbProfile.Model()
-				fbReq.Provider = fbProfile.ID()
-				fbReq.WebSearch = fbProfile.SupportsWebSearch()
-				fbReq.ProviderOptions = fbProfile.ProviderOptions()
-				fbReq.PromptCacheKey = ""
-				fbReq.PromptCacheRetention = ""
-				s.applyModelRequestMetadata(&fbReq)
-				modelResp, err = s.callModel(callCtx, policy, fbProfile, fbReq)
-				if err == nil {
-					// Reflect the model that actually answered in the
-					// request used for downstream logging (transcript,
-					// EventAssistantTextStart fallback path, etc).
-					req = fbReq
-					break
-				}
-			}
-		}
+		modelResp, req, err := s.callModelWithFallback(ctx, req, round)
 		resp := modelResp.Response
 
 		timings.LLMCall = time.Since(tPhaseStart)
@@ -1274,6 +1236,53 @@ func (s *Session) buildModelRequest(sys string, history []llm.Message, toolDefs 
 	}
 	s.applyModelRequestMetadata(&req)
 	return req
+}
+
+// callModelWithFallback issues the model call for one round and, on a
+// fallback-eligible permanent error, retries each configured fallback model in
+// order. It returns the (possibly fallback-updated) request actually used so
+// downstream logging reflects the model that answered.
+func (s *Session) callModelWithFallback(ctx context.Context, req llm.Request, round int) (sessionModelResponse, llm.Request, error) {
+	policy := llm.DefaultRetryPolicy()
+	if s.cfg.LLMRetryPolicy != nil {
+		policy = *s.cfg.LLMRetryPolicy
+	}
+	callCtx := llm.WithAPILogContext(ctx, s.id, round)
+	modelResp, err := s.callModel(callCtx, policy, s.profile, req)
+	// Fallback chain: when the primary model returns a Permanent-class
+	// provider error (403/404/422/...) or an endpoint-fallback signal,
+	// try each configured fallback in literal order. Stops at the first
+	// success; if all fallbacks also fail, the LAST attempt's error is
+	// returned to the caller. Retryable errors (429/5xx) burn the
+	// existing retry budget on the same model and DO NOT trigger the
+	// fallback chain — they are handled by the retry loop inside
+	// callModel. Kata cxw8.
+	if err != nil && len(s.cfg.ModelFallbacks) > 0 && modelFallbackEligible(err) {
+		for _, fbModel := range s.cfg.ModelFallbacks {
+			// validateModelFallbacks already rejected cross-provider fallbacks,
+			// so resolveProfileForRef is guaranteed to return the WithModel path
+			// here. We call it anyway so the fallback always uses the same
+			// resolution logic as SetModel.
+			fbProfile, _, _ := s.resolveProfileForRef(fbModel)
+			fbReq := req
+			fbReq.Model = fbProfile.Model()
+			fbReq.Provider = fbProfile.ID()
+			fbReq.WebSearch = fbProfile.SupportsWebSearch()
+			fbReq.ProviderOptions = fbProfile.ProviderOptions()
+			fbReq.PromptCacheKey = ""
+			fbReq.PromptCacheRetention = ""
+			s.applyModelRequestMetadata(&fbReq)
+			modelResp, err = s.callModel(callCtx, policy, fbProfile, fbReq)
+			if err == nil {
+				// Reflect the model that actually answered in the
+				// request used for downstream logging (transcript,
+				// EventAssistantTextStart fallback path, etc).
+				req = fbReq
+				break
+			}
+		}
+	}
+	return modelResp, req, err
 }
 
 // expandHistory flattens conversation turns into the per-message slice sent to
