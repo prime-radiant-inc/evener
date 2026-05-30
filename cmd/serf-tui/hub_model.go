@@ -910,9 +910,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case authListResultMsg:
-		// authListResultMsg is no longer forwarded to credentialsPanel (which
-		// now uses instanceListResultMsg). Keep the case to avoid a compile
-		// error from existing hub_auth_test.go references; msgs are dropped.
+		// authListResultMsg is no longer used; msgs are dropped.
 		return m, nil
 	case instanceListResultMsg:
 		if m.credentialsPanel != nil {

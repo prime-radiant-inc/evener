@@ -342,11 +342,11 @@
 
   SerfAppwire.onNotification(function (method) {
     if (method === "serf/auth/updated") {
-      // Reload credentials panel if it is currently rendered.
-      const credsRows = document.getElementById("credentials-rows");
-      if (credsRows && window.launchconfig && typeof launchconfig.authList === "function") {
-        launchconfig.authList().then(function (list) {
-          credsRows.dispatchEvent(new CustomEvent("credentials-reload", { bubbles: true, detail: list }));
+      // Reload instances panel if it is currently rendered.
+      const instancesRoot = document.getElementById("instances-root");
+      if (instancesRoot && instancesRoot.dataset.loaded === "true" && window.launchconfig && typeof launchconfig.instanceList === "function") {
+        launchconfig.instanceList().then(function (data) {
+          instancesRoot.dispatchEvent(new CustomEvent("credentials-reload", { bubbles: true, detail: data }));
         });
       }
       // Refresh providers settings tab if it is the active settings pane.

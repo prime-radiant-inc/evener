@@ -37,7 +37,7 @@ type credentialsPanel struct {
 	// create/edit form state
 	formOpen    bool
 	formEditing bool // true=edit existing, false=create new
-	formField   int  // 0=name/type, 1=apiStyle, 2=baseURL; cycles to submit
+	formField   int  // create: 0=type, 1=name, 2=apiStyle, 3=baseURL; edit: 0=apiStyle, 1=baseURL
 	formName    string
 	formType    string
 	formAPIStyle string
@@ -222,8 +222,8 @@ func (p credentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // updateForm handles key input while the create/edit form is shown.
-// Fields cycle through: for create (name→apiStyle→baseURL→submit);
-// for edit (apiStyle→baseURL→submit). Name is not editable for edit.
+// Fields cycle through: for create (type→name→apiStyle→baseURL→submit);
+// for edit (apiStyle→baseURL→submit). Type and name are not editable for edit.
 func (p credentialsPanel) updateForm(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.Type {
 	case tea.KeyEsc:
@@ -231,7 +231,7 @@ func (p credentialsPanel) updateForm(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return p, nil
 	case tea.KeyEnter:
 		// Advance field or submit on the last field.
-		maxField := 2 // baseURL is last field (index 2)
+		maxField := 3 // baseURL is last field (index 3) for create
 		if p.formEditing {
 			// Edit form: fields are apiStyle(0) and baseURL(1).
 			maxField = 1
@@ -262,11 +262,11 @@ func (p credentialsPanel) updateForm(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyRunes:
 		s := string(m.Runes)
 		// apiStyle field: space/tab toggles between responses and chat-completions.
-		editOffset := 0
+		// create: apiStyle=2; edit: apiStyle=0.
+		apiStyleField := 2
 		if p.formEditing {
-			editOffset = -1 // edit form starts at apiStyle=0
+			apiStyleField = 0
 		}
-		apiStyleField := 1 + editOffset
 		if p.formField == apiStyleField {
 			if s == " " || s == "\t" {
 				p.toggleAPIStyle()
@@ -316,7 +316,7 @@ func (p *credentialsPanel) formAppendChar(s string) {
 }
 
 // formActiveField maps the current formField index to a field name.
-// For create: 0=name, 1=apiStyle, 2=baseURL.
+// For create: 0=type, 1=name, 2=apiStyle, 3=baseURL.
 // For edit:   0=apiStyle, 1=baseURL.
 func (p credentialsPanel) formActiveField() string {
 	if p.formEditing {
@@ -329,8 +329,10 @@ func (p credentialsPanel) formActiveField() string {
 	}
 	switch p.formField {
 	case 0:
-		return "name"
+		return "type"
 	case 1:
+		return "name"
+	case 2:
 		return "apiStyle"
 	default:
 		return "baseURL"
@@ -434,9 +436,10 @@ func (p credentialsPanel) formView() string {
 	} else {
 		lines = append(lines, "New instance")
 		lines = append(lines, "")
-		lines = append(lines, p.formFieldLine("Name", "name", p.formName, 0))
-		lines = append(lines, p.formFieldLine("API Style", "apiStyle", p.apiStyleDisplay(), 1))
-		lines = append(lines, p.formFieldLine("Base URL", "baseURL", p.formBaseURL, 2))
+		lines = append(lines, p.formFieldLine("Type", "type", p.formType, 0))
+		lines = append(lines, p.formFieldLine("Name", "name", p.formName, 1))
+		lines = append(lines, p.formFieldLine("API Style", "apiStyle", p.apiStyleDisplay(), 2))
+		lines = append(lines, p.formFieldLine("Base URL", "baseURL", p.formBaseURL, 3))
 	}
 	return strings.Join(lines, "\n")
 }

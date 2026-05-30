@@ -248,6 +248,73 @@ func TestCredentialsPanel_EscCloses(t *testing.T) {
 	}
 }
 
+func TestCredentialsPanel_CreateFormCapturesType(t *testing.T) {
+	m := newCredentialsPanel()
+	// Open the create form with "n".
+	panel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	p := panel.(credentialsPanel)
+	if !p.formOpen || p.formEditing {
+		t.Fatal("n key should open create form")
+	}
+
+	// Field 0 = type: type "openai".
+	for _, ch := range "openai" {
+		panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		p = panel.(credentialsPanel)
+	}
+	if p.formType != "openai" {
+		t.Fatalf("formType = %q, want openai", p.formType)
+	}
+
+	// Advance to field 1 (name).
+	panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p = panel.(credentialsPanel)
+	if p.formActiveField() != "name" {
+		t.Fatalf("after first Enter, active field = %q, want name", p.formActiveField())
+	}
+
+	// Type a name.
+	for _, ch := range "myinst" {
+		panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		p = panel.(credentialsPanel)
+	}
+
+	// Advance to field 2 (apiStyle) — skip it.
+	panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p = panel.(credentialsPanel)
+	if p.formActiveField() != "apiStyle" {
+		t.Fatalf("after second Enter, active field = %q, want apiStyle", p.formActiveField())
+	}
+
+	// Advance to field 3 (baseURL) — leave empty.
+	panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p = panel.(credentialsPanel)
+	if p.formActiveField() != "baseURL" {
+		t.Fatalf("after third Enter, active field = %q, want baseURL", p.formActiveField())
+	}
+
+	// Submit on the last field.
+	panel, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p = panel.(credentialsPanel)
+	if p.formOpen {
+		t.Error("form should be closed after submit")
+	}
+	if cmd == nil {
+		t.Fatal("submit should produce a cmd")
+	}
+	msg := cmd()
+	got, ok := msg.(instanceCreateSubmitMsg)
+	if !ok {
+		t.Fatalf("cmd msg = %T, want instanceCreateSubmitMsg", msg)
+	}
+	if got.Params.Type != "openai" {
+		t.Errorf("Params.Type = %q, want openai", got.Params.Type)
+	}
+	if got.Params.Name != "myinst" {
+		t.Errorf("Params.Name = %q, want myinst", got.Params.Name)
+	}
+}
+
 func TestCredentialsPanel_InstanceListResultRefreshesPanel(t *testing.T) {
 	m := newCredentialsPanel()
 	// Initial load
