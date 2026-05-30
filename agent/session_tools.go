@@ -1020,7 +1020,7 @@ func registerSubagentTools(reg *ToolRegistry, s *Session) {
 					}
 					items = append(items, ti)
 				}
-				if sub, ok := s.subagents[agentID]; ok {
+				if sub := s.subagents.get(agentID); sub != nil {
 					store := sub.sess.getOrCreateTaskStore()
 					store.Append(items)
 				}

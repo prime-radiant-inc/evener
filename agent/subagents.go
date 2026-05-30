@@ -43,9 +43,9 @@ Your job is to complete the task and report your findings.`
 var rootOnlyAgentManagementTools = []string{"spawn_agent", "resume_agent", "wait", "close_agent"}
 
 type subagent struct {
-	id     string
-	sess   *Session
-	parent *Session
+	id   string
+	sess *Session
+	emit func(EventKind, any)
 
 	mu             sync.Mutex
 	running        bool
@@ -304,18 +304,16 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	}
 
 	sub := &subagent{
-		parent:       s,
 		id:           subSess.id,
 		sess:         subSess,
+		emit:         s.emit,
 		running:      true,
 		status:       SubAgentRunning,
 		done:         make(chan struct{}),
 		nudgeEnabled: subagentNeedsCommunicateNudge(agent),
 	}
 
-	s.mu.Lock()
-	s.subagents[sub.id] = sub
-	s.mu.Unlock()
+	s.subagents.track(sub)
 
 	// Subagent execution must outlive the parent tool-call context.
 	// The parent may stop waiting, finish its input, or time out while the
@@ -422,9 +420,7 @@ func (s *Session) closeAgent(agentID string) (any, error) {
 	// Wait for the goroutine to finish after cancellation.
 	done := sub.done
 	if done == nil {
-		s.mu.Lock()
-		delete(s.subagents, agentID)
-		s.mu.Unlock()
+		s.subagents.remove(agentID)
 
 		sub.mu.Lock()
 		result := sub.resultSnapshotLocked()
@@ -443,18 +439,14 @@ func (s *Session) closeAgent(agentID string) (any, error) {
 	result := sub.resultSnapshotLocked()
 	sub.mu.Unlock()
 
-	s.mu.Lock()
-	delete(s.subagents, agentID)
-	s.mu.Unlock()
+	s.subagents.remove(agentID)
 
 	b, _ := json.Marshal(result)
 	return string(b), nil
 }
 
 func (s *Session) getSub(agentID string) *subagent {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.subagents[agentID]
+	return s.subagents.get(agentID)
 }
 
 // communicateNudge returns the message sent to a subagent that stops without
@@ -500,14 +492,14 @@ func (a *subagent) run(ctx context.Context, input string) {
 	a.endEmitted = true
 	status := a.status
 	turnsUsed := a.turnsUsed
-	parent := a.parent
+	emit := a.emit
 	a.mu.Unlock()
 
 	if done != nil {
 		close(done)
 	}
-	if emitEnd && parent != nil {
-		parent.emit(EventSubagentEnd, SubagentEndData{
+	if emitEnd && emit != nil {
+		emit(EventSubagentEnd, SubagentEndData{
 			AgentID:   a.id,
 			Status:    string(status),
 			TurnsUsed: turnsUsed,

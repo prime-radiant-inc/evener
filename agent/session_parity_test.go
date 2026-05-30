@@ -936,9 +936,7 @@ func TestParity_SubagentNoMCPInheritance(t *testing.T) {
 	agentID := fmt.Sprint(spawned["agent_id"])
 
 	// Get the subagent session and check its config.
-	sess.mu.Lock()
-	sub := sess.subagents[agentID]
-	sess.mu.Unlock()
+	sub := sess.getSub(agentID)
 	if sub == nil {
 		t.Fatal("subagent not found")
 	}

@@ -103,17 +103,7 @@ func (s *Session) DetailedStatus() DetailedStatus {
 	}
 
 	// Subagents.
-	s.mu.Lock()
-	for id, sub := range s.subagents {
-		sub.mu.Lock()
-		ds.Subagents = append(ds.Subagents, SubagentInfo{
-			ID:        id,
-			Status:    sub.status,
-			TurnsUsed: sub.turnsUsed,
-		})
-		sub.mu.Unlock()
-	}
-	s.mu.Unlock()
+	ds.Subagents = append(ds.Subagents, s.subagents.infos()...)
 
 	// Plugin agent names (sorted).
 	for name := range s.pluginAgents {

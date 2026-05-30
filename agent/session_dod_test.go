@@ -2973,17 +2973,12 @@ func TestSession_GracefulShutdown_ClosesSubagents(t *testing.T) {
 		sess: subSess,
 		done: make(chan struct{}),
 	}
-	sess.mu.Lock()
-	sess.subagents["test-sub"] = sub
-	sess.mu.Unlock()
+	sess.subagents.track(sub)
 
 	sess.Close()
 
 	// Verify subagent was cleaned up from the map.
-	sess.mu.Lock()
-	remaining := len(sess.subagents)
-	sess.mu.Unlock()
-	if remaining != 0 {
+	if remaining := len(sess.subagents.drainForClose()); remaining != 0 {
 		t.Fatalf("expected 0 subagents after Close, got %d", remaining)
 	}
 
@@ -4347,15 +4342,19 @@ func TestSubagent_MaxTurns_DefaultsTo500_NotInheritedFromParent(t *testing.T) {
 	}
 
 	// Check the subagent's MaxTurns.
-	sess.mu.Lock()
-	defer sess.mu.Unlock()
-	for _, sub := range sess.subagents {
-		sub.sess.mu.Lock()
-		mt := sub.sess.cfg.MaxTurns
-		sub.sess.mu.Unlock()
-		if mt != 500 {
-			t.Fatalf("subagent MaxTurns=%d, want 500 (should not inherit parent's 100)", mt)
-		}
+	var spawned map[string]any
+	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
+		t.Fatal(err)
+	}
+	sub := sess.getSub(fmt.Sprint(spawned["agent_id"]))
+	if sub == nil {
+		t.Fatal("subagent not found")
+	}
+	sub.sess.mu.Lock()
+	mt := sub.sess.cfg.MaxTurns
+	sub.sess.mu.Unlock()
+	if mt != 500 {
+		t.Fatalf("subagent MaxTurns=%d, want 500 (should not inherit parent's 100)", mt)
 	}
 }
 
@@ -4557,9 +4556,7 @@ func TestSendInput_SteersRunningAgent(t *testing.T) {
 		running: true,
 		done:    make(chan struct{}),
 	}
-	sess.mu.Lock()
-	sess.subagents[sub.id] = sub
-	sess.mu.Unlock()
+	sess.subagents.track(sub)
 
 	// sendInput on a running agent should Steer instead of erroring.
 	_, err = sess.sendInput(context.Background(), sub.id, "steered message")

@@ -62,7 +62,7 @@ type Session struct {
 
 	// subagents
 	depth     int
-	subagents map[string]*subagent
+	subagents *subagentManager
 
 	// context management
 	contextMgr *ContextManager

@@ -75,11 +75,11 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		state:          SessionIdle,
 		events:         make(chan SessionEvent, 256),
 		history:        []Turn{},
-		subagents:      map[string]*subagent{},
 		readFiles:      map[string]bool{},
 		sessionCtx:     sessCtx,
 		cancelFunc:     sessCancel,
 	}
+	s.subagents = newSubagentManager(s.emit)
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind)
 	if err != nil {
@@ -223,11 +223,11 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		events:         make(chan SessionEvent, 256),
 		history:        resumeHistory,
 		modelResponses: snap.TurnCount,
-		subagents:      map[string]*subagent{},
 		readFiles:      map[string]bool{},
 		sessionCtx:     sessCtx,
 		cancelFunc:     sessCancel,
 	}
+	s.subagents = newSubagentManager(s.emit)
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind)
 	if err != nil {
@@ -362,11 +362,11 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 		nameSource:     meta.NameSource,
 		nameUpdated:    meta.NameUpdatedAt,
 		nameSet:        strings.TrimSpace(meta.Name) != "",
-		subagents:      map[string]*subagent{},
 		readFiles:      map[string]bool{},
 		sessionCtx:     sessCtx,
 		cancelFunc:     sessCancel,
 	}
+	s.subagents = newSubagentManager(s.emit)
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind)
 	if err != nil {

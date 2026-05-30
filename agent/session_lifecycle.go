@@ -139,15 +139,11 @@ func (s *Session) buildCompactionMeta() CompactionMeta {
 
 func (s *Session) Close() {
 	s.closeOnce.Do(func() {
+		// Collect subagents and clear the map via the manager, then close
+		// outside the lock to avoid deadlock (sub.sess.Close() acquires its own mu).
+		subs := s.subagents.drainForClose()
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
-		// Collect subagents and clear the map under the lock, then close
-		// outside the lock to avoid deadlock (sub.sess.Close() acquires its own mu).
-		subs := make([]*subagent, 0, len(s.subagents))
-		for id, sub := range s.subagents {
-			subs = append(subs, sub)
-			delete(s.subagents, id)
-		}
 		turns := s.modelResponses
 		emitEnd := !s.sessionEndEmitted
 		s.sessionEndEmitted = true
