@@ -4,11 +4,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	_ "primeradiant.com/serf/llm/providers/anthropic"
 	_ "primeradiant.com/serf/llm/providers/kimi"
 	_ "primeradiant.com/serf/llm/providers/openai"
+	"primeradiant.com/serf/llm"
 )
 
 // validProvidersToml is a minimal providers.toml with two openai instances
@@ -65,24 +67,25 @@ func TestLoadClient_WithValidConfig(t *testing.T) {
 	}
 }
 
-func TestLoadClient_NoFile_FallsBackToEnv(t *testing.T) {
-	// Point SERF_PROVIDERS_CONFIG at a path that does not exist.
-	t.Setenv("SERF_PROVIDERS_CONFIG", "/nonexistent/path/providers.toml")
-	// Unset any API keys so NewFromEnv doesn't fail on missing credentials.
+func TestLoadClient_NoFile_Materializes(t *testing.T) {
+	// When providers.toml is absent, LoadClient materializes it and returns
+	// hasConfig=true (always-config contract).
+	dir := t.TempDir()
+	t.Setenv("SERF_PROVIDERS_CONFIG", filepath.Join(dir, "providers.toml"))
 	t.Setenv("OPENAI_API_KEY", "sk-fake-for-test")
 
 	client, cfg, hasConfig, err := LoadClient()
 	if err != nil {
 		t.Fatalf("LoadClient (absent file): %v", err)
 	}
-	if hasConfig {
-		t.Fatal("expected hasConfig=false when file is absent")
+	if !hasConfig {
+		t.Fatal("expected hasConfig=true after materialization")
 	}
-	if cfg.Default != "" || len(cfg.Instances) != 0 {
-		t.Fatalf("expected empty Config when hasConfig=false, got %+v", cfg)
+	if len(cfg.Instances) == 0 {
+		t.Fatal("expected non-empty Config after materialization")
 	}
 	if client == nil {
-		t.Fatal("expected non-nil client from env fallback")
+		t.Fatal("expected non-nil client after materialization")
 	}
 }
 
@@ -102,13 +105,11 @@ func TestLoadClient_CorruptFile_ReturnsError(t *testing.T) {
 
 func TestLoadClient_DefaultPath_UsedWhenEnvNotSet(t *testing.T) {
 	// Clear SERF_PROVIDERS_CONFIG so LoadClient uses the default path.
-	// The default path (~/.serf/providers.toml) almost certainly doesn't
-	// exist in CI, so we just verify it doesn't blow up: hasConfig=false
-	// and no error.
+	// Override HOME so the default state root lands in a clean temp dir.
+	// After materialization, hasConfig must be true (always-config contract).
 	t.Setenv("SERF_PROVIDERS_CONFIG", "")
 	t.Setenv("OPENAI_API_KEY", "sk-fake-for-test")
 
-	// We override the home dir to a temp dir so the default path is clean.
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 
@@ -116,8 +117,8 @@ func TestLoadClient_DefaultPath_UsedWhenEnvNotSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadClient (default path, no file): %v", err)
 	}
-	if hasConfig {
-		t.Fatal("expected hasConfig=false when default path doesn't exist")
+	if !hasConfig {
+		t.Fatal("expected hasConfig=true after materialization at default path")
 	}
 }
 
@@ -147,23 +148,71 @@ func TestLoadClient_ResolverPicksConfig_WhenHasConfig(t *testing.T) {
 	}
 }
 
-func TestLoadClient_ResolverPicksEnv_WhenNoConfig(t *testing.T) {
-	t.Setenv("SERF_PROVIDERS_CONFIG", "/nonexistent/providers.toml")
+func TestLoadClient_ResolverPicksConfig_WhenMaterialized(t *testing.T) {
+	// When providers.toml is absent it is materialized; the resolver always
+	// goes through ResolveProfileFromConfig (always-config contract).
+	dir := t.TempDir()
+	t.Setenv("SERF_PROVIDERS_CONFIG", filepath.Join(dir, "providers.toml"))
 	t.Setenv("OPENAI_API_KEY", "sk-fake-for-test")
 
 	_, cfg, hasConfig, err := LoadClient()
 	if err != nil {
 		t.Fatalf("LoadClient: %v", err)
 	}
+	if !hasConfig {
+		t.Fatal("expected hasConfig=true after materialization")
+	}
 
 	resolver := BuildResolveProfile(cfg, hasConfig)
 
-	// "openai/gpt-4o" should go through the env path (SelectProfile).
+	// "openai/gpt-4o" resolves via the materialized config.
 	profile, err := resolver("openai/gpt-4o")
 	if err != nil {
 		t.Fatalf("resolver(openai/gpt-4o): %v", err)
 	}
 	if profile.ID() != "openai" {
 		t.Fatalf("profile.ID()=%q, want %q", profile.ID(), "openai")
+	}
+}
+
+func TestLoadClientMaterializesAndInjects(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("SERF_PROVIDERS_CONFIG", filepath.Join(dir, "providers.toml"))
+	t.Setenv("SERF_STATE_DIR", dir)
+	t.Setenv("OPENAI_API_KEY", "sk-env")
+
+	client, cfg, hasConfig, err := LoadClient(llm.WithStateDir(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasConfig {
+		t.Fatal("hasConfig must be true once materialized")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "providers.toml")); err != nil {
+		t.Fatal("providers.toml not materialized")
+	}
+	// openai instance registered + key injected into in-memory cfg
+	found := false
+	for _, n := range client.ProviderNames() {
+		if n == "openai" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("openai not registered: %v", client.ProviderNames())
+	}
+	injected := false
+	for _, inst := range cfg.Instances {
+		if inst.Name == "openai" && inst.APIKey == "sk-env" {
+			injected = true
+		}
+	}
+	if !injected {
+		t.Errorf("key not injected into in-memory cfg: %+v", cfg.Instances)
+	}
+	// the secret must NOT be on disk
+	data, _ := os.ReadFile(filepath.Join(dir, "providers.toml"))
+	if strings.Contains(string(data), "sk-env") {
+		t.Fatal("secret leaked to providers.toml")
 	}
 }
