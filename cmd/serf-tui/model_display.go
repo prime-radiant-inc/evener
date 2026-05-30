@@ -2,18 +2,23 @@ package main
 
 import "strings"
 
-// abbreviateModel strips provider prefixes and trailing date suffixes from
-// model IDs, e.g. "anthropic/claude-haiku-4-5-20250115" → "claude-haiku-4-5".
+// abbreviateModel strips the first slash-segment (the instance name) and
+// any trailing date suffix from a model ID, so it fits compactly in a
+// display context where the instance is already shown in a group header or
+// a separate label.
+//
+//	"openai/gpt-5"                       → "gpt-5"
+//	"work/gpt-5"                         → "gpt-5"
+//	"openrouter/anthropic/claude-opus-4" → "anthropic/claude-opus-4"
+//	"openai/gpt-5-20260101"              → "gpt-5"
+//	"bare-model"                         → "bare-model"
 func abbreviateModel(id string) string {
 	if id == "" {
 		return ""
 	}
-	// Strip known provider prefixes
-	for _, prefix := range []string{"anthropic/", "openai/", "google/", "openrouter/", "openai-compatible/"} {
-		if strings.HasPrefix(id, prefix) {
-			id = id[len(prefix):]
-			break
-		}
+	// Strip first slash-segment (the instance name), whatever it is.
+	if i := strings.IndexByte(id, '/'); i >= 0 {
+		id = id[i+1:]
 	}
 	// Strip trailing -YYYYMMDD date suffix
 	if len(id) >= 9 && id[len(id)-9] == '-' {
