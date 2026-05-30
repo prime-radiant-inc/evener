@@ -1446,7 +1446,9 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   margin-left: var(--space-2);
 }
 .settings-table .val-input,
-.settings-table .val-select {
+.settings-table .val-select,
+.credentials-pane .val-input,
+.credentials-pane .val-select {
   width: 100%;
   max-width: 320px;
   padding: var(--space-2) var(--space-3);
@@ -1466,11 +1468,14 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   max-width: 100%;
 }
 .settings-table .val-input:focus-visible,
-.settings-table .val-select:focus-visible { border-color: var(--accent); }
+.settings-table .val-select:focus-visible,
+.credentials-pane .val-input:focus-visible,
+.credentials-pane .val-select:focus-visible { border-color: var(--accent); }
 .settings-table .val-input[aria-invalid="true"],
 .settings-table .val-input[data-launch-invalid="true"] { border-color: var(--state-awaiting); }
 
-.settings-table .val-radio-group {
+.settings-table .val-radio-group,
+.credentials-pane .val-radio-group {
   display: inline-flex;
   flex-wrap: wrap;
   gap: var(--space-2);
@@ -1487,7 +1492,8 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .settings-table .launch-radio-composite .launch-radio-option-body { width: 100%; }
 .settings-table .launch-radio-composite textarea,
 .settings-table .launch-radio-composite input[type=text] { width: 100%; max-width: 100%; }
-.settings-table .val-radio {
+.settings-table .val-radio,
+.credentials-pane .val-radio {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
@@ -1501,7 +1507,8 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   cursor: pointer;
   transition: border-color var(--motion-fast), background var(--motion-fast);
 }
-.settings-table .val-radio input[type="radio"] {
+.settings-table .val-radio input[type="radio"],
+.credentials-pane .val-radio input[type="radio"] {
   appearance: none;
   width: 10px;
   height: 10px;
@@ -1509,12 +1516,15 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   border: 1px solid var(--text-dim);
   margin: 0;
 }
-.settings-table .val-radio input[type="radio"]:checked {
+.settings-table .val-radio input[type="radio"]:checked,
+.credentials-pane .val-radio input[type="radio"]:checked {
   background: var(--accent);
   border-color: var(--accent);
 }
 .settings-table .val-radio[data-checked],
-.settings-table .val-radio:has(input[type="radio"]:checked) {
+.settings-table .val-radio:has(input[type="radio"]:checked),
+.credentials-pane .val-radio[data-checked],
+.credentials-pane .val-radio:has(input[type="radio"]:checked) {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
@@ -2060,26 +2070,44 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   min-width: 0;
 }
 
-/* Credentials pane */
-.credentials-pane { padding: var(--space-5) var(--space-5); }
-.credentials-help { color: var(--muted-fg, #888); }
-.credentials-row { padding: var(--space-3) 0; border-bottom: 1px solid var(--border-subtle, var(--rule, #2a2a2a)); }
-.credentials-row-main { display: grid; grid-template-columns: 8rem 1fr auto; align-items: center; gap: var(--space-5); }
-.credentials-row-name { font-weight: 600; }
-.credentials-row-status { color: var(--text-muted, #888); font-family: var(--font-mono); font-size: var(--text-sm); }
-.credentials-row-actions button { margin-left: var(--space-2); }
-.credentials-clear-btn { color: var(--state-awaiting, var(--error, #c43755)); }
-.credentials-editor { display: flex; flex-direction: column; gap: var(--space-3); margin-top: var(--space-3); padding: var(--space-3) var(--space-4); background: var(--bg-raised, var(--panel-2, #1c1c24)); border-radius: var(--radius-lg); }
-.credentials-editor-label { font-size: var(--text-sm); color: var(--text-muted, #888); }
-.credentials-editor-label a { color: var(--accent, #7aa2f7); }
-.credentials-editor-input { padding: var(--space-3) var(--space-3); font-family: var(--font-mono); font-size: var(--text-base); }
-.credentials-editor-error { margin: 0; color: var(--state-awaiting, var(--error, #c43755)); font-size: var(--text-sm); }
-.credentials-editor-actions { display: flex; gap: var(--space-3); }
+/* Credentials pane — provider instances grouped by type, each row carrying its
+   credential layers plus inline add/edit/OAuth editors. Composes the
+   settings-collection primitives (§2.4); the type-group header reuses the
+   uppercase-mono section-label voice. */
+.credentials-pane { padding: var(--space-5); }
+.credentials-help { color: var(--text-muted); }
+
+/* Type group: a labeled cluster of instance rows. */
+.credentials-type-group:not(:first-child) { margin-top: var(--space-5); }
+.credentials-type-header {
+  padding: var(--space-2) 0;
+  margin-bottom: var(--space-1);
+  border-bottom: 1px solid var(--rule);
+}
+.credentials-type-name {
+  font-family: var(--font-mono);
+  font-size: var(--text-2xs);
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.credentials-instance-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* Instance row: the name line wraps inline (dot + name + badges + style). */
 .credentials-row .row-text {
   display: flex;
   align-items: baseline;
   gap: var(--space-3);
   flex-wrap: wrap;
+}
+.credentials-row .row-text .dim {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
 }
 .credentials-source-layer {
   margin-top: 2px;
@@ -2087,14 +2115,30 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   font-size: var(--text-xs);
   color: var(--text-muted);
 }
+
+/* Inline editors (set key / OAuth / edit / add). The card surface comes from
+   .surface-inset; these rules add layout only. */
+.credentials-add-row { display: block; }
 .credentials-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
   margin-top: var(--space-3);
-  padding: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+}
+.credentials-editor-label {
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.credentials-editor-label a { color: var(--accent); }
+.credentials-editor-field {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
 }
-.credentials-editor-label {
+.credentials-editor-field[hidden] { display: none; }
+.credentials-editor-field-label {
   font-family: var(--font-sans);
   font-size: var(--text-xs);
   color: var(--text-muted);
@@ -2109,6 +2153,27 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   font-family: var(--font-sans);
   font-size: var(--text-xs);
   color: var(--state-awaiting);
+}
+
+/* OAuth device-code display — a raised, selectable code chip inside the editor. */
+.credentials-device-code {
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--text-lg);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-align: center;
+  color: var(--text);
+  user-select: all;
+}
+.credentials-device-status {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
 }
 
 /* ── Button system (Pass 5) ───────────────────────────────────────────────
