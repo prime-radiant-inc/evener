@@ -50,7 +50,16 @@ func NameToTag(cfg Config) map[string]string {
 
 // DefaultStateRoot returns $hubStateRoot (default ~/.serf), relocated here so
 // cmd/serf and cmd/serf-hub resolve the identical path.
+//
+// SERF_STATE_DIR overrides the default — matching `serf run` / `serf serve`
+// (which already honor it) so the provider config (providers.toml) and
+// credentials follow the configured state dir instead of always living in
+// ~/.serf. This also gives tests, sandboxed runs, and multi-instance setups a
+// single knob to redirect all home-based serf state.
 func DefaultStateRoot() string {
+	if dir := os.Getenv("SERF_STATE_DIR"); dir != "" {
+		return dir
+	}
 	if home, err := os.UserHomeDir(); err == nil {
 		return filepath.Join(home, ".serf")
 	}
