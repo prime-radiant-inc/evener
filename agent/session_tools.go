@@ -575,22 +575,165 @@ func (s *Session) rebuildToolDefsCache() {
 
 // Tool registration.
 
+// toolDeps is the dependency surface the core tool handler closures need from
+// their owning session. The registerXxxTools helpers capture a *toolDeps
+// instead of a *Session, which cuts the tools⇄session back-cycle: the handler
+// closures no longer reference the concrete *Session type. Every member
+// forwards to an existing *Session method or field, preserving all locking and
+// ordering; toolDeps adds no behavior of its own.
+//
+// Subagent spawn/wait/send/close are deliberately NOT here — that is a separate
+// seam. registerSubagentTools still captures *Session directly.
+type toolDeps struct {
+	// emit publishes a session event (best-effort, same as Session.emit).
+	emit func(kind EventKind, data any)
+
+	// steering queue access for the communicate handler.
+	steer           func(msg string)
+	drainSteering   func() []steeringMessage
+	prependSteering func(entries []steeringMessage)
+
+	// abort returns a non-nil error when the session is closing (= Session.abortIfClosing).
+	abort func(ctx context.Context) error
+
+	// resultToolName is the effective name of the communicate tool.
+	resultToolName func() string
+
+	// cmdTimeouts is a live getter for the default and max shell command
+	// timeouts. It reads cfg on every call so SetTimeout mutations are visible;
+	// the values are NOT snapshotted at registration time.
+	cmdTimeouts func() (def, max int)
+
+	// readGuard exposes the read-before-write guardrail without leaking the raw
+	// readFiles map or its mutex.
+	readGuard readGuard
+
+	// taskGuard exposes task-store access and the task reminder bookkeeping,
+	// all guarded by the session's own mutex.
+	taskGuard taskGuard
+
+	// web exposes the web tools with the profile and client hidden behind them.
+	web webDeps
+
+	// setCommunicateResult records the communicate tool's result on the session
+	// (fields stay Session-owned; this is the only writer reachable from the handler).
+	setCommunicateResult func(awaitReply bool, message, reply, output string)
+
+	// skill looks up a discovered skill by name.
+	skill func(name string) (SkillMeta, bool)
+
+	// reasoningEffortLevels is captured once for the task_list tool definition.
+	reasoningEffortLevels []string
+
+	// webSearchEnabled is the resolved decision (BehaviorTag == "google") for
+	// whether the function-tool web_search should be registered.
+	webSearchEnabled bool
+}
+
+// readGuard wraps the read-before-write guardrail. It forwards to the
+// Session-owned readFiles map + mutex via TrackRead/ReadBeforeWriteWarning so
+// the handlers never touch the raw map.
+type readGuard struct {
+	trackRead              func(path string)
+	readBeforeWriteWarning func(path string) string
+}
+
+func (g readGuard) TrackRead(path string) { g.trackRead(path) }
+
+func (g readGuard) ReadBeforeWriteWarning(path string) string {
+	return g.readBeforeWriteWarning(path)
+}
+
+// taskGuard is a thin facade over Session-owned task state. It uses the same
+// s.mu as the rest of the session — it does NOT introduce a second mutex.
+type taskGuard struct {
+	getOrCreateTaskStore func() *TaskStore
+	markUsed             func()
+	setReasoningEffort   func(effort string)
+}
+
+func (g taskGuard) Store() *TaskStore { return g.getOrCreateTaskStore() }
+
+// MarkUsed records that the task_list tool was invoked this round (updates the
+// reminder counters under s.mu).
+func (g taskGuard) MarkUsed() { g.markUsed() }
+
+func (g taskGuard) SetReasoningEffort(effort string) { g.setReasoningEffort(effort) }
+
+// webDeps holds the bound web tool functions. The profile and client stay
+// hidden inside the closures captured here.
+type webDeps struct {
+	fetch  func(ctx context.Context, rawURL, question string) (any, error)
+	search func(ctx context.Context, query string) (any, error)
+}
+
+// newToolDeps builds the tool dependency surface from a session. Every member
+// is a forwarder to an existing method or field, so behavior and locking are
+// unchanged. Built once in registerCoreTools.
+func newToolDeps(s *Session) *toolDeps {
+	return &toolDeps{
+		emit:            s.emit,
+		steer:           s.Steer,
+		drainSteering:   s.drainSteering,
+		prependSteering: s.prependSteering,
+		abort:           s.abortIfClosing,
+		resultToolName:  s.resultToolName,
+		cmdTimeouts: func() (int, int) {
+			return s.cfg.DefaultCommandTimeoutMS, s.cfg.MaxCommandTimeoutMS
+		},
+		readGuard: readGuard{
+			trackRead:              s.trackReadFile,
+			readBeforeWriteWarning: s.readBeforeWriteWarning,
+		},
+		taskGuard: taskGuard{
+			getOrCreateTaskStore: s.getOrCreateTaskStore,
+			markUsed: func() {
+				s.mu.Lock()
+				s.taskToolEverUsed = true
+				s.taskToolLastRound = s.totalRounds
+				s.mu.Unlock()
+			},
+			setReasoningEffort: s.SetReasoningEffort,
+		},
+		web: webDeps{
+			fetch:  s.webFetch,
+			search: s.webSearch,
+		},
+		setCommunicateResult: func(awaitReply bool, message, reply, output string) {
+			s.mu.Lock()
+			s.communicated = true
+			s.communicateAwaitReply = awaitReply
+			s.communicateText = message
+			s.communicateReply = reply
+			s.communicateOutput = output
+			s.mu.Unlock()
+		},
+		skill: func(name string) (SkillMeta, bool) {
+			meta, ok := s.skills[name]
+			return meta, ok
+		},
+		reasoningEffortLevels: s.profile.ReasoningEffortLevels(),
+		webSearchEnabled:      s.profile.BehaviorTag() == "google",
+	}
+}
+
 func registerCoreTools(reg *ToolRegistry, s *Session) error {
-	if err := registerFileTools(reg, s); err != nil {
+	deps := newToolDeps(s)
+	if err := registerFileTools(reg, deps); err != nil {
 		return err
 	}
-	if err := registerShellTools(reg, s); err != nil {
+	if err := registerShellTools(reg, deps); err != nil {
 		return err
 	}
 	registerSubagentTools(reg, s)
-	registerTaskTools(reg, s)
-	registerWebTools(reg, s)
-	registerCommunicateTool(reg, s)
-	registerSkillTool(reg, s)
+	registerTaskTools(reg, deps)
+	registerWebTools(reg, deps)
+	registerCommunicateTool(reg, deps)
+	registerSkillTool(reg, deps)
 	return nil
 }
 
-func registerFileTools(reg *ToolRegistry, s *Session) error {
+func registerFileTools(reg *ToolRegistry, deps *toolDeps) error {
 	// read_file
 	if err := reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: defReadFile(), ReadOnly: true},
@@ -602,7 +745,7 @@ func registerFileTools(reg *ToolRegistry, s *Session) error {
 			purpose, _ := args["purpose"].(string)
 			result, err := env.ReadFile(path, offset, limit)
 			if err == nil {
-				s.trackReadFile(path)
+				deps.readGuard.TrackRead(path)
 				// If the file is an image or document (PDF), return an
 				// ImageResult so the vision side-channel can process it.
 				if img := parseImageResult(path, result); img != nil {
@@ -626,7 +769,7 @@ func registerFileTools(reg *ToolRegistry, s *Session) error {
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			path := fmt.Sprint(args["file_path"])
-			warn := s.readBeforeWriteWarning(path)
+			warn := deps.readGuard.ReadBeforeWriteWarning(path)
 			result, err := env.WriteFile(path, fmt.Sprint(args["content"]))
 			if err == nil && warn != "" {
 				return warn + fmt.Sprint(result), nil
@@ -647,7 +790,7 @@ func registerFileTools(reg *ToolRegistry, s *Session) error {
 			if v, ok := args["replace_all"].(bool); ok {
 				replaceAll = v
 			}
-			warn := s.readBeforeWriteWarning(path)
+			warn := deps.readGuard.ReadBeforeWriteWarning(path)
 			result, err := env.EditFile(path, fmt.Sprint(args["old_string"]), fmt.Sprint(args["new_string"]), replaceAll)
 			if err == nil && warn != "" {
 				return warn + fmt.Sprint(result), nil
@@ -659,18 +802,19 @@ func registerFileTools(reg *ToolRegistry, s *Session) error {
 	return nil
 }
 
-func registerShellTools(reg *ToolRegistry, s *Session) error {
+func registerShellTools(reg *ToolRegistry, deps *toolDeps) error {
 	// shell
 	if err := reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: defShell()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			cmd := fmt.Sprint(args["command"])
-			timeout := s.cfg.DefaultCommandTimeoutMS
+			defTimeout, maxTimeout := deps.cmdTimeouts()
+			timeout := defTimeout
 			if v, ok := args["timeout_ms"].(float64); ok && int(v) > 0 {
 				timeout = int(v)
 			}
-			if s.cfg.MaxCommandTimeoutMS > 0 && timeout > s.cfg.MaxCommandTimeoutMS {
-				timeout = s.cfg.MaxCommandTimeoutMS
+			if maxTimeout > 0 && timeout > maxTimeout {
+				timeout = maxTimeout
 			}
 			res, err := env.ExecCommand(ctx, cmd, timeout, "", nil)
 
@@ -926,17 +1070,14 @@ func registerSubagentTools(reg *ToolRegistry, s *Session) {
 	})
 }
 
-func registerTaskTools(reg *ToolRegistry, s *Session) {
+func registerTaskTools(reg *ToolRegistry, deps *toolDeps) {
 	// Task management.
 	_ = reg.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: defTaskList(s.profile.ReasoningEffortLevels())},
+		Tool: llm.Tool{Definition: defTaskList(deps.reasoningEffortLevels)},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
-			s.mu.Lock()
-			s.taskToolEverUsed = true
-			s.taskToolLastRound = s.totalRounds
-			s.mu.Unlock()
-			store := s.getOrCreateTaskStore()
+			deps.taskGuard.MarkUsed()
+			store := deps.taskGuard.Store()
 			action := fmt.Sprint(args["action"])
 			switch action {
 			case "view":
@@ -1052,9 +1193,9 @@ func registerTaskTools(reg *ToolRegistry, s *Session) {
 					for _, t := range store.View() {
 						if t.ID == manuallyStartedID {
 							if t.ReasoningEffort != "" {
-								s.SetReasoningEffort(t.ReasoningEffort)
+								deps.taskGuard.SetReasoningEffort(t.ReasoningEffort)
 							}
-							s.Steer(formatCurrentTaskSteering(t))
+							deps.steer(formatCurrentTaskSteering(t))
 							break
 						}
 					}
@@ -1075,9 +1216,9 @@ func registerTaskTools(reg *ToolRegistry, s *Session) {
 							next := eligible[0]
 							if err := store.Update([]TaskUpdate{{ID: next.ID, Status: TaskInProgress}}); err == nil {
 								if next.ReasoningEffort != "" {
-									s.SetReasoningEffort(next.ReasoningEffort)
+									deps.taskGuard.SetReasoningEffort(next.ReasoningEffort)
 								}
-								s.Steer(formatCurrentTaskSteering(next))
+								deps.steer(formatCurrentTaskSteering(next))
 							}
 						} else {
 							// No eligible task. If nothing remains open or in_progress,
@@ -1090,7 +1231,7 @@ func registerTaskTools(reg *ToolRegistry, s *Session) {
 								}
 							}
 							if allDone && len(store.View()) > 0 {
-								s.Steer(taskReminderAllDone())
+								deps.steer(taskReminderAllDone())
 								msg.WriteString("All tasks complete. ")
 							}
 						}
@@ -1107,14 +1248,14 @@ func registerTaskTools(reg *ToolRegistry, s *Session) {
 	})
 }
 
-func registerWebTools(reg *ToolRegistry, s *Session) {
+func registerWebTools(reg *ToolRegistry, deps *toolDeps) {
 	// Web fetch.
 	_ = reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: defWebFetch()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			rawURL := fmt.Sprint(args["url"])
 			question := fmt.Sprint(args["question"])
-			return s.webFetch(ctx, rawURL, question)
+			return deps.web.fetch(ctx, rawURL, question)
 		},
 	})
 
@@ -1122,31 +1263,31 @@ func registerWebTools(reg *ToolRegistry, s *Session) {
 	// OpenAI and Anthropic handle web search natively via req.WebSearch;
 	// registering a function tool named "web_search" for those providers
 	// causes a duplicate name collision with the adapter-injected server tool.
-	if s.profile.BehaviorTag() == "google" {
+	if deps.webSearchEnabled {
 		_ = reg.Register(RegisteredTool{
 			Tool: llm.Tool{Definition: defWebSearch()},
 			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 				query := fmt.Sprint(args["query"])
-				return s.webSearch(ctx, query)
+				return deps.web.search(ctx, query)
 			},
 		})
 	}
 }
 
-func registerCommunicateTool(reg *ToolRegistry, s *Session) {
+func registerCommunicateTool(reg *ToolRegistry, deps *toolDeps) {
 	// communicate is the only user-facing message channel.
 	// Use the profile's definition if available (it may have been modified by
 	// WithAllowedDecisions to add extra fields to the output schema).
 	// Fall back to the base definition otherwise.
-	resultToolDef := defCommunicateNamed(s.resultToolName())
-	if existing := reg.Get(s.resultToolName()); existing != nil {
+	resultToolDef := defCommunicateNamed(deps.resultToolName())
+	if existing := reg.Get(deps.resultToolName()); existing != nil {
 		resultToolDef = existing.Definition
 	}
 	_ = reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: resultToolDef},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
-			if err := s.abortIfClosing(ctx); err != nil {
+			if err := deps.abort(ctx); err != nil {
 				return nil, err
 			}
 			message := ""
@@ -1175,11 +1316,11 @@ func registerCommunicateTool(reg *ToolRegistry, s *Session) {
 			if explicitStructuredOutput {
 				resultText = structuredText
 			}
-			if err := s.abortIfClosing(ctx); err != nil {
+			if err := deps.abort(ctx); err != nil {
 				return nil, err
 			}
 
-			s.emit(EventCommunicate, CommunicateData{
+			deps.emit(EventCommunicate, CommunicateData{
 				AwaitReply: awaitReply,
 				Message:    message,
 			})
@@ -1188,7 +1329,7 @@ func registerCommunicateTool(reg *ToolRegistry, s *Session) {
 			// in the wire shape, so image-bearing entries are also appended
 			// as TurnSteering to keep their ContentImage parts available to
 			// the next model round.
-			drained := s.drainSteering()
+			drained := deps.drainSteering()
 			inbox := make([]string, 0, len(drained))
 			var deferred []steeringMessage
 			for _, msg := range drained {
@@ -1199,15 +1340,9 @@ func registerCommunicateTool(reg *ToolRegistry, s *Session) {
 					deferred = append(deferred, msg)
 				}
 			}
-			s.prependSteering(deferred)
+			deps.prependSteering(deferred)
 
-			s.mu.Lock()
-			s.communicated = true
-			s.communicateAwaitReply = awaitReply
-			s.communicateText = message
-			s.communicateReply = resultText
-			s.communicateOutput = structuredText
-			s.mu.Unlock()
+			deps.setCommunicateResult(awaitReply, message, resultText, structuredText)
 
 			resp := map[string]any{
 				"accepted":    true,
@@ -1220,7 +1355,7 @@ func registerCommunicateTool(reg *ToolRegistry, s *Session) {
 	})
 }
 
-func registerSkillTool(reg *ToolRegistry, s *Session) {
+func registerSkillTool(reg *ToolRegistry, deps *toolDeps) {
 	// use_skill (progressive disclosure of skill instructions).
 	// Present for provider profiles that include the use_skill tool definition.
 	if reg.Get("use_skill") != nil {
@@ -1230,11 +1365,11 @@ func registerSkillTool(reg *ToolRegistry, s *Session) {
 				_ = ctx
 				_ = env
 				skillName := fmt.Sprint(args["skill_name"])
-				meta, ok := s.skills[skillName]
+				meta, ok := deps.skill(skillName)
 				if !ok {
 					return nil, fmt.Errorf("skill %q not found", skillName)
 				}
-				s.emit(EventSkillActivated, SkillActivatedData{Name: skillName})
+				deps.emit(EventSkillActivated, SkillActivatedData{Name: skillName})
 				body, err := LoadSkillBody(meta)
 				if err != nil {
 					return nil, fmt.Errorf("loading skill %q: %w", skillName, err)
