@@ -175,6 +175,35 @@ func TestLoadClient_ResolverPicksConfig_WhenMaterialized(t *testing.T) {
 	}
 }
 
+// TestBuildResolveProfile_AlwaysUsesConfig verifies that BuildResolveProfile
+// always delegates to ResolveProfileFromConfig regardless of the hasConfig
+// argument. The env-fallback branch (SelectProfile) was removed; passing
+// hasConfig=false must still resolve a materialized instance name, not fall
+// back to env-based selection.
+func TestBuildResolveProfile_AlwaysUsesConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "providers.toml")
+	if err := os.WriteFile(path, []byte(validProvidersToml), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv("SERF_PROVIDERS_CONFIG", path)
+
+	_, cfg, _, err := LoadClient()
+	if err != nil {
+		t.Fatalf("LoadClient: %v", err)
+	}
+
+	// Even with hasConfig=false the resolver must use the config path.
+	resolver := BuildResolveProfile(cfg, false)
+	profile, err := resolver("work/gpt-4o")
+	if err != nil {
+		t.Fatalf("resolver(work/gpt-4o): %v", err)
+	}
+	if profile.ID() != "work" {
+		t.Fatalf("profile.ID()=%q, want %q", profile.ID(), "work")
+	}
+}
+
 func TestLoadClientMaterializesAndInjects(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("SERF_PROVIDERS_CONFIG", filepath.Join(dir, "providers.toml"))

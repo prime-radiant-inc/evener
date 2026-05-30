@@ -66,17 +66,11 @@ func LoadClient(opts ...llm.EnvOption) (*llm.Client, providerconfig.Config, bool
 }
 
 // BuildResolveProfile returns the SessionConfig.ResolveProfile closure.
-// When hasConfig is true, instance names are resolved via ResolveProfileFromConfig;
-// otherwise the existing SelectProfile (env-based) path is used.
+// Instance names are always resolved via ResolveProfileFromConfig (config is
+// always present after LoadClient). The hasConfig parameter is retained for
+// call-site compatibility and is ignored.
 func BuildResolveProfile(cfg providerconfig.Config, hasConfig bool) func(ref string) (agent.ProviderProfile, error) {
 	return func(ref string) (agent.ProviderProfile, error) {
-		if hasConfig {
-			return agent.ResolveProfileFromConfig(cfg, ref)
-		}
-		mr, err := ParseModelRef(ref)
-		if err != nil {
-			return nil, err
-		}
-		return SelectProfile(mr.Provider, mr.Model, "")
+		return agent.ResolveProfileFromConfig(cfg, ref)
 	}
 }

@@ -135,7 +135,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 	defer closeAPILog() //nolint:errcheck
 
-	profile, err := buildInitialProfile(provCfg, hasProvConfig, modelRef, cfg.outputSchema)
+	profile, err := buildInitialProfile(provCfg, modelRef, cfg.outputSchema)
 	if err != nil {
 		return err
 	}

@@ -18,9 +18,9 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
-// TestBuildInitialProfile_ConfigPath verifies that when a providers.toml is
-// loaded (hasProvConfig=true), buildInitialProfile resolves a custom instance
-// name to a profile whose ID matches the instance name, not the provider type.
+// TestBuildInitialProfile_ConfigPath verifies that buildInitialProfile resolves
+// a custom instance name (e.g. "work" defined in providers.toml) to a profile
+// whose ID matches the instance name, not the provider type.
 func TestBuildInitialProfile_ConfigPath(t *testing.T) {
 	cfg := providerconfig.Config{
 		Default: "work",
@@ -28,7 +28,7 @@ func TestBuildInitialProfile_ConfigPath(t *testing.T) {
 			{Name: "work", Type: "openai"},
 		},
 	}
-	profile, err := buildInitialProfile(cfg, true, cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "")
+	profile, err := buildInitialProfile(cfg, cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "")
 	if err != nil {
 		t.Fatalf("buildInitialProfile: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestBuildInitialProfile_ConfigPath(t *testing.T) {
 }
 
 // TestBuildInitialProfile_ConfigPathInvalidOutputSchema verifies that an invalid
-// --output-schema returns an error on the config path.
+// --output-schema returns an error.
 func TestBuildInitialProfile_ConfigPathInvalidOutputSchema(t *testing.T) {
 	cfg := providerconfig.Config{
 		Default: "work",
@@ -46,7 +46,7 @@ func TestBuildInitialProfile_ConfigPathInvalidOutputSchema(t *testing.T) {
 			{Name: "work", Type: "openai"},
 		},
 	}
-	_, err := buildInitialProfile(cfg, true, cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "{not json")
+	_, err := buildInitialProfile(cfg, cmdutil.ModelRef{Provider: "work", Model: "gpt-4o"}, "{not json")
 	if err == nil {
 		t.Fatal("expected error for invalid --output-schema JSON")
 	}
@@ -55,21 +55,8 @@ func TestBuildInitialProfile_ConfigPathInvalidOutputSchema(t *testing.T) {
 	}
 }
 
-// TestBuildInitialProfile_EnvPath verifies that when no providers.toml is
-// loaded (hasProvConfig=false), buildInitialProfile falls through to
-// SelectProfile and uses canonical provider type names.
-func TestBuildInitialProfile_EnvPath(t *testing.T) {
-	profile, err := buildInitialProfile(providerconfig.Config{}, false, cmdutil.ModelRef{Provider: "openai", Model: "gpt-5.2"}, "")
-	if err != nil {
-		t.Fatalf("buildInitialProfile: %v", err)
-	}
-	if profile.ID() != "openai" {
-		t.Fatalf("profile.ID() = %q, want %q", profile.ID(), "openai")
-	}
-}
-
 // TestBuildInitialProfile_UnknownInstanceError verifies that an unknown
-// instance name on the config path returns the expected error.
+// instance name returns the expected error.
 func TestBuildInitialProfile_UnknownInstanceError(t *testing.T) {
 	cfg := providerconfig.Config{
 		Default: "work",
@@ -77,12 +64,33 @@ func TestBuildInitialProfile_UnknownInstanceError(t *testing.T) {
 			{Name: "work", Type: "openai"},
 		},
 	}
-	_, err := buildInitialProfile(cfg, true, cmdutil.ModelRef{Provider: "unknown", Model: "gpt-4o"}, "")
+	_, err := buildInitialProfile(cfg, cmdutil.ModelRef{Provider: "unknown", Model: "gpt-4o"}, "")
 	if err == nil {
 		t.Fatal("expected error for unknown instance name")
 	}
 	if !strings.Contains(err.Error(), "unknown instance") {
 		t.Fatalf("error=%q, want to contain 'unknown instance'", err.Error())
+	}
+}
+
+// TestBuildInitialProfile_MaterializedInstance verifies that buildInitialProfile
+// resolves a type-named instance (e.g. "openai/gpt-5") through the config path,
+// matching the contract that LoadClient materializes a config before callers see it.
+func TestBuildInitialProfile_MaterializedInstance(t *testing.T) {
+	// Simulate a materialized config where the instance name equals the type name,
+	// which is what materializeProvidersConfig produces.
+	cfg := providerconfig.Config{
+		Default: "openai",
+		Instances: []providerconfig.InstanceConfig{
+			{Name: "openai", Type: "openai"},
+		},
+	}
+	profile, err := buildInitialProfile(cfg, cmdutil.ModelRef{Provider: "openai", Model: "gpt-5"}, "")
+	if err != nil {
+		t.Fatalf("buildInitialProfile: %v", err)
+	}
+	if profile.ID() != "openai" {
+		t.Fatalf("profile.ID() = %q, want %q", profile.ID(), "openai")
 	}
 }
 
@@ -221,7 +229,13 @@ func TestRunServeNonInteractiveFlagControlsPromptAddendum(t *testing.T) {
 	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providerconfig.Config, bool, error) {
 		client := llm.NewClient()
 		client.Register(serveLoggingAdapter{})
-		return client, providerconfig.Config{}, false, nil
+		cfg := providerconfig.Config{
+			Default: "openai",
+			Instances: []providerconfig.InstanceConfig{
+				{Name: "openai", Type: "openai"},
+			},
+		}
+		return client, cfg, true, nil
 	}
 	t.Cleanup(func() {
 		serveLoadClient = oldLoadClient
