@@ -1,4 +1,4 @@
-package main
+package launchcheck
 
 import (
 	"context"
@@ -54,7 +54,10 @@ type launchCheckResponse struct {
 	Diagnostics []appwire.ModelListDiagnostic `json:"diagnostics,omitempty"`
 }
 
-func runLaunchCheck(args []string, stdout, stderr io.Writer) error {
+// RunLaunchCheck executes the launch-check command, writing the launch contract
+// to stdout and diagnostics to stderr. It validates the requested appwire
+// protocol and, when requested, the provider/model ref and launchable models.
+func RunLaunchCheck(args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("launch-check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	model := fs.String("model", "", "provider/model to validate")

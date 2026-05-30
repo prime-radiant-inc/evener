@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmd/serf/internal/cliprompt"
+	"primeradiant.com/serf/cmd/serf/internal/launchcheck"
 	"primeradiant.com/serf/cmdutil"
 )
 
@@ -241,7 +242,7 @@ func dispatchCLICommand(args []string, stdin io.Reader, stdout, stderr io.Writer
 	case "serve":
 		return true, "serf serve", runServe(args[1:])
 	case "launch-check":
-		return true, "serf launch-check", runLaunchCheck(args[1:], stdout, stderr)
+		return true, "serf launch-check", launchcheck.RunLaunchCheck(args[1:], stdout, stderr)
 	case "openai":
 		return true, "serf openai", runOpenAI(args[1:], stdin, stdout, stderr)
 	default:

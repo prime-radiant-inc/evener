@@ -1,4 +1,4 @@
-package main
+package launchcheck
 
 import (
 	"bytes"
@@ -21,7 +21,7 @@ import (
 
 func TestLaunchCheckReportsProtocolAndValidatedModel(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	err := runLaunchCheck([]string{
+	err := RunLaunchCheck([]string{
 		"--protocol", appwire.ProtocolVersion,
 		"--model", "openrouter/free",
 		"--json",
@@ -46,7 +46,7 @@ func TestLaunchCheckListsLiveModelsFromConfiguredProviders(t *testing.T) {
 	configureLaunchCheckOpenAIModels(t, `{"data":[{"id":"gpt-live"},{"id":"text-embedding-3-small"}]}`)
 
 	var stdout, stderr bytes.Buffer
-	err := runLaunchCheck([]string{
+	err := RunLaunchCheck([]string{
 		"--protocol", appwire.ProtocolVersion,
 		"--models",
 		"--json",
@@ -72,7 +72,7 @@ func TestLaunchCheckReportsModelEnumerationDiagnostics(t *testing.T) {
 	configureLaunchCheckOpenAIModelStatus(t, http.StatusForbidden, `{"error":"forbidden"}`)
 
 	var stdout, stderr bytes.Buffer
-	err := runLaunchCheck([]string{
+	err := RunLaunchCheck([]string{
 		"--protocol", appwire.ProtocolVersion,
 		"--models",
 		"--json",
@@ -124,7 +124,7 @@ func TestLaunchCheckRejectsModelMissingFromLiveProviderList(t *testing.T) {
 	configureLaunchCheckOpenAIModels(t, `{"data":[{"id":"gpt-live"}]}`)
 
 	var stdout, stderr bytes.Buffer
-	err := runLaunchCheck([]string{
+	err := RunLaunchCheck([]string{
 		"--protocol", appwire.ProtocolVersion,
 		"--model", "openai/gpt-stale",
 		"--json",
@@ -144,7 +144,7 @@ func TestLaunchCheckAcceptsModelWhenProviderCannotEnumerateModels(t *testing.T) 
 	configureLaunchCheckOpenAIModelStatus(t, http.StatusForbidden, `{"error":"forbidden"}`)
 
 	var stdout, stderr bytes.Buffer
-	err := runLaunchCheck([]string{
+	err := RunLaunchCheck([]string{
 		"--protocol", appwire.ProtocolVersion,
 		"--model", "openai/gpt-5.5",
 		"--json",
@@ -227,7 +227,7 @@ func (launchCheckTimeoutError) Temporary() bool { return true }
 
 func TestLaunchCheckRejectsUnsupportedProvider(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	err := runLaunchCheck([]string{
+	err := RunLaunchCheck([]string{
 		"--protocol", appwire.ProtocolVersion,
 		"--model", "missing/free",
 		"--json",
@@ -245,7 +245,7 @@ func TestLaunchCheckRejectsUnsupportedProvider(t *testing.T) {
 
 func TestLaunchCheckRejectsProtocolMismatch(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	err := runLaunchCheck([]string{
+	err := RunLaunchCheck([]string{
 		"--protocol", "serf-appwire-v0",
 		"--model", "openrouter/free",
 		"--json",
@@ -255,25 +255,6 @@ func TestLaunchCheckRejectsProtocolMismatch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unsupported appwire protocol") {
 		t.Fatalf("error=%v", err)
-	}
-}
-
-func TestLaunchCheckDispatchesFromTopLevel(t *testing.T) {
-	var stdout, stderr bytes.Buffer
-	handled, label, err := dispatchCLICommand([]string{
-		"launch-check",
-		"--protocol", appwire.ProtocolVersion,
-		"--model", "openrouter/free",
-		"--json",
-	}, strings.NewReader(""), &stdout, &stderr)
-	if err != nil {
-		t.Fatalf("dispatchCLICommand: %v", err)
-	}
-	if !handled {
-		t.Fatal("dispatchCLICommand handled=false, want true")
-	}
-	if label != "serf launch-check" {
-		t.Fatalf("label=%q, want serf launch-check", label)
 	}
 }
 
@@ -296,7 +277,7 @@ type = "openai"
 	oaitest.IsolateOpenAIAuth(t)
 
 	var stdout, stderr bytes.Buffer
-	err := runLaunchCheck([]string{
+	err := RunLaunchCheck([]string{
 		"--protocol", appwire.ProtocolVersion,
 		"--model", "work2/gpt-5.2",
 		"--json",
@@ -336,7 +317,7 @@ base_url = "https://example.test/v1"
 	oaitest.IsolateOpenAIAuth(t)
 
 	var stdout, stderr bytes.Buffer
-	err := runLaunchCheck([]string{
+	err := RunLaunchCheck([]string{
 		"--protocol", appwire.ProtocolVersion,
 		"--model", "compat-x/some-model",
 		"--json",
@@ -372,7 +353,7 @@ type = "openai"
 	oaitest.IsolateOpenAIAuth(t)
 
 	var stdout, stderr bytes.Buffer
-	err := runLaunchCheck([]string{
+	err := RunLaunchCheck([]string{
 		"--protocol", appwire.ProtocolVersion,
 		"--model", "missing/some-model",
 		"--json",
