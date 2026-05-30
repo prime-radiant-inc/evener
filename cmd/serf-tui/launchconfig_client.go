@@ -148,6 +148,74 @@ type authLoginCompleteResultMsg struct {
 	Err      error
 }
 
+type instanceListResultMsg struct {
+	List appwire.InstanceListResponse
+	Err  error
+}
+
+type instanceSetDefaultMsg struct {
+	Name string
+}
+
+type instanceRemoveMsg struct {
+	Name string
+}
+
+type instanceMutateResultMsg struct {
+	List appwire.InstanceListResponse
+	Err  error
+}
+
+func cmdInstanceList(client *appwire.Client) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var resp appwire.InstanceListResponse
+		err := client.Request(ctx, appwire.MethodSerfInstanceList, appwire.EmptyParams{}, &resp)
+		return instanceListResultMsg{List: resp, Err: err}
+	}
+}
+
+func cmdInstanceCreate(client *appwire.Client, params appwire.InstanceCreateParams) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var resp appwire.InstanceListResponse
+		err := client.Request(ctx, appwire.MethodSerfInstanceCreate, params, &resp)
+		return instanceMutateResultMsg{List: resp, Err: err}
+	}
+}
+
+func cmdInstanceEdit(client *appwire.Client, params appwire.InstanceEditParams) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var resp appwire.InstanceListResponse
+		err := client.Request(ctx, appwire.MethodSerfInstanceEdit, params, &resp)
+		return instanceMutateResultMsg{List: resp, Err: err}
+	}
+}
+
+func cmdInstanceRemove(client *appwire.Client, name string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var resp appwire.InstanceListResponse
+		err := client.Request(ctx, appwire.MethodSerfInstanceRemove, appwire.InstanceRemoveParams{Name: name}, &resp)
+		return instanceMutateResultMsg{List: resp, Err: err}
+	}
+}
+
+func cmdInstanceSetDefault(client *appwire.Client, name string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var resp appwire.InstanceListResponse
+		err := client.Request(ctx, appwire.MethodSerfInstanceSetDefault, appwire.InstanceSetDefaultParams{Name: name}, &resp)
+		return instanceMutateResultMsg{List: resp, Err: err}
+	}
+}
+
 func cmdAuthLoginComplete(client *appwire.Client, provider, flowID, redirectURL string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

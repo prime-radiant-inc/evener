@@ -910,6 +910,11 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case authListResultMsg:
+		// authListResultMsg is no longer forwarded to credentialsPanel (which
+		// now uses instanceListResultMsg). Keep the case to avoid a compile
+		// error from existing hub_auth_test.go references; msgs are dropped.
+		return m, nil
+	case instanceListResultMsg:
 		if m.credentialsPanel != nil {
 			updated, cmd := m.credentialsPanel.Update(msg)
 			panel := updated.(credentialsPanel)
@@ -917,20 +922,54 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		return m, nil
+	case instanceMutateResultMsg:
+		if msg.Err != nil {
+			m.err = msg.Err
+			return m, nil
+		}
+		m.err = nil
+		// Refresh the panel with the updated list returned by the mutation.
+		if m.credentialsPanel != nil {
+			updated, cmd := m.credentialsPanel.Update(instanceListResultMsg{List: msg.List})
+			panel := updated.(credentialsPanel)
+			m.credentialsPanel = &panel
+			return m, cmd
+		}
+		return m, nil
+	case instanceSetDefaultMsg:
+		if m.client != nil {
+			return m, cmdInstanceSetDefault(m.client, msg.Name)
+		}
+		return m, nil
+	case instanceRemoveMsg:
+		if m.client != nil {
+			return m, cmdInstanceRemove(m.client, msg.Name)
+		}
+		return m, nil
+	case instanceCreateSubmitMsg:
+		if m.client != nil {
+			return m, cmdInstanceCreate(m.client, msg.Params)
+		}
+		return m, nil
+	case instanceEditSubmitMsg:
+		if m.client != nil {
+			return m, cmdInstanceEdit(m.client, msg.Params)
+		}
+		return m, nil
 	case credentialsActionMsg:
 		switch msg.Action {
 		case "set":
-			modal := newTextInputModalMasked(fmt.Sprintf("API key for %s:", msg.Provider), "credential-set:"+msg.Provider)
+			modal := newTextInputModalMasked(fmt.Sprintf("API key for %s:", msg.Instance), "credential-set:"+msg.Instance)
 			m.followupModal = &modal
 			return m, nil
 		case "logout":
 			if m.client != nil {
-				return m, cmdAuthLogout(m.client, msg.Provider)
+				return m, cmdAuthLogout(m.client, msg.Instance)
 			}
 			return m, nil
 		case "oauth":
 			if m.client != nil {
-				return m, cmdAuthLoginStart(m.client, msg.Provider)
+				return m, cmdAuthLoginStart(m.client, msg.Instance)
 			}
 			return m, nil
 		}
@@ -1050,7 +1089,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.err = nil
 		if m.credentialsPanel != nil && m.client != nil {
-			return m, cmdAuthList(m.client)
+			return m, cmdInstanceList(m.client)
 		}
 		return m, nil
 	case authLoginStartResultMsg:
@@ -1069,7 +1108,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.err = nil
 		if m.credentialsPanel != nil && m.client != nil {
-			return m, cmdAuthList(m.client)
+			return m, cmdInstanceList(m.client)
 		}
 		return m, nil
 	case launchSetLayerResultMsg:
@@ -2653,7 +2692,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 	switch notification.Method {
 	case appwire.NotifySerfAuthUpdated:
 		if m.credentialsPanel != nil && m.client != nil {
-			return cmdAuthList(m.client)
+			return cmdInstanceList(m.client)
 		}
 		return nil
 	case appwire.NotifySerfLaunchUpdated:

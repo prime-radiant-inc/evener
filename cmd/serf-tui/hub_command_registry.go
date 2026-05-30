@@ -317,7 +317,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 			panel := newCredentialsPanel()
 			m.credentialsPanel = &panel
 			if m.client != nil {
-				return cmdAuthList(m.client)
+				return cmdInstanceList(m.client)
 			}
 			return nil
 		},
