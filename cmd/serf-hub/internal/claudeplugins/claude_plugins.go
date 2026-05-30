@@ -1,4 +1,4 @@
-package main
+package claudeplugins
 
 import (
 	"encoding/json"
@@ -15,7 +15,7 @@ type claudeSettingsFile struct {
 	EnabledPlugins map[string]json.RawMessage `json:"enabledPlugins"`
 }
 
-func defaultHubLaunchDefaults() launchconfig.Layer {
+func DefaultHubLaunchDefaults() launchconfig.Layer {
 	return launchconfig.Layer{PluginDirs: defaultEnabledClaudePluginDirs()}
 }
 
@@ -24,10 +24,10 @@ func defaultEnabledClaudePluginDirs() []string {
 	if err != nil || home == "" {
 		return nil
 	}
-	return enabledClaudePluginDirs(home)
+	return EnabledClaudePluginDirs(home)
 }
 
-func enabledClaudePluginDirs(home string) []string {
+func EnabledClaudePluginDirs(home string) []string {
 	if home == "" {
 		return nil
 	}

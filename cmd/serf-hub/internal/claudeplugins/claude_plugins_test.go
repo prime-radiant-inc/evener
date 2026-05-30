@@ -1,4 +1,4 @@
-package main
+package claudeplugins
 
 import (
 	"os"
@@ -33,7 +33,7 @@ func TestEnabledClaudePluginDirsResolvesEnabledCacheEntries(t *testing.T) {
 	writePluginManifest(t, home, "market", "delta", "1.0.0", ".claude-plugin")
 	writePluginManifestWithoutHooks(t, home, "market", "epsilon", "1.0.0")
 
-	got := enabledClaudePluginDirs(home)
+	got := EnabledClaudePluginDirs(home)
 	want := []string{
 		filepath.Join(home, ".claude", "plugins", "cache", "market", "alpha", "2.0.0"),
 		filepath.Join(home, ".claude", "plugins", "cache", "market", "delta", "1.0.0"),
