@@ -1,4 +1,6 @@
-package main
+// Package toolsummary renders compact one-line descriptions and optional
+// detail bodies for tool calls in the serf-tui transcript.
+package toolsummary
 
 import (
 	"bytes"
@@ -13,14 +15,12 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-// summarizeTool returns a compact one-line description and an optional
+// SummarizeTool returns a compact one-line description and an optional
 // multi-line detail body for a tool call.
 //
-// Deprecated: renderToolCall now uses the toolRenderers registry (tool_renderers.go)
-// for display. This function is still called by historyToMessages, model.go, and
-// hub_types.go to populate toolCallInfo.Description / Detail fields. Those callers
-// will be updated in a follow-up wave; until then this function must remain.
-func summarizeTool(toolName, argsJSON string) (desc, detail string) {
+// Callers populate toolCallInfo.Description / Detail fields from this in
+// hub_types.go and message.go.
+func SummarizeTool(toolName, argsJSON string) (desc, detail string) {
 	if argsJSON == "" {
 		return "", ""
 	}

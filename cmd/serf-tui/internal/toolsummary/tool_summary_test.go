@@ -1,4 +1,4 @@
-package main
+package toolsummary
 
 import (
 	"strings"
@@ -6,14 +6,14 @@ import (
 )
 
 func TestSummarizeTool_Shell_WithPurpose(t *testing.T) {
-	desc, _ := summarizeTool("shell", `{"command":"ls -la /tmp","purpose":"list temp files"}`)
+	desc, _ := SummarizeTool("shell", `{"command":"ls -la /tmp","purpose":"list temp files"}`)
 	if desc != "list temp files" {
 		t.Errorf("got %q", desc)
 	}
 }
 
 func TestSummarizeTool_Shell_WithLegacyDescription(t *testing.T) {
-	desc, _ := summarizeTool("shell", `{"command":"ls -la /tmp","description":"list temp files"}`)
+	desc, _ := SummarizeTool("shell", `{"command":"ls -la /tmp","description":"list temp files"}`)
 	if desc != "list temp files" {
 		t.Errorf("got %q", desc)
 	}
@@ -21,7 +21,7 @@ func TestSummarizeTool_Shell_WithLegacyDescription(t *testing.T) {
 
 func TestSummarizeTool_Shell_MultiLine(t *testing.T) {
 	cmd := "line one\nline two\nline three"
-	desc, detail := summarizeTool("shell", `{"command":"`+strings.ReplaceAll(cmd, "\n", `\n`)+`"}`)
+	desc, detail := SummarizeTool("shell", `{"command":"`+strings.ReplaceAll(cmd, "\n", `\n`)+`"}`)
 	if desc != "line one" {
 		t.Errorf("desc: got %q, want first line", desc)
 	}
@@ -31,7 +31,7 @@ func TestSummarizeTool_Shell_MultiLine(t *testing.T) {
 }
 
 func TestSummarizeTool_Shell_Short(t *testing.T) {
-	desc, detail := summarizeTool("shell", `{"command":"go build ./..."}`)
+	desc, detail := SummarizeTool("shell", `{"command":"go build ./..."}`)
 	if desc != "go build ./..." {
 		t.Errorf("got %q", desc)
 	}
@@ -42,7 +42,7 @@ func TestSummarizeTool_Shell_Short(t *testing.T) {
 
 func TestSummarizeTool_Shell_LongSingleLine(t *testing.T) {
 	long := strings.Repeat("x", 100)
-	desc, detail := summarizeTool("shell", `{"command":"`+long+`"}`)
+	desc, detail := SummarizeTool("shell", `{"command":"`+long+`"}`)
 	if !strings.HasSuffix(desc, "…") {
 		t.Errorf("long desc should be truncated: %q", desc)
 	}
@@ -62,7 +62,7 @@ func TestSummarizeTool_ReadFile(t *testing.T) {
 		{`{"file_path":"/foo/bar/baz.go","offset":100,"limit":50}`, "…/bar/baz.go :100+50"},
 	}
 	for _, tt := range tests {
-		desc, _ := summarizeTool("read_file", tt.json)
+		desc, _ := SummarizeTool("read_file", tt.json)
 		if desc != tt.want {
 			t.Errorf("read_file %s → %q, want %q", tt.json, desc, tt.want)
 		}
@@ -70,7 +70,7 @@ func TestSummarizeTool_ReadFile(t *testing.T) {
 }
 
 func TestSummarizeTool_WriteFile(t *testing.T) {
-	desc, _ := summarizeTool("write_file", `{"file_path":"/a/b/c.go","content":"line1\nline2\nline3"}`)
+	desc, _ := SummarizeTool("write_file", `{"file_path":"/a/b/c.go","content":"line1\nline2\nline3"}`)
 	if !strings.Contains(desc, "c.go") {
 		t.Errorf("missing filename: %q", desc)
 	}
@@ -80,7 +80,7 @@ func TestSummarizeTool_WriteFile(t *testing.T) {
 }
 
 func TestSummarizeTool_EditFile_DescAndDiff(t *testing.T) {
-	desc, detail := summarizeTool("edit_file", `{"file_path":"/a/b/c.go","old_string":"func foo()","new_string":"func bar()"}`)
+	desc, detail := SummarizeTool("edit_file", `{"file_path":"/a/b/c.go","old_string":"func foo()","new_string":"func bar()"}`)
 	if !strings.Contains(desc, "c.go") {
 		t.Errorf("desc missing filename: %q", desc)
 	}
@@ -94,7 +94,7 @@ func TestSummarizeTool_EditFile_DescAndDiff(t *testing.T) {
 }
 
 func TestSummarizeTool_Glob(t *testing.T) {
-	desc, _ := summarizeTool("glob", `{"pattern":"**/*.go","path":"/some/dir"}`)
+	desc, _ := SummarizeTool("glob", `{"pattern":"**/*.go","path":"/some/dir"}`)
 	if !strings.Contains(desc, "**/*.go") {
 		t.Errorf("missing pattern: %q", desc)
 	}
@@ -104,14 +104,14 @@ func TestSummarizeTool_Glob(t *testing.T) {
 }
 
 func TestSummarizeTool_Grep(t *testing.T) {
-	desc, _ := summarizeTool("grep", `{"pattern":"func.*Error","path":"/src"}`)
+	desc, _ := SummarizeTool("grep", `{"pattern":"func.*Error","path":"/src"}`)
 	if !strings.Contains(desc, "func.*Error") {
 		t.Errorf("missing pattern: %q", desc)
 	}
 }
 
 func TestSummarizeTool_TaskList_View(t *testing.T) {
-	desc, detail := summarizeTool("task_list", `{"action":"view"}`)
+	desc, detail := SummarizeTool("task_list", `{"action":"view"}`)
 	if desc != "view" {
 		t.Errorf("got %q", desc)
 	}
@@ -121,7 +121,7 @@ func TestSummarizeTool_TaskList_View(t *testing.T) {
 }
 
 func TestSummarizeTool_TaskList_Append(t *testing.T) {
-	desc, detail := summarizeTool("task_list", `{"action":"append","tasks":[{"description":"do thing A","prompt":"do A fully"},{"description":"do thing B","prompt":"do B fully"}]}`)
+	desc, detail := SummarizeTool("task_list", `{"action":"append","tasks":[{"description":"do thing A","prompt":"do A fully"},{"description":"do thing B","prompt":"do B fully"}]}`)
 	if desc != "append 2 tasks" {
 		t.Errorf("desc: got %q", desc)
 	}
@@ -134,7 +134,7 @@ func TestSummarizeTool_TaskList_Append(t *testing.T) {
 }
 
 func TestSummarizeTool_TaskList_Update(t *testing.T) {
-	desc, detail := summarizeTool("task_list", `{"action":"update","updates":[{"id":1,"status":"done"},{"id":2,"status":"inProgress"}]}`)
+	desc, detail := SummarizeTool("task_list", `{"action":"update","updates":[{"id":1,"status":"done"},{"id":2,"status":"inProgress"}]}`)
 	if desc != "update 2 tasks" {
 		t.Errorf("desc: got %q", desc)
 	}
@@ -153,42 +153,42 @@ func TestSummarizeTool_TaskList_Update(t *testing.T) {
 }
 
 func TestSummarizeTool_WebSearch(t *testing.T) {
-	desc, _ := summarizeTool("web_search", `{"query":"golang context timeout"}`)
+	desc, _ := SummarizeTool("web_search", `{"query":"golang context timeout"}`)
 	if !strings.Contains(desc, "golang context timeout") {
 		t.Errorf("got %q", desc)
 	}
 }
 
 func TestSummarizeTool_SpawnAgent(t *testing.T) {
-	desc, _ := summarizeTool("spawn_agent", `{"task":"Explore the codebase and find all usages of the Foo interface"}`)
+	desc, _ := SummarizeTool("spawn_agent", `{"task":"Explore the codebase and find all usages of the Foo interface"}`)
 	if !strings.Contains(desc, "Explore") {
 		t.Errorf("got %q", desc)
 	}
 }
 
 func TestSummarizeTool_Communicate(t *testing.T) {
-	desc, _ := summarizeTool("communicate", `{"message":"Building..."}`)
+	desc, _ := SummarizeTool("communicate", `{"message":"Building..."}`)
 	if !strings.Contains(desc, "Building") {
 		t.Errorf("got %q", desc)
 	}
 }
 
 func TestSummarizeTool_Fallback(t *testing.T) {
-	desc, _ := summarizeTool("unknown_tool", `{"foo":"bar","num":42}`)
+	desc, _ := SummarizeTool("unknown_tool", `{"foo":"bar","num":42}`)
 	if !strings.Contains(desc, "bar") && !strings.Contains(desc, "42") {
 		t.Errorf("fallback should show short values: %q", desc)
 	}
 }
 
 func TestSummarizeTool_Empty(t *testing.T) {
-	desc, detail := summarizeTool("shell", "")
+	desc, detail := SummarizeTool("shell", "")
 	if desc != "" || detail != "" {
 		t.Errorf("empty args should return empty: %q %q", desc, detail)
 	}
 }
 
 func TestSummarizeTool_InvalidJSON(t *testing.T) {
-	desc, _ := summarizeTool("shell", "not json")
+	desc, _ := SummarizeTool("shell", "not json")
 	if desc != "not json" {
 		t.Errorf("invalid JSON should return raw: %q", desc)
 	}

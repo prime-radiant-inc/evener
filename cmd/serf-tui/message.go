@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmd/serf-tui/internal/toolsummary"
 	"primeradiant.com/serf/llm"
 )
 
@@ -478,7 +479,7 @@ func historyToMessages(turns []agent.Turn) []chatMessage {
 
 					// Non-communicate tool call: show as collapsed tool entry.
 					argsJSON := string(tc.Arguments)
-					toolDesc, toolDetail := summarizeTool(tc.Name, argsJSON)
+					toolDesc, toolDetail := toolsummary.SummarizeTool(tc.Name, argsJSON)
 					result := toolResults[tc.ID]
 					output := fmt.Sprintf("%v", result.Content)
 					info := &toolCallInfo{

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/cmd/serf-tui/internal/toolsummary"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -306,7 +307,7 @@ func threadItemToolDone(item appwire.ThreadItem, completed bool) bool {
 }
 
 func toolInfoFromThreadItem(item appwire.ThreadItem, done bool) *toolCallInfo {
-	desc, detail := summarizeTool(item.ToolName, item.ArgumentsJSON)
+	desc, detail := toolsummary.SummarizeTool(item.ToolName, item.ArgumentsJSON)
 	return &toolCallInfo{
 		Name:        item.ToolName,
 		Description: desc,
@@ -330,7 +331,7 @@ func mergeThreadItemIntoToolInfo(info *toolCallInfo, item appwire.ThreadItem, do
 		info.Hidden = item.ToolName == "communicate"
 	}
 	if item.ArgumentsJSON != "" || info.Description == "" {
-		desc, detail := summarizeTool(item.ToolName, item.ArgumentsJSON)
+		desc, detail := toolsummary.SummarizeTool(item.ToolName, item.ArgumentsJSON)
 		info.Description = desc
 		info.Detail = detail
 		info.RawArgs = item.ArgumentsJSON
