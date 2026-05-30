@@ -15,9 +15,9 @@ type OODAStrategy struct {
 }
 
 // NewOODAStrategy creates an OODAStrategy backed by the given ContextManager
-// and Session.
-func NewOODAStrategy(cm *ContextManager, session *Session) (*OODAStrategy, error) {
-	sls, err := NewSessionLogStrategy(cm, session)
+// and host.
+func NewOODAStrategy(cm *ContextManager, host StrategyHost) (*OODAStrategy, error) {
+	sls, err := NewSessionLogStrategy(cm, host)
 	if err != nil {
 		return nil, err
 	}

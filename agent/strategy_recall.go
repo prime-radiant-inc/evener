@@ -14,15 +14,15 @@ import (
 // agent to retrieve information from compacted-away history.
 type RecallStrategy struct {
 	compact *CompactStrategy
-	session *Session // reference to parent session for saving/transcript access
+	session StrategyHost // parent session for saving/transcript access
 }
 
 // NewRecallStrategy creates a RecallStrategy backed by the given ContextManager.
-// The session reference may be nil during construction if not yet available.
-func NewRecallStrategy(cm *ContextManager, session *Session) *RecallStrategy {
+// The host reference may be nil during construction if not yet available.
+func NewRecallStrategy(cm *ContextManager, host StrategyHost) *RecallStrategy {
 	return &RecallStrategy{
 		compact: NewCompactStrategy(cm),
-		session: session,
+		session: host,
 	}
 }
 
@@ -47,13 +47,13 @@ func transcriptPath(stateDir, sessionID string) string {
 
 // recallToolDef builds the RegisteredTool for the "recall" tool.
 func recallToolDef(strategy *RecallStrategy) RegisteredTool {
-	return buildRecallTool(func() *Session { return strategy.session })
+	return buildRecallTool(func() StrategyHost { return strategy.session })
 }
 
-// buildRecallTool creates a recall RegisteredTool that uses getSession to
+// buildRecallTool creates a recall RegisteredTool that uses getHost to
 // obtain the parent session at call time. Shared by RecallStrategy and
 // SessionLogStrategy.
-func buildRecallTool(getSession func() *Session) RegisteredTool {
+func buildRecallTool(getHost func() StrategyHost) RegisteredTool {
 	return RegisteredTool{
 		Tool: llm.Tool{
 			Definition: llm.ToolDefinition{
@@ -77,20 +77,20 @@ func buildRecallTool(getSession func() *Session) RegisteredTool {
 				return nil, fmt.Errorf("recall requires a non-empty 'question' string")
 			}
 
-			sess := getSession()
-			if sess == nil {
+			host := getHost()
+			if host == nil {
 				return nil, fmt.Errorf("recall: no session reference available")
 			}
 
 			// Save a full snapshot (with history) for the transcript search tools.
 			// maybeAutoSave only writes lightweight meta now, so we need the full snapshot here.
-			snap := sess.Snapshot()
-			if err := SaveSession(sess.stateDir, snap); err != nil {
+			snap := host.Snapshot()
+			if err := SaveSession(host.StateDir(), snap); err != nil {
 				return nil, fmt.Errorf("recall: save snapshot for search: %w", err)
 			}
 
-			path := transcriptPath(sess.stateDir, sess.id)
-			return recallExecute(ctx, sess.client, sess.profile.ID(), sess.profile.Model(), path, question)
+			path := transcriptPath(host.StateDir(), host.ID())
+			return recallExecute(ctx, host.Client(), host.Profile().ID(), host.Profile().Model(), path, question)
 		},
 	}
 }

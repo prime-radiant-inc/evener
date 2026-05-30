@@ -139,6 +139,25 @@ type Session struct {
 
 func (s *Session) ID() string { return s.id }
 
+// StrategyHost forwarders. Each is a one-line forwarder to existing state or
+// methods so context strategies can depend on the StrategyHost interface
+// instead of the concrete *Session type. Emit and WithResponseSideEffects
+// forward to the existing emit/withResponseSideEffects so lock and
+// side-effect semantics are unchanged.
+var _ StrategyHost = (*Session)(nil)
+
+func (s *Session) Emit(kind EventKind, data any) { s.emit(kind, data) }
+
+func (s *Session) WithResponseSideEffects(ctx context.Context, fn func()) error {
+	return s.withResponseSideEffects(ctx, fn)
+}
+
+func (s *Session) StateDir() string { return s.stateDir }
+
+func (s *Session) Profile() ProviderProfile { return s.profile }
+
+func (s *Session) Client() *llm.Client { return s.client }
+
 // SetReasoningEffort updates the reasoning effort used for future LLM calls.
 // Takes effect on the next request (spec).
 func (s *Session) SetReasoningEffort(effort string) {

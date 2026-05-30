@@ -6,6 +6,22 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// StrategyHost is the narrow surface a ContextStrategy needs from its owning
+// session. Strategies depend on this interface rather than on *Session, which
+// breaks the context⇄session back-cycle: the strategy_*.go files no longer
+// reference the concrete *Session type. *Session satisfies StrategyHost.
+type StrategyHost interface {
+	Emit(kind EventKind, data any)
+	WithResponseSideEffects(ctx context.Context, fn func()) error
+	StateDir() string
+	ID() string
+	Profile() ProviderProfile
+	// Snapshot and Client are used by the recall tool to persist a transcript
+	// and run the search sub-agent.
+	Snapshot() SessionSnapshot
+	Client() *llm.Client
+}
+
 // ContextStrategy defines how a session manages context pressure.
 type ContextStrategy interface {
 	// ManageContext is called before each LLM request. It may modify history

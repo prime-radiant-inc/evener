@@ -15,22 +15,22 @@ import (
 // tool, and forked summarization in AfterAction.
 type SessionLogStrategy struct {
 	cm      *ContextManager
-	session *Session
+	session StrategyHost
 	log     *SessionLog
 }
 
 // NewSessionLogStrategy creates a SessionLogStrategy backed by the given
-// ContextManager and Session. The session log is persisted alongside the
+// ContextManager and host. The session log is persisted alongside the
 // session snapshot.
-func NewSessionLogStrategy(cm *ContextManager, session *Session) (*SessionLogStrategy, error) {
-	logPath := filepath.Join(session.stateDir, "sessions", session.id+".log.jsonl")
+func NewSessionLogStrategy(cm *ContextManager, host StrategyHost) (*SessionLogStrategy, error) {
+	logPath := filepath.Join(host.StateDir(), "sessions", host.ID()+".log.jsonl")
 	log, err := NewSessionLog(logPath)
 	if err != nil {
 		return nil, fmt.Errorf("session log strategy: %w", err)
 	}
 	return &SessionLogStrategy{
 		cm:      cm,
-		session: session,
+		session: host,
 		log:     log,
 	}, nil
 }
@@ -43,7 +43,7 @@ func (s *SessionLogStrategy) Tools() []RegisteredTool {
 
 // sessionLogRecallToolDef builds the recall RegisteredTool for this strategy.
 func sessionLogRecallToolDef(strategy *SessionLogStrategy) RegisteredTool {
-	return buildRecallTool(func() *Session { return strategy.session })
+	return buildRecallTool(func() StrategyHost { return strategy.session })
 }
 
 // ManageContext applies compaction layers selectively:
@@ -243,7 +243,7 @@ func extractOriginalPromptLine(text, prefix string) string {
 // AfterAction forks a summarization of the recent turns and appends the
 // result to the session log. Errors from the LLM are non-fatal.
 func (s *SessionLogStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
-	if s.session == nil || s.session.profile == nil {
+	if s.session == nil || s.session.Profile() == nil {
 		return nil
 	}
 	// Pass only the last ~10 turns so the cheap model summarizes
@@ -252,15 +252,15 @@ func (s *SessionLogStrategy) AfterAction(ctx context.Context, history []Turn, cl
 	if len(recent) > 10 {
 		recent = recent[len(recent)-10:]
 	}
-	entry, err := ForkSummarize(ctx, client, s.session.profile, recent, len(history))
+	entry, err := ForkSummarize(ctx, client, s.session.Profile(), recent, len(history))
 	if err != nil {
 		// Non-fatal: log the error but don't fail the session.
 		return nil
 	}
-	return s.session.withResponseSideEffects(ctx, func() {
-		s.session.emit(EventForkSummary, ForkSummaryData{Turn: entry.Turn})
+	return s.session.WithResponseSideEffects(ctx, func() {
+		s.session.Emit(EventForkSummary, ForkSummaryData{Turn: entry.Turn})
 		if err := s.log.Append(entry); err != nil {
-			s.session.emit(EventWarning, WarningData{Message: "session log append failed: " + err.Error()})
+			s.session.Emit(EventWarning, WarningData{Message: "session log append failed: " + err.Error()})
 		}
 	})
 }
