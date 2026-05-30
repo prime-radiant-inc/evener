@@ -2,7 +2,8 @@
 
 How serf stores provider credentials, signs you in to OpenAI, and how the
 **hub** turns a launch request into a running model session. This documents the
-**current** implementation (as of 2026-05) so you can navigate it quickly.
+**current** implementation (as of 2026-05, after Phase 1c all-config-driven /
+hub materialization) so you can navigate it quickly.
 
 Companion docs:
 
@@ -13,11 +14,12 @@ Companion docs:
 The model to carry over from `llm-providers.md`: a provider has **two
 identities** — the instance **name** (`req.Provider`/`profile.ID()`/the adapter
 registration name) routes and identifies, while the behavior **tag**
-(`profile.BehaviorTag()`) drives provider-conditional behavior. By default they
-coincide at runtime (one instance per type), so the credential lookup below is
-keyed by the type name; a `providers.toml` (Phase 1b) adds named/custom instances,
-each with its own credentials and — for the `openai` tag — its own OAuth record.
-This doc is about *where the credentials live* and *which process reads them*.
+(`profile.BehaviorTag()`) drives provider-conditional behavior. For the default
+env-seeded instances they coincide (one instance per type, name == type), so the
+credential lookup below is keyed by the type name; a `providers.toml` (Phase 1b+)
+adds named/custom instances, each with its own credentials and — for the `openai`
+tag — its own OAuth record. This doc is about *where the credentials live* and
+*which process reads them*.
 
 ---
 
@@ -30,7 +32,7 @@ instances — a `providers.toml`:
 |-------|------|--------|-------|----------|
 | Credentials store | `<hubStateRoot>/credentials.toml` (chmod 600) | TOML | `internal/credentials` | API keys, keyed by provider type |
 | OpenAI OAuth record | `<stateDir>/auth/<instance>.json` (chmod 600) | JSON | `internal/auth/openai` | OpenAI ChatGPT/Codex OAuth tokens, per instance |
-| Providers config | `<stateRoot>/providers.toml` | TOML | `internal/providerconfig` | named/custom instances (type, apiStyle, base URL, optional inline `api_key`) |
+| Providers config | `<stateRoot>/providers.toml` | TOML | `internal/providerconfig` | descriptors-only instance list (type, apiStyle, base URL, quirks — never `api_key`) |
 | Process environment | n/a | env vars | the OS | fallback / base URLs / tuning |
 
 The **hub process never runs a model**. To validate or list models it spawns
@@ -252,18 +254,19 @@ This is the part most worth internalizing: **the hub orchestrates, separate
                         │                                              │
    credentials.toml ───▶│  credentials.Store (main.go:103)            │
    openai.json     ───▶│  hubAuthController (app_auth.go)             │
+   providers.toml  ─────▶  MaterializeProvidersConfig (main.go:120)   │
                         │  HubSpawner (spawn.go)                       │
                         └───────────────┬──────────────┬──────────────┘
                                         │              │
-                  env only (no config   │              │  env only
-                  file crosses here)    │              │
+                  SERF_PROVIDERS_CONFIG │              │  SERF_PROVIDERS_CONFIG
+                  + one API key         │              │  + one API key
                                         ▼              ▼
               ┌─────────────────────────────┐   ┌─────────────────────────────┐
               │ serf launch-check           │   │ serf serve  (the daemon)    │
               │ (subprocess, short-lived)   │   │ (subprocess, long-lived)    │
               │ cmd/serf/launch_check.go    │   │ cmd/serf/serve.go           │
               │                             │   │                             │
-              │ llm.NewFromEnv()            │   │ llm.NewFromEnv()            │
+              │ cmdutil.LoadClient()        │   │ cmdutil.LoadClient()        │
               │ → ProviderNames / ListModels│   │ → runs the session          │
               │ validates one model         │   │ writes a rendezvous entry   │
               └─────────────────────────────┘   └──────────────┬──────────────┘
@@ -314,13 +317,12 @@ config-aware:
 
 - **Profile validation is credential-free.** `validateLaunchCheckProfile`
   (`launch_check.go:119`) loads just the config (`launchCheckLoadConfig:35`, same
-  `SERF_PROVIDERS_CONFIG`-else-default path resolution as `LoadClient`): with a
-  config it resolves via `agent.ResolveProfileFromConfig` (`:125`) so **custom
-  instance names are valid**; otherwise it falls back to `cmdutil.SelectProfile`
-  (`:128`). It needs no API keys, so the launch contract resolves even with no
+  `SERF_PROVIDERS_CONFIG`-else-default path resolution as `LoadClient`): it always
+  resolves via `agent.ResolveProfileFromConfig` (`:125`) so **custom instance names
+  are valid**. It needs no API keys, so the launch contract resolves even with no
   credentials present.
 - **Model listing** (`launchCheckModels:132`) builds a live client via
-  `launchCheckLoadClient` (`:28` → `cmdutil.LoadClient`, config-or-env),
+  `launchCheckLoadClient` (`:28` → `cmdutil.LoadClient`, always config-driven),
   enumerates `client.ProviderNames()`, and filters by **behavior tag**
   (`client.BehaviorTagOf(provider)`, `:146`) — `openrouter-anthropic` is skipped,
   non-chat model IDs are dropped.
@@ -347,21 +349,25 @@ config-aware:
 `serf serve` (`cmd/serf/serve.go`) builds its client with `cmdutil.LoadClient`
 (via the `serveLoadClient` test hook, `serve.go:39`), resolves the model with
 `cmdutil.ResolveModelRef` (`serve.go:155`) + `buildInitialProfile`
-(`serve.go:171,440`) — which takes the config path (`ResolveProfileFromConfig`) or
-the env path (`SelectProfile`) and re-applies the output-schema/decisions
+(`serve.go:171,440`) — which always uses `ResolveProfileFromConfig` (config is
+always present after `LoadClient`) and re-applies the output-schema/decisions
 overrides — and on startup writes a rendezvous entry carrying `modelRef.Provider`
 (`serve.go:404`). The standalone `serf run` (`cmd/serf/run.go:127,138`) and the
 hub's own live-models endpoint behind `/api/models` (`cmd/serf-hub/web.go:2027`)
 likewise build via `cmdutil.LoadClient`, so all three see custom instances.
 
-`cmdutil.LoadClient` picks the builder: with a `providers.toml` it calls
-`llm.NewFromProviders` (one adapter per instance, built through the
-`RegisterInstanceAdapterFactory` registry); otherwise `llm.NewFromEnv`
-(`llm/env_registry.go:45`), which is factory-driven — each provider package
-registers an env-adapter factory in `init()` (`RegisterEnvAdapterFactory`), and a
-provider is "configured" iff its factory returns `configured = true` (e.g.
-openai-compatible only registers when `OPENAI_COMPATIBLE_BASE_URL` is set,
-`openaicompat/adapter.go:88-99`). `ProviderNames()` (`llm/client.go:63`) returns
+`cmdutil.LoadClient` (`cmdutil/load_client.go:31`) is **always** `NewFromProviders`
+— it loads `providers.toml` when present, or seeds the config in memory from the
+environment via `cmdutil.seedConfigFromEnv` (`cmdutil/materialize.go:18`) when
+absent, then injects credentials via `credentials.Store.ResolveKey(name, typ)`
+(`internal/credentials/store.go:184`) into the in-memory config and calls
+`llm.NewFromProviders`. No disk write ever occurs in `LoadClient`; persisting
+`providers.toml` is the hub's responsibility. The hub (`cmd/serf-hub/main.go:120–131`)
+materializes the file on startup when absent via
+`cmdutil.MaterializeProvidersConfig` (`cmdutil/materialize.go:54`) and passes the
+path to spawned children via `SERF_PROVIDERS_CONFIG`. `llm.NewFromEnv` is retained
+as the seed's detection input and for `launch_check.go`'s read-only validator, but
+is no longer a runtime default. `ProviderNames()` (`llm/client.go:63`) returns
 only the registered instances.
 
 ---
@@ -376,10 +382,10 @@ only the registered instances.
   the past index entry and **passes the stored `ProfileID` through as the
   provider** (PRI-1880); it errors on an empty `ProfileID` rather than silently
   dropping it. The old hardcoded whitelist (which omitted `openai-compatible` and
-  would silently drop unknown names) was **removed** — downstream `serf` resolves
-  it via the config (`ResolveProfileFromConfig`) or, on the env path,
-  `SelectProfile` (so a legacy `ProfileID == "gemini"` still resolves to the
-  `google` adapter). The resolved provider + model then drive the spawn.
+  would silently drop unknown names) was **removed** — downstream `serf` always
+  resolves via `ResolveProfileFromConfig` (so a legacy `ProfileID == "gemini"`
+  still resolves to the `google` adapter). The resolved provider + model then drive
+  the spawn.
 - On **CLI resume**, the stored `meta.ProfileID` is fed into
   `cmdutil.ResolveModelRef` → `buildInitialProfile` (`cmd/serf/serve.go`,
   `cmd/serf/run.go`).
