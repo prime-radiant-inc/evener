@@ -11,6 +11,7 @@ import (
 	"text/tabwriter"
 
 	"primeradiant.com/serf/buildinfo"
+	"primeradiant.com/serf/cmd/serf/internal/cliprompt"
 	"primeradiant.com/serf/cmdutil"
 )
 
@@ -95,7 +96,7 @@ func main() {
 	isResume := *flags.resume != "" || *flags.resumeWith != "" || *flags.resumeLast || *flags.listSessions
 	stat, _ := os.Stdin.Stat()
 	stdinIsCharDevice := stat != nil && (stat.Mode()&os.ModeCharDevice) != 0
-	prompt := readPromptFromArgsOrStdin(fs.Args(), *flags.listSessions, os.Stdin, stdinIsCharDevice)
+	prompt := cliprompt.Read(fs.Args(), *flags.listSessions, os.Stdin, stdinIsCharDevice)
 
 	if prompt == "" && !isResume {
 		fs.Usage()
