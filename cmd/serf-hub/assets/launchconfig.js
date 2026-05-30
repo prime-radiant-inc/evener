@@ -30,6 +30,12 @@
     authLogout: (provider) => request("serf/auth/logout", { provider }),
     authDeviceStart: (provider) => request("serf/auth/device/start", { provider }),
     authDevicePoll: (provider, flowId) => request("serf/auth/device/poll", { provider, flowId }),
+
+    instanceList: () => request("serf/instance/list", {}),
+    instanceCreate: (params) => request("serf/instance/create", params),
+    instanceEdit: (params) => request("serf/instance/edit", params),
+    instanceRemove: (name) => request("serf/instance/remove", { name }),
+    instanceSetDefault: (name) => request("serf/instance/setDefault", { name }),
   };
 
   function schemaPathKind(kind) {

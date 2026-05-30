@@ -2848,9 +2848,9 @@ func TestWeb_ApiModels_ReturnsLaunchErrorWhenLaunchModelListerFails(t *testing.T
 }
 
 func TestWeb_SettingsProvidersShowsLaunchModelDiagnostics(t *testing.T) {
-	// The providers tab is now JS-driven via launchconfig.authList(); provider
-	// data is no longer server-rendered. Verify the page loads and wires up the
-	// JS hook correctly.
+	// The /settings/providers tab is now a redirect stub pointing to the
+	// unified /credentials screen. Verify it returns 200 and includes the
+	// redirect link to /credentials.
 	web := NewWebServer(WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Spawner: &fakeRPCSpawner{},
@@ -2865,17 +2865,14 @@ func TestWeb_SettingsProvidersShowsLaunchModelDiagnostics(t *testing.T) {
 		t.Fatalf("status: %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"providers-rows", "launchconfig.authList"} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("settings providers missing %q:\n%s", want, body)
-		}
+	if !strings.Contains(body, "/credentials") {
+		t.Fatalf("settings providers missing redirect link to /credentials:\n%s", body)
 	}
 }
 
 func TestWeb_SettingsProvidersShowsLaunchModelErrorDiagnostic(t *testing.T) {
-	// The providers tab is now JS-driven via launchconfig.authList(); error
-	// diagnostics are surfaced at runtime by the JS, not server-rendered.
-	// Verify the page still returns 200 and includes the JS entry point.
+	// The /settings/providers tab is now a redirect stub; verify it returns 200
+	// regardless of whether the spawner errors during model list resolution.
 	web := NewWebServer(WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Spawner: &fakeRPCModelContractSpawner{
@@ -2892,8 +2889,8 @@ func TestWeb_SettingsProvidersShowsLaunchModelErrorDiagnostic(t *testing.T) {
 		t.Fatalf("status: %d body=%s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "launchconfig.authList") {
-		t.Fatalf("settings providers missing JS hook:\n%s", body)
+	if !strings.Contains(body, "/credentials") {
+		t.Fatalf("settings providers missing redirect link to /credentials:\n%s", body)
 	}
 }
 
@@ -3071,8 +3068,8 @@ func TestWeb_ApiDirs_FiltersByBasename(t *testing.T) {
 }
 
 // TestWeb_Settings_Providers_RendersSerfLaunchContract checks that
-// GET /settings/providers returns 200 and includes the JS entry point that
-// fetches auth/list at runtime (provider data is no longer server-rendered).
+// GET /settings/providers returns 200 and includes a link to the unified
+// /credentials screen (the providers tab is now a redirect stub).
 func TestWeb_Settings_Providers_RendersSerfLaunchContract(t *testing.T) {
 	web := NewWebServer(WebConfig{
 		HubAddr: "127.0.0.1:9180",
@@ -3099,10 +3096,8 @@ func TestWeb_Settings_Providers_RendersSerfLaunchContract(t *testing.T) {
 		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"providers-rows", "launchconfig.authList"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("body missing %q: %q", want, body)
-		}
+	if !strings.Contains(body, "/credentials") {
+		t.Errorf("body missing redirect link to /credentials: %q", body)
 	}
 }
 

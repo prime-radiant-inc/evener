@@ -1,46 +1,14 @@
 {{define "settings-content"}}
-<h2 class="settings-h2">Providers</h2>
+<h2 class="settings-h2">Providers &amp; credentials</h2>
 <p class="settings-help">
-  Credentials for each model provider. Edit on the
-  <a href="/credentials" hx-get="/_partials/credentials" hx-target="#workspace" hx-push-url="/credentials">credentials</a>
+  Provider instances and credentials are now managed on the
+  <a href="/credentials" hx-get="/_partials/credentials" hx-target="#workspace" hx-push-url="/credentials">Providers &amp; credentials</a>
   page.
 </p>
-<dl id="providers-rows" class="settings-table" data-loaded="false">
-  <div class="row"><dt>Loading…</dt><dd></dd></div>
-</dl>
 <script>
-  (async function () {
-    const rows = document.getElementById("providers-rows");
-    function escapeHtml(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
-    function badgeState(source) {
-      // map activeSource → data-state for the typographic badge
-      switch (source) {
-        case "file": case "oauth": case "env": return "idle";
-        case "absent": return "ended";
-        case "none": return "ended";
-        case "error": case "missing": return "awaiting";
-        case "unreachable": return "warning";
-        default: return "ended";
-      }
-    }
-    try {
-      const data = await launchconfig.authList();
-      rows.innerHTML = (data.providers || []).map(p => `
-        <div class="row">
-          <dt>${escapeHtml(p.provider)}</dt>
-          <dd>
-            <span class="status-badge" data-state="${badgeState(p.activeSource)}">
-              <span class="status-dot" data-state="${badgeState(p.activeSource)}"></span>
-              ${escapeHtml(p.activeSource)}
-            </span>
-            <span class="val-text"><span class="dim">${(p.authModes || []).join(" · ") || "—"}</span></span>
-          </dd>
-        </div>
-      `).join("");
-      rows.dataset.loaded = "true";
-    } catch (err) {
-      rows.innerHTML = `<div class="row"><dt>Error</dt><dd><span class="val-text">Failed to load: ${escapeHtml(err && err.message ? err.message : String(err))}</span></dd></div>`;
-    }
-  })();
+  // Redirect to the unified providers & credentials screen.
+  if (window.history && window.location.pathname === "/settings/providers") {
+    window.location.replace("/credentials");
+  }
 </script>
 {{end}}

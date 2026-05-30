@@ -31,7 +31,7 @@ func TestWeb_CredentialsPartial(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "credentials-rows") {
+	if !strings.Contains(rec.Body.String(), "instances-root") {
 		t.Errorf("partial missing root div")
 	}
 }
