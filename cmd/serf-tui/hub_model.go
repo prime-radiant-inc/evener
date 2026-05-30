@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
+	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -172,7 +173,7 @@ type hubModel struct {
 	// turn/start, turn/queue, turn/steer, turn/drainAsSteer. Wired
 	// from main.go via setSend after tea.NewProgram constructs the
 	// program reference.
-	pending *pendingCoordinator
+	pending *pendingpkg.PendingCoordinator
 }
 
 // addPendingAttachment appends a captured image to the composer's
@@ -362,7 +363,7 @@ func newHubModel(client *appwire.Client, hubURL string, stateDirs ...string) hub
 	// tea.NewProgram so coordinator-emitted msgs reach Update. Until
 	// then, msgs are dropped harmlessly (the coordinator only emits
 	// in response to user actions, which can't happen pre-Run).
-	model.pending = newPendingCoordinator(realClock{}, func(tea.Msg) {})
+	model.pending = pendingpkg.NewPendingCoordinator(pendingpkg.RealClock{}, func(tea.Msg) {})
 	if client != nil {
 		client.SetPendingCoordinator(model.pending)
 	}
@@ -504,31 +505,31 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmd := m.applyHubNotification(msg.notification)
 		return m, tea.Batch(cmd, waitHubNotification(m.client))
-	case pendingRegisteredMsg:
-		if msg.entry.Ref != "" && !m.matchesAsyncSessionRef(msg.entry.Ref) {
+	case pendingpkg.PendingRegisteredMsg:
+		if msg.Entry.Ref != "" && !m.matchesAsyncSessionRef(msg.Entry.Ref) {
 			return m, nil
 		}
-		switch msg.entry.Method {
+		switch msg.Entry.Method {
 		case appwire.MethodTurnSteer:
 			m.session.messages = append(m.session.messages, chatMessage{
 				Kind:      msgSteering,
-				Text:      msg.entry.Text,
+				Text:      msg.Entry.Text,
 				Pending:   true,
-				PendingID: msg.entry.ID,
+				PendingID: msg.Entry.ID,
 			})
 		case appwire.MethodTurnStart:
 			m.session.messages = append(m.session.messages, chatMessage{
 				Kind:      msgUser,
-				Text:      msg.entry.Text,
+				Text:      msg.Entry.Text,
 				Pending:   true,
-				PendingID: msg.entry.ID,
+				PendingID: msg.Entry.ID,
 			})
 		case appwire.MethodTurnDrainAsSteer:
 			m.session.messages = append(m.session.messages, chatMessage{
 				Kind:      msgSteering,
 				Text:      fmt.Sprintf("draining %d → steering", len(m.sessionQueue)),
 				Pending:   true,
-				PendingID: msg.entry.ID,
+				PendingID: msg.Entry.ID,
 			})
 		case appwire.MethodTurnQueue:
 			// Queue entries surface in the queue-preview chrome, not
@@ -536,18 +537,18 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.session.refreshViewport()
 		return m, nil
-	case pendingFailedMsg:
-		if msg.entry.Ref != "" && !m.matchesAsyncSessionRef(msg.entry.Ref) {
+	case pendingpkg.PendingFailedMsg:
+		if msg.Entry.Ref != "" && !m.matchesAsyncSessionRef(msg.Entry.Ref) {
 			return m, nil
 		}
-		m.markPendingFailedByID(msg.entry.ID, msg.reason)
+		m.markPendingFailedByID(msg.Entry.ID, msg.Reason)
 		m.session.refreshViewport()
 		return m, nil
-	case pendingConfirmedMsg:
-		if msg.entry.Ref != "" && !m.matchesAsyncSessionRef(msg.entry.Ref) {
+	case pendingpkg.PendingConfirmedMsg:
+		if msg.Entry.Ref != "" && !m.matchesAsyncSessionRef(msg.Entry.Ref) {
 			return m, nil
 		}
-		m.removePendingByID(msg.entry.ID)
+		m.removePendingByID(msg.Entry.ID)
 		m.session.refreshViewport()
 		return m, nil
 	case hubSendMsg:
@@ -2852,7 +2853,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 // Drain-special: turn/drainAsSteer matches first-come-first-served
 // regardless of text, because the daemon collapses queued entries
 // into one STEERING and the placeholder doesn't know the joined text.
-func reconcilePendingFromNotification(pending *pendingCoordinator, n appwire.Notification) {
+func reconcilePendingFromNotification(pending *pendingpkg.PendingCoordinator, n appwire.Notification) {
 	ref := notificationPendingRef(n)
 	switch n.Method {
 	case appwire.NotifySerfSteeringInjected:

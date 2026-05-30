@@ -8,6 +8,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/appwire/appwiretest"
 )
@@ -36,7 +37,7 @@ func (f *fakeTimer) Stop() bool {
 	return true
 }
 
-func (c *fakeClock) AfterFunc(d time.Duration, fn func()) pendingTimer {
+func (c *fakeClock) AfterFunc(d time.Duration, fn func()) pendingpkg.PendingTimer {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	t := &fakeTimer{c: c, fire: c.now.Add(d), fn: fn}
@@ -78,7 +79,7 @@ func drainMessages(ch <-chan tea.Msg, n int, timeout time.Duration) []tea.Msg {
 func TestPendingCoordinator_RegisterEmitsRegisteredMsg(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
-	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
 
 	h := p.Register("turn/steer", "look at this", "")
 	if h == nil {
@@ -89,14 +90,14 @@ func TestPendingCoordinator_RegisterEmitsRegisteredMsg(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 registered msg, got %d", len(got))
 	}
-	reg, ok := got[0].(pendingRegisteredMsg)
+	reg, ok := got[0].(pendingpkg.PendingRegisteredMsg)
 	if !ok {
-		t.Fatalf("got %T, want pendingRegisteredMsg", got[0])
+		t.Fatalf("got %T, want pendingpkg.PendingRegisteredMsg", got[0])
 	}
-	if reg.entry.Method != "turn/steer" || reg.entry.Text != "look at this" {
-		t.Fatalf("entry: %+v", reg.entry)
+	if reg.Entry.Method != "turn/steer" || reg.Entry.Text != "look at this" {
+		t.Fatalf("entry: %+v", reg.Entry)
 	}
-	if !reg.entry.Pending {
+	if !reg.Entry.Pending {
 		t.Fatal("new entry should be Pending=true")
 	}
 }
@@ -104,7 +105,7 @@ func TestPendingCoordinator_RegisterEmitsRegisteredMsg(t *testing.T) {
 func TestPendingCoordinator_FailEmitsFailedMsg(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
-	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
 	h := p.Register("turn/steer", "x", "")
 	drainMessages(msgs, 1, 100*time.Millisecond) // consume Registered
 
@@ -114,17 +115,17 @@ func TestPendingCoordinator_FailEmitsFailedMsg(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 failed msg, got %d", len(got))
 	}
-	fm, ok := got[0].(pendingFailedMsg)
+	fm, ok := got[0].(pendingpkg.PendingFailedMsg)
 	if !ok {
 		t.Fatalf("got %T", got[0])
 	}
-	if !strings.Contains(fm.reason, "not available") {
-		t.Fatalf("reason: %q", fm.reason)
+	if !strings.Contains(fm.Reason, "not available") {
+		t.Fatalf("reason: %q", fm.Reason)
 	}
-	if !fm.entry.Failed {
+	if !fm.Entry.Failed {
 		t.Fatal("entry should be Failed=true")
 	}
-	if fm.entry.Pending {
+	if fm.Entry.Pending {
 		t.Fatal("entry should not be Pending after Fail")
 	}
 }
@@ -132,7 +133,7 @@ func TestPendingCoordinator_FailEmitsFailedMsg(t *testing.T) {
 func TestPendingCoordinator_TimeoutMarksFailed(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
-	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
 	p.Register("turn/steer", "x", "")
 	drainMessages(msgs, 1, 100*time.Millisecond) // Registered
 
@@ -142,19 +143,19 @@ func TestPendingCoordinator_TimeoutMarksFailed(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 failed msg from timeout, got %d", len(got))
 	}
-	fm, ok := got[0].(pendingFailedMsg)
+	fm, ok := got[0].(pendingpkg.PendingFailedMsg)
 	if !ok {
 		t.Fatalf("got %T", got[0])
 	}
-	if !strings.Contains(fm.reason, "server did not confirm") {
-		t.Fatalf("reason: %q", fm.reason)
+	if !strings.Contains(fm.Reason, "server did not confirm") {
+		t.Fatalf("reason: %q", fm.Reason)
 	}
 }
 
 func TestPendingCoordinator_TimedOutEntryReconcilesLateNotification(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
-	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
 	p.Register("turn/steer", "eventually lands", "")
 	drainMessages(msgs, 1, 100*time.Millisecond) // Registered
 
@@ -163,8 +164,8 @@ func TestPendingCoordinator_TimedOutEntryReconcilesLateNotification(t *testing.T
 	if len(got) != 1 {
 		t.Fatalf("expected failed msg from timeout, got %d", len(got))
 	}
-	if _, ok := got[0].(pendingFailedMsg); !ok {
-		t.Fatalf("got %T, want pendingFailedMsg", got[0])
+	if _, ok := got[0].(pendingpkg.PendingFailedMsg); !ok {
+		t.Fatalf("got %T, want pendingpkg.PendingFailedMsg", got[0])
 	}
 
 	if !p.TryReconcile("turn/steer", "eventually lands", "") {
@@ -174,24 +175,24 @@ func TestPendingCoordinator_TimedOutEntryReconcilesLateNotification(t *testing.T
 	if len(got) != 1 {
 		t.Fatalf("expected confirmed msg after late reconcile, got %d", len(got))
 	}
-	cm, ok := got[0].(pendingConfirmedMsg)
+	cm, ok := got[0].(pendingpkg.PendingConfirmedMsg)
 	if !ok {
-		t.Fatalf("got %T, want pendingConfirmedMsg", got[0])
+		t.Fatalf("got %T, want pendingpkg.PendingConfirmedMsg", got[0])
 	}
-	if cm.entry.Pending || cm.entry.Failed || cm.entry.Reason != "" {
-		t.Fatalf("confirmed entry should be terminal clean: %+v", cm.entry)
+	if cm.Entry.Pending || cm.Entry.Failed || cm.Entry.Reason != "" {
+		t.Fatalf("confirmed entry should be terminal clean: %+v", cm.Entry)
 	}
 }
 
 func TestPendingCoordinator_ReconcilePrefersLivePendingOverFailedDuplicate(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
-	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
-	failedID := p.Register("turn/steer", "same text", "").(*pendingHandleImpl).id
+	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	failedID := p.Register("turn/steer", "same text", "").(*pendingpkg.PendingHandleImpl).ID
 	drainMessages(msgs, 1, 100*time.Millisecond) // Registered
 	clock.Advance(11 * time.Second)
 	drainMessages(msgs, 1, 100*time.Millisecond) // Failed
-	liveID := p.Register("turn/steer", "same text", "").(*pendingHandleImpl).id
+	liveID := p.Register("turn/steer", "same text", "").(*pendingpkg.PendingHandleImpl).ID
 	drainMessages(msgs, 1, 100*time.Millisecond) // Registered
 
 	if !p.TryReconcile("turn/steer", "same text", "") {
@@ -201,19 +202,19 @@ func TestPendingCoordinator_ReconcilePrefersLivePendingOverFailedDuplicate(t *te
 	if len(got) != 1 {
 		t.Fatalf("expected confirmed msg, got %d", len(got))
 	}
-	cm, ok := got[0].(pendingConfirmedMsg)
+	cm, ok := got[0].(pendingpkg.PendingConfirmedMsg)
 	if !ok {
-		t.Fatalf("got %T, want pendingConfirmedMsg", got[0])
+		t.Fatalf("got %T, want pendingpkg.PendingConfirmedMsg", got[0])
 	}
-	if cm.entry.ID != liveID {
-		t.Fatalf("confirmed ID=%d, want live pending %d over failed %d", cm.entry.ID, liveID, failedID)
+	if cm.Entry.ID != liveID {
+		t.Fatalf("confirmed ID=%d, want live pending %d over failed %d", cm.Entry.ID, liveID, failedID)
 	}
 }
 
 func TestPendingCoordinator_TryReconcile_MatchesByMethodAndText(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
-	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
 	p.Register("turn/steer", "look at this", "")
 	drainMessages(msgs, 1, 100*time.Millisecond)
 
@@ -225,19 +226,19 @@ func TestPendingCoordinator_TryReconcile_MatchesByMethodAndText(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 confirmed msg, got %d", len(got))
 	}
-	cm, ok := got[0].(pendingConfirmedMsg)
+	cm, ok := got[0].(pendingpkg.PendingConfirmedMsg)
 	if !ok {
 		t.Fatalf("got %T", got[0])
 	}
-	if cm.entry.Pending || cm.entry.Failed {
-		t.Fatalf("confirmed entry should not be pending or failed: %+v", cm.entry)
+	if cm.Entry.Pending || cm.Entry.Failed {
+		t.Fatalf("confirmed entry should not be pending or failed: %+v", cm.Entry)
 	}
 }
 
 func TestPendingCoordinator_TryReconcile_DrainSpecialIgnoresText(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
-	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
 	p.Register("turn/drainAsSteer", "", "")
 	drainMessages(msgs, 1, 100*time.Millisecond) // Registered
 
@@ -249,17 +250,17 @@ func TestPendingCoordinator_TryReconcile_DrainSpecialIgnoresText(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 confirmed msg, got %d", len(got))
 	}
-	if _, ok := got[0].(pendingConfirmedMsg); !ok {
-		t.Fatalf("got %T, want pendingConfirmedMsg", got[0])
+	if _, ok := got[0].(pendingpkg.PendingConfirmedMsg); !ok {
+		t.Fatalf("got %T, want pendingpkg.PendingConfirmedMsg", got[0])
 	}
 }
 
 func TestPendingCoordinator_TryReconcile_MatchesOldestDuplicate(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
-	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
-	first := p.Register("turn/steer", "same text", "").(*pendingHandleImpl).id
-	second := p.Register("turn/steer", "same text", "").(*pendingHandleImpl).id
+	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	first := p.Register("turn/steer", "same text", "").(*pendingpkg.PendingHandleImpl).ID
+	second := p.Register("turn/steer", "same text", "").(*pendingpkg.PendingHandleImpl).ID
 	drainMessages(msgs, 2, 100*time.Millisecond)
 
 	if !p.TryReconcile("turn/steer", "same text", "") {
@@ -269,21 +270,21 @@ func TestPendingCoordinator_TryReconcile_MatchesOldestDuplicate(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 confirmed msg, got %d", len(got))
 	}
-	cm, ok := got[0].(pendingConfirmedMsg)
+	cm, ok := got[0].(pendingpkg.PendingConfirmedMsg)
 	if !ok {
-		t.Fatalf("got %T, want pendingConfirmedMsg", got[0])
+		t.Fatalf("got %T, want pendingpkg.PendingConfirmedMsg", got[0])
 	}
-	if cm.entry.ID != first {
-		t.Fatalf("confirmed ID=%d, want oldest %d; newer was %d", cm.entry.ID, first, second)
+	if cm.Entry.ID != first {
+		t.Fatalf("confirmed ID=%d, want oldest %d; newer was %d", cm.Entry.ID, first, second)
 	}
 }
 
 func TestPendingCoordinator_TryReconcile_DrainMatchesOldest(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
-	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
-	first := p.Register("turn/drainAsSteer", "", "").(*pendingHandleImpl).id
-	second := p.Register("turn/drainAsSteer", "", "").(*pendingHandleImpl).id
+	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	first := p.Register("turn/drainAsSteer", "", "").(*pendingpkg.PendingHandleImpl).ID
+	second := p.Register("turn/drainAsSteer", "", "").(*pendingpkg.PendingHandleImpl).ID
 	drainMessages(msgs, 2, 100*time.Millisecond)
 
 	if !p.TryReconcile("turn/drainAsSteer", "joined text", "") {
@@ -293,19 +294,19 @@ func TestPendingCoordinator_TryReconcile_DrainMatchesOldest(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 confirmed msg, got %d", len(got))
 	}
-	cm, ok := got[0].(pendingConfirmedMsg)
+	cm, ok := got[0].(pendingpkg.PendingConfirmedMsg)
 	if !ok {
-		t.Fatalf("got %T, want pendingConfirmedMsg", got[0])
+		t.Fatalf("got %T, want pendingpkg.PendingConfirmedMsg", got[0])
 	}
-	if cm.entry.ID != first {
-		t.Fatalf("confirmed ID=%d, want oldest %d; newer was %d", cm.entry.ID, first, second)
+	if cm.Entry.ID != first {
+		t.Fatalf("confirmed ID=%d, want oldest %d; newer was %d", cm.Entry.ID, first, second)
 	}
 }
 
 func TestPendingCoordinator_TryReconcile_NoMatchReturnsFalse(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
-	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
 	p.Register("turn/steer", "look at this", "")
 	drainMessages(msgs, 1, 100*time.Millisecond)
 
@@ -317,7 +318,7 @@ func TestPendingCoordinator_TryReconcile_NoMatchReturnsFalse(t *testing.T) {
 func TestPendingCoordinator_TryReconcileScopesByRef(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
-	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
 	p.Register("turn/steer", "same text", "local:current")
 	drainMessages(msgs, 1, 100*time.Millisecond)
 
@@ -332,7 +333,7 @@ func TestPendingCoordinator_TryReconcileScopesByRef(t *testing.T) {
 func TestReconcilePendingFromNotification_ImageOnlyUserMessage(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
-	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
 	p.Register(appwire.MethodTurnStart, "[image]", "")
 	drainMessages(msgs, 1, 100*time.Millisecond)
 
@@ -350,15 +351,15 @@ func TestReconcilePendingFromNotification_ImageOnlyUserMessage(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("expected 1 confirmed msg, got %d", len(got))
 	}
-	if _, ok := got[0].(pendingConfirmedMsg); !ok {
-		t.Fatalf("got %T, want pendingConfirmedMsg", got[0])
+	if _, ok := got[0].(pendingpkg.PendingConfirmedMsg); !ok {
+		t.Fatalf("got %T, want pendingpkg.PendingConfirmedMsg", got[0])
 	}
 }
 
 func TestReconcilePendingFromNotification_TurnCompletedUserMessage(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
-	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
 	p.Register(appwire.MethodTurnStart, "completed only", "")
 	drainMessages(msgs, 1, 100*time.Millisecond)
 
@@ -377,15 +378,15 @@ func TestReconcilePendingFromNotification_TurnCompletedUserMessage(t *testing.T)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 confirmed msg, got %d", len(got))
 	}
-	if _, ok := got[0].(pendingConfirmedMsg); !ok {
-		t.Fatalf("got %T, want pendingConfirmedMsg", got[0])
+	if _, ok := got[0].(pendingpkg.PendingConfirmedMsg); !ok {
+		t.Fatalf("got %T, want pendingpkg.PendingConfirmedMsg", got[0])
 	}
 }
 
 func TestReconcilePendingFromNotification_TurnCompletedImageOnlyUserMessage(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
-	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
 	p.Register(appwire.MethodTurnStart, "[image]", "")
 	drainMessages(msgs, 1, 100*time.Millisecond)
 
@@ -407,15 +408,15 @@ func TestReconcilePendingFromNotification_TurnCompletedImageOnlyUserMessage(t *t
 	if len(got) != 1 {
 		t.Fatalf("expected 1 confirmed msg, got %d", len(got))
 	}
-	if _, ok := got[0].(pendingConfirmedMsg); !ok {
-		t.Fatalf("got %T, want pendingConfirmedMsg", got[0])
+	if _, ok := got[0].(pendingpkg.PendingConfirmedMsg); !ok {
+		t.Fatalf("got %T, want pendingpkg.PendingConfirmedMsg", got[0])
 	}
 }
 
 func TestPendingCoordinator_FailIsIdempotent(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 8)
-	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
 	h := p.Register("turn/steer", "x", "")
 	drainMessages(msgs, 1, 100*time.Millisecond)
 	h.Fail("a")
@@ -429,7 +430,7 @@ func TestPendingCoordinator_FailIsIdempotent(t *testing.T) {
 func TestPendingCoordinator_DispatchDoesNotDropBeyondFormerOutboxCap(t *testing.T) {
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	msgs := make(chan tea.Msg, 128)
-	p := newPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
+	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { msgs <- m })
 
 	const n = 40
 	handles := make([]appwire.PendingHandle, 0, n)
@@ -448,8 +449,8 @@ func TestPendingCoordinator_DispatchDoesNotDropBeyondFormerOutboxCap(t *testing.
 		t.Fatalf("failed msgs: got %d want %d", len(got), n)
 	}
 	for i, msg := range got {
-		if _, ok := msg.(pendingFailedMsg); !ok {
-			t.Fatalf("msg %d = %T, want pendingFailedMsg", i, msg)
+		if _, ok := msg.(pendingpkg.PendingFailedMsg); !ok {
+			t.Fatalf("msg %d = %T, want pendingpkg.PendingFailedMsg", i, msg)
 		}
 	}
 }
@@ -533,7 +534,7 @@ func TestHubModel_SteerFailsFastOnRPCUnavailable(t *testing.T) {
 	client.Start(ctx)
 
 	msgs := make(chan tea.Msg, 16)
-	pending := newPendingCoordinator(realClock{}, func(msg tea.Msg) { msgs <- msg })
+	pending := pendingpkg.NewPendingCoordinator(pendingpkg.RealClock{}, func(msg tea.Msg) { msgs <- msg })
 	client.SetPendingCoordinator(pending)
 
 	go func() {
@@ -553,15 +554,15 @@ func TestHubModel_SteerFailsFastOnRPCUnavailable(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("expected 2 msgs (Registered+Failed), got %d", len(got))
 	}
-	if _, ok := got[0].(pendingRegisteredMsg); !ok {
+	if _, ok := got[0].(pendingpkg.PendingRegisteredMsg); !ok {
 		t.Fatalf("first msg = %T", got[0])
 	}
-	fm, ok := got[1].(pendingFailedMsg)
+	fm, ok := got[1].(pendingpkg.PendingFailedMsg)
 	if !ok {
 		t.Fatalf("second msg = %T", got[1])
 	}
-	if !strings.Contains(fm.reason, "not available") {
-		t.Fatalf("reason: %q", fm.reason)
+	if !strings.Contains(fm.Reason, "not available") {
+		t.Fatalf("reason: %q", fm.Reason)
 	}
 }
 
@@ -577,7 +578,7 @@ func TestPendingCoordinator_DispatchIsAsync_NoDeadlock(t *testing.T) {
 	t.Parallel()
 	clock := &fakeClock{now: time.Unix(0, 0)}
 	blockForever := make(chan tea.Msg) // unbuffered, never read
-	p := newPendingCoordinator(clock, func(m tea.Msg) { blockForever <- m })
+	p := pendingpkg.NewPendingCoordinator(clock, func(m tea.Msg) { blockForever <- m })
 
 	// Register synchronously must not block on send (we always dispatch).
 	done := make(chan bool, 1)

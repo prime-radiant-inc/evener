@@ -16,6 +16,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/agent"
+	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -3894,7 +3895,7 @@ func TestHubModelIgnoresPendingCoordinatorMessagesForOtherSessions(t *testing.T)
 	m.detail.Ref = "local:current"
 	m.session.sessionID = "current"
 
-	updated, _ := m.Update(pendingRegisteredMsg{entry: pendingEntry{
+	updated, _ := m.Update(pendingpkg.PendingRegisteredMsg{Entry: pendingpkg.PendingEntry{
 		ID:      1,
 		Method:  appwire.MethodTurnStart,
 		Text:    "wrong",
@@ -3906,7 +3907,7 @@ func TestHubModelIgnoresPendingCoordinatorMessagesForOtherSessions(t *testing.T)
 		t.Fatalf("messages=%+v, want no placeholder from other session", got.session.messages)
 	}
 
-	updated, _ = got.Update(pendingRegisteredMsg{entry: pendingEntry{
+	updated, _ = got.Update(pendingpkg.PendingRegisteredMsg{Entry: pendingpkg.PendingEntry{
 		ID:      2,
 		Method:  appwire.MethodTurnStart,
 		Text:    "right",
@@ -3918,14 +3919,14 @@ func TestHubModelIgnoresPendingCoordinatorMessagesForOtherSessions(t *testing.T)
 		t.Fatalf("messages=%+v", got.session.messages)
 	}
 
-	updated, _ = got.Update(pendingFailedMsg{
-		entry: pendingEntry{
+	updated, _ = got.Update(pendingpkg.PendingFailedMsg{
+		Entry: pendingpkg.PendingEntry{
 			ID:     2,
 			Method: appwire.MethodTurnStart,
 			Text:   "right",
 			Ref:    "local:other",
 		},
-		reason: "wrong session",
+		Reason: "wrong session",
 	})
 	got = updated.(hubModel)
 	if got.session.messages[0].Failed {

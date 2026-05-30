@@ -1,4 +1,4 @@
-package main
+package pending
 
 import (
 	"strings"
@@ -11,26 +11,26 @@ import (
 
 const pendingTimeout = 10 * time.Second
 
-// pendingClock abstracts time.AfterFunc so tests can drive timeouts
+// PendingClock abstracts time.AfterFunc so tests can drive timeouts
 // deterministically via fakeClock.
-type pendingClock interface {
-	AfterFunc(d time.Duration, fn func()) pendingTimer
+type PendingClock interface {
+	AfterFunc(d time.Duration, fn func()) PendingTimer
 }
 
-type pendingTimer interface {
+type PendingTimer interface {
 	Stop() bool
 }
 
-type realClock struct{}
+type RealClock struct{}
 
-func (realClock) AfterFunc(d time.Duration, fn func()) pendingTimer {
+func (RealClock) AfterFunc(d time.Duration, fn func()) PendingTimer {
 	return time.AfterFunc(d, fn)
 }
 
-// pendingEntry is the unit of state the coordinator tracks. ID is
+// PendingEntry is the unit of state the coordinator tracks. ID is
 // stable per Register call so reducers / view code can address an
 // entry across re-renders.
-type pendingEntry struct {
+type PendingEntry struct {
 	ID      int64
 	Method  string
 	Text    string
@@ -40,19 +40,19 @@ type pendingEntry struct {
 	Reason  string
 }
 
-// pendingRegisteredMsg / pendingConfirmedMsg / pendingFailedMsg are
+// PendingRegisteredMsg / PendingConfirmedMsg / PendingFailedMsg are
 // the tea.Msg types the coordinator emits via the send func. The
 // bubbletea model handles them by updating the reducer.
-type pendingRegisteredMsg struct{ entry pendingEntry }
-type pendingConfirmedMsg struct{ entry pendingEntry }
-type pendingFailedMsg struct {
-	entry  pendingEntry
-	reason string
+type PendingRegisteredMsg struct{ Entry PendingEntry }
+type PendingConfirmedMsg struct{ Entry PendingEntry }
+type PendingFailedMsg struct {
+	Entry  PendingEntry
+	Reason string
 }
 
-type pendingCoordinator struct {
+type PendingCoordinator struct {
 	mu      sync.Mutex
-	clock   pendingClock
+	clock   PendingClock
 	send    func(tea.Msg)
 	nextID  int64
 	entries map[int64]*pendingEntryState
@@ -66,12 +66,12 @@ type pendingCoordinator struct {
 }
 
 type pendingEntryState struct {
-	entry pendingEntry
-	timer pendingTimer
+	entry PendingEntry
+	timer PendingTimer
 }
 
-func newPendingCoordinator(clock pendingClock, send func(tea.Msg)) *pendingCoordinator {
-	p := &pendingCoordinator{
+func NewPendingCoordinator(clock PendingClock, send func(tea.Msg)) *PendingCoordinator {
+	p := &PendingCoordinator{
 		clock:   clock,
 		send:    send,
 		entries: map[int64]*pendingEntryState{},
@@ -84,8 +84,8 @@ func newPendingCoordinator(clock pendingClock, send func(tea.Msg)) *pendingCoord
 // runDispatcher drains the outbox into the registered send func.
 // One goroutine, serial delivery, never blocks the caller. The current
 // send func is snapshotted under the lock on each iteration so
-// setSend takes effect for subsequent emissions.
-func (p *pendingCoordinator) runDispatcher() {
+// SetSend takes effect for subsequent emissions.
+func (p *PendingCoordinator) runDispatcher() {
 	for {
 		p.mu.Lock()
 		for len(p.outbox) == 0 {
@@ -102,39 +102,39 @@ func (p *pendingCoordinator) runDispatcher() {
 	}
 }
 
-// setSend installs the bubbletea program's Send function. Tests wire
+// SetSend installs the bubbletea program's Send function. Tests wire
 // a buffered channel; production wires program.Send after NewProgram.
 // Safe to call before or after Register; the new send replaces the
 // old one for subsequent emissions.
-func (p *pendingCoordinator) setSend(fn func(tea.Msg)) {
+func (p *PendingCoordinator) SetSend(fn func(tea.Msg)) {
 	p.mu.Lock()
 	p.send = fn
 	p.mu.Unlock()
 }
 
-type pendingHandleImpl struct {
-	coord *pendingCoordinator
-	id    int64
+type PendingHandleImpl struct {
+	Coord *PendingCoordinator
+	ID    int64
 }
 
-func (h *pendingHandleImpl) Fail(reason string) {
-	h.coord.failByID(h.id, reason)
+func (h *PendingHandleImpl) Fail(reason string) {
+	h.Coord.failByID(h.ID, reason)
 }
 
 // Register satisfies appwire.PendingCoordinator.
-func (p *pendingCoordinator) Register(method, text, ref string) appwire.PendingHandle {
+func (p *PendingCoordinator) Register(method, text, ref string) appwire.PendingHandle {
 	p.mu.Lock()
 	p.nextID++
 	id := p.nextID
-	entry := pendingEntry{ID: id, Method: method, Text: text, Ref: strings.TrimSpace(ref), Pending: true}
+	entry := PendingEntry{ID: id, Method: method, Text: text, Ref: strings.TrimSpace(ref), Pending: true}
 	state := &pendingEntryState{entry: entry}
 	p.entries[id] = state
 	state.timer = p.clock.AfterFunc(pendingTimeout, func() {
 		p.failByID(id, "server did not confirm")
 	})
 	p.mu.Unlock()
-	p.dispatch(pendingRegisteredMsg{entry: entry})
-	return &pendingHandleImpl{coord: p, id: id}
+	p.dispatch(PendingRegisteredMsg{Entry: entry})
+	return &PendingHandleImpl{Coord: p, ID: id}
 }
 
 // dispatch enqueues a tea.Msg for delivery to the bubbletea program.
@@ -144,7 +144,7 @@ func (p *pendingCoordinator) Register(method, text, ref string) appwire.PendingH
 // dequeue while Update is still running. The dispatcher goroutine
 // drains outbox serially so order is preserved across Register /
 // Confirm / Fail emissions for the same call sequence.
-func (p *pendingCoordinator) dispatch(msg tea.Msg) {
+func (p *PendingCoordinator) dispatch(msg tea.Msg) {
 	p.mu.Lock()
 	p.outbox = append(p.outbox, msg)
 	p.outboxCond.Signal()
@@ -161,7 +161,7 @@ func (p *pendingCoordinator) dispatch(msg tea.Msg) {
 //     one steering and the placeholder doesn't know that joined text
 //     in advance. This is the spec's "drain-special" semantic.
 //   - Everything else: (method, normalized-text) exact match.
-func (p *pendingCoordinator) TryReconcile(method, text, ref string) bool {
+func (p *PendingCoordinator) TryReconcile(method, text, ref string) bool {
 	ref = strings.TrimSpace(ref)
 	p.mu.Lock()
 	var pendingMatch *pendingEntryState
@@ -219,7 +219,7 @@ func (p *pendingCoordinator) TryReconcile(method, text, ref string) bool {
 	match.entry.Reason = ""
 	matchEntry := match.entry
 	p.mu.Unlock()
-	p.dispatch(pendingConfirmedMsg{entry: matchEntry})
+	p.dispatch(PendingConfirmedMsg{Entry: matchEntry})
 	return true
 }
 
@@ -238,7 +238,7 @@ func pendingRefsMatch(entryRef, ref string) bool {
 	return false
 }
 
-func (p *pendingCoordinator) failByID(id int64, reason string) {
+func (p *PendingCoordinator) failByID(id int64, reason string) {
 	p.mu.Lock()
 	state, ok := p.entries[id]
 	if !ok || state.entry.Failed || !state.entry.Pending {
@@ -251,7 +251,7 @@ func (p *pendingCoordinator) failByID(id int64, reason string) {
 	state.entry.Reason = reason
 	entry := state.entry
 	p.mu.Unlock()
-	p.dispatch(pendingFailedMsg{entry: entry, reason: reason})
+	p.dispatch(PendingFailedMsg{Entry: entry, Reason: reason})
 }
 
 func normalizePendingText(s string) string {

@@ -64,7 +64,7 @@ func run() int {
 	}
 	program := tea.NewProgram(m, programOpts...)
 	if m.pending != nil {
-		m.pending.setSend(program.Send)
+		m.pending.SetSend(program.Send)
 	}
 	finalModel, err := program.Run()
 	if err != nil {
