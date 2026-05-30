@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"testing"
 
 	_ "primeradiant.com/serf/llm/providers/anthropic"
@@ -67,11 +66,13 @@ func TestLoadClient_WithValidConfig(t *testing.T) {
 	}
 }
 
-func TestLoadClient_NoFile_Materializes(t *testing.T) {
-	// When providers.toml is absent, LoadClient materializes it and returns
-	// hasConfig=true (always-config contract).
+func TestLoadClient_NoFile_SeedsInMemory(t *testing.T) {
+	// When providers.toml is absent, LoadClient seeds the config in memory from
+	// the environment and returns hasConfig=true (always-config contract) WITHOUT
+	// writing a file.
 	dir := t.TempDir()
-	t.Setenv("SERF_PROVIDERS_CONFIG", filepath.Join(dir, "providers.toml"))
+	path := filepath.Join(dir, "providers.toml")
+	t.Setenv("SERF_PROVIDERS_CONFIG", path)
 	t.Setenv("OPENAI_API_KEY", "sk-fake-for-test")
 
 	client, cfg, hasConfig, err := LoadClient()
@@ -79,13 +80,16 @@ func TestLoadClient_NoFile_Materializes(t *testing.T) {
 		t.Fatalf("LoadClient (absent file): %v", err)
 	}
 	if !hasConfig {
-		t.Fatal("expected hasConfig=true after materialization")
+		t.Fatal("expected hasConfig=true after in-memory seed")
 	}
 	if len(cfg.Instances) == 0 {
-		t.Fatal("expected non-empty Config after materialization")
+		t.Fatal("expected non-empty Config after seed")
 	}
 	if client == nil {
-		t.Fatal("expected non-nil client after materialization")
+		t.Fatal("expected non-nil client after seed")
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("LoadClient must not write providers.toml (stat err=%v)", statErr)
 	}
 }
 
@@ -106,7 +110,7 @@ func TestLoadClient_CorruptFile_ReturnsError(t *testing.T) {
 func TestLoadClient_DefaultPath_UsedWhenEnvNotSet(t *testing.T) {
 	// Clear SERF_PROVIDERS_CONFIG so LoadClient uses the default path.
 	// Override HOME so the default state root lands in a clean temp dir.
-	// After materialization, hasConfig must be true (always-config contract).
+	// The config is seeded in memory; hasConfig is true and no file is written.
 	t.Setenv("SERF_PROVIDERS_CONFIG", "")
 	t.Setenv("OPENAI_API_KEY", "sk-fake-for-test")
 
@@ -118,7 +122,10 @@ func TestLoadClient_DefaultPath_UsedWhenEnvNotSet(t *testing.T) {
 		t.Fatalf("LoadClient (default path, no file): %v", err)
 	}
 	if !hasConfig {
-		t.Fatal("expected hasConfig=true after materialization at default path")
+		t.Fatal("expected hasConfig=true after in-memory seed at default path")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, ".serf", "providers.toml")); !os.IsNotExist(statErr) {
+		t.Fatalf("LoadClient must not write to the default state root (stat err=%v)", statErr)
 	}
 }
 
@@ -148,8 +155,8 @@ func TestLoadClient_ResolverPicksConfig_WhenHasConfig(t *testing.T) {
 	}
 }
 
-func TestLoadClient_ResolverPicksConfig_WhenMaterialized(t *testing.T) {
-	// When providers.toml is absent it is materialized; the resolver always
+func TestLoadClient_ResolverPicksConfig_WhenSeeded(t *testing.T) {
+	// When providers.toml is absent it is seeded in memory; the resolver always
 	// goes through ResolveProfileFromConfig (always-config contract).
 	dir := t.TempDir()
 	t.Setenv("SERF_PROVIDERS_CONFIG", filepath.Join(dir, "providers.toml"))
@@ -204,9 +211,10 @@ func TestBuildResolveProfile_AlwaysUsesConfig(t *testing.T) {
 	}
 }
 
-func TestLoadClientMaterializesAndInjects(t *testing.T) {
+func TestLoadClientSeedsInMemoryAndInjects(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("SERF_PROVIDERS_CONFIG", filepath.Join(dir, "providers.toml"))
+	path := filepath.Join(dir, "providers.toml")
+	t.Setenv("SERF_PROVIDERS_CONFIG", path)
 	t.Setenv("SERF_STATE_DIR", dir)
 	t.Setenv("OPENAI_API_KEY", "sk-env")
 
@@ -215,12 +223,13 @@ func TestLoadClientMaterializesAndInjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !hasConfig {
-		t.Fatal("hasConfig must be true once materialized")
+		t.Fatal("hasConfig must be true after in-memory seed")
 	}
-	if _, err := os.Stat(filepath.Join(dir, "providers.toml")); err != nil {
-		t.Fatal("providers.toml not materialized")
+	// LoadClient must NOT write providers.toml — persisting is the hub's job.
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("LoadClient must not write providers.toml (stat err=%v)", statErr)
 	}
-	// openai instance registered + key injected into in-memory cfg
+	// openai instance registered + key injected into the in-memory cfg
 	found := false
 	for _, n := range client.ProviderNames() {
 		if n == "openai" {
@@ -238,10 +247,5 @@ func TestLoadClientMaterializesAndInjects(t *testing.T) {
 	}
 	if !injected {
 		t.Errorf("key not injected into in-memory cfg: %+v", cfg.Instances)
-	}
-	// the secret must NOT be on disk
-	data, _ := os.ReadFile(filepath.Join(dir, "providers.toml"))
-	if strings.Contains(string(data), "sk-env") {
-		t.Fatal("secret leaked to providers.toml")
 	}
 }

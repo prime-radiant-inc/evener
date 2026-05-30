@@ -26,6 +26,7 @@ func Seed(providerNames []string, defaultName string, getBaseURL func(typ string
 				Name:     "openai",
 				Type:     "openai",
 				APIStyle: StyleResponses,
+				BaseURL:  getBaseURL("openai"),
 			}
 		default:
 			baseURL := getBaseURL(name)

@@ -10,15 +10,15 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// materializeProvidersConfig detects providers from the environment and writes
-// a descriptors-only providers.toml to path. It never writes api_key values.
-// The parent directory is created if needed. The write is atomic (temp file +
-// rename). The caller is responsible for deciding whether to call this (e.g.
-// only when the file is absent).
-func materializeProvidersConfig(path string, opts ...llm.EnvOption) (providerconfig.Config, error) {
+// seedConfigFromEnv detects providers from the environment and returns a
+// descriptors-only Config. It does NOT write anything to disk. LoadClient uses
+// this for the absent-file case so a read operation never has a write side
+// effect; callers that want to persist the result (the hub) use
+// MaterializeProvidersConfig.
+func seedConfigFromEnv(opts ...llm.EnvOption) (providerconfig.Config, error) {
 	client, err := llm.NewFromEnv(opts...)
 	if err != nil {
-		return providerconfig.Config{}, fmt.Errorf("materialize providers config: detect providers: %w", err)
+		return providerconfig.Config{}, fmt.Errorf("seed providers config: detect providers: %w", err)
 	}
 
 	names := client.ProviderNames()
@@ -26,8 +26,8 @@ func materializeProvidersConfig(path string, opts ...llm.EnvOption) (providercon
 
 	getBaseURL := func(typ string) string {
 		if typ == "ollama" {
-			// Match ollama adapter's resolution order:
-			// OLLAMA_BASE_URL takes precedence over OLLAMA_HOST.
+			// Match the ollama adapter's resolution order: OLLAMA_BASE_URL
+			// takes precedence over OLLAMA_HOST.
 			if v := strings.TrimSpace(os.Getenv("OLLAMA_BASE_URL")); v != "" {
 				return v
 			}
@@ -43,7 +43,19 @@ func materializeProvidersConfig(path string, opts ...llm.EnvOption) (providercon
 		return strings.TrimSpace(os.Getenv(v))
 	}
 
-	cfg := providerconfig.Seed(names, def, getBaseURL)
+	return providerconfig.Seed(names, def, getBaseURL), nil
+}
+
+// MaterializeProvidersConfig seeds a descriptors-only config from the environment
+// (see seedConfigFromEnv) and writes it to path atomically (temp file + rename),
+// mode 0644, creating the parent directory if needed. It never writes api_key
+// values. The hub calls this on startup to persist a single source of truth;
+// LoadClient itself only seeds in memory and never writes.
+func MaterializeProvidersConfig(path string, opts ...llm.EnvOption) (providerconfig.Config, error) {
+	cfg, err := seedConfigFromEnv(opts...)
+	if err != nil {
+		return providerconfig.Config{}, err
+	}
 
 	data, err := providerconfig.Marshal(cfg)
 	if err != nil {
@@ -54,27 +66,32 @@ func materializeProvidersConfig(path string, opts ...llm.EnvOption) (providercon
 		return providerconfig.Config{}, fmt.Errorf("materialize providers config: mkdir: %w", err)
 	}
 
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	// Atomic write via a uniquely-named temp file + rename so concurrent
+	// writers never clobber a shared temp path.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".providers-*.toml.tmp")
 	if err != nil {
 		return providerconfig.Config{}, fmt.Errorf("materialize providers config: create temp file: %w", err)
 	}
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		os.Remove(tmp)
+	tmpName := tmp.Name()
+	cleanup := func() { tmp.Close(); os.Remove(tmpName) }
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
 		return providerconfig.Config{}, fmt.Errorf("materialize providers config: write temp file: %w", err)
 	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmp)
+	if err := tmp.Chmod(0o644); err != nil {
+		cleanup()
+		return providerconfig.Config{}, fmt.Errorf("materialize providers config: chmod: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
 		return providerconfig.Config{}, fmt.Errorf("materialize providers config: sync: %w", err)
 	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
 		return providerconfig.Config{}, fmt.Errorf("materialize providers config: close: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
 		return providerconfig.Config{}, fmt.Errorf("materialize providers config: rename: %w", err)
 	}
 

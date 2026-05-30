@@ -17,14 +17,15 @@ import (
 // otherwise filepath.Join(providerconfig.DefaultStateRoot(), "providers.toml").
 //
 // Behavior:
-//   - providers.toml absent → materialized from environment (descriptors only, no secrets written).
 //   - providers.toml present and valid → loaded as-is.
+//   - providers.toml absent → the config is seeded in memory from the
+//     environment (descriptors only); nothing is written to disk. Persisting the
+//     file is the hub's responsibility (MaterializeProvidersConfig on startup).
 //   - providers.toml corrupt/invalid → returns error.
 //
-// After loading or materializing the descriptors config, credentials are
-// resolved from the credentials.toml in the same directory (missing file = empty
-// store, not an error) and injected into the in-memory config only. The file on
-// disk is never written with secrets.
+// After loading or seeding the descriptors config, credentials are resolved from
+// credentials.toml in the same directory (missing file = empty store, not an
+// error) and injected into the in-memory config only — never written to disk.
 //
 // Always returns (client, cfg, true, nil) on success.
 func LoadClient(opts ...llm.EnvOption) (*llm.Client, providerconfig.Config, bool, error) {
@@ -39,9 +40,13 @@ func LoadClient(opts ...llm.EnvOption) (*llm.Client, providerconfig.Config, bool
 	}
 
 	if !exists {
-		cfg, err = materializeProvidersConfig(path, opts...)
+		// Absent file: seed the config in memory from the environment. We do
+		// NOT write here — persisting providers.toml is the hub's job
+		// (MaterializeProvidersConfig on startup), so a plain client build never
+		// has a write side effect.
+		cfg, err = seedConfigFromEnv(opts...)
 		if err != nil {
-			return nil, providerconfig.Config{}, false, fmt.Errorf("materialize providers config: %w", err)
+			return nil, providerconfig.Config{}, false, fmt.Errorf("seed providers config: %w", err)
 		}
 	}
 

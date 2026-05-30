@@ -8,6 +8,8 @@ import (
 func TestSeedDescriptorsOnly(t *testing.T) {
 	getBase := func(typ string) string {
 		switch typ {
+		case "openai":
+			return "https://oai.example/v1"
 		case "openai-compatible":
 			return "https://vllm.local/v1"
 		case "ollama":
@@ -30,7 +32,7 @@ func TestSeedDescriptorsOnly(t *testing.T) {
 	if oc.Type != "openai" || oc.APIStyle != StyleChatCompletions || oc.BaseURL != "https://vllm.local/v1" {
 		t.Errorf("openai-compatible seed = %+v", oc)
 	}
-	if byName["openai"].BaseURL != "" || byName["openai"].APIStyle != StyleResponses {
+	if byName["openai"].BaseURL != "https://oai.example/v1" || byName["openai"].APIStyle != StyleResponses {
 		t.Errorf("openai seed = %+v", byName["openai"])
 	}
 	if byName["ollama"].BaseURL != "http://localhost:11434/v1" {

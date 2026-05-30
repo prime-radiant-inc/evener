@@ -18,7 +18,7 @@ func TestMaterializeProvidersConfig(t *testing.T) {
 	// ensure no OAuth/state interferes:
 	t.Setenv("SERF_STATE_DIR", dir)
 
-	cfg, err := materializeProvidersConfig(path, llm.WithStateDir(dir))
+	cfg, err := MaterializeProvidersConfig(path, llm.WithStateDir(dir))
 	if err != nil {
 		t.Fatal(err)
 	}
