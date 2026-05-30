@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/serf/internal/appprojector"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/internal/httpguard"
 )
 
 // ImageAttachment is re-exported from package agent so HTTP clients and the
@@ -149,7 +150,7 @@ type Server struct {
 	processing          bool
 	inputCh             chan InputMessage
 	hubToken            string
-	sameOrigin          sameOriginPolicy
+	sameOrigin          httpguard.SameOriginPolicy
 }
 
 // NewServer creates a new Server.
@@ -181,7 +182,7 @@ func NewServer(cfg ServerConfig) *Server {
 		appSourceID: "local",
 		inputCh:     make(chan InputMessage, 1),
 		hubToken:    strings.TrimSpace(cfg.HubToken),
-		sameOrigin:  newSameOriginPolicy(cfg.AllowedHost),
+		sameOrigin:  httpguard.NewSameOriginPolicy(cfg.AllowedHost),
 	}
 	s.registerAppWireHandlers()
 	s.mux.HandleFunc("/rpc", s.appServer.ServeWebSocket)
@@ -201,11 +202,11 @@ func NewServer(cfg ServerConfig) *Server {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if message := s.sameOrigin.rejection(r); message != "" {
+	if message := s.sameOrigin.Rejection(r); message != "" {
 		http.Error(w, message, http.StatusForbidden)
 		return
 	}
-	if !hubTokenAuthorized(s.hubToken, r.Header.Get("Authorization")) {
+	if !httpguard.HubTokenAuthorized(s.hubToken, r.Header.Get("Authorization")) {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		http.Error(w, "missing or invalid bearer token", http.StatusUnauthorized)
 		return

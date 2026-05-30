@@ -1,4 +1,6 @@
-package server
+// Package httpguard enforces inbound HTTP request guards: same-origin host
+// and Origin checks plus bearer-token authorization.
+package httpguard
 
 import (
 	"crypto/subtle"
@@ -7,15 +9,20 @@ import (
 	"strings"
 )
 
-type sameOriginPolicy struct {
+// SameOriginPolicy validates that requests target an allowed host and, when
+// present, carry an allowed Origin header. A zero-value policy permits all
+// requests.
+type SameOriginPolicy struct {
 	hosts   map[string]struct{}
 	origins map[string]struct{}
 }
 
-func newSameOriginPolicy(allowedHost string) sameOriginPolicy {
+// NewSameOriginPolicy builds a SameOriginPolicy from a single allowed host.
+// An empty allowedHost yields a permissive policy that accepts every request.
+func NewSameOriginPolicy(allowedHost string) SameOriginPolicy {
 	allowedHost = strings.TrimSpace(allowedHost)
 	if allowedHost == "" {
-		return sameOriginPolicy{}
+		return SameOriginPolicy{}
 	}
 	hosts := map[string]struct{}{}
 	addHost := func(host string) {
@@ -40,10 +47,12 @@ func newSameOriginPolicy(allowedHost string) sameOriginPolicy {
 	for host := range hosts {
 		origins["http://"+host] = struct{}{}
 	}
-	return sameOriginPolicy{hosts: hosts, origins: origins}
+	return SameOriginPolicy{hosts: hosts, origins: origins}
 }
 
-func (p sameOriginPolicy) rejection(r *http.Request) string {
+// Rejection returns a non-empty reason when the request violates the policy,
+// or "" when the request is allowed.
+func (p SameOriginPolicy) Rejection(r *http.Request) string {
 	if len(p.hosts) == 0 {
 		return ""
 	}
@@ -58,7 +67,10 @@ func (p sameOriginPolicy) rejection(r *http.Request) string {
 	return ""
 }
 
-func hubTokenAuthorized(expected, authorization string) bool {
+// HubTokenAuthorized reports whether the Authorization header carries a bearer
+// token matching expected. An empty expected token authorizes every request.
+// The comparison is constant-time to avoid leaking the token via timing.
+func HubTokenAuthorized(expected, authorization string) bool {
 	if expected == "" {
 		return true
 	}
