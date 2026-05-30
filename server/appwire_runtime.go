@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/internal/appprojector"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/apptranscript"
 	"primeradiant.com/serf/internal/appwire"
@@ -24,7 +25,7 @@ func (s *Server) SetAppIdentity(sourceID, threadID string) {
 	s.mu.Lock()
 	s.appSourceID = sourceID
 	s.appThreadID = threadID
-	s.appProjector = NewAppEventProjector(threadID, ref)
+	s.appProjector = appprojector.NewAppEventProjector(threadID, ref)
 	s.appActiveTurnID = ""
 	s.appReservedTurnID = ""
 	s.mu.Unlock()
@@ -725,7 +726,7 @@ func (s *Server) ensureAppProjectorLocked(threadID string) {
 		threadID = s.appThreadID
 	}
 	ref := appwire.Ref{SourceID: s.appSourceID, ThreadID: threadID}.String()
-	s.appProjector = NewAppEventProjector(threadID, ref)
+	s.appProjector = appprojector.NewAppEventProjector(threadID, ref)
 }
 
 func (s *Server) reserveAppTurnID() string {

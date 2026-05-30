@@ -1,4 +1,4 @@
-package server
+package appprojector
 
 import (
 	"encoding/json"

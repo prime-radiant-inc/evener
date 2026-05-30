@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/internal/appprojector"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -123,7 +124,7 @@ type Server struct {
 	status              StatusInfo
 	appSourceID         string
 	appThreadID         string
-	appProjector        *AppEventProjector
+	appProjector        *appprojector.AppEventProjector
 	appActiveTurnID     string
 	appReservedTurnID   string
 	cancelFunc          context.CancelFunc
