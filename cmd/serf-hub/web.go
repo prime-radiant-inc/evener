@@ -48,7 +48,8 @@ type WebConfig struct {
 	CredsStore     *credentials.Store // credentials store; passed to auth controller
 	PluginDirs     []string           // explicit plugin dirs; when empty, default to ~/.config/serf/plugins/*
 	MCPConfigPath  string             // MCP config file path; when empty, default to ~/.config/serf/mcp.json
-	ProviderConfig *providerconfig.Config // instance-to-tag mapping; nil when providers.toml absent (env path)
+	ProviderConfig      *providerconfig.Config // instance-to-tag mapping; nil when providers.toml absent (env path)
+	ProvidersConfigPath string                 // path to providers.toml; forwarded to the auth controller
 	CodexSources   []appsource.CodexSourceConfig
 	CodexLaunches  []CodexLaunchConfig
 	CodexLauncher  *CodexLauncher

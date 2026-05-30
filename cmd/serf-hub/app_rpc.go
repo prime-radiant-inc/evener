@@ -107,6 +107,7 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		}
 	}
 	authController := newHubAuthControllerWithStore(hubStateRoot, cfg.CredsStore)
+	authController.providersConfigPath = cfg.ProvidersConfigPath
 	var relayMu sync.Mutex
 	relayedThreads := map[string]*hubRelayHandle{}
 	startRelay := func(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams, thread appwire.Thread) error {
