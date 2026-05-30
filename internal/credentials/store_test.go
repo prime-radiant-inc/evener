@@ -106,6 +106,30 @@ func TestResolveKeyNameThenTypeEnv(t *testing.T) {
 	}
 }
 
+func TestResolveKeyOpenAICompatibleUsesCompatEnv(t *testing.T) {
+	// A seeded openai-compatible instance has name="openai-compatible", type="openai".
+	// Its key env var is OPENAI_COMPATIBLE_API_KEY, NOT the type's OPENAI_API_KEY.
+	path := filepath.Join(t.TempDir(), "credentials.toml")
+	if err := os.WriteFile(path, []byte("schema = 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI_COMPATIBLE_API_KEY", "compat-key")
+	if v, src := s.ResolveKey("openai-compatible", "openai"); v != "compat-key" || src != SourceEnv {
+		t.Fatalf("openai-compatible env = %q/%v, want compat-key/env", v, src)
+	}
+	// the name's env var wins over the type's when both are set
+	t.Setenv("OPENAI_API_KEY", "type-key")
+	if v, _ := s.ResolveKey("openai-compatible", "openai"); v != "compat-key" {
+		t.Fatalf("name env must win over type env: got %q, want compat-key", v)
+	}
+}
+
 func TestStore_List(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "env-key")
 	t.Setenv("GEMINI_API_KEY", "")

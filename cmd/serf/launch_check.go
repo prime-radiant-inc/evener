@@ -108,7 +108,7 @@ func runLaunchCheck(args []string, stdout, stderr io.Writer) error {
 }
 
 // validateLaunchCheckProfile checks that the model ref names a known provider
-// or config instance. When SERF_PROVIDERS_CONFIG is present (hasConfig=true),
+// or config instance. When a providers.toml exists (hasConfig=true),
 // it resolves via ResolveProfileFromConfig so custom instance names are valid;
 // otherwise it falls back to SelectProfile for the env-variable path.
 //

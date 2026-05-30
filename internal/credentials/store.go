@@ -177,14 +177,25 @@ func (s *Store) List() []Provider {
 // ResolveKey returns the effective API key for a provider instance given its
 // unique name and provider type. Lookup order:
 //  1. File entry keyed by instance name.
-//  2. Env var(s) for the provider type (first non-empty wins).
+//  2. Env var(s) for the instance name, then the provider type (first non-empty
+//     wins) — so openai-compatible resolves OPENAI_COMPATIBLE_API_KEY before the
+//     type's OPENAI_API_KEY.
 //  3. Empty string with SourceAbsent.
 func (s *Store) ResolveKey(name, typ string) (string, Source) {
 	name = strings.ToLower(name)
+	typ = strings.ToLower(typ)
 	if p, ok := s.data.Providers[name]; ok && strings.TrimSpace(p.APIKey) != "" {
 		return p.APIKey, SourceFile
 	}
-	for _, env := range providerEnvVars[strings.ToLower(typ)] {
+	// Env fallback: the instance name's var(s) first (covers openai-compatible,
+	// whose key is OPENAI_COMPATIBLE_API_KEY though its type is openai), then the
+	// type's var(s) (covers custom-named instances that fall back to their type key).
+	var candidates []string
+	candidates = append(candidates, providerEnvVars[name]...)
+	if typ != name {
+		candidates = append(candidates, providerEnvVars[typ]...)
+	}
+	for _, env := range candidates {
 		if v := strings.TrimSpace(os.Getenv(env)); v != "" {
 			return v, SourceEnv
 		}
