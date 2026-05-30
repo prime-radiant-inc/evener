@@ -1,4 +1,6 @@
-package main
+// Package hostlock provides a host-level exclusive lock so at most one
+// serf-hub process runs per machine.
+package hostlock
 
 import (
 	"fmt"

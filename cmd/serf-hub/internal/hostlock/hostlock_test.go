@@ -1,4 +1,4 @@
-package main
+package hostlock
 
 import (
 	"path/filepath"

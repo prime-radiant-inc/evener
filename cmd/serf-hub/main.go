@@ -16,6 +16,7 @@ import (
 
 	"primeradiant.com/serf/cmd/serf-hub/internal/claudeplugins"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hostlock"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/binresolve"
 	"primeradiant.com/serf/internal/credentials"
@@ -62,7 +63,7 @@ func main() {
 	// flock to ensure single hub per host.
 	home, _ := os.UserHomeDir()
 	lockPath := filepath.Join(home, ".serf", "hub.lock")
-	release, err := AcquireLock(lockPath)
+	release, err := hostlock.AcquireLock(lockPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
 		os.Exit(1)
