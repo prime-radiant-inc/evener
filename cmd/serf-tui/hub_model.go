@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
 	"primeradiant.com/serf/cmd/serf-tui/internal/hubdiagnostics"
 	"primeradiant.com/serf/cmd/serf-tui/internal/hubstart"
+	"primeradiant.com/serf/cmd/serf-tui/internal/modeldisplay"
 	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -4180,9 +4181,9 @@ func (m hubModel) sessionHeaderLines() []string {
 	}
 	addPart("src", firstNonEmptyString(m.detail.SourceLabel, sourceLabelFromRefText(m.detail.Ref)))
 	addPart("branch", m.detail.Branch)
-	addPart("model", abbreviateModel(m.detail.Model))
+	addPart("model", modeldisplay.AbbreviateModel(m.detail.Model))
 	if m.detail.WorkingDir != "" {
-		addPart("dir", abbreviatePath(m.detail.WorkingDir, 32))
+		addPart("dir", modeldisplay.AbbreviatePath(m.detail.WorkingDir, 32))
 	}
 	if ctx := formatContextFragment(m.detail); ctx != "" {
 		addPart("ctx", ctx)

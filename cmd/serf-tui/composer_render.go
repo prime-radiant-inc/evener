@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"primeradiant.com/serf/cmd/serf-tui/internal/modeldisplay"
 )
 
 // composerContext holds the metadata used to render the composer chip strip.
@@ -54,7 +55,7 @@ func renderComposerChipStrip(ctx composerContext) string {
 	add("model", composeProviderModel(ctx.Provider, ctx.Model))
 	add("branch", ctx.Branch)
 	if ctx.WorkingDir != "" {
-		leftParts = append(leftParts, dim.Render(abbreviatePath(ctx.WorkingDir, 32)))
+		leftParts = append(leftParts, dim.Render(modeldisplay.AbbreviatePath(ctx.WorkingDir, 32)))
 	}
 	sep := ghost.Render(" · ")
 	leftContent := strings.Join(leftParts, sep)
@@ -153,20 +154,20 @@ func renderChipStatus(ctx composerContext, th Theme) string {
 // composeProviderModel returns "<provider>/<abbreviated-model>" when a
 // provider is known, or just the abbreviated model otherwise.
 //
-// abbreviateModel strips the first slash-segment of model (the instance name),
-// so we abbreviate first and then strip only a *duplicate* outer provider
-// prefix from the result. That keeps two cases right:
+// modeldisplay.AbbreviateModel strips the first slash-segment of model (the
+// instance name), so we abbreviate first and then strip only a *duplicate*
+// outer provider prefix from the result. That keeps two cases right:
 //   - Standard instance ("openai/gpt-5" via provider="openai"):
-//     abbreviateModel strips "openai/" → "gpt-5"; no duplicate left to trim;
+//     AbbreviateModel strips "openai/" → "gpt-5"; no duplicate left to trim;
 //     we return "openai/gpt-5".
 //   - Nested routing ("openrouter/anthropic/claude-opus-4" via
-//     provider="openrouter"): abbreviateModel strips "openrouter/" →
+//     provider="openrouter"): AbbreviateModel strips "openrouter/" →
 //     "anthropic/claude-opus-4"; no duplicate outer "openrouter/" left;
 //     we return "openrouter/anthropic/claude-opus-4".
 func composeProviderModel(provider, model string) string {
 	model = strings.TrimSpace(model)
 	provider = strings.TrimSpace(provider)
-	abbr := abbreviateModel(model)
+	abbr := modeldisplay.AbbreviateModel(model)
 	if provider != "" {
 		abbr = strings.TrimPrefix(abbr, provider+"/")
 	}

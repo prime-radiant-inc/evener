@@ -1,8 +1,10 @@
-package main
+// Package modeldisplay provides helpers for compactly rendering model IDs and
+// filesystem paths in the TUI's chip strips and headers.
+package modeldisplay
 
 import "strings"
 
-// abbreviateModel strips the first slash-segment (the instance name) and
+// AbbreviateModel strips the first slash-segment (the instance name) and
 // any trailing date suffix from a model ID, so it fits compactly in a
 // display context where the instance is already shown in a group header or
 // a separate label.
@@ -12,7 +14,7 @@ import "strings"
 //	"openrouter/anthropic/claude-opus-4" → "anthropic/claude-opus-4"
 //	"openai/gpt-5-20260101"              → "gpt-5"
 //	"bare-model"                         → "bare-model"
-func abbreviateModel(id string) string {
+func AbbreviateModel(id string) string {
 	if id == "" {
 		return ""
 	}
@@ -37,9 +39,9 @@ func abbreviateModel(id string) string {
 	return id
 }
 
-// abbreviatePath shortens a filesystem path to at most max characters,
+// AbbreviatePath shortens a filesystem path to at most max characters,
 // replacing $HOME prefix with ~ and middle-truncating if needed.
-func abbreviatePath(p string, max int) string {
+func AbbreviatePath(p string, max int) string {
 	if len(p) <= max {
 		return p
 	}

@@ -1,4 +1,4 @@
-package main
+package modeldisplay
 
 import "testing"
 
@@ -23,9 +23,9 @@ func TestAbbreviateModel(t *testing.T) {
 		{"", ""},
 	}
 	for _, tc := range tests {
-		got := abbreviateModel(tc.id)
+		got := AbbreviateModel(tc.id)
 		if got != tc.want {
-			t.Errorf("abbreviateModel(%q) = %q, want %q", tc.id, got, tc.want)
+			t.Errorf("AbbreviateModel(%q) = %q, want %q", tc.id, got, tc.want)
 		}
 	}
 }
