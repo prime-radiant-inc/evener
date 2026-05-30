@@ -125,3 +125,13 @@ func ValidateAPIStyle(typ Type, style APIStyle) error {
 	}
 	return nil
 }
+
+// ValidateType reports whether typ is a known provider type. Creating an
+// instance with an unknown type would write a providers.toml that fails the
+// next Load, so callers validate up front.
+func ValidateType(typ Type) error {
+	if !knownTypes[typ] {
+		return fmt.Errorf("unknown provider type %q", typ)
+	}
+	return nil
+}

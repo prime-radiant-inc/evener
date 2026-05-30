@@ -62,6 +62,9 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 	if err := providerconfig.ValidateInstanceName(params.Name); err != nil {
 		return fmt.Errorf("invalid instance name: %w", err)
 	}
+	if err := providerconfig.ValidateType(providerconfig.Type(params.Type)); err != nil {
+		return fmt.Errorf("invalid type: %w", err)
+	}
 	if err := providerconfig.ValidateAPIStyle(providerconfig.Type(params.Type), providerconfig.APIStyle(params.APIStyle)); err != nil {
 		return fmt.Errorf("invalid api_style: %w", err)
 	}

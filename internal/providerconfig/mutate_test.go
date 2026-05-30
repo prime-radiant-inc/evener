@@ -249,3 +249,16 @@ func TestValidateAPIStyleRejectsUnknownStyle(t *testing.T) {
 		t.Error("expected error for unknown api_style, got nil")
 	}
 }
+
+func TestValidateType(t *testing.T) {
+	for _, typ := range []Type{"openai", "anthropic", "google", "kimi", "glm", "minimax", "openrouter", "openrouter-anthropic", "ollama"} {
+		if err := ValidateType(typ); err != nil {
+			t.Errorf("ValidateType(%q) = %v, want nil", typ, err)
+		}
+	}
+	for _, typ := range []Type{"", "bogus", "openai-compatible", "OpenAI"} {
+		if err := ValidateType(typ); err == nil {
+			t.Errorf("ValidateType(%q) = nil, want error", typ)
+		}
+	}
+}
