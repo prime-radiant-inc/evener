@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"primeradiant.com/serf/agent/internal/promptpath"
 	"primeradiant.com/serf/llm"
 )
 
@@ -118,7 +119,7 @@ func (s *Session) buildPromptData() PromptData {
 // renderSystemPrompt renders the system prompt using the template resolver.
 func (s *Session) renderSystemPrompt() string {
 	gitRoot := gitRootOrEmpty(s.env, s.envInfo.WorkingDir)
-	projDir := ProjectPromptsDir(gitRoot)
+	projDir := promptpath.ProjectPromptsDir(gitRoot)
 	if s.cfg.NoProjectPrompts {
 		projDir = ""
 	}
@@ -128,7 +129,7 @@ func (s *Session) renderSystemPrompt() string {
 	if projDir != "" {
 		projSections = filepath.Join(projDir, "sections")
 	}
-	if gd := GlobalPromptsDir(); gd != "" {
+	if gd := promptpath.GlobalPromptsDir(); gd != "" {
 		globalSections = filepath.Join(gd, "sections")
 	}
 
