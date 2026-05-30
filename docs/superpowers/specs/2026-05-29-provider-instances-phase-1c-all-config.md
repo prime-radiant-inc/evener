@@ -58,8 +58,10 @@ to add an instance, because there are *two* sources of truth. Phase 1c makes
   config; if the file is **absent it is materialized first** (§4), then loaded.
   `LoadClient` then **injects resolved credentials** into the in-memory `Config`
   (§5) and calls `llm.NewFromProviders`. The env path as a *default* is retired;
-  `llm.NewFromEnv` survives only as (a) the detection mechanism the materializer
-  uses and (b) a transitional safety fallback if materialization fails (logged).
+  `llm.NewFromEnv` survives only as the detection mechanism the materializer uses.
+  Materialization failure (e.g. an unwritable state dir) is a **loud error**, not a
+  silent env fallback — serf already requires a writable state dir, and a silent
+  fallback would reintroduce the very duality 1c removes.
 - **Secrets are never written to `providers.toml`** and are resolved per instance
   at load time (§5).
 
@@ -182,8 +184,8 @@ must resolve and inject credentials before adapter construction:
 - **Behavior preservation:** the **renamed-instance integration test** (§7 of the
   v7 spec, `agent/provider_instance_integration_test.go`) and the full suite stay
   green; a from-env materialized setup behaves identically to today's env path.
-- **Pristine output:** the materialization-failure fallback logs a captured,
-  asserted message (not a silent swallow).
+- **Pristine output:** materialization failure returns a clear wrapped error
+  (asserted in a test), not a silent swallow.
 
 ## 10. Risks / open questions
 
