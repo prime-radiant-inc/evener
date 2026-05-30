@@ -1,4 +1,4 @@
-package main
+package mcpstatus
 
 import (
 	"net/http"
@@ -9,7 +9,7 @@ import (
 	"primeradiant.com/serf/agent"
 )
 
-// probeMCPStatus inspects a configured MCP server and returns a single-snapshot
+// ProbeMCPStatus inspects a configured MCP server and returns a single-snapshot
 // status. The hub does not itself run MCP servers — agents spawn them per
 // session — so "running" is not something the hub can report. What the hub
 // CAN report is whether the configured server is *reachable*: the stdio
@@ -23,7 +23,7 @@ import (
 //   - "missing"   — stdio command not found on PATH
 //   - "unreachable" — HTTP/SSE URL does not respond within the probe budget
 //   - "unknown"   — config is malformed or type is unrecognized
-func probeMCPStatus(c agent.MCPServerConfig) string {
+func ProbeMCPStatus(c agent.MCPServerConfig) string {
 	t := strings.ToLower(strings.TrimSpace(c.Type))
 	if t == "" {
 		t = "stdio"

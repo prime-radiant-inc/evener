@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
+	"primeradiant.com/serf/cmd/serf-hub/internal/mcpstatus"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/frontmatter"
 	"primeradiant.com/serf/internal/appserver"
@@ -1668,7 +1669,7 @@ func (s *WebServer) discoverMCPsForSettings(path string) ([]mcpDisplay, error) {
 			Name:     c.Name,
 			Command:  cmd,
 			Args:     c.Args,
-			Status:   probeMCPStatus(c),
+			Status:   mcpstatus.ProbeMCPStatus(c),
 			Tools:    0,
 			Agents:   nil,
 			EditPath: editorURL(path),
