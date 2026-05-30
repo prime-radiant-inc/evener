@@ -572,33 +572,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		tPhaseStart = time.Now()
 
 		// Reuse historyTurns from context management — no redundant copy.
-		history := make([]llm.Message, 0, len(historyTurns))
-		for _, t := range historyTurns {
-			if t.Kind == TurnSteering {
-				history = append(history, t.Message)
-				continue
-			}
-			if t.Kind == TurnToolResults {
-				// Expand aggregated tool results into individual messages.
-				for _, p := range t.Message.Content {
-					if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
-						history = append(history, llm.ToolResultNamed(
-							p.ToolResult.ToolCallID,
-							p.ToolResult.Name,
-							p.ToolResult.Content,
-							p.ToolResult.IsError,
-						))
-					}
-				}
-				continue
-			}
-			if t.Kind == TurnCheckpoint || t.Kind == TurnSummary {
-				// Compaction turns carry user-role messages; include as-is.
-				history = append(history, t.Message)
-				continue
-			}
-			history = append(history, t.Message)
-		}
+		history := expandHistory(historyTurns)
 
 		timings.HistoryExpand = time.Since(tPhaseStart)
 
@@ -1292,6 +1266,40 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.setStateIfOpenLocked(SessionIdle)
 	s.mu.Unlock()
 	return lastText, nil
+}
+
+// expandHistory flattens conversation turns into the per-message slice sent to
+// the model: steering/checkpoint/summary turns pass through as-is, and
+// aggregated tool-result turns are expanded into individual tool-result messages.
+func expandHistory(historyTurns []Turn) []llm.Message {
+	history := make([]llm.Message, 0, len(historyTurns))
+	for _, t := range historyTurns {
+		if t.Kind == TurnSteering {
+			history = append(history, t.Message)
+			continue
+		}
+		if t.Kind == TurnToolResults {
+			// Expand aggregated tool results into individual messages.
+			for _, p := range t.Message.Content {
+				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
+					history = append(history, llm.ToolResultNamed(
+						p.ToolResult.ToolCallID,
+						p.ToolResult.Name,
+						p.ToolResult.Content,
+						p.ToolResult.IsError,
+					))
+				}
+			}
+			continue
+		}
+		if t.Kind == TurnCheckpoint || t.Kind == TurnSummary {
+			// Compaction turns carry user-role messages; include as-is.
+			history = append(history, t.Message)
+			continue
+		}
+		history = append(history, t.Message)
+	}
+	return history
 }
 
 type sessionModelResponse struct {
