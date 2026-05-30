@@ -1,4 +1,6 @@
-package main
+// Package httpsec provides HTTP security middleware for the serf-hub web
+// server.
+package httpsec
 
 import "net/http"
 

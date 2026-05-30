@@ -1,4 +1,4 @@
-package main
+package httpsec
 
 import (
 	"net/http"

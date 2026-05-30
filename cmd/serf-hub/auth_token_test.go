@@ -9,6 +9,12 @@ import (
 	"testing"
 )
 
+func okHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+}
+
 func TestLoadOrCreateAuthToken_PersistsAndReloads(t *testing.T) {
 	root := t.TempDir()
 	a, err := LoadOrCreateAuthToken(root)

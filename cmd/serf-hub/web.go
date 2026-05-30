@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
+	"primeradiant.com/serf/cmd/serf-hub/internal/httpsec"
 	"primeradiant.com/serf/cmd/serf-hub/internal/mcpstatus"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/frontmatter"
@@ -189,7 +190,7 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/auth", HandleAuth(s.cfg.AuthToken))
 
 	auth := AuthGuard(s.cfg.AuthToken)
-	return auth(CSPMiddleware(mux))
+	return auth(httpsec.CSPMiddleware(mux))
 }
 
 func (s *WebServer) handleIndex(w http.ResponseWriter, r *http.Request) {
