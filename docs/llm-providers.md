@@ -3,7 +3,7 @@
 How serf turns a `provider/model` string into an API call, and the two
 identities that hold the system together. This documents the **current**
 implementation (as of 2026-05, after the PRI-1880 *Phase 1a* behavior-tag
-separation). Companion doc:
+separation and *Phase 1b* config-driven instances). Companion doc:
 [`llm-provider-config-and-launch.md`](llm-provider-config-and-launch.md)
 (credentials, OAuth, and how the hub spawns sessions).
 
@@ -25,18 +25,19 @@ behavior TAG   =  profile.BehaviorTag()  =  providerconfig.BehaviorTag(type,styl
   is derived from a provider *type* + an `apiStyle` by one pure function,
   `providerconfig.BehaviorTag` (`internal/providerconfig/providerconfig.go:34`).
 
-**In Phase 1a these still coincide at runtime** — every default instance is named
-after its type, so `name == type == tag` and nothing changed observably. But the
-*code* now keys behavior on the tag, not the name, so a renamed or custom
-instance (where `name != type`, coming in Phase 1b) will behave like its
-underlying provider while routing/identifying under its own name. **If you change
-how providers are identified, keep this split: route on the name, branch on the
-tag.**
+**By default they still coincide at runtime** — with no `providers.toml`, every
+instance is named after its type, so `name == type == tag` and the env path is
+unchanged. But the *code* keys behavior on the tag, not the name, so a custom
+instance defined in `providers.toml` (where `name != type` — e.g. an `openai`-type
+instance named `work`) behaves like its underlying provider while routing and
+identifying under its own name. **If you change how providers are identified, keep
+this split: route on the name, branch on the tag.**
 
 > Pre-1a this was a single string equal "in four places at once." Phase 1a split
 > *behavior* (the tag) from *name* (routing/identity) and moved provider switching
-> out of the profile and up to the session (below). The old audits and the v1–v6
-> spec revisions under `docs/superpowers/specs/` describe the journey.
+> out of the profile and up to the session (below); Phase 1b then made the name
+> config-driven (`providers.toml`). The old audits and the v1–v6 spec revisions
+> under `docs/superpowers/specs/` describe the journey.
 
 ## Request lifecycle
 
@@ -78,14 +79,59 @@ shared vocabulary:
   behavior does this provider have." It returns the type for every type **except
   `openai`**, which splits by `apiStyle`: `openai`+`chat-completions` →
   `openai-compatible`; everything else (incl. `openai`+`responses`) → the type.
-- `NameToTag(cfg) map[string]string` (`:42`) — instance name → tag, for the
-  config-driven case (Phase 1b).
-- `Config`/`InstanceConfig` types and `DefaultStateRoot()` (`:52`, the `~/.serf`
-  resolver) — the scaffolding Phase 1b's `providers.toml` loader will populate.
+- `NameToTag(cfg) map[string]string` (`:43`) — instance name → tag, populated from
+  a loaded `providers.toml` and pushed into the client via `SetNameToTag` (below).
+- `Config`/`InstanceConfig` (`:27`/`:18`) + `Load`/`LoadFile` (`load.go:35,113`) —
+  the `providers.toml` parser/validator; `DefaultStateRoot()` (`:53`) resolves
+  `~/.serf`. See "Config-driven instances" below.
 
 The set of behavior tags is exactly the old set of distinct provider behaviors:
 `openai`, `openai-compatible`, `anthropic`, `google`, `openrouter`,
 `openrouter-anthropic`, `kimi`, `glm`, `minimax`, `ollama`.
+
+## Config-driven instances (`providers.toml`)
+
+By default serf builds its client from the environment (`llm.NewFromEnv`) — one
+instance per provider type, `name == type`. A `providers.toml` at
+`<state-root>/providers.toml` replaces that with an explicit list of **named
+instances**, which is what lets `name != type` exist:
+
+```toml
+default = "work"          # optional; the default instance (else first by sorted name)
+
+[instances.work]          # the table key IS the instance NAME — routing/identity
+type      = "openai"      # the provider TYPE — drives the behavior tag
+api_style = "responses"   # openai only: "responses" → openai tag; "chat-completions" → openai-compatible
+base_url  = "..."         # optional override
+api_key   = "..."         # optional; else env / per-instance OAuth (companion doc)
+quirks    = "..."         # optional; selects a quirks preset (openai-compatible types)
+```
+
+- **Load** — `providerconfig.Load`/`LoadFile` (`load.go:35,113`) parse + validate.
+  A corrupt file fails loudly; an **absent** file (`exists == false`) falls back to
+  the env path. The path is `SERF_PROVIDERS_CONFIG`, else
+  `DefaultStateRoot()/providers.toml`.
+- **Build** — `llm.NewFromProviders(cfg, …)` (`providers_config.go:45`) constructs
+  one adapter per instance through a **parallel registry**:
+  `RegisterInstanceAdapterFactory(type, apiStyle, factory)` (`:28`) mirrors the env
+  registry so `llm` builds per-instance adapters without importing
+  `llm/providers/*` (no cycle). Each adapter package exposes a
+  `NewForInstance(params)` (the openai adapter takes name / api-key / base-url /
+  org / project / chatgpt-base / state-home; the thin wrappers default base URL +
+  `QuirksPreset` by type).
+- **Tag wiring** — `NewFromProviders` calls
+  `c.SetNameToTag(providerconfig.NameToTag(cfg))` (`:89`); the client then maps each
+  instance name to its tag. (Env path: no map; `behaviorTagFor` falls back to the
+  name, correct while name == type.)
+- **Profile** — `agent.ResolveProfileFromConfig(cfg, "instance/model")`
+  (`agent/resolve.go:26`) finds the instance, builds the profile from its
+  `(type, apiStyle)` seed (so the tag is right), then `WithProviderID(raw, name)`
+  stamps the instance name **without** changing the tag — the "build-then-rename"
+  pattern.
+- **Entry point** — `cmdutil.LoadClient` (`cmdutil/load_client.go:22`) is the single
+  config-vs-env decision: it returns `(client, cfg, hasConfig, err)`, and
+  `BuildResolveProfile(cfg, hasConfig)` (`:51`) returns the session's profile
+  resolver (config → `ResolveProfileFromConfig`; env → `cmdutil.SelectProfile`).
 
 ## Provider profiles (`agent/profile.go`)
 
@@ -93,7 +139,7 @@ A **profile** is the provider-shaped half of a session. It now carries **both**
 an `id` (the instance name) and a `behaviorTag`. Constructors stamp the tag via
 `providerconfig.BehaviorTag`:
 
-| Constructor | id (Phase 1a) | behaviorTag | `profile.go` |
+| Constructor | id (default) | behaviorTag | `profile.go` |
 |---|---|---|---|
 | `NewOpenAIProfile` | `openai` | `openai` | tag at :596 |
 | `NewAnthropicProfile` | `anthropic` | `anthropic` | :686 |
@@ -105,7 +151,8 @@ an `id` (the instance name) and a `behaviorTag`. Constructors stamp the tag via
 `BehaviorTag()` is on the `ProviderProfile` interface (`:302`).
 `WithProviderID(profile, name)` (in `profile_overrides.go`) renames an instance —
 it overrides the `id` while **preserving the tag** (this is how a `name != type`
-instance is constructed; used in tests today, by the Phase-1b config path later).
+instance is constructed; used in tests and by the config path's
+`ResolveProfileFromConfig`).
 
 **Gemini is now canonical `google`.** `NewGeminiProfile` sets `id == "google"`
 (not `"gemini"`); the `gemini`→`google` rewrites in routing and catalog lookup
@@ -175,10 +222,11 @@ streamed `StreamEventError`/`StreamEventFinish` events (covering both the sessio
 consumer and `llm.StreamGenerate`). The empty-provider no-op is preserved
 (`context.Canceled` stays unlabeled). So adapters' hardcoded `resp.Provider`/error
 literals no longer leak — the response and errors report **the instance name**.
-`Client.nameToTag` (`:20`, settable via `SetNameToTag`) maps instance name → tag
-for llm-layer logic; it is nil in Phase 1a (env path), so `behaviorTagFor`
-(`:260`) falls back to the provider name (identity), which is correct while
-name==tag.
+`Client.nameToTag` (`:20`, set via `SetNameToTag` `:31`) maps instance name → tag
+for llm-layer logic. On the **config path** `NewFromProviders` populates it from
+`NameToTag(cfg)` (`providers_config.go:89`); on the **env path** it stays nil and
+`behaviorTagFor` (`:263`) falls back to the provider name (identity), correct
+while name == tag.
 
 `normalizeProviderName` is now just lowercase + trim (the `gemini`→`google`
 rewrite is gone — the Gemini profile's id is `google`).
@@ -231,7 +279,7 @@ change.)
 - Provider-failure diagnostics classify on the structured `llm.Error` (provider +
   tag), not a hardcoded name list (`internal/diagnostic`, `diagnostics.js`).
 
-## Phase 1a done / Phase 1b next
+## Phase 1a & 1b done / Phase 2 next
 
 **Phase 1a (done, behavior-preserving):** the name/tag split above; switching
 moved to the session; central identity stamping; Gemini canonicalized to
@@ -239,16 +287,19 @@ moved to the session; central identity stamping; Gemini canonicalized to
 integration backstop (`agent/provider_instance_integration_test.go`) + a
 full-tree sweep.
 
-**Deferred to Phase 1b** (need real custom instances + a config to matter and be
-testable): the `providers.toml` loader + `NewFromProviders`; per-instance OAuth;
-the `openai` `apiStyle` recipe + custom `anthropic` base-URL instances; wiring
-`SetNameToTag` from the config; and the **picker/launch behavior filters** that
-still key on the literal provider name —
-`cmd/serf/launch_check.go` (openrouter / openrouter-anthropic), `cmd/serf-hub/
-web.go`, `app_rpc.go launchProviderAllowsUnreportedModels`, and the env-keyed
-`cmdutil.queryModelContextWindow`. These are no-ops while name==type and are
-re-keyed in 1b. The design lives in
+**Phase 1b (done):** the config-driven instance machinery above — the
+`providers.toml` loader, `NewFromProviders` + the instance-adapter registry,
+`SetNameToTag` wired from the config, per-instance OAuth (companion doc), the
+`openai` `apiStyle` recipe + custom base-URL instances + the `openai-compatible`
+fold-in, config-aware launch-check/serve, and the picker/launch **behavior**
+filters re-keyed off the tag (`launch_check.go:146`, `cmd/serf-hub/web.go:2035`,
+`app_rpc.go launchProviderAllowsUnreportedModels:1543`). The design lives in
 [`docs/superpowers/specs/2026-05-29-provider-type-instance-model-design.md`](superpowers/specs/2026-05-29-provider-type-instance-model-design.md).
+
+**Phase 2 (next, terminal — no Phase 3):** one provider/instance **CRUD UI**
+replacing the duplicate Providers + Credentials screens — **in both the web hub
+and `serf-tui`** — with the model picker routing/displaying by instance name.
+Until then those settings screens stay type-based.
 
 ## Adding or changing a provider
 
@@ -267,6 +318,6 @@ re-keyed in 1b. The design lives in
   `launch-check` → `serf serve` process model.
 - [`ollama.md`](ollama.md) — running serf against a local Ollama server.
 - [`superpowers/specs/2026-05-29-provider-type-instance-model-design.md`](superpowers/specs/2026-05-29-provider-type-instance-model-design.md)
-  — the type/instance design (Phase 1a implemented; 1b/2 pending).
+  — the type/instance design (Phase 1a & 1b implemented; Phase 2 pending).
 - Historical point-in-time audits live under `docs/audit-logs/` (Feb 2026; paths
   there predate the `internal/llm` → `llm/` move).
