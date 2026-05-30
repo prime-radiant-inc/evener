@@ -416,7 +416,7 @@ type chatMessage struct {
 
 	// PendingID is non-zero when this message is an optimistic placeholder
 	// created in response to a user click before the authoritative event
-	// arrives. It matches the pendingEntry.ID from pendingCoordinator.
+	// arrives. It matches the PendingEntry.ID from the pending coordinator (pendingpkg).
 	PendingID int64
 	// Pending is true while the optimistic call is in flight. The renderer
 	// prefixes the row with a spinner glyph and dims the color while true.

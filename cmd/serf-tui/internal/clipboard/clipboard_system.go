@@ -16,7 +16,6 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
@@ -285,4 +284,3 @@ func ParseURIList(s string) []string {
 // interface drifts.
 var _ ClipboardSource = (*SystemClipboardSource)(nil)
 var _ = errors.New
-var _ = url.Parse
