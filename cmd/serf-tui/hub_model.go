@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
 	"primeradiant.com/serf/cmd/serf-tui/internal/hubdiagnostics"
 	"primeradiant.com/serf/cmd/serf-tui/internal/hubstart"
+	"primeradiant.com/serf/cmd/serf-tui/internal/inputhistory"
 	"primeradiant.com/serf/cmd/serf-tui/internal/modeldisplay"
 	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
 	"primeradiant.com/serf/internal/appwire"
@@ -1390,7 +1391,7 @@ func (m hubModel) updateSessionBrowseComposerKey(msg tea.KeyMsg) (tea.Model, tea
 			} else {
 				return m, nil
 			}
-			m.session.setInputValue(unescapeHistory(m.session.history[m.session.historyIdx]))
+			m.session.setInputValue(inputhistory.UnescapeHistory(m.session.history[m.session.historyIdx]))
 			return m, nil
 		}
 	case "down":
@@ -1401,7 +1402,7 @@ func (m hubModel) updateSessionBrowseComposerKey(msg tea.KeyMsg) (tea.Model, tea
 		if m.session.historyIdx >= 0 {
 			if m.session.historyIdx < len(m.session.history)-1 {
 				m.session.historyIdx++
-				m.session.setInputValue(unescapeHistory(m.session.history[m.session.historyIdx]))
+				m.session.setInputValue(inputhistory.UnescapeHistory(m.session.history[m.session.historyIdx]))
 			} else {
 				m.session.historyIdx = -1
 				m.session.setInputValue(m.session.historyDraft)
@@ -1960,14 +1961,14 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				return m, nil
 			}
-			m.session.setInputValue(unescapeHistory(m.session.history[m.session.historyIdx]))
+			m.session.setInputValue(inputhistory.UnescapeHistory(m.session.history[m.session.historyIdx]))
 			return m, nil
 		}
 	case "down":
 		if m.session.historyIdx >= 0 {
 			if m.session.historyIdx < len(m.session.history)-1 {
 				m.session.historyIdx++
-				m.session.setInputValue(unescapeHistory(m.session.history[m.session.historyIdx]))
+				m.session.setInputValue(inputhistory.UnescapeHistory(m.session.history[m.session.historyIdx]))
 			} else {
 				m.session.historyIdx = -1
 				m.session.setInputValue(m.session.historyDraft)

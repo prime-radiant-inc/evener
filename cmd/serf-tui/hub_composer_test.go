@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
+	"primeradiant.com/serf/cmd/serf-tui/internal/inputhistory"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -554,7 +555,7 @@ func TestHubModelSessionComposerAddsSentPromptsToHistory(t *testing.T) {
 	updated, _ = updated.(hubModel).Update(cmd())
 	m = updated.(hubModel)
 
-	if len(m.session.history) == 0 || unescapeHistory(m.session.history[len(m.session.history)-1]) != "remember this" {
+	if len(m.session.history) == 0 || inputhistory.UnescapeHistory(m.session.history[len(m.session.history)-1]) != "remember this" {
 		t.Fatalf("history=%v, want sent prompt appended", m.session.history)
 	}
 }

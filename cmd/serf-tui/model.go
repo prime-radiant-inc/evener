@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmd/serf-tui/internal/inputhistory"
 )
 
 // model holds the per-session UI state that hubModel embeds as
@@ -187,8 +188,8 @@ func (m *model) setInputValue(s string) {
 func (m *model) addHistory(text string) {
 	escaped := strings.ReplaceAll(text, "\n", `\n`)
 	m.history = append(m.history, escaped)
-	if len(m.history) > maxHistoryEntries {
-		m.history = m.history[len(m.history)-maxHistoryEntries:]
+	if len(m.history) > inputhistory.MaxHistoryEntries {
+		m.history = m.history[len(m.history)-inputhistory.MaxHistoryEntries:]
 	}
 }
 
