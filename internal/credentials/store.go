@@ -174,6 +174,24 @@ func (s *Store) List() []Provider {
 	return out
 }
 
+// ResolveKey returns the effective API key for a provider instance given its
+// unique name and provider type. Lookup order:
+//  1. File entry keyed by instance name.
+//  2. Env var(s) for the provider type (first non-empty wins).
+//  3. Empty string with SourceAbsent.
+func (s *Store) ResolveKey(name, typ string) (string, Source) {
+	name = strings.ToLower(name)
+	if p, ok := s.data.Providers[name]; ok && strings.TrimSpace(p.APIKey) != "" {
+		return p.APIKey, SourceFile
+	}
+	for _, env := range providerEnvVars[strings.ToLower(typ)] {
+		if v := strings.TrimSpace(os.Getenv(env)); v != "" {
+			return v, SourceEnv
+		}
+	}
+	return "", SourceAbsent
+}
+
 // APIKeyFor implements launchconfig.CredentialResolver.
 // Returns the API key value and the source label (e.g. "file", "env", "absent").
 func (s *Store) APIKeyFor(provider string) (string, string) {

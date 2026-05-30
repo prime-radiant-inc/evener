@@ -79,6 +79,33 @@ func TestStore_OpenAICompatibleUsesAPIKeyEnv(t *testing.T) {
 	}
 }
 
+func TestResolveKeyNameThenTypeEnv(t *testing.T) {
+	// Create a credentials.toml with [providers.work] api_key="file-work"
+	path := filepath.Join(t.TempDir(), "credentials.toml")
+	content := "schema = 1\n[providers.work]\napi_key = \"file-work\"\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+
+	// 1) file entry under the instance name wins
+	if v, src := s.ResolveKey("work", "openai"); v != "file-work" || src != SourceFile {
+		t.Fatalf("name lookup = %q/%v, want file-work/file", v, src)
+	}
+	// 2) a custom instance with no file entry → env by TYPE
+	t.Setenv("OPENAI_API_KEY", "env-openai")
+	if v, src := s.ResolveKey("work2", "openai"); v != "env-openai" || src != SourceEnv {
+		t.Fatalf("type-env fallback = %q/%v, want env-openai/env", v, src)
+	}
+	// 3) nothing anywhere → absent
+	if v, src := s.ResolveKey("nope", "kimi"); v != "" || src != SourceAbsent {
+		t.Fatalf("absent = %q/%v", v, src)
+	}
+}
+
 func TestStore_List(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "env-key")
 	t.Setenv("GEMINI_API_KEY", "")
