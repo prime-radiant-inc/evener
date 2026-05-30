@@ -323,27 +323,13 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	}
 
 	r := fromGeminiResponse(raw, req.Model)
-	stampEndpointURL(&r, endpoint)
+	llm.StampEndpointURL(&r, endpoint)
 	r.RateLimit = llm.ParseRateLimitHeaders(resp.Header)
 	if llm.RawBodyEnabled() {
 		r.RawRequestBody = string(b)
 		r.RawResponseBody = string(rawBytes)
 	}
 	return r, nil
-}
-
-// stampEndpointURL records the full URL the adapter dialed onto resp.Raw so
-// the APILogger can promote it to a top-level field in the api_call transcript.
-// The Google endpoint carries the API key as a query parameter; we log the
-// pre-query base form (host + path) only to avoid leaking the key.
-func stampEndpointURL(resp *llm.Response, endpoint string) {
-	if resp == nil || endpoint == "" {
-		return
-	}
-	if resp.Raw == nil {
-		resp.Raw = map[string]any{}
-	}
-	resp.Raw["endpoint_url"] = endpoint
 }
 
 func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
@@ -562,7 +548,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 							Usage:    usage,
 							Raw:      raw,
 						}
-						stampEndpointURL(&r, endpoint)
+						llm.StampEndpointURL(&r, endpoint)
 						if len(r.ToolCalls()) > 0 {
 							r.Finish = llm.FinishReason{Reason: "tool_calls", Raw: r.Finish.Raw}
 						} else if r.Finish.Reason == "" {

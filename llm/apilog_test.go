@@ -622,3 +622,41 @@ func TestAPILogger_PeriodicSync_SyncsAfterIntervalExpires(t *testing.T) {
 		t.Error("expected dirty=false after sync interval elapsed")
 	}
 }
+
+// TestStampEndpointURL pins the shared write-side helper that every provider
+// adapter uses to record the dialed URL. buildLogResponse later promotes
+// Raw["endpoint_url"] to a top-level transcript field (see
+// TestBuildLogResponse_EndpointURL for the read side).
+func TestStampEndpointURL(t *testing.T) {
+	t.Run("nil resp is a no-op", func(t *testing.T) {
+		// Must not panic.
+		StampEndpointURL(nil, "https://example.com/api")
+	})
+
+	t.Run("empty endpoint leaves Raw untouched", func(t *testing.T) {
+		resp := &Response{}
+		StampEndpointURL(resp, "")
+		if resp.Raw != nil {
+			t.Fatalf("Raw = %v, want nil for empty endpoint", resp.Raw)
+		}
+	})
+
+	t.Run("nil Raw is initialised and stamped", func(t *testing.T) {
+		resp := &Response{}
+		StampEndpointURL(resp, "https://example.com/api")
+		if got, _ := resp.Raw["endpoint_url"].(string); got != "https://example.com/api" {
+			t.Fatalf("Raw[endpoint_url] = %q, want %q", got, "https://example.com/api")
+		}
+	})
+
+	t.Run("existing Raw entries are preserved", func(t *testing.T) {
+		resp := &Response{Raw: map[string]any{"other": 1}}
+		StampEndpointURL(resp, "https://example.com/api")
+		if got, _ := resp.Raw["endpoint_url"].(string); got != "https://example.com/api" {
+			t.Fatalf("Raw[endpoint_url] = %q, want %q", got, "https://example.com/api")
+		}
+		if resp.Raw["other"] != 1 {
+			t.Fatalf("Raw[other] = %v, want 1 (existing entry clobbered)", resp.Raw["other"])
+		}
+	})
+}

@@ -266,6 +266,23 @@ func BuildAPILogRequest(req Request) APILogRequest {
 	return lr
 }
 
+// StampEndpointURL records the full URL an adapter dialed onto resp.Raw so
+// buildLogResponse can promote it to a top-level field in the api_call
+// transcript. It initialises Raw if nil so adapters that build responses
+// incrementally don't have to special-case it, and is a no-op when resp is nil
+// or endpoint is empty. Callers pass the URL they want logged; for providers
+// that carry secrets in the URL (e.g. Google's API key as a query parameter),
+// pass the pre-query base form (host + path) only to avoid leaking the secret.
+func StampEndpointURL(resp *Response, endpoint string) {
+	if resp == nil || endpoint == "" {
+		return
+	}
+	if resp.Raw == nil {
+		resp.Raw = map[string]any{}
+	}
+	resp.Raw["endpoint_url"] = endpoint
+}
+
 func buildLogResponse(resp Response) *APILogResponse {
 	var endpoint string
 	if resp.Raw != nil {

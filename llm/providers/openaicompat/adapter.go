@@ -233,26 +233,13 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	if err != nil {
 		return resp, err
 	}
-	stampEndpointURL(&resp, a.BaseURL+"/chat/completions")
+	llm.StampEndpointURL(&resp, a.BaseURL+"/chat/completions")
 	resp.RateLimit = llm.ParseRateLimitHeaders(headers)
 	if llm.RawBodyEnabled() {
 		resp.RawRequestBody = string(rawReqBody)
 		resp.RawResponseBody = string(rawRespBody)
 	}
 	return resp, nil
-}
-
-// stampEndpointURL records the full URL dialed for this call onto resp.Raw so
-// the APILogger can promote it to a top-level field in the api_call transcript.
-// Initialises Raw if nil.
-func stampEndpointURL(resp *llm.Response, endpoint string) {
-	if resp == nil || endpoint == "" {
-		return
-	}
-	if resp.Raw == nil {
-		resp.Raw = map[string]any{}
-	}
-	resp.Raw["endpoint_url"] = endpoint
 }
 
 // Stream sends a streaming Chat Completions request.
@@ -413,7 +400,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 						finalResp.Usage.ReasoningTokensEstimated = &e
 					}
 				}
-				stampEndpointURL(finalResp, a.BaseURL+"/chat/completions")
+				llm.StampEndpointURL(finalResp, a.BaseURL+"/chat/completions")
 				if sseBuf != nil {
 					finalResp.RawRequestBody = rawReqBody
 					finalResp.RawResponseBody = sseBuf.String()
