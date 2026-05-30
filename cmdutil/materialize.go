@@ -3,7 +3,6 @@ package cmdutil
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"primeradiant.com/serf/internal/providerconfig"
@@ -57,42 +56,8 @@ func MaterializeProvidersConfig(path string, opts ...llm.EnvOption) (providercon
 		return providerconfig.Config{}, err
 	}
 
-	data, err := providerconfig.Marshal(cfg)
-	if err != nil {
-		return providerconfig.Config{}, fmt.Errorf("materialize providers config: marshal: %w", err)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return providerconfig.Config{}, fmt.Errorf("materialize providers config: mkdir: %w", err)
-	}
-
-	// Atomic write via a uniquely-named temp file + rename so concurrent
-	// writers never clobber a shared temp path.
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".providers-*.toml.tmp")
-	if err != nil {
-		return providerconfig.Config{}, fmt.Errorf("materialize providers config: create temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	cleanup := func() { tmp.Close(); os.Remove(tmpName) }
-	if _, err := tmp.Write(data); err != nil {
-		cleanup()
-		return providerconfig.Config{}, fmt.Errorf("materialize providers config: write temp file: %w", err)
-	}
-	if err := tmp.Chmod(0o644); err != nil {
-		cleanup()
-		return providerconfig.Config{}, fmt.Errorf("materialize providers config: chmod: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		cleanup()
-		return providerconfig.Config{}, fmt.Errorf("materialize providers config: sync: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return providerconfig.Config{}, fmt.Errorf("materialize providers config: close: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
-		return providerconfig.Config{}, fmt.Errorf("materialize providers config: rename: %w", err)
+	if err := providerconfig.WriteFile(path, cfg); err != nil {
+		return providerconfig.Config{}, fmt.Errorf("materialize providers config: %w", err)
 	}
 
 	return cfg, nil
