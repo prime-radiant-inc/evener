@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/agent/internal/workspace"
 )
 
 // helper to create a file with optional content.
@@ -24,7 +26,7 @@ func touchFile(t *testing.T, path string, content ...string) {
 
 func TestScanWorkspace_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
-	ws := ScanWorkspace(dir)
+	ws := workspace.ScanWorkspace(dir)
 
 	if ws.Tree != "" {
 		t.Errorf("expected empty tree for empty dir, got %q", ws.Tree)
@@ -40,7 +42,7 @@ func TestScanWorkspace_BasicTree(t *testing.T) {
 	touchFile(t, filepath.Join(dir, "utils.py"), "def foo(): pass\n")
 	touchFile(t, filepath.Join(dir, "src", "lib.py"), "class Lib: pass\n")
 
-	ws := ScanWorkspace(dir)
+	ws := workspace.ScanWorkspace(dir)
 
 	// Tree should be rooted at the directory and use indented basenames.
 	if !strings.Contains(ws.Tree, dir+"/") {
@@ -67,7 +69,7 @@ func TestScanWorkspace_DepthLimit(t *testing.T) {
 	touchFile(t, filepath.Join(dir, "level1", "level2", "level3", "deep.txt"), "deep")          // walk depth 3 — NOT visible (>maxFileDepth)
 	touchFile(t, filepath.Join(dir, "level1", "level2", "level3", "level4", "vdeep.txt"), "vd") // walk depth 4 — NOT visible
 
-	ws := ScanWorkspace(dir)
+	ws := workspace.ScanWorkspace(dir)
 
 	// Walk-depth-2 file should be visible (within maxFileDepth=2).
 	if !strings.Contains(ws.Tree, "shallow.txt") {
@@ -94,7 +96,7 @@ func TestScanWorkspace_MaxEntries(t *testing.T) {
 		touchFile(t, filepath.Join(dir, "file_"+string(rune('a'+i/26))+string(rune('a'+i%26))+".txt"), "x")
 	}
 
-	ws := ScanWorkspace(dir)
+	ws := workspace.ScanWorkspace(dir)
 
 	// Should be truncated with a note.
 	if !strings.Contains(ws.Tree, "truncated") {
@@ -126,7 +128,7 @@ install: all
 `
 	touchFile(t, filepath.Join(dir, "Makefile"), makefile)
 
-	ws := ScanWorkspace(dir)
+	ws := workspace.ScanWorkspace(dir)
 
 	if !strings.Contains(ws.BuildInfo, "Makefile") {
 		t.Errorf("build info should mention Makefile: %s", ws.BuildInfo)
@@ -152,7 +154,7 @@ func TestScanWorkspace_PackageJsonScripts(t *testing.T) {
 }`
 	touchFile(t, filepath.Join(dir, "package.json"), pkg)
 
-	ws := ScanWorkspace(dir)
+	ws := workspace.ScanWorkspace(dir)
 
 	if !strings.Contains(ws.BuildInfo, "package.json") {
 		t.Errorf("build info should mention package.json: %s", ws.BuildInfo)
@@ -172,7 +174,7 @@ func TestScanWorkspace_HiddenDirsExcluded(t *testing.T) {
 	touchFile(t, filepath.Join(dir, "node_modules", "pkg", "index.js"), "module")
 	touchFile(t, filepath.Join(dir, "__pycache__", "main.cpython-39.pyc"), "cache")
 
-	ws := ScanWorkspace(dir)
+	ws := workspace.ScanWorkspace(dir)
 
 	if strings.Contains(ws.Tree, ".git") {
 		t.Errorf("tree should exclude .git: %s", ws.Tree)
@@ -192,7 +194,7 @@ func TestScanWorkspace_HiddenDirsExcluded(t *testing.T) {
 }
 
 func TestScanWorkspace_NonexistentDir(t *testing.T) {
-	ws := ScanWorkspace("/nonexistent/path/12345")
+	ws := workspace.ScanWorkspace("/nonexistent/path/12345")
 
 	if ws.Tree != "" {
 		t.Errorf("expected empty tree for nonexistent dir, got %q", ws.Tree)
@@ -204,7 +206,7 @@ func TestScanWorkspace_GoModDetection(t *testing.T) {
 	touchFile(t, filepath.Join(dir, "go.mod"), "module example.com/app\n\ngo 1.21\n")
 	touchFile(t, filepath.Join(dir, "main.go"), "package main\n")
 
-	ws := ScanWorkspace(dir)
+	ws := workspace.ScanWorkspace(dir)
 
 	if !strings.Contains(ws.BuildInfo, "go.mod") {
 		t.Errorf("build info should mention go.mod: %s", ws.BuildInfo)
@@ -215,7 +217,7 @@ func TestScanWorkspace_CargoTomlDetection(t *testing.T) {
 	dir := t.TempDir()
 	touchFile(t, filepath.Join(dir, "Cargo.toml"), "[package]\nname = \"myapp\"\nversion = \"0.1.0\"\n")
 
-	ws := ScanWorkspace(dir)
+	ws := workspace.ScanWorkspace(dir)
 
 	if !strings.Contains(ws.BuildInfo, "Cargo.toml") {
 		t.Errorf("build info should mention Cargo.toml: %s", ws.BuildInfo)
@@ -227,7 +229,7 @@ func TestScanWorkspace_PytestIniDetection(t *testing.T) {
 	touchFile(t, filepath.Join(dir, "pytest.ini"), "[pytest]\ntestpaths = tests\n")
 	touchFile(t, filepath.Join(dir, "main.py"), "print('hi')\n")
 
-	ws := ScanWorkspace(dir)
+	ws := workspace.ScanWorkspace(dir)
 
 	if !strings.Contains(ws.BuildInfo, "pytest") {
 		t.Errorf("build info should mention pytest: %s", ws.BuildInfo)
@@ -240,7 +242,7 @@ func TestScanWorkspace_TreeFormat_Indented(t *testing.T) {
 	touchFile(t, filepath.Join(dir, "src", "main.py"), "print('hello')\n")
 	touchFile(t, filepath.Join(dir, "src", "utils.py"), "def foo(): pass\n")
 
-	ws := ScanWorkspace(dir)
+	ws := workspace.ScanWorkspace(dir)
 
 	// First line should be the root with trailing slash.
 	lines := strings.Split(ws.Tree, "\n")
@@ -265,7 +267,7 @@ func TestScanWorkspace_DockerfileDetection(t *testing.T) {
 	touchFile(t, filepath.Join(dir, "Dockerfile"), "FROM python:3.11\nRUN pip install flask\n")
 	touchFile(t, filepath.Join(dir, "docker-compose.yml"), "version: '3'\n")
 
-	ws := ScanWorkspace(dir)
+	ws := workspace.ScanWorkspace(dir)
 
 	if !strings.Contains(ws.BuildInfo, "Dockerfile") {
 		t.Errorf("build info should mention Dockerfile: %s", ws.BuildInfo)
@@ -276,7 +278,7 @@ func TestScanWorkspace_CMakeDetection(t *testing.T) {
 	dir := t.TempDir()
 	touchFile(t, filepath.Join(dir, "CMakeLists.txt"), "cmake_minimum_required(VERSION 3.10)\nproject(myapp)\n")
 
-	ws := ScanWorkspace(dir)
+	ws := workspace.ScanWorkspace(dir)
 
 	if !strings.Contains(ws.BuildInfo, "CMake") {
 		t.Errorf("build info should mention CMake: %s", ws.BuildInfo)
