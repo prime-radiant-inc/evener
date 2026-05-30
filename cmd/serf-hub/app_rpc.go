@@ -108,6 +108,14 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 	}
 	authController := newHubAuthControllerWithStore(hubStateRoot, cfg.CredsStore)
 	authController.providersConfigPath = cfg.ProvidersConfigPath
+	var instancesController *hubInstancesController
+	if cfg.ProviderConfig != nil {
+		instancesController = &hubInstancesController{
+			cfg:                 cfg.ProviderConfig,
+			providersConfigPath: cfg.ProvidersConfigPath,
+			auth:                authController,
+		}
+	}
 	var relayMu sync.Mutex
 	relayedThreads := map[string]*hubRelayHandle{}
 	startRelay := func(ctx context.Context, source appsource.Source, params appwire.ThreadReadParams, thread appwire.Thread) error {
@@ -479,6 +487,35 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		}
 		return resp, err
 	})
+	if instancesController != nil {
+		appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceList, func(_ context.Context, _ appwire.EmptyParams) (appwire.InstanceListResponse, error) {
+			return instancesController.List(), nil
+		})
+		appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceCreate, func(_ context.Context, params appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
+			if err := instancesController.Create(params); err != nil {
+				return appwire.InstanceListResponse{}, err
+			}
+			return instancesController.List(), nil
+		})
+		appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
+			if err := instancesController.Edit(params); err != nil {
+				return appwire.InstanceListResponse{}, err
+			}
+			return instancesController.List(), nil
+		})
+		appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
+			if err := instancesController.Remove(params); err != nil {
+				return appwire.InstanceListResponse{}, err
+			}
+			return instancesController.List(), nil
+		})
+		appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceSetDefault, func(_ context.Context, params appwire.InstanceSetDefaultParams) (appwire.InstanceListResponse, error) {
+			if err := instancesController.SetDefault(params); err != nil {
+				return appwire.InstanceListResponse{}, err
+			}
+			return instancesController.List(), nil
+		})
+	}
 	launchController := newHubLaunchController(hubStateRoot)
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchResolve, func(ctx context.Context, params appwire.LaunchConfigResolveParams) (appwire.LaunchConfigResolved, error) {
 		return launchController.Resolve(ctx, params)

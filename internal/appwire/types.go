@@ -42,6 +42,11 @@ const (
 	MethodSerfLaunchSetLayer        = "serf/launch/setLayer"
 	MethodSerfLaunchTrustRepo       = "serf/launch/trustRepo"
 	MethodModelList                 = "model/list"
+	MethodSerfInstanceList          = "serf/instance/list"
+	MethodSerfInstanceCreate        = "serf/instance/create"
+	MethodSerfInstanceEdit          = "serf/instance/edit"
+	MethodSerfInstanceRemove        = "serf/instance/remove"
+	MethodSerfInstanceSetDefault    = "serf/instance/setDefault"
 )
 
 const (

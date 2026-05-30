@@ -5059,6 +5059,39 @@ func TestLaunchProviderAllowsUnreportedModels_KeyedByBehaviorTag(t *testing.T) {
 	}
 }
 
+func TestHubRPCInstanceListRoutesToController(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	cfg := providerconfig.Config{
+		Instances: []providerconfig.InstanceConfig{
+			{Name: "my-openai", Type: "openai", APIStyle: "openai"},
+		},
+	}
+	if err := providerconfig.WriteFile(tomlPath, cfg); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	hub := newHubRPCTestServer(t, WebConfig{
+		Past:                NewPastIndex(""),
+		ProviderConfig:      &cfg,
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	var resp appwire.InstanceListResponse
+	if err := client.Request(context.Background(), appwire.MethodSerfInstanceList, appwire.EmptyParams{}, &resp); err != nil {
+		t.Fatalf("serf/instance/list: %v", err)
+	}
+	if len(resp.Instances) != 1 || resp.Instances[0].Name != "my-openai" {
+		t.Fatalf("instances=%+v", resp.Instances)
+	}
+}
+
 func dialHubRPC(t *testing.T, hub *httptest.Server) *appwire.Client {
 	t.Helper()
 	transport, err := appwire.DialWebSocket(context.Background(), "ws"+hub.URL[len("http"):]+"/rpc", hub.Client())
