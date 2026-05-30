@@ -576,6 +576,21 @@ func (s *Session) rebuildToolDefsCache() {
 // Tool registration.
 
 func registerCoreTools(reg *ToolRegistry, s *Session) error {
+	if err := registerFileTools(reg, s); err != nil {
+		return err
+	}
+	if err := registerShellTools(reg, s); err != nil {
+		return err
+	}
+	registerSubagentTools(reg, s)
+	registerTaskTools(reg, s)
+	registerWebTools(reg, s)
+	registerCommunicateTool(reg, s)
+	registerSkillTool(reg, s)
+	return nil
+}
+
+func registerFileTools(reg *ToolRegistry, s *Session) error {
 	// read_file
 	if err := reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: defReadFile(), ReadOnly: true},
@@ -641,6 +656,10 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 		},
 	})
 
+	return nil
+}
+
+func registerShellTools(reg *ToolRegistry, s *Session) error {
 	// shell
 	if err := reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: defShell()},
@@ -748,6 +767,10 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 		},
 	})
 
+	return nil
+}
+
+func registerSubagentTools(reg *ToolRegistry, s *Session) {
 	// Subagent tools (best-effort; synchronous completion for v1).
 	_ = reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: defSpawnAgent()},
@@ -901,7 +924,9 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			return s.closeAgent(fmt.Sprint(args["agent_id"]))
 		},
 	})
+}
 
+func registerTaskTools(reg *ToolRegistry, s *Session) {
 	// Task management.
 	_ = reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: defTaskList(s.profile.ReasoningEffortLevels())},
@@ -1080,7 +1105,9 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			}
 		},
 	})
+}
 
+func registerWebTools(reg *ToolRegistry, s *Session) {
 	// Web fetch.
 	_ = reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: defWebFetch()},
@@ -1104,7 +1131,9 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			},
 		})
 	}
+}
 
+func registerCommunicateTool(reg *ToolRegistry, s *Session) {
 	// communicate is the only user-facing message channel.
 	// Use the profile's definition if available (it may have been modified by
 	// WithAllowedDecisions to add extra fields to the output schema).
@@ -1189,7 +1218,9 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			return string(b), nil
 		},
 	})
+}
 
+func registerSkillTool(reg *ToolRegistry, s *Session) {
 	// use_skill (progressive disclosure of skill instructions).
 	// Present for provider profiles that include the use_skill tool definition.
 	if reg.Get("use_skill") != nil {
@@ -1212,8 +1243,6 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 			},
 		})
 	}
-
-	return nil
 }
 
 type nodeOutput struct {
