@@ -49,7 +49,15 @@ them before the seams exist is the cycle fight to avoid. **Out of scope for this
 ## Tier 1 extraction procedure (per leaf file F → package `agent/internal/<pkg>`)
 
 This is a behavior-preserving move across a package boundary; the existing `agent` suite is
-the regression harness. For each extraction:
+the regression harness.
+
+**Selection pre-req (critical):** an `agent/internal/*` package is importable only under
+`agent/`. So a candidate's used symbols must have **zero references outside the `agent`
+package** (`grep` `cmd/ server/ llm/ internal/ cmdutil/`). A symbol consumed externally is
+public API — it cannot move to `internal/` (it would break external imports). It may move
+to a non-internal `agent/<pkg>` later, but that relocates public API and is out of this batch.
+
+For each selected extraction:
 
 1. `mkdir -p agent/internal/<pkg>`; create `agent/internal/<pkg>/<file>.go` with F's full
    content, changing the header `package agent` → `package <pkg>`. Run `goimports` on it.
@@ -90,11 +98,15 @@ directory, so it cannot move without relocating the embedded prompt tree.
 
 ## First batch (this ticket, via the `agent-leaf-harvest` workflow)
 
-The three cleanest — pure leaves, already-exported APIs, no new exports, low real churn:
+The three cleanest pure leaves with **zero external references** (confirmed):
 
-1. `agent/internal/workspace` ← `workspace.go`
-2. `agent/internal/roundtiming` ← `round_timings.go`
-3. `agent/internal/promptpath` ← `prompt_paths.go`
+1. `agent/internal/workspace` ← `workspace.go` — `WorkspaceInfo`, `ScanWorkspace` already exported, 0 external refs.
+2. `agent/internal/promptpath` ← `prompt_paths.go` — `GlobalPromptsDir`, `ProjectPromptsDir` already exported, 0 external refs.
+3. `agent/internal/installid` ← `installation_id.go` — `loadOrCreateInstallationID` + the metadata-key const are *unexported* (so internal-only); they get **exported** on the move (demonstrates the export path), 0 external refs.
+
+> **`round_timings.go` was dropped from the first batch:** `RoundTimings` is consumed
+> externally by `server/appwire_projection.go` through the event system, so it is public API
+> and cannot move to `internal/`. Deferred (a non-internal `agent/<pkg>` relocation, later).
 
 Executed as a workflow: one subagent per extraction (sequential, build+`go test ./agent`
 gated, committed), then a holistic review reconstructing each move to confirm it is a pure
