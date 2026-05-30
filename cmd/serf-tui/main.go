@@ -10,6 +10,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/hubstart"
 )
 
 func main() {
@@ -21,7 +22,7 @@ func main() {
 }
 
 func run() int {
-	startupOpts, err := parseTUIStartupOptions(os.Args[1:], os.Getenv)
+	startupOpts, err := hubstart.ParseTUIStartupOptions(os.Args[1:], os.Getenv)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			// Usage has already been printed by the flag package via fs.Usage.
@@ -31,10 +32,10 @@ func run() int {
 		return 2
 	}
 
-	authToken := resolveAuthToken(startupOpts.AuthToken, startupOpts.StateDir)
+	authToken := hubstart.ResolveAuthToken(startupOpts.AuthToken, startupOpts.StateDir)
 
 	ctx := context.Background()
-	runtime, err := startHubClient(ctx, hubStartConfig{
+	runtime, err := hubstart.StartHubClient(ctx, hubstart.HubStartConfig{
 		RawAddr:           startupOpts.HubAddr,
 		HubBin:            startupOpts.HubBin,
 		StateDir:          startupOpts.StateDir,
@@ -45,7 +46,7 @@ func run() int {
 		HealthTimeout:     5 * time.Second,
 	})
 	if err != nil {
-		fmt.Fprint(os.Stderr, startupErrorScreen(err))
+		fmt.Fprint(os.Stderr, hubstart.StartupErrorScreen(err))
 		return 1
 	}
 

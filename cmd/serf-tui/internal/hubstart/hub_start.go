@@ -1,4 +1,4 @@
-package main
+package hubstart
 
 import (
 	"bytes"
@@ -21,15 +21,15 @@ import (
 	"primeradiant.com/serf/internal/hubapi"
 )
 
-const defaultHubAddr = "127.0.0.1:9180"
+const DefaultHubAddr = "127.0.0.1:9180"
 
-type hubAddress struct {
+type HubAddress struct {
 	BaseURL  string
 	BindAddr string
 	IsLocal  bool
 }
 
-type hubStartConfig struct {
+type HubStartConfig struct {
 	RawAddr             string
 	HubBin              string
 	StateDir            string
@@ -40,17 +40,17 @@ type hubStartConfig struct {
 	HealthTimeout       time.Duration
 	HTTPClient          *http.Client
 	LookPath            func(string) (string, error)
-	DialHub             func(context.Context, hubAddress, *http.Client) (*appwire.Client, error)
-	StartLocalHub       func(hubStartRequest) error
-	CheckHubEnvironment func(context.Context, hubAddress, *http.Client, string) error
+	DialHub             func(context.Context, HubAddress, *http.Client) (*appwire.Client, error)
+	StartLocalHub       func(HubStartRequest) error
+	CheckHubEnvironment func(context.Context, HubAddress, *http.Client, string) error
 }
 
-type hubRuntime struct {
-	Address hubAddress
+type HubRuntime struct {
+	Address HubAddress
 	Client  *appwire.Client
 }
 
-type tuiStartupOptions struct {
+type TUIStartupOptions struct {
 	HubAddr      string
 	HubBin       string
 	StateDir     string
@@ -60,12 +60,12 @@ type tuiStartupOptions struct {
 	Debug        bool
 }
 
-func parseTUIStartupOptions(args []string, getenv func(string) string) (tuiStartupOptions, error) {
+func ParseTUIStartupOptions(args []string, getenv func(string) string) (TUIStartupOptions, error) {
 	if getenv == nil {
 		getenv = os.Getenv
 	}
-	opts := tuiStartupOptions{
-		HubAddr:      envDefault(getenv, "SERF_HUB_ADDR", defaultHubAddr),
+	opts := TUIStartupOptions{
+		HubAddr:      EnvDefault(getenv, "SERF_HUB_ADDR", DefaultHubAddr),
 		HubBin:       getenv("SERF_HUB_BIN"),
 		StateDir:     getenv("SERF_STATE_DIR"),
 		LogFile:      getenv("SERF_TUI_LOG_FILE"),
@@ -102,7 +102,7 @@ func parseTUIStartupOptions(args []string, getenv func(string) string) (tuiStart
 		fmt.Fprintf(w, "  SERF_HUB_AUTH_TOKEN      default value for --auth-token\n")
 	}
 	if err := fs.Parse(args); err != nil {
-		return tuiStartupOptions{}, err
+		return TUIStartupOptions{}, err
 	}
 	if noAutoStartHub {
 		opts.AutoStartHub = false
@@ -110,14 +110,14 @@ func parseTUIStartupOptions(args []string, getenv func(string) string) (tuiStart
 	return opts, nil
 }
 
-// resolveAuthToken determines the hub auth token using the resolution order:
+// ResolveAuthToken determines the hub auth token using the resolution order:
 // explicit value (from flag or env) → token file → empty (with warning).
 // The stateDir is used to locate the token file; if empty, $HOME/.serf is used.
-func resolveAuthToken(explicit, stateDir string) string {
+func ResolveAuthToken(explicit, stateDir string) string {
 	if explicit != "" {
 		return explicit
 	}
-	tokenFile := authTokenFilePath(stateDir)
+	tokenFile := AuthTokenFilePath(stateDir)
 	data, err := os.ReadFile(tokenFile)
 	if err == nil {
 		if tok := strings.TrimSpace(string(data)); tok != "" {
@@ -128,8 +128,8 @@ func resolveAuthToken(explicit, stateDir string) string {
 	return ""
 }
 
-// authTokenFilePath returns the path to the hub auth-token file.
-func authTokenFilePath(stateDir string) string {
+// AuthTokenFilePath returns the path to the hub auth-token file.
+func AuthTokenFilePath(stateDir string) string {
 	if stateDir != "" {
 		return filepath.Join(filepath.Clean(stateDir), "auth-token")
 	}
@@ -158,10 +158,10 @@ func (t *bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.base.RoundTrip(clone)
 }
 
-// httpClientWithBearer returns an *http.Client that attaches an Authorization
+// HTTPClientWithBearer returns an *http.Client that attaches an Authorization
 // bearer token to every request. If token is empty the original client is
 // returned unchanged.
-func httpClientWithBearer(base *http.Client, token string) *http.Client {
+func HTTPClientWithBearer(base *http.Client, token string) *http.Client {
 	if token == "" {
 		return base
 	}
@@ -174,90 +174,90 @@ func httpClientWithBearer(base *http.Client, token string) *http.Client {
 	return &clone
 }
 
-func envDefault(getenv func(string) string, key, fallback string) string {
+func EnvDefault(getenv func(string) string, key, fallback string) string {
 	if value := getenv(key); value != "" {
 		return value
 	}
 	return fallback
 }
 
-type startupErrorKind string
+type StartupErrorKind string
 
 const (
-	startupErrorMissingHubBinary  startupErrorKind = "missing-hub-binary"
-	startupErrorBindFailure       startupErrorKind = "bind-failure"
-	startupErrorUnhealthyHub      startupErrorKind = "unhealthy-hub"
-	startupErrorIncompatibleAPI   startupErrorKind = "incompatible-api"
-	startupErrorStaleEnvironment  startupErrorKind = "stale-environment"
-	startupErrorRemoteNoAutoStart startupErrorKind = "remote-no-autostart"
-	startupErrorHubUnavailable    startupErrorKind = "hub-unavailable"
+	StartupErrorMissingHubBinary  StartupErrorKind = "missing-hub-binary"
+	StartupErrorBindFailure       StartupErrorKind = "bind-failure"
+	StartupErrorUnhealthyHub      StartupErrorKind = "unhealthy-hub"
+	StartupErrorIncompatibleAPI   StartupErrorKind = "incompatible-api"
+	StartupErrorStaleEnvironment  StartupErrorKind = "stale-environment"
+	StartupErrorRemoteNoAutoStart StartupErrorKind = "remote-no-autostart"
+	StartupErrorHubUnavailable    StartupErrorKind = "hub-unavailable"
 )
 
-var localHubImmediateExitWindow = 750 * time.Millisecond
+var LocalHubImmediateExitWindow = 750 * time.Millisecond
 
-type startupError struct {
-	Kind   startupErrorKind
+type StartupError struct {
+	Kind   StartupErrorKind
 	Addr   string
 	Detail string
 	Err    error
 }
 
-func (e startupError) Error() string {
+func (e StartupError) Error() string {
 	detail := e.Detail
 	if detail == "" && e.Err != nil {
 		detail = e.Err.Error()
 	}
 	switch e.Kind {
-	case startupErrorMissingHubBinary:
+	case StartupErrorMissingHubBinary:
 		return "cannot find serf-hub binary: " + detail
-	case startupErrorBindFailure:
+	case StartupErrorBindFailure:
 		return "hub failed to bind: " + detail
-	case startupErrorUnhealthyHub:
+	case StartupErrorUnhealthyHub:
 		return "hub is unhealthy: " + detail
-	case startupErrorIncompatibleAPI:
+	case StartupErrorIncompatibleAPI:
 		return "hub API is incompatible: " + detail
-	case startupErrorStaleEnvironment:
+	case StartupErrorStaleEnvironment:
 		return "hub state/auth environment is stale: " + detail
-	case startupErrorRemoteNoAutoStart:
+	case StartupErrorRemoteNoAutoStart:
 		return "remote hub is not reachable and cannot be auto-started: " + detail
 	default:
 		return "hub is not reachable: " + detail
 	}
 }
 
-func (e startupError) Unwrap() error {
+func (e StartupError) Unwrap() error {
 	return e.Err
 }
 
-type hubStartRequest struct {
+type HubStartRequest struct {
 	Binary   string
 	BindAddr string
 	StateDir string
 	LogFile  string
 }
 
-func normalizeHubAddress(raw string) (hubAddress, error) {
+func NormalizeHubAddress(raw string) (HubAddress, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		raw = defaultHubAddr
+		raw = DefaultHubAddr
 	}
 	if !strings.Contains(raw, "://") {
 		raw = "http://" + raw
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return hubAddress{}, err
+		return HubAddress{}, err
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return hubAddress{}, fmt.Errorf("unsupported hub URL scheme %q", u.Scheme)
+		return HubAddress{}, fmt.Errorf("unsupported hub URL scheme %q", u.Scheme)
 	}
 	if u.Host == "" {
-		return hubAddress{}, fmt.Errorf("hub address must include a host")
+		return HubAddress{}, fmt.Errorf("hub address must include a host")
 	}
 	u.Path = strings.TrimRight(u.Path, "/")
 	u.RawQuery = ""
 	u.Fragment = ""
-	return hubAddress{
+	return HubAddress{
 		BaseURL:  strings.TrimRight(u.String(), "/"),
 		BindAddr: u.Host,
 		IsLocal:  isLocalHubHost(u.Hostname()),
@@ -276,12 +276,12 @@ func isLocalHubHost(host string) bool {
 	return ip.IsLoopback()
 }
 
-func startHubClient(ctx context.Context, cfg hubStartConfig) (hubRuntime, error) {
-	fail := func(err error) (hubRuntime, error) {
-		writeStartupDiagnostic(cfg.LogFile, err)
-		return hubRuntime{}, err
+func StartHubClient(ctx context.Context, cfg HubStartConfig) (HubRuntime, error) {
+	fail := func(err error) (HubRuntime, error) {
+		WriteStartupDiagnostic(cfg.LogFile, err)
+		return HubRuntime{}, err
 	}
-	addr, err := normalizeHubAddress(cfg.RawAddr)
+	addr, err := NormalizeHubAddress(cfg.RawAddr)
 	if err != nil {
 		return fail(err)
 	}
@@ -292,7 +292,7 @@ func startHubClient(ctx context.Context, cfg hubStartConfig) (hubRuntime, error)
 	// This covers both the WebSocket upgrade (nhooyr/websocket uses HTTPClient)
 	// and any plain HTTP calls made via hubapi.Client.
 	if cfg.AuthToken != "" {
-		cfg.HTTPClient = httpClientWithBearer(cfg.HTTPClient, cfg.AuthToken)
+		cfg.HTTPClient = HTTPClientWithBearer(cfg.HTTPClient, cfg.AuthToken)
 	}
 	if cfg.HealthTimeout == 0 {
 		cfg.HealthTimeout = 5 * time.Second
@@ -308,29 +308,29 @@ func startHubClient(ctx context.Context, cfg hubStartConfig) (hubRuntime, error)
 		if err := cfg.CheckHubEnvironment(ctx, addr, cfg.HTTPClient, cfg.StateDir); err != nil {
 			return fail(err)
 		}
-		return hubRuntime{Address: addr, Client: client}, nil
+		return HubRuntime{Address: addr, Client: client}, nil
 	}
 	if isTerminalStartupError(err) {
 		return fail(err)
 	}
 	if !cfg.AutoStart {
-		return fail(startupError{Kind: startupErrorHubUnavailable, Addr: addr.BaseURL, Err: err})
+		return fail(StartupError{Kind: StartupErrorHubUnavailable, Addr: addr.BaseURL, Err: err})
 	}
 	if !addr.IsLocal {
-		return fail(startupError{Kind: startupErrorRemoteNoAutoStart, Addr: addr.BaseURL, Err: err})
+		return fail(StartupError{Kind: StartupErrorRemoteNoAutoStart, Addr: addr.BaseURL, Err: err})
 	}
 	if cfg.LookPath == nil {
 		cfg.LookPath = exec.LookPath
 	}
 	bin, err := binresolve.Resolve("serf-hub", cfg.HubBin, cfg.CurrentExecutable, cfg.LookPath)
 	if err != nil {
-		return fail(startupError{Kind: startupErrorMissingHubBinary, Addr: addr.BaseURL, Err: err})
+		return fail(StartupError{Kind: StartupErrorMissingHubBinary, Addr: addr.BaseURL, Err: err})
 	}
 	startLocalHubFn := cfg.StartLocalHub
 	if startLocalHubFn == nil {
-		startLocalHubFn = startLocalHub
+		startLocalHubFn = StartLocalHub
 	}
-	if err := startLocalHubFn(hubStartRequest{
+	if err := startLocalHubFn(HubStartRequest{
 		Binary:   bin,
 		BindAddr: addr.BindAddr,
 		StateDir: cfg.StateDir,
@@ -343,15 +343,15 @@ func startHubClient(ctx context.Context, cfg hubStartConfig) (hubRuntime, error)
 		if isTerminalStartupError(err) {
 			return fail(err)
 		}
-		return fail(startupError{Kind: startupErrorUnhealthyHub, Addr: addr.BaseURL, Err: err})
+		return fail(StartupError{Kind: StartupErrorUnhealthyHub, Addr: addr.BaseURL, Err: err})
 	}
 	if err := cfg.CheckHubEnvironment(ctx, addr, cfg.HTTPClient, cfg.StateDir); err != nil {
 		return fail(err)
 	}
-	return hubRuntime{Address: addr, Client: client}, nil
+	return HubRuntime{Address: addr, Client: client}, nil
 }
 
-func waitForHubHealth(ctx context.Context, addr hubAddress, httpClient *http.Client, timeout time.Duration, dialHub func(context.Context, hubAddress, *http.Client) (*appwire.Client, error)) (*appwire.Client, error) {
+func waitForHubHealth(ctx context.Context, addr HubAddress, httpClient *http.Client, timeout time.Duration, dialHub func(context.Context, HubAddress, *http.Client) (*appwire.Client, error)) (*appwire.Client, error) {
 	deadline := time.Now().Add(timeout)
 	var lastErr error
 	for {
@@ -376,7 +376,7 @@ func waitForHubHealth(ctx context.Context, addr hubAddress, httpClient *http.Cli
 	}
 }
 
-func dialHubRPC(ctx context.Context, addr hubAddress, httpClient *http.Client) (*appwire.Client, error) {
+func dialHubRPC(ctx context.Context, addr HubAddress, httpClient *http.Client) (*appwire.Client, error) {
 	transport, err := appwire.DialWebSocket(ctx, hubRPCURL(addr), httpClient)
 	if err != nil {
 		return nil, err
@@ -392,8 +392,8 @@ func dialHubRPC(ctx context.Context, addr hubAddress, httpClient *http.Client) (
 	}
 	if init.ProtocolVersion != "" && init.ProtocolVersion != appwire.ProtocolVersion {
 		client.Close()
-		return nil, startupError{
-			Kind:   startupErrorIncompatibleAPI,
+		return nil, StartupError{
+			Kind:   StartupErrorIncompatibleAPI,
 			Addr:   addr.BaseURL,
 			Detail: fmt.Sprintf("hub speaks %q, TUI requires %q", init.ProtocolVersion, appwire.ProtocolVersion),
 		}
@@ -401,7 +401,7 @@ func dialHubRPC(ctx context.Context, addr hubAddress, httpClient *http.Client) (
 	return client, nil
 }
 
-func hubRPCURL(addr hubAddress) string {
+func hubRPCURL(addr HubAddress) string {
 	base := addr.BaseURL
 	switch {
 	case strings.HasPrefix(base, "https://"):
@@ -413,12 +413,12 @@ func hubRPCURL(addr hubAddress) string {
 	}
 }
 
-func startLocalHub(req hubStartRequest) error {
+func StartLocalHub(req HubStartRequest) error {
 	cmd := exec.Command(req.Binary, "--addr", req.BindAddr)
 	if req.StateDir != "" {
 		cmd.Env = append(os.Environ(),
 			"SERF_STATE_DIR="+req.StateDir,
-			"XDG_STATE_HOME="+stateHomeForSerfStateDir(req.StateDir),
+			"XDG_STATE_HOME="+StateHomeForSerfStateDir(req.StateDir),
 		)
 	}
 	var out *os.File
@@ -457,17 +457,17 @@ func startLocalHub(req hubStartRequest) error {
 			return fmt.Errorf("serf-hub exited during startup: %w: %s", err, output)
 		}
 		return fmt.Errorf("serf-hub exited during startup: %w", err)
-	case <-time.After(localHubImmediateExitWindow):
+	case <-time.After(LocalHubImmediateExitWindow):
 	}
 	return cmd.Process.Release()
 }
 
-func stateHomeForSerfStateDir(stateDir string) string {
+func StateHomeForSerfStateDir(stateDir string) string {
 	clean := filepath.Clean(strings.TrimSpace(stateDir))
 	return filepath.Dir(clean)
 }
 
-func checkHubEnvironment(ctx context.Context, addr hubAddress, httpClient *http.Client, stateDir string) error {
+func checkHubEnvironment(ctx context.Context, addr HubAddress, httpClient *http.Client, stateDir string) error {
 	stateDir = strings.TrimSpace(stateDir)
 	if stateDir == "" {
 		return nil
@@ -482,8 +482,8 @@ func checkHubEnvironment(ctx context.Context, addr hubAddress, httpClient *http.
 	}
 	expected := filepath.Join(filepath.Clean(stateDir), "projects", "*")
 	if filepath.Clean(health.StateGlob) != filepath.Clean(expected) {
-		return startupError{
-			Kind:   startupErrorStaleEnvironment,
+		return StartupError{
+			Kind:   StartupErrorStaleEnvironment,
 			Addr:   addr.BaseURL,
 			Detail: fmt.Sprintf("hub indexes %s; TUI requested %s", health.StateGlob, expected),
 		}
@@ -491,12 +491,12 @@ func checkHubEnvironment(ctx context.Context, addr hubAddress, httpClient *http.
 	return nil
 }
 
-func classifyStartHubError(addr hubAddress, err error) error {
-	kind := startupErrorUnhealthyHub
+func classifyStartHubError(addr HubAddress, err error) error {
+	kind := StartupErrorUnhealthyHub
 	if looksLikeBindFailure(err) {
-		kind = startupErrorBindFailure
+		kind = StartupErrorBindFailure
 	}
-	return startupError{Kind: kind, Addr: addr.BaseURL, Err: err}
+	return StartupError{Kind: kind, Addr: addr.BaseURL, Err: err}
 }
 
 func looksLikeBindFailure(err error) bool {
@@ -508,15 +508,15 @@ func looksLikeBindFailure(err error) bool {
 }
 
 func isTerminalStartupError(err error) bool {
-	var startupErr startupError
+	var startupErr StartupError
 	if !errors.As(err, &startupErr) {
 		return false
 	}
-	return startupErr.Kind == startupErrorIncompatibleAPI || startupErr.Kind == startupErrorStaleEnvironment
+	return startupErr.Kind == StartupErrorIncompatibleAPI || startupErr.Kind == StartupErrorStaleEnvironment
 }
 
-func startupErrorScreen(err error) string {
-	var startupErr startupError
+func StartupErrorScreen(err error) string {
+	var startupErr StartupError
 	if !errors.As(err, &startupErr) {
 		return fmt.Sprintf("Serf TUI startup failed\n\n%s\n", err)
 	}
@@ -525,24 +525,24 @@ func startupErrorScreen(err error) string {
 		detail = startupErr.Err.Error()
 	}
 	switch startupErr.Kind {
-	case startupErrorMissingHubBinary:
+	case StartupErrorMissingHubBinary:
 		return fmt.Sprintf("Serf TUI startup failed\n\nCannot find serf-hub binary.\n%s\n", detail)
-	case startupErrorBindFailure:
+	case StartupErrorBindFailure:
 		return fmt.Sprintf("Serf TUI startup failed\n\nHub failed to bind %s.\n%s\n", startupErr.Addr, detail)
-	case startupErrorUnhealthyHub:
+	case StartupErrorUnhealthyHub:
 		return fmt.Sprintf("Serf TUI startup failed\n\nHub started but did not become healthy at %s.\n%s\n", startupErr.Addr, detail)
-	case startupErrorIncompatibleAPI:
+	case StartupErrorIncompatibleAPI:
 		return fmt.Sprintf("Serf TUI startup failed\n\nHub API is incompatible at %s.\n%s\n", startupErr.Addr, detail)
-	case startupErrorStaleEnvironment:
+	case StartupErrorStaleEnvironment:
 		return fmt.Sprintf("Serf TUI startup failed\n\nHub is running with a different state/auth environment at %s.\n%s\n", startupErr.Addr, detail)
-	case startupErrorRemoteNoAutoStart:
+	case StartupErrorRemoteNoAutoStart:
 		return fmt.Sprintf("Serf TUI startup failed\n\nRemote Hub is not reachable at %s, and serf-tui only auto-starts local Hubs.\n%s\n", startupErr.Addr, detail)
 	default:
 		return fmt.Sprintf("Serf TUI startup failed\n\nHub is not reachable at %s.\n%s\n", startupErr.Addr, detail)
 	}
 }
 
-func writeStartupDiagnostic(logFile string, err error) {
+func WriteStartupDiagnostic(logFile string, err error) {
 	logFile = strings.TrimSpace(logFile)
 	if logFile == "" || err == nil {
 		return
@@ -555,8 +555,8 @@ func writeStartupDiagnostic(logFile string, err error) {
 		return
 	}
 	defer f.Close()
-	kind := startupErrorKind("unknown")
-	var startupErr startupError
+	kind := StartupErrorKind("unknown")
+	var startupErr StartupError
 	if errors.As(err, &startupErr) {
 		kind = startupErr.Kind
 	}

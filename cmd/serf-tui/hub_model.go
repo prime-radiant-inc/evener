@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
+	"primeradiant.com/serf/cmd/serf-tui/internal/hubstart"
 	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -2065,7 +2066,7 @@ func (m hubModel) ctrlCRestoreMessage() string {
 func (m hubModel) restoreInstructionMessage() string {
 	hubURL := strings.TrimSpace(m.hubURL)
 	if hubURL == "" {
-		hubURL = defaultHubAddr
+		hubURL = hubstart.DefaultHubAddr
 	}
 	ref := strings.TrimSpace(m.detail.Ref)
 	if ref == "" {

@@ -1,4 +1,4 @@
-package main
+package hubstart
 
 import (
 	"context"
@@ -47,9 +47,9 @@ func TestHubAddressNormalization(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := normalizeHubAddress(tt.raw)
+			got, err := NormalizeHubAddress(tt.raw)
 			if err != nil {
-				t.Fatalf("normalizeHubAddress: %v", err)
+				t.Fatalf("NormalizeHubAddress: %v", err)
 			}
 			if got.BaseURL != tt.baseURL || got.BindAddr != tt.bindAddr || got.IsLocal != tt.local {
 				t.Fatalf("got %+v", got)
@@ -60,70 +60,70 @@ func TestHubAddressNormalization(t *testing.T) {
 
 func TestStartHubClientDoesNotAutoStartRemoteHub(t *testing.T) {
 	started := false
-	_, err := startHubClient(context.Background(), hubStartConfig{
+	_, err := StartHubClient(context.Background(), HubStartConfig{
 		RawAddr:       "http://hubbox.example:9180",
 		AutoStart:     true,
 		HealthTimeout: time.Millisecond,
-		DialHub: func(context.Context, hubAddress, *http.Client) (*appwire.Client, error) {
+		DialHub: func(context.Context, HubAddress, *http.Client) (*appwire.Client, error) {
 			return nil, errors.New("connection refused")
 		},
-		StartLocalHub: func(hubStartRequest) error {
+		StartLocalHub: func(HubStartRequest) error {
 			started = true
 			return nil
 		},
 	})
 	if err == nil {
-		t.Fatal("startHubClient returned nil error")
+		t.Fatal("StartHubClient returned nil error")
 	}
 	if started {
-		t.Fatal("startHubClient tried to auto-start a remote hub")
+		t.Fatal("StartHubClient tried to auto-start a remote hub")
 	}
-	var startupErr startupError
-	if !errors.As(err, &startupErr) || startupErr.Kind != startupErrorRemoteNoAutoStart {
+	var startupErr StartupError
+	if !errors.As(err, &startupErr) || startupErr.Kind != StartupErrorRemoteNoAutoStart {
 		t.Fatalf("error=%v, want remote no-autostart startup error", err)
 	}
 }
 
 func TestStartHubClientReportsMissingHubBinary(t *testing.T) {
-	_, err := startHubClient(context.Background(), hubStartConfig{
+	_, err := StartHubClient(context.Background(), HubStartConfig{
 		RawAddr:       "127.0.0.1:9180",
 		AutoStart:     true,
 		HealthTimeout: time.Millisecond,
 		LookPath: func(string) (string, error) {
 			return "", os.ErrNotExist
 		},
-		DialHub: func(context.Context, hubAddress, *http.Client) (*appwire.Client, error) {
+		DialHub: func(context.Context, HubAddress, *http.Client) (*appwire.Client, error) {
 			return nil, errors.New("connection refused")
 		},
 	})
-	var startupErr startupError
-	if !errors.As(err, &startupErr) || startupErr.Kind != startupErrorMissingHubBinary {
+	var startupErr StartupError
+	if !errors.As(err, &startupErr) || startupErr.Kind != StartupErrorMissingHubBinary {
 		t.Fatalf("error=%v, want missing binary startup error", err)
 	}
 }
 
 func TestStartHubClientHonorsNoAutoStartForLocalHub(t *testing.T) {
 	started := false
-	_, err := startHubClient(context.Background(), hubStartConfig{
+	_, err := StartHubClient(context.Background(), HubStartConfig{
 		RawAddr:       "127.0.0.1:9180",
 		AutoStart:     false,
 		HealthTimeout: time.Millisecond,
-		DialHub: func(context.Context, hubAddress, *http.Client) (*appwire.Client, error) {
+		DialHub: func(context.Context, HubAddress, *http.Client) (*appwire.Client, error) {
 			return nil, errors.New("connection refused")
 		},
-		StartLocalHub: func(hubStartRequest) error {
+		StartLocalHub: func(HubStartRequest) error {
 			started = true
 			return nil
 		},
 	})
 	if err == nil {
-		t.Fatal("startHubClient returned nil error")
+		t.Fatal("StartHubClient returned nil error")
 	}
 	if started {
-		t.Fatal("startHubClient auto-started despite no-auto-start")
+		t.Fatal("StartHubClient auto-started despite no-auto-start")
 	}
-	var startupErr startupError
-	if !errors.As(err, &startupErr) || startupErr.Kind != startupErrorHubUnavailable {
+	var startupErr StartupError
+	if !errors.As(err, &startupErr) || startupErr.Kind != StartupErrorHubUnavailable {
 		t.Fatalf("error=%v, want hub unavailable startup error", err)
 	}
 }
@@ -133,32 +133,32 @@ func TestStartHubClientPassesStateDirAndLogFileToLocalHub(t *testing.T) {
 	logFile := filepath.Join(t.TempDir(), "serf-tui.log")
 	hubBin := filepath.Join(t.TempDir(), "serf-hub")
 	writeExecutable(t, hubBin)
-	var got hubStartRequest
+	var got HubStartRequest
 	started := false
-	runtime, err := startHubClient(context.Background(), hubStartConfig{
+	runtime, err := StartHubClient(context.Background(), HubStartConfig{
 		RawAddr:       "127.0.0.1:9180",
 		HubBin:        hubBin,
 		StateDir:      stateDir,
 		LogFile:       logFile,
 		AutoStart:     true,
 		HealthTimeout: time.Millisecond,
-		DialHub: func(context.Context, hubAddress, *http.Client) (*appwire.Client, error) {
+		DialHub: func(context.Context, HubAddress, *http.Client) (*appwire.Client, error) {
 			if !started {
 				return nil, errors.New("connection refused")
 			}
 			return appwire.NewClient(noopAppWireTransport{}), nil
 		},
-		StartLocalHub: func(req hubStartRequest) error {
+		StartLocalHub: func(req HubStartRequest) error {
 			started = true
 			got = req
 			return nil
 		},
-		CheckHubEnvironment: func(context.Context, hubAddress, *http.Client, string) error {
+		CheckHubEnvironment: func(context.Context, HubAddress, *http.Client, string) error {
 			return nil
 		},
 	})
 	if err != nil {
-		t.Fatalf("startHubClient: %v", err)
+		t.Fatalf("StartHubClient: %v", err)
 	}
 	if runtime.Client == nil {
 		t.Fatal("runtime client is nil")
@@ -172,26 +172,26 @@ func TestStartHubClientDistinguishesStartupFailures(t *testing.T) {
 	tests := []struct {
 		name string
 		err  error
-		kind startupErrorKind
+		kind StartupErrorKind
 	}{
-		{name: "bind failure", err: fmt.Errorf("listen tcp 127.0.0.1:9180: bind: address already in use"), kind: startupErrorBindFailure},
-		{name: "other start failure", err: errors.New("permission denied"), kind: startupErrorUnhealthyHub},
+		{name: "bind failure", err: fmt.Errorf("listen tcp 127.0.0.1:9180: bind: address already in use"), kind: StartupErrorBindFailure},
+		{name: "other start failure", err: errors.New("permission denied"), kind: StartupErrorUnhealthyHub},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := startHubClient(context.Background(), hubStartConfig{
+			_, err := StartHubClient(context.Background(), HubStartConfig{
 				RawAddr:       "127.0.0.1:9180",
 				HubBin:        writeTempExecutable(t),
 				AutoStart:     true,
 				HealthTimeout: time.Millisecond,
-				DialHub: func(context.Context, hubAddress, *http.Client) (*appwire.Client, error) {
+				DialHub: func(context.Context, HubAddress, *http.Client) (*appwire.Client, error) {
 					return nil, errors.New("connection refused")
 				},
-				StartLocalHub: func(hubStartRequest) error {
+				StartLocalHub: func(HubStartRequest) error {
 					return tt.err
 				},
 			})
-			var startupErr startupError
+			var startupErr StartupError
 			if !errors.As(err, &startupErr) || startupErr.Kind != tt.kind {
 				t.Fatalf("error=%v, want kind %s", err, tt.kind)
 			}
@@ -200,20 +200,20 @@ func TestStartHubClientDistinguishesStartupFailures(t *testing.T) {
 }
 
 func TestStartHubClientReportsUnhealthyAutoStartedHub(t *testing.T) {
-	_, err := startHubClient(context.Background(), hubStartConfig{
+	_, err := StartHubClient(context.Background(), HubStartConfig{
 		RawAddr:       "127.0.0.1:9180",
 		HubBin:        writeTempExecutable(t),
 		AutoStart:     true,
 		HealthTimeout: time.Millisecond,
-		DialHub: func(context.Context, hubAddress, *http.Client) (*appwire.Client, error) {
+		DialHub: func(context.Context, HubAddress, *http.Client) (*appwire.Client, error) {
 			return nil, errors.New("connection refused")
 		},
-		StartLocalHub: func(hubStartRequest) error {
+		StartLocalHub: func(HubStartRequest) error {
 			return nil
 		},
 	})
-	var startupErr startupError
-	if !errors.As(err, &startupErr) || startupErr.Kind != startupErrorUnhealthyHub {
+	var startupErr StartupError
+	if !errors.As(err, &startupErr) || startupErr.Kind != StartupErrorUnhealthyHub {
 		t.Fatalf("error=%v, want unhealthy hub startup error", err)
 	}
 }
@@ -221,30 +221,30 @@ func TestStartHubClientReportsUnhealthyAutoStartedHub(t *testing.T) {
 func TestStartHubClientDoesNotAutoStartIncompatibleOrStaleHub(t *testing.T) {
 	tests := []struct {
 		name string
-		cfg  hubStartConfig
-		kind startupErrorKind
+		cfg  HubStartConfig
+		kind StartupErrorKind
 	}{
 		{
 			name: "incompatible api",
-			cfg: hubStartConfig{
-				DialHub: func(context.Context, hubAddress, *http.Client) (*appwire.Client, error) {
-					return nil, startupError{Kind: startupErrorIncompatibleAPI, Detail: "protocol mismatch"}
+			cfg: HubStartConfig{
+				DialHub: func(context.Context, HubAddress, *http.Client) (*appwire.Client, error) {
+					return nil, StartupError{Kind: StartupErrorIncompatibleAPI, Detail: "protocol mismatch"}
 				},
 			},
-			kind: startupErrorIncompatibleAPI,
+			kind: StartupErrorIncompatibleAPI,
 		},
 		{
 			name: "stale environment",
-			cfg: hubStartConfig{
+			cfg: HubStartConfig{
 				StateDir: filepath.Join(t.TempDir(), "state", "serf"),
-				DialHub: func(context.Context, hubAddress, *http.Client) (*appwire.Client, error) {
+				DialHub: func(context.Context, HubAddress, *http.Client) (*appwire.Client, error) {
 					return appwire.NewClient(noopAppWireTransport{}), nil
 				},
-				CheckHubEnvironment: func(context.Context, hubAddress, *http.Client, string) error {
-					return startupError{Kind: startupErrorStaleEnvironment, Detail: "state dir mismatch"}
+				CheckHubEnvironment: func(context.Context, HubAddress, *http.Client, string) error {
+					return StartupError{Kind: StartupErrorStaleEnvironment, Detail: "state dir mismatch"}
 				},
 			},
-			kind: startupErrorStaleEnvironment,
+			kind: StartupErrorStaleEnvironment,
 		},
 	}
 	for _, tt := range tests {
@@ -253,15 +253,15 @@ func TestStartHubClientDoesNotAutoStartIncompatibleOrStaleHub(t *testing.T) {
 			tt.cfg.RawAddr = "127.0.0.1:9180"
 			tt.cfg.AutoStart = true
 			tt.cfg.HealthTimeout = time.Millisecond
-			tt.cfg.StartLocalHub = func(hubStartRequest) error {
+			tt.cfg.StartLocalHub = func(HubStartRequest) error {
 				started = true
 				return nil
 			}
-			_, err := startHubClient(context.Background(), tt.cfg)
+			_, err := StartHubClient(context.Background(), tt.cfg)
 			if started {
-				t.Fatal("startHubClient tried to auto-start after terminal startup error")
+				t.Fatal("StartHubClient tried to auto-start after terminal startup error")
 			}
-			var startupErr startupError
+			var startupErr StartupError
 			if !errors.As(err, &startupErr) || startupErr.Kind != tt.kind {
 				t.Fatalf("error=%v, want kind %s", err, tt.kind)
 			}
@@ -272,19 +272,19 @@ func TestStartHubClientDoesNotAutoStartIncompatibleOrStaleHub(t *testing.T) {
 func TestStartupErrorScreenNamesFailureKind(t *testing.T) {
 	tests := []struct {
 		name string
-		err  startupError
+		err  StartupError
 		want string
 	}{
-		{name: "missing binary", err: startupError{Kind: startupErrorMissingHubBinary, Detail: "not found"}, want: "Cannot find serf-hub binary"},
-		{name: "bind failure", err: startupError{Kind: startupErrorBindFailure, Addr: "http://127.0.0.1:9180", Detail: "address already in use"}, want: "Hub failed to bind"},
-		{name: "unhealthy", err: startupError{Kind: startupErrorUnhealthyHub, Addr: "http://127.0.0.1:9180", Detail: "timeout"}, want: "did not become healthy"},
-		{name: "incompatible", err: startupError{Kind: startupErrorIncompatibleAPI, Addr: "http://127.0.0.1:9180", Detail: "old protocol"}, want: "Hub API is incompatible"},
-		{name: "stale", err: startupError{Kind: startupErrorStaleEnvironment, Addr: "http://127.0.0.1:9180", Detail: "state dir mismatch"}, want: "different state/auth environment"},
-		{name: "remote", err: startupError{Kind: startupErrorRemoteNoAutoStart, Addr: "http://hubbox.example:9180", Detail: "connection refused"}, want: "Remote Hub is not reachable"},
+		{name: "missing binary", err: StartupError{Kind: StartupErrorMissingHubBinary, Detail: "not found"}, want: "Cannot find serf-hub binary"},
+		{name: "bind failure", err: StartupError{Kind: StartupErrorBindFailure, Addr: "http://127.0.0.1:9180", Detail: "address already in use"}, want: "Hub failed to bind"},
+		{name: "unhealthy", err: StartupError{Kind: StartupErrorUnhealthyHub, Addr: "http://127.0.0.1:9180", Detail: "timeout"}, want: "did not become healthy"},
+		{name: "incompatible", err: StartupError{Kind: StartupErrorIncompatibleAPI, Addr: "http://127.0.0.1:9180", Detail: "old protocol"}, want: "Hub API is incompatible"},
+		{name: "stale", err: StartupError{Kind: StartupErrorStaleEnvironment, Addr: "http://127.0.0.1:9180", Detail: "state dir mismatch"}, want: "different state/auth environment"},
+		{name: "remote", err: StartupError{Kind: StartupErrorRemoteNoAutoStart, Addr: "http://hubbox.example:9180", Detail: "connection refused"}, want: "Remote Hub is not reachable"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			screen := startupErrorScreen(tt.err)
+			screen := StartupErrorScreen(tt.err)
 			for _, want := range []string{"Serf TUI startup failed", tt.want, tt.err.Detail} {
 				if !strings.Contains(screen, want) {
 					t.Fatalf("screen missing %q:\n%s", want, screen)
@@ -296,17 +296,17 @@ func TestStartupErrorScreenNamesFailureKind(t *testing.T) {
 
 func TestStartHubClientWritesStartupDiagnosticsToLogFile(t *testing.T) {
 	logFile := filepath.Join(t.TempDir(), "startup.log")
-	_, err := startHubClient(context.Background(), hubStartConfig{
+	_, err := StartHubClient(context.Background(), HubStartConfig{
 		RawAddr:       "http://hubbox.example:9180",
 		LogFile:       logFile,
 		AutoStart:     true,
 		HealthTimeout: time.Millisecond,
-		DialHub: func(context.Context, hubAddress, *http.Client) (*appwire.Client, error) {
+		DialHub: func(context.Context, HubAddress, *http.Client) (*appwire.Client, error) {
 			return nil, errors.New("connection refused")
 		},
 	})
 	if err == nil {
-		t.Fatal("startHubClient returned nil error")
+		t.Fatal("StartHubClient returned nil error")
 	}
 	data, readErr := os.ReadFile(logFile)
 	if readErr != nil {
@@ -323,22 +323,22 @@ func TestStartLocalHubReportsImmediateExitOutput(t *testing.T) {
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho 'listen tcp 127.0.0.1:9180: bind: address already in use' >&2\nexit 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	err := startLocalHub(hubStartRequest{
+	err := StartLocalHub(HubStartRequest{
 		Binary:   bin,
 		BindAddr: "127.0.0.1:9180",
 		LogFile:  filepath.Join(t.TempDir(), "hub.log"),
 	})
 	if err == nil || !strings.Contains(err.Error(), "address already in use") {
-		t.Fatalf("startLocalHub error=%v, want immediate exit output", err)
+		t.Fatalf("StartLocalHub error=%v, want immediate exit output", err)
 	}
 }
 
 func withLocalHubImmediateExitWindow(t *testing.T, window time.Duration) {
 	t.Helper()
-	previous := localHubImmediateExitWindow
-	localHubImmediateExitWindow = window
+	previous := LocalHubImmediateExitWindow
+	LocalHubImmediateExitWindow = window
 	t.Cleanup(func() {
-		localHubImmediateExitWindow = previous
+		LocalHubImmediateExitWindow = previous
 	})
 }
 

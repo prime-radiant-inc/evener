@@ -16,6 +16,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmd/serf-tui/internal/hubstart"
 	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appwire"
@@ -2012,7 +2013,7 @@ func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	runtime, err := startHubClient(context.Background(), hubStartConfig{
+	runtime, err := hubstart.StartHubClient(context.Background(), hubstart.HubStartConfig{
 		RawAddr:    srv.URL,
 		AutoStart:  false,
 		HTTPClient: srv.Client(),
