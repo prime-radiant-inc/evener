@@ -46,9 +46,10 @@ func Seed(providerNames []string, defaultName string, getBaseURL func(typ string
 	}
 }
 
-// baseURLEnvVar returns the environment variable name for the base URL of the
-// given provider type tag. Returns "" for unknown types.
-func baseURLEnvVar(typ string) string {
+// BaseURLEnvVar returns the environment variable name for the base URL of the
+// given provider type tag. Returns "" for unknown types (e.g. ollama, whose base
+// URL the materializer resolves from OLLAMA_BASE_URL/OLLAMA_HOST).
+func BaseURLEnvVar(typ string) string {
 	switch typ {
 	case "openai":
 		return "OPENAI_BASE_URL"
@@ -69,15 +70,6 @@ func baseURLEnvVar(typ string) string {
 	default:
 		return ""
 	}
-}
-
-// instanceShape is a write-only view of InstanceConfig that omits APIKey,
-// ensuring secrets are never emitted by Marshal.
-type instanceShape struct {
-	Type     Type     `toml:"type"`
-	APIStyle APIStyle `toml:"api_style,omitempty"`
-	BaseURL  string   `toml:"base_url,omitempty"`
-	Quirks   string   `toml:"quirks,omitempty"`
 }
 
 // Marshal emits providers.toml content for cfg. It never emits api_key even

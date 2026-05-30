@@ -58,3 +58,15 @@ func TestMarshalDescriptorsOnly(t *testing.T) {
 		t.Fatalf("round-trip mismatch: %+v", got)
 	}
 }
+
+func TestBaseURLEnvVar(t *testing.T) {
+	if got := BaseURLEnvVar("kimi"); got != "KIMI_BASE_URL" {
+		t.Errorf("kimi = %q", got)
+	}
+	if got := BaseURLEnvVar("openai-compatible"); got != "OPENAI_COMPATIBLE_BASE_URL" {
+		t.Errorf("openai-compatible = %q", got)
+	}
+	if got := BaseURLEnvVar("ollama"); got != "" {
+		t.Errorf("ollama should be empty (caller resolves), got %q", got)
+	}
+}
