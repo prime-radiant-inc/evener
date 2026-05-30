@@ -1,4 +1,4 @@
-package main
+package rvreg
 
 import (
 	"fmt"
@@ -7,14 +7,17 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
-type serveRendezvousRegistration struct {
+// Registration tracks a serve process's rendezvous entry on disk, keeping the
+// in-memory copy in sync so the session identity can be updated and the entry
+// removed on shutdown.
+type Registration struct {
 	mu         sync.Mutex
 	runDir     string
 	entry      rendezvous.Entry
 	registered bool
 }
 
-func (r *serveRendezvousRegistration) Register(runDir string, entry rendezvous.Entry) error {
+func (r *Registration) Register(runDir string, entry rendezvous.Entry) error {
 	if _, err := rendezvous.Write(runDir, entry); err != nil {
 		return err
 	}
@@ -26,7 +29,7 @@ func (r *serveRendezvousRegistration) Register(runDir string, entry rendezvous.E
 	return nil
 }
 
-func (r *serveRendezvousRegistration) UpdateSessionID(sessionID string) error {
+func (r *Registration) UpdateSessionID(sessionID string) error {
 	if sessionID == "" {
 		return fmt.Errorf("session id is required")
 	}
@@ -41,7 +44,7 @@ func (r *serveRendezvousRegistration) UpdateSessionID(sessionID string) error {
 	return err
 }
 
-func (r *serveRendezvousRegistration) Remove() error {
+func (r *Registration) Remove() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if !r.registered {

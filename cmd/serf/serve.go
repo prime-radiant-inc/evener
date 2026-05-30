@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmd/serf/internal/rvreg"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/providerconfig"
@@ -238,7 +239,7 @@ func runServe(args []string) error {
 		AllowedHost:   listener.Addr().String(),
 	})
 	srv.SetAppIdentity("local", sess.ID())
-	rvRegistration := &serveRendezvousRegistration{}
+	rvRegistration := &rvreg.Registration{}
 
 	var currentMu sync.RWMutex
 	currentSess := sess
