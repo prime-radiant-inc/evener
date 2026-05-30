@@ -19,6 +19,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/buildinfo"
+	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/frontmatter"
 	"primeradiant.com/serf/internal/appserver"
@@ -51,8 +52,8 @@ type WebConfig struct {
 	ProviderConfig      *providerconfig.Config // instance-to-tag mapping; nil when providers.toml absent (env path)
 	ProvidersConfigPath string                 // path to providers.toml; forwarded to the auth controller
 	CodexSources        []appsource.CodexSourceConfig
-	CodexLaunches       []CodexLaunchConfig
-	CodexLauncher       *CodexLauncher
+	CodexLaunches       []codexlaunch.CodexLaunchConfig
+	CodexLauncher       *codexlaunch.CodexLauncher
 }
 
 // Spawner forks a serf serve subprocess and waits for its rendezvous file to appear.
@@ -117,7 +118,7 @@ func NewWebServer(cfg WebConfig) *WebServer {
 	}
 	sources := newHubSourceRegistry(cfg)
 	if cfg.CodexLauncher == nil && len(cfg.CodexLaunches) > 0 {
-		cfg.CodexLauncher = NewCodexLauncher(cfg.CodexLaunches)
+		cfg.CodexLauncher = codexlaunch.NewCodexLauncher(cfg.CodexLaunches)
 	}
 	web := &WebServer{
 		cfg: cfg, appTmpl: appTmpl, sidebarTmpl: sidebarTmpl,
@@ -1181,7 +1182,7 @@ type settingsData struct {
 	BearerTokenAge    string // human-readable age of the auth token file, empty if unavailable
 	HubVersion        string // Version constant (e.g. "0.1.0")
 	HubCommit         string // git commit hash injected at build time, empty in dev builds
-	CodexLaunches     []CodexLaunchConfig
+	CodexLaunches     []codexlaunch.CodexLaunchConfig
 	ProjectCWD        string            // canonical cwd for the per-project settings page
 	AvailableProjects []projectListItem // known projects shown when ProjectCWD is empty
 }

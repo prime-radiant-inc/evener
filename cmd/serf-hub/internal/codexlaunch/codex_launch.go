@@ -1,4 +1,4 @@
-package main
+package codexlaunch
 
 import (
 	"bufio"
@@ -32,17 +32,17 @@ type CodexLaunchConfig struct {
 }
 
 type CodexLauncher struct {
-	mu      sync.Mutex
+	Mu      sync.Mutex
 	configs map[string]CodexLaunchConfig
-	running map[string]*launchedCodex
-	sources map[string]appsource.Source
+	Running map[string]*LaunchedCodex
+	Sources map[string]appsource.Source
 	client  *http.Client
 }
 
-type launchedCodex struct {
-	cmd      *exec.Cmd
+type LaunchedCodex struct {
+	Cmd      *exec.Cmd
 	endpoint string
-	exited   <-chan error
+	Exited   <-chan error
 }
 
 func NewCodexLauncher(configs []CodexLaunchConfig) *CodexLauncher {
@@ -57,15 +57,15 @@ func NewCodexLauncher(configs []CodexLaunchConfig) *CodexLauncher {
 	}
 	return &CodexLauncher{
 		configs: byID,
-		running: map[string]*launchedCodex{},
-		sources: map[string]appsource.Source{},
+		Running: map[string]*LaunchedCodex{},
+		Sources: map[string]appsource.Source{},
 		client:  http.DefaultClient,
 	}
 }
 
 func (l *CodexLauncher) EnsureSource(ctx context.Context, sourceID string, sources *appsource.Registry) (appsource.Source, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.Mu.Lock()
+	defer l.Mu.Unlock()
 	if source, ok := l.cachedSourceLocked(sourceID, sources); ok {
 		if sources != nil {
 			sources.Add(source)
@@ -86,8 +86,8 @@ func (l *CodexLauncher) EnsureSource(ctx context.Context, sourceID string, sourc
 		BearerToken:     cfg.BearerToken,
 		BearerTokenFile: cfg.BearerTokenFile,
 	}, l.client)
-	l.running[sourceID] = launched
-	l.sources[sourceID] = source
+	l.Running[sourceID] = launched
+	l.Sources[sourceID] = source
 	if sources != nil {
 		sources.Add(source)
 	}
@@ -95,32 +95,32 @@ func (l *CodexLauncher) EnsureSource(ctx context.Context, sourceID string, sourc
 }
 
 func (l *CodexLauncher) Manages(sourceID string) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	l.Mu.Lock()
+	defer l.Mu.Unlock()
 	_, ok := l.configs[sourceID]
 	return ok
 }
 
 func (l *CodexLauncher) cachedSourceLocked(sourceID string, sources *appsource.Registry) (appsource.Source, bool) {
-	source, hasSource := l.sources[sourceID]
-	launched := l.running[sourceID]
+	source, hasSource := l.Sources[sourceID]
+	launched := l.Running[sourceID]
 	if !hasSource {
 		return nil, false
 	}
 	if launched != nil && !launchedCodexExited(launched) {
 		return source, true
 	}
-	delete(l.running, sourceID)
-	delete(l.sources, sourceID)
+	delete(l.Running, sourceID)
+	delete(l.Sources, sourceID)
 	if sources != nil {
 		sources.Remove(sourceID)
 	}
 	return nil, false
 }
 
-func launchedCodexExited(launched *launchedCodex) bool {
+func launchedCodexExited(launched *LaunchedCodex) bool {
 	select {
-	case <-launched.exited:
+	case <-launched.Exited:
 		return true
 	default:
 		return false
@@ -128,21 +128,21 @@ func launchedCodexExited(launched *launchedCodex) bool {
 }
 
 func (l *CodexLauncher) Shutdown(ctx context.Context) error {
-	l.mu.Lock()
-	running := make([]*launchedCodex, 0, len(l.running))
-	for _, launched := range l.running {
+	l.Mu.Lock()
+	running := make([]*LaunchedCodex, 0, len(l.Running))
+	for _, launched := range l.Running {
 		running = append(running, launched)
 	}
-	l.running = map[string]*launchedCodex{}
-	l.sources = map[string]appsource.Source{}
-	l.mu.Unlock()
+	l.Running = map[string]*LaunchedCodex{}
+	l.Sources = map[string]appsource.Source{}
+	l.Mu.Unlock()
 
 	for _, launched := range running {
-		if launched.cmd.Process != nil {
-			_ = launched.cmd.Process.Kill()
+		if launched.Cmd.Process != nil {
+			_ = launched.Cmd.Process.Kill()
 		}
 		select {
-		case <-launched.exited:
+		case <-launched.Exited:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -150,7 +150,7 @@ func (l *CodexLauncher) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig) (*launchedCodex, error) {
+func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig) (*LaunchedCodex, error) {
 	binary := strings.TrimSpace(cfg.Binary)
 	if binary == "" {
 		binary = "codex"
@@ -195,8 +195,8 @@ func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig)
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if endpoint != "" && codexReady(waitCtx, l.client, endpoint) {
-			return &launchedCodex{cmd: cmd, endpoint: endpoint, exited: exited}, nil
+		if endpoint != "" && CodexReady(waitCtx, l.client, endpoint) {
+			return &LaunchedCodex{Cmd: cmd, endpoint: endpoint, Exited: exited}, nil
 		}
 		select {
 		case next := <-endpoints:
@@ -250,13 +250,13 @@ func codexLaunchEnv(overrides map[string]string) []string {
 func scanCodexEndpoint(r io.Reader, endpoints chan<- string) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
-		if endpoint, ok := parseCodexEndpoint(scanner.Text()); ok {
+		if endpoint, ok := ParseCodexEndpoint(scanner.Text()); ok {
 			endpoints <- endpoint
 		}
 	}
 }
 
-func parseCodexEndpoint(line string) (string, bool) {
+func ParseCodexEndpoint(line string) (string, bool) {
 	if endpoint, ok := parseCodexEndpointJSON(line); ok {
 		return endpoint, true
 	}
@@ -302,7 +302,7 @@ func configuredCodexEndpoint(listen string) string {
 	return listen
 }
 
-func codexReady(ctx context.Context, client *http.Client, endpoint string) bool {
+func CodexReady(ctx context.Context, client *http.Client, endpoint string) bool {
 	readyURL, err := codexReadyURL(endpoint)
 	if err != nil {
 		return false

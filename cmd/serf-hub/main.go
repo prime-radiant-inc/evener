@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/binresolve"
 	"primeradiant.com/serf/internal/credentials"
@@ -143,9 +144,9 @@ func main() {
 		ProvidersConfigPath: providersConfigPath,
 		LaunchDefaults:      defaultHubLaunchDefaults(),
 	}
-	var codexLauncher *CodexLauncher
+	var codexLauncher *codexlaunch.CodexLauncher
 	if len(cfg.CodexLaunches) > 0 {
-		codexLauncher = NewCodexLauncher(cfg.CodexLaunches)
+		codexLauncher = codexlaunch.NewCodexLauncher(cfg.CodexLaunches)
 	}
 
 	// stateDir is the parent of the projects/ directory; used for ForkSession

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
@@ -445,12 +446,12 @@ func TestWeb_SidebarIncludesConfiguredCodexSourceThreads(t *testing.T) {
 }
 
 func TestAPI_ManagedCodexSessionDetailEnsuresSource(t *testing.T) {
-	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
 	web := NewWebServer(WebConfig{
 		HubAddr:       "127.0.0.1:9180",
 		Past:          NewPastIndex(""),
-		CodexLaunches: []CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	})
 
@@ -472,12 +473,12 @@ func TestAPI_ManagedCodexSessionDetailEnsuresSource(t *testing.T) {
 }
 
 func TestWeb_APITreeIncludesManagedCodexLaunchThreads(t *testing.T) {
-	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
 	web := NewWebServer(WebConfig{
 		HubAddr:       "127.0.0.1:9180",
 		Past:          NewPastIndex(""),
-		CodexLaunches: []CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	})
 
@@ -645,13 +646,13 @@ func TestAPI_SendUnavailableCapabilityDoesNotStartTurn(t *testing.T) {
 }
 
 func TestAPI_SendEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
-	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
 	if _, err := launcher.EnsureSource(context.Background(), "codex-managed", nil); err != nil {
 		t.Fatalf("EnsureSource: %v", err)
 	}
 	first := launcherRunningProcess(t, launcher, "codex-managed")
-	if err := first.cmd.Process.Kill(); err != nil {
+	if err := first.Cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill first codex: %v", err)
 	}
 	waitLaunchedCodexExited(t, first)
@@ -659,7 +660,7 @@ func TestAPI_SendEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
 	web := NewWebServer(WebConfig{
 		HubAddr:       "127.0.0.1:9180",
 		Past:          NewPastIndex(""),
-		CodexLaunches: []CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	})
 
@@ -1828,7 +1829,7 @@ func TestWeb_ApiSpawn_RejectsOversizeItem(t *testing.T) {
 }
 
 func TestWeb_ApiSpawn_CodexLaunchFailureReturnsStructuredDiagnostic(t *testing.T) {
-	cfg := CodexLaunchConfig{
+	cfg := codexlaunch.CodexLaunchConfig{
 		ID:     "codex-broken",
 		Binary: "/tmp/serf-no-such-codex-binary",
 		Listen: "ws://127.0.0.1:0",
@@ -1836,8 +1837,8 @@ func TestWeb_ApiSpawn_CodexLaunchFailureReturnsStructuredDiagnostic(t *testing.T
 	web := NewWebServer(WebConfig{
 		HubAddr:       "127.0.0.1:9180",
 		Past:          NewPastIndex(""),
-		CodexLaunches: []CodexLaunchConfig{cfg},
-		CodexLauncher: NewCodexLauncher([]CodexLaunchConfig{cfg}),
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{cfg},
+		CodexLauncher: codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{cfg}),
 	})
 	body := strings.NewReader(`{"harness":"codex-broken","working_dir":"/tmp","prompt":"hello"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/spawn", body)
@@ -4392,7 +4393,7 @@ func TestWeb_APIHealth(t *testing.T) {
 func TestWeb_APIHealthReportsCodexLaunchSpawnCapability(t *testing.T) {
 	web := NewWebServer(WebConfig{
 		HubAddr:       "127.0.0.1:9180",
-		CodexLaunches: []CodexLaunchConfig{{ID: "codex-managed"}},
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}},
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 	req.Host = "127.0.0.1:9180"
@@ -4704,12 +4705,12 @@ func TestWeb_APISessionDetailsLocalLiveUsesAppWireForkCapability(t *testing.T) {
 }
 
 func TestWeb_ManagedCodexLiveWorkspaceCapabilitiesEnsureSource(t *testing.T) {
-	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
 	web := NewWebServer(WebConfig{
 		HubAddr:       "127.0.0.1:9180",
 		Past:          NewPastIndex(""),
-		CodexLaunches: []CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	})
 
@@ -4725,7 +4726,7 @@ func TestWeb_APISpawnSchema(t *testing.T) {
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID: "codex-local",
 		}},
-		CodexLaunches: []CodexLaunchConfig{{ID: "codex-managed"}},
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}},
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/spawn-schema", nil)
 	req.Host = "127.0.0.1:9180"

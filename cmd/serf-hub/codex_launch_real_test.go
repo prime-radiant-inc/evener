@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -22,7 +23,7 @@ func TestCodexLauncherRealAppServerSmoke(t *testing.T) {
 		t.Skip("set SERF_CODEX_APP_SERVER_BINARY to run real Codex app-server smoke")
 	}
 	codexHome := t.TempDir()
-	launcher := NewCodexLauncher([]CodexLaunchConfig{{
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{{
 		ID:         "codex-real",
 		Binary:     binary,
 		WorkingDir: t.TempDir(),
@@ -155,7 +156,7 @@ func startRealCodexAppServer(t *testing.T, binary string) (string, func()) {
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if endpoint != "" && codexReady(ctx, httpTestClient(), endpoint) {
+		if endpoint != "" && codexlaunch.CodexReady(ctx, httpTestClient(), endpoint) {
 			return endpoint, func() {
 				if cmd.Process != nil {
 					_ = cmd.Process.Kill()
@@ -193,7 +194,7 @@ func realCodexAppServerArgs(binary string, extra ...string) []string {
 func scanRealCodexEndpoint(r io.Reader, endpoints chan<- string) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
-		if endpoint, ok := parseCodexEndpoint(scanner.Text()); ok {
+		if endpoint, ok := codexlaunch.ParseCodexEndpoint(scanner.Text()); ok {
 			endpoints <- endpoint
 		}
 	}

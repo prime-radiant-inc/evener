@@ -11,12 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appwire"
 )
 
 func TestCodexLauncherLaunchesProcessAndWaitsForReady(t *testing.T) {
-	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
 
 	source, err := launcher.EnsureSource(context.Background(), "codex-managed", nil)
@@ -33,20 +34,20 @@ func TestCodexLauncherLaunchesProcessAndWaitsForReady(t *testing.T) {
 }
 
 func TestCodexLauncherRelaunchesAfterManagedProcessExits(t *testing.T) {
-	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
 
 	first, err := launcher.EnsureSource(context.Background(), "codex-managed", nil)
 	if err != nil {
 		t.Fatalf("EnsureSource first: %v", err)
 	}
-	launcher.mu.Lock()
-	launched := launcher.running["codex-managed"]
-	launcher.mu.Unlock()
-	if launched == nil || launched.cmd.Process == nil {
+	launcher.Mu.Lock()
+	launched := launcher.Running["codex-managed"]
+	launcher.Mu.Unlock()
+	if launched == nil || launched.Cmd.Process == nil {
 		t.Fatal("managed codex process was not tracked")
 	}
-	if err := launched.cmd.Process.Kill(); err != nil {
+	if err := launched.Cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill managed codex: %v", err)
 	}
 
@@ -65,7 +66,7 @@ func TestCodexLauncherRelaunchesAfterManagedProcessExits(t *testing.T) {
 }
 
 func TestCodexLauncherEarlyExitReturnsStructuredDiagnostic(t *testing.T) {
-	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-exit", "exit")})
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-exit", "exit")})
 	defer shutdownCodexLauncher(t, launcher)
 
 	_, err := launcher.EnsureSource(context.Background(), "codex-exit", nil)
@@ -78,7 +79,7 @@ func TestCodexLauncherEarlyExitReturnsStructuredDiagnostic(t *testing.T) {
 func TestCodexLauncherTimeoutReturnsStructuredDiagnostic(t *testing.T) {
 	cfg := fakeCodexLaunchConfig("codex-timeout", "silent")
 	cfg.Timeout = 50 * time.Millisecond
-	launcher := NewCodexLauncher([]CodexLaunchConfig{cfg})
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{cfg})
 	defer shutdownCodexLauncher(t, launcher)
 
 	_, err := launcher.EnsureSource(context.Background(), "codex-timeout", nil)
@@ -89,7 +90,7 @@ func TestCodexLauncherTimeoutReturnsStructuredDiagnostic(t *testing.T) {
 }
 
 func TestCodexLauncherMissingBinaryReturnsStructuredDiagnostic(t *testing.T) {
-	launcher := NewCodexLauncher([]CodexLaunchConfig{{
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{{
 		ID:     "codex-missing",
 		Binary: "/tmp/serf-no-such-codex-binary",
 		Listen: "ws://127.0.0.1:0",
@@ -104,7 +105,7 @@ func TestCodexLauncherMissingBinaryReturnsStructuredDiagnostic(t *testing.T) {
 }
 
 func TestParseCodexEndpointAcceptsJSONEndpointLine(t *testing.T) {
-	endpoint, ok := parseCodexEndpoint(`{"endpoint":"ws://127.0.0.1:1234/rpc"}`)
+	endpoint, ok := codexlaunch.ParseCodexEndpoint(`{"endpoint":"ws://127.0.0.1:1234/rpc"}`)
 	if !ok {
 		t.Fatal("endpoint not parsed")
 	}
@@ -215,12 +216,12 @@ func TestFakeCodexAppServerHelper(t *testing.T) {
 	os.Exit(0)
 }
 
-func fakeCodexLaunchConfig(id, mode string) CodexLaunchConfig {
+func fakeCodexLaunchConfig(id, mode string) codexlaunch.CodexLaunchConfig {
 	exe, err := os.Executable()
 	if err != nil {
 		panic(err)
 	}
-	return CodexLaunchConfig{
+	return codexlaunch.CodexLaunchConfig{
 		ID:      id,
 		Binary:  exe,
 		Args:    []string{"-test.run=TestFakeCodexAppServerHelper", "--"},
@@ -255,7 +256,7 @@ func wireErrorInfoIs(data any, want appwire.ErrorInfo) bool {
 	}
 }
 
-func shutdownCodexLauncher(t *testing.T, launcher *CodexLauncher) {
+func shutdownCodexLauncher(t *testing.T, launcher *codexlaunch.CodexLauncher) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

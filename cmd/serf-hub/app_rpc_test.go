@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
@@ -351,11 +352,11 @@ func TestHubThreadListIncludesEveryRegisteredSource(t *testing.T) {
 }
 
 func TestHubThreadListIncludesManagedCodexLaunchThreads(t *testing.T) {
-	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
 	cfg := WebConfig{
 		Past:          NewPastIndex(""),
-		CodexLaunches: []CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	}
 	sources := newHubSourceRegistry(cfg)
@@ -373,11 +374,11 @@ func TestHubThreadListIncludesManagedCodexLaunchThreads(t *testing.T) {
 }
 
 func TestHubThreadListDoesNotLaunchManagedCodexOutsideSourceFilter(t *testing.T) {
-	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
 	cfg := WebConfig{
 		Past:          NewPastIndex(""),
-		CodexLaunches: []CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	}
 	localThread := appwire.Thread{
@@ -404,11 +405,11 @@ func TestHubThreadListDoesNotLaunchManagedCodexOutsideSourceFilter(t *testing.T)
 }
 
 func TestHubThreadListReturnsManagedCodexLaunchErrorWhenSelectedSourceFails(t *testing.T) {
-	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "exit")})
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "exit")})
 	defer shutdownCodexLauncher(t, launcher)
 	cfg := WebConfig{
 		Past:          NewPastIndex(""),
-		CodexLaunches: []CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "exit")},
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "exit")},
 		CodexLauncher: launcher,
 	}
 	sources := newHubSourceRegistry(cfg)
@@ -3302,11 +3303,11 @@ func TestHubRPCThreadStartRoutesByHarnessToConfiguredCodexSource(t *testing.T) {
 }
 
 func TestHubRPCThreadStartLaunchesConfiguredCodexAppServer(t *testing.T) {
-	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
 	hub := newHubRPCTestServer(t, WebConfig{
 		Past:          NewPastIndex(""),
-		CodexLaunches: []CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	})
 	defer hub.Close()
@@ -3329,11 +3330,11 @@ func TestHubRPCThreadStartLaunchesConfiguredCodexAppServer(t *testing.T) {
 }
 
 func TestHubRPCThreadStartRelaunchesConfiguredCodexAppServerAfterExit(t *testing.T) {
-	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
 	hub := newHubRPCTestServer(t, WebConfig{
 		Past:          NewPastIndex(""),
-		CodexLaunches: []CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	})
 	defer hub.Close()
@@ -3350,7 +3351,7 @@ func TestHubRPCThreadStartRelaunchesConfiguredCodexAppServerAfterExit(t *testing
 		t.Fatalf("first ThreadStart: %v", err)
 	}
 	first := launcherRunningProcess(t, launcher, "codex-managed")
-	if err := first.cmd.Process.Kill(); err != nil {
+	if err := first.Cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill first codex: %v", err)
 	}
 	waitLaunchedCodexExited(t, first)
@@ -3369,20 +3370,20 @@ func TestHubRPCThreadStartRelaunchesConfiguredCodexAppServerAfterExit(t *testing
 }
 
 func TestHubRPCThreadResumeEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
-	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
 	if _, err := launcher.EnsureSource(context.Background(), "codex-managed", nil); err != nil {
 		t.Fatalf("EnsureSource: %v", err)
 	}
 	first := launcherRunningProcess(t, launcher, "codex-managed")
-	if err := first.cmd.Process.Kill(); err != nil {
+	if err := first.Cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill first codex: %v", err)
 	}
 	waitLaunchedCodexExited(t, first)
 
 	hub := newHubRPCTestServer(t, WebConfig{
 		Past:          NewPastIndex(""),
-		CodexLaunches: []CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	})
 	defer hub.Close()
@@ -3401,20 +3402,20 @@ func TestHubRPCThreadResumeEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
 }
 
 func TestHubRPCThreadForkEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
-	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
 	if _, err := launcher.EnsureSource(context.Background(), "codex-managed", nil); err != nil {
 		t.Fatalf("EnsureSource: %v", err)
 	}
 	first := launcherRunningProcess(t, launcher, "codex-managed")
-	if err := first.cmd.Process.Kill(); err != nil {
+	if err := first.Cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill first codex: %v", err)
 	}
 	waitLaunchedCodexExited(t, first)
 
 	hub := newHubRPCTestServer(t, WebConfig{
 		Past:          NewPastIndex(""),
-		CodexLaunches: []CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	})
 	defer hub.Close()
@@ -3433,18 +3434,18 @@ func TestHubRPCThreadForkEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
 }
 
 func TestHubRPCTurnStartEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
-	launcher := NewCodexLauncher([]CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
 	web := NewWebServer(WebConfig{
 		Past:          NewPastIndex(""),
-		CodexLaunches: []CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	})
 	if _, err := launcher.EnsureSource(context.Background(), "codex-managed", web.sources); err != nil {
 		t.Fatalf("EnsureSource: %v", err)
 	}
 	first := launcherRunningProcess(t, launcher, "codex-managed")
-	if err := first.cmd.Process.Kill(); err != nil {
+	if err := first.Cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill first codex: %v", err)
 	}
 	waitLaunchedCodexExited(t, first)
@@ -3596,7 +3597,7 @@ func TestHubRPCHarnessListIncludesConfiguredCodexSources(t *testing.T) {
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID: "codex-local",
 		}, {}},
-		CodexLaunches: []CodexLaunchConfig{{ID: "codex-managed"}},
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}},
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -4387,7 +4388,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 // codex:thread_xxx) even when they aren't in the local past index, so that an
 // auto-resume retry fires when the managed daemon dies mid-turn.
 func TestHubKnowsRefAcceptsManagedLaunchRefWithoutPastEntry(t *testing.T) {
-	launcher := NewCodexLauncher([]CodexLaunchConfig{{ID: "codex-managed"}})
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}})
 	cfg := WebConfig{Past: NewPastIndex(""), CodexLauncher: launcher}
 	if !hubKnowsRef(cfg, "codex-managed:th_known") {
 		t.Fatal("hubKnowsRef should accept managed-launch ref")
@@ -4446,14 +4447,14 @@ func (s *resumeAfterSessionUnavailableManagedSource) counts() (start, resume int
 
 // seedManagedSource pokes a fake source into the CodexLauncher's caches so
 // that EnsureSource returns it without spawning a real process.
-func seedManagedSource(t *testing.T, launcher *CodexLauncher, sourceID string, source appsource.Source) {
+func seedManagedSource(t *testing.T, launcher *codexlaunch.CodexLauncher, sourceID string, source appsource.Source) {
 	t.Helper()
-	launcher.mu.Lock()
-	defer launcher.mu.Unlock()
-	launcher.sources[sourceID] = source
-	launcher.running[sourceID] = &launchedCodex{
-		cmd:    &exec.Cmd{},
-		exited: make(chan error),
+	launcher.Mu.Lock()
+	defer launcher.Mu.Unlock()
+	launcher.Sources[sourceID] = source
+	launcher.Running[sourceID] = &codexlaunch.LaunchedCodex{
+		Cmd:    &exec.Cmd{},
+		Exited: make(chan error),
 	}
 }
 
@@ -4463,7 +4464,7 @@ func seedManagedSource(t *testing.T, launcher *CodexLauncher, sourceID string, s
 // at MethodTurnStart skipped the retry entirely for any non-local ref (kata
 // ws5f).
 func TestHubRPCTurnStartResumesManagedLaunchRefOnSessionUnavailable(t *testing.T) {
-	launcher := NewCodexLauncher([]CodexLaunchConfig{{ID: "codex-managed"}})
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}})
 	fake := &resumeAfterSessionUnavailableManagedSource{
 		relayLifecycleSource: relayLifecycleSource{canceled: make(chan struct{}, 1)},
 		id:                   "codex-managed",
@@ -4481,7 +4482,7 @@ func TestHubRPCTurnStartResumesManagedLaunchRefOnSessionUnavailable(t *testing.T
 
 	hub := newHubRPCTestServer(t, WebConfig{
 		Past:          NewPastIndex(""),
-		CodexLaunches: []CodexLaunchConfig{{ID: "codex-managed"}},
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}},
 		CodexLauncher: launcher,
 	})
 	defer hub.Close()
@@ -5011,22 +5012,22 @@ func buildRPCStructuredFailedSession(t *testing.T, stateDir string) string {
 	return sessionID
 }
 
-func launcherRunningProcess(t *testing.T, launcher *CodexLauncher, sourceID string) *launchedCodex {
+func launcherRunningProcess(t *testing.T, launcher *codexlaunch.CodexLauncher, sourceID string) *codexlaunch.LaunchedCodex {
 	t.Helper()
-	launcher.mu.Lock()
-	defer launcher.mu.Unlock()
-	launched := launcher.running[sourceID]
-	if launched == nil || launched.cmd == nil || launched.cmd.Process == nil {
+	launcher.Mu.Lock()
+	defer launcher.Mu.Unlock()
+	launched := launcher.Running[sourceID]
+	if launched == nil || launched.Cmd == nil || launched.Cmd.Process == nil {
 		t.Fatalf("launcher has no running process for %s", sourceID)
 	}
 	return launched
 }
 
-func waitLaunchedCodexExited(t *testing.T, launched *launchedCodex) {
+func waitLaunchedCodexExited(t *testing.T, launched *codexlaunch.LaunchedCodex) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if launched.cmd.ProcessState != nil {
+		if launched.Cmd.ProcessState != nil {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
