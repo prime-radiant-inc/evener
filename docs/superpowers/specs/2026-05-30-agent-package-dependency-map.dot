@@ -1,0 +1,69 @@
+// serf `agent` package intra-package dependency map.
+// Generated from a go/types symbol-reference analysis (see /tmp/agentdep):
+// every edge = "cluster A uses a package-level symbol/method/type defined in cluster B".
+// Clusters = concern groupings of the 70 source files. Edge labels = reference counts.
+// Classification (core / leaf-below) computed via strongly-connected-component reachability
+// from the `session` cluster. Principal edges shown; the full session->* fan-out is omitted
+// for readability (session references all 13 other clusters).
+digraph agentdeps {
+  rankdir=TB;
+  bgcolor="#0a0a0e";
+  fontname="Helvetica"; fontcolor="#ececf0"; fontsize=20; labelloc=t;
+  label="serf `agent` package (70 files) — concern-level packaging is blocked by one dependency knot\l\l13 of 14 concern-clusters form a single strongly-connected core. Only `events` is cleanly extractable today.\lThe knot is held shut by FOUR direct back-cycles into session (red). Sever those (via interface seams) and the core falls apart.\l";
+  node [style=filled, shape=box, fontname="Courier", fontsize=13, fontcolor="#0a0a0e", color="#0a0a0e", margin=0.14];
+  edge [color="#5a5a64", fontcolor="#9aa0aa", fontname="Courier", fontsize=10];
+
+  subgraph cluster_core {
+    label="ENTANGLED CORE — one strongly-connected component (~60 of 70 files)\lNo package boundary inside this box is cycle-free without first introducing interfaces.\l";
+    labeljust=l; fontcolor="#f7768e"; color="#f7768e"; style="rounded"; penwidth=2.0; fontsize=13;
+
+    session     [fillcolor="#f7768e", label="session\n‹the Session hub›", penwidth=2.5, fontsize=15];
+
+    // the four clusters that directly cycle with session (the entanglements to break)
+    sessiondata [fillcolor="#ff9e9e"];
+    subagents   [fillcolor="#ff9e9e"];
+    tools       [fillcolor="#ff9e9e"];
+    context     [fillcolor="#ff9e9e"];
+
+    // the rest: pulled into the SCC transitively through the four above
+    profile     [fillcolor="#e0af68"];
+    prompt      [fillcolor="#e0af68"];
+    plugins     [fillcolor="#e0af68"];
+    mcp         [fillcolor="#e0af68"];
+    tasks       [fillcolor="#e0af68"];
+    transcript  [fillcolor="#e0af68"];
+    env         [fillcolor="#e0af68"];
+    misc        [fillcolor="#e0af68"];
+
+    // --- the four direct cycles with session (forward gray, back-edge red+bold) ---
+    session -> sessiondata [label=154];
+    sessiondata -> session [label=22, color="#f7768e", penwidth=2.5];
+    session -> subagents   [label=37];
+    subagents -> session   [label=86, color="#f7768e", penwidth=2.5];
+    session -> tools       [label=207];
+    tools -> session       [label=8,  color="#f7768e", penwidth=2.5];
+    session -> context     [label=47];
+    context -> session     [label=41, color="#f7768e", penwidth=2.5];
+
+    // --- transitive members depend INTO the cyclic quartet (so they join the SCC) ---
+    context    -> sessiondata [label=189];
+    misc       -> sessiondata [label=47];
+    transcript -> sessiondata [label=34];
+    profile    -> tools       [label=9];
+    env        -> tools       [label=3];
+    mcp        -> tools        [label=8];
+    tasks      -> subagents    [label=9];
+    prompt     -> subagents    [label=4];
+    plugins    -> subagents    [label=4];
+    plugins    -> mcp          [label=11];
+  }
+
+  // the one clean lower-leaf today
+  events [fillcolor="#9ece6a", label="events\n‹extractable NOW →\nlower package›", fontsize=14];
+  session -> events [label=251, color="#9ece6a", penwidth=2.5];
+
+  // the file-level extractable rim (cycle-free today, individually)
+  rim [shape=note, fillcolor="#16161e", color="#9ece6a", fontcolor="#9ece6a", fontname="Courier", fontsize=11, margin=0.2, label="\lFILE-LEVEL EXTRACTABLE RIM  (the hope inside the knot)\l\l~37 of 70 files reference NO session symbol, yet session-core uses them.\l\l11 PURE leaves (reference no other agent file at all) — move today:\l   events.go  round_timings.go  turns.go  workspace.go  installation_id.go\l   prompt_assets.go  prompt_paths.go  plugin_tools.go  apply_patch.go\l   builtin_skills.go  env.go\l\lNear-leaves (ref only non-session files; need a transitive-closure check):\l   tool_registry.go  transcript.go  mcp_manager.go  profile.go  task_store.go\l   the strategy_*.go impls, ...\l\lExtract these as agent/internal/* lower packages INDIVIDUALLY — never a whole\lconcern-cluster, because each cluster has at least one file that touches session.\l"];
+  events -> rim [style=invis];
+  { rank=same; events; rim; }
+}
