@@ -5064,7 +5064,7 @@ func TestHubRPCInstanceListRoutesToController(t *testing.T) {
 	tomlPath := filepath.Join(dir, "providers.toml")
 	cfg := providerconfig.Config{
 		Instances: []providerconfig.InstanceConfig{
-			{Name: "my-openai", Type: "openai", APIStyle: "openai"},
+			{Name: "my-openai", Type: "openai", APIStyle: "responses"},
 		},
 	}
 	if err := providerconfig.WriteFile(tomlPath, cfg); err != nil {

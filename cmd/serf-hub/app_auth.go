@@ -550,7 +550,7 @@ func (c *hubAuthController) instanceStatus(name, typ string) appwire.AuthStatusR
 
 	// Non-openai: key-based credential check, resolving by instance name.
 	v, src := c.creds.ResolveKey(name, typ)
-	hasFile, envVar := c.creds.Layers(name)
+	hasFile, envVar := c.creds.InstanceLayers(name, typ)
 	modes := credentialAuthModes(typ)
 	if modes == nil {
 		modes = []string{"apiKey"}

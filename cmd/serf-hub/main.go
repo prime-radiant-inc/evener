@@ -140,7 +140,6 @@ func main() {
 		HubToken:            hubToken,
 		Creds:               credsStore,
 		StateRoot:           hubStateRoot,
-		ProviderConfig:      loadedProviderConfig,
 		ProvidersConfigPath: providersConfigPath,
 		LaunchDefaults:      defaultHubLaunchDefaults(),
 	}

@@ -31,20 +31,7 @@ func newTestInstancesController(t *testing.T, tomlPath, credsDir, stateDir strin
 	auth.stateDir = stateDir
 	auth.providersConfigPath = tomlPath
 
-	cfg, exists, err := providerconfig.LoadFile(tomlPath)
-	if err != nil {
-		t.Fatalf("LoadFile: %v", err)
-	}
-	var cfgPtr *providerconfig.Config
-	if exists {
-		cfgPtr = &cfg
-	} else {
-		empty := providerconfig.Config{}
-		cfgPtr = &empty
-	}
-
 	return &hubInstancesController{
-		cfg:                cfgPtr,
 		providersConfigPath: tomlPath,
 		auth:               auth,
 	}
@@ -132,18 +119,6 @@ func TestInstances_Create_ListIncludesEntry(t *testing.T) {
 	}
 	if diskInst.APIKey != "" {
 		t.Errorf("api_key must not be written; got %q", diskInst.APIKey)
-	}
-
-	// Verify the shared pointer was updated.
-	found2 := false
-	for _, inst := range ctl.cfg.Instances {
-		if inst.Name == "mywork" {
-			found2 = true
-			break
-		}
-	}
-	if !found2 {
-		t.Error("shared *cfg was not updated after Create")
 	}
 }
 
@@ -442,10 +417,10 @@ func TestInstances_SetDefault_MissingInstance_Errors(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 9. After Create, the shared *c.cfg reflects the new instance
+// 9. After Create, List reads fresh from disk and reflects the new instance
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestInstances_Create_UpdatesSharedPointer(t *testing.T) {
+func TestInstances_Create_ListReflectsNewInstance(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	dir := t.TempDir()
 	stateDir := t.TempDir()
@@ -453,25 +428,22 @@ func TestInstances_Create_UpdatesSharedPointer(t *testing.T) {
 	writeMinimalProvidersToml(t, tomlPath)
 
 	ctl := newTestInstancesController(t, tomlPath, dir, stateDir)
-	savedPtr := ctl.cfg // capture the pointer
 
 	if err := ctl.Create(appwire.InstanceCreateParams{Type: "anthropic", Name: "newone"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 
-	// The pointer must be the same object, but its contents updated.
-	if savedPtr != ctl.cfg {
-		t.Error("shared pointer changed after Create — expected in-place update via *c.cfg = newCfg")
-	}
+	// List must read fresh from disk and include the new instance.
+	resp := ctl.List()
 	found := false
-	for _, inst := range ctl.cfg.Instances {
+	for _, inst := range resp.Instances {
 		if inst.Name == "newone" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Error("shared *cfg.Instances does not include 'newone' after Create")
+		t.Error("List did not include 'newone' after Create")
 	}
 }
 

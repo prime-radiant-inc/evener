@@ -734,3 +734,34 @@ func TestAuth_DevicePoll_ExistingFlowExpiresAfter15Min(t *testing.T) {
 		t.Errorf("after expiry the flow should be dropped; got %+v", got2)
 	}
 }
+
+// TestAuth_InstanceStatus_EnvVarReportedFromType ensures that instanceStatus
+// reports the correct EnvVar when the active credential comes from the type's
+// env var (e.g. ANTHROPIC_API_KEY) rather than the instance-name's env var.
+// This is Fix 2: Layers(name) only checks the name's env vars; InstanceLayers
+// also checks the type's env vars, matching ResolveKey resolution order.
+func TestAuth_InstanceStatus_EnvVarReportedFromType(t *testing.T) {
+	// Set ANTHROPIC_API_KEY in the environment; leave instance name "work" unset.
+	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+	t.Setenv("WORK_API_KEY", "")
+
+	stateDir := t.TempDir()
+	store, err := credentials.LoadStore(filepath.Join(stateDir, "credentials.toml"))
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	// No stored file key for "work".
+	c := newHubAuthControllerWithStore(stateDir, store)
+
+	status := c.instanceStatus("work", "anthropic")
+
+	if status.ActiveSource != string(credentials.SourceEnv) {
+		t.Errorf("ActiveSource=%q, want %q", status.ActiveSource, credentials.SourceEnv)
+	}
+	if status.EnvVar != "ANTHROPIC_API_KEY" {
+		t.Errorf("EnvVar=%q, want %q", status.EnvVar, "ANTHROPIC_API_KEY")
+	}
+	if !status.SignedIn {
+		t.Errorf("SignedIn=false, want true")
+	}
+}

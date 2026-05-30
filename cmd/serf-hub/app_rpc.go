@@ -109,9 +109,8 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 	authController := newHubAuthControllerWithStore(hubStateRoot, cfg.CredsStore)
 	authController.providersConfigPath = cfg.ProvidersConfigPath
 	var instancesController *hubInstancesController
-	if cfg.ProviderConfig != nil {
+	if cfg.ProvidersConfigPath != "" {
 		instancesController = &hubInstancesController{
-			cfg:                 cfg.ProviderConfig,
 			providersConfigPath: cfg.ProvidersConfigPath,
 			auth:                authController,
 		}

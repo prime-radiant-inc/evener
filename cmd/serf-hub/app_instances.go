@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"sync"
 
@@ -11,10 +12,9 @@ import (
 )
 
 // hubInstancesController manages provider instance CRUD: Create, Edit, Remove,
-// SetDefault, and List. It holds a pointer to the shared providerconfig.Config
-// so that mutations are visible to the spawner without a restart.
+// SetDefault, and List. providers.toml on disk is the single source of truth;
+// reads call LoadFile fresh and writes call WriteFile atomically.
 type hubInstancesController struct {
-	cfg                 *providerconfig.Config
 	providersConfigPath string
 	auth                *hubAuthController
 	mu                  sync.Mutex
@@ -23,9 +23,7 @@ type hubInstancesController struct {
 // List returns the current list of instances, each enriched with credential
 // status from the auth controller. Results are sorted by Type, then Name.
 func (c *hubInstancesController) List() appwire.InstanceListResponse {
-	c.mu.Lock()
-	cfg := *c.cfg
-	c.mu.Unlock()
+	cfg, _, _ := providerconfig.LoadFile(c.providersConfigPath)
 
 	entries := make([]appwire.InstanceEntry, 0, len(cfg.Instances))
 	for _, inst := range cfg.Instances {
@@ -95,7 +93,6 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 	if err := providerconfig.WriteFile(c.providersConfigPath, newCfg); err != nil {
 		return fmt.Errorf("write providers.toml: %w", err)
 	}
-	*c.cfg = newCfg
 	return nil
 }
 
@@ -137,7 +134,6 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	if err := providerconfig.WriteFile(c.providersConfigPath, newCfg); err != nil {
 		return fmt.Errorf("write providers.toml: %w", err)
 	}
-	*c.cfg = newCfg
 	return nil
 }
 
@@ -173,14 +169,15 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	if err := providerconfig.WriteFile(c.providersConfigPath, newCfg); err != nil {
 		return fmt.Errorf("write providers.toml: %w", err)
 	}
-	*c.cfg = newCfg
 
 	// Clear stored credentials (ignore errors for missing entries).
 	_ = c.auth.creds.Clear(params.Name)
 
-	// Clear OAuth state file (ignore not-found).
+	// Delete OAuth state file as best-effort: DeleteAuth already ignores
+	// not-found. Any other error is logged but does not fail Remove, since
+	// the instance is already gone from providers.toml.
 	if _, err := authopenai.DeleteAuth(c.auth.stateDir, params.Name); err != nil {
-		return fmt.Errorf("delete OAuth state: %w", err)
+		fmt.Fprintf(os.Stderr, "[hub] remove %s: delete OAuth state: %v\n", params.Name, err)
 	}
 
 	return nil
@@ -212,7 +209,6 @@ func (c *hubInstancesController) SetDefault(params appwire.InstanceSetDefaultPar
 	if err := providerconfig.WriteFile(c.providersConfigPath, newCfg); err != nil {
 		return fmt.Errorf("write providers.toml: %w", err)
 	}
-	*c.cfg = newCfg
 	return nil
 }
 

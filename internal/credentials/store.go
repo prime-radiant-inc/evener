@@ -142,6 +142,30 @@ func (s *Store) Layers(provider string) (hasFile bool, envVar string) {
 	return hasFile, envVar
 }
 
+// InstanceLayers returns the individual file and env sources for a provider
+// instance, mirroring the resolution order of ResolveKey: the instance name's
+// env vars are checked first, then the type's env vars. This ensures the
+// reported EnvVar matches what ResolveKey actually resolved.
+func (s *Store) InstanceLayers(name, typ string) (hasFile bool, envVar string) {
+	name = strings.ToLower(name)
+	typ = strings.ToLower(typ)
+	if p, ok := s.data.Providers[name]; ok && strings.TrimSpace(p.APIKey) != "" {
+		hasFile = true
+	}
+	var candidates []string
+	candidates = append(candidates, providerEnvVars[name]...)
+	if typ != name {
+		candidates = append(candidates, providerEnvVars[typ]...)
+	}
+	for _, env := range candidates {
+		if v := strings.TrimSpace(os.Getenv(env)); v != "" {
+			envVar = env
+			break
+		}
+	}
+	return hasFile, envVar
+}
+
 // Set writes a provider API key into the in-memory store and persists.
 func (s *Store) Set(provider, value string) error {
 	provider = strings.ToLower(provider)

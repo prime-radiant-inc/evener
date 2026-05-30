@@ -57,10 +57,6 @@ type HubSpawner struct {
 	HubToken   string
 	Creds      *credentials.Store // credentials store for provider key injection
 	StateRoot  string             // hub-level state root; used for resolving
-	// ProviderConfig is set when the hub loaded a valid providers.toml. When
-	// non-nil it is used for instance-aware credential checks and the config
-	// path is forwarded to spawned children via SERF_PROVIDERS_CONFIG.
-	ProviderConfig     *providerconfig.Config
 	ProvidersConfigPath string // path of the providers.toml the hub loaded
 	// LaunchDefaults are ambient defaults applied to hub-spawned daemons after
 	// layered launch config resolves. Explicit launch config still wins.
@@ -144,7 +140,7 @@ func (h *HubSpawner) Spawn(ctx context.Context, req SpawnRequest) (rendezvous.En
 		HubToken:            h.HubToken,
 		ProvidersConfigPath: h.ProvidersConfigPath,
 	})
-	if err := validateProviderCredentials(req.Provider, h.Creds, req.Env, h.ProviderConfig); err != nil {
+	if err := validateProviderCredentials(req.Provider, h.Creds, req.Env, h.ProvidersConfigPath); err != nil {
 		return rendezvous.Entry{}, err
 	}
 	if err := validateSerfLaunchContract(ctx, h.SerfBinary, req.Resolved.Effective.Model, req.Env); err != nil {
@@ -189,7 +185,7 @@ func (h *HubSpawner) Resume(ctx context.Context, req ResumeRequest) (rendezvous.
 		ProvidersConfigPath: h.ProvidersConfigPath,
 	})
 	if req.Provider != "" {
-		if err := validateProviderCredentials(req.Provider, h.Creds, req.Env, h.ProviderConfig); err != nil {
+		if err := validateProviderCredentials(req.Provider, h.Creds, req.Env, h.ProvidersConfigPath); err != nil {
 			return rendezvous.Entry{}, err
 		}
 	}
@@ -474,18 +470,25 @@ func setEnvValue(env []string, key, value string) []string {
 // If store is nil, credential validation is skipped (the spawned process
 // inherits env credentials or will fail at the LLM provider level instead).
 //
-// When cfg is non-nil and provider matches an instance name, the check is
-// instance-aware: inline api_key on the instance counts as a credential, and
-// for openai-type instances the per-instance OAuth file (auth/<name>.json) is
-// checked using the instance name, not the hard-coded "openai".
-// When cfg is nil, the original type-map behavior is used unchanged.
-func validateProviderCredentials(provider string, store *credentials.Store, env []string, cfg *providerconfig.Config) error {
+// When providersConfigPath is non-empty, the file is loaded fresh from disk
+// and the check is instance-aware: inline api_key on the instance counts as a
+// credential, and for openai-type instances the per-instance OAuth file
+// (auth/<name>.json) is checked using the instance name, not "openai".
+// When the file cannot be loaded or the path is empty, the original type-map
+// behavior is used unchanged.
+func validateProviderCredentials(provider string, store *credentials.Store, env []string, providersConfigPath string) error {
 	if provider == "" || store == nil {
 		return nil
 	}
 
 	// Config-path: instance-aware credential check.
-	if cfg != nil {
+	if providersConfigPath != "" {
+		pcfg, exists, err := providerconfig.LoadFile(providersConfigPath)
+		if err != nil || !exists {
+			// Fall through to the no-config path below.
+			goto noConfig
+		}
+		cfg := &pcfg
 		for _, inst := range cfg.Instances {
 			if inst.Name != strings.ToLower(strings.TrimSpace(provider)) {
 				continue
@@ -523,6 +526,7 @@ func validateProviderCredentials(provider string, store *credentials.Store, env 
 		return nil
 	}
 
+noConfig:
 	// No-config path: original type-map behavior, unchanged.
 	if strings.EqualFold(strings.TrimSpace(provider), "openai") && openAIStoredOAuthUsable(env) {
 		return nil
