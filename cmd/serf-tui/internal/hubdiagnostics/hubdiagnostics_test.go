@@ -1,4 +1,4 @@
-package main
+package hubdiagnostics
 
 import (
 	"strings"
@@ -10,9 +10,9 @@ import (
 func TestFormatHubDiagnosticProviderCauseOverridesLegacySource(t *testing.T) {
 	cause := &appwire.DiagnosticCause{Kind: "provider", Provider: "openai", Status: 503}
 
-	got := formatHubDiagnosticWithCause("Serf warning", "serf", "upstream failed", "Session warning", cause)
+	got := FormatHubDiagnosticWithCause("Serf warning", "serf", "upstream failed", "Session warning", cause)
 	if !strings.Contains(got, "Provider error: upstream failed") {
-		t.Fatalf("formatHubDiagnosticWithCause = %q, want provider title", got)
+		t.Fatalf("FormatHubDiagnosticWithCause = %q, want provider title", got)
 	}
 }
 
@@ -24,8 +24,8 @@ func TestFormatHubTurnErrorProviderCauseOverridesLegacyFields(t *testing.T) {
 		Cause:   &appwire.DiagnosticCause{Kind: "provider", Provider: "openai", Status: 429},
 	}
 
-	got := formatHubTurnError(err, "Session error")
+	got := FormatHubTurnError(err, "Session error")
 	if !strings.Contains(got, "Provider error: rate limited") {
-		t.Fatalf("formatHubTurnError = %q, want provider title", got)
+		t.Fatalf("FormatHubTurnError = %q, want provider title", got)
 	}
 }

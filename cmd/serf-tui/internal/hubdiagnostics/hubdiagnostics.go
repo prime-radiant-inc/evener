@@ -1,4 +1,4 @@
-package main
+package hubdiagnostics
 
 import (
 	"strings"
@@ -19,14 +19,14 @@ func formatHubDiagnostic(title, source, message, fallback string) string {
 	return title + ": " + message
 }
 
-func formatHubTurnError(err *appwire.TurnError, fallback string) string {
+func FormatHubTurnError(err *appwire.TurnError, fallback string) string {
 	if err == nil {
 		return formatHubDiagnostic("", "", "", fallback)
 	}
-	return formatHubDiagnosticWithCause(err.Title, err.Source, err.Message, fallback, err.Cause)
+	return FormatHubDiagnosticWithCause(err.Title, err.Source, err.Message, fallback, err.Cause)
 }
 
-func formatHubDiagnosticWithCause(title, source, message, fallback string, cause *appwire.DiagnosticCause) string {
+func FormatHubDiagnosticWithCause(title, source, message, fallback string, cause *appwire.DiagnosticCause) string {
 	if cause != nil && strings.EqualFold(strings.TrimSpace(cause.Kind), "provider") {
 		source = "provider"
 		if isLegacyNonProviderDiagnosticTitle(title) {

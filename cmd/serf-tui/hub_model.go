@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
+	"primeradiant.com/serf/cmd/serf-tui/internal/hubdiagnostics"
 	"primeradiant.com/serf/cmd/serf-tui/internal/hubstart"
 	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
 	"primeradiant.com/serf/internal/appwire"
@@ -2778,7 +2779,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 				m.detail.ActiveTurnID = ""
 			}
 			if params.Turn.Status == appwire.TurnStatusFailed {
-				m.addSessionSystemOnce(formatHubTurnError(params.Turn.Error, "Session error"))
+				m.addSessionSystemOnce(hubdiagnostics.FormatHubTurnError(params.Turn.Error, "Session error"))
 			}
 			// Queue head pop is now driven by thread/queueChanged from
 			// the daemon (kata r80p); we no longer mirror locally on turn
@@ -2832,7 +2833,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			if strings.TrimSpace(title) == "" && strings.TrimSpace(source) == "" && classifyWarningCategory(message, params.Cause) == "provider" {
 				source = "provider"
 			}
-			m.addSessionSystemOnce(formatHubDiagnosticWithCause(title, source, message, "Session warning", params.Cause))
+			m.addSessionSystemOnce(hubdiagnostics.FormatHubDiagnosticWithCause(title, source, message, "Session warning", params.Cause))
 		}
 	}
 	m.session.refreshViewport()

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/cmd/serf-tui/internal/hubdiagnostics"
 	"primeradiant.com/serf/cmd/serf-tui/internal/toolsummary"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -296,7 +297,7 @@ func messagesFromThread(thread appwire.Thread) []chatMessage {
 			reducer.applyThreadItem(item, turnIndex, completed)
 		}
 		if turn.Status == appwire.TurnStatusFailed && turn.Error != nil {
-			reducer.messages = append(reducer.messages, chatMessage{Kind: msgSystem, Text: formatHubTurnError(turn.Error, "Session error")})
+			reducer.messages = append(reducer.messages, chatMessage{Kind: msgSystem, Text: hubdiagnostics.FormatHubTurnError(turn.Error, "Session error")})
 		}
 	}
 	return reducer.messages
