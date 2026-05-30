@@ -581,48 +581,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		toolDefs := s.allToolDefinitions(round)
 		timings.ToolDefs = time.Since(tPhaseStart)
 
-		var messages []llm.Message
-		if s.cfg.SystemPromptAsUser {
-			// Combine system prompt with the first user message into one
-			// message so instructions are adjacent to the task. GPT-5.4
-			// ignores the instructions parameter and follows user messages.
-			if len(history) > 0 && history[0].Role == llm.RoleUser {
-				messages = make([]llm.Message, len(history))
-				copy(messages, history)
-				messages[0] = prependSystemPromptToUserMessage(sys, history[0])
-			} else {
-				messages = append([]llm.Message{llm.User(sys)}, history...)
-			}
-		} else {
-			messages = append([]llm.Message{llm.System(sys)}, history...)
-		}
-
-		req := llm.Request{
-			Model:      s.profile.Model(),
-			Provider:   s.profile.ID(),
-			Messages:   messages,
-			Tools:      toolDefs,
-			ToolChoice: &llm.ToolChoice{Mode: "required"},
-			WebSearch:  s.profile.SupportsWebSearch(),
-			AdapterTimeout: &llm.AdapterTimeout{
-				Connect:    10 * time.Second,
-				Request:    10 * time.Minute,
-				StreamRead: 30 * time.Second,
-			},
-		}
-		if opts := s.profile.ProviderOptions(); opts != nil {
-			req.ProviderOptions = opts
-		}
-		if s.taskStore != nil {
-			if current, ok := s.taskStore.CurrentInProgress(); ok && current.ReasoningEffort != "" {
-				s.cfg.ReasoningEffort = current.ReasoningEffort
-			}
-		}
-		if strings.TrimSpace(s.cfg.ReasoningEffort) != "" {
-			v := strings.TrimSpace(s.cfg.ReasoningEffort)
-			req.ReasoningEffort = &v
-		}
-		s.applyModelRequestMetadata(&req)
+		req := s.buildModelRequest(sys, history, toolDefs)
 
 		// --- Phase: LLMCall ---
 		tPhaseStart = time.Now()
@@ -1266,6 +1225,55 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.setStateIfOpenLocked(SessionIdle)
 	s.mu.Unlock()
 	return lastText, nil
+}
+
+// buildModelRequest assembles the llm.Request for one round: it lays out the
+// system prompt + history into messages (honoring SystemPromptAsUser), then
+// applies tools, provider options, reasoning effort, and model metadata.
+func (s *Session) buildModelRequest(sys string, history []llm.Message, toolDefs []llm.ToolDefinition) llm.Request {
+	var messages []llm.Message
+	if s.cfg.SystemPromptAsUser {
+		// Combine system prompt with the first user message into one
+		// message so instructions are adjacent to the task. GPT-5.4
+		// ignores the instructions parameter and follows user messages.
+		if len(history) > 0 && history[0].Role == llm.RoleUser {
+			messages = make([]llm.Message, len(history))
+			copy(messages, history)
+			messages[0] = prependSystemPromptToUserMessage(sys, history[0])
+		} else {
+			messages = append([]llm.Message{llm.User(sys)}, history...)
+		}
+	} else {
+		messages = append([]llm.Message{llm.System(sys)}, history...)
+	}
+
+	req := llm.Request{
+		Model:      s.profile.Model(),
+		Provider:   s.profile.ID(),
+		Messages:   messages,
+		Tools:      toolDefs,
+		ToolChoice: &llm.ToolChoice{Mode: "required"},
+		WebSearch:  s.profile.SupportsWebSearch(),
+		AdapterTimeout: &llm.AdapterTimeout{
+			Connect:    10 * time.Second,
+			Request:    10 * time.Minute,
+			StreamRead: 30 * time.Second,
+		},
+	}
+	if opts := s.profile.ProviderOptions(); opts != nil {
+		req.ProviderOptions = opts
+	}
+	if s.taskStore != nil {
+		if current, ok := s.taskStore.CurrentInProgress(); ok && current.ReasoningEffort != "" {
+			s.cfg.ReasoningEffort = current.ReasoningEffort
+		}
+	}
+	if strings.TrimSpace(s.cfg.ReasoningEffort) != "" {
+		v := strings.TrimSpace(s.cfg.ReasoningEffort)
+		req.ReasoningEffort = &v
+	}
+	s.applyModelRequestMetadata(&req)
+	return req
 }
 
 // expandHistory flattens conversation turns into the per-message slice sent to
