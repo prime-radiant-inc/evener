@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
 )
 
 // TestAddPendingAttachment_InsertsMarkerAtCursor verifies that adding a
@@ -12,7 +14,7 @@ import (
 func TestAddPendingAttachment_InsertsMarkerAtCursor(t *testing.T) {
 	m := newSessionHubModel(nil)
 
-	img := &PastedImage{Path: "/tmp/one.png", MediaType: "image/png"}
+	img := &clipboard.PastedImage{Path: "/tmp/one.png", MediaType: "image/png"}
 	m.addPendingAttachment(img)
 
 	if got := m.session.input.Value(); got != "[image 1]" {
@@ -29,9 +31,9 @@ func TestAddPendingAttachment_InsertsMarkerAtCursor(t *testing.T) {
 func TestAddPendingAttachment_NumbersMonotonic(t *testing.T) {
 	m := newSessionHubModel(nil)
 
-	a := &PastedImage{Path: "/tmp/a.png"}
-	b := &PastedImage{Path: "/tmp/b.png"}
-	c := &PastedImage{Path: "/tmp/c.png"}
+	a := &clipboard.PastedImage{Path: "/tmp/a.png"}
+	b := &clipboard.PastedImage{Path: "/tmp/b.png"}
+	c := &clipboard.PastedImage{Path: "/tmp/c.png"}
 	m.addPendingAttachment(a)
 	m.addPendingAttachment(b)
 	m.addPendingAttachment(c)
@@ -56,7 +58,7 @@ func TestAddPendingAttachment_InsertsAtCursorPosition(t *testing.T) {
 	m.session.input.CursorStart()
 	m.session.input.SetCursor(5)
 
-	img := &PastedImage{Path: "/tmp/one.png"}
+	img := &clipboard.PastedImage{Path: "/tmp/one.png"}
 	m.addPendingAttachment(img)
 
 	want := "hello[image 1] world"
@@ -71,8 +73,8 @@ func TestAddPendingAttachment_InsertsAtCursorPosition(t *testing.T) {
 // Kata 2stz.
 func TestRemovePendingAttachment_StripsMarker(t *testing.T) {
 	m := newSessionHubModel(nil)
-	a := &PastedImage{Path: "/tmp/a.png"}
-	b := &PastedImage{Path: "/tmp/b.png"}
+	a := &clipboard.PastedImage{Path: "/tmp/a.png"}
+	b := &clipboard.PastedImage{Path: "/tmp/b.png"}
 	m.addPendingAttachment(a)
 	m.addPendingAttachment(b)
 
@@ -99,14 +101,14 @@ func TestRemovePendingAttachment_StripsMarker(t *testing.T) {
 // Kata 2stz.
 func TestNextMarker_AfterRemoval_DoesNotReuse(t *testing.T) {
 	m := newSessionHubModel(nil)
-	a := &PastedImage{Path: "/tmp/a.png"}
-	b := &PastedImage{Path: "/tmp/b.png"}
+	a := &clipboard.PastedImage{Path: "/tmp/a.png"}
+	b := &clipboard.PastedImage{Path: "/tmp/b.png"}
 	m.addPendingAttachment(a)
 	m.addPendingAttachment(b)
 
 	m.removePendingAttachment(0)
 
-	c := &PastedImage{Path: "/tmp/c.png"}
+	c := &clipboard.PastedImage{Path: "/tmp/c.png"}
 	m.addPendingAttachment(c)
 
 	if c.MarkerN != 3 {
@@ -125,12 +127,12 @@ func TestNextMarker_AfterRemoval_DoesNotReuse(t *testing.T) {
 // marker counter survives removing the highest (and only) marker. Kata 2stz.
 func TestNextMarker_AfterRemovingHighest_DoesNotReuse(t *testing.T) {
 	m := newSessionHubModel(nil)
-	a := &PastedImage{Path: "/tmp/a.png"}
+	a := &clipboard.PastedImage{Path: "/tmp/a.png"}
 	m.addPendingAttachment(a)
 
 	m.removePendingAttachment(0)
 
-	b := &PastedImage{Path: "/tmp/b.png"}
+	b := &clipboard.PastedImage{Path: "/tmp/b.png"}
 	m.addPendingAttachment(b)
 
 	if b.MarkerN != 2 {
@@ -153,7 +155,7 @@ func TestRemovePendingAttachment_NoOpForUnassignedMarker(t *testing.T) {
 	m.session.input.SetValue("preserved text")
 	// Manually craft a PastedImage with MarkerN=0 and append without
 	// going through addPendingAttachment, which assigns a marker.
-	m.pendingAttachments = []*PastedImage{{Path: "/tmp/legacy.png", MarkerN: 0}}
+	m.pendingAttachments = []*clipboard.PastedImage{{Path: "/tmp/legacy.png", MarkerN: 0}}
 
 	m.removePendingAttachment(0)
 

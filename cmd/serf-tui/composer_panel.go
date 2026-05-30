@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
 )
 
 type composerPanel struct {
@@ -25,7 +26,7 @@ type composerPanel struct {
 	// Attachments are the pending image attachments shown as chips
 	// between the composer textarea and the queue preview. Each chip
 	// renders as "📎 <name> (WxH) [×]".
-	Attachments []*PastedImage
+	Attachments []*clipboard.PastedImage
 	// ChipContext provides metadata for the chip strip rendered above the textarea.
 	ChipContext composerContext
 }
@@ -238,7 +239,7 @@ func (p composerPanel) View() string {
 // what's queued. The header advertises Alt+Backspace as the way to
 // drop the most recent chip (kata 5vxd) — the [×] marker is still
 // rendered to signal the chip is removable.
-func renderAttachmentChips(atts []*PastedImage) string {
+func renderAttachmentChips(atts []*clipboard.PastedImage) string {
 	th := activeTheme()
 	sectionStyle := lipgloss.NewStyle().Bold(true).Foreground(th.Accent)
 	mutedStyle := lipgloss.NewStyle().Foreground(th.TextDim)

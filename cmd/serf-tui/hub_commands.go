@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -36,7 +37,7 @@ type hubSendMsg struct {
 	draft                   string
 	turnID                  string
 	trackedAttachmentSubmit bool
-	submittedAttachments    []*PastedImage
+	submittedAttachments    []*clipboard.PastedImage
 	err                     error
 }
 
@@ -391,7 +392,7 @@ func modelDiagnosticDisabledReason(diagnostic appwire.ModelListDiagnostic) strin
 	return reason
 }
 
-func sendHubInput(client *appwire.Client, ref appwire.Ref, text string, draft string, attachments []*PastedImage) tea.Cmd {
+func sendHubInput(client *appwire.Client, ref appwire.Ref, text string, draft string, attachments []*clipboard.PastedImage) tea.Cmd {
 	trackedAttachmentSubmit := len(attachments) > 0
 	return func() tea.Msg {
 		items, err := buildAttachmentItems(attachments)

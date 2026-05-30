@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -18,7 +19,7 @@ type hubQueueMsg struct {
 	text                    string
 	draft                   string
 	trackedAttachmentSubmit bool
-	submittedAttachments    []*PastedImage
+	submittedAttachments    []*clipboard.PastedImage
 	err                     error
 }
 
@@ -31,7 +32,7 @@ type hubDrainAsSteerMsg struct {
 	preQueueDepth           int
 	hadAttachment           bool
 	trackedAttachmentSubmit bool
-	submittedAttachments    []*PastedImage
+	submittedAttachments    []*clipboard.PastedImage
 	err                     error
 }
 
@@ -39,7 +40,7 @@ type hubDrainAsSteerMsg struct {
 // after the active turn completes. When attachments are supplied (kata re91)
 // they are read from disk at submit time and shipped as image InputItems
 // alongside the text.
-func sendHubQueue(client *appwire.Client, ref appwire.Ref, text, draft string, attachments []*PastedImage) tea.Cmd {
+func sendHubQueue(client *appwire.Client, ref appwire.Ref, text, draft string, attachments []*clipboard.PastedImage) tea.Cmd {
 	trackedAttachmentSubmit := len(attachments) > 0
 	return func() tea.Msg {
 		items, err := buildAttachmentItems(attachments)
@@ -58,7 +59,7 @@ func sendHubQueue(client *appwire.Client, ref appwire.Ref, text, draft string, a
 // queued message into a single STEERING message for the in-flight turn.
 // When the composer carries text or attachments (kata re91) they ride on
 // the drain request so the daemon appends and drains atomically.
-func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft string, attachments []*PastedImage, preQueueDepth ...int) tea.Cmd {
+func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft string, attachments []*clipboard.PastedImage, preQueueDepth ...int) tea.Cmd {
 	trackedAttachmentSubmit := len(attachments) > 0
 	return func() tea.Msg {
 		depth := 0
@@ -83,7 +84,7 @@ func sendHubDrainAsSteer(client *appwire.Client, ref appwire.Ref, text, draft st
 // composer drafts live, and matches the codex reference impl. An error on
 // any file aborts the build — the caller surfaces it through the usual
 // hubSendMsg/hubQueueMsg error path so the user can retry.
-func buildAttachmentItems(attachments []*PastedImage) ([]appwire.InputItem, error) {
+func buildAttachmentItems(attachments []*clipboard.PastedImage) ([]appwire.InputItem, error) {
 	if len(attachments) == 0 {
 		return nil, nil
 	}

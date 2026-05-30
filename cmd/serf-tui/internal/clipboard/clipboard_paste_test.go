@@ -1,4 +1,4 @@
-package main
+package clipboard
 
 import (
 	"errors"
@@ -79,15 +79,15 @@ func TestIsProbablyWSL(t *testing.T) {
 			if err := os.WriteFile(path, []byte(tc.contents), 0o644); err != nil {
 				t.Fatalf("write tmp version file: %v", err)
 			}
-			if got := isProbablyWSL(path); got != tc.want {
-				t.Fatalf("isProbablyWSL(%q) = %v, want %v", tc.contents, got, tc.want)
+			if got := IsProbablyWSL(path); got != tc.want {
+				t.Fatalf("IsProbablyWSL(%q) = %v, want %v", tc.contents, got, tc.want)
 			}
 		})
 	}
 
 	t.Run("missing file returns false", func(t *testing.T) {
-		if got := isProbablyWSL(filepath.Join(t.TempDir(), "nonexistent")); got {
-			t.Fatal("isProbablyWSL on missing file = true, want false")
+		if got := IsProbablyWSL(filepath.Join(t.TempDir(), "nonexistent")); got {
+			t.Fatal("IsProbablyWSL on missing file = true, want false")
 		}
 	})
 }
@@ -140,8 +140,8 @@ func TestConvertWindowsPathToWSL(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := convertWindowsPathToWSL(tc.in); got != tc.want {
-				t.Fatalf("convertWindowsPathToWSL(%q) = %q, want %q", tc.in, got, tc.want)
+			if got := ConvertWindowsPathToWSL(tc.in); got != tc.want {
+				t.Fatalf("ConvertWindowsPathToWSL(%q) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}
@@ -280,9 +280,9 @@ func TestPasteClipboardImage_FallsBackToWSL(t *testing.T) {
 	}
 
 	// First confirm the helper translates the fake path correctly.
-	gotPath, err := tryWSLClipboardFallback(src, ErrNoClipboardImage)
+	gotPath, err := TryWSLClipboardFallback(src, ErrNoClipboardImage)
 	if err != nil {
-		t.Fatalf("tryWSLClipboardFallback err = %v", err)
+		t.Fatalf("TryWSLClipboardFallback err = %v", err)
 	}
 	if gotPath != "/mnt/c/fake/clip.png" {
 		t.Fatalf("converted path = %q, want /mnt/c/fake/clip.png", gotPath)
@@ -303,7 +303,7 @@ func TestPasteClipboardImage_WSLErrorWhenConvertedPathMissing(t *testing.T) {
 }
 
 func TestFileURIToPathUnescapesPercentEncoding(t *testing.T) {
-	got := fileURIToPath("file:///tmp/My%20Shot%231.png")
+	got := FileURIToPath("file:///tmp/My%20Shot%231.png")
 	if got != "/tmp/My Shot#1.png" {
 		t.Fatalf("path=%q, want unescaped path", got)
 	}
@@ -330,14 +330,14 @@ func TestTryWSLClipboardFallback_NoWindowsImage(t *testing.T) {
 	src := &fakeClipboard{
 		winErr: ErrNoClipboardImage,
 	}
-	if _, err := tryWSLClipboardFallback(src, nil); err == nil {
+	if _, err := TryWSLClipboardFallback(src, nil); err == nil {
 		t.Fatal("expected error when PowerShell reports no image")
 	}
 }
 
 func TestTryWSLClipboardFallback_RejectsUNC(t *testing.T) {
 	src := &fakeClipboard{winPath: `\\server\share\foo.png`}
-	if _, err := tryWSLClipboardFallback(src, nil); err == nil {
+	if _, err := TryWSLClipboardFallback(src, nil); err == nil {
 		t.Fatal("expected error for UNC path that cannot be mapped to /mnt")
 	}
 }

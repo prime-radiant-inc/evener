@@ -10,7 +10,7 @@
 // [ErrClipboardUnavailable] so [PasteClipboardImage] can attempt the
 // next branch (file list → image bytes → WSL fallback).
 
-package main
+package clipboard
 
 import (
 	"bytes"
@@ -108,7 +108,7 @@ if ($img -ne $null) {
 	return "", ErrClipboardUnavailable
 }
 
-// ProcVersion returns /proc/version so [isProbablyWSLFromSource] can
+// ProcVersion returns /proc/version so [IsProbablyWSLFromSource] can
 // detect WSL kernels without re-reading the file on every paste.
 func (s *SystemClipboardSource) ProcVersion() string {
 	data, err := os.ReadFile("/proc/version")
@@ -201,7 +201,7 @@ func readFilePathsX11() ([]string, error) {
 	if err != nil {
 		return nil, nil
 	}
-	return parseURIList(string(out)), nil
+	return ParseURIList(string(out)), nil
 }
 
 // readImageBytesX11 asks xclip for image/png bytes. If image/png is not
@@ -240,7 +240,7 @@ func readFilePathsWayland() ([]string, error) {
 	if err != nil {
 		return nil, nil
 	}
-	return parseURIList(string(out)), nil
+	return ParseURIList(string(out)), nil
 }
 
 // readImageBytesWayland asks wl-paste for image/png bytes.
@@ -262,10 +262,10 @@ func readImageBytesWayland() ([]byte, string, error) {
 	return out, "image/png", nil
 }
 
-// parseURIList splits a text/uri-list payload into local filesystem
+// ParseURIList splits a text/uri-list payload into local filesystem
 // paths. Lines that start with "#" are comments per RFC 2483; lines
 // without a `file://` prefix are skipped.
-func parseURIList(s string) []string {
+func ParseURIList(s string) []string {
 	var out []string
 	for _, line := range strings.Split(s, "\n") {
 		line = strings.TrimSpace(line)
@@ -275,35 +275,9 @@ func parseURIList(s string) []string {
 		if !strings.HasPrefix(line, "file://") {
 			continue
 		}
-		out = append(out, fileURIToPath(line))
+		out = append(out, FileURIToPath(line))
 	}
 	return out
-}
-
-// fileURIToPath strips the file:// prefix, returning the local path
-// portion. Hostnames in the URI (e.g. file://localhost/path) are
-// tolerated by skipping any leading segment up to the next '/'.
-func fileURIToPath(uri string) string {
-	const prefix = "file://"
-	if !strings.HasPrefix(uri, prefix) {
-		return uri
-	}
-	rest := uri[len(prefix):]
-	if rest == "" {
-		return ""
-	}
-	if rest[0] != '/' {
-		// file://host/path → drop host segment.
-		idx := strings.IndexByte(rest, '/')
-		if idx < 0 {
-			return ""
-		}
-		rest = rest[idx:]
-	}
-	if path, err := url.PathUnescape(rest); err == nil {
-		return path
-	}
-	return rest
 }
 
 // Compile-time assertion that the production source satisfies the
@@ -311,3 +285,4 @@ func fileURIToPath(uri string) string {
 // interface drifts.
 var _ ClipboardSource = (*SystemClipboardSource)(nil)
 var _ = errors.New
+var _ = url.Parse

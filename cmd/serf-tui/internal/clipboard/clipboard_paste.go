@@ -14,7 +14,7 @@
 // approach also makes the WSL fallback fit naturally: WSL is just one more
 // "platform" whose clipboard tool happens to be PowerShell on the Windows
 // side of the mount.
-package main
+package clipboard
 
 import (
 	"errors"
@@ -84,7 +84,7 @@ type ClipboardSource interface {
 	// available.
 	ReadWindowsClipboardViaPowerShell() (string, error)
 	// ProcVersion returns the contents of /proc/version (or equivalent)
-	// so [isProbablyWSL] can be exercised without touching the real fs.
+	// so [isProbablyWSLFromSource] can be exercised without touching the real fs.
 	ProcVersion() string
 }
 
@@ -120,7 +120,7 @@ func PasteClipboardImage(src ClipboardSource) (*PastedImage, error) {
 			}
 			return &PastedImage{
 				Path:      p,
-				MediaType: mediaTypeForPath(p),
+				MediaType: MediaTypeForPath(p),
 				Size:      int(info.Size()),
 				Origin:    "clipboard-file",
 			}, nil
@@ -130,7 +130,7 @@ func PasteClipboardImage(src ClipboardSource) (*PastedImage, error) {
 	// Step 2: raw image bytes.
 	data, mediaType, err := src.ReadImageBytes()
 	if err == nil && len(data) > 0 {
-		path, werr := writeTempPNG(data)
+		path, werr := WriteTempPNG(data)
 		if werr != nil {
 			return nil, fmt.Errorf("write temp png: %w", werr)
 		}
@@ -146,8 +146,8 @@ func PasteClipboardImage(src ClipboardSource) (*PastedImage, error) {
 	}
 
 	// Step 3: WSL fallback.
-	if isProbablyWSLFromSource(src) {
-		path, werr := tryWSLClipboardFallback(src, err)
+	if IsProbablyWSLFromSource(src) {
+		path, werr := TryWSLClipboardFallback(src, err)
 		if werr == nil {
 			info, statErr := os.Stat(path)
 			if statErr != nil {
@@ -168,11 +168,11 @@ func PasteClipboardImage(src ClipboardSource) (*PastedImage, error) {
 	return nil, err
 }
 
-// tryWSLClipboardFallback invokes the Windows-side clipboard via the
+// TryWSLClipboardFallback invokes the Windows-side clipboard via the
 // configured ClipboardSource, then converts the returned Windows path to
 // its WSL mount equivalent. The error argument propagates the original
 // failure so callers can decide whether the fallback is worth attempting.
-func tryWSLClipboardFallback(src ClipboardSource, prior error) (string, error) {
+func TryWSLClipboardFallback(src ClipboardSource, prior error) (string, error) {
 	if src == nil {
 		return "", errors.New("clipboard source is nil")
 	}
@@ -190,7 +190,7 @@ func tryWSLClipboardFallback(src ClipboardSource, prior error) (string, error) {
 		}
 		return "", ErrNoClipboardImage
 	}
-	wslPath := convertWindowsPathToWSL(winPath)
+	wslPath := ConvertWindowsPathToWSL(winPath)
 	if wslPath == "" {
 		if prior != nil {
 			return "", prior
@@ -200,11 +200,11 @@ func tryWSLClipboardFallback(src ClipboardSource, prior error) (string, error) {
 	return wslPath, nil
 }
 
-// isProbablyWSL inspects the contents of /proc/version-style text and
+// IsProbablyWSL inspects the contents of /proc/version-style text and
 // reports whether they look like a Microsoft/WSL kernel. The path is
 // taken as an arg so the heuristic can be exercised without touching the
 // real filesystem.
-func isProbablyWSL(versionPath string) bool {
+func IsProbablyWSL(versionPath string) bool {
 	data, err := os.ReadFile(versionPath)
 	if err != nil {
 		return false
@@ -213,11 +213,11 @@ func isProbablyWSL(versionPath string) bool {
 	return strings.Contains(lower, "microsoft") || strings.Contains(lower, "wsl")
 }
 
-// isProbablyWSLFromSource is the in-memory variant: it inspects whatever
+// IsProbablyWSLFromSource is the in-memory variant: it inspects whatever
 // the source already cached from /proc/version. Used by
 // [PasteClipboardImage] so a single ClipboardSource fake fully drives the
 // WSL branch in tests.
-func isProbablyWSLFromSource(src ClipboardSource) bool {
+func IsProbablyWSLFromSource(src ClipboardSource) bool {
 	if src == nil {
 		return false
 	}
@@ -259,8 +259,8 @@ func NormalizePastedPath(text string) string {
 	}
 
 	// Windows drive-letter or UNC. Pass through as-is; the WSL composer
-	// can decide whether to convert via convertWindowsPathToWSL.
-	if isWindowsPath(t) {
+	// can decide whether to convert via ConvertWindowsPathToWSL.
+	if IsWindowsPath(t) {
 		return t
 	}
 
@@ -280,9 +280,9 @@ func NormalizePastedPath(text string) string {
 	return ""
 }
 
-// isWindowsPath returns true when the input starts with a drive letter
+// IsWindowsPath returns true when the input starts with a drive letter
 // followed by ":\\" or ":/" (e.g. C:\foo) or is a UNC share (\\server\share).
-func isWindowsPath(s string) bool {
+func IsWindowsPath(s string) bool {
 	if strings.HasPrefix(s, `\\`) {
 		return true
 	}
@@ -305,10 +305,10 @@ func isASCIIAlpha(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
 }
 
-// convertWindowsPathToWSL maps "C:\\Users\\Alice\\foo.png" to
+// ConvertWindowsPathToWSL maps "C:\\Users\\Alice\\foo.png" to
 // "/mnt/c/Users/Alice/foo.png". Returns "" if the input is not a
 // drive-letter path. UNC paths (\\server\share) are not supported.
-func convertWindowsPathToWSL(input string) string {
+func ConvertWindowsPathToWSL(input string) string {
 	if strings.HasPrefix(input, `\\`) {
 		return ""
 	}
@@ -333,9 +333,9 @@ func convertWindowsPathToWSL(input string) string {
 	return out
 }
 
-// mediaTypeForPath returns the canonical MIME type for an image file at
+// MediaTypeForPath returns the canonical MIME type for an image file at
 // the given path, defaulting to image/png when the extension is unknown.
-func mediaTypeForPath(path string) string {
+func MediaTypeForPath(path string) string {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".png":
 		return "image/png"
@@ -350,10 +350,10 @@ func mediaTypeForPath(path string) string {
 	}
 }
 
-// writeTempPNG persists the given bytes under os.TempDir() with the
+// WriteTempPNG persists the given bytes under os.TempDir() with the
 // "serf-clipboard-" prefix and ".png" suffix, returning the absolute
 // path. The caller owns cleanup.
-func writeTempPNG(data []byte) (string, error) {
+func WriteTempPNG(data []byte) (string, error) {
 	f, err := os.CreateTemp("", "serf-clipboard-*.png")
 	if err != nil {
 		return "", err
@@ -364,4 +364,30 @@ func writeTempPNG(data []byte) (string, error) {
 		return "", err
 	}
 	return f.Name(), nil
+}
+
+// FileURIToPath strips the file:// prefix, returning the local path
+// portion. Hostnames in the URI (e.g. file://localhost/path) are
+// tolerated by skipping any leading segment up to the next '/'.
+func FileURIToPath(uri string) string {
+	const prefix = "file://"
+	if !strings.HasPrefix(uri, prefix) {
+		return uri
+	}
+	rest := uri[len(prefix):]
+	if rest == "" {
+		return ""
+	}
+	if rest[0] != '/' {
+		// file://host/path → drop host segment.
+		idx := strings.IndexByte(rest, '/')
+		if idx < 0 {
+			return ""
+		}
+		rest = rest[idx:]
+	}
+	if path, err := url.PathUnescape(rest); err == nil {
+		return path
+	}
+	return rest
 }

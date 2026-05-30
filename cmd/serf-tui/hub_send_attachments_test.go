@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -56,7 +57,7 @@ func TestSendHubInputIncludesAttachments(t *testing.T) {
 	client, cleanup := newTUIAppWireClient(t, app)
 	defer cleanup()
 
-	atts := []*PastedImage{
+	atts := []*clipboard.PastedImage{
 		{Path: first, MediaType: "image/png"},
 		{Path: second, MediaType: "image/png"},
 	}
@@ -114,7 +115,7 @@ func TestSendHubQueueIncludesAttachments(t *testing.T) {
 	client, cleanup := newTUIAppWireClient(t, app)
 	defer cleanup()
 
-	atts := []*PastedImage{{Path: path, MediaType: "image/png"}}
+	atts := []*clipboard.PastedImage{{Path: path, MediaType: "image/png"}}
 
 	msg := sendHubQueue(client, appwire.Ref{SourceID: "local", ThreadID: "th_q"}, "queue me", "queue me", atts)()
 	queueMsg, ok := msg.(hubQueueMsg)
@@ -162,7 +163,7 @@ func TestSendHubDrainAsSteerIncludesAttachments(t *testing.T) {
 	client, cleanup := newTUIAppWireClient(t, app)
 	defer cleanup()
 
-	atts := []*PastedImage{{Path: path, MediaType: "image/png"}}
+	atts := []*clipboard.PastedImage{{Path: path, MediaType: "image/png"}}
 
 	msg := sendHubDrainAsSteer(client, appwire.Ref{SourceID: "local", ThreadID: "th_s"}, "steer me", "steer me", atts)()
 	drainMsg, ok := msg.(hubDrainAsSteerMsg)
@@ -216,7 +217,7 @@ func TestSendHubDrainAsSteerAlwaysUsesInputShape(t *testing.T) {
 // turn doesn't re-attach the same images).
 func TestSendClearsPendingAttachmentsOnSuccess(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.pendingAttachments = []*PastedImage{
+	m.pendingAttachments = []*clipboard.PastedImage{
 		{Path: "/tmp/sent-one.png", MediaType: "image/png"},
 		{Path: "/tmp/sent-two.png", MediaType: "image/png"},
 	}
@@ -231,12 +232,12 @@ func TestSendClearsPendingAttachmentsOnSuccess(t *testing.T) {
 
 func TestSendClearsOnlySubmittedAttachmentSnapshot(t *testing.T) {
 	m := newSessionHubModel(nil)
-	submitted := &PastedImage{Path: "/tmp/submitted.png", MediaType: "image/png"}
-	newDraft := &PastedImage{Path: "/tmp/new-draft.png", MediaType: "image/png"}
-	m.pendingAttachments = []*PastedImage{submitted, newDraft}
+	submitted := &clipboard.PastedImage{Path: "/tmp/submitted.png", MediaType: "image/png"}
+	newDraft := &clipboard.PastedImage{Path: "/tmp/new-draft.png", MediaType: "image/png"}
+	m.pendingAttachments = []*clipboard.PastedImage{submitted, newDraft}
 	m.nextAttachmentMarker = 2
 
-	updated, _ := m.Update(hubSendMsg{text: "hi", turnID: "turn_done", submittedAttachments: []*PastedImage{submitted}})
+	updated, _ := m.Update(hubSendMsg{text: "hi", turnID: "turn_done", submittedAttachments: []*clipboard.PastedImage{submitted}})
 	got := updated.(hubModel)
 
 	if len(got.pendingAttachments) != 1 || got.pendingAttachments[0] != newDraft {
@@ -251,9 +252,9 @@ func TestSendClearsOnlySubmittedAttachmentSnapshot(t *testing.T) {
 // preserves pendingAttachments so the user can retry without re-pasting.
 func TestSendKeepsPendingAttachmentsOnError(t *testing.T) {
 	m := newSessionHubModel(nil)
-	first := &PastedImage{Path: "/tmp/keep-one.png", MediaType: "image/png"}
-	second := &PastedImage{Path: "/tmp/keep-two.png", MediaType: "image/png"}
-	m.pendingAttachments = []*PastedImage{first, second}
+	first := &clipboard.PastedImage{Path: "/tmp/keep-one.png", MediaType: "image/png"}
+	second := &clipboard.PastedImage{Path: "/tmp/keep-two.png", MediaType: "image/png"}
+	m.pendingAttachments = []*clipboard.PastedImage{first, second}
 
 	updated, _ := m.Update(hubSendMsg{text: "hi", draft: "hi", err: errors.New("boom")})
 	got := updated.(hubModel)
@@ -268,12 +269,12 @@ func TestSendKeepsPendingAttachmentsOnError(t *testing.T) {
 
 func TestSendDoesNotRestoreSubmittedAttachmentSnapshotOverNewDraft(t *testing.T) {
 	m := newSessionHubModel(nil)
-	submitted := &PastedImage{Path: "/tmp/restore-one.png", MediaType: "image/png", MarkerN: 4}
-	newDraft := &PastedImage{Path: "/tmp/new-draft.png", MediaType: "image/png", MarkerN: 5}
-	m.pendingAttachments = []*PastedImage{newDraft}
+	submitted := &clipboard.PastedImage{Path: "/tmp/restore-one.png", MediaType: "image/png", MarkerN: 4}
+	newDraft := &clipboard.PastedImage{Path: "/tmp/new-draft.png", MediaType: "image/png", MarkerN: 5}
+	m.pendingAttachments = []*clipboard.PastedImage{newDraft}
 	m.nextAttachmentMarker = 5
 
-	updated, _ := m.Update(hubSendMsg{text: "hi", draft: "hi", err: errors.New("boom"), submittedAttachments: []*PastedImage{submitted}})
+	updated, _ := m.Update(hubSendMsg{text: "hi", draft: "hi", err: errors.New("boom"), submittedAttachments: []*clipboard.PastedImage{submitted}})
 	got := updated.(hubModel)
 
 	if len(got.pendingAttachments) != 1 || got.pendingAttachments[0] != newDraft {
@@ -286,10 +287,10 @@ func TestSendDoesNotRestoreSubmittedAttachmentSnapshotOverNewDraft(t *testing.T)
 
 func TestSendRestoresSubmittedAttachmentSnapshotOnErrorWhenComposerUnchanged(t *testing.T) {
 	m := newSessionHubModel(nil)
-	submitted := &PastedImage{Path: "/tmp/restore-one.png", MediaType: "image/png", MarkerN: 4}
+	submitted := &clipboard.PastedImage{Path: "/tmp/restore-one.png", MediaType: "image/png", MarkerN: 4}
 	m.nextAttachmentMarker = 4
 
-	updated, _ := m.Update(hubSendMsg{text: "hi", draft: "hi", err: errors.New("boom"), submittedAttachments: []*PastedImage{submitted}})
+	updated, _ := m.Update(hubSendMsg{text: "hi", draft: "hi", err: errors.New("boom"), submittedAttachments: []*clipboard.PastedImage{submitted}})
 	got := updated.(hubModel)
 
 	if len(got.pendingAttachments) != 1 || got.pendingAttachments[0] != submitted {
@@ -317,7 +318,7 @@ func TestAttachmentBytesReadFromTempFile(t *testing.T) {
 	client, cleanup := newTUIAppWireClient(t, app)
 	defer cleanup()
 
-	att := &PastedImage{Path: path, MediaType: "image/png"}
+	att := &clipboard.PastedImage{Path: path, MediaType: "image/png"}
 
 	// Mutate the file AFTER staging the attachment but BEFORE sendHubInput
 	// fires. If the send path reads bytes early (e.g. at attachment-stage
@@ -327,7 +328,7 @@ func TestAttachmentBytesReadFromTempFile(t *testing.T) {
 		t.Fatalf("rewrite: %v", err)
 	}
 
-	msg := sendHubInput(client, appwire.Ref{SourceID: "local", ThreadID: "th_late"}, "hi", "hi", []*PastedImage{att})()
+	msg := sendHubInput(client, appwire.Ref{SourceID: "local", ThreadID: "th_late"}, "hi", "hi", []*clipboard.PastedImage{att})()
 	if sendMsg, ok := msg.(hubSendMsg); !ok || sendMsg.err != nil {
 		t.Fatalf("msg=%T err=%v", msg, sendMsg.err)
 	}
@@ -355,7 +356,7 @@ func TestSubmitSnapshotsAttachmentSliceBeforeAsyncCommand(t *testing.T) {
 
 	m := newSessionHubModel(client)
 	m.session.input.SetValue("ship")
-	m.pendingAttachments = []*PastedImage{
+	m.pendingAttachments = []*clipboard.PastedImage{
 		{Path: pathA, MediaType: "image/png"},
 		{Path: pathB, MediaType: "image/png"},
 	}

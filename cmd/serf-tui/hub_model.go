@@ -14,6 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -152,12 +153,12 @@ type hubModel struct {
 	// PastedImage.Path that the submit flow ships as an InputItem and
 	// cleans up afterwards. The slice is rendered as a row of chips
 	// below the composer textarea.
-	pendingAttachments []*PastedImage
+	pendingAttachments []*clipboard.PastedImage
 	// attachmentSubmitsInFlight counts async submit commands that captured
 	// attachment pointers. While non-zero, removed temp files are queued for
 	// deferred cleanup so the command can still read them.
 	attachmentSubmitsInFlight int
-	deferredAttachmentCleanup []*PastedImage
+	deferredAttachmentCleanup []*clipboard.PastedImage
 	// nextAttachmentMarker is a per-composer high-water counter. Marker
 	// numbers are never reused while a composer draft is alive, even if the
 	// user removes the highest-numbered attachment.
@@ -165,7 +166,7 @@ type hubModel struct {
 	// clipboardSource is the production clipboard reader, swappable in
 	// tests via newSessionHubModel + assignment. When nil we lazily
 	// install the platform-specific SystemClipboardSource on first use.
-	clipboardSource ClipboardSource
+	clipboardSource clipboard.ClipboardSource
 
 	// pending coordinates optimistic-rendering placeholders for
 	// turn/start, turn/queue, turn/steer, turn/drainAsSteer. Wired
@@ -182,7 +183,7 @@ type hubModel struct {
 // literal "[image N]" token is inserted at the textarea's current
 // cursor position so the user can reposition or delete it inline. Kata
 // 2stz.
-func (m *hubModel) addPendingAttachment(img *PastedImage) {
+func (m *hubModel) addPendingAttachment(img *clipboard.PastedImage) {
 	if img == nil {
 		return
 	}
@@ -225,11 +226,11 @@ func (m *hubModel) clearPendingAttachments(cleanupFiles bool) {
 	m.nextAttachmentMarker = 0
 }
 
-func (m *hubModel) clearSubmittedAttachments(submitted []*PastedImage, cleanupFiles bool) {
+func (m *hubModel) clearSubmittedAttachments(submitted []*clipboard.PastedImage, cleanupFiles bool) {
 	if len(submitted) == 0 {
 		return
 	}
-	submittedSet := make(map[*PastedImage]struct{}, len(submitted))
+	submittedSet := make(map[*clipboard.PastedImage]struct{}, len(submitted))
 	for _, img := range submitted {
 		if img == nil {
 			continue
@@ -255,17 +256,17 @@ func (m *hubModel) clearSubmittedAttachments(submitted []*PastedImage, cleanupFi
 	}
 }
 
-func (m *hubModel) restoreSubmittedAttachments(submitted []*PastedImage) {
+func (m *hubModel) restoreSubmittedAttachments(submitted []*clipboard.PastedImage) {
 	if len(submitted) == 0 {
 		return
 	}
-	present := make(map[*PastedImage]struct{}, len(m.pendingAttachments))
+	present := make(map[*clipboard.PastedImage]struct{}, len(m.pendingAttachments))
 	for _, img := range m.pendingAttachments {
 		if img != nil {
 			present[img] = struct{}{}
 		}
 	}
-	restored := make([]*PastedImage, 0, len(submitted)+len(m.pendingAttachments))
+	restored := make([]*clipboard.PastedImage, 0, len(submitted)+len(m.pendingAttachments))
 	for _, img := range submitted {
 		if img == nil {
 			continue
@@ -281,7 +282,7 @@ func (m *hubModel) restoreSubmittedAttachments(submitted []*PastedImage) {
 	m.pendingAttachments = append(restored, m.pendingAttachments...)
 }
 
-func (m *hubModel) restoreFailedComposerPayload(draft string, submitted []*PastedImage) bool {
+func (m *hubModel) restoreFailedComposerPayload(draft string, submitted []*clipboard.PastedImage) bool {
 	if m.session.input.Value() != "" || len(m.pendingAttachments) > 0 {
 		m.clearSubmittedAttachments(submitted, true)
 		return false
@@ -291,7 +292,7 @@ func (m *hubModel) restoreFailedComposerPayload(draft string, submitted []*Paste
 	return true
 }
 
-func (m *hubModel) noteUnrestoredFailedComposerPayload(action, draft string, submitted []*PastedImage) {
+func (m *hubModel) noteUnrestoredFailedComposerPayload(action, draft string, submitted []*clipboard.PastedImage) {
 	preview := strings.TrimSpace(draft)
 	if preview == "" {
 		switch len(submitted) {
@@ -306,12 +307,12 @@ func (m *hubModel) noteUnrestoredFailedComposerPayload(action, draft string, sub
 	m.addSessionSystem(fmt.Sprintf("%s failed; preserved current draft instead of restoring failed payload: %s", action, preview))
 }
 
-func (m *hubModel) snapshotPendingAttachmentsForSubmit() []*PastedImage {
+func (m *hubModel) snapshotPendingAttachmentsForSubmit() []*clipboard.PastedImage {
 	if len(m.pendingAttachments) == 0 {
 		return nil
 	}
 	m.attachmentSubmitsInFlight++
-	submitted := append([]*PastedImage(nil), m.pendingAttachments...)
+	submitted := append([]*clipboard.PastedImage(nil), m.pendingAttachments...)
 	m.clearSubmittedAttachments(submitted, false)
 	return submitted
 }
@@ -329,7 +330,7 @@ func (m *hubModel) finishAttachmentSubmit() {
 	m.deferredAttachmentCleanup = nil
 }
 
-func (m *hubModel) cleanupPendingAttachmentFile(img *PastedImage) {
+func (m *hubModel) cleanupPendingAttachmentFile(img *clipboard.PastedImage) {
 	if m.attachmentSubmitsInFlight > 0 {
 		m.deferredAttachmentCleanup = append(m.deferredAttachmentCleanup, img)
 		return
@@ -337,7 +338,7 @@ func (m *hubModel) cleanupPendingAttachmentFile(img *PastedImage) {
 	cleanupPendingAttachmentFile(img)
 }
 
-func cleanupPendingAttachmentFile(img *PastedImage) {
+func cleanupPendingAttachmentFile(img *clipboard.PastedImage) {
 	if img == nil || img.Path == "" {
 		return
 	}
@@ -2156,10 +2157,10 @@ func isAltVKey(msg tea.KeyMsg) bool {
 func (m hubModel) handleClipboardPaste() (tea.Model, tea.Cmd) {
 	src := m.clipboardSource
 	if src == nil {
-		src = NewSystemClipboardSource()
+		src = clipboard.NewSystemClipboardSource()
 		m.clipboardSource = src
 	}
-	img, err := PasteClipboardImage(src)
+	img, err := clipboard.PasteClipboardImage(src)
 	if err != nil {
 		m.addSessionSystem("Clipboard paste failed: " + err.Error())
 		return m, nil
@@ -2174,20 +2175,20 @@ func (m hubModel) handleClipboardPaste() (tea.Model, tea.Cmd) {
 // otherwise the caller falls through and the textarea receives the
 // paste as normal text.
 func (m *hubModel) handleBracketedPaste(text string) (tea.Cmd, bool) {
-	resolved := NormalizePastedPath(text)
+	resolved := clipboard.NormalizePastedPath(text)
 	if resolved == "" {
 		return nil, false
 	}
-	if !IsImageFile(resolved) {
+	if !clipboard.IsImageFile(resolved) {
 		return nil, false
 	}
 	info, err := os.Stat(resolved)
 	if err != nil || info.IsDir() {
 		return nil, false
 	}
-	m.addPendingAttachment(&PastedImage{
+	m.addPendingAttachment(&clipboard.PastedImage{
 		Path:      resolved,
-		MediaType: mediaTypeForPath(resolved),
+		MediaType: clipboard.MediaTypeForPath(resolved),
 		Size:      int(info.Size()),
 		Origin:    "path",
 	})

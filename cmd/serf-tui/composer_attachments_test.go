@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
 )
 
 // TestPendingAttachmentsMutability verifies that the hub session model
@@ -21,7 +22,7 @@ func TestPendingAttachmentsMutability(t *testing.T) {
 		t.Fatalf("initial pendingAttachments len = %d, want 0", got)
 	}
 
-	img := &PastedImage{
+	img := &clipboard.PastedImage{
 		Path:      "/tmp/pretend.png",
 		MediaType: "image/png",
 		Width:     320,
@@ -43,7 +44,7 @@ func TestPendingAttachmentsMutability(t *testing.T) {
 // pending attachment, in the documented "📎 <name> (WxH) [×]" format.
 func TestAttachmentChipsRender(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.pendingAttachments = []*PastedImage{
+	m.pendingAttachments = []*clipboard.PastedImage{
 		{Path: "/tmp/screenshot-one.png", MediaType: "image/png", Width: 320, Height: 240},
 		{Path: "/tmp/screenshot-two.png", MediaType: "image/png", Width: 1024, Height: 768},
 	}
@@ -63,9 +64,9 @@ func TestAttachmentChipsRender(t *testing.T) {
 // helper removes the requested chip and leaves the rest in order.
 func TestRemoveAttachmentDropsByIndex(t *testing.T) {
 	m := newSessionHubModel(nil)
-	first := &PastedImage{Path: "/tmp/one.png", Width: 320, Height: 240}
-	second := &PastedImage{Path: "/tmp/two.png", Width: 1024, Height: 768}
-	m.pendingAttachments = []*PastedImage{first, second}
+	first := &clipboard.PastedImage{Path: "/tmp/one.png", Width: 320, Height: 240}
+	second := &clipboard.PastedImage{Path: "/tmp/two.png", Width: 1024, Height: 768}
+	m.pendingAttachments = []*clipboard.PastedImage{first, second}
 
 	m.removePendingAttachment(0)
 
@@ -83,7 +84,7 @@ func TestSessionSwitchClearsPendingAttachmentsAndTempFiles(t *testing.T) {
 	if err := os.WriteFile(path, []byte("png"), 0o644); err != nil {
 		t.Fatalf("write temp attachment: %v", err)
 	}
-	m.pendingAttachments = []*PastedImage{{
+	m.pendingAttachments = []*clipboard.PastedImage{{
 		Path:      path,
 		MediaType: "image/png",
 		Origin:    "clipboard-image",
@@ -119,7 +120,7 @@ func TestRemoveAttachmentDefersTempCleanupDuringSubmit(t *testing.T) {
 	if err := os.WriteFile(path, []byte("png"), 0o644); err != nil {
 		t.Fatalf("write temp attachment: %v", err)
 	}
-	m.pendingAttachments = []*PastedImage{{
+	m.pendingAttachments = []*clipboard.PastedImage{{
 		Path:   path,
 		Origin: "clipboard-image",
 	}}
@@ -143,7 +144,7 @@ func TestTextOnlyCompletionDoesNotReleaseDeferredAttachmentCleanup(t *testing.T)
 		t.Fatalf("write temp attachment: %v", err)
 	}
 	m.attachmentSubmitsInFlight = 1
-	m.deferredAttachmentCleanup = []*PastedImage{{
+	m.deferredAttachmentCleanup = []*clipboard.PastedImage{{
 		Path:   path,
 		Origin: "clipboard-image",
 	}}
@@ -164,9 +165,9 @@ func TestTextOnlyCompletionDoesNotReleaseDeferredAttachmentCleanup(t *testing.T)
 // attachment chip without touching the rest. Kata 5vxd.
 func TestAltBackspaceRemovesLastAttachment(t *testing.T) {
 	m := newSessionHubModel(nil)
-	first := &PastedImage{Path: "/tmp/one.png", Width: 320, Height: 240}
-	second := &PastedImage{Path: "/tmp/two.png", Width: 1024, Height: 768}
-	m.pendingAttachments = []*PastedImage{first, second}
+	first := &clipboard.PastedImage{Path: "/tmp/one.png", Width: 320, Height: 240}
+	second := &clipboard.PastedImage{Path: "/tmp/two.png", Width: 1024, Height: 768}
+	m.pendingAttachments = []*clipboard.PastedImage{first, second}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyBackspace, Alt: true})
 	got := updated.(hubModel)
@@ -185,7 +186,7 @@ func TestAltBackspaceRemovesLastAttachment(t *testing.T) {
 func TestCtrlHWithAttachmentsFallsThrough(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.session.setInputValue("hello")
-	m.pendingAttachments = []*PastedImage{{Path: "/tmp/one.png"}}
+	m.pendingAttachments = []*clipboard.PastedImage{{Path: "/tmp/one.png"}}
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlH})
 	got := updated.(hubModel)
@@ -203,9 +204,9 @@ func TestCtrlHWithAttachmentsFallsThrough(t *testing.T) {
 // handler instead of removing an attachment. Kata 5vxd.
 func TestAltBackspaceDoesNotFireDuringPalette(t *testing.T) {
 	m := newSessionHubModel(nil)
-	first := &PastedImage{Path: "/tmp/one.png", Width: 320, Height: 240}
-	second := &PastedImage{Path: "/tmp/two.png", Width: 1024, Height: 768}
-	m.pendingAttachments = []*PastedImage{first, second}
+	first := &clipboard.PastedImage{Path: "/tmp/one.png", Width: 320, Height: 240}
+	second := &clipboard.PastedImage{Path: "/tmp/two.png", Width: 1024, Height: 768}
+	m.pendingAttachments = []*clipboard.PastedImage{first, second}
 	m.openCommandPalette()
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyBackspace, Alt: true})
@@ -221,9 +222,30 @@ func TestAltBackspaceDoesNotFireDuringPalette(t *testing.T) {
 
 // fakeClipboardSourceForKeybind provides an in-memory image so Ctrl+V
 // pushes a real PastedImage onto pendingAttachments.
-func fakeClipboardSourceForKeybind(t *testing.T) ClipboardSource {
+// fakeKeybindClipboard is a minimal ClipboardSource stub for keybind tests.
+type fakeKeybindClipboard struct {
+	filesErr       error
+	imageBytes     []byte
+	imageMediaType string
+}
+
+func (f *fakeKeybindClipboard) ReadFilePaths() ([]string, error) {
+	return nil, f.filesErr
+}
+
+func (f *fakeKeybindClipboard) ReadImageBytes() ([]byte, string, error) {
+	return f.imageBytes, f.imageMediaType, nil
+}
+
+func (f *fakeKeybindClipboard) ReadWindowsClipboardViaPowerShell() (string, error) {
+	return "", clipboard.ErrNoClipboardImage
+}
+
+func (f *fakeKeybindClipboard) ProcVersion() string { return "" }
+
+func fakeClipboardSourceForKeybind(t *testing.T) clipboard.ClipboardSource {
 	t.Helper()
-	return &fakeClipboard{
+	return &fakeKeybindClipboard{
 		filesErr:       errors.New("no file list"),
 		imageBytes:     []byte("\x89PNG\r\n\x1a\nfake-png-bytes"),
 		imageMediaType: "image/png",

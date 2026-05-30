@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -181,7 +182,7 @@ func TestHubModelEnterSendsImageOnlySubmission(t *testing.T) {
 
 	path := writeAttachmentTempFile(t, []byte("image-only"))
 	m := newSessionHubModel(client)
-	m.pendingAttachments = []*PastedImage{{Path: path, MediaType: "image/png", MarkerN: 1}}
+	m.pendingAttachments = []*clipboard.PastedImage{{Path: path, MediaType: "image/png", MarkerN: 1}}
 	m.nextAttachmentMarker = 1
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -226,7 +227,7 @@ func TestHubModelBusyEnterQueuesImageOnlySubmission(t *testing.T) {
 	m.detail.Capabilities.Steer = true
 	m.detail.Capabilities.Queue = true
 	m.session.processing = true
-	m.pendingAttachments = []*PastedImage{{Path: path, MediaType: "image/png", MarkerN: 1}}
+	m.pendingAttachments = []*clipboard.PastedImage{{Path: path, MediaType: "image/png", MarkerN: 1}}
 	m.nextAttachmentMarker = 1
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -263,14 +264,14 @@ func TestHubModelBusyEnterRestoresAttachmentsOnQueueFailure(t *testing.T) {
 	defer cleanup()
 
 	path := writeAttachmentTempFile(t, []byte("queued-image-fail"))
-	img := &PastedImage{Path: path, MediaType: "image/png", MarkerN: 7}
+	img := &clipboard.PastedImage{Path: path, MediaType: "image/png", MarkerN: 7}
 	m := newSessionHubModel(client)
 	m.detail.State = "active"
 	m.detail.Capabilities.Send = false
 	m.detail.Capabilities.Steer = true
 	m.detail.Capabilities.Queue = true
 	m.session.processing = true
-	m.pendingAttachments = []*PastedImage{img}
+	m.pendingAttachments = []*clipboard.PastedImage{img}
 	m.nextAttachmentMarker = 7
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -640,17 +641,17 @@ func TestHubModelFailureRestorePreservesNewerComposerDraft(t *testing.T) {
 func TestHubModelFailureRestorePreservesNewerAttachments(t *testing.T) {
 	oldPath := writeAttachmentTempFile(t, []byte("old-image"))
 	newPath := writeAttachmentTempFile(t, []byte("new-image"))
-	oldImage := &PastedImage{Path: oldPath, MediaType: "image/png", MarkerN: 1}
-	newImage := &PastedImage{Path: newPath, MediaType: "image/png", MarkerN: 2}
+	oldImage := &clipboard.PastedImage{Path: oldPath, MediaType: "image/png", MarkerN: 1}
+	newImage := &clipboard.PastedImage{Path: newPath, MediaType: "image/png", MarkerN: 2}
 
 	m := newSessionHubModel(nil)
-	m.pendingAttachments = []*PastedImage{newImage}
+	m.pendingAttachments = []*clipboard.PastedImage{newImage}
 
 	updated, _ := m.Update(hubQueueMsg{
 		ref:                  "local:01SEND",
 		text:                 "old queue",
 		draft:                "old queue",
-		submittedAttachments: []*PastedImage{oldImage},
+		submittedAttachments: []*clipboard.PastedImage{oldImage},
 		err:                  errors.New("queue failed"),
 	})
 	got := updated.(hubModel)
