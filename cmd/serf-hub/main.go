@@ -149,6 +149,18 @@ func main() {
 		codexLauncher = NewCodexLauncher(cfg.CodexLaunches)
 	}
 
+	// Instance CRUD controller. The auth sub-controller is built with the same
+	// credentials store so credential status reads are consistent with the auth
+	// RPC path. loadedProviderConfig is the same pointer given to the spawner,
+	// so Create/Edit/Remove/SetDefault are immediately visible without a restart.
+	instancesAuthCtl := newHubAuthControllerWithStore(hubStateRoot, credsStore)
+	instancesAuthCtl.providersConfigPath = providersConfigPath
+	_ = &hubInstancesController{ // TODO(phase2): register RPC methods
+		cfg:                 loadedProviderConfig,
+		providersConfigPath: providersConfigPath,
+		auth:                instancesAuthCtl,
+	}
+
 	// stateDir is the parent of the projects/ directory; used for ForkSession
 	// as a fallback when a session's project dir can't be found in the past index.
 	stateDir := filepath.Dir(filepath.Clean(strings.TrimSuffix(stateGlob, "*")))

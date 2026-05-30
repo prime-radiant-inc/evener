@@ -1,0 +1,228 @@
+package main
+
+import (
+	"fmt"
+	"sort"
+	"sync"
+
+	"primeradiant.com/serf/internal/appwire"
+	authopenai "primeradiant.com/serf/internal/auth/openai"
+	"primeradiant.com/serf/internal/providerconfig"
+)
+
+// hubInstancesController manages provider instance CRUD: Create, Edit, Remove,
+// SetDefault, and List. It holds a pointer to the shared providerconfig.Config
+// so that mutations are visible to the spawner without a restart.
+type hubInstancesController struct {
+	cfg                 *providerconfig.Config
+	providersConfigPath string
+	auth                *hubAuthController
+	mu                  sync.Mutex
+}
+
+// List returns the current list of instances, each enriched with credential
+// status from the auth controller. Results are sorted by Type, then Name.
+func (c *hubInstancesController) List() appwire.InstanceListResponse {
+	c.mu.Lock()
+	cfg := *c.cfg
+	c.mu.Unlock()
+
+	entries := make([]appwire.InstanceEntry, 0, len(cfg.Instances))
+	for _, inst := range cfg.Instances {
+		status := c.auth.instanceStatus(inst.Name, string(inst.Type))
+		entry := appwire.InstanceEntry{
+			Name:           inst.Name,
+			Type:           string(inst.Type),
+			APIStyle:       string(inst.APIStyle),
+			BaseURL:        inst.BaseURL,
+			IsDefault:      inst.Name == cfg.Default,
+			AuthModes:      status.AuthModes,
+			ActiveSource:   status.ActiveSource,
+			HasStoredFile:  status.HasStoredFile,
+			HasStoredOAuth: status.HasStoredOAuth,
+			EnvVar:         status.EnvVar,
+			StoredEmail:    status.StoredEmail,
+		}
+		entries = append(entries, entry)
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Type != entries[j].Type {
+			return entries[i].Type < entries[j].Type
+		}
+		return entries[i].Name < entries[j].Name
+	})
+
+	return appwire.InstanceListResponse{Instances: entries}
+}
+
+// Create adds a new provider instance to the config. It reloads the config
+// from disk before mutating to avoid clobbering manual edits.
+func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) error {
+	if err := providerconfig.ValidateInstanceName(params.Name); err != nil {
+		return fmt.Errorf("invalid instance name: %w", err)
+	}
+	if err := providerconfig.ValidateAPIStyle(providerconfig.Type(params.Type), providerconfig.APIStyle(params.APIStyle)); err != nil {
+		return fmt.Errorf("invalid api_style: %w", err)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	cfg, err := c.reloadFromDisk()
+	if err != nil {
+		return err
+	}
+
+	// Reject duplicate names.
+	for _, inst := range cfg.Instances {
+		if inst.Name == params.Name {
+			return fmt.Errorf("instance %q already exists", params.Name)
+		}
+	}
+
+	inst := providerconfig.InstanceConfig{
+		Name:     params.Name,
+		Type:     providerconfig.Type(params.Type),
+		APIStyle: providerconfig.APIStyle(params.APIStyle),
+		BaseURL:  params.BaseURL,
+	}
+	newCfg := cfg.Upsert(inst)
+
+	if err := providerconfig.WriteFile(c.providersConfigPath, newCfg); err != nil {
+		return fmt.Errorf("write providers.toml: %w", err)
+	}
+	*c.cfg = newCfg
+	return nil
+}
+
+// Edit updates APIStyle and BaseURL for an existing instance. Type is immutable.
+// Reloads from disk before mutating.
+func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	cfg, err := c.reloadFromDisk()
+	if err != nil {
+		return err
+	}
+
+	var existing *providerconfig.InstanceConfig
+	for i := range cfg.Instances {
+		if cfg.Instances[i].Name == params.Name {
+			existing = &cfg.Instances[i]
+			break
+		}
+	}
+	if existing == nil {
+		return fmt.Errorf("instance %q not found", params.Name)
+	}
+
+	// Type is immutable; build the updated record from the existing type.
+	updated := providerconfig.InstanceConfig{
+		Name:     existing.Name,
+		Type:     existing.Type, // immutable
+		APIStyle: providerconfig.APIStyle(params.APIStyle),
+		BaseURL:  params.BaseURL,
+		Quirks:   existing.Quirks,
+	}
+	if err := providerconfig.ValidateAPIStyle(updated.Type, updated.APIStyle); err != nil {
+		return fmt.Errorf("invalid api_style: %w", err)
+	}
+
+	newCfg := cfg.Upsert(updated)
+	if err := providerconfig.WriteFile(c.providersConfigPath, newCfg); err != nil {
+		return fmt.Errorf("write providers.toml: %w", err)
+	}
+	*c.cfg = newCfg
+	return nil
+}
+
+// Remove deletes an instance from the config, clears its credentials and OAuth
+// state, and reassigns the default if the removed instance was the default.
+// Reloads from disk before mutating.
+func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	cfg, err := c.reloadFromDisk()
+	if err != nil {
+		return err
+	}
+
+	newCfg := cfg.RemoveInstance(params.Name)
+
+	// Reassign default when the removed instance held it.
+	if cfg.Default == params.Name {
+		// Pick the first remaining instance by sorted name, or "" if none left.
+		newDefault := ""
+		if len(newCfg.Instances) > 0 {
+			names := make([]string, 0, len(newCfg.Instances))
+			for _, inst := range newCfg.Instances {
+				names = append(names, inst.Name)
+			}
+			sort.Strings(names)
+			newDefault = names[0]
+		}
+		newCfg = newCfg.WithDefault(newDefault)
+	}
+
+	if err := providerconfig.WriteFile(c.providersConfigPath, newCfg); err != nil {
+		return fmt.Errorf("write providers.toml: %w", err)
+	}
+	*c.cfg = newCfg
+
+	// Clear stored credentials (ignore errors for missing entries).
+	_ = c.auth.creds.Clear(params.Name)
+
+	// Clear OAuth state file (ignore not-found).
+	if _, err := authopenai.DeleteAuth(c.auth.stateDir, params.Name); err != nil {
+		return fmt.Errorf("delete OAuth state: %w", err)
+	}
+
+	return nil
+}
+
+// SetDefault sets the named instance as the config default.
+// Reloads from disk before mutating.
+func (c *hubInstancesController) SetDefault(params appwire.InstanceSetDefaultParams) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	cfg, err := c.reloadFromDisk()
+	if err != nil {
+		return err
+	}
+
+	found := false
+	for _, inst := range cfg.Instances {
+		if inst.Name == params.Name {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("instance %q not found", params.Name)
+	}
+
+	newCfg := cfg.WithDefault(params.Name)
+	if err := providerconfig.WriteFile(c.providersConfigPath, newCfg); err != nil {
+		return fmt.Errorf("write providers.toml: %w", err)
+	}
+	*c.cfg = newCfg
+	return nil
+}
+
+// reloadFromDisk reads providers.toml and returns the current config.
+// When the file is absent it returns an empty Config (no instances). The
+// caller must already hold c.mu.
+func (c *hubInstancesController) reloadFromDisk() (providerconfig.Config, error) {
+	cfg, exists, err := providerconfig.LoadFile(c.providersConfigPath)
+	if err != nil {
+		return providerconfig.Config{}, fmt.Errorf("reload providers.toml: %w", err)
+	}
+	if !exists {
+		return providerconfig.Config{}, nil
+	}
+	return cfg, nil
+}
