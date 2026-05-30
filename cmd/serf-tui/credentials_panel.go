@@ -27,21 +27,21 @@ type panelRow struct {
 // It groups instances by type and supports full CRUD keybindings.
 type credentialsPanel struct {
 	instances []appwire.InstanceEntry
-	rows      []panelRow  // flattened display rows (headers + instance rows)
-	cursor    int         // index into rows (always points to a non-header row)
+	rows      []panelRow // flattened display rows (headers + instance rows)
+	cursor    int        // index into rows (always points to a non-header row)
 	err       error
 	loading   bool
 	done      bool
 	cancelled bool
 
 	// create/edit form state
-	formOpen    bool
-	formEditing bool // true=edit existing, false=create new
-	formField   int  // create: 0=type, 1=name, 2=apiStyle, 3=baseURL; edit: 0=apiStyle, 1=baseURL
-	formName    string
-	formType    string
+	formOpen     bool
+	formEditing  bool // true=edit existing, false=create new
+	formField    int  // create: 0=type, 1=name, 2=apiStyle, 3=baseURL; edit: 0=apiStyle, 1=baseURL
+	formName     string
+	formType     string
 	formAPIStyle string
-	formBaseURL string
+	formBaseURL  string
 }
 
 func newCredentialsPanel() credentialsPanel {
@@ -458,7 +458,7 @@ func (p credentialsPanel) formFieldLine(label, fieldName, value string, fieldIdx
 	if active {
 		cursor = "> "
 	}
-	prompt := lipgloss.NewStyle().Foreground(th.TextDim).Render(label+":")
+	prompt := lipgloss.NewStyle().Foreground(th.TextDim).Render(label + ":")
 	var val string
 	if active {
 		val = lipgloss.NewStyle().Foreground(th.Text).Render(value + "_")
@@ -468,4 +468,3 @@ func (p credentialsPanel) formFieldLine(label, fieldName, value string, fieldIdx
 	_ = fieldIdx
 	return cursor + prompt + " " + val
 }
-

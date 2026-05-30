@@ -57,16 +57,16 @@ func (e *httpErrorBase) Error() string {
 	}
 	return fmt.Sprintf("%s error (status=%d): %s", e.provider, e.statusCode, msg)
 }
-func (e *httpErrorBase) Provider() string            { return e.provider }
-func (e *httpErrorBase) setProvider(name string)     { e.provider = strings.TrimSpace(name) }
-func (e *httpErrorBase) BehaviorTag() string         { return e.behaviorTag }
-func (e *httpErrorBase) setBehaviorTag(tag string)   { e.behaviorTag = strings.TrimSpace(tag) }
-func (e *httpErrorBase) StatusCode() int             { return e.statusCode }
-func (e *httpErrorBase) ErrorCode() string           { return e.errorCode }
-func (e *httpErrorBase) Retryable() bool             { return e.retryable }
-func (e *httpErrorBase) RetryAfter() *time.Duration  { return e.retryAfter }
-func (e *httpErrorBase) Raw() any                    { return e.rawResponse }
-func (e *httpErrorBase) Unwrap() error               { return e.cause }
+func (e *httpErrorBase) Provider() string           { return e.provider }
+func (e *httpErrorBase) setProvider(name string)    { e.provider = strings.TrimSpace(name) }
+func (e *httpErrorBase) BehaviorTag() string        { return e.behaviorTag }
+func (e *httpErrorBase) setBehaviorTag(tag string)  { e.behaviorTag = strings.TrimSpace(tag) }
+func (e *httpErrorBase) StatusCode() int            { return e.statusCode }
+func (e *httpErrorBase) ErrorCode() string          { return e.errorCode }
+func (e *httpErrorBase) Retryable() bool            { return e.retryable }
+func (e *httpErrorBase) RetryAfter() *time.Duration { return e.retryAfter }
+func (e *httpErrorBase) Raw() any                   { return e.rawResponse }
+func (e *httpErrorBase) Unwrap() error              { return e.cause }
 
 type InvalidRequestError struct{ httpErrorBase }
 type AuthenticationError struct{ httpErrorBase }

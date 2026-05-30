@@ -17,9 +17,11 @@ func (s *stubLister) ListModels(ctx context.Context) ([]ModelInfo, error) {
 
 type stubAdapter struct{}
 
-func (s *stubAdapter) Name() string                                                { return "stub" }
-func (s *stubAdapter) Complete(ctx context.Context, req Request) (Response, error)  { return Response{}, nil }
-func (s *stubAdapter) Stream(ctx context.Context, req Request) (Stream, error)     { return nil, nil }
+func (s *stubAdapter) Name() string { return "stub" }
+func (s *stubAdapter) Complete(ctx context.Context, req Request) (Response, error) {
+	return Response{}, nil
+}
+func (s *stubAdapter) Stream(ctx context.Context, req Request) (Stream, error) { return nil, nil }
 
 func TestClient_ListModels_Delegates(t *testing.T) {
 	c := NewClient()

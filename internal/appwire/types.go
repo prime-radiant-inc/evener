@@ -733,17 +733,17 @@ type AuthDevicePollResponse struct {
 // AuthStatusResponse so the existing web credential-source rendering can be
 // reused without additional translation.
 type InstanceEntry struct {
-	Name         string   `json:"name"`
-	Type         string   `json:"type"`
-	APIStyle     string   `json:"apiStyle"`
-	BaseURL      string   `json:"baseUrl"`
-	IsDefault    bool     `json:"isDefault"`
-	AuthModes    []string `json:"authModes,omitempty"`
-	ActiveSource string   `json:"activeSource"`
-	HasStoredFile bool    `json:"hasStoredFile,omitempty"`
-	HasStoredOAuth bool   `json:"hasStoredOAuth"`
-	EnvVar       string   `json:"envVar,omitempty"`
-	StoredEmail  string   `json:"storedEmail,omitempty"`
+	Name           string   `json:"name"`
+	Type           string   `json:"type"`
+	APIStyle       string   `json:"apiStyle"`
+	BaseURL        string   `json:"baseUrl"`
+	IsDefault      bool     `json:"isDefault"`
+	AuthModes      []string `json:"authModes,omitempty"`
+	ActiveSource   string   `json:"activeSource"`
+	HasStoredFile  bool     `json:"hasStoredFile,omitempty"`
+	HasStoredOAuth bool     `json:"hasStoredOAuth"`
+	EnvVar         string   `json:"envVar,omitempty"`
+	StoredEmail    string   `json:"storedEmail,omitempty"`
 }
 
 // InstanceListResponse is the result of serf/instance/list.

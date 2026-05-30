@@ -26,19 +26,19 @@ const (
 
 // excludedDirs are directories skipped during workspace scanning.
 var excludedDirs = map[string]bool{
-	".git":         true,
-	".hg":          true,
-	".svn":         true,
-	"node_modules": true,
-	"__pycache__":  true,
-	".tox":         true,
-	".mypy_cache":  true,
+	".git":          true,
+	".hg":           true,
+	".svn":          true,
+	"node_modules":  true,
+	"__pycache__":   true,
+	".tox":          true,
+	".mypy_cache":   true,
 	".pytest_cache": true,
-	"venv":         true,
-	".venv":        true,
-	".eggs":        true,
-	"dist":         true,
-	".cache":       true,
+	"venv":          true,
+	".venv":         true,
+	".eggs":         true,
+	"dist":          true,
+	".cache":        true,
 }
 
 // ScanWorkspace walks the working directory and returns structured context

@@ -51,13 +51,13 @@ type ResumeRequest struct {
 
 // HubSpawner fulfills the Spawner interface using SpawnDaemon.
 type HubSpawner struct {
-	Cfg        Config
-	SerfBinary string // path to the serf binary; "" → "serf" on PATH
-	RunDir     string
-	HubToken   string
-	Creds      *credentials.Store // credentials store for provider key injection
-	StateRoot  string             // hub-level state root; used for resolving
-	ProvidersConfigPath string // path of the providers.toml the hub loaded
+	Cfg                 Config
+	SerfBinary          string // path to the serf binary; "" → "serf" on PATH
+	RunDir              string
+	HubToken            string
+	Creds               *credentials.Store // credentials store for provider key injection
+	StateRoot           string             // hub-level state root; used for resolving
+	ProvidersConfigPath string             // path of the providers.toml the hub loaded
 	// LaunchDefaults are ambient defaults applied to hub-spawned daemons after
 	// layered launch config resolves. Explicit launch config still wins.
 	LaunchDefaults launchconfig.Layer

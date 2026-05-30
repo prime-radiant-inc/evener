@@ -29,9 +29,9 @@ type ModelInfo struct {
 	// reflect explicit catalog values. The override layer can flip an
 	// inherited value; absence stays nil so a missing field doesn't
 	// authoritatively disable web search.
-	SupportsWebSearch *bool `json:"supports_web_search,omitempty"`
-	InputCostPerMillion      *float64 `json:"input_cost_per_million,omitempty"`
-	OutputCostPerMillion     *float64 `json:"output_cost_per_million,omitempty"`
+	SupportsWebSearch    *bool    `json:"supports_web_search,omitempty"`
+	InputCostPerMillion  *float64 `json:"input_cost_per_million,omitempty"`
+	OutputCostPerMillion *float64 `json:"output_cost_per_million,omitempty"`
 	// Cache-tier pricing. All optional — providers that don't charge separately for cached
 	// reads or for cache-creation leave them nil.
 	CacheReadInputCostPerMillion  *float64 `json:"cache_read_input_cost_per_million,omitempty"`
@@ -206,18 +206,18 @@ func parseLiteLLMCatalog(data []byte) (*ModelCatalog, error) {
 		}
 
 		models = append(models, ModelInfo{
-			ID:                       id,
-			Provider:                 prov,
-			DisplayName:              id,
-			ContextWindow:            ctxWindow,
-			MaxOutputTokens:          maxOutPtr,
-			SupportsTools:            parseBool(v["supports_function_calling"]),
-			SupportsVision:           parseBool(v["supports_vision"]),
-			SupportsReasoning:        parseBool(v["supports_reasoning"]),
-			ReasoningEffortLevels:    effortLevels,
-			SupportsAdaptiveThinking: parseBool(v["supports_adaptive_thinking"]),
-			SupportsEffortParameter:  parseBool(v["supports_effort_parameter"]),
-			SupportsWebSearch:        parseBoolPtr(v["supports_web_search"]),
+			ID:                            id,
+			Provider:                      prov,
+			DisplayName:                   id,
+			ContextWindow:                 ctxWindow,
+			MaxOutputTokens:               maxOutPtr,
+			SupportsTools:                 parseBool(v["supports_function_calling"]),
+			SupportsVision:                parseBool(v["supports_vision"]),
+			SupportsReasoning:             parseBool(v["supports_reasoning"]),
+			ReasoningEffortLevels:         effortLevels,
+			SupportsAdaptiveThinking:      parseBool(v["supports_adaptive_thinking"]),
+			SupportsEffortParameter:       parseBool(v["supports_effort_parameter"]),
+			SupportsWebSearch:             parseBoolPtr(v["supports_web_search"]),
 			InputCostPerMillion:           inPerM,
 			OutputCostPerMillion:          outPerM,
 			CacheReadInputCostPerMillion:  cacheReadPerM,

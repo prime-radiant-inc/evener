@@ -3766,10 +3766,10 @@ func TestInstanceParamsFromConfig_EnvTunables(t *testing.T) {
 
 	// instanceParamsFromConfig is the helper extracted from the factory closure.
 	params := instanceParamsFromConfig(
-		"openai",  // inst.Name
-		"",        // inst.BaseURL (not set)
-		"k",       // inst.APIKey (injected by loader)
-		"/tmp",    // stateHome
+		"openai", // inst.Name
+		"",       // inst.BaseURL (not set)
+		"k",      // inst.APIKey (injected by loader)
+		"/tmp",   // stateHome
 	)
 
 	if params.OrgID != "org-x" {

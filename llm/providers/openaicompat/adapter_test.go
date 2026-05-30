@@ -1497,9 +1497,9 @@ func TestQuirks_ToolChoiceAutoOnly_ClampsRequired(t *testing.T) {
 		Quirks: ProviderQuirks{ToolChoiceAutoOnly: true},
 	}
 	_, err := a.Complete(context.Background(), llm.Request{
-		Model:    "m",
-		Messages: []llm.Message{llm.User("hi")},
-		Tools:    []llm.ToolDefinition{{Name: "foo"}},
+		Model:      "m",
+		Messages:   []llm.Message{llm.User("hi")},
+		Tools:      []llm.ToolDefinition{{Name: "foo"}},
 		ToolChoice: &llm.ToolChoice{Mode: "required"},
 	})
 	if err != nil {
@@ -1531,9 +1531,9 @@ func TestQuirks_ToolChoiceAutoOnly_PreservesAuto(t *testing.T) {
 		Quirks: ProviderQuirks{ToolChoiceAutoOnly: true},
 	}
 	_, err := a.Complete(context.Background(), llm.Request{
-		Model:    "m",
-		Messages: []llm.Message{llm.User("hi")},
-		Tools:    []llm.ToolDefinition{{Name: "foo"}},
+		Model:      "m",
+		Messages:   []llm.Message{llm.User("hi")},
+		Tools:      []llm.ToolDefinition{{Name: "foo"}},
 		ToolChoice: &llm.ToolChoice{Mode: "auto"},
 	})
 	if err != nil {

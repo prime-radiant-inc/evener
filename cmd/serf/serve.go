@@ -195,7 +195,7 @@ func runServe(args []string) error {
 		NonInteractive:         *nonInteractive,
 		SystemPromptAsUser:     *systemPromptAsUser,
 		ModelFallbacks:         []string(modelFallbacks),
-		ResolveProfile: cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
+		ResolveProfile:         cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
 	}
 	if *maxSubagentDepth >= 0 {
 		sessionCfg.MaxSubagentDepth = *maxSubagentDepth

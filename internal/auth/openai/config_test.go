@@ -70,11 +70,11 @@ func TestAuthorizeURLContainsRequiredQueryParams(t *testing.T) {
 
 	query := parsed.Query()
 	required := map[string]string{
-		"response_type":         "code",
-		"client_id":             cfg.ClientID,
-		"redirect_uri":          redirectURI,
-		"scope":                 strings.Join(cfg.Scopes, " "),
-		"code_challenge_method": "S256",
+		"response_type":              "code",
+		"client_id":                  cfg.ClientID,
+		"redirect_uri":               redirectURI,
+		"scope":                      strings.Join(cfg.Scopes, " "),
+		"code_challenge_method":      "S256",
 		"id_token_add_organizations": "true",
 		"codex_cli_simplified_flow":  "true",
 		"originator":                 "pi",

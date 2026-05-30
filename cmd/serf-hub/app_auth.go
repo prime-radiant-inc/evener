@@ -18,16 +18,16 @@ import (
 )
 
 type hubAuthController struct {
-	stateDir            string
-	authEnv             map[string]string
-	creds               *credentials.Store
-	cfg                 authopenai.Config
-	client              *http.Client
-	now                 func() time.Time
-	exchangeCode        func(context.Context, *http.Client, authopenai.Config, authopenai.TokenExchangeRequest) (authopenai.TokenSet, error)
-	requestDeviceCode   func(context.Context, *http.Client, authopenai.Config) (authopenai.DeviceCode, error)
-	pollDeviceOnce      func(context.Context, *http.Client, authopenai.Config, authopenai.DeviceCode) (authopenai.DeviceCodeSuccess, bool, error)
-	exchangeDevice      func(context.Context, *http.Client, authopenai.Config, string, string) (authopenai.TokenSet, error)
+	stateDir          string
+	authEnv           map[string]string
+	creds             *credentials.Store
+	cfg               authopenai.Config
+	client            *http.Client
+	now               func() time.Time
+	exchangeCode      func(context.Context, *http.Client, authopenai.Config, authopenai.TokenExchangeRequest) (authopenai.TokenSet, error)
+	requestDeviceCode func(context.Context, *http.Client, authopenai.Config) (authopenai.DeviceCode, error)
+	pollDeviceOnce    func(context.Context, *http.Client, authopenai.Config, authopenai.DeviceCode) (authopenai.DeviceCodeSuccess, bool, error)
+	exchangeDevice    func(context.Context, *http.Client, authopenai.Config, string, string) (authopenai.TokenSet, error)
 	// providersConfigPath is the path to providers.toml. When non-empty, auth
 	// methods resolve the instance type from the file and key credentials and
 	// OAuth state by instance name rather than provider type.

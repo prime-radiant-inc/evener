@@ -24,16 +24,16 @@ import (
 // ProviderQuirks configures per-provider behavioral overrides for OpenAI-compatible
 // APIs that deviate from the standard Chat Completions contract.
 type ProviderQuirks struct {
-	LockTemperature       bool
-	LockTopP              bool
-	LockFrequencyPenalty  bool
-	LockPresencePenalty   bool
-	ToolChoiceAutoOnly    bool
-	MaxStopSequences      int
-	StripEmptyContent     bool
-	NoJSONSchema          bool
-	FinishReasonMap       map[string]string
-	TranslateMaxToXHigh   bool // OpenRouter vocab: our "max" → their "xhigh"
+	LockTemperature      bool
+	LockTopP             bool
+	LockFrequencyPenalty bool
+	LockPresencePenalty  bool
+	ToolChoiceAutoOnly   bool
+	MaxStopSequences     int
+	StripEmptyContent    bool
+	NoJSONSchema         bool
+	FinishReasonMap      map[string]string
+	TranslateMaxToXHigh  bool // OpenRouter vocab: our "max" → their "xhigh"
 }
 
 func (q ProviderQuirks) mapFinishReason(raw string) string {

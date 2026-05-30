@@ -25,8 +25,8 @@ func NewObsMaskStrategy(cm *ContextManager) *ObsMaskStrategy {
 	return &ObsMaskStrategy{cm: cm}
 }
 
-func (s *ObsMaskStrategy) Name() string              { return "obs-mask" }
-func (s *ObsMaskStrategy) Tools() []RegisteredTool   { return nil }
+func (s *ObsMaskStrategy) Name() string            { return "obs-mask" }
+func (s *ObsMaskStrategy) Tools() []RegisteredTool { return nil }
 
 func (s *ObsMaskStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
 	return nil

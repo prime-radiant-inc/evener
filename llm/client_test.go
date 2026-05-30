@@ -486,7 +486,7 @@ func TestClient_SupportsToolChoice(t *testing.T) {
 // name it is registered under. The client must stamp the instance name
 // (req.Provider) over whatever the adapter returned.
 type instanceAdapter struct {
-	typeName string // hardcoded type, e.g. "openaicompat"
+	typeName    string // hardcoded type, e.g. "openaicompat"
 	errToReturn error  // if set, Complete returns this error and Stream emits it
 }
 

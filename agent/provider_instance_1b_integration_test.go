@@ -112,10 +112,10 @@ func TestPhase1b_ClientRouting_AllFiveInstances(t *testing.T) {
 // as ID.
 func TestPhase1b_ResolveProfileFromConfig_BehaviorTags(t *testing.T) {
 	cases := []struct {
-		ref        string
-		wantID     string
-		wantTag    string
-		wantModel  string
+		ref       string
+		wantID    string
+		wantTag   string
+		wantModel string
 	}{
 		{"work/gpt-5.2", "work", "openai", "gpt-5.2"},
 		{"work2/gpt-5.4", "work2", "openai", "gpt-5.4"},
@@ -148,11 +148,11 @@ func TestPhase1b_ResolveProfileFromConfig_BehaviorTags(t *testing.T) {
 func TestPhase1b_NameToTag_AllFive(t *testing.T) {
 	m := providerconfig.NameToTag(phase1bCfg)
 	want := map[string]string{
-		"work":       "openai",
-		"work2":      "openai",
-		"compat-x":   "openai-compatible",
+		"work":        "openai",
+		"work2":       "openai",
+		"compat-x":    "openai-compatible",
 		"anthro-corp": "anthropic",
-		"kc":         "kimi",
+		"kc":          "kimi",
 	}
 	for name, wantTag := range want {
 		if got := m[name]; got != wantTag {

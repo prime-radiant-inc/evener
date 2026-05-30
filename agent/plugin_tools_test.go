@@ -7,7 +7,7 @@ func TestMapClaudeToolName(t *testing.T) {
 		"Read": "read_file", "Write": "write_file", "Edit": "edit_file",
 		"Bash": "shell", "Grep": "grep", "Glob": "glob",
 		"Task": "spawn_agent", "WebFetch": "web_fetch", "WebSearch": "web_search",
-		"NotebookEdit": "notebook_edit",
+		"NotebookEdit":      "notebook_edit",
 		"unknown_tool":      "unknown_tool",
 		"mcp__server__tool": "mcp__server__tool",
 	}
@@ -24,7 +24,7 @@ func TestMapSerfToolNameToClaude(t *testing.T) {
 		"shell": "Bash", "grep": "Grep", "glob": "Glob",
 		"spawn_agent": "Task", "web_fetch": "WebFetch", "web_search": "WebSearch",
 		"notebook_edit": "NotebookEdit",
-		"unknown": "unknown",
+		"unknown":       "unknown",
 	}
 	for input, want := range tests {
 		if got := MapSerfToolNameToClaude(input); got != want {

@@ -169,7 +169,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			ExportATIFPath:         cfg.exportATIF,
 			NonInteractive:         true,
 			SystemPromptAsUser:     cfg.systemPromptAsUser,
-			ResolveProfile: cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
+			ResolveProfile:         cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
 		}
 		if cfg.maxSubagentDepth >= 0 {
 			sessionCfg.MaxSubagentDepth = cfg.maxSubagentDepth

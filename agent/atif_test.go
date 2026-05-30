@@ -946,8 +946,8 @@ func TestConvertToATIF_MultiRound(t *testing.T) {
 				},
 				Timestamp: ts.Add(1 * time.Second),
 				Usage: llm.Usage{
-					InputTokens:    100,
-					OutputTokens:   40,
+					InputTokens:     100,
+					OutputTokens:    40,
 					CacheReadTokens: &cacheRead,
 				},
 			},

@@ -111,4 +111,3 @@ func formatTokens(n int) string {
 	}
 	return fmt.Sprintf("%dk", n/1000)
 }
-

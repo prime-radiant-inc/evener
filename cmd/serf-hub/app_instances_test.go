@@ -33,7 +33,7 @@ func newTestInstancesController(t *testing.T, tomlPath, credsDir, stateDir strin
 
 	return &hubInstancesController{
 		providersConfigPath: tomlPath,
-		auth:               auth,
+		auth:                auth,
 	}
 }
 

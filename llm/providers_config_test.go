@@ -32,14 +32,30 @@ func setupFakeInstanceFactories(t *testing.T) {
 		{typ: "anthropic", apiStyle: ""}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) {
 			return &fakeAdapter{name: inst.Name}, nil
 		},
-		{typ: "google", apiStyle: ""}:              func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) { return &fakeAdapter{name: inst.Name}, nil },
-		{typ: "gemini", apiStyle: ""}:              func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) { return &fakeAdapter{name: inst.Name}, nil },
-		{typ: "kimi", apiStyle: ""}:                func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) { return &fakeAdapter{name: inst.Name}, nil },
-		{typ: "glm", apiStyle: ""}:                 func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) { return &fakeAdapter{name: inst.Name}, nil },
-		{typ: "openrouter", apiStyle: ""}:          func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) { return &fakeAdapter{name: inst.Name}, nil },
-		{typ: "minimax", apiStyle: ""}:             func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) { return &fakeAdapter{name: inst.Name}, nil },
-		{typ: "openrouter-anthropic", apiStyle: ""}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) { return &fakeAdapter{name: inst.Name}, nil },
-		{typ: "ollama", apiStyle: ""}:              func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) { return &fakeAdapter{name: inst.Name}, nil },
+		{typ: "google", apiStyle: ""}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) {
+			return &fakeAdapter{name: inst.Name}, nil
+		},
+		{typ: "gemini", apiStyle: ""}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) {
+			return &fakeAdapter{name: inst.Name}, nil
+		},
+		{typ: "kimi", apiStyle: ""}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) {
+			return &fakeAdapter{name: inst.Name}, nil
+		},
+		{typ: "glm", apiStyle: ""}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) {
+			return &fakeAdapter{name: inst.Name}, nil
+		},
+		{typ: "openrouter", apiStyle: ""}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) {
+			return &fakeAdapter{name: inst.Name}, nil
+		},
+		{typ: "minimax", apiStyle: ""}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) {
+			return &fakeAdapter{name: inst.Name}, nil
+		},
+		{typ: "openrouter-anthropic", apiStyle: ""}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) {
+			return &fakeAdapter{name: inst.Name}, nil
+		},
+		{typ: "ollama", apiStyle: ""}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) {
+			return &fakeAdapter{name: inst.Name}, nil
+		},
 	}
 	instanceFactoriesMu.Unlock()
 	t.Cleanup(func() {

@@ -55,26 +55,26 @@ type hubSessionCapabilities struct {
 }
 
 type hubSessionDetail struct {
-	Ref             string
-	SessionID       string
-	SourceLabel     string
-	Title           string
-	State           string
-	Model           string
-	Profile         string
-	WorkingDir      string
-	Project         string
-	Branch          string
-	TurnCount       int
-	ContextPressure float64
-	ContextUsed     int
-	ContextWindow   int
+	Ref              string
+	SessionID        string
+	SourceLabel      string
+	Title            string
+	State            string
+	Model            string
+	Profile          string
+	WorkingDir       string
+	Project          string
+	Branch           string
+	TurnCount        int
+	ContextPressure  float64
+	ContextUsed      int
+	ContextWindow    int
 	ContextRemaining int
-	ActiveTurnID    string
-	RecentErrors    []string
-	Diagnostics     *appwire.SerfDiagnostics
-	Live            bool
-	Capabilities    hubSessionCapabilities
+	ActiveTurnID     string
+	RecentErrors     []string
+	Diagnostics      *appwire.SerfDiagnostics
+	Live             bool
+	Capabilities     hubSessionCapabilities
 	// Queue carries the authoritative queue snapshot from
 	// thread.Serf.Queue (kata r80p). hubModel mirrors this into
 	// sessionQueue when entering/refreshing a session so the composer
@@ -210,27 +210,27 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		capabilities.Resume = true
 	}
 	return hubSessionDetail{
-		Ref:             node.Ref,
-		SessionID:       thread.SessionID,
-		SourceLabel:     node.SourceLabel,
-		Title:           node.Title,
-		State:           node.State,
-		Model:           thread.ModelProvider,
-		Profile:         thread.Serf.Profile,
-		WorkingDir:      thread.CWD,
-		Project:         node.Project,
-		Branch:          gitBranchFromThread(thread),
+		Ref:              node.Ref,
+		SessionID:        thread.SessionID,
+		SourceLabel:      node.SourceLabel,
+		Title:            node.Title,
+		State:            node.State,
+		Model:            thread.ModelProvider,
+		Profile:          thread.Serf.Profile,
+		WorkingDir:       thread.CWD,
+		Project:          node.Project,
+		Branch:           gitBranchFromThread(thread),
 		TurnCount:        len(thread.Turns),
 		ActiveTurnID:     activeTurnIDFromThread(thread),
 		ContextPressure:  thread.Serf.ContextPressure,
 		ContextUsed:      thread.Serf.ContextUsed,
 		ContextWindow:    thread.Serf.ContextWindow,
 		ContextRemaining: thread.Serf.ContextRemaining,
-		RecentErrors:    recentTurnErrors(thread),
-		Diagnostics:     thread.Serf.Diagnostics,
-		Live:            node.Live,
-		Capabilities:    capabilities,
-		Queue:           thread.Serf.Queue,
+		RecentErrors:     recentTurnErrors(thread),
+		Diagnostics:      thread.Serf.Diagnostics,
+		Live:             node.Live,
+		Capabilities:     capabilities,
+		Queue:            thread.Serf.Queue,
 	}
 }
 

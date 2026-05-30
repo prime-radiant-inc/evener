@@ -1261,10 +1261,10 @@ func TestBuildSystemPrompt_OpenAI_SkillsWithUseSkill(t *testing.T) {
 		{Name: "greet", Description: "Greeting skill", Dir: "/tmp/skills/greet", SkillFile: "/tmp/skills/greet/SKILL.md"},
 	}
 	prompt := renderPromptForTest(t, p, PromptData{
-		WorkingDir: "/tmp",
-		Platform:   "linux",
-		Today:      "2026-02-09",
-		Skills:     skills,
+		WorkingDir:  "/tmp",
+		Platform:    "linux",
+		Today:       "2026-02-09",
+		Skills:      skills,
 		HasUseSkill: true,
 	})
 

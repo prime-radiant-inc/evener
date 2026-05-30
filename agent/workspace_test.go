@@ -282,5 +282,3 @@ func TestScanWorkspace_CMakeDetection(t *testing.T) {
 		t.Errorf("build info should mention CMake: %s", ws.BuildInfo)
 	}
 }
-
-

@@ -31,16 +31,16 @@ type ATIFAgent struct {
 
 // ATIFStep is a single step in the trajectory.
 type ATIFStep struct {
-	StepID           int               `json:"step_id"`
-	Source           string            `json:"source"`
-	Message          string            `json:"message,omitempty"`
-	Timestamp        string            `json:"timestamp,omitempty"`
-	ModelName        string            `json:"model_name,omitempty"`
-	ReasoningContent string            `json:"reasoning_content,omitempty"`
-	ToolCalls        []ATIFToolCall    `json:"tool_calls,omitempty"`
-	Observation      *ATIFObservation  `json:"observation,omitempty"`
-	Metrics          *ATIFStepMetrics  `json:"metrics,omitempty"`
-	Extra            map[string]any    `json:"extra"`
+	StepID           int              `json:"step_id"`
+	Source           string           `json:"source"`
+	Message          string           `json:"message,omitempty"`
+	Timestamp        string           `json:"timestamp,omitempty"`
+	ModelName        string           `json:"model_name,omitempty"`
+	ReasoningContent string           `json:"reasoning_content,omitempty"`
+	ToolCalls        []ATIFToolCall   `json:"tool_calls,omitempty"`
+	Observation      *ATIFObservation `json:"observation,omitempty"`
+	Metrics          *ATIFStepMetrics `json:"metrics,omitempty"`
+	Extra            map[string]any   `json:"extra"`
 }
 
 // ATIFToolCall records a single tool invocation.

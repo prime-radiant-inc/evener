@@ -66,8 +66,8 @@ func TestRenderHubSessionStatusRendersDiagnosticsSections(t *testing.T) {
 				{Name: "superpowers", Version: "5.1.0", SkillCount: 30, AgentCount: 2, HookCount: 4},
 			},
 			Hooks: map[string]int{
-				"SessionStart":      2,
-				"UserPromptSubmit":  1,
+				"SessionStart":     2,
+				"UserPromptSubmit": 1,
 			},
 			Subagents: []appwire.SerfSubagentInfo{
 				{ID: "agent_1", Status: "running", TurnsUsed: 5},

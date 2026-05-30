@@ -190,9 +190,9 @@ func TestApplyPatchRendererUnifiedDiff(t *testing.T) {
 func TestApplyPatchRendererV4a(t *testing.T) {
 	r, _ := lookupToolRenderer("apply_patch")
 	tests := []struct {
-		name   string
-		patch  string
-		want   string
+		name  string
+		patch string
+		want  string
 	}{
 		{
 			name:  "Update File",

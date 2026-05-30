@@ -42,11 +42,11 @@ func TestSearchTranscript(t *testing.T) {
 	path := createTestSnapshot(t, dir, "search-test", history)
 
 	tests := []struct {
-		name          string
-		query         string
-		wantCount     int
-		wantIndices   []int
-		wantPreview   string // substring to check in first match
+		name        string
+		query       string
+		wantCount   int
+		wantIndices []int
+		wantPreview string // substring to check in first match
 	}{
 		{
 			name:        "find hello",
@@ -321,10 +321,10 @@ func TestFilterTurns(t *testing.T) {
 			wantIndices: []int{7},
 		},
 		{
-			name:        "filter with no matches",
-			kind:        "USER_INPUT",
-			contains:    "nonexistent",
-			wantCount:   0,
+			name:      "filter with no matches",
+			kind:      "USER_INPUT",
+			contains:  "nonexistent",
+			wantCount: 0,
 		},
 		{
 			name:        "no filters - all turns",

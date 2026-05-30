@@ -14,7 +14,7 @@ func TestIsImageFile(t *testing.T) {
 		{"photo.gif", true},
 		{"photo.webp", true},
 		{"photo.bmp", true},
-		{"photo.svg", false},  // SVG is XML, not a raster image
+		{"photo.svg", false}, // SVG is XML, not a raster image
 		{"code.go", false},
 		{"readme.md", false},
 		{"data.json", false},

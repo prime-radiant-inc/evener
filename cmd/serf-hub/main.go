@@ -163,23 +163,23 @@ func main() {
 
 	// Web
 	web := NewWebServer(WebConfig{
-		HubAddr:        cfg.Addr,
-		AuthToken:      authToken,
-		HubStateRoot:   cfg.HubStateRoot,
-		RunDir:         runDir,
-		PastIndexPath:  pastIndexDB,
-		Roster:         roster,
-		Past:           past,
-		Spawner:        spawner,
-		Models:         models,
-		PastPerPage:    cfg.PastResultsPerPage,
-		StateDir:       stateDir,
+		HubAddr:             cfg.Addr,
+		AuthToken:           authToken,
+		HubStateRoot:        cfg.HubStateRoot,
+		RunDir:              runDir,
+		PastIndexPath:       pastIndexDB,
+		Roster:              roster,
+		Past:                past,
+		Spawner:             spawner,
+		Models:              models,
+		PastPerPage:         cfg.PastResultsPerPage,
+		StateDir:            stateDir,
 		CredsStore:          credsStore,
 		ProviderConfig:      loadedProviderConfig,
 		ProvidersConfigPath: providersConfigPath,
-		CodexSources:   cfg.CodexSources,
-		CodexLaunches:  cfg.CodexLaunches,
-		CodexLauncher:  codexLauncher,
+		CodexSources:        cfg.CodexSources,
+		CodexLaunches:       cfg.CodexLaunches,
+		CodexLauncher:       codexLauncher,
 	})
 
 	// Lifecycle

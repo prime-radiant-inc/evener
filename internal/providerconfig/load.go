@@ -36,9 +36,9 @@ func KnownTypeNames() []string {
 
 // fileShape is the raw parsed shape of providers.toml before validation.
 type fileShape struct {
-	Schema    int                        `toml:"schema"`
-	Default   string                     `toml:"default"`
-	Instances map[string]InstanceConfig  `toml:"instances"`
+	Schema    int                       `toml:"schema"`
+	Default   string                    `toml:"default"`
+	Instances map[string]InstanceConfig `toml:"instances"`
 }
 
 // Load parses and validates providers.toml content from data.
