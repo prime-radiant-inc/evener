@@ -55,26 +55,30 @@ to add an instance, because there are *two* sources of truth. Phase 1c makes
   ```
 
 - **Construction** flows through one path: `cmdutil.LoadClient` resolves the
-  config; if the file is **absent it is materialized first** (§4), then loaded.
-  `LoadClient` then **injects resolved credentials** into the in-memory `Config`
-  (§5) and calls `llm.NewFromProviders`. The env path as a *default* is retired;
-  `llm.NewFromEnv` survives only as the detection mechanism the materializer uses.
-  Materialization failure (e.g. an unwritable state dir) is a **loud error**, not a
-  silent env fallback — serf already requires a writable state dir, and a silent
-  fallback would reintroduce the very duality 1c removes.
+  config; if the file is present it is loaded, and if **absent the config is seeded
+  in memory** from the environment (§4) — `LoadClient` never writes. It then
+  **injects resolved credentials** into the in-memory `Config` (§5) and calls
+  `llm.NewFromProviders`. The env path as a *default* is retired; `llm.NewFromEnv`
+  survives only as the detection mechanism the seed uses.
+- **Persistence is the hub's job.** A read-shaped client build must not have a write
+  side effect, so the on-disk `providers.toml` is written only by the **hub on
+  startup** (`cmdutil.MaterializeProvidersConfig`, §4); the hub failing to write is
+  a **loud error** (it already needs a writable state root). Standalone `serf` runs
+  on the in-memory seed.
 - **Secrets are never written to `providers.toml`** and are resolved per instance
   at load time (§5).
 
-## 4. Materialization (`internal/providerconfig` + `cmdutil`)
+## 4. Seeding & materialization (`internal/providerconfig` + `cmdutil`)
 
-- **Trigger:** when the resolved providers-config path has no file, `LoadClient`
-  **writes one before loading**. A single shared helper produces it so the hub,
-  `serf serve`, and `serf run` all materialize/consume the identical file.
-  **Idempotent** — only writes when absent; never overwrites an existing file.
-  In hub flows the hub materializes **before spawning**, so spawned `serf serve` /
-  `launch-check` children find the file already present (the hub passes its path
-  via `SERF_PROVIDERS_CONFIG`); a standalone `serf run` materializes at the default
-  root. Writes are **atomic** (temp + rename), so the idempotent guard is race-safe.
+- **Seeding (in memory, no write):** `cmdutil.seedConfigFromEnv` builds a
+  descriptors-only `Config` from a `NewFromEnv` detection client. `LoadClient` uses
+  it for the absent-file case, so any client build works with zero disk writes.
+- **Materialization (write):** `cmdutil.MaterializeProvidersConfig` seeds, then
+  writes the file **atomically** (`os.CreateTemp` + rename, mode `0644`). Only the
+  **hub** calls it, **once on startup when the file is absent** — never overwriting
+  an existing file. The hub passes the path to spawned children via
+  `SERF_PROVIDERS_CONFIG`, so `serf serve` / `launch-check` load the same file
+  rather than re-seeding.
 - **Seed:** build a throwaway client via `NewFromEnv`, enumerate
   `ProviderNames()`, and emit one `[instances.<name>]` descriptor per configured
   provider. The descriptor carries only **non-secret** fields:
@@ -125,18 +129,20 @@ must resolve and inject credentials before adapter construction:
 
 ## 6. Code changes (inventory)
 
-- `internal/providerconfig`: a `Materialize`/`Seed` helper (descriptor synthesis
-  from an env client + the base-URL env map) and a `Marshal` for writing
-  `providers.toml`.
-- `cmdutil.LoadClient`: materialize-if-absent; inject resolved credentials into the
-  in-memory `Config`; always go through `NewFromProviders`. (1b already routes
+- `internal/providerconfig`: pure `Seed` (descriptor synthesis) + `Marshal`
+  (descriptors-only TOML, never emits `api_key`) + exported `BaseURLEnvVar`.
+- `cmdutil`: `seedConfigFromEnv` (in-memory, no write) and
+  `MaterializeProvidersConfig` (seed + atomic write; hub-only).
+- `cmdutil.LoadClient`: load-or-seed; inject resolved credentials into the in-memory
+  `Config`; always `NewFromProviders` (`hasConfig` always true). (1b already routes
   serve/run/launch-check/`/api/models` through `LoadClient`, so they inherit this.)
-- `internal/credentials`: `(name, type)` lookup (name-first, type-env fallback);
-  keep type-keyed file entries working for default instances.
+- `cmd/serf-hub/main.go`: materialize `providers.toml` on startup when absent.
+- `internal/credentials`: `ResolveKey(name, type)` (name-first, type-env fallback);
+  type-keyed file entries still work for default instances.
 - `llm/providers/openai/adapter.go`: instance factory restores org/project/chatgpt
-  env tunables.
-- Retire env-path-as-default: `NewFromEnv` is no longer a runtime default, only a
-  materialization input + logged fallback.
+  env tunables; the seed captures `OPENAI_BASE_URL` like every other type.
+- Retire env-path-as-default: `NewFromEnv` is no longer a runtime default, only the
+  seed's detection input.
 
 ## 7. Edge cases
 
@@ -169,9 +175,13 @@ must resolve and inject credentials before adapter construction:
 
 ## 9. Testing strategy
 
-- **Materialization:** absent file → a descriptors-only `providers.toml` is written
-  seeded from a stub env client; round-trips through `Load`; **idempotent** (present
-  file is never overwritten); **no `api_key` ever written**; `0644`.
+- **Seeding (LoadClient):** absent file → the config is **seeded in memory** and
+  **no file is written** (asserted via `os.Stat`); `hasConfig` is true.
+- **Materialization (hub write):** `MaterializeProvidersConfig` writes a
+  descriptors-only file (round-trips through `Load`; **no `api_key` ever written**;
+  `0644`); an **OAuth-only OpenAI** (no `OPENAI_API_KEY`) is detected and
+  materialized (`TestMaterializeDetectsOpenAIOAuth`), so the hub never persists a
+  config missing the user's main provider.
 - **Seed fidelity:** for each provider type, the seeded descriptor + injected
   credential produces an adapter equivalent to the env-path adapter (same base URL,
   same key source); `openai-compatible` → `openai`/`chat-completions` with the env
@@ -184,8 +194,8 @@ must resolve and inject credentials before adapter construction:
 - **Behavior preservation:** the **renamed-instance integration test** (§7 of the
   v7 spec, `agent/provider_instance_integration_test.go`) and the full suite stay
   green; a from-env materialized setup behaves identically to today's env path.
-- **Pristine output:** materialization failure returns a clear wrapped error
-  (asserted in a test), not a silent swallow.
+- **No silent fallback:** materialization (hub) and credential-store load errors are
+  returned/exited loudly, never silently swallowed into an env fallback.
 
 ## 10. Risks / open questions
 
