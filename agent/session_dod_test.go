@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/llm"
 )
 
@@ -730,8 +731,8 @@ func TestSession_PopulatesModelRequestMetadata(t *testing.T) {
 	if req.PromptCacheKey != wantPromptCacheKey {
 		t.Fatalf("PromptCacheKey = %q, want %q", req.PromptCacheKey, wantPromptCacheKey)
 	}
-	if got := req.ClientMetadata[codexInstallationIDMetadataKey]; got == "" {
-		t.Fatalf("client metadata missing %s: %#v", codexInstallationIDMetadataKey, req.ClientMetadata)
+	if got := req.ClientMetadata[installid.CodexInstallationIDMetadataKey]; got == "" {
+		t.Fatalf("client metadata missing %s: %#v", installid.CodexInstallationIDMetadataKey, req.ClientMetadata)
 	}
 	if _, err := os.Stat(filepath.Join(stateDir, "installation_id")); err != nil {
 		t.Fatalf("installation_id file: %v", err)

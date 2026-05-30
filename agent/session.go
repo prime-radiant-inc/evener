@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/llm"
 )
 
@@ -279,7 +280,7 @@ func (s *Session) applyModelRequestMetadata(req *llm.Request) {
 		if req.ClientMetadata == nil {
 			req.ClientMetadata = map[string]string{}
 		}
-		req.ClientMetadata[codexInstallationIDMetadataKey] = s.installID
+		req.ClientMetadata[installid.CodexInstallationIDMetadataKey] = s.installID
 	}
 }
 

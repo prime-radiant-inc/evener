@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/llm"
 )
@@ -70,7 +71,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		depth:          cfg.Depth,
 		env:            env,
 		stateDir:       cfg.StateDir,
-		installID:      loadOrCreateInstallationID(cfg.StateDir),
+		installID:      installid.LoadOrCreateInstallationID(cfg.StateDir),
 		state:          SessionIdle,
 		events:         make(chan SessionEvent, 256),
 		history:        []Turn{},
@@ -217,7 +218,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		depth:          cfg.Depth,
 		env:            env,
 		stateDir:       cfg.StateDir,
-		installID:      loadOrCreateInstallationID(cfg.StateDir),
+		installID:      installid.LoadOrCreateInstallationID(cfg.StateDir),
 		state:          SessionIdle,
 		events:         make(chan SessionEvent, 256),
 		history:        resumeHistory,
@@ -349,7 +350,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 		depth:          cfg.Depth,
 		env:            env,
 		stateDir:       cfg.StateDir,
-		installID:      loadOrCreateInstallationID(cfg.StateDir),
+		installID:      installid.LoadOrCreateInstallationID(cfg.StateDir),
 		state:          SessionIdle,
 		events:         make(chan SessionEvent, 256),
 		history:        resumeHistory,

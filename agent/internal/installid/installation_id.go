@@ -1,4 +1,4 @@
-package agent
+package installid
 
 import (
 	"os"
@@ -8,9 +8,9 @@ import (
 	"github.com/oklog/ulid/v2"
 )
 
-const codexInstallationIDMetadataKey = "x-codex-installation-id"
+const CodexInstallationIDMetadataKey = "x-codex-installation-id"
 
-func loadOrCreateInstallationID(stateDir string) string {
+func LoadOrCreateInstallationID(stateDir string) string {
 	stateDir = strings.TrimSpace(stateDir)
 	if stateDir == "" {
 		return ""
