@@ -5090,6 +5090,18 @@ func TestHubRPCInstanceListRoutesToController(t *testing.T) {
 	if len(resp.Instances) != 1 || resp.Instances[0].Name != "my-openai" {
 		t.Fatalf("instances=%+v", resp.Instances)
 	}
+	if len(resp.AvailableTypes) == 0 {
+		t.Error("AvailableTypes must be non-empty in list response")
+	}
+	hasOpenAI := false
+	for _, tp := range resp.AvailableTypes {
+		if tp == "openai" {
+			hasOpenAI = true
+		}
+	}
+	if !hasOpenAI {
+		t.Errorf("AvailableTypes=%v missing expected type \"openai\"", resp.AvailableTypes)
+	}
 }
 
 func dialHubRPC(t *testing.T, hub *httptest.Server) *appwire.Client {

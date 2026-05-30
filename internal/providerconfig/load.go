@@ -24,6 +24,16 @@ var knownTypes = map[Type]bool{
 	"ollama":               true,
 }
 
+// KnownTypeNames returns the sorted list of valid provider type names.
+func KnownTypeNames() []string {
+	names := make([]string, 0, len(knownTypes))
+	for t := range knownTypes {
+		names = append(names, string(t))
+	}
+	sort.Strings(names)
+	return names
+}
+
 // fileShape is the raw parsed shape of providers.toml before validation.
 type fileShape struct {
 	Schema    int                        `toml:"schema"`

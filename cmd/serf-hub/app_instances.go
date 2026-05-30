@@ -51,7 +51,10 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 		return entries[i].Name < entries[j].Name
 	})
 
-	return appwire.InstanceListResponse{Instances: entries}
+	return appwire.InstanceListResponse{
+		Instances:      entries,
+		AvailableTypes: providerconfig.KnownTypeNames(),
+	}
 }
 
 // Create adds a new provider instance to the config. It reloads the config

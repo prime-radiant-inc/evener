@@ -748,7 +748,8 @@ type InstanceEntry struct {
 
 // InstanceListResponse is the result of serf/instance/list.
 type InstanceListResponse struct {
-	Instances []InstanceEntry `json:"instances"`
+	Instances      []InstanceEntry `json:"instances"`
+	AvailableTypes []string        `json:"availableTypes"`
 }
 
 // InstanceCreateParams is the params for serf/instance/create.
