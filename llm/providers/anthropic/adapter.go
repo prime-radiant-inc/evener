@@ -492,7 +492,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		}
 		rawReqBody := string(b) // captured above
 
-		_ = llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
+		parseErr := llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
 			if len(ev.Data) == 0 {
 				return nil
 			}
@@ -791,6 +791,8 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		if !finished {
 			if err := sctx.Err(); err != nil {
 				s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.WrapContextError("anthropic", err)})
+			} else {
+				s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.NewStreamError("anthropic", "anthropic stream ended without completion", parseErr)})
 			}
 		}
 	}()

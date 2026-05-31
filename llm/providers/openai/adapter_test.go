@@ -650,6 +650,65 @@ func TestAdapter_Stream_YieldsTextDeltasAndFinish(t *testing.T) {
 	}
 }
 
+// TestStream_ResponsesContentThenMidStreamFailure_SurfacesCause covers the case
+// where the responses stream sends content and then fails mid-read (not a clean
+// empty stream and not a context cancellation). The adapter must surface a
+// StreamEventError carrying the read cause — NOT the empty-stream fallback
+// sentinel (which would wrongly trigger a chat-completions retry) and not drop
+// the cause entirely (E3).
+func TestStream_ResponsesContentThenMidStreamFailure_SurfacesCause(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Errorf("ResponseWriter is not a Hijacker")
+			return
+		}
+		conn, bufrw, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		defer conn.Close()
+		// One content delta (so sentContent==true), then drop the connection
+		// without the terminating zero-length chunk → mid-stream read failure.
+		_, _ = bufrw.WriteString("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+		sse := "event: response.output_text.delta\ndata: " + `{"type":"response.output_text.delta","delta":"Hi"}` + "\n\n"
+		_, _ = fmt.Fprintf(bufrw, "%x\r\n%s\r\n", len(sse), sse)
+		_ = bufrw.Flush()
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	stream, err := a.Stream(ctx, llm.Request{Model: "gpt-5.2", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	var streamErr error
+	for ev := range stream.Events() {
+		if ev.Type == llm.StreamEventError {
+			streamErr = ev.Err
+		}
+	}
+	if streamErr == nil {
+		t.Fatal("expected a StreamEventError after content-then-failure")
+	}
+	if errors.Is(streamErr, errEmptyResponsesStream) {
+		t.Fatalf("content-then-failure wrongly emitted the empty-stream fallback sentinel: %v", streamErr)
+	}
+	if errors.Unwrap(streamErr) == nil {
+		t.Fatalf("surfaced stream error dropped the underlying read cause (E3): %v", streamErr)
+	}
+}
+
 func TestAdapter_Stream_CloseClosesResponsesStream(t *testing.T) {
 	requestDone := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

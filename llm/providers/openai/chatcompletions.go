@@ -93,7 +93,7 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 		}
 		rawReqBody := string(jsonBody)
 
-		_ = llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
+		parseErr := llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
 			data := string(ev.Data)
 			if data == "[DONE]" {
 				finished = true
@@ -257,7 +257,7 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 			} else {
 				s.Send(llm.StreamEvent{
 					Type: llm.StreamEventError,
-					Err:  llm.NewStreamError("openai", fmt.Sprintf("chat.completions stream closed without [DONE] (model: %q)", req.Model), nil),
+					Err:  llm.NewStreamError("openai", fmt.Sprintf("chat.completions stream closed without [DONE] (model: %q)", req.Model), parseErr),
 				})
 			}
 		}

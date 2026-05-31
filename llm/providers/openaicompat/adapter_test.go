@@ -313,6 +313,57 @@ func TestAdapter_Stream_YieldsTextDeltasAndFinish(t *testing.T) {
 	}
 }
 
+// TestAdapter_Stream_MidStreamReadFailure_SurfacesCause drives the adapter
+// against a server that streams one delta then drops the connection mid-chunk,
+// so llm.ParseSSE returns a read error. The adapter must surface a
+// StreamEventError carrying that read error as its cause (errors.Unwrap), not
+// drop it and leave the consumer to synthesize a generic "stream ended" (E3).
+func TestAdapter_Stream_MidStreamReadFailure_SurfacesCause(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Errorf("ResponseWriter is not a Hijacker")
+			return
+		}
+		conn, bufrw, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		defer conn.Close()
+		// One chunked SSE delta, then drop the connection without the terminating
+		// zero-length chunk so the client's body read fails mid-stream.
+		_, _ = bufrw.WriteString("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+		sse := "data: " + `{"id":"x","model":"gpt-4o","choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":null}]}` + "\n\n"
+		_, _ = fmt.Fprintf(bufrw, "%x\r\n%s\r\n", len(sse), sse)
+		_ = bufrw.Flush()
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	st, err := a.Stream(ctx, llm.Request{Model: "gpt-4o", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer st.Close() //nolint:errcheck
+
+	var streamErr error
+	for ev := range st.Events() {
+		if ev.Type == llm.StreamEventError {
+			streamErr = ev.Err
+		}
+	}
+	if streamErr == nil {
+		t.Fatal("expected a StreamEventError after the mid-stream read failure")
+	}
+	if errors.Unwrap(streamErr) == nil {
+		t.Fatalf("surfaced stream error dropped the underlying read cause (E3 regression): %v", streamErr)
+	}
+}
+
 func TestAdapter_Stream_ToolCalls(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

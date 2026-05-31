@@ -325,7 +325,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		}
 		rawReqBody := string(jsonBody)
 
-		_ = llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
+		parseErr := llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
 			data := string(ev.Data)
 			if data == "[DONE]" {
 				finished = true
@@ -536,6 +536,8 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		if !finished {
 			if err := sctx.Err(); err != nil {
 				s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.WrapContextError("openai-compatible", err)})
+			} else {
+				s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.NewStreamError("openai-compatible", "openai-compatible stream ended without completion", parseErr)})
 			}
 		}
 	}()

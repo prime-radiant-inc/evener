@@ -229,7 +229,7 @@ func (a *Adapter) streamResponses(ctx context.Context, req llm.Request) (llm.Str
 		}
 		rawReqBody := string(b)
 
-		_ = llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
+		parseErr := llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
 			if len(ev.Data) == 0 {
 				return nil
 			}
@@ -474,12 +474,17 @@ func (a *Adapter) streamResponses(ctx context.Context, req llm.Request) (llm.Str
 		}, llm.StreamReadSSEOptions(req.AdapterTimeout)...)
 
 		if !finished {
-			if err := sctx.Err(); err != nil {
-				s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.WrapContextError("openai", err)})
-			} else if !sentContent {
+			switch {
+			case sctx.Err() != nil:
+				s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.WrapContextError("openai", sctx.Err())})
+			case !sentContent:
 				// Stream closed 200 OK with zero content: model likely does not
 				// support /v1/responses. Signal the caller to try Chat Completions.
 				s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: errEmptyResponsesStream})
+			default:
+				// Content was streamed, then the stream ended without completion —
+				// a genuine mid-stream read failure; surface its cause.
+				s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.NewStreamError("openai", "openai responses stream ended without completion", parseErr)})
 			}
 		}
 	}()
