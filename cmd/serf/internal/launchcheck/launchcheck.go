@@ -35,7 +35,7 @@ var launchCheckLoadClient = func(opts ...llm.EnvOption) (*llm.Client, providercf
 var launchCheckLoadConfig = func() (providercfg.Config, bool, error) {
 	path := os.Getenv("SERF_PROVIDERS_CONFIG")
 	if path == "" {
-		path = filepath.Join(providercfg.DefaultStateRoot(), "providers.toml")
+		path = filepath.Join(cmdutil.DefaultStateRoot(), "providers.toml")
 	}
 	return providercfg.LoadFile(path)
 }

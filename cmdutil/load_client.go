@@ -14,7 +14,7 @@ import (
 // LoadClient constructs an LLM client that is always config-driven.
 //
 // Path resolution: if SERF_PROVIDERS_CONFIG is set, that path is used;
-// otherwise filepath.Join(providercfg.DefaultStateRoot(), "providers.toml").
+// otherwise filepath.Join(DefaultStateRoot(), "providers.toml").
 //
 // Behavior:
 //   - providers.toml present and valid → loaded as-is.
@@ -31,7 +31,7 @@ import (
 func LoadClient(opts ...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
 	path := os.Getenv("SERF_PROVIDERS_CONFIG")
 	if path == "" {
-		path = filepath.Join(providercfg.DefaultStateRoot(), "providers.toml")
+		path = filepath.Join(DefaultStateRoot(), "providers.toml")
 	}
 
 	cfg, exists, err := providercfg.LoadFile(path)
