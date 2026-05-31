@@ -54,11 +54,11 @@ func TestRunRetentionProbes_SingleQuestion_Correct(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("I'll fix it.")},
 	}
 
-	probes := []ProbeQuestion{
+	probes := []probeQuestion{
 		{Question: "What repo are you working on?", Expected: "django/django", Difficulty: "easy", Type: "factual"},
 	}
 
-	score, results, err := RunRetentionProbes(context.Background(), client, profile, probes, history)
+	score, results, err := runRetentionProbes(context.Background(), client, profile, probes, history)
 	if err != nil {
 		t.Fatalf("RunRetentionProbes: %v", err)
 	}
@@ -88,11 +88,11 @@ func TestRunRetentionProbes_SingleQuestion_Incorrect(t *testing.T) {
 	client.Register(adapter)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	probes := []ProbeQuestion{
+	probes := []probeQuestion{
 		{Question: "What repo?", Expected: "django/django", Difficulty: "easy", Type: "factual"},
 	}
 
-	score, results, err := RunRetentionProbes(context.Background(), client, profile, probes,
+	score, results, err := runRetentionProbes(context.Background(), client, profile, probes,
 		[]Turn{{Kind: TurnUserInput, Message: llm.User("task")}},
 	)
 	if err != nil {
@@ -122,13 +122,13 @@ func TestRunRetentionProbes_MultipleQuestions(t *testing.T) {
 	client.Register(adapter)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	probes := []ProbeQuestion{
+	probes := []probeQuestion{
 		{Question: "What repo?", Expected: "django/django", Difficulty: "easy", Type: "factual"},
 		{Question: "What function?", Expected: "escape()", Difficulty: "medium", Type: "factual"},
 		{Question: "What language?", Expected: "python", Difficulty: "easy", Type: "factual"},
 	}
 
-	score, results, err := RunRetentionProbes(context.Background(), client, profile, probes,
+	score, results, err := runRetentionProbes(context.Background(), client, profile, probes,
 		[]Turn{{Kind: TurnUserInput, Message: llm.User("task")}},
 	)
 	if err != nil {
@@ -157,8 +157,8 @@ func TestRunRetentionProbes_NoQuestions(t *testing.T) {
 	client := llm.NewClient()
 	profile := NewOpenAIProfile("gpt-5.2")
 
-	score, results, err := RunRetentionProbes(context.Background(), client, profile,
-		[]ProbeQuestion{},
+	score, results, err := runRetentionProbes(context.Background(), client, profile,
+		[]probeQuestion{},
 		[]Turn{{Kind: TurnUserInput, Message: llm.User("task")}},
 	)
 	if err != nil {
@@ -181,8 +181,8 @@ func TestRunRetentionProbes_AgentCallFails(t *testing.T) {
 	client.Register(adapter)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	_, _, err := RunRetentionProbes(context.Background(), client, profile,
-		[]ProbeQuestion{{Question: "q", Expected: "a", Difficulty: "easy", Type: "factual"}},
+	_, _, err := runRetentionProbes(context.Background(), client, profile,
+		[]probeQuestion{{Question: "q", Expected: "a", Difficulty: "easy", Type: "factual"}},
 		[]Turn{{Kind: TurnUserInput, Message: llm.User("task")}},
 	)
 	if err == nil {
@@ -202,8 +202,8 @@ func TestRunRetentionProbes_JudgeCallFails(t *testing.T) {
 	client.Register(adapter)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	_, _, err := RunRetentionProbes(context.Background(), client, profile,
-		[]ProbeQuestion{{Question: "q", Expected: "a", Difficulty: "easy", Type: "factual"}},
+	_, _, err := runRetentionProbes(context.Background(), client, profile,
+		[]probeQuestion{{Question: "q", Expected: "a", Difficulty: "easy", Type: "factual"}},
 		[]Turn{{Kind: TurnUserInput, Message: llm.User("task")}},
 	)
 	if err == nil {
@@ -273,11 +273,11 @@ func TestRunRetentionProbes_DistractorScoring(t *testing.T) {
 	client.Register(adapter)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	probes := []ProbeQuestion{
+	probes := []probeQuestion{
 		{Question: "Did you create a database migration?", Expected: "no", Difficulty: "distractor", Type: "distractor"},
 	}
 
-	score, results, err := RunRetentionProbes(context.Background(), client, profile, probes,
+	score, results, err := runRetentionProbes(context.Background(), client, profile, probes,
 		[]Turn{{Kind: TurnUserInput, Message: llm.User("task")}},
 	)
 	if err != nil {

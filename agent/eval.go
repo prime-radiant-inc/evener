@@ -6,8 +6,8 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// EvalMetrics holds metrics collected during an evaluation run.
-type EvalMetrics struct {
+// evalMetrics holds metrics collected during an evaluation run.
+type evalMetrics struct {
 	Strategy          string   `json:"strategy"`
 	Model             string   `json:"model"`
 	Task              string   `json:"task"`
@@ -27,17 +27,17 @@ type EvalMetrics struct {
 	Result            string   `json:"result"`
 
 	// F2P test evaluation results (when --test-patch is used).
-	F2PResults *F2PResults `json:"f2p_results,omitempty"`
+	F2PResults *f2pResults `json:"f2p_results,omitempty"`
 
 	// Per-question retention probe breakdown (when new probe format is used).
-	RetentionBreakdown []ProbeResult `json:"retention_breakdown,omitempty"`
+	RetentionBreakdown []probeResult `json:"retention_breakdown,omitempty"`
 
 	// Diff captures the agent's code changes (git diff) after the run.
 	Diff string `json:"diff,omitempty"`
 }
 
-// F2PResults captures fail-to-pass test evaluation outcomes.
-type F2PResults struct {
+// f2pResults captures fail-to-pass test evaluation outcomes.
+type f2pResults struct {
 	Resolved     bool     `json:"resolved"`
 	TestsPassed  []string `json:"tests_passed"`
 	TestsFailed  []string `json:"tests_failed"`
@@ -45,17 +45,17 @@ type F2PResults struct {
 	PatchApplied bool     `json:"patch_applied"`
 }
 
-// EvalCollector collects metrics from session events during an evaluation run.
-type EvalCollector struct {
-	metrics EvalMetrics
+// evalCollector collects metrics from session events during an evaluation run.
+type evalCollector struct {
+	metrics evalMetrics
 	mu      sync.Mutex
 }
 
-// NewEvalCollector creates an EvalCollector pre-populated with strategy, model,
+// newEvalCollector creates an EvalCollector pre-populated with strategy, model,
 // and task metadata.
-func NewEvalCollector(strategy, model, task string) *EvalCollector {
-	return &EvalCollector{
-		metrics: EvalMetrics{
+func newEvalCollector(strategy, model, task string) *evalCollector {
+	return &evalCollector{
+		metrics: evalMetrics{
 			Strategy:         strategy,
 			Model:            model,
 			Task:             task,
@@ -65,7 +65,7 @@ func NewEvalCollector(strategy, model, task string) *EvalCollector {
 }
 
 // ProcessEvent handles a SessionEvent and updates the collected metrics.
-func (c *EvalCollector) ProcessEvent(ev SessionEvent) {
+func (c *evalCollector) ProcessEvent(ev SessionEvent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -94,7 +94,7 @@ func (c *EvalCollector) ProcessEvent(ev SessionEvent) {
 
 // addUsage extracts token counts from the Usage field, which may be llm.Usage
 // or map[string]any (when deserialized from JSON).
-func (c *EvalCollector) addUsage(usage any) {
+func (c *evalCollector) addUsage(usage any) {
 	switch u := usage.(type) {
 	case llm.Usage:
 		c.metrics.TotalInputTokens += u.InputTokens
@@ -122,7 +122,7 @@ func (c *EvalCollector) addUsage(usage any) {
 }
 
 // Metrics returns a snapshot of the collected metrics.
-func (c *EvalCollector) Metrics() EvalMetrics {
+func (c *evalCollector) Metrics() evalMetrics {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

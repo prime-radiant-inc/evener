@@ -47,7 +47,7 @@ func TestConvertToATIF_SimpleConversation(t *testing.T) {
 		},
 	}
 
-	traj := ConvertToATIF(header, entries)
+	traj := convertToATIF(header, entries)
 
 	// --- Root trajectory fields ---
 	if traj.SchemaVersion != "ATIF-v1.6" {
@@ -244,7 +244,7 @@ func TestConvertToATIF_ToolUse(t *testing.T) {
 		},
 	}
 
-	traj := ConvertToATIF(header, entries)
+	traj := convertToATIF(header, entries)
 
 	// ASSISTANT + TOOL_RESULTS should merge into one step → 2 total steps (user + agent).
 	if len(traj.Steps) != 2 {
@@ -435,7 +435,7 @@ func TestConvertToATIF_ToolError(t *testing.T) {
 		},
 	}
 
-	traj := ConvertToATIF(header, entries)
+	traj := convertToATIF(header, entries)
 
 	if len(traj.Steps) != 2 {
 		t.Fatalf("len(Steps) = %d, want 2", len(traj.Steps))
@@ -532,7 +532,7 @@ func TestConvertToATIF_ThinkingContent(t *testing.T) {
 		},
 	}
 
-	traj := ConvertToATIF(header, entries)
+	traj := convertToATIF(header, entries)
 
 	if len(traj.Steps) != 2 {
 		t.Fatalf("len(Steps) = %d, want 2", len(traj.Steps))
@@ -558,7 +558,7 @@ func TestConvertToATIF_ThinkingContent(t *testing.T) {
 		{Kind: llm.ContentText, Text: "Here is the answer."},
 	}
 
-	traj2 := ConvertToATIF(header, entries)
+	traj2 := convertToATIF(header, entries)
 	agentStep2 := traj2.Steps[1]
 	if agentStep2.Extra["has_redacted_thinking"] != true {
 		t.Errorf("Extra[has_redacted_thinking] = %v, want true (ContentRedThinking)", agentStep2.Extra["has_redacted_thinking"])
@@ -578,7 +578,7 @@ func TestConvertToATIF_ThinkingContent(t *testing.T) {
 		{Kind: llm.ContentText, Text: "Answer with redacted flag."},
 	}
 
-	traj3 := ConvertToATIF(header, entries)
+	traj3 := convertToATIF(header, entries)
 	agentStep3 := traj3.Steps[1]
 	if agentStep3.Extra["has_redacted_thinking"] != true {
 		t.Errorf("Extra[has_redacted_thinking] = %v, want true (Redacted flag)", agentStep3.Extra["has_redacted_thinking"])
@@ -616,7 +616,7 @@ func TestConvertToATIF_CheckpointAndSummary(t *testing.T) {
 		},
 	}
 
-	traj := ConvertToATIF(header, entries)
+	traj := convertToATIF(header, entries)
 
 	if len(traj.Steps) != 2 {
 		t.Fatalf("len(Steps) = %d, want 2", len(traj.Steps))
@@ -661,7 +661,7 @@ func TestConvertToATIF_EmptyTranscript(t *testing.T) {
 		ProfileID:    "openai",
 	}
 
-	traj := ConvertToATIF(header, nil)
+	traj := convertToATIF(header, nil)
 
 	if traj.SchemaVersion != "ATIF-v1.6" {
 		t.Errorf("SchemaVersion = %q, want %q", traj.SchemaVersion, "ATIF-v1.6")
@@ -708,7 +708,7 @@ func TestConvertToATIF_MissingBuildVersion(t *testing.T) {
 		// BuildVersion deliberately empty
 	}
 
-	traj := ConvertToATIF(header, nil)
+	traj := convertToATIF(header, nil)
 
 	if traj.Agent.Version != "unknown" {
 		t.Errorf("Agent.Version = %q, want %q", traj.Agent.Version, "unknown")
@@ -737,7 +737,7 @@ func TestConvertToATIF_SteeringTurn(t *testing.T) {
 		},
 	}
 
-	traj := ConvertToATIF(header, entries)
+	traj := convertToATIF(header, entries)
 
 	if len(traj.Steps) != 1 {
 		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
@@ -794,7 +794,7 @@ func TestConvertToATIF_OrphanedToolResults(t *testing.T) {
 		},
 	}
 
-	traj := ConvertToATIF(header, entries)
+	traj := convertToATIF(header, entries)
 
 	if len(traj.Steps) != 1 {
 		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
@@ -871,7 +871,7 @@ func TestConvertToATIF_WebSearch(t *testing.T) {
 		},
 	}
 
-	traj := ConvertToATIF(header, entries)
+	traj := convertToATIF(header, entries)
 
 	if len(traj.Steps) != 2 {
 		t.Fatalf("len(Steps) = %d, want 2", len(traj.Steps))
@@ -992,7 +992,7 @@ func TestConvertToATIF_MultiRound(t *testing.T) {
 		},
 	}
 
-	traj := ConvertToATIF(header, entries)
+	traj := convertToATIF(header, entries)
 
 	// USER + ASSISTANT/TOOL_RESULTS (merged) + ASSISTANT = 3 steps
 	if len(traj.Steps) != 3 {
@@ -1095,7 +1095,7 @@ func TestExportATIF_WritesFile(t *testing.T) {
 	}
 
 	outputPath := filepath.Join(dir, "output", "trajectory.json")
-	if err := ExportATIF(transcriptPath, outputPath); err != nil {
+	if err := exportATIF(transcriptPath, outputPath); err != nil {
 		t.Fatalf("ExportATIF: %v", err)
 	}
 
@@ -1104,7 +1104,7 @@ func TestExportATIF_WritesFile(t *testing.T) {
 		t.Fatalf("ReadFile: %v", err)
 	}
 
-	var traj ATIFTrajectory
+	var traj atifTrajectory
 	if err := json.Unmarshal(data, &traj); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
@@ -1147,7 +1147,7 @@ func TestConvertToATIF_RawUsage(t *testing.T) {
 		}},
 	}
 
-	traj := ConvertToATIF(header, entries)
+	traj := convertToATIF(header, entries)
 	if len(traj.Steps) != 1 {
 		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
 	}
@@ -1186,7 +1186,7 @@ func TestConvertToATIF_WebSearchRaw(t *testing.T) {
 		}},
 	}
 
-	traj := ConvertToATIF(header, entries)
+	traj := convertToATIF(header, entries)
 	if len(traj.Steps) != 1 {
 		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
 	}
@@ -1220,7 +1220,7 @@ func TestConvertToATIF_TurnSystem(t *testing.T) {
 		}},
 	}
 
-	traj := ConvertToATIF(header, entries)
+	traj := convertToATIF(header, entries)
 	if len(traj.Steps) != 1 {
 		t.Fatalf("len(Steps) = %d, want 1", len(traj.Steps))
 	}

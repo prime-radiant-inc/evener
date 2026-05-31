@@ -8,27 +8,27 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// ProbeQuestion represents a retention probe question with its expected answer
+// probeQuestion represents a retention probe question with its expected answer
 // and metadata for evaluation.
-type ProbeQuestion struct {
+type probeQuestion struct {
 	Question   string `json:"question"`
 	Expected   string `json:"expected"`
 	Difficulty string `json:"difficulty"` // "easy", "medium", "hard", "distractor"
 	Type       string `json:"type"`       // "factual", "distractor"
 }
 
-// ProbeResult captures the outcome of a single retention probe.
-type ProbeResult struct {
+// probeResult captures the outcome of a single retention probe.
+type probeResult struct {
 	Question   string `json:"question"`
 	Expected   string `json:"expected"`
 	Difficulty string `json:"difficulty"`
 	Correct    bool   `json:"correct"`
 }
 
-// RunRetentionProbes injects probe questions about earlier decisions into a
+// runRetentionProbes injects probe questions about earlier decisions into a
 // completed session and judges the agent's answers against expected values.
 // Returns the fraction of correct answers (0.0-1.0) and per-question results.
-func RunRetentionProbes(ctx context.Context, client *llm.Client, profile ProviderProfile, probeQuestions []ProbeQuestion, sessionHistory []Turn) (float64, []ProbeResult, error) {
+func runRetentionProbes(ctx context.Context, client *llm.Client, profile ProviderProfile, probeQuestions []probeQuestion, sessionHistory []Turn) (float64, []probeResult, error) {
 	if len(probeQuestions) == 0 {
 		return 0.0, nil, nil
 	}
@@ -37,13 +37,13 @@ func RunRetentionProbes(ctx context.Context, client *llm.Client, profile Provide
 	history := turnsToMessages(sessionHistory)
 
 	var correct int
-	results := make([]ProbeResult, 0, len(probeQuestions))
+	results := make([]probeResult, 0, len(probeQuestions))
 	for _, pq := range probeQuestions {
 		isCorrect, err := runOneProbe(ctx, client, profile, history, pq)
 		if err != nil {
 			return 0, nil, fmt.Errorf("retention probe %q: %w", pq.Question, err)
 		}
-		results = append(results, ProbeResult{
+		results = append(results, probeResult{
 			Question:   pq.Question,
 			Expected:   pq.Expected,
 			Difficulty: pq.Difficulty,
@@ -59,7 +59,7 @@ func RunRetentionProbes(ctx context.Context, client *llm.Client, profile Provide
 
 // runOneProbe sends a single probe question to the agent, then judges the
 // response against the expected answer. Returns true if the judge says correct.
-func runOneProbe(ctx context.Context, client *llm.Client, profile ProviderProfile, history []llm.Message, pq ProbeQuestion) (bool, error) {
+func runOneProbe(ctx context.Context, client *llm.Client, profile ProviderProfile, history []llm.Message, pq probeQuestion) (bool, error) {
 	// Step 1: Ask the agent the probe question with the session history.
 	agentMessages := append(append([]llm.Message{}, history...), llm.User(pq.Question))
 	agentReq := llm.Request{

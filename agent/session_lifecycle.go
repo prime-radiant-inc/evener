@@ -220,7 +220,7 @@ func (s *Session) Close() {
 		// Export ATIF trajectory if configured (root session only, after transcript flush).
 		if s.cfg.ExportATIFPath != "" && s.stateDir != "" && s.cfg.Depth == 0 {
 			tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
-			if err := ExportATIF(tpath, s.cfg.ExportATIFPath); err != nil {
+			if err := exportATIF(tpath, s.cfg.ExportATIFPath); err != nil {
 				s.emit(EventWarning, WarningData{Message: fmt.Sprintf("ATIF export failed: %v", err)})
 			}
 		}

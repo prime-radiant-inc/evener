@@ -11,66 +11,66 @@ import (
 
 // ATIF v1.6 types — Agent Trajectory Interchange Format.
 
-// ATIFTrajectory is the root object of an ATIF v1.6 document.
-type ATIFTrajectory struct {
+// atifTrajectory is the root object of an ATIF v1.6 document.
+type atifTrajectory struct {
 	SchemaVersion string            `json:"schema_version"`
 	SessionID     string            `json:"session_id"`
-	Agent         ATIFAgent         `json:"agent"`
-	Steps         []ATIFStep        `json:"steps"`
-	FinalMetrics  *ATIFFinalMetrics `json:"final_metrics,omitempty"`
+	Agent         atifAgent         `json:"agent"`
+	Steps         []atifStep        `json:"steps"`
+	FinalMetrics  *atifFinalMetrics `json:"final_metrics,omitempty"`
 	Extra         map[string]any    `json:"extra"`
 }
 
-// ATIFAgent identifies the agent that produced the trajectory.
-type ATIFAgent struct {
+// atifAgent identifies the agent that produced the trajectory.
+type atifAgent struct {
 	Name      string         `json:"name"`
 	Version   string         `json:"version"`
 	ModelName string         `json:"model_name"`
 	Extra     map[string]any `json:"extra"`
 }
 
-// ATIFStep is a single step in the trajectory.
-type ATIFStep struct {
+// atifStep is a single step in the trajectory.
+type atifStep struct {
 	StepID           int              `json:"step_id"`
 	Source           string           `json:"source"`
 	Message          string           `json:"message,omitempty"`
 	Timestamp        string           `json:"timestamp,omitempty"`
 	ModelName        string           `json:"model_name,omitempty"`
 	ReasoningContent string           `json:"reasoning_content,omitempty"`
-	ToolCalls        []ATIFToolCall   `json:"tool_calls,omitempty"`
-	Observation      *ATIFObservation `json:"observation,omitempty"`
-	Metrics          *ATIFStepMetrics `json:"metrics,omitempty"`
+	ToolCalls        []atifToolCall   `json:"tool_calls,omitempty"`
+	Observation      *atifObservation `json:"observation,omitempty"`
+	Metrics          *atifStepMetrics `json:"metrics,omitempty"`
 	Extra            map[string]any   `json:"extra"`
 }
 
-// ATIFToolCall records a single tool invocation.
-type ATIFToolCall struct {
+// atifToolCall records a single tool invocation.
+type atifToolCall struct {
 	ToolCallID   string         `json:"tool_call_id"`
 	FunctionName string         `json:"function_name"`
 	Arguments    map[string]any `json:"arguments,omitempty"`
 }
 
-// ATIFObservation holds the tool results attached to a step.
-type ATIFObservation struct {
-	Results []ATIFObservationResult `json:"results"`
+// atifObservation holds the tool results attached to a step.
+type atifObservation struct {
+	Results []atifObservationResult `json:"results"`
 }
 
-// ATIFObservationResult is a single tool result within an observation.
-type ATIFObservationResult struct {
+// atifObservationResult is a single tool result within an observation.
+type atifObservationResult struct {
 	SourceCallID string `json:"source_call_id"`
 	Content      string `json:"content"`
 }
 
-// ATIFStepMetrics captures per-step token usage.
-type ATIFStepMetrics struct {
+// atifStepMetrics captures per-step token usage.
+type atifStepMetrics struct {
 	PromptTokens     int            `json:"prompt_tokens"`
 	CompletionTokens int            `json:"completion_tokens"`
 	CachedTokens     int            `json:"cached_tokens"`
 	Extra            map[string]any `json:"extra,omitempty"`
 }
 
-// ATIFFinalMetrics summarizes totals across all steps.
-type ATIFFinalMetrics struct {
+// atifFinalMetrics summarizes totals across all steps.
+type atifFinalMetrics struct {
 	TotalPromptTokens     int            `json:"total_prompt_tokens"`
 	TotalCompletionTokens int            `json:"total_completion_tokens"`
 	TotalCachedTokens     int            `json:"total_cached_tokens"`
@@ -78,17 +78,17 @@ type ATIFFinalMetrics struct {
 	Extra                 map[string]any `json:"extra,omitempty"`
 }
 
-// ConvertToATIF converts a serf transcript (header + entries) into an ATIF v1.6 trajectory.
-func ConvertToATIF(header TranscriptHeader, entries []TranscriptEntry) ATIFTrajectory {
+// convertToATIF converts a serf transcript (header + entries) into an ATIF v1.6 trajectory.
+func convertToATIF(header TranscriptHeader, entries []TranscriptEntry) atifTrajectory {
 	version := header.BuildVersion
 	if version == "" {
 		version = "unknown"
 	}
 
-	traj := ATIFTrajectory{
+	traj := atifTrajectory{
 		SchemaVersion: "ATIF-v1.6",
 		SessionID:     header.SessionID,
-		Agent: ATIFAgent{
+		Agent: atifAgent{
 			Name:      "serf",
 			Version:   version,
 			ModelName: header.Model,
@@ -97,7 +97,7 @@ func ConvertToATIF(header TranscriptHeader, entries []TranscriptEntry) ATIFTraje
 		Extra: buildRootExtra(header),
 	}
 
-	var steps []ATIFStep
+	var steps []atifStep
 	stepID := 1
 	var totalPrompt, totalCompletion, totalCached int
 
@@ -107,7 +107,7 @@ func ConvertToATIF(header TranscriptHeader, entries []TranscriptEntry) ATIFTraje
 
 		switch turn.Kind {
 		case TurnUserInput:
-			step := ATIFStep{
+			step := atifStep{
 				StepID:    stepID,
 				Source:    "user",
 				Message:   turn.Message.Text(),
@@ -143,7 +143,7 @@ func ConvertToATIF(header TranscriptHeader, entries []TranscriptEntry) ATIFTraje
 			stepID++
 
 		case TurnSteering, TurnSystem:
-			step := ATIFStep{
+			step := atifStep{
 				StepID:    stepID,
 				Source:    "system",
 				Message:   turn.Message.Text(),
@@ -154,7 +154,7 @@ func ConvertToATIF(header TranscriptHeader, entries []TranscriptEntry) ATIFTraje
 			stepID++
 
 		case TurnCheckpoint:
-			step := ATIFStep{
+			step := atifStep{
 				StepID:    stepID,
 				Source:    "system",
 				Message:   turn.Message.Text(),
@@ -165,7 +165,7 @@ func ConvertToATIF(header TranscriptHeader, entries []TranscriptEntry) ATIFTraje
 			stepID++
 
 		case TurnSummary:
-			step := ATIFStep{
+			step := atifStep{
 				StepID:    stepID,
 				Source:    "system",
 				Message:   turn.Message.Text(),
@@ -185,7 +185,7 @@ func ConvertToATIF(header TranscriptHeader, entries []TranscriptEntry) ATIFTraje
 			if len(durMap) > 0 {
 				extra["tool_durations_ms"] = durMap
 			}
-			step := ATIFStep{
+			step := atifStep{
 				StepID:      stepID,
 				Source:      "system",
 				Timestamp:   formatTimestamp(turn),
@@ -198,7 +198,7 @@ func ConvertToATIF(header TranscriptHeader, entries []TranscriptEntry) ATIFTraje
 	}
 
 	traj.Steps = steps
-	traj.FinalMetrics = &ATIFFinalMetrics{
+	traj.FinalMetrics = &atifFinalMetrics{
 		TotalPromptTokens:     totalPrompt,
 		TotalCompletionTokens: totalCompletion,
 		TotalCachedTokens:     totalCached,
@@ -208,13 +208,13 @@ func ConvertToATIF(header TranscriptHeader, entries []TranscriptEntry) ATIFTraje
 	return traj
 }
 
-// ExportATIF reads a transcript JSONL file, converts to ATIF, and writes to outPath.
-func ExportATIF(transcriptPath, outPath string) error {
+// exportATIF reads a transcript JSONL file, converts to ATIF, and writes to outPath.
+func exportATIF(transcriptPath, outPath string) error {
 	header, entries, _, err := ReadTranscript(transcriptPath)
 	if err != nil {
 		return fmt.Errorf("read transcript: %w", err)
 	}
-	traj := ConvertToATIF(header, entries)
+	traj := convertToATIF(header, entries)
 	data, err := json.MarshalIndent(traj, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal ATIF: %w", err)
@@ -229,8 +229,8 @@ func ExportATIF(transcriptPath, outPath string) error {
 }
 
 // convertAssistantTurn extracts text, tool calls, thinking, and metadata from an assistant turn.
-func convertAssistantTurn(turn Turn, stepID int) ATIFStep {
-	step := ATIFStep{
+func convertAssistantTurn(turn Turn, stepID int) atifStep {
+	step := atifStep{
 		StepID:    stepID,
 		Source:    "agent",
 		Timestamp: formatTimestamp(turn),
@@ -238,7 +238,7 @@ func convertAssistantTurn(turn Turn, stepID int) ATIFStep {
 	}
 
 	var textParts []byte
-	var toolCalls []ATIFToolCall
+	var toolCalls []atifToolCall
 	var reasoningParts []byte
 	var phases []string
 
@@ -255,7 +255,7 @@ func convertAssistantTurn(turn Turn, stepID int) ATIFStep {
 
 		case llm.ContentToolCall:
 			if part.ToolCall != nil {
-				tc := ATIFToolCall{
+				tc := atifToolCall{
 					ToolCallID:   part.ToolCall.ID,
 					FunctionName: part.ToolCall.Name,
 				}
@@ -315,7 +315,7 @@ func convertAssistantTurn(turn Turn, stepID int) ATIFStep {
 
 	// Metrics from usage.
 	if turn.Usage.InputTokens > 0 || turn.Usage.OutputTokens > 0 {
-		m := &ATIFStepMetrics{
+		m := &atifStepMetrics{
 			PromptTokens:     turn.Usage.InputTokens,
 			CompletionTokens: turn.Usage.OutputTokens,
 		}
@@ -348,8 +348,8 @@ func convertAssistantTurn(turn Turn, stepID int) ATIFStep {
 }
 
 // convertToolResults extracts observation results, error flags, and durations from a tool results turn.
-func convertToolResults(turn Turn) (*ATIFObservation, map[string]bool, map[string]int64) {
-	var results []ATIFObservationResult
+func convertToolResults(turn Turn) (*atifObservation, map[string]bool, map[string]int64) {
+	var results []atifObservationResult
 	errMap := map[string]bool{}
 	durMap := map[string]int64{}
 
@@ -358,7 +358,7 @@ func convertToolResults(turn Turn) (*ATIFObservation, map[string]bool, map[strin
 			continue
 		}
 		tr := part.ToolResult
-		results = append(results, ATIFObservationResult{
+		results = append(results, atifObservationResult{
 			SourceCallID: tr.ToolCallID,
 			Content:      fmt.Sprintf("%v", tr.Content),
 		})
@@ -373,7 +373,7 @@ func convertToolResults(turn Turn) (*ATIFObservation, map[string]bool, map[strin
 	if len(results) == 0 {
 		return nil, nil, nil
 	}
-	return &ATIFObservation{Results: results}, errMap, durMap
+	return &atifObservation{Results: results}, errMap, durMap
 }
 
 // formatTimestamp formats a turn's timestamp as ISO 8601 UTC.
