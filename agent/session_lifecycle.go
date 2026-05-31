@@ -46,6 +46,23 @@ func (e *bareTextWithoutResultToolError) Is(target error) bool {
 	return target == errBareTextWithoutResultTool
 }
 
+// Retry budgets for degenerate model responses within a single input turn.
+const (
+	maxEmptyRetries        = 3
+	maxTotalEmptyResponses = 8 // prevent repeated burst-and-recover spirals
+	maxBareTextRetries     = 3
+)
+
+// retryTracker counts the degenerate (empty / bare-text) model responses seen so
+// far in one input turn. consecutiveEmpty and consecutiveBareText reset once the
+// model produces tool calls; totalEmpty bounds burst-and-recover spirals across
+// the whole turn.
+type retryTracker struct {
+	consecutiveEmpty    int
+	totalEmpty          int
+	consecutiveBareText int
+}
+
 // Compact forces context compaction regardless of current pressure.
 // Runs all compaction layers (observation masking, thinking clearing,
 // checkpoint, and LLM summarization). Safe to call while idle.
@@ -457,6 +474,200 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	default:
 	}
 
+	if !s.acceptUserInput(ctx, input, images) {
+		return "", nil
+	}
+
+	var toolSigs []string
+	var lastText string // accumulated assistant text for round-limit return
+	ctxWarned := false
+	contentFilterRetried := false // track whether we've already tried recovering from a content filter error
+	var tracker retryTracker
+
+	for round := 0; s.cfg.MaxToolRoundsPerInput < 0 || round < s.cfg.MaxToolRoundsPerInput; round++ {
+		roundStart := time.Now()
+		var timings RoundTimings
+		timings.Round = round
+
+		s.mu.Lock()
+		s.totalRounds++
+		s.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			s.emit(EventError, errorDataFromError(ctx.Err()))
+			s.mu.Lock()
+			if s.state == SessionProcessing && !s.closingOrClosedLocked() {
+				s.state = SessionIdle
+			}
+			s.mu.Unlock()
+			return "", ctx.Err()
+		default:
+		}
+
+		profile, sys, history, req := s.prepareModelRequest(ctx, round, &timings)
+
+		// --- Phase: LLMCall ---
+		tPhaseStart := time.Now()
+
+		modelResp, req, err := s.callModelWithFallback(ctx, profile, req, round)
+		resp := modelResp.Response
+
+		timings.LLMCall = time.Since(tPhaseStart)
+
+		if err == nil {
+			if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+				return "", abortErr
+			}
+		}
+
+		s.logAPICall(round, roundStart, timings.LLMCall, sys, len(history), req, resp, err)
+
+		if err != nil {
+			retry, ferr := s.handleModelError(ctx, err, req, &contentFilterRetried)
+			if retry {
+				continue
+			}
+			return "", ferr
+		}
+
+		if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+			return "", abortErr
+		}
+
+		// Accumulate usage and record exact input token count for pressure calculation.
+		s.recordResponseUsage(resp)
+
+		// Context window awareness: emit a warning when we exceed ~80% of the profile's context window.
+		if !ctxWarned {
+			if s.maybeWarnContextUsage(profile, req.Messages) {
+				ctxWarned = true
+			}
+		}
+
+		if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+			return "", abortErr
+		}
+
+		txt := resp.Text()
+		lastText = txt
+		calls := resp.ToolCalls()
+
+		// Two concepts of "empty":
+		// 1. noContent: no text and no tool calls — triggers retry logic
+		// 2. skipHistory: no text, no tool calls, AND no phase metadata —
+		//    truly nothing to append. Responses with phase annotations
+		//    (e.g., "final_answer") must be preserved in history so the
+		//    model sees its own phase metadata and can course-correct.
+		noContent := strings.TrimSpace(txt) == "" && len(calls) == 0
+		hasPhase := false
+		for _, p := range resp.Message.Content {
+			if p.Phase != "" {
+				hasPhase = true
+				break
+			}
+		}
+		skipHistory := noContent && !hasPhase
+
+		if abortErr := s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory); abortErr != nil {
+			return "", abortErr
+		}
+		// pause_turn: model needs another turn (e.g. server-side web search still running).
+		if resp.Finish.Reason == llm.FinishReasonPauseTurn {
+			round-- // Don't count pause_turn as a tool round.
+			timings.TotalRound = time.Since(roundStart)
+			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
+			s.emit(EventRoundTimings, timings)
+			continue
+		}
+
+		// Reverse-map provider-specific tool names to canonical names for registry lookup.
+		for i := range calls {
+			calls[i].Name = s.canonicalToolName(calls[i].Name)
+		}
+
+		if len(calls) == 0 {
+			retry, ferr := s.handleNoToolCalls(noContent, &tracker)
+			if !retry {
+				return "", ferr
+			}
+			round-- // Don't count empty/bare-text retries as tool rounds.
+			timings.TotalRound = time.Since(roundStart)
+			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
+			s.emit(EventRoundTimings, timings)
+			continue
+		}
+
+		// Model produced tool calls — reset retry counters.
+		tracker.consecutiveEmpty = 0
+		tracker.consecutiveBareText = 0
+
+		if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+			if ctx.Err() != nil && !s.isClosingOrClosed() {
+				s.appendCanceledToolResults(calls, nil, abortErr)
+			}
+			return "", abortErr
+		}
+
+		// --- Phase: ToolExec ---
+		tPhaseStart = time.Now()
+
+		// Execute tool calls (possibly in parallel) and send results back.
+		results, execErr := s.execToolBatch(ctx, calls, profile)
+		if execErr != nil {
+			return "", execErr
+		}
+
+		timings.ToolExec = time.Since(tPhaseStart)
+
+		// --- Phase: Persistence ---
+		tPhaseStart = time.Now()
+
+		if persistErr := s.persistToolResults(ctx, calls, results); persistErr != nil {
+			return "", persistErr
+		}
+
+		timings.Persistence = time.Since(tPhaseStart)
+
+		// --- Phase: AfterAction ---
+		tPhaseStart = time.Now()
+
+		// Notify the context strategy that a tool round completed.
+		if afterErr := s.notifyStrategyAfterAction(ctx); afterErr != nil {
+			return "", afterErr
+		}
+
+		timings.AfterAction = time.Since(tPhaseStart)
+
+		if steerErr := s.injectPostToolSteering(ctx, calls, &toolSigs); steerErr != nil {
+			return "", steerErr
+		}
+
+		// Emit round timings before checking result delivery.
+		timings.TotalRound = time.Since(roundStart)
+		timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall - timings.ToolExec - timings.Persistence - timings.AfterAction
+		s.emit(EventRoundTimings, timings)
+
+		// communicate sets the flag; exit the loop with the communicated message.
+		if done, text := s.deliverIfCommunicated(ctx); done {
+			return text, nil
+		}
+	}
+
+	s.emit(EventTurnLimit, TurnLimitData{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput})
+	s.mu.Lock()
+	s.setStateIfOpenLocked(SessionIdle)
+	s.mu.Unlock()
+	return lastText, nil
+}
+
+// acceptUserInput records a new user input at the start of an input turn: it
+// repairs any orphaned tool results, emits EventUserInput, appends the user turn,
+// launches the session namer, and runs UserPromptSubmit hooks. It enforces
+// MaxTurns, returning proceed=false (the caller returns "", nil) when the turn
+// limit is already reached; otherwise it increments the turn counter, drains any
+// pending steering, and returns proceed=true.
+func (s *Session) acceptUserInput(ctx context.Context, input string, images []ImageAttachment) (proceed bool) {
 	s.repairOrphanedToolResults("before accepting new input")
 
 	s.mu.Lock()
@@ -491,7 +702,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		s.mu.Lock()
 		s.setStateIfOpenLocked(SessionIdle)
 		s.mu.Unlock()
-		return "", nil
+		return false
 	}
 
 	s.mu.Lock()
@@ -503,680 +714,588 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		s.appendTurn(TurnSteering, steeringMessageToLLM(msg))
 		s.emit(EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	}
+	return true
+}
 
-	var toolSigs []string
-	var lastText string // accumulated assistant text for round-limit return
-	ctxWarned := false
-	contentFilterRetried := false // track whether we've already tried recovering from a content filter error
-	consecutiveEmptyResponses := 0
-	totalEmptyResponses := 0
-	consecutiveBareTextResponses := 0
-	const maxEmptyRetries = 3
-	const maxTotalEmptyResponses = 8 // prevent repeated burst-and-recover spirals
-	const maxBareTextRetries = 3
+// prepareModelRequest runs the per-round input phases and assembles the llm.Request
+// for the round. It snapshots the model inputs (profile, system prompt, tool
+// definitions, reasoning effort) under s.mu — keeping the round on one consistent
+// model and removing the lock-free read races (PRI-1958 A2/A4) — then applies
+// context management and expands history. It records the SystemPrompt, ContextMgmt,
+// and HistoryExpand phase timings into t. It never returns an error: the input
+// phases only emit warnings.
+func (s *Session) prepareModelRequest(ctx context.Context, round int, t *RoundTimings) (profile ProviderProfile, sys string, history []llm.Message, req llm.Request) {
+	// --- Phase: SystemPrompt ---
+	tPhaseStart := time.Now()
 
-	for round := 0; s.cfg.MaxToolRoundsPerInput < 0 || round < s.cfg.MaxToolRoundsPerInput; round++ {
-		roundStart := time.Now()
-		var timings RoundTimings
-		timings.Round = round
+	effortOverride := ""
+	if s.taskStore != nil {
+		if current, ok := s.taskStore.CurrentInProgress(); ok {
+			effortOverride = strings.TrimSpace(current.ReasoningEffort)
+		}
+	}
+	s.mu.Lock()
+	profile = s.profile
+	sys = s.cachedSystemPrompt
+	toolDefs := s.allToolDefinitions(round)
+	if effortOverride != "" {
+		s.cfg.ReasoningEffort = effortOverride
+	}
+	reasoningEffort := strings.TrimSpace(s.cfg.ReasoningEffort)
+	s.mu.Unlock()
+
+	t.SystemPrompt = time.Since(tPhaseStart)
+
+	// --- Phase: ContextMgmt ---
+	tPhaseStart = time.Now()
+
+	// Copy history once for both context management and message expansion.
+	s.mu.Lock()
+	historyTurns := append([]Turn{}, s.history...)
+	s.mu.Unlock()
+	if repaired, repairs := repairOrphanedToolResults(historyTurns); repairs > 0 {
+		historyTurns = repaired
+		s.mu.Lock()
+		s.history = repaired
+		s.mu.Unlock()
+		s.emit(EventWarning, WarningData{Message: fmt.Sprintf("Recovered %d interrupted tool call(s) before model request", repairs)})
+		s.maybeAutoSave()
+	}
+
+	// Apply context management before each LLM request.
+	if s.strategy != nil {
+		// Populate compaction metadata so checkpoint/summarize have session context.
+		s.contextMgr.Meta = s.buildCompactionMeta()
+
+		emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &historyTurns)
+		if err := s.strategy.ManageContext(ctx, &historyTurns, len(sys), emitFn); err != nil {
+			s.emit(EventWarning, warningDataFromError("context strategy error: "+err.Error(), err))
+		}
+		flushCompactionHooks()
 
 		s.mu.Lock()
-		s.totalRounds++
+		s.history = historyTurns
 		s.mu.Unlock()
+	}
 
-		select {
-		case <-ctx.Done():
-			s.emit(EventError, errorDataFromError(ctx.Err()))
-			s.mu.Lock()
-			if s.state == SessionProcessing && !s.closingOrClosedLocked() {
-				s.state = SessionIdle
-			}
-			s.mu.Unlock()
-			return "", ctx.Err()
-		default:
-		}
+	t.ContextMgmt = time.Since(tPhaseStart)
 
-		// --- Phase: SystemPrompt ---
-		tPhaseStart := time.Now()
+	// --- Phase: HistoryExpand ---
+	tPhaseStart = time.Now()
 
-		// Snapshot the per-round model inputs under s.mu. SetModel /
-		// SetReasoningEffort mutate the profile, the prompt/tool-def caches, and
-		// s.cfg under s.mu; reading them once here keeps the round on one
-		// consistent model and removes the lock-free read races (PRI-1958 A2/A4).
-		effortOverride := ""
-		if s.taskStore != nil {
-			if current, ok := s.taskStore.CurrentInProgress(); ok {
-				effortOverride = strings.TrimSpace(current.ReasoningEffort)
-			}
-		}
+	// Reuse historyTurns from context management — no redundant copy.
+	history = expandHistory(historyTurns)
+
+	t.HistoryExpand = time.Since(tPhaseStart)
+
+	// --- Phase: ToolDefs --- (toolDefs snapshotted with profile/sys above)
+	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
+	return profile, sys, history, req
+}
+
+// handleModelError reacts to a failed model call. It returns retry=true when the
+// turn should retry the round — content-filter recovery, which compacts away the
+// offending content (the next request often succeeds) and records that it has
+// tried once via *contentFilterRetried. Otherwise it emits the terminal error,
+// emits a context-overflow warning when applicable, closes the session on a
+// non-retryable llm.Error, leaves the session out of "processing", and returns
+// retry=false with the error the turn should fail with — a "provider error"-wrapped
+// value (so callers can distinguish a provider failure from agent quiescence; the
+// original error is preserved via errors.Unwrap, kata 3xbh) or the raw cancellation.
+func (s *Session) handleModelError(ctx context.Context, err error, req llm.Request, contentFilterRetried *bool) (retry bool, ferr error) {
+	if isTurnCancellation(ctx, err) {
+		return false, err
+	}
+
+	// Content filter recovery: compaction often removes the offending content,
+	// allowing the next request to succeed. Try once.
+	var cfe *llm.ContentFilterError
+	if errors.As(err, &cfe) && !*contentFilterRetried && s.contextMgr != nil {
+		*contentFilterRetried = true
+		s.emit(EventWarning, warningDataFromError("Content filter hit — compacting context and retrying", err))
 		s.mu.Lock()
-		profile := s.profile
-		sys := s.cachedSystemPrompt
-		toolDefs := s.allToolDefinitions(round)
-		if effortOverride != "" {
-			s.cfg.ReasoningEffort = effortOverride
-		}
-		reasoningEffort := strings.TrimSpace(s.cfg.ReasoningEffort)
+		histCopy := append([]Turn{}, s.history...)
 		s.mu.Unlock()
-
-		timings.SystemPrompt = time.Since(tPhaseStart)
-
-		// --- Phase: ContextMgmt ---
-		tPhaseStart = time.Now()
-
-		// Copy history once for both context management and message expansion.
+		emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &histCopy)
+		s.contextMgr.ForceCompact(ctx, &histCopy, emitFn)
+		flushCompactionHooks()
 		s.mu.Lock()
-		historyTurns := append([]Turn{}, s.history...)
+		s.history = histCopy
 		s.mu.Unlock()
-		if repaired, repairs := repairOrphanedToolResults(historyTurns); repairs > 0 {
-			historyTurns = repaired
+		return true, nil
+	}
+
+	errData := errorDataFromError(err)
+	errData.Cause = providerCauseFromError(err, req.Model)
+	s.emit(EventError, errData)
+
+	// Spec: context overflow should emit a warning (no automatic compaction).
+	var cle *llm.ContextLengthError
+	if errors.As(err, &cle) {
+		s.emit(EventWarning, warningDataFromError("Context length exceeded", err))
+	}
+	// Spec: non-retryable/unrecoverable errors transition the session to closed.
+	var le llm.Error
+	if errors.As(err, &le) && !le.Retryable() {
+		s.Close()
+	}
+	// Recoverable LLM errors (retry policy exhausted, stream-ended, timeouts,
+	// etc.) bail out of the run loop without compacting or closing — but we still
+	// need to leave the session out of "processing" so it doesn't sit active
+	// forever from the daemon's /status endpoint (which would disable steer/send
+	// with no recovery path short of restarting the daemon, kata r6y9). meta.json
+	// flush happens via the deferred flush at the top of processOneInput (kata ztne).
+	s.mu.Lock()
+	if s.state == SessionProcessing && !s.closingOrClosedLocked() {
+		s.state = SessionIdle
+	}
+	s.mu.Unlock()
+	return false, fmt.Errorf("provider error: %w", err)
+}
+
+// recordResponseUsage accumulates the response usage into the context manager and
+// records the exact input token count for pressure calculation. Anthropic makes
+// multiple forward passes for server-side web search, reporting combined usage
+// (~2x actual); that inflated baseline is skipped so the previous value stays valid.
+func (s *Session) recordResponseUsage(resp llm.Response) {
+	if s.contextMgr == nil {
+		return
+	}
+	s.contextMgr.AddUsage(resp.Usage)
+
+	hasServerWebSearch := false
+	for _, p := range resp.Message.Content {
+		if p.Kind == llm.ContentWebSearch {
+			hasServerWebSearch = true
+			break
+		}
+	}
+	if !hasServerWebSearch {
+		totalInput := resp.Usage.InputTokens
+		if resp.Usage.CacheReadTokens != nil {
+			totalInput += *resp.Usage.CacheReadTokens
+		}
+		if resp.Usage.CacheWriteTokens != nil {
+			totalInput += *resp.Usage.CacheWriteTokens
+		}
+		if totalInput > 0 {
 			s.mu.Lock()
-			s.history = repaired
+			hLen := len(s.history)
 			s.mu.Unlock()
-			s.emit(EventWarning, WarningData{Message: fmt.Sprintf("Recovered %d interrupted tool call(s) before model request", repairs)})
-			s.maybeAutoSave()
+			s.contextMgr.RecordInputTokens(totalInput, hLen)
 		}
+	}
+}
 
-		// Apply context management before each LLM request.
-		if s.strategy != nil {
-			// Populate compaction metadata so checkpoint/summarize have session context.
-			s.contextMgr.Meta = s.buildCompactionMeta()
-
-			emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &historyTurns)
-			if err := s.strategy.ManageContext(ctx, &historyTurns, len(sys), emitFn); err != nil {
-				s.emit(EventWarning, warningDataFromError("context strategy error: "+err.Error(), err))
-			}
-			flushCompactionHooks()
-
-			s.mu.Lock()
-			s.history = historyTurns
-			s.mu.Unlock()
+// emitAssistantResponse emits the assistant text lifecycle events for a round (start
+// /delta/end, skipping start/delta when the assistant already streamed) and appends
+// the assistant turn to history unless the response was empty without phase metadata.
+// It runs under withResponseSideEffects and returns its abort error.
+func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, modelResp sessionModelResponse, txt string, skipHistory bool) error {
+	return s.withResponseSideEffects(ctx, func() {
+		if !modelResp.StreamedAssistant {
+			s.emit(EventAssistantTextStart, AssistantTextStartData{
+				Model: resp.Model,
+			})
 		}
-
-		timings.ContextMgmt = time.Since(tPhaseStart)
-
-		// --- Phase: HistoryExpand ---
-		tPhaseStart = time.Now()
-
-		// Reuse historyTurns from context management — no redundant copy.
-		history := expandHistory(historyTurns)
-
-		timings.HistoryExpand = time.Since(tPhaseStart)
-
-		// --- Phase: ToolDefs --- (toolDefs snapshotted with profile/sys above)
-		req := s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
-
-		// --- Phase: LLMCall ---
-		tPhaseStart = time.Now()
-
-		modelResp, req, err := s.callModelWithFallback(ctx, profile, req, round)
-		resp := modelResp.Response
-
-		timings.LLMCall = time.Since(tPhaseStart)
-
-		if err == nil {
-			if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
-				return "", abortErr
-			}
+		if !skipHistory {
+			s.appendAssistantTurn(resp)
 		}
-
-		s.logAPICall(round, roundStart, timings.LLMCall, sys, len(history), req, resp, err)
-
-		if err != nil {
-			if isTurnCancellation(ctx, err) {
-				return "", err
-			}
-
-			// Content filter recovery: compaction often removes the offending
-			// content, allowing the next request to succeed. Try once.
-			var cfe *llm.ContentFilterError
-			if errors.As(err, &cfe) && !contentFilterRetried && s.contextMgr != nil {
-				contentFilterRetried = true
-				s.emit(EventWarning, warningDataFromError("Content filter hit — compacting context and retrying", err))
-				s.mu.Lock()
-				histCopy := append([]Turn{}, s.history...)
-				s.mu.Unlock()
-				emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &histCopy)
-				s.contextMgr.ForceCompact(ctx, &histCopy, emitFn)
-				flushCompactionHooks()
-				s.mu.Lock()
-				s.history = histCopy
-				s.mu.Unlock()
-				continue
-			}
-
-			errData := errorDataFromError(err)
-			errData.Cause = providerCauseFromError(err, req.Model)
-			s.emit(EventError, errData)
-
-			// Spec: context overflow should emit a warning (no automatic compaction).
-			var cle *llm.ContextLengthError
-			if errors.As(err, &cle) {
-				s.emit(EventWarning, warningDataFromError("Context length exceeded", err))
-			}
-			// Spec: non-retryable/unrecoverable errors transition the session to closed.
-			var le llm.Error
-			if errors.As(err, &le) && !le.Retryable() {
-				s.Close()
-			}
-			// Recoverable LLM errors (retry policy exhausted, stream-ended,
-			// timeouts, etc.) bail out of the run loop without compacting or
-			// closing — but we still need to leave active. Without this
-			// flip the session sits in active forever from the daemon's
-			// /status endpoint, the hub disables steer/send, and the user has
-			// no recovery path short of restarting the daemon (kata r6y9).
-			// meta.json flush happens via the deferred flush at the top of
-			// processOneInput (kata ztne).
-			s.mu.Lock()
-			if s.state == SessionProcessing && !s.closingOrClosedLocked() {
-				s.state = SessionIdle
-			}
-			s.mu.Unlock()
-			// Wrap with "provider error" so callers (toil, runners) can
-			// distinguish a provider/LLM failure from agent quiescence
-			// (empty output + nil err) without parsing adapter-specific
-			// error message formats. The original error is preserved via
-			// errors.Unwrap for callers that need the underlying detail
-			// (kata 3xbh).
-			return "", fmt.Errorf("provider error: %w", err)
+		if !modelResp.StreamedAssistant && strings.TrimSpace(txt) != "" {
+			s.emit(EventAssistantTextDelta, AssistantTextDeltaData{Delta: txt})
 		}
-
-		if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
-			return "", abortErr
+		textEndData := AssistantTextEndData{
+			Text:         txt,
+			Usage:        resp.Usage,
+			FinishReason: resp.Finish.Reason,
+			Model:        resp.Model,
 		}
+		if reasoning := resp.ReasoningText(); reasoning != "" {
+			textEndData.Reasoning = reasoning
+		}
+		s.emit(EventAssistantTextEnd, textEndData)
+		s.mu.Lock()
+		s.modelResponses++
+		s.mu.Unlock()
+	})
+}
 
-		// Accumulate usage and record exact input token count for pressure calculation.
-		if s.contextMgr != nil {
-			s.contextMgr.AddUsage(resp.Usage)
+// handleNoToolCalls reacts to a model response that produced no tool calls.
+// noContent distinguishes a truly empty response — a model glitch (e.g.
+// gpt-5.3-codex null-content); retried with escalating "you went silent" steering,
+// phase-only responses included — from bare text that bypassed the result tool,
+// which violates the all-user-facing-messages-go-through-the-result-tool contract
+// and is retried with "use the result tool" steering. It updates the retry counters
+// in t and returns retry=true to inject the steering and retry the round, or
+// retry=false with the terminal error once the relevant retry budget is spent.
+func (s *Session) handleNoToolCalls(noContent bool, t *retryTracker) (retry bool, ferr error) {
+	if noContent {
+		t.consecutiveEmpty++
+		t.totalEmpty++
+		if t.consecutiveEmpty <= maxEmptyRetries && t.totalEmpty <= maxTotalEmptyResponses {
+			s.emit(EventWarning, WarningData{
+				Message: fmt.Sprintf("empty response from model (retry %d/%d)", t.consecutiveEmpty, maxEmptyRetries),
+			})
+			var steering string
+			switch t.consecutiveEmpty {
+			case 1:
+				steering = "Your previous response was empty. Please continue working on the task."
+			case 2:
+				steering = "Your response was empty again. If you're stuck, write what you've tried so far " +
+					"to notes.txt, then try a different approach. You have plenty of rounds left."
+			default:
+				steering = "You've produced multiple empty responses. You MUST either call a tool to continue " +
+					"working, or call " + s.resultToolName() + " with your best effort so far. Take a breath — you've " +
+					"got this. Try a completely different approach."
+			}
+			s.appendTurn(TurnSteering, llm.User(steering))
+			s.emit(EventSteeringInjected, SteeringInjectedData{Text: steering})
+			return true, nil
+		}
+		err := &emptyResponseExhaustedError{retries: maxEmptyRetries}
+		s.emit(EventError, errorDataFromError(err))
+		s.mu.Lock()
+		s.setStateIfOpenLocked(SessionIdle)
+		s.mu.Unlock()
+		return false, err
+	}
 
-			// Detect server-side web search in the response. Anthropic makes
-			// multiple forward passes for server tools, reporting combined usage
-			// (~2x actual). Skip recording the inflated baseline; the previous
-			// lastInputTokens value remains valid for pressure estimation.
-			hasServerWebSearch := false
-			for _, p := range resp.Message.Content {
-				if p.Kind == llm.ContentWebSearch {
-					hasServerWebSearch = true
-					break
+	t.consecutiveEmpty = 0
+	t.consecutiveBareText++
+	if t.consecutiveBareText <= maxBareTextRetries {
+		s.emit(EventWarning, WarningData{
+			Message: fmt.Sprintf("bare text response without tool call (retry %d/%d)", t.consecutiveBareText, maxBareTextRetries),
+		})
+		steering := "You responded with bare text instead of a tool call. " +
+			"All user-facing messages MUST use " + s.resultToolName() + ". " +
+			"If that bare text was meant for the user, call " + s.resultToolName() + " now with that text in message, set await_reply=true only if you need user input, and include the output envelope. " +
+			"Otherwise call your next tool and keep working."
+		s.appendTurn(TurnSteering, llm.User(steering))
+		s.emit(EventSteeringInjected, SteeringInjectedData{Text: steering})
+		return true, nil
+	}
+	err := &bareTextWithoutResultToolError{
+		toolName: s.resultToolName(),
+		retries:  maxBareTextRetries,
+	}
+	s.emit(EventError, errorDataFromError(err))
+	s.mu.Lock()
+	s.setStateIfOpenLocked(SessionIdle)
+	s.mu.Unlock()
+	return false, err
+}
+
+// execToolBatch executes the round's tool calls and returns their results. When the
+// profile supports parallel tool calls and there is more than one, it batches
+// consecutive read-only calls to run concurrently (ordered-group algorithm) and
+// serializes everything else; otherwise it runs them in order. On cancellation it
+// records canceled results for the outstanding calls — keeping history well-formed —
+// and returns the abort error alongside the partial results.
+func (s *Session) execToolBatch(ctx context.Context, calls []llm.ToolCallData, profile ProviderProfile) ([]ToolExecResult, error) {
+	results := make([]ToolExecResult, len(calls))
+	if profile.SupportsParallelToolCalls() && len(calls) > 1 {
+		// Ordered-group algorithm: batch consecutive read-only calls for
+		// parallel execution; serialize everything else.
+		flushReadBatch := func(batch []int) error {
+			switch len(batch) {
+			case 0:
+				// nothing to do
+			case 1:
+				if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+					return abortErr
 				}
-			}
-			if !hasServerWebSearch {
-				totalInput := resp.Usage.InputTokens
-				if resp.Usage.CacheReadTokens != nil {
-					totalInput += *resp.Usage.CacheReadTokens
-				}
-				if resp.Usage.CacheWriteTokens != nil {
-					totalInput += *resp.Usage.CacheWriteTokens
-				}
-				if totalInput > 0 {
-					s.mu.Lock()
-					hLen := len(s.history)
-					s.mu.Unlock()
-					s.contextMgr.RecordInputTokens(totalInput, hLen)
-				}
-			}
-		}
-
-		// Context window awareness: emit a warning when we exceed ~80% of the profile's context window.
-		if !ctxWarned {
-			if s.maybeWarnContextUsage(profile, req.Messages) {
-				ctxWarned = true
-			}
-		}
-
-		if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
-			return "", abortErr
-		}
-
-		txt := resp.Text()
-		lastText = txt
-		calls := resp.ToolCalls()
-
-		// Two concepts of "empty":
-		// 1. noContent: no text and no tool calls — triggers retry logic
-		// 2. skipHistory: no text, no tool calls, AND no phase metadata —
-		//    truly nothing to append. Responses with phase annotations
-		//    (e.g., "final_answer") must be preserved in history so the
-		//    model sees its own phase metadata and can course-correct.
-		noContent := strings.TrimSpace(txt) == "" && len(calls) == 0
-		hasPhase := false
-		for _, p := range resp.Message.Content {
-			if p.Phase != "" {
-				hasPhase = true
-				break
-			}
-		}
-		skipHistory := noContent && !hasPhase
-
-		if abortErr := s.withResponseSideEffects(ctx, func() {
-			if !modelResp.StreamedAssistant {
-				s.emit(EventAssistantTextStart, AssistantTextStartData{
-					Model: resp.Model,
-				})
-			}
-			if !skipHistory {
-				s.appendAssistantTurn(resp)
-			}
-			if !modelResp.StreamedAssistant && strings.TrimSpace(txt) != "" {
-				s.emit(EventAssistantTextDelta, AssistantTextDeltaData{Delta: txt})
-			}
-			textEndData := AssistantTextEndData{
-				Text:         txt,
-				Usage:        resp.Usage,
-				FinishReason: resp.Finish.Reason,
-				Model:        resp.Model,
-			}
-			if reasoning := resp.ReasoningText(); reasoning != "" {
-				textEndData.Reasoning = reasoning
-			}
-			s.emit(EventAssistantTextEnd, textEndData)
-			s.mu.Lock()
-			s.modelResponses++
-			s.mu.Unlock()
-		}); abortErr != nil {
-			return "", abortErr
-		}
-		// pause_turn: model needs another turn (e.g. server-side web search still running).
-		if resp.Finish.Reason == llm.FinishReasonPauseTurn {
-			round-- // Don't count pause_turn as a tool round.
-			timings.TotalRound = time.Since(roundStart)
-			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
-			s.emit(EventRoundTimings, timings)
-			continue
-		}
-
-		// Reverse-map provider-specific tool names to canonical names for registry lookup.
-		for i := range calls {
-			calls[i].Name = s.canonicalToolName(calls[i].Name)
-		}
-
-		if len(calls) == 0 {
-			// Empty response (no text, no tool calls): likely a model glitch
-			// (e.g. gpt-5.3-codex null-content). Inject escalating steering and retry.
-			// Note: phase-only responses are still retried — they carry metadata
-			// but the model hasn't produced any useful output.
-			if noContent {
-				consecutiveEmptyResponses++
-				totalEmptyResponses++
-				if consecutiveEmptyResponses <= maxEmptyRetries && totalEmptyResponses <= maxTotalEmptyResponses {
-					s.emit(EventWarning, WarningData{
-						Message: fmt.Sprintf("empty response from model (retry %d/%d)", consecutiveEmptyResponses, maxEmptyRetries),
-					})
-					var steering string
-					switch consecutiveEmptyResponses {
-					case 1:
-						steering = "Your previous response was empty. Please continue working on the task."
-					case 2:
-						steering = "Your response was empty again. If you're stuck, write what you've tried so far " +
-							"to notes.txt, then try a different approach. You have plenty of rounds left."
-					default:
-						steering = "You've produced multiple empty responses. You MUST either call a tool to continue " +
-							"working, or call " + s.resultToolName() + " with your best effort so far. Take a breath — you've " +
-							"got this. Try a completely different approach."
-					}
-					s.appendTurn(TurnSteering, llm.User(steering))
-					s.emit(EventSteeringInjected, SteeringInjectedData{Text: steering})
-					round-- // Don't count empty-response retries as tool rounds.
-					timings.TotalRound = time.Since(roundStart)
-					timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
-					s.emit(EventRoundTimings, timings)
-					continue
-				}
-				err := &emptyResponseExhaustedError{retries: maxEmptyRetries}
-				s.emit(EventError, errorDataFromError(err))
-				s.mu.Lock()
-				s.setStateIfOpenLocked(SessionIdle)
-				s.mu.Unlock()
-				return "", err
-			} else {
-				// Non-empty bare text without tool calls violates the contract:
-				// all user-facing messages must go through communicate.
-				consecutiveEmptyResponses = 0
-				consecutiveBareTextResponses++
-				if consecutiveBareTextResponses <= maxBareTextRetries {
-					s.emit(EventWarning, WarningData{
-						Message: fmt.Sprintf("bare text response without tool call (retry %d/%d)", consecutiveBareTextResponses, maxBareTextRetries),
-					})
-					steering := "You responded with bare text instead of a tool call. " +
-						"All user-facing messages MUST use " + s.resultToolName() + ". " +
-						"If that bare text was meant for the user, call " + s.resultToolName() + " now with that text in message, set await_reply=true only if you need user input, and include the output envelope. " +
-						"Otherwise call your next tool and keep working."
-					s.appendTurn(TurnSteering, llm.User(steering))
-					s.emit(EventSteeringInjected, SteeringInjectedData{Text: steering})
-					round-- // Don't count bare-text retries as tool rounds.
-					timings.TotalRound = time.Since(roundStart)
-					timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
-					s.emit(EventRoundTimings, timings)
-					continue
-				}
-				err := &bareTextWithoutResultToolError{
-					toolName: s.resultToolName(),
-					retries:  maxBareTextRetries,
-				}
-				s.emit(EventError, errorDataFromError(err))
-				s.mu.Lock()
-				s.setStateIfOpenLocked(SessionIdle)
-				s.mu.Unlock()
-				return "", err
-			}
-		}
-
-		// Model produced tool calls — reset retry counters.
-		consecutiveEmptyResponses = 0
-		consecutiveBareTextResponses = 0
-
-		if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
-			if ctx.Err() != nil && !s.isClosingOrClosed() {
-				s.appendCanceledToolResults(calls, nil, abortErr)
-			}
-			return "", abortErr
-		}
-
-		// --- Phase: ToolExec ---
-		tPhaseStart = time.Now()
-
-		// Execute tool calls (possibly in parallel) and send results back.
-		results := make([]ToolExecResult, len(calls))
-		if profile.SupportsParallelToolCalls() && len(calls) > 1 {
-			// Ordered-group algorithm: batch consecutive read-only calls for
-			// parallel execution; serialize everything else.
-			flushReadBatch := func(batch []int) error {
-				switch len(batch) {
-				case 0:
-					// nothing to do
-				case 1:
-					if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
-						return abortErr
-					}
-					results[batch[0]] = s.execTool(ctx, calls[batch[0]])
-				default:
-					var wg sync.WaitGroup
-					var panicValue any
-					var panicMu sync.Mutex
-					wg.Add(len(batch))
-					for _, i := range batch {
-						go func() {
-							defer func() {
-								if r := recover(); r != nil {
-									panicMu.Lock()
-									if panicValue == nil {
-										panicValue = r
-									}
-									panicMu.Unlock()
+				results[batch[0]] = s.execTool(ctx, calls[batch[0]])
+			default:
+				var wg sync.WaitGroup
+				var panicValue any
+				var panicMu sync.Mutex
+				wg.Add(len(batch))
+				for _, i := range batch {
+					go func() {
+						defer func() {
+							if r := recover(); r != nil {
+								panicMu.Lock()
+								if panicValue == nil {
+									panicValue = r
 								}
-								wg.Done()
-							}()
-							if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
-								panic(abortErr)
+								panicMu.Unlock()
 							}
-							results[i] = s.execTool(ctx, calls[i])
+							wg.Done()
 						}()
-					}
-					wg.Wait()
-					if panicValue != nil {
-						if err, ok := panicValue.(error); ok {
-							return err
+						if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+							panic(abortErr)
 						}
-						panic(panicValue)
-					}
+						results[i] = s.execTool(ctx, calls[i])
+					}()
 				}
-				return nil
+				wg.Wait()
+				if panicValue != nil {
+					if err, ok := panicValue.(error); ok {
+						return err
+					}
+					panic(panicValue)
+				}
 			}
+			return nil
+		}
 
-			var readBatch []int
-			for i, call := range calls {
-				t := s.reg.Get(call.Name)
-				if t != nil && t.ReadOnly {
-					readBatch = append(readBatch, i)
-				} else {
-					if err := flushReadBatch(readBatch); err != nil {
-						if ctx.Err() != nil && !s.isClosingOrClosed() {
-							s.appendCanceledToolResults(calls, results, err)
-						}
-						return "", err
+		var readBatch []int
+		for i, call := range calls {
+			t := s.reg.Get(call.Name)
+			if t != nil && t.ReadOnly {
+				readBatch = append(readBatch, i)
+			} else {
+				if err := flushReadBatch(readBatch); err != nil {
+					if ctx.Err() != nil && !s.isClosingOrClosed() {
+						s.appendCanceledToolResults(calls, results, err)
 					}
-					readBatch = readBatch[:0]
-					if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
-						if ctx.Err() != nil && !s.isClosingOrClosed() {
-							s.appendCanceledToolResults(calls, results, abortErr)
-						}
-						return "", abortErr
-					}
-					results[i] = s.execTool(ctx, call)
+					return results, err
 				}
-			}
-			if err := flushReadBatch(readBatch); err != nil {
-				if ctx.Err() != nil && !s.isClosingOrClosed() {
-					s.appendCanceledToolResults(calls, results, err)
-				}
-				return "", err
-			}
-		} else {
-			for i := range calls {
+				readBatch = readBatch[:0]
 				if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
 					if ctx.Err() != nil && !s.isClosingOrClosed() {
 						s.appendCanceledToolResults(calls, results, abortErr)
 					}
-					return "", abortErr
+					return results, abortErr
 				}
-				results[i] = s.execTool(ctx, calls[i])
+				results[i] = s.execTool(ctx, call)
 			}
 		}
-
-		if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+		if err := flushReadBatch(readBatch); err != nil {
 			if ctx.Err() != nil && !s.isClosingOrClosed() {
-				s.appendCanceledToolResults(calls, results, abortErr)
+				s.appendCanceledToolResults(calls, results, err)
 			}
-			return "", abortErr
+			return results, err
 		}
-
-		timings.ToolExec = time.Since(tPhaseStart)
-
-		// --- Phase: Persistence ---
-		tPhaseStart = time.Now()
-
-		// Aggregate all tool results into a single TurnToolResults turn.
-		var parts []llm.ContentPart
-		for _, r := range results {
-			parts = append(parts, llm.ContentPart{
-				Kind: llm.ContentToolResult,
-				ToolResult: &llm.ToolResultData{
-					ToolCallID:     r.CallID,
-					Name:           r.ToolName,
-					Content:        r.Output,
-					IsError:        r.IsError,
-					DurationMS:     r.DurationMS,
-					ImageData:      r.ImageData,
-					ImageMediaType: r.ImageMediaType,
-				},
-			})
-		}
-		if abortErr := s.appendToolResults(ctx, calls, results, parts); abortErr != nil {
-			return "", abortErr
-		}
-
-		// If any tool result contained an image, make a side-channel API call
-		// to describe it. GPT models in tool-calling mode never produce text
-		// descriptions of images — they immediately write code. This off-loop
-		// call with no tools forces the model to use its native vision, then
-		// injects the description into the conversation so the agent can use it.
-		for i, r := range results {
-			if len(r.ImageData) > 0 {
-				if desc := s.describeImage(ctx, r); desc != "" {
-					// Include the file path so the agent can correlate descriptions
-					// to specific files when multiple images/documents are read in one round.
-					label := "Image description (from vision)"
-					if strings.HasPrefix(r.ImageMediaType, "application/pdf") {
-						label = "Document description (from content analysis)"
-					}
-					if i < len(calls) {
-						var args map[string]any
-						if json.Unmarshal(calls[i].Arguments, &args) == nil {
-							if path, ok := args["file_path"].(string); ok {
-								label += " for " + path
-							}
-						}
-					}
-					if abortErr := s.withResponseSideEffects(ctx, func() {
-						s.Steer(label + ": " + desc + "\n<system-reminder>Visual descriptions are summaries. They may miss or mischaracterize details.</system-reminder>")
-					}); abortErr != nil {
-						return "", abortErr
-					}
-				}
-			}
-		}
-
-		timings.Persistence = time.Since(tPhaseStart)
-
-		// --- Phase: AfterAction ---
-		tPhaseStart = time.Now()
-
-		// Notify the context strategy that a tool round completed.
-		// AfterAction takes []Turn (not *[]Turn) so it cannot mutate the slice.
-		// Pass s.history directly — no copy needed since the loop is single-
-		// threaded and nothing else modifies history until AfterAction returns.
-		if s.strategy != nil {
+	} else {
+		for i := range calls {
 			if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
-				return "", abortErr
-			}
-			s.mu.Lock()
-			hist := s.history
-			s.mu.Unlock()
-			if err := s.strategy.AfterAction(ctx, hist, s.client); err != nil {
-				if abortErr := s.withResponseSideEffects(ctx, func() {
-					s.emit(EventWarning, WarningData{Message: "strategy AfterAction error: " + err.Error()})
-				}); abortErr != nil {
-					return "", abortErr
+				if ctx.Err() != nil && !s.isClosingOrClosed() {
+					s.appendCanceledToolResults(calls, results, abortErr)
 				}
+				return results, abortErr
 			}
-			if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
-				return "", abortErr
-			}
-		}
-
-		timings.AfterAction = time.Since(tPhaseStart)
-
-		// Loop detection: track per-call signatures and check for repeating patterns.
-		for _, call := range calls {
-			toolSigs = append(toolSigs, call.Name+":"+shortHash(call.Arguments))
-		}
-		if s.cfg.EnableLoopDetection != nil && *s.cfg.EnableLoopDetection {
-			if detectLoop(toolSigs, s.cfg.LoopDetectionWindow) {
-				s.mu.Lock()
-				s.loopDetectionCount++
-				count := s.loopDetectionCount
-				s.mu.Unlock()
-
-				warning := s.stuckEscalation(count)
-				if abortErr := s.withResponseSideEffects(ctx, func() {
-					s.emit(EventLoopDetection, LoopDetectionData{Message: warning})
-					s.appendTurn(TurnSteering, llm.User(warning))
-					s.emit(EventSteeringInjected, SteeringInjectedData{Text: warning})
-				}); abortErr != nil {
-					return "", abortErr
-				}
-			}
-		}
-
-		// Read-only streak detection: nudge agent if stuck in analysis paralysis.
-		allReadOnly := len(calls) > 0
-		for _, call := range calls {
-			t := s.reg.Get(call.Name)
-			if t == nil || !t.ReadOnly {
-				allReadOnly = false
-				break
-			}
-		}
-		if allReadOnly {
-			s.readOnlyStreak++
-		} else {
-			s.readOnlyStreak = 0
-		}
-		if s.readOnlyStreak == 5 {
-			nudge := "<SYSTEM-REMINDER>You have spent several turns reading without writing or running anything. Review your current task. If you have enough context to make progress, write code or run a command now. A first attempt you can test and fix is more valuable than more reading.</SYSTEM-REMINDER>"
-			if abortErr := s.withResponseSideEffects(ctx, func() {
-				s.appendTurn(TurnSteering, llm.User(nudge))
-				s.emit(EventSteeringInjected, SteeringInjectedData{Text: nudge})
-			}); abortErr != nil {
-				return "", abortErr
-			}
-		} else if s.readOnlyStreak == 10 {
-			nudge := "<SYSTEM-REMINDER>You have been reading for 10 turns without acting. Stop reading. Write the deliverable file now, even if incomplete. You can iterate after you have something to test.</SYSTEM-REMINDER>"
-			if abortErr := s.withResponseSideEffects(ctx, func() {
-				s.appendTurn(TurnSteering, llm.User(nudge))
-				s.emit(EventSteeringInjected, SteeringInjectedData{Text: nudge})
-			}); abortErr != nil {
-				return "", abortErr
-			}
-		}
-
-		// Inject any queued steering messages before the next model call.
-		if abortErr := s.withResponseSideEffects(ctx, func() {
-			for _, msg := range s.drainSteering() {
-				s.appendTurn(TurnSteering, steeringMessageToLLM(msg))
-				s.emit(EventSteeringInjected, steeringInjectedDataFromMessage(msg))
-			}
-		}); abortErr != nil {
-			return "", abortErr
-		}
-
-		// Task reminder injection.
-		if abortErr := s.withResponseSideEffects(ctx, func() {
-			if reminder := s.maybeInjectTaskReminder(); reminder != "" {
-				s.appendTurn(TurnSteering, llm.User(reminder))
-				s.emit(EventSteeringInjected, SteeringInjectedData{Text: reminder})
-			}
-		}); abortErr != nil {
-			return "", abortErr
-		}
-
-		// Emit round timings before checking result delivery.
-		timings.TotalRound = time.Since(roundStart)
-		timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall - timings.ToolExec - timings.Persistence - timings.AfterAction
-		s.emit(EventRoundTimings, timings)
-
-		// communicate sets the flag; exit the loop with the communicated message.
-		s.mu.Lock()
-		delivered := s.communicated
-		awaitReply := s.communicateAwaitReply
-		text := s.communicateReply
-		s.mu.Unlock()
-		if delivered {
-			// Stop hooks
-			if s.hookRunner != nil {
-				hi := s.hookInput(HookStop)
-				if awaitReply {
-					hi.Reason = "communicate.await_reply"
-				} else {
-					hi.Reason = "communicate.complete"
-				}
-				stopResult := s.hookRunner.RunStop(ctx, hi)
-				for _, msg := range stopResult.SystemMessages {
-					s.Steer(msg)
-				}
-				if stopResult.Blocked {
-					// Don't return — continue the loop
-					continue
-				}
-			}
-			s.mu.Lock()
-			if !s.closingOrClosedLocked() {
-				if awaitReply {
-					s.state = SessionAwaitingInput
-				} else {
-					s.state = SessionIdle
-				}
-			}
-			s.mu.Unlock()
-			return text, nil
+			results[i] = s.execTool(ctx, calls[i])
 		}
 	}
 
-	s.emit(EventTurnLimit, TurnLimitData{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput})
+	if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+		if ctx.Err() != nil && !s.isClosingOrClosed() {
+			s.appendCanceledToolResults(calls, results, abortErr)
+		}
+		return results, abortErr
+	}
+	return results, nil
+}
+
+// persistToolResults aggregates the round's tool results into a single tool-result
+// turn and appends it to history. For any result carrying image/document data it
+// makes a side-channel vision call (GPT models in tool-calling mode never describe
+// images themselves — they immediately write code) and injects the description as
+// steering so the agent can use it. It returns the abort error if the turn is
+// canceled mid-persist.
+func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallData, results []ToolExecResult) error {
+	// Aggregate all tool results into a single TurnToolResults turn.
+	var parts []llm.ContentPart
+	for _, r := range results {
+		parts = append(parts, llm.ContentPart{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID:     r.CallID,
+				Name:           r.ToolName,
+				Content:        r.Output,
+				IsError:        r.IsError,
+				DurationMS:     r.DurationMS,
+				ImageData:      r.ImageData,
+				ImageMediaType: r.ImageMediaType,
+			},
+		})
+	}
+	if abortErr := s.appendToolResults(ctx, calls, results, parts); abortErr != nil {
+		return abortErr
+	}
+
+	for i, r := range results {
+		if len(r.ImageData) > 0 {
+			if desc := s.describeImage(ctx, r); desc != "" {
+				// Include the file path so the agent can correlate descriptions to
+				// specific files when multiple images/documents are read in one round.
+				label := "Image description (from vision)"
+				if strings.HasPrefix(r.ImageMediaType, "application/pdf") {
+					label = "Document description (from content analysis)"
+				}
+				if i < len(calls) {
+					var args map[string]any
+					if json.Unmarshal(calls[i].Arguments, &args) == nil {
+						if path, ok := args["file_path"].(string); ok {
+							label += " for " + path
+						}
+					}
+				}
+				if abortErr := s.withResponseSideEffects(ctx, func() {
+					s.Steer(label + ": " + desc + "\n<system-reminder>Visual descriptions are summaries. They may miss or mischaracterize details.</system-reminder>")
+				}); abortErr != nil {
+					return abortErr
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// notifyStrategyAfterAction tells the context strategy that a tool round completed
+// so it can run any post-action bookkeeping. A strategy error is surfaced as a
+// warning, not a turn failure; only cancellation aborts the turn.
+func (s *Session) notifyStrategyAfterAction(ctx context.Context) error {
+	if s.strategy == nil {
+		return nil
+	}
+	if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+		return abortErr
+	}
+	// AfterAction takes []Turn (not *[]Turn) so it cannot mutate the slice. Pass
+	// s.history directly — no copy needed since the loop is single-threaded and
+	// nothing else modifies history until AfterAction returns.
 	s.mu.Lock()
-	s.setStateIfOpenLocked(SessionIdle)
+	hist := s.history
 	s.mu.Unlock()
-	return lastText, nil
+	if err := s.strategy.AfterAction(ctx, hist, s.client); err != nil {
+		if abortErr := s.withResponseSideEffects(ctx, func() {
+			s.emit(EventWarning, WarningData{Message: "strategy AfterAction error: " + err.Error()})
+		}); abortErr != nil {
+			return abortErr
+		}
+	}
+	if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
+		return abortErr
+	}
+	return nil
+}
+
+// injectPostToolSteering runs the post-tool-round bookkeeping that may inject
+// steering before the next model call: it appends the round's tool-call signatures
+// to toolSigs and runs loop detection, tracks the read-only streak (nudging at 5 and
+// 10 consecutive read-only rounds), drains queued steering messages, and injects any
+// task reminder. It returns the abort error if the turn is canceled mid-injection.
+func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCallData, toolSigs *[]string) error {
+	// Loop detection: track per-call signatures and check for repeating patterns.
+	for _, call := range calls {
+		*toolSigs = append(*toolSigs, call.Name+":"+shortHash(call.Arguments))
+	}
+	if s.cfg.EnableLoopDetection != nil && *s.cfg.EnableLoopDetection {
+		if detectLoop(*toolSigs, s.cfg.LoopDetectionWindow) {
+			s.mu.Lock()
+			s.loopDetectionCount++
+			count := s.loopDetectionCount
+			s.mu.Unlock()
+
+			warning := s.stuckEscalation(count)
+			if abortErr := s.withResponseSideEffects(ctx, func() {
+				s.emit(EventLoopDetection, LoopDetectionData{Message: warning})
+				s.appendTurn(TurnSteering, llm.User(warning))
+				s.emit(EventSteeringInjected, SteeringInjectedData{Text: warning})
+			}); abortErr != nil {
+				return abortErr
+			}
+		}
+	}
+
+	// Read-only streak detection: nudge agent if stuck in analysis paralysis.
+	allReadOnly := len(calls) > 0
+	for _, call := range calls {
+		t := s.reg.Get(call.Name)
+		if t == nil || !t.ReadOnly {
+			allReadOnly = false
+			break
+		}
+	}
+	if allReadOnly {
+		s.readOnlyStreak++
+	} else {
+		s.readOnlyStreak = 0
+	}
+	if s.readOnlyStreak == 5 {
+		nudge := "<SYSTEM-REMINDER>You have spent several turns reading without writing or running anything. Review your current task. If you have enough context to make progress, write code or run a command now. A first attempt you can test and fix is more valuable than more reading.</SYSTEM-REMINDER>"
+		if abortErr := s.withResponseSideEffects(ctx, func() {
+			s.appendTurn(TurnSteering, llm.User(nudge))
+			s.emit(EventSteeringInjected, SteeringInjectedData{Text: nudge})
+		}); abortErr != nil {
+			return abortErr
+		}
+	} else if s.readOnlyStreak == 10 {
+		nudge := "<SYSTEM-REMINDER>You have been reading for 10 turns without acting. Stop reading. Write the deliverable file now, even if incomplete. You can iterate after you have something to test.</SYSTEM-REMINDER>"
+		if abortErr := s.withResponseSideEffects(ctx, func() {
+			s.appendTurn(TurnSteering, llm.User(nudge))
+			s.emit(EventSteeringInjected, SteeringInjectedData{Text: nudge})
+		}); abortErr != nil {
+			return abortErr
+		}
+	}
+
+	// Inject any queued steering messages before the next model call.
+	if abortErr := s.withResponseSideEffects(ctx, func() {
+		for _, msg := range s.drainSteering() {
+			s.appendTurn(TurnSteering, steeringMessageToLLM(msg))
+			s.emit(EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+		}
+	}); abortErr != nil {
+		return abortErr
+	}
+
+	// Task reminder injection.
+	if abortErr := s.withResponseSideEffects(ctx, func() {
+		if reminder := s.maybeInjectTaskReminder(); reminder != "" {
+			s.appendTurn(TurnSteering, llm.User(reminder))
+			s.emit(EventSteeringInjected, SteeringInjectedData{Text: reminder})
+		}
+	}); abortErr != nil {
+		return abortErr
+	}
+	return nil
+}
+
+// deliverIfCommunicated checks whether the agent delivered a result this round via
+// the communicate/result tool. If so — and unless a Stop hook blocks completion, in
+// which case the turn keeps looping — it runs the Stop hooks, transitions the session
+// to awaiting-input or idle, and returns done=true with the reply to hand back to the
+// caller. It returns done=false when nothing was delivered or a Stop hook blocked
+// completion, meaning the turn should continue to the next round.
+func (s *Session) deliverIfCommunicated(ctx context.Context) (done bool, text string) {
+	s.mu.Lock()
+	delivered := s.communicated
+	awaitReply := s.communicateAwaitReply
+	text = s.communicateReply
+	s.mu.Unlock()
+	if !delivered {
+		return false, ""
+	}
+	// Stop hooks
+	if s.hookRunner != nil {
+		hi := s.hookInput(HookStop)
+		if awaitReply {
+			hi.Reason = "communicate.await_reply"
+		} else {
+			hi.Reason = "communicate.complete"
+		}
+		stopResult := s.hookRunner.RunStop(ctx, hi)
+		for _, msg := range stopResult.SystemMessages {
+			s.Steer(msg)
+		}
+		if stopResult.Blocked {
+			// Don't finish — keep looping.
+			return false, ""
+		}
+	}
+	s.mu.Lock()
+	if !s.closingOrClosedLocked() {
+		if awaitReply {
+			s.state = SessionAwaitingInput
+		} else {
+			s.state = SessionIdle
+		}
+	}
+	s.mu.Unlock()
+	return true, text
 }
 
 // buildModelRequest assembles the llm.Request for one round: it lays out the
