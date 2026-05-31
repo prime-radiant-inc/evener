@@ -1471,25 +1471,23 @@ func TestHubRPCThreadReadKeepsRelayWhenSubscriberArrivesDuringIdleRetirement(t *
 		canceled:      make(chan struct{}, 2),
 	}
 	srv := httptest.NewUnstartedServer(nil)
-	cfg := WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")}
-	web := NewWebServer(cfg)
-	web.sources.Add(source)
-	srv.Config.Handler = web.Handler()
-	srv.Start()
-	defer srv.Close()
 
 	idleReached := make(chan struct{})
 	releaseIdle := make(chan struct{})
 	var idleOnce sync.Once
-	oldHook := hubRelayIdleExitHook
-	hubRelayIdleExitHook = func(threadID string) {
+	cfg := WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")}
+	cfg.relayHooks.idleExit = func(threadID string) {
 		if threadID != "th_1" {
 			return
 		}
 		idleOnce.Do(func() { close(idleReached) })
 		<-releaseIdle
 	}
-	t.Cleanup(func() { hubRelayIdleExitHook = oldHook })
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
 
 	client1 := dialHubRPC(t, srv)
 	if _, err := client1.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
@@ -1555,25 +1553,23 @@ func TestHubRPCThreadReadKeepsReplacementRelayTrackedAfterIdleCleanup(t *testing
 		canceled:      make(chan struct{}, 2),
 	}
 	srv := httptest.NewUnstartedServer(nil)
-	cfg := WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")}
-	web := NewWebServer(cfg)
-	web.sources.Add(source)
-	srv.Config.Handler = web.Handler()
-	srv.Start()
-	defer srv.Close()
 
 	afterIdleDelete := make(chan struct{})
 	releaseCleanup := make(chan struct{})
 	var idleOnce sync.Once
-	oldHook := hubRelayAfterIdleDeleteHook
-	hubRelayAfterIdleDeleteHook = func(threadID string) {
+	cfg := WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")}
+	cfg.relayHooks.afterIdleDelete = func(threadID string) {
 		if threadID != "th_cleanup" {
 			return
 		}
 		idleOnce.Do(func() { close(afterIdleDelete) })
 		<-releaseCleanup
 	}
-	t.Cleanup(func() { hubRelayAfterIdleDeleteHook = oldHook })
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
 
 	client1 := dialHubRPC(t, srv)
 	if _, err := client1.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {

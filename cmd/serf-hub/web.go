@@ -21,6 +21,15 @@ import (
 	"primeradiant.com/serf/rendezvous"
 )
 
+// relayLifecycleHooks are optional test seams the relay idle-retirement loop
+// invokes to observe teardown. They are nil in production and set once via
+// WebConfig at construction (never mutated after a relay goroutine starts), so
+// each hub server instance carries its own — no shared global, no data race.
+type relayLifecycleHooks struct {
+	idleExit        func(threadID string)
+	afterIdleDelete func(threadID string)
+}
+
 // WebConfig is everything the web server needs.
 type WebConfig struct {
 	HubAddr             string
@@ -42,6 +51,8 @@ type WebConfig struct {
 	CodexSources        []appsource.CodexSourceConfig
 	CodexLaunches       []codexlaunch.CodexLaunchConfig
 	CodexLauncher       *codexlaunch.CodexLauncher
+
+	relayHooks relayLifecycleHooks // test-only relay lifecycle seams; nil in production
 }
 
 // Spawner forks a serf serve subprocess and waits for its rendezvous file to appear.

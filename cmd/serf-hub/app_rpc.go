@@ -59,9 +59,6 @@ func newHubSourceRegistry(cfg WebConfig) *appsource.Registry {
 	return registry
 }
 
-var hubRelayIdleExitHook func(threadID string)
-var hubRelayAfterIdleDeleteHook func(threadID string)
-
 type hubRelayHandle struct {
 	ready chan struct{}
 	err   error
@@ -207,8 +204,8 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 					return
 				case <-ticker.C:
 					if server.SubscriberCount(relayKey) == 0 {
-						if hubRelayIdleExitHook != nil {
-							hubRelayIdleExitHook(threadID)
+						if cfg.relayHooks.idleExit != nil {
+							cfg.relayHooks.idleExit(threadID)
 						}
 						relayMu.Lock()
 						if server.SubscriberCount(relayKey) == 0 {
@@ -216,8 +213,8 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 								delete(relayedThreads, relayKey)
 							}
 							relayMu.Unlock()
-							if hubRelayAfterIdleDeleteHook != nil {
-								hubRelayAfterIdleDeleteHook(threadID)
+							if cfg.relayHooks.afterIdleDelete != nil {
+								cfg.relayHooks.afterIdleDelete(threadID)
 							}
 							cancelRelay()
 							return
