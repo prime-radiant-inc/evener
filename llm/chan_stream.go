@@ -48,11 +48,18 @@ func (s *ChanStream) CloseSend() {
 	})
 }
 
-// Send publishes a stream event, dropping it if the stream is already closed.
+// Send publishes a stream event from the stream's single producer goroutine.
+//
+// Concurrency contract: a ChanStream has exactly one producer. Every Send and the
+// single CloseSend run on that one goroutine, in order, so a Send is never
+// concurrent with — nor reached after — CloseSend's close(s.events); there is no
+// send-on-closed-channel hazard. We deliberately do not recover here: if the
+// single-producer contract is ever violated, a stray Send racing CloseSend faults
+// loudly (a panic, or a race the detector flags) instead of being silently masked.
+// The consumer runs on another goroutine and stops the producer cooperatively via
+// Close, which cancels and closes s.closing but never s.events; Send observes that
+// here and drops the event.
 func (s *ChanStream) Send(ev StreamEvent) {
-	// Send can race with CloseSend; sending on a closed channel panics.
-	// v1 semantics are best-effort delivery, so treat this as a drop.
-	defer func() { _ = recover() }()
 	select {
 	case <-s.done:
 		return

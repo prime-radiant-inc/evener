@@ -55,3 +55,27 @@ func TestChanStream_SendAfterClose_DoesNotPanic(t *testing.T) {
 	_ = s.Close()
 	s.Send(StreamEvent{Type: StreamEventProviderEvent})
 }
+
+// TestChanStream_NoRaceProducerVsConsumerClose drives the single-producer
+// contract under -race: one producer goroutine Sends a stream then CloseSends,
+// while the consumer reads Events() and triggers Close mid-stream. Confirms the
+// removed Send recover() was unnecessary — no race, no send-on-closed panic.
+func TestChanStream_NoRaceProducerVsConsumerClose(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		_, cancel := context.WithCancel(context.Background())
+		s := NewChanStream(cancel)
+		go func() {
+			defer s.CloseSend()
+			for j := 0; j < 100; j++ {
+				s.Send(StreamEvent{Type: StreamEventTextDelta, Delta: "x"})
+			}
+		}()
+		n := 0
+		for range s.Events() {
+			n++
+			if n == 5 {
+				go func() { _ = s.Close() }()
+			}
+		}
+	}
+}
