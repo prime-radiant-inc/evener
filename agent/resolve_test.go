@@ -1,10 +1,11 @@
-package agent
+package agent_test
 
 import (
 	"os"
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 )
@@ -15,7 +16,7 @@ func TestResolveProfileFromConfig_OpenAIResponses(t *testing.T) {
 			{Name: "work", Type: "openai", APIStyle: "responses"},
 		},
 	}
-	p, err := ResolveProfileFromConfig(cfg, "work/gpt-5.2")
+	p, err := agent.ResolveProfileFromConfig(cfg, "work/gpt-5.2")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -37,7 +38,7 @@ func TestResolveProfileFromConfig_OpenAIDefaultStyle(t *testing.T) {
 			{Name: "myopenai", Type: "openai", APIStyle: ""},
 		},
 	}
-	p, err := ResolveProfileFromConfig(cfg, "myopenai/gpt-4.1-mini")
+	p, err := agent.ResolveProfileFromConfig(cfg, "myopenai/gpt-4.1-mini")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -58,7 +59,7 @@ func TestResolveProfileFromConfig_ChatCompletions(t *testing.T) {
 			{Name: "localai", Type: "openai", APIStyle: "chat-completions"},
 		},
 	}
-	p, err := ResolveProfileFromConfig(cfg, "localai/gpt-3.5-turbo")
+	p, err := agent.ResolveProfileFromConfig(cfg, "localai/gpt-3.5-turbo")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -79,7 +80,7 @@ func TestResolveProfileFromConfig_Kimi(t *testing.T) {
 			{Name: "kc", Type: "kimi"},
 		},
 	}
-	p, err := ResolveProfileFromConfig(cfg, "kc/kimi-k2")
+	p, err := agent.ResolveProfileFromConfig(cfg, "kc/kimi-k2")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -100,7 +101,7 @@ func TestResolveProfileFromConfig_Anthropic(t *testing.T) {
 			{Name: "ant", Type: "anthropic"},
 		},
 	}
-	p, err := ResolveProfileFromConfig(cfg, "ant/claude-opus-4-6")
+	p, err := agent.ResolveProfileFromConfig(cfg, "ant/claude-opus-4-6")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestResolveProfileFromConfig_Google(t *testing.T) {
 			{Name: "g1", Type: "google"},
 		},
 	}
-	p, err := ResolveProfileFromConfig(cfg, "g1/gemini-2.5-pro")
+	p, err := agent.ResolveProfileFromConfig(cfg, "g1/gemini-2.5-pro")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -142,7 +143,7 @@ func TestResolveProfileFromConfig_GLM(t *testing.T) {
 			{Name: "glm-inst", Type: "glm"},
 		},
 	}
-	p, err := ResolveProfileFromConfig(cfg, "glm-inst/glm-5")
+	p, err := agent.ResolveProfileFromConfig(cfg, "glm-inst/glm-5")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -160,7 +161,7 @@ func TestResolveProfileFromConfig_MiniMax(t *testing.T) {
 			{Name: "mm", Type: "minimax"},
 		},
 	}
-	p, err := ResolveProfileFromConfig(cfg, "mm/minimax/minimax-m2.7")
+	p, err := agent.ResolveProfileFromConfig(cfg, "mm/minimax/minimax-m2.7")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -182,7 +183,7 @@ func TestResolveProfileFromConfig_OpenRouterAnthropic(t *testing.T) {
 			{Name: "ora", Type: "openrouter-anthropic"},
 		},
 	}
-	p, err := ResolveProfileFromConfig(cfg, "ora/anthropic/claude-opus-4")
+	p, err := agent.ResolveProfileFromConfig(cfg, "ora/anthropic/claude-opus-4")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -203,7 +204,7 @@ func TestResolveProfileFromConfig_Ollama(t *testing.T) {
 			{Name: "local", Type: "ollama"},
 		},
 	}
-	p, err := ResolveProfileFromConfig(cfg, "local/llama3.1")
+	p, err := agent.ResolveProfileFromConfig(cfg, "local/llama3.1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -222,7 +223,7 @@ func TestResolveProfileFromConfig_UnknownInstance(t *testing.T) {
 			{Name: "ant", Type: "anthropic"},
 		},
 	}
-	_, err := ResolveProfileFromConfig(cfg, "nope/gpt-5")
+	_, err := agent.ResolveProfileFromConfig(cfg, "nope/gpt-5")
 	if err == nil {
 		t.Fatal("expected error for unknown instance, got nil")
 	}
@@ -238,7 +239,7 @@ func TestResolveProfileFromConfig_UnknownType(t *testing.T) {
 			{Name: "exotic", Type: "exotic-provider"},
 		},
 	}
-	_, err := ResolveProfileFromConfig(cfg, "exotic/some-model")
+	_, err := agent.ResolveProfileFromConfig(cfg, "exotic/some-model")
 	if err == nil {
 		t.Fatal("expected error for unknown type, got nil")
 	}
@@ -253,7 +254,7 @@ func TestResolveProfileFromConfig_ChatCompletionsTagNotDerivedFromInstanceName(t
 			{Name: "work", Type: "openai", APIStyle: "chat-completions"},
 		},
 	}
-	p, err := ResolveProfileFromConfig(cfg, "work/gpt-5.2")
+	p, err := agent.ResolveProfileFromConfig(cfg, "work/gpt-5.2")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -306,7 +307,7 @@ func TestResolveProfileFromConfig_KimiContextWindowFromCatalog(t *testing.T) {
 			{Name: "kc", Type: "kimi"},
 		},
 	}
-	p, err := ResolveProfileFromConfig(cfg, "kc/"+catalogModel)
+	p, err := agent.ResolveProfileFromConfig(cfg, "kc/"+catalogModel)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

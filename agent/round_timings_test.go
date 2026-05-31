@@ -1,4 +1,4 @@
-package agent
+package agent_test
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/llm"
 )
 
@@ -55,36 +57,36 @@ func TestRoundTimings_Emitted(t *testing.T) {
 	dir := t.TempDir()
 
 	c := llm.NewClient()
-	comm := communicateCall("c1", "result")
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
+	comm := agenttest.CommunicateCall("c1", "result")
+	f := &agenttest.FakeAdapter{
+		Provider: "openai",
+		Steps: []func(req llm.Request) llm.Response{
 			// Round 0: tool call
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(shellToolCall("s1"))
+				return agenttest.ToolCallResponse(shellToolCall("s1"))
 			},
 			// Round 1: communicate
 			func(req llm.Request) llm.Response {
-				return toolCallResponse(comm)
+				return agenttest.ToolCallResponse(comm)
 			},
 		},
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.2"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
 
 	// Drain events and collect timings.
-	var timings []RoundTimings
+	var timings []agent.RoundTimings
 	events := sess.Events()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for ev := range events {
-			if ev.Kind == EventRoundTimings {
-				if rt, ok := ev.Data.(RoundTimings); ok {
+			if ev.Kind == agent.EventRoundTimings {
+				if rt, ok := ev.Data.(agent.RoundTimings); ok {
 					timings = append(timings, rt)
 				}
 			}
@@ -128,7 +130,7 @@ func TestRoundTimings_Emitted(t *testing.T) {
 }
 
 func TestRoundTimings_SerializesToJSON(t *testing.T) {
-	rt := RoundTimings{
+	rt := agent.RoundTimings{
 		Round:        3,
 		SystemPrompt: 5 * time.Millisecond,
 		LLMCall:      100 * time.Millisecond,
@@ -166,11 +168,11 @@ func BenchmarkRoundOverhead(b *testing.B) {
 		for i := 0; i < nToolRounds-1; i++ {
 			id := "s" + string(rune('0'+i))
 			steps = append(steps, func(req llm.Request) llm.Response {
-				return toolCallResponse(shellToolCall(id))
+				return agenttest.ToolCallResponse(shellToolCall(id))
 			})
 		}
 		steps = append(steps, func(req llm.Request) llm.Response {
-			return toolCallResponse(communicateCall("c1", "done"))
+			return agenttest.ToolCallResponse(agenttest.CommunicateCall("c1", "done"))
 		})
 		return steps
 	}
@@ -190,7 +192,7 @@ func BenchmarkRoundOverhead(b *testing.B) {
 		adapter.steps = makeSteps()
 		adapter.mu.Unlock()
 
-		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+		sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.2"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
 		if err != nil {
 			b.Fatalf("NewSession: %v", err)
 		}

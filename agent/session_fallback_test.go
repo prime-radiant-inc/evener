@@ -1,13 +1,14 @@
-package agent
+package agent_test
 
 import (
 	"context"
 	"encoding/json"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/launchconfig"
 	"primeradiant.com/serf/llm"
@@ -17,53 +18,6 @@ import (
 // (403/404/...) and ModelFallbacks is configured, the session must try each
 // fallback in order before giving up.
 
-// modelTrackingAdapter records every model passed in req.Model and replies
-// with a per-model response factory. Useful for verifying the literal order
-// of fallback attempts.
-type modelTrackingAdapter struct {
-	name string
-
-	mu       sync.Mutex
-	models   []string
-	requests []llm.Request
-	respond  func(req llm.Request) (llm.Response, error)
-}
-
-func (a *modelTrackingAdapter) Name() string { return a.name }
-
-func (a *modelTrackingAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	_ = ctx
-	a.mu.Lock()
-	a.models = append(a.models, req.Model)
-	a.requests = append(a.requests, req)
-	a.mu.Unlock()
-	resp, err := a.respond(req)
-	if err != nil {
-		return resp, err
-	}
-	resp.Provider = a.name
-	if resp.Model == "" {
-		resp.Model = req.Model
-	}
-	return resp, nil
-}
-
-func (a *modelTrackingAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	return nil, llm.ErrStreamUnsupported
-}
-
-func (a *modelTrackingAdapter) Models() []string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return append([]string(nil), a.models...)
-}
-
-func (a *modelTrackingAdapter) Requests() []llm.Request {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return append([]llm.Request(nil), a.requests...)
-}
-
 // TestFallbackChain_PermanentErrorTriesNextModel: primary returns 403, the
 // first fallback succeeds, the second fallback is never called.
 func TestFallbackChain_PermanentErrorTriesNextModel(t *testing.T) {
@@ -72,17 +26,17 @@ func TestFallbackChain_PermanentErrorTriesNextModel(t *testing.T) {
 
 	permErr := llm.ErrorFromHTTPStatus("openai", 403, "access denied", nil, nil)
 
-	f := &modelTrackingAdapter{
-		name: "openai",
-		respond: func(req llm.Request) (llm.Response, error) {
+	f := &agenttest.ModelTrackingAdapter{
+		Provider: "openai",
+		Respond: func(req llm.Request) (llm.Response, error) {
 			switch req.Model {
 			case "primary":
 				return llm.Response{}, permErr
 			case "fallback-b":
-				return finalResponse("fallback B answered"), nil
+				return agenttest.FinalResponse("fallback B answered"), nil
 			case "fallback-c":
 				t.Errorf("fallback-c must not be invoked once fallback-b succeeds")
-				return finalResponse("c"), nil
+				return agenttest.FinalResponse("c"), nil
 			}
 			t.Errorf("unexpected model %q", req.Model)
 			return llm.Response{}, nil
@@ -91,7 +45,7 @@ func TestFallbackChain_PermanentErrorTriesNextModel(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("primary"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		LLMRetryPolicy: &policy,
 		ModelFallbacks: []string{"fallback-b", "fallback-c"},
 	})
@@ -132,14 +86,14 @@ func TestFallbackChain_EndpointFallbackErrorTriesNextModel(t *testing.T) {
 
 	endpointFallbackErr := llm.ErrorFromHTTPStatus("openai", 404, "responses.create(stream) failed: model not found", nil, nil)
 
-	f := &modelTrackingAdapter{
-		name: "openai",
-		respond: func(req llm.Request) (llm.Response, error) {
+	f := &agenttest.ModelTrackingAdapter{
+		Provider: "openai",
+		Respond: func(req llm.Request) (llm.Response, error) {
 			switch req.Model {
 			case "primary":
 				return llm.Response{}, endpointFallbackErr
 			case "fallback-b":
-				return finalResponse("fallback B answered"), nil
+				return agenttest.FinalResponse("fallback B answered"), nil
 			}
 			t.Errorf("unexpected model %q", req.Model)
 			return llm.Response{}, nil
@@ -148,7 +102,7 @@ func TestFallbackChain_EndpointFallbackErrorTriesNextModel(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("primary"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		LLMRetryPolicy: &policy,
 		ModelFallbacks: []string{"fallback-b"},
 	})
@@ -193,9 +147,9 @@ func TestFallbackChain_ExhaustionReturnsLastError(t *testing.T) {
 	errB := llm.ErrorFromHTTPStatus("openai", 403, "fallback-b denied", nil, nil)
 	errC := llm.ErrorFromHTTPStatus("openai", 403, "fallback-c denied", nil, nil)
 
-	f := &modelTrackingAdapter{
-		name: "openai",
-		respond: func(req llm.Request) (llm.Response, error) {
+	f := &agenttest.ModelTrackingAdapter{
+		Provider: "openai",
+		Respond: func(req llm.Request) (llm.Response, error) {
 			switch req.Model {
 			case "primary":
 				return llm.Response{}, errPrimary
@@ -210,7 +164,7 @@ func TestFallbackChain_ExhaustionReturnsLastError(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("primary"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		LLMRetryPolicy: &policy,
 		ModelFallbacks: []string{"fallback-b", "fallback-c"},
 	})
@@ -256,9 +210,9 @@ func TestFallbackChain_RetryableSkipsFallback(t *testing.T) {
 
 	rateLimit := llm.ErrorFromHTTPStatus("openai", 429, "rate limited", nil, nil)
 
-	f := &modelTrackingAdapter{
-		name: "openai",
-		respond: func(req llm.Request) (llm.Response, error) {
+	f := &agenttest.ModelTrackingAdapter{
+		Provider: "openai",
+		Respond: func(req llm.Request) (llm.Response, error) {
 			if req.Model == "fallback-b" {
 				t.Errorf("fallback-b must not be invoked when primary returns a Retryable error")
 			}
@@ -270,7 +224,7 @@ func TestFallbackChain_RetryableSkipsFallback(t *testing.T) {
 	// Burn budget quickly: 1 retry = 2 primary attempts total, no sleeps.
 	policy := llm.RetryPolicy{MaxRetries: 1, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond}
 	sleep := func(ctx context.Context, d time.Duration) error { return nil }
-	sess, err := NewSession(c, NewOpenAIProfile("primary"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		LLMRetryPolicy: &policy,
 		LLMSleep:       sleep,
 		ModelFallbacks: []string{"fallback-b"},
@@ -306,9 +260,9 @@ func TestFallbackChain_RejectsCrossProviderFallbacks(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	openaiAdapter := &modelTrackingAdapter{
-		name: "openai",
-		respond: func(req llm.Request) (llm.Response, error) {
+	openaiAdapter := &agenttest.ModelTrackingAdapter{
+		Provider: "openai",
+		Respond: func(req llm.Request) (llm.Response, error) {
 			t.Errorf("adapter should not be called for invalid cross-provider fallback config")
 			return llm.Response{}, nil
 		},
@@ -316,7 +270,7 @@ func TestFallbackChain_RejectsCrossProviderFallbacks(t *testing.T) {
 	c.Register(openaiAdapter)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	_, err := NewSession(c, NewOpenAIProfile("primary"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	_, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		LLMRetryPolicy: &policy,
 		ModelFallbacks: []string{"anthropic/claude-test", "fallback-b"},
 	})
@@ -336,16 +290,16 @@ func TestFallbackChain_EmptyFallbacksNoEffect(t *testing.T) {
 
 	permErr := llm.ErrorFromHTTPStatus("openai", 403, "denied", nil, nil)
 
-	f := &modelTrackingAdapter{
-		name: "openai",
-		respond: func(req llm.Request) (llm.Response, error) {
+	f := &agenttest.ModelTrackingAdapter{
+		Provider: "openai",
+		Respond: func(req llm.Request) (llm.Response, error) {
 			return llm.Response{}, permErr
 		},
 	}
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("primary"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		LLMRetryPolicy: &policy,
 		// ModelFallbacks left nil — empty chain.
 	})

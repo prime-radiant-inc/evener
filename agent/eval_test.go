@@ -1,13 +1,14 @@
-package agent
+package agent_test
 
 import (
 	"testing"
 
+	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/llm"
 )
 
 func TestNewEvalCollector_SetsInitialFields(t *testing.T) {
-	c := NewEvalCollector("compact", "gpt-4", "write tests")
+	c := agent.NewEvalCollector("compact", "gpt-4", "write tests")
 	m := c.Metrics()
 	if m.Strategy != "compact" {
 		t.Errorf("expected strategy %q, got %q", "compact", m.Strategy)
@@ -24,19 +25,19 @@ func TestNewEvalCollector_SetsInitialFields(t *testing.T) {
 }
 
 func TestEvalCollector_CountsTurns(t *testing.T) {
-	c := NewEvalCollector("compact", "gpt-4", "task")
+	c := agent.NewEvalCollector("compact", "gpt-4", "task")
 
 	// Two assistant text end events = 2 turns.
-	c.ProcessEvent(SessionEvent{
-		Kind: EventAssistantTextEnd,
-		Data: AssistantTextEndData{
+	c.ProcessEvent(agent.SessionEvent{
+		Kind: agent.EventAssistantTextEnd,
+		Data: agent.AssistantTextEndData{
 			Text:  "hello",
 			Usage: llm.Usage{InputTokens: 10, OutputTokens: 5},
 		},
 	})
-	c.ProcessEvent(SessionEvent{
-		Kind: EventAssistantTextEnd,
-		Data: AssistantTextEndData{
+	c.ProcessEvent(agent.SessionEvent{
+		Kind: agent.EventAssistantTextEnd,
+		Data: agent.AssistantTextEndData{
 			Text:  "world",
 			Usage: llm.Usage{InputTokens: 20, OutputTokens: 8},
 		},
@@ -49,17 +50,17 @@ func TestEvalCollector_CountsTurns(t *testing.T) {
 }
 
 func TestEvalCollector_AccumulatesTokens(t *testing.T) {
-	c := NewEvalCollector("compact", "gpt-4", "task")
+	c := agent.NewEvalCollector("compact", "gpt-4", "task")
 
-	c.ProcessEvent(SessionEvent{
-		Kind: EventAssistantTextEnd,
-		Data: AssistantTextEndData{
+	c.ProcessEvent(agent.SessionEvent{
+		Kind: agent.EventAssistantTextEnd,
+		Data: agent.AssistantTextEndData{
 			Usage: llm.Usage{InputTokens: 100, OutputTokens: 50},
 		},
 	})
-	c.ProcessEvent(SessionEvent{
-		Kind: EventAssistantTextEnd,
-		Data: AssistantTextEndData{
+	c.ProcessEvent(agent.SessionEvent{
+		Kind: agent.EventAssistantTextEnd,
+		Data: agent.AssistantTextEndData{
 			Usage: llm.Usage{InputTokens: 200, OutputTokens: 30},
 		},
 	})
@@ -74,15 +75,15 @@ func TestEvalCollector_AccumulatesTokens(t *testing.T) {
 }
 
 func TestEvalCollector_CountsCompactionEvents(t *testing.T) {
-	c := NewEvalCollector("compact", "gpt-4", "task")
+	c := agent.NewEvalCollector("compact", "gpt-4", "task")
 
-	c.ProcessEvent(SessionEvent{
-		Kind: EventContextCompaction,
-		Data: ContextCompactionData{Layer: "aggressive"},
+	c.ProcessEvent(agent.SessionEvent{
+		Kind: agent.EventContextCompaction,
+		Data: agent.ContextCompactionData{Layer: "aggressive"},
 	})
-	c.ProcessEvent(SessionEvent{
-		Kind: EventContextCompaction,
-		Data: ContextCompactionData{Layer: "moderate"},
+	c.ProcessEvent(agent.SessionEvent{
+		Kind: agent.EventContextCompaction,
+		Data: agent.ContextCompactionData{Layer: "moderate"},
 	})
 
 	m := c.Metrics()
@@ -101,22 +102,22 @@ func TestEvalCollector_CountsCompactionEvents(t *testing.T) {
 }
 
 func TestEvalCollector_CountsRecallCalls(t *testing.T) {
-	c := NewEvalCollector("recall", "gpt-4", "task")
+	c := agent.NewEvalCollector("recall", "gpt-4", "task")
 
 	// recall via ToolCallStart
-	c.ProcessEvent(SessionEvent{
-		Kind: EventToolCallStart,
-		Data: ToolCallStartData{ToolName: "recall", CallID: "c1"},
+	c.ProcessEvent(agent.SessionEvent{
+		Kind: agent.EventToolCallStart,
+		Data: agent.ToolCallStartData{ToolName: "recall", CallID: "c1"},
 	})
 	// non-recall tool should not increment
-	c.ProcessEvent(SessionEvent{
-		Kind: EventToolCallStart,
-		Data: ToolCallStartData{ToolName: "shell", CallID: "c2"},
+	c.ProcessEvent(agent.SessionEvent{
+		Kind: agent.EventToolCallStart,
+		Data: agent.ToolCallStartData{ToolName: "shell", CallID: "c2"},
 	})
 	// another recall
-	c.ProcessEvent(SessionEvent{
-		Kind: EventToolCallStart,
-		Data: ToolCallStartData{ToolName: "recall", CallID: "c3"},
+	c.ProcessEvent(agent.SessionEvent{
+		Kind: agent.EventToolCallStart,
+		Data: agent.ToolCallStartData{ToolName: "recall", CallID: "c3"},
 	})
 
 	m := c.Metrics()
@@ -126,12 +127,12 @@ func TestEvalCollector_CountsRecallCalls(t *testing.T) {
 }
 
 func TestEvalCollector_IgnoresUnrelatedEvents(t *testing.T) {
-	c := NewEvalCollector("compact", "gpt-4", "task")
+	c := agent.NewEvalCollector("compact", "gpt-4", "task")
 
-	c.ProcessEvent(SessionEvent{Kind: EventSessionStart, Data: SessionStartData{Profile: "openai", Model: "gpt-4"}})
-	c.ProcessEvent(SessionEvent{Kind: EventUserInput, Data: UserInputData{Text: "hello"}})
-	c.ProcessEvent(SessionEvent{Kind: EventAssistantTextDelta, Data: AssistantTextDeltaData{Delta: "hi"}})
-	c.ProcessEvent(SessionEvent{Kind: EventSessionEnd, Data: SessionEndData{Reason: "done"}})
+	c.ProcessEvent(agent.SessionEvent{Kind: agent.EventSessionStart, Data: agent.SessionStartData{Profile: "openai", Model: "gpt-4"}})
+	c.ProcessEvent(agent.SessionEvent{Kind: agent.EventUserInput, Data: agent.UserInputData{Text: "hello"}})
+	c.ProcessEvent(agent.SessionEvent{Kind: agent.EventAssistantTextDelta, Data: agent.AssistantTextDeltaData{Delta: "hi"}})
+	c.ProcessEvent(agent.SessionEvent{Kind: agent.EventSessionEnd, Data: agent.SessionEndData{Reason: "done"}})
 
 	m := c.Metrics()
 	if m.TurnCount != 0 {
@@ -147,11 +148,11 @@ func TestEvalCollector_IgnoresUnrelatedEvents(t *testing.T) {
 
 func TestEvalCollector_HandlesUsageAsMapFallback(t *testing.T) {
 	// Usage could come through as a map[string]any if deserialized from JSON.
-	c := NewEvalCollector("compact", "gpt-4", "task")
+	c := agent.NewEvalCollector("compact", "gpt-4", "task")
 
-	c.ProcessEvent(SessionEvent{
-		Kind: EventAssistantTextEnd,
-		Data: AssistantTextEndData{
+	c.ProcessEvent(agent.SessionEvent{
+		Kind: agent.EventAssistantTextEnd,
+		Data: agent.AssistantTextEndData{
 			Usage: map[string]any{
 				"input_tokens":  float64(50),
 				"output_tokens": float64(25),
@@ -172,17 +173,17 @@ func TestEvalCollector_HandlesUsageAsMapFallback(t *testing.T) {
 }
 
 func TestEvalCollector_TotalTokensComputed(t *testing.T) {
-	c := NewEvalCollector("compact", "gpt-4", "task")
+	c := agent.NewEvalCollector("compact", "gpt-4", "task")
 
-	c.ProcessEvent(SessionEvent{
-		Kind: EventAssistantTextEnd,
-		Data: AssistantTextEndData{
+	c.ProcessEvent(agent.SessionEvent{
+		Kind: agent.EventAssistantTextEnd,
+		Data: agent.AssistantTextEndData{
 			Usage: llm.Usage{InputTokens: 100, OutputTokens: 50},
 		},
 	})
-	c.ProcessEvent(SessionEvent{
-		Kind: EventAssistantTextEnd,
-		Data: AssistantTextEndData{
+	c.ProcessEvent(agent.SessionEvent{
+		Kind: agent.EventAssistantTextEnd,
+		Data: agent.AssistantTextEndData{
 			Usage: llm.Usage{InputTokens: 200, OutputTokens: 30},
 		},
 	})
@@ -201,15 +202,15 @@ func TestEvalCollector_TotalTokensComputed(t *testing.T) {
 }
 
 func TestEvalCollector_CountsForkSummaryCalls(t *testing.T) {
-	c := NewEvalCollector("session-log", "gpt-4", "task")
+	c := agent.NewEvalCollector("session-log", "gpt-4", "task")
 
-	c.ProcessEvent(SessionEvent{
-		Kind: EventForkSummary,
-		Data: ForkSummaryData{Turn: 3},
+	c.ProcessEvent(agent.SessionEvent{
+		Kind: agent.EventForkSummary,
+		Data: agent.ForkSummaryData{Turn: 3},
 	})
-	c.ProcessEvent(SessionEvent{
-		Kind: EventForkSummary,
-		Data: ForkSummaryData{Turn: 7},
+	c.ProcessEvent(agent.SessionEvent{
+		Kind: agent.EventForkSummary,
+		Data: agent.ForkSummaryData{Turn: 7},
 	})
 
 	m := c.Metrics()
@@ -219,7 +220,7 @@ func TestEvalCollector_CountsForkSummaryCalls(t *testing.T) {
 }
 
 func TestEvalCollector_RetentionScoreDefaultsToZero(t *testing.T) {
-	c := NewEvalCollector("compact", "gpt-4", "task")
+	c := agent.NewEvalCollector("compact", "gpt-4", "task")
 	m := c.Metrics()
 	if m.RetentionScore != 0.0 {
 		t.Errorf("expected RetentionScore 0.0, got %f", m.RetentionScore)
@@ -227,15 +228,15 @@ func TestEvalCollector_RetentionScoreDefaultsToZero(t *testing.T) {
 }
 
 func TestEvalCollector_ConcurrentAccess(t *testing.T) {
-	c := NewEvalCollector("compact", "gpt-4", "task")
+	c := agent.NewEvalCollector("compact", "gpt-4", "task")
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for i := 0; i < 100; i++ {
-			c.ProcessEvent(SessionEvent{
-				Kind: EventAssistantTextEnd,
-				Data: AssistantTextEndData{
+			c.ProcessEvent(agent.SessionEvent{
+				Kind: agent.EventAssistantTextEnd,
+				Data: agent.AssistantTextEndData{
 					Usage: llm.Usage{InputTokens: 1, OutputTokens: 1},
 				},
 			})

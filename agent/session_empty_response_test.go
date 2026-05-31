@@ -1,4 +1,4 @@
-package agent
+package agent_test
 
 import (
 	"context"
@@ -7,26 +7,22 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/llm"
 )
-
-// emptyResponse returns a response with no text and no tool calls,
-// simulating gpt-5.3-codex's null-content behavior.
-func emptyResponse() llm.Response {
-	return llm.Response{Message: llm.Message{Role: llm.RoleAssistant}}
-}
 
 func TestEmptyResponse_RetriesWithSteering(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	result := communicateCall("c1", "final answer")
+	result := agenttest.CommunicateCall("c1", "final answer")
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
+	f := &agenttest.FakeAdapter{
+		Provider: "openai",
+		Steps: []func(req llm.Request) llm.Response{
 			// Round 0: model returns empty response.
-			func(req llm.Request) llm.Response { return emptyResponse() },
+			func(req llm.Request) llm.Response { return agenttest.EmptyResponse() },
 			// Round 1: after steering nudge, model resumes with communicate.
 			func(req llm.Request) llm.Response {
 				// Verify a steering message was injected into the conversation.
@@ -43,13 +39,13 @@ func TestEmptyResponse_RetriesWithSteering(t *testing.T) {
 				if !foundSteering {
 					t.Errorf("expected steering message containing 'continue', got: %+v", lastMsg.Content)
 				}
-				return toolCallResponse(result)
+				return agenttest.ToolCallResponse(result)
 			},
 		},
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.3-codex"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -74,13 +70,13 @@ func TestEmptyResponse_ExhaustsRetries(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return emptyResponse() }, // retry 1
-			func(req llm.Request) llm.Response { return emptyResponse() }, // retry 2
-			func(req llm.Request) llm.Response { return emptyResponse() }, // retry 3
-			func(req llm.Request) llm.Response { return emptyResponse() }, // exhausted — should not reach
+	f := &agenttest.FakeAdapter{
+		Provider: "openai",
+		Steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return agenttest.EmptyResponse() }, // retry 1
+			func(req llm.Request) llm.Response { return agenttest.EmptyResponse() }, // retry 2
+			func(req llm.Request) llm.Response { return agenttest.EmptyResponse() }, // retry 3
+			func(req llm.Request) llm.Response { return agenttest.EmptyResponse() }, // exhausted — should not reach
 			func(req llm.Request) llm.Response {
 				t.Fatalf("should not reach 5th request")
 				return llm.Response{}
@@ -89,7 +85,7 @@ func TestEmptyResponse_ExhaustsRetries(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.3-codex"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -126,24 +122,24 @@ func TestEmptyResponse_ResetsOnProgress(t *testing.T) {
 		})
 		return llm.ToolCallData{ID: id, Name: "exec_command", Arguments: raw, Type: "function"}
 	}
-	result := communicateCall("c1", "done")
+	result := agenttest.CommunicateCall("c1", "done")
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
+	f := &agenttest.FakeAdapter{
+		Provider: "openai",
+		Steps: []func(req llm.Request) llm.Response{
 			// Round 0: empty (triggers retry 1).
-			func(req llm.Request) llm.Response { return emptyResponse() },
+			func(req llm.Request) llm.Response { return agenttest.EmptyResponse() },
 			// Round 0 retry: model recovers with tool call.
-			func(req llm.Request) llm.Response { return toolCallResponse(shellCall("s1")) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(shellCall("s1")) },
 			// Round 1: empty again (should be fresh retry counter).
-			func(req llm.Request) llm.Response { return emptyResponse() },
+			func(req llm.Request) llm.Response { return agenttest.EmptyResponse() },
 			// Round 1 retry: model recovers and submits result.
-			func(req llm.Request) llm.Response { return toolCallResponse(result) },
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(result) },
 		},
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.3-codex"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -174,23 +170,23 @@ func TestEmptyResponse_DoesNotConsumeToolRounds(t *testing.T) {
 		})
 		return llm.ToolCallData{ID: id, Name: "exec_command", Arguments: raw, Type: "function"}
 	}
-	result := communicateCall("c1", "done")
+	result := agenttest.CommunicateCall("c1", "done")
 
 	// With MaxToolRoundsPerInput=3, agent gets 3 real tool rounds.
 	// Two empty responses should NOT consume rounds, leaving all 3 for real work.
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(shellCall("s1")) }, // round 0
-			func(req llm.Request) llm.Response { return emptyResponse() },                   // empty — not a round
-			func(req llm.Request) llm.Response { return toolCallResponse(shellCall("s2")) }, // round 1
-			func(req llm.Request) llm.Response { return emptyResponse() },                   // empty — not a round
-			func(req llm.Request) llm.Response { return toolCallResponse(result) },          // round 2 (submit)
+	f := &agenttest.FakeAdapter{
+		Provider: "openai",
+		Steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(shellCall("s1")) }, // round 0
+			func(req llm.Request) llm.Response { return agenttest.EmptyResponse() },                   // empty — not a round
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(shellCall("s2")) }, // round 1
+			func(req llm.Request) llm.Response { return agenttest.EmptyResponse() },                   // empty — not a round
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(result) },          // round 2 (submit)
 		},
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.3-codex"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		MaxToolRoundsPerInput: 3,
 	})
 	if err != nil {
@@ -224,21 +220,21 @@ func TestBareText_DoesNotConsumeToolRounds(t *testing.T) {
 		})
 		return llm.ToolCallData{ID: id, Name: "exec_command", Arguments: raw, Type: "function"}
 	}
-	result := communicateCall("c1", "done")
+	result := agenttest.CommunicateCall("c1", "done")
 
 	// With MaxToolRoundsPerInput=3, bare text retries should not consume rounds.
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolCallResponse(shellCall("s1")) },            // round 0
+	f := &agenttest.FakeAdapter{
+		Provider: "openai",
+		Steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(shellCall("s1")) },  // round 0
 			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("oops")} }, // bare text — not a round
-			func(req llm.Request) llm.Response { return toolCallResponse(shellCall("s2")) },            // round 1
-			func(req llm.Request) llm.Response { return toolCallResponse(result) },                     // round 2 (submit)
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(shellCall("s2")) },  // round 1
+			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(result) },           // round 2 (submit)
 		},
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.3-codex"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		MaxToolRoundsPerInput: 3,
 		NonInteractive:        true,
 	})
@@ -265,11 +261,11 @@ func TestBareText_RedirectsToCommunicate(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	result := communicateCall("c1", "final answer")
+	result := agenttest.CommunicateCall("c1", "final answer")
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
+	f := &agenttest.FakeAdapter{
+		Provider: "openai",
+		Steps: []func(req llm.Request) llm.Response{
 			// Round 0: model returns bare text (no tools) — should be redirected.
 			func(req llm.Request) llm.Response {
 				return llm.Response{Message: llm.Assistant("here is my answer")}
@@ -293,13 +289,13 @@ func TestBareText_RedirectsToCommunicate(t *testing.T) {
 				if !foundSteering {
 					t.Errorf("expected steering to allow immediate communicate, got: %+v", lastMsg.Content)
 				}
-				return toolCallResponse(result)
+				return agenttest.ToolCallResponse(result)
 			},
 		},
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.3-codex"), NewLocalExecutionEnvironment(dir), SessionConfig{NonInteractive: true})
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{NonInteractive: true})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -326,9 +322,9 @@ func TestBareText_ExhaustsRetries(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
+	f := &agenttest.FakeAdapter{
+		Provider: "openai",
+		Steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("text 1")} },
 			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("text 2")} },
 			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("text 3")} },
@@ -341,7 +337,7 @@ func TestBareText_ExhaustsRetries(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.3-codex"), NewLocalExecutionEnvironment(dir), SessionConfig{NonInteractive: true})
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{NonInteractive: true})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -373,7 +369,7 @@ func TestEmptyResponse_PhasePreservedInHistory(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	result := communicateCall("c1", "final answer")
+	result := agenttest.CommunicateCall("c1", "final answer")
 
 	// emptyResponseWithPhase simulates gpt-5.3-codex emitting an empty text
 	// response with phase="final_answer".
@@ -386,9 +382,9 @@ func TestEmptyResponse_PhasePreservedInHistory(t *testing.T) {
 		},
 	}
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
+	f := &agenttest.FakeAdapter{
+		Provider: "openai",
+		Steps: []func(req llm.Request) llm.Response{
 			// Round 0: model returns empty text with final_answer phase.
 			func(req llm.Request) llm.Response { return emptyWithPhase },
 			// Round 1: after steering, model should have the empty final_answer
@@ -408,13 +404,13 @@ func TestEmptyResponse_PhasePreservedInHistory(t *testing.T) {
 				if !foundPhase {
 					t.Errorf("expected empty final_answer phase in history, not found in request messages")
 				}
-				return toolCallResponse(result)
+				return agenttest.ToolCallResponse(result)
 			},
 		},
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.3-codex"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

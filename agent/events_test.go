@@ -1,11 +1,13 @@
-package agent
+package agent_test
 
 import (
 	"testing"
+
+	"primeradiant.com/serf/agent"
 )
 
 func TestPluginLoadedData_DataMap(t *testing.T) {
-	ev := SessionEvent{Kind: EventPluginLoaded, Data: PluginLoadedData{
+	ev := agent.SessionEvent{Kind: agent.EventPluginLoaded, Data: agent.PluginLoadedData{
 		Name: "test", Dir: "/tmp", SkillCount: 2, AgentCount: 1, MCPCount: 3,
 	}}
 	dm := ev.DataMap()
@@ -30,7 +32,7 @@ func TestPluginLoadedData_DataMap(t *testing.T) {
 }
 
 func TestHookStartData_DataMap(t *testing.T) {
-	ev := SessionEvent{Kind: EventHookStart, Data: HookStartData{
+	ev := agent.SessionEvent{Kind: agent.EventHookStart, Data: agent.HookStartData{
 		Event: "PreToolUse", HookType: "command", Matcher: "Write", PluginName: "my-plugin",
 	}}
 	dm := ev.DataMap()
@@ -52,7 +54,7 @@ func TestHookStartData_DataMap(t *testing.T) {
 }
 
 func TestHookEndData_DataMap(t *testing.T) {
-	ev := SessionEvent{Kind: EventHookEnd, Data: HookEndData{
+	ev := agent.SessionEvent{Kind: agent.EventHookEnd, Data: agent.HookEndData{
 		Event: "PostToolUse", HookType: "prompt", Matcher: "*",
 		PluginName: "test-plugin", ExitCode: 0, DurationMS: 150,
 	}}
@@ -81,7 +83,7 @@ func TestHookEndData_DataMap(t *testing.T) {
 }
 
 func TestHookEndData_NonZeroExitCode(t *testing.T) {
-	ev := SessionEvent{Kind: EventHookEnd, Data: HookEndData{
+	ev := agent.SessionEvent{Kind: agent.EventHookEnd, Data: agent.HookEndData{
 		Event: "PreToolUse", HookType: "command", Matcher: "Write",
 		PluginName: "err-plugin", ExitCode: 2, DurationMS: 50,
 	}}
@@ -93,10 +95,10 @@ func TestHookEndData_NonZeroExitCode(t *testing.T) {
 
 func TestEventKindConstants(t *testing.T) {
 	// Verify the new event kinds have the expected string values.
-	if EventHookStart != "HOOK_START" {
-		t.Errorf("EventHookStart = %q, want %q", EventHookStart, "HOOK_START")
+	if agent.EventHookStart != "HOOK_START" {
+		t.Errorf("EventHookStart = %q, want %q", agent.EventHookStart, "HOOK_START")
 	}
-	if EventHookEnd != "HOOK_END" {
-		t.Errorf("EventHookEnd = %q, want %q", EventHookEnd, "HOOK_END")
+	if agent.EventHookEnd != "HOOK_END" {
+		t.Errorf("EventHookEnd = %q, want %q", agent.EventHookEnd, "HOOK_END")
 	}
 }

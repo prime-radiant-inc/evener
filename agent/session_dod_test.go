@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/llm"
 )
@@ -2058,25 +2059,25 @@ func TestSession_Subagent_AutoNudgeExplicitBuiltinSubagent(t *testing.T) {
 				mu.Lock()
 				callCount++
 				mu.Unlock()
-				return emptyResponse()
+				return agenttest.EmptyResponse()
 			},
 			func(req llm.Request) llm.Response {
 				mu.Lock()
 				callCount++
 				mu.Unlock()
-				return emptyResponse()
+				return agenttest.EmptyResponse()
 			},
 			func(req llm.Request) llm.Response {
 				mu.Lock()
 				callCount++
 				mu.Unlock()
-				return emptyResponse()
+				return agenttest.EmptyResponse()
 			},
 			func(req llm.Request) llm.Response {
 				mu.Lock()
 				callCount++
 				mu.Unlock()
-				return emptyResponse()
+				return agenttest.EmptyResponse()
 			},
 			func(req llm.Request) llm.Response {
 				mu.Lock()
@@ -5202,25 +5203,25 @@ func TestSession_Subagent_AutoNudgeOnEmptyResponseExhaustion(t *testing.T) {
 				mu.Lock()
 				callCount++
 				mu.Unlock()
-				return emptyResponse()
+				return agenttest.EmptyResponse()
 			},
 			func(req llm.Request) llm.Response {
 				mu.Lock()
 				callCount++
 				mu.Unlock()
-				return emptyResponse()
+				return agenttest.EmptyResponse()
 			},
 			func(req llm.Request) llm.Response {
 				mu.Lock()
 				callCount++
 				mu.Unlock()
-				return emptyResponse()
+				return agenttest.EmptyResponse()
 			},
 			func(req llm.Request) llm.Response {
 				mu.Lock()
 				callCount++
 				mu.Unlock()
-				return emptyResponse()
+				return agenttest.EmptyResponse()
 			},
 			func(req llm.Request) llm.Response {
 				mu.Lock()

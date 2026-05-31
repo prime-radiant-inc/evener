@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/llm"
 )
 
@@ -66,9 +67,9 @@ func TestOpenAIPromptCacheDefaults_FallbackUnsupportedModelClearsRetention(t *te
 	dir := t.TempDir()
 	c := llm.NewClient()
 	permErr := llm.ErrorFromHTTPStatus("openai", 403, "denied", nil, nil)
-	f := &modelTrackingAdapter{
-		name: "openai",
-		respond: func(req llm.Request) (llm.Response, error) {
+	f := &agenttest.ModelTrackingAdapter{
+		Provider: "openai",
+		Respond: func(req llm.Request) (llm.Response, error) {
 			switch req.Model {
 			case "gpt-5.5":
 				return llm.Response{}, permErr

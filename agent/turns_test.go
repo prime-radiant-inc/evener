@@ -1,15 +1,16 @@
-package agent
+package agent_test
 
 import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/llm"
 )
 
 func TestTurn_HasTimestamp(t *testing.T) {
 	before := time.Now().UTC()
-	turn := NewTurn(TurnUserInput, llm.User("hello"))
+	turn := agent.NewTurn(agent.TurnUserInput, llm.User("hello"))
 	after := time.Now().UTC()
 
 	if turn.Timestamp.IsZero() {
@@ -21,10 +22,10 @@ func TestTurn_HasTimestamp(t *testing.T) {
 }
 
 func TestTurnKind_CheckpointAndSummary(t *testing.T) {
-	if TurnCheckpoint != "CHECKPOINT" {
-		t.Fatalf("TurnCheckpoint = %q, want CHECKPOINT", TurnCheckpoint)
+	if agent.TurnCheckpoint != "CHECKPOINT" {
+		t.Fatalf("TurnCheckpoint = %q, want CHECKPOINT", agent.TurnCheckpoint)
 	}
-	if TurnSummary != "SUMMARY" {
-		t.Fatalf("TurnSummary = %q, want SUMMARY", TurnSummary)
+	if agent.TurnSummary != "SUMMARY" {
+		t.Fatalf("TurnSummary = %q, want SUMMARY", agent.TurnSummary)
 	}
 }
