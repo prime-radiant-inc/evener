@@ -30,8 +30,11 @@ func (s *Session) emit(kind EventKind, data any) {
 		SessionID: s.id,
 		Data:      data,
 	}
-	// Close() may happen concurrently with emit (abort signal while tools run in parallel).
-	// Sending on a closed channel would panic; v1 semantics are best-effort delivery.
+	// Detached event emitters (subagent runs, the session namer) are joined by
+	// Close() via sendersWG before it closes the channel, so they cannot race the
+	// close. The remaining concurrent emitter is the caller-owned ProcessInput
+	// goroutine during an abort-Close: the session cannot join a goroutine it does
+	// not own, so guard that best-effort send against a closed channel here.
 	defer func() { _ = recover() }()
 	select {
 	case s.events <- ev:

@@ -139,9 +139,6 @@ func (s *Session) buildCompactionMeta() CompactionMeta {
 
 func (s *Session) Close() {
 	s.closeOnce.Do(func() {
-		// Collect subagents and clear the map via the manager, then close
-		// outside the lock to avoid deadlock (sub.sess.Close() acquires its own mu).
-		subs := s.subagents.drainForClose()
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
 		turns := s.modelResponses
@@ -149,6 +146,12 @@ func (s *Session) Close() {
 		s.sessionEndEmitted = true
 		s.closing = true
 		s.state = SessionClosed
+		// Mark closing BEFORE draining so a spawn or namer launch racing teardown
+		// is either registered here (and cancelled below) or observes closing and
+		// refuses — there is no window for a late goroutine to escape the drain.
+		// The map is cleared under the lock; children are closed OUTSIDE the lock
+		// (sub.sess.Close() acquires its own mu).
+		subs := s.subagents.drainForClose()
 		s.mu.Unlock()
 		s.responseSideEffectsMu.Unlock()
 
@@ -207,6 +210,10 @@ func (s *Session) Close() {
 		s.state = SessionClosed
 		s.mu.Unlock()
 		s.toolEventsWG.Wait()
+		// Join detached event emitters (subagent runs, session namer) so their
+		// emit() sends complete before the channel is closed. They are already
+		// cancelled above (child Close + cancelFunc), so this returns promptly.
+		s.sendersWG.Wait()
 		close(s.events)
 	})
 }

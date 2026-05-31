@@ -28,6 +28,7 @@ type Session struct {
 	mu                    sync.Mutex
 	responseSideEffectsMu sync.Mutex
 	toolEventsWG          sync.WaitGroup
+	sendersWG             sync.WaitGroup // detached event emitters (subagent runs, session namer); Close() joins before closing events
 	state                 SessionState
 	closing               bool
 	turns                 int // user input count (for MaxTurns enforcement)

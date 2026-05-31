@@ -200,13 +200,15 @@ func (s *Session) launchInitialPromptNamer(ctx context.Context, input string) {
 		return
 	}
 	s.mu.Lock()
-	if s.nameSet || s.namePromptPending || strings.TrimSpace(s.name) != "" {
+	if s.nameSet || s.namePromptPending || strings.TrimSpace(s.name) != "" || s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return
 	}
 	s.namePromptPending = true
+	s.sendersWG.Add(1)
 	s.mu.Unlock()
 	go func() {
+		defer s.sendersWG.Done()
 		nameCtx := ctx
 		if nameCtx == nil {
 			nameCtx = context.Background()
@@ -237,7 +239,15 @@ func (s *Session) launchCompactionNamer(ctx context.Context, turn Turn) {
 	if !s.shouldNameFromCompaction() {
 		return
 	}
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return
+	}
+	s.sendersWG.Add(1)
+	s.mu.Unlock()
 	go func() {
+		defer s.sendersWG.Done()
 		nameCtx := ctx
 		if nameCtx == nil {
 			nameCtx = context.Background()

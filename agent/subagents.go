@@ -313,13 +313,27 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		nudgeEnabled: subagentNeedsCommunicateNudge(agent),
 	}
 
+	// Register the child and enroll its run goroutine in sendersWG under s.mu,
+	// gated on the closing flag: the Add then happens-before Close()'s Wait, and a
+	// spawn racing teardown is either drained (and cancelled) here or refused.
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		subSess.Close()
+		return "", fmt.Errorf("session is closed")
+	}
 	s.subagents.track(sub)
+	s.sendersWG.Add(1)
+	s.mu.Unlock()
 
 	// Subagent execution must outlive the parent tool-call context.
 	// The parent may stop waiting, finish its input, or time out while the
 	// child keeps running. Child cancellation is handled by subSess.Close(),
 	// including when the parent session closes.
-	go sub.run(context.Background(), task)
+	go func() {
+		defer s.sendersWG.Done()
+		sub.run(context.Background(), task)
+	}()
 
 	s.emit(EventSubagentStart, SubagentStartData{
 		AgentID: sub.id,
@@ -345,7 +359,17 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 		return "ok", nil
 	}
 
-	// Agent is idle — start a new ProcessInput round.
+	// Agent is idle — start a new ProcessInput round. Enroll the resumed run in
+	// sendersWG under s.mu (gated on closing) so it joins the same teardown
+	// barrier as the initial spawn.
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return "", fmt.Errorf("session is closed")
+	}
+	s.sendersWG.Add(1)
+	s.mu.Unlock()
+
 	sub.mu.Lock()
 	sub.done = make(chan struct{})
 	sub.running = true
@@ -362,7 +386,10 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 	})
 
 	// Resume runs should also be independent of the caller's wait context.
-	go sub.run(context.Background(), input)
+	go func() {
+		defer s.sendersWG.Done()
+		sub.run(context.Background(), input)
+	}()
 	return "ok", nil
 }
 
