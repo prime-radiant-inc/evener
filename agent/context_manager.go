@@ -572,14 +572,37 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 	// turns in the main model's context.
 	const maxCheckpointChars = 60_000
 
-	// Collect: modified files, tool counts, shell results, user messages,
-	// final agent responses, working notes, and activated skills.
-	modifiedFiles := map[string]bool{}
-	activatedSkills := map[string]bool{}
-	toolCounts := map[string]int{}
-	var lastShellResults []string
-	var conversation []checkpointConversationEntry
-	var workingNotes []string
+	data := collectCheckpointData(history, cutoff, resultToolName)
+	checkpointTurn := NewTurn(TurnCheckpoint, llm.User(formatCheckpoint(data, meta, maxCheckpointChars)))
+
+	result := make([]Turn, 0, 1+preserveRecent)
+	result = append(result, checkpointTurn)
+	result = append(result, history[cutoff:]...)
+	return result
+}
+
+// checkpointData is the raw material distilled from the to-be-compacted history
+// prefix: which files were modified, which skills activated, per-tool call counts,
+// the last few shell results, the conversation (user/agent turns), and the
+// assistant's working notes.
+type checkpointData struct {
+	modifiedFiles    map[string]bool
+	activatedSkills  map[string]bool
+	toolCounts       map[string]int
+	lastShellResults []string
+	conversation     []checkpointConversationEntry
+	workingNotes     []string
+}
+
+// collectCheckpointData walks history[:cutoff] and distills it into a
+// checkpointData: modified files, tool counts, shell results, user messages,
+// final agent responses, working notes, and activated skills.
+func collectCheckpointData(history []Turn, cutoff int, resultToolName string) checkpointData {
+	data := checkpointData{
+		modifiedFiles:   map[string]bool{},
+		activatedSkills: map[string]bool{},
+		toolCounts:      map[string]int{},
+	}
 
 	for i := 0; i < cutoff; i++ {
 		t := history[i]
@@ -587,8 +610,8 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 		case TurnCheckpoint, TurnSummary:
 			// Extract user messages and working notes from previous compaction turns
 			// so they survive across repeated compactions.
-			conversation = append(conversation, extractCheckpointConversation(t.Message.Text())...)
-			workingNotes = append(workingNotes, extractCheckpointWorkingNotes(t.Message.Text())...)
+			data.conversation = append(data.conversation, extractCheckpointConversation(t.Message.Text())...)
+			data.workingNotes = append(data.workingNotes, extractCheckpointWorkingNotes(t.Message.Text())...)
 
 		case TurnUserInput:
 			text := t.Message.Text()
@@ -598,10 +621,10 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 			// Old-format checkpoint/summary stored as TurnUserInput — extract
 			// user messages from them just like typed compaction turns.
 			if strings.HasPrefix(text, "[CONTEXT CHECKPOINT]") || strings.HasPrefix(text, "[CONTEXT SUMMARY]") {
-				conversation = append(conversation, extractCheckpointConversation(text)...)
+				data.conversation = append(data.conversation, extractCheckpointConversation(text)...)
 				continue
 			}
-			conversation = append(conversation, checkpointConversationEntry{Role: "user", Text: text})
+			data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
 
 		case TurnTool, TurnToolResults:
 			// Extract non-await communicate results (agent responses to the user).
@@ -612,7 +635,7 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 				if p.ToolResult.Name == resultToolName {
 					awaitReply, msg := communicateArgsFromHistory(history[:i+1], p.ToolResult.ToolCallID)
 					if !awaitReply && msg != "" {
-						conversation = append(conversation, checkpointConversationEntry{Role: "agent", Text: msg})
+						data.conversation = append(data.conversation, checkpointConversationEntry{Role: "agent", Text: msg})
 					}
 					continue
 				}
@@ -625,18 +648,18 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 				if len(note) > 500 {
 					note = note[:500] + "..."
 				}
-				workingNotes = append(workingNotes, note)
+				data.workingNotes = append(data.workingNotes, note)
 			}
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentWebSearch {
-					toolCounts["web_search"]++
+					data.toolCounts["web_search"]++
 					continue
 				}
 				if p.Kind != llm.ContentToolCall || p.ToolCall == nil {
 					continue
 				}
 				name := p.ToolCall.Name
-				toolCounts[name]++
+				data.toolCounts[name]++
 
 				var args map[string]any
 				if len(p.ToolCall.Arguments) > 0 {
@@ -646,7 +669,7 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 				switch name {
 				case "edit_file", "write_file":
 					if path, ok := args["file_path"]; ok {
-						modifiedFiles[fmt.Sprint(path)] = true
+						data.modifiedFiles[fmt.Sprint(path)] = true
 					}
 				case "apply_patch":
 					if patch, ok := args["patch"]; ok {
@@ -654,7 +677,7 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 							line = strings.TrimSpace(line)
 							for _, prefix := range []string{"*** Update File: ", "*** Add File: ", "*** Delete File: "} {
 								if strings.HasPrefix(line, prefix) {
-									modifiedFiles[strings.TrimPrefix(line, prefix)] = true
+									data.modifiedFiles[strings.TrimPrefix(line, prefix)] = true
 								}
 							}
 						}
@@ -676,17 +699,26 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 								break
 							}
 						}
-						lastShellResults = append(lastShellResults, fmt.Sprintf("  %q → exit %s", cmdStr, exitCode))
+						data.lastShellResults = append(data.lastShellResults, fmt.Sprintf("  %q → exit %s", cmdStr, exitCode))
 					}
 				case "use_skill":
 					if sn, ok := args["skill_name"]; ok {
-						activatedSkills[fmt.Sprint(sn)] = true
+						data.activatedSkills[fmt.Sprint(sn)] = true
 					}
 				}
 			}
 		}
 	}
 
+	return data
+}
+
+// formatCheckpoint renders collected checkpoint data into the [CONTEXT CHECKPOINT]
+// … [END CHECKPOINT] block: the fixed metadata sections (transcript pointer,
+// modified files, tool counts, recent shell results, activated skills), then the
+// conversation and working notes fit into maxChars by shedding the oldest working
+// notes first and then the oldest conversation entries.
+func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) string {
 	// Build the fixed-size sections first (metadata), then fill remaining
 	// budget with user messages and agent responses.
 	var fixed strings.Builder
@@ -697,9 +729,9 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 	}
 
 	// Files modified.
-	if len(modifiedFiles) > 0 {
-		files := make([]string, 0, len(modifiedFiles))
-		for f := range modifiedFiles {
+	if len(data.modifiedFiles) > 0 {
+		files := make([]string, 0, len(data.modifiedFiles))
+		for f := range data.modifiedFiles {
 			files = append(files, f)
 		}
 		sort.Strings(files)
@@ -707,10 +739,10 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 	}
 
 	// Tool call counts.
-	if total := sumCounts(toolCounts); total > 0 {
+	if total := sumCounts(data.toolCounts); total > 0 {
 		fixed.WriteString(fmt.Sprintf("Actions taken: %d tool calls (", total))
-		toolNames := make([]string, 0, len(toolCounts))
-		for name := range toolCounts {
+		toolNames := make([]string, 0, len(data.toolCounts))
+		for name := range data.toolCounts {
 			toolNames = append(toolNames, name)
 		}
 		sort.Strings(toolNames)
@@ -718,26 +750,26 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 			if i > 0 {
 				fixed.WriteString(", ")
 			}
-			fixed.WriteString(fmt.Sprintf("%d %s", toolCounts[name], name))
+			fixed.WriteString(fmt.Sprintf("%d %s", data.toolCounts[name], name))
 		}
 		fixed.WriteString(")\n")
 	}
 
 	// Last 3 shell results.
-	if len(lastShellResults) > 0 {
+	if len(data.lastShellResults) > 0 {
 		start := 0
-		if len(lastShellResults) > 3 {
-			start = len(lastShellResults) - 3
+		if len(data.lastShellResults) > 3 {
+			start = len(data.lastShellResults) - 3
 		}
 		fixed.WriteString("Last shell results:\n")
-		for _, r := range lastShellResults[start:] {
+		for _, r := range data.lastShellResults[start:] {
 			fixed.WriteString(r + "\n")
 		}
 	}
 
 	// Activated skills.
 	allSkills := map[string]bool{}
-	for s := range activatedSkills {
+	for s := range data.activatedSkills {
 		allSkills[s] = true
 	}
 	if meta != nil {
@@ -760,13 +792,15 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 	// Reserve space for [CONTEXT CHECKPOINT], [END CHECKPOINT], fixed sections,
 	// and the Markdown section headings.
 	overhead := len("[CONTEXT CHECKPOINT]\n") + len(fixedStr) + len("[END CHECKPOINT]\n") + 200
-	variableBudget := maxCheckpointChars - overhead
+	variableBudget := maxChars - overhead
 	if variableBudget < 1000 {
 		variableBudget = 1000
 	}
 
 	// Encode conversation and working notes as Markdown. Shed oldest notes
 	// first, then oldest user or agent messages if needed to fit budget.
+	conversation := data.conversation
+	workingNotes := data.workingNotes
 	conversationMarkdown := renderCheckpointConversation(conversation)
 	notesMarkdown := renderCheckpointWorkingNotes(workingNotes)
 
@@ -797,13 +831,7 @@ func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, result
 		b.WriteString(notesMarkdown)
 	}
 	b.WriteString("[END CHECKPOINT]\n")
-
-	checkpointTurn := NewTurn(TurnCheckpoint, llm.User(b.String()))
-
-	result := make([]Turn, 0, 1+preserveRecent)
-	result = append(result, checkpointTurn)
-	result = append(result, history[cutoff:]...)
-	return result
+	return b.String()
 }
 
 // findToolResultByCallID finds a tool result in a TurnTool by its ToolCallID
@@ -994,298 +1022,6 @@ func safeCutoff(history []Turn, cutoff int) int {
 }
 
 // --- Helper functions ---
-
-type checkpointConversationEntry struct {
-	Role string `json:"role"`
-	Text string `json:"text"`
-}
-
-type checkpointMarkdownBlock struct {
-	Heading string
-	Text    string
-}
-
-func renderCheckpointConversation(entries []checkpointConversationEntry) string {
-	entries = cleanCheckpointConversation(entries)
-	if len(entries) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("## Conversation\n\n")
-	for _, entry := range entries {
-		switch entry.Role {
-		case "agent":
-			b.WriteString("### Agent\n\n")
-		default:
-			b.WriteString("### User\n\n")
-		}
-		writeMarkdownFence(&b, entry.Text)
-	}
-	return b.String()
-}
-
-func renderCheckpointWorkingNotes(notes []string) string {
-	clean := make([]string, 0, len(notes))
-	for _, note := range notes {
-		note = strings.TrimSpace(note)
-		if note != "" {
-			clean = append(clean, note)
-		}
-	}
-	if len(clean) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("## Working Notes\n\n")
-	for _, note := range clean {
-		b.WriteString("### Note\n\n")
-		writeMarkdownFence(&b, note)
-	}
-	return b.String()
-}
-
-func writeMarkdownFence(b *strings.Builder, text string) {
-	fence := markdownFence(text)
-	b.WriteString(fence)
-	b.WriteString("text\n")
-	b.WriteString(text)
-	if !strings.HasSuffix(text, "\n") {
-		b.WriteByte('\n')
-	}
-	b.WriteString(fence)
-	b.WriteString("\n\n")
-}
-
-func markdownFence(text string) string {
-	longest := 0
-	current := 0
-	for _, r := range text {
-		if r == '`' {
-			current++
-			if current > longest {
-				longest = current
-			}
-			continue
-		}
-		current = 0
-	}
-	if longest < 3 {
-		longest = 3
-	} else {
-		longest++
-	}
-	return strings.Repeat("`", longest)
-}
-
-func extractCheckpointConversation(text string) []checkpointConversationEntry {
-	if entries := extractMarkdownConversation(text); len(entries) > 0 {
-		return entries
-	}
-
-	open := "<conversation>"
-	close := "</conversation>"
-	if idx := strings.Index(text, open); idx >= 0 {
-		rest := text[idx+len(open):]
-		if end := strings.Index(rest, close); end >= 0 {
-			var entries []checkpointConversationEntry
-			if err := json.Unmarshal([]byte(rest[:end]), &entries); err == nil {
-				return cleanCheckpointConversation(entries)
-			}
-		}
-	}
-
-	// Backward compatibility for checkpoints that bundled user and agent text
-	// separately. The original relative ordering is unrecoverable, so preserve
-	// the old bundle order while migrating into the new conversation shape.
-	var entries []checkpointConversationEntry
-	for _, msg := range extractCheckpointJSON(text, "user_messages") {
-		entries = append(entries, checkpointConversationEntry{Role: "user", Text: msg})
-	}
-	for _, msg := range extractCheckpointJSON(text, "agent_responses") {
-		entries = append(entries, checkpointConversationEntry{Role: "agent", Text: msg})
-	}
-	return entries
-}
-
-func extractMarkdownConversation(text string) []checkpointConversationEntry {
-	section := markdownSection(text, "## Conversation")
-	if section == "" {
-		return nil
-	}
-	blocks := parseMarkdownBlocks(section)
-	entries := make([]checkpointConversationEntry, 0, len(blocks))
-	for _, block := range blocks {
-		role := strings.ToLower(strings.TrimSpace(block.Heading))
-		switch role {
-		case "user":
-			entries = append(entries, checkpointConversationEntry{Role: "user", Text: block.Text})
-		case "agent", "assistant":
-			entries = append(entries, checkpointConversationEntry{Role: "agent", Text: block.Text})
-		}
-	}
-	return cleanCheckpointConversation(entries)
-}
-
-func extractCheckpointWorkingNotes(text string) []string {
-	section := markdownSection(text, "## Working Notes")
-	if section != "" {
-		blocks := parseMarkdownBlocks(section)
-		notes := make([]string, 0, len(blocks))
-		for _, block := range blocks {
-			note := strings.TrimSpace(block.Text)
-			if note != "" {
-				notes = append(notes, note)
-			}
-		}
-		return notes
-	}
-	return extractCheckpointJSON(text, "working_notes")
-}
-
-func markdownSection(text, heading string) string {
-	start := -1
-	bodyStart := -1
-	prefix := heading + "\n"
-	if strings.HasPrefix(text, prefix) {
-		start = 0
-		bodyStart = len(prefix)
-	} else if idx := strings.Index(text, "\n"+prefix); idx >= 0 {
-		start = idx + 1
-		bodyStart = start + len(prefix)
-	}
-	if bodyStart < 0 {
-		return ""
-	}
-	rest := text[bodyStart:]
-	end := len(rest)
-	for _, marker := range []string{"\n## ", "\n[END CHECKPOINT]"} {
-		if idx := strings.Index(rest, marker); idx >= 0 && idx < end {
-			end = idx
-		}
-	}
-	return rest[:end]
-}
-
-func parseMarkdownBlocks(section string) []checkpointMarkdownBlock {
-	var blocks []checkpointMarkdownBlock
-	var heading string
-	var lines []string
-	inFence := false
-	fenceMarker := ""
-	sawFence := false
-
-	flush := func() {
-		if heading == "" {
-			return
-		}
-		text := strings.TrimSpace(strings.Join(lines, "\n"))
-		if text != "" {
-			blocks = append(blocks, checkpointMarkdownBlock{Heading: heading, Text: text})
-		}
-	}
-
-	for _, line := range strings.Split(section, "\n") {
-		if !inFence && strings.HasPrefix(line, "### ") {
-			flush()
-			heading = strings.TrimSpace(strings.TrimPrefix(line, "### "))
-			lines = nil
-			sawFence = false
-			continue
-		}
-		if heading == "" {
-			continue
-		}
-		if marker := markdownFenceMarker(line); marker != "" {
-			if !inFence {
-				inFence = true
-				fenceMarker = marker
-				sawFence = true
-				continue
-			}
-			if strings.TrimSpace(line) == fenceMarker {
-				inFence = false
-				fenceMarker = ""
-				continue
-			}
-		}
-		if inFence {
-			lines = append(lines, line)
-			continue
-		}
-		if !sawFence && strings.TrimSpace(line) != "" {
-			lines = append(lines, line)
-		}
-	}
-	flush()
-	return blocks
-}
-
-func markdownFenceMarker(line string) string {
-	count := 0
-	for _, r := range line {
-		if r != '`' {
-			break
-		}
-		count++
-	}
-	if count < 3 {
-		return ""
-	}
-	return strings.Repeat("`", count)
-}
-
-func cleanCheckpointConversation(entries []checkpointConversationEntry) []checkpointConversationEntry {
-	out := make([]checkpointConversationEntry, 0, len(entries))
-	for _, entry := range entries {
-		role := strings.ToLower(strings.TrimSpace(entry.Role))
-		switch role {
-		case "user", "agent":
-		case "assistant":
-			role = "agent"
-		default:
-			continue
-		}
-		text := strings.TrimSpace(entry.Text)
-		if text == "" {
-			continue
-		}
-		out = append(out, checkpointConversationEntry{Role: role, Text: text})
-	}
-	return out
-}
-
-// extractCheckpointJSON extracts a JSON string array from a checkpoint text
-// stored in XML-style tags like <user_messages>[...]</user_messages>.
-// Falls back to legacy "Original task:" format for backward compatibility.
-func extractCheckpointJSON(text, tag string) []string {
-	// New format: <tag>[...]</tag>
-	open := "<" + tag + ">"
-	close := "</" + tag + ">"
-	if idx := strings.Index(text, open); idx >= 0 {
-		rest := text[idx+len(open):]
-		if end := strings.Index(rest, close); end >= 0 {
-			var msgs []string
-			if err := json.Unmarshal([]byte(rest[:end]), &msgs); err == nil {
-				return msgs
-			}
-		}
-	}
-
-	// Legacy format: "Original task: ..." line (only for user_messages tag).
-	if tag == "user_messages" {
-		if idx := strings.Index(text, "Original task: "); idx >= 0 {
-			rest := text[idx+len("Original task: "):]
-			if nl := strings.Index(rest, "\n"); nl >= 0 {
-				rest = rest[:nl]
-			}
-			if rest != "" {
-				return []string{rest}
-			}
-		}
-	}
-
-	return nil
-}
 
 func countLines(s string) int {
 	s = strings.TrimRight(s, "\n")
