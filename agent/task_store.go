@@ -12,20 +12,28 @@ import (
 type TaskStatus string
 
 const (
-	TaskOpen       TaskStatus = "open"
+	// TaskOpen is the status of a task that has not been started.
+	TaskOpen TaskStatus = "open"
+	// TaskInProgress is the status of a task that is currently being worked on.
 	TaskInProgress TaskStatus = "in_progress"
-	TaskDone       TaskStatus = "done"
-	TaskCancelled  TaskStatus = "cancelled"
+	// TaskDone is the status of a task that has been completed.
+	TaskDone TaskStatus = "done"
+	// TaskCancelled is the status of a task that was cancelled.
+	TaskCancelled TaskStatus = "cancelled"
 )
 
 // TaskType classifies what kind of work a task represents.
 type TaskType string
 
 const (
-	TaskTypeResearch  TaskType = "research"
+	// TaskTypeResearch is a task that investigates or gathers information.
+	TaskTypeResearch TaskType = "research"
+	// TaskTypeImplement is a task that writes or changes code.
 	TaskTypeImplement TaskType = "implement"
-	TaskTypeVerify    TaskType = "verify"
-	TaskTypeFix       TaskType = "fix"
+	// TaskTypeVerify is a task that checks or validates work.
+	TaskTypeVerify TaskType = "verify"
+	// TaskTypeFix is a task that corrects a problem.
+	TaskTypeFix TaskType = "fix"
 )
 
 // Task is a single work item in the agent's task list.

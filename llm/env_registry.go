@@ -6,19 +6,25 @@ import (
 	"sync"
 )
 
+// EnvConfig holds configuration derived from environment variables and options
+// that is passed to env adapter factories.
 type EnvConfig struct {
 	StateDir  string
 	StateHome string
 }
 
+// EnvOption configures an EnvConfig.
 type EnvOption func(*EnvConfig)
 
+// WithStateDir returns an EnvOption that sets the StateDir on the EnvConfig.
 func WithStateDir(stateDir string) EnvOption {
 	return func(cfg *EnvConfig) {
 		cfg.StateDir = stateDir
 	}
 }
 
+// EnvAdapterFactory constructs a ProviderAdapter from an EnvConfig. It reports
+// whether the adapter was configured and returns any error encountered.
 type EnvAdapterFactory func(cfg EnvConfig) (adapter ProviderAdapter, configured bool, err error)
 
 var (

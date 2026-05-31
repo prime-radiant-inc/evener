@@ -43,18 +43,24 @@ type CompactStrategy struct {
 	cm *ContextManager
 }
 
+// NewCompactStrategy returns a CompactStrategy backed by the given ContextManager.
 func NewCompactStrategy(cm *ContextManager) *CompactStrategy {
 	return &CompactStrategy{cm: cm}
 }
 
+// Name returns the strategy identifier "compact".
 func (s *CompactStrategy) Name() string { return "compact" }
 
+// Tools returns no additional tool definitions for this strategy.
 func (s *CompactStrategy) Tools() []RegisteredTool { return nil }
 
+// AfterAction does nothing for this strategy and always returns nil.
 func (s *CompactStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
 	return nil
 }
 
+// ManageContext delegates to the ContextManager's MaybeCompact to reduce context
+// pressure before an LLM request and returns nil.
 func (s *CompactStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
 	s.cm.MaybeCompact(ctx, history, sysPromptChars, emitFn)
 	return nil

@@ -26,16 +26,21 @@ func NewRecallStrategy(cm *ContextManager, host StrategyHost) *RecallStrategy {
 	}
 }
 
+// Name returns the strategy's identifier, "recall".
 func (s *RecallStrategy) Name() string { return "recall" }
 
+// ManageContext delegates to the underlying CompactStrategy to manage the
+// conversation history.
 func (s *RecallStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
 	return s.compact.ManageContext(ctx, history, sysPromptChars, emitFn)
 }
 
+// AfterAction is a no-op for RecallStrategy.
 func (s *RecallStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
 	return nil
 }
 
+// Tools returns the strategy's registered tools, namely the "recall" tool.
 func (s *RecallStrategy) Tools() []RegisteredTool {
 	return []RegisteredTool{recallToolDef(s)}
 }

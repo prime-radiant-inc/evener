@@ -7,30 +7,47 @@ import (
 	"time"
 )
 
+// Role identifies the author of a message.
 type Role string
 
 const (
-	RoleSystem    Role = "system"
-	RoleUser      Role = "user"
+	// RoleSystem is the "system" message role.
+	RoleSystem Role = "system"
+	// RoleUser is the "user" message role.
+	RoleUser Role = "user"
+	// RoleAssistant is the "assistant" message role.
 	RoleAssistant Role = "assistant"
-	RoleTool      Role = "tool"
+	// RoleTool is the "tool" message role, used for tool results.
+	RoleTool Role = "tool"
+	// RoleDeveloper is the "developer" message role.
 	RoleDeveloper Role = "developer"
 )
 
+// ContentKind identifies the type of a content part within a message.
 type ContentKind string
 
 const (
-	ContentText        ContentKind = "text"
-	ContentImage       ContentKind = "image"
-	ContentAudio       ContentKind = "audio"
-	ContentDocument    ContentKind = "document"
-	ContentToolCall    ContentKind = "tool_call"
-	ContentToolResult  ContentKind = "tool_result"
-	ContentThinking    ContentKind = "thinking"
+	// ContentText is a text content part.
+	ContentText ContentKind = "text"
+	// ContentImage is an image content part.
+	ContentImage ContentKind = "image"
+	// ContentAudio is an audio content part.
+	ContentAudio ContentKind = "audio"
+	// ContentDocument is a document content part.
+	ContentDocument ContentKind = "document"
+	// ContentToolCall is a tool-call content part.
+	ContentToolCall ContentKind = "tool_call"
+	// ContentToolResult is a tool-result content part.
+	ContentToolResult ContentKind = "tool_result"
+	// ContentThinking is a thinking (reasoning) content part.
+	ContentThinking ContentKind = "thinking"
+	// ContentRedThinking is a redacted thinking content part.
 	ContentRedThinking ContentKind = "redacted_thinking"
-	ContentWebSearch   ContentKind = "web_search"
+	// ContentWebSearch is a web-search content part.
+	ContentWebSearch ContentKind = "web_search"
 )
 
+// Message is a single conversation message with a role and one or more content parts.
 type Message struct {
 	Role       Role          `json:"role"`
 	Content    []ContentPart `json:"content"`
@@ -38,6 +55,7 @@ type Message struct {
 	ToolCallID string        `json:"tool_call_id,omitempty"`
 }
 
+// Text returns the concatenation of all text content parts in the message.
 func (m Message) Text() string {
 	var b strings.Builder
 	for _, p := range m.Content {
@@ -48,19 +66,28 @@ func (m Message) Text() string {
 	return b.String()
 }
 
+// System returns a system-role message containing the given text.
 func System(text string) Message {
 	return Message{Role: RoleSystem, Content: []ContentPart{{Kind: ContentText, Text: text}}}
 }
+
+// Developer returns a developer-role message containing the given text.
 func Developer(text string) Message {
 	return Message{Role: RoleDeveloper, Content: []ContentPart{{Kind: ContentText, Text: text}}}
 }
+
+// User returns a user-role message containing the given text.
 func User(text string) Message {
 	return Message{Role: RoleUser, Content: []ContentPart{{Kind: ContentText, Text: text}}}
 }
+
+// Assistant returns an assistant-role message containing the given text.
 func Assistant(text string) Message {
 	return Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentText, Text: text}}}
 }
 
+// ToolResult returns a tool-role message carrying the result of a tool call
+// identified by toolCallID. Set isError to mark the result as an error.
 func ToolResult(toolCallID string, content any, isError bool) Message {
 	part := ContentPart{
 		Kind: ContentToolResult,
@@ -73,6 +100,9 @@ func ToolResult(toolCallID string, content any, isError bool) Message {
 	return Message{Role: RoleTool, ToolCallID: toolCallID, Content: []ContentPart{part}}
 }
 
+// ToolResultNamed returns a tool-role message carrying the result of a tool
+// call identified by toolCallID, additionally recording the tool's name. Set
+// isError to mark the result as an error.
 func ToolResultNamed(toolCallID string, name string, content any, isError bool) Message {
 	part := ContentPart{
 		Kind: ContentToolResult,
@@ -86,6 +116,8 @@ func ToolResultNamed(toolCallID string, name string, content any, isError bool) 
 	return Message{Role: RoleTool, ToolCallID: toolCallID, Content: []ContentPart{part}}
 }
 
+// ContentPart is one part of a message's content. Its Kind selects which of
+// the typed payload fields is populated.
 type ContentPart struct {
 	Kind ContentKind `json:"kind"`
 
@@ -100,6 +132,7 @@ type ContentPart struct {
 	WebSearch  *WebSearchData  `json:"web_search,omitempty"`
 }
 
+// ImageData holds an image content part, supplied either by URL or inline bytes.
 type ImageData struct {
 	URL       string `json:"url,omitempty"`
 	Data      []byte `json:"data,omitempty"` // raw bytes; adapters base64-encode as needed
@@ -107,12 +140,14 @@ type ImageData struct {
 	Detail    string `json:"detail,omitempty"` // "auto"|"low"|"high"
 }
 
+// AudioData holds an audio content part, supplied either by URL or inline bytes.
 type AudioData struct {
 	URL       string `json:"url,omitempty"`
 	Data      []byte `json:"data,omitempty"`
 	MediaType string `json:"media_type,omitempty"`
 }
 
+// DocumentData holds a document content part, supplied either by URL or inline bytes.
 type DocumentData struct {
 	URL       string `json:"url,omitempty"`
 	Data      []byte `json:"data,omitempty"`
@@ -120,6 +155,7 @@ type DocumentData struct {
 	FileName  string `json:"file_name,omitempty"`
 }
 
+// ToolCallData describes a tool call requested by the model.
 type ToolCallData struct {
 	ID              string          `json:"id"`
 	Name            string          `json:"name"`
@@ -146,6 +182,7 @@ func (tc *ToolCallData) Parse() error {
 	return nil
 }
 
+// ToolResultData describes the result of a tool call, linked back to it by ToolCallID.
 type ToolResultData struct {
 	ToolCallID string `json:"tool_call_id"`
 	Name       string `json:"name,omitempty"`
@@ -157,6 +194,7 @@ type ToolResultData struct {
 	ImageMediaType string `json:"image_media_type,omitempty"`
 }
 
+// ThinkingData holds a model reasoning (thinking) content part.
 type ThinkingData struct {
 	ID               string   `json:"id,omitempty"`
 	Text             string   `json:"text"`
@@ -166,11 +204,13 @@ type ThinkingData struct {
 	Summary          []string `json:"summary,omitempty"`
 }
 
+// WebSearchData holds a web-search content part, including the query and the raw provider payload.
 type WebSearchData struct {
 	Query string          `json:"query,omitempty"`
 	Raw   json.RawMessage `json:"raw"`
 }
 
+// ToolDefinition describes a tool the model may call, including its JSON Schema parameters.
 type ToolDefinition struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
@@ -182,17 +222,20 @@ type ToolDefinition struct {
 	Strict *bool `json:"strict,omitempty"`
 }
 
+// ToolChoice controls whether and which tool the model is allowed or required to call.
 type ToolChoice struct {
 	Mode string `json:"mode"` // "auto", "none", "required"
 	Name string `json:"name,omitempty"`
 }
 
+// ResponseFormat constrains the format of the model's response (plain text, JSON, or a JSON schema).
 type ResponseFormat struct {
 	Type       string         `json:"type"`                  // "text", "json", "json_schema"
 	JSONSchema map[string]any `json:"json_schema,omitempty"` // when type=json_schema
 	Strict     bool           `json:"strict,omitempty"`
 }
 
+// Request is a provider-agnostic chat-completion request.
 type Request struct {
 	Model    string    `json:"model"`
 	Provider string    `json:"provider,omitempty"`
@@ -230,6 +273,7 @@ type Request struct {
 	AdapterTimeout *AdapterTimeout `json:"adapter_timeout,omitempty"`
 }
 
+// FinishReason holds a canonical finish reason alongside the raw provider value.
 type FinishReason struct {
 	Reason string `json:"reason"`
 	Raw    string `json:"raw,omitempty"`
@@ -237,13 +281,20 @@ type FinishReason struct {
 
 // Canonical finish reason values per spec section 3.8.
 const (
-	FinishReasonStop          = "stop"
-	FinishReasonLength        = "length"
-	FinishReasonToolCalls     = "tool_calls"
+	// FinishReasonStop indicates the model stopped naturally or hit a stop sequence.
+	FinishReasonStop = "stop"
+	// FinishReasonLength indicates the model stopped at the max-token limit.
+	FinishReasonLength = "length"
+	// FinishReasonToolCalls indicates the model stopped to make tool calls.
+	FinishReasonToolCalls = "tool_calls"
+	// FinishReasonContentFilter indicates generation was halted by a content filter.
 	FinishReasonContentFilter = "content_filter"
-	FinishReasonError         = "error"
-	FinishReasonOther         = "other"
-	FinishReasonPauseTurn     = "pause_turn"
+	// FinishReasonError indicates generation ended due to an error.
+	FinishReasonError = "error"
+	// FinishReasonOther indicates a finish reason that maps to none of the canonical values.
+	FinishReasonOther = "other"
+	// FinishReasonPauseTurn indicates the turn was paused and may be continued.
+	FinishReasonPauseTurn = "pause_turn"
 )
 
 // NormalizeFinishReason maps a provider-specific finish reason to a canonical value.
@@ -330,6 +381,8 @@ type Usage struct {
 	Raw map[string]any `json:"raw,omitempty"`
 }
 
+// Add returns the field-wise sum of u and v. Optional pointer fields are summed
+// via addOptInt, and the result's Raw is reset to an empty map.
 func (u Usage) Add(v Usage) Usage {
 	out := Usage{
 		InputTokens:  u.InputTokens + v.InputTokens,
@@ -361,11 +414,13 @@ func addOptInt(a, b *int) *int {
 	return &sum
 }
 
+// Warning is a non-fatal advisory message returned alongside a response.
 type Warning struct {
 	Message string `json:"message"`
 	Code    string `json:"code,omitempty"`
 }
 
+// RateLimitInfo reports provider rate-limit state parsed from response headers.
 type RateLimitInfo struct {
 	RequestsRemaining *int       `json:"requests_remaining,omitempty"`
 	RequestsLimit     *int       `json:"requests_limit,omitempty"`
@@ -390,6 +445,7 @@ func DefaultAdapterTimeout() AdapterTimeout {
 	}
 }
 
+// Response is a provider-agnostic chat-completion response.
 type Response struct {
 	ID        string         `json:"id"`
 	Model     string         `json:"model"`
@@ -407,8 +463,10 @@ type Response struct {
 	RawResponseBody string `json:"-"`
 }
 
+// Text returns the concatenated text content of the response message.
 func (r Response) Text() string { return r.Message.Text() }
 
+// ToolCalls returns the tool calls present in the response message.
 func (r Response) ToolCalls() []ToolCallData {
 	var calls []ToolCallData
 	for _, p := range r.Message.Content {
@@ -419,6 +477,7 @@ func (r Response) ToolCalls() []ToolCallData {
 	return calls
 }
 
+// ReasoningText returns the concatenated text of the response's thinking content parts.
 func (r Response) ReasoningText() string {
 	var b strings.Builder
 	for _, p := range r.Message.Content {
@@ -429,6 +488,8 @@ func (r Response) ReasoningText() string {
 	return b.String()
 }
 
+// Validate checks that the request has a model and messages and that every tool
+// has a valid name and parameter schema, returning the first error found.
 func (req Request) Validate() error {
 	if strings.TrimSpace(req.Model) == "" {
 		return fmt.Errorf("request.model is required")

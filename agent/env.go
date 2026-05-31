@@ -2,6 +2,7 @@ package agent
 
 import "context"
 
+// ExecResult holds the outcome of a command executed in an ExecutionEnvironment.
 type ExecResult struct {
 	Stdout     string `json:"stdout"`
 	Stderr     string `json:"stderr"`
@@ -10,6 +11,7 @@ type ExecResult struct {
 	DurationMS int64  `json:"duration_ms"`
 }
 
+// DirEntry describes a single entry returned when listing a directory.
 type DirEntry struct {
 	Name  string `json:"name"`
 	IsDir bool   `json:"is_dir"`

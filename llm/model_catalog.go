@@ -40,11 +40,16 @@ type ModelInfo struct {
 	Aliases                       []string `json:"aliases,omitempty"`
 }
 
+// ModelCatalog holds a set of ModelInfo entries and a lazily-built index for
+// lookup by model ID or alias.
 type ModelCatalog struct {
 	Models []ModelInfo
 	byID   map[string]ModelInfo
 }
 
+// GetModelInfo returns a copy of the ModelInfo registered under modelID (after
+// trimming surrounding whitespace), or nil if the catalog is nil or no entry
+// matches. The index is built on first use.
 func (c *ModelCatalog) GetModelInfo(modelID string) *ModelInfo {
 	if c == nil {
 		return nil
@@ -59,6 +64,9 @@ func (c *ModelCatalog) GetModelInfo(modelID string) *ModelInfo {
 	return nil
 }
 
+// ListModels returns the catalog's models, optionally filtered by provider
+// (case-insensitive, whitespace-trimmed). An empty provider returns a copy of
+// all models; a nil catalog returns nil.
 func (c *ModelCatalog) ListModels(provider string) []ModelInfo {
 	if c == nil {
 		return nil
@@ -76,6 +84,11 @@ func (c *ModelCatalog) ListModels(provider string) []ModelInfo {
 	return out
 }
 
+// GetLatestModel returns the model for the given provider that best matches the
+// requested capability, selecting the largest context window and breaking ties
+// by lexically greater ID. The capability filter (case-insensitive,
+// whitespace-trimmed) accepts "" (any), "tools", "vision", or "reasoning"; an
+// unknown capability or no matching model yields nil.
 func (c *ModelCatalog) GetLatestModel(provider string, capability string) *ModelInfo {
 	models := c.ListModels(provider)
 	capability = strings.ToLower(strings.TrimSpace(capability))

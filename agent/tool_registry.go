@@ -16,11 +16,14 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// TruncationStrategy selects how tool output exceeding a limit is shortened.
 type TruncationStrategy string
 
 const (
+	// TruncHeadTail keeps the head and tail of the output, removing the middle.
 	TruncHeadTail TruncationStrategy = "head_tail"
-	TruncTail     TruncationStrategy = "tail"
+	// TruncTail keeps the last portion of the output, removing the start.
+	TruncTail TruncationStrategy = "tail"
 )
 
 const toolPurposeDescription = "Briefly explain why you are calling this tool and what you expect to learn or accomplish."
@@ -84,12 +87,17 @@ func cloneSchemaValue(v any) any {
 	}
 }
 
+// ToolOutputLimit specifies the character and line bounds, and the truncation
+// strategy, applied to a tool's output before it is sent to the model.
 type ToolOutputLimit struct {
 	MaxChars int                `json:"max_chars,omitempty"`
 	MaxLines int                `json:"max_lines,omitempty"`
 	Strategy TruncationStrategy `json:"strategy,omitempty"`
 }
 
+// ToolExecResult holds the outcome of executing a single tool call, including
+// the truncated output sent to the model, the full untruncated output, timing,
+// and any image or state side-channel data.
 type ToolExecResult struct {
 	ToolName string
 	CallID   string
@@ -192,6 +200,9 @@ func parseDocumentResult(path, readFileOutput string) *ImageResult {
 	}
 }
 
+// RegisteredTool is a tool stored in a ToolRegistry: the embedded llm.Tool
+// (definition and Execute), its compiled validation schema, output limit, and
+// the agent-layer executor that receives the ExecutionEnvironment.
 type RegisteredTool struct {
 	llm.Tool // embeds Definition + Execute
 	Schema   *jsonschema.Schema
@@ -204,12 +215,15 @@ type RegisteredTool struct {
 // Return a non-nil error to block execution (the error message is returned to the LLM).
 type ToolMiddleware func(ctx context.Context, toolName string, args map[string]any) error
 
+// ToolRegistry is a concurrency-safe collection of registered tools and the
+// middleware run before their execution.
 type ToolRegistry struct {
 	mu         sync.RWMutex
 	tools      map[string]RegisteredTool
 	middleware []ToolMiddleware
 }
 
+// NewToolRegistry returns an empty ToolRegistry ready for tool registration.
 func NewToolRegistry() *ToolRegistry {
 	return &ToolRegistry{tools: map[string]RegisteredTool{}}
 }
@@ -222,6 +236,11 @@ func (r *ToolRegistry) Use(mw ToolMiddleware) {
 	r.middleware = append(r.middleware, mw)
 }
 
+// Register validates and stores a tool in the registry. It rejects an invalid
+// tool name or a missing executor, injects the purpose parameter into the
+// definition, applies a default output limit when none is set, compiles (or
+// reuses) the argument schema, and bridges llm.Tool.Execute from Exec when
+// unset.
 func (r *ToolRegistry) Register(t RegisteredTool) error {
 	if err := llm.ValidateToolName(t.Definition.Name); err != nil {
 		return err
@@ -274,6 +293,7 @@ func (r *ToolRegistry) Register(t RegisteredTool) error {
 	return nil
 }
 
+// Definitions returns the tool definitions for all registered tools.
 func (r *ToolRegistry) Definitions() []llm.ToolDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -325,12 +345,14 @@ func (r *ToolRegistry) RegisteredNames() map[string]bool {
 	return names
 }
 
+// Unregister deletes the named tool from the registry.
 func (r *ToolRegistry) Unregister(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.tools, name)
 }
 
+// Get returns the named registered tool, or nil if it is not registered.
 func (r *ToolRegistry) Get(name string) *RegisteredTool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -341,6 +363,7 @@ func (r *ToolRegistry) Get(name string) *RegisteredTool {
 	return &t
 }
 
+// Names returns the names of all registered tools, sorted alphabetically.
 func (r *ToolRegistry) Names() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -352,6 +375,12 @@ func (r *ToolRegistry) Names() []string {
 	return out
 }
 
+// ExecuteCall runs a single tool call: it looks up the tool, parses and
+// schema-validates the arguments, runs the registered middleware, invokes the
+// executor, and returns a truncated ToolExecResult. Unknown tools, invalid
+// arguments, failed validation, blocking middleware, and executor errors are
+// each returned as an error result. ImageResult and ToolStateResult values are
+// unpacked into the result's image and state fields.
 func (r *ToolRegistry) ExecuteCall(ctx context.Context, env ExecutionEnvironment, call llm.ToolCallData) ToolExecResult {
 	name := call.Name
 	callID := call.ID

@@ -15,6 +15,11 @@ func RuntimeDir(originURL, workDir, overrideDir string) string {
 	return RuntimeDirWithStateHome(originURL, workDir, overrideDir, "")
 }
 
+// RuntimeDirWithStateHome computes the project state directory like RuntimeDir,
+// but uses stateHome as the base when it is non-empty instead of xdgStateHome().
+// If overrideDir is non-empty, it is returned directly. Otherwise the result is
+// <base>/serf/projects/<hash>/, where <hash> is derived from originURL (if
+// non-empty) or workDir.
 func RuntimeDirWithStateHome(originURL, workDir, overrideDir, stateHome string) string {
 	if overrideDir != "" {
 		return overrideDir

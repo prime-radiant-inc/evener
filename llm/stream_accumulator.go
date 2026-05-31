@@ -19,6 +19,8 @@ type StreamAccumulator struct {
 	partial       *Response
 }
 
+// NewStreamAccumulator returns a StreamAccumulator with its internal text and
+// tool-call maps initialized and ready to Process events.
 func NewStreamAccumulator() *StreamAccumulator {
 	return &StreamAccumulator{
 		textByID:  map[string]*strings.Builder{},
@@ -26,6 +28,9 @@ func NewStreamAccumulator() *StreamAccumulator {
 	}
 }
 
+// Process folds a single StreamEvent into the accumulator, updating accumulated
+// text, reasoning, tool calls, finish reason, and usage according to the event's
+// type. It is a no-op on a nil receiver and ignores unrecognized event types.
 func (a *StreamAccumulator) Process(ev StreamEvent) {
 	if a == nil {
 		return

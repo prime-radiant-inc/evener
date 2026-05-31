@@ -18,17 +18,31 @@ type CheckpointPredStrategy struct {
 	cm *ContextManager
 }
 
+// NewCheckpointPredStrategy returns a CheckpointPredStrategy bound to the given
+// ContextManager.
 func NewCheckpointPredStrategy(cm *ContextManager) *CheckpointPredStrategy {
 	return &CheckpointPredStrategy{cm: cm}
 }
 
-func (s *CheckpointPredStrategy) Name() string            { return "checkpoint-pred" }
+// Name returns the strategy's identifier, "checkpoint-pred".
+func (s *CheckpointPredStrategy) Name() string { return "checkpoint-pred" }
+
+// Tools returns nil; this strategy registers no tools.
 func (s *CheckpointPredStrategy) Tools() []RegisteredTool { return nil }
 
+// AfterAction is a no-op for this strategy and always returns nil.
 func (s *CheckpointPredStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
 	return nil
 }
 
+// ManageContext applies the layered compaction pipeline to history in place,
+// each layer triggered once the estimated context pressure reaches its
+// threshold: observation masking, thinking clearing, a predictive checkpoint
+// (falling back to the deterministic checkpoint on error), and LLM
+// summarization. Each layer that compacts emits an EventContextCompaction
+// event, except the summarization layer, which emits one only on success and
+// an EventWarning on failure. It is a no-op when no ContextManager or context
+// window is configured.
 func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
 	if s.cm == nil {
 		return nil

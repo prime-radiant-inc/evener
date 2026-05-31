@@ -12,6 +12,10 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// Session holds the state for a single agent conversation, including its
+// configuration, LLM client and provider profile, event channel, conversation
+// history, registered tools, context-management state, subagents, plugins, MCP
+// connections, and persistence settings.
 type Session struct {
 	id             string
 	cfg            SessionConfig
@@ -140,6 +144,7 @@ type Session struct {
 	promptSourceLog      []PromptSource
 }
 
+// ID returns the session's identifier.
 func (s *Session) ID() string { return s.id }
 
 // StrategyHost forwarders. Each is a one-line forwarder to existing state or
@@ -149,14 +154,21 @@ func (s *Session) ID() string { return s.id }
 // side-effect semantics are unchanged.
 var _ StrategyHost = (*Session)(nil)
 
+// Emit forwards to the session's internal emit, sending a session event of the
+// given kind with the given data.
 func (s *Session) Emit(kind EventKind, data any) { s.emit(kind, data) }
 
+// WithResponseSideEffects forwards to the session's internal
+// withResponseSideEffects, running fn with the response side-effect semantics
+// unchanged.
 func (s *Session) WithResponseSideEffects(ctx context.Context, fn func()) error {
 	return s.withResponseSideEffects(ctx, fn)
 }
 
+// StateDir returns the session's configured state directory.
 func (s *Session) StateDir() string { return s.stateDir }
 
+// Profile returns the session's current provider profile.
 func (s *Session) Profile() ProviderProfile { return s.currentProfile() }
 
 // currentProfile returns the active profile under s.mu so reads never race
@@ -168,6 +180,7 @@ func (s *Session) currentProfile() ProviderProfile {
 	return s.profile
 }
 
+// Client returns the session's LLM client.
 func (s *Session) Client() *llm.Client { return s.client }
 
 // SetReasoningEffort updates the reasoning effort used for future LLM calls.

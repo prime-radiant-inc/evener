@@ -41,6 +41,14 @@ func selectStrategy(cfg SessionConfig, cm *ContextManager, sess *Session) (Conte
 	}
 }
 
+// NewSession creates a new Session from the given client, provider profile,
+// execution environment, and config. It validates the inputs, initializes the
+// environment, applies config defaults, performs the shared session-state setup
+// (system prompt, skills, tools, MCP), populates default agent tasks for
+// non-interactive root sessions, creates the transcript writer when state
+// persistence is enabled, installs the configured context strategy, and emits
+// the initial SessionStart envelope. It returns an error if any input is nil or
+// if initialization fails.
 func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnvironment, cfg SessionConfig) (*Session, error) {
 	if client == nil {
 		return nil, fmt.Errorf("llm client is nil")

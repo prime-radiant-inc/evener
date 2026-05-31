@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+// SSEEvent is a single Server-Sent Event parsed from a stream, holding the
+// event name and its raw data bytes.
 type SSEEvent struct {
 	Event string
 	Data  []byte

@@ -50,7 +50,7 @@ type ATIFToolCall struct {
 	Arguments    map[string]any `json:"arguments,omitempty"`
 }
 
-// ATIFObservation holds tool results attached to an agent step.
+// ATIFObservation holds the tool results attached to a step.
 type ATIFObservation struct {
 	Results []ATIFObservationResult `json:"results"`
 }

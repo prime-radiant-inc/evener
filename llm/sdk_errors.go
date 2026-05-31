@@ -36,14 +36,28 @@ func (e *nonHTTPErrorBase) RetryAfter() *time.Duration { return e.retryAfter }
 func (e *nonHTTPErrorBase) Raw() any                   { return nil }
 func (e *nonHTTPErrorBase) Unwrap() error              { return e.cause }
 
+// AbortError is a non-HTTP error reporting a user-initiated cancellation.
 type AbortError struct{ nonHTTPErrorBase }
+
+// NetworkError is a non-HTTP error reporting a network-level failure.
 type NetworkError struct{ nonHTTPErrorBase }
+
+// StreamError is a non-HTTP error reporting a streaming failure.
 type StreamError struct{ nonHTTPErrorBase }
+
+// InvalidToolCallError is a non-HTTP error reporting an invalid tool call.
 type InvalidToolCallError struct{ nonHTTPErrorBase }
+
+// NoObjectGeneratedError is a non-HTTP error reporting that no valid object
+// could be produced from the model output. RawText holds the model output text
+// that could not be parsed or validated.
 type NoObjectGeneratedError struct {
 	nonHTTPErrorBase
 	RawText string
 }
+
+// UnsupportedToolChoiceError is a non-HTTP error reporting that the requested
+// tool_choice mode is not supported.
 type UnsupportedToolChoiceError struct{ nonHTTPErrorBase }
 
 // NewAbortError reports a user-initiated cancellation. cause is the underlying
@@ -67,6 +81,8 @@ func NewNoObjectGeneratedError(message string, rawText string, cause error) erro
 	return &NoObjectGeneratedError{nonHTTPErrorBase: nonHTTPErrorBase{message: message, retryable: false, cause: cause}, RawText: rawText}
 }
 
+// NewUnsupportedToolChoiceError reports that the given tool_choice mode is not
+// supported by provider. The error is not retryable.
 func NewUnsupportedToolChoiceError(provider, mode string) error {
 	msg := strings.TrimSpace(mode)
 	if msg == "" {

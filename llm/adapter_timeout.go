@@ -44,7 +44,7 @@ func ClientWithConnectTimeout(client *http.Client, at *AdapterTimeout) *http.Cli
 }
 
 // StreamReadSSEOptions returns ParseSSE options for the StreamRead timeout.
-// If at is nil or StreamRead is zero, returns nil (no options).
+// If at is nil or StreamRead is zero/negative, returns nil (no options).
 func StreamReadSSEOptions(at *AdapterTimeout) []SSEOption {
 	if at == nil || at.StreamRead <= 0 {
 		return nil

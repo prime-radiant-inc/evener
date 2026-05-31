@@ -23,6 +23,8 @@ func resolveEffortLevels(model string, providerDefault []string) []string {
 	return providerDefault
 }
 
+// EnvironmentInfo holds the working directory, platform, version, date, and
+// git/workspace details describing the environment an agent runs in.
 type EnvironmentInfo struct {
 	WorkingDir            string        `json:"working_dir"`
 	Platform              string        `json:"platform"`
@@ -38,6 +40,9 @@ type EnvironmentInfo struct {
 	Workspace             WorkspaceInfo `json:"workspace,omitempty"`
 }
 
+// ProviderProfile describes a provider's identity, model, tool definitions,
+// and capabilities, and produces derived profiles via WithModel and a tool
+// registry via NewToolRegistry.
 type ProviderProfile interface {
 	ID() string
 	// BehaviorTag returns the stable behavior identity for this profile.
@@ -590,6 +595,7 @@ func (p *baseProfile) WithModel(model string) ProviderProfile {
 	return &clone
 }
 
+// NewOpenAIProfile returns a ProviderProfile for OpenAI using the given model.
 func NewOpenAIProfile(model string) ProviderProfile {
 	bp := buildBaseProfile(profileSpec{
 		id:              "openai",
@@ -674,6 +680,9 @@ func (p *anthropicProfile) WithModel(model string) ProviderProfile {
 	return &clone
 }
 
+// NewAnthropicProfile returns a ProviderProfile for Anthropic using the given
+// model. The context window is 1,000,000 when the model carries the 1M-context
+// suffix and 200,000 otherwise.
 func NewAnthropicProfile(model string) ProviderProfile {
 	model = strings.TrimSpace(model)
 	has1M := strings.HasSuffix(model, anthropicSuffix1M)
@@ -702,6 +711,8 @@ func NewAnthropicProfile(model string) ProviderProfile {
 	}
 }
 
+// NewGeminiProfile returns a ProviderProfile for Google Gemini using the given
+// model.
 func NewGeminiProfile(model string) ProviderProfile {
 	bp := buildBaseProfile(profileSpec{
 		id:              "google",
@@ -736,6 +747,7 @@ func NewGeminiProfile(model string) ProviderProfile {
 	return &bp
 }
 
+// NewMiniMaxProfile returns a ProviderProfile for MiniMax using the given model.
 func NewMiniMaxProfile(model string) ProviderProfile {
 	bp := buildBaseProfile(profileSpec{
 		id:              "minimax",
@@ -865,6 +877,10 @@ func resolveOpenRouterAnthropicCtxAndEfforts(lookup func(string) *llm.ModelInfo,
 	return ctx, efforts
 }
 
+// NewOpenRouterAnthropicProfile returns a ProviderProfile for the
+// openrouter-anthropic provider using the given model, resolving the context
+// window, reasoning effort levels, and web-search support from the embedded
+// model catalog.
 func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 	model = strings.TrimSpace(model)
 	// Resolve catalog metadata. The openrouter-anthropic profile draws

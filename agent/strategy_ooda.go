@@ -26,6 +26,7 @@ func NewOODAStrategy(cm *ContextManager, host StrategyHost) (*OODAStrategy, erro
 	}, nil
 }
 
+// Name returns the strategy's identifier, "ooda".
 func (s *OODAStrategy) Name() string { return "ooda" }
 
 // ManageContext applies normal compaction layers from SessionLogStrategy,

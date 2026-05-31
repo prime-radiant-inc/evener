@@ -2,6 +2,7 @@ package llm
 
 import "errors"
 
+// ErrStreamUnsupported indicates that streaming is not supported.
 var ErrStreamUnsupported = errors.New("stream unsupported")
 
 // Stream is an asynchronous iterator of StreamEvent values. Implementations must
@@ -11,26 +12,44 @@ type Stream interface {
 	Close() error
 }
 
+// StreamEventType identifies the kind of a StreamEvent.
 type StreamEventType string
 
 const (
-	StreamEventStreamStart    StreamEventType = "STREAM_START"
-	StreamEventTextStart      StreamEventType = "TEXT_START"
-	StreamEventTextDelta      StreamEventType = "TEXT_DELTA"
-	StreamEventTextEnd        StreamEventType = "TEXT_END"
+	// StreamEventStreamStart marks the start of the stream.
+	StreamEventStreamStart StreamEventType = "STREAM_START"
+	// StreamEventTextStart marks the start of a text segment.
+	StreamEventTextStart StreamEventType = "TEXT_START"
+	// StreamEventTextDelta carries an incremental chunk of text.
+	StreamEventTextDelta StreamEventType = "TEXT_DELTA"
+	// StreamEventTextEnd marks the end of a text segment.
+	StreamEventTextEnd StreamEventType = "TEXT_END"
+	// StreamEventReasoningStart marks the start of a reasoning segment.
 	StreamEventReasoningStart StreamEventType = "REASONING_START"
+	// StreamEventReasoningDelta carries an incremental chunk of reasoning.
 	StreamEventReasoningDelta StreamEventType = "REASONING_DELTA"
-	StreamEventReasoningEnd   StreamEventType = "REASONING_END"
-	StreamEventToolCallStart  StreamEventType = "TOOL_CALL_START"
-	StreamEventToolCallDelta  StreamEventType = "TOOL_CALL_DELTA"
-	StreamEventToolCallEnd    StreamEventType = "TOOL_CALL_END"
-	StreamEventStepFinish     StreamEventType = "STEP_FINISH"
-	StreamEventObjectDelta    StreamEventType = "OBJECT_DELTA"
-	StreamEventFinish         StreamEventType = "FINISH"
-	StreamEventError          StreamEventType = "ERROR"
-	StreamEventProviderEvent  StreamEventType = "PROVIDER_EVENT"
+	// StreamEventReasoningEnd marks the end of a reasoning segment.
+	StreamEventReasoningEnd StreamEventType = "REASONING_END"
+	// StreamEventToolCallStart marks the start of a tool call.
+	StreamEventToolCallStart StreamEventType = "TOOL_CALL_START"
+	// StreamEventToolCallDelta carries an incremental chunk of a tool call.
+	StreamEventToolCallDelta StreamEventType = "TOOL_CALL_DELTA"
+	// StreamEventToolCallEnd marks the end of a tool call.
+	StreamEventToolCallEnd StreamEventType = "TOOL_CALL_END"
+	// StreamEventStepFinish marks the completion of a step.
+	StreamEventStepFinish StreamEventType = "STEP_FINISH"
+	// StreamEventObjectDelta carries an incremental chunk of structured output.
+	StreamEventObjectDelta StreamEventType = "OBJECT_DELTA"
+	// StreamEventFinish marks the completion of the stream.
+	StreamEventFinish StreamEventType = "FINISH"
+	// StreamEventError reports an error that occurred during streaming.
+	StreamEventError StreamEventType = "ERROR"
+	// StreamEventProviderEvent carries a provider-specific passthrough event.
+	StreamEventProviderEvent StreamEventType = "PROVIDER_EVENT"
 )
 
+// StreamEvent is a single event emitted on a Stream. Type indicates which kind
+// of event it is and therefore which of the remaining fields are populated.
 type StreamEvent struct {
 	Type StreamEventType `json:"type"`
 

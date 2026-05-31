@@ -8,7 +8,8 @@ import (
 )
 
 // ParseRateLimitHeaders extracts rate limit info from standard x-ratelimit-*
-// response headers. Returns nil if no rate limit headers are present.
+// response headers. Returns nil if none of the recognized headers are present
+// and parseable.
 func ParseRateLimitHeaders(h http.Header) *RateLimitInfo {
 	info := RateLimitInfo{}
 	found := false

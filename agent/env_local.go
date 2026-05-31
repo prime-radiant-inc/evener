@@ -25,18 +25,27 @@ import (
 type EnvVarPolicy int
 
 const (
-	EnvPolicyDefault  EnvVarPolicy = iota // Inherit all non-sensitive (current behavior)
-	EnvPolicyAll                          // Inherit everything including sensitive
-	EnvPolicyNone                         // Start clean, only explicitly passed vars
-	EnvPolicyCoreOnly                     // Only PATH, HOME, USER, SHELL, LANG, TERM, TMPDIR + language paths
+	// EnvPolicyDefault inherits all non-sensitive environment variables (the current default behavior).
+	EnvPolicyDefault EnvVarPolicy = iota // Inherit all non-sensitive (current behavior)
+	// EnvPolicyAll inherits every environment variable, including sensitive ones.
+	EnvPolicyAll // Inherit everything including sensitive
+	// EnvPolicyNone starts with a clean environment, passing only explicitly provided vars.
+	EnvPolicyNone // Start clean, only explicitly passed vars
+	// EnvPolicyCoreOnly inherits only a core set of variables (PATH, HOME, USER, SHELL, LANG, TERM, TMPDIR) plus language toolchain paths.
+	EnvPolicyCoreOnly // Only PATH, HOME, USER, SHELL, LANG, TERM, TMPDIR + language paths
 )
 
+// LocalExecutionEnvironment runs commands and file operations on the local
+// machine, rooted at RootDir and governed by EnvPolicy. It tracks the PIDs of
+// started processes so they can be terminated on cleanup.
 type LocalExecutionEnvironment struct {
 	RootDir     string
 	EnvPolicy   EnvVarPolicy
 	runningPIDs *sync.Map // pid (int) → struct{}
 }
 
+// NewLocalExecutionEnvironment returns a LocalExecutionEnvironment rooted at
+// rootDir with a fresh PID tracker.
 func NewLocalExecutionEnvironment(rootDir string) *LocalExecutionEnvironment {
 	return &LocalExecutionEnvironment{
 		RootDir:     rootDir,
@@ -54,10 +63,15 @@ func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecu
 	}
 }
 
+// Initialize prepares the environment for use. The local environment needs no
+// setup, so this always returns nil.
 func (e *LocalExecutionEnvironment) Initialize() error {
 	return nil // Local env needs no setup
 }
 
+// Cleanup terminates any tracked processes by sending SIGTERM to each process
+// group, waiting two seconds for graceful shutdown, then sending SIGKILL to
+// every tracked process group (a no-op for those that already exited).
 func (e *LocalExecutionEnvironment) Cleanup() {
 	// Collect running PIDs and send SIGTERM.
 	var pids []int
@@ -78,8 +92,11 @@ func (e *LocalExecutionEnvironment) Cleanup() {
 	}
 }
 
+// WorkingDirectory returns the environment's root directory.
 func (e *LocalExecutionEnvironment) WorkingDirectory() string { return e.RootDir }
 
+// Platform returns the operating system family as one of "darwin", "windows",
+// or "linux" (the default for any other GOOS).
 func (e *LocalExecutionEnvironment) Platform() string {
 	switch runtime.GOOS {
 	case "darwin":
@@ -91,6 +108,9 @@ func (e *LocalExecutionEnvironment) Platform() string {
 	}
 }
 
+// OSVersion returns the OS version string. On darwin and linux it shells out to
+// "uname -rs"; on windows it runs "ver". If the command fails it falls back to
+// "GOOS/GOARCH".
 func (e *LocalExecutionEnvironment) OSVersion() string {
 	switch runtime.GOOS {
 	case "darwin", "linux":
@@ -107,6 +127,12 @@ func (e *LocalExecutionEnvironment) OSVersion() string {
 	return runtime.GOOS + "/" + runtime.GOARCH // fallback
 }
 
+// ReadFile reads the file at path (resolved relative to RootDir) and returns
+// its contents. Image and PDF files are returned as base64-encoded data with a
+// descriptive header. Files containing a NUL byte are rejected as binary. For
+// text files, lines are returned numbered, starting at offsetLine (default 1)
+// and limited to limitLines lines (default 2000); CRLF line endings are
+// normalized to LF.
 func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limitLines *int) (string, error) {
 	abs := e.resolve(path)
 	b, err := os.ReadFile(abs)
@@ -152,6 +178,9 @@ func (e *LocalExecutionEnvironment) ReadFile(path string, offsetLine *int, limit
 	return out.String(), nil
 }
 
+// WriteFile writes content to the file at path, creating any missing parent
+// directories. The path must resolve to a location under RootDir. It returns a
+// human-readable summary of the bytes written.
 func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (string, error) {
 	abs, err := e.resolveWrite(path)
 	if err != nil {
@@ -166,6 +195,11 @@ func (e *LocalExecutionEnvironment) WriteFile(path string, content string) (stri
 	return fmt.Sprintf("wrote %d bytes to %s", len(content), path), nil
 }
 
+// EditFile replaces occurrences of oldString with newString in the file at
+// path, which must resolve to a location under RootDir. If oldString is not
+// found exactly, a whitespace-normalized fuzzy match is attempted. Unless
+// replaceAll is true, oldString must match exactly once. It returns a summary
+// of the number of replacements made.
 func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newString string, replaceAll bool) (string, error) {
 	abs, err := e.resolveWrite(path)
 	if err != nil {
@@ -270,11 +304,17 @@ func detectDocumentFormat(path string, data []byte) string {
 	return ""
 }
 
+// FileExists reports whether a file or directory exists at path (resolved
+// relative to RootDir).
 func (e *LocalExecutionEnvironment) FileExists(path string) bool {
 	_, err := os.Stat(e.resolve(path))
 	return err == nil
 }
 
+// ListDirectory returns the entries under path (resolved relative to RootDir),
+// recursing up to depth levels (depth <= 0 is treated as 1). Entries are sorted
+// by name within each directory, nested names are prefixed with their relative
+// path, and file sizes are populated.
 func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]DirEntry, error) {
 	if depth <= 0 {
 		depth = 1
@@ -317,6 +357,10 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 	return out, nil
 }
 
+// Glob returns absolute paths matching pattern (doublestar syntax) under
+// basePath, which defaults to RootDir and is resolved relative to RootDir when
+// not absolute. Results are sorted by modification time, newest first, with
+// ties broken by path.
 func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string) ([]string, error) {
 	base := strings.TrimSpace(basePath)
 	if base == "" {
@@ -347,6 +391,12 @@ func (e *LocalExecutionEnvironment) Glob(pattern string, basePath string) ([]str
 	return abs, nil
 }
 
+// Grep searches for pattern under path (defaulting to RootDir), using ripgrep
+// when available and falling back to a native Go regex search otherwise.
+// globFilter restricts which files are searched, caseInsensitive enables
+// case-insensitive matching, and maxResults caps the output (default 100).
+// outputMode selects the result format: "files_with_matches", "count", or
+// matching lines otherwise.
 func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
 	rg, err := exec.LookPath("rg")
 	if err != nil {
@@ -497,6 +547,13 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 	return strings.Join(results, "\n"), nil
 }
 
+// ExecCommand runs command through the platform shell in its own process group,
+// rooted at workingDir (defaulting to RootDir and required to be under RootDir).
+// The environment is built from EnvPolicy plus envVars, with any local
+// virtualenv bin directory prepended to PATH. The command is terminated if ctx
+// is cancelled or timeoutMS elapses (default 10000ms), escalating from SIGTERM
+// to SIGKILL. It returns an ExecResult capturing stdout, stderr, exit code,
+// timeout status, and duration.
 func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
 	if timeoutMS <= 0 {
 		timeoutMS = 10_000

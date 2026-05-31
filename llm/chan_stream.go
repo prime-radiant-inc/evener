@@ -14,8 +14,13 @@ type chanStream struct {
 	done     chan struct{}
 }
 
+// ChanStream is a channel-backed stream of StreamEvents with a single producer
+// goroutine and a single consumer. The consumer reads from Events, and can stop
+// the producer cooperatively via Close.
 type ChanStream struct{ chanStream }
 
+// NewChanStream returns a ChanStream with a buffered event channel. cancel, if
+// non-nil, is invoked by Close to stop the underlying producer.
 func NewChanStream(cancel context.CancelFunc) *ChanStream {
 	return &ChanStream{chanStream{
 		events:  make(chan StreamEvent, 128),
@@ -25,8 +30,13 @@ func NewChanStream(cancel context.CancelFunc) *ChanStream {
 	}}
 }
 
+// Events returns the receive-only channel of stream events for the consumer.
 func (s *ChanStream) Events() <-chan StreamEvent { return s.events }
 
+// Close stops the stream cooperatively: on the first call it invokes the cancel
+// function (if any) and signals senders to stop blocking and drop events, then
+// blocks until the producer has finished via CloseSend. Subsequent calls only
+// wait for that completion. It always returns nil.
 func (s *ChanStream) Close() error {
 	s.once.Do(func() {
 		if s.cancel != nil {

@@ -12,6 +12,9 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v5"
 )
 
+// Tool is a callable tool made available to the model. It pairs a ToolDefinition
+// with an optional Execute handler; tools without an Execute handler are passive
+// (their calls are returned to the caller rather than run by the tool loop).
 type Tool struct {
 	Definition ToolDefinition
 	Execute    func(ctx context.Context, args any) (any, error)
@@ -36,6 +39,9 @@ func ToolCallContextFromCtx(ctx context.Context) (ToolCallContext, bool) {
 	return v, ok
 }
 
+// GenerateOptions configures a Generate call: the client, model/provider,
+// prompt or messages, tools and tool-loop behavior, sampling and request
+// parameters, retry policy, and operation timeouts.
 type GenerateOptions struct {
 	Client *Client
 
@@ -102,6 +108,9 @@ type GenerateOptions struct {
 	TimeoutPerStep time.Duration
 }
 
+// StepResult holds the outcome of a single generation step: the model's text,
+// reasoning, tool calls and their results, finish reason, token usage, the raw
+// Response, and any warnings.
 type StepResult struct {
 	Text         string
 	Reasoning    string
@@ -113,6 +122,10 @@ type StepResult struct {
 	Warnings     []Warning
 }
 
+// GenerateResult is the result of a Generate call. Its Text, Reasoning,
+// ToolCalls, ToolResults, FinishReason, Usage, and Response mirror the final
+// step, while TotalUsage aggregates usage across all steps and Steps holds the
+// per-step results.
 type GenerateResult struct {
 	Text         string
 	Reasoning    string
@@ -216,6 +229,13 @@ func prepareGeneration(opts GenerateOptions) (*generationState, error) {
 	}, nil
 }
 
+// Generate runs a generation request described by opts. It calls the model
+// (with retries per the configured policy), and when the model requests tool
+// calls it executes any tools that have an Execute handler and feeds the
+// results back, looping up to the configured tool-round budget or until a
+// StopWhen predicate halts it. Passive tool calls (no Execute handler) cause it
+// to return the calls to the caller. It returns a GenerateResult aggregating the
+// steps and total usage.
 func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error) {
 	gs, err := prepareGeneration(opts)
 	if err != nil {

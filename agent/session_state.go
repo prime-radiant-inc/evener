@@ -9,10 +9,14 @@ import (
 type SessionState string
 
 const (
-	SessionIdle          SessionState = "idle"
-	SessionProcessing    SessionState = "active"
+	// SessionIdle indicates the session is not currently processing or awaiting input.
+	SessionIdle SessionState = "idle"
+	// SessionProcessing indicates the session is actively processing.
+	SessionProcessing SessionState = "active"
+	// SessionAwaitingInput indicates the session is waiting for input.
 	SessionAwaitingInput SessionState = "awaiting"
-	SessionClosed        SessionState = "closed"
+	// SessionClosed indicates the session has been closed.
+	SessionClosed SessionState = "closed"
 )
 
 // State returns the current session state.

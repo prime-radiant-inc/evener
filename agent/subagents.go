@@ -18,9 +18,12 @@ const minWaitTimeoutMS = 120_000 // 2 minutes
 type SubAgentStatus string
 
 const (
-	SubAgentRunning   SubAgentStatus = "running"
+	// SubAgentRunning indicates the sub-agent is currently executing a run.
+	SubAgentRunning SubAgentStatus = "running"
+	// SubAgentCompleted indicates the sub-agent's run finished without error.
 	SubAgentCompleted SubAgentStatus = "completed"
-	SubAgentFailed    SubAgentStatus = "failed"
+	// SubAgentFailed indicates the sub-agent's run finished with an error.
+	SubAgentFailed SubAgentStatus = "failed"
 )
 
 // SubAgentResult is the structured output from a completed sub-agent.

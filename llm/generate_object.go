@@ -9,11 +9,19 @@ import (
 	"sync"
 )
 
+// GenerateObjectOptions configures object generation. It embeds GenerateOptions
+// and adds the JSON schema the generated output must conform to.
 type GenerateObjectOptions struct {
 	GenerateOptions
 	Schema map[string]any
 }
 
+// GenerateObject calls Generate with a json_schema response format derived from
+// opts.Schema, strips any markdown code fence from the result text, parses it as
+// JSON, and validates it against the schema. It returns an error if the schema is
+// nil, if the underlying generation fails, or if the output cannot be parsed or
+// fails schema validation. On success the parsed object is stored in the result's
+// Output field.
 func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateResult, error) {
 	if opts.Schema == nil {
 		return nil, &ConfigurationError{Message: "schema is required"}

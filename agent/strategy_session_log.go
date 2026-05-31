@@ -35,8 +35,10 @@ func NewSessionLogStrategy(cm *ContextManager, host StrategyHost) (*SessionLogSt
 	}, nil
 }
 
+// Name returns the strategy's identifier, "session-log".
 func (s *SessionLogStrategy) Name() string { return "session-log" }
 
+// Tools returns the tools provided by this strategy, namely the recall tool.
 func (s *SessionLogStrategy) Tools() []RegisteredTool {
 	return []RegisteredTool{sessionLogRecallToolDef(s)}
 }

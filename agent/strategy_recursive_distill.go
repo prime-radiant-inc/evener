@@ -25,6 +25,8 @@ type RecursiveDistillStrategy struct {
 	lastMacroAt    int // turn count at last macro-summary
 }
 
+// NewRecursiveDistillStrategy returns a RecursiveDistillStrategy bound to the
+// given ContextManager with empty micro- and macro-summary hierarchies.
 func NewRecursiveDistillStrategy(cm *ContextManager) *RecursiveDistillStrategy {
 	return &RecursiveDistillStrategy{
 		cm:             cm,
@@ -33,9 +35,15 @@ func NewRecursiveDistillStrategy(cm *ContextManager) *RecursiveDistillStrategy {
 	}
 }
 
-func (s *RecursiveDistillStrategy) Name() string            { return "recursive-distill" }
+// Name returns the strategy identifier "recursive-distill".
+func (s *RecursiveDistillStrategy) Name() string { return "recursive-distill" }
+
+// Tools returns nil, as this strategy registers no tools.
 func (s *RecursiveDistillStrategy) Tools() []RegisteredTool { return nil }
 
+// ManageContext runs the standard compact compaction and then, if any
+// distilled summaries exist, injects the distilled memory hierarchy as a
+// steering message at the end of history.
 func (s *RecursiveDistillStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
 	// Run standard compact compaction.
 	s.cm.MaybeCompact(ctx, history, sysPromptChars, emitFn)

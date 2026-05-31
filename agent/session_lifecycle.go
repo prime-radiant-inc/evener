@@ -154,6 +154,13 @@ func (s *Session) buildCompactionMeta() CompactionMeta {
 	return meta
 }
 
+// Close shuts the session down once (subsequent calls are no-ops via
+// closeOnce). It marks the session closing/closed, cancels in-flight
+// LLM calls, cleans up the environment (killing child processes), runs the
+// SessionEnd hooks, emits EventSessionEnd with the final state, closes
+// subagents, the MCP manager, and the transcript, exports the ATIF trajectory
+// when configured for the root session, removes any embedded skills directory,
+// waits for in-flight event emitters to finish, and closes the events channel.
 func (s *Session) Close() {
 	s.closeOnce.Do(func() {
 		s.responseSideEffectsMu.Lock()
@@ -241,6 +248,14 @@ func (s *Session) Close() {
 	})
 }
 
+// ProcessInput processes a single user input (with optional image attachments)
+// through to completion and returns the accumulated assistant output. It runs
+// the input, then loops to drain per-turn follow-ups and queued user messages,
+// running each as a further turn. On a cancelled turn it applies interrupt
+// semantics — flipping the session back to idle (unless closed), appending a
+// system-reminder interrupt marker, and optionally draining the queue head —
+// then returns the partial output with the error. It emits EventSessionEnd for
+// the input and returns an error when the session is closed or a turn fails.
 func (s *Session) ProcessInput(ctx context.Context, input string, images []ImageAttachment) (string, error) {
 	// Reset so SESSION_END can fire at the end of this input's processing.
 	s.mu.Lock()

@@ -2,6 +2,11 @@ package agent
 
 import "primeradiant.com/serf/llm"
 
+// SessionConfig holds the configuration options for an agent session,
+// covering tool-round and turn limits, command timeouts, prompt composition,
+// context-management strategy, sub-agent behavior, LLM retry and fallback
+// settings, and session persistence. Zero-valued fields are filled in by
+// applyDefaults where defaults apply.
 type SessionConfig struct {
 	MaxToolRoundsPerInput   int `json:"max_tool_rounds_per_input,omitempty"`
 	MaxTurns                int `json:"max_turns,omitempty"`

@@ -21,15 +21,24 @@ import (
 type HookEvent string
 
 const (
-	HookPreToolUse       HookEvent = "PreToolUse"
-	HookPostToolUse      HookEvent = "PostToolUse"
-	HookStop             HookEvent = "Stop"
-	HookSubagentStop     HookEvent = "SubagentStop"
+	// HookPreToolUse fires before a tool is used.
+	HookPreToolUse HookEvent = "PreToolUse"
+	// HookPostToolUse fires after a tool is used.
+	HookPostToolUse HookEvent = "PostToolUse"
+	// HookStop fires when the session stops.
+	HookStop HookEvent = "Stop"
+	// HookSubagentStop fires when a subagent stops.
+	HookSubagentStop HookEvent = "SubagentStop"
+	// HookUserPromptSubmit fires when a user prompt is submitted.
 	HookUserPromptSubmit HookEvent = "UserPromptSubmit"
-	HookSessionStart     HookEvent = "SessionStart"
-	HookSessionEnd       HookEvent = "SessionEnd"
-	HookPreCompact       HookEvent = "PreCompact"
-	HookNotification     HookEvent = "Notification"
+	// HookSessionStart fires when a session starts.
+	HookSessionStart HookEvent = "SessionStart"
+	// HookSessionEnd fires when a session ends.
+	HookSessionEnd HookEvent = "SessionEnd"
+	// HookPreCompact fires before compaction.
+	HookPreCompact HookEvent = "PreCompact"
+	// HookNotification fires on a notification.
+	HookNotification HookEvent = "Notification"
 )
 
 // SessionStartKind is the matcher target used for SessionStart hooks.
@@ -38,9 +47,13 @@ const (
 type SessionStartKind string
 
 const (
+	// SessionStartKindStartup targets ordinary session startup.
 	SessionStartKindStartup SessionStartKind = "startup"
-	SessionStartKindResume  SessionStartKind = "resume"
-	SessionStartKindClear   SessionStartKind = "clear"
+	// SessionStartKindResume targets session resume.
+	SessionStartKindResume SessionStartKind = "resume"
+	// SessionStartKindClear targets session clear.
+	SessionStartKindClear SessionStartKind = "clear"
+	// SessionStartKindCompact targets the compaction lifecycle boundary.
 	SessionStartKindCompact SessionStartKind = "compact"
 )
 

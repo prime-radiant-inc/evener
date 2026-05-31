@@ -8,8 +8,12 @@ import (
 	"time"
 )
 
+// SleepFunc pauses for the duration d, returning early with an error if ctx is
+// cancelled before d elapses.
 type SleepFunc func(ctx context.Context, d time.Duration) error
 
+// DefaultSleep waits for d, returning nil once it elapses or ctx.Err() if ctx
+// is cancelled first. A non-positive d returns immediately.
 func DefaultSleep(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
 		return nil

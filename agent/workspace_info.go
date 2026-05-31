@@ -42,8 +42,7 @@ var excludedDirs = map[string]bool{
 }
 
 // ScanWorkspace walks the working directory and returns structured context
-// about its contents: a directory tree, detected test files, and build
-// system information.
+// about its contents: a directory tree and build system information.
 func ScanWorkspace(root string) WorkspaceInfo {
 	var ws WorkspaceInfo
 

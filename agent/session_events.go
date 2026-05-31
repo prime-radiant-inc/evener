@@ -6,6 +6,7 @@ import (
 	"time"
 )
 
+// Events returns the session's receive-only channel of SessionEvent values.
 func (s *Session) Events() <-chan SessionEvent { return s.events }
 
 func (s *Session) emitSessionStartEnvelope(start SessionStartData, promptSources []PromptSource) {

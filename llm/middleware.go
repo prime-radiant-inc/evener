@@ -2,7 +2,10 @@ package llm
 
 import "context"
 
+// CompleteFunc performs a non-streaming completion for req and returns the Response.
 type CompleteFunc func(ctx context.Context, req Request) (Response, error)
+
+// StreamFunc performs a streaming completion for req and returns the Stream.
 type StreamFunc func(ctx context.Context, req Request) (Stream, error)
 
 // Middleware wraps provider calls for cross-cutting concerns. Middleware is applied in
@@ -12,11 +15,15 @@ type Middleware interface {
 	WrapStream(next StreamFunc) StreamFunc
 }
 
+// MiddlewareFunc adapts ordinary functions to the Middleware interface. A nil Complete
+// or Stream field means that phase is passed through to next unchanged.
 type MiddlewareFunc struct {
 	Complete func(ctx context.Context, req Request, next CompleteFunc) (Response, error)
 	Stream   func(ctx context.Context, req Request, next StreamFunc) (Stream, error)
 }
 
+// WrapComplete returns next unchanged when Complete is nil; otherwise it returns a
+// CompleteFunc that invokes Complete with next.
 func (m MiddlewareFunc) WrapComplete(next CompleteFunc) CompleteFunc {
 	if m.Complete == nil {
 		return next
@@ -26,6 +33,8 @@ func (m MiddlewareFunc) WrapComplete(next CompleteFunc) CompleteFunc {
 	}
 }
 
+// WrapStream returns next unchanged when Stream is nil; otherwise it returns a
+// StreamFunc that invokes Stream with next.
 func (m MiddlewareFunc) WrapStream(next StreamFunc) StreamFunc {
 	if m.Stream == nil {
 		return next

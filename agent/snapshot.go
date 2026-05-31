@@ -59,6 +59,9 @@ type SessionMeta struct {
 	IsSubagent bool `json:"is_subagent,omitempty"`
 }
 
+// UnmarshalJSON decodes a SessionMeta from JSON, falling back to the legacy
+// "original_task" field for OriginalPrompt when the current "original_prompt"
+// field is empty or absent.
 func (m *SessionMeta) UnmarshalJSON(data []byte) error {
 	type sessionMetaAlias SessionMeta
 	var aux struct {

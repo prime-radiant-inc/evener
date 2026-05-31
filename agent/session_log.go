@@ -139,7 +139,8 @@ func (l *SessionLog) EntriesRange(start, end int) []SessionLogEntry {
 	return result
 }
 
-// String returns a human-readable rendering of the log for injection into context.
+// String returns a human-readable rendering of the log for injection into
+// context, excluding advisory entries.
 func (l *SessionLog) String() string {
 	l.mu.RLock()
 	defer l.mu.RUnlock()

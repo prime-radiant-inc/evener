@@ -24,8 +24,11 @@ type StreamResult struct {
 	done chan struct{}
 }
 
+// Events returns the channel of StreamEvent values from the underlying stream.
 func (r *StreamResult) Events() <-chan StreamEvent { return r.stream.Events() }
-func (r *StreamResult) Close() error               { return r.stream.Close() }
+
+// Close closes the underlying stream.
+func (r *StreamResult) Close() error { return r.stream.Close() }
 
 // TextStream returns a channel that yields only the text delta strings from the
 // stream. The channel is closed when the underlying event stream ends.
@@ -42,6 +45,8 @@ func (r *StreamResult) TextStream() <-chan string {
 	return ch
 }
 
+// Response blocks until the stream is complete, then returns a copy of the final
+// accumulated response and any terminal error. It returns an error if r is nil.
 func (r *StreamResult) Response() (*Response, error) {
 	if r == nil {
 		return nil, fmt.Errorf("stream result is nil")
@@ -56,6 +61,8 @@ func (r *StreamResult) Response() (*Response, error) {
 	return nil, r.err
 }
 
+// PartialResponse returns a copy of the most recently accumulated partial response,
+// or nil if r is nil or no partial response is available yet.
 func (r *StreamResult) PartialResponse() *Response {
 	if r == nil {
 		return nil

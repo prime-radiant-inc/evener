@@ -21,22 +21,45 @@ type Error interface {
 	Raw() any
 }
 
+// ConfigurationError reports a configuration problem (e.g. invalid or missing
+// setup) and carries an optional underlying Cause. It satisfies the Error
+// interface with empty provider, behavior tag, status code, and error code,
+// and is never retryable.
 type ConfigurationError struct {
 	Message string
 	Cause   error
 }
 
+// Error returns the configuration error message, prefixed with
+// "configuration error: " and with surrounding whitespace trimmed.
 func (e *ConfigurationError) Error() string {
 	return "configuration error: " + strings.TrimSpace(e.Message)
 }
-func (e *ConfigurationError) Provider() string           { return "" }
-func (e *ConfigurationError) BehaviorTag() string        { return "" }
-func (e *ConfigurationError) StatusCode() int            { return 0 }
-func (e *ConfigurationError) ErrorCode() string          { return "" }
-func (e *ConfigurationError) Retryable() bool            { return false }
+
+// Provider returns the empty string; configuration errors are not attributed
+// to a provider.
+func (e *ConfigurationError) Provider() string { return "" }
+
+// BehaviorTag returns the empty string; configuration errors carry no behavior tag.
+func (e *ConfigurationError) BehaviorTag() string { return "" }
+
+// StatusCode returns 0; configuration errors have no HTTP status.
+func (e *ConfigurationError) StatusCode() int { return 0 }
+
+// ErrorCode returns the empty string; configuration errors carry no error code.
+func (e *ConfigurationError) ErrorCode() string { return "" }
+
+// Retryable returns false; configuration errors are not retryable.
+func (e *ConfigurationError) Retryable() bool { return false }
+
+// RetryAfter returns nil; configuration errors have no retry delay.
 func (e *ConfigurationError) RetryAfter() *time.Duration { return nil }
-func (e *ConfigurationError) Raw() any                   { return nil }
-func (e *ConfigurationError) Unwrap() error              { return e.Cause }
+
+// Raw returns nil; configuration errors have no raw response.
+func (e *ConfigurationError) Raw() any { return nil }
+
+// Unwrap returns the underlying Cause, if any.
+func (e *ConfigurationError) Unwrap() error { return e.Cause }
 
 type httpErrorBase struct {
 	provider    string
@@ -68,16 +91,50 @@ func (e *httpErrorBase) RetryAfter() *time.Duration { return e.retryAfter }
 func (e *httpErrorBase) Raw() any                   { return e.rawResponse }
 func (e *httpErrorBase) Unwrap() error              { return e.cause }
 
+// InvalidRequestError reports a malformed or rejected request, typically from
+// an HTTP 400 or 422 status. It is not retryable.
 type InvalidRequestError struct{ httpErrorBase }
+
+// AuthenticationError reports failed authentication, typically from an HTTP 401
+// status. It is not retryable.
 type AuthenticationError struct{ httpErrorBase }
+
+// AccessDeniedError reports a forbidden request, typically from an HTTP 403
+// status. It is not retryable, except for transient provider bans (e.g. OpenAI
+// cyber_policy_violation) which are marked retryable.
 type AccessDeniedError struct{ httpErrorBase }
+
+// NotFoundError reports a missing resource, typically from an HTTP 404 status
+// or a "not found" message. It is not retryable.
 type NotFoundError struct{ httpErrorBase }
+
+// RequestTimeoutError reports a request timeout, from an HTTP 408 status or a
+// non-HTTP deadline. It is retryable.
 type RequestTimeoutError struct{ httpErrorBase }
+
+// ContextLengthError reports that the request exceeded the model's context
+// window, typically from an HTTP 413 status or a "context length" message. It
+// is not retryable.
 type ContextLengthError struct{ httpErrorBase }
+
+// ContentFilterError reports that the request or response was blocked by a
+// content filter or safety/usage policy. It is not retryable.
 type ContentFilterError struct{ httpErrorBase }
+
+// QuotaExceededError reports that a quota or billing limit was exceeded,
+// detected from a "quota" or "billing" message. It is not retryable.
 type QuotaExceededError struct{ httpErrorBase }
+
+// RateLimitError reports that a rate limit was hit, typically from an HTTP 429
+// status. It is retryable.
 type RateLimitError struct{ httpErrorBase }
+
+// ServerError reports a server-side failure, typically from an HTTP 500, 502,
+// 503, or 504 status. It is retryable.
 type ServerError struct{ httpErrorBase }
+
+// UnknownHTTPError reports an HTTP failure with a status code that does not map
+// to a more specific error type. It defaults to retryable.
 type UnknownHTTPError struct{ httpErrorBase }
 
 // extractErrorCode attempts to find an error code from a raw API response body.
@@ -159,6 +216,12 @@ func StampErrorBehaviorTag(err error, tag string) error {
 	return err
 }
 
+// ErrorFromHTTPStatus maps an HTTP status code to the corresponding Error
+// implementation, populating it with the provider, message, raw response, and
+// retry-after delay, and an error code extracted from raw. The returned error's
+// retryable flag and concrete type are determined by the status code; 400/422
+// responses are further refined by message via classifyByMessage. Unrecognized
+// status codes yield a retryable UnknownHTTPError.
 func ErrorFromHTTPStatus(provider string, statusCode int, message string, raw any, retryAfter *time.Duration) error {
 	base := httpErrorBase{
 		provider:    strings.TrimSpace(provider),

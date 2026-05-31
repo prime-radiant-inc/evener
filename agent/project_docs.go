@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// ProjectDoc holds a single loaded project instruction file: its identifier path and raw content.
 type ProjectDoc struct {
 	// Path is a stable, human-friendly identifier for the instruction file (relative to git root when available).
 	Path string

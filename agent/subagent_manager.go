@@ -3,9 +3,10 @@ package agent
 import "sync"
 
 // subagentManager owns the parent session's child-subagent map. It exists to
-// break the subagent⇄session back-reference cycle: subagents no longer hold a
-// *Session, they hold the parent's emit closure, and the parent reaches its
-// children only through this manager.
+// break the subagent⇄session back-reference cycle: a subagent no longer holds a
+// back-reference to its parent *Session, it holds the parent's emit closure, and
+// the parent reaches its children only through this manager. (A subagent still
+// holds sub.sess, its own child *Session, as downward composition.)
 //
 // Lock ordering: the manager mutex is the OUTER lock and each sub.mu is the
 // INNER lock. Callers that need both must take the manager mutex first. The

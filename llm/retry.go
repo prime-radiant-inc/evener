@@ -2,6 +2,9 @@ package llm
 
 import "time"
 
+// RetryPolicy configures how retry attempts are spaced, including the maximum
+// number of retries, the exponential backoff delays, optional jitter, and an
+// optional callback invoked before each retry.
 type RetryPolicy struct {
 	// MaxRetries is the number of retry attempts (not counting the initial attempt).
 	MaxRetries int
@@ -22,6 +25,9 @@ type RetryPolicy struct {
 	OnRetry func(err error, attempt int, delay time.Duration)
 }
 
+// DefaultRetryPolicy returns a RetryPolicy with 4 retries, a 1 second base
+// delay, a 60 second maximum delay, a backoff multiplier of 2.0, and jitter
+// enabled.
 func DefaultRetryPolicy() RetryPolicy {
 	return RetryPolicy{
 		MaxRetries:        4,

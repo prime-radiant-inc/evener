@@ -27,6 +27,8 @@ type MemoryCrystalsStrategy struct {
 	crystals []MemoryCrystal
 }
 
+// NewMemoryCrystalsStrategy returns a MemoryCrystalsStrategy that uses the
+// given ContextManager and starts with an empty crystal bank.
 func NewMemoryCrystalsStrategy(cm *ContextManager) *MemoryCrystalsStrategy {
 	return &MemoryCrystalsStrategy{
 		cm:       cm,
@@ -34,9 +36,15 @@ func NewMemoryCrystalsStrategy(cm *ContextManager) *MemoryCrystalsStrategy {
 	}
 }
 
-func (s *MemoryCrystalsStrategy) Name() string            { return "memory-crystals" }
+// Name returns the strategy's identifier, "memory-crystals".
+func (s *MemoryCrystalsStrategy) Name() string { return "memory-crystals" }
+
+// Tools returns the tools registered by this strategy; it registers none.
 func (s *MemoryCrystalsStrategy) Tools() []RegisteredTool { return nil }
 
+// ManageContext runs standard compact compaction and then, if any crystals
+// have been collected, injects the crystal bank into history as a steering
+// message.
 func (s *MemoryCrystalsStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
 	// Run standard compact compaction.
 	s.cm.MaybeCompact(ctx, history, sysPromptChars, emitFn)

@@ -10,9 +10,9 @@ type ImageAttachment struct {
 	Name      string `json:"name,omitempty"`
 }
 
-// userInputImagesFromAttachments shapes the slice the way the
-// USER_INPUT event payload expects (smaller field set than the
-// internal type and conventionally nil-when-empty).
+// userInputImagesFromAttachments converts the attachments into the
+// UserInputImage slice the USER_INPUT event payload expects,
+// returning nil when there are no images.
 func userInputImagesFromAttachments(images []ImageAttachment) []UserInputImage {
 	if len(images) == 0 {
 		return nil

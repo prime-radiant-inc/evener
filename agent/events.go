@@ -7,38 +7,69 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// EventKind identifies the type of a SessionEvent.
 type EventKind string
 
+// Event kinds emitted on a session's event stream.
 const (
-	EventSessionStart        EventKind = "SESSION_START"
-	EventSessionEnd          EventKind = "SESSION_END"
-	EventUserInput           EventKind = "USER_INPUT"
-	EventAssistantTextStart  EventKind = "ASSISTANT_TEXT_START"
-	EventAssistantTextDelta  EventKind = "ASSISTANT_TEXT_DELTA"
-	EventAssistantTextEnd    EventKind = "ASSISTANT_TEXT_END"
-	EventToolCallStart       EventKind = "TOOL_CALL_START"
+	// EventSessionStart marks the start of a session.
+	EventSessionStart EventKind = "SESSION_START"
+	// EventSessionEnd marks the end of a session.
+	EventSessionEnd EventKind = "SESSION_END"
+	// EventUserInput carries a user input turn.
+	EventUserInput EventKind = "USER_INPUT"
+	// EventAssistantTextStart marks the start of an assistant text response.
+	EventAssistantTextStart EventKind = "ASSISTANT_TEXT_START"
+	// EventAssistantTextDelta carries an incremental chunk of assistant text.
+	EventAssistantTextDelta EventKind = "ASSISTANT_TEXT_DELTA"
+	// EventAssistantTextEnd marks the end of an assistant text response.
+	EventAssistantTextEnd EventKind = "ASSISTANT_TEXT_END"
+	// EventToolCallStart marks the start of a tool call.
+	EventToolCallStart EventKind = "TOOL_CALL_START"
+	// EventToolCallOutputDelta carries an incremental chunk of tool call output.
 	EventToolCallOutputDelta EventKind = "TOOL_CALL_OUTPUT_DELTA"
-	EventToolCallEnd         EventKind = "TOOL_CALL_END"
-	EventSteeringInjected    EventKind = "STEERING_INJECTED"
-	EventQueueChanged        EventKind = "QUEUE_CHANGED"
-	EventTurnLimit           EventKind = "TURN_LIMIT"
-	EventLoopDetection       EventKind = "LOOP_DETECTION"
-	EventCommunicate         EventKind = "COMMUNICATE"
-	EventSkillActivated      EventKind = "SKILL_ACTIVATED"
-	EventContextCompaction   EventKind = "CONTEXT_COMPACTION"
-	EventCompactionTurn      EventKind = "COMPACTION_TURN"
-	EventWarning             EventKind = "WARNING"
-	EventError               EventKind = "ERROR"
-	EventSubagentStart       EventKind = "SUBAGENT_START"
-	EventSubagentEnd         EventKind = "SUBAGENT_END"
-	EventPluginLoaded        EventKind = "PLUGIN_LOADED"
-	EventHookStart           EventKind = "HOOK_START"
-	EventHookEnd             EventKind = "HOOK_END"
-	EventForkSummary         EventKind = "FORK_SUMMARY"
-	EventPromptLoaded        EventKind = "PROMPT_LOADED"
-	EventRoundTimings        EventKind = "ROUND_TIMINGS"
+	// EventToolCallEnd marks the end of a tool call.
+	EventToolCallEnd EventKind = "TOOL_CALL_END"
+	// EventSteeringInjected marks steering input injected into the session.
+	EventSteeringInjected EventKind = "STEERING_INJECTED"
+	// EventQueueChanged reports a change to the session's input queue.
+	EventQueueChanged EventKind = "QUEUE_CHANGED"
+	// EventTurnLimit reports turn or tool-round limits.
+	EventTurnLimit EventKind = "TURN_LIMIT"
+	// EventLoopDetection reports detection of a loop.
+	EventLoopDetection EventKind = "LOOP_DETECTION"
+	// EventCommunicate carries a communicate message.
+	EventCommunicate EventKind = "COMMUNICATE"
+	// EventSkillActivated reports activation of a skill.
+	EventSkillActivated EventKind = "SKILL_ACTIVATED"
+	// EventContextCompaction reports a context compaction.
+	EventContextCompaction EventKind = "CONTEXT_COMPACTION"
+	// EventCompactionTurn carries a turn produced by compaction.
+	EventCompactionTurn EventKind = "COMPACTION_TURN"
+	// EventWarning carries a warning.
+	EventWarning EventKind = "WARNING"
+	// EventError carries an error.
+	EventError EventKind = "ERROR"
+	// EventSubagentStart marks the start of a subagent.
+	EventSubagentStart EventKind = "SUBAGENT_START"
+	// EventSubagentEnd marks the end of a subagent.
+	EventSubagentEnd EventKind = "SUBAGENT_END"
+	// EventPluginLoaded reports that a plugin was loaded.
+	EventPluginLoaded EventKind = "PLUGIN_LOADED"
+	// EventHookStart marks the start of a hook execution.
+	EventHookStart EventKind = "HOOK_START"
+	// EventHookEnd marks the end of a hook execution.
+	EventHookEnd EventKind = "HOOK_END"
+	// EventForkSummary carries a fork summary.
+	EventForkSummary EventKind = "FORK_SUMMARY"
+	// EventPromptLoaded reports that a prompt was loaded.
+	EventPromptLoaded EventKind = "PROMPT_LOADED"
+	// EventRoundTimings carries round timing information.
+	EventRoundTimings EventKind = "ROUND_TIMINGS"
 )
 
+// SessionEvent is a single timestamped event on a session's event stream,
+// tagged by Kind and carrying an optional typed Data payload.
 type SessionEvent struct {
 	Kind      EventKind `json:"kind"`
 	Timestamp time.Time `json:"timestamp"`
@@ -100,6 +131,7 @@ func (e SessionEvent) ToStreamEvent() *llm.StreamEvent {
 
 // Typed event payload structs. JSON tags match the map keys used previously.
 
+// SessionStartData is the payload for an EventSessionStart event.
 type SessionStartData struct {
 	Profile           string `json:"profile"`
 	Model             string `json:"model"`
@@ -109,6 +141,7 @@ type SessionStartData struct {
 	ContextWindowSize int    `json:"context_window_size,omitempty"`
 }
 
+// SessionEndData is the payload for an EventSessionEnd event.
 type SessionEndData struct {
 	Reason string `json:"reason"`
 	State  string `json:"state,omitempty"`
@@ -121,6 +154,7 @@ type SessionEndData struct {
 	Interrupted bool `json:"interrupted,omitempty"`
 }
 
+// UserInputData is the payload for an EventUserInput event.
 type UserInputData struct {
 	Text   string           `json:"text"`
 	Images []UserInputImage `json:"images,omitempty"`
@@ -138,14 +172,17 @@ type UserInputImage struct {
 	Name      string `json:"name,omitempty"`
 }
 
+// AssistantTextStartData is the payload for an EventAssistantTextStart event.
 type AssistantTextStartData struct {
 	Model string `json:"model"`
 }
 
+// AssistantTextDeltaData is the payload for an EventAssistantTextDelta event.
 type AssistantTextDeltaData struct {
 	Delta string `json:"delta"`
 }
 
+// AssistantTextEndData is the payload for an EventAssistantTextEnd event.
 type AssistantTextEndData struct {
 	Text         string `json:"text"`
 	Usage        any    `json:"usage,omitempty"`
@@ -154,6 +191,7 @@ type AssistantTextEndData struct {
 	Reasoning    string `json:"reasoning,omitempty"`
 }
 
+// ToolCallStartData is the payload for an EventToolCallStart event.
 type ToolCallStartData struct {
 	ToolName      string `json:"tool_name"`
 	CallID        string `json:"call_id"`
@@ -161,12 +199,14 @@ type ToolCallStartData struct {
 	Description   string `json:"description,omitempty"`
 }
 
+// ToolCallOutputDeltaData is the payload for an EventToolCallOutputDelta event.
 type ToolCallOutputDeltaData struct {
 	ToolName string `json:"tool_name"`
 	CallID   string `json:"call_id"`
 	Delta    string `json:"delta"`
 }
 
+// ToolCallEndData is the payload for an EventToolCallEnd event.
 type ToolCallEndData struct {
 	ToolName string `json:"tool_name"`
 	CallID   string `json:"call_id"`
@@ -180,6 +220,7 @@ type ToolCallEndData struct {
 	ToolState json.RawMessage `json:"tool_state,omitempty"`
 }
 
+// SteeringInjectedData is the payload for an EventSteeringInjected event.
 type SteeringInjectedData struct {
 	Text   string           `json:"text"`
 	Images []UserInputImage `json:"images,omitempty"`
@@ -193,24 +234,29 @@ type QueueChangedData struct {
 	Preview []string `json:"preview,omitempty"`
 }
 
+// TurnLimitData is the payload for an EventTurnLimit event.
 type TurnLimitData struct {
 	MaxTurns              int `json:"max_turns,omitempty"`
 	MaxToolRoundsPerInput int `json:"max_tool_rounds_per_input,omitempty"`
 }
 
+// LoopDetectionData is the payload for an EventLoopDetection event.
 type LoopDetectionData struct {
 	Message string `json:"message"`
 }
 
+// CommunicateData is the payload for an EventCommunicate event.
 type CommunicateData struct {
 	AwaitReply bool   `json:"await_reply"`
 	Message    string `json:"message"`
 }
 
+// SkillActivatedData is the payload for an EventSkillActivated event.
 type SkillActivatedData struct {
 	Name string `json:"name"`
 }
 
+// ContextCompactionData is the payload for an EventContextCompaction event.
 type ContextCompactionData struct {
 	Layer           string `json:"layer,omitempty"`
 	TurnsBefore     int    `json:"turns_before,omitempty"`
@@ -219,11 +265,13 @@ type ContextCompactionData struct {
 	EstTokensAfter  int    `json:"est_tokens_after,omitempty"`
 }
 
+// CompactionTurnData is the payload for an EventCompactionTurn event.
 type CompactionTurnData struct {
 	Kind string `json:"kind"`
 	Text string `json:"text"`
 }
 
+// WarningData is the payload for an EventWarning event.
 type WarningData struct {
 	Message           string `json:"message"`
 	Source            string `json:"source,omitempty"`
@@ -234,6 +282,7 @@ type WarningData struct {
 	Percent           int    `json:"percent,omitempty"`
 }
 
+// ErrorData is the payload for an EventError event.
 type ErrorData struct {
 	Error  string `json:"error"`
 	Source string `json:"source,omitempty"`
@@ -256,17 +305,20 @@ type ErrorCause struct {
 	Status   int    `json:"status,omitempty"`
 }
 
+// SubagentStartData is the payload for an EventSubagentStart event.
 type SubagentStartData struct {
 	AgentID string `json:"agent_id"`
 	Task    string `json:"task"`
 }
 
+// SubagentEndData is the payload for an EventSubagentEnd event.
 type SubagentEndData struct {
 	AgentID   string `json:"agent_id"`
 	Status    string `json:"status"`
 	TurnsUsed int    `json:"turns_used"`
 }
 
+// PluginLoadedData is the payload for an EventPluginLoaded event.
 type PluginLoadedData struct {
 	Name       string `json:"name"`
 	Dir        string `json:"dir"`
@@ -275,6 +327,7 @@ type PluginLoadedData struct {
 	MCPCount   int    `json:"mcp_count"`
 }
 
+// HookStartData is the payload for an EventHookStart event.
 type HookStartData struct {
 	Event      string `json:"event"`
 	HookType   string `json:"hook_type"`
@@ -282,6 +335,7 @@ type HookStartData struct {
 	PluginName string `json:"plugin_name"`
 }
 
+// HookEndData is the payload for an EventHookEnd event.
 type HookEndData struct {
 	Event      string `json:"event"`
 	HookType   string `json:"hook_type"`
@@ -291,10 +345,12 @@ type HookEndData struct {
 	DurationMS int64  `json:"duration_ms"`
 }
 
+// ForkSummaryData is the payload for an EventForkSummary event.
 type ForkSummaryData struct {
 	Turn int `json:"turn"`
 }
 
+// PromptLoadedData is the payload for an EventPromptLoaded event.
 type PromptLoadedData struct {
 	Label string `json:"label"`
 	Size  int    `json:"size"`

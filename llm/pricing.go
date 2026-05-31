@@ -6,15 +6,10 @@ import (
 
 // Price captures a model's per-million-token rates in USD.
 //
-// Input and output are always populated when Price is returned via
-// GetPrice. Cache-tier fields are optional — providers that don't
-// distinguish (e.g. OpenAI has no cache-creation charge, Google has no
-// 1-hour tier) leave them nil.
-//
-// Callers that need to bill a token breakdown compute cost by summing
-// bucket_tokens * matching_rate. For token classes the provider doesn't
-// charge separately (e.g. reasoning on OpenAI is billed as output),
-// the caller routes those tokens through the output rate.
+// InputPerM and OutputPerM are always populated when Price is returned via
+// GetPrice. The cache-tier fields are optional and are nil when the catalog
+// has no corresponding rate for the model (e.g. OpenAI models generally
+// carry no cache-creation rate, and Google models carry no 1-hour rate).
 type Price struct {
 	InputPerM           float64
 	OutputPerM          float64

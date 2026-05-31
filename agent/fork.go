@@ -15,10 +15,11 @@ import (
 
 // ForkSession creates a new session branched from a parent session at a given divergence turn.
 //
-// It copies the parent's first (divergenceTurn-1) USER_INPUT-counted turns into a new
-// child transcript, then appends the edited message as a new USER_INPUT turn at position
-// divergenceTurn. The child gets its own fresh session ID and metadata pointing back to
-// the parent.
+// divergenceTurn is a 1-based index into the parent's full entry list (all turns, not
+// just USER_INPUT). It copies the first (divergenceTurn-1) entries into a new child
+// transcript, then appends the edited message as a new USER_INPUT turn at position
+// divergenceTurn; the entry it replaces must itself be a USER_INPUT turn. The child gets
+// its own fresh session ID and metadata pointing back to the parent.
 //
 // If parentForkLabel is non-empty, the parent's meta is updated with that label so the
 // parent branch can be identified in session listings.

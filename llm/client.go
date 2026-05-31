@@ -7,12 +7,18 @@ import (
 	"sync"
 )
 
+// ProviderAdapter is the interface a single LLM provider backend implements.
+// It reports its name and serves completion requests in both buffered and
+// streaming forms.
 type ProviderAdapter interface {
 	Name() string
 	Complete(ctx context.Context, req Request) (Response, error)
 	Stream(ctx context.Context, req Request) (Stream, error)
 }
 
+// Client routes LLM requests to registered provider adapters, applies
+// middleware, and stamps the resolved provider name and behavior tag onto
+// responses and errors.
 type Client struct {
 	providers       map[string]ProviderAdapter
 	defaultProvider string
@@ -20,6 +26,7 @@ type Client struct {
 	nameToTag       map[string]string
 }
 
+// NewClient returns a Client with no registered providers.
 func NewClient() *Client {
 	return &Client{providers: map[string]ProviderAdapter{}}
 }
@@ -43,6 +50,10 @@ type NonDefaultEligible interface {
 	NonDefaultEligible()
 }
 
+// Register adds an adapter to the client, keyed by its Name. If no default
+// provider has been set yet and the adapter does not implement
+// NonDefaultEligible, it becomes the default. Adapters implementing
+// Initializer are initialized immediately with a background context.
 func (c *Client) Register(adapter ProviderAdapter) {
 	if c.providers == nil {
 		c.providers = map[string]ProviderAdapter{}
@@ -58,6 +69,8 @@ func (c *Client) Register(adapter ProviderAdapter) {
 	}
 }
 
+// SetDefaultProvider sets the provider name used when a request does not
+// specify one.
 func (c *Client) SetDefaultProvider(name string) {
 	c.defaultProvider = name
 }
@@ -70,6 +83,8 @@ func (c *Client) DefaultProvider() string {
 	return c.defaultProvider
 }
 
+// ProviderNames returns the names of all registered providers in unspecified
+// order, or nil if none are registered.
 func (c *Client) ProviderNames() []string {
 	if c == nil || len(c.providers) == 0 {
 		return nil
@@ -81,6 +96,10 @@ func (c *Client) ProviderNames() []string {
 	return out
 }
 
+// Complete validates the request, resolves the target provider (falling back
+// to the default when unset), runs the request through the middleware chain
+// and the selected adapter, and returns the response. The resolved provider
+// name and behavior tag are stamped onto the response and any error.
 func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 	if err := req.Validate(); err != nil {
 		return Response{}, err
@@ -118,6 +137,10 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 	return resp, err
 }
 
+// Stream validates the request, resolves the target provider (falling back to
+// the default when unset), runs the request through the middleware chain and
+// the selected adapter, and returns a Stream. The resolved provider name and
+// behavior tag are stamped onto stream events and any error.
 func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 	if err := req.Validate(); err != nil {
 		return nil, err
