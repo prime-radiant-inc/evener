@@ -12,7 +12,7 @@ func TestMapClaudeToolName(t *testing.T) {
 		"mcp__server__tool": "mcp__server__tool",
 	}
 	for input, want := range tests {
-		if got := MapClaudeToolName(input); got != want {
+		if got := mapClaudeToolName(input); got != want {
 			t.Errorf("MapClaudeToolName(%q) = %q, want %q", input, got, want)
 		}
 	}
@@ -27,7 +27,7 @@ func TestMapSerfToolNameToClaude(t *testing.T) {
 		"unknown":       "unknown",
 	}
 	for input, want := range tests {
-		if got := MapSerfToolNameToClaude(input); got != want {
+		if got := mapSerfToolNameToClaude(input); got != want {
 			t.Errorf("MapSerfToolNameToClaude(%q) = %q, want %q", input, got, want)
 		}
 	}

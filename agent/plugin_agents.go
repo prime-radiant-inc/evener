@@ -98,7 +98,7 @@ func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 				case "all", "*":
 					return PluginAgent{}, fmt.Errorf("agent field \"tools\" uses the scalar form \"all\" for unrestricted access; use `tools: all`")
 				default:
-					tools = append(tools, MapClaudeToolName(s))
+					tools = append(tools, mapClaudeToolName(s))
 				}
 			}
 		default:

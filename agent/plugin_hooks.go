@@ -544,7 +544,7 @@ func (r *HookRunner) runHook(ctx context.Context, hook RegisteredHook, input Hoo
 
 // runAll executes all matched hooks in parallel and returns their parsed outputs.
 func (r *HookRunner) runAll(ctx context.Context, event HookEvent, toolName string, input HookInput) []ParsedHookOutput {
-	claudeName := MapSerfToolNameToClaude(toolName)
+	claudeName := mapSerfToolNameToClaude(toolName)
 	matched := r.matchHooks(event, claudeName)
 	if len(matched) == 0 {
 		return nil

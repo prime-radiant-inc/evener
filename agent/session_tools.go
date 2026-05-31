@@ -207,7 +207,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 	// PreToolUse hooks
 	if s.hookRunner != nil {
 		hi := s.hookInput(HookPreToolUse)
-		hi.ToolName = MapSerfToolNameToClaude(call.Name)
+		hi.ToolName = mapSerfToolNameToClaude(call.Name)
 		if len(call.Arguments) > 0 {
 			_ = json.Unmarshal(call.Arguments, &hi.ToolInput)
 		}
@@ -355,7 +355,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 	// PostToolUse hooks
 	if s.hookRunner != nil {
 		hi := s.hookInput(HookPostToolUse)
-		hi.ToolName = MapSerfToolNameToClaude(call.Name)
+		hi.ToolName = mapSerfToolNameToClaude(call.Name)
 		hi.ToolResult = res.FullOutput
 		postResult := s.hookRunner.RunPostToolUse(ctx, hi)
 		for _, msg := range postResult.SystemMessages {

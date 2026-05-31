@@ -1520,7 +1520,7 @@ func TestMaybeCompact_CallsOnCompactionTurn(t *testing.T) {
 	// Use assistant text (not tool results) so observation masking can't reduce pressure.
 	// Need >80% of 500 = 400 tokens.
 	history := []Turn{{Kind: TurnUserInput, Message: llm.User("Fix the auth bug")}}
-	for EstimateTokens(history) < 425 {
+	for estimateTokens(history) < 425 {
 		history = append(history,
 			Turn{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("analysis ", 50))},
 		)

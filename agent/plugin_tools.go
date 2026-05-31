@@ -24,18 +24,18 @@ func init() {
 	}
 }
 
-// MapClaudeToolName converts a Claude Code tool name to serf's canonical name.
+// mapClaudeToolName converts a Claude Code tool name to serf's canonical name.
 // Unknown names pass through unchanged.
-func MapClaudeToolName(name string) string {
+func mapClaudeToolName(name string) string {
 	if mapped, ok := claudeToSerfToolNames[name]; ok {
 		return mapped
 	}
 	return name
 }
 
-// MapSerfToolNameToClaude converts a serf canonical tool name to Claude Code's name.
+// mapSerfToolNameToClaude converts a serf canonical tool name to Claude Code's name.
 // Unknown names pass through unchanged.
-func MapSerfToolNameToClaude(name string) string {
+func mapSerfToolNameToClaude(name string) string {
 	if mapped, ok := serfToClaudeToolNames[name]; ok {
 		return mapped
 	}

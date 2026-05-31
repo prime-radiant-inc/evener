@@ -165,11 +165,11 @@ func TestPlugin_EndToEnd(t *testing.T) {
 	}
 
 	// 7. Tool name mapping bidirectional
-	if MapClaudeToolName("Read") != "read_file" {
-		t.Errorf("MapClaudeToolName(Read) = %q, want read_file", MapClaudeToolName("Read"))
+	if mapClaudeToolName("Read") != "read_file" {
+		t.Errorf("MapClaudeToolName(Read) = %q, want read_file", mapClaudeToolName("Read"))
 	}
-	if MapSerfToolNameToClaude("read_file") != "Read" {
-		t.Errorf("MapSerfToolNameToClaude(read_file) = %q, want Read", MapSerfToolNameToClaude("read_file"))
+	if mapSerfToolNameToClaude("read_file") != "Read" {
+		t.Errorf("MapSerfToolNameToClaude(read_file) = %q, want Read", mapSerfToolNameToClaude("read_file"))
 	}
 
 	// 8. Plugin agent prompt formatting

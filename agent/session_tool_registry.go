@@ -342,7 +342,7 @@ func registerShellTools(reg *ToolRegistry, deps *toolDeps) error {
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			patch := fmt.Sprint(args["patch"])
-			return ApplyPatch(env.WorkingDirectory(), patch)
+			return applyPatch(env.WorkingDirectory(), patch)
 		},
 	})
 

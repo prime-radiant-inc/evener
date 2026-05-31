@@ -26,11 +26,11 @@ func toolResultContent(t Turn) string {
 // --- Phase 1: Token tracking + estimation ---
 
 func TestEstimateTokens_EmptyHistory(t *testing.T) {
-	got := EstimateTokens(nil)
+	got := estimateTokens(nil)
 	if got != 0 {
 		t.Fatalf("EstimateTokens(nil) = %d, want 0", got)
 	}
-	got = EstimateTokens([]Turn{})
+	got = estimateTokens([]Turn{})
 	if got != 0 {
 		t.Fatalf("EstimateTokens([]) = %d, want 0", got)
 	}
@@ -39,7 +39,7 @@ func TestEstimateTokens_EmptyHistory(t *testing.T) {
 func TestEstimateTokens_SingleUserTurn(t *testing.T) {
 	text := "Hello, world! This is a test message."
 	turns := []Turn{{Kind: TurnUserInput, Message: llm.User(text)}}
-	got := EstimateTokens(turns)
+	got := estimateTokens(turns)
 	want := len(text) / 4
 	if got != want {
 		t.Fatalf("EstimateTokens = %d, want %d (len=%d)", got, want, len(text))
@@ -52,7 +52,7 @@ func TestEstimateTokens_WithToolResults(t *testing.T) {
 		{Kind: TurnUserInput, Message: llm.User("read a file")},
 		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", content, false)},
 	}
-	got := EstimateTokens(turns)
+	got := estimateTokens(turns)
 	// messageCharCount counts: message.ToolCallID + part.ToolCallID + part.Name + content
 	// Message-level ToolCallID = "c1" (2), part ToolCallID = "c1" (2), part Name = "read_file" (9), content (36)
 	// User text = "read a file" (11)
@@ -73,7 +73,7 @@ func TestEstimateTokens_WithThinking(t *testing.T) {
 			},
 		}},
 	}
-	got := EstimateTokens(turns)
+	got := estimateTokens(turns)
 	totalChars := len("let me think about this carefully") + len("answer")
 	want := totalChars / 4
 	if got != want {
@@ -800,7 +800,7 @@ func TestSummarizeWithLLM_ErrorFallsBackGracefully(t *testing.T) {
 // makeBigHistory creates a history where EstimateTokens returns approximately targetTokens.
 func makeBigHistory(targetTokens int) []Turn {
 	turns := []Turn{{Kind: TurnUserInput, Message: llm.User("Fix the auth bug")}}
-	for EstimateTokens(turns) < targetTokens {
+	for estimateTokens(turns) < targetTokens {
 		id := fmt.Sprintf("c%d", len(turns))
 		turns = append(turns,
 			Turn{Kind: TurnAssistant, Message: assistantWithToolCall(id, "read_file", `{"file_path":"file.go"}`)},
@@ -871,7 +871,7 @@ func TestMaybeCompact_CheckpointThreshold(t *testing.T) {
 
 	// Each assistant turn ~400 chars = 100 tokens. Need 85% of 500 = 425 tokens.
 	history := []Turn{{Kind: TurnUserInput, Message: llm.User("Fix the auth bug")}}
-	for EstimateTokens(history) < 425 {
+	for estimateTokens(history) < 425 {
 		history = append(history,
 			Turn{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("analysis ", 50))},
 		)

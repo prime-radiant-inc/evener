@@ -68,9 +68,9 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]T
 
 	// Layer 1: Observation masking (same as compact).
 	if p >= s.cm.ObservationMaskThreshold {
-		before := EstimateTokens(*history)
+		before := estimateTokens(*history)
 		maskObservations(*history, s.cm.PreserveRecentTurns, s.cm.resultToolName())
-		after := EstimateTokens(*history)
+		after := estimateTokens(*history)
 		emitFn(EventContextCompaction, ContextCompactionData{
 			Layer:           "observation_mask",
 			TurnsBefore:     len(*history),
@@ -84,9 +84,9 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]T
 
 	// Layer 2: Thinking clearing (same as compact).
 	if p >= s.cm.ThinkingClearThreshold {
-		before := EstimateTokens(*history)
+		before := estimateTokens(*history)
 		clearThinking(*history, s.cm.PreserveRecentTurns)
-		after := EstimateTokens(*history)
+		after := estimateTokens(*history)
 		emitFn(EventContextCompaction, ContextCompactionData{
 			Layer:           "thinking_clear",
 			TurnsBefore:     len(*history),
@@ -101,7 +101,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]T
 	// Layer 3: Predictive checkpoint (replaces deterministic checkpoint).
 	if p >= s.cm.CheckpointThreshold {
 		turnsBefore := len(*history)
-		before := EstimateTokens(*history)
+		before := estimateTokens(*history)
 		result, err := s.predictiveCheckpoint(ctx, *history, s.cm.PreserveRecentTurns)
 		if err != nil {
 			// Fall back to deterministic checkpoint on error.
@@ -112,7 +112,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]T
 		} else {
 			*history = result
 		}
-		after := EstimateTokens(*history)
+		after := estimateTokens(*history)
 		emitFn(EventContextCompaction, ContextCompactionData{
 			Layer:           "checkpoint_pred",
 			TurnsBefore:     turnsBefore,
@@ -130,7 +130,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]T
 	// Layer 4: LLM summarization fallback (same as compact).
 	if p >= s.cm.SummarizeThreshold && s.cm.client != nil {
 		turnsBefore := len(*history)
-		before := EstimateTokens(*history)
+		before := estimateTokens(*history)
 		result, err := s.cm.summarizeWithLLM(ctx, *history, s.cm.PreserveRecentTurns)
 		if err != nil {
 			emitFn(EventWarning, WarningData{
@@ -138,7 +138,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]T
 			})
 		} else {
 			*history = result
-			after := EstimateTokens(*history)
+			after := estimateTokens(*history)
 			emitFn(EventContextCompaction, ContextCompactionData{
 				Layer:           "summarize",
 				TurnsBefore:     turnsBefore,

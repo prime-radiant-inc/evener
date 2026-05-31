@@ -72,9 +72,9 @@ func (s *ObsMaskStrategy) ManageContext(ctx context.Context, history *[]Turn, sy
 	// minimal "[tool: OK]" markers. Much more aggressive than compact's Layer 1
 	// which generates readable summaries.
 	if p >= s.cm.ObservationMaskThreshold {
-		before := EstimateTokens(*history)
+		before := estimateTokens(*history)
 		aggressiveMaskObservations(*history, s.cm.PreserveRecentTurns)
-		after := EstimateTokens(*history)
+		after := estimateTokens(*history)
 		emitFn(EventContextCompaction, ContextCompactionData{
 			Layer:           "aggressive_obs_mask",
 			TurnsBefore:     len(*history),
@@ -89,9 +89,9 @@ func (s *ObsMaskStrategy) ManageContext(ctx context.Context, history *[]Turn, sy
 	// Layer 2: Deterministic checkpoint as fallback if masking wasn't enough.
 	if p >= s.cm.CheckpointThreshold {
 		turnsBefore := len(*history)
-		before := EstimateTokens(*history)
+		before := estimateTokens(*history)
 		*history = checkpoint(*history, s.cm.PreserveRecentTurns, &s.cm.Meta, s.cm.resultToolName())
-		after := EstimateTokens(*history)
+		after := estimateTokens(*history)
 		emitFn(EventContextCompaction, ContextCompactionData{
 			Layer:           "checkpoint",
 			TurnsBefore:     turnsBefore,

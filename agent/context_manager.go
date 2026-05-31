@@ -148,10 +148,10 @@ func (cm *ContextManager) estimatePressure(history []Turn, sysPromptChars int) f
 	if lastTokens > 0 && measuredLen <= len(history) {
 		// Use the known token count as baseline, then estimate only new turns.
 		newTurns := history[measuredLen:]
-		totalTokens = lastTokens + EstimateTokens(newTurns)
+		totalTokens = lastTokens + estimateTokens(newTurns)
 	} else {
 		// Fall back to char/4 for everything.
-		totalTokens = EstimateTokens(history) + sysPromptChars/4
+		totalTokens = estimateTokens(history) + sysPromptChars/4
 	}
 
 	return float64(totalTokens) / float64(cw)
@@ -162,8 +162,8 @@ func (cm *ContextManager) EstimatePressure(history []Turn, sysPromptChars int) f
 	return cm.estimatePressure(history, sysPromptChars)
 }
 
-// EstimateTokens estimates token count for turns using the char/4 heuristic.
-func EstimateTokens(turns []Turn) int {
+// estimateTokens estimates token count for turns using the char/4 heuristic.
+func estimateTokens(turns []Turn) int {
 	chars := 0
 	for _, t := range turns {
 		chars += messageCharCount(t.Message)
@@ -208,9 +208,9 @@ func (cm *ContextManager) MaybeCompact(
 	// Layer 1: Deterministic checkpoint at ≥80%.
 	if p >= cm.CheckpointThreshold {
 		turnsBefore := len(*history)
-		before := EstimateTokens(*history)
+		before := estimateTokens(*history)
 		*history = checkpoint(*history, cm.PreserveRecentTurns, &cm.Meta, cm.resultToolName())
-		after := EstimateTokens(*history)
+		after := estimateTokens(*history)
 		emitFn(EventContextCompaction, ContextCompactionData{
 			Layer:           "checkpoint",
 			TurnsBefore:     turnsBefore,
@@ -228,7 +228,7 @@ func (cm *ContextManager) MaybeCompact(
 	// Layer 2: LLM summarization at ≥90%.
 	if p >= cm.SummarizeThreshold && cm.client != nil {
 		turnsBefore := len(*history)
-		before := EstimateTokens(*history)
+		before := estimateTokens(*history)
 		result, err := cm.summarizeWithLLM(ctx, *history, cm.PreserveRecentTurns)
 		if err != nil {
 			// On error, emit warning but continue with current history.
@@ -237,7 +237,7 @@ func (cm *ContextManager) MaybeCompact(
 			})
 		} else {
 			*history = result
-			after := EstimateTokens(*history)
+			after := estimateTokens(*history)
 			emitFn(EventContextCompaction, ContextCompactionData{
 				Layer:           "summarize",
 				TurnsBefore:     turnsBefore,
@@ -276,9 +276,9 @@ func (cm *ContextManager) ForceCompact(
 
 	// Layer 1: Deterministic checkpoint.
 	turnsBefore := len(*history)
-	before := EstimateTokens(*history)
+	before := estimateTokens(*history)
 	*history = checkpoint(*history, cm.PreserveRecentTurns, &cm.Meta, cm.resultToolName())
-	after := EstimateTokens(*history)
+	after := estimateTokens(*history)
 	emitFn(EventContextCompaction, ContextCompactionData{
 		Layer:           "checkpoint",
 		TurnsBefore:     turnsBefore,
@@ -293,7 +293,7 @@ func (cm *ContextManager) ForceCompact(
 	// Layer 2: LLM summarization (only if client is available).
 	if cm.client != nil {
 		turnsBefore = len(*history)
-		before = EstimateTokens(*history)
+		before = estimateTokens(*history)
 		result, err := cm.summarizeWithLLM(ctx, *history, cm.PreserveRecentTurns)
 		if err != nil {
 			emitFn(EventWarning, WarningData{
@@ -301,7 +301,7 @@ func (cm *ContextManager) ForceCompact(
 			})
 		} else {
 			*history = result
-			after := EstimateTokens(*history)
+			after := estimateTokens(*history)
 			emitFn(EventContextCompaction, ContextCompactionData{
 				Layer:           "summarize",
 				TurnsBefore:     turnsBefore,

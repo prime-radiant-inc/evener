@@ -32,9 +32,9 @@ func (cm *ContextManager) EstimateUsage(history []Turn, sysPromptChars int) Cont
 
 	var used int
 	if lastTokens > 0 && measuredLen <= len(history) {
-		used = lastTokens + EstimateTokens(history[measuredLen:])
+		used = lastTokens + estimateTokens(history[measuredLen:])
 	} else {
-		used = EstimateTokens(history) + sysPromptChars/4
+		used = estimateTokens(history) + sysPromptChars/4
 	}
 	remaining := cw - used
 	if remaining < 0 {
