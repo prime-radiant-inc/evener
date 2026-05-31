@@ -19,7 +19,16 @@ func (exampleAdapter) Complete(ctx context.Context, req llm.Request) (llm.Respon
 }
 
 func (exampleAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	return nil, llm.ErrStreamUnsupported
+	st := llm.NewChanStream(func() {})
+	go func() {
+		defer st.CloseSend()
+		st.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
+		for _, chunk := range []string{"Hello", " from", " the", " model."} {
+			st.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: chunk})
+		}
+		st.Send(llm.StreamEvent{Type: llm.StreamEventFinish})
+	}()
+	return st, nil
 }
 
 // Generate runs a complete request against a registered provider and returns the
@@ -48,4 +57,30 @@ func ExampleClassify() {
 	err := llm.ErrorFromHTTPStatus("openai", 429, "rate limited", nil, nil)
 	fmt.Println(llm.Classify(err))
 	// Output: retryable
+}
+
+// Client.Stream returns a Stream of incremental events; range over its Events
+// channel for the deltas and Close it when done.
+func ExampleClient_Stream() {
+	client := llm.NewClient()
+	client.Register(exampleAdapter{})
+
+	st, err := client.Stream(context.Background(), llm.Request{
+		Provider: "example",
+		Model:    "example-1",
+		Messages: []llm.Message{llm.User("Say hello.")},
+	})
+	if err != nil {
+		fmt.Println("error:", err)
+		return
+	}
+	defer st.Close() //nolint:errcheck
+
+	for ev := range st.Events() {
+		if ev.Type == llm.StreamEventTextDelta {
+			fmt.Print(ev.Delta)
+		}
+	}
+	fmt.Println()
+	// Output: Hello from the model.
 }
