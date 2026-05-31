@@ -41,8 +41,7 @@ type EnvironmentInfo struct {
 }
 
 // ProviderProfile describes a provider's identity, model, tool definitions,
-// and capabilities, and produces derived profiles via WithModel and a tool
-// registry via NewToolRegistry.
+// and capabilities, and produces derived profiles via WithModel.
 type ProviderProfile interface {
 	ID() string
 	// BehaviorTag returns the stable behavior identity for this profile.
@@ -71,10 +70,6 @@ type ProviderProfile interface {
 	// ToolNameMap returns the canonical→provider-specific tool name mapping.
 	// Returns nil for providers that use canonical names (e.g. Anthropic).
 	ToolNameMap() map[string]string
-	// NewToolRegistry returns a ToolRegistry pre-populated with the profile's
-	// tool definitions and placeholder executors. The Session wires real
-	// executors after construction.
-	NewToolRegistry() *ToolRegistry
 }
 
 type baseProfile struct {
@@ -327,7 +322,11 @@ func (p *baseProfile) ToolNameMap() map[string]string {
 	return m
 }
 
-func (p *baseProfile) NewToolRegistry() *ToolRegistry {
+// toolRegistry returns a ToolRegistry pre-populated with the profile's tool
+// definitions (canonical names) and placeholder executors; the Session wires
+// real executors after construction. Reached via newProfileToolRegistry rather
+// than the public ProviderProfile interface.
+func (p *baseProfile) toolRegistry() *ToolRegistry {
 	reg := NewToolRegistry()
 	for _, td := range p.toolDefs {
 		_ = reg.Register(RegisteredTool{
@@ -338,6 +337,17 @@ func (p *baseProfile) NewToolRegistry() *ToolRegistry {
 		})
 	}
 	return reg
+}
+
+// newProfileToolRegistry builds the placeholder ToolRegistry for a profile.
+// Every profile embeds *baseProfile, which carries the unexported toolRegistry
+// method, so this keeps the ToolRegistry type off the public ProviderProfile
+// interface while remaining callable for any ProviderProfile.
+func newProfileToolRegistry(p ProviderProfile) *ToolRegistry {
+	if b, ok := p.(interface{ toolRegistry() *ToolRegistry }); ok {
+		return b.toolRegistry()
+	}
+	return NewToolRegistry()
 }
 func (p *baseProfile) SupportsParallelToolCalls() bool { return p.parallel }
 func (p *baseProfile) ContextWindowSize() int          { return p.contextWindow }

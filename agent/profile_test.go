@@ -1705,7 +1705,7 @@ func TestProviderProfile_NewToolRegistry_ContainsProfileTools(t *testing.T) {
 	}
 	for _, p := range profiles {
 		t.Run(p.ID(), func(t *testing.T) {
-			reg := p.NewToolRegistry()
+			reg := newProfileToolRegistry(p)
 			if reg == nil {
 				t.Fatal("NewToolRegistry() returned nil")
 			}
@@ -1747,7 +1747,7 @@ func TestProviderProfile_NewToolRegistry_ContainsProfileTools(t *testing.T) {
 
 func TestProviderProfile_NewToolRegistry_PlaceholderExecReturnsError(t *testing.T) {
 	p := NewAnthropicProfile("claude-test")
-	reg := p.NewToolRegistry()
+	reg := newProfileToolRegistry(p)
 	tool := reg.Get("read_file")
 	if tool == nil {
 		t.Fatal("read_file not found")

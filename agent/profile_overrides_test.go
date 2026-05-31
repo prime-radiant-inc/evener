@@ -108,7 +108,7 @@ func TestWithAllowedDecisions_RegistryPreservesDecisionSchema(t *testing.T) {
 	// definition (with decision). Then re-registering with the base definition
 	// but checking for an existing entry first should preserve decision.
 	p := WithAllowedDecisions(NewOpenAIProfile("gpt-5.2"), []string{"approved", "rejected"})
-	reg := p.NewToolRegistry()
+	reg := newProfileToolRegistry(p)
 
 	// Registry should have communicate with decision from profile.
 	existing := reg.Get("communicate")

@@ -133,7 +133,7 @@ func TestBehaviorTag_Gemini_RenamedGoogleRegistersWebSearch(t *testing.T) {
 		env:     NewLocalExecutionEnvironment(dir),
 	}
 
-	reg := renamedGemini.NewToolRegistry()
+	reg := newProfileToolRegistry(renamedGemini)
 	if err := registerCoreTools(reg, sess); err != nil {
 		t.Fatalf("registerCoreTools: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestBehaviorTag_Gemini_OriginalGeminiRegistersWebSearch(t *testing.T) {
 		env:     NewLocalExecutionEnvironment(dir),
 	}
 
-	reg := geminiProfile.NewToolRegistry()
+	reg := newProfileToolRegistry(geminiProfile)
 	if err := registerCoreTools(reg, sess); err != nil {
 		t.Fatalf("registerCoreTools: %v", err)
 	}

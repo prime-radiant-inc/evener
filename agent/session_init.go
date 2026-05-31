@@ -509,7 +509,7 @@ func (s *Session) initSessionState(sessionStartKind SessionStartKind) ([]PromptS
 	s.contextMgr = NewContextManager(s.profile, s.client)
 	s.contextMgr.ResultToolName = s.resultToolName()
 
-	reg := s.profile.NewToolRegistry()
+	reg := newProfileToolRegistry(s.profile)
 	if err := registerCoreTools(reg, s); err != nil {
 		return nil, err
 	}
