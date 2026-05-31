@@ -233,188 +233,194 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	s := llm.NewChanStream(cancel)
 	s.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
 
-	go func() {
-		defer func() {
-			_ = resp.Body.Close()
-			s.CloseSend()
-		}()
-
-		textID := "text_1"
-		textStarted := false
-		finished := false
-		var textBuf strings.Builder
-		var contentParts []llm.ContentPart
-		var usage llm.Usage
-		finish := llm.FinishReason{Reason: "stop"}
-
-		flushTextPart := func() {
-			if textBuf.Len() == 0 {
-				return
-			}
-			contentParts = append(contentParts, llm.ContentPart{Kind: llm.ContentText, Text: textBuf.String()})
-			textBuf.Reset()
-		}
-
-		var sseBody io.Reader = resp.Body
-		var sseBuf *bytes.Buffer
-		if llm.RawBodyEnabled() {
-			sseBuf = &bytes.Buffer{}
-			sseBody = io.TeeReader(resp.Body, sseBuf)
-		}
-		rawReqBody := string(b)
-
-		parseErr := llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
-			if len(ev.Data) == 0 {
-				return nil
-			}
-			var raw map[string]any
-			dec := json.NewDecoder(bytes.NewReader(ev.Data))
-			dec.UseNumber()
-			if err := dec.Decode(&raw); err != nil {
-				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: map[string]any{"event": ev.Event, "data": string(ev.Data)}})
-				return nil
-			}
-
-			// candidates[0].content.parts
-			if cands, ok := raw["candidates"].([]any); ok && len(cands) > 0 {
-				if c0, ok := cands[0].(map[string]any); ok {
-					if content, ok := c0["content"].(map[string]any); ok {
-						if parts, ok := content["parts"].([]any); ok {
-							for _, pAny := range parts {
-								p, ok := pAny.(map[string]any)
-								if !ok {
-									continue
-								}
-								// Thought parts must be checked BEFORE text parts
-								// because thought parts also have a "text" field.
-								if thought, _ := p["thought"].(bool); thought {
-									text, _ := p["text"].(string)
-									if text != "" {
-										flushTextPart()
-										s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
-										s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: text})
-										s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
-										contentParts = append(contentParts, llm.ContentPart{
-											Kind: llm.ContentThinking,
-											Thinking: &llm.ThinkingData{
-												Text: text,
-											},
-										})
-									}
-									continue
-								}
-								if t, _ := p["text"].(string); t != "" {
-									if !textStarted {
-										textStarted = true
-										s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: textID})
-									}
-									textBuf.WriteString(t)
-									s.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: textID, Delta: t})
-									continue
-								}
-								if fc, ok := p["functionCall"].(map[string]any); ok {
-									name, _ := fc["name"].(string)
-									argsAny := normalizeJSONNumbers(fc["args"])
-									argsRaw, _ := json.Marshal(argsAny)
-									thoughtSig := geminiThoughtSignature(p, fc)
-									flushTextPart()
-
-									id := "call_" + ulid.Make().String() // synthetic per spec
-									tc := llm.ToolCallData{
-										ID:               id,
-										Name:             name,
-										Type:             "function",
-										ThoughtSignature: thoughtSig,
-									}
-									s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
-									tcEnd := llm.ToolCallData{
-										ID:               id,
-										Name:             name,
-										Arguments:        argsRaw,
-										Type:             "function",
-										ThoughtSignature: thoughtSig,
-									}
-									s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tcEnd})
-
-									// Preserve tool call in the accumulated response.
-									contentParts = append(contentParts, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &tcEnd})
-								}
-							}
-						}
-					}
-					// Parse groundingMetadata for web search results (mirrors fromGeminiResponse).
-					if gm, ok := c0["groundingMetadata"].(map[string]any); ok && len(gm) > 0 {
-						query := ""
-						if wq, ok := gm["webSearchQueries"].([]any); ok && len(wq) > 0 {
-							qs := make([]string, 0, len(wq))
-							for _, q := range wq {
-								if s, ok := q.(string); ok {
-									qs = append(qs, s)
-								}
-							}
-							query = strings.Join(qs, "; ")
-						}
-						gmRaw, _ := json.Marshal(gm)
-						contentParts = append(contentParts, llm.ContentPart{
-							Kind: llm.ContentWebSearch,
-							WebSearch: &llm.WebSearchData{
-								Query: query,
-								Raw:   gmRaw,
-							},
-						})
-					}
-					if fr, _ := c0["finishReason"].(string); fr != "" {
-						finish = llm.NormalizeFinishReason("google", fr)
-						if textStarted {
-							s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
-							textStarted = false
-						}
-						// Finish on explicit finishReason chunk.
-						flushTextPart()
-						msg := llm.Message{Role: llm.RoleAssistant, Content: contentParts}
-						r := llm.Response{
-							Provider: "google",
-							Model:    req.Model,
-							Message:  msg,
-							Finish:   finish,
-							Usage:    usage,
-							Raw:      raw,
-						}
-						llm.StampEndpointURL(&r, endpoint)
-						if len(r.ToolCalls()) > 0 {
-							r.Finish = llm.FinishReason{Reason: "tool_calls", Raw: r.Finish.Raw}
-						} else if r.Finish.Reason == "" {
-							r.Finish = llm.FinishReason{Reason: "stop"}
-						}
-						rp := r
-						if sseBuf != nil {
-							rp.RawRequestBody = rawReqBody
-							rp.RawResponseBody = sseBuf.String()
-						}
-						s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp})
-						finished = true
-						cancel()
-						return nil
-					}
-				}
-			}
-
-			if um, ok := raw["usageMetadata"].(map[string]any); ok {
-				usage = parseUsage(um)
-			}
-
-			s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: raw})
-			return nil
-		}, llm.StreamReadSSEOptions(req.AdapterTimeout)...)
-
-		if !finished {
-			if err := sctx.Err(); err != nil {
-				s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.WrapContextError("google", err)})
-			} else {
-				s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.NewStreamError("google", "google stream ended without completion", parseErr)})
-			}
-		}
-	}()
+	go a.decodeStream(sctx, cancel, resp, s, req, b, endpoint)
 
 	return s, nil
+}
+
+// decodeStream consumes the streamGenerateContent SSE stream in its own goroutine:
+// it translates each chunk into llm stream events and emits the final accumulated
+// Response when the model signals a finish reason. It owns closing the response
+// body and the ChanStream.
+func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, b []byte, endpoint string) {
+	defer func() {
+		_ = resp.Body.Close()
+		s.CloseSend()
+	}()
+
+	textID := "text_1"
+	textStarted := false
+	finished := false
+	var textBuf strings.Builder
+	var contentParts []llm.ContentPart
+	var usage llm.Usage
+	finish := llm.FinishReason{Reason: "stop"}
+
+	flushTextPart := func() {
+		if textBuf.Len() == 0 {
+			return
+		}
+		contentParts = append(contentParts, llm.ContentPart{Kind: llm.ContentText, Text: textBuf.String()})
+		textBuf.Reset()
+	}
+
+	var sseBody io.Reader = resp.Body
+	var sseBuf *bytes.Buffer
+	if llm.RawBodyEnabled() {
+		sseBuf = &bytes.Buffer{}
+		sseBody = io.TeeReader(resp.Body, sseBuf)
+	}
+	rawReqBody := string(b)
+
+	parseErr := llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
+		if len(ev.Data) == 0 {
+			return nil
+		}
+		var raw map[string]any
+		dec := json.NewDecoder(bytes.NewReader(ev.Data))
+		dec.UseNumber()
+		if err := dec.Decode(&raw); err != nil {
+			s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: map[string]any{"event": ev.Event, "data": string(ev.Data)}})
+			return nil
+		}
+
+		// candidates[0].content.parts
+		if cands, ok := raw["candidates"].([]any); ok && len(cands) > 0 {
+			if c0, ok := cands[0].(map[string]any); ok {
+				if content, ok := c0["content"].(map[string]any); ok {
+					if parts, ok := content["parts"].([]any); ok {
+						for _, pAny := range parts {
+							p, ok := pAny.(map[string]any)
+							if !ok {
+								continue
+							}
+							// Thought parts must be checked BEFORE text parts
+							// because thought parts also have a "text" field.
+							if thought, _ := p["thought"].(bool); thought {
+								text, _ := p["text"].(string)
+								if text != "" {
+									flushTextPart()
+									s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
+									s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: text})
+									s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
+									contentParts = append(contentParts, llm.ContentPart{
+										Kind: llm.ContentThinking,
+										Thinking: &llm.ThinkingData{
+											Text: text,
+										},
+									})
+								}
+								continue
+							}
+							if t, _ := p["text"].(string); t != "" {
+								if !textStarted {
+									textStarted = true
+									s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: textID})
+								}
+								textBuf.WriteString(t)
+								s.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: textID, Delta: t})
+								continue
+							}
+							if fc, ok := p["functionCall"].(map[string]any); ok {
+								name, _ := fc["name"].(string)
+								argsAny := normalizeJSONNumbers(fc["args"])
+								argsRaw, _ := json.Marshal(argsAny)
+								thoughtSig := geminiThoughtSignature(p, fc)
+								flushTextPart()
+
+								id := "call_" + ulid.Make().String() // synthetic per spec
+								tc := llm.ToolCallData{
+									ID:               id,
+									Name:             name,
+									Type:             "function",
+									ThoughtSignature: thoughtSig,
+								}
+								s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
+								tcEnd := llm.ToolCallData{
+									ID:               id,
+									Name:             name,
+									Arguments:        argsRaw,
+									Type:             "function",
+									ThoughtSignature: thoughtSig,
+								}
+								s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tcEnd})
+
+								// Preserve tool call in the accumulated response.
+								contentParts = append(contentParts, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &tcEnd})
+							}
+						}
+					}
+				}
+				// Parse groundingMetadata for web search results (mirrors fromGeminiResponse).
+				if gm, ok := c0["groundingMetadata"].(map[string]any); ok && len(gm) > 0 {
+					query := ""
+					if wq, ok := gm["webSearchQueries"].([]any); ok && len(wq) > 0 {
+						qs := make([]string, 0, len(wq))
+						for _, q := range wq {
+							if s, ok := q.(string); ok {
+								qs = append(qs, s)
+							}
+						}
+						query = strings.Join(qs, "; ")
+					}
+					gmRaw, _ := json.Marshal(gm)
+					contentParts = append(contentParts, llm.ContentPart{
+						Kind: llm.ContentWebSearch,
+						WebSearch: &llm.WebSearchData{
+							Query: query,
+							Raw:   gmRaw,
+						},
+					})
+				}
+				if fr, _ := c0["finishReason"].(string); fr != "" {
+					finish = llm.NormalizeFinishReason("google", fr)
+					if textStarted {
+						s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
+						textStarted = false
+					}
+					// Finish on explicit finishReason chunk.
+					flushTextPart()
+					msg := llm.Message{Role: llm.RoleAssistant, Content: contentParts}
+					r := llm.Response{
+						Provider: "google",
+						Model:    req.Model,
+						Message:  msg,
+						Finish:   finish,
+						Usage:    usage,
+						Raw:      raw,
+					}
+					llm.StampEndpointURL(&r, endpoint)
+					if len(r.ToolCalls()) > 0 {
+						r.Finish = llm.FinishReason{Reason: "tool_calls", Raw: r.Finish.Raw}
+					} else if r.Finish.Reason == "" {
+						r.Finish = llm.FinishReason{Reason: "stop"}
+					}
+					rp := r
+					if sseBuf != nil {
+						rp.RawRequestBody = rawReqBody
+						rp.RawResponseBody = sseBuf.String()
+					}
+					s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp})
+					finished = true
+					cancel()
+					return nil
+				}
+			}
+		}
+
+		if um, ok := raw["usageMetadata"].(map[string]any); ok {
+			usage = parseUsage(um)
+		}
+
+		s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: raw})
+		return nil
+	}, llm.StreamReadSSEOptions(req.AdapterTimeout)...)
+
+	if !finished {
+		if err := sctx.Err(); err != nil {
+			s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.WrapContextError("google", err)})
+		} else {
+			s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.NewStreamError("google", "google stream ended without completion", parseErr)})
+		}
+	}
 }
