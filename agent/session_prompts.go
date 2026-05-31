@@ -26,14 +26,14 @@ func (s *Session) refreshSystemPromptCache() {
 	s.cachedSystemPrompt = s.renderSystemPrompt()
 }
 
-// buildPromptData assembles a PromptData from session state for template rendering.
-func (s *Session) buildPromptData() PromptData {
+// buildPromptData assembles a promptData from session state for template rendering.
+func (s *Session) buildPromptData() promptData {
 	agentName := s.cfg.AgentName
 	if agentName == "" {
 		agentName = defaultAgentName
 	}
 
-	data := PromptData{
+	data := promptData{
 		NonInteractive:           s.cfg.NonInteractive,
 		Provider:                 s.profile.ID(),
 		Agent:                    agentName,
@@ -68,7 +68,7 @@ func (s *Session) buildPromptData() PromptData {
 	}
 	data.HasUseSkill = hasUseSkill
 	for _, sm := range s.skills {
-		data.Skills = append(data.Skills, SkillEntry{
+		data.Skills = append(data.Skills, skillEntry{
 			Name: sm.Name, Description: sm.Description,
 			Dir: sm.Dir, SkillFile: sm.SkillFile,
 		})
@@ -133,11 +133,11 @@ func (s *Session) renderSystemPrompt() string {
 		globalSections = filepath.Join(gd, "sections")
 	}
 
-	resolver := &SectionResolver{
+	resolver := &sectionResolver{
 		provider: s.profile.BehaviorTag(),
 		agent:    s.cfg.AgentName,
 		agentFS:  embeddedAgents,
-		sources: []SectionSource{
+		sources: []sectionSource{
 			diskSource{dir: projSections},
 			diskSource{dir: globalSections},
 			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
@@ -164,7 +164,7 @@ func (s *Session) renderSystemPrompt() string {
 		return fmt.Sprintf("Template rendering failed: %v. Please report this bug.", err)
 	}
 	if trimmed := strings.TrimSpace(s.systemPromptOverride); trimmed != "" {
-		sources = append([]PromptSource{{
+		sources = append([]promptSource{{
 			Label: "cli:" + s.cfg.SystemPromptFile,
 			Size:  len(trimmed),
 		}}, sources...)
@@ -174,7 +174,7 @@ func (s *Session) renderSystemPrompt() string {
 		if readErr != nil {
 			continue
 		}
-		sources = append(sources, PromptSource{
+		sources = append(sources, promptSource{
 			Label: "append:" + p,
 			Size:  len(strings.TrimRight(string(b), "\n")),
 		})

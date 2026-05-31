@@ -455,7 +455,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 // resolution, skills discovery, tool registry setup, and MCP connection.
 // The Session struct fields (client, profile, env, cfg) must already be set.
 // Returns the prompt sources so the caller can emit events after SessionStart.
-func (s *Session) initSessionState(sessionStartKind SessionStartKind) ([]PromptSource, error) {
+func (s *Session) initSessionState(sessionStartKind SessionStartKind) ([]promptSource, error) {
 	ei := envInfoFromEnv(s.env)
 	ei.KnowledgeCutoff = s.profile.KnowledgeCutoff()
 	if inRepo, branch, mod, untracked, commits := snapshotGit(s.env, ei.WorkingDir); inRepo {

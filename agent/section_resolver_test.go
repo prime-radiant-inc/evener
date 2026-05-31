@@ -75,13 +75,13 @@ func writeSection(t *testing.T, dir, name, content string) {
 	}
 }
 
-// helper: create a SectionResolver backed by a single temp directory.
-func newTestResolver(t *testing.T, dir, provider, agent string) *SectionResolver {
+// helper: create a sectionResolver backed by a single temp directory.
+func newTestResolver(t *testing.T, dir, provider, agent string) *sectionResolver {
 	t.Helper()
-	return &SectionResolver{
+	return &sectionResolver{
 		provider: provider,
 		agent:    agent,
-		sources:  []SectionSource{diskSource{dir: dir}},
+		sources:  []sectionSource{diskSource{dir: dir}},
 	}
 }
 
@@ -95,7 +95,7 @@ func TestSectionResolver_BaseOnly(t *testing.T) {
 	writeSection(t, dir, "identity.md", "I am serf")
 
 	r := newTestResolver(t, dir, "openai", "coordinator")
-	got := r.Section("identity", PromptData{})
+	got := r.Section("identity", promptData{})
 	if got != "I am serf" {
 		t.Errorf("got %q, want %q", got, "I am serf")
 	}
@@ -107,7 +107,7 @@ func TestSectionResolver_ProviderOverride(t *testing.T) {
 	writeSection(t, dir, "tools.provider-openai.md", "openai tools")
 
 	r := newTestResolver(t, dir, "openai", "")
-	got := r.Section("tools", PromptData{})
+	got := r.Section("tools", promptData{})
 	if got != "openai tools" {
 		t.Errorf("got %q, want %q", got, "openai tools")
 	}
@@ -118,7 +118,7 @@ func TestSectionResolver_ProviderFallsBackToBase(t *testing.T) {
 	writeSection(t, dir, "tools.md", "generic tools")
 
 	r := newTestResolver(t, dir, "anthropic", "")
-	got := r.Section("tools", PromptData{})
+	got := r.Section("tools", promptData{})
 	if got != "generic tools" {
 		t.Errorf("got %q, want %q", got, "generic tools")
 	}
@@ -131,7 +131,7 @@ func TestSectionResolver_PrependAppend(t *testing.T) {
 	writeSection(t, dir, "tools.provider-openai_append.md", "after")
 
 	r := newTestResolver(t, dir, "openai", "")
-	got := r.Section("tools", PromptData{})
+	got := r.Section("tools", promptData{})
 	want := "before\n\nbase\n\nafter"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
@@ -144,7 +144,7 @@ func TestSectionResolver_AgentBodyReplaces(t *testing.T) {
 	writeSection(t, dir, "communicate.agent-reviewer.md", "call approve or reject")
 
 	r := newTestResolver(t, dir, "openai", "reviewer")
-	got := r.Section("communicate", PromptData{})
+	got := r.Section("communicate", promptData{})
 	if got != "call approve or reject" {
 		t.Errorf("got %q, want %q", got, "call approve or reject")
 	}
@@ -156,7 +156,7 @@ func TestSectionResolver_AgentAppendIsAdditive(t *testing.T) {
 	writeSection(t, dir, "tools.agent-implementer_append.md", "impl tips")
 
 	r := newTestResolver(t, dir, "openai", "implementer")
-	got := r.Section("tools", PromptData{})
+	got := r.Section("tools", promptData{})
 	want := "base tools\n\nimpl tips"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
@@ -167,7 +167,7 @@ func TestSectionResolver_MissingSectionReturnsEmpty(t *testing.T) {
 	dir := t.TempDir()
 
 	r := newTestResolver(t, dir, "openai", "coordinator")
-	got := r.Section("nonexistent", PromptData{})
+	got := r.Section("nonexistent", promptData{})
 	if got != "" {
 		t.Errorf("got %q, want empty string", got)
 	}
@@ -179,12 +179,12 @@ func TestSectionResolver_SourcePriority(t *testing.T) {
 	writeSection(t, dir1, "identity.md", "project identity")
 	writeSection(t, dir2, "identity.md", "global identity")
 
-	r := &SectionResolver{
+	r := &sectionResolver{
 		provider: "openai",
 		agent:    "",
-		sources:  []SectionSource{diskSource{dir: dir1}, diskSource{dir: dir2}},
+		sources:  []sectionSource{diskSource{dir: dir1}, diskSource{dir: dir2}},
 	}
-	got := r.Section("identity", PromptData{})
+	got := r.Section("identity", promptData{})
 	if got != "project identity" {
 		t.Errorf("got %q, want %q", got, "project identity")
 	}
@@ -195,7 +195,7 @@ func TestSectionResolver_TmplRendering(t *testing.T) {
 	writeSection(t, dir, "identity.md.tmpl", "Hello {{ .Provider }}")
 
 	r := newTestResolver(t, dir, "openai", "")
-	got := r.Section("identity", PromptData{Provider: "openai"})
+	got := r.Section("identity", promptData{Provider: "openai"})
 	if got != "Hello openai" {
 		t.Errorf("got %q, want %q", got, "Hello openai")
 	}
@@ -207,7 +207,7 @@ func TestSectionResolver_TmplPriorityOverMd(t *testing.T) {
 	writeSection(t, dir, "identity.md", "Static")
 
 	r := newTestResolver(t, dir, "openai", "")
-	got := r.Section("identity", PromptData{Provider: "openai"})
+	got := r.Section("identity", promptData{Provider: "openai"})
 	if got != "Template openai" {
 		t.Errorf("got %q, want %q", got, "Template openai")
 	}
@@ -224,7 +224,7 @@ func TestSectionResolver_Render(t *testing.T) {
 	writeSection(t, tmplDir, "test.md.tmpl", "{{ section \"identity\" }}\n\n{{ section \"values\" }}")
 
 	r := newTestResolver(t, sectionDir, "openai", "coordinator")
-	got, sources, err := r.Render(tmplDir, "test", PromptData{})
+	got, sources, err := r.Render(tmplDir, "test", promptData{})
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestSectionResolver_RenderConditional(t *testing.T) {
 
 	// NonInteractive false: "headless" should NOT appear.
 	r := newTestResolver(t, sectionDir, "openai", "coordinator")
-	got, _, err := r.Render(tmplDir, "cond", PromptData{NonInteractive: false})
+	got, _, err := r.Render(tmplDir, "cond", promptData{NonInteractive: false})
 	if err != nil {
 		t.Fatalf("Render (false): %v", err)
 	}
@@ -261,7 +261,7 @@ func TestSectionResolver_RenderConditional(t *testing.T) {
 
 	// NonInteractive true: "headless" should appear.
 	r2 := newTestResolver(t, sectionDir, "openai", "coordinator")
-	got2, _, err := r2.Render(tmplDir, "cond", PromptData{NonInteractive: true})
+	got2, _, err := r2.Render(tmplDir, "cond", promptData{NonInteractive: true})
 	if err != nil {
 		t.Fatalf("Render (true): %v", err)
 	}
@@ -290,13 +290,13 @@ func TestCollapseBlankLines(t *testing.T) {
 }
 
 func TestSectionResolver_RoleSection(t *testing.T) {
-	r := &SectionResolver{
+	r := &sectionResolver{
 		provider: "openai",
 		agent:    "coordinator",
 		sources:  nil,
 		agentFS:  embeddedAgents,
 	}
-	got := r.Section("role", PromptData{
+	got := r.Section("role", promptData{
 		RolePromptOverride: mustWorkflowAgent(t, "coordinator").SystemPrompt,
 	})
 
@@ -315,13 +315,13 @@ func TestSectionResolver_RoleDiskOverride(t *testing.T) {
 	dir := t.TempDir()
 	writeSection(t, dir, "role.agent-coordinator.md", "Custom coordinator role")
 
-	r := &SectionResolver{
+	r := &sectionResolver{
 		provider: "openai",
 		agent:    "coordinator",
-		sources:  []SectionSource{diskSource{dir: dir}},
+		sources:  []sectionSource{diskSource{dir: dir}},
 		agentFS:  embeddedAgents,
 	}
-	got := r.Section("role", PromptData{})
+	got := r.Section("role", promptData{})
 
 	if got != "Custom coordinator role" {
 		t.Errorf("got %q, want %q", got, "Custom coordinator role")
@@ -333,7 +333,7 @@ func TestSectionResolver_SourceTracking(t *testing.T) {
 	writeSection(t, dir, "identity.md", "I am serf")
 
 	r := newTestResolver(t, dir, "openai", "coordinator")
-	r.Section("identity", PromptData{})
+	r.Section("identity", promptData{})
 
 	sources := r.Sources()
 	if len(sources) == 0 {
@@ -369,14 +369,14 @@ func TestMasterTemplates_Parse(t *testing.T) {
 }
 
 func TestSystemTemplate_StructuralRegression(t *testing.T) {
-	resolver := &SectionResolver{
+	resolver := &sectionResolver{
 		provider: "openai",
 		agent:    "coordinator",
 		agentFS:  embeddedAgents,
-		sources:  []SectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 
-	data := PromptData{
+	data := promptData{
 		Provider:           "openai",
 		Agent:              "coordinator",
 		RolePromptOverride: mustWorkflowAgent(t, "coordinator").SystemPrompt,
@@ -389,16 +389,16 @@ func TestSystemTemplate_StructuralRegression(t *testing.T) {
 		Model:              "gpt-5.4",
 		KnowledgeCutoff:    "2025-05",
 		ResultToolName:     "communicate",
-		ProfileTools: []ToolEntry{
+		ProfileTools: []toolEntry{
 			{Name: "shell", Description: "Run commands"},
 			{Name: "apply_patch", Description: "Edit files"},
 		},
-		AvailableAgents: []AgentEntry{
+		AvailableAgents: []agentEntry{
 			{
 				Name:         "implementer",
 				Description:  "Code implementation agent.",
 				DefaultTools: "`read_file`, `apply_patch`",
-				TaskList: []AgentTaskEntry{
+				TaskList: []agentTaskEntry{
 					{Title: "Do the work", Description: "Implement the solution.", ReplacedByParentTasks: true},
 				},
 			},
@@ -451,14 +451,14 @@ func TestSystemTemplate_StructuralRegression(t *testing.T) {
 // directory is not a repository. The system prompt is cached, so an unlabeled
 // snapshot would be read as live.
 func TestGitSection_SingleSourceAndLabeled(t *testing.T) {
-	resolver := &SectionResolver{
+	resolver := &sectionResolver{
 		provider: "openai",
 		agent:    "coordinator",
 		agentFS:  embeddedAgents,
-		sources:  []SectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 
-	inRepo := PromptData{Provider: "openai", Agent: "coordinator", WorkingDir: "/tmp/test", IsGitRepo: true, GitBranch: "main"}
+	inRepo := promptData{Provider: "openai", Agent: "coordinator", WorkingDir: "/tmp/test", IsGitRepo: true, GitBranch: "main"}
 	git := resolver.Section("git", inRepo)
 	for _, want := range []string{"session start", "stale", "Branch: main"} {
 		if !strings.Contains(git, want) {
@@ -466,7 +466,7 @@ func TestGitSection_SingleSourceAndLabeled(t *testing.T) {
 		}
 	}
 
-	notRepo := PromptData{Provider: "openai", Agent: "coordinator", WorkingDir: "/tmp/test", IsGitRepo: false}
+	notRepo := promptData{Provider: "openai", Agent: "coordinator", WorkingDir: "/tmp/test", IsGitRepo: false}
 	if git := resolver.Section("git", notRepo); !strings.Contains(git, "Not a git repository") {
 		t.Errorf("git section should report a non-repository working dir, got:\n%s", git)
 	}
@@ -484,13 +484,13 @@ func TestGitSection_SingleSourceAndLabeled(t *testing.T) {
 // section — it is their only source of git state, so it must be present and
 // labeled rather than confined to the root system prompt.
 func TestSubagentTemplate_IncludesGitSection(t *testing.T) {
-	resolver := &SectionResolver{
+	resolver := &sectionResolver{
 		provider: "openai",
 		agent:    "implementer",
 		agentFS:  embeddedAgents,
-		sources:  []SectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
-	data := PromptData{
+	data := promptData{
 		Provider:           "openai",
 		Agent:              "implementer",
 		RolePromptOverride: mustWorkflowAgent(t, "implementer").SystemPrompt,
@@ -512,14 +512,14 @@ func TestSubagentTemplate_IncludesGitSection(t *testing.T) {
 }
 
 func TestSubagentTemplate_StructuralRegression(t *testing.T) {
-	resolver := &SectionResolver{
+	resolver := &sectionResolver{
 		provider: "openai",
 		agent:    "implementer",
 		agentFS:  embeddedAgents,
-		sources:  []SectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 
-	data := PromptData{
+	data := promptData{
 		Provider:           "openai",
 		Agent:              "implementer",
 		RolePromptOverride: mustWorkflowAgent(t, "implementer").SystemPrompt,
@@ -551,14 +551,14 @@ func TestSubagentTemplate_StructuralRegression(t *testing.T) {
 }
 
 func TestReviewerTemplate_UsesCommunicateDecisionContract(t *testing.T) {
-	resolver := &SectionResolver{
+	resolver := &sectionResolver{
 		provider: "openai",
 		agent:    "reviewer",
 		agentFS:  embeddedAgents,
-		sources:  []SectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 
-	data := PromptData{
+	data := promptData{
 		Provider:                    "openai",
 		Agent:                       "reviewer",
 		RolePromptOverride:          mustWorkflowAgent(t, "reviewer").SystemPrompt,
@@ -594,14 +594,14 @@ func TestReviewerTemplate_UsesCommunicateDecisionContract(t *testing.T) {
 }
 
 func TestAnthropicProvider_UsesEditFile(t *testing.T) {
-	resolver := &SectionResolver{
+	resolver := &sectionResolver{
 		provider: "anthropic",
 		agent:    "coordinator",
 		agentFS:  embeddedAgents,
-		sources:  []SectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
 	}
 
-	data := PromptData{
+	data := promptData{
 		Provider:           "anthropic",
 		Agent:              "coordinator",
 		RolePromptOverride: mustWorkflowAgent(t, "coordinator").SystemPrompt,

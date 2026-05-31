@@ -498,7 +498,7 @@ func (s *Session) defaultToolSummaryForAgent(agent PluginAgent) string {
 	return formatToolNamesForPrompt(s.providerVisibleToolNames(canonical))
 }
 
-func (s *Session) availableAgentEntries() []AgentEntry {
+func (s *Session) availableAgentEntries() []agentEntry {
 	names := make([]string, 0, len(s.pluginAgents))
 	for name, agent := range s.pluginAgents {
 		if agentUsesRootOnlyManagementTools(agent) {
@@ -508,10 +508,10 @@ func (s *Session) availableAgentEntries() []AgentEntry {
 	}
 	sort.Strings(names)
 
-	entries := make([]AgentEntry, 0, len(names))
+	entries := make([]agentEntry, 0, len(names))
 	for _, name := range names {
 		agent := s.pluginAgents[name]
-		entries = append(entries, AgentEntry{
+		entries = append(entries, agentEntry{
 			Name:         name,
 			Description:  agent.Description,
 			DefaultTools: s.defaultToolSummaryForAgent(agent),

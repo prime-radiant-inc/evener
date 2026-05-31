@@ -12,14 +12,14 @@ import (
 	"primeradiant.com/serf/frontmatter"
 )
 
-// PromptSource describes one component of the composed system prompt.
-type PromptSource struct {
+// promptSource describes one component of the composed system prompt.
+type promptSource struct {
 	Label string
 	Size  int
 }
 
-// SectionSource provides read access to a directory of section files.
-type SectionSource interface {
+// sectionSource provides read access to a directory of section files.
+type sectionSource interface {
 	ReadFile(name string) ([]byte, bool)
 }
 
@@ -53,13 +53,13 @@ func (e embedSource) ReadFile(name string) ([]byte, bool) {
 	return data, true
 }
 
-// SectionResolver resolves prompt sections using provider/agent layering.
+// sectionResolver resolves prompt sections using provider/agent layering.
 // It checks sources in order (first match wins) and supports .md.tmpl templates.
-type SectionResolver struct {
+type sectionResolver struct {
 	provider string
 	agent    string
-	sources  []SectionSource
-	tracked  []PromptSource
+	sources  []sectionSource
+	tracked  []promptSource
 	agentFS  embed.FS // for role section: reads agents/{agent}.md
 }
 
@@ -70,7 +70,7 @@ type SectionResolver struct {
 // If an agent body exists, it replaces the entire provider result.
 // Otherwise, agent prepend/append are additive on top of the provider result.
 // Non-empty parts are joined with "\n\n".
-func (r *SectionResolver) Section(name string, data PromptData) string {
+func (r *sectionResolver) Section(name string, data promptData) string {
 	if name == "role" {
 		return r.resolveRole(data)
 	}
@@ -111,9 +111,9 @@ func (r *SectionResolver) Section(name string, data PromptData) string {
 // resolveRole handles the "role" section specially: it checks disk sources for
 // a role.agent-{agent}.md override, then falls back to the embedded agent
 // definition (with YAML frontmatter stripped).
-func (r *SectionResolver) resolveRole(data PromptData) string {
+func (r *sectionResolver) resolveRole(data promptData) string {
 	if body := strings.TrimSpace(data.RolePromptOverride); body != "" {
-		r.tracked = append(r.tracked, PromptSource{
+		r.tracked = append(r.tracked, promptSource{
 			Label: "config:role_prompt_override",
 			Size:  len(body),
 		})
@@ -127,7 +127,7 @@ func (r *SectionResolver) resolveRole(data PromptData) string {
 	for _, src := range r.sources {
 		if content, ok := src.ReadFile(stem + ".md"); ok {
 			s := strings.TrimRight(string(content), "\n")
-			r.tracked = append(r.tracked, PromptSource{
+			r.tracked = append(r.tracked, promptSource{
 				Label: r.sourceLabel(src, stem+".md"),
 				Size:  len(s),
 			})
@@ -145,7 +145,7 @@ func (r *SectionResolver) resolveRole(data PromptData) string {
 		return ""
 	}
 	body := strings.TrimSpace(doc.Body)
-	r.tracked = append(r.tracked, PromptSource{
+	r.tracked = append(r.tracked, promptSource{
 		Label: "agent:" + r.agent,
 		Size:  len(body),
 	})
@@ -154,23 +154,23 @@ func (r *SectionResolver) resolveRole(data PromptData) string {
 
 // readAndRender tries to read a section file (template first, then plain),
 // renders it if needed, and tracks the source.
-func (r *SectionResolver) readAndRender(stem string, data PromptData) string {
+func (r *sectionResolver) readAndRender(stem string, data promptData) string {
 	// Try .md.tmpl first.
 	if raw, label := r.readFirst(stem + ".md.tmpl"); raw != nil {
 		result, err := r.renderTemplate(label, string(raw), data)
 		if err != nil {
-			r.tracked = append(r.tracked, PromptSource{Label: "ERROR:" + label})
+			r.tracked = append(r.tracked, promptSource{Label: "ERROR:" + label})
 			return ""
 		}
 		result = strings.TrimRight(result, "\n")
-		r.tracked = append(r.tracked, PromptSource{Label: label, Size: len(result)})
+		r.tracked = append(r.tracked, promptSource{Label: label, Size: len(result)})
 		return result
 	}
 
 	// Try plain .md.
 	if raw, label := r.readFirst(stem + ".md"); raw != nil {
 		result := strings.TrimRight(string(raw), "\n")
-		r.tracked = append(r.tracked, PromptSource{Label: label, Size: len(result)})
+		r.tracked = append(r.tracked, promptSource{Label: label, Size: len(result)})
 		return result
 	}
 
@@ -178,7 +178,7 @@ func (r *SectionResolver) readAndRender(stem string, data PromptData) string {
 }
 
 // readFirst checks each source in order and returns the first match.
-func (r *SectionResolver) readFirst(name string) ([]byte, string) {
+func (r *sectionResolver) readFirst(name string) ([]byte, string) {
 	for _, src := range r.sources {
 		if data, ok := src.ReadFile(name); ok {
 			return data, r.sourceLabel(src, name)
@@ -188,7 +188,7 @@ func (r *SectionResolver) readFirst(name string) ([]byte, string) {
 }
 
 // sourceLabel returns a human-readable label for a source/file combination.
-func (r *SectionResolver) sourceLabel(src SectionSource, name string) string {
+func (r *sectionResolver) sourceLabel(src sectionSource, name string) string {
 	switch s := src.(type) {
 	case diskSource:
 		return "disk:" + filepath.Join(s.dir, name)
@@ -200,7 +200,7 @@ func (r *SectionResolver) sourceLabel(src SectionSource, name string) string {
 }
 
 // renderTemplate parses and executes a text/template with the given data.
-func (r *SectionResolver) renderTemplate(name, content string, data PromptData) (string, error) {
+func (r *sectionResolver) renderTemplate(name, content string, data promptData) (string, error) {
 	tmpl, err := template.New(name).Parse(content)
 	if err != nil {
 		return "", fmt.Errorf("parsing template %s: %w", name, err)
@@ -215,7 +215,7 @@ func (r *SectionResolver) renderTemplate(name, content string, data PromptData) 
 // Render reads a top-level template from disk at {tmplDir}/{name}.md.tmpl,
 // executes it with a "section" FuncMap that resolves sections through this
 // resolver, and returns the rendered text with tracked sources.
-func (r *SectionResolver) Render(tmplDir string, name string, data PromptData) (string, []PromptSource, error) {
+func (r *sectionResolver) Render(tmplDir string, name string, data promptData) (string, []promptSource, error) {
 	r.tracked = nil
 	content, err := os.ReadFile(filepath.Join(tmplDir, name+".md.tmpl"))
 	if err != nil {
@@ -226,7 +226,7 @@ func (r *SectionResolver) Render(tmplDir string, name string, data PromptData) (
 
 // RenderEmbedded reads a top-level template from an embedded FS at
 // {prefix}{name}.md.tmpl and renders it the same way as Render.
-func (r *SectionResolver) RenderEmbedded(fs embed.FS, prefix, name string, data PromptData) (string, []PromptSource, error) {
+func (r *sectionResolver) RenderEmbedded(fs embed.FS, prefix, name string, data promptData) (string, []promptSource, error) {
 	r.tracked = nil
 	content, err := fs.ReadFile(prefix + name + ".md.tmpl")
 	if err != nil {
@@ -236,7 +236,7 @@ func (r *SectionResolver) RenderEmbedded(fs embed.FS, prefix, name string, data 
 }
 
 // renderFromContent is the shared implementation for Render and RenderEmbedded.
-func (r *SectionResolver) renderFromContent(name string, content []byte, data PromptData) (string, []PromptSource, error) {
+func (r *sectionResolver) renderFromContent(name string, content []byte, data promptData) (string, []promptSource, error) {
 	funcMap := template.FuncMap{
 		"section": func(sectionName string) string {
 			return r.Section(sectionName, data)
@@ -264,6 +264,6 @@ func collapseBlankLines(s string) string {
 }
 
 // Sources returns the tracked prompt sources from all resolved sections.
-func (r *SectionResolver) Sources() []PromptSource {
+func (r *sectionResolver) Sources() []promptSource {
 	return r.tracked
 }

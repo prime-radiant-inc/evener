@@ -24,11 +24,11 @@ func renderAvailableAgentsSectionForTest(t *testing.T, agents map[string]PluginA
 		sess.pluginAgents[name] = agent
 	}
 
-	resolver := &SectionResolver{
+	resolver := &sectionResolver{
 		provider: sess.profile.ID(),
 		agent:    defaultAgentName,
 		agentFS:  embeddedAgents,
-		sources: []SectionSource{
+		sources: []sectionSource{
 			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
 		},
 	}

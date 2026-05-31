@@ -10,7 +10,7 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-func renderPromptForTest(t *testing.T, p ProviderProfile, data PromptData) string {
+func renderPromptForTest(t *testing.T, p ProviderProfile, data promptData) string {
 	t.Helper()
 	if data.Provider == "" {
 		data.Provider = p.ID()
@@ -34,11 +34,11 @@ func renderPromptForTest(t *testing.T, p ProviderProfile, data PromptData) strin
 		data.ProfileTools = toolEntriesFromDefinitions(p.ToolDefinitions())
 	}
 
-	resolver := &SectionResolver{
+	resolver := &sectionResolver{
 		provider: p.ID(),
 		agent:    data.Agent,
 		agentFS:  embeddedAgents,
-		sources: []SectionSource{
+		sources: []sectionSource{
 			embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"},
 		},
 	}
@@ -193,7 +193,7 @@ func TestProviderProfiles_AddPurposeToEveryToolSchema(t *testing.T) {
 }
 
 func TestSystemPrompt_ImplementerWarnsOnUnavailableTools(t *testing.T) {
-	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.4"), PromptData{
+	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.4"), promptData{
 		Agent:                       "implementer",
 		CallableToolNames:           []string{"read_file", "exec_command", "communicate"},
 		UnavailableProfileToolNames: []string{"spawn_agent", "resume_agent", "wait", "close_agent"},
@@ -208,7 +208,7 @@ func TestSystemPrompt_ImplementerWarnsOnUnavailableTools(t *testing.T) {
 }
 
 func TestSystemPrompt_CoordinatorHasImpossibleDelegationException(t *testing.T) {
-	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.4"), PromptData{
+	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.4"), promptData{
 		Agent: "coordinator",
 	})
 
@@ -221,7 +221,7 @@ func TestSystemPrompt_CoordinatorHasImpossibleDelegationException(t *testing.T) 
 }
 
 func TestSystemPrompt_DefaultAgentDoesNotUseCoordinatorRole(t *testing.T) {
-	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.4"), PromptData{})
+	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.4"), promptData{})
 
 	if strings.Contains(prompt, "You are a coordinator. You delegate, verify, and iterate. You do not implement.") {
 		t.Fatalf("default prompt should not use coordinator persona:\n%s", prompt)
@@ -232,7 +232,7 @@ func TestSystemPrompt_DefaultAgentDoesNotUseCoordinatorRole(t *testing.T) {
 }
 
 func TestProviderProfiles_BuildSystemPrompt_IncludesEnvironment(t *testing.T) {
-	data := PromptData{
+	data := promptData{
 		WorkingDir:      "/tmp",
 		Platform:        "linux",
 		OSVersion:       "test",
@@ -257,7 +257,7 @@ func TestProviderProfiles_BuildSystemPrompt_IncludesEnvironment(t *testing.T) {
 
 func TestBuildSystemPrompt_DoesNotDuplicateProviderToolDescriptions(t *testing.T) {
 	p := NewOpenAIProfile("gpt-5.2")
-	data := PromptData{
+	data := promptData{
 		WorkingDir: "/tmp",
 		Platform:   "linux",
 	}
@@ -277,14 +277,14 @@ func TestBuildSystemPrompt_DoesNotDuplicateProviderToolDescriptions(t *testing.T
 }
 
 func TestBuildSystemPrompt_DoesNotDuplicateMCPOrCustomToolDescriptions(t *testing.T) {
-	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.2"), PromptData{
+	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.2"), promptData{
 		WorkingDir: "/tmp",
 		Platform:   "linux",
-		MCPTools: []ToolEntry{{
+		MCPTools: []toolEntry{{
 			Name:        "mcp__server__search",
 			Description: "Searches the remote index with an MCP-backed provider tool.",
 		}},
-		CustomTools: []ToolEntry{{
+		CustomTools: []toolEntry{{
 			Name:        "project_custom",
 			Description: "Runs a project-specific custom tool.",
 		}},
@@ -337,7 +337,7 @@ func TestProviderProfile_WithModel(t *testing.T) {
 	if len(cloned.ToolDefinitions()) != len(orig.ToolDefinitions()) {
 		t.Fatalf("tool count mismatch: cloned=%d orig=%d", len(cloned.ToolDefinitions()), len(orig.ToolDefinitions()))
 	}
-	if renderPromptForTest(t, cloned, PromptData{WorkingDir: "/tmp", Platform: "linux"}) == "" {
+	if renderPromptForTest(t, cloned, promptData{WorkingDir: "/tmp", Platform: "linux"}) == "" {
 		t.Fatalf("cloned profile has empty system prompt")
 	}
 }
@@ -1196,12 +1196,12 @@ func TestAllProfiles_SystemPromptContainsSkillsGuidance(t *testing.T) {
 		"anthropic": NewAnthropicProfile("claude-test"),
 		"gemini":    NewGeminiProfile("gemini-test"),
 	}
-	skills := []SkillEntry{
+	skills := []skillEntry{
 		{Name: "test-skill", Description: "A test skill", Dir: "/tmp/skills/test-skill", SkillFile: "/tmp/skills/test-skill/SKILL.md"},
 	}
 
 	for name, p := range profiles {
-		prompt := renderPromptForTest(t, p, PromptData{
+		prompt := renderPromptForTest(t, p, promptData{
 			WorkingDir:  "/tmp",
 			Platform:    "linux",
 			Today:       "2026-02-09",
@@ -1226,11 +1226,11 @@ func TestAllProfiles_SystemPromptContainsSkillsGuidance(t *testing.T) {
 func TestBuildSystemPrompt_IncludesSkillsList(t *testing.T) {
 	// Anthropic profile has use_skill, so skills are rendered with directory paths.
 	p := NewAnthropicProfile("claude-test")
-	skills := []SkillEntry{
+	skills := []skillEntry{
 		{Name: "greet", Description: "Greeting skill", Dir: "/tmp/skills/greet", SkillFile: "/tmp/skills/greet/SKILL.md"},
 		{Name: "deploy", Description: "Deploy skill", Dir: "/tmp/skills/deploy", SkillFile: "/tmp/skills/deploy/SKILL.md"},
 	}
-	prompt := renderPromptForTest(t, p, PromptData{
+	prompt := renderPromptForTest(t, p, promptData{
 		WorkingDir:  "/tmp",
 		Platform:    "linux",
 		Today:       "2026-02-09",
@@ -1257,10 +1257,10 @@ func TestBuildSystemPrompt_IncludesSkillsList(t *testing.T) {
 
 func TestBuildSystemPrompt_OpenAI_SkillsWithUseSkill(t *testing.T) {
 	p := NewOpenAIProfile("gpt-5.2")
-	skills := []SkillEntry{
+	skills := []skillEntry{
 		{Name: "greet", Description: "Greeting skill", Dir: "/tmp/skills/greet", SkillFile: "/tmp/skills/greet/SKILL.md"},
 	}
-	prompt := renderPromptForTest(t, p, PromptData{
+	prompt := renderPromptForTest(t, p, promptData{
 		WorkingDir:  "/tmp",
 		Platform:    "linux",
 		Today:       "2026-02-09",
@@ -1281,7 +1281,7 @@ func TestBuildSystemPrompt_OpenAI_SkillsWithUseSkill(t *testing.T) {
 
 func TestBuildSystemPrompt_NoSkills_NoSkillsSection(t *testing.T) {
 	p := NewOpenAIProfile("gpt-5.2")
-	prompt := renderPromptForTest(t, p, PromptData{
+	prompt := renderPromptForTest(t, p, promptData{
 		WorkingDir: "/tmp",
 		Platform:   "linux",
 		Today:      "2026-02-09",
@@ -1668,13 +1668,13 @@ func TestGeminiProfile_ContextWindow_Is1M(t *testing.T) {
 
 func TestBuildSystemPrompt_ToolUsageBeforeProjectDocs(t *testing.T) {
 	p := NewOpenAIProfile("gpt-5.2")
-	prompt := renderPromptForTest(t, p, PromptData{
+	prompt := renderPromptForTest(t, p, promptData{
 		WorkingDir:  "/tmp",
 		Platform:    "linux",
 		Today:       "2026-02-11",
 		ProjectDocs: []ProjectDoc{{Path: "AGENTS.md", Content: "project instructions here"}},
-		MCPTools:    []ToolEntry{{Name: "mcp__server__tool1", Description: "Does thing one"}},
-		CustomTools: []ToolEntry{{Name: "my_custom_tool", Description: "Does custom things"}},
+		MCPTools:    []toolEntry{{Name: "mcp__server__tool1", Description: "Does thing one"}},
+		CustomTools: []toolEntry{{Name: "my_custom_tool", Description: "Does custom things"}},
 	})
 
 	beginIdx := strings.Index(prompt, "----- BEGIN AGENTS.md -----")
@@ -1801,7 +1801,7 @@ func TestBuildSystemPrompt_WorkspaceSection(t *testing.T) {
 	}
 
 	p := NewOpenAIProfile("gpt-5.3-codex")
-	prompt := renderPromptForTest(t, p, PromptData{
+	prompt := renderPromptForTest(t, p, promptData{
 		WorkingDir:    env.WorkingDir,
 		Platform:      env.Platform,
 		Today:         env.Today,
@@ -1856,7 +1856,7 @@ func TestBuildSystemPrompt_EmptyWorkspace(t *testing.T) {
 	}
 
 	p := NewOpenAIProfile("gpt-5.3-codex")
-	prompt := renderPromptForTest(t, p, PromptData{
+	prompt := renderPromptForTest(t, p, promptData{
 		WorkingDir: env.WorkingDir,
 		Platform:   env.Platform,
 		Today:      env.Today,
@@ -1880,7 +1880,7 @@ func TestBuildSystemPrompt_WorkspaceAnnotation(t *testing.T) {
 	}
 
 	p := NewOpenAIProfile("gpt-5.3-codex")
-	prompt := renderPromptForTest(t, p, PromptData{
+	prompt := renderPromptForTest(t, p, promptData{
 		WorkingDir:    env.WorkingDir,
 		Platform:      env.Platform,
 		Today:         env.Today,

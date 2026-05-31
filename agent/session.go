@@ -141,7 +141,7 @@ type Session struct {
 
 	systemPromptOverride string
 	cachedSystemPrompt   string
-	promptSourceLog      []PromptSource
+	promptSourceLog      []promptSource
 }
 
 // ID returns the session's identifier.

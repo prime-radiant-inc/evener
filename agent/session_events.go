@@ -9,7 +9,7 @@ import (
 // Events returns the session's receive-only channel of SessionEvent values.
 func (s *Session) Events() <-chan SessionEvent { return s.events }
 
-func (s *Session) emitSessionStartEnvelope(start SessionStartData, promptSources []PromptSource) {
+func (s *Session) emitSessionStartEnvelope(start SessionStartData, promptSources []promptSource) {
 	s.emit(EventSessionStart, start)
 	for _, data := range s.pendingPluginEvents {
 		s.emit(EventPluginLoaded, data)

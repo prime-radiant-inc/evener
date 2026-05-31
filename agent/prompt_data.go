@@ -6,9 +6,9 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// PromptData is the template context for system prompt rendering.
+// promptData is the template context for system prompt rendering.
 // Assembled from session state; not a source of truth.
-type PromptData struct {
+type promptData struct {
 	// Resolution context
 	NonInteractive           bool
 	Provider                 string // "openai", "anthropic", "gemini"
@@ -36,21 +36,21 @@ type PromptData struct {
 	BuildInfo     string
 
 	// Skills
-	Skills               []SkillEntry
+	Skills               []skillEntry
 	HasUseSkill          bool
 	ActivatedSkillBodies []string
 
 	// Tools (three tiers)
-	ProfileTools []ToolEntry
-	MCPTools     []ToolEntry
-	CustomTools  []ToolEntry
+	ProfileTools []toolEntry
+	MCPTools     []toolEntry
+	CustomTools  []toolEntry
 
 	// Tool availability for the current role/session
 	CallableToolNames           []string
 	UnavailableProfileToolNames []string
 
 	// Available agents (for spawn_agent)
-	AvailableAgents []AgentEntry
+	AvailableAgents []agentEntry
 
 	// Project docs
 	ProjectDocs []ProjectDoc
@@ -65,43 +65,43 @@ type PromptData struct {
 	CLIAppends []string
 }
 
-// SkillEntry is a skill for template rendering.
-type SkillEntry struct {
+// skillEntry is a skill for template rendering.
+type skillEntry struct {
 	Name        string
 	Description string
 	Dir         string // directory path (for use_skill profiles)
 	SkillFile   string // SKILL.md path (for read_file profiles)
 }
 
-// ToolEntry is a tool for template rendering.
-type ToolEntry struct {
+// toolEntry is a tool for template rendering.
+type toolEntry struct {
 	Name        string
 	Description string
 }
 
-// AgentTaskEntry is a summarized default task in a spawnable agent workflow.
-type AgentTaskEntry struct {
+// agentTaskEntry is a summarized default task in a spawnable agent workflow.
+type agentTaskEntry struct {
 	Title                 string
 	Description           string
 	ReplacedByParentTasks bool
 }
 
-// AgentEntry is a spawnable agent for template rendering.
-type AgentEntry struct {
+// agentEntry is a spawnable agent for template rendering.
+type agentEntry struct {
 	Name         string
 	Description  string
 	DefaultTools string
-	TaskList     []AgentTaskEntry
+	TaskList     []agentTaskEntry
 }
 
-func toolEntriesFromDefinitions(defs []llm.ToolDefinition) []ToolEntry {
-	entries := make([]ToolEntry, 0, len(defs))
+func toolEntriesFromDefinitions(defs []llm.ToolDefinition) []toolEntry {
+	entries := make([]toolEntry, 0, len(defs))
 	for _, td := range defs {
 		desc := strings.TrimSpace(td.Description)
 		if desc == "" {
 			desc = "(no description)"
 		}
-		entries = append(entries, ToolEntry{Name: td.Name, Description: desc})
+		entries = append(entries, toolEntry{Name: td.Name, Description: desc})
 	}
 	return entries
 }
@@ -159,10 +159,10 @@ func summarizeTaskPrompt(prompt string) string {
 	return text
 }
 
-func agentTaskEntries(tasks []TaskTemplate) []AgentTaskEntry {
-	entries := make([]AgentTaskEntry, 0, len(tasks))
+func agentTaskEntries(tasks []TaskTemplate) []agentTaskEntry {
+	entries := make([]agentTaskEntry, 0, len(tasks))
 	for _, task := range tasks {
-		entries = append(entries, AgentTaskEntry{
+		entries = append(entries, agentTaskEntry{
 			Title:                 task.Title,
 			Description:           summarizeTaskPrompt(task.Prompt),
 			ReplacedByParentTasks: task.Insert == "parent_tasks",

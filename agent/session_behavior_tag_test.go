@@ -188,12 +188,12 @@ func TestBehaviorTag_Gemini_OpenAIDoesNotRegisterWebSearch(t *testing.T) {
 	}
 }
 
-// ── Site 3: renderSystemPrompt SectionResolver provider ───────────────────
+// ── Site 3: renderSystemPrompt sectionResolver provider ───────────────────
 
 // TestBehaviorTag_SectionResolver_RenamedOpenAILoadsOpenAISection verifies
 // that a session with a renamed OpenAI profile (id="work", tag="openai")
 // renders the tools.provider-openai_append.md section in the system prompt.
-// Before the fix, SectionResolver.provider = s.profile.ID() = "work", so no
+// Before the fix, sectionResolver.provider = s.profile.ID() = "work", so no
 // openai-specific section would be loaded.
 func TestBehaviorTag_SectionResolver_RenamedOpenAILoadsOpenAISection(t *testing.T) {
 	dir := t.TempDir()
