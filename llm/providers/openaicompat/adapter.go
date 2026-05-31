@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/internal/openaichat"
+	"primeradiant.com/serf/llm/providers/internal/transport"
 )
 
 type Adapter struct {
@@ -222,201 +223,196 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 	var usage *llm.Usage
 	finished := false
 
-	var sseBody io.Reader = resp.Body
-	var sseBuf *bytes.Buffer
-	if llm.RawBodyEnabled() {
-		sseBuf = &bytes.Buffer{}
-		sseBody = io.TeeReader(resp.Body, sseBuf)
-	}
 	rawReqBody := string(jsonBody)
 
-	parseErr := llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
-		data := string(ev.Data)
-		if data == "[DONE]" {
-			finished = true
+	runner := &transport.StreamRunner{
+		Provider:      "openai-compatible",
+		Resp:          resp,
+		Stream:        s,
+		SSEOpts:       llm.StreamReadSSEOptions(req.AdapterTimeout),
+		Finished:      &finished,
+		IncompleteMsg: "openai-compatible stream ended without completion",
+		OnEvent: func(ev llm.SSEEvent, sseBuf *bytes.Buffer) error {
+			data := string(ev.Data)
+			if data == "[DONE]" {
+				finished = true
 
-			// Close reasoning if still open.
-			if reasoningStarted && !textStarted && len(toolCalls) == 0 {
-				s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
-			}
-
-			// Collect and emit tool call end events.
-			var completedToolCalls []llm.ToolCallData
-			for idx, tc := range toolCalls {
-				rescuedArgs := rescueClaudeXMLArgs(tc.args.String())
-				tcd := llm.ToolCallData{
-					ID:        tc.id,
-					Name:      tc.name,
-					Arguments: json.RawMessage(rescuedArgs),
-					Type:      "function",
+				// Close reasoning if still open.
+				if reasoningStarted && !textStarted && len(toolCalls) == 0 {
+					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
 				}
-				completedToolCalls = append(completedToolCalls, tcd)
+
+				// Collect and emit tool call end events.
+				var completedToolCalls []llm.ToolCallData
+				for idx, tc := range toolCalls {
+					rescuedArgs := rescueClaudeXMLArgs(tc.args.String())
+					tcd := llm.ToolCallData{
+						ID:        tc.id,
+						Name:      tc.name,
+						Arguments: json.RawMessage(rescuedArgs),
+						Type:      "function",
+					}
+					completedToolCalls = append(completedToolCalls, tcd)
+					s.Send(llm.StreamEvent{
+						Type:     llm.StreamEventToolCallEnd,
+						ToolCall: &tcd,
+					})
+					delete(toolCalls, idx)
+				}
+
+				if textStarted {
+					s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: "text_0"})
+				}
+
+				// Build final response.
+				msg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{}}
+				if reasoningBuf.Len() > 0 {
+					msg.Content = append(msg.Content, llm.ContentPart{
+						Kind:     llm.ContentThinking,
+						Thinking: &llm.ThinkingData{Text: reasoningBuf.String()},
+					})
+				}
+				if textBuf.Len() > 0 {
+					msg.Content = append(msg.Content, llm.ContentPart{Kind: llm.ContentText, Text: textBuf.String()})
+				}
+				for i := range completedToolCalls {
+					msg.Content = append(msg.Content, llm.ContentPart{
+						Kind:     llm.ContentToolCall,
+						ToolCall: &completedToolCalls[i],
+					})
+				}
+
+				rawFinish := finishReason
+				mappedFinish := a.Quirks.mapFinishReason(rawFinish)
+				var finish llm.FinishReason
+				if mappedFinish == rawFinish {
+					finish = llm.NormalizeFinishReason("", rawFinish)
+				} else {
+					finish = llm.FinishReason{Reason: mappedFinish, Raw: rawFinish}
+				}
+
+				finalResp := &llm.Response{
+					Provider:  "openai-compatible",
+					Model:     model,
+					Message:   msg,
+					Finish:    finish,
+					RateLimit: rl,
+				}
+				if usage != nil {
+					finalResp.Usage = *usage
+				}
+				if finalResp.Usage.ReasoningTokens == nil && finalResp.Usage.ReasoningTokensEstimated == nil {
+					if est := estimateThinkingFromBuf(reasoningBuf.Len()); est > 0 {
+						e := est
+						finalResp.Usage.ReasoningTokensEstimated = &e
+					}
+				}
+				llm.StampEndpointURL(finalResp, a.BaseURL+"/chat/completions")
+				if sseBuf != nil {
+					finalResp.RawRequestBody = rawReqBody
+					finalResp.RawResponseBody = sseBuf.String()
+				}
 				s.Send(llm.StreamEvent{
-					Type:     llm.StreamEventToolCallEnd,
-					ToolCall: &tcd,
+					Type:         llm.StreamEventFinish,
+					FinishReason: &finish,
+					Usage:        usage,
+					Response:     finalResp,
 				})
-				delete(toolCalls, idx)
+				return nil
 			}
 
-			if textStarted {
-				s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: "text_0"})
+			var chunk chatCompletionChunk
+			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+				return nil
+			}
+			if chunk.Model != "" {
+				model = chunk.Model
+			}
+			if chunk.Usage != nil {
+				u := openaichat.ParseChatUsage(chunk.Usage)
+				usage = &u
 			}
 
-			// Build final response.
-			msg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{}}
-			if reasoningBuf.Len() > 0 {
-				msg.Content = append(msg.Content, llm.ContentPart{
-					Kind:     llm.ContentThinking,
-					Thinking: &llm.ThinkingData{Text: reasoningBuf.String()},
-				})
+			if len(chunk.Choices) == 0 {
+				return nil
 			}
-			if textBuf.Len() > 0 {
-				msg.Content = append(msg.Content, llm.ContentPart{Kind: llm.ContentText, Text: textBuf.String()})
-			}
-			for i := range completedToolCalls {
-				msg.Content = append(msg.Content, llm.ContentPart{
-					Kind:     llm.ContentToolCall,
-					ToolCall: &completedToolCalls[i],
-				})
+			choice := chunk.Choices[0]
+
+			if choice.FinishReason != "" {
+				finishReason = choice.FinishReason
 			}
 
-			rawFinish := finishReason
-			mappedFinish := a.Quirks.mapFinishReason(rawFinish)
-			var finish llm.FinishReason
-			if mappedFinish == rawFinish {
-				finish = llm.NormalizeFinishReason("", rawFinish)
-			} else {
-				finish = llm.FinishReason{Reason: mappedFinish, Raw: rawFinish}
-			}
-
-			finalResp := &llm.Response{
-				Provider:  "openai-compatible",
-				Model:     model,
-				Message:   msg,
-				Finish:    finish,
-				RateLimit: rl,
-			}
-			if usage != nil {
-				finalResp.Usage = *usage
-			}
-			if finalResp.Usage.ReasoningTokens == nil && finalResp.Usage.ReasoningTokensEstimated == nil {
-				if est := estimateThinkingFromBuf(reasoningBuf.Len()); est > 0 {
-					e := est
-					finalResp.Usage.ReasoningTokensEstimated = &e
+			// Reasoning content delta.
+			if choice.Delta.ReasoningContent != "" {
+				if !reasoningStarted {
+					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
+					reasoningStarted = true
 				}
+				reasoningBuf.WriteString(choice.Delta.ReasoningContent)
+				s.Send(llm.StreamEvent{
+					Type:           llm.StreamEventReasoningDelta,
+					ReasoningDelta: choice.Delta.ReasoningContent,
+				})
 			}
-			llm.StampEndpointURL(finalResp, a.BaseURL+"/chat/completions")
-			if sseBuf != nil {
-				finalResp.RawRequestBody = rawReqBody
-				finalResp.RawResponseBody = sseBuf.String()
-			}
-			s.Send(llm.StreamEvent{
-				Type:         llm.StreamEventFinish,
-				FinishReason: &finish,
-				Usage:        usage,
-				Response:     finalResp,
-			})
-			return nil
-		}
 
-		var chunk chatCompletionChunk
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			return nil
-		}
-		if chunk.Model != "" {
-			model = chunk.Model
-		}
-		if chunk.Usage != nil {
-			u := openaichat.ParseChatUsage(chunk.Usage)
-			usage = &u
-		}
-
-		if len(chunk.Choices) == 0 {
-			return nil
-		}
-		choice := chunk.Choices[0]
-
-		if choice.FinishReason != "" {
-			finishReason = choice.FinishReason
-		}
-
-		// Reasoning content delta.
-		if choice.Delta.ReasoningContent != "" {
-			if !reasoningStarted {
-				s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
-				reasoningStarted = true
-			}
-			reasoningBuf.WriteString(choice.Delta.ReasoningContent)
-			s.Send(llm.StreamEvent{
-				Type:           llm.StreamEventReasoningDelta,
-				ReasoningDelta: choice.Delta.ReasoningContent,
-			})
-		}
-
-		// Text delta — close reasoning first if transitioning.
-		if choice.Delta.Content != "" {
-			if reasoningStarted && !textStarted {
-				s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
-			}
-			if !textStarted {
-				s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: "text_0"})
-				textStarted = true
-			}
-			textBuf.WriteString(choice.Delta.Content)
-			s.Send(llm.StreamEvent{
-				Type:   llm.StreamEventTextDelta,
-				TextID: "text_0",
-				Delta:  choice.Delta.Content,
-			})
-		}
-
-		// Tool call deltas.
-		for _, tc := range choice.Delta.ToolCalls {
-			state, exists := toolCalls[tc.Index]
-			if !exists {
-				// Close reasoning before the first tool call if needed.
+			// Text delta — close reasoning first if transitioning.
+			if choice.Delta.Content != "" {
 				if reasoningStarted && !textStarted {
 					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
-					reasoningStarted = false // Prevent double-close in [DONE].
 				}
-				state = &toolCallState{
-					id:   tc.ID,
-					name: tc.Function.Name,
+				if !textStarted {
+					s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: "text_0"})
+					textStarted = true
 				}
-				toolCalls[tc.Index] = state
+				textBuf.WriteString(choice.Delta.Content)
 				s.Send(llm.StreamEvent{
-					Type: llm.StreamEventToolCallStart,
-					ToolCall: &llm.ToolCallData{
-						ID:   tc.ID,
-						Name: tc.Function.Name,
-						Type: "function",
-					},
+					Type:   llm.StreamEventTextDelta,
+					TextID: "text_0",
+					Delta:  choice.Delta.Content,
 				})
 			}
-			if tc.Function.Arguments != "" {
-				state.args.WriteString(tc.Function.Arguments)
-				s.Send(llm.StreamEvent{
-					Type: llm.StreamEventToolCallDelta,
-					ToolCall: &llm.ToolCallData{
-						ID:        state.id,
-						Name:      state.name,
-						Arguments: json.RawMessage(tc.Function.Arguments),
-						Type:      "function",
-					},
-				})
+
+			// Tool call deltas.
+			for _, tc := range choice.Delta.ToolCalls {
+				state, exists := toolCalls[tc.Index]
+				if !exists {
+					// Close reasoning before the first tool call if needed.
+					if reasoningStarted && !textStarted {
+						s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
+						reasoningStarted = false // Prevent double-close in [DONE].
+					}
+					state = &toolCallState{
+						id:   tc.ID,
+						name: tc.Function.Name,
+					}
+					toolCalls[tc.Index] = state
+					s.Send(llm.StreamEvent{
+						Type: llm.StreamEventToolCallStart,
+						ToolCall: &llm.ToolCallData{
+							ID:   tc.ID,
+							Name: tc.Function.Name,
+							Type: "function",
+						},
+					})
+				}
+				if tc.Function.Arguments != "" {
+					state.args.WriteString(tc.Function.Arguments)
+					s.Send(llm.StreamEvent{
+						Type: llm.StreamEventToolCallDelta,
+						ToolCall: &llm.ToolCallData{
+							ID:        state.id,
+							Name:      state.name,
+							Arguments: json.RawMessage(tc.Function.Arguments),
+							Type:      "function",
+						},
+					})
+				}
 			}
-		}
 
-		return nil
-	}, llm.StreamReadSSEOptions(req.AdapterTimeout)...)
-
-	if !finished {
-		if err := sctx.Err(); err != nil {
-			s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.WrapContextError("openai-compatible", err)})
-		} else {
-			s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.NewStreamError("openai-compatible", "openai-compatible stream ended without completion", parseErr)})
-		}
+			return nil
+		},
 	}
+	runner.Run(sctx)
 }
 
 // --- HTTP helpers ---
