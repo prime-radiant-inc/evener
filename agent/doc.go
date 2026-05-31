@@ -33,9 +33,15 @@
 //
 // # Concurrency
 //
-// One goroutine drives a session through [Session.ProcessInput]. While a turn is
-// running, another goroutine may range over [Session.Events] to observe it and
-// may call control methods such as [Session.SetModel] concurrently. [Session.Close]
-// stops the session and closes the event stream; it is the caller's signal that
-// no further turns will run.
+// [Session.ProcessInput] is not re-entrant: drive each session from a single
+// goroutine and run its turns one at a time. While a turn is running, other
+// goroutines may observe and steer it. These methods are safe to call
+// concurrently with a running turn: [Session.Events], [Session.State],
+// [Session.Snapshot], [Session.QueueDepth], [Session.Steer], [Session.Enqueue],
+// [Session.SetModel], [Session.SetReasoningEffort], [Session.SetTimeout], and
+// [Session.Close].
+//
+// [Session.Events] returns a channel that [Session.Close] closes, so a range
+// loop over it ends when the session closes. Close stops the session and is the
+// caller's signal that no further turns will run.
 package agent
