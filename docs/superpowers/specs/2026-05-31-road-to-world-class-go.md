@@ -22,7 +22,7 @@ Ratified: externally-importable libraries; execute to the done-bar. Merges are f
   - P1.1 llm error wrapping (E1/E2/E6) — PRI-1960 — merged `34176b0b` (cause-threading + `WrapContextError` populates + 3 behavior-preserving consumer fixes: `retryableError`/`isTurnCancellation`/`queuedInputDrainContext`).
   - P1.2 stream-read surfacing (E3) — PRI-1963 — merged `c6dbd647` (capture `parseErr` → StreamError carrying the cause in all 5 adapters; responses.go fallback sentinel preserved).
   - P1.3 error hygiene (E4/E5/E8/E9) — PRI-1967 — merged `7bbae6be` (EventWarning vs swallow; `errNoCredentials` sentinel + `loginRequiredError` `%v`→`%w` so isUnconfigured is `errors.Is`-based; `errors.As`; apilog Sync symmetry).
-- **Phase 2 — Docs + naming gate — ▶ NEXT** (P2.1 package docs + examples + concurrency doc — Phase 0 done so the concurrency doc can tell the truth). Parallel-safe with Phase 3.
+- **Phase 2 — Docs + naming gate — ▶ IN PROGRESS** — P2.1 package `doc.go` for `llm` (PRI-1968, merged `c080f0f1`) and `agent` (PRI-1969, merged `95ed966b`) done (both verified against the code, no invented details). Remaining P2.1/P2.2: runnable Example tests (need a fake-adapter harness), godoc sweep + the identifier/godoc lint gate, the fuller Session concurrency doc (C4), P2.3 kill the naming-ignore pragmas. Parallel-safe with Phase 3.
 - **Phase 3 — Library boundary + API surface — ▶ available** (P3.1 promote config schema → public `llm/providercfg` + `WorkspaceInfo` is the externally-importable precondition; P3.1 before P3.3).
 - **Phase 4 — Black-box test migration (XL, gates subpackage extraction) — pending.**
 - **Phase 5 — Decomposition + dedup — pending** (P5.1 processOneInput god-function; P5.2–P5.6).
