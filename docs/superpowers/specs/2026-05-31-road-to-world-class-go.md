@@ -283,6 +283,51 @@ internal, it stays white-box in bucket 2.
 
 ---
 
+## 2.5 Surface-min scope — conservative vs aggressive (the Q1 decision surface)
+
+Added 2026-05-31 (session 2) so the scope choice has a durable reference. App-reachability
+re-verified by grepping `cmd/` + `server/` for each cluster's entry-point METHOD calls (not
+just type names — type-inference hides method-returned types from a `agent.Type` grep).
+**Caveat:** the audit's per-symbol "zero refs" claims proved unreliable (see §0 correction); treat
+this table as a candidate list and re-verify each symbol with `go doc -all` + a method-call grep
+before unexporting it.
+
+**KEEP — real app consumers, never cut:** the ~46 app-used `Session`/construction methods + the
+event contract; plus the niche-but-real ones a grep confirmed: `agent.LoadPlugin` (claudeplugins),
+`agent.RunRetentionProbes` (serfeval), `Session.ContextMetrics()` + `Session.DetailedStatus()` (hub
+status endpoint).
+
+**CONSERVATIVE — do now, targeted, behavior-preserving (~15–20 symbols):**
+- P3.4 ✅ `NewToolRegistry` off the `ProviderProfile` interface (`3452dd27`).
+- P3.3 (ratified, next) slim `SessionConfig` — move spawn-internal + the two "For testing" fields off the public struct.
+- P3.2 (Q4, after P4.1) unexport the 12 llm HTTP error structs (`ContentFilterError` stays).
+Keeps every app-reachable method exported.
+
+**AGGRESSIVE — gated on P4.1 (test coupling), mostly NO app rework; this IS Phase 6 / P6.2:**
+verified app-call counts in parens (entry point → count):
+
+| Cluster | Representative symbols | App calls |
+| --- | --- | --- |
+| eval internals | `EvalCollector`, `EvalMetrics`, `ProbeResult`, `ProbeQuestion`, `NewEvalCollector` | 0 (RunRetentionProbes itself stays — serfeval) |
+| ATIF | `ATIFAgent` +7 types, `ConvertToATIF`, `ExportATIF` (ExportATIF→0) | 0 |
+| prompt composition | `SectionResolver`, `PromptData`, `PromptSource`, `SectionSource`, `AgentEntry`, `AgentTaskEntry` | 0 |
+| strategy / context | `ContextManager`(NewContextManager→0), `ContextStrategy`, 8×`*Strategy`+`New*`, `StrategyHost` | 0 |
+| tools / MCP / hooks | `ToolRegistry`, `RegisteredTool`, `MCPManager`+`NewMCPManager`, `HookRunner`+`NewHookRunner` | 0 |
+| transcript helpers | `ReadTranscriptFull`, `TranscriptData`, ReadTranscript variants | 0 |
+| tool-map utils | `MapClaudeToolName`, `MapSerfToolNameToClaude`, `ApplyPatch`, `EstimateTokens` | 0 |
+| naming | `SubAgent*` → `Subagent*` (public rename; event surface already uses `Subagent`) | n/a |
+
+Net ~80–120 symbols, **all 0-app-ref** (used only inside `agent` + agent's own tests). So
+"aggressive" is not a consumer-breaking scope toggle — it's the P4.1 test-migration (XL) + the
+Phase-6 internal-subpackage moves (P6.2) that the roadmap already defers behind the PRI-1947 seams.
+
+**Bottom line:** conservative is the now-decision (in progress). Aggressive ≈ Phase 6, unlocked by
+P4.1 — so do conservative now; once P4.1 lands and shows exactly which symbols are freed, revisit
+this table to pick how much of the aggressive set to internalize. There is no urgency to choose
+aggressive vs conservative *today*; they're sequential, not exclusive.
+
+---
+
 ## 3. Findings by dimension (consolidated, deduped, severity-ranked)
 
 Severity: **critical** > **high** > **medium** > **low**. Evidence verified at HEAD.
