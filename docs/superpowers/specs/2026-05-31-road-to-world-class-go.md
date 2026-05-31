@@ -9,6 +9,26 @@ Sections 3–5 are the supporting findings, roadmap, and standing gate.
 
 ---
 
+## 0. Progress (live; updated 2026-05-31)
+
+Ratified: externally-importable libraries; execute to the done-bar. Merges are ff-only to local main (never pushed).
+
+- **Phase 0 — Correctness — ✅ COMPLETE** (all merged to local main @ `94ba4d41`)
+  - P0.1 events race + delete `emit` recover() — PRI-1939 (option C: `eventsMu` RWMutex + `eventsClosed`) — merged `3d4bc474`.
+  - P0.2 synchronize SetModel/SetReasoningEffort reads on the turn path — PRI-1958 (locked-accessor `currentProfile()` + per-round snapshot) — merged `109b61ad`.
+  - P0.3 finish + verify hub_model split — PRI-1956 (4563→232) — verified pure-move, merged.
+  - P0.4 delete `chanStream.Send` recover() + document single-producer contract — PRI-1959 — merged `94ba4d41`.
+- **Phase 1 — Honest error contracts — ▶ NEXT** (P1.1 llm error wrapping ∥ P1.2 stream-read surfacing ∥ P1.3 hygiene). Parallel-safe with Phase 2 / Phase 3.
+- **Phase 2 — Docs + naming gate — pending** (P2.1 gated on Phase 0 so the concurrency doc is truthful — now unblocked).
+- **Phase 3 — Library boundary + API surface — pending** (P3.1 promote config schema is the precondition; P3.1 before P3.3).
+- **Phase 4 — Black-box test migration (XL, gates subpackage extraction) — pending.**
+- **Phase 5 — Decomposition + dedup — pending** (P5.1 processOneInput god-function; P5.2–P5.6).
+- **Phase 6 — Subpackages + actor core (deferred) — pending** (needs PRI-1947 seams + Phase 4).
+
+Standing gate (§5) not yet wired into CI — establish once Phase 1–2 land.
+
+---
+
 ## 1. The bar
 
 "World-class" / "Pike would demo it at Google I/O" means, concretely, for `agent` and `llm`:
