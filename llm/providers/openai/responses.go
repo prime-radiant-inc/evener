@@ -199,297 +199,304 @@ func (a *Adapter) streamResponses(ctx context.Context, req llm.Request) (llm.Str
 	// STREAM_START
 	s.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
 
-	go func() {
-		defer func() {
-			_ = resp.Body.Close()
-			s.CloseSend()
-		}()
-
-		textID := "text_1"
-		textStarted := false
-		finished := false
-		// sentContent tracks whether any meaningful content event was emitted.
-		// If the stream closes without content, we emit errEmptyResponsesStream.
-		sentContent := false
-		type toolState struct {
-			id      string
-			itemID  string
-			name    string
-			started bool
-			args    strings.Builder
-		}
-		toolStates := map[string]*toolState{}
-		itemToCallID := map[string]string{}
-
-		var sseBody io.Reader = resp.Body
-		var sseBuf *bytes.Buffer
-		if llm.RawBodyEnabled() {
-			sseBuf = &bytes.Buffer{}
-			sseBody = io.TeeReader(resp.Body, sseBuf)
-		}
-		rawReqBody := string(b)
-
-		parseErr := llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
-			if len(ev.Data) == 0 {
-				return nil
-			}
-			var payload map[string]any
-			dec := json.NewDecoder(bytes.NewReader(ev.Data))
-			dec.UseNumber()
-			if err := dec.Decode(&payload); err != nil {
-				// Emit raw passthrough and continue.
-				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: map[string]any{"event": ev.Event, "data": string(ev.Data)}})
-				return nil
-			}
-			typ, _ := payload["type"].(string)
-			if typ == "" {
-				typ = ev.Event
-			}
-
-			switch typ {
-			case "response.output_item.added":
-				itemAny := payload["item"]
-				if item, ok := itemAny.(map[string]any); ok {
-					if itemType, _ := item["type"].(string); itemType == "function_call" {
-						callID, _ := item["call_id"].(string)
-						itemID, _ := item["id"].(string)
-						name, _ := item["name"].(string)
-						stateID := callID
-						if stateID == "" {
-							stateID = itemID
-						}
-						if stateID != "" {
-							st := toolStates[stateID]
-							if st == nil {
-								st = &toolState{id: stateID}
-							}
-							if callID != "" {
-								st.id = callID
-								toolStates[callID] = st
-							}
-							if itemID != "" {
-								st.itemID = itemID
-								itemToCallID[itemID] = st.id
-								toolStates[itemID] = st
-							}
-							if st.name == "" && name != "" {
-								st.name = name
-							}
-							toolStates[stateID] = st
-						}
-					}
-				}
-			case "response.output_text.delta":
-				delta, _ := payload["delta"].(string)
-				if delta == "" {
-					delta, _ = payload["text"].(string)
-				}
-				if delta == "" {
-					return nil
-				}
-				sentContent = true
-				if !textStarted {
-					textStarted = true
-					s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: textID})
-				}
-				s.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: textID, Delta: delta})
-			case "response.function_call_arguments.delta":
-				delta, _ := payload["delta"].(string)
-				if delta == "" {
-					delta, _ = payload["arguments"].(string)
-				}
-				callID, _ := payload["call_id"].(string)
-				itemID, _ := payload["item_id"].(string)
-				if callID == "" && itemID != "" {
-					callID = itemToCallID[itemID]
-				}
-				if callID == "" {
-					callID = itemID
-				}
-				if callID == "" {
-					callID, _ = payload["id"].(string)
-				}
-				name, _ := payload["name"].(string)
-				if callID == "" || (delta == "" && name == "") {
-					// Can't map reliably; pass through.
-					s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
-					return nil
-				}
-
-				st := toolStates[callID]
-				if st == nil && itemID != "" {
-					st = toolStates[itemID]
-					if st != nil {
-						callID = st.id
-					}
-				}
-				if st == nil {
-					st = &toolState{id: callID, name: name}
-					toolStates[callID] = st
-				}
-				if st.name == "" && name != "" {
-					st.name = name
-				}
-				if delta != "" {
-					st.args.WriteString(delta)
-				}
-				if !st.started {
-					sentContent = true
-					st.started = true
-					tc := llm.ToolCallData{ID: st.id, Name: st.name, Type: "function"}
-					s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
-				}
-				tc := llm.ToolCallData{ID: st.id, Name: st.name, Arguments: []byte(delta), Type: "function"}
-				s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &tc})
-			case "response.function_call_arguments.done":
-				argsStr, _ := payload["arguments"].(string)
-				callID, _ := payload["call_id"].(string)
-				itemID, _ := payload["item_id"].(string)
-				if callID == "" && itemID != "" {
-					callID = itemToCallID[itemID]
-				}
-				if callID == "" {
-					callID = itemID
-				}
-				if callID == "" {
-					s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
-					return nil
-				}
-				st := toolStates[callID]
-				if st == nil && itemID != "" {
-					st = toolStates[itemID]
-					if st != nil {
-						callID = st.id
-					}
-				}
-				if st == nil {
-					st = &toolState{id: callID}
-					toolStates[callID] = st
-				}
-				if itemID != "" {
-					st.itemID = itemID
-					itemToCallID[itemID] = st.id
-				}
-				if argsStr != "" {
-					st.args.Reset()
-					st.args.WriteString(argsStr)
-				}
-			case "response.output_item.done":
-				itemAny := payload["item"]
-				if itemAny == nil {
-					itemAny = payload["output_item"]
-				}
-				if item, ok := itemAny.(map[string]any); ok {
-					it, _ := item["type"].(string)
-					switch it {
-					case "function_call":
-						callID, _ := item["call_id"].(string)
-						itemID, _ := item["id"].(string)
-						name, _ := item["name"].(string)
-						argsStr, _ := item["arguments"].(string)
-						if callID == "" && itemID != "" {
-							callID = itemToCallID[itemID]
-						}
-						if callID != "" {
-							st := toolStates[callID]
-							if st == nil && itemID != "" {
-								st = toolStates[itemID]
-								if st != nil {
-									callID = st.id
-								}
-							}
-							if st == nil {
-								st = &toolState{id: callID, name: name}
-								toolStates[callID] = st
-							}
-							if itemID != "" {
-								st.itemID = itemID
-								itemToCallID[itemID] = st.id
-								toolStates[itemID] = st
-							}
-							if st.name == "" && name != "" {
-								st.name = name
-							}
-							if argsStr != "" {
-								st.args.Reset()
-								st.args.WriteString(argsStr)
-							}
-							if argsStr == "" {
-								argsStr = st.args.String()
-							}
-							if !st.started {
-								sentContent = true
-								st.started = true
-								tc := llm.ToolCallData{ID: st.id, Name: st.name, Type: "function"}
-								s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
-							}
-							tc := llm.ToolCallData{ID: st.id, Name: st.name, Arguments: json.RawMessage(argsStr), Type: "function"}
-							s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tc})
-						} else {
-							s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
-						}
-					default:
-						// Best-effort: treat as end-of-text.
-						if textStarted {
-							s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
-							textStarted = false
-						}
-					}
-				} else if textStarted {
-					// Best-effort: treat as end-of-text.
-					s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
-					textStarted = false
-				}
-			case "response.completed":
-				// Response object may be nested under "response" or be the payload itself.
-				rawResp, _ := payload["response"].(map[string]any)
-				if rawResp == nil {
-					rawResp = payload
-				}
-				r := fromResponses(rawResp, req.Model)
-				llm.StampEndpointURL(&r, a.responsesURL())
-				// Ensure text segment is closed.
-				if textStarted {
-					s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
-					textStarted = false
-				}
-				sentContent = true
-				if responseHasAssistantContent(r) {
-					rp := r
-					if sseBuf != nil {
-						rp.RawRequestBody = rawReqBody
-						rp.RawResponseBody = sseBuf.String()
-					}
-					s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp})
-				} else {
-					s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage})
-				}
-				// Stop parsing after finish.
-				finished = true
-				cancel()
-			default:
-				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
-			}
-			return nil
-		}, llm.StreamReadSSEOptions(req.AdapterTimeout)...)
-
-		if !finished {
-			switch {
-			case sctx.Err() != nil:
-				s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.WrapContextError("openai", sctx.Err())})
-			case !sentContent:
-				// Stream closed 200 OK with zero content: model likely does not
-				// support /v1/responses. Signal the caller to try Chat Completions.
-				s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: errEmptyResponsesStream})
-			default:
-				// Content was streamed, then the stream ended without completion —
-				// a genuine mid-stream read failure; surface its cause.
-				s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.NewStreamError("openai", "openai responses stream ended without completion", parseErr)})
-			}
-		}
-	}()
+	go a.decodeResponsesStream(sctx, cancel, resp, s, req, b)
 
 	return s, nil
+}
+
+// decodeResponsesStream consumes the Responses API SSE stream in its own
+// goroutine: it translates each event into llm stream events and emits the final
+// accumulated Response on response.completed. It emits errEmptyResponsesStream if
+// the stream closes 200 OK with zero content. It owns closing the response body
+// and the ChanStream.
+func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, b []byte) {
+	defer func() {
+		_ = resp.Body.Close()
+		s.CloseSend()
+	}()
+
+	textID := "text_1"
+	textStarted := false
+	finished := false
+	// sentContent tracks whether any meaningful content event was emitted.
+	// If the stream closes without content, we emit errEmptyResponsesStream.
+	sentContent := false
+	type toolState struct {
+		id      string
+		itemID  string
+		name    string
+		started bool
+		args    strings.Builder
+	}
+	toolStates := map[string]*toolState{}
+	itemToCallID := map[string]string{}
+
+	var sseBody io.Reader = resp.Body
+	var sseBuf *bytes.Buffer
+	if llm.RawBodyEnabled() {
+		sseBuf = &bytes.Buffer{}
+		sseBody = io.TeeReader(resp.Body, sseBuf)
+	}
+	rawReqBody := string(b)
+
+	parseErr := llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
+		if len(ev.Data) == 0 {
+			return nil
+		}
+		var payload map[string]any
+		dec := json.NewDecoder(bytes.NewReader(ev.Data))
+		dec.UseNumber()
+		if err := dec.Decode(&payload); err != nil {
+			// Emit raw passthrough and continue.
+			s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: map[string]any{"event": ev.Event, "data": string(ev.Data)}})
+			return nil
+		}
+		typ, _ := payload["type"].(string)
+		if typ == "" {
+			typ = ev.Event
+		}
+
+		switch typ {
+		case "response.output_item.added":
+			itemAny := payload["item"]
+			if item, ok := itemAny.(map[string]any); ok {
+				if itemType, _ := item["type"].(string); itemType == "function_call" {
+					callID, _ := item["call_id"].(string)
+					itemID, _ := item["id"].(string)
+					name, _ := item["name"].(string)
+					stateID := callID
+					if stateID == "" {
+						stateID = itemID
+					}
+					if stateID != "" {
+						st := toolStates[stateID]
+						if st == nil {
+							st = &toolState{id: stateID}
+						}
+						if callID != "" {
+							st.id = callID
+							toolStates[callID] = st
+						}
+						if itemID != "" {
+							st.itemID = itemID
+							itemToCallID[itemID] = st.id
+							toolStates[itemID] = st
+						}
+						if st.name == "" && name != "" {
+							st.name = name
+						}
+						toolStates[stateID] = st
+					}
+				}
+			}
+		case "response.output_text.delta":
+			delta, _ := payload["delta"].(string)
+			if delta == "" {
+				delta, _ = payload["text"].(string)
+			}
+			if delta == "" {
+				return nil
+			}
+			sentContent = true
+			if !textStarted {
+				textStarted = true
+				s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: textID})
+			}
+			s.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: textID, Delta: delta})
+		case "response.function_call_arguments.delta":
+			delta, _ := payload["delta"].(string)
+			if delta == "" {
+				delta, _ = payload["arguments"].(string)
+			}
+			callID, _ := payload["call_id"].(string)
+			itemID, _ := payload["item_id"].(string)
+			if callID == "" && itemID != "" {
+				callID = itemToCallID[itemID]
+			}
+			if callID == "" {
+				callID = itemID
+			}
+			if callID == "" {
+				callID, _ = payload["id"].(string)
+			}
+			name, _ := payload["name"].(string)
+			if callID == "" || (delta == "" && name == "") {
+				// Can't map reliably; pass through.
+				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
+				return nil
+			}
+
+			st := toolStates[callID]
+			if st == nil && itemID != "" {
+				st = toolStates[itemID]
+				if st != nil {
+					callID = st.id
+				}
+			}
+			if st == nil {
+				st = &toolState{id: callID, name: name}
+				toolStates[callID] = st
+			}
+			if st.name == "" && name != "" {
+				st.name = name
+			}
+			if delta != "" {
+				st.args.WriteString(delta)
+			}
+			if !st.started {
+				sentContent = true
+				st.started = true
+				tc := llm.ToolCallData{ID: st.id, Name: st.name, Type: "function"}
+				s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
+			}
+			tc := llm.ToolCallData{ID: st.id, Name: st.name, Arguments: []byte(delta), Type: "function"}
+			s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &tc})
+		case "response.function_call_arguments.done":
+			argsStr, _ := payload["arguments"].(string)
+			callID, _ := payload["call_id"].(string)
+			itemID, _ := payload["item_id"].(string)
+			if callID == "" && itemID != "" {
+				callID = itemToCallID[itemID]
+			}
+			if callID == "" {
+				callID = itemID
+			}
+			if callID == "" {
+				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
+				return nil
+			}
+			st := toolStates[callID]
+			if st == nil && itemID != "" {
+				st = toolStates[itemID]
+				if st != nil {
+					callID = st.id
+				}
+			}
+			if st == nil {
+				st = &toolState{id: callID}
+				toolStates[callID] = st
+			}
+			if itemID != "" {
+				st.itemID = itemID
+				itemToCallID[itemID] = st.id
+			}
+			if argsStr != "" {
+				st.args.Reset()
+				st.args.WriteString(argsStr)
+			}
+		case "response.output_item.done":
+			itemAny := payload["item"]
+			if itemAny == nil {
+				itemAny = payload["output_item"]
+			}
+			if item, ok := itemAny.(map[string]any); ok {
+				it, _ := item["type"].(string)
+				switch it {
+				case "function_call":
+					callID, _ := item["call_id"].(string)
+					itemID, _ := item["id"].(string)
+					name, _ := item["name"].(string)
+					argsStr, _ := item["arguments"].(string)
+					if callID == "" && itemID != "" {
+						callID = itemToCallID[itemID]
+					}
+					if callID != "" {
+						st := toolStates[callID]
+						if st == nil && itemID != "" {
+							st = toolStates[itemID]
+							if st != nil {
+								callID = st.id
+							}
+						}
+						if st == nil {
+							st = &toolState{id: callID, name: name}
+							toolStates[callID] = st
+						}
+						if itemID != "" {
+							st.itemID = itemID
+							itemToCallID[itemID] = st.id
+							toolStates[itemID] = st
+						}
+						if st.name == "" && name != "" {
+							st.name = name
+						}
+						if argsStr != "" {
+							st.args.Reset()
+							st.args.WriteString(argsStr)
+						}
+						if argsStr == "" {
+							argsStr = st.args.String()
+						}
+						if !st.started {
+							sentContent = true
+							st.started = true
+							tc := llm.ToolCallData{ID: st.id, Name: st.name, Type: "function"}
+							s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
+						}
+						tc := llm.ToolCallData{ID: st.id, Name: st.name, Arguments: json.RawMessage(argsStr), Type: "function"}
+						s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tc})
+					} else {
+						s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
+					}
+				default:
+					// Best-effort: treat as end-of-text.
+					if textStarted {
+						s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
+						textStarted = false
+					}
+				}
+			} else if textStarted {
+				// Best-effort: treat as end-of-text.
+				s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
+				textStarted = false
+			}
+		case "response.completed":
+			// Response object may be nested under "response" or be the payload itself.
+			rawResp, _ := payload["response"].(map[string]any)
+			if rawResp == nil {
+				rawResp = payload
+			}
+			r := fromResponses(rawResp, req.Model)
+			llm.StampEndpointURL(&r, a.responsesURL())
+			// Ensure text segment is closed.
+			if textStarted {
+				s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
+				textStarted = false
+			}
+			sentContent = true
+			if responseHasAssistantContent(r) {
+				rp := r
+				if sseBuf != nil {
+					rp.RawRequestBody = rawReqBody
+					rp.RawResponseBody = sseBuf.String()
+				}
+				s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp})
+			} else {
+				s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage})
+			}
+			// Stop parsing after finish.
+			finished = true
+			cancel()
+		default:
+			s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
+		}
+		return nil
+	}, llm.StreamReadSSEOptions(req.AdapterTimeout)...)
+
+	if !finished {
+		switch {
+		case sctx.Err() != nil:
+			s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.WrapContextError("openai", sctx.Err())})
+		case !sentContent:
+			// Stream closed 200 OK with zero content: model likely does not
+			// support /v1/responses. Signal the caller to try Chat Completions.
+			s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: errEmptyResponsesStream})
+		default:
+			// Content was streamed, then the stream ended without completion —
+			// a genuine mid-stream read failure; surface its cause.
+			s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.NewStreamError("openai", "openai responses stream ended without completion", parseErr)})
+		}
+	}
 }
 
 func toResponsesResponseFormat(rf llm.ResponseFormat) any {

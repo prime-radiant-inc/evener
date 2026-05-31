@@ -388,47 +388,54 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	out, outCancel := context.WithCancel(ctx)
 	proxy := llm.NewChanStream(outCancel)
 
-	go func() {
-		defer proxy.CloseSend()
-
-		sentContent := false
-		for ev := range responsesStream.Events() {
-			if isContentEvent(ev.Type) {
-				sentContent = true
-			}
-			if ev.Type == llm.StreamEventError && errors.Is(ev.Err, errEmptyResponsesStream) && !sentContent {
-				// Responses API gave us nothing. Fall back to Chat Completions.
-				responsesStream.Close() //nolint:errcheck
-				ccStream, ccErr := a.streamViaChatCompletions(out, req)
-				if ccErr != nil {
-					combinedMsg := fmt.Sprintf(
-						"openai: model %q failed on both endpoints — "+
-							"/v1/responses: empty stream (model not supported); "+
-							"/v1/chat/completions: %v",
-						req.Model, ccErr,
-					)
-					proxy.Send(llm.StreamEvent{
-						Type: llm.StreamEventError,
-						Err:  llm.NewStreamError("openai", combinedMsg, ccErr),
-					})
-					return
-				}
-				// Forward all events from the Chat Completions stream.
-				for ccEv := range ccStream.Events() {
-					proxy.Send(ccEv)
-				}
-				ccStream.Close() //nolint:errcheck
-				return
-			}
-			proxy.Send(ev)
-		}
-		responsesStream.Close() //nolint:errcheck
-	}()
+	go a.decodeStream(out, proxy, responsesStream, req)
 
 	return &responsesFallbackProxyStream{
 		proxy:           proxy,
 		responsesStream: responsesStream,
 	}, nil
+}
+
+// decodeStream proxies the Responses API stream in its own goroutine, watching
+// for the empty-stream sentinel. If the Responses stream yields no content before
+// signalling errEmptyResponsesStream, it swaps to Chat Completions and forwards
+// those events instead; otherwise it forwards Responses events verbatim. It owns
+// closing the proxy ChanStream and the underlying Responses stream.
+func (a *Adapter) decodeStream(out context.Context, proxy *llm.ChanStream, responsesStream llm.Stream, req llm.Request) {
+	defer proxy.CloseSend()
+
+	sentContent := false
+	for ev := range responsesStream.Events() {
+		if isContentEvent(ev.Type) {
+			sentContent = true
+		}
+		if ev.Type == llm.StreamEventError && errors.Is(ev.Err, errEmptyResponsesStream) && !sentContent {
+			// Responses API gave us nothing. Fall back to Chat Completions.
+			responsesStream.Close() //nolint:errcheck
+			ccStream, ccErr := a.streamViaChatCompletions(out, req)
+			if ccErr != nil {
+				combinedMsg := fmt.Sprintf(
+					"openai: model %q failed on both endpoints — "+
+						"/v1/responses: empty stream (model not supported); "+
+						"/v1/chat/completions: %v",
+					req.Model, ccErr,
+				)
+				proxy.Send(llm.StreamEvent{
+					Type: llm.StreamEventError,
+					Err:  llm.NewStreamError("openai", combinedMsg, ccErr),
+				})
+				return
+			}
+			// Forward all events from the Chat Completions stream.
+			for ccEv := range ccStream.Events() {
+				proxy.Send(ccEv)
+			}
+			ccStream.Close() //nolint:errcheck
+			return
+		}
+		proxy.Send(ev)
+	}
+	responsesStream.Close() //nolint:errcheck
 }
 
 type responsesFallbackProxyStream struct {

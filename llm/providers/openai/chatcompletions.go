@@ -66,204 +66,210 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 	s := llm.NewChanStream(cancel)
 	s.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
 
-	go func() {
-		defer func() {
-			_ = resp.Body.Close()
-			s.CloseSend()
-		}()
-
-		type toolCallState struct {
-			id   string
-			name string
-			args strings.Builder
-		}
-		toolCalls := map[int]*toolCallState{}
-		var textStarted bool
-		var textBuf strings.Builder
-		var finishReason string
-		var model string
-		var usage *llm.Usage
-		finished := false
-
-		var sseBody io.Reader = resp.Body
-		var sseBuf *bytes.Buffer
-		if llm.RawBodyEnabled() {
-			sseBuf = &bytes.Buffer{}
-			sseBody = io.TeeReader(resp.Body, sseBuf)
-		}
-		rawReqBody := string(jsonBody)
-
-		parseErr := llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
-			data := string(ev.Data)
-			if data == "[DONE]" {
-				finished = true
-
-				// Emit tool call end events.
-				var completedToolCalls []llm.ToolCallData
-				for _, tc := range toolCalls {
-					tcd := llm.ToolCallData{
-						ID:        tc.id,
-						Name:      tc.name,
-						Arguments: json.RawMessage(tc.args.String()),
-						Type:      "function",
-					}
-					completedToolCalls = append(completedToolCalls, tcd)
-					s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tcd})
-				}
-				if textStarted {
-					s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: "text_0"})
-				}
-
-				msg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{}}
-				if textBuf.Len() > 0 {
-					msg.Content = append(msg.Content, llm.ContentPart{Kind: llm.ContentText, Text: textBuf.String()})
-				}
-				for i := range completedToolCalls {
-					msg.Content = append(msg.Content, llm.ContentPart{
-						Kind:     llm.ContentToolCall,
-						ToolCall: &completedToolCalls[i],
-					})
-				}
-
-				finish := llm.NormalizeFinishReason("", finishReason)
-				finalResp := &llm.Response{
-					Provider: "openai",
-					Model:    model,
-					Message:  msg,
-					Finish:   finish,
-				}
-				if usage != nil {
-					finalResp.Usage = *usage
-				}
-				llm.StampEndpointURL(finalResp, a.chatCompletionsURL())
-				if sseBuf != nil {
-					finalResp.RawRequestBody = rawReqBody
-					finalResp.RawResponseBody = sseBuf.String()
-				}
-				s.Send(llm.StreamEvent{
-					Type:         llm.StreamEventFinish,
-					FinishReason: &finish,
-					Usage:        usage,
-					Response:     finalResp,
-				})
-				cancel()
-				return nil
-			}
-
-			var chunk struct {
-				ID      string `json:"id"`
-				Model   string `json:"model"`
-				Choices []struct {
-					Index        int    `json:"index"`
-					FinishReason string `json:"finish_reason"`
-					Delta        struct {
-						Content   string `json:"content"`
-						ToolCalls []struct {
-							Index    int    `json:"index"`
-							ID       string `json:"id,omitempty"`
-							Type     string `json:"type,omitempty"`
-							Function struct {
-								Name      string `json:"name"`
-								Arguments string `json:"arguments"`
-							} `json:"function"`
-						} `json:"tool_calls"`
-					} `json:"delta"`
-				} `json:"choices"`
-				Usage map[string]any `json:"usage"`
-			}
-			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-				return nil
-			}
-			if chunk.Model != "" {
-				model = chunk.Model
-			}
-			if chunk.Usage != nil {
-				rawPrompt := llm.IntFromAny(chunk.Usage["prompt_tokens"])
-				var cachedRead int
-				if details, ok := chunk.Usage["prompt_tokens_details"].(map[string]any); ok {
-					cachedRead = llm.IntFromAny(details["cached_tokens"])
-				}
-				uncachedInput := rawPrompt - cachedRead
-				if uncachedInput < 0 {
-					uncachedInput = 0
-				}
-				u := llm.Usage{
-					InputTokens:  uncachedInput,
-					OutputTokens: llm.IntFromAny(chunk.Usage["completion_tokens"]),
-					Raw:          chunk.Usage,
-				}
-				u.TotalTokens = rawPrompt + u.OutputTokens
-				if v := llm.IntFromAny(chunk.Usage["total_tokens"]); v > 0 {
-					u.TotalTokens = v
-				}
-				if details, ok := chunk.Usage["completion_tokens_details"].(map[string]any); ok {
-					if rt := llm.IntFromAny(details["reasoning_tokens"]); rt > 0 {
-						u.ReasoningTokens = &rt
-					}
-				}
-				if cachedRead > 0 {
-					u.CacheReadTokens = &cachedRead
-				}
-				usage = &u
-			}
-			if len(chunk.Choices) == 0 {
-				return nil
-			}
-			choice := chunk.Choices[0]
-			if choice.FinishReason != "" {
-				finishReason = choice.FinishReason
-			}
-			if choice.Delta.Content != "" {
-				if !textStarted {
-					s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: "text_0"})
-					textStarted = true
-				}
-				textBuf.WriteString(choice.Delta.Content)
-				s.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: "text_0", Delta: choice.Delta.Content})
-			}
-			for _, tc := range choice.Delta.ToolCalls {
-				state, exists := toolCalls[tc.Index]
-				if !exists {
-					state = &toolCallState{id: tc.ID, name: tc.Function.Name}
-					toolCalls[tc.Index] = state
-					s.Send(llm.StreamEvent{
-						Type: llm.StreamEventToolCallStart,
-						ToolCall: &llm.ToolCallData{
-							ID:   tc.ID,
-							Name: tc.Function.Name,
-							Type: "function",
-						},
-					})
-				}
-				if tc.Function.Arguments != "" {
-					state.args.WriteString(tc.Function.Arguments)
-					s.Send(llm.StreamEvent{
-						Type: llm.StreamEventToolCallDelta,
-						ToolCall: &llm.ToolCallData{
-							ID:        state.id,
-							Name:      state.name,
-							Arguments: json.RawMessage(tc.Function.Arguments),
-							Type:      "function",
-						},
-					})
-				}
-			}
-			return nil
-		}, llm.StreamReadSSEOptions(req.AdapterTimeout)...)
-
-		if !finished {
-			if err := sctx.Err(); err != nil {
-				s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.WrapContextError("openai", err)})
-			} else {
-				s.Send(llm.StreamEvent{
-					Type: llm.StreamEventError,
-					Err:  llm.NewStreamError("openai", fmt.Sprintf("chat.completions stream closed without [DONE] (model: %q)", req.Model), parseErr),
-				})
-			}
-		}
-	}()
+	go a.decodeChatCompletionsStream(sctx, cancel, resp, s, req, jsonBody)
 
 	return s, nil
+}
+
+// decodeChatCompletionsStream consumes the Chat Completions SSE stream in its own
+// goroutine: it translates each chunk into llm stream events and emits the final
+// accumulated Response on [DONE]. It owns closing the response body and the
+// ChanStream.
+func (a *Adapter) decodeChatCompletionsStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, jsonBody []byte) {
+	defer func() {
+		_ = resp.Body.Close()
+		s.CloseSend()
+	}()
+
+	type toolCallState struct {
+		id   string
+		name string
+		args strings.Builder
+	}
+	toolCalls := map[int]*toolCallState{}
+	var textStarted bool
+	var textBuf strings.Builder
+	var finishReason string
+	var model string
+	var usage *llm.Usage
+	finished := false
+
+	var sseBody io.Reader = resp.Body
+	var sseBuf *bytes.Buffer
+	if llm.RawBodyEnabled() {
+		sseBuf = &bytes.Buffer{}
+		sseBody = io.TeeReader(resp.Body, sseBuf)
+	}
+	rawReqBody := string(jsonBody)
+
+	parseErr := llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
+		data := string(ev.Data)
+		if data == "[DONE]" {
+			finished = true
+
+			// Emit tool call end events.
+			var completedToolCalls []llm.ToolCallData
+			for _, tc := range toolCalls {
+				tcd := llm.ToolCallData{
+					ID:        tc.id,
+					Name:      tc.name,
+					Arguments: json.RawMessage(tc.args.String()),
+					Type:      "function",
+				}
+				completedToolCalls = append(completedToolCalls, tcd)
+				s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tcd})
+			}
+			if textStarted {
+				s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: "text_0"})
+			}
+
+			msg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{}}
+			if textBuf.Len() > 0 {
+				msg.Content = append(msg.Content, llm.ContentPart{Kind: llm.ContentText, Text: textBuf.String()})
+			}
+			for i := range completedToolCalls {
+				msg.Content = append(msg.Content, llm.ContentPart{
+					Kind:     llm.ContentToolCall,
+					ToolCall: &completedToolCalls[i],
+				})
+			}
+
+			finish := llm.NormalizeFinishReason("", finishReason)
+			finalResp := &llm.Response{
+				Provider: "openai",
+				Model:    model,
+				Message:  msg,
+				Finish:   finish,
+			}
+			if usage != nil {
+				finalResp.Usage = *usage
+			}
+			llm.StampEndpointURL(finalResp, a.chatCompletionsURL())
+			if sseBuf != nil {
+				finalResp.RawRequestBody = rawReqBody
+				finalResp.RawResponseBody = sseBuf.String()
+			}
+			s.Send(llm.StreamEvent{
+				Type:         llm.StreamEventFinish,
+				FinishReason: &finish,
+				Usage:        usage,
+				Response:     finalResp,
+			})
+			cancel()
+			return nil
+		}
+
+		var chunk struct {
+			ID      string `json:"id"`
+			Model   string `json:"model"`
+			Choices []struct {
+				Index        int    `json:"index"`
+				FinishReason string `json:"finish_reason"`
+				Delta        struct {
+					Content   string `json:"content"`
+					ToolCalls []struct {
+						Index    int    `json:"index"`
+						ID       string `json:"id,omitempty"`
+						Type     string `json:"type,omitempty"`
+						Function struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"delta"`
+			} `json:"choices"`
+			Usage map[string]any `json:"usage"`
+		}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			return nil
+		}
+		if chunk.Model != "" {
+			model = chunk.Model
+		}
+		if chunk.Usage != nil {
+			rawPrompt := llm.IntFromAny(chunk.Usage["prompt_tokens"])
+			var cachedRead int
+			if details, ok := chunk.Usage["prompt_tokens_details"].(map[string]any); ok {
+				cachedRead = llm.IntFromAny(details["cached_tokens"])
+			}
+			uncachedInput := rawPrompt - cachedRead
+			if uncachedInput < 0 {
+				uncachedInput = 0
+			}
+			u := llm.Usage{
+				InputTokens:  uncachedInput,
+				OutputTokens: llm.IntFromAny(chunk.Usage["completion_tokens"]),
+				Raw:          chunk.Usage,
+			}
+			u.TotalTokens = rawPrompt + u.OutputTokens
+			if v := llm.IntFromAny(chunk.Usage["total_tokens"]); v > 0 {
+				u.TotalTokens = v
+			}
+			if details, ok := chunk.Usage["completion_tokens_details"].(map[string]any); ok {
+				if rt := llm.IntFromAny(details["reasoning_tokens"]); rt > 0 {
+					u.ReasoningTokens = &rt
+				}
+			}
+			if cachedRead > 0 {
+				u.CacheReadTokens = &cachedRead
+			}
+			usage = &u
+		}
+		if len(chunk.Choices) == 0 {
+			return nil
+		}
+		choice := chunk.Choices[0]
+		if choice.FinishReason != "" {
+			finishReason = choice.FinishReason
+		}
+		if choice.Delta.Content != "" {
+			if !textStarted {
+				s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: "text_0"})
+				textStarted = true
+			}
+			textBuf.WriteString(choice.Delta.Content)
+			s.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: "text_0", Delta: choice.Delta.Content})
+		}
+		for _, tc := range choice.Delta.ToolCalls {
+			state, exists := toolCalls[tc.Index]
+			if !exists {
+				state = &toolCallState{id: tc.ID, name: tc.Function.Name}
+				toolCalls[tc.Index] = state
+				s.Send(llm.StreamEvent{
+					Type: llm.StreamEventToolCallStart,
+					ToolCall: &llm.ToolCallData{
+						ID:   tc.ID,
+						Name: tc.Function.Name,
+						Type: "function",
+					},
+				})
+			}
+			if tc.Function.Arguments != "" {
+				state.args.WriteString(tc.Function.Arguments)
+				s.Send(llm.StreamEvent{
+					Type: llm.StreamEventToolCallDelta,
+					ToolCall: &llm.ToolCallData{
+						ID:        state.id,
+						Name:      state.name,
+						Arguments: json.RawMessage(tc.Function.Arguments),
+						Type:      "function",
+					},
+				})
+			}
+		}
+		return nil
+	}, llm.StreamReadSSEOptions(req.AdapterTimeout)...)
+
+	if !finished {
+		if err := sctx.Err(); err != nil {
+			s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.WrapContextError("openai", err)})
+		} else {
+			s.Send(llm.StreamEvent{
+				Type: llm.StreamEventError,
+				Err:  llm.NewStreamError("openai", fmt.Sprintf("chat.completions stream closed without [DONE] (model: %q)", req.Model), parseErr),
+			})
+		}
+	}
 }
 
 // buildChatCompletionsBody translates an llm.Request into a Chat Completions

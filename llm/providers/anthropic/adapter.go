@@ -193,99 +193,160 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	s := llm.NewChanStream(cancel)
 	s.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
 
-	go func() {
-		defer func() {
-			_ = resp.Body.Close()
-			s.CloseSend()
-		}()
+	go a.decodeStream(sctx, cancel, resp, s, req, b)
 
-		finished := false
-		type blockState struct {
-			typ      string
-			rawStart map[string]any // raw content_block from content_block_start
+	return s, nil
+}
 
-			// text
-			textID      string
-			textStarted bool
-			text        strings.Builder
+// decodeStream consumes the messages SSE stream in its own goroutine: it
+// translates each event into llm stream events and emits the final accumulated
+// Response on message_stop. It owns closing the response body and the ChanStream.
+func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, b []byte) {
+	defer func() {
+		_ = resp.Body.Close()
+		s.CloseSend()
+	}()
 
-			// tool_use
-			toolID      string
-			toolName    string
-			toolStarted bool
-			toolArgs    strings.Builder
+	finished := false
+	type blockState struct {
+		typ      string
+		rawStart map[string]any // raw content_block from content_block_start
 
-			// thinking / redacted_thinking
-			thinkingStarted bool
-			thinking        strings.Builder
-			signature       strings.Builder
-			redacted        bool
+		// text
+		textID      string
+		textStarted bool
+		text        strings.Builder
+
+		// tool_use
+		toolID      string
+		toolName    string
+		toolStarted bool
+		toolArgs    strings.Builder
+
+		// thinking / redacted_thinking
+		thinkingStarted bool
+		thinking        strings.Builder
+		signature       strings.Builder
+		redacted        bool
+	}
+	blocks := map[int]*blockState{}
+	maxIdx := -1
+
+	getBlock := func(idx int) *blockState {
+		st := blocks[idx]
+		if st == nil {
+			st = &blockState{}
+			blocks[idx] = st
 		}
-		blocks := map[int]*blockState{}
-		maxIdx := -1
+		if idx > maxIdx {
+			maxIdx = idx
+		}
+		return st
+	}
 
-		getBlock := func(idx int) *blockState {
-			st := blocks[idx]
-			if st == nil {
-				st = &blockState{}
-				blocks[idx] = st
-			}
-			if idx > maxIdx {
-				maxIdx = idx
-			}
-			return st
+	var usage llm.Usage
+	finish := llm.FinishReason{Reason: "stop"}
+	var msgID string
+	var actualModel string
+	var rawMessage map[string]any
+
+	var sseBody io.Reader = resp.Body
+	var sseBuf *bytes.Buffer
+	if llm.RawBodyEnabled() {
+		sseBuf = &bytes.Buffer{}
+		sseBody = io.TeeReader(resp.Body, sseBuf)
+	}
+	rawReqBody := string(b) // captured above
+
+	parseErr := llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
+		if len(ev.Data) == 0 {
+			return nil
+		}
+		var payload map[string]any
+		dec := json.NewDecoder(bytes.NewReader(ev.Data))
+		dec.UseNumber()
+		if err := dec.Decode(&payload); err != nil {
+			s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: map[string]any{"event": ev.Event, "data": string(ev.Data)}})
+			return nil
 		}
 
-		var usage llm.Usage
-		finish := llm.FinishReason{Reason: "stop"}
-		var msgID string
-		var actualModel string
-		var rawMessage map[string]any
-
-		var sseBody io.Reader = resp.Body
-		var sseBuf *bytes.Buffer
-		if llm.RawBodyEnabled() {
-			sseBuf = &bytes.Buffer{}
-			sseBody = io.TeeReader(resp.Body, sseBuf)
-		}
-		rawReqBody := string(b) // captured above
-
-		parseErr := llm.ParseSSE(sctx, sseBody, func(ev llm.SSEEvent) error {
-			if len(ev.Data) == 0 {
-				return nil
-			}
-			var payload map[string]any
-			dec := json.NewDecoder(bytes.NewReader(ev.Data))
-			dec.UseNumber()
-			if err := dec.Decode(&payload); err != nil {
-				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: map[string]any{"event": ev.Event, "data": string(ev.Data)}})
-				return nil
-			}
-
-			switch ev.Event {
-			case "message_start":
-				if msgAny, ok := payload["message"].(map[string]any); ok {
-					if id, _ := msgAny["id"].(string); id != "" {
-						msgID = id
-					}
-					if m, _ := msgAny["model"].(string); m != "" {
-						actualModel = m
-					}
-					rawMessage = msgAny
-					if u, ok := msgAny["usage"].(map[string]any); ok {
-						usage = parseUsage(u)
-					}
+		switch ev.Event {
+		case "message_start":
+			if msgAny, ok := payload["message"].(map[string]any); ok {
+				if id, _ := msgAny["id"].(string); id != "" {
+					msgID = id
 				}
-			case "content_block_start":
-				idx := llm.IntFromAny(payload["index"])
-				cb, _ := payload["content_block"].(map[string]any)
-				typ, _ := cb["type"].(string)
-				st := getBlock(idx)
-				st.typ = typ
-				st.rawStart = cb
-				if cb, ok := payload["content_block"].(map[string]any); ok {
-					switch typ {
-					case "text":
+				if m, _ := msgAny["model"].(string); m != "" {
+					actualModel = m
+				}
+				rawMessage = msgAny
+				if u, ok := msgAny["usage"].(map[string]any); ok {
+					usage = parseUsage(u)
+				}
+			}
+		case "content_block_start":
+			idx := llm.IntFromAny(payload["index"])
+			cb, _ := payload["content_block"].(map[string]any)
+			typ, _ := cb["type"].(string)
+			st := getBlock(idx)
+			st.typ = typ
+			st.rawStart = cb
+			if cb, ok := payload["content_block"].(map[string]any); ok {
+				switch typ {
+				case "text":
+					if st.textID == "" {
+						st.textID = fmt.Sprintf("text_%d", idx)
+					}
+					if !st.textStarted {
+						st.textStarted = true
+						s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: st.textID})
+					}
+				case "tool_use":
+					st.toolID, _ = cb["id"].(string)
+					st.toolName, _ = cb["name"].(string)
+					// Note: content_block_start always has input:{} as a placeholder.
+					// Actual arguments arrive via input_json_delta events; capturing
+					// the placeholder here would corrupt them (e.g. {}{"city":"Paris"}).
+					if !st.toolStarted && strings.TrimSpace(st.toolID) != "" {
+						st.toolStarted = true
+						tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Type: "function"}
+						s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
+					}
+				case "thinking", "redacted_thinking":
+					st.redacted = (typ == "redacted_thinking")
+					if sig, _ := cb["signature"].(string); sig != "" && st.signature.Len() == 0 {
+						st.signature.WriteString(sig)
+					}
+					if !st.thinkingStarted {
+						st.thinkingStarted = true
+						s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
+					}
+					// Some implementations may include initial thinking in the start block.
+					t, _ := cb["thinking"].(string)
+					if t == "" {
+						t, _ = cb["text"].(string)
+					}
+					if t == "" {
+						t, _ = cb["data"].(string)
+					}
+					if t != "" {
+						st.thinking.WriteString(t)
+						s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: t})
+					}
+				case "server_tool_use":
+					st.toolID, _ = cb["id"].(string)
+					st.toolName, _ = cb["name"].(string)
+				case "web_search_tool_result":
+					// raw payload stored in st.rawStart above
+				}
+			}
+		case "content_block_delta":
+			idx := llm.IntFromAny(payload["index"])
+			st := getBlock(idx)
+			if d, ok := payload["delta"].(map[string]any); ok {
+				switch typ, _ := d["type"].(string); typ {
+				case "text_delta":
+					if delta, _ := d["text"].(string); delta != "" {
 						if st.textID == "" {
 							st.textID = fmt.Sprintf("text_%d", idx)
 						}
@@ -293,267 +354,211 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 							st.textStarted = true
 							s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: st.textID})
 						}
-					case "tool_use":
-						st.toolID, _ = cb["id"].(string)
-						st.toolName, _ = cb["name"].(string)
-						// Note: content_block_start always has input:{} as a placeholder.
-						// Actual arguments arrive via input_json_delta events; capturing
-						// the placeholder here would corrupt them (e.g. {}{"city":"Paris"}).
+						st.text.WriteString(delta)
+						s.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: st.textID, Delta: delta})
+					}
+				case "input_json_delta":
+					if delta, _ := d["partial_json"].(string); delta != "" {
+						st.toolArgs.WriteString(delta)
 						if !st.toolStarted && strings.TrimSpace(st.toolID) != "" {
 							st.toolStarted = true
 							tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Type: "function"}
 							s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
 						}
-					case "thinking", "redacted_thinking":
-						st.redacted = (typ == "redacted_thinking")
-						if sig, _ := cb["signature"].(string); sig != "" && st.signature.Len() == 0 {
-							st.signature.WriteString(sig)
+						if strings.TrimSpace(st.toolID) != "" {
+							tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Arguments: []byte(st.toolArgs.String()), Type: "function"}
+							s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &tc})
 						}
+					}
+				case "thinking_delta":
+					delta, _ := d["thinking"].(string)
+					if delta == "" {
+						delta, _ = d["text"].(string)
+					}
+					if delta != "" {
 						if !st.thinkingStarted {
 							st.thinkingStarted = true
 							s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
 						}
-						// Some implementations may include initial thinking in the start block.
-						t, _ := cb["thinking"].(string)
-						if t == "" {
-							t, _ = cb["text"].(string)
-						}
-						if t == "" {
-							t, _ = cb["data"].(string)
-						}
-						if t != "" {
-							st.thinking.WriteString(t)
-							s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: t})
-						}
-					case "server_tool_use":
-						st.toolID, _ = cb["id"].(string)
-						st.toolName, _ = cb["name"].(string)
-					case "web_search_tool_result":
-						// raw payload stored in st.rawStart above
+						st.thinking.WriteString(delta)
+						s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: delta})
+					}
+				case "signature_delta":
+					if delta, _ := d["signature"].(string); delta != "" {
+						st.signature.WriteString(delta)
 					}
 				}
-			case "content_block_delta":
-				idx := llm.IntFromAny(payload["index"])
-				st := getBlock(idx)
-				if d, ok := payload["delta"].(map[string]any); ok {
-					switch typ, _ := d["type"].(string); typ {
-					case "text_delta":
-						if delta, _ := d["text"].(string); delta != "" {
-							if st.textID == "" {
-								st.textID = fmt.Sprintf("text_%d", idx)
-							}
-							if !st.textStarted {
-								st.textStarted = true
-								s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: st.textID})
-							}
-							st.text.WriteString(delta)
-							s.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: st.textID, Delta: delta})
-						}
-					case "input_json_delta":
-						if delta, _ := d["partial_json"].(string); delta != "" {
-							st.toolArgs.WriteString(delta)
-							if !st.toolStarted && strings.TrimSpace(st.toolID) != "" {
-								st.toolStarted = true
-								tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Type: "function"}
-								s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
-							}
-							if strings.TrimSpace(st.toolID) != "" {
-								tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Arguments: []byte(st.toolArgs.String()), Type: "function"}
-								s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &tc})
-							}
-						}
-					case "thinking_delta":
-						delta, _ := d["thinking"].(string)
-						if delta == "" {
-							delta, _ = d["text"].(string)
-						}
-						if delta != "" {
-							if !st.thinkingStarted {
-								st.thinkingStarted = true
-								s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
-							}
-							st.thinking.WriteString(delta)
-							s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: delta})
-						}
-					case "signature_delta":
-						if delta, _ := d["signature"].(string); delta != "" {
-							st.signature.WriteString(delta)
-						}
+			}
+		case "content_block_stop":
+			idx := llm.IntFromAny(payload["index"])
+			st := blocks[idx]
+			if st == nil {
+				return nil
+			}
+			switch st.typ {
+			case "text":
+				if st.textStarted {
+					if st.textID == "" {
+						st.textID = fmt.Sprintf("text_%d", idx)
 					}
+					s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: st.textID})
+					st.textStarted = false
 				}
-			case "content_block_stop":
-				idx := llm.IntFromAny(payload["index"])
-				st := blocks[idx]
+			case "tool_use":
+				if strings.TrimSpace(st.toolID) != "" {
+					if !st.toolStarted {
+						st.toolStarted = true
+						tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Type: "function"}
+						s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
+					}
+					tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Arguments: []byte(st.toolArgs.String()), Type: "function"}
+					s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tc})
+					st.toolStarted = false
+				}
+			case "thinking", "redacted_thinking":
+				if st.thinkingStarted {
+					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
+					st.thinkingStarted = false
+				}
+			}
+		case "message_delta":
+			if sr, _ := payload["stop_reason"].(string); sr != "" {
+				finish = llm.NormalizeFinishReason("anthropic", sr)
+			}
+			if u, ok := payload["usage"].(map[string]any); ok {
+				u2 := parseUsage(u)
+				if u2.OutputTokens > 0 {
+					usage.OutputTokens = u2.OutputTokens
+				}
+				if u2.InputTokens > 0 {
+					usage.InputTokens = u2.InputTokens
+				}
+			}
+		case "message_stop":
+			var parts []llm.ContentPart
+			for i := 0; i <= maxIdx; i++ {
+				st := blocks[i]
 				if st == nil {
-					return nil
+					continue
 				}
 				switch st.typ {
 				case "text":
-					if st.textStarted {
-						if st.textID == "" {
-							st.textID = fmt.Sprintf("text_%d", idx)
-						}
-						s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: st.textID})
-						st.textStarted = false
+					if st.text.Len() > 0 {
+						parts = append(parts, llm.ContentPart{Kind: llm.ContentText, Text: st.text.String()})
 					}
 				case "tool_use":
 					if strings.TrimSpace(st.toolID) != "" {
-						if !st.toolStarted {
-							st.toolStarted = true
-							tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Type: "function"}
-							s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
+						args := st.toolArgs.String()
+						if args == "" {
+							args = "{}"
 						}
-						tc := llm.ToolCallData{ID: st.toolID, Name: st.toolName, Arguments: []byte(st.toolArgs.String()), Type: "function"}
-						s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tc})
-						st.toolStarted = false
+						parts = append(parts, llm.ContentPart{
+							Kind: llm.ContentToolCall,
+							ToolCall: &llm.ToolCallData{
+								ID:        st.toolID,
+								Name:      st.toolName,
+								Arguments: json.RawMessage(args),
+								Type:      "function",
+							},
+						})
 					}
-				case "thinking", "redacted_thinking":
-					if st.thinkingStarted {
-						s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningEnd})
-						st.thinkingStarted = false
+				case "thinking":
+					if st.thinking.Len() > 0 {
+						parts = append(parts, llm.ContentPart{
+							Kind: llm.ContentThinking,
+							Thinking: &llm.ThinkingData{
+								Text:      st.thinking.String(),
+								Signature: st.signature.String(),
+								Redacted:  false,
+							},
+						})
 					}
-				}
-			case "message_delta":
-				if sr, _ := payload["stop_reason"].(string); sr != "" {
-					finish = llm.NormalizeFinishReason("anthropic", sr)
-				}
-				if u, ok := payload["usage"].(map[string]any); ok {
-					u2 := parseUsage(u)
-					if u2.OutputTokens > 0 {
-						usage.OutputTokens = u2.OutputTokens
+				case "redacted_thinking":
+					if st.thinking.Len() > 0 {
+						parts = append(parts, llm.ContentPart{
+							Kind: llm.ContentRedThinking,
+							Thinking: &llm.ThinkingData{
+								Text:     st.thinking.String(),
+								Redacted: true,
+							},
+						})
 					}
-					if u2.InputTokens > 0 {
-						usage.InputTokens = u2.InputTokens
+				case "server_tool_use":
+					if st.rawStart != nil {
+						query := ""
+						if input, _ := st.rawStart["input"].(map[string]any); input != nil {
+							query, _ = input["query"].(string)
+						}
+						raw, _ := json.Marshal(st.rawStart)
+						parts = append(parts, llm.ContentPart{
+							Kind: llm.ContentWebSearch,
+							WebSearch: &llm.WebSearchData{
+								Query: query,
+								Raw:   raw,
+							},
+						})
 					}
-				}
-			case "message_stop":
-				var parts []llm.ContentPart
-				for i := 0; i <= maxIdx; i++ {
-					st := blocks[i]
-					if st == nil {
-						continue
-					}
-					switch st.typ {
-					case "text":
-						if st.text.Len() > 0 {
-							parts = append(parts, llm.ContentPart{Kind: llm.ContentText, Text: st.text.String()})
-						}
-					case "tool_use":
-						if strings.TrimSpace(st.toolID) != "" {
-							args := st.toolArgs.String()
-							if args == "" {
-								args = "{}"
-							}
-							parts = append(parts, llm.ContentPart{
-								Kind: llm.ContentToolCall,
-								ToolCall: &llm.ToolCallData{
-									ID:        st.toolID,
-									Name:      st.toolName,
-									Arguments: json.RawMessage(args),
-									Type:      "function",
-								},
-							})
-						}
-					case "thinking":
-						if st.thinking.Len() > 0 {
-							parts = append(parts, llm.ContentPart{
-								Kind: llm.ContentThinking,
-								Thinking: &llm.ThinkingData{
-									Text:      st.thinking.String(),
-									Signature: st.signature.String(),
-									Redacted:  false,
-								},
-							})
-						}
-					case "redacted_thinking":
-						if st.thinking.Len() > 0 {
-							parts = append(parts, llm.ContentPart{
-								Kind: llm.ContentRedThinking,
-								Thinking: &llm.ThinkingData{
-									Text:     st.thinking.String(),
-									Redacted: true,
-								},
-							})
-						}
-					case "server_tool_use":
-						if st.rawStart != nil {
-							query := ""
-							if input, _ := st.rawStart["input"].(map[string]any); input != nil {
-								query, _ = input["query"].(string)
-							}
-							raw, _ := json.Marshal(st.rawStart)
-							parts = append(parts, llm.ContentPart{
-								Kind: llm.ContentWebSearch,
-								WebSearch: &llm.WebSearchData{
-									Query: query,
-									Raw:   raw,
-								},
-							})
-						}
-					case "web_search_tool_result":
-						if st.rawStart != nil {
-							raw, _ := json.Marshal(st.rawStart)
-							parts = append(parts, llm.ContentPart{
-								Kind: llm.ContentWebSearch,
-								WebSearch: &llm.WebSearchData{
-									Raw: raw,
-								},
-							})
-						}
+				case "web_search_tool_result":
+					if st.rawStart != nil {
+						raw, _ := json.Marshal(st.rawStart)
+						parts = append(parts, llm.ContentPart{
+							Kind: llm.ContentWebSearch,
+							WebSearch: &llm.WebSearchData{
+								Raw: raw,
+							},
+						})
 					}
 				}
-
-				msg := llm.Message{Role: llm.RoleAssistant, Content: parts}
-				model := actualModel
-				if model == "" {
-					model = req.Model
-				}
-				r := llm.Response{
-					ID:       msgID,
-					Provider: "anthropic",
-					Model:    model,
-					Message:  msg,
-					Finish:   finish,
-					Usage:    usage,
-					Raw:      rawMessage,
-				}
-				llm.StampEndpointURL(&r, a.BaseURL+"/v1/messages")
-				if len(r.ToolCalls()) > 0 {
-					r.Finish = llm.FinishReason{Reason: "tool_calls", Raw: "tool_use"}
-				}
-
-				// Best-effort thinking-token estimate from visible thinking content,
-				// only when provider didn't supply a native ReasoningTokens count.
-				// Informational only — never enters the billing path.
-				if r.Usage.ReasoningTokens == nil && r.Usage.ReasoningTokensEstimated == nil {
-					if est := estimateThinkingTokens(parts); est > 0 {
-						e := est
-						r.Usage.ReasoningTokensEstimated = &e
-					}
-				}
-
-				rp := r
-				if sseBuf != nil {
-					rp.RawRequestBody = rawReqBody
-					rp.RawResponseBody = sseBuf.String()
-				}
-				s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp})
-				finished = true
-				cancel()
-			default:
-				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
 			}
-			return nil
-		}, llm.StreamReadSSEOptions(req.AdapterTimeout)...)
 
-		if !finished {
-			if err := sctx.Err(); err != nil {
-				s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.WrapContextError("anthropic", err)})
-			} else {
-				s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.NewStreamError("anthropic", "anthropic stream ended without completion", parseErr)})
+			msg := llm.Message{Role: llm.RoleAssistant, Content: parts}
+			model := actualModel
+			if model == "" {
+				model = req.Model
 			}
+			r := llm.Response{
+				ID:       msgID,
+				Provider: "anthropic",
+				Model:    model,
+				Message:  msg,
+				Finish:   finish,
+				Usage:    usage,
+				Raw:      rawMessage,
+			}
+			llm.StampEndpointURL(&r, a.BaseURL+"/v1/messages")
+			if len(r.ToolCalls()) > 0 {
+				r.Finish = llm.FinishReason{Reason: "tool_calls", Raw: "tool_use"}
+			}
+
+			// Best-effort thinking-token estimate from visible thinking content,
+			// only when provider didn't supply a native ReasoningTokens count.
+			// Informational only — never enters the billing path.
+			if r.Usage.ReasoningTokens == nil && r.Usage.ReasoningTokensEstimated == nil {
+				if est := estimateThinkingTokens(parts); est > 0 {
+					e := est
+					r.Usage.ReasoningTokensEstimated = &e
+				}
+			}
+
+			rp := r
+			if sseBuf != nil {
+				rp.RawRequestBody = rawReqBody
+				rp.RawResponseBody = sseBuf.String()
+			}
+			s.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp})
+			finished = true
+			cancel()
+		default:
+			s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
 		}
-	}()
+		return nil
+	}, llm.StreamReadSSEOptions(req.AdapterTimeout)...)
 
-	return s, nil
+	if !finished {
+		if err := sctx.Err(); err != nil {
+			s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.WrapContextError("anthropic", err)})
+		} else {
+			s.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.NewStreamError("anthropic", "anthropic stream ended without completion", parseErr)})
+		}
+	}
 }
