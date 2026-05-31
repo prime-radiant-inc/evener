@@ -35,14 +35,14 @@ func seedConfigFromEnv(opts ...llm.EnvOption) (providercfg.Config, error) {
 			}
 			return ""
 		}
-		v := providercfg.BaseURLEnvVar(typ)
+		v := BaseURLEnvVar(typ)
 		if v == "" {
 			return ""
 		}
 		return strings.TrimSpace(os.Getenv(v))
 	}
 
-	return providercfg.Seed(names, def, getBaseURL), nil
+	return Seed(names, def, getBaseURL), nil
 }
 
 // MaterializeProvidersConfig seeds a descriptors-only config from the environment
