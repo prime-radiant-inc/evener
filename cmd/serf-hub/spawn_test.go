@@ -12,7 +12,7 @@ import (
 	"primeradiant.com/serf/internal/auth/openai/oaitest"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/internal/launchconfig"
-	"primeradiant.com/serf/internal/providerconfig"
+	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -750,10 +750,10 @@ func TestResolveSerfStateDirMatchesServeDefaultForWorkingDir(t *testing.T) {
 }
 
 // writeProvidersConfig writes cfg to a temp providers.toml in dir and returns the path.
-func writeProvidersConfig(t *testing.T, dir string, cfg providerconfig.Config) string {
+func writeProvidersConfig(t *testing.T, dir string, cfg providercfg.Config) string {
 	t.Helper()
 	path := filepath.Join(dir, "providers.toml")
-	if err := providerconfig.WriteFile(path, cfg); err != nil {
+	if err := providercfg.WriteFile(path, cfg); err != nil {
 		t.Fatalf("writeProvidersConfig: %v", err)
 	}
 	return path
@@ -783,9 +783,9 @@ func TestValidateProviderCredentials_ConfigInstanceOAuthPass(t *testing.T) {
 	}
 
 	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	cfgPath := writeProvidersConfig(t, t.TempDir(), providerconfig.Config{
+	cfgPath := writeProvidersConfig(t, t.TempDir(), providercfg.Config{
 		Default: "work",
-		Instances: []providerconfig.InstanceConfig{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "work", Type: "openai"},
 		},
 	})
@@ -803,9 +803,9 @@ func TestValidateProviderCredentials_ConfigInstanceOAuthMissing(t *testing.T) {
 	xdgStateHome := t.TempDir()
 
 	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	cfgPath := writeProvidersConfig(t, t.TempDir(), providerconfig.Config{
+	cfgPath := writeProvidersConfig(t, t.TempDir(), providercfg.Config{
 		Default: "work",
-		Instances: []providerconfig.InstanceConfig{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "work", Type: "openai"},
 		},
 	})
@@ -849,10 +849,10 @@ api_key = "sk-inline-key"
 // OPENAI_COMPATIBLE_BASE_URL in the environment.
 func TestValidateProviderCredentials_ConfigInstanceChatCompletionsBaseURLPasses(t *testing.T) {
 	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	cfgPath := writeProvidersConfig(t, t.TempDir(), providerconfig.Config{
+	cfgPath := writeProvidersConfig(t, t.TempDir(), providercfg.Config{
 		Default: "local",
-		Instances: []providerconfig.InstanceConfig{
-			{Name: "local", Type: "openai", APIStyle: providerconfig.StyleChatCompletions, BaseURL: "http://127.0.0.1:11434/v1"},
+		Instances: []providercfg.InstanceConfig{
+			{Name: "local", Type: "openai", APIStyle: providercfg.StyleChatCompletions, BaseURL: "http://127.0.0.1:11434/v1"},
 		},
 	})
 	// No env key, no OPENAI_COMPATIBLE_BASE_URL in launch env — base_url is in config.
@@ -868,10 +868,10 @@ func TestValidateProviderCredentials_ConfigInstanceChatCompletionsBaseURLPasses(
 func TestValidateProviderCredentials_ConfigInstanceChatCompletionsNoBaseURLFails(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	store, _ := credentials.LoadStore(filepath.Join(t.TempDir(), "credentials.toml"))
-	cfgPath := writeProvidersConfig(t, t.TempDir(), providerconfig.Config{
+	cfgPath := writeProvidersConfig(t, t.TempDir(), providercfg.Config{
 		Default: "local",
-		Instances: []providerconfig.InstanceConfig{
-			{Name: "local", Type: "openai", APIStyle: providerconfig.StyleChatCompletions},
+		Instances: []providercfg.InstanceConfig{
+			{Name: "local", Type: "openai", APIStyle: providercfg.StyleChatCompletions},
 		},
 	})
 	t.Setenv("OPENAI_API_KEY", "")

@@ -13,8 +13,8 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmdutil"
-	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -22,9 +22,9 @@ import (
 // a custom instance name (e.g. "work" defined in providers.toml) to a profile
 // whose ID matches the instance name, not the provider type.
 func TestBuildInitialProfile_ConfigPath(t *testing.T) {
-	cfg := providerconfig.Config{
+	cfg := providercfg.Config{
 		Default: "work",
-		Instances: []providerconfig.InstanceConfig{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "work", Type: "openai"},
 		},
 	}
@@ -40,9 +40,9 @@ func TestBuildInitialProfile_ConfigPath(t *testing.T) {
 // TestBuildInitialProfile_ConfigPathInvalidOutputSchema verifies that an invalid
 // --output-schema returns an error.
 func TestBuildInitialProfile_ConfigPathInvalidOutputSchema(t *testing.T) {
-	cfg := providerconfig.Config{
+	cfg := providercfg.Config{
 		Default: "work",
-		Instances: []providerconfig.InstanceConfig{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "work", Type: "openai"},
 		},
 	}
@@ -58,9 +58,9 @@ func TestBuildInitialProfile_ConfigPathInvalidOutputSchema(t *testing.T) {
 // TestBuildInitialProfile_UnknownInstanceError verifies that an unknown
 // instance name returns the expected error.
 func TestBuildInitialProfile_UnknownInstanceError(t *testing.T) {
-	cfg := providerconfig.Config{
+	cfg := providercfg.Config{
 		Default: "work",
-		Instances: []providerconfig.InstanceConfig{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "work", Type: "openai"},
 		},
 	}
@@ -79,9 +79,9 @@ func TestBuildInitialProfile_UnknownInstanceError(t *testing.T) {
 func TestBuildInitialProfile_MaterializedInstance(t *testing.T) {
 	// Simulate a materialized config where the instance name equals the type name,
 	// which is what materializeProvidersConfig produces.
-	cfg := providerconfig.Config{
+	cfg := providercfg.Config{
 		Default: "openai",
-		Instances: []providerconfig.InstanceConfig{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "openai", Type: "openai"},
 		},
 	}
@@ -196,12 +196,12 @@ func TestServe_WritesAndRemovesRendezvousFile(t *testing.T) {
 
 func TestRunServeNonInteractiveFlagControlsPromptAddendum(t *testing.T) {
 	oldLoadClient := serveLoadClient
-	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providerconfig.Config, bool, error) {
+	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
 		client := llm.NewClient()
 		client.Register(serveLoggingAdapter{})
-		cfg := providerconfig.Config{
+		cfg := providercfg.Config{
 			Default: "openai",
-			Instances: []providerconfig.InstanceConfig{
+			Instances: []providercfg.InstanceConfig{
 				{Name: "openai", Type: "openai"},
 			},
 		}
@@ -288,10 +288,10 @@ func TestServeClient_APILogWritesJSONL(t *testing.T) {
 	called := make(chan struct{}, 1)
 
 	oldLoadClient := serveLoadClient
-	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providerconfig.Config, bool, error) {
+	serveLoadClient = func(...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
 		client := llm.NewClient()
 		client.Register(serveLoggingAdapter{called: called})
-		return client, providerconfig.Config{}, false, nil
+		return client, providercfg.Config{}, false, nil
 	}
 	t.Cleanup(func() {
 		serveLoadClient = oldLoadClient

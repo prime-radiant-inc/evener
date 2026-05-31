@@ -19,25 +19,25 @@ import (
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/diagnostic"
-	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 // launchCheckLoadClient is the injectable hook for tests. Production code calls
 // cmdutil.LoadClient; tests may replace this to inject a stub client or config.
-var launchCheckLoadClient = func(opts ...llm.EnvOption) (*llm.Client, providerconfig.Config, bool, error) {
+var launchCheckLoadClient = func(opts ...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
 	return cmdutil.LoadClient(opts...)
 }
 
 // launchCheckLoadConfig resolves the providers config path (same logic as
 // LoadClient) and parses it. Returns (cfg, true, nil) when the file exists and
 // is valid, (cfg{}, false, nil) when absent, or (cfg{}, _, err) on parse error.
-var launchCheckLoadConfig = func() (providerconfig.Config, bool, error) {
+var launchCheckLoadConfig = func() (providercfg.Config, bool, error) {
 	path := os.Getenv("SERF_PROVIDERS_CONFIG")
 	if path == "" {
-		path = filepath.Join(providerconfig.DefaultStateRoot(), "providers.toml")
+		path = filepath.Join(providercfg.DefaultStateRoot(), "providers.toml")
 	}
-	return providerconfig.LoadFile(path)
+	return providercfg.LoadFile(path)
 }
 
 type launchCheckModel struct {

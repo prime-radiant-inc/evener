@@ -34,21 +34,21 @@ import (
 	"time"
 
 	"primeradiant.com/serf/internal/auth/openai"
-	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 // ── Fixture ────────────────────────────────────────────────────────────────────
 
 // phase1bCfg is the five-instance config used across all 1b subtests.
-var phase1bCfg = providerconfig.Config{
+var phase1bCfg = providercfg.Config{
 	Default: "work",
-	Instances: []providerconfig.InstanceConfig{
-		{Name: "anthro-corp", Type: providerconfig.Type("anthropic"), BaseURL: "https://anthropic.example.com", APIKey: "ant-key"},
-		{Name: "compat-x", Type: providerconfig.Type("openai"), APIStyle: providerconfig.StyleChatCompletions, BaseURL: "https://compat.example.com/v1", APIKey: "compat-key"},
-		{Name: "kc", Type: providerconfig.Type("kimi"), APIKey: "kimi-key"},
-		{Name: "work", Type: providerconfig.Type("openai"), APIStyle: providerconfig.StyleResponses, APIKey: "sk-work"},
-		{Name: "work2", Type: providerconfig.Type("openai"), APIStyle: providerconfig.StyleResponses, APIKey: "sk-work2"},
+	Instances: []providercfg.InstanceConfig{
+		{Name: "anthro-corp", Type: providercfg.Type("anthropic"), BaseURL: "https://anthropic.example.com", APIKey: "ant-key"},
+		{Name: "compat-x", Type: providercfg.Type("openai"), APIStyle: providercfg.StyleChatCompletions, BaseURL: "https://compat.example.com/v1", APIKey: "compat-key"},
+		{Name: "kc", Type: providercfg.Type("kimi"), APIKey: "kimi-key"},
+		{Name: "work", Type: providercfg.Type("openai"), APIStyle: providercfg.StyleResponses, APIKey: "sk-work"},
+		{Name: "work2", Type: providercfg.Type("openai"), APIStyle: providercfg.StyleResponses, APIKey: "sk-work2"},
 	},
 }
 
@@ -62,7 +62,7 @@ func buildPhase1bClient() *llm.Client {
 		c.Register(&fakeAdapter{name: inst.Name})
 	}
 	c.SetDefaultProvider(phase1bCfg.Default)
-	c.SetNameToTag(providerconfig.NameToTag(phase1bCfg))
+	c.SetNameToTag(providercfg.NameToTag(phase1bCfg))
 	return c
 }
 
@@ -142,11 +142,11 @@ func TestPhase1b_ResolveProfileFromConfig_BehaviorTags(t *testing.T) {
 	}
 }
 
-// TestPhase1b_NameToTag_AllFive verifies that providerconfig.NameToTag maps each
+// TestPhase1b_NameToTag_AllFive verifies that providercfg.NameToTag maps each
 // instance to the right behavior tag — which is what NewFromProviders passes to
 // c.SetNameToTag for error stamping and BehaviorTagOf lookups.
 func TestPhase1b_NameToTag_AllFive(t *testing.T) {
-	m := providerconfig.NameToTag(phase1bCfg)
+	m := providercfg.NameToTag(phase1bCfg)
 	want := map[string]string{
 		"work":        "openai",
 		"work2":       "openai",

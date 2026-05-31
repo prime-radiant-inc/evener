@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 // ProviderQuirks configures per-provider behavioral overrides for OpenAI-compatible
@@ -120,7 +120,7 @@ func init() {
 	})
 	// Register for the openai+chat-completions fold-in: an openai instance with
 	// apiStyle=chat-completions routes through the openaicompat adapter.
-	llm.RegisterInstanceAdapterFactory("openai", "chat-completions", func(inst providerconfig.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
+	llm.RegisterInstanceAdapterFactory("openai", "chat-completions", func(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
 		return NewForInstance(OpenAICompatInstanceParams{
 			Name:    inst.Name,
 			BaseURL: inst.BaseURL,

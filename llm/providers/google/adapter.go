@@ -16,8 +16,8 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
-	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 type Adapter struct {
@@ -67,7 +67,7 @@ func init() {
 	})
 	for _, typ := range []string{"google", "gemini"} {
 		t := typ
-		llm.RegisterInstanceAdapterFactory(t, "", func(inst providerconfig.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
+		llm.RegisterInstanceAdapterFactory(t, "", func(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
 			return NewForInstance(GoogleInstanceParams{
 				Name:    inst.Name,
 				BaseURL: inst.BaseURL,

@@ -17,7 +17,7 @@ import (
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/credentials"
-	"primeradiant.com/serf/internal/providerconfig"
+	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -39,15 +39,15 @@ type WebConfig struct {
 	PastIndexPath       string // path to the SQLite past-index DB, for display in settings
 	Roster              *Roster
 	Past                *PastIndex
-	Spawner             Spawner                // optional; nil disables spawn
-	Models              []modelDescriptor      // available models for the spawn chip
-	PastPerPage         int                    // results per page for /past; defaults to 50 when zero
-	StateDir            string                 // root of the projects/<sha> state directory; needed for ForkSession
-	CredsStore          *credentials.Store     // credentials store; passed to auth controller
-	PluginDirs          []string               // explicit plugin dirs; when empty, default to ~/.config/serf/plugins/*
-	MCPConfigPath       string                 // MCP config file path; when empty, default to ~/.config/serf/mcp.json
-	ProviderConfig      *providerconfig.Config // instance-to-tag mapping; nil when providers.toml absent (env path)
-	ProvidersConfigPath string                 // path to providers.toml; forwarded to the auth controller
+	Spawner             Spawner             // optional; nil disables spawn
+	Models              []modelDescriptor   // available models for the spawn chip
+	PastPerPage         int                 // results per page for /past; defaults to 50 when zero
+	StateDir            string              // root of the projects/<sha> state directory; needed for ForkSession
+	CredsStore          *credentials.Store  // credentials store; passed to auth controller
+	PluginDirs          []string            // explicit plugin dirs; when empty, default to ~/.config/serf/plugins/*
+	MCPConfigPath       string              // MCP config file path; when empty, default to ~/.config/serf/mcp.json
+	ProviderConfig      *providercfg.Config // instance-to-tag mapping; nil when providers.toml absent (env path)
+	ProvidersConfigPath string              // path to providers.toml; forwarded to the auth controller
 	CodexSources        []appsource.CodexSourceConfig
 	CodexLaunches       []codexlaunch.CodexLaunchConfig
 	CodexLauncher       *codexlaunch.CodexLauncher

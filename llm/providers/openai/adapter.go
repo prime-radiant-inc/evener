@@ -17,8 +17,8 @@ import (
 
 	"primeradiant.com/serf/buildinfo"
 	authopenai "primeradiant.com/serf/internal/auth/openai"
-	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 // errEmptyResponsesStream is a sentinel error emitted when the Responses API
@@ -158,7 +158,7 @@ func init() {
 		return a, true, nil
 	})
 	// Register for config-driven construction: openai + responses (or empty) style.
-	factory := func(inst providerconfig.InstanceConfig, stateHome string) (llm.ProviderAdapter, error) {
+	factory := func(inst providercfg.InstanceConfig, stateHome string) (llm.ProviderAdapter, error) {
 		return NewForInstance(instanceParamsFromConfig(inst.Name, inst.BaseURL, inst.APIKey, stateHome))
 	}
 	llm.RegisterInstanceAdapterFactory("openai", "responses", factory)

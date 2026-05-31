@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
-	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 // seedConfigFromEnv detects providers from the environment and returns a
@@ -14,10 +14,10 @@ import (
 // this for the absent-file case so a read operation never has a write side
 // effect; callers that want to persist the result (the hub) use
 // MaterializeProvidersConfig.
-func seedConfigFromEnv(opts ...llm.EnvOption) (providerconfig.Config, error) {
+func seedConfigFromEnv(opts ...llm.EnvOption) (providercfg.Config, error) {
 	client, err := llm.NewFromEnv(opts...)
 	if err != nil {
-		return providerconfig.Config{}, fmt.Errorf("seed providers config: detect providers: %w", err)
+		return providercfg.Config{}, fmt.Errorf("seed providers config: detect providers: %w", err)
 	}
 
 	names := client.ProviderNames()
@@ -35,14 +35,14 @@ func seedConfigFromEnv(opts ...llm.EnvOption) (providerconfig.Config, error) {
 			}
 			return ""
 		}
-		v := providerconfig.BaseURLEnvVar(typ)
+		v := providercfg.BaseURLEnvVar(typ)
 		if v == "" {
 			return ""
 		}
 		return strings.TrimSpace(os.Getenv(v))
 	}
 
-	return providerconfig.Seed(names, def, getBaseURL), nil
+	return providercfg.Seed(names, def, getBaseURL), nil
 }
 
 // MaterializeProvidersConfig seeds a descriptors-only config from the environment
@@ -50,14 +50,14 @@ func seedConfigFromEnv(opts ...llm.EnvOption) (providerconfig.Config, error) {
 // mode 0644, creating the parent directory if needed. It never writes api_key
 // values. The hub calls this on startup to persist a single source of truth;
 // LoadClient itself only seeds in memory and never writes.
-func MaterializeProvidersConfig(path string, opts ...llm.EnvOption) (providerconfig.Config, error) {
+func MaterializeProvidersConfig(path string, opts ...llm.EnvOption) (providercfg.Config, error) {
 	cfg, err := seedConfigFromEnv(opts...)
 	if err != nil {
-		return providerconfig.Config{}, err
+		return providercfg.Config{}, err
 	}
 
-	if err := providerconfig.WriteFile(path, cfg); err != nil {
-		return providerconfig.Config{}, fmt.Errorf("materialize providers config: %w", err)
+	if err := providercfg.WriteFile(path, cfg); err != nil {
+		return providercfg.Config{}, fmt.Errorf("materialize providers config: %w", err)
 	}
 
 	return cfg, nil

@@ -20,7 +20,7 @@ import (
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/binresolve"
 	"primeradiant.com/serf/internal/credentials"
-	"primeradiant.com/serf/internal/providerconfig"
+	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"
 
 	// Side-effect imports register provider adapters. These are the same
@@ -114,8 +114,8 @@ func main() {
 	if providersConfigPath == "" {
 		providersConfigPath = filepath.Join(hubStateRoot, "providers.toml")
 	}
-	var loadedProviderConfig *providerconfig.Config
-	if pcfg, exists, pcfgErr := providerconfig.LoadFile(providersConfigPath); pcfgErr != nil {
+	var loadedProviderConfig *providercfg.Config
+	if pcfg, exists, pcfgErr := providercfg.LoadFile(providersConfigPath); pcfgErr != nil {
 		fmt.Fprintf(os.Stderr, "[hub] providers config: %v\n", pcfgErr)
 		os.Exit(1)
 	} else if exists {

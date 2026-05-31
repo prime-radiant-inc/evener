@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/internal/workspace"
-	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 // resolveEffortLevels returns reasoning effort levels for the given model.
@@ -594,7 +594,7 @@ func (p *baseProfile) WithModel(model string) ProviderProfile {
 func NewOpenAIProfile(model string) ProviderProfile {
 	bp := buildBaseProfile(profileSpec{
 		id:              "openai",
-		behaviorTag:     providerconfig.BehaviorTag("openai", string(providerconfig.StyleResponses)),
+		behaviorTag:     providercfg.BehaviorTag("openai", string(providercfg.StyleResponses)),
 		model:           model,
 		parallel:        true,
 		contextWindow:   400_000,
@@ -684,7 +684,7 @@ func NewAnthropicProfile(model string) ProviderProfile {
 	}
 	bp := buildBaseProfile(profileSpec{
 		id:              "anthropic",
-		behaviorTag:     providerconfig.BehaviorTag("anthropic", ""),
+		behaviorTag:     providercfg.BehaviorTag("anthropic", ""),
 		model:           model,
 		parallel:        true,
 		contextWindow:   ctxWindow,
@@ -706,7 +706,7 @@ func NewAnthropicProfile(model string) ProviderProfile {
 func NewGeminiProfile(model string) ProviderProfile {
 	bp := buildBaseProfile(profileSpec{
 		id:              "google",
-		behaviorTag:     providerconfig.BehaviorTag("google", ""),
+		behaviorTag:     providercfg.BehaviorTag("google", ""),
 		model:           model,
 		parallel:        true,
 		contextWindow:   1_000_000,
@@ -740,7 +740,7 @@ func NewGeminiProfile(model string) ProviderProfile {
 func NewMiniMaxProfile(model string) ProviderProfile {
 	bp := buildBaseProfile(profileSpec{
 		id:              "minimax",
-		behaviorTag:     providerconfig.BehaviorTag("minimax", ""),
+		behaviorTag:     providercfg.BehaviorTag("minimax", ""),
 		model:           model,
 		parallel:        true,
 		contextWindow:   204_800,
@@ -902,7 +902,7 @@ func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
 	}
 	bp := buildBaseProfile(profileSpec{
 		id:              "openrouter-anthropic",
-		behaviorTag:     providerconfig.BehaviorTag("openrouter-anthropic", ""),
+		behaviorTag:     providercfg.BehaviorTag("openrouter-anthropic", ""),
 		model:           model,
 		parallel:        true,
 		contextWindow:   contextWindow,
@@ -1025,7 +1025,7 @@ func NewOpenAICompatProfile(id, model string, contextWindow int) ProviderProfile
 	}
 	bp := buildBaseProfile(profileSpec{
 		id:              id,
-		behaviorTag:     providerconfig.BehaviorTag(id, ""),
+		behaviorTag:     providercfg.BehaviorTag(id, ""),
 		model:           model,
 		parallel:        true,
 		contextWindow:   contextWindow,

@@ -26,8 +26,8 @@ import (
 	"strings"
 	"sync"
 
-	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/openaicompat"
 )
 
@@ -229,7 +229,7 @@ func init() {
 			},
 		}, true, nil
 	})
-	llm.RegisterInstanceAdapterFactory("ollama", "", func(inst providerconfig.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
+	llm.RegisterInstanceAdapterFactory("ollama", "", func(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
 		return NewForInstance(InstanceParams{
 			Name:    inst.Name,
 			BaseURL: inst.BaseURL,

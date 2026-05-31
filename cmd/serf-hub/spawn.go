@@ -19,7 +19,7 @@ import (
 	authopenai "primeradiant.com/serf/internal/auth/openai"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/internal/launchconfig"
-	"primeradiant.com/serf/internal/providerconfig"
+	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -483,7 +483,7 @@ func validateProviderCredentials(provider string, store *credentials.Store, env 
 
 	// Config-path: instance-aware credential check.
 	if providersConfigPath != "" {
-		pcfg, exists, err := providerconfig.LoadFile(providersConfigPath)
+		pcfg, exists, err := providercfg.LoadFile(providersConfigPath)
 		if err != nil || !exists {
 			// Fall through to the no-config path below.
 			goto noConfig
@@ -505,7 +505,7 @@ func validateProviderCredentials(provider string, store *credentials.Store, env 
 				}
 			}
 			// Fall through to env-var check using the instance's behavior tag.
-			tag := providerconfig.BehaviorTag(string(inst.Type), string(inst.APIStyle))
+			tag := providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle))
 			if tag == "openai-compatible" {
 				// A base_url set in providers.toml is sufficient: the openaicompat
 				// adapter reads it from config and does not require

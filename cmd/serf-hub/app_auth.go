@@ -14,7 +14,7 @@ import (
 	"primeradiant.com/serf/internal/appwire"
 	authopenai "primeradiant.com/serf/internal/auth/openai"
 	"primeradiant.com/serf/internal/credentials"
-	"primeradiant.com/serf/internal/providerconfig"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 type hubAuthController struct {
@@ -496,7 +496,7 @@ func (c *hubAuthController) resolveInstanceType(name string) (typ, behaviorTag s
 	if c.providersConfigPath == "" {
 		return "", "", fmt.Errorf("no providers config path configured")
 	}
-	cfg, exists, err := providerconfig.LoadFile(c.providersConfigPath)
+	cfg, exists, err := providercfg.LoadFile(c.providersConfigPath)
 	if err != nil {
 		return "", "", fmt.Errorf("load providers config: %w", err)
 	}
@@ -506,7 +506,7 @@ func (c *hubAuthController) resolveInstanceType(name string) (typ, behaviorTag s
 	for _, inst := range cfg.Instances {
 		if inst.Name == name {
 			t := string(inst.Type)
-			tag := providerconfig.BehaviorTag(t, string(inst.APIStyle))
+			tag := providercfg.BehaviorTag(t, string(inst.APIStyle))
 			return t, tag, nil
 		}
 	}

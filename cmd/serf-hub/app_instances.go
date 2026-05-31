@@ -8,7 +8,7 @@ import (
 
 	"primeradiant.com/serf/internal/appwire"
 	authopenai "primeradiant.com/serf/internal/auth/openai"
-	"primeradiant.com/serf/internal/providerconfig"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 // hubInstancesController manages provider instance CRUD: Create, Edit, Remove,
@@ -23,7 +23,7 @@ type hubInstancesController struct {
 // List returns the current list of instances, each enriched with credential
 // status from the auth controller. Results are sorted by Type, then Name.
 func (c *hubInstancesController) List() appwire.InstanceListResponse {
-	cfg, _, _ := providerconfig.LoadFile(c.providersConfigPath)
+	cfg, _, _ := providercfg.LoadFile(c.providersConfigPath)
 
 	entries := make([]appwire.InstanceEntry, 0, len(cfg.Instances))
 	for _, inst := range cfg.Instances {
@@ -53,20 +53,20 @@ func (c *hubInstancesController) List() appwire.InstanceListResponse {
 
 	return appwire.InstanceListResponse{
 		Instances:      entries,
-		AvailableTypes: providerconfig.KnownTypeNames(),
+		AvailableTypes: providercfg.KnownTypeNames(),
 	}
 }
 
 // Create adds a new provider instance to the config. It reloads the config
 // from disk before mutating to avoid clobbering manual edits.
 func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) error {
-	if err := providerconfig.ValidateInstanceName(params.Name); err != nil {
+	if err := providercfg.ValidateInstanceName(params.Name); err != nil {
 		return fmt.Errorf("invalid instance name: %w", err)
 	}
-	if err := providerconfig.ValidateType(providerconfig.Type(params.Type)); err != nil {
+	if err := providercfg.ValidateType(providercfg.Type(params.Type)); err != nil {
 		return fmt.Errorf("invalid type: %w", err)
 	}
-	if err := providerconfig.ValidateAPIStyle(providerconfig.Type(params.Type), providerconfig.APIStyle(params.APIStyle)); err != nil {
+	if err := providercfg.ValidateAPIStyle(providercfg.Type(params.Type), providercfg.APIStyle(params.APIStyle)); err != nil {
 		return fmt.Errorf("invalid api_style: %w", err)
 	}
 
@@ -85,15 +85,15 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 		}
 	}
 
-	inst := providerconfig.InstanceConfig{
+	inst := providercfg.InstanceConfig{
 		Name:     params.Name,
-		Type:     providerconfig.Type(params.Type),
-		APIStyle: providerconfig.APIStyle(params.APIStyle),
+		Type:     providercfg.Type(params.Type),
+		APIStyle: providercfg.APIStyle(params.APIStyle),
 		BaseURL:  params.BaseURL,
 	}
 	newCfg := cfg.Upsert(inst)
 
-	if err := providerconfig.WriteFile(c.providersConfigPath, newCfg); err != nil {
+	if err := providercfg.WriteFile(c.providersConfigPath, newCfg); err != nil {
 		return fmt.Errorf("write providers.toml: %w", err)
 	}
 	return nil
@@ -110,7 +110,7 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		return err
 	}
 
-	var existing *providerconfig.InstanceConfig
+	var existing *providercfg.InstanceConfig
 	for i := range cfg.Instances {
 		if cfg.Instances[i].Name == params.Name {
 			existing = &cfg.Instances[i]
@@ -122,19 +122,19 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 	}
 
 	// Type is immutable; build the updated record from the existing type.
-	updated := providerconfig.InstanceConfig{
+	updated := providercfg.InstanceConfig{
 		Name:     existing.Name,
 		Type:     existing.Type, // immutable
-		APIStyle: providerconfig.APIStyle(params.APIStyle),
+		APIStyle: providercfg.APIStyle(params.APIStyle),
 		BaseURL:  params.BaseURL,
 		Quirks:   existing.Quirks,
 	}
-	if err := providerconfig.ValidateAPIStyle(updated.Type, updated.APIStyle); err != nil {
+	if err := providercfg.ValidateAPIStyle(updated.Type, updated.APIStyle); err != nil {
 		return fmt.Errorf("invalid api_style: %w", err)
 	}
 
 	newCfg := cfg.Upsert(updated)
-	if err := providerconfig.WriteFile(c.providersConfigPath, newCfg); err != nil {
+	if err := providercfg.WriteFile(c.providersConfigPath, newCfg); err != nil {
 		return fmt.Errorf("write providers.toml: %w", err)
 	}
 	return nil
@@ -169,7 +169,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		newCfg = newCfg.WithDefault(newDefault)
 	}
 
-	if err := providerconfig.WriteFile(c.providersConfigPath, newCfg); err != nil {
+	if err := providercfg.WriteFile(c.providersConfigPath, newCfg); err != nil {
 		return fmt.Errorf("write providers.toml: %w", err)
 	}
 
@@ -209,7 +209,7 @@ func (c *hubInstancesController) SetDefault(params appwire.InstanceSetDefaultPar
 	}
 
 	newCfg := cfg.WithDefault(params.Name)
-	if err := providerconfig.WriteFile(c.providersConfigPath, newCfg); err != nil {
+	if err := providercfg.WriteFile(c.providersConfigPath, newCfg); err != nil {
 		return fmt.Errorf("write providers.toml: %w", err)
 	}
 	return nil
@@ -218,13 +218,13 @@ func (c *hubInstancesController) SetDefault(params appwire.InstanceSetDefaultPar
 // reloadFromDisk reads providers.toml and returns the current config.
 // When the file is absent it returns an empty Config (no instances). The
 // caller must already hold c.mu.
-func (c *hubInstancesController) reloadFromDisk() (providerconfig.Config, error) {
-	cfg, exists, err := providerconfig.LoadFile(c.providersConfigPath)
+func (c *hubInstancesController) reloadFromDisk() (providercfg.Config, error) {
+	cfg, exists, err := providercfg.LoadFile(c.providersConfigPath)
 	if err != nil {
-		return providerconfig.Config{}, fmt.Errorf("reload providers.toml: %w", err)
+		return providercfg.Config{}, fmt.Errorf("reload providers.toml: %w", err)
 	}
 	if !exists {
-		return providerconfig.Config{}, nil
+		return providercfg.Config{}, nil
 	}
 	return cfg, nil
 }

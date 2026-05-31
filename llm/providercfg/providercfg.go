@@ -1,6 +1,8 @@
-// Package providerconfig is the leaf type/behavior-tag vocabulary shared by
-// llm, agent, cmdutil, and the cmd/* binaries. It imports none of them.
-package providerconfig
+// Package providercfg is the public configuration schema for serf's providers
+// (providers.toml) — the leaf instance/type/behavior-tag vocabulary used to
+// build an llm Client from configuration (via llm.NewFromProviders) and to
+// resolve agent profiles. It imports no other serf package.
+package providercfg
 
 import (
 	"os"

@@ -14,7 +14,7 @@ import (
 	authopenai "primeradiant.com/serf/internal/auth/openai"
 	"primeradiant.com/serf/internal/auth/openai/oaitest"
 	"primeradiant.com/serf/internal/credentials"
-	"primeradiant.com/serf/internal/providerconfig"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 // newTestInstancesController builds an isolated hubInstancesController backed
@@ -100,14 +100,14 @@ func TestInstances_Create_ListIncludesEntry(t *testing.T) {
 	}
 
 	// Verify round-trip: re-read from disk.
-	reloaded, exists, err := providerconfig.LoadFile(tomlPath)
+	reloaded, exists, err := providercfg.LoadFile(tomlPath)
 	if err != nil {
 		t.Fatalf("LoadFile after Create: %v", err)
 	}
 	if !exists {
 		t.Fatal("providers.toml absent after Create")
 	}
-	var diskInst *providerconfig.InstanceConfig
+	var diskInst *providercfg.InstanceConfig
 	for i := range reloaded.Instances {
 		if reloaded.Instances[i].Name == "mywork" {
 			diskInst = &reloaded.Instances[i]
@@ -339,7 +339,7 @@ type = "anthropic"
 	}
 
 	// Default should now be "beta" (only remaining).
-	reloaded, exists, err := providerconfig.LoadFile(tomlPath)
+	reloaded, exists, err := providercfg.LoadFile(tomlPath)
 	if err != nil {
 		t.Fatalf("LoadFile after Remove: %v", err)
 	}
@@ -380,7 +380,7 @@ type = "anthropic"
 	}
 
 	// Verify disk.
-	reloaded, exists, err := providerconfig.LoadFile(tomlPath)
+	reloaded, exists, err := providercfg.LoadFile(tomlPath)
 	if err != nil {
 		t.Fatalf("LoadFile after SetDefault: %v", err)
 	}

@@ -23,8 +23,8 @@ import (
 	"primeradiant.com/serf/internal/apptranscript"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/launchconfig"
-	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -1561,9 +1561,9 @@ func validateSerfLaunchModel(ctx context.Context, cfg WebConfig, ref cmdutil.Mod
 // behaviorTagFromConfig resolves a provider instance name to its behavior tag
 // using cfg. When cfg is nil or the name is not present in the config, the
 // name itself is returned (identity fallback for the env path).
-func behaviorTagFromConfig(name string, cfg *providerconfig.Config) string {
+func behaviorTagFromConfig(name string, cfg *providercfg.Config) string {
 	if cfg != nil {
-		if tag, ok := providerconfig.NameToTag(*cfg)[name]; ok {
+		if tag, ok := providercfg.NameToTag(*cfg)[name]; ok {
 			return tag
 		}
 	}
@@ -1574,7 +1574,7 @@ func behaviorTagFromConfig(name string, cfg *providerconfig.Config) string {
 // behavior tag is "openrouter-anthropic". The tag is resolved from cfg when
 // available; when cfg is nil the provider name is used as-is (identity
 // fallback for the env path where instance name == type == tag).
-func launchProviderAllowsUnreportedModels(provider string, cfg *providerconfig.Config) bool {
+func launchProviderAllowsUnreportedModels(provider string, cfg *providercfg.Config) bool {
 	tag := behaviorTagFromConfig(provider, cfg)
 	return strings.EqualFold(strings.TrimSpace(tag), "openrouter-anthropic")
 }

@@ -5,11 +5,11 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/internal/providerconfig"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 // ResolveProfileFromConfig maps an instance name to a ProviderProfile using
-// the loaded providerconfig.Config.
+// the loaded providercfg.Config.
 //
 // ref is parsed as "<instanceName>/<model>" where model may contain additional
 // slashes (e.g. "work/anthropic/claude-opus-4"). The instance name must match
@@ -23,13 +23,13 @@ import (
 // The context window is passed as 0 to NewOpenAICompatProfile — the catalog
 // lookup inside the constructor keys on the behavior tag and resolves the
 // right window from the embedded model catalog.
-func ResolveProfileFromConfig(cfg providerconfig.Config, ref string) (ProviderProfile, error) {
+func ResolveProfileFromConfig(cfg providercfg.Config, ref string) (ProviderProfile, error) {
 	instName, model, ok := strings.Cut(ref, "/")
 	if !ok || instName == "" || model == "" {
 		return nil, fmt.Errorf("invalid model ref %q: must be instanceName/model", ref)
 	}
 
-	var inst *providerconfig.InstanceConfig
+	var inst *providercfg.InstanceConfig
 	for i := range cfg.Instances {
 		if cfg.Instances[i].Name == instName {
 			inst = &cfg.Instances[i]
@@ -52,7 +52,7 @@ func ResolveProfileFromConfig(cfg providerconfig.Config, ref string) (ProviderPr
 	var raw ProviderProfile
 	switch typ {
 	case "openai":
-		if style == string(providerconfig.StyleChatCompletions) {
+		if style == string(providercfg.StyleChatCompletions) {
 			// Pass "openai-compatible" as the id so BehaviorTag("openai-compatible","")
 			// produces the correct tag, then rename to the instance name.
 			raw = NewOpenAICompatProfile("openai-compatible", model, 0)

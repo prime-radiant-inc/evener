@@ -22,8 +22,8 @@ import (
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/diagnostic"
-	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"
 )
 
@@ -5034,8 +5034,8 @@ func waitLaunchedCodexExited(t *testing.T, launched *codexlaunch.LaunchedCodex) 
 // A renamed instance like "ora-work" mapped to tag "openrouter-anthropic" must
 // behave identically to the canonical instance name.
 func TestLaunchProviderAllowsUnreportedModels_KeyedByBehaviorTag(t *testing.T) {
-	cfg := &providerconfig.Config{
-		Instances: []providerconfig.InstanceConfig{
+	cfg := &providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "ora-work", Type: "openrouter-anthropic"},
 		},
 	}
@@ -5056,12 +5056,12 @@ func TestLaunchProviderAllowsUnreportedModels_KeyedByBehaviorTag(t *testing.T) {
 func TestHubRPCInstanceListRoutesToController(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")
-	cfg := providerconfig.Config{
-		Instances: []providerconfig.InstanceConfig{
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "my-openai", Type: "openai", APIStyle: "responses"},
 		},
 	}
-	if err := providerconfig.WriteFile(tomlPath, cfg); err != nil {
+	if err := providercfg.WriteFile(tomlPath, cfg); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	hub := newHubRPCTestServer(t, WebConfig{

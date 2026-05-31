@@ -19,8 +19,8 @@ import (
 	"primeradiant.com/serf/cmd/serf/internal/rvreg"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/appwire"
-	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
 	_ "primeradiant.com/serf/llm/providers/glm"
 	_ "primeradiant.com/serf/llm/providers/google"
@@ -37,18 +37,18 @@ import (
 
 // serveLoadClient is the injectable hook for tests. Production code calls
 // cmdutil.LoadClient; tests may replace this to inject a stub client.
-var serveLoadClient = func(opts ...llm.EnvOption) (*llm.Client, providerconfig.Config, bool, error) {
+var serveLoadClient = func(opts ...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
 	return cmdutil.LoadClient(opts...)
 }
 
-func newServeLLMClient(stateDir string, warnings io.Writer) (*llm.Client, providerconfig.Config, bool, func() error, error) {
+func newServeLLMClient(stateDir string, warnings io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
 	client, cfg, hasConfig, err := serveLoadClient(llm.WithStateDir(stateDir))
 	if err != nil {
-		return nil, providerconfig.Config{}, false, nil, fmt.Errorf("LLM client: %w", err)
+		return nil, providercfg.Config{}, false, nil, fmt.Errorf("LLM client: %w", err)
 	}
 	closeAPILog, err := cmdutil.AttachAPILogger(client, stateDir, warnings)
 	if err != nil {
-		return nil, providerconfig.Config{}, false, nil, err
+		return nil, providercfg.Config{}, false, nil, err
 	}
 	return client, cfg, hasConfig, closeAPILog, nil
 }
@@ -433,7 +433,7 @@ func runServe(args []string) error {
 // are resolved via agent.ResolveProfileFromConfig. outputSchemaJSON and
 // SERF_ALLOWED_DECISIONS are applied so callers see the same communicate-tool
 // schema regardless of model.
-func buildInitialProfile(cfg providerconfig.Config, modelRef cmdutil.ModelRef, outputSchemaJSON string) (agent.ProviderProfile, error) {
+func buildInitialProfile(cfg providercfg.Config, modelRef cmdutil.ModelRef, outputSchemaJSON string) (agent.ProviderProfile, error) {
 	raw, err := agent.ResolveProfileFromConfig(cfg, modelRef.Qualified())
 	if err != nil {
 		return nil, err

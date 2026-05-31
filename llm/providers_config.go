@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"sync"
 
-	"primeradiant.com/serf/internal/providerconfig"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 // InstanceAdapterFactory constructs a ProviderAdapter for one provider instance.
 // The factory receives the full InstanceConfig and the global StateHome (used by
 // OAuth-backed adapters such as openai). It is registered per (type, apiStyle) pair.
-type InstanceAdapterFactory func(inst providerconfig.InstanceConfig, stateHome string) (ProviderAdapter, error)
+type InstanceAdapterFactory func(inst providercfg.InstanceConfig, stateHome string) (ProviderAdapter, error)
 
 var (
 	instanceFactoriesMu sync.Mutex
@@ -24,7 +24,7 @@ type instanceFactoryKey struct {
 
 // RegisterInstanceAdapterFactory registers a factory that can construct a ProviderAdapter
 // from an InstanceConfig. Provider packages should call this from init().
-// typ and apiStyle must match what appears in providerconfig.InstanceConfig.
+// typ and apiStyle must match what appears in providercfg.InstanceConfig.
 func RegisterInstanceAdapterFactory(typ, apiStyle string, factory InstanceAdapterFactory) {
 	if factory == nil {
 		return
@@ -34,7 +34,7 @@ func RegisterInstanceAdapterFactory(typ, apiStyle string, factory InstanceAdapte
 	instanceFactoriesMu.Unlock()
 }
 
-// NewFromProviders constructs a Client from an explicit providerconfig.Config.
+// NewFromProviders constructs a Client from an explicit providercfg.Config.
 // Each instance in cfg.Instances is mapped to its adapter by (Type, APIStyle)
 // via factories registered with RegisterInstanceAdapterFactory. The configured
 // Default instance is set as the client's default provider.
@@ -42,7 +42,7 @@ func RegisterInstanceAdapterFactory(typ, apiStyle string, factory InstanceAdapte
 // Callers may pass the same EnvOption set accepted by NewFromEnv — in
 // particular WithStateDir — to control the StateHome used for OAuth-backed
 // adapters.
-func NewFromProviders(cfg providerconfig.Config, opts ...EnvOption) (*Client, error) {
+func NewFromProviders(cfg providercfg.Config, opts ...EnvOption) (*Client, error) {
 	envCfg := EnvConfig{}
 	for _, opt := range opts {
 		if opt != nil {
@@ -86,7 +86,7 @@ func NewFromProviders(cfg providerconfig.Config, opts ...EnvOption) (*Client, er
 		c.SetDefaultProvider(cfg.Default)
 	}
 
-	c.SetNameToTag(providerconfig.NameToTag(cfg))
+	c.SetNameToTag(providercfg.NameToTag(cfg))
 
 	return c, nil
 }

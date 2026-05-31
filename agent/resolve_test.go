@@ -5,13 +5,13 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 func TestResolveProfileFromConfig_OpenAIResponses(t *testing.T) {
-	cfg := providerconfig.Config{
-		Instances: []providerconfig.InstanceConfig{
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "work", Type: "openai", APIStyle: "responses"},
 		},
 	}
@@ -32,8 +32,8 @@ func TestResolveProfileFromConfig_OpenAIResponses(t *testing.T) {
 
 func TestResolveProfileFromConfig_OpenAIDefaultStyle(t *testing.T) {
 	// Empty APIStyle on openai type defaults to responses behavior (not chat-completions)
-	cfg := providerconfig.Config{
-		Instances: []providerconfig.InstanceConfig{
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "myopenai", Type: "openai", APIStyle: ""},
 		},
 	}
@@ -53,8 +53,8 @@ func TestResolveProfileFromConfig_OpenAIDefaultStyle(t *testing.T) {
 }
 
 func TestResolveProfileFromConfig_ChatCompletions(t *testing.T) {
-	cfg := providerconfig.Config{
-		Instances: []providerconfig.InstanceConfig{
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "localai", Type: "openai", APIStyle: "chat-completions"},
 		},
 	}
@@ -74,8 +74,8 @@ func TestResolveProfileFromConfig_ChatCompletions(t *testing.T) {
 }
 
 func TestResolveProfileFromConfig_Kimi(t *testing.T) {
-	cfg := providerconfig.Config{
-		Instances: []providerconfig.InstanceConfig{
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "kc", Type: "kimi"},
 		},
 	}
@@ -95,8 +95,8 @@ func TestResolveProfileFromConfig_Kimi(t *testing.T) {
 }
 
 func TestResolveProfileFromConfig_Anthropic(t *testing.T) {
-	cfg := providerconfig.Config{
-		Instances: []providerconfig.InstanceConfig{
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "ant", Type: "anthropic"},
 		},
 	}
@@ -116,8 +116,8 @@ func TestResolveProfileFromConfig_Anthropic(t *testing.T) {
 }
 
 func TestResolveProfileFromConfig_Google(t *testing.T) {
-	cfg := providerconfig.Config{
-		Instances: []providerconfig.InstanceConfig{
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "g1", Type: "google"},
 		},
 	}
@@ -137,8 +137,8 @@ func TestResolveProfileFromConfig_Google(t *testing.T) {
 }
 
 func TestResolveProfileFromConfig_GLM(t *testing.T) {
-	cfg := providerconfig.Config{
-		Instances: []providerconfig.InstanceConfig{
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "glm-inst", Type: "glm"},
 		},
 	}
@@ -155,8 +155,8 @@ func TestResolveProfileFromConfig_GLM(t *testing.T) {
 }
 
 func TestResolveProfileFromConfig_MiniMax(t *testing.T) {
-	cfg := providerconfig.Config{
-		Instances: []providerconfig.InstanceConfig{
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "mm", Type: "minimax"},
 		},
 	}
@@ -177,8 +177,8 @@ func TestResolveProfileFromConfig_MiniMax(t *testing.T) {
 }
 
 func TestResolveProfileFromConfig_OpenRouterAnthropic(t *testing.T) {
-	cfg := providerconfig.Config{
-		Instances: []providerconfig.InstanceConfig{
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "ora", Type: "openrouter-anthropic"},
 		},
 	}
@@ -198,8 +198,8 @@ func TestResolveProfileFromConfig_OpenRouterAnthropic(t *testing.T) {
 }
 
 func TestResolveProfileFromConfig_Ollama(t *testing.T) {
-	cfg := providerconfig.Config{
-		Instances: []providerconfig.InstanceConfig{
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "local", Type: "ollama"},
 		},
 	}
@@ -216,8 +216,8 @@ func TestResolveProfileFromConfig_Ollama(t *testing.T) {
 }
 
 func TestResolveProfileFromConfig_UnknownInstance(t *testing.T) {
-	cfg := providerconfig.Config{
-		Instances: []providerconfig.InstanceConfig{
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "work", Type: "openai"},
 			{Name: "ant", Type: "anthropic"},
 		},
@@ -233,8 +233,8 @@ func TestResolveProfileFromConfig_UnknownInstance(t *testing.T) {
 }
 
 func TestResolveProfileFromConfig_UnknownType(t *testing.T) {
-	cfg := providerconfig.Config{
-		Instances: []providerconfig.InstanceConfig{
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "exotic", Type: "exotic-provider"},
 		},
 	}
@@ -248,8 +248,8 @@ func TestResolveProfileFromConfig_ChatCompletionsTagNotDerivedFromInstanceName(t
 	// The tag must be "openai-compatible" (from the type+style), NOT derived
 	// from the instance name "work". Passing inst.Name to NewOpenAICompatProfile
 	// would derive a wrong tag via BehaviorTag("work","").
-	cfg := providerconfig.Config{
-		Instances: []providerconfig.InstanceConfig{
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "work", Type: "openai", APIStyle: "chat-completions"},
 		},
 	}
@@ -301,8 +301,8 @@ func TestResolveProfileFromConfig_KimiContextWindowFromCatalog(t *testing.T) {
 		t.Fatalf("catalog window %d == default %d; choose a model with a distinct window", wantCtx, defaultWindow)
 	}
 
-	cfg := providerconfig.Config{
-		Instances: []providerconfig.InstanceConfig{
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "kc", Type: "kimi"},
 		},
 	}

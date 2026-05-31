@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/internal/providerconfig"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 // setupFakeInstanceFactories replaces the instance factory registry with fakes
@@ -20,40 +20,40 @@ func setupFakeInstanceFactories(t *testing.T) {
 	}
 	// Replace with fakes that never make network calls.
 	instanceFactories = map[instanceFactoryKey]InstanceAdapterFactory{
-		{typ: "openai", apiStyle: "responses"}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) {
+		{typ: "openai", apiStyle: "responses"}: func(inst providercfg.InstanceConfig, _ string) (ProviderAdapter, error) {
 			return &fakeAdapter{name: inst.Name}, nil
 		},
-		{typ: "openai", apiStyle: ""}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) {
+		{typ: "openai", apiStyle: ""}: func(inst providercfg.InstanceConfig, _ string) (ProviderAdapter, error) {
 			return &fakeAdapter{name: inst.Name}, nil
 		},
-		{typ: "openai", apiStyle: "chat-completions"}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) {
+		{typ: "openai", apiStyle: "chat-completions"}: func(inst providercfg.InstanceConfig, _ string) (ProviderAdapter, error) {
 			return &fakeAdapter{name: inst.Name}, nil
 		},
-		{typ: "anthropic", apiStyle: ""}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) {
+		{typ: "anthropic", apiStyle: ""}: func(inst providercfg.InstanceConfig, _ string) (ProviderAdapter, error) {
 			return &fakeAdapter{name: inst.Name}, nil
 		},
-		{typ: "google", apiStyle: ""}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) {
+		{typ: "google", apiStyle: ""}: func(inst providercfg.InstanceConfig, _ string) (ProviderAdapter, error) {
 			return &fakeAdapter{name: inst.Name}, nil
 		},
-		{typ: "gemini", apiStyle: ""}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) {
+		{typ: "gemini", apiStyle: ""}: func(inst providercfg.InstanceConfig, _ string) (ProviderAdapter, error) {
 			return &fakeAdapter{name: inst.Name}, nil
 		},
-		{typ: "kimi", apiStyle: ""}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) {
+		{typ: "kimi", apiStyle: ""}: func(inst providercfg.InstanceConfig, _ string) (ProviderAdapter, error) {
 			return &fakeAdapter{name: inst.Name}, nil
 		},
-		{typ: "glm", apiStyle: ""}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) {
+		{typ: "glm", apiStyle: ""}: func(inst providercfg.InstanceConfig, _ string) (ProviderAdapter, error) {
 			return &fakeAdapter{name: inst.Name}, nil
 		},
-		{typ: "openrouter", apiStyle: ""}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) {
+		{typ: "openrouter", apiStyle: ""}: func(inst providercfg.InstanceConfig, _ string) (ProviderAdapter, error) {
 			return &fakeAdapter{name: inst.Name}, nil
 		},
-		{typ: "minimax", apiStyle: ""}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) {
+		{typ: "minimax", apiStyle: ""}: func(inst providercfg.InstanceConfig, _ string) (ProviderAdapter, error) {
 			return &fakeAdapter{name: inst.Name}, nil
 		},
-		{typ: "openrouter-anthropic", apiStyle: ""}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) {
+		{typ: "openrouter-anthropic", apiStyle: ""}: func(inst providercfg.InstanceConfig, _ string) (ProviderAdapter, error) {
 			return &fakeAdapter{name: inst.Name}, nil
 		},
-		{typ: "ollama", apiStyle: ""}: func(inst providerconfig.InstanceConfig, _ string) (ProviderAdapter, error) {
+		{typ: "ollama", apiStyle: ""}: func(inst providercfg.InstanceConfig, _ string) (ProviderAdapter, error) {
 			return &fakeAdapter{name: inst.Name}, nil
 		},
 	}
@@ -68,9 +68,9 @@ func setupFakeInstanceFactories(t *testing.T) {
 func TestNewFromProviders_RegistersAllInstances(t *testing.T) {
 	setupFakeInstanceFactories(t)
 
-	cfg := providerconfig.Config{
+	cfg := providercfg.Config{
 		Default: "work",
-		Instances: []providerconfig.InstanceConfig{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "work", Type: "openai", APIStyle: "responses", APIKey: "key-work"},
 			{Name: "work2", Type: "openai", APIStyle: "responses", APIKey: "key-work2"},
 			{Name: "kimi-corp", Type: "kimi", APIKey: "key-kimi"},
@@ -104,9 +104,9 @@ func TestNewFromProviders_RegistersAllInstances(t *testing.T) {
 func TestNewFromProviders_DefaultIsSet(t *testing.T) {
 	setupFakeInstanceFactories(t)
 
-	cfg := providerconfig.Config{
+	cfg := providercfg.Config{
 		Default: "work",
-		Instances: []providerconfig.InstanceConfig{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "work", Type: "openai", APIStyle: "responses", APIKey: "key-work"},
 			{Name: "work2", Type: "openai", APIStyle: "responses", APIKey: "key-work2"},
 			{Name: "kimi-corp", Type: "kimi", APIKey: "key-kimi"},
@@ -126,9 +126,9 @@ func TestNewFromProviders_DefaultIsSet(t *testing.T) {
 func TestNewFromProviders_BehaviorTagsAreSet(t *testing.T) {
 	setupFakeInstanceFactories(t)
 
-	cfg := providerconfig.Config{
+	cfg := providercfg.Config{
 		Default: "work",
-		Instances: []providerconfig.InstanceConfig{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "work", Type: "openai", APIStyle: "responses", APIKey: "key-work"},
 			{Name: "kimi-corp", Type: "kimi", APIKey: "key-kimi"},
 		},
@@ -150,9 +150,9 @@ func TestNewFromProviders_BehaviorTagsAreSet(t *testing.T) {
 func TestNewFromProviders_RoutingReachesCorrectAdapter(t *testing.T) {
 	setupFakeInstanceFactories(t)
 
-	cfg := providerconfig.Config{
+	cfg := providercfg.Config{
 		Default: "work",
-		Instances: []providerconfig.InstanceConfig{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "work", Type: "openai", APIStyle: "responses", APIKey: "key-work"},
 			{Name: "kimi-corp", Type: "kimi", APIKey: "key-kimi"},
 		},
@@ -188,9 +188,9 @@ func TestNewFromProviders_RoutingReachesCorrectAdapter(t *testing.T) {
 func TestNewFromProviders_ChatCompletionsStyleIsOpenAICompat(t *testing.T) {
 	setupFakeInstanceFactories(t)
 
-	cfg := providerconfig.Config{
+	cfg := providercfg.Config{
 		Default: "my-compat",
-		Instances: []providerconfig.InstanceConfig{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "my-compat", Type: "openai", APIStyle: "chat-completions",
 				BaseURL: "https://example.com/v1", APIKey: "key-compat"},
 		},
@@ -221,8 +221,8 @@ func TestNewFromProviders_ChatCompletionsStyleIsOpenAICompat(t *testing.T) {
 func TestNewFromProviders_UnknownTypeErrors(t *testing.T) {
 	setupFakeInstanceFactories(t)
 
-	cfg := providerconfig.Config{
-		Instances: []providerconfig.InstanceConfig{
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
 			{Name: "bad", Type: "does-not-exist", APIKey: "key"},
 		},
 	}

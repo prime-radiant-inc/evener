@@ -9,8 +9,8 @@ import (
 
 	authopenai "primeradiant.com/serf/internal/auth/openai"
 	"primeradiant.com/serf/internal/auth/openai/oaitest"
-	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 func TestMaterializeProvidersConfig(t *testing.T) {
@@ -39,7 +39,7 @@ func TestMaterializeProvidersConfig(t *testing.T) {
 		t.Fatalf("secret leaked:\n%s", data)
 	}
 
-	got, exists, err := providerconfig.LoadFile(path)
+	got, exists, err := providercfg.LoadFile(path)
 	if err != nil || !exists {
 		t.Fatalf("reload: exists=%v err=%v", exists, err)
 	}

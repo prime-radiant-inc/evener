@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/internal/providerconfig"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 type Adapter struct {
@@ -62,7 +62,7 @@ func init() {
 		}
 		return a, true, nil
 	})
-	llm.RegisterInstanceAdapterFactory("anthropic", "", func(inst providerconfig.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
+	llm.RegisterInstanceAdapterFactory("anthropic", "", func(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
 		return NewForInstance(AnthropicInstanceParams{
 			Name:    inst.Name,
 			BaseURL: inst.BaseURL,
