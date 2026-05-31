@@ -16,6 +16,7 @@ import (
 
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/serf/llm/providers/internal/openaichat"
 )
 
 type Adapter struct {
@@ -97,6 +98,17 @@ func (a *Adapter) Name() string {
 	return "openai-compatible"
 }
 
+func (a *Adapter) setChatHeaders(httpReq *http.Request) {
+	// Apply default headers first so provider-specific headers take precedence.
+	for k, v := range a.DefaultHeaders {
+		httpReq.Header.Set(k, v)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	if a.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+a.APIKey)
+	}
+}
+
 // Complete sends a non-streaming Chat Completions request.
 func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	if a.Client == nil {
@@ -156,14 +168,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 	if err != nil {
 		return nil, err
 	}
-	// Apply default headers first so provider-specific headers take precedence.
-	for k, v := range a.DefaultHeaders {
-		httpReq.Header.Set(k, v)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if a.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+a.APIKey)
-	}
+	a.setChatHeaders(httpReq)
 
 	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
@@ -322,35 +327,7 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 			model = chunk.Model
 		}
 		if chunk.Usage != nil {
-			// OpenAI-compat endpoints report prompt_tokens as
-			// total-including-cached. Subtract cached_tokens to honor
-			// llm.Usage's "InputTokens means new uncached input" invariant.
-			rawPrompt := llm.IntFromAny(chunk.Usage["prompt_tokens"])
-			var cachedRead int
-			if details, ok := chunk.Usage["prompt_tokens_details"].(map[string]any); ok {
-				cachedRead = llm.IntFromAny(details["cached_tokens"])
-			}
-			uncachedInput := rawPrompt - cachedRead
-			if uncachedInput < 0 {
-				uncachedInput = 0
-			}
-			u := llm.Usage{
-				InputTokens:  uncachedInput,
-				OutputTokens: llm.IntFromAny(chunk.Usage["completion_tokens"]),
-				Raw:          chunk.Usage,
-			}
-			u.TotalTokens = rawPrompt + u.OutputTokens
-			if v := llm.IntFromAny(chunk.Usage["total_tokens"]); v > 0 {
-				u.TotalTokens = v
-			}
-			if details, ok := chunk.Usage["completion_tokens_details"].(map[string]any); ok {
-				if rt := llm.IntFromAny(details["reasoning_tokens"]); rt > 0 {
-					u.ReasoningTokens = &rt
-				}
-			}
-			if cachedRead > 0 {
-				u.CacheReadTokens = &cachedRead
-			}
+			u := openaichat.ParseChatUsage(chunk.Usage)
 			usage = &u
 		}
 
@@ -454,14 +431,7 @@ func (a *Adapter) doHTTP(ctx context.Context, body map[string]any, at *llm.Adapt
 	if err != nil {
 		return nil, nil, nil, 0, nil, err
 	}
-	// Apply default headers first so provider-specific headers take precedence.
-	for k, v := range a.DefaultHeaders {
-		httpReq.Header.Set(k, v)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if a.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+a.APIKey)
-	}
+	a.setChatHeaders(httpReq)
 
 	client := llm.ClientWithConnectTimeout(a.Client, at)
 	resp, err := client.Do(httpReq)

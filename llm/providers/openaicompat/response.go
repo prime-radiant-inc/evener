@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providers/internal/openaichat"
 )
 
 type chatCompletionResponse struct {
@@ -170,33 +171,7 @@ func fromChatCompletionResponse(raw map[string]any, quirks ProviderQuirks) (llm.
 	}
 
 	if parsed.Usage != nil {
-		rawPrompt := llm.IntFromAny(parsed.Usage["prompt_tokens"])
-		output := llm.IntFromAny(parsed.Usage["completion_tokens"])
-		var cachedRead int
-		if details, ok := parsed.Usage["prompt_tokens_details"].(map[string]any); ok {
-			cachedRead = llm.IntFromAny(details["cached_tokens"])
-		}
-		uncachedInput := rawPrompt - cachedRead
-		if uncachedInput < 0 {
-			uncachedInput = 0
-		}
-		resp.Usage = llm.Usage{
-			InputTokens:  uncachedInput,
-			OutputTokens: output,
-			Raw:          parsed.Usage,
-		}
-		resp.Usage.TotalTokens = rawPrompt + output
-		if v := llm.IntFromAny(parsed.Usage["total_tokens"]); v > 0 {
-			resp.Usage.TotalTokens = v
-		}
-		if details, ok := parsed.Usage["completion_tokens_details"].(map[string]any); ok {
-			if rt := llm.IntFromAny(details["reasoning_tokens"]); rt > 0 {
-				resp.Usage.ReasoningTokens = &rt
-			}
-		}
-		if cachedRead > 0 {
-			resp.Usage.CacheReadTokens = &cachedRead
-		}
+		resp.Usage = openaichat.ParseChatUsage(parsed.Usage)
 	}
 
 	if resp.Usage.ReasoningTokens == nil && resp.Usage.ReasoningTokensEstimated == nil {

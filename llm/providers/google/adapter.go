@@ -95,6 +95,14 @@ func (a *Adapter) Name() string {
 	return "google"
 }
 
+func (a *Adapter) setJSONHeaders(httpReq *http.Request) {
+	// Apply default headers first so provider-specific headers take precedence.
+	for k, v := range a.DefaultHeaders {
+		httpReq.Header.Set(k, v)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+}
+
 func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
 	if a.Client == nil {
 		a.Client = &http.Client{Timeout: 0}
@@ -131,11 +139,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	if err != nil {
 		return llm.Response{}, err
 	}
-	// Apply default headers first so provider-specific headers take precedence.
-	for k, v := range a.DefaultHeaders {
-		httpReq.Header.Set(k, v)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
+	a.setJSONHeaders(httpReq)
 
 	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)
@@ -206,11 +210,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		cancel()
 		return nil, err
 	}
-	// Apply default headers first so provider-specific headers take precedence.
-	for k, v := range a.DefaultHeaders {
-		httpReq.Header.Set(k, v)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
+	a.setJSONHeaders(httpReq)
 
 	client := llm.ClientWithConnectTimeout(a.Client, req.AdapterTimeout)
 	resp, err := client.Do(httpReq)

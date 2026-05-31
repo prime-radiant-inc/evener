@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providers/internal/openaichat"
 )
 
 // streamViaChatCompletions provides a fallback streaming path using the
@@ -187,32 +188,7 @@ func (a *Adapter) decodeChatCompletionsStream(sctx context.Context, cancel conte
 			model = chunk.Model
 		}
 		if chunk.Usage != nil {
-			rawPrompt := llm.IntFromAny(chunk.Usage["prompt_tokens"])
-			var cachedRead int
-			if details, ok := chunk.Usage["prompt_tokens_details"].(map[string]any); ok {
-				cachedRead = llm.IntFromAny(details["cached_tokens"])
-			}
-			uncachedInput := rawPrompt - cachedRead
-			if uncachedInput < 0 {
-				uncachedInput = 0
-			}
-			u := llm.Usage{
-				InputTokens:  uncachedInput,
-				OutputTokens: llm.IntFromAny(chunk.Usage["completion_tokens"]),
-				Raw:          chunk.Usage,
-			}
-			u.TotalTokens = rawPrompt + u.OutputTokens
-			if v := llm.IntFromAny(chunk.Usage["total_tokens"]); v > 0 {
-				u.TotalTokens = v
-			}
-			if details, ok := chunk.Usage["completion_tokens_details"].(map[string]any); ok {
-				if rt := llm.IntFromAny(details["reasoning_tokens"]); rt > 0 {
-					u.ReasoningTokens = &rt
-				}
-			}
-			if cachedRead > 0 {
-				u.CacheReadTokens = &cachedRead
-			}
+			u := openaichat.ParseChatUsage(chunk.Usage)
 			usage = &u
 		}
 		if len(chunk.Choices) == 0 {
@@ -289,7 +265,7 @@ func buildChatCompletionsBody(req llm.Request, stream bool) (map[string]any, err
 	body["messages"] = msgs
 
 	if len(req.Tools) > 0 {
-		body["tools"] = toCompletionsTools(req.Tools)
+		body["tools"] = openaichat.ToChatTools(req.Tools)
 	}
 	if req.ToolChoice != nil {
 		tc, err := toResponsesToolChoice(*req.ToolChoice)
@@ -311,7 +287,7 @@ func buildChatCompletionsBody(req llm.Request, stream bool) (map[string]any, err
 		body["stop"] = req.StopSequences
 	}
 	if req.ResponseFormat != nil {
-		body["response_format"] = toChatResponseFormat(*req.ResponseFormat)
+		body["response_format"] = openaichat.ToChatResponseFormat(*req.ResponseFormat)
 	}
 	if req.ReasoningEffort != nil {
 		body["reasoning_effort"] = *req.ReasoningEffort
@@ -424,25 +400,6 @@ func requestHasToolResultImages(req llm.Request) bool {
 	return false
 }
 
-// toCompletionsTools converts tool definitions for the Chat Completions format.
-func toCompletionsTools(tools []llm.ToolDefinition) []map[string]any {
-	out := make([]map[string]any, 0, len(tools))
-	for _, t := range tools {
-		fn := map[string]any{"name": t.Name}
-		if t.Description != "" {
-			fn["description"] = t.Description
-		}
-		if t.Parameters != nil {
-			fn["parameters"] = t.Parameters
-		}
-		out = append(out, map[string]any{
-			"type":     "function",
-			"function": fn,
-		})
-	}
-	return out
-}
-
 func hasChatRichContent(parts []llm.ContentPart) bool {
 	for _, p := range parts {
 		switch p.Kind {
@@ -532,26 +489,4 @@ func buildChatMultimodalParts(parts []llm.ContentPart) ([]map[string]any, error)
 		}
 	}
 	return out, nil
-}
-
-func toChatResponseFormat(rf llm.ResponseFormat) map[string]any {
-	switch rf.Type {
-	case "json", "json_object":
-		return map[string]any{"type": "json_object"}
-	case "json_schema":
-		out := map[string]any{"type": "json_schema"}
-		if rf.JSONSchema != nil {
-			schema := map[string]any{
-				"name":   "response",
-				"schema": rf.JSONSchema,
-			}
-			if rf.Strict {
-				schema["strict"] = true
-			}
-			out["json_schema"] = schema
-		}
-		return out
-	default:
-		return map[string]any{"type": "text"}
-	}
 }

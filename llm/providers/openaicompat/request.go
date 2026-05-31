@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providers/internal/openaichat"
 )
 
 func buildRequestBody(req llm.Request, stream bool, quirks ProviderQuirks) (map[string]any, error) {
@@ -32,7 +33,7 @@ func buildRequestBody(req llm.Request, stream bool, quirks ProviderQuirks) (map[
 	body["messages"] = msgs
 
 	if len(req.Tools) > 0 {
-		body["tools"] = toChatTools(req.Tools)
+		body["tools"] = openaichat.ToChatTools(req.Tools)
 	}
 	if req.ToolChoice != nil {
 		tc, err := toChatToolChoice(*req.ToolChoice)
@@ -54,7 +55,7 @@ func buildRequestBody(req llm.Request, stream bool, quirks ProviderQuirks) (map[
 		body["stop"] = req.StopSequences
 	}
 	if req.ResponseFormat != nil {
-		body["response_format"] = toChatResponseFormat(*req.ResponseFormat)
+		body["response_format"] = openaichat.ToChatResponseFormat(*req.ResponseFormat)
 	}
 	if req.ReasoningEffort != nil && !useReasoningDetails {
 		effort := *req.ReasoningEffort
@@ -293,26 +294,6 @@ func toolCallsFromParts(parts []llm.ContentPart) []map[string]any {
 	return calls
 }
 
-func toChatTools(tools []llm.ToolDefinition) []map[string]any {
-	out := make([]map[string]any, len(tools))
-	for i, t := range tools {
-		fn := map[string]any{
-			"name": t.Name,
-		}
-		if t.Description != "" {
-			fn["description"] = t.Description
-		}
-		if t.Parameters != nil {
-			fn["parameters"] = t.Parameters
-		}
-		out[i] = map[string]any{
-			"type":     "function",
-			"function": fn,
-		}
-	}
-	return out
-}
-
 func toChatToolChoice(tc llm.ToolChoice) (any, error) {
 	switch strings.ToLower(strings.TrimSpace(tc.Mode)) {
 	case "", "auto":
@@ -331,27 +312,5 @@ func toChatToolChoice(tc llm.ToolChoice) (any, error) {
 		}, nil
 	default:
 		return nil, llm.NewUnsupportedToolChoiceError("openai-compatible", tc.Mode)
-	}
-}
-
-func toChatResponseFormat(rf llm.ResponseFormat) map[string]any {
-	switch rf.Type {
-	case "json", "json_object":
-		return map[string]any{"type": "json_object"}
-	case "json_schema":
-		out := map[string]any{"type": "json_schema"}
-		if rf.JSONSchema != nil {
-			schema := map[string]any{
-				"name":   "response",
-				"schema": rf.JSONSchema,
-			}
-			if rf.Strict {
-				schema["strict"] = true
-			}
-			out["json_schema"] = schema
-		}
-		return out
-	default:
-		return map[string]any{"type": "text"}
 	}
 }
