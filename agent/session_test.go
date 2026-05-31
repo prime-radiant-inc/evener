@@ -967,7 +967,7 @@ func TestSession_ProviderAbortKeepsSessionIdle(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) (llm.Response, error){
 			func(req llm.Request) (llm.Response, error) {
-				return llm.Response{}, llm.NewAbortError("user canceled")
+				return llm.Response{}, llm.NewAbortError("user canceled", nil)
 			},
 		},
 	})
@@ -4503,7 +4503,7 @@ func TestSession_ProvideErrorReturnsErrorToCaller(t *testing.T) {
 		streamErr: llm.NewStreamError("openai",
 			`openai: model "gpt-5.4" failed on both endpoints — `+
 				`/v1/responses: empty stream (model not supported); `+
-				`/v1/chat/completions: openai error (status=403)`),
+				`/v1/chat/completions: openai error (status=403)`, nil),
 	}
 	c.Register(f)
 
@@ -4598,7 +4598,7 @@ func TestSession_ProviderErrorStillRecordsTranscriptEntry(t *testing.T) {
 		streamErr: llm.NewStreamError("openai",
 			`openai: model "gpt-5.4" failed on both endpoints — `+
 				`/v1/responses: empty stream (model not supported); `+
-				`/v1/chat/completions: openai error (status=403)`),
+				`/v1/chat/completions: openai error (status=403)`, nil),
 	}
 	c.Register(f)
 

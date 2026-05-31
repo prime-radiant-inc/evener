@@ -1252,7 +1252,7 @@ func TestSession_AbortErrorDrainsQueuedInputWithFreshContext(t *testing.T) {
 			func(req llm.Request) (llm.Response, error) {
 				started <- struct{}{}
 				<-releaseAbort
-				return llm.Response{}, llm.NewAbortError("user canceled")
+				return llm.Response{}, llm.NewAbortError("user canceled", nil)
 			},
 			func(req llm.Request) (llm.Response, error) {
 				return finalResponse("queued turn completed after abort error"), nil
@@ -1320,12 +1320,47 @@ func TestQueuedInputDrainRootAcceptsAbortErrorForCanceledMarkedTurn(t *testing.T
 	markedCtx := WithQueuedInputDrainOnInterrupt(turnCtx, rootCtx)
 	cancelTurn()
 
-	got, ok := queuedInputDrainContext(markedCtx, llm.NewAbortError("user canceled"))
+	got, ok := queuedInputDrainContext(markedCtx, llm.NewAbortError("user canceled", context.Canceled))
 	if !ok {
 		t.Fatal("queuedInputDrainContext rejected AbortError from canceled marked turn")
 	}
 	if got != rootCtx {
 		t.Fatal("queuedInputDrainContext did not return the root context")
+	}
+}
+
+// Regression (honest-Unwrap asymmetry): an *AbortError now satisfies
+// errors.Is(_, context.Canceled), but it must still drain queued input ONLY when
+// THIS turn's context was the one canceled — not when an abort surfaced from a
+// sub-operation while the turn is still live.
+func TestQueuedInputDrainRejectsAbortErrorWhenTurnLive(t *testing.T) {
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
+	turnCtx, cancelTurn := context.WithCancel(rootCtx)
+	defer cancelTurn()
+	markedCtx := WithQueuedInputDrainOnInterrupt(turnCtx, rootCtx)
+	// Do NOT cancel the turn: markedCtx.Err() == nil.
+
+	if _, ok := queuedInputDrainContext(markedCtx, llm.NewAbortError("subop canceled", context.Canceled)); ok {
+		t.Fatal("drained on an AbortError while the turn ctx was still live; the raw-Canceled-vs-AbortError asymmetry collapsed")
+	}
+}
+
+// Regression (honest-Unwrap): a typed RequestTimeoutError now unwraps to
+// context.DeadlineExceeded, but while the turn ctx is still alive it is a
+// retryable adapter-level timeout, NOT the turn being interrupted.
+func TestIsTurnCancellation_LiveTimeoutIsNotCancellation(t *testing.T) {
+	ctx := context.Background() // live: ctx.Err() == nil
+
+	timeout := llm.WrapContextError("openai", context.DeadlineExceeded)
+	if isTurnCancellation(ctx, timeout) {
+		t.Fatal("classified a live-ctx RequestTimeoutError as a cancellation")
+	}
+	if abort := llm.WrapContextError("openai", context.Canceled); !isTurnCancellation(ctx, abort) {
+		t.Fatal("failed to classify an AbortError as a cancellation")
+	}
+	if !isTurnCancellation(ctx, context.DeadlineExceeded) {
+		t.Fatal("failed to classify a bare DeadlineExceeded as a cancellation")
 	}
 }
 

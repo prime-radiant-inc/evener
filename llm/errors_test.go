@@ -347,7 +347,7 @@ func TestConfigurationError_ErrorCode_Raw(t *testing.T) {
 }
 
 func TestNewRequestTimeoutError_IsRetryable(t *testing.T) {
-	err := NewRequestTimeoutError("openai", `Post "https://api.openai.com/v1/responses": context deadline exceeded`)
+	err := NewRequestTimeoutError("openai", `Post "https://api.openai.com/v1/responses": context deadline exceeded`, nil)
 	var e Error
 	if !errors.As(err, &e) {
 		t.Fatal("expected Error interface")
@@ -395,7 +395,7 @@ func TestBehaviorTag_DefaultEmpty(t *testing.T) {
 }
 
 func TestBehaviorTag_NonHTTPError(t *testing.T) {
-	err := NewStreamError("work", "stream closed")
+	err := NewStreamError("work", "stream closed", nil)
 	var bs behaviorTagSetter
 	if !errors.As(err, &bs) {
 		t.Fatalf("expected behaviorTagSetter on StreamError, got %T", err)

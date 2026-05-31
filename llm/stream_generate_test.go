@@ -472,7 +472,7 @@ func TestStreamGenerate_DoesNotRetryAfterPartialDataDelivered(t *testing.T) {
 					st.Send(StreamEvent{Type: StreamEventStreamStart})
 					st.Send(StreamEvent{Type: StreamEventTextStart, TextID: "text_1"})
 					st.Send(StreamEvent{Type: StreamEventTextDelta, TextID: "text_1", Delta: "hi"})
-					st.Send(StreamEvent{Type: StreamEventError, Err: NewStreamError("openai", "boom")})
+					st.Send(StreamEvent{Type: StreamEventError, Err: NewStreamError("openai", "boom", nil)})
 					cancel()
 				}()
 				_ = sctx

@@ -403,7 +403,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 					)
 					proxy.Send(llm.StreamEvent{
 						Type: llm.StreamEventError,
-						Err:  llm.NewStreamError("openai", combinedMsg),
+						Err:  llm.NewStreamError("openai", combinedMsg, ccErr),
 					})
 					return
 				}
@@ -485,7 +485,7 @@ func (a *Adapter) fallbackToChatCompletions(ctx context.Context, req llm.Request
 	if ccErr != nil {
 		return nil, fmt.Errorf(
 			"openai: model %q failed on both endpoints — "+
-				"/v1/responses: %w; /v1/chat/completions: %v",
+				"/v1/responses: %w; /v1/chat/completions: %w",
 			req.Model, responsesErr, ccErr,
 		)
 	}

@@ -257,7 +257,7 @@ func (a *Adapter) streamViaChatCompletions(ctx context.Context, req llm.Request)
 			} else {
 				s.Send(llm.StreamEvent{
 					Type: llm.StreamEventError,
-					Err:  llm.NewStreamError("openai", fmt.Sprintf("chat.completions stream closed without [DONE] (model: %q)", req.Model)),
+					Err:  llm.NewStreamError("openai", fmt.Sprintf("chat.completions stream closed without [DONE] (model: %q)", req.Model), nil),
 				})
 			}
 		}

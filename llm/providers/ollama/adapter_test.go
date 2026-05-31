@@ -484,7 +484,7 @@ func TestAdapter_Stream_RewritesStartupErrorProvider(t *testing.T) {
 // — turning "context canceled" into "ollama error: context canceled"
 // would mislead callers about who originated the failure.
 func TestAdapter_AbortErrorNotRestamped(t *testing.T) {
-	abort := llm.NewAbortError("context canceled")
+	abort := llm.NewAbortError("context canceled", nil)
 	got := llm.RewriteErrorProvider(abort, "ollama")
 	var llmErr llm.Error
 	if !errors.As(got, &llmErr) {

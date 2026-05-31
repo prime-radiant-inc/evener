@@ -221,7 +221,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 				if finishEv == nil {
 					streamErr = WrapContextError(req.Provider, callCtx.Err())
 					if streamErr == nil {
-						streamErr = NewStreamError(strings.TrimSpace(req.Provider), "stream ended without finish event")
+						streamErr = NewStreamError(strings.TrimSpace(req.Provider), "stream ended without finish event", nil)
 					}
 				}
 				return
@@ -300,7 +300,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 				stepResp = acc.Response()
 			}
 			if stepResp == nil {
-				err := NewStreamError(strings.TrimSpace(req.Provider), "missing response in finish event")
+				err := NewStreamError(strings.TrimSpace(req.Provider), "missing response in finish event", nil)
 				outStream.Send(StreamEvent{Type: StreamEventError, Err: err})
 				res.mu.Lock()
 				res.err = err

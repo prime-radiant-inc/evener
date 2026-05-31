@@ -243,12 +243,17 @@ func classifyByMessage(base httpErrorBase) error {
 // exceeded) that matches the unified error hierarchy. HTTP-level timeouts are retried
 // because the server may not have received the request. User-initiated cancellation
 // (context.Canceled) goes through NewAbortError instead and is not retried.
-func NewRequestTimeoutError(provider string, message string) error {
+//
+// cause is the underlying error (typically context.DeadlineExceeded), exposed via
+// Unwrap so errors.Is(err, context.DeadlineExceeded) holds. Pass nil when there is
+// no underlying cause (e.g. an HTTP 408 synthesized from a status code).
+func NewRequestTimeoutError(provider string, message string, cause error) error {
 	base := httpErrorBase{
 		provider:   strings.TrimSpace(provider),
 		statusCode: 0,
 		message:    message,
 		retryable:  true,
+		cause:      cause,
 	}
 	return &RequestTimeoutError{base}
 }

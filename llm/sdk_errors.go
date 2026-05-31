@@ -46,16 +46,25 @@ type NoObjectGeneratedError struct {
 }
 type UnsupportedToolChoiceError struct{ nonHTTPErrorBase }
 
-func NewAbortError(message string) error {
-	return &AbortError{nonHTTPErrorBase{message: message, retryable: false}}
+// NewAbortError reports a user-initiated cancellation. cause is the underlying
+// error (typically context.Canceled); it is exposed via Unwrap so errors.Is(err,
+// context.Canceled) holds. Pass nil when there is no underlying cause.
+func NewAbortError(message string, cause error) error {
+	return &AbortError{nonHTTPErrorBase{message: message, retryable: false, cause: cause}}
 }
 
-func NewStreamError(provider, message string) error {
-	return &StreamError{nonHTTPErrorBase{provider: provider, message: message, retryable: true}}
+// NewStreamError reports a streaming failure. cause is the underlying read/parse
+// error (e.g. an SSE decode failure or a wrapped context error) and is exposed
+// via Unwrap; pass nil for a content-level stream sentinel with no cause.
+func NewStreamError(provider, message string, cause error) error {
+	return &StreamError{nonHTTPErrorBase{provider: provider, message: message, retryable: true, cause: cause}}
 }
 
-func NewNoObjectGeneratedError(message string, rawText string) error {
-	return &NoObjectGeneratedError{nonHTTPErrorBase: nonHTTPErrorBase{message: message, retryable: false}, RawText: rawText}
+// NewNoObjectGeneratedError reports that no valid object could be produced from
+// the model output. cause is the underlying parse/validation error, exposed via
+// Unwrap; pass nil when none applies.
+func NewNoObjectGeneratedError(message string, rawText string, cause error) error {
+	return &NoObjectGeneratedError{nonHTTPErrorBase: nonHTTPErrorBase{message: message, retryable: false, cause: cause}, RawText: rawText}
 }
 
 func NewUnsupportedToolChoiceError(provider, mode string) error {

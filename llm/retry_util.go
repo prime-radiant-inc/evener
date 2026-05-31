@@ -28,11 +28,15 @@ func retryableError(err error) bool {
 	if err == nil {
 		return false
 	}
-	// Bare context cancellation / deadline at this level means the overall
+	// A bare context cancellation / deadline at this level means the overall
 	// budget is exhausted — don't retry even though Classify would label
 	// DeadlineExceeded as Retryable (that's a signal classification, not a
-	// budget decision).
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	// budget decision). A typed llm.Error that merely *wraps* a context
+	// sentinel (e.g. a RequestTimeoutError built from an adapter-level
+	// deadline) is a transient failure, so the bare-sentinel guard skips it
+	// and defers to the classifier below.
+	var le Error
+	if !errors.As(err, &le) && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 		return false
 	}
 	// Delegate to the classifier so retry decisions are made in exactly one

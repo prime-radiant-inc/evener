@@ -13,10 +13,10 @@ func WrapContextError(provider string, err error) error {
 		return nil
 	}
 	if errors.Is(err, context.Canceled) {
-		return NewAbortError(err.Error())
+		return NewAbortError(err.Error(), err)
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return NewRequestTimeoutError(provider, err.Error())
+		return NewRequestTimeoutError(provider, err.Error(), err)
 	}
 	return err
 }

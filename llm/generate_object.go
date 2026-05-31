@@ -36,7 +36,7 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateR
 	dec := json.NewDecoder(bytes.NewReader([]byte(text)))
 	dec.UseNumber()
 	if err := dec.Decode(&out); err != nil {
-		return nil, NewNoObjectGeneratedError(fmt.Sprintf("failed to parse JSON output: %v", err), text)
+		return nil, NewNoObjectGeneratedError(fmt.Sprintf("failed to parse JSON output: %v", err), text, err)
 	}
 
 	schema, err := compileSchema(opts.Schema)
@@ -44,7 +44,7 @@ func GenerateObject(ctx context.Context, opts GenerateObjectOptions) (*GenerateR
 		return nil, err
 	}
 	if err := schema.Validate(out); err != nil {
-		return nil, NewNoObjectGeneratedError(fmt.Sprintf("JSON output failed schema validation: %v", err), res.Text)
+		return nil, NewNoObjectGeneratedError(fmt.Sprintf("JSON output failed schema validation: %v", err), res.Text, err)
 	}
 	res.Output = out
 	return res, nil
@@ -162,14 +162,14 @@ func StreamGenerateObject(ctx context.Context, opts GenerateObjectOptions) (*Str
 		dec.UseNumber()
 		if err := dec.Decode(&out); err != nil {
 			res.mu.Lock()
-			res.objErr = NewNoObjectGeneratedError(fmt.Sprintf("failed to parse JSON output: %v", err), text)
+			res.objErr = NewNoObjectGeneratedError(fmt.Sprintf("failed to parse JSON output: %v", err), text, err)
 			res.mu.Unlock()
 			return
 		}
 
 		if err := compiledSchema.Validate(out); err != nil {
 			res.mu.Lock()
-			res.objErr = NewNoObjectGeneratedError(fmt.Sprintf("JSON output failed schema validation: %v", err), text)
+			res.objErr = NewNoObjectGeneratedError(fmt.Sprintf("JSON output failed schema validation: %v", err), text, err)
 			res.mu.Unlock()
 			return
 		}

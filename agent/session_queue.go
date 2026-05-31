@@ -302,7 +302,14 @@ func queuedInputDrainContext(ctx context.Context, err error) (context.Context, b
 		return nil, false
 	}
 	var abort *llm.AbortError
-	drainable := errors.Is(err, context.Canceled) || (errors.As(err, &abort) && errors.Is(ctx.Err(), context.Canceled))
+	isAbort := errors.As(err, &abort)
+	// A bare context.Canceled is this turn's own cancellation and always drains.
+	// An *AbortError wraps a cancellation that may have come from a sub-operation,
+	// so it drains only when THIS turn's context was the one canceled. Post
+	// honest-Unwrap an *AbortError satisfies errors.Is(_, context.Canceled), so
+	// the abort case is discriminated explicitly to preserve that distinction.
+	bareCanceled := errors.Is(err, context.Canceled) && !isAbort
+	drainable := bareCanceled || (isAbort && errors.Is(ctx.Err(), context.Canceled))
 	if !drainable || errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return nil, false
 	}

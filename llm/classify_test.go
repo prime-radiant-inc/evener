@@ -12,7 +12,7 @@ func TestClassifyTimeoutIsRetryable(t *testing.T) {
 		t.Fatalf("Classify(DeadlineExceeded) = %v, want Retryable", got)
 	}
 	// Also a wrapped form via NewRequestTimeoutError (non-HTTP timeout).
-	err := NewRequestTimeoutError("openai", "deadline exceeded")
+	err := NewRequestTimeoutError("openai", "deadline exceeded", nil)
 	if got := Classify(err); got != ErrorClassRetryable {
 		t.Fatalf("Classify(RequestTimeoutError) = %v, want Retryable", got)
 	}
@@ -67,7 +67,7 @@ func TestClassifyOpenAIResponses404IsFallback(t *testing.T) {
 }
 
 func TestClassifyOpenAIResponsesEmptyStreamIsFallback(t *testing.T) {
-	err := NewStreamError("openai", "/v1/responses: empty stream (model not supported)")
+	err := NewStreamError("openai", "/v1/responses: empty stream (model not supported)", nil)
 	if got := Classify(err); got != ErrorClassFallback {
 		t.Fatalf("Classify(openai responses empty stream) = %v, want Fallback", got)
 	}
@@ -88,7 +88,7 @@ func TestClassify401IsPermanent(t *testing.T) {
 }
 
 func TestClassifyStreamEndedIsRetryable(t *testing.T) {
-	err := NewStreamError("openai", "stream ended without finish event")
+	err := NewStreamError("openai", "stream ended without finish event", nil)
 	if got := Classify(err); got != ErrorClassRetryable {
 		t.Fatalf("Classify(StreamError) = %v, want Retryable", got)
 	}
@@ -119,7 +119,7 @@ func TestClassifyContextCanceledIsPermanent(t *testing.T) {
 }
 
 func TestClassifyAbortErrorIsPermanent(t *testing.T) {
-	err := NewAbortError("user canceled")
+	err := NewAbortError("user canceled", nil)
 	if got := Classify(err); got != ErrorClassPermanent {
 		t.Fatalf("Classify(AbortError) = %v, want Permanent", got)
 	}

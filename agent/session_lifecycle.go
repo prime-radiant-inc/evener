@@ -1376,11 +1376,22 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 }
 
 func isTurnCancellation(ctx context.Context, err error) bool {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+	if ctx.Err() != nil {
 		return true
 	}
 	var abort *llm.AbortError
-	return errors.As(err, &abort)
+	if errors.As(err, &abort) {
+		return true
+	}
+	// A typed llm error that merely wraps a context sentinel (e.g. a
+	// RequestTimeoutError from an adapter-level timeout while this turn's ctx is
+	// still alive) is a retryable failure, not the turn being interrupted —
+	// only a bare context sentinel counts as a cancellation here.
+	var le llm.Error
+	if errors.As(err, &le) {
+		return false
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 func streamUnavailable(err error) bool {
@@ -1488,7 +1499,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 			if ev.Err != nil {
 				return sessionModelResponse{}, ev.Err
 			}
-			return sessionModelResponse{}, llm.NewStreamError(req.Provider, "stream error")
+			return sessionModelResponse{}, llm.NewStreamError(req.Provider, "stream error", nil)
 		}
 	}
 
@@ -1496,11 +1507,11 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		if err := ctx.Err(); err != nil {
 			return sessionModelResponse{}, err
 		}
-		return sessionModelResponse{}, llm.NewStreamError(req.Provider, "stream ended without finish event")
+		return sessionModelResponse{}, llm.NewStreamError(req.Provider, "stream ended without finish event", nil)
 	}
 	resp := acc.Response()
 	if resp == nil {
-		return sessionModelResponse{}, llm.NewStreamError(req.Provider, "stream ended without response")
+		return sessionModelResponse{}, llm.NewStreamError(req.Provider, "stream ended without response", nil)
 	}
 	if resp.Provider == "" {
 		resp.Provider = req.Provider
