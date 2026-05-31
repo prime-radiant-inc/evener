@@ -1,4 +1,4 @@
-.PHONY: build build-hub build-tui build-all build-linux build-namingcheck test test-short vet lint lint-naming clean
+.PHONY: build build-hub build-tui build-all build-linux build-namingcheck test test-short vet lint lint-naming lint-internal clean
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -39,11 +39,16 @@ vet:
 lint-naming:
 	go run ./cmd/serf-namingcheck
 
+# lint-internal fails if any exported symbol in the agent/llm/providercfg
+# libraries names a serf-internal type — keeping them externally importable.
+lint-internal:
+	go run ./cmd/serf-internalcheck
+
 build-namingcheck:
 	go build -o serf-namingcheck ./cmd/serf-namingcheck/
 
-lint: lint-naming
+lint: lint-naming lint-internal
 	golangci-lint run ./...
 
 clean:
-	rm -f serf serf-hub serf-tui llmcall serf-namingcheck
+	rm -f serf serf-hub serf-tui llmcall serf-namingcheck serf-internalcheck
