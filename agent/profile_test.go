@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/internal/workspace"
 	"primeradiant.com/serf/llm"
 )
 
@@ -1798,7 +1797,7 @@ func TestBuildSystemPrompt_WorkspaceSection(t *testing.T) {
 		WorkingDir: dir,
 		Platform:   "linux",
 		Today:      "2026-03-01",
-		Workspace:  workspace.ScanWorkspace(dir),
+		Workspace:  ScanWorkspace(dir),
 	}
 
 	p := NewOpenAIProfile("gpt-5.3-codex")
@@ -1877,7 +1876,7 @@ func TestBuildSystemPrompt_WorkspaceAnnotation(t *testing.T) {
 		WorkingDir: dir,
 		Platform:   "linux",
 		Today:      "2026-03-01",
-		Workspace:  workspace.ScanWorkspace(dir),
+		Workspace:  ScanWorkspace(dir),
 	}
 
 	p := NewOpenAIProfile("gpt-5.3-codex")

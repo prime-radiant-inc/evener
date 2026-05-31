@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent/internal/workspace"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 )
@@ -25,18 +24,18 @@ func resolveEffortLevels(model string, providerDefault []string) []string {
 }
 
 type EnvironmentInfo struct {
-	WorkingDir            string                  `json:"working_dir"`
-	Platform              string                  `json:"platform"`
-	OSVersion             string                  `json:"os_version"`
-	Today                 string                  `json:"today"`            // YYYY-MM-DD
-	KnowledgeCutoff       string                  `json:"knowledge_cutoff"` // YYYY-MM-DD
-	IsGitRepo             bool                    `json:"is_git_repo"`
-	GitBranch             string                  `json:"git_branch,omitempty"`
-	GitOriginURL          string                  `json:"git_origin_url,omitempty"`
-	GitModifiedFiles      int                     `json:"git_modified_files"`
-	GitUntrackedFiles     int                     `json:"git_untracked_files"`
-	GitRecentCommitTitles []string                `json:"git_recent_commit_titles,omitempty"`
-	Workspace             workspace.WorkspaceInfo `json:"workspace,omitempty"`
+	WorkingDir            string        `json:"working_dir"`
+	Platform              string        `json:"platform"`
+	OSVersion             string        `json:"os_version"`
+	Today                 string        `json:"today"`            // YYYY-MM-DD
+	KnowledgeCutoff       string        `json:"knowledge_cutoff"` // YYYY-MM-DD
+	IsGitRepo             bool          `json:"is_git_repo"`
+	GitBranch             string        `json:"git_branch,omitempty"`
+	GitOriginURL          string        `json:"git_origin_url,omitempty"`
+	GitModifiedFiles      int           `json:"git_modified_files"`
+	GitUntrackedFiles     int           `json:"git_untracked_files"`
+	GitRecentCommitTitles []string      `json:"git_recent_commit_titles,omitempty"`
+	Workspace             WorkspaceInfo `json:"workspace,omitempty"`
 }
 
 type ProviderProfile interface {
@@ -1058,7 +1057,7 @@ func envInfoFromEnv(env ExecutionEnvironment) EnvironmentInfo {
 		Platform:   plat,
 		OSVersion:  osv,
 		Today:      time.Now().UTC().Format("2006-01-02"),
-		Workspace:  workspace.ScanWorkspace(wd),
+		Workspace:  ScanWorkspace(wd),
 	}
 }
 
