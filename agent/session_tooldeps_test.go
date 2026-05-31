@@ -57,7 +57,7 @@ func TestToolDeps_ShellTimeoutClamp(t *testing.T) {
 		cmdTimeouts: func() (int, int) { return defTimeout, maxTimeout },
 	}
 
-	reg := NewToolRegistry()
+	reg := newToolRegistry()
 	if err := registerShellTools(reg, deps); err != nil {
 		t.Fatalf("registerShellTools: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestToolDeps_ReadBeforeWriteWarning(t *testing.T) {
 		},
 	}
 
-	reg := NewToolRegistry()
+	reg := newToolRegistry()
 	if err := registerFileTools(reg, deps); err != nil {
 		t.Fatalf("registerFileTools: %v", err)
 	}

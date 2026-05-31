@@ -32,7 +32,7 @@ func TestRegisteredTool_EmbedsLLMTool(t *testing.T) {
 	}
 
 	// Register should bridge Execute from Exec.
-	reg := NewToolRegistry()
+	reg := newToolRegistry()
 	if err := reg.Register(rt); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestRegisteredTool_ExecuteNotBridgedWhenAlreadySet(t *testing.T) {
 		},
 	}
 
-	reg := NewToolRegistry()
+	reg := newToolRegistry()
 	if err := reg.Register(rt); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestRegisteredTool_BridgedExecute_RejectsNonMapArgs(t *testing.T) {
 		},
 	}
 
-	reg := NewToolRegistry()
+	reg := newToolRegistry()
 	if err := reg.Register(rt); err != nil {
 		t.Fatalf("Register: %v", err)
 	}

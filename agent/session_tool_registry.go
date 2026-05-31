@@ -152,7 +152,7 @@ func newToolDeps(s *Session) *toolDeps {
 	}
 }
 
-func registerCoreTools(reg *ToolRegistry, s *Session) error {
+func registerCoreTools(reg *toolRegistry, s *Session) error {
 	deps := newToolDeps(s)
 	if err := registerFileTools(reg, deps); err != nil {
 		return err
@@ -168,7 +168,7 @@ func registerCoreTools(reg *ToolRegistry, s *Session) error {
 	return nil
 }
 
-func registerFileTools(reg *ToolRegistry, deps *toolDeps) error {
+func registerFileTools(reg *toolRegistry, deps *toolDeps) error {
 	// read_file
 	if err := reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: defReadFile(), ReadOnly: true},
@@ -182,7 +182,7 @@ func registerFileTools(reg *ToolRegistry, deps *toolDeps) error {
 			if err == nil {
 				deps.readGuard.TrackRead(path)
 				// If the file is an image or document (PDF), return an
-				// ImageResult so the vision side-channel can process it.
+				// imageResult so the vision side-channel can process it.
 				if img := parseImageResult(path, result); img != nil {
 					img.Purpose = purpose
 					return *img, nil
@@ -237,7 +237,7 @@ func registerFileTools(reg *ToolRegistry, deps *toolDeps) error {
 	return nil
 }
 
-func registerShellTools(reg *ToolRegistry, deps *toolDeps) error {
+func registerShellTools(reg *toolRegistry, deps *toolDeps) error {
 	// shell
 	if err := reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: defShell()},
@@ -349,7 +349,7 @@ func registerShellTools(reg *ToolRegistry, deps *toolDeps) error {
 	return nil
 }
 
-func registerSubagentTools(reg *ToolRegistry, s *Session) {
+func registerSubagentTools(reg *toolRegistry, s *Session) {
 	// Subagent tools (best-effort; synchronous completion for v1).
 	_ = reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: defSpawnAgent()},
@@ -505,7 +505,7 @@ func registerSubagentTools(reg *ToolRegistry, s *Session) {
 	})
 }
 
-func registerTaskTools(reg *ToolRegistry, deps *toolDeps) {
+func registerTaskTools(reg *toolRegistry, deps *toolDeps) {
 	// Task management.
 	_ = reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: defTaskList(deps.reasoningEffortLevels)},
@@ -562,7 +562,7 @@ func registerTaskTools(reg *ToolRegistry, deps *toolDeps) {
 				// message when the agent actually transitions one to
 				// in_progress, either manually or via auto-advance.
 				total, done := store.Progress()
-				return ToolStateResult{
+				return toolStateResult{
 					Output: fmt.Sprintf("Added %d task(s). Progress: %d/%d tasks complete.", len(added), done, total),
 					State:  store.View(),
 				}, nil
@@ -637,7 +637,7 @@ func registerTaskTools(reg *ToolRegistry, deps *toolDeps) {
 				}
 
 				if !completedAny && manuallyStartedID == 0 {
-					return ToolStateResult{Output: "Updated.", State: store.View()}, nil
+					return toolStateResult{Output: "Updated.", State: store.View()}, nil
 				}
 
 				var msg strings.Builder
@@ -675,7 +675,7 @@ func registerTaskTools(reg *ToolRegistry, deps *toolDeps) {
 
 				total, done := store.Progress()
 				msg.WriteString(fmt.Sprintf("Progress: %d/%d tasks complete.", done, total))
-				return ToolStateResult{Output: msg.String(), State: store.View()}, nil
+				return toolStateResult{Output: msg.String(), State: store.View()}, nil
 			default:
 				return nil, fmt.Errorf("unknown task_list action %q: use view, append, or update", action)
 			}
@@ -683,7 +683,7 @@ func registerTaskTools(reg *ToolRegistry, deps *toolDeps) {
 	})
 }
 
-func registerWebTools(reg *ToolRegistry, deps *toolDeps) {
+func registerWebTools(reg *toolRegistry, deps *toolDeps) {
 	// Web fetch.
 	_ = reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: defWebFetch()},
@@ -709,7 +709,7 @@ func registerWebTools(reg *ToolRegistry, deps *toolDeps) {
 	}
 }
 
-func registerCommunicateTool(reg *ToolRegistry, deps *toolDeps) {
+func registerCommunicateTool(reg *toolRegistry, deps *toolDeps) {
 	// communicate is the only user-facing message channel.
 	// Use the profile's definition if available (it may have been modified by
 	// WithAllowedDecisions to add extra fields to the output schema).
@@ -790,7 +790,7 @@ func registerCommunicateTool(reg *ToolRegistry, deps *toolDeps) {
 	})
 }
 
-func registerSkillTool(reg *ToolRegistry, deps *toolDeps) {
+func registerSkillTool(reg *toolRegistry, deps *toolDeps) {
 	// use_skill (progressive disclosure of skill instructions).
 	// Present for provider profiles that include the use_skill tool definition.
 	if reg.Get("use_skill") != nil {

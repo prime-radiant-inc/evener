@@ -280,9 +280,9 @@ func TestLive_MCP_StdioServer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	mgr, err := NewMCPManager(ctx, lp.MCPConfigs, nil)
+	mgr, err := newMCPManager(ctx, lp.MCPConfigs, nil)
 	if err != nil {
-		t.Fatalf("NewMCPManager: %v", err)
+		t.Fatalf("newMCPManager: %v", err)
 	}
 	defer mgr.Close()
 
@@ -312,7 +312,7 @@ func TestLive_MCP_StdioServer(t *testing.T) {
 	}
 
 	// Register tools and invoke
-	reg := NewToolRegistry()
+	reg := newToolRegistry()
 	if err := mgr.RegisterTools(reg); err != nil {
 		t.Fatalf("RegisterTools: %v", err)
 	}
@@ -763,7 +763,7 @@ func TestLive_ToolRestriction_PluginAgent(t *testing.T) {
 	}
 
 	// Build a full tool registry
-	reg := NewToolRegistry()
+	reg := newToolRegistry()
 	// Register some dummy tools (including communicate, which subagents always need)
 	for _, name := range []string{"read_file", "grep", "glob", "shell", "write_file", "edit_file", "communicate"} {
 		n := name

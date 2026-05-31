@@ -14,8 +14,8 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// MCPManager manages connections to external MCP servers.
-type MCPManager struct {
+// mcpManager manages connections to external MCP servers.
+type mcpManager struct {
 	conns []mcpConn
 }
 
@@ -26,11 +26,11 @@ type mcpConn struct {
 	origNames map[string]string    // sanitized namespaced name → original MCP tool name
 }
 
-// NewMCPManager connects to all configured MCP servers, discovers their tools,
+// newMCPManager connects to all configured MCP servers, discovers their tools,
 // and namespaces them. The transports parameter is optional: when nil, transports
 // are created from configs. When provided (for testing), each transport[i]
 // corresponds to configs[i].
-func NewMCPManager(ctx context.Context, configs []MCPServerConfig, transports []mcp.Transport) (*MCPManager, error) {
+func newMCPManager(ctx context.Context, configs []MCPServerConfig, transports []mcp.Transport) (*mcpManager, error) {
 	if len(configs) == 0 {
 		return nil, nil
 	}
@@ -40,7 +40,7 @@ func NewMCPManager(ctx context.Context, configs []MCPServerConfig, transports []
 		Version: "v1",
 	}, nil)
 
-	mgr := &MCPManager{}
+	mgr := &mcpManager{}
 	for i, cfg := range configs {
 		var transport mcp.Transport
 		if transports != nil && i < len(transports) {
@@ -93,7 +93,7 @@ func NewMCPManager(ctx context.Context, configs []MCPServerConfig, transports []
 }
 
 // ToolDefinitions returns all namespaced tool definitions from all MCP servers.
-func (m *MCPManager) ToolDefinitions() []llm.ToolDefinition {
+func (m *mcpManager) ToolDefinitions() []llm.ToolDefinition {
 	if m == nil {
 		return nil
 	}
@@ -105,9 +105,9 @@ func (m *MCPManager) ToolDefinitions() []llm.ToolDefinition {
 }
 
 // RegisterTools registers execution closures for all MCP tools into the
-// given ToolRegistry. Returns an error if any namespaced tool name collides
+// given toolRegistry. Returns an error if any namespaced tool name collides
 // with an existing registration or fails validation.
-func (m *MCPManager) RegisterTools(reg *ToolRegistry) error {
+func (m *mcpManager) RegisterTools(reg *toolRegistry) error {
 	if m == nil {
 		return nil
 	}
@@ -153,7 +153,7 @@ func (m *MCPManager) RegisterTools(reg *ToolRegistry) error {
 }
 
 // Servers returns per-server info including name and namespaced tool names.
-func (m *MCPManager) Servers() []MCPServerInfo {
+func (m *mcpManager) Servers() []MCPServerInfo {
 	if m == nil {
 		return nil
 	}
@@ -169,7 +169,7 @@ func (m *MCPManager) Servers() []MCPServerInfo {
 }
 
 // Close shuts down all MCP server connections.
-func (m *MCPManager) Close() {
+func (m *mcpManager) Close() {
 	if m == nil {
 		return
 	}

@@ -322,12 +322,12 @@ func (p *baseProfile) ToolNameMap() map[string]string {
 	return m
 }
 
-// toolRegistry returns a ToolRegistry pre-populated with the profile's tool
+// toolRegistry returns a toolRegistry pre-populated with the profile's tool
 // definitions (canonical names) and placeholder executors; the Session wires
 // real executors after construction. Reached via newProfileToolRegistry rather
 // than the public ProviderProfile interface.
-func (p *baseProfile) toolRegistry() *ToolRegistry {
-	reg := NewToolRegistry()
+func (p *baseProfile) toolRegistry() *toolRegistry {
+	reg := newToolRegistry()
 	for _, td := range p.toolDefs {
 		_ = reg.Register(RegisteredTool{
 			Tool: llm.Tool{Definition: td},
@@ -339,15 +339,15 @@ func (p *baseProfile) toolRegistry() *ToolRegistry {
 	return reg
 }
 
-// newProfileToolRegistry builds the placeholder ToolRegistry for a profile.
+// newProfileToolRegistry builds the placeholder toolRegistry for a profile.
 // Every profile embeds *baseProfile, which carries the unexported toolRegistry
-// method, so this keeps the ToolRegistry type off the public ProviderProfile
+// method, so this keeps the toolRegistry type off the public ProviderProfile
 // interface while remaining callable for any ProviderProfile.
-func newProfileToolRegistry(p ProviderProfile) *ToolRegistry {
-	if b, ok := p.(interface{ toolRegistry() *ToolRegistry }); ok {
+func newProfileToolRegistry(p ProviderProfile) *toolRegistry {
+	if b, ok := p.(interface{ toolRegistry() *toolRegistry }); ok {
 		return b.toolRegistry()
 	}
-	return NewToolRegistry()
+	return newToolRegistry()
 }
 func (p *baseProfile) SupportsParallelToolCalls() bool { return p.parallel }
 func (p *baseProfile) ContextWindowSize() int          { return p.contextWindow }

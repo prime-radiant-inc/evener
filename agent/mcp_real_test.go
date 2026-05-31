@@ -18,7 +18,7 @@ func requireNpx(t *testing.T) {
 	}
 }
 
-func newEverythingManager(t *testing.T) *MCPManager {
+func newEverythingManager(t *testing.T) *mcpManager {
 	t.Helper()
 	requireNpx(t)
 	// 60s instead of 30s: npx startup is fork+exec heavy and load-sensitive.
@@ -27,14 +27,14 @@ func newEverythingManager(t *testing.T) *MCPManager {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
 
-	mgr, err := NewMCPManager(ctx, []MCPServerConfig{{
+	mgr, err := newMCPManager(ctx, []MCPServerConfig{{
 		Name:    "everything",
 		Type:    "stdio",
 		Command: "npx",
 		Args:    []string{"-y", "@modelcontextprotocol/server-everything"},
 	}}, nil)
 	if err != nil {
-		t.Fatalf("NewMCPManager: %v", err)
+		t.Fatalf("newMCPManager: %v", err)
 	}
 	t.Cleanup(mgr.Close)
 	return mgr
@@ -84,7 +84,7 @@ func TestRealMCP_ToolDiscovery(t *testing.T) {
 func TestRealMCP_Echo(t *testing.T) {
 	mgr := newEverythingManager(t)
 
-	reg := NewToolRegistry()
+	reg := newToolRegistry()
 	if err := mgr.RegisterTools(reg); err != nil {
 		t.Fatalf("RegisterTools: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestRealMCP_Echo(t *testing.T) {
 func TestRealMCP_GetSum(t *testing.T) {
 	mgr := newEverythingManager(t)
 
-	reg := NewToolRegistry()
+	reg := newToolRegistry()
 	if err := mgr.RegisterTools(reg); err != nil {
 		t.Fatalf("RegisterTools: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestRealMCP_GetSum(t *testing.T) {
 func TestRealMCP_ImageContent(t *testing.T) {
 	mgr := newEverythingManager(t)
 
-	reg := NewToolRegistry()
+	reg := newToolRegistry()
 	if err := mgr.RegisterTools(reg); err != nil {
 		t.Fatalf("RegisterTools: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestRealMCP_EnvPassing(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
 
-	mgr, err := NewMCPManager(ctx, []MCPServerConfig{{
+	mgr, err := newMCPManager(ctx, []MCPServerConfig{{
 		Name:    "everything",
 		Type:    "stdio",
 		Command: "npx",
@@ -172,11 +172,11 @@ func TestRealMCP_EnvPassing(t *testing.T) {
 		Env:     map[string]string{"MCP_TEST_MARKER": "serf_integration_12345"},
 	}}, nil)
 	if err != nil {
-		t.Fatalf("NewMCPManager: %v", err)
+		t.Fatalf("newMCPManager: %v", err)
 	}
 	t.Cleanup(mgr.Close)
 
-	reg := NewToolRegistry()
+	reg := newToolRegistry()
 	if err := mgr.RegisterTools(reg); err != nil {
 		t.Fatalf("RegisterTools: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestRealMCP_EnvPassing(t *testing.T) {
 func TestRealMCP_AnnotatedMessage(t *testing.T) {
 	mgr := newEverythingManager(t)
 
-	reg := NewToolRegistry()
+	reg := newToolRegistry()
 	if err := mgr.RegisterTools(reg); err != nil {
 		t.Fatalf("RegisterTools: %v", err)
 	}

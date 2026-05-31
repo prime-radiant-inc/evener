@@ -104,7 +104,7 @@ func TestWithAllowedDecisions_NilDecisions_NoOp(t *testing.T) {
 }
 
 func TestWithAllowedDecisions_RegistryPreservesDecisionSchema(t *testing.T) {
-	// Regression test: NewToolRegistry registers the profile's communicate
+	// Regression test: newToolRegistry registers the profile's communicate
 	// definition (with decision). Then re-registering with the base definition
 	// but checking for an existing entry first should preserve decision.
 	p := WithAllowedDecisions(NewOpenAIProfile("gpt-5.2"), []string{"approved", "rejected"})
@@ -113,7 +113,7 @@ func TestWithAllowedDecisions_RegistryPreservesDecisionSchema(t *testing.T) {
 	// Registry should have communicate with decision from profile.
 	existing := reg.Get("communicate")
 	if existing == nil {
-		t.Fatal("communicate not found in registry after NewToolRegistry")
+		t.Fatal("communicate not found in registry after newToolRegistry")
 	}
 
 	// Simulate registerCoreTools pattern (the fix):

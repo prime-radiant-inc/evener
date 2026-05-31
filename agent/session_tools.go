@@ -52,7 +52,7 @@ func (s *Session) RegisterTool(name, description string, params map[string]any, 
 // describeImage makes a side-channel API call with no tools to describe an image
 // using the model's native vision. Returns the text description, or "" on error.
 // The call includes context from the current task so the description is relevant.
-func (s *Session) describeImage(ctx context.Context, r ToolExecResult) string {
+func (s *Session) describeImage(ctx context.Context, r toolExecResult) string {
 	if len(r.ImageData) == 0 {
 		return ""
 	}
@@ -200,7 +200,7 @@ func (s *Session) providerVisibleToolNames(names []string) []string {
 	return out
 }
 
-func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecResult {
+func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) toolExecResult {
 	if err := s.abortIfClosing(ctx); err != nil {
 		return skippedToolResult(call, err)
 	}
@@ -221,7 +221,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 			if preResult.DenyMessage != "" {
 				denyMsg = preResult.DenyMessage
 			}
-			return ToolExecResult{
+			return toolExecResult{
 				ToolName:   call.Name,
 				CallID:     call.ID,
 				Output:     denyMsg,
@@ -232,7 +232,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) ToolExecR
 		if len(preResult.UpdatedInput) > 0 {
 			if err := applyUpdatedToolInput(&call, preResult.UpdatedInput); err != nil {
 				msg := "invalid hook updatedInput: " + err.Error()
-				return ToolExecResult{
+				return toolExecResult{
 					ToolName:   call.Name,
 					CallID:     call.ID,
 					Output:     msg,
@@ -387,12 +387,12 @@ func applyUpdatedToolInput(call *llm.ToolCallData, updated map[string]any) error
 	return nil
 }
 
-func skippedToolResult(call llm.ToolCallData, err error) ToolExecResult {
+func skippedToolResult(call llm.ToolCallData, err error) toolExecResult {
 	msg := "tool skipped: session is closing"
 	if err != nil && err != context.Canceled {
 		msg = "tool skipped: " + err.Error()
 	}
-	return ToolExecResult{
+	return toolExecResult{
 		ToolName:   call.Name,
 		CallID:     call.ID,
 		Output:     msg,
@@ -401,7 +401,7 @@ func skippedToolResult(call llm.ToolCallData, err error) ToolExecResult {
 	}
 }
 
-func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []ToolExecResult, err error) {
+func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []toolExecResult, err error) {
 	if len(calls) == 0 {
 		return
 	}
@@ -410,13 +410,13 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 	}
 	parts := make([]llm.ContentPart, 0, len(calls))
 	for i, call := range calls {
-		res := ToolExecResult{}
+		res := toolExecResult{}
 		if i < len(results) {
 			res = results[i]
 		}
 		if res.CallID == "" {
 			msg := "tool canceled: " + err.Error()
-			res = ToolExecResult{
+			res = toolExecResult{
 				ToolName:   call.Name,
 				CallID:     call.ID,
 				Output:     msg,
@@ -440,7 +440,7 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 	s.appendTurn(TurnToolResults, llm.Message{Role: llm.RoleTool, Content: parts})
 }
 
-func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallData, results []ToolExecResult, parts []llm.ContentPart) error {
+func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallData, results []toolExecResult, parts []llm.ContentPart) error {
 	if abortErr := s.withResponseSideEffects(ctx, func() {
 		s.appendTurn(TurnToolResults, llm.Message{Role: llm.RoleTool, Content: parts})
 		// Persist the completed tool round so resumed sessions always include

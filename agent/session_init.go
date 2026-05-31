@@ -701,7 +701,7 @@ func (s *Session) initMCP() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	mgr, err := NewMCPManager(ctx, configs, nil)
+	mgr, err := newMCPManager(ctx, configs, nil)
 	if err != nil {
 		return err
 	}

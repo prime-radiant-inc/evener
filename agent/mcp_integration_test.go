@@ -13,7 +13,7 @@ import (
 )
 
 // TestMCPIntegration_ToolCallThroughSession verifies the full flow:
-// in-process MCP server -> MCPManager -> Session tool registry -> fakeAdapter
+// in-process MCP server -> mcpManager -> Session tool registry -> fakeAdapter
 // calls the MCP tool -> result flows back through the session.
 func TestMCPIntegration_ToolCallThroughSession(t *testing.T) {
 	// Create a minimal MCP server with a "greet" tool.
@@ -53,12 +53,12 @@ func TestMCPIntegration_ToolCallThroughSession(t *testing.T) {
 		t.Fatalf("server connect: %v", err)
 	}
 
-	// Create MCPManager directly with the transport (bypassing config discovery).
-	mgr, err := NewMCPManager(ctx, []MCPServerConfig{
+	// Create mcpManager directly with the transport (bypassing config discovery).
+	mgr, err := newMCPManager(ctx, []MCPServerConfig{
 		{Name: "ext", Type: "stdio"},
 	}, []mcp.Transport{ct})
 	if err != nil {
-		t.Fatalf("NewMCPManager: %v", err)
+		t.Fatalf("newMCPManager: %v", err)
 	}
 
 	// Create a fakeAdapter that calls the ext__greet tool, then returns a final text response.
@@ -124,7 +124,7 @@ func TestMCPIntegration_ToolCallThroughSession(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 
-	// Manually inject the MCPManager into the session (since we don't go through config discovery).
+	// Manually inject the mcpManager into the session (since we don't go through config discovery).
 	if err := mgr.RegisterTools(sess.reg); err != nil {
 		t.Fatal(err)
 	}

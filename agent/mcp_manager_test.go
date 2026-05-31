@@ -52,11 +52,11 @@ func TestMCPManager_InMemory(t *testing.T) {
 		t.Fatalf("server connect: %v", err)
 	}
 
-	mgr, err := NewMCPManager(ctx, []MCPServerConfig{
+	mgr, err := newMCPManager(ctx, []MCPServerConfig{
 		{Name: "testserver", Type: "stdio"},
 	}, []mcp.Transport{ct})
 	if err != nil {
-		t.Fatalf("NewMCPManager: %v", err)
+		t.Fatalf("newMCPManager: %v", err)
 	}
 	defer mgr.Close()
 
@@ -73,7 +73,7 @@ func TestMCPManager_InMemory(t *testing.T) {
 	}
 
 	// Register and execute.
-	reg := NewToolRegistry()
+	reg := newToolRegistry()
 	if err := mgr.RegisterTools(reg); err != nil {
 		t.Fatalf("RegisterTools: %v", err)
 	}
@@ -136,12 +136,12 @@ func TestMCPManager_MultipleServers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mgr, err := NewMCPManager(ctx, []MCPServerConfig{
+	mgr, err := newMCPManager(ctx, []MCPServerConfig{
 		{Name: "alpha", Type: "stdio"},
 		{Name: "beta", Type: "stdio"},
 	}, []mcp.Transport{ct1, ct2})
 	if err != nil {
-		t.Fatalf("NewMCPManager: %v", err)
+		t.Fatalf("newMCPManager: %v", err)
 	}
 	defer mgr.Close()
 
@@ -162,7 +162,7 @@ func TestMCPManager_MultipleServers(t *testing.T) {
 	}
 
 	// Verify invocation routes to correct server.
-	reg := NewToolRegistry()
+	reg := newToolRegistry()
 	if err := mgr.RegisterTools(reg); err != nil {
 		t.Fatal(err)
 	}
@@ -206,16 +206,16 @@ func TestMCPManager_BuiltinCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mgr, err := NewMCPManager(ctx, []MCPServerConfig{
+	mgr, err := newMCPManager(ctx, []MCPServerConfig{
 		{Name: "s", Type: "stdio"},
 	}, []mcp.Transport{ct})
 	if err != nil {
-		t.Fatalf("NewMCPManager: %v", err)
+		t.Fatalf("newMCPManager: %v", err)
 	}
 	defer mgr.Close()
 
 	// Pre-register s__echo in the registry to simulate collision.
-	reg := NewToolRegistry()
+	reg := newToolRegistry()
 	if err := reg.Register(RegisteredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "s__echo", Description: "pre-existing"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
@@ -255,15 +255,15 @@ func TestMCPManager_ToolNameTooLong(t *testing.T) {
 	}
 
 	// "longservername__" (16) + 60 = 76 chars > 64 limit
-	mgr, err := NewMCPManager(ctx, []MCPServerConfig{
+	mgr, err := newMCPManager(ctx, []MCPServerConfig{
 		{Name: "longservername", Type: "stdio"},
 	}, []mcp.Transport{ct})
 	if err != nil {
-		t.Fatalf("NewMCPManager: %v", err)
+		t.Fatalf("newMCPManager: %v", err)
 	}
 	defer mgr.Close()
 
-	reg := NewToolRegistry()
+	reg := newToolRegistry()
 	err = mgr.RegisterTools(reg)
 	if err == nil {
 		t.Fatal("expected tool name too long error, got nil")
@@ -273,7 +273,7 @@ func TestMCPManager_ToolNameTooLong(t *testing.T) {
 // TestMCPManager_Empty verifies that an empty config list returns nil manager.
 func TestMCPManager_Empty(t *testing.T) {
 	ctx := context.Background()
-	mgr, err := NewMCPManager(ctx, nil, nil)
+	mgr, err := newMCPManager(ctx, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -374,12 +374,12 @@ func TestMCPManager_Servers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mgr, err := NewMCPManager(ctx, []MCPServerConfig{
+	mgr, err := newMCPManager(ctx, []MCPServerConfig{
 		{Name: "alpha", Type: "stdio"},
 		{Name: "beta", Type: "stdio"},
 	}, []mcp.Transport{ct1, ct2})
 	if err != nil {
-		t.Fatalf("NewMCPManager: %v", err)
+		t.Fatalf("newMCPManager: %v", err)
 	}
 	defer mgr.Close()
 
@@ -416,7 +416,7 @@ func TestMCPManager_Servers(t *testing.T) {
 
 // TestMCPManager_Servers_Nil verifies Servers() on nil manager returns nil.
 func TestMCPManager_Servers_Nil(t *testing.T) {
-	var mgr *MCPManager
+	var mgr *mcpManager
 	servers := mgr.Servers()
 	if servers != nil {
 		t.Errorf("expected nil, got %v", servers)

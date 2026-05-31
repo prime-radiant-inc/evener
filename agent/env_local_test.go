@@ -238,7 +238,7 @@ func TestParseImageResult_ExtractsImageData(t *testing.T) {
 
 	got := parseImageResult("photo.png", readOutput)
 	if got == nil {
-		t.Fatal("expected non-nil ImageResult")
+		t.Fatal("expected non-nil imageResult")
 	}
 	if !bytes.Equal(got.Data, pngHeader) {
 		t.Fatalf("Data mismatch: got %v, want %v", got.Data, pngHeader)
@@ -278,7 +278,7 @@ func TestReadFile_NonImageBinaryStillErrors(t *testing.T) {
 
 func TestReadFile_Image_EndToEnd_ToolExecResult(t *testing.T) {
 	// End-to-end: read_file on a real PNG → env returns base64 → parseImageResult
-	// extracts bytes → ToolExecResult has ImageData set. This is the path that
+	// extracts bytes → toolExecResult has ImageData set. This is the path that
 	// sends images to the model for visual inspection.
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)

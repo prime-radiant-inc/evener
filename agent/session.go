@@ -45,7 +45,7 @@ type Session struct {
 	forkDivergence int
 	forkLabel      string
 
-	reg *ToolRegistry
+	reg *toolRegistry
 
 	steeringQueue []steeringMessage
 	followups     []string
@@ -80,7 +80,7 @@ type Session struct {
 	embeddedSkillsDir string // temp dir for extracted embedded skills; cleaned up in Close
 
 	// MCP server connections
-	mcpMgr   *MCPManager
+	mcpMgr   *mcpManager
 	mcpTools []llm.ToolDefinition
 
 	// Plugin-provided components

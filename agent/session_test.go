@@ -2633,7 +2633,7 @@ func TestSession_ExecToolEmitsEndWhenCloseBeginsAfterStart(t *testing.T) {
 		eventsDone <- events
 	}()
 
-	resultDone := make(chan ToolExecResult, 1)
+	resultDone := make(chan toolExecResult, 1)
 	go func() {
 		resultDone <- sess.execTool(context.Background(), llm.ToolCallData{
 			ID:        "slow_call",
@@ -2660,7 +2660,7 @@ func TestSession_ExecToolEmitsEndWhenCloseBeginsAfterStart(t *testing.T) {
 	}
 	close(releaseTool)
 
-	var res ToolExecResult
+	var res toolExecResult
 	select {
 	case res = <-resultDone:
 	case <-time.After(time.Second):
@@ -2725,7 +2725,7 @@ func TestSession_AppendCanceledToolResultsPreservesCompletedStatus(t *testing.T)
 		{ID: "ok_call", Name: "ok_tool"},
 		{ID: "canceled_call", Name: "slow_tool"},
 	}
-	results := []ToolExecResult{{
+	results := []toolExecResult{{
 		ToolName:   "ok_tool",
 		CallID:     "ok_call",
 		Output:     "ok",
@@ -2770,7 +2770,7 @@ func TestSession_AppendToolResultsSynthesizesCanceledResultsOnCancel(t *testing.
 		{ID: "ok_call", Name: "ok_tool"},
 		{ID: "canceled_call", Name: "slow_tool"},
 	}
-	results := []ToolExecResult{{
+	results := []toolExecResult{{
 		ToolName:   "ok_tool",
 		CallID:     "ok_call",
 		Output:     "ok",

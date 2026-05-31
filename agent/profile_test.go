@@ -1707,7 +1707,7 @@ func TestProviderProfile_NewToolRegistry_ContainsProfileTools(t *testing.T) {
 		t.Run(p.ID(), func(t *testing.T) {
 			reg := newProfileToolRegistry(p)
 			if reg == nil {
-				t.Fatal("NewToolRegistry() returned nil")
+				t.Fatal("newToolRegistry() returned nil")
 			}
 
 			// Build the set of canonical names from p.toolDefs (the internal
