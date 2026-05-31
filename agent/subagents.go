@@ -297,8 +297,9 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	if agent != nil && len(agent.Tasks) > 0 {
 		subStore := subSess.getOrCreateTaskStore()
 		if err := subStore.PopulateFromTemplates(agent.Tasks, parentTasks); err != nil {
-			// Log but don't fail the spawn.
-			_ = err
+			// Non-fatal: surface as a warning so the spawn still proceeds but the
+			// failure is observable instead of silently swallowed.
+			s.emit(EventWarning, warningDataFromError("failed to populate subagent tasks from templates", err))
 		}
 		// Inject the first task's prompt as a steering message.
 		if current, ok := subStore.CurrentInProgress(); ok {

@@ -436,6 +436,24 @@ func TestRuntimeCredentialsRefreshFailureRequiresRelogin(t *testing.T) {
 	}
 }
 
+// TestRuntimeCredentialsNoStoredAuthUnwrapsToErrAuthNotFound verifies that with
+// no stored auth and no env key, the login-required error stays errors.Is
+// reachable to BOTH ErrLoginRequired and its ErrAuthNotFound cause (the %w
+// wrapping), so callers like the openai env-adapter factory can match either.
+func TestRuntimeCredentialsNoStoredAuthUnwrapsToErrAuthNotFound(t *testing.T) {
+	stateDir := t.TempDir()
+	t.Setenv("OPENAI_API_KEY", "")
+	svc := newTestService(time.Date(2026, 5, 8, 0, 0, 0, 0, time.UTC))
+
+	_, err := svc.ResolveRuntimeCredentials(context.Background(), stateDir, "openai")
+	if !errors.Is(err, ErrLoginRequired) {
+		t.Fatalf("ResolveRuntimeCredentials() error = %v, want ErrLoginRequired", err)
+	}
+	if !errors.Is(err, ErrAuthNotFound) {
+		t.Fatalf("ResolveRuntimeCredentials() error = %v, want errors.Is ErrAuthNotFound (the %%w cause)", err)
+	}
+}
+
 func TestRuntimeCredentialsTransientRefreshFailureDoesNotRequireRelogin(t *testing.T) {
 	stateDir := t.TempDir()
 	now := time.Date(2026, 5, 8, 0, 10, 0, 0, time.UTC)

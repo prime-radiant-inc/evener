@@ -27,6 +27,12 @@ import (
 // Responses API endpoint and triggers an automatic fallback to Chat Completions.
 var errEmptyResponsesStream = errors.New("openai responses stream closed with no events (model may not support /v1/responses)")
 
+// errNoCredentials is the sentinel returned by NewFromEnv when no OpenAI
+// credentials (API key or stored auth) are configured. The env-adapter factory
+// matches it with errors.Is to skip the provider silently rather than surfacing
+// a hard error.
+var errNoCredentials = errors.New("no OpenAI credentials configured")
+
 const (
 	defaultAPIBaseURL     = "https://api.openai.com"
 	defaultResponsesPath  = "/v1/responses"
@@ -137,7 +143,7 @@ func NewForInstance(params OpenAIInstanceParams) (*Adapter, error) {
 		}, nil
 	}
 
-	return nil, fmt.Errorf("no OpenAI credentials configured")
+	return nil, errNoCredentials
 }
 
 func init() {
@@ -525,17 +531,12 @@ func responseHasAssistantContent(r llm.Response) bool {
 	return strings.TrimSpace(r.Text()) != "" || len(r.ToolCalls()) > 0
 }
 
+// isUnconfigured reports whether err means "no usable OpenAI credentials" — the
+// no-credentials sentinel, or an auth-not-found error surfaced through the OAuth
+// resolution path (login required). The env-adapter factory uses it to skip the
+// provider silently. Both arms are matched via errors.Is, not by string.
 func isUnconfigured(err error) bool {
-	if err == nil {
-		return false
-	}
-	if strings.Contains(err.Error(), "no OpenAI credentials configured") {
-		return true
-	}
-	if strings.Contains(err.Error(), authopenai.ErrAuthNotFound.Error()) {
-		return true
-	}
-	return false
+	return errors.Is(err, errNoCredentials) || errors.Is(err, authopenai.ErrAuthNotFound)
 }
 
 func firstPositiveInt(values ...int) int {

@@ -3861,3 +3861,30 @@ func TestInstanceFactory_EnvTunables_APIKeyPath(t *testing.T) {
 		t.Fatalf("ProjectID = %q, want %q", a.ProjectID, "proj-y")
 	}
 }
+
+// TestIsUnconfigured verifies the env-adapter "skip silently" predicate matches
+// both the no-credentials sentinel and an auth-not-found surfaced through the
+// OAuth login-required path — via errors.Is, including through %w wrapping — and
+// nothing else.
+func TestIsUnconfigured(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"no-credentials sentinel", errNoCredentials, true},
+		{"wrapped no-credentials", fmt.Errorf("init openai: %w", errNoCredentials), true},
+		{"auth-not-found wrapped", fmt.Errorf("resolve OpenAI auth: %w", authopenai.ErrAuthNotFound), true},
+		{"login-required wrapping not-found", fmt.Errorf("%w: run `serf openai login`: %w", authopenai.ErrLoginRequired, authopenai.ErrAuthNotFound), true},
+		{"unrelated", errors.New("network down"), false},
+		{"unrelated wrapped", fmt.Errorf("ctx: %w", errors.New("boom")), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isUnconfigured(tc.err); got != tc.want {
+				t.Fatalf("isUnconfigured(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
+	}
+}

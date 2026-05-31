@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -253,7 +254,8 @@ func executeCommandHook(ctx context.Context, hook RegisteredHook, input HookInpu
 		if ctx.Err() != nil {
 			return result, fmt.Errorf("hook command killed: %w", ctx.Err())
 		}
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			result.ExitCode = exitErr.ExitCode()
 			return result, nil
 		}

@@ -199,7 +199,9 @@ func (l *APILogger) Close() error {
 		l.file = nil
 	}
 	if l.rawFile != nil {
-		_ = l.rawFile.Sync()
+		if err := l.rawFile.Sync(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 		if err := l.rawFile.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}

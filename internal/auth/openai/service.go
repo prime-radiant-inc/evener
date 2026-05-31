@@ -498,7 +498,7 @@ func needsRefresh(now, expiry time.Time) bool {
 }
 
 func loginRequiredError(err error) error {
-	return fmt.Errorf("%w: run `serf openai login`: %v", ErrLoginRequired, err)
+	return fmt.Errorf("%w: run `serf openai login`: %w", ErrLoginRequired, err)
 }
 
 func isPermanentRefreshError(err error) bool {
