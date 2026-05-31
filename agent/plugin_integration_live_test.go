@@ -357,7 +357,7 @@ func TestLive_Hooks_CommandExecution(t *testing.T) {
 	})
 
 	// --- SessionStart ---
-	startResult := runner.RunSessionStart(context.Background(), HookInput{
+	startResult := runner.RunSessionStart(context.Background(), hookInput{
 		SessionID:     "live-test",
 		CWD:           dir,
 		HookEventName: "SessionStart",
@@ -377,7 +377,7 @@ func TestLive_Hooks_CommandExecution(t *testing.T) {
 	}
 
 	// --- PreToolUse (safe path) ---
-	safeResult := runner.RunPreToolUse(context.Background(), HookInput{
+	safeResult := runner.RunPreToolUse(context.Background(), hookInput{
 		SessionID:     "live-test",
 		CWD:           dir,
 		HookEventName: "PreToolUse",
@@ -389,7 +389,7 @@ func TestLive_Hooks_CommandExecution(t *testing.T) {
 	}
 
 	// --- PreToolUse (dangerous path — should be blocked via exit 2) ---
-	dangerousResult := runner.RunPreToolUse(context.Background(), HookInput{
+	dangerousResult := runner.RunPreToolUse(context.Background(), hookInput{
 		SessionID:     "live-test",
 		CWD:           dir,
 		HookEventName: "PreToolUse",
@@ -408,7 +408,7 @@ func TestLive_Hooks_CommandExecution(t *testing.T) {
 	}
 
 	// --- Stop hook (should approve) ---
-	stopResult := runner.RunStop(context.Background(), HookInput{
+	stopResult := runner.RunStop(context.Background(), hookInput{
 		SessionID:     "live-test",
 		CWD:           dir,
 		HookEventName: "Stop",
@@ -475,7 +475,7 @@ func TestLive_Hooks_PromptWithRealLLM(t *testing.T) {
 		t.Fatalf("NewFromEnv: %v", err)
 	}
 
-	runner := NewHookRunner(clientAdapter{client}, integrationTestModel)
+	runner := newHookRunner(clientAdapter{client}, integrationTestModel)
 	for event, hooks := range lp.Hooks {
 		runner.Add(event, hooks...)
 	}
@@ -483,7 +483,7 @@ func TestLive_Hooks_PromptWithRealLLM(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	result := runner.RunPreToolUse(ctx, HookInput{
+	result := runner.RunPreToolUse(ctx, hookInput{
 		SessionID:     "prompt-test",
 		CWD:           dir,
 		HookEventName: "PreToolUse",

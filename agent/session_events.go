@@ -79,9 +79,9 @@ func (s *Session) runNotificationHook(ctx context.Context, message string) {
 	}
 }
 
-// hookInput creates a HookInput with the session's ID and working directory pre-filled.
-func (s *Session) hookInput(event HookEvent) HookInput {
-	return HookInput{
+// hookInput creates a hookInput with the session's ID and working directory pre-filled.
+func (s *Session) hookInput(event HookEvent) hookInput {
+	return hookInput{
 		SessionID:     s.id,
 		CWD:           s.env.WorkingDirectory(),
 		HookEventName: string(event),

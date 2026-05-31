@@ -200,7 +200,7 @@ func TestRealPlugin_Superpowers_HookExecution(t *testing.T) {
 	})
 
 	// Execute SessionStart hook - it reads using-superpowers SKILL.md and outputs JSON
-	input := HookInput{
+	input := hookInput{
 		SessionID:     "test-session",
 		CWD:           dir,
 		HookEventName: "SessionStart",
@@ -355,7 +355,7 @@ func TestRealPlugin_SecurityGuidance_HookExecution(t *testing.T) {
 
 	// Execute PreToolUse for a Write to a GitHub Actions workflow file.
 	// The hook outputs to stderr with exit code 2 (block).
-	input := HookInput{
+	input := hookInput{
 		SessionID:     sessionID,
 		CWD:           dir,
 		HookEventName: "PreToolUse",
@@ -749,18 +749,18 @@ func TestRealPlugin_Settings_WithFile(t *testing.T) {
 
 // ---------- Helpers ----------
 
-// newHookRunnerFromPlugin creates a HookRunner populated with a single plugin's hooks.
-func newHookRunnerFromPlugin(p LoadedPlugin) *HookRunner {
-	runner := NewHookRunner(nil, "")
+// newHookRunnerFromPlugin creates a hookRunner populated with a single plugin's hooks.
+func newHookRunnerFromPlugin(p LoadedPlugin) *hookRunner {
+	runner := newHookRunner(nil, "")
 	for event, eventHooks := range p.Hooks {
 		runner.Add(event, eventHooks...)
 	}
 	return runner
 }
 
-// newHookRunnerFromPlugins creates a HookRunner populated with hooks from multiple plugins.
-func newHookRunnerFromPlugins(plugins []LoadedPlugin) *HookRunner {
-	runner := NewHookRunner(nil, "")
+// newHookRunnerFromPlugins creates a hookRunner populated with hooks from multiple plugins.
+func newHookRunnerFromPlugins(plugins []LoadedPlugin) *hookRunner {
+	runner := newHookRunner(nil, "")
 	for _, p := range plugins {
 		for event, eventHooks := range p.Hooks {
 			runner.Add(event, eventHooks...)

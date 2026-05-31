@@ -27,7 +27,7 @@ func TestParsePluginHooks_WrapperFormat(t *testing.T) {
 		}
 	}`)
 
-	hooks, err := ParsePluginHooks(data, "/plugins/test", "test-plugin")
+	hooks, err := parsePluginHooks(data, "/plugins/test", "test-plugin")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestParsePluginHooks_DirectFormat(t *testing.T) {
 		]
 	}`)
 
-	hooks, err := ParsePluginHooks(data, "/plugins/test", "test-plugin")
+	hooks, err := parsePluginHooks(data, "/plugins/test", "test-plugin")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestParsePluginHooks_ExpandsPluginRoot(t *testing.T) {
 		]
 	}`)
 
-	hooks, err := ParsePluginHooks(data, "/my/plugin", "test-plugin")
+	hooks, err := parsePluginHooks(data, "/my/plugin", "test-plugin")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestParsePluginHooks_PromptType(t *testing.T) {
 		]
 	}`)
 
-	hooks, err := ParsePluginHooks(data, "/plugins/test", "test-plugin")
+	hooks, err := parsePluginHooks(data, "/plugins/test", "test-plugin")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestParsePluginHooks_DefaultTimeouts(t *testing.T) {
 		]
 	}`)
 
-	hooks, err := ParsePluginHooks(data, "/plugins/test", "test-plugin")
+	hooks, err := parsePluginHooks(data, "/plugins/test", "test-plugin")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestParsePluginHooks_AllEvents(t *testing.T) {
 	}
 	data := []byte(`{` + inner + `}`)
 
-	hooks, err := ParsePluginHooks(data, "/plugins/test", "test-plugin")
+	hooks, err := parsePluginHooks(data, "/plugins/test", "test-plugin")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestExecuteCommandHook(t *testing.T) {
 		Timeout:   5,
 		PluginDir: "/tmp",
 	}
-	input := HookInput{
+	input := hookInput{
 		SessionID:     "sess-123",
 		CWD:           "/tmp",
 		HookEventName: "PreToolUse",
@@ -289,7 +289,7 @@ func TestExecuteCommandHook_Timeout(t *testing.T) {
 		Timeout:   1,
 		PluginDir: "/tmp",
 	}
-	input := HookInput{
+	input := hookInput{
 		CWD:           "/tmp",
 		HookEventName: "PreToolUse",
 	}
@@ -310,7 +310,7 @@ func TestExecuteCommandHook_ExitCode2(t *testing.T) {
 		Timeout:   5,
 		PluginDir: "/tmp",
 	}
-	input := HookInput{
+	input := hookInput{
 		CWD:           "/tmp",
 		HookEventName: "PreToolUse",
 	}
@@ -332,7 +332,7 @@ func TestExecuteCommandHook_Environment(t *testing.T) {
 		Timeout:   5,
 		PluginDir: "/my/plugin/dir",
 	}
-	input := HookInput{
+	input := hookInput{
 		CWD:           "/my/project",
 		HookEventName: "PreToolUse",
 	}
@@ -374,7 +374,7 @@ func (m *mockPromptHookClient) Generate(ctx context.Context, req llm.Request) (l
 }
 
 func TestSubstituteHookVariables(t *testing.T) {
-	input := HookInput{
+	input := hookInput{
 		ToolName:   "Write",
 		ToolInput:  map[string]any{"file": "test.go", "content": "hello"},
 		ToolResult: "file written successfully",
@@ -399,7 +399,7 @@ func TestSubstituteHookVariables(t *testing.T) {
 }
 
 func TestSubstituteHookVariables_EmptyValues(t *testing.T) {
-	input := HookInput{} // all zero values
+	input := hookInput{} // all zero values
 
 	prompt := "Tool: $TOOL_NAME, Input: $TOOL_INPUT, Result: $TOOL_RESULT, Prompt: $USER_PROMPT"
 	result := substituteHookVariables(prompt, input)
@@ -425,7 +425,7 @@ func TestExecutePromptHook(t *testing.T) {
 		Prompt:  "Check $TOOL_NAME usage",
 		Timeout: 30,
 	}
-	input := HookInput{
+	input := hookInput{
 		ToolName:      "Write",
 		HookEventName: "PreToolUse",
 	}
@@ -449,7 +449,7 @@ func TestExecutePromptHook_UsesHookModel(t *testing.T) {
 		Prompt: "check",
 		Model:  "custom-model-v2",
 	}
-	input := HookInput{HookEventName: "PreToolUse"}
+	input := hookInput{HookEventName: "PreToolUse"}
 
 	_, err := executePromptHook(context.Background(), client, "default-model", hook, input)
 	if err != nil {
@@ -460,10 +460,10 @@ func TestExecutePromptHook_UsesHookModel(t *testing.T) {
 	}
 }
 
-// --- Task 10: HookRunner ---
+// --- Task 10: hookRunner ---
 
 func TestHookRunner_MatcherRegex(t *testing.T) {
-	runner := NewHookRunner(nil, "")
+	runner := newHookRunner(nil, "")
 	runner.Add(HookPreToolUse, RegisteredHook{
 		Matcher: "Write|Edit",
 		Type:    "command",
@@ -488,7 +488,7 @@ func TestHookRunner_MatcherRegex(t *testing.T) {
 }
 
 func TestHookRunner_WildcardMatcher(t *testing.T) {
-	runner := NewHookRunner(nil, "")
+	runner := newHookRunner(nil, "")
 	runner.Add(HookPreToolUse, RegisteredHook{
 		Matcher: "*",
 		Type:    "command",
@@ -505,7 +505,7 @@ func TestHookRunner_WildcardMatcher(t *testing.T) {
 }
 
 func TestHookRunner_ParallelExecution(t *testing.T) {
-	runner := NewHookRunner(nil, "")
+	runner := newHookRunner(nil, "")
 	// Two hooks that each sleep 100ms
 	runner.Add(HookSessionStart,
 		RegisteredHook{
@@ -522,7 +522,7 @@ func TestHookRunner_ParallelExecution(t *testing.T) {
 		},
 	)
 
-	input := HookInput{
+	input := hookInput{
 		CWD:           "/tmp",
 		HookEventName: "SessionStart",
 	}
@@ -540,7 +540,7 @@ func TestHookRunner_ParallelExecution(t *testing.T) {
 }
 
 func TestHookRunner_SessionStartUsesExplicitKind(t *testing.T) {
-	runner := NewHookRunner(nil, "")
+	runner := newHookRunner(nil, "")
 	runner.Add(HookSessionStart, RegisteredHook{
 		Matcher: "startup|clear|compact",
 		Type:    "command",
@@ -548,7 +548,7 @@ func TestHookRunner_SessionStartUsesExplicitKind(t *testing.T) {
 		Timeout: 5,
 	})
 
-	input := HookInput{
+	input := hookInput{
 		CWD:           "/tmp",
 		HookEventName: "SessionStart",
 	}
@@ -565,7 +565,7 @@ func TestHookRunner_SessionStartUsesExplicitKind(t *testing.T) {
 }
 
 func TestHookRunner_PreToolUse_Deny(t *testing.T) {
-	runner := NewHookRunner(nil, "")
+	runner := newHookRunner(nil, "")
 	// A command hook that outputs a deny JSON
 	runner.Add(HookPreToolUse, RegisteredHook{
 		Matcher: "*",
@@ -574,7 +574,7 @@ func TestHookRunner_PreToolUse_Deny(t *testing.T) {
 		Timeout: 5,
 	})
 
-	input := HookInput{
+	input := hookInput{
 		CWD:           "/tmp",
 		HookEventName: "PreToolUse",
 		ToolName:      "Write",
@@ -587,7 +587,7 @@ func TestHookRunner_PreToolUse_Deny(t *testing.T) {
 }
 
 func TestHookRunner_PreToolUse_ExitCode2Denies(t *testing.T) {
-	runner := NewHookRunner(nil, "")
+	runner := newHookRunner(nil, "")
 	runner.Add(HookPreToolUse, RegisteredHook{
 		Matcher: "*",
 		Type:    "command",
@@ -595,7 +595,7 @@ func TestHookRunner_PreToolUse_ExitCode2Denies(t *testing.T) {
 		Timeout: 5,
 	})
 
-	result := runner.RunPreToolUse(context.Background(), HookInput{
+	result := runner.RunPreToolUse(context.Background(), hookInput{
 		CWD:           "/tmp",
 		HookEventName: "PreToolUse",
 		ToolName:      "Write",
@@ -609,8 +609,8 @@ func TestHookRunner_PreToolUse_ExitCode2Denies(t *testing.T) {
 }
 
 func TestHookRunner_NoHooks(t *testing.T) {
-	runner := NewHookRunner(nil, "")
-	input := HookInput{
+	runner := newHookRunner(nil, "")
+	input := hookInput{
 		CWD:           "/tmp",
 		HookEventName: "PreToolUse",
 		ToolName:      "Write",
@@ -636,7 +636,7 @@ func TestHookRunner_NoHooks(t *testing.T) {
 }
 
 func TestHookRunner_ToolNameMapping(t *testing.T) {
-	runner := NewHookRunner(nil, "")
+	runner := newHookRunner(nil, "")
 	// Register a hook that matches Claude name "Write"
 	runner.Add(HookPreToolUse, RegisteredHook{
 		Matcher: "Write",
@@ -652,7 +652,7 @@ func TestHookRunner_ToolNameMapping(t *testing.T) {
 	}
 
 	// The runner's Run methods convert serf names to Claude names for matching
-	input := HookInput{
+	input := hookInput{
 		CWD:           "/tmp",
 		HookEventName: "PreToolUse",
 		ToolName:      "write_file", // serf name
@@ -759,9 +759,9 @@ func TestParseHookOutput_EmptyOutput(t *testing.T) {
 	}
 }
 
-// Verify HookInput JSON marshaling is correct.
+// Verify hookInput JSON marshaling is correct.
 func TestHookInput_JSON(t *testing.T) {
-	input := HookInput{
+	input := hookInput{
 		SessionID:     "s1",
 		CWD:           "/tmp",
 		HookEventName: "PreToolUse",
@@ -785,10 +785,10 @@ func TestHookInput_JSON(t *testing.T) {
 	}
 }
 
-// --- Task 17: HookRunner event callback ---
+// --- Task 17: hookRunner event callback ---
 
 func TestHookRunner_EmitsHookEvents(t *testing.T) {
-	runner := NewHookRunner(nil, "")
+	runner := newHookRunner(nil, "")
 	runner.Add(HookSessionStart, RegisteredHook{
 		Matcher:    "*",
 		Type:       "command",
@@ -802,7 +802,7 @@ func TestHookRunner_EmitsHookEvents(t *testing.T) {
 		collected = append(collected, SessionEvent{Kind: kind, Data: data})
 	})
 
-	input := HookInput{
+	input := hookInput{
 		CWD:           "/tmp",
 		HookEventName: "SessionStart",
 	}
@@ -859,7 +859,7 @@ func TestHookRunner_EmitsHookEvents(t *testing.T) {
 }
 
 func TestHookRunner_NoCallbackNoEvents(t *testing.T) {
-	runner := NewHookRunner(nil, "")
+	runner := newHookRunner(nil, "")
 	runner.Add(HookSessionStart, RegisteredHook{
 		Matcher: "*",
 		Type:    "command",
@@ -868,7 +868,7 @@ func TestHookRunner_NoCallbackNoEvents(t *testing.T) {
 	})
 
 	// Should not panic when no callback is set
-	input := HookInput{
+	input := hookInput{
 		CWD:           "/tmp",
 		HookEventName: "SessionStart",
 	}
@@ -876,7 +876,7 @@ func TestHookRunner_NoCallbackNoEvents(t *testing.T) {
 }
 
 func TestHookRunner_Summary(t *testing.T) {
-	runner := NewHookRunner(nil, "")
+	runner := newHookRunner(nil, "")
 	runner.Add(HookPreToolUse, RegisteredHook{Matcher: "*", Type: "command", Command: "echo a"})
 	runner.Add(HookPreToolUse, RegisteredHook{Matcher: "Write", Type: "command", Command: "echo b"})
 	runner.Add(HookPostToolUse, RegisteredHook{Matcher: "*", Type: "prompt", Prompt: "check"})
@@ -900,7 +900,7 @@ func TestHookRunner_Summary(t *testing.T) {
 }
 
 func TestHookRunner_Summary_Empty(t *testing.T) {
-	runner := NewHookRunner(nil, "")
+	runner := newHookRunner(nil, "")
 	summary := runner.Summary()
 	if len(summary) != 0 {
 		t.Errorf("expected empty summary, got %v", summary)

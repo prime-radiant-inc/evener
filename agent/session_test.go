@@ -1335,7 +1335,7 @@ func TestSession_PreToolUseUpdatedInputRewritesToolCall(t *testing.T) {
 	}
 	defer sess.Close()
 
-	runner := NewHookRunner(nil, "")
+	runner := newHookRunner(nil, "")
 	runner.Add(HookPreToolUse, RegisteredHook{
 		Matcher: "Write",
 		Type:    "command",
@@ -1377,7 +1377,7 @@ func TestSession_PreCompactHookOnlyRunsWhenCompactionEmits(t *testing.T) {
 	}
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
-	runner := NewHookRunner(nil, "")
+	runner := newHookRunner(nil, "")
 	runner.SetEventCallback(func(kind EventKind, data any) {
 		sess.emit(kind, data)
 	})
@@ -1419,7 +1419,7 @@ func TestSession_PreCompactHookRunsAtCompactionBoundary(t *testing.T) {
 	}
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
-	runner := NewHookRunner(nil, "")
+	runner := newHookRunner(nil, "")
 	runner.SetEventCallback(func(kind EventKind, data any) {
 		sess.emit(kind, data)
 	})
@@ -1505,7 +1505,7 @@ func TestSession_NotificationHookRunsOnWarning(t *testing.T) {
 	defer sess.Close()
 
 	marker := filepath.Join(dir, "notification-hook")
-	runner := NewHookRunner(nil, "")
+	runner := newHookRunner(nil, "")
 	runner.Add(HookNotification, RegisteredHook{
 		Matcher: "*",
 		Type:    "command",

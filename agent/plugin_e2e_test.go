@@ -200,7 +200,7 @@ func TestPlugin_EndToEnd_HookExecution(t *testing.T) {
 		t.Fatalf("LoadPlugin: %v", err)
 	}
 
-	runner := NewHookRunner(nil, "") // no prompt client needed for command hooks
+	runner := newHookRunner(nil, "") // no prompt client needed for command hooks
 	for event, eventHooks := range lp.Hooks {
 		runner.Add(event, eventHooks...)
 	}
@@ -212,14 +212,14 @@ func TestPlugin_EndToEnd_HookExecution(t *testing.T) {
 	})
 
 	// Fire SessionStart
-	input := HookInput{
+	input := hookInput{
 		SessionID:     "test-session",
 		CWD:           pluginDir,
 		HookEventName: "SessionStart",
 	}
 	result := runner.RunSessionStart(context.Background(), input)
 
-	// RunSessionStart returns HookRunResult; any system messages are informational.
+	// RunSessionStart returns hookRunResult; any system messages are informational.
 	// The absence of error-level messages means the hook succeeded.
 	_ = result
 

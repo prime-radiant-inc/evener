@@ -86,7 +86,7 @@ type Session struct {
 	// Plugin-provided components
 	plugins             []LoadedPlugin
 	pendingPluginEvents []PluginLoadedData
-	hookRunner          *HookRunner
+	hookRunner          *hookRunner
 	pluginAgents        map[string]PluginAgent
 	pluginMCPConfigs    []MCPServerConfig
 

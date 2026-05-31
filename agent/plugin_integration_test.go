@@ -12,8 +12,8 @@ import (
 // --- clientAdapter tests ---
 
 func TestClientAdapter_SatisfiesPromptHookClient(t *testing.T) {
-	// Verify that clientAdapter implements PromptHookClient at compile time.
-	var _ PromptHookClient = clientAdapter{}
+	// Verify that clientAdapter implements promptHookClient at compile time.
+	var _ promptHookClient = clientAdapter{}
 }
 
 // --- initPlugins tests ---
@@ -65,7 +65,7 @@ func TestInitPlugins_BuildsHookRunner(t *testing.T) {
 	}
 
 	// Simulate what initPlugins does: build runner from plugin hooks
-	runner := NewHookRunner(nil, "test-model")
+	runner := newHookRunner(nil, "test-model")
 	for _, p := range plugins {
 		for event, eventHooks := range p.Hooks {
 			runner.Add(event, eventHooks...)
@@ -184,7 +184,7 @@ func TestInitPlugins_CombinesMultiplePlugins(t *testing.T) {
 
 	// Simulate initPlugins: merge skills from all plugins
 	allSkills := map[string]SkillMeta{}
-	runner := NewHookRunner(nil, "test-model")
+	runner := newHookRunner(nil, "test-model")
 	allAgents := map[string]PluginAgent{}
 
 	for _, p := range plugins {
@@ -254,7 +254,7 @@ func TestClientAdapter_Generate(t *testing.T) {
 
 	// Verify the interface is satisfied (compile-time check above is sufficient,
 	// but let's also check at runtime).
-	var iface PromptHookClient = adapter
+	var iface promptHookClient = adapter
 	_ = iface
 }
 

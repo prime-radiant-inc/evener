@@ -640,7 +640,7 @@ func (s *Session) initPlugins(sessionStartKind SessionStartKind) error {
 
 	s.plugins = plugins
 
-	runner := NewHookRunner(clientAdapter{s.client}, s.profile.Model())
+	runner := newHookRunner(clientAdapter{s.client}, s.profile.Model())
 	allAgents := map[string]PluginAgent{}
 
 	for _, p := range plugins {
