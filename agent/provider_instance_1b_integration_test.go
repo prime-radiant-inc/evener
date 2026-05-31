@@ -209,7 +209,7 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 	}
 
 	workReq := llm.Request{Model: "gpt-5.2", Provider: workProfile.ID()}
-	workSess.applyModelRequestMetadata(&workReq)
+	workSess.applyModelRequestMetadata(workSess.profile, &workReq)
 	if strings.TrimSpace(workReq.PromptCacheKey) == "" {
 		t.Error("work session (tag=openai): PromptCacheKey empty — must be prompt-cache eligible")
 	}
@@ -232,7 +232,7 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 	}
 
 	compatReq := llm.Request{Model: "gpt-4o", Provider: compatProfile.ID()}
-	compatSess.applyModelRequestMetadata(&compatReq)
+	compatSess.applyModelRequestMetadata(compatSess.profile, &compatReq)
 	if got := strings.TrimSpace(compatReq.PromptCacheKey); got != "" {
 		t.Errorf("compat-x session (tag=openai-compatible): PromptCacheKey = %q, want empty", got)
 	}

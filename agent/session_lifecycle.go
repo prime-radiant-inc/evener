@@ -335,11 +335,11 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 	}
 }
 
-func (s *Session) maybeWarnContextUsage(msgs []llm.Message) bool {
-	if s == nil || s.profile == nil {
+func (s *Session) maybeWarnContextUsage(profile ProviderProfile, msgs []llm.Message) bool {
+	if s == nil || profile == nil {
 		return false
 	}
-	cw := s.profile.ContextWindowSize()
+	cw := profile.ContextWindowSize()
 	if cw <= 0 {
 		return false
 	}
@@ -539,7 +539,25 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// --- Phase: SystemPrompt ---
 		tPhaseStart := time.Now()
 
+		// Snapshot the per-round model inputs under s.mu. SetModel /
+		// SetReasoningEffort mutate the profile, the prompt/tool-def caches, and
+		// s.cfg under s.mu; reading them once here keeps the round on one
+		// consistent model and removes the lock-free read races (PRI-1958 A2/A4).
+		effortOverride := ""
+		if s.taskStore != nil {
+			if current, ok := s.taskStore.CurrentInProgress(); ok {
+				effortOverride = strings.TrimSpace(current.ReasoningEffort)
+			}
+		}
+		s.mu.Lock()
+		profile := s.profile
 		sys := s.cachedSystemPrompt
+		toolDefs := s.allToolDefinitions(round)
+		if effortOverride != "" {
+			s.cfg.ReasoningEffort = effortOverride
+		}
+		reasoningEffort := strings.TrimSpace(s.cfg.ReasoningEffort)
+		s.mu.Unlock()
 
 		timings.SystemPrompt = time.Since(tPhaseStart)
 
@@ -585,17 +603,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		timings.HistoryExpand = time.Since(tPhaseStart)
 
-		// --- Phase: ToolDefs ---
-		tPhaseStart = time.Now()
-		toolDefs := s.allToolDefinitions(round)
-		timings.ToolDefs = time.Since(tPhaseStart)
-
-		req := s.buildModelRequest(sys, history, toolDefs)
+		// --- Phase: ToolDefs --- (toolDefs snapshotted with profile/sys above)
+		req := s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort)
 
 		// --- Phase: LLMCall ---
 		tPhaseStart = time.Now()
 
-		modelResp, req, err := s.callModelWithFallback(ctx, req, round)
+		modelResp, req, err := s.callModelWithFallback(ctx, profile, req, round)
 		resp := modelResp.Response
 
 		timings.LLMCall = time.Since(tPhaseStart)
@@ -705,7 +719,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		// Context window awareness: emit a warning when we exceed ~80% of the profile's context window.
 		if !ctxWarned {
-			if s.maybeWarnContextUsage(req.Messages) {
+			if s.maybeWarnContextUsage(profile, req.Messages) {
 				ctxWarned = true
 			}
 		}
@@ -863,7 +877,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		// Execute tool calls (possibly in parallel) and send results back.
 		results := make([]ToolExecResult, len(calls))
-		if s.profile.SupportsParallelToolCalls() && len(calls) > 1 {
+		if profile.SupportsParallelToolCalls() && len(calls) > 1 {
 			// Ordered-group algorithm: batch consecutive read-only calls for
 			// parallel execution; serialize everything else.
 			flushReadBatch := func(batch []int) error {
@@ -1168,7 +1182,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 // buildModelRequest assembles the llm.Request for one round: it lays out the
 // system prompt + history into messages (honoring SystemPromptAsUser), then
 // applies tools, provider options, reasoning effort, and model metadata.
-func (s *Session) buildModelRequest(sys string, history []llm.Message, toolDefs []llm.ToolDefinition) llm.Request {
+func (s *Session) buildModelRequest(profile ProviderProfile, sys string, history []llm.Message, toolDefs []llm.ToolDefinition, reasoningEffort string) llm.Request {
 	var messages []llm.Message
 	if s.cfg.SystemPromptAsUser {
 		// Combine system prompt with the first user message into one
@@ -1186,31 +1200,26 @@ func (s *Session) buildModelRequest(sys string, history []llm.Message, toolDefs 
 	}
 
 	req := llm.Request{
-		Model:      s.profile.Model(),
-		Provider:   s.profile.ID(),
+		Model:      profile.Model(),
+		Provider:   profile.ID(),
 		Messages:   messages,
 		Tools:      toolDefs,
 		ToolChoice: &llm.ToolChoice{Mode: "required"},
-		WebSearch:  s.profile.SupportsWebSearch(),
+		WebSearch:  profile.SupportsWebSearch(),
 		AdapterTimeout: &llm.AdapterTimeout{
 			Connect:    10 * time.Second,
 			Request:    10 * time.Minute,
 			StreamRead: 30 * time.Second,
 		},
 	}
-	if opts := s.profile.ProviderOptions(); opts != nil {
+	if opts := profile.ProviderOptions(); opts != nil {
 		req.ProviderOptions = opts
 	}
-	if s.taskStore != nil {
-		if current, ok := s.taskStore.CurrentInProgress(); ok && current.ReasoningEffort != "" {
-			s.cfg.ReasoningEffort = current.ReasoningEffort
-		}
-	}
-	if strings.TrimSpace(s.cfg.ReasoningEffort) != "" {
-		v := strings.TrimSpace(s.cfg.ReasoningEffort)
+	if reasoningEffort != "" {
+		v := reasoningEffort
 		req.ReasoningEffort = &v
 	}
-	s.applyModelRequestMetadata(&req)
+	s.applyModelRequestMetadata(profile, &req)
 	return req
 }
 
@@ -1218,13 +1227,13 @@ func (s *Session) buildModelRequest(sys string, history []llm.Message, toolDefs 
 // fallback-eligible permanent error, retries each configured fallback model in
 // order. It returns the (possibly fallback-updated) request actually used so
 // downstream logging reflects the model that answered.
-func (s *Session) callModelWithFallback(ctx context.Context, req llm.Request, round int) (sessionModelResponse, llm.Request, error) {
+func (s *Session) callModelWithFallback(ctx context.Context, profile ProviderProfile, req llm.Request, round int) (sessionModelResponse, llm.Request, error) {
 	policy := llm.DefaultRetryPolicy()
 	if s.cfg.LLMRetryPolicy != nil {
 		policy = *s.cfg.LLMRetryPolicy
 	}
 	callCtx := llm.WithAPILogContext(ctx, s.id, round)
-	modelResp, err := s.callModel(callCtx, policy, s.profile, req)
+	modelResp, err := s.callModel(callCtx, policy, profile, req)
 	// Fallback chain: when the primary model returns a Permanent-class
 	// provider error (403/404/422/...) or an endpoint-fallback signal,
 	// try each configured fallback in literal order. Stops at the first
@@ -1239,7 +1248,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, req llm.Request, ro
 			// so resolveProfileForRef is guaranteed to return the WithModel path
 			// here. We call it anyway so the fallback always uses the same
 			// resolution logic as SetModel.
-			fbProfile, _, _ := s.resolveProfileForRef(fbModel)
+			fbProfile, _, _ := s.resolveProfileForRef(profile, fbModel)
 			fbReq := req
 			fbReq.Model = fbProfile.Model()
 			fbReq.Provider = fbProfile.ID()
@@ -1247,7 +1256,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, req llm.Request, ro
 			fbReq.ProviderOptions = fbProfile.ProviderOptions()
 			fbReq.PromptCacheKey = ""
 			fbReq.PromptCacheRetention = ""
-			s.applyModelRequestMetadata(&fbReq)
+			s.applyModelRequestMetadata(profile, &fbReq)
 			modelResp, err = s.callModel(callCtx, policy, fbProfile, fbReq)
 			if err == nil {
 				// Reflect the model that actually answered in the

@@ -127,7 +127,7 @@ func TestProviderInstance_RenamedOpenAI_IdentityAndBehavior(t *testing.T) {
 		Model:    renamedProfile.Model(),
 		Provider: renamedProfile.ID(), // "work"
 	}
-	sess.applyModelRequestMetadata(&req)
+	sess.applyModelRequestMetadata(sess.profile, &req)
 	if strings.TrimSpace(req.PromptCacheKey) == "" {
 		t.Fatalf("PromptCacheKey empty — renamed openai instance must be prompt-cache eligible by tag")
 	}
@@ -176,7 +176,7 @@ func TestProviderInstance_OpenAICompatible_NoOpenAIBehavior(t *testing.T) {
 		Model:    "gpt-4o",
 		Provider: "openai", // even if provider says "openai", tag must override
 	}
-	sess.applyModelRequestMetadata(&req)
+	sess.applyModelRequestMetadata(sess.profile, &req)
 	if got := strings.TrimSpace(req.PromptCacheKey); got != "" {
 		t.Fatalf("PromptCacheKey = %q, want empty — openai-compatible must NOT be prompt-cache eligible", got)
 	}

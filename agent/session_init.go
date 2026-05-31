@@ -569,7 +569,7 @@ func (s *Session) validateModelFallbacks() error {
 			if decidePrefixAction(s.profile.BehaviorTag(), s.profile.ID(), provider) == prefixActionSwitch {
 				// Resolve to get the target provider name for the error message.
 				targetTag := provider // best-effort for the error message
-				fbProfile, crossProvider, err := s.resolveProfileForRef(fbModel)
+				fbProfile, crossProvider, err := s.resolveProfileForRef(s.profile, fbModel)
 				if err != nil {
 					return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
 				}
@@ -579,7 +579,7 @@ func (s *Session) validateModelFallbacks() error {
 				return fmt.Errorf("model_fallbacks entry %q switches provider from %q to %q; cross-provider fallbacks are not supported because provider prompt/tool surfaces differ", fbModel, s.profile.BehaviorTag(), targetTag)
 			}
 		}
-		fbProfile, _, err := s.resolveProfileForRef(fbModel)
+		fbProfile, _, err := s.resolveProfileForRef(s.profile, fbModel)
 		if err != nil {
 			return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)
 		}

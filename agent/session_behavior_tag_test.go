@@ -46,7 +46,7 @@ func TestBehaviorTag_PromptCache_RenamedOpenAI(t *testing.T) {
 		Provider: renamedProfile.ID(), // "work" — what the main loop sets
 	}
 
-	sess.applyModelRequestMetadata(&req)
+	sess.applyModelRequestMetadata(sess.profile, &req)
 
 	if strings.TrimSpace(req.PromptCacheKey) == "" {
 		t.Fatalf("PromptCacheKey is empty — renamed openai instance must be prompt-cache eligible")
@@ -75,7 +75,7 @@ func TestBehaviorTag_PromptCache_OpenAICompatible(t *testing.T) {
 		Provider: "openai", // even if provider says "openai", tag must override
 	}
 
-	sess.applyModelRequestMetadata(&req)
+	sess.applyModelRequestMetadata(sess.profile, &req)
 
 	if got := strings.TrimSpace(req.PromptCacheKey); got != "" {
 		t.Fatalf("PromptCacheKey = %q, want empty — openai-compatible must NOT be prompt-cache eligible", got)

@@ -193,7 +193,7 @@ func (s *Session) launchInitialPromptNamer(ctx context.Context, input string) {
 	if s.stateDir == "" {
 		return
 	}
-	if !sessionNamerEnabled(s.profile) {
+	if !sessionNamerEnabled(s.currentProfile()) {
 		return
 	}
 	if strings.TrimSpace(input) == "" {
@@ -230,7 +230,7 @@ func (s *Session) launchCompactionNamer(ctx context.Context, turn Turn) {
 	if s.stateDir == "" {
 		return
 	}
-	if !sessionNamerEnabled(s.profile) {
+	if !sessionNamerEnabled(s.currentProfile()) {
 		return
 	}
 	if !isSessionNameCompactionTurn(turn) || strings.TrimSpace(turn.Message.Text()) == "" {
@@ -315,7 +315,7 @@ func (s *Session) nameSessionFromText(ctx context.Context, source, text string) 
 		return s.nameSessionFromTextFunc(ctx, source, text)
 	}
 
-	result, err := NameSession(ctx, s.client, s.profile, source, text)
+	result, err := NameSession(ctx, s.client, s.currentProfile(), source, text)
 	if err != nil {
 		s.appendSessionNamerLog(SessionLogEntry{
 			Kind:     "advisory",

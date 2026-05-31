@@ -132,9 +132,10 @@ Recent action:
 %s
 Key facts (one line):`, b.String())
 
+	cp := s.cm.currentProfile()
 	req := llm.Request{
-		Model:    s.cm.profile.CheapModel(),
-		Provider: s.cm.profile.ID(),
+		Model:    cp.CheapModel(),
+		Provider: cp.ID(),
 		Messages: []llm.Message{llm.User(prompt)},
 	}
 

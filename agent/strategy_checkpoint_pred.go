@@ -33,7 +33,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]T
 	if s.cm == nil {
 		return nil
 	}
-	cw := s.cm.profile.ContextWindowSize()
+	cw := s.cm.currentProfile().ContextWindowSize()
 	if cw <= 0 {
 		return nil
 	}
@@ -198,9 +198,10 @@ Generate a checkpoint preserving:
 
 Write ONLY the checkpoint content. Be specific and concise (under 500 words). Focus on information the agent CANNOT re-derive from the codebase.`, b.String())
 
+	cp := s.cm.currentProfile()
 	req := llm.Request{
-		Model:    s.cm.profile.CheapModel(),
-		Provider: s.cm.profile.ID(),
+		Model:    cp.CheapModel(),
+		Provider: cp.ID(),
 		Messages: []llm.Message{llm.User(prompt)},
 	}
 

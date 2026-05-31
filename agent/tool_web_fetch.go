@@ -119,9 +119,10 @@ func (s *Session) webFetch(ctx context.Context, rawURL string, question string) 
 	}
 
 	// Call cheap model to answer the question.
+	p := s.currentProfile()
 	cheapReq := llm.Request{
-		Model:    s.profile.CheapModel(),
-		Provider: s.profile.ID(),
+		Model:    p.CheapModel(),
+		Provider: p.ID(),
 		Messages: []llm.Message{
 			llm.System("You are a web content analyst. Read the provided content and answer the user's question concisely."),
 			llm.User(fmt.Sprintf("URL: %s\n\nQuestion: %s\n\nContent:\n%s", rawURL, question, readableContent)),

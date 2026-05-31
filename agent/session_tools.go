@@ -95,9 +95,25 @@ func (s *Session) describeImage(ctx context.Context, r ToolExecResult) string {
 		}}
 	}
 
+	// Snapshot the model inputs under s.mu: the vision side-channel runs during
+	// the round, so a concurrent SetModel/SetReasoningEffort (which mutate these
+	// under s.mu) must not race these reads (PRI-1958 A2/A4).
+	effortOverride := ""
+	if s.taskStore != nil {
+		if current, ok := s.taskStore.CurrentInProgress(); ok && current.ReasoningEffort != "" {
+			effortOverride = current.ReasoningEffort
+		}
+	}
+	s.mu.Lock()
+	profile := s.profile
+	effort := strings.TrimSpace(s.cfg.ReasoningEffort)
+	s.mu.Unlock()
+	if effortOverride != "" {
+		effort = effortOverride
+	}
 	req := llm.Request{
-		Model:    s.profile.Model(),
-		Provider: s.profile.ID(),
+		Model:    profile.Model(),
+		Provider: profile.ID(),
 		Messages: []llm.Message{
 			{
 				Role: llm.RoleUser,
@@ -116,18 +132,12 @@ func (s *Session) describeImage(ctx context.Context, r ToolExecResult) string {
 	}
 	// Vision descriptions need sufficient reasoning to be accurate.
 	// Floor at "high" regardless of the current task's effort level.
-	effort := strings.TrimSpace(s.cfg.ReasoningEffort)
-	if s.taskStore != nil {
-		if current, ok := s.taskStore.CurrentInProgress(); ok && current.ReasoningEffort != "" {
-			effort = current.ReasoningEffort
-		}
-	}
 	effortRank := map[string]int{"low": 1, "medium": 2, "high": 3, "xhigh": 4}
 	if effortRank[effort] < effortRank["high"] {
 		effort = "high"
 	}
 	req.ReasoningEffort = &effort
-	s.applyModelRequestMetadata(&req)
+	s.applyModelRequestMetadata(profile, &req)
 
 	resp, err := s.client.Complete(ctx, req)
 	if err != nil {
@@ -143,7 +153,7 @@ func (s *Session) canonicalToolName(name string) string {
 	if name == "" {
 		return ""
 	}
-	for canonical, provider := range s.profile.ToolNameMap() {
+	for canonical, provider := range s.currentProfile().ToolNameMap() {
 		if provider == name {
 			return canonical
 		}

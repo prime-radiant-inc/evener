@@ -147,9 +147,10 @@ func (s *RecursiveDistillStrategy) microSummarize(ctx context.Context, client *l
 %s
 Status update:`, b.String())
 
+	cp := s.cm.currentProfile()
 	req := llm.Request{
-		Model:    s.cm.profile.CheapModel(),
-		Provider: s.cm.profile.ID(),
+		Model:    cp.CheapModel(),
+		Provider: cp.ID(),
 		Messages: []llm.Message{llm.User(prompt)},
 	}
 
@@ -176,9 +177,10 @@ func (s *RecursiveDistillStrategy) macroSummarize(ctx context.Context, client *l
 %s
 Progress report:`, b.String())
 
+	cp := s.cm.currentProfile()
 	req := llm.Request{
-		Model:    s.cm.profile.CheapModel(),
-		Provider: s.cm.profile.ID(),
+		Model:    cp.CheapModel(),
+		Provider: cp.ID(),
 		Messages: []llm.Message{llm.User(prompt)},
 	}
 

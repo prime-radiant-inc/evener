@@ -55,7 +55,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]Turn,
 	if s.cm == nil {
 		return nil
 	}
-	cw := s.cm.profile.ContextWindowSize()
+	cw := s.cm.currentProfile().ContextWindowSize()
 	if cw <= 0 {
 		return nil
 	}

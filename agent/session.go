@@ -157,7 +157,16 @@ func (s *Session) WithResponseSideEffects(ctx context.Context, fn func()) error 
 
 func (s *Session) StateDir() string { return s.stateDir }
 
-func (s *Session) Profile() ProviderProfile { return s.profile }
+func (s *Session) Profile() ProviderProfile { return s.currentProfile() }
+
+// currentProfile returns the active profile under s.mu so reads never race
+// SetModel's swap (s.profile is reassigned under s.mu). Callers that already
+// hold s.mu must read s.profile directly instead of calling this.
+func (s *Session) currentProfile() ProviderProfile {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.profile
+}
 
 func (s *Session) Client() *llm.Client { return s.client }
 
@@ -181,10 +190,10 @@ func (s *Session) SetReasoningEffort(effort string) {
 // ref is classified as a cross-provider switch (prefixActionSwitch) AND the
 // session has a resolver, the resolver is called. Otherwise the current
 // profile's WithModel is used (handles same-provider, strip, and keep cases).
-func (s *Session) resolveProfileForRef(ref string) (ProviderProfile, bool, error) {
+func (s *Session) resolveProfileForRef(base ProviderProfile, ref string) (ProviderProfile, bool, error) {
 	if parts := strings.SplitN(ref, "/", 2); len(parts) == 2 {
 		provider := strings.ToLower(parts[0])
-		action := decidePrefixAction(s.profile.BehaviorTag(), s.profile.ID(), provider)
+		action := decidePrefixAction(base.BehaviorTag(), base.ID(), provider)
 		if action == prefixActionSwitch && s.resolveProfile != nil {
 			resolved, err := s.resolveProfile(ref)
 			if err != nil {
@@ -195,7 +204,7 @@ func (s *Session) resolveProfileForRef(ref string) (ProviderProfile, bool, error
 			}
 		}
 	}
-	return s.profile.WithModel(ref), false, nil
+	return base.WithModel(ref), false, nil
 }
 
 // reapplyProviderSpecificTools updates the live tool registry when the session
@@ -232,7 +241,7 @@ func (s *Session) SetModel(model string) {
 		return
 	}
 	oldTag := s.profile.BehaviorTag()
-	nextProfile, crossProvider, err := s.resolveProfileForRef(model)
+	nextProfile, crossProvider, err := s.resolveProfileForRef(s.profile, model)
 	if err != nil {
 		s.mu.Unlock()
 		return
@@ -283,11 +292,11 @@ func (s *Session) SetTimeout(timeoutMS int) {
 	s.maybeAutoSave()
 }
 
-func (s *Session) applyModelRequestMetadata(req *llm.Request) {
+func (s *Session) applyModelRequestMetadata(profile ProviderProfile, req *llm.Request) {
 	if req == nil {
 		return
 	}
-	openAIPromptCacheSupported := s.profile.BehaviorTag() == "openai" && openAIModelSupports24hPromptCache(req.Model)
+	openAIPromptCacheSupported := profile.BehaviorTag() == "openai" && openAIModelSupports24hPromptCache(req.Model)
 	if strings.TrimSpace(s.id) != "" {
 		req.SessionID = s.id
 		req.ThreadID = s.id

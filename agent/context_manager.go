@@ -110,6 +110,15 @@ func (cm *ContextManager) SetProfile(profile ProviderProfile) {
 	cm.profile = profile
 }
 
+// currentProfile returns the active profile under cm.mu so reads do not race
+// SetProfile (called from Session.SetModel). The profile pointer is swapped
+// atomically; a caller uses the returned value for the duration of one operation.
+func (cm *ContextManager) currentProfile() ProviderProfile {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	return cm.profile
+}
+
 // LastInputTokens returns the most recently recorded input token count.
 func (cm *ContextManager) LastInputTokens() int {
 	cm.mu.Lock()
@@ -125,7 +134,7 @@ func (cm *ContextManager) Pressure(history []Turn, sysPromptChars int) float64 {
 // estimatePressure calculates what fraction of the context window is in use.
 // Uses actual API-reported token counts when available, falling back to char/4.
 func (cm *ContextManager) estimatePressure(history []Turn, sysPromptChars int) float64 {
-	cw := cm.profile.ContextWindowSize()
+	cw := cm.currentProfile().ContextWindowSize()
 	if cw <= 0 {
 		return 0
 	}
@@ -173,7 +182,7 @@ func (cm *ContextManager) MaybeCompact(
 	sysPromptChars int,
 	emitFn func(EventKind, any),
 ) {
-	cw := cm.profile.ContextWindowSize()
+	cw := cm.currentProfile().ContextWindowSize()
 	if cw <= 0 {
 		return
 	}
@@ -942,9 +951,10 @@ Be thorough and structured. Err on the side of including too much rather than to
 `
 	prompt := prefix + b.String()
 
+	sumProfile := cm.currentProfile()
 	req := llm.Request{
-		Model:    cm.profile.CheapModel(),
-		Provider: cm.profile.ID(),
+		Model:    sumProfile.CheapModel(),
+		Provider: sumProfile.ID(),
 		Messages: []llm.Message{llm.User(prompt)},
 	}
 

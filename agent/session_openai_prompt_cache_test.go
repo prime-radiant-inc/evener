@@ -124,7 +124,7 @@ func TestOpenAIPromptCacheDefaults_PreserveExplicitRequestValues(t *testing.T) {
 		PromptCacheRetention: "1h",
 	}
 
-	sess.applyModelRequestMetadata(&req)
+	sess.applyModelRequestMetadata(sess.profile, &req)
 
 	if got, want := req.PromptCacheKey, "explicit-key"; got != want {
 		t.Fatalf("PromptCacheKey = %q, want %q", got, want)
