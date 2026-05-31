@@ -354,9 +354,9 @@ func TestSpawnAgent_BlockingMode(t *testing.T) {
 		t.Fatalf("blocking spawn returned error: %s", res.Output)
 	}
 
-	// Should be a SubAgentResult JSON (with output, success, turns_used),
+	// Should be a subagentResult JSON (with output, success, turns_used),
 	// NOT a spawn result JSON (with agent_id, status).
-	var result SubAgentResult
+	var result subagentResult
 	if err := json.Unmarshal([]byte(res.Output), &result); err != nil {
 		t.Fatalf("parsing blocking result: %v (output: %s)", err, res.Output)
 	}
@@ -501,9 +501,9 @@ func TestSpawnAgent_NonBlockingSubagentSurvivesParentContextCancellation(t *test
 		t.Fatalf("wait error: %s", waitRes.Output)
 	}
 
-	var result SubAgentResult
+	var result subagentResult
 	if err := json.Unmarshal([]byte(waitRes.Output), &result); err != nil {
-		t.Fatalf("unmarshal SubAgentResult: %v (out=%q)", err, waitRes.Output)
+		t.Fatalf("unmarshal subagentResult: %v (out=%q)", err, waitRes.Output)
 	}
 	if !result.Success {
 		t.Fatalf("expected success=true, got false (out=%q)", result.Output)

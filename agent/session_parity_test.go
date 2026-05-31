@@ -820,7 +820,7 @@ func TestParity_SubagentSpawnAndWait(t *testing.T) {
 				t.Fatalf("wait error: %s", waitRes.Output)
 			}
 
-			var result SubAgentResult
+			var result subagentResult
 			if err := json.Unmarshal([]byte(waitRes.Output), &result); err != nil {
 				t.Fatalf("unmarshal wait result: %v (out=%q)", err, waitRes.Output)
 			}
@@ -885,11 +885,11 @@ func TestParity_CloseAgentWaitsForCompletion(t *testing.T) {
 				t.Fatalf("close_agent error: %s", closeRes.Output)
 			}
 
-			var result SubAgentResult
+			var result subagentResult
 			if err := json.Unmarshal([]byte(closeRes.Output), &result); err != nil {
 				t.Fatal(err)
 			}
-			if result.Status == SubAgentRunning {
+			if result.Status == SubagentRunning {
 				t.Fatalf("close_agent returned status 'running'; expected it to wait for completion")
 			}
 		})

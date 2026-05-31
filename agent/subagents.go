@@ -14,21 +14,21 @@ import (
 // from burning rounds with rapid 1-second retries.
 const minWaitTimeoutMS = 120_000 // 2 minutes
 
-// SubAgentStatus tracks the lifecycle of a sub-agent.
-type SubAgentStatus string
+// SubagentStatus tracks the lifecycle of a sub-agent.
+type SubagentStatus string
 
 const (
-	// SubAgentRunning indicates the sub-agent is currently executing a run.
-	SubAgentRunning SubAgentStatus = "running"
-	// SubAgentCompleted indicates the sub-agent's run finished without error.
-	SubAgentCompleted SubAgentStatus = "completed"
-	// SubAgentFailed indicates the sub-agent's run finished with an error.
-	SubAgentFailed SubAgentStatus = "failed"
+	// SubagentRunning indicates the sub-agent is currently executing a run.
+	SubagentRunning SubagentStatus = "running"
+	// SubagentCompleted indicates the sub-agent's run finished without error.
+	SubagentCompleted SubagentStatus = "completed"
+	// SubagentFailed indicates the sub-agent's run finished with an error.
+	SubagentFailed SubagentStatus = "failed"
 )
 
-// SubAgentResult is the structured output from a completed sub-agent.
-type SubAgentResult struct {
-	Status     SubAgentStatus `json:"status"`
+// subagentResult is the structured output from a completed sub-agent.
+type subagentResult struct {
+	Status     SubagentStatus `json:"status"`
 	Output     string         `json:"output"`
 	Success    bool           `json:"success"`
 	TurnsUsed  int            `json:"turns_used"`
@@ -52,7 +52,7 @@ type subagent struct {
 
 	mu             sync.Mutex
 	running        bool
-	status         SubAgentStatus
+	status         SubagentStatus
 	turnsUsed      int
 	done           chan struct{}
 	result         string
@@ -315,7 +315,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		sess:         subSess,
 		emit:         s.emit,
 		running:      true,
-		status:       SubAgentRunning,
+		status:       SubagentRunning,
 		done:         make(chan struct{}),
 		nudgeEnabled: subagentNeedsCommunicateNudge(agent),
 	}
@@ -347,7 +347,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		Task:    task,
 	})
 
-	b, _ := json.Marshal(map[string]any{"agent_id": sub.id, "status": string(SubAgentRunning)})
+	b, _ := json.Marshal(map[string]any{"agent_id": sub.id, "status": string(SubagentRunning)})
 	return string(b), nil
 }
 
@@ -380,7 +380,7 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 	sub.mu.Lock()
 	sub.done = make(chan struct{})
 	sub.running = true
-	sub.status = SubAgentRunning
+	sub.status = SubagentRunning
 	sub.result = ""
 	sub.err = nil
 	sub.resultConsumed = false
@@ -517,9 +517,9 @@ func (a *subagent) run(ctx context.Context, input string) {
 	a.running = false
 	a.turnsUsed = turns
 	if err != nil {
-		a.status = SubAgentFailed
+		a.status = SubagentFailed
 	} else {
-		a.status = SubAgentCompleted
+		a.status = SubagentCompleted
 	}
 	done := a.done
 	emitEnd := !a.endEmitted
@@ -565,12 +565,12 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	return a.sess.ProcessInput(ctx, reason, nil)
 }
 
-func (a *subagent) resultSnapshotLocked() SubAgentResult {
+func (a *subagent) resultSnapshotLocked() subagentResult {
 	output := a.result
 	if strings.TrimSpace(output) == "" && a.err != nil {
 		output = a.err.Error()
 	}
-	return SubAgentResult{
+	return subagentResult{
 		Status:     a.status,
 		Output:     output,
 		Success:    a.err == nil,

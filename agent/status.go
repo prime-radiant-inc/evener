@@ -27,7 +27,7 @@ type PluginInfo struct {
 // SubagentInfo describes an active sub-agent.
 type SubagentInfo struct {
 	ID        string         `json:"id"`
-	Status    SubAgentStatus `json:"status"`
+	Status    SubagentStatus `json:"status"`
 	TurnsUsed int            `json:"turns_used"`
 }
 

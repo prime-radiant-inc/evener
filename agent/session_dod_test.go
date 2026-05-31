@@ -1803,7 +1803,7 @@ func TestSession_Subagents_SpawnWaitClose_AndDepthLimit(t *testing.T) {
 	if waitRes.IsError {
 		t.Fatalf("wait error: %s", waitRes.Output)
 	}
-	var waitResult SubAgentResult
+	var waitResult subagentResult
 	if err := json.Unmarshal([]byte(waitRes.Output), &waitResult); err != nil {
 		t.Fatalf("unmarshal wait result: %v (out=%q)", err, waitRes.Output)
 	}
@@ -1918,9 +1918,9 @@ func TestSession_WaitAgent_ReturnsSubAgentResult(t *testing.T) {
 		t.Fatalf("wait error: %s", waitRes.Output)
 	}
 
-	var result SubAgentResult
+	var result subagentResult
 	if err := json.Unmarshal([]byte(waitRes.Output), &result); err != nil {
-		t.Fatalf("unmarshal SubAgentResult: %v (out=%q)", err, waitRes.Output)
+		t.Fatalf("unmarshal subagentResult: %v (out=%q)", err, waitRes.Output)
 	}
 	if !result.Success {
 		t.Fatalf("expected success=true, got false")
@@ -1931,8 +1931,8 @@ func TestSession_WaitAgent_ReturnsSubAgentResult(t *testing.T) {
 	if result.TurnsUsed < 1 {
 		t.Fatalf("expected turns_used >= 1, got %d", result.TurnsUsed)
 	}
-	if result.Status != SubAgentCompleted {
-		t.Fatalf("expected status=%q, got %q", SubAgentCompleted, result.Status)
+	if result.Status != SubagentCompleted {
+		t.Fatalf("expected status=%q, got %q", SubagentCompleted, result.Status)
 	}
 }
 
@@ -1983,15 +1983,15 @@ func TestSession_WaitAgent_FailedSubagentReturnsResult(t *testing.T) {
 		t.Fatalf("wait should return a failed result, not a tool error: %s", waitRes.Output)
 	}
 
-	var result SubAgentResult
+	var result subagentResult
 	if err := json.Unmarshal([]byte(waitRes.Output), &result); err != nil {
-		t.Fatalf("unmarshal failed SubAgentResult: %v (out=%q)", err, waitRes.Output)
+		t.Fatalf("unmarshal failed subagentResult: %v (out=%q)", err, waitRes.Output)
 	}
 	if result.Success {
 		t.Fatalf("expected success=false, got true")
 	}
-	if result.Status != SubAgentFailed {
-		t.Fatalf("expected status=%q, got %q", SubAgentFailed, result.Status)
+	if result.Status != SubagentFailed {
+		t.Fatalf("expected status=%q, got %q", SubagentFailed, result.Status)
 	}
 	if !strings.Contains(result.Output, "simulated child failure") {
 		t.Fatalf("expected failed result output to include child error, got %q", result.Output)
@@ -2031,15 +2031,15 @@ func TestSession_SpawnAgent_BlockingFailureReturnsResult(t *testing.T) {
 		t.Fatalf("blocking spawn should return a failed result, not a tool error: %s", res.Output)
 	}
 
-	var result SubAgentResult
+	var result subagentResult
 	if err := json.Unmarshal([]byte(res.Output), &result); err != nil {
 		t.Fatalf("unmarshal blocking result: %v (out=%q)", err, res.Output)
 	}
 	if result.Success {
 		t.Fatalf("expected success=false, got true")
 	}
-	if result.Status != SubAgentFailed {
-		t.Fatalf("expected status=%q, got %q", SubAgentFailed, result.Status)
+	if result.Status != SubagentFailed {
+		t.Fatalf("expected status=%q, got %q", SubagentFailed, result.Status)
 	}
 	if !strings.Contains(result.Output, "simulated child failure") {
 		t.Fatalf("expected failed result output to include child error, got %q", result.Output)
@@ -2122,7 +2122,7 @@ func TestSession_Subagent_AutoNudgeExplicitBuiltinSubagent(t *testing.T) {
 		t.Fatalf("wait error: %s", waitRes.Output)
 	}
 
-	var result SubAgentResult
+	var result subagentResult
 	json.Unmarshal([]byte(waitRes.Output), &result)
 	if !result.Success {
 		t.Fatalf("expected explicit builtin subagent to recover, got failure: %+v", result)
@@ -2262,14 +2262,14 @@ func TestSession_SpawnAgent_MaxTurns(t *testing.T) {
 }
 
 func TestSubAgentStatus_Values(t *testing.T) {
-	if SubAgentRunning != "running" {
-		t.Fatalf("SubAgentRunning = %q, want 'running'", SubAgentRunning)
+	if SubagentRunning != "running" {
+		t.Fatalf("SubagentRunning = %q, want 'running'", SubagentRunning)
 	}
-	if SubAgentCompleted != "completed" {
-		t.Fatalf("SubAgentCompleted = %q, want 'completed'", SubAgentCompleted)
+	if SubagentCompleted != "completed" {
+		t.Fatalf("SubagentCompleted = %q, want 'completed'", SubagentCompleted)
 	}
-	if SubAgentFailed != "failed" {
-		t.Fatalf("SubAgentFailed = %q, want 'failed'", SubAgentFailed)
+	if SubagentFailed != "failed" {
+		t.Fatalf("SubagentFailed = %q, want 'failed'", SubagentFailed)
 	}
 }
 
@@ -4450,13 +4450,13 @@ func TestCloseAgent_ReturnsStructuredStatus(t *testing.T) {
 		t.Fatalf("close_agent error: %s", closeRes.Output)
 	}
 
-	// Verify close result is a SubAgentResult and removes the agent from the session.
-	var result SubAgentResult
+	// Verify close result is a subagentResult and removes the agent from the session.
+	var result subagentResult
 	if err := json.Unmarshal([]byte(closeRes.Output), &result); err != nil {
 		t.Fatalf("close_agent result is not JSON: %q (err: %v)", closeRes.Output, err)
 	}
-	if result.Status != SubAgentCompleted {
-		t.Errorf("close_agent status=%v, want %q", result.Status, SubAgentCompleted)
+	if result.Status != SubagentCompleted {
+		t.Errorf("close_agent status=%v, want %q", result.Status, SubagentCompleted)
 	}
 	if result.Output != "subagent output text" {
 		t.Errorf("close_agent output=%q, want %q", result.Output, "subagent output text")
@@ -4588,7 +4588,7 @@ func TestSendInput_SteersRunningAgent(t *testing.T) {
 	sub := &subagent{
 		id:      subSess.id,
 		sess:    subSess,
-		status:  SubAgentRunning,
+		status:  SubagentRunning,
 		running: true,
 		done:    make(chan struct{}),
 	}
@@ -5174,7 +5174,7 @@ func TestSession_Subagent_AutoNudgeOnMissingCommunicate(t *testing.T) {
 		t.Fatalf("wait error: %s", waitRes.Output)
 	}
 
-	var result SubAgentResult
+	var result subagentResult
 	json.Unmarshal([]byte(waitRes.Output), &result)
 
 	// The auto-nudge should have caused a second ProcessInput call,
@@ -5266,7 +5266,7 @@ func TestSession_Subagent_AutoNudgeOnEmptyResponseExhaustion(t *testing.T) {
 		t.Fatalf("wait error: %s", waitRes.Output)
 	}
 
-	var result SubAgentResult
+	var result subagentResult
 	json.Unmarshal([]byte(waitRes.Output), &result)
 	if !strings.Contains(result.Output, "Recovered after nudge") {
 		t.Errorf("expected nudged subagent to report findings via communicate, got: %q", result.Output)

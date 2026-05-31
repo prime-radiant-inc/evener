@@ -107,8 +107,8 @@ func TestSubagentManager_EmitClosureIsCaptured(t *testing.T) {
 func TestSubagentManager_InfosEnumeratesTracked(t *testing.T) {
 	fe := &fakeEmit{}
 	m := newSubagentManager(fe.emit)
-	m.track(&subagent{id: "a", status: SubAgentRunning, turnsUsed: 3})
-	m.track(&subagent{id: "b", status: SubAgentCompleted, turnsUsed: 7})
+	m.track(&subagent{id: "a", status: SubagentRunning, turnsUsed: 3})
+	m.track(&subagent{id: "b", status: SubagentCompleted, turnsUsed: 7})
 
 	infos := m.infos()
 	if len(infos) != 2 {
@@ -118,10 +118,10 @@ func TestSubagentManager_InfosEnumeratesTracked(t *testing.T) {
 	for _, info := range infos {
 		byID[info.ID] = info
 	}
-	if byID["a"].Status != SubAgentRunning || byID["a"].TurnsUsed != 3 {
+	if byID["a"].Status != SubagentRunning || byID["a"].TurnsUsed != 3 {
 		t.Fatalf("infos[a] = %+v, want running/3", byID["a"])
 	}
-	if byID["b"].Status != SubAgentCompleted || byID["b"].TurnsUsed != 7 {
+	if byID["b"].Status != SubagentCompleted || byID["b"].TurnsUsed != 7 {
 		t.Fatalf("infos[b] = %+v, want completed/7", byID["b"])
 	}
 }
