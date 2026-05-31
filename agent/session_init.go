@@ -15,27 +15,27 @@ import (
 )
 
 // selectStrategy creates the appropriate ContextStrategy from config.
-func selectStrategy(cfg SessionConfig, cm *ContextManager, sess *Session) (ContextStrategy, error) {
+func selectStrategy(cfg SessionConfig, cm *contextManager, sess *Session) (ContextStrategy, error) {
 	if cfg.ContextStrategyOverride != nil {
 		return cfg.ContextStrategyOverride, nil
 	}
 	switch cfg.ContextStrategy {
 	case "", "compact":
-		return NewCompactStrategy(cm), nil
+		return newCompactStrategy(cm), nil
 	case "recall":
-		return NewRecallStrategy(cm, sess), nil
+		return newRecallStrategy(cm, sess), nil
 	case "session-log":
-		return NewSessionLogStrategy(cm, sess)
+		return newSessionLogStrategy(cm, sess)
 	case "ooda":
-		return NewOODAStrategy(cm, sess)
+		return newOODAStrategy(cm, sess)
 	case "obs-mask":
-		return NewObsMaskStrategy(cm), nil
+		return newObsMaskStrategy(cm), nil
 	case "checkpoint-pred":
-		return NewCheckpointPredStrategy(cm), nil
+		return newCheckpointPredStrategy(cm), nil
 	case "memory-crystals":
-		return NewMemoryCrystalsStrategy(cm), nil
+		return newMemoryCrystalsStrategy(cm), nil
 	case "recursive-distill":
-		return NewRecursiveDistillStrategy(cm), nil
+		return newRecursiveDistillStrategy(cm), nil
 	default:
 		return nil, fmt.Errorf("unknown context strategy: %q", cfg.ContextStrategy)
 	}
@@ -506,7 +506,7 @@ func (s *Session) initSessionState(sessionStartKind SessionStartKind) ([]promptS
 		return nil, err
 	}
 
-	s.contextMgr = NewContextManager(s.profile, s.client)
+	s.contextMgr = newContextManager(s.profile, s.client)
 	s.contextMgr.ResultToolName = s.resultToolName()
 
 	reg := newProfileToolRegistry(s.profile)

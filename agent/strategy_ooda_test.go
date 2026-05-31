@@ -11,11 +11,11 @@ import (
 )
 
 func TestOODAStrategy_SatisfiesInterface(t *testing.T) {
-	var _ ContextStrategy = (*OODAStrategy)(nil)
+	var _ ContextStrategy = (*oodaStrategy)(nil)
 }
 
 func TestOODAStrategy_Name(t *testing.T) {
-	s := &OODAStrategy{}
+	s := &oodaStrategy{}
 	if s.Name() != "ooda" {
 		t.Errorf("expected name %q, got %q", "ooda", s.Name())
 	}
@@ -24,11 +24,11 @@ func TestOODAStrategy_Name(t *testing.T) {
 func TestOODAStrategy_Tools_InheritsFromSessionLogStrategy(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
-	sls := &SessionLogStrategy{
+	sls := &sessionLogStrategy{
 		log: mustNewSessionLog(t, logPath),
 	}
-	ooda := &OODAStrategy{
-		SessionLogStrategy: sls,
+	ooda := &oodaStrategy{
+		sessionLogStrategy: sls,
 	}
 
 	tools := ooda.Tools()
@@ -43,7 +43,7 @@ func TestOODAStrategy_Tools_InheritsFromSessionLogStrategy(t *testing.T) {
 func TestOODAStrategy_ManageContext_NoOrientMessageWhenLogEmpty(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewContextManager(profile, client)
+	cm := newContextManager(profile, client)
 
 	// Set thresholds high so no compaction occurs.
 	cm.ObservationMaskThreshold = 0.99
@@ -56,8 +56,8 @@ func TestOODAStrategy_ManageContext_NoOrientMessageWhenLogEmpty(t *testing.T) {
 	logPath := filepath.Join(dir, "test.log.jsonl")
 	sessionLog := mustNewSessionLog(t, logPath)
 
-	ooda := &OODAStrategy{
-		SessionLogStrategy: &SessionLogStrategy{
+	ooda := &oodaStrategy{
+		sessionLogStrategy: &sessionLogStrategy{
 			cm:  cm,
 			log: sessionLog,
 		},
@@ -82,7 +82,7 @@ func TestOODAStrategy_ManageContext_NoOrientMessageWhenLogEmpty(t *testing.T) {
 func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewContextManager(profile, client)
+	cm := newContextManager(profile, client)
 
 	// Set thresholds high so no compaction occurs.
 	cm.ObservationMaskThreshold = 0.99
@@ -110,8 +110,8 @@ func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *tes
 		FilesTouched: []string{"auth.go"},
 	})
 
-	ooda := &OODAStrategy{
-		SessionLogStrategy: &SessionLogStrategy{
+	ooda := &oodaStrategy{
+		sessionLogStrategy: &sessionLogStrategy{
 			cm:  cm,
 			log: sessionLog,
 		},
@@ -156,7 +156,7 @@ func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *tes
 func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewContextManager(profile, client)
+	cm := newContextManager(profile, client)
 
 	// Set thresholds high so no compaction occurs.
 	cm.ObservationMaskThreshold = 0.99
@@ -178,8 +178,8 @@ func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 		Outcome: "success",
 	})
 
-	ooda := &OODAStrategy{
-		SessionLogStrategy: &SessionLogStrategy{
+	ooda := &oodaStrategy{
+		sessionLogStrategy: &sessionLogStrategy{
 			cm:  cm,
 			log: sessionLog,
 		},
@@ -209,7 +209,7 @@ func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 func TestOODAStrategy_ManageContext_AppliesCompactionLayers(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewContextManager(profile, client)
+	cm := newContextManager(profile, client)
 
 	// Set low thresholds to trigger compaction.
 	cm.ObservationMaskThreshold = 0.05
@@ -229,8 +229,8 @@ func TestOODAStrategy_ManageContext_AppliesCompactionLayers(t *testing.T) {
 		Outcome: "success",
 	})
 
-	ooda := &OODAStrategy{
-		SessionLogStrategy: &SessionLogStrategy{
+	ooda := &oodaStrategy{
+		sessionLogStrategy: &sessionLogStrategy{
 			cm:  cm,
 			log: sessionLog,
 		},
@@ -275,7 +275,7 @@ func TestOODAStrategy_ManageContext_AppliesCompactionLayers(t *testing.T) {
 		t.Fatalf("ManageContext returned error: %v", err)
 	}
 
-	// Should have applied compaction (inherited from SessionLogStrategy).
+	// Should have applied compaction (inherited from sessionLogStrategy).
 	if len(emittedLayers) == 0 {
 		t.Fatal("expected at least one compaction event")
 	}
@@ -316,9 +316,9 @@ func TestOODAStrategy_AfterAction_InheritsFromSessionLogStrategy(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
 
-	ooda := &OODAStrategy{
-		SessionLogStrategy: &SessionLogStrategy{
-			cm:      NewContextManager(profile, client),
+	ooda := &oodaStrategy{
+		sessionLogStrategy: &sessionLogStrategy{
+			cm:      newContextManager(profile, client),
 			log:     mustNewSessionLog(t, logPath),
 			session: &Session{profile: profile},
 		},

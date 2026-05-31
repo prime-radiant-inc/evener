@@ -9,26 +9,26 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// SessionLogStrategy combines compact layers 1+2 (observation masking and
+// sessionLogStrategy combines compact layers 1+2 (observation masking and
 // thinking clearing) with a session-log-based checkpoint (replacing the
 // deterministic layer 3), LLM summarization fallback (layer 4), a recall
 // tool, and forked summarization in AfterAction.
-type SessionLogStrategy struct {
-	cm      *ContextManager
-	session StrategyHost
+type sessionLogStrategy struct {
+	cm      *contextManager
+	session strategyHost
 	log     *SessionLog
 }
 
-// NewSessionLogStrategy creates a SessionLogStrategy backed by the given
-// ContextManager and host. The session log is persisted alongside the
+// newSessionLogStrategy creates a sessionLogStrategy backed by the given
+// contextManager and host. The session log is persisted alongside the
 // session snapshot.
-func NewSessionLogStrategy(cm *ContextManager, host StrategyHost) (*SessionLogStrategy, error) {
+func newSessionLogStrategy(cm *contextManager, host strategyHost) (*sessionLogStrategy, error) {
 	logPath := filepath.Join(host.StateDir(), "sessions", host.ID()+".log.jsonl")
 	log, err := NewSessionLog(logPath)
 	if err != nil {
 		return nil, fmt.Errorf("session log strategy: %w", err)
 	}
-	return &SessionLogStrategy{
+	return &sessionLogStrategy{
 		cm:      cm,
 		session: host,
 		log:     log,
@@ -36,16 +36,16 @@ func NewSessionLogStrategy(cm *ContextManager, host StrategyHost) (*SessionLogSt
 }
 
 // Name returns the strategy's identifier, "session-log".
-func (s *SessionLogStrategy) Name() string { return "session-log" }
+func (s *sessionLogStrategy) Name() string { return "session-log" }
 
 // Tools returns the tools provided by this strategy, namely the recall tool.
-func (s *SessionLogStrategy) Tools() []RegisteredTool {
+func (s *sessionLogStrategy) Tools() []RegisteredTool {
 	return []RegisteredTool{sessionLogRecallToolDef(s)}
 }
 
 // sessionLogRecallToolDef builds the recall RegisteredTool for this strategy.
-func sessionLogRecallToolDef(strategy *SessionLogStrategy) RegisteredTool {
-	return buildRecallTool(func() StrategyHost { return strategy.session })
+func sessionLogRecallToolDef(strategy *sessionLogStrategy) RegisteredTool {
+	return buildRecallTool(func() strategyHost { return strategy.session })
 }
 
 // ManageContext applies compaction layers selectively:
@@ -53,7 +53,7 @@ func sessionLogRecallToolDef(strategy *SessionLogStrategy) RegisteredTool {
 //   - Layer 2: thinking clearing
 //   - Layer 3 (replaced): session-log checkpoint instead of deterministic checkpoint
 //   - Layer 4: LLM summarization fallback
-func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s *sessionLogStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
 	if s.cm == nil {
 		return nil
 	}
@@ -169,7 +169,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]Turn,
 
 // sessionLogCheckpoint replaces old history with a checkpoint built from the
 // session log. Returns a new history slice: [checkpoint_turn, ...preserved_recent].
-func (s *SessionLogStrategy) sessionLogCheckpoint(history []Turn, preserveRecent int) []Turn {
+func (s *sessionLogStrategy) sessionLogCheckpoint(history []Turn, preserveRecent int) []Turn {
 	if len(history) <= preserveRecent {
 		return history
 	}
@@ -244,7 +244,7 @@ func extractOriginalPromptLine(text, prefix string) string {
 
 // AfterAction forks a summarization of the recent turns and appends the
 // result to the session log. Errors from the LLM are non-fatal.
-func (s *SessionLogStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
+func (s *sessionLogStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
 	if s.session == nil || s.session.Profile() == nil {
 		return nil
 	}

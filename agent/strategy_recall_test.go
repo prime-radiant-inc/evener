@@ -11,18 +11,18 @@ import (
 )
 
 func TestRecallStrategy_SatisfiesInterface(t *testing.T) {
-	var _ ContextStrategy = (*RecallStrategy)(nil)
+	var _ ContextStrategy = (*recallStrategy)(nil)
 }
 
 func TestRecallStrategy_Name(t *testing.T) {
-	rs := &RecallStrategy{}
+	rs := &recallStrategy{}
 	if rs.Name() != "recall" {
 		t.Errorf("expected name %q, got %q", "recall", rs.Name())
 	}
 }
 
 func TestRecallStrategy_Tools_RegistersRecall(t *testing.T) {
-	rs := &RecallStrategy{}
+	rs := &recallStrategy{}
 	tools := rs.Tools()
 	if len(tools) != 1 {
 		t.Fatalf("expected 1 tool, got %d", len(tools))
@@ -60,7 +60,7 @@ func TestRecallStrategy_Tools_RegistersRecall(t *testing.T) {
 }
 
 func TestRecallStrategy_AfterAction_Noop(t *testing.T) {
-	rs := &RecallStrategy{}
+	rs := &recallStrategy{}
 	err := rs.AfterAction(context.Background(), nil, nil)
 	if err != nil {
 		t.Errorf("AfterAction should be no-op, got error: %v", err)
@@ -70,9 +70,9 @@ func TestRecallStrategy_AfterAction_Noop(t *testing.T) {
 func TestRecallStrategy_ManageContext_DelegatesToCompact(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewContextManager(profile, client)
+	cm := newContextManager(profile, client)
 
-	rs := NewRecallStrategy(cm, nil)
+	rs := newRecallStrategy(cm, nil)
 
 	// Simple history that won't trigger compaction.
 	history := []Turn{
@@ -153,10 +153,10 @@ func TestRecallStrategy_RecallTool_SearchesTranscript(t *testing.T) {
 	}
 	c.Register(f)
 
-	// Build the RecallStrategy with a mock session-like setup.
+	// Build the recallStrategy with a mock session-like setup.
 	// We need the session to provide: client, profile model/provider, stateDir, id.
-	rs := &RecallStrategy{
-		compact: &CompactStrategy{},
+	rs := &recallStrategy{
+		compact: &compactStrategy{},
 	}
 
 	// Get the recall tool and test its executor directly.
@@ -199,7 +199,7 @@ func TestRecallStrategy_RecallTool_NoTranscript(t *testing.T) {
 }
 
 func TestRecallStrategy_Integration_ViaTool(t *testing.T) {
-	// Test the full flow: Session creates RecallStrategy, the recall tool
+	// Test the full flow: Session creates recallStrategy, the recall tool
 	// saves the session and runs the sub-agent.
 	dir := t.TempDir()
 

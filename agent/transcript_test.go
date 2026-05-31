@@ -1484,7 +1484,7 @@ func TestSummarizeWithLLM_UsesTurnSummaryKind(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), client)
+	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), client)
 
 	history := []Turn{
 		{Kind: TurnUserInput, Message: llm.User("Fix the auth bug")},
@@ -1514,7 +1514,7 @@ func TestSummarizeWithLLM_UsesTurnSummaryKind(t *testing.T) {
 func TestMaybeCompact_CallsOnCompactionTurn(t *testing.T) {
 	// Use a tiny context window to force checkpoint (L3).
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 500}
-	cm := NewContextManager(profile, nil)
+	cm := newContextManager(profile, nil)
 	cm.PreserveRecentTurns = 2
 
 	// Use assistant text (not tool results) so observation masking can't reduce pressure.

@@ -19,7 +19,7 @@ func (s *Session) ContextMetrics() ContextMetrics {
 }
 
 // EstimateUsage returns the estimated used, total, and remaining context tokens.
-func (cm *ContextManager) EstimateUsage(history []Turn, sysPromptChars int) ContextMetrics {
+func (cm *contextManager) EstimateUsage(history []Turn, sysPromptChars int) ContextMetrics {
 	cw := cm.currentProfile().ContextWindowSize()
 	if cw <= 0 {
 		return ContextMetrics{}

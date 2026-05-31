@@ -12,18 +12,18 @@ import (
 )
 
 func TestSessionLogStrategy_SatisfiesInterface(t *testing.T) {
-	var _ ContextStrategy = (*SessionLogStrategy)(nil)
+	var _ ContextStrategy = (*sessionLogStrategy)(nil)
 }
 
 func TestSessionLogStrategy_Name(t *testing.T) {
-	s := &SessionLogStrategy{}
+	s := &sessionLogStrategy{}
 	if s.Name() != "session-log" {
 		t.Errorf("expected name %q, got %q", "session-log", s.Name())
 	}
 }
 
 func TestSessionLogStrategy_Tools_RegistersRecall(t *testing.T) {
-	s := &SessionLogStrategy{}
+	s := &sessionLogStrategy{}
 	tools := s.Tools()
 	if len(tools) != 1 {
 		t.Fatalf("expected 1 tool, got %d", len(tools))
@@ -48,7 +48,7 @@ func TestSessionLogStrategy_Tools_RegistersRecall(t *testing.T) {
 func TestSessionLogStrategy_ManageContext_ObservationMaskAtHighPressure(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewContextManager(profile, client)
+	cm := newContextManager(profile, client)
 
 	// Set a low observation mask threshold so compaction triggers on our test data.
 	cm.ObservationMaskThreshold = 0.05
@@ -59,7 +59,7 @@ func TestSessionLogStrategy_ManageContext_ObservationMaskAtHighPressure(t *testi
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
-	sls := &SessionLogStrategy{
+	sls := &sessionLogStrategy{
 		cm:  cm,
 		log: mustNewSessionLog(t, logPath),
 	}
@@ -125,7 +125,7 @@ func TestSessionLogStrategy_ManageContext_ObservationMaskAtHighPressure(t *testi
 func TestSessionLogStrategy_ManageContext_SessionLogCheckpointAtHighPressure(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewContextManager(profile, client)
+	cm := newContextManager(profile, client)
 
 	// Set thresholds so checkpoint triggers but not summarize.
 	cm.ObservationMaskThreshold = 0.01
@@ -153,7 +153,7 @@ func TestSessionLogStrategy_ManageContext_SessionLogCheckpointAtHighPressure(t *
 		FilesTouched: []string{"auth.go"},
 	})
 
-	sls := &SessionLogStrategy{
+	sls := &sessionLogStrategy{
 		cm:  cm,
 		log: sessionLog,
 	}
@@ -256,8 +256,8 @@ func TestSessionLogStrategy_AfterAction_CallsForkSummarizeAndAppendsToLog(t *tes
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
 
-	sls := &SessionLogStrategy{
-		cm:      NewContextManager(profile, client),
+	sls := &sessionLogStrategy{
+		cm:      newContextManager(profile, client),
 		log:     mustNewSessionLog(t, logPath),
 		session: &Session{profile: profile},
 	}
@@ -313,8 +313,8 @@ func TestSessionLogStrategy_AfterAction_LLMErrorIsNonFatal(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
 
-	sls := &SessionLogStrategy{
-		cm:      NewContextManager(profile, client),
+	sls := &sessionLogStrategy{
+		cm:      newContextManager(profile, client),
 		log:     mustNewSessionLog(t, logPath),
 		session: &Session{profile: profile},
 	}
@@ -339,7 +339,7 @@ func TestSessionLogStrategy_SessionLogCheckpoint_EmptyLog(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
 
-	sls := &SessionLogStrategy{
+	sls := &sessionLogStrategy{
 		log: mustNewSessionLog(t, logPath),
 	}
 
@@ -387,7 +387,7 @@ func TestSessionLogStrategy_SessionLogCheckpoint_PreservesRecentTurns(t *testing
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
 
-	sls := &SessionLogStrategy{
+	sls := &sessionLogStrategy{
 		log: mustNewSessionLog(t, logPath),
 	}
 
@@ -418,7 +418,7 @@ func TestSessionLogStrategy_SessionLogCheckpoint_TooFewTurns(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
 
-	sls := &SessionLogStrategy{
+	sls := &sessionLogStrategy{
 		log: mustNewSessionLog(t, logPath),
 	}
 
@@ -439,7 +439,7 @@ func TestSessionLogStrategy_SessionLogCheckpoint_TurnKind(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
 
-	sls := &SessionLogStrategy{
+	sls := &sessionLogStrategy{
 		log: mustNewSessionLog(t, logPath),
 	}
 
@@ -463,7 +463,7 @@ func TestSessionLogStrategy_SessionLogCheckpoint_TurnKind(t *testing.T) {
 func TestSessionLogStrategy_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewContextManager(profile, client)
+	cm := newContextManager(profile, client)
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001
 	cm.CheckpointThreshold = 0.0001
@@ -477,7 +477,7 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
-	sls := &SessionLogStrategy{
+	sls := &sessionLogStrategy{
 		cm:  cm,
 		log: mustNewSessionLog(t, logPath),
 	}
@@ -525,7 +525,7 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 	client.Register(f)
 
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := NewContextManager(profile, client)
+	cm := newContextManager(profile, client)
 	// All thresholds very low so all layers fire.
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001
@@ -540,7 +540,7 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "test.log.jsonl")
-	sls := &SessionLogStrategy{
+	sls := &sessionLogStrategy{
 		cm:  cm,
 		log: mustNewSessionLog(t, logPath),
 	}

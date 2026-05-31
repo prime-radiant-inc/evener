@@ -8,7 +8,7 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// RecursiveDistillStrategy implements logarithmic memory hierarchy through
+// recursiveDistillStrategy implements logarithmic memory hierarchy through
 // continuous micro-compactions. Every 10 turns, recent actions are distilled
 // into 1-2 sentences (micro-summary). Every 50 turns (5 micro-summaries),
 // the micro-summaries are folded into a macro-summary. This creates a
@@ -17,18 +17,18 @@ import (
 //
 // Uses compact as the base compaction mechanism, with distilled summaries
 // injected as a steering message that survives compaction.
-type RecursiveDistillStrategy struct {
-	cm             *ContextManager
+type recursiveDistillStrategy struct {
+	cm             *contextManager
 	microSummaries []string
 	macroSummaries []string
 	lastMicroAt    int // turn count at last micro-summary
 	lastMacroAt    int // turn count at last macro-summary
 }
 
-// NewRecursiveDistillStrategy returns a RecursiveDistillStrategy bound to the
-// given ContextManager with empty micro- and macro-summary hierarchies.
-func NewRecursiveDistillStrategy(cm *ContextManager) *RecursiveDistillStrategy {
-	return &RecursiveDistillStrategy{
+// newRecursiveDistillStrategy returns a recursiveDistillStrategy bound to the
+// given contextManager with empty micro- and macro-summary hierarchies.
+func newRecursiveDistillStrategy(cm *contextManager) *recursiveDistillStrategy {
+	return &recursiveDistillStrategy{
 		cm:             cm,
 		microSummaries: []string{},
 		macroSummaries: []string{},
@@ -36,15 +36,15 @@ func NewRecursiveDistillStrategy(cm *ContextManager) *RecursiveDistillStrategy {
 }
 
 // Name returns the strategy identifier "recursive-distill".
-func (s *RecursiveDistillStrategy) Name() string { return "recursive-distill" }
+func (s *recursiveDistillStrategy) Name() string { return "recursive-distill" }
 
 // Tools returns nil, as this strategy registers no tools.
-func (s *RecursiveDistillStrategy) Tools() []RegisteredTool { return nil }
+func (s *recursiveDistillStrategy) Tools() []RegisteredTool { return nil }
 
 // ManageContext runs the standard compact compaction and then, if any
 // distilled summaries exist, injects the distilled memory hierarchy as a
 // steering message at the end of history.
-func (s *RecursiveDistillStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s *recursiveDistillStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
 	// Run standard compact compaction.
 	s.cm.MaybeCompact(ctx, history, sysPromptChars, emitFn)
 
@@ -58,7 +58,7 @@ func (s *RecursiveDistillStrategy) ManageContext(ctx context.Context, history *[
 
 // injectDistilledContext places the distilled memory hierarchy as a steering
 // message at the end of history. Removes any previous distilled turn first.
-func (s *RecursiveDistillStrategy) injectDistilledContext(history *[]Turn) {
+func (s *recursiveDistillStrategy) injectDistilledContext(history *[]Turn) {
 	var b strings.Builder
 	b.WriteString("[DISTILLED MEMORY]\n")
 
@@ -96,7 +96,7 @@ func (s *RecursiveDistillStrategy) injectDistilledContext(history *[]Turn) {
 
 // AfterAction checks if enough turns have accumulated for a micro or macro
 // distillation step.
-func (s *RecursiveDistillStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
+func (s *recursiveDistillStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
 	if client == nil || s.cm == nil {
 		return nil
 	}
@@ -126,7 +126,7 @@ func (s *RecursiveDistillStrategy) AfterAction(ctx context.Context, history []Tu
 }
 
 // microSummarize distills the last 10 turns into 1-2 sentences.
-func (s *RecursiveDistillStrategy) microSummarize(ctx context.Context, client *llm.Client, history []Turn) (string, error) {
+func (s *recursiveDistillStrategy) microSummarize(ctx context.Context, client *llm.Client, history []Turn) (string, error) {
 	recent := history
 	if len(recent) > 10 {
 		recent = recent[len(recent)-10:]
@@ -171,7 +171,7 @@ Status update:`, b.String())
 }
 
 // macroSummarize folds multiple micro-summaries into a single overview sentence.
-func (s *RecursiveDistillStrategy) macroSummarize(ctx context.Context, client *llm.Client, micros []string) (string, error) {
+func (s *recursiveDistillStrategy) macroSummarize(ctx context.Context, client *llm.Client, micros []string) (string, error) {
 	var b strings.Builder
 	for i, m := range micros {
 		b.WriteString(fmt.Sprintf("%d. %s\n", i+1, m))

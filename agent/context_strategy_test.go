@@ -49,19 +49,19 @@ func (s *spyStrategy) AfterActionCount() int {
 }
 
 func TestContextStrategyInterface(t *testing.T) {
-	// Verify that CompactStrategy satisfies the ContextStrategy interface.
-	var _ ContextStrategy = (*CompactStrategy)(nil)
+	// Verify that compactStrategy satisfies the ContextStrategy interface.
+	var _ ContextStrategy = (*compactStrategy)(nil)
 }
 
 func TestCompactStrategyName(t *testing.T) {
-	cs := &CompactStrategy{}
+	cs := &compactStrategy{}
 	if cs.Name() != "compact" {
 		t.Errorf("expected name %q, got %q", "compact", cs.Name())
 	}
 }
 
 func TestCompactStrategyTools(t *testing.T) {
-	cs := &CompactStrategy{}
+	cs := &compactStrategy{}
 	if len(cs.Tools()) != 0 {
 		t.Errorf("compact strategy should register no tools, got %d", len(cs.Tools()))
 	}
@@ -72,10 +72,10 @@ func TestCompactStrategyManageContext_Delegation(t *testing.T) {
 	// the 80% checkpoint threshold.
 	client := llm.NewClient()
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 500}
-	cm := NewContextManager(profile, client)
+	cm := newContextManager(profile, client)
 	cm.PreserveRecentTurns = 2
 
-	cs := NewCompactStrategy(cm)
+	cs := newCompactStrategy(cm)
 
 	// ~425 tokens (85% of 500) to exceed checkpoint threshold.
 	history := []Turn{
@@ -91,7 +91,7 @@ func TestCompactStrategyManageContext_Delegation(t *testing.T) {
 		emittedEvent = kind
 	}
 
-	// ManageContext should delegate to ContextManager.MaybeCompact, which should
+	// ManageContext should delegate to contextManager.MaybeCompact, which should
 	// emit a compaction event because pressure exceeds the threshold.
 	ctx := context.Background()
 	err := cs.ManageContext(ctx, &history, 0, emitFn)
@@ -228,7 +228,7 @@ func TestCompactionThresholdScale(t *testing.T) {
 }
 
 func TestSession_ContextStrategy_DefaultIsCompact(t *testing.T) {
-	// When no strategy is specified, default to CompactStrategy.
+	// When no strategy is specified, default to compactStrategy.
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})

@@ -8,30 +8,30 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// CheckpointPredStrategy replaces the deterministic checkpoint (Layer 3) with
+// checkpointPredStrategy replaces the deterministic checkpoint (Layer 3) with
 // a forward-looking predictive checkpoint. Before compaction, a cheap model
 // predicts what information the agent will need going forward and generates a
 // targeted checkpoint preserving exactly that.
 //
-// Layers 1, 2, and 4 are identical to CompactStrategy.
-type CheckpointPredStrategy struct {
-	cm *ContextManager
+// Layers 1, 2, and 4 are identical to compactStrategy.
+type checkpointPredStrategy struct {
+	cm *contextManager
 }
 
-// NewCheckpointPredStrategy returns a CheckpointPredStrategy bound to the given
-// ContextManager.
-func NewCheckpointPredStrategy(cm *ContextManager) *CheckpointPredStrategy {
-	return &CheckpointPredStrategy{cm: cm}
+// newCheckpointPredStrategy returns a checkpointPredStrategy bound to the given
+// contextManager.
+func newCheckpointPredStrategy(cm *contextManager) *checkpointPredStrategy {
+	return &checkpointPredStrategy{cm: cm}
 }
 
 // Name returns the strategy's identifier, "checkpoint-pred".
-func (s *CheckpointPredStrategy) Name() string { return "checkpoint-pred" }
+func (s *checkpointPredStrategy) Name() string { return "checkpoint-pred" }
 
 // Tools returns nil; this strategy registers no tools.
-func (s *CheckpointPredStrategy) Tools() []RegisteredTool { return nil }
+func (s *checkpointPredStrategy) Tools() []RegisteredTool { return nil }
 
 // AfterAction is a no-op for this strategy and always returns nil.
-func (s *CheckpointPredStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
+func (s *checkpointPredStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
 	return nil
 }
 
@@ -41,9 +41,9 @@ func (s *CheckpointPredStrategy) AfterAction(ctx context.Context, history []Turn
 // (falling back to the deterministic checkpoint on error), and LLM
 // summarization. Each layer that compacts emits an EventContextCompaction
 // event, except the summarization layer, which emits one only on success and
-// an EventWarning on failure. It is a no-op when no ContextManager or context
+// an EventWarning on failure. It is a no-op when no contextManager or context
 // window is configured.
-func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s *checkpointPredStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
 	if s.cm == nil {
 		return nil
 	}
@@ -165,7 +165,7 @@ func (s *CheckpointPredStrategy) ManageContext(ctx context.Context, history *[]T
 
 // predictiveCheckpoint asks a cheap model to predict what information the agent
 // will need going forward, then creates a targeted checkpoint preserving that.
-func (s *CheckpointPredStrategy) predictiveCheckpoint(ctx context.Context, history []Turn, preserveRecent int) ([]Turn, error) {
+func (s *checkpointPredStrategy) predictiveCheckpoint(ctx context.Context, history []Turn, preserveRecent int) ([]Turn, error) {
 	if len(history) <= preserveRecent {
 		return history, nil
 	}

@@ -82,7 +82,7 @@ func TestEstimateTokens_WithThinking(t *testing.T) {
 }
 
 func TestContextManager_AddUsage_Accumulates(t *testing.T) {
-	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), nil)
+	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), nil)
 	cm.AddUsage(llm.Usage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150})
 	cm.AddUsage(llm.Usage{InputTokens: 200, OutputTokens: 100, TotalTokens: 300})
 
@@ -99,7 +99,7 @@ func TestContextManager_AddUsage_Accumulates(t *testing.T) {
 }
 
 func TestContextManager_CumulativeUsage_ThreadSafe(t *testing.T) {
-	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), nil)
+	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), nil)
 
 	var wg sync.WaitGroup
 	for i := 0; i < 100; i++ {
@@ -678,7 +678,7 @@ func TestSummarizeWithLLM_CallsCheapModel(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), client)
+	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), client)
 
 	history := []Turn{
 		{Kind: TurnUserInput, Message: llm.User("Fix the auth bug")},
@@ -711,7 +711,7 @@ func TestSummarizeWithLLM_ReplacesOldHistory(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), client)
+	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), client)
 
 	history := []Turn{
 		{Kind: TurnUserInput, Message: llm.User("task")},
@@ -749,7 +749,7 @@ func TestSummarizeWithLLM_PreservesRecentTurns(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), client)
+	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), client)
 
 	history := []Turn{
 		{Kind: TurnUserInput, Message: llm.User("task")},
@@ -778,7 +778,7 @@ func TestSummarizeWithLLM_ErrorFallsBackGracefully(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), client)
+	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), client)
 
 	history := []Turn{
 		{Kind: TurnUserInput, Message: llm.User("task")},
@@ -813,7 +813,7 @@ func makeBigHistory(targetTokens int) []Turn {
 func TestMaybeCompact_NoCompactionBelow80Percent(t *testing.T) {
 	// At 70% pressure, no compaction should fire. Compaction starts at 80% (checkpoint).
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
-	cm := NewContextManager(profile, nil)
+	cm := newContextManager(profile, nil)
 	cm.PreserveRecentTurns = 2
 
 	// Create history filling ~70% of 1000 tokens = 700 tokens via tool results.
@@ -838,7 +838,7 @@ func TestMaybeCompact_NoCompactionBelow80Percent(t *testing.T) {
 }
 
 func TestMaybeCompact_BelowThreshold_NoAction(t *testing.T) {
-	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), nil)
+	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), nil)
 
 	// Small history, well below any threshold.
 	history := []Turn{
@@ -866,7 +866,7 @@ func TestMaybeCompact_BelowThreshold_NoAction(t *testing.T) {
 
 func TestMaybeCompact_CheckpointThreshold(t *testing.T) {
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 500}
-	cm := NewContextManager(profile, nil)
+	cm := newContextManager(profile, nil)
 	cm.PreserveRecentTurns = 2
 
 	// Each assistant turn ~400 chars = 100 tokens. Need 85% of 500 = 425 tokens.
@@ -909,7 +909,7 @@ func TestMaybeCompact_CheckpointThreshold(t *testing.T) {
 
 func TestMaybeCompact_EmitsEvents(t *testing.T) {
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 500}
-	cm := NewContextManager(profile, nil)
+	cm := newContextManager(profile, nil)
 	cm.PreserveRecentTurns = 2
 
 	// Fill ~85% = 425 tokens (above 80% checkpoint threshold).
@@ -947,7 +947,7 @@ func TestMaybeCompact_EmitsEvents(t *testing.T) {
 
 func TestMaybeCompact_RespectsSysPromptSize(t *testing.T) {
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
-	cm := NewContextManager(profile, nil)
+	cm := newContextManager(profile, nil)
 	cm.PreserveRecentTurns = 2
 
 	// Small history, but giant system prompt.
@@ -1244,7 +1244,7 @@ func TestSummarizeWithLLM_AdjustsCutoffToAvoidOrphanedToolTurn(t *testing.T) {
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), client)
+	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), client)
 
 	history := []Turn{
 		{Kind: TurnUserInput, Message: llm.User("task")},
@@ -1338,7 +1338,7 @@ func TestSummarizeWithLLM_TruncatesPromptForCheapModel(t *testing.T) {
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), client)
+	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), client)
 
 	// Build history with enormous user messages — many times larger than any cheap model can handle.
 	history := []Turn{
@@ -1374,7 +1374,7 @@ func TestSummarizeWithLLM_RequestsInterleavedConversationTimeline(t *testing.T) 
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), client)
+	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), client)
 
 	history := []Turn{
 		{Kind: TurnUserInput, Message: llm.User("first request")},
@@ -1399,7 +1399,7 @@ func TestSummarizeWithLLM_AdapterError_ReturnsError(t *testing.T) {
 	adapter := &errorAdapter{name: "openai"}
 	client := llm.NewClient()
 	client.Register(adapter)
-	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), client)
+	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), client)
 
 	history := []Turn{
 		{Kind: TurnUserInput, Message: llm.User("task")},
@@ -1652,11 +1652,11 @@ func TestCheckpoint_IncludesWebSearchCount(t *testing.T) {
 	}
 }
 
-// Token-based pressure: ContextManager should use actual InputTokens from API
+// Token-based pressure: contextManager should use actual InputTokens from API
 // responses for pressure calculation instead of relying solely on char/4.
 func TestContextManager_UsesLastInputTokensForPressure(t *testing.T) {
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
-	cm := NewContextManager(profile, nil)
+	cm := newContextManager(profile, nil)
 
 	// Record that the last API response reported 550 input tokens for a 10-turn history.
 	cm.RecordInputTokens(550, 10)
@@ -1681,7 +1681,7 @@ func TestContextManager_UsesLastInputTokensForPressure(t *testing.T) {
 
 func TestContextManager_EstimateUsageReportsRemainingWindow(t *testing.T) {
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
-	cm := NewContextManager(profile, nil)
+	cm := newContextManager(profile, nil)
 	cm.RecordInputTokens(550, 10)
 
 	history := make([]Turn, 11)
@@ -1695,7 +1695,7 @@ func TestContextManager_EstimateUsageReportsRemainingWindow(t *testing.T) {
 
 func TestContextManager_FallsBackToCharHeuristicWithoutMeasurement(t *testing.T) {
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
-	cm := NewContextManager(profile, nil)
+	cm := newContextManager(profile, nil)
 
 	// No RecordInputTokens called — should fall back to char/4.
 	history := []Turn{
@@ -1712,7 +1712,7 @@ func TestContextManager_FallsBackToCharHeuristicWithoutMeasurement(t *testing.T)
 
 func TestContextManager_ResetsAfterCompaction(t *testing.T) {
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
-	cm := NewContextManager(profile, nil)
+	cm := newContextManager(profile, nil)
 	cm.PreserveRecentTurns = 2
 
 	// Record high token count.
@@ -1819,7 +1819,7 @@ func TestSummarizeWithLLM_SafeCutoffNegative_ReturnsUnchanged(t *testing.T) {
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), client)
+	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), client)
 
 	// Same scenario as checkpoint test: cutoff walks to 0 → return -1.
 	history := []Turn{
@@ -1906,7 +1906,7 @@ func TestMaybeCompact_SummarizeThreshold(t *testing.T) {
 	// message, but the preserved recent turns are large enough to keep
 	// pressure above 90% after checkpoint, forcing summarize.
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 50}
-	cm := NewContextManager(profile, client)
+	cm := newContextManager(profile, client)
 	cm.PreserveRecentTurns = 1
 
 	// After checkpoint, result = [checkpoint_msg, recent_turn].
@@ -1981,7 +1981,7 @@ func startsWith(s, prefix string) bool {
 
 func TestPressure_ReturnsEstimate(t *testing.T) {
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
-	cm := NewContextManager(profile, nil)
+	cm := newContextManager(profile, nil)
 
 	history := []Turn{
 		{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("x", 400))},
@@ -1996,7 +1996,7 @@ func TestPressure_ReturnsEstimate(t *testing.T) {
 
 func TestPressure_ZeroContextWindow(t *testing.T) {
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 0}
-	cm := NewContextManager(profile, nil)
+	cm := newContextManager(profile, nil)
 
 	p := cm.Pressure(nil, 0)
 	if p != 0 {
@@ -2009,7 +2009,7 @@ func TestPressure_ZeroContextWindow(t *testing.T) {
 func TestContextManager_SetProfile_UpdatesContextWindow(t *testing.T) {
 	// Start with a 200K profile, switch to 1M. Pressure should reflect new window.
 	smallProfile := &baseProfile{id: "anthropic", model: "claude-opus-4-6", contextWindow: 200_000}
-	cm := NewContextManager(smallProfile, nil)
+	cm := newContextManager(smallProfile, nil)
 
 	// Record 100K tokens.
 	cm.RecordInputTokens(100_000, 5)
@@ -2049,7 +2049,7 @@ func TestForceCompact_RunsAllLayers(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 100_000}
-	cm := NewContextManager(profile, client)
+	cm := newContextManager(profile, client)
 	cm.PreserveRecentTurns = 2
 
 	history := []Turn{
@@ -2086,7 +2086,7 @@ func TestForceCompact_RunsAllLayers(t *testing.T) {
 func TestForceCompact_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 	// ForceCompact should fire OnCompactionTurn for TurnCheckpoint (L3).
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 100_000}
-	cm := NewContextManager(profile, nil) // no LLM client → L4 skipped
+	cm := newContextManager(profile, nil) // no LLM client → L4 skipped
 	cm.PreserveRecentTurns = 2
 
 	var callbackTurns []TurnKind
@@ -2131,7 +2131,7 @@ func TestForceCompact_FiresOnCompactionTurn_Summary(t *testing.T) {
 	client.Register(adapter)
 
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 100_000}
-	cm := NewContextManager(profile, client)
+	cm := newContextManager(profile, client)
 	cm.PreserveRecentTurns = 2
 
 	var callbackTurns []TurnKind
@@ -2172,7 +2172,7 @@ func TestForceCompact_BelowThreshold(t *testing.T) {
 	// Even with tiny history well below auto-compact thresholds,
 	// ForceCompact should still run the layers.
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1_000_000}
-	cm := NewContextManager(profile, nil) // no LLM client → summarize skipped
+	cm := newContextManager(profile, nil) // no LLM client → summarize skipped
 	cm.PreserveRecentTurns = 2
 
 	history := []Turn{

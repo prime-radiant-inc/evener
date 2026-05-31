@@ -6,11 +6,11 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// StrategyHost is the narrow surface a ContextStrategy needs from its owning
+// strategyHost is the narrow surface a ContextStrategy needs from its owning
 // session. Strategies depend on this interface rather than on *Session, which
 // breaks the context⇄session back-cycle: the strategy_*.go files no longer
-// reference the concrete *Session type. *Session satisfies StrategyHost.
-type StrategyHost interface {
+// reference the concrete *Session type. *Session satisfies strategyHost.
+type strategyHost interface {
 	Emit(kind EventKind, data any)
 	WithResponseSideEffects(ctx context.Context, fn func()) error
 	StateDir() string
@@ -38,30 +38,30 @@ type ContextStrategy interface {
 	Name() string
 }
 
-// CompactStrategy wraps the existing 4-layer progressive compaction.
-type CompactStrategy struct {
-	cm *ContextManager
+// compactStrategy wraps the existing 4-layer progressive compaction.
+type compactStrategy struct {
+	cm *contextManager
 }
 
-// NewCompactStrategy returns a CompactStrategy backed by the given ContextManager.
-func NewCompactStrategy(cm *ContextManager) *CompactStrategy {
-	return &CompactStrategy{cm: cm}
+// newCompactStrategy returns a compactStrategy backed by the given contextManager.
+func newCompactStrategy(cm *contextManager) *compactStrategy {
+	return &compactStrategy{cm: cm}
 }
 
 // Name returns the strategy identifier "compact".
-func (s *CompactStrategy) Name() string { return "compact" }
+func (s *compactStrategy) Name() string { return "compact" }
 
 // Tools returns no additional tool definitions for this strategy.
-func (s *CompactStrategy) Tools() []RegisteredTool { return nil }
+func (s *compactStrategy) Tools() []RegisteredTool { return nil }
 
 // AfterAction does nothing for this strategy and always returns nil.
-func (s *CompactStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
+func (s *compactStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
 	return nil
 }
 
-// ManageContext delegates to the ContextManager's MaybeCompact to reduce context
+// ManageContext delegates to the contextManager's MaybeCompact to reduce context
 // pressure before an LLM request and returns nil.
-func (s *CompactStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s *compactStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
 	s.cm.MaybeCompact(ctx, history, sysPromptChars, emitFn)
 	return nil
 }

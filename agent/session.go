@@ -72,7 +72,7 @@ type Session struct {
 	subagents *subagentManager
 
 	// context management
-	contextMgr *ContextManager
+	contextMgr *contextManager
 	strategy   ContextStrategy
 
 	// skills discovered at session startup
@@ -147,12 +147,12 @@ type Session struct {
 // ID returns the session's identifier.
 func (s *Session) ID() string { return s.id }
 
-// StrategyHost forwarders. Each is a one-line forwarder to existing state or
-// methods so context strategies can depend on the StrategyHost interface
+// strategyHost forwarders. Each is a one-line forwarder to existing state or
+// methods so context strategies can depend on the strategyHost interface
 // instead of the concrete *Session type. Emit and WithResponseSideEffects
 // forward to the existing emit/withResponseSideEffects so lock and
 // side-effect semantics are unchanged.
-var _ StrategyHost = (*Session)(nil)
+var _ strategyHost = (*Session)(nil)
 
 // Emit forwards to the session's internal emit, sending a session event of the
 // given kind with the given data.
@@ -417,7 +417,7 @@ func (s *Session) maybeAutoSave() {
 //
 // Thresholds are clamped to a minimum of 0.20 so that aggressive scaling
 // doesn't collapse all layers into a narrow band.
-func applyThresholdScale(cm *ContextManager, scale float64) {
+func applyThresholdScale(cm *contextManager, scale float64) {
 	if scale > 0 && scale != 1.0 {
 		clamp := func(v float64) float64 {
 			if v < 0.20 {

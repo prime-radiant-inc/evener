@@ -9,18 +9,18 @@ import (
 )
 
 func TestMemoryCrystalsStrategy_SatisfiesInterface(t *testing.T) {
-	var _ ContextStrategy = (*MemoryCrystalsStrategy)(nil)
+	var _ ContextStrategy = (*memoryCrystalsStrategy)(nil)
 }
 
 func TestMemoryCrystalsStrategy_Name(t *testing.T) {
-	s := &MemoryCrystalsStrategy{}
+	s := &memoryCrystalsStrategy{}
 	if s.Name() != "memory-crystals" {
 		t.Errorf("expected name %q, got %q", "memory-crystals", s.Name())
 	}
 }
 
 func TestMemoryCrystalsStrategy_Tools_ReturnsNil(t *testing.T) {
-	s := &MemoryCrystalsStrategy{}
+	s := &memoryCrystalsStrategy{}
 	if tools := s.Tools(); tools != nil {
 		t.Errorf("expected nil tools, got %v", tools)
 	}
@@ -29,8 +29,8 @@ func TestMemoryCrystalsStrategy_Tools_ReturnsNil(t *testing.T) {
 func TestMemoryCrystalsStrategy_AfterAction_SkipsNonThirdTurn(t *testing.T) {
 	client := llm.NewClient()
 	profile := NewOpenAIProfile("gpt-5.2")
-	cm := NewContextManager(profile, client)
-	s := NewMemoryCrystalsStrategy(cm)
+	cm := newContextManager(profile, client)
+	s := newMemoryCrystalsStrategy(cm)
 
 	// 2 turns — not a multiple of 3, so no crystallization.
 	history := []Turn{
@@ -64,8 +64,8 @@ func TestMemoryCrystalsStrategy_AfterAction_CrystallizesEveryThird(t *testing.T)
 	client.Register(f)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	cm := NewContextManager(profile, client)
-	s := NewMemoryCrystalsStrategy(cm)
+	cm := newContextManager(profile, client)
+	s := newMemoryCrystalsStrategy(cm)
 
 	// 3 turns — multiple of 3, should trigger crystallization.
 	history := []Turn{
@@ -98,8 +98,8 @@ func TestMemoryCrystalsStrategy_AfterAction_CrystallizesEveryThird(t *testing.T)
 }
 
 func TestMemoryCrystalsStrategy_InjectCrystals(t *testing.T) {
-	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), nil)
-	s := NewMemoryCrystalsStrategy(cm)
+	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), nil)
+	s := newMemoryCrystalsStrategy(cm)
 	s.crystals = []MemoryCrystal{
 		{Turn: 3, Action: "read_file", Facts: "Read auth.go, 200 lines"},
 		{Turn: 6, Action: "edit_file", Facts: "Fixed nil check at line 42"},
@@ -135,8 +135,8 @@ func TestMemoryCrystalsStrategy_InjectCrystals(t *testing.T) {
 }
 
 func TestMemoryCrystalsStrategy_InjectCrystals_RemovesOld(t *testing.T) {
-	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), nil)
-	s := NewMemoryCrystalsStrategy(cm)
+	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), nil)
+	s := newMemoryCrystalsStrategy(cm)
 	s.crystals = []MemoryCrystal{
 		{Turn: 3, Action: "test", Facts: "new crystal"},
 	}
@@ -168,8 +168,8 @@ func TestMemoryCrystalsStrategy_InjectCrystals_RemovesOld(t *testing.T) {
 }
 
 func TestMemoryCrystalsStrategy_PruneOldCrystals(t *testing.T) {
-	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), nil)
-	s := NewMemoryCrystalsStrategy(cm)
+	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), nil)
+	s := newMemoryCrystalsStrategy(cm)
 
 	// Add 25 crystals.
 	for i := 0; i < 25; i++ {

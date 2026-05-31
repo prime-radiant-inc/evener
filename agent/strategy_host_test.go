@@ -10,9 +10,9 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// fakeStrategyHost is a minimal StrategyHost implementation that returns canned
+// fakeStrategyHost is a minimal strategyHost implementation that returns canned
 // values and records Emit calls. It proves that context strategies operate
-// through the StrategyHost seam without a real Session.
+// through the strategyHost seam without a real Session.
 type fakeStrategyHost struct {
 	stateDir string
 	id       string
@@ -39,11 +39,11 @@ func (h *fakeStrategyHost) Snapshot() SessionSnapshot { return SessionSnapshot{I
 func (h *fakeStrategyHost) Client() *llm.Client       { return h.client }
 
 func TestStrategyHost_FakeSatisfiesInterface(t *testing.T) {
-	var _ StrategyHost = (*fakeStrategyHost)(nil)
+	var _ strategyHost = (*fakeStrategyHost)(nil)
 }
 
 // TestSessionLogStrategy_OperatesWithFakeHost proves a strategy can be
-// constructed from and drive its work through a fake StrategyHost: the log
+// constructed from and drive its work through a fake strategyHost: the log
 // path is built from the host's StateDir/ID, and AfterAction routes its
 // summary side-effects through the host's WithResponseSideEffects + Emit.
 func TestSessionLogStrategy_OperatesWithFakeHost(t *testing.T) {
@@ -74,9 +74,9 @@ func TestSessionLogStrategy_OperatesWithFakeHost(t *testing.T) {
 
 	// Constructor accepts the fake host (not a real Session) and uses
 	// StateDir/ID to build the log path.
-	sls, err := NewSessionLogStrategy(NewContextManager(profile, client), host)
+	sls, err := newSessionLogStrategy(newContextManager(profile, client), host)
 	if err != nil {
-		t.Fatalf("NewSessionLogStrategy with fake host: %v", err)
+		t.Fatalf("newSessionLogStrategy with fake host: %v", err)
 	}
 
 	turns := []Turn{

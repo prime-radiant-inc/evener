@@ -9,39 +9,39 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// RecallStrategy extends CompactStrategy by adding a "recall" tool that spawns
+// recallStrategy extends compactStrategy by adding a "recall" tool that spawns
 // a sub-agent to search through the session transcript. This allows the main
 // agent to retrieve information from compacted-away history.
-type RecallStrategy struct {
-	compact *CompactStrategy
-	session StrategyHost // parent session for saving/transcript access
+type recallStrategy struct {
+	compact *compactStrategy
+	session strategyHost // parent session for saving/transcript access
 }
 
-// NewRecallStrategy creates a RecallStrategy backed by the given ContextManager.
+// newRecallStrategy creates a recallStrategy backed by the given contextManager.
 // The host reference may be nil during construction if not yet available.
-func NewRecallStrategy(cm *ContextManager, host StrategyHost) *RecallStrategy {
-	return &RecallStrategy{
-		compact: NewCompactStrategy(cm),
+func newRecallStrategy(cm *contextManager, host strategyHost) *recallStrategy {
+	return &recallStrategy{
+		compact: newCompactStrategy(cm),
 		session: host,
 	}
 }
 
 // Name returns the strategy's identifier, "recall".
-func (s *RecallStrategy) Name() string { return "recall" }
+func (s *recallStrategy) Name() string { return "recall" }
 
-// ManageContext delegates to the underlying CompactStrategy to manage the
+// ManageContext delegates to the underlying compactStrategy to manage the
 // conversation history.
-func (s *RecallStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s *recallStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
 	return s.compact.ManageContext(ctx, history, sysPromptChars, emitFn)
 }
 
-// AfterAction is a no-op for RecallStrategy.
-func (s *RecallStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
+// AfterAction is a no-op for recallStrategy.
+func (s *recallStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
 	return nil
 }
 
 // Tools returns the strategy's registered tools, namely the "recall" tool.
-func (s *RecallStrategy) Tools() []RegisteredTool {
+func (s *recallStrategy) Tools() []RegisteredTool {
 	return []RegisteredTool{recallToolDef(s)}
 }
 
@@ -51,14 +51,14 @@ func transcriptPath(stateDir, sessionID string) string {
 }
 
 // recallToolDef builds the RegisteredTool for the "recall" tool.
-func recallToolDef(strategy *RecallStrategy) RegisteredTool {
-	return buildRecallTool(func() StrategyHost { return strategy.session })
+func recallToolDef(strategy *recallStrategy) RegisteredTool {
+	return buildRecallTool(func() strategyHost { return strategy.session })
 }
 
 // buildRecallTool creates a recall RegisteredTool that uses getHost to
-// obtain the parent session at call time. Shared by RecallStrategy and
-// SessionLogStrategy.
-func buildRecallTool(getHost func() StrategyHost) RegisteredTool {
+// obtain the parent session at call time. Shared by recallStrategy and
+// sessionLogStrategy.
+func buildRecallTool(getHost func() strategyHost) RegisteredTool {
 	return RegisteredTool{
 		Tool: llm.Tool{
 			Definition: llm.ToolDefinition{

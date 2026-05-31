@@ -9,18 +9,18 @@ import (
 )
 
 func TestRecursiveDistillStrategy_SatisfiesInterface(t *testing.T) {
-	var _ ContextStrategy = (*RecursiveDistillStrategy)(nil)
+	var _ ContextStrategy = (*recursiveDistillStrategy)(nil)
 }
 
 func TestRecursiveDistillStrategy_Name(t *testing.T) {
-	s := &RecursiveDistillStrategy{}
+	s := &recursiveDistillStrategy{}
 	if s.Name() != "recursive-distill" {
 		t.Errorf("expected name %q, got %q", "recursive-distill", s.Name())
 	}
 }
 
 func TestRecursiveDistillStrategy_Tools_ReturnsNil(t *testing.T) {
-	s := &RecursiveDistillStrategy{}
+	s := &recursiveDistillStrategy{}
 	if tools := s.Tools(); tools != nil {
 		t.Errorf("expected nil tools, got %v", tools)
 	}
@@ -29,8 +29,8 @@ func TestRecursiveDistillStrategy_Tools_ReturnsNil(t *testing.T) {
 func TestRecursiveDistillStrategy_AfterAction_NoMicroBelowThreshold(t *testing.T) {
 	client := llm.NewClient()
 	profile := NewOpenAIProfile("gpt-5.2")
-	cm := NewContextManager(profile, client)
-	s := NewRecursiveDistillStrategy(cm)
+	cm := newContextManager(profile, client)
+	s := newRecursiveDistillStrategy(cm)
 
 	// 5 turns — not enough for micro-summary (needs 10).
 	history := make([]Turn, 5)
@@ -64,8 +64,8 @@ func TestRecursiveDistillStrategy_AfterAction_MicroAt10Turns(t *testing.T) {
 	client.Register(f)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	cm := NewContextManager(profile, client)
-	s := NewRecursiveDistillStrategy(cm)
+	cm := newContextManager(profile, client)
+	s := newRecursiveDistillStrategy(cm)
 
 	// 10 turns — should trigger micro-summary.
 	history := make([]Turn, 10)
@@ -117,8 +117,8 @@ func TestRecursiveDistillStrategy_AfterAction_MacroAt50Turns(t *testing.T) {
 	client.Register(f)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	cm := NewContextManager(profile, client)
-	s := NewRecursiveDistillStrategy(cm)
+	cm := newContextManager(profile, client)
+	s := newRecursiveDistillStrategy(cm)
 
 	// Pre-populate with 4 micro-summaries (simulating turns 10-40).
 	s.microSummaries = []string{
@@ -157,8 +157,8 @@ func TestRecursiveDistillStrategy_AfterAction_MacroAt50Turns(t *testing.T) {
 }
 
 func TestRecursiveDistillStrategy_InjectDistilledContext(t *testing.T) {
-	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), nil)
-	s := NewRecursiveDistillStrategy(cm)
+	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), nil)
+	s := newRecursiveDistillStrategy(cm)
 	s.macroSummaries = []string{"Phase 1: investigated and found root cause."}
 	s.microSummaries = []string{"Applied fix to auth.go.", "Running tests."}
 
@@ -193,8 +193,8 @@ func TestRecursiveDistillStrategy_InjectDistilledContext(t *testing.T) {
 }
 
 func TestRecursiveDistillStrategy_InjectDistilledContext_RemovesOld(t *testing.T) {
-	cm := NewContextManager(NewOpenAIProfile("gpt-5.2"), nil)
-	s := NewRecursiveDistillStrategy(cm)
+	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), nil)
+	s := newRecursiveDistillStrategy(cm)
 	s.microSummaries = []string{"new summary"}
 
 	history := []Turn{

@@ -8,32 +8,32 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// OODAStrategy extends SessionLogStrategy by injecting the session log as a
+// oodaStrategy extends sessionLogStrategy by injecting the session log as a
 // steering message before each LLM call (the Orient phase of the OODA loop).
-type OODAStrategy struct {
-	*SessionLogStrategy // embed for ManageContext layers, AfterAction, Tools
+type oodaStrategy struct {
+	*sessionLogStrategy // embed for ManageContext layers, AfterAction, Tools
 }
 
-// NewOODAStrategy creates an OODAStrategy backed by the given ContextManager
+// newOODAStrategy creates an oodaStrategy backed by the given contextManager
 // and host.
-func NewOODAStrategy(cm *ContextManager, host StrategyHost) (*OODAStrategy, error) {
-	sls, err := NewSessionLogStrategy(cm, host)
+func newOODAStrategy(cm *contextManager, host strategyHost) (*oodaStrategy, error) {
+	sls, err := newSessionLogStrategy(cm, host)
 	if err != nil {
 		return nil, err
 	}
-	return &OODAStrategy{
-		SessionLogStrategy: sls,
+	return &oodaStrategy{
+		sessionLogStrategy: sls,
 	}, nil
 }
 
 // Name returns the strategy's identifier, "ooda".
-func (s *OODAStrategy) Name() string { return "ooda" }
+func (s *oodaStrategy) Name() string { return "ooda" }
 
-// ManageContext applies normal compaction layers from SessionLogStrategy,
+// ManageContext applies normal compaction layers from sessionLogStrategy,
 // then injects the session log as an orientation message at the end of history.
-func (s *OODAStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s *oodaStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
 	// Apply normal compaction layers.
-	if err := s.SessionLogStrategy.ManageContext(ctx, history, sysPromptChars, emitFn); err != nil {
+	if err := s.sessionLogStrategy.ManageContext(ctx, history, sysPromptChars, emitFn); err != nil {
 		return err
 	}
 

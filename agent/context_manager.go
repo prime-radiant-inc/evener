@@ -19,9 +19,9 @@ type CompactionMeta struct {
 	ActivatedSkills []string // skill names activated during this session
 }
 
-// ContextManager tracks cumulative token usage and applies progressive
+// contextManager tracks cumulative token usage and applies progressive
 // compaction layers to conversation history as context fills up.
-type ContextManager struct {
+type contextManager struct {
 	profile  ProviderProfile
 	client   *llm.Client
 	cumUsage llm.Usage
@@ -58,9 +58,9 @@ type ContextManager struct {
 	Meta CompactionMeta
 }
 
-// NewContextManager creates a ContextManager with default thresholds.
-func NewContextManager(profile ProviderProfile, client *llm.Client) *ContextManager {
-	return &ContextManager{
+// newContextManager creates a contextManager with default thresholds.
+func newContextManager(profile ProviderProfile, client *llm.Client) *contextManager {
+	return &contextManager{
 		profile:                  profile,
 		client:                   client,
 		ObservationMaskThreshold: 0.60,
@@ -71,7 +71,7 @@ func NewContextManager(profile ProviderProfile, client *llm.Client) *ContextMana
 	}
 }
 
-func (cm *ContextManager) resultToolName() string {
+func (cm *contextManager) resultToolName() string {
 	if cm.ResultToolName != "" {
 		return cm.ResultToolName
 	}
@@ -79,14 +79,14 @@ func (cm *ContextManager) resultToolName() string {
 }
 
 // AddUsage records token usage from a completed LLM call.
-func (cm *ContextManager) AddUsage(u llm.Usage) {
+func (cm *contextManager) AddUsage(u llm.Usage) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	cm.cumUsage = cm.cumUsage.Add(u)
 }
 
 // CumulativeUsage returns accumulated session totals.
-func (cm *ContextManager) CumulativeUsage() llm.Usage {
+func (cm *contextManager) CumulativeUsage() llm.Usage {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	return cm.cumUsage
@@ -95,7 +95,7 @@ func (cm *ContextManager) CumulativeUsage() llm.Usage {
 // RecordInputTokens stores the exact input token count from an API response,
 // along with the history length at that point. This enables accurate pressure
 // calculation for subsequent turns without relying on the char/4 heuristic.
-func (cm *ContextManager) RecordInputTokens(tokens int, historyLen int) {
+func (cm *contextManager) RecordInputTokens(tokens int, historyLen int) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	cm.lastInputTokens = tokens
@@ -104,7 +104,7 @@ func (cm *ContextManager) RecordInputTokens(tokens int, historyLen int) {
 
 // SetProfile replaces the provider profile so that ContextWindowSize() and
 // other profile-derived values stay current after a model change.
-func (cm *ContextManager) SetProfile(profile ProviderProfile) {
+func (cm *contextManager) SetProfile(profile ProviderProfile) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	cm.profile = profile
@@ -113,27 +113,27 @@ func (cm *ContextManager) SetProfile(profile ProviderProfile) {
 // currentProfile returns the active profile under cm.mu so reads do not race
 // SetProfile (called from Session.SetModel). The profile pointer is swapped
 // atomically; a caller uses the returned value for the duration of one operation.
-func (cm *ContextManager) currentProfile() ProviderProfile {
+func (cm *contextManager) currentProfile() ProviderProfile {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	return cm.profile
 }
 
 // LastInputTokens returns the most recently recorded input token count.
-func (cm *ContextManager) LastInputTokens() int {
+func (cm *contextManager) LastInputTokens() int {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	return cm.lastInputTokens
 }
 
 // Pressure returns the current context pressure as a fraction (0.0–1.0).
-func (cm *ContextManager) Pressure(history []Turn, sysPromptChars int) float64 {
+func (cm *contextManager) Pressure(history []Turn, sysPromptChars int) float64 {
 	return cm.estimatePressure(history, sysPromptChars)
 }
 
 // estimatePressure calculates what fraction of the context window is in use.
 // Uses actual API-reported token counts when available, falling back to char/4.
-func (cm *ContextManager) estimatePressure(history []Turn, sysPromptChars int) float64 {
+func (cm *contextManager) estimatePressure(history []Turn, sysPromptChars int) float64 {
 	cw := cm.currentProfile().ContextWindowSize()
 	if cw <= 0 {
 		return 0
@@ -158,7 +158,7 @@ func (cm *ContextManager) estimatePressure(history []Turn, sysPromptChars int) f
 }
 
 // EstimatePressure returns the estimated fraction of context window in use.
-func (cm *ContextManager) EstimatePressure(history []Turn, sysPromptChars int) float64 {
+func (cm *contextManager) EstimatePressure(history []Turn, sysPromptChars int) float64 {
 	return cm.estimatePressure(history, sysPromptChars)
 }
 
@@ -176,7 +176,7 @@ func estimateTokens(turns []Turn) int {
 // MaybeCompact checks context pressure and applies compaction layers progressively.
 // It modifies history in place and emits events for each layer applied.
 // Called before each LLM request.
-func (cm *ContextManager) MaybeCompact(
+func (cm *contextManager) MaybeCompact(
 	ctx context.Context,
 	history *[]Turn,
 	sysPromptChars int,
@@ -263,7 +263,7 @@ func (cm *ContextManager) MaybeCompact(
 
 // ForceCompact runs all compaction layers unconditionally, regardless of context pressure.
 // Used for user-initiated compaction (e.g. /compact command).
-func (cm *ContextManager) ForceCompact(
+func (cm *contextManager) ForceCompact(
 	ctx context.Context,
 	history *[]Turn,
 	emitFn func(EventKind, any),
@@ -860,7 +860,7 @@ func sumCounts(m map[string]int) int {
 // summarizeWithLLM calls the cheap model to generate a narrative summary of
 // old history. Replaces old history with a single user message containing the
 // summary, preserving the most recent turns.
-func (cm *ContextManager) summarizeWithLLM(ctx context.Context, history []Turn, preserveRecent int) ([]Turn, error) {
+func (cm *contextManager) summarizeWithLLM(ctx context.Context, history []Turn, preserveRecent int) ([]Turn, error) {
 	if len(history) <= preserveRecent {
 		return history, nil
 	}

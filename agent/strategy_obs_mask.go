@@ -8,7 +8,7 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// ObsMaskStrategy implements aggressive observation masking as the primary
+// obsMaskStrategy implements aggressive observation masking as the primary
 // context management mechanism. Based on JetBrains (NeurIPS 2025) finding that
 // dropping tool outputs equals or beats LLM summarization for code agents.
 //
@@ -17,35 +17,35 @@ import (
 // checkpoint only if still over pressure. No thinking clearing, no LLM
 // summarization — the hypothesis is that tool outputs are re-readable, so
 // preserving reasoning is more valuable than preserving observations.
-type ObsMaskStrategy struct {
-	cm *ContextManager
+type obsMaskStrategy struct {
+	cm *contextManager
 }
 
-// NewObsMaskStrategy returns an ObsMaskStrategy backed by the given ContextManager.
-func NewObsMaskStrategy(cm *ContextManager) *ObsMaskStrategy {
-	return &ObsMaskStrategy{cm: cm}
+// newObsMaskStrategy returns an obsMaskStrategy backed by the given contextManager.
+func newObsMaskStrategy(cm *contextManager) *obsMaskStrategy {
+	return &obsMaskStrategy{cm: cm}
 }
 
 // Name returns the strategy identifier "obs-mask".
-func (s *ObsMaskStrategy) Name() string { return "obs-mask" }
+func (s *obsMaskStrategy) Name() string { return "obs-mask" }
 
 // Tools returns the tools registered by this strategy; it registers none.
-func (s *ObsMaskStrategy) Tools() []RegisteredTool { return nil }
+func (s *obsMaskStrategy) Tools() []RegisteredTool { return nil }
 
 // AfterAction is a no-op; this strategy performs no work after each action.
-func (s *ObsMaskStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
+func (s *obsMaskStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
 	return nil
 }
 
 // ManageContext reduces context pressure in two layers. When pressure reaches
-// the ContextManager's ObservationMaskThreshold it aggressively masks tool
+// the contextManager's ObservationMaskThreshold it aggressively masks tool
 // outputs older than PreserveRecentTurns, replacing them with minimal markers.
 // If pressure still reaches CheckpointThreshold it then folds history into a
 // deterministic checkpoint. Each applied layer emits an EventContextCompaction
 // event via emitFn, and any compaction resets the manager's cached token
-// measurements. It is a no-op when no ContextManager is set or the context
+// measurements. It is a no-op when no contextManager is set or the context
 // window size is non-positive.
-func (s *ObsMaskStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s *obsMaskStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
 	if s.cm == nil {
 		return nil
 	}

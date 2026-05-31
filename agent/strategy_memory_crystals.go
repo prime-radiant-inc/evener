@@ -15,37 +15,37 @@ type MemoryCrystal struct {
 	Facts  string `json:"facts"`
 }
 
-// MemoryCrystalsStrategy uses compact compaction as the base, but periodically
+// memoryCrystalsStrategy uses compact compaction as the base, but periodically
 // crystallizes key facts into tiny structured summaries that survive all
 // compaction. Unlike session-log prose, crystals are machine-readable, small
 // (<100 tokens each), and cumulative.
 //
 // AfterAction: every 3rd action, call cheap model to extract key facts.
 // ManageContext: run compact, then inject crystal bank as steering message.
-type MemoryCrystalsStrategy struct {
-	cm       *ContextManager
+type memoryCrystalsStrategy struct {
+	cm       *contextManager
 	crystals []MemoryCrystal
 }
 
-// NewMemoryCrystalsStrategy returns a MemoryCrystalsStrategy that uses the
-// given ContextManager and starts with an empty crystal bank.
-func NewMemoryCrystalsStrategy(cm *ContextManager) *MemoryCrystalsStrategy {
-	return &MemoryCrystalsStrategy{
+// newMemoryCrystalsStrategy returns a memoryCrystalsStrategy that uses the
+// given contextManager and starts with an empty crystal bank.
+func newMemoryCrystalsStrategy(cm *contextManager) *memoryCrystalsStrategy {
+	return &memoryCrystalsStrategy{
 		cm:       cm,
 		crystals: []MemoryCrystal{},
 	}
 }
 
 // Name returns the strategy's identifier, "memory-crystals".
-func (s *MemoryCrystalsStrategy) Name() string { return "memory-crystals" }
+func (s *memoryCrystalsStrategy) Name() string { return "memory-crystals" }
 
 // Tools returns the tools registered by this strategy; it registers none.
-func (s *MemoryCrystalsStrategy) Tools() []RegisteredTool { return nil }
+func (s *memoryCrystalsStrategy) Tools() []RegisteredTool { return nil }
 
 // ManageContext runs standard compact compaction and then, if any crystals
 // have been collected, injects the crystal bank into history as a steering
 // message.
-func (s *MemoryCrystalsStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s *memoryCrystalsStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
 	// Run standard compact compaction.
 	s.cm.MaybeCompact(ctx, history, sysPromptChars, emitFn)
 
@@ -59,7 +59,7 @@ func (s *MemoryCrystalsStrategy) ManageContext(ctx context.Context, history *[]T
 
 // injectCrystals ensures the crystal bank is present in history as a steering
 // message at the end. Removes any previous crystal turn first.
-func (s *MemoryCrystalsStrategy) injectCrystals(history *[]Turn) {
+func (s *memoryCrystalsStrategy) injectCrystals(history *[]Turn) {
 	var b strings.Builder
 	b.WriteString("[MEMORY CRYSTALS]\nKey facts preserved from this session:\n\n")
 	for _, c := range s.crystals {
@@ -85,7 +85,7 @@ func (s *MemoryCrystalsStrategy) injectCrystals(history *[]Turn) {
 // AfterAction crystallizes key facts from the recent action every 3rd turn.
 // Calling every turn would trigger the compaction cascade; every 3rd is a
 // good balance between coverage and overhead.
-func (s *MemoryCrystalsStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
+func (s *memoryCrystalsStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
 	if client == nil || s.cm == nil {
 		return nil
 	}
@@ -114,7 +114,7 @@ func (s *MemoryCrystalsStrategy) AfterAction(ctx context.Context, history []Turn
 }
 
 // crystallize calls the cheap model to extract key facts from recent turns.
-func (s *MemoryCrystalsStrategy) crystallize(ctx context.Context, client *llm.Client, recent []Turn, turnNumber int) (MemoryCrystal, error) {
+func (s *memoryCrystalsStrategy) crystallize(ctx context.Context, client *llm.Client, recent []Turn, turnNumber int) (MemoryCrystal, error) {
 	var b strings.Builder
 	for _, t := range recent {
 		switch t.Kind {
@@ -175,7 +175,7 @@ Key facts (one line):`, b.String())
 
 // pruneOldCrystals caps the crystal bank to avoid unbounded growth.
 // 20 crystals at ~100 tokens each = ~2k tokens total.
-func (s *MemoryCrystalsStrategy) pruneOldCrystals() {
+func (s *memoryCrystalsStrategy) pruneOldCrystals() {
 	const maxCrystals = 20
 	if len(s.crystals) > maxCrystals {
 		s.crystals = s.crystals[len(s.crystals)-maxCrystals:]
