@@ -211,10 +211,16 @@ func (s *Session) Close() {
 		s.mu.Unlock()
 		s.toolEventsWG.Wait()
 		// Join detached event emitters (subagent runs, session namer) so their
-		// emit() sends complete before the channel is closed. They are already
+		// events are delivered before the channel closes. They are already
 		// cancelled above (child Close + cancelFunc), so this returns promptly.
 		s.sendersWG.Wait()
+		// Close under eventsMu so a caller-owned emit() (Enqueue/DrainAsSteer or
+		// the ProcessInput loop — goroutines the session cannot join) can never
+		// send on the closed channel. This replaces the old emit() recover().
+		s.eventsMu.Lock()
+		s.eventsClosed = true
 		close(s.events)
+		s.eventsMu.Unlock()
 	})
 }
 

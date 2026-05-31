@@ -22,8 +22,10 @@ type Session struct {
 	stateDir       string
 	installID      string
 
-	events  chan SessionEvent
-	envInfo EnvironmentInfo
+	events       chan SessionEvent
+	eventsMu     sync.RWMutex // guards send-vs-close on events; all sends go through emit()
+	eventsClosed bool         // set under eventsMu.Lock immediately before close(events)
+	envInfo      EnvironmentInfo
 
 	mu                    sync.Mutex
 	responseSideEffectsMu sync.Mutex

@@ -30,17 +30,20 @@ func (s *Session) emit(kind EventKind, data any) {
 		SessionID: s.id,
 		Data:      data,
 	}
-	// Detached event emitters (subagent runs, the session namer) are joined by
-	// Close() via sendersWG before it closes the channel, so they cannot race the
-	// close. The remaining concurrent emitter is the caller-owned ProcessInput
-	// goroutine during an abort-Close: the session cannot join a goroutine it does
-	// not own, so guard that best-effort send against a closed channel here.
-	defer func() { _ = recover() }()
-	select {
-	case s.events <- ev:
-	default:
-		// Drop events if consumer is too slow; v1 is best-effort.
+	// eventsMu makes the send mutually exclusive with Close()'s close(s.events).
+	// emit is called from caller-owned goroutines the session cannot join
+	// (Enqueue/DrainAsSteer, the ProcessInput loop), so the lock — not a recover()
+	// — is what guarantees we never send on a closed channel. Delivery of detached
+	// emitters' events before teardown is ensured separately by the WaitGroups.
+	s.eventsMu.RLock()
+	if !s.eventsClosed {
+		select {
+		case s.events <- ev:
+		default:
+			// Drop events if the consumer is too slow; v1 is best-effort.
+		}
 	}
+	s.eventsMu.RUnlock()
 	if kind == EventWarning {
 		s.runNotificationHook(context.Background(), warningHookMessage(data))
 	}
