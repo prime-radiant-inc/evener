@@ -2732,13 +2732,15 @@ func TestLoopDetection_PatternLength2(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 
-	var loopDetected bool
+	detected := make(chan bool, 1)
 	go func() {
+		found := false
 		for ev := range sess.Events() {
 			if ev.Kind == EventLoopDetection {
-				loopDetected = true
+				found = true
 			}
 		}
+		detected <- found
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2748,9 +2750,8 @@ func TestLoopDetection_PatternLength2(t *testing.T) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 	sess.Close()
-	time.Sleep(50 * time.Millisecond)
 
-	if !loopDetected {
+	if !<-detected {
 		t.Fatal("expected loop detection for A-B-A-B pattern of length 2")
 	}
 }
