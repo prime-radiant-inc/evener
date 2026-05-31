@@ -18,14 +18,18 @@ Ratified: externally-importable libraries; execute to the done-bar. Merges are f
   - P0.2 synchronize SetModel/SetReasoningEffort reads on the turn path — PRI-1958 (locked-accessor `currentProfile()` + per-round snapshot) — merged `109b61ad`.
   - P0.3 finish + verify hub_model split — PRI-1956 (4563→232) — verified pure-move, merged.
   - P0.4 delete `chanStream.Send` recover() + document single-producer contract — PRI-1959 — merged `94ba4d41`.
-- **Phase 1 — Honest error contracts — ▶ NEXT** (P1.1 llm error wrapping ∥ P1.2 stream-read surfacing ∥ P1.3 hygiene). Parallel-safe with Phase 2 / Phase 3.
+- **Phase 1 — Honest error contracts — ▶ IN PROGRESS**
+  - P1.1 llm error wrapping (E1/E2/E6) — PRI-1960 — ✅ merged `34176b0b` (cause-threading + `WrapContextError` populates + 3 behavior-preserving consumer fixes: `retryableError`/`isTurnCancellation`/`queuedInputDrainContext`).
+  - P1.2 stream-read surfacing (E3) ▶ NEXT ∥ P1.3 hygiene (E4/E5/E8/E9). Parallel-safe with Phase 2 / Phase 3.
 - **Phase 2 — Docs + naming gate — pending** (P2.1 gated on Phase 0 so the concurrency doc is truthful — now unblocked).
 - **Phase 3 — Library boundary + API surface — pending** (P3.1 promote config schema is the precondition; P3.1 before P3.3).
 - **Phase 4 — Black-box test migration (XL, gates subpackage extraction) — pending.**
 - **Phase 5 — Decomposition + dedup — pending** (P5.1 processOneInput god-function; P5.2–P5.6).
 - **Phase 6 — Subpackages + actor core (deferred) — pending** (needs PRI-1947 seams + Phase 4).
 
-Standing gate (§5) not yet wired into CI — establish once Phase 1–2 land.
+**Milestone — `go test -race ./...` GREEN module-wide** (2026-05-31): the full race gate now passes. Beyond Phase 0's agent/llm fixes, running the whole-module gate surfaced two PRE-EXISTING `cmd/serf-hub` races the agent/llm-focused audit never looked at — both fixed: PRI-1961 (relay idle-exit test hooks were package globals racing across tests → instance-scoped onto `WebConfig`) and PRI-1962 (codex launcher's single-shot `Exited` channel was peeked via `cmd.ProcessState` racing `cmd.Wait()` → broadcast closed-channel + retired the single-shot fragility).
+
+Standing gate (§5): `-race ./...` now green (milestone above); not yet wired into CI — establish once Phase 1–2 land.
 
 ---
 
