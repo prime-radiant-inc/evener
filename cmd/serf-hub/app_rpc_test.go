@@ -4450,7 +4450,7 @@ func seedManagedSource(t *testing.T, launcher *codexlaunch.CodexLauncher, source
 	launcher.Sources[sourceID] = source
 	launcher.Running[sourceID] = &codexlaunch.LaunchedCodex{
 		Cmd:    &exec.Cmd{},
-		Exited: make(chan error),
+		Exited: make(chan struct{}),
 	}
 }
 
@@ -5021,14 +5021,11 @@ func launcherRunningProcess(t *testing.T, launcher *codexlaunch.CodexLauncher, s
 
 func waitLaunchedCodexExited(t *testing.T, launched *codexlaunch.LaunchedCodex) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if launched.Cmd.ProcessState != nil {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case <-launched.Exited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for launched codex process to exit")
 	}
-	t.Fatal("timed out waiting for launched codex process to exit")
 }
 
 // TestLaunchProviderAllowsUnreportedModels_KeyedByBehaviorTag verifies that

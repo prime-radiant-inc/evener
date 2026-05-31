@@ -42,7 +42,10 @@ type CodexLauncher struct {
 type LaunchedCodex struct {
 	Cmd      *exec.Cmd
 	endpoint string
-	Exited   <-chan error
+	// Exited is closed when the launched process exits (cmd.Wait returns). It is
+	// a broadcast: any number of observers may select on it, repeatedly, without
+	// consuming a single-shot signal.
+	Exited <-chan struct{}
 }
 
 func NewCodexLauncher(configs []CodexLaunchConfig) *CodexLauncher {
@@ -184,9 +187,13 @@ func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig)
 	}
 	go scanCodexEndpoint(stdout, endpoints)
 	go scanCodexEndpoint(stderr, endpoints)
-	exited := make(chan error, 1)
+	// exitErr is published before close(exited); a receive on exited
+	// happens-after the close, so reading exitErr after the receive is race-free.
+	exited := make(chan struct{})
+	var exitErr error
 	go func() {
-		exited <- cmd.Wait()
+		exitErr = cmd.Wait()
+		close(exited)
 	}()
 
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -203,9 +210,9 @@ func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig)
 			if next != "" {
 				endpoint = next
 			}
-		case err := <-exited:
-			if err != nil {
-				return nil, appwire.HubLaunchError("codex app-server exited before ready: " + err.Error())
+		case <-exited:
+			if exitErr != nil {
+				return nil, appwire.HubLaunchError("codex app-server exited before ready: " + exitErr.Error())
 			}
 			return nil, appwire.HubLaunchError("codex app-server exited before ready")
 		case <-ticker.C:
