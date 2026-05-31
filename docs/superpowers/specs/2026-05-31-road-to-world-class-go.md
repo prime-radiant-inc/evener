@@ -18,11 +18,12 @@ Ratified: externally-importable libraries; execute to the done-bar. Merges are f
   - P0.2 synchronize SetModel/SetReasoningEffort reads on the turn path — PRI-1958 (locked-accessor `currentProfile()` + per-round snapshot) — merged `109b61ad`.
   - P0.3 finish + verify hub_model split — PRI-1956 (4563→232) — verified pure-move, merged.
   - P0.4 delete `chanStream.Send` recover() + document single-producer contract — PRI-1959 — merged `94ba4d41`.
-- **Phase 1 — Honest error contracts — ▶ IN PROGRESS**
-  - P1.1 llm error wrapping (E1/E2/E6) — PRI-1960 — ✅ merged `34176b0b` (cause-threading + `WrapContextError` populates + 3 behavior-preserving consumer fixes: `retryableError`/`isTurnCancellation`/`queuedInputDrainContext`).
-  - P1.2 stream-read surfacing (E3) ▶ NEXT ∥ P1.3 hygiene (E4/E5/E8/E9). Parallel-safe with Phase 2 / Phase 3.
-- **Phase 2 — Docs + naming gate — pending** (P2.1 gated on Phase 0 so the concurrency doc is truthful — now unblocked).
-- **Phase 3 — Library boundary + API surface — pending** (P3.1 promote config schema is the precondition; P3.1 before P3.3).
+- **Phase 1 — Honest error contracts — ✅ COMPLETE** (all merged to local main @ `7bbae6be`)
+  - P1.1 llm error wrapping (E1/E2/E6) — PRI-1960 — merged `34176b0b` (cause-threading + `WrapContextError` populates + 3 behavior-preserving consumer fixes: `retryableError`/`isTurnCancellation`/`queuedInputDrainContext`).
+  - P1.2 stream-read surfacing (E3) — PRI-1963 — merged `c6dbd647` (capture `parseErr` → StreamError carrying the cause in all 5 adapters; responses.go fallback sentinel preserved).
+  - P1.3 error hygiene (E4/E5/E8/E9) — PRI-1967 — merged `7bbae6be` (EventWarning vs swallow; `errNoCredentials` sentinel + `loginRequiredError` `%v`→`%w` so isUnconfigured is `errors.Is`-based; `errors.As`; apilog Sync symmetry).
+- **Phase 2 — Docs + naming gate — ▶ NEXT** (P2.1 package docs + examples + concurrency doc — Phase 0 done so the concurrency doc can tell the truth). Parallel-safe with Phase 3.
+- **Phase 3 — Library boundary + API surface — ▶ available** (P3.1 promote config schema → public `llm/providercfg` + `WorkspaceInfo` is the externally-importable precondition; P3.1 before P3.3).
 - **Phase 4 — Black-box test migration (XL, gates subpackage extraction) — pending.**
 - **Phase 5 — Decomposition + dedup — pending** (P5.1 processOneInput god-function; P5.2–P5.6).
 - **Phase 6 — Subpackages + actor core (deferred) — pending** (needs PRI-1947 seams + Phase 4).
