@@ -76,15 +76,22 @@ var excludeSuffixes = []string{
 // protocol. Codex's wire format is camelCase, so JSON tags in any of these
 // trees MUST be camelCase and the snake_case-default rule does not apply.
 //
-//   - internal/appwire/   is the protocol definition itself.
-//   - internal/appsource/ contains clients of the protocol (CodexSource
+//   - internal/appwire/    is the protocol definition itself.
+//   - internal/appsource/  contains clients of the protocol (CodexSource
 //     serializes/deserializes the codex wire format).
-//   - internal/appserver/ contains the server-side implementation that
+//   - internal/appserver/  contains the server-side implementation that
 //     speaks the same wire format back to clients.
+//   - internal/appprojector/ projects codex/appwire payloads (its tests
+//     parse the same camelCase wire shapes).
+//   - internal/launchconfig/ defines the launch-option schema that appwire
+//     mirrors on the wire (appwire.LaunchOption carries the identical
+//     camelCase tags); its JSON tags must match the wire spelling verbatim.
 var appwirePrefixes = []string{
 	"internal/appwire/",
 	"internal/appsource/",
 	"internal/appserver/",
+	"internal/appprojector/",
+	"internal/launchconfig/",
 }
 
 // appwireServerPrefix matches the hub's appwire runtime glue files
@@ -335,10 +342,26 @@ func checkJSONTag(v, rel string) string {
 		}
 		return ""
 	}
+	if isUpstreamCamelKey(key) {
+		return ""
+	}
 	if !isSnakeCase(key) {
 		return fmt.Sprintf("json tag %q must be snake_case (suggest %q)", key, toSnakeCase(key))
 	}
 	return ""
+}
+
+// isUpstreamCamelKey reports whether key is a fixed camelCase key from an
+// upstream Claude config format (.mcp.json / settings.json) that serf parses
+// verbatim. The names are dictated by upstream, so they are exempt from the
+// snake_case rule wherever they appear (this is what previously required
+// per-field serf:naming-ignore markers on those structs).
+func isUpstreamCamelKey(key string) bool {
+	switch key {
+	case "mcpServers", "enabledPlugins":
+		return true
+	}
+	return false
 }
 
 func checkTOMLTag(v string) string {

@@ -21,7 +21,6 @@ type MCPServerConfig struct {
 
 // mcpConfigFile is the JSON structure of an mcp.json file.
 type mcpConfigFile struct {
-	// serf:naming-ignore — mirrors Claude .mcp.json upstream format
 	MCPServers map[string]json.RawMessage `json:"mcpServers"`
 }
 

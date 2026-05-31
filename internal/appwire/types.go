@@ -200,6 +200,13 @@ type ThreadQueueChangedParams struct {
 	Queue    QueueState `json:"queue"`
 }
 
+// TurnCompletedParams is the payload of a turn/completed notification: the
+// completed turn and its ID.
+type TurnCompletedParams struct {
+	TurnID string `json:"turnId"`
+	Turn   Turn   `json:"turn"`
+}
+
 type ThreadCapabilities struct {
 	Send         bool `json:"send"`
 	Steer        bool `json:"steer"`

@@ -83,11 +83,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			m.applySessionTranscriptReducer(reducer)
 		}
 	case appwire.NotifyTurnCompleted:
-		var params struct {
-			// serf:naming-ignore: AppWire envelope field
-			TurnID string       `json:"turnId"`
-			Turn   appwire.Turn `json:"turn"`
-		}
+		var params appwire.TurnCompletedParams
 		if json.Unmarshal(notification.Params, &params) == nil {
 			turnID := firstNonEmptyString(params.TurnID, params.Turn.ID)
 			for _, item := range params.Turn.Items {
