@@ -26,7 +26,7 @@ func TestWrapContextError_TimeoutUnwrapsToDeadline(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal("errors.Is(WrapContextError(DeadlineExceeded), context.DeadlineExceeded) = false, want true")
 	}
-	var rt *RequestTimeoutError
+	var rt *requestTimeoutError
 	if !errors.As(err, &rt) {
 		t.Fatal("WrapContextError(DeadlineExceeded) is not *RequestTimeoutError")
 	}

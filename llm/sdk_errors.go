@@ -39,8 +39,8 @@ func (e *nonHTTPErrorBase) Unwrap() error              { return e.cause }
 // AbortError is a non-HTTP error reporting a user-initiated cancellation.
 type AbortError struct{ nonHTTPErrorBase }
 
-// NetworkError is a non-HTTP error reporting a network-level failure.
-type NetworkError struct{ nonHTTPErrorBase }
+// networkError is a non-HTTP error reporting a network-level failure.
+type networkError struct{ nonHTTPErrorBase }
 
 // StreamError is a non-HTTP error reporting a streaming failure.
 type StreamError struct{ nonHTTPErrorBase }

@@ -352,10 +352,8 @@ func TestIntegration_ErrorHandling(t *testing.T) {
 			if err == nil {
 				t.Fatalf("expected error for nonexistent model")
 			}
-			var nf *llm.NotFoundError
-			var ir *llm.InvalidRequestError
 			// Different providers may return NotFound or InvalidRequest for bad models.
-			if !errors.As(err, &nf) && !errors.As(err, &ir) {
+			if k := llm.Kind(err); k != llm.KindNotFound && k != llm.KindInvalidRequest {
 				t.Logf("error type: %T, error: %v", err, err)
 				// At minimum, it should be some kind of llm.Error.
 				var llmErr llm.Error

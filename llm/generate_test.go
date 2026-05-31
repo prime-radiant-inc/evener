@@ -486,7 +486,7 @@ func TestGenerate_TimeoutPerStep_CancelsLLMCall(t *testing.T) {
 		if err == nil {
 			t.Fatalf("expected error")
 		}
-		var te *RequestTimeoutError
+		var te *requestTimeoutError
 		if !errors.As(err, &te) {
 			t.Fatalf("expected RequestTimeoutError, got %T (%v)", err, err)
 		}
@@ -530,7 +530,7 @@ func TestGenerate_TimeoutTotal_CancelsOperation(t *testing.T) {
 		if err == nil {
 			t.Fatalf("expected error")
 		}
-		var te *RequestTimeoutError
+		var te *requestTimeoutError
 		if !errors.As(err, &te) {
 			t.Fatalf("expected RequestTimeoutError, got %T (%v)", err, err)
 		}

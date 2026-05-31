@@ -3885,8 +3885,7 @@ func TestSession_ContentFilterRecovery_FailsOnSecondFilterHit(t *testing.T) {
 		t.Fatal("expected error on second content filter hit, got nil")
 	}
 
-	var cfe *llm.ContentFilterError
-	if !errors.As(err, &cfe) {
+	if llm.Kind(err) != llm.KindContentFilter {
 		t.Errorf("expected ContentFilterError, got: %T: %v", err, err)
 	}
 	// All 3 steps should have been called: success, filter, recovery-filter.

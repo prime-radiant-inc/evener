@@ -146,7 +146,10 @@ func TestAdapter_Complete_HTTPErrorMapping_AuthenticationError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	var ae *llm.AuthenticationError
+	if llm.Kind(err) != llm.KindAuthentication {
+		t.Fatalf("expected AuthenticationError, got %T (%v)", err, err)
+	}
+	var ae llm.Error
 	if !errors.As(err, &ae) {
 		t.Fatalf("expected AuthenticationError, got %T (%v)", err, err)
 	}
@@ -991,8 +994,7 @@ func TestAdapter_Stream_ContextDeadline_EmitsRequestTimeoutError(t *testing.T) {
 	if sawErr == nil {
 		t.Fatalf("expected stream error")
 	}
-	var rte *llm.RequestTimeoutError
-	if !errors.As(sawErr, &rte) {
+	if llm.Kind(sawErr) != llm.KindTimeout {
 		t.Fatalf("expected RequestTimeoutError, got %T (%v)", sawErr, sawErr)
 	}
 }
@@ -2095,8 +2097,7 @@ func TestAdapterTimeout_Request_EnforcedOnComplete(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	var rte *llm.RequestTimeoutError
-	if errors.As(err, &rte) {
+	if llm.Kind(err) == llm.KindTimeout {
 		return // correct error type
 	}
 	if errors.Is(err, context.DeadlineExceeded) {

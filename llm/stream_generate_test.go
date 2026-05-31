@@ -111,7 +111,7 @@ func TestStreamGenerate_TimeoutPerStep_EmitsRequestTimeoutError(t *testing.T) {
 	if sawErr == nil {
 		t.Fatalf("expected error event")
 	}
-	var rte *RequestTimeoutError
+	var rte *requestTimeoutError
 	if !errors.As(sawErr, &rte) {
 		t.Fatalf("expected RequestTimeoutError, got %T (%v)", sawErr, sawErr)
 	}
@@ -167,7 +167,7 @@ func TestStreamGenerate_TimeoutTotal_EmitsRequestTimeoutError(t *testing.T) {
 	if sawErr == nil {
 		t.Fatalf("expected error event")
 	}
-	var rte *RequestTimeoutError
+	var rte *requestTimeoutError
 	if !errors.As(sawErr, &rte) {
 		t.Fatalf("expected RequestTimeoutError, got %T (%v)", sawErr, sawErr)
 	}

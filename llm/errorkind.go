@@ -82,25 +82,25 @@ func Kind(err error) ErrorKind {
 		return KindUnknown
 	}
 	switch {
-	case errorIs[*ContentFilterError](err):
+	case errorIs[*contentFilterError](err):
 		return KindContentFilter
-	case errorIs[*ContextLengthError](err):
+	case errorIs[*contextLengthError](err):
 		return KindContextLength
-	case errorIs[*QuotaExceededError](err):
+	case errorIs[*quotaExceededError](err):
 		return KindQuotaExceeded
-	case errorIs[*RateLimitError](err):
+	case errorIs[*rateLimitError](err):
 		return KindRateLimit
-	case errorIs[*RequestTimeoutError](err):
+	case errorIs[*requestTimeoutError](err):
 		return KindTimeout
-	case errorIs[*AuthenticationError](err):
+	case errorIs[*authenticationError](err):
 		return KindAuthentication
-	case errorIs[*AccessDeniedError](err):
+	case errorIs[*accessDeniedError](err):
 		return KindAccessDenied
-	case errorIs[*NotFoundError](err):
+	case errorIs[*notFoundError](err):
 		return KindNotFound
-	case errorIs[*InvalidRequestError](err):
+	case errorIs[*invalidRequestError](err):
 		return KindInvalidRequest
-	case errorIs[*ServerError](err):
+	case errorIs[*serverError](err):
 		return KindServer
 	default:
 		return KindUnknown

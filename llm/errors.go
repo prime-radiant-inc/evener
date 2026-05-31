@@ -91,51 +91,51 @@ func (e *httpErrorBase) RetryAfter() *time.Duration { return e.retryAfter }
 func (e *httpErrorBase) Raw() any                   { return e.rawResponse }
 func (e *httpErrorBase) Unwrap() error              { return e.cause }
 
-// InvalidRequestError reports a malformed or rejected request, typically from
-// an HTTP 400 or 422 status. It is not retryable.
-type InvalidRequestError struct{ httpErrorBase }
+// invalidRequestError reports a malformed or rejected request, typically from
+// an HTTP 400 or 422 status. It is not retryable. Its category is [KindInvalidRequest].
+type invalidRequestError struct{ httpErrorBase }
 
-// AuthenticationError reports failed authentication, typically from an HTTP 401
-// status. It is not retryable.
-type AuthenticationError struct{ httpErrorBase }
+// authenticationError reports failed authentication, typically from an HTTP 401
+// status. It is not retryable. Its category is [KindAuthentication].
+type authenticationError struct{ httpErrorBase }
 
-// AccessDeniedError reports a forbidden request, typically from an HTTP 403
+// accessDeniedError reports a forbidden request, typically from an HTTP 403
 // status. It is not retryable, except for transient provider bans (e.g. OpenAI
-// cyber_policy_violation) which are marked retryable.
-type AccessDeniedError struct{ httpErrorBase }
+// cyber_policy_violation) which are marked retryable. Its category is [KindAccessDenied].
+type accessDeniedError struct{ httpErrorBase }
 
-// NotFoundError reports a missing resource, typically from an HTTP 404 status
-// or a "not found" message. It is not retryable.
-type NotFoundError struct{ httpErrorBase }
+// notFoundError reports a missing resource, typically from an HTTP 404 status
+// or a "not found" message. It is not retryable. Its category is [KindNotFound].
+type notFoundError struct{ httpErrorBase }
 
-// RequestTimeoutError reports a request timeout, from an HTTP 408 status or a
-// non-HTTP deadline. It is retryable.
-type RequestTimeoutError struct{ httpErrorBase }
+// requestTimeoutError reports a request timeout, from an HTTP 408 status or a
+// non-HTTP deadline. It is retryable. Its category is [KindTimeout].
+type requestTimeoutError struct{ httpErrorBase }
 
-// ContextLengthError reports that the request exceeded the model's context
+// contextLengthError reports that the request exceeded the model's context
 // window, typically from an HTTP 413 status or a "context length" message. It
-// is not retryable.
-type ContextLengthError struct{ httpErrorBase }
+// is not retryable. Its category is [KindContextLength].
+type contextLengthError struct{ httpErrorBase }
 
-// ContentFilterError reports that the request or response was blocked by a
-// content filter or safety/usage policy. It is not retryable.
-type ContentFilterError struct{ httpErrorBase }
+// contentFilterError reports that the request or response was blocked by a
+// content filter or safety/usage policy. It is not retryable. Its category is [KindContentFilter].
+type contentFilterError struct{ httpErrorBase }
 
-// QuotaExceededError reports that a quota or billing limit was exceeded,
-// detected from a "quota" or "billing" message. It is not retryable.
-type QuotaExceededError struct{ httpErrorBase }
+// quotaExceededError reports that a quota or billing limit was exceeded,
+// detected from a "quota" or "billing" message. It is not retryable. Its category is [KindQuotaExceeded].
+type quotaExceededError struct{ httpErrorBase }
 
-// RateLimitError reports that a rate limit was hit, typically from an HTTP 429
-// status. It is retryable.
-type RateLimitError struct{ httpErrorBase }
+// rateLimitError reports that a rate limit was hit, typically from an HTTP 429
+// status. It is retryable. Its category is [KindRateLimit].
+type rateLimitError struct{ httpErrorBase }
 
-// ServerError reports a server-side failure, typically from an HTTP 500, 502,
-// 503, or 504 status. It is retryable.
-type ServerError struct{ httpErrorBase }
+// serverError reports a server-side failure, typically from an HTTP 500, 502,
+// 503, or 504 status. It is retryable. Its category is [KindServer].
+type serverError struct{ httpErrorBase }
 
-// UnknownHTTPError reports an HTTP failure with a status code that does not map
-// to a more specific error type. It defaults to retryable.
-type UnknownHTTPError struct{ httpErrorBase }
+// unknownHTTPError reports an HTTP failure with a status code that does not map
+// to a more specific error type. It defaults to retryable. Its category is [KindUnknown].
+type unknownHTTPError struct{ httpErrorBase }
 
 // extractErrorCode attempts to find an error code from a raw API response body.
 // Supports OpenAI ({"error":{"code":"..."}}) and Anthropic ({"error":{"type":"..."}}) formats.
@@ -238,10 +238,10 @@ func ErrorFromHTTPStatus(provider string, statusCode int, message string, raw an
 		if err := classifyByMessage(base); err != nil {
 			return err
 		}
-		return &InvalidRequestError{base}
+		return &invalidRequestError{base}
 	case 401:
 		base.retryable = false
-		return &AuthenticationError{base}
+		return &authenticationError{base}
 	case 403:
 		base.retryable = false
 		// OpenAI cyber_policy_violation is a temporary account-level ban that
@@ -253,26 +253,26 @@ func ErrorFromHTTPStatus(provider string, statusCode int, message string, raw an
 				base.retryAfter = &d
 			}
 		}
-		return &AccessDeniedError{base}
+		return &accessDeniedError{base}
 	case 404:
 		base.retryable = false
-		return &NotFoundError{base}
+		return &notFoundError{base}
 	case 408:
 		base.retryable = true
-		return &RequestTimeoutError{base}
+		return &requestTimeoutError{base}
 	case 413:
 		base.retryable = false
-		return &ContextLengthError{base}
+		return &contextLengthError{base}
 	case 429:
 		base.retryable = true
-		return &RateLimitError{base}
+		return &rateLimitError{base}
 	case 500, 502, 503, 504:
 		base.retryable = true
-		return &ServerError{base}
+		return &serverError{base}
 	default:
 		// Spec: unknown errors default to retryable.
 		base.retryable = true
-		return &UnknownHTTPError{base}
+		return &unknownHTTPError{base}
 	}
 }
 
@@ -282,22 +282,22 @@ func classifyByMessage(base httpErrorBase) error {
 	// Check error code first — more reliable than message parsing.
 	switch base.errorCode {
 	case "invalid_prompt", "content_policy_violation":
-		return &ContentFilterError{base}
+		return &contentFilterError{base}
 	}
 
 	lower := strings.ToLower(base.message)
 	switch {
 	case strings.Contains(lower, "content filter") || strings.Contains(lower, "safety") ||
 		strings.Contains(lower, "usage policy"):
-		return &ContentFilterError{base}
+		return &contentFilterError{base}
 	case strings.Contains(lower, "context length") || strings.Contains(lower, "too many tokens"):
-		return &ContextLengthError{base}
+		return &contextLengthError{base}
 	case strings.Contains(lower, "quota") || strings.Contains(lower, "billing"):
-		return &QuotaExceededError{base}
+		return &quotaExceededError{base}
 	case strings.Contains(lower, "not found") || strings.Contains(lower, "does not exist"):
-		return &NotFoundError{base}
+		return &notFoundError{base}
 	case strings.Contains(lower, "unauthorized") || strings.Contains(lower, "invalid key"):
-		return &AuthenticationError{base}
+		return &authenticationError{base}
 	}
 	return nil
 }
@@ -318,7 +318,7 @@ func NewRequestTimeoutError(provider string, message string, cause error) error 
 		retryable:  true,
 		cause:      cause,
 	}
-	return &RequestTimeoutError{base}
+	return &requestTimeoutError{base}
 }
 
 // ParseRetryAfter parses the Retry-After header value.

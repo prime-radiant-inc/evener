@@ -519,15 +519,18 @@ func TestAdapter_Complete_HTTPErrorMapping_IncludesRetryAfter(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	var rl *llm.RateLimitError
-	if !errors.As(err, &rl) {
+	var le llm.Error
+	if !errors.As(err, &le) {
 		t.Fatalf("expected RateLimitError, got %T (%v)", err, err)
 	}
-	if rl.StatusCode() != 429 {
-		t.Fatalf("status_code: %d", rl.StatusCode())
+	if llm.Kind(err) != llm.KindRateLimit {
+		t.Fatalf("expected RateLimitError, got %T (%v)", err, err)
 	}
-	if rl.RetryAfter() == nil || *rl.RetryAfter() != 2*time.Second {
-		t.Fatalf("retry_after: %v", rl.RetryAfter())
+	if le.StatusCode() != 429 {
+		t.Fatalf("status_code: %d", le.StatusCode())
+	}
+	if le.RetryAfter() == nil || *le.RetryAfter() != 2*time.Second {
+		t.Fatalf("retry_after: %v", le.RetryAfter())
 	}
 }
 
@@ -547,14 +550,17 @@ func TestAdapter_Complete_HTTPErrorMapping_AuthenticationError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	var ae *llm.AuthenticationError
-	if !errors.As(err, &ae) {
+	var le llm.Error
+	if !errors.As(err, &le) {
 		t.Fatalf("expected AuthenticationError, got %T (%v)", err, err)
 	}
-	if ae.StatusCode() != 401 {
-		t.Fatalf("status_code: %d", ae.StatusCode())
+	if llm.Kind(err) != llm.KindAuthentication {
+		t.Fatalf("expected AuthenticationError, got %T (%v)", err, err)
 	}
-	if ae.Retryable() {
+	if le.StatusCode() != 401 {
+		t.Fatalf("status_code: %d", le.StatusCode())
+	}
+	if le.Retryable() {
 		t.Fatalf("expected non-retryable auth error")
 	}
 }
@@ -1086,8 +1092,7 @@ func TestAdapter_Stream_ContextDeadline_EmitsRequestTimeoutError(t *testing.T) {
 	if sawErr == nil {
 		t.Fatalf("expected stream error")
 	}
-	var rte *llm.RequestTimeoutError
-	if !errors.As(sawErr, &rte) {
+	if llm.Kind(sawErr) != llm.KindTimeout {
 		t.Fatalf("expected RequestTimeoutError, got %T (%v)", sawErr, sawErr)
 	}
 }
@@ -2488,8 +2493,7 @@ func TestAdapterTimeout_Request_EnforcedOnComplete(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	var rte *llm.RequestTimeoutError
-	if errors.As(err, &rte) {
+	if llm.Kind(err) == llm.KindTimeout {
 		return // correct error type
 	}
 	if errors.Is(err, context.DeadlineExceeded) {

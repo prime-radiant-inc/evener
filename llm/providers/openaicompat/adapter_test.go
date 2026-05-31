@@ -238,8 +238,7 @@ func TestAdapter_Complete_HTTPError_MapsToErrorType(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	var rle *llm.RateLimitError
-	if !errors.As(err, &rle) {
+	if llm.Kind(err) != llm.KindRateLimit {
 		t.Fatalf("expected RateLimitError, got %T (%v)", err, err)
 	}
 }
@@ -440,15 +439,16 @@ func TestHTTPErrorMapping_IncludesRetryAfter(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	var rlErr *llm.RateLimitError
-	if !errors.As(err, &rlErr) {
+	if llm.Kind(err) != llm.KindRateLimit {
 		t.Fatalf("expected RateLimitError, got %T: %v", err, err)
 	}
-	if rlErr.RetryAfter() == nil {
+	var le llm.Error
+	errors.As(err, &le)
+	if le.RetryAfter() == nil {
 		t.Fatal("RetryAfter is nil, want 30s")
 	}
-	if *rlErr.RetryAfter() != 30*time.Second {
-		t.Errorf("RetryAfter = %v, want 30s", *rlErr.RetryAfter())
+	if *le.RetryAfter() != 30*time.Second {
+		t.Errorf("RetryAfter = %v, want 30s", *le.RetryAfter())
 	}
 }
 
@@ -603,8 +603,7 @@ func TestAdapterTimeout_Request_EnforcedOnComplete(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	var rte *llm.RequestTimeoutError
-	if errors.As(err, &rte) {
+	if llm.Kind(err) == llm.KindTimeout {
 		return // correct error type
 	}
 	if errors.Is(err, context.DeadlineExceeded) {

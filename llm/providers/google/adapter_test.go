@@ -495,15 +495,18 @@ func TestAdapter_Complete_HTTPErrorMapping_ServerErrorWithRetryAfter(t *testing.
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	var se *llm.ServerError
-	if !errors.As(err, &se) {
+	var le llm.Error
+	if !errors.As(err, &le) {
 		t.Fatalf("expected ServerError, got %T (%v)", err, err)
 	}
-	if !se.Retryable() {
+	if llm.Kind(err) != llm.KindServer {
+		t.Fatalf("expected ServerError, got %T (%v)", err, err)
+	}
+	if !le.Retryable() {
 		t.Fatalf("expected retryable server error")
 	}
-	if se.RetryAfter() == nil || *se.RetryAfter() != 1*time.Second {
-		t.Fatalf("retry_after: %v", se.RetryAfter())
+	if le.RetryAfter() == nil || *le.RetryAfter() != 1*time.Second {
+		t.Fatalf("retry_after: %v", le.RetryAfter())
 	}
 }
 
@@ -525,8 +528,7 @@ func TestAdapter_Complete_GRPCStatusMapping(t *testing.T) {
 			grpcStatus: "RESOURCE_EXHAUSTED",
 			message:    "quota exceeded",
 			checkErr: func(t *testing.T, err error) {
-				var target *llm.RateLimitError
-				if !errors.As(err, &target) {
+				if llm.Kind(err) != llm.KindRateLimit {
 					t.Fatalf("expected RateLimitError, got %T (%v)", err, err)
 				}
 			},
@@ -537,8 +539,7 @@ func TestAdapter_Complete_GRPCStatusMapping(t *testing.T) {
 			grpcStatus: "NOT_FOUND",
 			message:    "model not found",
 			checkErr: func(t *testing.T, err error) {
-				var target *llm.NotFoundError
-				if !errors.As(err, &target) {
+				if llm.Kind(err) != llm.KindNotFound {
 					t.Fatalf("expected NotFoundError, got %T (%v)", err, err)
 				}
 			},
@@ -549,8 +550,7 @@ func TestAdapter_Complete_GRPCStatusMapping(t *testing.T) {
 			grpcStatus: "INVALID_ARGUMENT",
 			message:    "invalid argument",
 			checkErr: func(t *testing.T, err error) {
-				var target *llm.InvalidRequestError
-				if !errors.As(err, &target) {
+				if llm.Kind(err) != llm.KindInvalidRequest {
 					t.Fatalf("expected InvalidRequestError, got %T (%v)", err, err)
 				}
 			},
@@ -561,8 +561,7 @@ func TestAdapter_Complete_GRPCStatusMapping(t *testing.T) {
 			grpcStatus: "PERMISSION_DENIED",
 			message:    "permission denied",
 			checkErr: func(t *testing.T, err error) {
-				var target *llm.AccessDeniedError
-				if !errors.As(err, &target) {
+				if llm.Kind(err) != llm.KindAccessDenied {
 					t.Fatalf("expected AccessDeniedError, got %T (%v)", err, err)
 				}
 			},
@@ -573,11 +572,14 @@ func TestAdapter_Complete_GRPCStatusMapping(t *testing.T) {
 			grpcStatus: "UNAUTHENTICATED",
 			message:    "unauthenticated",
 			checkErr: func(t *testing.T, err error) {
-				var target *llm.AuthenticationError
-				if !errors.As(err, &target) {
+				var le llm.Error
+				if !errors.As(err, &le) {
 					t.Fatalf("expected AuthenticationError, got %T (%v)", err, err)
 				}
-				if target.Retryable() {
+				if llm.Kind(err) != llm.KindAuthentication {
+					t.Fatalf("expected AuthenticationError, got %T (%v)", err, err)
+				}
+				if le.Retryable() {
 					t.Fatalf("expected non-retryable")
 				}
 			},
@@ -588,11 +590,14 @@ func TestAdapter_Complete_GRPCStatusMapping(t *testing.T) {
 			grpcStatus: "UNAVAILABLE",
 			message:    "service unavailable",
 			checkErr: func(t *testing.T, err error) {
-				var target *llm.ServerError
-				if !errors.As(err, &target) {
+				var le llm.Error
+				if !errors.As(err, &le) {
 					t.Fatalf("expected ServerError, got %T (%v)", err, err)
 				}
-				if !target.Retryable() {
+				if llm.Kind(err) != llm.KindServer {
+					t.Fatalf("expected ServerError, got %T (%v)", err, err)
+				}
+				if !le.Retryable() {
 					t.Fatalf("expected retryable")
 				}
 			},
@@ -603,11 +608,14 @@ func TestAdapter_Complete_GRPCStatusMapping(t *testing.T) {
 			grpcStatus: "DEADLINE_EXCEEDED",
 			message:    "deadline exceeded",
 			checkErr: func(t *testing.T, err error) {
-				var target *llm.ServerError
-				if !errors.As(err, &target) {
+				var le llm.Error
+				if !errors.As(err, &le) {
 					t.Fatalf("expected ServerError, got %T (%v)", err, err)
 				}
-				if !target.Retryable() {
+				if llm.Kind(err) != llm.KindServer {
+					t.Fatalf("expected ServerError, got %T (%v)", err, err)
+				}
+				if !le.Retryable() {
 					t.Fatalf("expected retryable")
 				}
 			},
@@ -618,11 +626,14 @@ func TestAdapter_Complete_GRPCStatusMapping(t *testing.T) {
 			grpcStatus: "INTERNAL",
 			message:    "internal error",
 			checkErr: func(t *testing.T, err error) {
-				var target *llm.ServerError
-				if !errors.As(err, &target) {
+				var le llm.Error
+				if !errors.As(err, &le) {
 					t.Fatalf("expected ServerError, got %T (%v)", err, err)
 				}
-				if !target.Retryable() {
+				if llm.Kind(err) != llm.KindServer {
+					t.Fatalf("expected ServerError, got %T (%v)", err, err)
+				}
+				if !le.Retryable() {
 					t.Fatalf("expected retryable")
 				}
 			},
@@ -634,11 +645,14 @@ func TestAdapter_Complete_GRPCStatusMapping(t *testing.T) {
 			grpcStatus: "RESOURCE_EXHAUSTED",
 			message:    "Resource has been exhausted",
 			checkErr: func(t *testing.T, err error) {
-				var target *llm.RateLimitError
-				if !errors.As(err, &target) {
+				var le llm.Error
+				if !errors.As(err, &le) {
 					t.Fatalf("expected RateLimitError, got %T (%v)", err, err)
 				}
-				if !target.Retryable() {
+				if llm.Kind(err) != llm.KindRateLimit {
+					t.Fatalf("expected RateLimitError, got %T (%v)", err, err)
+				}
+				if !le.Retryable() {
 					t.Fatalf("expected retryable")
 				}
 			},
@@ -649,11 +663,14 @@ func TestAdapter_Complete_GRPCStatusMapping(t *testing.T) {
 			grpcStatus: "DEADLINE_EXCEEDED",
 			message:    "deadline exceeded",
 			checkErr: func(t *testing.T, err error) {
-				var target *llm.RequestTimeoutError
-				if !errors.As(err, &target) {
+				var le llm.Error
+				if !errors.As(err, &le) {
 					t.Fatalf("expected RequestTimeoutError, got %T (%v)", err, err)
 				}
-				if !target.Retryable() {
+				if llm.Kind(err) != llm.KindTimeout {
+					t.Fatalf("expected RequestTimeoutError, got %T (%v)", err, err)
+				}
+				if !le.Retryable() {
 					t.Fatalf("expected retryable")
 				}
 			},
@@ -664,11 +681,14 @@ func TestAdapter_Complete_GRPCStatusMapping(t *testing.T) {
 			grpcStatus: "UNAVAILABLE",
 			message:    "service temporarily unavailable",
 			checkErr: func(t *testing.T, err error) {
-				var target *llm.ServerError
-				if !errors.As(err, &target) {
+				var le llm.Error
+				if !errors.As(err, &le) {
 					t.Fatalf("expected ServerError, got %T (%v)", err, err)
 				}
-				if !target.Retryable() {
+				if llm.Kind(err) != llm.KindServer {
+					t.Fatalf("expected ServerError, got %T (%v)", err, err)
+				}
+				if !le.Retryable() {
 					t.Fatalf("expected retryable")
 				}
 			},
@@ -679,11 +699,14 @@ func TestAdapter_Complete_GRPCStatusMapping(t *testing.T) {
 			grpcStatus: "INTERNAL",
 			message:    "internal error",
 			checkErr: func(t *testing.T, err error) {
-				var target *llm.ServerError
-				if !errors.As(err, &target) {
+				var le llm.Error
+				if !errors.As(err, &le) {
 					t.Fatalf("expected ServerError, got %T (%v)", err, err)
 				}
-				if !target.Retryable() {
+				if llm.Kind(err) != llm.KindServer {
+					t.Fatalf("expected ServerError, got %T (%v)", err, err)
+				}
+				if !le.Retryable() {
 					t.Fatalf("expected retryable")
 				}
 			},
@@ -1158,8 +1181,7 @@ func TestAdapter_Stream_ContextDeadline_EmitsRequestTimeoutError(t *testing.T) {
 	if sawErr == nil {
 		t.Fatalf("expected stream error")
 	}
-	var rte *llm.RequestTimeoutError
-	if !errors.As(sawErr, &rte) {
+	if llm.Kind(sawErr) != llm.KindTimeout {
 		t.Fatalf("expected RequestTimeoutError, got %T (%v)", sawErr, sawErr)
 	}
 }
@@ -1182,11 +1204,14 @@ func TestAdapter_Stream_GRPCStatusMapping(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	var target *llm.RateLimitError
-	if !errors.As(err, &target) {
+	var le llm.Error
+	if !errors.As(err, &le) {
 		t.Fatalf("expected RateLimitError, got %T (%v)", err, err)
 	}
-	if !target.Retryable() {
+	if llm.Kind(err) != llm.KindRateLimit {
+		t.Fatalf("expected RateLimitError, got %T (%v)", err, err)
+	}
+	if !le.Retryable() {
 		t.Fatalf("expected retryable")
 	}
 }
@@ -1632,8 +1657,7 @@ func TestComplete_WrapsContextDeadlineExceeded(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	var rte *llm.RequestTimeoutError
-	if !errors.As(err, &rte) {
+	if llm.Kind(err) != llm.KindTimeout {
 		t.Fatalf("expected RequestTimeoutError, got %T: %v", err, err)
 	}
 }
@@ -2241,8 +2265,7 @@ func TestAdapterTimeout_Request_EnforcedOnComplete(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	var rte *llm.RequestTimeoutError
-	if errors.As(err, &rte) {
+	if llm.Kind(err) == llm.KindTimeout {
 		return // correct error type
 	}
 	if errors.Is(err, context.DeadlineExceeded) {

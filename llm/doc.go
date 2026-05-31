@@ -35,12 +35,19 @@
 // # Errors
 //
 // Provider failures are normalized to the [Error] interface, which exposes the
-// provider, HTTP status, retryability, and any Retry-After. Classify an error
-// with [Classify] (retryable, permanent, or endpoint-fallback) rather than
-// type-asserting concrete types, and match cancellation and timeout with
-// errors.Is: the taxonomy populates its Unwrap chain, so errors.Is(err,
-// context.Canceled) and errors.Is(err, context.DeadlineExceeded) hold for
-// user-cancelled and timed-out requests.
+// provider, HTTP status, retryability, and any Retry-After. The concrete error
+// types are unexported; branch on a failure with one of two orthogonal axes
+// rather than type-asserting:
+//
+//   - [Classify] returns the retry disposition ([ErrorClassRetryable],
+//     [ErrorClassPermanent], or [ErrorClassFallback]).
+//   - [Kind] returns the category ([ErrorKind]: [KindRateLimit],
+//     [KindContextLength], [KindContentFilter], …). A 429 and a 503 share a
+//     Class (retryable) but differ in Kind.
+//
+// Match cancellation and timeout with errors.Is: the taxonomy populates its
+// Unwrap chain, so errors.Is(err, context.Canceled) and errors.Is(err,
+// context.DeadlineExceeded) hold for user-cancelled and timed-out requests.
 //
 // # Adapter SPI
 //

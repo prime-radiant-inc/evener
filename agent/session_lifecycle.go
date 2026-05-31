@@ -824,8 +824,7 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 
 	// Content filter recovery: compaction often removes the offending content,
 	// allowing the next request to succeed. Try once.
-	var cfe *llm.ContentFilterError
-	if errors.As(err, &cfe) && !*contentFilterRetried && s.contextMgr != nil {
+	if llm.Kind(err) == llm.KindContentFilter && !*contentFilterRetried && s.contextMgr != nil {
 		*contentFilterRetried = true
 		s.emit(EventWarning, warningDataFromError("Content filter hit — compacting context and retrying", err))
 		s.mu.Lock()
@@ -845,8 +844,7 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 	s.emit(EventError, errData)
 
 	// Spec: context overflow should emit a warning (no automatic compaction).
-	var cle *llm.ContextLengthError
-	if errors.As(err, &cle) {
+	if llm.Kind(err) == llm.KindContextLength {
 		s.emit(EventWarning, warningDataFromError("Context length exceeded", err))
 	}
 	// Spec: non-retryable/unrecoverable errors transition the session to closed.

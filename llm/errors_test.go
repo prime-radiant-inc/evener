@@ -29,55 +29,55 @@ func TestErrorFromHTTPStatus_MappingAndRetryable(t *testing.T) {
 		wantType  any
 		retryable bool
 	}{
-		{status: 400, wantType: &InvalidRequestError{}, retryable: false},
-		{status: 401, wantType: &AuthenticationError{}, retryable: false},
-		{status: 403, wantType: &AccessDeniedError{}, retryable: false},
-		{status: 404, wantType: &NotFoundError{}, retryable: false},
-		{status: 408, wantType: &RequestTimeoutError{}, retryable: true},
-		{status: 413, wantType: &ContextLengthError{}, retryable: false},
-		{status: 422, wantType: &InvalidRequestError{}, retryable: false},
-		{status: 429, wantType: &RateLimitError{}, retryable: true},
-		{status: 500, wantType: &ServerError{}, retryable: true},
-		{status: 503, wantType: &ServerError{}, retryable: true},
-		{status: 599, wantType: &UnknownHTTPError{}, retryable: true},
+		{status: 400, wantType: &invalidRequestError{}, retryable: false},
+		{status: 401, wantType: &authenticationError{}, retryable: false},
+		{status: 403, wantType: &accessDeniedError{}, retryable: false},
+		{status: 404, wantType: &notFoundError{}, retryable: false},
+		{status: 408, wantType: &requestTimeoutError{}, retryable: true},
+		{status: 413, wantType: &contextLengthError{}, retryable: false},
+		{status: 422, wantType: &invalidRequestError{}, retryable: false},
+		{status: 429, wantType: &rateLimitError{}, retryable: true},
+		{status: 500, wantType: &serverError{}, retryable: true},
+		{status: 503, wantType: &serverError{}, retryable: true},
+		{status: 599, wantType: &unknownHTTPError{}, retryable: true},
 	}
 	for _, tc := range cases {
 		err := ErrorFromHTTPStatus("p", tc.status, "msg", nil, nil)
 		switch tc.wantType.(type) {
-		case *InvalidRequestError:
-			if _, ok := err.(*InvalidRequestError); !ok {
+		case *invalidRequestError:
+			if _, ok := err.(*invalidRequestError); !ok {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
-		case *AuthenticationError:
-			if _, ok := err.(*AuthenticationError); !ok {
+		case *authenticationError:
+			if _, ok := err.(*authenticationError); !ok {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
-		case *AccessDeniedError:
-			if _, ok := err.(*AccessDeniedError); !ok {
+		case *accessDeniedError:
+			if _, ok := err.(*accessDeniedError); !ok {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
-		case *NotFoundError:
-			if _, ok := err.(*NotFoundError); !ok {
+		case *notFoundError:
+			if _, ok := err.(*notFoundError); !ok {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
-		case *RequestTimeoutError:
-			if _, ok := err.(*RequestTimeoutError); !ok {
+		case *requestTimeoutError:
+			if _, ok := err.(*requestTimeoutError); !ok {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
-		case *ContextLengthError:
-			if _, ok := err.(*ContextLengthError); !ok {
+		case *contextLengthError:
+			if _, ok := err.(*contextLengthError); !ok {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
-		case *RateLimitError:
-			if _, ok := err.(*RateLimitError); !ok {
+		case *rateLimitError:
+			if _, ok := err.(*rateLimitError); !ok {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
-		case *ServerError:
-			if _, ok := err.(*ServerError); !ok {
+		case *serverError:
+			if _, ok := err.(*serverError); !ok {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
-		case *UnknownHTTPError:
-			if _, ok := err.(*UnknownHTTPError); !ok {
+		case *unknownHTTPError:
+			if _, ok := err.(*unknownHTTPError); !ok {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
 		}
@@ -92,7 +92,7 @@ func TestErrorFromHTTPStatus_MappingAndRetryable(t *testing.T) {
 }
 
 func TestContentFilterError_ImplementsErrorInterface(t *testing.T) {
-	err := &ContentFilterError{httpErrorBase{provider: "test", statusCode: 400, message: "blocked", retryable: false}}
+	err := &contentFilterError{httpErrorBase{provider: "test", statusCode: 400, message: "blocked", retryable: false}}
 	var llmErr Error
 	if !errors.As(err, &llmErr) {
 		t.Fatalf("ContentFilterError does not implement Error interface")
@@ -106,7 +106,7 @@ func TestContentFilterError_ImplementsErrorInterface(t *testing.T) {
 }
 
 func TestQuotaExceededError_ImplementsErrorInterface(t *testing.T) {
-	err := &QuotaExceededError{httpErrorBase{provider: "test", statusCode: 429, message: "quota exceeded", retryable: false}}
+	err := &quotaExceededError{httpErrorBase{provider: "test", statusCode: 429, message: "quota exceeded", retryable: false}}
 	var llmErr Error
 	if !errors.As(err, &llmErr) {
 		t.Fatalf("QuotaExceededError does not implement Error interface")
@@ -176,7 +176,7 @@ func TestRaw_ExposesRawResponse(t *testing.T) {
 
 func TestUnwrap_ErrorChain(t *testing.T) {
 	cause := fmt.Errorf("underlying network problem")
-	err := &ServerError{httpErrorBase{
+	err := &serverError{httpErrorBase{
 		provider:   "openai",
 		statusCode: 500,
 		message:    "server error",
@@ -219,37 +219,36 @@ func TestErrorFromHTTPStatus_ErrorCodeClassification(t *testing.T) {
 		status    int
 		message   string
 		errorCode string
-		want      string
+		want      ErrorKind
 	}{
 		{
 			"invalid_prompt code",
 			400,
 			"some generic message",
 			"invalid_prompt",
-			"*llm.ContentFilterError",
+			KindContentFilter,
 		},
 		{
 			"content_policy_violation code",
 			400,
 			"some generic message",
 			"content_policy_violation",
-			"*llm.ContentFilterError",
+			KindContentFilter,
 		},
 		{
 			"unrecognized code falls through",
 			400,
 			"bad request",
 			"some_other_code",
-			"*llm.InvalidRequestError",
+			KindInvalidRequest,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			raw := map[string]any{"error": map[string]any{"code": tc.errorCode}}
 			err := ErrorFromHTTPStatus("openai", tc.status, tc.message, raw, nil)
-			got := fmt.Sprintf("%T", err)
-			if got != tc.want {
-				t.Fatalf("ErrorFromHTTPStatus(%d, code=%q) = %s, want %s", tc.status, tc.errorCode, got, tc.want)
+			if got := Kind(err); got != tc.want {
+				t.Fatalf("ErrorFromHTTPStatus(%d, code=%q) kind = %v, want %v", tc.status, tc.errorCode, got, tc.want)
 			}
 		})
 	}
@@ -433,36 +432,35 @@ func TestErrorFromHTTPStatus_MessageBasedClassification(t *testing.T) {
 		name    string
 		status  int
 		message string
-		want    string // expected error type name
+		want    ErrorKind
 	}{
 		// Ambiguous 400 classified by message.
-		{"400 content filter", 400, "content filter policy violated", "*llm.ContentFilterError"},
-		{"400 safety", 400, "blocked by safety settings", "*llm.ContentFilterError"},
-		{"400 context length", 400, "context length exceeded", "*llm.ContextLengthError"},
-		{"400 too many tokens", 400, "too many tokens in request", "*llm.ContextLengthError"},
-		{"400 quota", 400, "quota exceeded for billing account", "*llm.QuotaExceededError"},
-		{"400 billing", 400, "billing issue on account", "*llm.QuotaExceededError"},
-		{"400 not found", 400, "model does not exist", "*llm.NotFoundError"},
-		{"400 plain", 400, "bad request", "*llm.InvalidRequestError"},
+		{"400 content filter", 400, "content filter policy violated", KindContentFilter},
+		{"400 safety", 400, "blocked by safety settings", KindContentFilter},
+		{"400 context length", 400, "context length exceeded", KindContextLength},
+		{"400 too many tokens", 400, "too many tokens in request", KindContextLength},
+		{"400 quota", 400, "quota exceeded for billing account", KindQuotaExceeded},
+		{"400 billing", 400, "billing issue on account", KindQuotaExceeded},
+		{"400 not found", 400, "model does not exist", KindNotFound},
+		{"400 plain", 400, "bad request", KindInvalidRequest},
 
 		// Unambiguous status codes should NOT be overridden by message.
-		{"401 always auth", 401, "content filter something", "*llm.AuthenticationError"},
-		{"429 always rate", 429, "quota exceeded", "*llm.RateLimitError"},
-		{"404 always notfound", 404, "quota exceeded", "*llm.NotFoundError"},
+		{"401 always auth", 401, "content filter something", KindAuthentication},
+		{"429 always rate", 429, "quota exceeded", KindRateLimit},
+		{"404 always notfound", 404, "quota exceeded", KindNotFound},
 
 		// 422 is ambiguous like 400.
-		{"422 content filter", 422, "this violates safety policy", "*llm.ContentFilterError"},
-		{"422 plain", 422, "invalid field", "*llm.InvalidRequestError"},
+		{"422 content filter", 422, "this violates safety policy", KindContentFilter},
+		{"422 plain", 422, "invalid field", KindInvalidRequest},
 
 		// OpenAI usage policy violation (invalid_prompt).
-		{"400 usage policy", 400, "Your prompt was flagged as potentially violating our usage policy", "*llm.ContentFilterError"},
+		{"400 usage policy", 400, "Your prompt was flagged as potentially violating our usage policy", KindContentFilter},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			err := ErrorFromHTTPStatus("p", tc.status, tc.message, nil, nil)
-			got := fmt.Sprintf("%T", err)
-			if got != tc.want {
-				t.Fatalf("ErrorFromHTTPStatus(%d, %q) = %s, want %s", tc.status, tc.message, got, tc.want)
+			if got := Kind(err); got != tc.want {
+				t.Fatalf("ErrorFromHTTPStatus(%d, %q) kind = %v, want %v", tc.status, tc.message, got, tc.want)
 			}
 		})
 	}

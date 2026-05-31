@@ -120,8 +120,7 @@ func TestRun_EpilogueWrapsContextErrorOnCancel(t *testing.T) {
 		t.Fatal("expected a terminal error event")
 	}
 	want := llm.WrapContextError("anthropic", context.DeadlineExceeded)
-	var timeoutErr *llm.RequestTimeoutError
-	if !errors.As(errEv.Err, &timeoutErr) {
+	if llm.Kind(errEv.Err) != llm.KindTimeout {
 		t.Fatalf("ctx-cancel epilogue: got %T (%v), want %T (%v)", errEv.Err, errEv.Err, want, want)
 	}
 	// It must NOT be a StreamError carrying IncompleteMsg.

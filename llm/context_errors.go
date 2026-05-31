@@ -6,8 +6,8 @@ import (
 )
 
 // WrapContextError converts context cancellation/deadline errors into the SDK
-// error hierarchy (AbortError/RequestTimeoutError). Other errors are returned
-// unchanged.
+// error hierarchy (AbortError or a timeout of [KindTimeout]). Other errors are
+// returned unchanged.
 func WrapContextError(provider string, err error) error {
 	if err == nil {
 		return nil
