@@ -52,16 +52,6 @@ type = "anthropic"
 	}
 }
 
-// writeEmptyDirProvidersToml creates the directory for providers.toml but does
-// NOT write the file (tests Create from scratch need the file absent but the
-// directory present for WriteFile).
-func ensureParentDir(t *testing.T, path string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. Create → List includes the new instance with correct fields; file
 //    round-trips through LoadFile; no api_key in the written file.

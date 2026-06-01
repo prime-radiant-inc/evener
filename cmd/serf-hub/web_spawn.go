@@ -18,24 +18,6 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// findNewSession polls the roster up to 3s for a daemon with the given pid.
-// Returns the resolved session_id when found, or empty string on timeout.
-func (s *WebServer) findNewSession(pid int) string {
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if s.cfg.Roster != nil {
-			s.cfg.Roster.Refresh()
-			for _, le := range s.cfg.Roster.List() {
-				if le.PID == pid && le.SessionID != "" {
-					return le.SessionID
-				}
-			}
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	return ""
-}
-
 // handleWorkspaceSpawn renders the prompt-first spawn surface partial.
 // Accepts an optional ?dir=<absolute path> query param. When present and the
 // path is absolute and exists, it pre-fills the working_dir chip — used by
@@ -186,18 +168,6 @@ func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(models) //nolint:errcheck
-}
-
-func serfLaunchModelsOrEmpty(ctx context.Context, cfg hubcore.WebConfig) []appwire.ModelDescriptor {
-	return serfLaunchModelListOrEmpty(ctx, cfg).Data
-}
-
-func serfLaunchModelListOrEmpty(ctx context.Context, cfg hubcore.WebConfig) appwire.ModelListResponse {
-	resp, err := serfLaunchModelList(ctx, cfg, "")
-	if err != nil {
-		return appwire.ModelListResponse{}
-	}
-	return resp
 }
 
 func launchModelListErrorDiagnostic(err error) appwire.ModelListDiagnostic {

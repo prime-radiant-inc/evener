@@ -156,20 +156,6 @@ func TestServerAppWireTurnDrainAsSteerThroughSessionProducesImageBearingSteer(t 
 	}
 }
 
-// fakeServerAdapter is a minimal llm.Adapter shim used in this package's
-// session-backed wire tests. The session never executes a turn here — we
-// only need it to accept queue/steer mutations — so a no-op adapter is
-// sufficient.
-type fakeServerAdapter struct{ name string }
-
-func (a *fakeServerAdapter) Name() string { return a.name }
-func (a *fakeServerAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
-	return llm.Response{Provider: a.name, Model: req.Model, Message: llm.Assistant("noop")}, nil
-}
-func (a *fakeServerAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
-	return nil, llm.ErrStreamUnsupported
-}
-
 type blockingServerAdapter struct {
 	name    string
 	started chan struct{}

@@ -110,14 +110,6 @@ func providerHasLaunchDiagnostic(diagnostics []appwire.ModelListDiagnostic, prov
 	return false
 }
 
-func serfLaunchModels(ctx context.Context, cfg hubcore.WebConfig) ([]appwire.ModelDescriptor, error) {
-	resp, err := serfLaunchModelList(ctx, cfg, "")
-	if err != nil {
-		return nil, err
-	}
-	return resp.Data, nil
-}
-
 func serfLaunchModelList(ctx context.Context, cfg hubcore.WebConfig, workingDir string) (appwire.ModelListResponse, error) {
 	if strings.TrimSpace(workingDir) != "" {
 		if lister, ok := cfg.Spawner.(SerfLaunchModelContractWorkingDirLister); ok && lister != nil {

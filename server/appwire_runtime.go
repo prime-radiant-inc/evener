@@ -505,16 +505,6 @@ func (s *Server) ensureAppProjectorLocked(threadID string) {
 	s.appProjector = appprojector.NewAppEventProjector(threadID, ref)
 }
 
-func (s *Server) reserveAppTurnID() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.ensureAppProjectorLocked("")
-	turnID := s.appProjector.ReserveTurnID()
-	s.appActiveTurnID = turnID
-	s.appReservedTurnID = turnID
-	return turnID
-}
-
 func (s *Server) reserveAppTurnIDForStart() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

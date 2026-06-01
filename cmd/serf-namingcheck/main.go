@@ -94,12 +94,6 @@ var appwirePrefixes = []string{
 	"cmd/serf-hub/internal/launchconfig/",
 }
 
-// appwireServerPrefix matches the hub's appwire runtime glue files
-// (server/appwire_runtime.go, server/appwire_projection.go, ...). These
-// files thread appwire payloads through the hub and carry the camelCase
-// requirement with them.
-const appwireServerPrefix = "server/appwire_"
-
 // providersPrefix marks per-provider client code. Each upstream provider has
 // its own wire format (OpenAI uses snake_case, Anthropic uses snake_case,
 // Google uses camelCase, etc.) so JSON tags here are completely exempt — they

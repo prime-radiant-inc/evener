@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -3224,28 +3223,6 @@ func TestWeb_SessionTasks_LiveProxiesDaemon(t *testing.T) {
 	}
 }
 
-// stubDaemonForSend stands up an httptest server that records the body posted
-// to /input and replies 202. Returns the server (caller must Close), a pointer
-// to the captured body bytes, and the host:port string.
-func stubDaemonForSend(t *testing.T) (*httptest.Server, *[]byte, string) {
-	t.Helper()
-	var captured []byte
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/input" || r.Method != http.MethodPost {
-			http.NotFound(w, r)
-			return
-		}
-		buf, err := io.ReadAll(r.Body)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		captured = buf
-		w.WriteHeader(http.StatusAccepted)
-	}))
-	return srv, &captured, strings.TrimPrefix(srv.URL, "http://")
-}
-
 func startAppwireTestDaemon(t *testing.T, dir, sessionID string, register func(*appserver.Server)) *httptest.Server {
 	t.Helper()
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
@@ -3695,23 +3672,6 @@ func TestWeb_Workspace_ForkOriginalBanner(t *testing.T) {
 			t.Errorf("fork banner missing %q: %q", w, body)
 		}
 	}
-}
-
-// stubDaemonForAction stands up an httptest server that records the path of
-// any POST and replies with the given status code. Returns the server, a
-// pointer to the captured path, and the host:port string.
-func stubDaemonForAction(t *testing.T, replyStatus int) (*httptest.Server, *string, string) {
-	t.Helper()
-	var capturedPath string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "POST required", http.StatusMethodNotAllowed)
-			return
-		}
-		capturedPath = r.URL.Path
-		w.WriteHeader(replyStatus)
-	}))
-	return srv, &capturedPath, strings.TrimPrefix(srv.URL, "http://")
 }
 
 func TestWeb_SessionAction_InterruptForwards(t *testing.T) {
@@ -4169,33 +4129,6 @@ func TestLaunchSerfSettings_UsesSchemaRoot(t *testing.T) {
 			t.Fatalf("project launch settings exposed env fallback %q: %q", blocked, projectBody)
 		}
 	}
-}
-
-// writeFakePlugin creates a minimal plugin tree at <root>/<name>:
-//
-//	.claude-plugin/plugin.json with the given name+version
-//	skills/<skillName>/SKILL.md with name+description frontmatter (when set)
-func writeFakePlugin(t *testing.T, root, name, version, skillName, skillDesc string) string {
-	t.Helper()
-	dir := filepath.Join(root, name)
-	if err := os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	manifest := []byte(`{"name":"` + name + `","version":"` + version + `"}`)
-	if err := os.WriteFile(filepath.Join(dir, ".claude-plugin", "plugin.json"), manifest, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if skillName != "" {
-		skillDir := filepath.Join(dir, "skills", skillName)
-		if err := os.MkdirAll(skillDir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		body := "---\nname: " + skillName + "\ndescription: " + skillDesc + "\n---\n\nbody\n"
-		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(body), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return dir
 }
 
 // TestWeb_Settings_PluginsPane_RendersClientScaffolding asserts that the

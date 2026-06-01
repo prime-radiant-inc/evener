@@ -429,17 +429,6 @@ func resolveSerfStateDirWithStateHome(workDir, override, stateHome string) strin
 	return agent.RuntimeDirWithStateHome(cmdutil.GitOriginURLFromDir(wd), wd, "", strings.TrimSpace(stateHome))
 }
 
-func setEnvValue(env []string, key, value string) []string {
-	prefix := key + "="
-	for i, kv := range env {
-		if strings.HasPrefix(kv, prefix) {
-			env[i] = prefix + value
-			return env
-		}
-	}
-	return append(env, prefix+value)
-}
-
 // validateProviderCredentials checks that the credentials store has a value
 // for the given provider. Providers listed with auth mode "none" (e.g. ollama)
 // are always accepted. A configured provider with no resolvable credential
@@ -633,14 +622,6 @@ func validateSerfLaunchContract(ctx context.Context, serfBinary, model string, e
 		return appwire.HubLaunchError(fmt.Sprintf("serf launch-check protocol %q does not match Hub protocol %q", resp.Protocol, appwire.ProtocolVersion))
 	}
 	return nil
-}
-
-func listSerfLaunchModels(ctx context.Context, serfBinary string, env []string) ([]appwire.ModelDescriptor, error) {
-	resp, err := listSerfLaunchModelContract(ctx, serfBinary, env)
-	if err != nil {
-		return nil, err
-	}
-	return resp.Data, nil
 }
 
 func listSerfLaunchModelContract(ctx context.Context, serfBinary string, env []string) (appwire.ModelListResponse, error) {
