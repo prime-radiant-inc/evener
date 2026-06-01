@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmd/serf-tui/internal/hubstart"
 	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitext"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appwire"
@@ -267,7 +268,7 @@ func TestHubModelDashboardClampsRowsToTerminalHeight(t *testing.T) {
 	m.selected = len(m.dashboardRows()) - 1
 
 	got := m.dashboardView()
-	if lines := shellSectionLineCount(got); lines > m.height {
+	if lines := tuitext.ShellSectionLineCount(got); lines > m.height {
 		t.Fatalf("dashboard rendered %d lines, want <= %d:\n%s", lines, m.height, got)
 	}
 	if !strings.Contains(got, "task 19") {

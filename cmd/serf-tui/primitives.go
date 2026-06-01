@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitext"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
@@ -68,7 +69,7 @@ func SectionDivider(width int, left, right string) string {
 				if available < 0 {
 					available = 0
 				}
-				truncatedLeft := truncateText(strings.ToUpper(left), available)
+				truncatedLeft := tuitext.TruncateText(strings.ToUpper(left), available)
 				return lipgloss.NewStyle().Foreground(th.RuleSoft).Render("─ ") +
 					lipgloss.NewStyle().Foreground(th.TextDim).Bold(true).Render(truncatedLeft) +
 					lipgloss.NewStyle().Foreground(th.Rule).Render(trailPlain)

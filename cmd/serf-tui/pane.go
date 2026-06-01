@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitext"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
@@ -10,7 +11,7 @@ func renderStyledPane(text string, width int) string {
 		return ""
 	}
 	innerWidth := max(1, width-3)
-	body := truncateMultilineText(text, innerWidth)
+	body := tuitext.TruncateMultilineText(text, innerWidth)
 	return tuitheme.DefaultTUIStyles().Pane.Width(width).Render(body)
 }
 
@@ -21,7 +22,7 @@ func renderPopupPane(text string, width int) string {
 	terminalWidth := width
 	popupWidth := popupPaneWidth(width)
 	innerWidth := popupPaneContentWidth(width)
-	body := truncateMultilineText(text, innerWidth)
+	body := tuitext.TruncateMultilineText(text, innerWidth)
 	pane := tuitheme.DefaultTUIStyles().Modal.Width(popupWidth).Render(body)
 	if terminalWidth > popupWidth {
 		return lipgloss.PlaceHorizontal(terminalWidth, lipgloss.Center, pane)

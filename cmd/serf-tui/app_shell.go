@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitext"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
@@ -42,10 +43,10 @@ func (s appShell) View() string {
 		return content + "\n\n" + footer + "\n"
 	}
 	if content == "" {
-		gap := max(0, s.Height-shellSectionLineCount(footer))
+		gap := max(0, s.Height-tuitext.ShellSectionLineCount(footer))
 		return strings.Repeat("\n", gap) + footer
 	}
-	gap := s.Height - shellSectionLineCount(content) - shellSectionLineCount(footer) + 1
+	gap := s.Height - tuitext.ShellSectionLineCount(content) - tuitext.ShellSectionLineCount(footer) + 1
 	if gap < 2 {
 		gap = 2
 	}

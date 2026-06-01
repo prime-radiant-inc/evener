@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitext"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
@@ -24,7 +25,7 @@ func (m hubModel) dashboardView() string {
 	topBar := dashboardHeader(m.hubURL, liveCount, width)
 	var b strings.Builder
 	if m.err != nil {
-		b.WriteString(truncateText(fmt.Sprintf("error: %v", m.err), width))
+		b.WriteString(tuitext.TruncateText(fmt.Sprintf("error: %v", m.err), width))
 		b.WriteString("\n\n")
 	}
 	if m.commandPalette != nil {
@@ -91,7 +92,7 @@ func (m hubModel) dashboardView() string {
 		drawerWidth := min(72, max(42, width/2))
 		listWidth := max(40, width-drawerWidth-2)
 		list := renderDashboardRowsWindow(rows, m.selected, listWidth, false, rowLimit)
-		drawer := limitFirstLines(m.dashboardDetailsView(rows, drawerWidth), rowLimit)
+		drawer := tuitext.LimitFirstLines(m.dashboardDetailsView(rows, drawerWidth), rowLimit)
 		b.WriteString(joinDashboardColumns(list, drawer, listWidth, drawerWidth, width))
 	} else {
 		b.WriteString(renderDashboardRowsWindow(rows, m.selected, width, width <= 72, rowLimit))
@@ -171,7 +172,7 @@ func renderDashboardLaunchRow(row hubRow, selected bool, width int) string {
 	if selected {
 		cursor = ">"
 	}
-	line := truncateText(cursor+" + "+row.title, width)
+	line := tuitext.TruncateText(cursor+" + "+row.title, width)
 	if selected {
 		return tuitheme.DefaultTUIStyles().Selected.Render(line)
 	}
@@ -183,7 +184,7 @@ func dashboardRowLimit(totalHeight int, topBar string, bodyPrefix string, footer
 		return 0
 	}
 	limit := sessionShellBodyHeight(totalHeight, topBar, "", footer)
-	limit -= shellSectionLineCount(bodyPrefix)
+	limit -= tuitext.ShellSectionLineCount(bodyPrefix)
 	if limit < 1 {
 		return 1
 	}
@@ -201,7 +202,7 @@ func renderDashboardProjectRow(row hubRow, rows []hubRow, selected bool, width i
 	}
 	styles := tuitheme.DefaultTUIStyles()
 	line := fmt.Sprintf("%s %s %s %s  %s", cursor, marker, statusDot(row.state), dashboardCell(row.project), projectSummary(row, rows))
-	line = truncateText(line, width)
+	line = tuitext.TruncateText(line, width)
 	if selected {
 		return styles.Selected.Render(line)
 	}
@@ -222,7 +223,7 @@ func renderDashboardRecentToggleRow(row hubRow, expanded bool, selected bool, wi
 		count = 1
 	}
 	label := "recent"
-	line := truncateText(fmt.Sprintf("%s %s %s %d %s", cursor, marker, dashboardCell(row.project), count, label), width)
+	line := tuitext.TruncateText(fmt.Sprintf("%s %s %s %d %s", cursor, marker, dashboardCell(row.project), count, label), width)
 	if selected {
 		return tuitheme.DefaultTUIStyles().Selected.Render(line)
 	}
@@ -255,7 +256,7 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 	// the marker stays one cell wide for column stability.
 	marker := StateBar(stateColor(row.state))
 	styles := tuitheme.DefaultTUIStyles()
-	line := strings.Join(nonEmptyStrings([]string{
+	line := strings.Join(tuitext.NonEmptyStrings([]string{
 		marker,
 		statusDot(row.state),
 		stateLabel(row.state),
@@ -267,7 +268,7 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 	}), " ")
 	_ = compact // compact/non-compact share layout today; keep param for the call sites
 	// Use ANSI-aware truncation: the joined line carries SGR escapes from
-	// StateBar and dashboardCell helpers. truncateText slices raw runes
+	// StateBar and dashboardCell helpers. tuitext.TruncateText slices raw runes
 	// and would chop through escape sequences (a tail-end \x1b[0m or fg
 	// switch gets cut, leaking style into the next row), and the selected
 	// branch below relies on ANSI being intact before it strips them.

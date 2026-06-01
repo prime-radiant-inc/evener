@@ -104,7 +104,7 @@ func renderComposerChipStrip(ctx composerContext) string {
 		// Chip-strip fragments are ANSI-styled (each span declares the band
 		// bg explicitly to survive the parent's reset boundaries). Use
 		// ansi.Truncate so the underlying SGR escapes stay intact and the
-		// band bg keeps painting through the truncation tail. truncateText
+		// band bg keeps painting through the truncation tail. tuitext.TruncateText
 		// slices raw runes and would chop through escape sequences.
 		if leftW >= inner {
 			leftContent = ansi.Truncate(leftContent, inner, "…")
