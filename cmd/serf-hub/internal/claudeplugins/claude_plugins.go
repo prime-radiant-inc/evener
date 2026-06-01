@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/internal/launchconfig"
+	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
 )
 
 type claudeSettingsFile struct {

@@ -7,7 +7,7 @@ import (
 
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
-	"primeradiant.com/serf/internal/launchconfig"
+	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
 )
 
 // hubLaunchController owns the serf/launch/* RPC handlers.

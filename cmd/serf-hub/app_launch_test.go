@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/launchconfig"
+	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
 )
 
 func TestHubLaunchControllerSchema(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/internal/launchconfig"
+	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
 )
 
 // TestE2E_HubAndDaemon brings up a real serf daemon plus the hub and
