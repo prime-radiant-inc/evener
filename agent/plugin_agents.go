@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/frontmatter"
+	"primeradiant.com/serf/agent/internal/frontmatter"
 )
 
 // TaskTemplate defines a default task in an agent's workflow.

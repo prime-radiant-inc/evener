@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"text/tabwriter"
 
+	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmd/serf/internal/cliprompt"
 	"primeradiant.com/serf/cmd/serf/internal/launchcheck"
@@ -51,8 +52,10 @@ type runCLIFlags struct {
 }
 
 func main() {
-	// Report the serf build version in the OpenAI provider's User-Agent.
+	// Report the serf build version in the OpenAI provider's User-Agent and in
+	// agent session metadata.
 	openaiprovider.ClientVersion = buildinfo.Version()
+	agent.BuildVersion = buildinfo.Version()
 
 	// Quick flags that don't need full flag.Parse().
 	if len(os.Args) > 1 && os.Args[1] == "--version" {

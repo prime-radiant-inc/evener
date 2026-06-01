@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/frontmatter"
+	"primeradiant.com/serf/agent/internal/frontmatter"
 )
 
 // SkillMeta holds discovery-time metadata for a single skill.

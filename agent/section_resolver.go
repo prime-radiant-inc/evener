@@ -9,7 +9,7 @@ import (
 	"strings"
 	"text/template"
 
-	"primeradiant.com/serf/frontmatter"
+	"primeradiant.com/serf/agent/internal/frontmatter"
 )
 
 // promptSource describes one component of the composed system prompt.

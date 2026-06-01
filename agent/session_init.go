@@ -10,9 +10,15 @@ import (
 
 	"github.com/oklog/ulid/v2"
 	"primeradiant.com/serf/agent/internal/installid"
-	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/llm"
 )
+
+// BuildVersion is recorded in each session's metadata (SessionMeta.BuildVersion).
+// It defaults to "dev"; an embedding application sets it to its build version at
+// startup (the serf binaries set it from the linker-stamped build info). Kept as
+// a package-level setting because it is a per-process constant — the same value
+// for every session in a run — mirroring openai.ClientVersion in the llm module.
+var BuildVersion = "dev"
 
 // selectStrategy creates the appropriate contextStrategy from config.
 func selectStrategy(cfg SessionConfig, cm *contextManager, sess *Session) (contextStrategy, error) {
@@ -136,7 +142,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 			Model:            profile.Model(),
 			WorkingDir:       s.envInfo.WorkingDir,
 			Depth:            cfg.spawn.depth,
-			BuildVersion:     buildinfo.Version(),
+			BuildVersion:     BuildVersion,
 			SystemPrompt:     s.cachedSystemPrompt,
 			AgentTasks:       agentTasks,
 		}
@@ -268,7 +274,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 				Model:            profile.Model(),
 				WorkingDir:       s.envInfo.WorkingDir,
 				Depth:            cfg.spawn.depth,
-				BuildVersion:     buildinfo.Version(),
+				BuildVersion:     BuildVersion,
 				SystemPrompt:     s.cachedSystemPrompt,
 				AgentTasks:       agentTasks,
 			}
@@ -406,7 +412,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 				Model:            profile.Model(),
 				WorkingDir:       s.envInfo.WorkingDir,
 				Depth:            cfg.spawn.depth,
-				BuildVersion:     buildinfo.Version(),
+				BuildVersion:     BuildVersion,
 				SystemPrompt:     s.cachedSystemPrompt,
 				AgentTasks:       agentTasks,
 			}

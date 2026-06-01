@@ -4,7 +4,7 @@ import (
 	"errors"
 	"strings"
 
-	"primeradiant.com/serf/internal/diagnostic"
+	"primeradiant.com/serf/agent/internal/diagnostic"
 	"primeradiant.com/serf/llm"
 )
 
