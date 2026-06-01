@@ -23,8 +23,8 @@ type providerCase struct {
 
 var providerCases = []providerCase{
 	{"openai", "openai", NewOpenAIProfile},
-	{"anthropic", "anthropic", NewAnthropicProfile},
-	{"gemini", "google", NewGeminiProfile},
+	{"anthropic", "anthropic", newAnthropicProfile},
+	{"gemini", "google", newGeminiProfile},
 }
 
 // newParitySession creates a session with the given provider and fakeAdapter steps.

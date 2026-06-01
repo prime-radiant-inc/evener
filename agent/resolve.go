@@ -20,7 +20,7 @@ import (
 // via WithProviderID so the instance's user-assigned name becomes the profile ID
 // while the behavior tag stays derived from the provider type (not the name).
 //
-// The context window is passed as 0 to NewOpenAICompatProfile — the catalog
+// The context window is passed as 0 to newOpenAICompatProfile — the catalog
 // lookup inside the constructor keys on the behavior tag and resolves the
 // right window from the embedded model catalog.
 func ResolveProfileFromConfig(cfg providercfg.Config, ref string) (ProviderProfile, error) {
@@ -55,22 +55,22 @@ func ResolveProfileFromConfig(cfg providercfg.Config, ref string) (ProviderProfi
 		if style == string(providercfg.StyleChatCompletions) {
 			// Pass "openai-compatible" as the id so BehaviorTag("openai-compatible","")
 			// produces the correct tag, then rename to the instance name.
-			raw = NewOpenAICompatProfile("openai-compatible", model, 0)
+			raw = newOpenAICompatProfile("openai-compatible", model, 0)
 		} else {
 			// responses or empty style → full OpenAI profile
 			raw = NewOpenAIProfile(model)
 		}
 	case "anthropic":
-		raw = NewAnthropicProfile(model)
+		raw = newAnthropicProfile(model)
 	case "google":
-		raw = NewGeminiProfile(model)
+		raw = newGeminiProfile(model)
 	case "minimax":
-		raw = NewMiniMaxProfile(model)
+		raw = newMiniMaxProfile(model)
 	case "openrouter-anthropic":
-		raw = NewOpenRouterAnthropicProfile(model)
+		raw = newOpenRouterAnthropicProfile(model)
 	case "kimi", "glm", "openrouter", "ollama":
 		// Pass the type as the constructor id so the behavior tag is the type.
-		raw = NewOpenAICompatProfile(typ, model, 0)
+		raw = newOpenAICompatProfile(typ, model, 0)
 	default:
 		return nil, fmt.Errorf("unknown provider type %q for instance %q", typ, instName)
 	}

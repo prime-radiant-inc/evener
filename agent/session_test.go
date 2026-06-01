@@ -1065,7 +1065,7 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs_Anthropic(t *testing.T) 
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1148,7 +1148,7 @@ func TestSession_NaturalCompletion_LoadsOnlyProfileDocs_Gemini(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewGeminiProfile("gemini-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, newGeminiProfile("gemini-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1237,7 +1237,7 @@ func TestSession_CoreTools_ListDir(t *testing.T) {
 
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "google"})
-	sess, err := NewSession(c, NewGeminiProfile("gemini-test"), env, SessionConfig{})
+	sess, err := NewSession(c, newGeminiProfile("gemini-test"), env, SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1778,7 +1778,7 @@ func TestSession_ParallelToolCalls_RunConcurrentlyWhenSupported(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1862,7 +1862,7 @@ func TestSession_ParallelToolCalls_NonReadOnlyToolsSerialize(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -3654,7 +3654,7 @@ func TestSession_RecordInputTokens_SkipsWebSearchResponse(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewAnthropicProfile("claude-opus-4-6"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-opus-4-6"), NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -3703,7 +3703,7 @@ func TestSession_SetModel_UpdatesContextManager(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewAnthropicProfile("claude-opus-4-6"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-opus-4-6"), NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

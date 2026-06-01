@@ -108,7 +108,7 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 	c.Register(f)
 
 	// Anthropic profile has use_skill tool, so skills are listed in system prompt.
-	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
 	c.Register(f)
 
 	// Anthropic profile renders skills in system prompt, so we can verify shadowing.
-	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestEmbeddedSkills_UseSkillWithProjectSkill(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestEmbeddedSkills_UseSkillUnknownReturnsError(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

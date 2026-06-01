@@ -434,8 +434,8 @@ func TestTaskListSchema_ReasoningEffortEnumPerProvider(t *testing.T) {
 		want    []string
 	}{
 		{"openai", NewOpenAIProfile("test"), []string{"low", "medium", "high", "xhigh"}},
-		{"anthropic", NewAnthropicProfile("test"), []string{"low", "medium", "high", "max"}},
-		{"gemini", NewGeminiProfile("test"), []string{"low", "medium", "high"}},
+		{"anthropic", newAnthropicProfile("test"), []string{"low", "medium", "high", "max"}},
+		{"gemini", newGeminiProfile("test"), []string{"low", "medium", "high"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

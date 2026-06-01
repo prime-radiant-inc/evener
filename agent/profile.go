@@ -590,9 +590,9 @@ func (p *baseProfile) WithModel(model string) ProviderProfile {
 		var rebuilt ProviderProfile
 		switch p.behaviorTag {
 		case "openrouter-anthropic":
-			rebuilt = NewOpenRouterAnthropicProfile(model)
+			rebuilt = newOpenRouterAnthropicProfile(model)
 		default:
-			rebuilt = NewOpenAICompatProfile(p.behaviorTag, model, 0)
+			rebuilt = newOpenAICompatProfile(p.behaviorTag, model, 0)
 		}
 		// Re-stamp the instance identity onto the rebuilt profile so that a
 		// renamed instance (id != behaviorTag, via WithProviderID) keeps its
@@ -690,10 +690,10 @@ func (p *anthropicProfile) WithModel(model string) ProviderProfile {
 	return &clone
 }
 
-// NewAnthropicProfile returns a ProviderProfile for Anthropic using the given
+// newAnthropicProfile returns a ProviderProfile for Anthropic using the given
 // model. The context window is 1,000,000 when the model carries the 1M-context
 // suffix and 200,000 otherwise.
-func NewAnthropicProfile(model string) ProviderProfile {
+func newAnthropicProfile(model string) ProviderProfile {
 	model = strings.TrimSpace(model)
 	has1M := strings.HasSuffix(model, anthropicSuffix1M)
 	ctxWindow := 200_000
@@ -721,9 +721,9 @@ func NewAnthropicProfile(model string) ProviderProfile {
 	}
 }
 
-// NewGeminiProfile returns a ProviderProfile for Google Gemini using the given
+// newGeminiProfile returns a ProviderProfile for Google Gemini using the given
 // model.
-func NewGeminiProfile(model string) ProviderProfile {
+func newGeminiProfile(model string) ProviderProfile {
 	bp := buildBaseProfile(profileSpec{
 		id:              "google",
 		behaviorTag:     providercfg.BehaviorTag("google", ""),
@@ -757,8 +757,8 @@ func NewGeminiProfile(model string) ProviderProfile {
 	return &bp
 }
 
-// NewMiniMaxProfile returns a ProviderProfile for MiniMax using the given model.
-func NewMiniMaxProfile(model string) ProviderProfile {
+// newMiniMaxProfile returns a ProviderProfile for MiniMax using the given model.
+func newMiniMaxProfile(model string) ProviderProfile {
 	bp := buildBaseProfile(profileSpec{
 		id:              "minimax",
 		behaviorTag:     providercfg.BehaviorTag("minimax", ""),
@@ -776,7 +776,7 @@ func NewMiniMaxProfile(model string) ProviderProfile {
 	return &bp
 }
 
-// NewOpenRouterAnthropicProfile creates a profile that routes any OpenRouter-
+// newOpenRouterAnthropicProfile creates a profile that routes any OpenRouter-
 // served model through OpenRouter's Anthropic-Messages-compatible endpoint
 // (https://openrouter.ai/api/v1/messages).
 //
@@ -887,11 +887,11 @@ func resolveOpenRouterAnthropicCtxAndEfforts(lookup func(string) *llm.ModelInfo,
 	return ctx, efforts
 }
 
-// NewOpenRouterAnthropicProfile returns a ProviderProfile for the
+// newOpenRouterAnthropicProfile returns a ProviderProfile for the
 // openrouter-anthropic provider using the given model, resolving the context
 // window, reasoning effort levels, and web-search support from the embedded
 // model catalog.
-func NewOpenRouterAnthropicProfile(model string) ProviderProfile {
+func newOpenRouterAnthropicProfile(model string) ProviderProfile {
 	model = strings.TrimSpace(model)
 	// Resolve catalog metadata. The openrouter-anthropic profile draws
 	// from up to three places:
@@ -968,7 +968,7 @@ func suppressBareCatalogLookup(behaviorTag string) bool {
 }
 
 // resolveOpenAICompatCatalogModel runs the OpenAI-compatible catalog
-// lookup precedence used by NewOpenAICompatProfile, returning the first
+// lookup precedence used by newOpenAICompatProfile, returning the first
 // matching ModelInfo or nil. Pulled out as a pure function so it can be
 // unit-tested with a fake catalog without depending on which specific
 // entries the embedded catalog ships.
@@ -1005,7 +1005,7 @@ func resolveOpenAICompatCatalogModel(lookup func(string) *llm.ModelInfo, behavio
 	return nil
 }
 
-// NewOpenAICompatProfile creates a profile for OpenAI-compatible providers
+// newOpenAICompatProfile creates a profile for OpenAI-compatible providers
 // (kimi, glm, openrouter, ollama, etc.). If contextWindow is 0, it's looked
 // up from the embedded model catalog; if still unknown, defaults to 128K.
 //
@@ -1014,7 +1014,7 @@ func resolveOpenAICompatCatalogModel(lookup func(string) *llm.ModelInfo, behavio
 //
 // The wire model name is always the bare value; only the catalog lookup
 // is broadened.
-func NewOpenAICompatProfile(id, model string, contextWindow int) ProviderProfile {
+func newOpenAICompatProfile(id, model string, contextWindow int) ProviderProfile {
 	model = strings.TrimSpace(model)
 	var catModel *llm.ModelInfo
 	if cat := llm.EmbeddedModelCatalog(); cat != nil {

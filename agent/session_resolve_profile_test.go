@@ -24,11 +24,11 @@ func testResolver(ref string) (ProviderProfile, error) {
 	case "openai":
 		return NewOpenAIProfile(model), nil
 	case "anthropic":
-		return NewAnthropicProfile(model), nil
+		return newAnthropicProfile(model), nil
 	case "google", "gemini":
-		return NewGeminiProfile(model), nil
+		return newGeminiProfile(model), nil
 	case "kimi", "glm", "openrouter", "ollama":
-		return NewOpenAICompatProfile(provider, model, 0), nil
+		return newOpenAICompatProfile(provider, model, 0), nil
 	}
 	return nil, nil
 }
@@ -202,7 +202,7 @@ func TestSetModel_CrossProvider_SwitchAwayFromGoogle_RemovesWebSearch(t *testing
 	c.Register(&fakeAdapter{name: "gemini"})
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewGeminiProfile("gemini-2.5-pro"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, newGeminiProfile("gemini-2.5-pro"), NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolver,
 	})
@@ -277,15 +277,15 @@ func testResolverFull(ref string) (ProviderProfile, error) {
 	case "openai":
 		return NewOpenAIProfile(model), nil
 	case "anthropic":
-		return NewAnthropicProfile(model), nil
+		return newAnthropicProfile(model), nil
 	case "google", "gemini":
-		return NewGeminiProfile(model), nil
+		return newGeminiProfile(model), nil
 	case "minimax":
-		return NewMiniMaxProfile(model), nil
+		return newMiniMaxProfile(model), nil
 	case "openrouter-anthropic":
-		return NewOpenRouterAnthropicProfile(model), nil
+		return newOpenRouterAnthropicProfile(model), nil
 	case "kimi", "glm", "openrouter", "ollama":
-		return NewOpenAICompatProfile(provider, model, 0), nil
+		return newOpenAICompatProfile(provider, model, 0), nil
 	}
 	return nil, nil
 }
@@ -351,7 +351,7 @@ func TestSetModel_CrossProvider_FromAnthropicToOllama(t *testing.T) {
 	c.Register(&fakeAdapter{name: "anthropic"})
 	c.Register(&fakeAdapter{name: "ollama"})
 
-	sess, err := NewSession(c, NewAnthropicProfile("claude-opus-4-6"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, newAnthropicProfile("claude-opus-4-6"), NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolverFull,
 	})
@@ -403,7 +403,7 @@ func TestSetModel_CrossProvider_FromMiniMax(t *testing.T) {
 	c.Register(&fakeAdapter{name: "minimax"})
 	c.Register(&fakeAdapter{name: "anthropic"})
 
-	sess, err := NewSession(c, NewMiniMaxProfile("MiniMax-M2.7"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, newMiniMaxProfile("MiniMax-M2.7"), NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolverFull,
 	})
@@ -462,7 +462,7 @@ func TestSetModel_CrossProvider_FromOpenRouterToOllama(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openrouter"})
 	c.Register(&fakeAdapter{name: "ollama"})
 
-	sess, err := NewSession(c, NewOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0),
+	sess, err := NewSession(c, newOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0),
 		NewLocalExecutionEnvironment(dir), SessionConfig{
 			NoProjectPrompts: true,
 			ResolveProfile:   testResolverFull,
@@ -517,7 +517,7 @@ func TestSetModel_CrossProvider_FromAnthropicToOpenAI(t *testing.T) {
 	c.Register(&fakeAdapter{name: "anthropic"})
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewAnthropicProfile("claude-opus-4-6"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, newAnthropicProfile("claude-opus-4-6"), NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolverFull,
 	})

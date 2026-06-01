@@ -606,7 +606,7 @@ func TestAnthropicProvider_UsesEditFile(t *testing.T) {
 		Agent:              "coordinator",
 		RolePromptOverride: mustWorkflowAgent(t, "coordinator").SystemPrompt,
 		ResultToolName:     "communicate",
-		ProfileTools:       toolEntriesFromDefinitions(NewAnthropicProfile("claude-test").ToolDefinitions()),
+		ProfileTools:       toolEntriesFromDefinitions(newAnthropicProfile("claude-test").ToolDefinitions()),
 	}
 
 	result, _, err := resolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "system", data)

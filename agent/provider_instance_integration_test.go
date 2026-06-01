@@ -48,7 +48,7 @@ func instanceTestResolver(ref string) (ProviderProfile, error) {
 	case "work2":
 		return WithProviderID(NewOpenAIProfile(model), "work2"), nil
 	case "google", "gemini":
-		return NewGeminiProfile(model), nil
+		return newGeminiProfile(model), nil
 	case "openai":
 		return NewOpenAIProfile(model), nil
 	}

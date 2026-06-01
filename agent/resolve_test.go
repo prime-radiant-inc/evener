@@ -247,7 +247,7 @@ func TestResolveProfileFromConfig_UnknownType(t *testing.T) {
 
 func TestResolveProfileFromConfig_ChatCompletionsTagNotDerivedFromInstanceName(t *testing.T) {
 	// The tag must be "openai-compatible" (from the type+style), NOT derived
-	// from the instance name "work". Passing inst.Name to NewOpenAICompatProfile
+	// from the instance name "work". Passing inst.Name to newOpenAICompatProfile
 	// would derive a wrong tag via BehaviorTag("work","").
 	cfg := providercfg.Config{
 		Instances: []providercfg.InstanceConfig{

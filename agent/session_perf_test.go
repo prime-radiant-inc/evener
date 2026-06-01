@@ -180,9 +180,9 @@ func TestToolDefs_WebSearchExcludedForNonGemini(t *testing.T) {
 		adapter string
 		want    bool // true = web_search should be present
 	}{
-		{"anthropic", NewAnthropicProfile("claude-test"), "anthropic", false},
+		{"anthropic", newAnthropicProfile("claude-test"), "anthropic", false},
 		{"openai", NewOpenAIProfile("gpt-test"), "openai", false},
-		{"gemini", NewGeminiProfile("gemini-test"), "gemini", true},
+		{"gemini", newGeminiProfile("gemini-test"), "gemini", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -222,9 +222,9 @@ func TestToolDefs_NoDuplicateNames(t *testing.T) {
 		profile ProviderProfile
 		adapter string
 	}{
-		{"anthropic", NewAnthropicProfile("claude-test"), "anthropic"},
+		{"anthropic", newAnthropicProfile("claude-test"), "anthropic"},
 		{"openai", NewOpenAIProfile("gpt-test"), "openai"},
-		{"gemini", NewGeminiProfile("gemini-test"), "gemini"},
+		{"gemini", newGeminiProfile("gemini-test"), "gemini"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -257,7 +257,7 @@ func TestToolDefs_MCPToolSameNameAsProfileTool_NoDuplicate(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "anthropic"})
 
-	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

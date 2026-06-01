@@ -3093,7 +3093,7 @@ func TestSession_ToolResults_AggregatedIntoSingleTurn(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -3160,7 +3160,7 @@ func TestSession_ToolResults_ContainsAllCallIDs(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

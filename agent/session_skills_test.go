@@ -43,7 +43,7 @@ func TestUseSkill_ReturnsBody(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestUseSkill_NotFound_ReturnsError(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "anthropic"})
 
-	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestUseSkill_EmitsEvent(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestUseSkill_SystemPromptContainsSkillList(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

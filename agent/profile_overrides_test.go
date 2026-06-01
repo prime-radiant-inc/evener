@@ -233,7 +233,7 @@ func TestWithCommunicateOutputSchema_NilOrEmpty_NoOp(t *testing.T) {
 }
 
 func TestWithCommunicateOutputSchema_Anthropic(t *testing.T) {
-	base := NewAnthropicProfile("claude-opus-4-6")
+	base := newAnthropicProfile("claude-opus-4-6")
 	schema := map[string]any{
 		"type":       "object",
 		"properties": map[string]any{"summary": map[string]any{"type": "string"}},
@@ -322,7 +322,7 @@ func TestWithAllowedDecisions_WithOutputSchema_BothApplied(t *testing.T) {
 }
 
 func TestWithContextWindow_OverridesWhenPositive(t *testing.T) {
-	base := NewOpenAICompatProfile("kimi", "kimi-k2", 0)
+	base := newOpenAICompatProfile("kimi", "kimi-k2", 0)
 	original := base.ContextWindowSize()
 
 	p := WithContextWindow(base, 262_144)
@@ -336,7 +336,7 @@ func TestWithContextWindow_OverridesWhenPositive(t *testing.T) {
 }
 
 func TestWithContextWindow_NonPositiveIsNoOp(t *testing.T) {
-	base := NewOpenAICompatProfile("kimi", "kimi-k2", 0)
+	base := newOpenAICompatProfile("kimi", "kimi-k2", 0)
 	want := base.ContextWindowSize()
 
 	for _, n := range []int{0, -1, -100} {
@@ -348,7 +348,7 @@ func TestWithContextWindow_NonPositiveIsNoOp(t *testing.T) {
 }
 
 func TestWithContextWindow_PreservesAnthropicProfileType(t *testing.T) {
-	base := NewAnthropicProfile("claude-opus-4-6")
+	base := newAnthropicProfile("claude-opus-4-6")
 	p := WithContextWindow(base, 500_000)
 	if _, ok := p.(*anthropicProfile); !ok {
 		t.Fatalf("WithContextWindow returned %T, want *anthropicProfile", p)

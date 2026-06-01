@@ -117,9 +117,9 @@ func webSearchExecIsReal(t *testing.T, reg *toolRegistry) (isReal bool) {
 // Before the fix, the check was s.profile.ID() == "gemini", so a renamed
 // instance (id="myai") would retain only the placeholder executor.
 func TestBehaviorTag_Gemini_RenamedGoogleRegistersWebSearch(t *testing.T) {
-	// NewGeminiProfile has id="gemini", tag="google".
+	// newGeminiProfile has id="gemini", tag="google".
 	// WithProviderID renames the id to "myai" while preserving tag="google".
-	renamedGemini := WithProviderID(NewGeminiProfile("gemini-2.5-pro"), "myai")
+	renamedGemini := WithProviderID(newGeminiProfile("gemini-2.5-pro"), "myai")
 	if renamedGemini.ID() != "myai" {
 		t.Fatalf("pre-condition: ID() = %q, want myai", renamedGemini.ID())
 	}
@@ -147,7 +147,7 @@ func TestBehaviorTag_Gemini_RenamedGoogleRegistersWebSearch(t *testing.T) {
 // existing baseline: an unmodified gemini profile (id="gemini", tag="google")
 // still gets the real web_search executor.
 func TestBehaviorTag_Gemini_OriginalGeminiRegistersWebSearch(t *testing.T) {
-	geminiProfile := NewGeminiProfile("gemini-2.5-pro")
+	geminiProfile := newGeminiProfile("gemini-2.5-pro")
 
 	dir := t.TempDir()
 	sess := &Session{
