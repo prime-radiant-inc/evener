@@ -354,7 +354,7 @@ func TestMessagesFromThreadIncludesFailedTurnDiagnostic(t *testing.T) {
 }
 
 func TestHubThreadFixtureKeepsSplitToolResultsGrouped(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "internal", "appwire", "testdata", "tool-groups-thread.json"))
+	data, err := os.ReadFile(filepath.Join("..", "..", "appwire", "testdata", "tool-groups-thread.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

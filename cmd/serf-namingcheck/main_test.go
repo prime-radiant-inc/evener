@@ -255,7 +255,7 @@ type TomlBad struct {
 // TestCheckJSONTag_AppwireCarveOut verifies that the camelCase regime is
 // enforced inside every appwire-adjacent tree (codex protocol requires it)
 // and that snake_case tags in those trees become violations. The carve-out
-// covers internal/appwire/ (the protocol definition), internal/appsource/
+// covers appwire/ (the protocol definition), cmd/serf-hub/internal/appsource/
 // and internal/appserver/ (its clients and server-side implementation), and
 // server/appwire_*.go (the hub runtime glue).
 func TestCheckJSONTag_AppwireCarveOut(t *testing.T) {
@@ -265,14 +265,14 @@ func TestCheckJSONTag_AppwireCarveOut(t *testing.T) {
 		tag     string
 		wantMsg bool
 	}{
-		// internal/appwire/ — the protocol definition itself.
-		{"appwire camelCase ok", "internal/appwire/types.go", "workingDir", false},
-		{"appwire snake bad", "internal/appwire/types.go", "working_dir", true},
-		{"appwire single word ok", "internal/appwire/types.go", "id", false},
+		// appwire/ — the protocol definition itself.
+		{"appwire camelCase ok", "appwire/types.go", "workingDir", false},
+		{"appwire snake bad", "appwire/types.go", "working_dir", true},
+		{"appwire single word ok", "appwire/types.go", "id", false},
 
-		// internal/appsource/ — codex protocol clients.
-		{"appsource camelCase ok", "internal/appsource/codex_source.go", "threadId", false},
-		{"appsource snake bad", "internal/appsource/codex_source.go", "thread_id", true},
+		// cmd/serf-hub/internal/appsource/ — codex protocol clients.
+		{"appsource camelCase ok", "cmd/serf-hub/internal/appsource/codex_source.go", "threadId", false},
+		{"appsource snake bad", "cmd/serf-hub/internal/appsource/codex_source.go", "thread_id", true},
 
 		// internal/appserver/ — server-side implementation.
 		{"appserver camelCase ok", "internal/appserver/notifier.go", "threadId", false},
@@ -325,7 +325,7 @@ func TestCheckJSONTag_ProvidersCarveOut(t *testing.T) {
 }
 
 // TestCheckGoFile_AppwirePath confirms the carve-out reaches through
-// checkGoFile end-to-end: a camelCase JSON tag in internal/appwire/ produces
+// checkGoFile end-to-end: a camelCase JSON tag in appwire/ produces
 // no violation, while the same struct in an ordinary path does.
 func TestCheckGoFile_AppwirePath(t *testing.T) {
 	src := `package x
@@ -339,8 +339,8 @@ type T struct {
 		t.Fatal(err)
 	}
 
-	// Under internal/appwire/: camelCase is required, so no violation.
-	vs, err := checkGoFile(path, "internal/appwire/x.go")
+	// Under appwire/: camelCase is required, so no violation.
+	vs, err := checkGoFile(path, "appwire/x.go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,11 +502,11 @@ type X struct { F string ` + "`json:\"badField\"`" + ` }
 		t.Fatal(err)
 	}
 
-	// internal/appwire is exempt from the camelCase-is-bad rule.
-	if err := os.MkdirAll(filepath.Join(root, "internal", "appwire"), 0o755); err != nil {
+	// appwire is exempt from the camelCase-is-bad rule.
+	if err := os.MkdirAll(filepath.Join(root, "appwire"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "internal", "appwire", "x.go"), []byte(badSrc), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "appwire", "x.go"), []byte(badSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

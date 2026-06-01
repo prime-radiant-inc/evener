@@ -1,6 +1,6 @@
 // Package appwiretest exposes test helpers for driving appwire.Client
 // from external packages. The private memoryTransport in
-// internal/appwire's own _test.go cannot be reused from cmd/serf-tui,
+// appwire's own _test.go cannot be reused from cmd/serf-tui,
 // so this package provides an equivalent with an exported API.
 package appwiretest
 
