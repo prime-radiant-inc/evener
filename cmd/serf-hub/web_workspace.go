@@ -12,7 +12,6 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/hubapi"
 )
@@ -208,14 +207,6 @@ func (s *WebServer) renderSessionTasks(w http.ResponseWriter, r *http.Request, i
 	_, _ = w.Write([]byte("[]\n"))
 }
 
-func htmlEscape(s string) string {
-	s = strings.ReplaceAll(s, "&", "&amp;")
-	s = strings.ReplaceAll(s, "<", "&lt;")
-	s = strings.ReplaceAll(s, ">", "&gt;")
-	s = strings.ReplaceAll(s, `"`, "&quot;")
-	return s
-}
-
 // renderWorkspaceMeta returns the title-bar meta partial — status pill,
 // branch, turn count. Polled every 2s by the workspace header so live
 // state changes (idle → processing → ended) reflect promptly.
@@ -325,86 +316,6 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 	return WorkspaceData{}
 }
 
-func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
-	ref := thread.Serf.Ref
-	if ref == "" {
-		ref = appwire.Ref{SourceID: thread.Source, ThreadID: thread.ID}.String()
-	}
-	title := thread.Name
-	if title == "" {
-		title = thread.Preview
-	}
-	if title == "" {
-		title = strutil.FirstNonEmpty(thread.SessionID, thread.ID)
-	}
-	state := hubcore.NormalizeState(thread.Status.Type)
-	if state == "" {
-		state = "idle"
-	}
-	return WorkspaceData{
-		ID:           ref,
-		SourceLabel:  sourceLabelFromRefText(ref),
-		Title:        title,
-		State:        state,
-		StateLabel:   stateLabel(state),
-		TurnCount:    completedTurnCount(thread.Turns),
-		ActiveTurnID: activeTurnIDFromAppwireThread(thread),
-		RunningFor:   activeTurnRunningFor(thread),
-		Model:        thread.ModelProvider,
-		WorkingDir:   thread.CWD,
-		Capabilities: hubCapabilitiesFromAppwire(thread.Serf.Capabilities),
-	}
-}
-
-func activeTurnRunningFor(thread appwire.Thread) string {
-	for _, turn := range thread.Turns {
-		if turn.Status != appwire.TurnStatusInProgress || turn.StartedAt == nil || *turn.StartedAt <= 0 {
-			continue
-		}
-		return compactDuration(time.Since(time.Unix(*turn.StartedAt, 0)))
-	}
-	return ""
-}
-
-func compactDuration(d time.Duration) string {
-	if d < 0 {
-		d = 0
-	}
-	if d < time.Minute {
-		seconds := int(d.Seconds())
-		if seconds < 1 {
-			seconds = 1
-		}
-		return fmt.Sprintf("%ds", seconds)
-	}
-	if d < time.Hour {
-		return fmt.Sprintf("%dm", int(d.Minutes()))
-	}
-	return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
-}
-
-func activeTurnIDFromAppwireThread(thread appwire.Thread) string {
-	for _, turn := range thread.Turns {
-		if turn.Status == appwire.TurnStatusInProgress {
-			return turn.ID
-		}
-	}
-	return ""
-}
-
-// completedTurnCount counts only turns whose Status is "completed" — kata
-// k5t4. Failed / canceled / in-flight turns don't count. Keeps the live
-// status and the past-index display consistent.
-func completedTurnCount(turns []appwire.Turn) int {
-	n := 0
-	for _, t := range turns {
-		if t.Status == appwire.TurnStatusCompleted {
-			n++
-		}
-	}
-	return n
-}
-
 func (s *WebServer) liveWorkspaceCapabilities(id string, fallback hubapi.SessionCapabilities) hubapi.SessionCapabilities {
 	caps, _ := s.liveWorkspaceSnapshot(id, fallback)
 	return caps
@@ -425,17 +336,6 @@ func (s *WebServer) liveWorkspaceSnapshot(id string, fallback hubapi.SessionCapa
 	caps := hubCapabilitiesFromAppwire(resp.Thread.Serf.Capabilities)
 	caps.Resume = fallback.Resume
 	return caps, activeTurnIDFromAppwireThread(resp.Thread)
-}
-
-func sourceLabelFromRefText(refText string) string {
-	ref, err := appwire.ParseRef(refText)
-	if err != nil {
-		return "serf"
-	}
-	if ref.SourceID == "" || ref.SourceID == "local" {
-		return "serf"
-	}
-	return ref.SourceID
 }
 
 // fillForkLineage populates the WorkspaceData fork-banner fields for the
@@ -462,48 +362,6 @@ func (s *WebServer) fillForkLineage(data *WorkspaceData, m agent.SessionMeta) {
 			return
 		}
 	}
-}
-
-// liveTitle prefers a friendly title for a running session: pull
-// OriginalPrompt from the past index if it's been written there, otherwise
-// fall back to a short session ID.
-func liveTitle(id string, le hubcore.LiveEntry, past *hubcore.PastIndex) string {
-	if past != nil {
-		if pe, ok := past.Find(id); ok {
-			return pastTitle(pe)
-		}
-	}
-	return hubcore.ShortID(id)
-}
-
-func pastTitle(pe hubcore.PastEntry) string {
-	if title := agent.SessionDisplayName(pe.Meta); title != "" {
-		return title
-	}
-	return hubcore.ShortID(pe.Meta.ID)
-}
-
-func searchPastTitle(pe hubcore.PastEntry) string {
-	if title := strings.TrimSpace(pe.Meta.Name); title != "" {
-		return title
-	}
-	return hubcore.ShortID(pe.Meta.ID)
-}
-
-func stateLabel(state string) string {
-	switch state {
-	case "awaiting":
-		return "awaiting"
-	case "active":
-		return "active"
-	case "warning":
-		return "warning"
-	case "idle":
-		return "idle"
-	case "notLoaded":
-		return "notLoaded"
-	}
-	return state
 }
 
 func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id string) {
@@ -541,24 +399,4 @@ func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id 
 	if err := s.inputStripTmpl.ExecuteTemplate(w, "input_status", data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
-}
-
-func formatContextNumbers(used, window, remaining int) string {
-	if window <= 0 {
-		return ""
-	}
-	if remaining < 0 {
-		remaining = 0
-	}
-	return fmt.Sprintf("%s / %s tokens (%s left)", formatTokenCount(used), formatTokenCount(window), formatTokenCount(remaining))
-}
-
-func formatTokenCount(n int) string {
-	if n < 0 {
-		n = 0
-	}
-	if n < 1000 {
-		return fmt.Sprintf("%d", n)
-	}
-	return fmt.Sprintf("%dk", (n+500)/1000)
 }
