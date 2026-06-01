@@ -8,14 +8,24 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providers/openaicompat"
 )
 
+// clientFor builds an llm.Client with a single ollama adapter (empty instance
+// name => "ollama") wrapping the given backing openai-compatible adapter. The
+// provider stamping under test now lives at the Client boundary, so the
+// delegation/stamping scenarios route through this client and address the
+// adapter explicitly by name ("ollama").
+func clientFor(backing *openaicompat.Adapter) *llm.Client {
+	c := llm.NewClient()
+	c.Register(newAdapter("", backing))
+	return c
+}
+
 func TestAdapter_Name(t *testing.T) {
-	a := &adapter{inner: &openaicompat.Adapter{}}
+	a := newAdapter("", &openaicompat.Adapter{})
 	if a.Name() != "ollama" {
 		t.Fatalf("Name() = %q, want ollama", a.Name())
 	}
@@ -32,12 +42,13 @@ func TestAdapter_Complete_DelegatesAndStampsProvider(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	a := &adapter{inner: &openaicompat.Adapter{
+	c := clientFor(&openaicompat.Adapter{
 		BaseURL: srv.URL,
 		Client:  srv.Client(),
-	}}
+	})
 
-	resp, err := a.Complete(context.Background(), llm.Request{
+	resp, err := c.Complete(context.Background(), llm.Request{
+		Provider: "ollama",
 		Model:    "llama3.2",
 		Messages: []llm.Message{llm.User("hi")},
 	})
@@ -59,10 +70,10 @@ func TestAdapter_ListModels_RewritesProvider(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	a := &adapter{inner: &openaicompat.Adapter{
+	a := newAdapter("", &openaicompat.Adapter{
 		BaseURL: srv.URL,
 		Client:  srv.Client(),
-	}}
+	})
 
 	models, err := a.ListModels(context.Background())
 	if err != nil {
@@ -196,21 +207,21 @@ func TestNewForInstance_Name(t *testing.T) {
 
 func TestNewForInstance_DefaultBaseURL(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "ol"})
-	if a.inner.BaseURL != defaultBaseURL {
-		t.Fatalf("inner.BaseURL = %q, want %q", a.inner.BaseURL, defaultBaseURL)
+	if a.Adapter.BaseURL != defaultBaseURL {
+		t.Fatalf("Adapter.BaseURL = %q, want %q", a.Adapter.BaseURL, defaultBaseURL)
 	}
 }
 
 func TestNewForInstance_CustomBaseURL(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "ol", BaseURL: "http://custom/v1"})
-	if a.inner.BaseURL != "http://custom/v1" {
-		t.Fatalf("inner.BaseURL = %q, want http://custom/v1", a.inner.BaseURL)
+	if a.Adapter.BaseURL != "http://custom/v1" {
+		t.Fatalf("Adapter.BaseURL = %q, want http://custom/v1", a.Adapter.BaseURL)
 	}
 }
 
 // TestAdapter_Stream_DelegatesAndStampsProvider verifies Stream() forwards to
-// the embedded openaicompat adapter, returns parseable text events, and
-// rewrites Response.Provider on the FINISH event to "ollama".
+// the backing openaicompat adapter, returns parseable text events, and that the
+// Client rewrites Response.Provider on the FINISH event to "ollama".
 func TestAdapter_Stream_DelegatesAndStampsProvider(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -228,12 +239,13 @@ func TestAdapter_Stream_DelegatesAndStampsProvider(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	a := &adapter{inner: &openaicompat.Adapter{
+	c := clientFor(&openaicompat.Adapter{
 		BaseURL: srv.URL,
 		Client:  srv.Client(),
-	}}
+	})
 
-	stream, err := a.Stream(context.Background(), llm.Request{
+	stream, err := c.Stream(context.Background(), llm.Request{
+		Provider: "ollama",
 		Model:    "llama3.2",
 		Messages: []llm.Message{llm.User("hi")},
 	})
@@ -262,7 +274,7 @@ func TestAdapter_Stream_DelegatesAndStampsProvider(t *testing.T) {
 }
 
 // TestAdapter_Complete_PropagatesAPIKey verifies that an OLLAMA_API_KEY
-// configured on the inner adapter is sent as a Bearer token (for use with
+// configured on the backing adapter is sent as a Bearer token (for use with
 // authenticated proxies / Ollama Cloud).
 func TestAdapter_Complete_PropagatesAPIKey(t *testing.T) {
 	var seen string
@@ -276,11 +288,11 @@ func TestAdapter_Complete_PropagatesAPIKey(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	a := &adapter{inner: &openaicompat.Adapter{
+	a := newAdapter("", &openaicompat.Adapter{
 		APIKey:  "secret-token",
 		BaseURL: srv.URL,
 		Client:  srv.Client(),
-	}}
+	})
 
 	if _, err := a.Complete(context.Background(), llm.Request{
 		Model:    "llama3.2",
@@ -308,10 +320,10 @@ func TestAdapter_Complete_NoAuthHeaderWhenKeyEmpty(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	a := &adapter{inner: &openaicompat.Adapter{
+	a := newAdapter("", &openaicompat.Adapter{
 		BaseURL: srv.URL,
 		Client:  srv.Client(),
-	}}
+	})
 
 	if _, err := a.Complete(context.Background(), llm.Request{
 		Model:    "llama3.2",
@@ -324,67 +336,9 @@ func TestAdapter_Complete_NoAuthHeaderWhenKeyEmpty(t *testing.T) {
 	}
 }
 
-// stubStream is a hand-rolled llm.Stream used by the close-path regression
-// tests. Its Close() intentionally does NOT close the events channel: the
-// wrapper under test must own its own shutdown via the done signal.
-// Relying on inner.Close() to unblock pump is the bug we're guarding
-// against.
-type stubStream struct {
-	events chan llm.StreamEvent
-}
-
-func (s *stubStream) Events() <-chan llm.StreamEvent { return s.events }
-func (s *stubStream) Close() error                   { return nil }
-
-// TestAdapter_Stream_CloseWithoutDraining verifies that Close() on the
-// rewriteStream wrapper returns promptly and that the events channel is
-// closed even when the consumer never reads from Events() and the inner
-// stream remains open. The synchronous unbuffered stub deterministically
-// reproduces the "pump blocked on full out-channel" condition: the 17th
-// send returns only after pump has dequeued event 17 and is committed to
-// writing it into the now-full 16-slot wrapper buffer. Regression test
-// for the goroutine leak found in review of commit be4e79b.
-func TestAdapter_Stream_CloseWithoutDraining(t *testing.T) {
-	inner := &stubStream{events: make(chan llm.StreamEvent)}
-	ws := newRewriteStream(inner)
-
-	// Fill the 16-slot wrapper buffer, then send one more so the pump
-	// goroutine is parked inside its inner select on a blocked send. Each
-	// send to the unbuffered inner.events only completes after pump has
-	// read it, so when the 17th send returns we have a deterministic
-	// "pump is blocked" state.
-	for i := 0; i < 17; i++ {
-		inner.events <- llm.StreamEvent{Type: llm.StreamEventTextDelta, Delta: "x"}
-	}
-
-	closed := make(chan error, 1)
-	go func() { closed <- ws.Close() }()
-	select {
-	case <-closed:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Close() hung — pump goroutine did not respond to shutdown signal")
-	}
-
-	// After Close returns, the events channel MUST be closed. In the
-	// pre-fix implementation, pump would still be blocked trying to
-	// forward event 17 (or, after we drain, waiting on a fresh read from
-	// the still-open stub stream), so ws.Events() would never close and
-	// this drain would hang.
-	drained := make(chan struct{})
-	go func() {
-		for range ws.Events() {
-		}
-		close(drained)
-	}()
-	select {
-	case <-drained:
-	case <-time.After(2 * time.Second):
-		t.Fatal("Events() channel did not close after Close() — pump goroutine leaked")
-	}
-}
-
 // TestAdapter_Stream_CloseIsIdempotent verifies that calling Close()
-// multiple times does not panic (e.g. by double-closing the done channel).
+// multiple times on a Client-wrapped ollama stream does not panic (e.g. by
+// double-closing the done channel).
 func TestAdapter_Stream_CloseIsIdempotent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -392,12 +346,13 @@ func TestAdapter_Stream_CloseIsIdempotent(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	a := &adapter{inner: &openaicompat.Adapter{
+	c := clientFor(&openaicompat.Adapter{
 		BaseURL: srv.URL,
 		Client:  srv.Client(),
-	}}
+	})
 
-	stream, err := a.Stream(context.Background(), llm.Request{
+	stream, err := c.Stream(context.Background(), llm.Request{
+		Provider: "ollama",
 		Model:    "llama3.2",
 		Messages: []llm.Message{llm.User("hi")},
 	})
@@ -414,11 +369,11 @@ func TestAdapter_Stream_CloseIsIdempotent(t *testing.T) {
 	_ = stream.Close()
 }
 
-// TestAdapter_Complete_RewritesErrorProvider verifies that an HTTP error
-// from the inner openai-compatible adapter has its provider stamp
-// rewritten to "ollama" before bubbling up. Without this, an Ollama
-// outage / auth failure would surface as an "openai-compatible" error
-// in logs and metrics.
+// TestAdapter_Complete_RewritesErrorProvider verifies that an HTTP error from
+// the backing openai-compatible adapter has its provider stamp rewritten to
+// "ollama" before bubbling up through the Client. Without this, an Ollama
+// outage / auth failure would surface as an "openai-compatible" error in logs
+// and metrics.
 func TestAdapter_Complete_RewritesErrorProvider(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -426,12 +381,13 @@ func TestAdapter_Complete_RewritesErrorProvider(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	a := &adapter{inner: &openaicompat.Adapter{
+	c := clientFor(&openaicompat.Adapter{
 		BaseURL: srv.URL,
 		Client:  srv.Client(),
-	}}
+	})
 
-	_, err := a.Complete(context.Background(), llm.Request{
+	_, err := c.Complete(context.Background(), llm.Request{
+		Provider: "ollama",
 		Model:    "llama3.2",
 		Messages: []llm.Message{llm.User("hi")},
 	})
@@ -447,9 +403,10 @@ func TestAdapter_Complete_RewritesErrorProvider(t *testing.T) {
 	}
 }
 
-// TestAdapter_Stream_RewritesStartupErrorProvider verifies that a
-// non-200 startup response on the streaming endpoint surfaces as an
-// ollama-stamped error.
+// TestAdapter_Stream_RewritesStartupErrorProvider verifies that a non-200
+// startup response on the streaming endpoint surfaces as an ollama-stamped
+// error. Client.Stream returns the startup failure as a returned error (not a
+// stream event) after rewriting the provider.
 func TestAdapter_Stream_RewritesStartupErrorProvider(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -457,12 +414,13 @@ func TestAdapter_Stream_RewritesStartupErrorProvider(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	a := &adapter{inner: &openaicompat.Adapter{
+	c := clientFor(&openaicompat.Adapter{
 		BaseURL: srv.URL,
 		Client:  srv.Client(),
-	}}
+	})
 
-	_, err := a.Stream(context.Background(), llm.Request{
+	_, err := c.Stream(context.Background(), llm.Request{
+		Provider: "ollama",
 		Model:    "llama3.2",
 		Messages: []llm.Message{llm.User("hi")},
 	})
@@ -480,9 +438,9 @@ func TestAdapter_Stream_RewritesStartupErrorProvider(t *testing.T) {
 
 // TestAdapter_AbortErrorNotRestamped verifies that user-driven
 // cancellation errors (AbortError, constructed with no provider) are
-// NOT restamped by the wrapper. Cancellation isn't provider-attributed
-// — turning "context canceled" into "ollama error: context canceled"
-// would mislead callers about who originated the failure.
+// NOT restamped. Cancellation isn't provider-attributed — turning
+// "context canceled" into "ollama error: context canceled" would mislead
+// callers about who originated the failure.
 func TestAdapter_AbortErrorNotRestamped(t *testing.T) {
 	abort := llm.NewAbortError("context canceled", nil)
 	got := llm.RewriteErrorProvider(abort, "ollama")
@@ -495,20 +453,20 @@ func TestAdapter_AbortErrorNotRestamped(t *testing.T) {
 	}
 }
 
-// TestAdapter_Complete_RewritesNonHTTPErrorProvider verifies that
-// non-HTTP typed adapter errors (e.g. UnsupportedToolChoiceError, which
-// the inner adapter returns synchronously before any network call) are
-// also stamped with "ollama". These derive from nonHTTPErrorBase, a
-// different type than httpErrorBase, so the rewrite plumbing must
-// cover both.
+// TestAdapter_Complete_RewritesNonHTTPErrorProvider verifies that non-HTTP
+// typed adapter errors (e.g. UnsupportedToolChoiceError, which the backing
+// adapter returns synchronously before any network call) are also stamped with
+// "ollama" by the Client. These derive from nonHTTPErrorBase, a different type
+// than httpErrorBase, so the rewrite plumbing must cover both.
 func TestAdapter_Complete_RewritesNonHTTPErrorProvider(t *testing.T) {
 	// No server needed — the error fires before any HTTP call.
-	a := &adapter{inner: &openaicompat.Adapter{
+	c := clientFor(&openaicompat.Adapter{
 		BaseURL: "http://unreachable.invalid",
 		Client:  &http.Client{},
-	}}
+	})
 
-	_, err := a.Complete(context.Background(), llm.Request{
+	_, err := c.Complete(context.Background(), llm.Request{
+		Provider:   "ollama",
 		Model:      "llama3.2",
 		Messages:   []llm.Message{llm.User("hi")},
 		ToolChoice: &llm.ToolChoice{Mode: "definitely-not-a-mode"},
@@ -522,36 +480,6 @@ func TestAdapter_Complete_RewritesNonHTTPErrorProvider(t *testing.T) {
 	}
 	if llmErr.Provider() != "ollama" {
 		t.Fatalf("err.Provider() = %q, want ollama", llmErr.Provider())
-	}
-}
-
-// TestAdapter_Stream_RewritesEventErrorProvider verifies that an error
-// surfaced via StreamEventError (from a mid-stream failure on the inner
-// stream) is also stamped with the ollama provider name.
-func TestAdapter_Stream_RewritesEventErrorProvider(t *testing.T) {
-	// Use the stub stream so we can synthesize a StreamEventError directly.
-	inner := &stubStream{events: make(chan llm.StreamEvent, 1)}
-	// Build an error whose original Provider() is the inner adapter's
-	// "openai-compatible" stamp so we can assert the rewrite worked.
-	innerErr := llm.ErrorFromHTTPStatus("openai-compatible", 502, "upstream gone", nil, nil)
-	inner.events <- llm.StreamEvent{Type: llm.StreamEventError, Err: innerErr}
-	close(inner.events) // signal end-of-stream so pump can exit cleanly
-
-	ws := newRewriteStream(inner)
-
-	var seen llm.Error
-	for ev := range ws.Events() {
-		if ev.Type == llm.StreamEventError && ev.Err != nil {
-			if !errors.As(ev.Err, &seen) {
-				t.Fatalf("ev.Err is not a llm.Error: %T", ev.Err)
-			}
-		}
-	}
-	if seen == nil {
-		t.Fatal("did not observe a StreamEventError on the wrapper stream")
-	}
-	if seen.Provider() != "ollama" {
-		t.Fatalf("event err.Provider() = %q, want ollama", seen.Provider())
 	}
 }
 
@@ -590,7 +518,7 @@ func TestProviderNotAutoElectedAsDefault(t *testing.T) {
 
 	// Register ollama first. Without NonDefaultEligible it would become
 	// the default. The marker should prevent that.
-	a := &adapter{inner: &openaicompat.Adapter{}}
+	a := newAdapter("", &openaicompat.Adapter{})
 	c.Register(a)
 
 	if got := c.DefaultProvider(); got != "" {

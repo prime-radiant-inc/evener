@@ -24,10 +24,10 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/serf/llm/providers/internal/providerfwd"
 	"primeradiant.com/serf/llm/providers/openaicompat"
 )
 
@@ -35,16 +35,31 @@ const defaultBaseURL = "http://localhost:11434/v1"
 
 const providerName = "ollama"
 
+// adapter is the ollama provider adapter. It embeds the shared
+// openai-compatible forwarder for Name/Complete/Stream (promoted from the
+// backing adapter), marks itself NonDefaultEligible, and overrides ListModels
+// to stamp the ollama provider name onto returned models.
+//
+// Complete/Stream do NOT stamp the provider name here: llm.Client already
+// stamps the resolved instance name onto responses, stream finish payloads,
+// and errors. ListModels is the exception — llm.Client.ListModels does not
+// rewrite ModelInfo.Provider, so the adapter must do it.
 type adapter struct {
-	name  string
-	inner *openaicompat.Adapter
+	*providerfwd.OpenAICompat
 }
 
-func (a *adapter) Name() string {
-	if a.name != "" {
-		return a.name
-	}
-	return providerName
+// Compile-time assertions for the provider contract plus the optional
+// capabilities ollama participates in.
+var (
+	_ llm.ProviderAdapter    = (*adapter)(nil)
+	_ llm.NonDefaultEligible = (*adapter)(nil)
+	_ llm.ModelLister        = (*adapter)(nil)
+)
+
+// newAdapter wraps a backing openai-compatible adapter with the ollama
+// forwarder under the given instance name (empty name => "ollama").
+func newAdapter(instanceName string, backing *openaicompat.Adapter) *adapter {
+	return &adapter{OpenAICompat: providerfwd.NewOpenAICompat(instanceName, providerName, backing)}
 }
 
 // NonDefaultEligible marks the ollama adapter as ineligible for the
@@ -53,22 +68,13 @@ func (a *adapter) Name() string {
 // silent default fallback should never land here.
 func (a *adapter) NonDefaultEligible() {}
 
-func (a *adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	resp, err := a.inner.Complete(ctx, req)
-	resp.Provider = providerName
-	return resp, llm.RewriteErrorProvider(err, providerName)
-}
-
-func (a *adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	inner, err := a.inner.Stream(ctx, req)
-	if err != nil {
-		return nil, llm.RewriteErrorProvider(err, providerName)
-	}
-	return newRewriteStream(inner), nil
-}
-
+// ListModels delegates to the backing adapter's /models fetch and rewrites the
+// provider stamp on each model to "ollama". The backing openai-compatible
+// adapter stamps "openai-compatible"; llm.Client.ListModels does not rewrite
+// it, so this override is required for models to surface under the ollama
+// provider name.
 func (a *adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
-	models, err := a.inner.ListModels(ctx)
+	models, err := a.OpenAICompat.ListModels(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -76,69 +82,6 @@ func (a *adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 		models[i].Provider = providerName
 	}
 	return models, nil
-}
-
-// rewriteStream wraps an inner llm.Stream and rewrites the Provider field on
-// any embedded Response payloads so consumers see "ollama" instead of the
-// inner adapter's "openai-compatible" stamp.
-//
-// Close() owns shutdown: it signals the pump to stop forwarding, closes the
-// inner stream, and waits for the pump goroutine to exit before returning.
-// This prevents a goroutine leak when a consumer calls Close() without
-// draining Events() — without coordination, the pump would block forever
-// trying to send into a full out-channel that nobody is reading.
-type rewriteStream struct {
-	inner   llm.Stream
-	out     chan llm.StreamEvent
-	done    chan struct{}
-	pumpEnd chan struct{}
-	once    sync.Once
-}
-
-func newRewriteStream(inner llm.Stream) *rewriteStream {
-	s := &rewriteStream{
-		inner:   inner,
-		out:     make(chan llm.StreamEvent, 16),
-		done:    make(chan struct{}),
-		pumpEnd: make(chan struct{}),
-	}
-	go s.pump()
-	return s
-}
-
-func (s *rewriteStream) pump() {
-	defer close(s.pumpEnd)
-	defer close(s.out)
-	for {
-		select {
-		case <-s.done:
-			return
-		case ev, ok := <-s.inner.Events():
-			if !ok {
-				return
-			}
-			if ev.Response != nil {
-				ev.Response.Provider = providerName
-			}
-			if ev.Err != nil {
-				ev.Err = llm.RewriteErrorProvider(ev.Err, providerName)
-			}
-			select {
-			case s.out <- ev:
-			case <-s.done:
-				return
-			}
-		}
-	}
-}
-
-func (s *rewriteStream) Events() <-chan llm.StreamEvent { return s.out }
-
-func (s *rewriteStream) Close() error {
-	s.once.Do(func() { close(s.done) })
-	err := s.inner.Close()
-	<-s.pumpEnd
-	return err
 }
 
 // resolveBaseURL implements the documented resolution order.
@@ -203,14 +146,11 @@ func NewForInstance(params InstanceParams) *adapter {
 	if base == "" {
 		base = defaultBaseURL
 	}
-	return &adapter{
-		name: params.Name,
-		inner: openaicompat.NewForInstance(openaicompat.OpenAICompatInstanceParams{
-			Name:    params.Name,
-			BaseURL: base,
-			APIKey:  params.APIKey,
-		}),
-	}
+	return newAdapter(params.Name, openaicompat.NewForInstance(openaicompat.OpenAICompatInstanceParams{
+		Name:    params.Name,
+		BaseURL: base,
+		APIKey:  params.APIKey,
+	}))
 }
 
 func init() {
@@ -221,13 +161,11 @@ func init() {
 		// Always register: ollama implements NonDefaultEligible, so the
 		// "silent default provider" concern is handled at the client
 		// level. Explicit --provider ollama works zero-config.
-		return &adapter{
-			inner: &openaicompat.Adapter{
-				APIKey:  keyEnv,
-				BaseURL: resolveBaseURL(baseEnv, hostEnv),
-				Client:  &http.Client{Timeout: 0},
-			},
-		}, true, nil
+		return newAdapter("", &openaicompat.Adapter{
+			APIKey:  keyEnv,
+			BaseURL: resolveBaseURL(baseEnv, hostEnv),
+			Client:  &http.Client{Timeout: 0},
+		}), true, nil
 	})
 	llm.RegisterInstanceAdapterFactory("ollama", "", func(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
 		return NewForInstance(InstanceParams{
