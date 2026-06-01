@@ -15,8 +15,13 @@ const (
 )
 
 var (
+	// ErrAuthNotFound is returned by LoadAuth when no auth file exists for the
+	// instance. Callers branch on it (via errors.Is) to fall back to
+	// OPENAI_API_KEY or to treat the instance as signed out.
 	ErrAuthNotFound = errors.New("openai auth not found")
-	ErrAuthCorrupt  = errors.New("openai auth is corrupt")
+	// ErrAuthCorrupt is returned (wrapped) by LoadAuth when the auth file
+	// exists but cannot be parsed as JSON or fails AuthRecord.Validate.
+	ErrAuthCorrupt = errors.New("openai auth is corrupt")
 )
 
 // AuthRecord is the persisted Serf-owned OpenAI auth record.
@@ -43,10 +48,17 @@ func AuthFilePath(stateDir, instanceName string) string {
 	return filepath.Join(stateDir, authDirName, instanceName+".json")
 }
 
+// DefaultStateDir returns the default Serf state directory, resolving the state
+// home from XDG_STATE_HOME (falling back to ~/.local/state). It is equivalent
+// to DefaultStateDirWithStateHome("").
 func DefaultStateDir() string {
 	return DefaultStateDirWithStateHome("")
 }
 
+// DefaultStateDirWithStateHome returns the Serf state directory rooted at the
+// given state home. When stateHome is empty it falls back to XDG_STATE_HOME,
+// then to ~/.local/state (or the OS temp dir if the home directory cannot be
+// determined). The result is that base joined with "serf".
 func DefaultStateDirWithStateHome(stateHome string) string {
 	base := strings.TrimSpace(stateHome)
 	if base == "" {
@@ -62,6 +74,9 @@ func DefaultStateDirWithStateHome(stateHome string) string {
 	return filepath.Join(base, "serf")
 }
 
+// LoadAuth reads and validates the stored auth record for instanceName under
+// stateDir. It returns ErrAuthNotFound if no file exists and a wrapped
+// ErrAuthCorrupt if the file cannot be parsed or fails validation.
 func LoadAuth(stateDir, instanceName string) (AuthRecord, error) {
 	path := AuthFilePath(stateDir, instanceName)
 	data, err := os.ReadFile(path)
@@ -82,6 +97,10 @@ func LoadAuth(stateDir, instanceName string) (AuthRecord, error) {
 	return record, nil
 }
 
+// SaveAuth writes record as the auth file for instanceName under stateDir,
+// creating the auth directory if needed. The write is atomic (a 0600 temp file
+// is synced and renamed into place) so a reader never observes a partially
+// written record.
 func SaveAuth(stateDir, instanceName string, record AuthRecord) error {
 	path := AuthFilePath(stateDir, instanceName)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -126,6 +145,9 @@ func SaveAuth(stateDir, instanceName string, record AuthRecord) error {
 	return nil
 }
 
+// DeleteAuth removes the stored auth file for instanceName under stateDir. It
+// reports whether a file was actually deleted; a missing file returns
+// (false, nil).
 func DeleteAuth(stateDir, instanceName string) (bool, error) {
 	path := AuthFilePath(stateDir, instanceName)
 	if err := os.Remove(path); err != nil {

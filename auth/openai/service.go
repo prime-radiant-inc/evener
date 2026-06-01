@@ -21,29 +21,63 @@ const refreshSkew = 5 * time.Minute
 // imperceptible to a user waiting on the device flow.
 const defaultConcurrentLoginWatchInterval = time.Second
 
+// Auth source identifiers reported in AuthStatus.Source and
+// RuntimeCredentials.Source, describing where the active credential came from.
 const (
+	// AuthSourceSignedOut indicates no stored OAuth record exists and no
+	// OPENAI_API_KEY is set; the user is not authenticated.
 	AuthSourceSignedOut = "signed-out"
-	AuthSourceEnv       = "env"
-	AuthSourceOAuth     = "oauth"
+	// AuthSourceEnv indicates the credential comes from the OPENAI_API_KEY
+	// environment variable rather than a stored OAuth login.
+	AuthSourceEnv = "env"
+	// AuthSourceOAuth indicates the credential comes from a stored OAuth record
+	// obtained via Login or LoginWithDevice.
+	AuthSourceOAuth = "oauth"
 )
 
+// ErrLoginRequired is returned (wrapped) by ResolveRuntimeCredentials when no
+// usable credential is available: there is no stored auth and no
+// OPENAI_API_KEY, or the stored auth cannot be refreshed. The wrapped message
+// directs the user to run `serf openai login`.
 var ErrLoginRequired = errors.New("openai login required")
 
+// AuthStatus is a read-only snapshot of an instance's authentication state, as
+// returned by Service.Status, Service.Login, and Service.LoginWithDevice.
 type AuthStatus struct {
-	SignedIn     bool
-	Source       string
-	Email        string
-	AccountID    string
-	WorkspaceID  string
-	Expiry       time.Time
+	// SignedIn is true when a credential is available from either a stored
+	// OAuth record or the OPENAI_API_KEY environment variable.
+	SignedIn bool
+	// Source identifies where the credential came from: one of
+	// AuthSourceOAuth, AuthSourceEnv, or AuthSourceSignedOut.
+	Source string
+	// Email, AccountID, and WorkspaceID are display metadata parsed from the
+	// ID token; they are populated only for stored OAuth records.
+	Email       string
+	AccountID   string
+	WorkspaceID string
+	// Expiry is the access-token expiry for OAuth records; zero otherwise.
+	Expiry time.Time
+	// NeedsRefresh is true when the access token has expired or is within the
+	// refresh-skew window and should be refreshed before use.
 	NeedsRefresh bool
-	NeedsLogin   bool
+	// NeedsLogin is true when the access token has a non-zero expiry that is at
+	// or before the current time (fully expired, not merely within the refresh
+	// window).
+	NeedsLogin bool
 }
 
+// RuntimeCredentials is the resolved bearer token and its provenance returned
+// by Service.ResolveRuntimeCredentials for making authenticated OpenAI API
+// calls.
 type RuntimeCredentials struct {
+	// BearerToken is the value to send in the Authorization header.
 	BearerToken string
-	Source      string
-	Expiry      time.Time
+	// Source identifies the credential origin: AuthSourceOAuth or
+	// AuthSourceEnv.
+	Source string
+	// Expiry is the token expiry for OAuth-sourced credentials; zero for
+	// env-sourced credentials.
+	Expiry time.Time
 }
 
 type callbackServer interface {
@@ -52,6 +86,12 @@ type callbackServer interface {
 	Close() error
 }
 
+// Service drives the OpenAI OAuth lifecycle for a provider instance: browser
+// and device-code login, status reporting, logout, and resolving a usable
+// bearer token (refreshing the access token on demand). It reads and writes the
+// per-instance auth record under a state directory. The collaborator function
+// fields default to this package's exported helpers and are overridden only in
+// tests; construct a Service with NewService.
 type Service struct {
 	cfg                 Config
 	client              *http.Client
@@ -77,6 +117,10 @@ type Service struct {
 	notifyConcurrentLogin func()
 }
 
+// NewService builds a Service from cfg, filling any unset Config fields with the
+// package defaults (see DefaultConfig). If client is nil, an http.Client using
+// the resolved HTTPTimeout is created. The returned Service can be further
+// configured with the With* methods.
 func NewService(cfg Config, client *http.Client) *Service {
 	resolvedCfg := mergeConfigDefaults(cfg)
 	if client == nil {
@@ -114,6 +158,9 @@ func (s *Service) WithConcurrentLoginNotifier(notify func()) *Service {
 	return s
 }
 
+// WithBrowserOpener overrides how Login opens the authorization URL (the
+// default shells out to the OS opener). A nil opener is ignored. Returns the
+// receiver for chaining.
 func (s *Service) WithBrowserOpener(openBrowser func(string) error) *Service {
 	if openBrowser != nil {
 		s.openBrowser = openBrowser
@@ -121,6 +168,11 @@ func (s *Service) WithBrowserOpener(openBrowser func(string) error) *Service {
 	return s
 }
 
+// WithManualRedirectReader supplies a reader that Login races against the
+// localhost callback server, letting the user paste the full redirect URL
+// instead of relying on the browser callback. The default reader simply blocks
+// until the context is cancelled. A nil reader is ignored. Returns the receiver
+// for chaining.
 func (s *Service) WithManualRedirectReader(readRedirectURL func(context.Context) (string, error)) *Service {
 	if readRedirectURL != nil {
 		s.readRedirectURL = readRedirectURL
@@ -128,6 +180,11 @@ func (s *Service) WithManualRedirectReader(readRedirectURL func(context.Context)
 	return s
 }
 
+// Login runs the interactive browser OAuth flow: it starts a localhost callback
+// server, opens the authorization URL, and waits for either the browser
+// callback or a manually pasted redirect URL (whichever arrives first). It then
+// exchanges the authorization code for tokens, persists them under stateDir for
+// instanceName, and returns the resulting AuthStatus.
 func (s *Service) Login(ctx context.Context, stateDir, instanceName string) (AuthStatus, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -347,6 +404,10 @@ func (s *Service) watchForConcurrentLogin(ctx context.Context, stateDir, instanc
 	}
 }
 
+// Status reports the current authentication state for instanceName without
+// making network calls. A stored OAuth record takes precedence over
+// OPENAI_API_KEY; if neither is present, the returned AuthStatus has Source
+// AuthSourceSignedOut.
 func (s *Service) Status(stateDir, instanceName string) (AuthStatus, error) {
 	// Prefer a stored OAuth record over OPENAI_API_KEY: once a user explicitly
 	// signs in via `serf openai login`, that intent should win over an env
@@ -371,10 +432,21 @@ func (s *Service) Status(stateDir, instanceName string) (AuthStatus, error) {
 	return AuthStatus{Source: AuthSourceSignedOut}, nil
 }
 
+// Logout deletes the stored OAuth record for instanceName. It reports whether a
+// record existed; deleting a missing record is not an error.
 func (s *Service) Logout(stateDir, instanceName string) (bool, error) {
 	return DeleteAuth(stateDir, instanceName)
 }
 
+// ResolveRuntimeCredentials returns a usable bearer token for instanceName,
+// refreshing the stored access token when it is expired or near expiry (and
+// persisting the refreshed record). A stored OAuth record is preferred; the
+// OPENAI_API_KEY environment variable is used only when no record exists at
+// all. When nothing is available, or the stored record has no refresh token, or
+// a refresh fails permanently (e.g. invalid_grant), the error wraps
+// ErrLoginRequired rather than silently falling back to env. A transient
+// refresh failure is returned as an ordinary wrapped error so the caller can
+// retry.
 func (s *Service) ResolveRuntimeCredentials(ctx context.Context, stateDir, instanceName string) (RuntimeCredentials, error) {
 	// Prefer a stored OAuth record over OPENAI_API_KEY. We only fall back to env
 	// when there is no stored auth at all; if a record exists but cannot be

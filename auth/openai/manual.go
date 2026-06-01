@@ -8,9 +8,16 @@ import (
 )
 
 var (
+	// ErrInvalidRedirectURL is returned (sometimes wrapped) by ParseRedirectURL
+	// when the input cannot be parsed as a URL or is missing a scheme or host.
 	ErrInvalidRedirectURL = errors.New("invalid redirect URL")
-	ErrMissingCode        = errors.New("missing authorization code")
-	ErrStateMismatch      = errors.New("state mismatch")
+	// ErrMissingCode is returned by ParseRedirectURL when the redirect URL has
+	// no "code" query parameter.
+	ErrMissingCode = errors.New("missing authorization code")
+	// ErrStateMismatch is returned by ValidateState when the returned state is
+	// empty or does not equal the expected state, indicating a possible CSRF
+	// attempt or a stale callback.
+	ErrStateMismatch = errors.New("state mismatch")
 )
 
 // ParseRedirectURL extracts the authorization code and state from a pasted redirect URL.

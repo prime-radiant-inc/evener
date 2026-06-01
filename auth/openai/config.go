@@ -9,9 +9,18 @@ import (
 )
 
 const (
-	IssuerBaseURL       = "https://auth.openai.com"
-	ClientID            = "app_EMoamEEZ73f0CkXaXp7hrann"
-	RedirectPath        = "/auth/callback"
+	// IssuerBaseURL is the OpenAI OAuth issuer. The authorize and token
+	// endpoints are derived from it (e.g. IssuerBaseURL + "/oauth/authorize").
+	IssuerBaseURL = "https://auth.openai.com"
+	// ClientID is the public OAuth client identifier Serf registers as with
+	// OpenAI. It is sent on the authorize, token-exchange, and refresh requests.
+	ClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
+	// RedirectPath is the path component of the localhost redirect URI that the
+	// callback server listens on and that is registered with OpenAI.
+	RedirectPath = "/auth/callback"
+	// DefaultCallbackPort is the localhost port the browser-login callback
+	// server tries first. If it is unavailable, the server falls back to
+	// FallbackCallbackPort.
 	DefaultCallbackPort = 1455
 )
 
@@ -23,7 +32,9 @@ var defaultScopes = []string{
 }
 
 const (
-	defaultOriginator    = "pi"
+	defaultOriginator = "pi"
+	// FallbackCallbackPort is the localhost port the browser-login callback
+	// server binds to when DefaultCallbackPort is already in use.
 	FallbackCallbackPort = 1457
 )
 
@@ -37,13 +48,26 @@ type Config struct {
 	CallbackTimeout time.Duration
 }
 
+// AuthorizeURLOptions are the per-login parameters Config.AuthorizeURL needs to
+// build the OpenAI authorization URL. RedirectURI, State, and CodeChallenge are
+// required.
 type AuthorizeURLOptions struct {
-	RedirectURI   string
-	State         string
+	// RedirectURI is the localhost callback URI OpenAI redirects back to.
+	RedirectURI string
+	// State is the random anti-CSRF token echoed back on the callback and
+	// checked with ValidateState.
+	State string
+	// CodeChallenge is the PKCE S256 code challenge derived from the verifier
+	// returned by GeneratePKCE.
 	CodeChallenge string
-	OpenBrowser   bool
+	// OpenBrowser is recorded on the options but does not affect the URL; the
+	// caller decides whether to open a browser.
+	OpenBrowser bool
 }
 
+// DefaultConfig returns the standard Serf-owned OpenAI OAuth configuration: the
+// public issuer, client ID, redirect path, default scopes, and the HTTP and
+// callback timeouts used by NewService when the caller does not override them.
 func DefaultConfig() Config {
 	return Config{
 		IssuerBaseURL:   IssuerBaseURL,

@@ -8,6 +8,9 @@ import (
 	"strings"
 )
 
+// ErrInvalidIDToken is returned (wrapped) by ParseIDTokenClaims when the ID
+// token is malformed: it lacks a JWT payload segment, or the payload is not
+// valid base64url-encoded JSON. An empty token is not an error.
 var ErrInvalidIDToken = errors.New("invalid id token")
 
 // TokenClaims contains display-oriented metadata parsed from an ID token.
