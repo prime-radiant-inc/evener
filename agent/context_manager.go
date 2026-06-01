@@ -40,7 +40,7 @@ type contextManager struct {
 	// ObservationMaskThreshold and ThinkingClearThreshold are not used by the
 	// default compaction path (MaybeCompact/ForceCompact) because in-place
 	// modifications bust the prompt cache for all providers. They remain here
-	// for experimental ContextStrategy implementations that call
+	// for experimental contextStrategy implementations that call
 	// maskObservations/clearThinking directly.
 	ObservationMaskThreshold float64
 	ThinkingClearThreshold   float64

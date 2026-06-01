@@ -41,8 +41,8 @@ func (s *recallStrategy) AfterAction(ctx context.Context, history []Turn, client
 }
 
 // Tools returns the strategy's registered tools, namely the "recall" tool.
-func (s *recallStrategy) Tools() []RegisteredTool {
-	return []RegisteredTool{recallToolDef(s)}
+func (s *recallStrategy) Tools() []registeredTool {
+	return []registeredTool{recallToolDef(s)}
 }
 
 // transcriptPath returns the path where the session snapshot is stored.
@@ -50,16 +50,16 @@ func transcriptPath(stateDir, sessionID string) string {
 	return filepath.Join(stateDir, "sessions", sessionID+".json")
 }
 
-// recallToolDef builds the RegisteredTool for the "recall" tool.
-func recallToolDef(strategy *recallStrategy) RegisteredTool {
+// recallToolDef builds the registeredTool for the "recall" tool.
+func recallToolDef(strategy *recallStrategy) registeredTool {
 	return buildRecallTool(func() strategyHost { return strategy.session })
 }
 
-// buildRecallTool creates a recall RegisteredTool that uses getHost to
+// buildRecallTool creates a recall registeredTool that uses getHost to
 // obtain the parent session at call time. Shared by recallStrategy and
 // sessionLogStrategy.
-func buildRecallTool(getHost func() strategyHost) RegisteredTool {
-	return RegisteredTool{
+func buildRecallTool(getHost func() strategyHost) registeredTool {
+	return registeredTool{
 		Tool: llm.Tool{
 			Definition: llm.ToolDefinition{
 				Name:        "recall",

@@ -15,7 +15,7 @@ import (
 func TestToolRegistry_Restrict(t *testing.T) {
 	reg := newToolRegistry()
 	for _, name := range []string{"read_file", "write_file", "grep", "shell", "communicate"} {
-		_ = reg.Register(RegisteredTool{
+		_ = reg.Register(registeredTool{
 			Tool: llm.Tool{Definition: llm.ToolDefinition{Name: name, Description: name}},
 			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 				return "ok", nil
@@ -39,13 +39,13 @@ func TestToolRegistry_Restrict(t *testing.T) {
 
 func TestToolRegistry_Restrict_KeepsCommunicate(t *testing.T) {
 	reg := newToolRegistry()
-	_ = reg.Register(RegisteredTool{
+	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "communicate", Description: "communicate"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
 		},
 	})
-	_ = reg.Register(RegisteredTool{
+	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "shell", Description: "shell"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil

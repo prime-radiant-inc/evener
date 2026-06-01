@@ -329,7 +329,7 @@ func (p *baseProfile) ToolNameMap() map[string]string {
 func (p *baseProfile) toolRegistry() *toolRegistry {
 	reg := newToolRegistry()
 	for _, td := range p.toolDefs {
-		_ = reg.Register(RegisteredTool{
+		_ = reg.Register(registeredTool{
 			Tool: llm.Tool{Definition: td},
 			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 				return nil, fmt.Errorf("tool executor not wired")

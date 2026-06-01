@@ -9,7 +9,7 @@ import (
 
 func TestRegisteredTool_EmbedsLLMTool(t *testing.T) {
 	var execCalled bool
-	rt := RegisteredTool{
+	rt := registeredTool{
 		Tool: llm.Tool{
 			Definition: llm.ToolDefinition{
 				Name:        "test_embed",
@@ -59,7 +59,7 @@ func TestRegisteredTool_EmbedsLLMTool(t *testing.T) {
 
 func TestRegisteredTool_ExecuteNotBridgedWhenAlreadySet(t *testing.T) {
 	var executeCalled bool
-	rt := RegisteredTool{
+	rt := registeredTool{
 		Tool: llm.Tool{
 			Definition: llm.ToolDefinition{
 				Name: "preset_exec",
@@ -97,7 +97,7 @@ func TestRegisteredTool_ExecuteNotBridgedWhenAlreadySet(t *testing.T) {
 }
 
 func TestRegisteredTool_BridgedExecute_RejectsNonMapArgs(t *testing.T) {
-	rt := RegisteredTool{
+	rt := registeredTool{
 		Tool: llm.Tool{
 			Definition: llm.ToolDefinition{
 				Name: "bridge_reject",

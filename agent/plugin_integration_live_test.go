@@ -767,7 +767,7 @@ func TestLive_ToolRestriction_PluginAgent(t *testing.T) {
 	// Register some dummy tools (including communicate, which subagents always need)
 	for _, name := range []string{"read_file", "grep", "glob", "shell", "write_file", "edit_file", "communicate"} {
 		n := name
-		if err := reg.Register(RegisteredTool{
+		if err := reg.Register(registeredTool{
 			Tool: llm.Tool{Definition: llm.ToolDefinition{
 				Name:        n,
 				Description: "test tool " + n,

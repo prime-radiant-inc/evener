@@ -9,7 +9,7 @@ import (
 )
 
 func TestObsMaskStrategy_SatisfiesInterface(t *testing.T) {
-	var _ ContextStrategy = (*obsMaskStrategy)(nil)
+	var _ contextStrategy = (*obsMaskStrategy)(nil)
 }
 
 func TestObsMaskStrategy_Name(t *testing.T) {

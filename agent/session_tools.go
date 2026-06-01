@@ -32,7 +32,7 @@ func (s *Session) resultToolName() string {
 
 // RegisterTool registers a custom tool at runtime.
 func (s *Session) RegisterTool(name, description string, params map[string]any, fn func(ctx context.Context, args any) (any, error)) {
-	_ = s.reg.Register(RegisteredTool{
+	_ = s.reg.Register(registeredTool{
 		Tool: llm.Tool{
 			Definition: llm.ToolDefinition{
 				Name:        name,

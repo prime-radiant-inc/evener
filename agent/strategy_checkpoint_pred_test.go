@@ -9,7 +9,7 @@ import (
 )
 
 func TestCheckpointPredStrategy_SatisfiesInterface(t *testing.T) {
-	var _ ContextStrategy = (*checkpointPredStrategy)(nil)
+	var _ contextStrategy = (*checkpointPredStrategy)(nil)
 }
 
 func TestCheckpointPredStrategy_Name(t *testing.T) {

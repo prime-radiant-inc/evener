@@ -527,7 +527,7 @@ func TestSession_Steer_IsInjectedAfterCurrentToolRound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	_ = sess.reg.Register(RegisteredTool{
+	_ = sess.reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "slow"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
@@ -647,7 +647,7 @@ func TestSession_ReasoningEffort_PassedThroughAndCanChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	_ = sess.reg.Register(RegisteredTool{
+	_ = sess.reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "slow"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
@@ -775,7 +775,7 @@ func TestSession_RetainsEncryptedReasoningAcrossToolRound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	_ = sess.reg.Register(RegisteredTool{
+	_ = sess.reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "noop"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -943,7 +943,7 @@ func TestSession_AbortSignal_KeepsSessionAliveAndEmitsInterruptedSessionEnd(t *t
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	_ = sess.reg.Register(RegisteredTool{
+	_ = sess.reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "slow"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
@@ -1075,7 +1075,7 @@ func TestSession_AbortThenFollowup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	_ = sess.reg.Register(RegisteredTool{
+	_ = sess.reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "slow"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
@@ -1163,7 +1163,7 @@ func TestSession_AbortDrainsQueuedInputWithFreshContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	_ = sess.reg.Register(RegisteredTool{
+	_ = sess.reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "slow"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
@@ -1402,7 +1402,7 @@ func TestSession_CustomToolRegistration_OverridesExistingTool(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	// Override a built-in tool implementation.
-	if err := sess.reg.Register(RegisteredTool{
+	if err := sess.reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{
 			Name: "read_file",
 			Parameters: map[string]any{

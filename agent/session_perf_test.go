@@ -99,7 +99,7 @@ func TestCachedToolDefs_IncludesMCPTools(t *testing.T) {
 		Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
 	}
 	sess.mcpTools = append(sess.mcpTools, mcpTool)
-	_ = sess.reg.Register(RegisteredTool{
+	_ = sess.reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: mcpTool},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
@@ -136,7 +136,7 @@ func TestCachedToolDefs_IncludesRegistryOnlyTools(t *testing.T) {
 	defer sess.Close()
 
 	// Register a custom tool directly.
-	customTool := RegisteredTool{
+	customTool := registeredTool{
 		Tool: llm.Tool{
 			Definition: llm.ToolDefinition{
 				Name:        "custom_tool",
@@ -469,7 +469,7 @@ func TestCachedSystemPromptComponents_DoesNotDuplicateMCPToolDescriptions(t *tes
 		Description: "Test MCP tool",
 	}
 	sess.mcpTools = append(sess.mcpTools, mcpTool)
-	_ = sess.reg.Register(RegisteredTool{
+	_ = sess.reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: mcpTool},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil

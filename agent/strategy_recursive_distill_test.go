@@ -9,7 +9,7 @@ import (
 )
 
 func TestRecursiveDistillStrategy_SatisfiesInterface(t *testing.T) {
-	var _ ContextStrategy = (*recursiveDistillStrategy)(nil)
+	var _ contextStrategy = (*recursiveDistillStrategy)(nil)
 }
 
 func TestRecursiveDistillStrategy_Name(t *testing.T) {

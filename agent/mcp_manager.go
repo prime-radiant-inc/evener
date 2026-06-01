@@ -132,7 +132,7 @@ func (m *mcpManager) RegisterTools(reg *toolRegistry) error {
 			origName := conn.origNames[td.Name]
 			sess := conn.session
 
-			if err := reg.Register(RegisteredTool{
+			if err := reg.Register(registeredTool{
 				Tool: llm.Tool{Definition: td},
 				Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 					result, err := sess.CallTool(ctx, &mcp.CallToolParams{

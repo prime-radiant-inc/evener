@@ -11,7 +11,7 @@ import (
 )
 
 func TestOODAStrategy_SatisfiesInterface(t *testing.T) {
-	var _ ContextStrategy = (*oodaStrategy)(nil)
+	var _ contextStrategy = (*oodaStrategy)(nil)
 }
 
 func TestOODAStrategy_Name(t *testing.T) {

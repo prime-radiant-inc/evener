@@ -12,7 +12,7 @@ import (
 )
 
 func TestSessionLogStrategy_SatisfiesInterface(t *testing.T) {
-	var _ ContextStrategy = (*sessionLogStrategy)(nil)
+	var _ contextStrategy = (*sessionLogStrategy)(nil)
 }
 
 func TestSessionLogStrategy_Name(t *testing.T) {

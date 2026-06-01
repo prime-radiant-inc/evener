@@ -30,7 +30,7 @@ func newObsMaskStrategy(cm *contextManager) *obsMaskStrategy {
 func (s *obsMaskStrategy) Name() string { return "obs-mask" }
 
 // Tools returns the tools registered by this strategy; it registers none.
-func (s *obsMaskStrategy) Tools() []RegisteredTool { return nil }
+func (s *obsMaskStrategy) Tools() []registeredTool { return nil }
 
 // AfterAction is a no-op; this strategy performs no work after each action.
 func (s *obsMaskStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {

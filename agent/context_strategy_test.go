@@ -15,12 +15,12 @@ type spyStrategy struct {
 	mu                 sync.Mutex
 	manageContextCalls int
 	afterActionCalls   int
-	toolsDefs          []RegisteredTool
+	toolsDefs          []registeredTool
 }
 
 func (s *spyStrategy) Name() string { return "spy" }
 
-func (s *spyStrategy) Tools() []RegisteredTool { return s.toolsDefs }
+func (s *spyStrategy) Tools() []registeredTool { return s.toolsDefs }
 
 func (s *spyStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, EventData)) error {
 	s.mu.Lock()
@@ -49,8 +49,8 @@ func (s *spyStrategy) AfterActionCount() int {
 }
 
 func TestContextStrategyInterface(t *testing.T) {
-	// Verify that compactStrategy satisfies the ContextStrategy interface.
-	var _ ContextStrategy = (*compactStrategy)(nil)
+	// Verify that compactStrategy satisfies the contextStrategy interface.
+	var _ contextStrategy = (*compactStrategy)(nil)
 }
 
 func TestCompactStrategyName(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// strategyHost is the narrow surface a ContextStrategy needs from its owning
+// strategyHost is the narrow surface a contextStrategy needs from its owning
 // session. Strategies depend on this interface rather than on *Session, which
 // breaks the context⇄session back-cycle: the strategy_*.go files no longer
 // reference the concrete *Session type. *Session satisfies strategyHost.
@@ -22,8 +22,8 @@ type strategyHost interface {
 	Client() *llm.Client
 }
 
-// ContextStrategy defines how a session manages context pressure.
-type ContextStrategy interface {
+// contextStrategy defines how a session manages context pressure.
+type contextStrategy interface {
 	// ManageContext is called before each LLM request. It may modify history
 	// in place to reduce context pressure.
 	ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, EventData)) error
@@ -32,7 +32,7 @@ type ContextStrategy interface {
 	AfterAction(ctx context.Context, history []Turn, client *llm.Client) error
 
 	// Tools returns additional tool definitions this strategy wants registered.
-	Tools() []RegisteredTool
+	Tools() []registeredTool
 
 	// Name returns the strategy identifier for config/logging.
 	Name() string
@@ -52,7 +52,7 @@ func newCompactStrategy(cm *contextManager) *compactStrategy {
 func (s *compactStrategy) Name() string { return "compact" }
 
 // Tools returns no additional tool definitions for this strategy.
-func (s *compactStrategy) Tools() []RegisteredTool { return nil }
+func (s *compactStrategy) Tools() []registeredTool { return nil }
 
 // AfterAction does nothing for this strategy and always returns nil.
 func (s *compactStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {

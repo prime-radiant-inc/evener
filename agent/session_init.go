@@ -14,8 +14,8 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// selectStrategy creates the appropriate ContextStrategy from config.
-func selectStrategy(cfg SessionConfig, cm *contextManager, sess *Session) (ContextStrategy, error) {
+// selectStrategy creates the appropriate contextStrategy from config.
+func selectStrategy(cfg SessionConfig, cm *contextManager, sess *Session) (contextStrategy, error) {
 	if cfg.testOnly.contextStrategyOverride != nil {
 		return cfg.testOnly.contextStrategyOverride, nil
 	}

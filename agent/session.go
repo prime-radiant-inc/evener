@@ -73,7 +73,7 @@ type Session struct {
 
 	// context management
 	contextMgr *contextManager
-	strategy   ContextStrategy
+	strategy   contextStrategy
 
 	// skills discovered at session startup
 	skills            map[string]SkillMeta
@@ -232,7 +232,7 @@ func (s *Session) reapplyProviderSpecificTools(oldTag, newTag string) {
 	switch {
 	case newTag == "google" && oldTag != "google":
 		// Switching to Gemini: wire the real web_search executor.
-		_ = s.reg.Register(RegisteredTool{
+		_ = s.reg.Register(registeredTool{
 			Tool: llm.Tool{Definition: defWebSearch()},
 			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 				query := fmt.Sprint(args["query"])

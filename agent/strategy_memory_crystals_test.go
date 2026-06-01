@@ -9,7 +9,7 @@ import (
 )
 
 func TestMemoryCrystalsStrategy_SatisfiesInterface(t *testing.T) {
-	var _ ContextStrategy = (*memoryCrystalsStrategy)(nil)
+	var _ contextStrategy = (*memoryCrystalsStrategy)(nil)
 }
 
 func TestMemoryCrystalsStrategy_Name(t *testing.T) {

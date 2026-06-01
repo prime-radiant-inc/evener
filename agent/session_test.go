@@ -62,7 +62,7 @@ type compactionEventStrategy struct {
 
 func (s compactionEventStrategy) Name() string { return "compaction-event-test" }
 
-func (s compactionEventStrategy) Tools() []RegisteredTool { return nil }
+func (s compactionEventStrategy) Tools() []registeredTool { return nil }
 
 func (s compactionEventStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, EventData)) error {
 	_ = ctx
@@ -1785,7 +1785,7 @@ func TestSession_ParallelToolCalls_RunConcurrentlyWhenSupported(t *testing.T) {
 	// Register a slow read-only tool that blocks until the test releases it.
 	// ReadOnly: true ensures the ordered-group algorithm batches both calls
 	// for parallel execution (non-read-only tools are serialized).
-	_ = sess.reg.Register(RegisteredTool{
+	_ = sess.reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{
 			Name: "slow",
 			Parameters: map[string]any{
@@ -1866,8 +1866,8 @@ func TestSession_ParallelToolCalls_NonReadOnlyToolsSerialize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	makeTool := func(name string, readOnly bool) RegisteredTool {
-		return RegisteredTool{
+	makeTool := func(name string, readOnly bool) registeredTool {
+		return registeredTool{
 			Tool: llm.Tool{
 				Definition: llm.ToolDefinition{
 					Name:       name,
@@ -3022,7 +3022,7 @@ func TestSession_CustomRegisteredTool_AppearsInSystemPrompt(t *testing.T) {
 	defer sess.Close()
 
 	// Register a custom tool after session creation.
-	if err := sess.reg.Register(RegisteredTool{
+	if err := sess.reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "my_custom_tool", Description: "Does custom things"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil

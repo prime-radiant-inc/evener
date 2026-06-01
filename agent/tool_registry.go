@@ -200,10 +200,10 @@ func parseDocumentResult(path, readFileOutput string) *imageResult {
 	}
 }
 
-// RegisteredTool is a registered tool: the embedded llm.Tool (definition and
+// registeredTool is a registered tool: the embedded llm.Tool (definition and
 // Execute), its compiled validation schema, output limit, and the agent-layer
 // executor that receives the ExecutionEnvironment.
-type RegisteredTool struct {
+type registeredTool struct {
 	llm.Tool // embeds Definition + Execute
 	Schema   *jsonschema.Schema
 	Limit    ToolOutputLimit
@@ -219,13 +219,13 @@ type toolMiddleware func(ctx context.Context, toolName string, args map[string]a
 // middleware run before their execution.
 type toolRegistry struct {
 	mu         sync.RWMutex
-	tools      map[string]RegisteredTool
+	tools      map[string]registeredTool
 	middleware []toolMiddleware
 }
 
 // newToolRegistry returns an empty toolRegistry ready for tool registration.
 func newToolRegistry() *toolRegistry {
-	return &toolRegistry{tools: map[string]RegisteredTool{}}
+	return &toolRegistry{tools: map[string]registeredTool{}}
 }
 
 // Use appends a middleware to the tool execution pipeline.
@@ -241,7 +241,7 @@ func (r *toolRegistry) Use(mw toolMiddleware) {
 // definition, applies a default output limit when none is set, compiles (or
 // reuses) the argument schema, and bridges llm.Tool.Execute from Exec when
 // unset.
-func (r *toolRegistry) Register(t RegisteredTool) error {
+func (r *toolRegistry) Register(t registeredTool) error {
 	if err := llm.ValidateToolName(t.Definition.Name); err != nil {
 		return err
 	}
@@ -287,7 +287,7 @@ func (r *toolRegistry) Register(t RegisteredTool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.tools == nil {
-		r.tools = map[string]RegisteredTool{}
+		r.tools = map[string]registeredTool{}
 	}
 	r.tools[t.Definition.Name] = t
 	return nil
@@ -353,7 +353,7 @@ func (r *toolRegistry) Unregister(name string) {
 }
 
 // Get returns the named registered tool, or nil if it is not registered.
-func (r *toolRegistry) Get(name string) *RegisteredTool {
+func (r *toolRegistry) Get(name string) *registeredTool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	t, ok := r.tools[name]

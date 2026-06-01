@@ -39,7 +39,7 @@ func newRecursiveDistillStrategy(cm *contextManager) *recursiveDistillStrategy {
 func (s *recursiveDistillStrategy) Name() string { return "recursive-distill" }
 
 // Tools returns nil, as this strategy registers no tools.
-func (s *recursiveDistillStrategy) Tools() []RegisteredTool { return nil }
+func (s *recursiveDistillStrategy) Tools() []registeredTool { return nil }
 
 // ManageContext runs the standard compact compaction and then, if any
 // distilled summaries exist, injects the distilled memory hierarchy as a

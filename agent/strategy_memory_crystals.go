@@ -40,7 +40,7 @@ func newMemoryCrystalsStrategy(cm *contextManager) *memoryCrystalsStrategy {
 func (s *memoryCrystalsStrategy) Name() string { return "memory-crystals" }
 
 // Tools returns the tools registered by this strategy; it registers none.
-func (s *memoryCrystalsStrategy) Tools() []RegisteredTool { return nil }
+func (s *memoryCrystalsStrategy) Tools() []registeredTool { return nil }
 
 // ManageContext runs standard compact compaction and then, if any crystals
 // have been collected, injects the crystal bank into history as a steering

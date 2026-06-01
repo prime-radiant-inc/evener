@@ -11,7 +11,7 @@ import (
 )
 
 func TestRecallStrategy_SatisfiesInterface(t *testing.T) {
-	var _ ContextStrategy = (*recallStrategy)(nil)
+	var _ contextStrategy = (*recallStrategy)(nil)
 }
 
 func TestRecallStrategy_Name(t *testing.T) {

@@ -16,7 +16,7 @@ import (
 
 func TestToolRegistry_ToolStateResult_CarriesStateAsSideChannel(t *testing.T) {
 	r := newToolRegistry()
-	if err := r.Register(RegisteredTool{
+	if err := r.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "snap"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -62,7 +62,7 @@ func TestToolRegistry_ToolStateResult_CarriesStateAsSideChannel(t *testing.T) {
 func TestToolRegistry_AddsAndStripsUniversalPurpose(t *testing.T) {
 	r := newToolRegistry()
 	var gotArgs map[string]any
-	if err := r.Register(RegisteredTool{
+	if err := r.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{
 			Name:        "echo",
 			Description: "echo args",
@@ -120,7 +120,7 @@ func TestToolRegistry_UnknownTool_ReturnsErrorResult(t *testing.T) {
 
 func TestToolRegistry_SchemaValidationError_IsReturnedToModel(t *testing.T) {
 	r := newToolRegistry()
-	if err := r.Register(RegisteredTool{
+	if err := r.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{
 			Name: "t",
 			Parameters: map[string]any{
@@ -154,7 +154,7 @@ func TestToolRegistry_SchemaValidationError_IsReturnedToModel(t *testing.T) {
 
 func TestToolRegistry_InvalidArgumentsJSON_IsReturnedToModel(t *testing.T) {
 	r := newToolRegistry()
-	if err := r.Register(RegisteredTool{
+	if err := r.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "t"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -179,7 +179,7 @@ func TestToolRegistry_InvalidArgumentsJSON_IsReturnedToModel(t *testing.T) {
 
 func TestToolRegistry_ExecError_IsReturnedToModel(t *testing.T) {
 	r := newToolRegistry()
-	if err := r.Register(RegisteredTool{
+	if err := r.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "t"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -205,7 +205,7 @@ func TestToolRegistry_ExecError_IsReturnedToModel(t *testing.T) {
 
 func TestToolRegistry_TruncationMarkers(t *testing.T) {
 	r := newToolRegistry()
-	if err := r.Register(RegisteredTool{
+	if err := r.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "t"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -238,7 +238,7 @@ func TestToolRegistry_TruncationMarkers(t *testing.T) {
 func TestToolRegistry_TruncationOrder_CharsFirstThenLines(t *testing.T) {
 	r := newToolRegistry()
 	full := strings.Repeat("0123456789\n", 100) // ~1100 chars, many lines
-	if err := r.Register(RegisteredTool{
+	if err := r.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "t"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -280,7 +280,7 @@ func TestToolRegistry_TruncationLines_UsesHeadTailAndOmittedMarker(t *testing.T)
 		"l8",
 		"l9",
 	}, "\n")
-	if err := r.Register(RegisteredTool{
+	if err := r.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "t"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -314,7 +314,7 @@ func TestToolRegistry_TruncationLines_UsesHeadTailAndOmittedMarker(t *testing.T)
 
 func TestToolRegistry_Unregister(t *testing.T) {
 	r := newToolRegistry()
-	_ = r.Register(RegisteredTool{
+	_ = r.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "foo", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
@@ -328,7 +328,7 @@ func TestToolRegistry_Unregister(t *testing.T) {
 
 func TestToolRegistry_Get(t *testing.T) {
 	r := newToolRegistry()
-	_ = r.Register(RegisteredTool{
+	_ = r.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "bar", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
@@ -348,11 +348,11 @@ func TestToolRegistry_Get(t *testing.T) {
 
 func TestToolRegistry_Names(t *testing.T) {
 	r := newToolRegistry()
-	_ = r.Register(RegisteredTool{
+	_ = r.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "alpha", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) { return "", nil },
 	})
-	_ = r.Register(RegisteredTool{
+	_ = r.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "beta", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) { return "", nil },
 	})
@@ -368,7 +368,7 @@ func TestToolRegistry_Names(t *testing.T) {
 
 func TestToolRegistry_Register_RejectsNonObjectRootSchema(t *testing.T) {
 	reg := newToolRegistry()
-	err := reg.Register(RegisteredTool{
+	err := reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{
 			Name: "bad_tool",
 			Parameters: map[string]any{
@@ -389,13 +389,13 @@ func TestToolRegistry_Register_RejectsNonObjectRootSchema(t *testing.T) {
 
 func TestToolRegistry_Register_LatestWinsOnNameCollision(t *testing.T) {
 	reg := newToolRegistry()
-	first := RegisteredTool{
+	first := registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "my_tool", Description: "first"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			return "first", nil
 		},
 	}
-	second := RegisteredTool{
+	second := registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "my_tool", Description: "second"}},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			return "second", nil
@@ -450,7 +450,7 @@ func TestTruncateChars_UTF8Aware(t *testing.T) {
 
 func TestToolRegistry_Middleware_CalledBeforeExecution(t *testing.T) {
 	reg := newToolRegistry()
-	if err := reg.Register(RegisteredTool{
+	if err := reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{
 			Name:        "test_tool",
 			Description: "test",
@@ -481,7 +481,7 @@ func TestToolRegistry_Middleware_CalledBeforeExecution(t *testing.T) {
 func TestToolRegistry_Middleware_CanBlockExecution(t *testing.T) {
 	reg := newToolRegistry()
 	var execCalled bool
-	if err := reg.Register(RegisteredTool{
+	if err := reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{
 			Name:        "test_tool",
 			Description: "test",
@@ -518,7 +518,7 @@ func TestToolRegistry_Register_WarnsOnEmptyDescription(t *testing.T) {
 	log.SetOutput(&buf)
 	defer log.SetOutput(os.Stderr)
 
-	err := reg.Register(RegisteredTool{
+	err := reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{
 			Name:        "no_desc_tool",
 			Description: "",
@@ -581,7 +581,7 @@ func TestToolRegistry_Register_RecoversPanicInSchemaCompilation(t *testing.T) {
 	for _, tc := range pathological {
 		t.Run(tc.name, func(t *testing.T) {
 			// This must not panic — error return is acceptable.
-			_ = reg.Register(RegisteredTool{
+			_ = reg.Register(registeredTool{
 				Tool: llm.Tool{Definition: llm.ToolDefinition{
 					Name:       "test_" + tc.name,
 					Parameters: tc.params,
@@ -613,7 +613,7 @@ func TestRegister_ReusesCompiledSchemaOnReregistration(t *testing.T) {
 	}
 
 	// First registration compiles the schema.
-	if err := reg.Register(RegisteredTool{
+	if err := reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "read_file", Parameters: params}},
 		Exec: noop,
 	}); err != nil {
@@ -630,7 +630,7 @@ func TestRegister_ReusesCompiledSchemaOnReregistration(t *testing.T) {
 
 	// Re-register the same tool (as registerCoreTools does) without Schema.
 	// Register should reuse the compiled Schema from the first registration.
-	if err := reg.Register(RegisteredTool{
+	if err := reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "read_file", Parameters: params}},
 		Exec: noop,
 	}); err != nil {
@@ -651,7 +651,7 @@ func TestRegister_ReusesCompiledSchemaOnReregistration(t *testing.T) {
 func TestExecuteCall_ImageResult_PopulatesImageFields(t *testing.T) {
 	reg := newToolRegistry()
 	imgData := []byte{0x89, 0x50, 0x4E, 0x47} // PNG magic bytes
-	if err := reg.Register(RegisteredTool{
+	if err := reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{
 			Name:       "read_file",
 			Parameters: map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}, "required": []string{"file_path"}},

@@ -28,7 +28,7 @@ func newCheckpointPredStrategy(cm *contextManager) *checkpointPredStrategy {
 func (s *checkpointPredStrategy) Name() string { return "checkpoint-pred" }
 
 // Tools returns nil; this strategy registers no tools.
-func (s *checkpointPredStrategy) Tools() []RegisteredTool { return nil }
+func (s *checkpointPredStrategy) Tools() []registeredTool { return nil }
 
 // AfterAction is a no-op for this strategy and always returns nil.
 func (s *checkpointPredStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {

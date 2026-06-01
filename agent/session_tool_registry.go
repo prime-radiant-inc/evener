@@ -170,7 +170,7 @@ func registerCoreTools(reg *toolRegistry, s *Session) error {
 
 func registerFileTools(reg *toolRegistry, deps *toolDeps) error {
 	// read_file
-	if err := reg.Register(RegisteredTool{
+	if err := reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defReadFile(), ReadOnly: true},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -199,7 +199,7 @@ func registerFileTools(reg *toolRegistry, deps *toolDeps) error {
 	}
 
 	// write_file
-	if err := reg.Register(RegisteredTool{
+	if err := reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defWriteFile()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -216,7 +216,7 @@ func registerFileTools(reg *toolRegistry, deps *toolDeps) error {
 	}
 
 	// edit_file
-	_ = reg.Register(RegisteredTool{
+	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defEditFile()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -239,7 +239,7 @@ func registerFileTools(reg *toolRegistry, deps *toolDeps) error {
 
 func registerShellTools(reg *toolRegistry, deps *toolDeps) error {
 	// shell
-	if err := reg.Register(RegisteredTool{
+	if err := reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defShell()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			cmd := fmt.Sprint(args["command"])
@@ -280,7 +280,7 @@ func registerShellTools(reg *toolRegistry, deps *toolDeps) error {
 	}
 
 	// list_dir (Gemini-aligned)
-	_ = reg.Register(RegisteredTool{
+	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defListDir(), ReadOnly: true},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -294,7 +294,7 @@ func registerShellTools(reg *toolRegistry, deps *toolDeps) error {
 	})
 
 	// grep
-	if err := reg.Register(RegisteredTool{
+	if err := reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defGrep(), ReadOnly: true},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -320,7 +320,7 @@ func registerShellTools(reg *toolRegistry, deps *toolDeps) error {
 	}
 
 	// glob
-	if err := reg.Register(RegisteredTool{
+	if err := reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defGlob(), ReadOnly: true},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -337,7 +337,7 @@ func registerShellTools(reg *toolRegistry, deps *toolDeps) error {
 	}
 
 	// apply_patch (OpenAI-specific; best-effort implementation lives in this repo)
-	_ = reg.Register(RegisteredTool{
+	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defApplyPatch()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -351,7 +351,7 @@ func registerShellTools(reg *toolRegistry, deps *toolDeps) error {
 
 func registerSubagentTools(reg *toolRegistry, s *Session) {
 	// Subagent tools (best-effort; synchronous completion for v1).
-	_ = reg.Register(RegisteredTool{
+	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defSpawnAgent()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
@@ -433,7 +433,7 @@ func registerSubagentTools(reg *toolRegistry, s *Session) {
 			return waitResult, waitErr
 		},
 	})
-	_ = reg.Register(RegisteredTool{
+	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defSendInput()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
@@ -481,7 +481,7 @@ func registerSubagentTools(reg *toolRegistry, s *Session) {
 			return waitResult, waitErr
 		},
 	})
-	_ = reg.Register(RegisteredTool{
+	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defWait()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
@@ -496,7 +496,7 @@ func registerSubagentTools(reg *toolRegistry, s *Session) {
 			return s.waitAgent(ctx, fmt.Sprint(args["agent_id"]), timeout)
 		},
 	})
-	_ = reg.Register(RegisteredTool{
+	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defCloseAgent()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
@@ -507,7 +507,7 @@ func registerSubagentTools(reg *toolRegistry, s *Session) {
 
 func registerTaskTools(reg *toolRegistry, deps *toolDeps) {
 	// Task management.
-	_ = reg.Register(RegisteredTool{
+	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defTaskList(deps.reasoningEffortLevels)},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -685,7 +685,7 @@ func registerTaskTools(reg *toolRegistry, deps *toolDeps) {
 
 func registerWebTools(reg *toolRegistry, deps *toolDeps) {
 	// Web fetch.
-	_ = reg.Register(RegisteredTool{
+	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defWebFetch()},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			rawURL := fmt.Sprint(args["url"])
@@ -699,7 +699,7 @@ func registerWebTools(reg *toolRegistry, deps *toolDeps) {
 	// registering a function tool named "web_search" for those providers
 	// causes a duplicate name collision with the adapter-injected server tool.
 	if deps.webSearchEnabled {
-		_ = reg.Register(RegisteredTool{
+		_ = reg.Register(registeredTool{
 			Tool: llm.Tool{Definition: defWebSearch()},
 			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 				query := fmt.Sprint(args["query"])
@@ -718,7 +718,7 @@ func registerCommunicateTool(reg *toolRegistry, deps *toolDeps) {
 	if existing := reg.Get(deps.resultToolName()); existing != nil {
 		resultToolDef = existing.Definition
 	}
-	_ = reg.Register(RegisteredTool{
+	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: resultToolDef},
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
@@ -794,7 +794,7 @@ func registerSkillTool(reg *toolRegistry, deps *toolDeps) {
 	// use_skill (progressive disclosure of skill instructions).
 	// Present for provider profiles that include the use_skill tool definition.
 	if reg.Get("use_skill") != nil {
-		_ = reg.Register(RegisteredTool{
+		_ = reg.Register(registeredTool{
 			Tool: llm.Tool{Definition: defUseSkill()},
 			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 				_ = ctx

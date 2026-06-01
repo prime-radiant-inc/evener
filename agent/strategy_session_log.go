@@ -39,12 +39,12 @@ func newSessionLogStrategy(cm *contextManager, host strategyHost) (*sessionLogSt
 func (s *sessionLogStrategy) Name() string { return "session-log" }
 
 // Tools returns the tools provided by this strategy, namely the recall tool.
-func (s *sessionLogStrategy) Tools() []RegisteredTool {
-	return []RegisteredTool{sessionLogRecallToolDef(s)}
+func (s *sessionLogStrategy) Tools() []registeredTool {
+	return []registeredTool{sessionLogRecallToolDef(s)}
 }
 
-// sessionLogRecallToolDef builds the recall RegisteredTool for this strategy.
-func sessionLogRecallToolDef(strategy *sessionLogStrategy) RegisteredTool {
+// sessionLogRecallToolDef builds the recall registeredTool for this strategy.
+func sessionLogRecallToolDef(strategy *sessionLogStrategy) registeredTool {
 	return buildRecallTool(func() strategyHost { return strategy.session })
 }
 
