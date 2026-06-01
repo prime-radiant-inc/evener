@@ -374,13 +374,15 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 		forkParentID:   meta.ParentSessionID,
 		forkDivergence: meta.DivergenceTurn,
 		forkLabel:      meta.ForkLabel,
-		name:           meta.Name,
-		nameSource:     meta.NameSource,
-		nameUpdated:    meta.NameUpdatedAt,
-		nameSet:        strings.TrimSpace(meta.Name) != "",
-		readFiles:      map[string]bool{},
-		sessionCtx:     sessCtx,
-		cancelFunc:     sessCancel,
+		naming: sessionName{
+			value:   meta.Name,
+			source:  meta.NameSource,
+			updated: meta.NameUpdatedAt,
+			set:     strings.TrimSpace(meta.Name) != "",
+		},
+		readFiles:  map[string]bool{},
+		sessionCtx: sessCtx,
+		cancelFunc: sessCancel,
 	}
 	s.subagents = newSubagentManager(s.emit)
 

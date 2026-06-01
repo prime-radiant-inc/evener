@@ -228,9 +228,9 @@ func TestSessionNameFromCompactionTurn_RefreshesPromptName(t *testing.T) {
 	defer sess.Close()
 
 	sess.mu.Lock()
-	sess.name = "Initial Prompt Name"
-	sess.nameSource = sessionNameSourcePrompt
-	sess.nameUpdated = time.Now().UTC()
+	sess.naming.value = "Initial Prompt Name"
+	sess.naming.source = sessionNameSourcePrompt
+	sess.naming.updated = time.Now().UTC()
 	sess.mu.Unlock()
 
 	var gotSource, gotText string
@@ -238,9 +238,9 @@ func TestSessionNameFromCompactionTurn_RefreshesPromptName(t *testing.T) {
 		gotSource = source
 		gotText = text
 		sess.mu.Lock()
-		sess.name = "Compacted Parser Fixes"
-		sess.nameSource = source
-		sess.nameUpdated = time.Now().UTC()
+		sess.naming.value = "Compacted Parser Fixes"
+		sess.naming.source = source
+		sess.naming.updated = time.Now().UTC()
 		sess.mu.Unlock()
 		return nil
 	}
@@ -287,9 +287,9 @@ func TestSessionNameFromCompactionTurn_SkipsNonCompactionAndManualName(t *testin
 	}
 
 	sess.mu.Lock()
-	sess.name = "Manual Release Name"
-	sess.nameSource = "manual"
-	sess.nameUpdated = time.Now().UTC()
+	sess.naming.value = "Manual Release Name"
+	sess.naming.source = "manual"
+	sess.naming.updated = time.Now().UTC()
 	sess.mu.Unlock()
 	if err := sess.nameSessionFromCompactionTurn(context.Background(), NewTurn(TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]\nRelease work"))); err != nil {
 		t.Fatalf("manual-name compaction turn error: %v", err)

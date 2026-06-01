@@ -49,8 +49,8 @@ type Session struct {
 	//   the mutable cfg knobs (ReasoningEffort, command timeouts,
 	//   MaxToolRoundsPerInput), cachedSystemPrompt, cachedToolDefs, the
 	//   comm communicate-result, steeringQueue, followups, inputQueue,
-	//   loopDetectionCount, the task* reminder counters, depth, and the name*
-	//   fields. It does NOT guard reg — the ToolRegistry self-synchronizes.
+	//   loopDetectionCount, the task* reminder counters, depth, and the
+	//   naming name-state. It does NOT guard reg — the ToolRegistry self-synchronizes.
 	//   (readOnlyStreak is mutated only by the loop and is intentionally
 	//   lock-free / loop-private; loopDetectionCount is taken under mu.)
 	mu sync.Mutex
@@ -129,11 +129,7 @@ type Session struct {
 	// SESSION_END deduplication: emitted exactly once across ProcessInput and Close.
 	sessionEndEmitted bool
 
-	name              string
-	nameSource        string
-	nameUpdated       time.Time
-	nameSet           bool
-	namePromptPending bool
+	naming sessionName
 
 	nameSessionFromTextFunc func(context.Context, string, string) error
 
@@ -179,6 +175,17 @@ type communicateResult struct {
 	text       string // the message shown to the user
 	reply      string // the text handed back to the caller
 	output     string // canonical structured output (CommunicateOutput)
+}
+
+// sessionName holds the session's auto-generated display name and its
+// provenance. The namer goroutine (session_namer.go) assigns it; Meta and
+// Snapshot read it. Guarded by s.mu.
+type sessionName struct {
+	value         string    // display name ("" until assigned)
+	source        string    // provenance tag (sessionNameSource*)
+	updated       time.Time // when value last changed
+	set           bool      // a name has been assigned
+	promptPending bool      // a naming LLM call is in flight
 }
 
 // ID returns the session's identifier.

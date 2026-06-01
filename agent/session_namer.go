@@ -205,11 +205,11 @@ func (s *Session) launchInitialPromptNamer(ctx context.Context, input string) {
 		return
 	}
 	s.mu.Lock()
-	if s.nameSet || s.namePromptPending || strings.TrimSpace(s.name) != "" || s.closingOrClosedLocked() {
+	if s.naming.set || s.naming.promptPending || strings.TrimSpace(s.naming.value) != "" || s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		return
 	}
-	s.namePromptPending = true
+	s.naming.promptPending = true
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
 	go func() {
@@ -226,8 +226,8 @@ func (s *Session) launchInitialPromptNamer(ctx context.Context, input string) {
 func (s *Session) clearPromptNamePendingAfterAttempt(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err != nil || strings.TrimSpace(s.name) == "" {
-		s.namePromptPending = false
+	if err != nil || strings.TrimSpace(s.naming.value) == "" {
+		s.naming.promptPending = false
 	}
 }
 
@@ -304,10 +304,10 @@ func (s *Session) handleCompactionTurn(t Turn) {
 func (s *Session) shouldNameFromCompaction() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if strings.TrimSpace(s.name) == "" {
+	if strings.TrimSpace(s.naming.value) == "" {
 		return true
 	}
-	source := strings.TrimSpace(s.nameSource)
+	source := strings.TrimSpace(s.naming.source)
 	return source == sessionNameSourcePrompt || source == sessionNameSourceCompaction
 }
 
@@ -341,10 +341,10 @@ func (s *Session) nameSessionFromText(ctx context.Context, source, text string) 
 		s.mu.Unlock()
 		return nil
 	}
-	s.name = result.Name
-	s.nameSource = result.Source
-	s.nameUpdated = time.Now().UTC()
-	s.nameSet = true
+	s.naming.value = result.Name
+	s.naming.source = result.Source
+	s.naming.updated = time.Now().UTC()
+	s.naming.set = true
 	s.mu.Unlock()
 
 	s.appendSessionNamerLog(SessionLogEntry{
@@ -365,10 +365,10 @@ func (s *Session) shouldApplySessionName(source string) bool {
 
 func (s *Session) shouldApplySessionNameLocked(source string) bool {
 	source = normalizeSessionNameSource(source)
-	if strings.TrimSpace(s.name) == "" {
+	if strings.TrimSpace(s.naming.value) == "" {
 		return true
 	}
-	currentSource := strings.TrimSpace(s.nameSource)
+	currentSource := strings.TrimSpace(s.naming.source)
 	switch source {
 	case sessionNameSourceCompaction:
 		return currentSource == sessionNameSourcePrompt || currentSource == sessionNameSourceCompaction
