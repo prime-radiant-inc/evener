@@ -71,11 +71,14 @@ func LoadClient(opts ...llm.EnvOption) (*llm.Client, providercfg.Config, bool, e
 }
 
 // BuildResolveProfile returns the SessionConfig.ResolveProfile closure.
-// Instance names are always resolved via ResolveProfileFromConfig (config is
-// always present after LoadClient). The hasConfig parameter is retained for
-// call-site compatibility and is ignored.
+// Instance names are always resolved via ResolveProfileWithLiveWindow (config
+// is always present after LoadClient), so cross-provider switches via
+// Session.SetModel pick up the provider's live context window for openai-compat
+// providers, falling back to the catalog window when the lookup is unavailable.
+// The hasConfig parameter is retained for call-site compatibility and is
+// ignored.
 func BuildResolveProfile(cfg providercfg.Config, hasConfig bool) func(ref string) (agent.ProviderProfile, error) {
 	return func(ref string) (agent.ProviderProfile, error) {
-		return agent.ResolveProfileFromConfig(cfg, ref)
+		return ResolveProfileWithLiveWindow(cfg, ref)
 	}
 }

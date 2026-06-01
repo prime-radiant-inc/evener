@@ -14,6 +14,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/server"
 )
 
@@ -29,52 +30,59 @@ func GitOriginURLFromDir(dir string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// SelectProfile creates the ProviderProfile for the given provider and model.
+// isOpenAICompatTag reports whether a profile's behavior tag identifies an
+// OpenAI-compatible provider — the family whose context window the live
+// /models lookup can refine. openrouter-anthropic is deliberately excluded:
+// it routes Anthropic models and is not an openai-compat profile.
+func isOpenAICompatTag(behaviorTag string) bool {
+	switch behaviorTag {
+	case "openai-compatible", "kimi", "glm", "openrouter", "ollama":
+		return true
+	}
+	return false
+}
+
+// ResolveProfileWithLiveWindow resolves an instance ref ("instanceName/model")
+// to a ProviderProfile via agent.ResolveProfileFromConfig, then — for
+// openai-compat providers — refines the context window with a best-effort live
+// query to the provider's /models endpoint.
 //
-// If outputSchemaJSON is non-empty (after trimming whitespace), it is parsed
-// as JSON into a map and applied as the communicate tool's output schema via
-// agent.WithCommunicateOutputSchema. Parse errors return an error.
+// The agent library resolver stays network-free (it sources the window from the
+// embedded catalog); the live lookup lives here, in the app layer that already
+// owns queryModelContextWindow. The query keys on the resolved profile's
+// behavior tag (the provider TYPE: kimi/glm/openrouter), NOT on the ref's
+// instance-name segment, which may be a user-assigned name. When the lookup
+// returns 0 (no credentials, offline, or a provider that does not report a
+// context length) the catalog-derived window is preserved.
 //
-// SERF_ALLOWED_DECISIONS remains honored independently and stacks on top of
-// any supplied output schema.
-func SelectProfile(provider, model, outputSchemaJSON string) (agent.ProviderProfile, error) {
-	var outputSchema map[string]any
-	if trimmed := strings.TrimSpace(outputSchemaJSON); trimmed != "" {
-		if err := json.Unmarshal([]byte(trimmed), &outputSchema); err != nil {
-			return nil, fmt.Errorf("invalid --output-schema: %w", err)
+// This is the default resolution path for both the initial profile
+// (buildInitialProfile) and cross-provider switches (BuildResolveProfile /
+// Session.SetModel).
+func ResolveProfileWithLiveWindow(cfg providercfg.Config, ref string) (agent.ProviderProfile, error) {
+	p, err := agent.ResolveProfileFromConfig(cfg, ref)
+	if err != nil {
+		return nil, err
+	}
+	if isOpenAICompatTag(p.BehaviorTag()) {
+		if window := queryModelContextWindow(p.BehaviorTag(), p.Model()); window > 0 {
+			p = agent.WithContextWindow(p, window)
 		}
 	}
-	allowedDecisions := parseAllowedDecisions(os.Getenv("SERF_ALLOWED_DECISIONS"))
-
-	// Normalize once: registered adapter names are lowercase, so the
-	// profile's id must also be lowercase or the runtime won't find a
-	// matching provider for mixed-case provider/model values.
-	// Also trim surrounding whitespace so sloppy env/config values work the
-	// same as canonical provider names.
-	provider = strings.ToLower(strings.TrimSpace(provider))
-
-	var raw agent.ProviderProfile
-	switch provider {
-	case "openai":
-		raw = agent.NewOpenAIProfile(model)
-	case "anthropic":
-		raw = agent.NewAnthropicProfile(model)
-	case "google", "gemini":
-		raw = agent.NewGeminiProfile(model)
-	case "minimax":
-		raw = agent.NewMiniMaxProfile(model)
-	case "openrouter-anthropic":
-		raw = agent.NewOpenRouterAnthropicProfile(model)
-	case "kimi", "glm", "openrouter", "ollama":
-		ctxWindow := queryModelContextWindow(provider, model)
-		raw = agent.NewOpenAICompatProfile(provider, model, ctxWindow)
-	default:
-		return nil, fmt.Errorf("unknown provider %q: must be openai, anthropic, google, minimax, openrouter-anthropic, kimi, glm, openrouter, or ollama", provider)
-	}
-
-	p := agent.WithCommunicateOutputSchema(raw, outputSchema)
-	p = agent.WithAllowedDecisions(p, allowedDecisions)
 	return p, nil
+}
+
+// ResolveProfileForProvider resolves a bare provider/model pair to a
+// ProviderProfile WITHOUT any live network lookup. It synthesizes a
+// single-instance providercfg from the provider string (reusing the same
+// type/api-style roster as the seeded no-config path) and resolves it via
+// agent.ResolveProfileFromConfig.
+//
+// This is the network-free path used by the launch-check validation probe when
+// no providers.toml exists: it must confirm that provider/model names a known
+// provider without credentials and without issuing the live /models query.
+func ResolveProfileForProvider(provider, model string) (agent.ProviderProfile, error) {
+	cfg := Seed([]string{provider}, provider, func(string) string { return "" })
+	return agent.ResolveProfileFromConfig(cfg, provider+"/"+model)
 }
 
 // ModelRef is a provider-qualified model identifier.
@@ -281,7 +289,12 @@ var providerEnvConfig = map[string]struct {
 // context window of the given model. Returns 0 if the query fails or the
 // provider doesn't report context length. Best-effort — the profile falls
 // back to the embedded catalog, then to 128K.
-func queryModelContextWindow(provider, model string) int {
+//
+// It is a package var so tests can stub the live lookup without issuing real
+// HTTP requests. `provider` must be the provider TYPE / behavior tag
+// (kimi/glm/openrouter), not an instance name — the lookup keys on
+// providerEnvConfig by that tag.
+var queryModelContextWindow = func(provider, model string) int {
 	cfg, ok := providerEnvConfig[provider]
 	if !ok {
 		return 0

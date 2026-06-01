@@ -430,11 +430,13 @@ func runServe(args []string) error {
 
 // buildInitialProfile constructs the session's initial ProviderProfile from
 // the provider config. Instance names (e.g. "work" defined in providers.toml)
-// are resolved via agent.ResolveProfileFromConfig. outputSchemaJSON and
-// SERF_ALLOWED_DECISIONS are applied so callers see the same communicate-tool
-// schema regardless of model.
+// are resolved via cmdutil.ResolveProfileWithLiveWindow, which sources the
+// context window from the provider's live /models endpoint for openai-compat
+// providers (falling back to the embedded catalog when unavailable).
+// outputSchemaJSON and SERF_ALLOWED_DECISIONS are applied in this app layer so
+// callers see the same communicate-tool schema regardless of model.
 func buildInitialProfile(cfg providercfg.Config, modelRef cmdutil.ModelRef, outputSchemaJSON string) (agent.ProviderProfile, error) {
-	raw, err := agent.ResolveProfileFromConfig(cfg, modelRef.Qualified())
+	raw, err := cmdutil.ResolveProfileWithLiveWindow(cfg, modelRef.Qualified())
 	if err != nil {
 		return nil, err
 	}

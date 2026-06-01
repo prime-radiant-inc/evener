@@ -113,12 +113,13 @@ func RunLaunchCheck(args []string, stdout, stderr io.Writer) error {
 // validateLaunchCheckProfile checks that the model ref names a known provider
 // or config instance. When a providers.toml exists (hasConfig=true),
 // it resolves via ResolveProfileFromConfig so custom instance names are valid;
-// otherwise it falls back to SelectProfile for the env-variable path.
+// otherwise it resolves via cmdutil.ResolveProfileForProvider, which
+// synthesizes a single-instance config from the provider string.
 //
-// Profile validation only needs the config file, not a live client, so it uses
-// launchCheckLoadConfig rather than launchCheckLoadClient. This avoids
-// credential errors when no API keys are present (the launch contract must
-// resolve without credentials).
+// Both branches are NETWORK-FREE: a validation probe must resolve without
+// credentials and must not issue the live /models lookup. Profile validation
+// only needs the config file, not a live client, so it uses
+// launchCheckLoadConfig rather than launchCheckLoadClient.
 func validateLaunchCheckProfile(ref cmdutil.ModelRef) error {
 	cfg, hasConfig, err := launchCheckLoadConfig()
 	if err != nil {
@@ -128,7 +129,7 @@ func validateLaunchCheckProfile(ref cmdutil.ModelRef) error {
 		_, err := agent.ResolveProfileFromConfig(cfg, ref.Qualified())
 		return err
 	}
-	_, err = cmdutil.SelectProfile(ref.Provider, ref.Model, "")
+	_, err = cmdutil.ResolveProfileForProvider(ref.Provider, ref.Model)
 	return err
 }
 

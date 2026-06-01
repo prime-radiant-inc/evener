@@ -128,10 +128,10 @@ func TestRunBareModelRejected(t *testing.T) {
 
 // TestRunInvalidOutputSchema verifies that run returns an error when
 // --output-schema contains malformed JSON. This is the black-box wire-through
-// test — it confirms cfg.outputSchema reaches cmdutil.SelectProfile.
+// test — it confirms cfg.outputSchema reaches buildInitialProfile.
 func TestRunInvalidOutputSchema(t *testing.T) {
 	// Need at least one API key so llm.NewFromEnv succeeds and we actually
-	// reach SelectProfile where the schema is parsed.
+	// reach buildInitialProfile where the schema is parsed.
 	if os.Getenv("OPENAI_API_KEY") == "" {
 		t.Setenv("OPENAI_API_KEY", "dummy-for-wire-test")
 	}

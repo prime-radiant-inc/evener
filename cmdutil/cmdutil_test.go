@@ -3,6 +3,9 @@ package cmdutil
 import (
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providercfg"
 )
 
 func TestMaxRoundsToConfig(t *testing.T) {
@@ -134,158 +137,184 @@ func TestParseAllowedDecisions_Whitespace(t *testing.T) {
 	}
 }
 
-func TestSelectProfile_NoSchema(t *testing.T) {
-	p, err := SelectProfile("openai", "gpt-5.2", "")
+func TestIsOpenAICompatTag(t *testing.T) {
+	compat := []string{"openai-compatible", "kimi", "glm", "openrouter", "ollama"}
+	for _, tag := range compat {
+		if !isOpenAICompatTag(tag) {
+			t.Errorf("isOpenAICompatTag(%q) = false, want true", tag)
+		}
+	}
+	notCompat := []string{"openai", "anthropic", "google", "minimax", "openrouter-anthropic", ""}
+	for _, tag := range notCompat {
+		if isOpenAICompatTag(tag) {
+			t.Errorf("isOpenAICompatTag(%q) = true, want false", tag)
+		}
+	}
+}
+
+// stubQueryModelContextWindow replaces the live /models lookup for the duration
+// of a test and restores it on cleanup. It records the (provider, model) the
+// resolver passed so the test can assert the lookup keys on the behavior tag.
+func stubQueryModelContextWindow(t *testing.T, fn func(provider, model string) int) *struct {
+	called  bool
+	gotProv string
+	gotMod  string
+} {
+	t.Helper()
+	rec := &struct {
+		called  bool
+		gotProv string
+		gotMod  string
+	}{}
+	orig := queryModelContextWindow
+	queryModelContextWindow = func(provider, model string) int {
+		rec.called = true
+		rec.gotProv = provider
+		rec.gotMod = model
+		return fn(provider, model)
+	}
+	t.Cleanup(func() { queryModelContextWindow = orig })
+	return rec
+}
+
+// TestResolveProfileWithLiveWindow_OpenAICompatAppliesLiveWindow verifies the
+// app-layer default: for an openai-compat instance the resolver refines the
+// context window with the live lookup, keyed on the behavior tag (the provider
+// type), not on the instance-name segment of the ref.
+func TestResolveProfileWithLiveWindow_OpenAICompatAppliesLiveWindow(t *testing.T) {
+	const liveWindow = 262_144
+	rec := stubQueryModelContextWindow(t, func(provider, model string) int {
+		return liveWindow
+	})
+
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
+			// Instance name "kc" differs from the kimi behavior tag.
+			{Name: "kc", Type: "kimi"},
+		},
+	}
+	p, err := ResolveProfileWithLiveWindow(cfg, "kc/kimi-k2")
 	if err != nil {
-		t.Fatalf("SelectProfile: %v", err)
+		t.Fatalf("ResolveProfileWithLiveWindow: %v", err)
 	}
-	// Default permissive output schema should still have the message/data/artifacts shape.
-	var found bool
-	for _, td := range p.ToolDefinitions() {
-		if td.Name != "communicate" {
-			continue
-		}
-		found = true
-		props, _ := td.Parameters["properties"].(map[string]any)
-		output, _ := props["output"].(map[string]any)
-		outProps, _ := output["properties"].(map[string]any)
-		if _, ok := outProps["data"]; !ok {
-			t.Fatalf("default output schema missing data: %#v", outProps)
-		}
-		if _, ok := outProps["message"]; !ok {
-			t.Fatalf("default output schema missing message: %#v", outProps)
-		}
+	if got := p.ContextWindowSize(); got != liveWindow {
+		t.Fatalf("ContextWindowSize() = %d, want %d (live window must be applied)", got, liveWindow)
 	}
-	if !found {
-		t.Fatal("communicate tool not found")
+	if !rec.called {
+		t.Fatal("expected live lookup to be called for openai-compat provider")
+	}
+	if rec.gotProv != "kimi" {
+		t.Fatalf("live lookup provider = %q, want %q (must key on behavior tag, not instance name)", rec.gotProv, "kimi")
+	}
+	if rec.gotMod != "kimi-k2" {
+		t.Fatalf("live lookup model = %q, want %q", rec.gotMod, "kimi-k2")
+	}
+	if p.ID() != "kc" {
+		t.Fatalf("profile ID = %q, want %q", p.ID(), "kc")
 	}
 }
 
-func TestSelectProfile_ValidSchema(t *testing.T) {
-	schemaJSON := `{"type":"object","properties":{"plan":{"type":"string"}},"required":["plan"],"additionalProperties":false}`
-	p, err := SelectProfile("openai", "gpt-5.2", schemaJSON)
+// TestResolveProfileWithLiveWindow_FallsBackWhenLookupZero verifies that a
+// zero result from the live lookup (no creds / offline) preserves the
+// catalog-derived window rather than zeroing it out.
+func TestResolveProfileWithLiveWindow_FallsBackWhenLookupZero(t *testing.T) {
+	stubQueryModelContextWindow(t, func(provider, model string) int { return 0 })
+
+	const catalogModel = "moonshot/kimi-latest-128k"
+	cat := llm.EmbeddedModelCatalog()
+	mi := cat.GetModelInfo(catalogModel)
+	if mi == nil || mi.ContextWindow == 0 {
+		t.Fatalf("catalog model %q missing or zero window; pick another", catalogModel)
+	}
+	wantCtx := mi.ContextWindow
+
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
+			{Name: "kc", Type: "kimi"},
+		},
+	}
+	p, err := ResolveProfileWithLiveWindow(cfg, "kc/"+catalogModel)
 	if err != nil {
-		t.Fatalf("SelectProfile: %v", err)
+		t.Fatalf("ResolveProfileWithLiveWindow: %v", err)
 	}
-	var found bool
-	for _, td := range p.ToolDefinitions() {
-		if td.Name != "communicate" {
-			continue
-		}
-		found = true
-		props, _ := td.Parameters["properties"].(map[string]any)
-		output, _ := props["output"].(map[string]any)
-		outProps, _ := output["properties"].(map[string]any)
-		if _, ok := outProps["plan"]; !ok {
-			t.Fatalf("output.properties missing plan after schema replacement: %#v", outProps)
-		}
-		// The original permissive fields must be gone.
-		if _, ok := outProps["data"]; ok {
-			t.Fatal("expected data to be gone after schema replacement")
-		}
-		if _, ok := outProps["message"]; ok {
-			t.Fatal("expected message to be gone after schema replacement")
-		}
-	}
-	if !found {
-		t.Fatal("communicate tool not found")
+	if got := p.ContextWindowSize(); got != wantCtx {
+		t.Fatalf("ContextWindowSize() = %d, want %d (catalog fallback when lookup returns 0)", got, wantCtx)
 	}
 }
 
-func TestSelectProfile_InvalidJSON(t *testing.T) {
-	_, err := SelectProfile("openai", "gpt-5.2", "{not json")
-	if err == nil {
-		t.Fatal("expected error for invalid JSON")
-	}
-	if !strings.Contains(err.Error(), "invalid --output-schema") {
-		t.Fatalf("error message %q, want to contain 'invalid --output-schema'", err.Error())
-	}
-}
+// TestResolveProfileWithLiveWindow_NonCompatSkipsLookup verifies the live
+// lookup is NOT invoked for non-openai-compat providers (e.g. anthropic), so
+// those profiles keep their constructor-derived window untouched.
+func TestResolveProfileWithLiveWindow_NonCompatSkipsLookup(t *testing.T) {
+	rec := stubQueryModelContextWindow(t, func(provider, model string) int {
+		t.Errorf("live lookup must not be called for non-openai-compat provider; got (%q,%q)", provider, model)
+		return 999
+	})
 
-func TestSelectProfile_WhitespaceOnly(t *testing.T) {
-	// Whitespace-only input is treated like empty — no override applied.
-	p, err := SelectProfile("openai", "gpt-5.2", "   ")
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
+			{Name: "ant", Type: "anthropic"},
+		},
+	}
+	p, err := ResolveProfileWithLiveWindow(cfg, "ant/claude-opus-4-6")
 	if err != nil {
-		t.Fatalf("SelectProfile: %v", err)
+		t.Fatalf("ResolveProfileWithLiveWindow: %v", err)
 	}
-	for _, td := range p.ToolDefinitions() {
-		if td.Name != "communicate" {
-			continue
-		}
-		props, _ := td.Parameters["properties"].(map[string]any)
-		output, _ := props["output"].(map[string]any)
-		outProps, _ := output["properties"].(map[string]any)
-		if _, ok := outProps["data"]; !ok {
-			t.Fatalf("default output schema missing data (whitespace should be no-op): %#v", outProps)
-		}
-		return
+	if rec.called {
+		t.Fatal("live lookup was called for anthropic; expected skip")
 	}
-	t.Fatal("communicate tool not found")
-}
-
-// TestSelectProfile_NormalizesProviderCase verifies that mixed-case and
-// whitespace-padded provider strings are normalized to lowercase before
-// being used as the profile id. The registered adapter names are
-// lowercase, so a profile with id="OLLAMA" or "  ollama  " would later
-// fail to find a matching provider in the LLM client. Mirrors the same
-// invariant llm.normalizeProviderName enforces on the client side.
-//
-// Hermeticity: SelectProfile calls queryModelContextWindow for kimi /
-// glm / openrouter when their API keys are present, which would issue
-// real HTTP requests. Clear those env vars so the test takes the
-// fast/empty path regardless of the test runner's environment.
-func TestSelectProfile_NormalizesProviderCase(t *testing.T) {
-	t.Setenv("KIMI_API_KEY", "")
-	t.Setenv("GLM_API_KEY", "")
-	t.Setenv("OPENROUTER_API_KEY", "")
-
-	cases := []struct {
-		input  string
-		wantID string
-	}{
-		{"ollama", "ollama"},
-		{"OLLAMA", "ollama"},
-		{"Ollama", "ollama"},
-		{"Kimi", "kimi"},
-		{"OpenRouter", "openrouter"},
-		{"  OLLAMA  ", "ollama"},
-		{"\tollama\n", "ollama"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.input, func(t *testing.T) {
-			p, err := SelectProfile(tc.input, "some-model", "")
-			if err != nil {
-				t.Fatalf("SelectProfile(%q): %v", tc.input, err)
-			}
-			if p.ID() != tc.wantID {
-				t.Fatalf("profile ID = %q, want %q (mixed-case/whitespace provider must be normalized)", p.ID(), tc.wantID)
-			}
-		})
+	if got := p.ContextWindowSize(); got != 200_000 {
+		t.Fatalf("ContextWindowSize() = %d, want 200000 (anthropic default untouched)", got)
 	}
 }
 
-// TestSelectProfile_GeminiIDIsGoogle verifies that both "google" and "gemini"
-// prefixes yield a profile whose ID() is "google" — the canonical provider key
-// after the id/adapter-name unification (PRI-1880).
-func TestSelectProfile_GeminiIDIsGoogle(t *testing.T) {
+// TestResolveProfileForProvider_NetworkFree verifies the no-config probe helper
+// resolves common providers without invoking the live lookup, and maps the
+// openai/openai-compat roster the same way the seeded path does.
+func TestResolveProfileForProvider_NetworkFree(t *testing.T) {
+	stubQueryModelContextWindow(t, func(provider, model string) int {
+		t.Errorf("ResolveProfileForProvider must be network-free; live lookup called with (%q,%q)", provider, model)
+		return 999
+	})
+
 	cases := []struct {
 		provider string
+		model    string
+		wantID   string
+		wantTag  string
 	}{
-		{"google"},
-		{"gemini"},
-		{"GEMINI"},
-		{"Google"},
+		{"openai", "gpt-5.2", "openai", "openai"},
+		{"anthropic", "claude-opus-4-6", "anthropic", "anthropic"},
+		{"kimi", "kimi-k2", "kimi", "kimi"},
+		{"openrouter", "free", "openrouter", "openrouter"},
+		{"ollama", "llama3.1", "ollama", "ollama"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.provider, func(t *testing.T) {
-			p, err := SelectProfile(tc.provider, "gemini-2.5-pro", "")
+			p, err := ResolveProfileForProvider(tc.provider, tc.model)
 			if err != nil {
-				t.Fatalf("SelectProfile(%q): %v", tc.provider, err)
+				t.Fatalf("ResolveProfileForProvider(%q): %v", tc.provider, err)
 			}
-			if got := p.ID(); got != "google" {
-				t.Fatalf("profile ID = %q, want \"google\"", got)
+			if p.ID() != tc.wantID {
+				t.Errorf("ID() = %q, want %q", p.ID(), tc.wantID)
+			}
+			if p.BehaviorTag() != tc.wantTag {
+				t.Errorf("BehaviorTag() = %q, want %q", p.BehaviorTag(), tc.wantTag)
+			}
+			if p.Model() != tc.model {
+				t.Errorf("Model() = %q, want %q", p.Model(), tc.model)
 			}
 		})
+	}
+}
+
+func TestResolveProfileForProvider_UnknownProvider(t *testing.T) {
+	_, err := ResolveProfileForProvider("missing", "free")
+	if err == nil {
+		t.Fatal("expected error for unknown provider")
+	}
+	if !strings.Contains(err.Error(), "unknown provider") {
+		t.Fatalf("error = %v, want to contain 'unknown provider'", err)
 	}
 }
 
