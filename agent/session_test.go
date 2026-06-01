@@ -4626,9 +4626,9 @@ func TestSession_ProviderErrorStillRecordsTranscriptEntry(t *testing.T) {
 		t.Fatal("TranscriptPath is empty; session lacks state dir")
 	}
 
-	data, rerr := ReadTranscriptFull(tpath)
+	data, rerr := readTranscriptFull(tpath)
 	if rerr != nil {
-		t.Fatalf("ReadTranscriptFull: %v", rerr)
+		t.Fatalf("readTranscriptFull: %v", rerr)
 	}
 	// Find the api_call entry that recorded the provider failure.
 	var found *TranscriptAPICall
@@ -4680,9 +4680,9 @@ func TestSession_TranscriptAPICallRecordsFullToolDefinitions(t *testing.T) {
 		t.Fatal("TranscriptPath is empty")
 	}
 
-	data, err := ReadTranscriptFull(tpath)
+	data, err := readTranscriptFull(tpath)
 	if err != nil {
-		t.Fatalf("ReadTranscriptFull: %v", err)
+		t.Fatalf("readTranscriptFull: %v", err)
 	}
 	if len(data.APICalls) == 0 {
 		t.Fatalf("no api calls recorded")
@@ -4813,9 +4813,9 @@ func TestProviderErrorTranscriptEntryStillRecorded(t *testing.T) {
 		t.Fatal("TranscriptPath is empty; session lacks state dir")
 	}
 
-	data, rerr := ReadTranscriptFull(tpath)
+	data, rerr := readTranscriptFull(tpath)
 	if rerr != nil {
-		t.Fatalf("ReadTranscriptFull: %v", rerr)
+		t.Fatalf("readTranscriptFull: %v", rerr)
 	}
 	var found *TranscriptAPICall
 	for i := range data.APICalls {

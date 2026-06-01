@@ -117,10 +117,10 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 		t.Error("child transcript does not contain the edited message text")
 	}
 
-	// Read child transcript via ReadTranscript and verify structure.
-	_, entries, _, err := ReadTranscript(childTranscriptPath)
+	// Read child transcript via readTranscript and verify structure.
+	_, entries, _, err := readTranscript(childTranscriptPath)
 	if err != nil {
-		t.Fatalf("ReadTranscript(child): %v", err)
+		t.Fatalf("readTranscript(child): %v", err)
 	}
 
 	// Expected entries:

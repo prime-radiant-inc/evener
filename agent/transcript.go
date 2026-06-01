@@ -303,10 +303,10 @@ func OpenTranscriptWriter(path string) (*TranscriptWriter, error) {
 	return &TranscriptWriter{file: f, seq: nextSeq, lastSync: time.Now()}, nil
 }
 
-// ReadTranscript reads a transcript JSONL file, returning the header, all valid entries,
+// readTranscript reads a transcript JSONL file, returning the header, all valid entries,
 // and the count of skipped (corrupt/partial) lines. Callers can use the skipped count
 // to decide whether to warn about data loss from crash recovery.
-func ReadTranscript(path string) (TranscriptHeader, []TranscriptEntry, int, error) {
+func readTranscript(path string) (TranscriptHeader, []TranscriptEntry, int, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return TranscriptHeader{}, nil, 0, fmt.Errorf("open transcript: %w", err)
@@ -356,20 +356,20 @@ func ReadTranscript(path string) (TranscriptHeader, []TranscriptEntry, int, erro
 	return header, entries, skipped, nil
 }
 
-// TranscriptData holds all parsed content from a transcript JSONL file.
-type TranscriptData struct {
+// transcriptData holds all parsed content from a transcript JSONL file.
+type transcriptData struct {
 	Header   TranscriptHeader
 	Entries  []TranscriptEntry
 	APICalls []TranscriptAPICall
 	Skipped  int
 }
 
-// ReadTranscriptFull reads a transcript JSONL file, returning all line types:
+// readTranscriptFull reads a transcript JSONL file, returning all line types:
 // header, entries, and API calls. Corrupt/partial lines are counted in Skipped.
-func ReadTranscriptFull(path string) (TranscriptData, error) {
+func readTranscriptFull(path string) (transcriptData, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return TranscriptData{}, fmt.Errorf("open transcript: %w", err)
+		return transcriptData{}, fmt.Errorf("open transcript: %w", err)
 	}
 	defer f.Close()
 
@@ -379,14 +379,14 @@ func ReadTranscriptFull(path string) (TranscriptData, error) {
 	// First line must be the header.
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
-			return TranscriptData{}, fmt.Errorf("reading transcript header: %w", err)
+			return transcriptData{}, fmt.Errorf("reading transcript header: %w", err)
 		}
-		return TranscriptData{}, fmt.Errorf("transcript file is empty: no header")
+		return transcriptData{}, fmt.Errorf("transcript file is empty: no header")
 	}
 
-	var data TranscriptData
+	var data transcriptData
 	if err := json.Unmarshal(scanner.Bytes(), &data.Header); err != nil {
-		return TranscriptData{}, fmt.Errorf("parsing transcript header: %w", err)
+		return transcriptData{}, fmt.Errorf("parsing transcript header: %w", err)
 	}
 
 	// Remaining lines are entries or api_calls. Dispatch by "kind" field.
@@ -425,7 +425,7 @@ func ReadTranscriptFull(path string) (TranscriptData, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return TranscriptData{}, fmt.Errorf("reading transcript: %w", err)
+		return transcriptData{}, fmt.Errorf("reading transcript: %w", err)
 	}
 
 	return data, nil

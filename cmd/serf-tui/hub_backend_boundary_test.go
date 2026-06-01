@@ -53,7 +53,6 @@ func TestHubCommandRoutingStaysInsideAppWireClientBoundary(t *testing.T) {
 		"sendInput(",
 		"sendSteer(",
 		"startEmbedded(",
-		"agent.ReadTranscript(",
 		"authopenai.NewService(",
 		"authopenai.LoadAuth(",
 		"cmdutil.ResolveSessionMeta(",

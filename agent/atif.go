@@ -210,7 +210,7 @@ func convertToATIF(header TranscriptHeader, entries []TranscriptEntry) atifTraje
 
 // exportATIF reads a transcript JSONL file, converts to ATIF, and writes to outPath.
 func exportATIF(transcriptPath, outPath string) error {
-	header, entries, _, err := ReadTranscript(transcriptPath)
+	header, entries, _, err := readTranscript(transcriptPath)
 	if err != nil {
 		return fmt.Errorf("read transcript: %w", err)
 	}

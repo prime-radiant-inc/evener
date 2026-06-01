@@ -359,9 +359,9 @@ func TestSession_AutoSave_WritesMetaAfterProcessInput(t *testing.T) {
 
 	// History should be in the transcript, not the meta.
 	tpath := filepath.Join(dir, sessionsSubdir, sess.ID()+".transcript.jsonl")
-	_, entries, _, err := ReadTranscript(tpath)
+	_, entries, _, err := readTranscript(tpath)
 	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
+		t.Fatalf("readTranscript: %v", err)
 	}
 	if len(entries) < 2 {
 		t.Fatalf("expected at least 2 transcript entries, got %d", len(entries))
@@ -423,9 +423,9 @@ func TestSession_AutoSave_PersistsToolResults(t *testing.T) {
 
 	// Tool results should be in the transcript.
 	tpath := filepath.Join(dir, sessionsSubdir, sess.ID()+".transcript.jsonl")
-	_, entries, _, err := ReadTranscript(tpath)
+	_, entries, _, err := readTranscript(tpath)
 	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
+		t.Fatalf("readTranscript: %v", err)
 	}
 
 	pendingToolCalls := map[string]struct{}{}
@@ -544,9 +544,9 @@ func TestSession_AutoSave_DoesNotPersistMidToolRound(t *testing.T) {
 
 	// Verify tool results are complete in the transcript.
 	tpath := filepath.Join(dir, sessionsSubdir, sess.ID()+".transcript.jsonl")
-	_, entries, _, err := ReadTranscript(tpath)
+	_, entries, _, err := readTranscript(tpath)
 	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
+		t.Fatalf("readTranscript: %v", err)
 	}
 
 	pending := map[string]struct{}{}
@@ -606,9 +606,9 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 
 	// Verify transcript has the initial history.
 	tpath := filepath.Join(dir, sessionsSubdir, sess.ID()+".transcript.jsonl")
-	_, entries, _, err := ReadTranscript(tpath)
+	_, entries, _, err := readTranscript(tpath)
 	if err != nil {
-		t.Fatalf("ReadTranscript after phase 1: %v", err)
+		t.Fatalf("readTranscript after phase 1: %v", err)
 	}
 	initialEntryCount := len(entries)
 	if initialEntryCount < 2 {
@@ -644,9 +644,9 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 	}
 
 	// Verify the transcript grew with new entries.
-	_, entries2, _, err := ReadTranscript(tpath)
+	_, entries2, _, err := readTranscript(tpath)
 	if err != nil {
-		t.Fatalf("ReadTranscript after phase 2: %v", err)
+		t.Fatalf("readTranscript after phase 2: %v", err)
 	}
 	if len(entries2) <= initialEntryCount {
 		t.Fatalf("transcript did not grow after resume: got %d entries, was %d", len(entries2), initialEntryCount)

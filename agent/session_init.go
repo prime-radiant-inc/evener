@@ -208,7 +208,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 	var resumeHistory []Turn
 	if stateDir != "" {
 		tpath := filepath.Join(stateDir, sessionsSubdir, snap.ID+".transcript.jsonl")
-		_, entries, _, readErr := ReadTranscript(tpath)
+		_, entries, _, readErr := readTranscript(tpath)
 		if readErr == nil && len(entries) > 0 {
 			resumeHistory = ResumeHistory(entries)
 		}
@@ -340,7 +340,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 	var resumeHistory []Turn
 	if stateDir != "" {
 		tpath := filepath.Join(stateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
-		_, entries, _, readErr := ReadTranscript(tpath)
+		_, entries, _, readErr := readTranscript(tpath)
 		if readErr == nil && len(entries) > 0 {
 			resumeHistory = ResumeHistory(entries)
 		}

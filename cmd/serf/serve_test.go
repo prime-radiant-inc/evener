@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
@@ -255,11 +256,17 @@ func TestRunServeNonInteractiveFlagControlsPromptAddendum(t *testing.T) {
 			}
 
 			path := filepath.Join(stateDir, "sessions", entry.SessionID+".transcript.jsonl")
-			data, err := agent.ReadTranscriptFull(path)
+			f, err := os.Open(path)
 			if err != nil {
-				t.Fatalf("ReadTranscriptFull: %v", err)
+				t.Fatalf("open transcript: %v", err)
 			}
-			got := strings.Contains(data.Header.SystemPrompt, "Non-interactive mode")
+			var header agent.TranscriptHeader
+			derr := json.NewDecoder(f).Decode(&header)
+			f.Close()
+			if derr != nil {
+				t.Fatalf("decode transcript header: %v", derr)
+			}
+			got := strings.Contains(header.SystemPrompt, "Non-interactive mode")
 			if got != tc.want {
 				t.Fatalf("non-interactive prompt addendum present=%v, want %v", got, tc.want)
 			}

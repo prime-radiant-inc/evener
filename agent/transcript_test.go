@@ -445,7 +445,7 @@ func TestTranscriptWriter_LargeEntry(t *testing.T) {
 	tw.Close()
 
 	// Read back and verify
-	_, entries, _, err := ReadTranscript(path)
+	_, entries, _, err := readTranscript(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +462,7 @@ func TestTranscriptWriter_LargeEntry(t *testing.T) {
 	}
 }
 
-// --- ReadTranscript tests ---
+// --- readTranscript tests ---
 
 func TestReadTranscript_ReturnsHeaderAndEntries(t *testing.T) {
 	dir := t.TempDir()
@@ -495,9 +495,9 @@ func TestReadTranscript_ReturnsHeaderAndEntries(t *testing.T) {
 	}
 	w.Close()
 
-	gotHeader, entries, _, err := ReadTranscript(path)
+	gotHeader, entries, _, err := readTranscript(path)
 	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
+		t.Fatalf("readTranscript: %v", err)
 	}
 
 	if gotHeader.SessionID != "sess-read-001" {
@@ -555,9 +555,9 @@ func TestReadTranscript_PartialLastLine(t *testing.T) {
 	f.WriteString(`{"kind":"entry","seq":3,"turn":{"kind":"ASSISTANT"`)
 	f.Close()
 
-	gotHeader, entries, _, err := ReadTranscript(path)
+	gotHeader, entries, _, err := readTranscript(path)
 	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
+		t.Fatalf("readTranscript: %v", err)
 	}
 
 	if gotHeader.SessionID != "sess-partial" {
@@ -583,7 +583,7 @@ func TestReadTranscript_EmptyFile(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	_, _, _, err := ReadTranscript(path)
+	_, _, _, err := readTranscript(path)
 	if err == nil {
 		t.Fatal("expected error for empty file, got nil")
 	}
@@ -606,9 +606,9 @@ func TestReadTranscript_HeaderOnly(t *testing.T) {
 	}
 	w.Close()
 
-	gotHeader, entries, _, err := ReadTranscript(path)
+	gotHeader, entries, _, err := readTranscript(path)
 	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
+		t.Fatalf("readTranscript: %v", err)
 	}
 
 	if gotHeader.SessionID != "sess-header-only" {
@@ -660,9 +660,9 @@ func TestOpenTranscriptWriter_AppendsToExisting(t *testing.T) {
 	}
 
 	// Read back and verify.
-	_, entries, _, err := ReadTranscript(path)
+	_, entries, _, err := readTranscript(path)
 	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
+		t.Fatalf("readTranscript: %v", err)
 	}
 
 	if len(entries) != 8 {
@@ -720,9 +720,9 @@ func TestOpenTranscriptWriter_TruncatesPartialLine(t *testing.T) {
 	}
 
 	// Read back and verify.
-	_, entries, _, err := ReadTranscript(path)
+	_, entries, _, err := readTranscript(path)
 	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
+		t.Fatalf("readTranscript: %v", err)
 	}
 
 	if len(entries) != 4 {
@@ -767,9 +767,9 @@ func TestOpenTranscriptWriter_HeaderOnlyFile(t *testing.T) {
 	}
 
 	// Read back and verify.
-	_, entries, _, err := ReadTranscript(path)
+	_, entries, _, err := readTranscript(path)
 	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
+		t.Fatalf("readTranscript: %v", err)
 	}
 
 	if len(entries) != 1 {
@@ -917,9 +917,9 @@ func TestSession_TranscriptCreatedOnNewSession(t *testing.T) {
 	}
 
 	// Read it back and verify the header.
-	header, entries, _, err := ReadTranscript(tpath)
+	header, entries, _, err := readTranscript(tpath)
 	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
+		t.Fatalf("readTranscript: %v", err)
 	}
 	if header.SessionID != sess.ID() {
 		t.Errorf("header session_id: got %q want %q", header.SessionID, sess.ID())
@@ -996,9 +996,9 @@ func TestSession_TranscriptRecordsTurns(t *testing.T) {
 
 	// Read the transcript and verify entries were recorded.
 	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
-	header, entries, _, err := ReadTranscript(tpath)
+	header, entries, _, err := readTranscript(tpath)
 	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
+		t.Fatalf("readTranscript: %v", err)
 	}
 	if header.SessionID != sess.ID() {
 		t.Errorf("header session_id mismatch")
@@ -1070,9 +1070,9 @@ func TestSession_ContextDiagnosticsRecordedOnAPICall(t *testing.T) {
 	sess.Close()
 
 	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
-	data, err := ReadTranscriptFull(tpath)
+	data, err := readTranscriptFull(tpath)
 	if err != nil {
-		t.Fatalf("ReadTranscriptFull: %v", err)
+		t.Fatalf("readTranscriptFull: %v", err)
 	}
 	if len(data.APICalls) != 1 {
 		t.Fatalf("expected 1 api_call, got %d", len(data.APICalls))
@@ -1112,7 +1112,7 @@ func TestSession_TranscriptClosedOnSessionClose(t *testing.T) {
 
 	// After Close, the transcript file should be readable (properly flushed).
 	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
-	_, _, _, err = ReadTranscript(tpath)
+	_, _, _, err = readTranscript(tpath)
 	if err != nil {
 		t.Fatalf("transcript not readable after Close: %v", err)
 	}
@@ -1147,7 +1147,7 @@ func TestSubagent_TranscriptHasParentLinkage(t *testing.T) {
 	if len(files) != 1 {
 		t.Fatalf("expected 1 transcript, got %d", len(files))
 	}
-	hdr, _, _, err := ReadTranscript(files[0])
+	hdr, _, _, err := readTranscript(files[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1186,7 +1186,7 @@ func TestRootSession_TranscriptHasEmptyParentFields(t *testing.T) {
 	if len(files) != 1 {
 		t.Fatalf("expected 1 transcript, got %d", len(files))
 	}
-	hdr, _, _, err := ReadTranscript(files[0])
+	hdr, _, _, err := readTranscript(files[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1353,9 +1353,9 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 
 	// --- Read the transcript ---
 	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
-	hdr, entries, _, err := ReadTranscript(tpath)
+	hdr, entries, _, err := readTranscript(tpath)
 	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
+		t.Fatalf("readTranscript: %v", err)
 	}
 
 	// --- Verify header ---
@@ -1634,9 +1634,9 @@ func TestSubagent_TranscriptPersistsAfterCloseAgent(t *testing.T) {
 	var subEntries []TranscriptEntry
 	foundParent, foundSub := false, false
 	for _, f := range files {
-		hdr, entries, _, err := ReadTranscript(f)
+		hdr, entries, _, err := readTranscript(f)
 		if err != nil {
-			t.Fatalf("ReadTranscript(%s): %v", f, err)
+			t.Fatalf("readTranscript(%s): %v", f, err)
 		}
 		if hdr.ParentSessionID == "" {
 			parentHeader = hdr
@@ -1830,7 +1830,7 @@ func TestTranscriptWriter_SeqNotIncrementedOnWriteFailure(t *testing.T) {
 	}
 }
 
-// --- Fix 2: ReadTranscript returns corrupt line count ---
+// --- Fix 2: readTranscript returns corrupt line count ---
 
 func TestReadTranscript_ReturnsCorruptLineCount(t *testing.T) {
 	dir := t.TempDir()
@@ -1869,9 +1869,9 @@ func TestReadTranscript_ReturnsCorruptLineCount(t *testing.T) {
 	f.WriteString("\n")
 	f.Close()
 
-	_, entries, skipped, err := ReadTranscript(path)
+	_, entries, skipped, err := readTranscript(path)
 	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
+		t.Fatalf("readTranscript: %v", err)
 	}
 	if len(entries) != 3 {
 		t.Fatalf("expected 3 valid entries, got %d", len(entries))
@@ -1897,9 +1897,9 @@ func TestReadTranscript_ZeroCorruptLinesOnCleanFile(t *testing.T) {
 	w.Append(NewTurn(TurnAssistant, llm.Assistant("msg")))
 	w.Close()
 
-	_, entries, skipped, err := ReadTranscript(path)
+	_, entries, skipped, err := readTranscript(path)
 	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
+		t.Fatalf("readTranscript: %v", err)
 	}
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry, got %d", len(entries))
@@ -1951,9 +1951,9 @@ func TestOpenTranscriptWriter_SingleFileHandle(t *testing.T) {
 	w2.Close()
 
 	// Read back: should have header + 3 clean entries, no partial line.
-	_, entries, skipped, err := ReadTranscript(path)
+	_, entries, skipped, err := readTranscript(path)
 	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
+		t.Fatalf("readTranscript: %v", err)
 	}
 	if skipped != 0 {
 		t.Errorf("expected 0 skipped, got %d", skipped)
@@ -1984,9 +1984,9 @@ func TestSession_TranscriptHeaderContainsSystemPrompt(t *testing.T) {
 	defer sess.Close()
 
 	tpath := filepath.Join(stateDir, sessionsSubdir, sess.ID()+".transcript.jsonl")
-	header, _, _, err := ReadTranscript(tpath)
+	header, _, _, err := readTranscript(tpath)
 	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
+		t.Fatalf("readTranscript: %v", err)
 	}
 
 	if header.SystemPrompt == "" {
@@ -2046,9 +2046,9 @@ func TestTranscriptWriter_PeriodicSync_SkipsSyncWithinInterval(t *testing.T) {
 	w.Close()
 
 	// All data should be readable after Close.
-	_, entries, _, err := ReadTranscript(path)
+	_, entries, _, err := readTranscript(path)
 	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
+		t.Fatalf("readTranscript: %v", err)
 	}
 	if len(entries) != 5 {
 		t.Fatalf("expected 5 entries, got %d", len(entries))
@@ -2157,9 +2157,9 @@ func TestTranscriptWriter_PeriodicSync_CloseFlushesDirtyWrites(t *testing.T) {
 	}
 
 	// All entries must be readable.
-	_, entries, _, err := ReadTranscript(path)
+	_, entries, _, err := readTranscript(path)
 	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
+		t.Fatalf("readTranscript: %v", err)
 	}
 	if len(entries) != 10 {
 		t.Fatalf("expected 10 entries, got %d", len(entries))
@@ -2209,9 +2209,9 @@ func TestTranscriptWriter_PeriodicSync_ConcurrentAppendWithInterval(t *testing.T
 	wg.Wait()
 	w.Close()
 
-	_, entries, _, err := ReadTranscript(path)
+	_, entries, _, err := readTranscript(path)
 	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
+		t.Fatalf("readTranscript: %v", err)
 	}
 
 	expectedTotal := numGoroutines * turnsPerGoroutine
@@ -2505,9 +2505,9 @@ func TestReadTranscriptFull_ParsesAllLineTypes(t *testing.T) {
 	w.Append(NewTurn(TurnAssistant, llm.Assistant("done")))
 	w.Close()
 
-	data, err := ReadTranscriptFull(path)
+	data, err := readTranscriptFull(path)
 	if err != nil {
-		t.Fatalf("ReadTranscriptFull: %v", err)
+		t.Fatalf("readTranscriptFull: %v", err)
 	}
 
 	// Header
@@ -2589,9 +2589,9 @@ func TestReadTranscriptFull_SkipsCorruptLines(t *testing.T) {
 	f.WriteString("{bad json\n")
 	f.Close()
 
-	data, err := ReadTranscriptFull(path)
+	data, err := readTranscriptFull(path)
 	if err != nil {
-		t.Fatalf("ReadTranscriptFull: %v", err)
+		t.Fatalf("readTranscriptFull: %v", err)
 	}
 	if len(data.Entries) != 1 {
 		t.Errorf("expected 1 entry, got %d", len(data.Entries))
@@ -2621,10 +2621,10 @@ func TestReadTranscript_SkipsAPICallLines(t *testing.T) {
 	w.Append(NewTurn(TurnAssistant, llm.Assistant("hi")))
 	w.Close()
 
-	// ReadTranscript should only return entries, silently skipping api_call lines.
-	_, entries, skipped, err := ReadTranscript(path)
+	// readTranscript should only return entries, silently skipping api_call lines.
+	_, entries, skipped, err := readTranscript(path)
 	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
+		t.Fatalf("readTranscript: %v", err)
 	}
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 entries, got %d", len(entries))
@@ -2670,9 +2670,9 @@ func TestOpenTranscriptWriter_ResumesWithAPICallSeq(t *testing.T) {
 	// Next seq should be 3 (one past the api_call and entries).
 	w2.Append(NewTurn(TurnUserInput, llm.User("more")))
 
-	data, err := ReadTranscriptFull(path)
+	data, err := readTranscriptFull(path)
 	if err != nil {
-		t.Fatalf("ReadTranscriptFull: %v", err)
+		t.Fatalf("readTranscriptFull: %v", err)
 	}
 
 	if len(data.Entries) != 3 {

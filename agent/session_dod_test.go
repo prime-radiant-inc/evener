@@ -328,9 +328,9 @@ func TestSession_EventSystem_UserInputCarriesTurnIndex(t *testing.T) {
 	}
 
 	tpath := filepath.Join(dir, sessionsSubdir, sessID+".transcript.jsonl")
-	_, entries, _, err := ReadTranscript(tpath)
+	_, entries, _, err := readTranscript(tpath)
 	if err != nil {
-		t.Fatalf("ReadTranscript: %v", err)
+		t.Fatalf("readTranscript: %v", err)
 	}
 	var transcriptTurns []int
 	for i, e := range entries {
