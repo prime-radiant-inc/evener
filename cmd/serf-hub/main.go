@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/claudeplugins"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hostlock"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubedge"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/binresolve"
 	"primeradiant.com/serf/internal/credentials"
@@ -100,7 +101,7 @@ func main() {
 		os.Exit(1)
 	}
 	hubStateRoot := cfg.HubStateRoot
-	authToken, err := LoadOrCreateAuthToken(hubStateRoot)
+	authToken, err := hubedge.LoadOrCreateAuthToken(hubStateRoot)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[hub] auth token: %v\n", err)
 		os.Exit(1)
@@ -236,7 +237,7 @@ func main() {
 		authHost = host + port
 	}
 	fmt.Fprintf(os.Stderr, "[hub] auth URL (visit once per browser): http://%s/auth?token=%s\n", authHost, authToken)
-	fmt.Fprintf(os.Stderr, "[hub] auth token also at %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, authTokenFile))
+	fmt.Fprintf(os.Stderr, "[hub] auth token also at %s (use as Authorization: Bearer ... for scripted clients)\n", filepath.Join(hubStateRoot, hubedge.TokenFileName))
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
 		os.Exit(1)

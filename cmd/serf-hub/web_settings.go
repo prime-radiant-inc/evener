@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmd/serf-hub/internal/editorurl"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubedge"
 	"primeradiant.com/serf/cmd/serf-hub/internal/mcpstatus"
 	"primeradiant.com/serf/frontmatter"
 	"primeradiant.com/serf/internal/appwire"
@@ -138,7 +139,7 @@ func (s *WebServer) renderSettingsPartial(w http.ResponseWriter, r *http.Request
 	pastIndexSize := fileSizeHuman(s.cfg.PastIndexPath)
 	bearerTokenAge := ""
 	if s.cfg.HubStateRoot != "" {
-		bearerTokenAge = fileAgeHuman(filepath.Join(s.cfg.HubStateRoot, authTokenFile))
+		bearerTokenAge = fileAgeHuman(filepath.Join(s.cfg.HubStateRoot, hubedge.TokenFileName))
 	}
 
 	data := settingsData{

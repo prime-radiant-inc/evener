@@ -1,4 +1,4 @@
-package main
+package hubedge
 
 import (
 	"net/http"
@@ -24,7 +24,7 @@ func TestLoadOrCreateAuthToken_PersistsAndReloads(t *testing.T) {
 	if len(a) < 40 {
 		t.Errorf("token too short: %q", a)
 	}
-	info, err := os.Stat(filepath.Join(root, authTokenFile))
+	info, err := os.Stat(filepath.Join(root, TokenFileName))
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}

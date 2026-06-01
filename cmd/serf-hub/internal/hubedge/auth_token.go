@@ -1,4 +1,8 @@
-package main
+// Package hubedge implements capability-URL / cookie authentication for the
+// hub web edge: token load/create, the AuthGuard + HandleAuth middleware,
+// bearer/cookie extraction, and constant-time comparison. It is the
+// authentication half of the hub's HTTP security edge (sibling of httpsec).
+package hubedge
 
 import (
 	"crypto/rand"
@@ -28,8 +32,8 @@ const (
 	// authCookieName is the cookie key set after a successful /auth visit.
 	authCookieName = "serf_hub_auth"
 
-	// authTokenFile is the basename inside hub_state_root for the token.
-	authTokenFile = "auth-token"
+	// TokenFileName is the basename inside hub_state_root for the token.
+	TokenFileName = "auth-token"
 
 	// authCookieMaxAgeSeconds is one year — the token is the secret, not
 	// the cookie, so long expiry is fine.
@@ -46,7 +50,7 @@ func LoadOrCreateAuthToken(hubStateRoot string) (string, error) {
 	if err := os.MkdirAll(hubStateRoot, 0o700); err != nil {
 		return "", fmt.Errorf("auth token: mkdir %s: %w", hubStateRoot, err)
 	}
-	path := filepath.Join(hubStateRoot, authTokenFile)
+	path := filepath.Join(hubStateRoot, TokenFileName)
 	data, err := os.ReadFile(path)
 	if err == nil {
 		if tok := strings.TrimSpace(string(data)); tok != "" {
@@ -126,7 +130,7 @@ func AuthGuard(token string) func(http.Handler) http.Handler {
 						"Unauthorized.\n\n"+
 							"This browser hasn't been authorized for this hub. Get the\n"+
 							"auth URL from the hub operator (logged at startup) or read\n"+
-							"the auth token from "+authTokenFile+" in the hub state\n"+
+							"the auth token from "+TokenFileName+" in the hub state\n"+
 							"directory, then visit /auth?token=<value>.",
 						http.StatusUnauthorized)
 					return

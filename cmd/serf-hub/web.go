@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/httpsec"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubedge"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
@@ -178,9 +179,9 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/api/spawn-schema", s.handleAPISpawnSchema)
 	mux.HandleFunc("/api/sessions/", s.handleAPISession)
 
-	mux.HandleFunc("/auth", HandleAuth(s.cfg.AuthToken))
+	mux.HandleFunc("/auth", hubedge.HandleAuth(s.cfg.AuthToken))
 
-	auth := AuthGuard(s.cfg.AuthToken)
+	auth := hubedge.AuthGuard(s.cfg.AuthToken)
 	return auth(httpsec.CSPMiddleware(mux))
 }
 
