@@ -52,9 +52,9 @@ func (s *Session) Meta() SessionMeta {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now().UTC()
-	parentID := s.cfg.ParentSessionID
+	parentID := s.cfg.spawn.parentSessionID
 	divergence := 0
-	isSubagent := s.cfg.ParentSessionID != ""
+	isSubagent := s.cfg.spawn.parentSessionID != ""
 	if s.forkDivergence > 0 {
 		parentID = s.forkParentID
 		divergence = s.forkDivergence

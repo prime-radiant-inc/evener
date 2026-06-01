@@ -267,10 +267,10 @@ func TestTaskWorkflow_ParentTasksNotClobberedByNewSession(t *testing.T) {
 
 	// Simulate a subagent session (has ParentSessionID set).
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{
-		AgentName:       "implementer",
-		NonInteractive:  true,
-		StateDir:        dir,
-		ParentSessionID: "parent-coord-123", // marks this as a subagent
+		AgentName:      "implementer",
+		NonInteractive: true,
+		StateDir:       dir,
+		spawn:          spawnConfig{parentSessionID: "parent-coord-123"}, // marks this as a subagent
 	}))
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

@@ -453,7 +453,7 @@ func TestSpawnAgent_GrantTools_RejectsUnavailableParentTool(t *testing.T) {
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 2,
-		AllowedToolNames: []string{"read_file", "spawn_agent"},
+		spawn:            spawnConfig{allowedToolNames: []string{"read_file", "spawn_agent"}},
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -186,16 +186,16 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	s.mu.Unlock()
 	subCfg.MCPConfigFiles = nil
 	subCfg.MCPInline = nil
-	subCfg.ParentSessionID = s.id
-	subCfg.SubagentTask = task
-	subCfg.Depth = depth + 1
+	subCfg.spawn.parentSessionID = s.id
+	subCfg.spawn.subagentTask = task
+	subCfg.spawn.depth = depth + 1
 	if s.cfg.ShareTasksWithChildren {
-		subCfg.SharedTaskStore = s.getOrCreateTaskStore()
+		subCfg.spawn.sharedTaskStore = s.getOrCreateTaskStore()
 	} else {
-		subCfg.SharedTaskStore = nil
+		subCfg.spawn.sharedTaskStore = nil
 	}
 	if callID, ok := ctx.Value(ctxToolCallID).(string); ok {
-		subCfg.ParentToolCallID = callID
+		subCfg.spawn.parentToolCallID = callID
 	}
 	if maxTurns > 0 {
 		subCfg.MaxTurns = maxTurns
@@ -224,7 +224,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	subCfg.AgentName = agentName // ensure subagent gets its own tasks, not parent's
 
 	if agent != nil && strings.TrimSpace(agent.SystemPrompt) != "" && agent.PluginName != "builtin" {
-		subCfg.RolePromptOverride = rolePrompt
+		subCfg.spawn.rolePromptOverride = rolePrompt
 	}
 	if agent != nil && len(agent.Skills) > 0 {
 		for _, skillName := range agent.Skills {
@@ -233,7 +233,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 				continue
 			}
 			if strings.TrimSpace(body) != "" {
-				subCfg.ActivatedSkillBodies = append(subCfg.ActivatedSkillBodies, body)
+				subCfg.spawn.activatedSkillBodies = append(subCfg.spawn.activatedSkillBodies, body)
 			}
 		}
 	}
@@ -265,9 +265,9 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	if allTools {
 		// Leave the registry unrestricted for explicit all-tools agents.
 	} else if len(allowedTools) > 0 {
-		subCfg.AllowedToolNames = append([]string(nil), allowedTools...)
+		subCfg.spawn.allowedToolNames = append([]string(nil), allowedTools...)
 	} else {
-		subCfg.DeniedToolNames = append([]string(nil), deniedTools...)
+		subCfg.spawn.deniedToolNames = append([]string(nil), deniedTools...)
 	}
 
 	subEnv := s.env

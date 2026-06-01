@@ -366,7 +366,7 @@ func (s *Session) extractOriginalPrompt() string {
 			return t.Message.Text()
 		}
 	}
-	return s.cfg.SubagentTask
+	return s.cfg.spawn.subagentTask
 }
 
 func (s *Session) appendTurn(kind TurnKind, m llm.Message) {

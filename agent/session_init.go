@@ -76,7 +76,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		client:         client,
 		profile:        profile,
 		resolveProfile: cfg.ResolveProfile,
-		depth:          cfg.Depth,
+		depth:          cfg.spawn.depth,
 		env:            env,
 		stateDir:       cfg.StateDir,
 		installID:      installid.LoadOrCreateInstallationID(cfg.StateDir),
@@ -99,7 +99,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 	if agentName == "" {
 		agentName = defaultAgentName
 	}
-	if cfg.NonInteractive && cfg.ParentSessionID == "" {
+	if cfg.NonInteractive && cfg.spawn.parentSessionID == "" {
 		// Root sessions only. Subagent tasks are populated in spawnAgent
 		// where parentTasks from the coordinator's task_list parameter are
 		// available. Populating here with nil parentTasks would leave the
@@ -128,14 +128,14 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		}
 		hdr := TranscriptHeader{
 			SessionID:        s.id,
-			ParentSessionID:  cfg.ParentSessionID,
-			ParentToolCallID: cfg.ParentToolCallID,
-			Task:             cfg.SubagentTask,
+			ParentSessionID:  cfg.spawn.parentSessionID,
+			ParentToolCallID: cfg.spawn.parentToolCallID,
+			Task:             cfg.spawn.subagentTask,
 			CreatedAt:        time.Now().UTC(),
 			ProfileID:        profile.ID(),
 			Model:            profile.Model(),
 			WorkingDir:       s.envInfo.WorkingDir,
-			Depth:            cfg.Depth,
+			Depth:            cfg.spawn.depth,
 			BuildVersion:     buildinfo.Version(),
 			SystemPrompt:     s.cachedSystemPrompt,
 			AgentTasks:       agentTasks,
@@ -223,7 +223,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		cfg:            cfg,
 		client:         client,
 		profile:        profile,
-		depth:          cfg.Depth,
+		depth:          cfg.spawn.depth,
 		env:            env,
 		stateDir:       cfg.StateDir,
 		installID:      installid.LoadOrCreateInstallationID(cfg.StateDir),
@@ -260,14 +260,14 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 			}
 			hdr := TranscriptHeader{
 				SessionID:        s.id,
-				ParentSessionID:  cfg.ParentSessionID,
-				ParentToolCallID: cfg.ParentToolCallID,
-				Task:             cfg.SubagentTask,
+				ParentSessionID:  cfg.spawn.parentSessionID,
+				ParentToolCallID: cfg.spawn.parentToolCallID,
+				Task:             cfg.spawn.subagentTask,
 				CreatedAt:        snap.CreatedAt,
 				ProfileID:        profile.ID(),
 				Model:            profile.Model(),
 				WorkingDir:       s.envInfo.WorkingDir,
-				Depth:            cfg.Depth,
+				Depth:            cfg.spawn.depth,
 				BuildVersion:     buildinfo.Version(),
 				SystemPrompt:     s.cachedSystemPrompt,
 				AgentTasks:       agentTasks,
@@ -355,7 +355,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 		cfg:            cfg,
 		client:         client,
 		profile:        profile,
-		depth:          cfg.Depth,
+		depth:          cfg.spawn.depth,
 		env:            env,
 		stateDir:       cfg.StateDir,
 		installID:      installid.LoadOrCreateInstallationID(cfg.StateDir),
@@ -398,14 +398,14 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 			}
 			hdr := TranscriptHeader{
 				SessionID:        s.id,
-				ParentSessionID:  cfg.ParentSessionID,
-				ParentToolCallID: cfg.ParentToolCallID,
-				Task:             cfg.SubagentTask,
+				ParentSessionID:  cfg.spawn.parentSessionID,
+				ParentToolCallID: cfg.spawn.parentToolCallID,
+				Task:             cfg.spawn.subagentTask,
 				CreatedAt:        meta.CreatedAt,
 				ProfileID:        profile.ID(),
 				Model:            profile.Model(),
 				WorkingDir:       s.envInfo.WorkingDir,
-				Depth:            cfg.Depth,
+				Depth:            cfg.spawn.depth,
 				BuildVersion:     buildinfo.Version(),
 				SystemPrompt:     s.cachedSystemPrompt,
 				AgentTasks:       agentTasks,
@@ -540,14 +540,14 @@ func (s *Session) initSessionState(sessionStartKind SessionStartKind) ([]promptS
 	if err := s.initMCP(); err != nil {
 		return nil, fmt.Errorf("MCP initialization: %w", err)
 	}
-	if len(s.cfg.AllowedToolNames) > 0 {
-		allowed := make(map[string]bool, len(s.cfg.AllowedToolNames))
-		for _, name := range s.cfg.AllowedToolNames {
+	if len(s.cfg.spawn.allowedToolNames) > 0 {
+		allowed := make(map[string]bool, len(s.cfg.spawn.allowedToolNames))
+		for _, name := range s.cfg.spawn.allowedToolNames {
 			allowed[name] = true
 		}
 		s.reg.RestrictKeepingResultTool(allowed, s.resultToolName())
 	}
-	for _, name := range s.cfg.DeniedToolNames {
+	for _, name := range s.cfg.spawn.deniedToolNames {
 		s.reg.Remove(name)
 	}
 	if s.depth > 0 {
@@ -610,7 +610,7 @@ func modelFallbackEligible(err error) bool {
 }
 
 func (s *Session) applyAgentRolePromptOverride() {
-	if strings.TrimSpace(s.cfg.RolePromptOverride) != "" {
+	if strings.TrimSpace(s.cfg.spawn.rolePromptOverride) != "" {
 		return
 	}
 	agentName := strings.TrimSpace(s.cfg.AgentName)
@@ -622,7 +622,7 @@ func (s *Session) applyAgentRolePromptOverride() {
 		return
 	}
 	if prompt := strings.TrimSpace(agent.SystemPrompt); prompt != "" {
-		s.cfg.RolePromptOverride = prompt
+		s.cfg.spawn.rolePromptOverride = prompt
 	}
 }
 

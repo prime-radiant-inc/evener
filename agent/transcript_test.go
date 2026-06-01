@@ -1125,10 +1125,12 @@ func TestSubagent_TranscriptHasParentLinkage(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai"})
 
 	cfg := SessionConfig{
-		StateDir:        stateDir,
-		ParentSessionID: "parent-session-123",
-		SubagentTask:    "implement auth middleware",
-		Depth:           2,
+		StateDir: stateDir,
+		spawn: spawnConfig{
+			parentSessionID: "parent-session-123",
+			subagentTask:    "implement auth middleware",
+			depth:           2,
+		},
 	}
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err != nil {
@@ -1206,7 +1208,7 @@ func TestSubagent_DepthSetFromConfig(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai"})
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
-		Depth: 3,
+		spawn: spawnConfig{depth: 3},
 	})
 	if err != nil {
 		t.Fatal(err)

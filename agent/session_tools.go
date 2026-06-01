@@ -616,8 +616,8 @@ func (s *Session) resolveFilePath(path string) string {
 
 func (s *Session) getOrCreateTaskStore() *TaskStore {
 	s.taskStoreOnce.Do(func() {
-		if s.cfg.SharedTaskStore != nil {
-			s.taskStore = s.cfg.SharedTaskStore
+		if s.cfg.spawn.sharedTaskStore != nil {
+			s.taskStore = s.cfg.spawn.sharedTaskStore
 			return
 		}
 		dir := s.stateDir

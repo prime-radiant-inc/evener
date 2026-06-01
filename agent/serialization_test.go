@@ -227,6 +227,64 @@ func TestSessionConfig_JSONOmitsFunctionFields(t *testing.T) {
 	}
 }
 
+// TestSessionConfig_SpawnFieldsDropOnPersist pins the load-bearing persistence
+// invariant for the spawn sub-struct: spawnConfig is tagged json:"-" on
+// SessionConfig, so a populated spawn drops entirely on marshal and is the zero
+// spawnConfig on unmarshal. This reproduces the pre-refactor per-field json:"-"
+// behavior the subagent restore path depends on -- a restored subagent must get
+// spawn.depth==0 / spawn.parentSessionID=="" so ATIF root-export gating and the
+// subagent-management-is-top-level guards stay correct. If this test fails,
+// someone likely added json tags to spawnConfig; do not do that.
+func TestSessionConfig_SpawnFieldsDropOnPersist(t *testing.T) {
+	cfg := SessionConfig{
+		MaxToolRoundsPerInput: 200,
+		spawn: spawnConfig{
+			parentSessionID:      "01PARENT",
+			parentToolCallID:     "call_abc",
+			subagentTask:         "do the thing",
+			depth:                3,
+			sharedTaskStore:      NewTaskStore("", "01PARENT"),
+			rolePromptOverride:   "be a reviewer",
+			activatedSkillBodies: []string{"skill-body"},
+			allowedToolNames:     []string{"read_file"},
+			deniedToolNames:      []string{"shell"},
+		},
+	}
+
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// No spawn key and none of the nested field names leak into the JSON.
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal raw: %v", err)
+	}
+	for _, key := range []string{
+		"spawn", "parent_session_id", "parentSessionID", "subagent_task",
+		"depth", "shared_task_store", "role_prompt_override",
+		"allowed_tool_names", "denied_tool_names",
+	} {
+		if _, ok := raw[key]; ok {
+			t.Fatalf("spawn-related key %q must not appear in persisted JSON, got keys: %v", key, raw)
+		}
+	}
+
+	// Round-trip yields the zero spawnConfig (drop-on-persist + zero-on-restore).
+	// spawnConfig has slice fields, so check the components rather than == .
+	var got SessionConfig
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	s := got.spawn
+	if s.parentSessionID != "" || s.parentToolCallID != "" || s.subagentTask != "" ||
+		s.depth != 0 || s.sharedTaskStore != nil || s.rolePromptOverride != "" ||
+		s.activatedSkillBodies != nil || s.allowedToolNames != nil || s.deniedToolNames != nil {
+		t.Fatalf("restored spawn must be the zero spawnConfig, got %+v", s)
+	}
+}
+
 func TestSession_ID_ReturnsULID(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})

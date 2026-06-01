@@ -1623,9 +1623,9 @@ func TestSharedTaskStore_ChildUsesParentStore(t *testing.T) {
 		{Type: TaskTypeResearch, Description: "Shared task", Prompt: "Do shared work"},
 	})
 
-	// Create child session with SharedTaskStore pointing to parent's store.
+	// Create child session with a shared task store pointing to parent's store.
 	childSess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), SessionConfig{
-		SharedTaskStore: parentStore,
+		spawn: spawnConfig{sharedTaskStore: parentStore},
 	})
 	if err != nil {
 		t.Fatalf("NewSession (child): %v", err)
@@ -1674,13 +1674,13 @@ func TestSharedTaskStore_ShareTasksWithChildrenConfig(t *testing.T) {
 		{Type: TaskTypeResearch, Description: "Shared via config", Prompt: "Work"},
 	})
 
-	// Verify config propagation: subCfg should have SharedTaskStore set.
+	// Verify config propagation: subCfg should have a shared task store set.
 	// We can't easily call spawnAgent in a unit test, so verify the config
 	// field is correctly set and the child would pick it up.
 	subCfg := parentSess.cfg
-	subCfg.SharedTaskStore = nil // Reset to simulate fresh subCfg copy
+	subCfg.spawn.sharedTaskStore = nil // Reset to simulate fresh subCfg copy
 	if parentSess.cfg.ShareTasksWithChildren {
-		subCfg.SharedTaskStore = parentSess.getOrCreateTaskStore()
+		subCfg.spawn.sharedTaskStore = parentSess.getOrCreateTaskStore()
 	}
 
 	childSess, err := NewSession(c, NewOpenAIProfile("test"), NewLocalExecutionEnvironment(dir), subCfg)

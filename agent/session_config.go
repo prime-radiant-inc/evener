@@ -82,6 +82,12 @@ type SessionConfig struct {
 
 	// LLMRetryPolicy controls retries for retryable Unified LLM errors (429, 5xx, etc).
 	// Nil means use llm.DefaultRetryPolicy().
+	//
+	// LLMRetryPolicy and LLMSleep are not set by app callers in production; they
+	// exist as test-injection points (including from the external agent_test
+	// package, which constructs SessionConfig literals through NewSession and so
+	// cannot reach an unexported field). They are json:"-" and carry no
+	// serialization cost, so they stay on the public struct.
 	LLMRetryPolicy *llm.RetryPolicy `json:"-"`
 	LLMSleep       llm.SleepFunc    `json:"-"`
 
@@ -99,24 +105,12 @@ type SessionConfig struct {
 	// Used for evaluation testing. 0 means use defaults.
 	CompactionThresholdScale float64 `json:"compaction_threshold_scale,omitempty"`
 
-	// ParentSessionID links sub-agent sessions to their parent (set by spawnAgent).
-	ParentSessionID string `json:"-"`
-
-	// ParentToolCallID is the tool call ID that spawned this sub-agent session.
-	ParentToolCallID string `json:"-"`
-
-	// SubagentTask is the task description passed to spawn_agent.
-	SubagentTask string `json:"-"`
-
-	// Depth is the sub-agent nesting depth (0 for root sessions).
-	Depth int `json:"-"`
-
 	// StateDir, when non-empty, enables incremental session persistence.
 	// Snapshots are written to <StateDir>/sessions/ and tasks to <StateDir>/tasks/.
 	StateDir string `json:"-"`
 
 	// ExportATIFPath, when non-empty, causes Session.Close to export an ATIF v1.6
-	// trajectory JSON file to this path. Only root sessions (Depth==0) export.
+	// trajectory JSON file to this path. Only root sessions (spawn.depth==0) export.
 	ExportATIFPath string `json:"-"`
 
 	// SystemPromptAsUser, when true, combines the system prompt into the first
@@ -124,10 +118,6 @@ type SessionConfig struct {
 	// Workaround for models (e.g. GPT-5.4) that ignore the instructions
 	// parameter when given specific task delegations in user messages.
 	SystemPromptAsUser bool `json:"system_prompt_as_user,omitempty"`
-
-	// SharedTaskStore, when non-nil, is used instead of creating a per-session
-	// task store. Set by spawnAgent when ShareTasksWithChildren is true.
-	SharedTaskStore *TaskStore `json:"-"`
 
 	// ResolveProfile, when non-nil, maps a "provider/model" ref to the
 	// corresponding ProviderProfile. Injected by cmd/serf so that
@@ -137,11 +127,45 @@ type SessionConfig struct {
 	// only handles same-provider (or strip/keep) refs.
 	ResolveProfile func(ref string) (ProviderProfile, error) `json:"-"`
 
-	// Internal prompt/session shaping for restricted subagents and reviewer runs.
-	RolePromptOverride   string   `json:"-"`
-	ActivatedSkillBodies []string `json:"-"`
-	AllowedToolNames     []string `json:"-"`
-	DeniedToolNames      []string `json:"-"`
+	// spawn holds the fields that only spawnAgent (plus the init-time
+	// role-prompt derivation) populates when creating a child session. It is
+	// never set by package consumers and never persisted (json:"-"), matching
+	// the pre-refactor json:"-" behavior of each individual field.
+	spawn spawnConfig `json:"-"`
+}
+
+// spawnConfig holds the SessionConfig fields that only spawnAgent (plus the
+// init-time role-prompt derivation in applyAgentRolePromptOverride) populates
+// when creating a child session. They are never set by package consumers and
+// never persisted: the parent field is json:"-", so the whole struct drops on
+// marshal and is the zero spawnConfig on unmarshal. Restored sessions
+// reconstruct parent linkage from the transcript header, NOT from this struct;
+// do NOT add json tags or repopulate these on restore, or restored subagents
+// would gain a non-zero depth and break ATIF root-export gating and the
+// subagent-management-is-top-level guards.
+type spawnConfig struct {
+	// parentSessionID links sub-agent sessions to their parent (set by spawnAgent).
+	parentSessionID string
+
+	// parentToolCallID is the tool call ID that spawned this sub-agent session.
+	parentToolCallID string
+
+	// subagentTask is the task description passed to spawn_agent.
+	subagentTask string
+
+	// depth is the sub-agent nesting depth (0 for root sessions).
+	depth int
+
+	// sharedTaskStore, when non-nil, is used instead of creating a per-session
+	// task store. Set by spawnAgent when ShareTasksWithChildren is true.
+	sharedTaskStore *TaskStore
+
+	// rolePromptOverride and the three fields below carry internal prompt and
+	// session shaping for restricted subagents and reviewer runs.
+	rolePromptOverride   string
+	activatedSkillBodies []string
+	allowedToolNames     []string
+	deniedToolNames      []string
 }
 
 func (c *SessionConfig) applyDefaults() {

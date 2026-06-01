@@ -38,7 +38,7 @@ func (s *Session) buildPromptData() promptData {
 		Provider:                 s.profile.ID(),
 		Agent:                    agentName,
 		BaseInstructionsOverride: strings.TrimSpace(s.systemPromptOverride),
-		RolePromptOverride:       strings.TrimSpace(s.cfg.RolePromptOverride),
+		RolePromptOverride:       strings.TrimSpace(s.cfg.spawn.rolePromptOverride),
 		WorkingDir:               s.envInfo.WorkingDir,
 		IsGitRepo:                s.envInfo.IsGitRepo,
 		GitBranch:                s.envInfo.GitBranch,
@@ -55,7 +55,7 @@ func (s *Session) buildPromptData() promptData {
 		ResultToolName:           s.resultToolName(),
 		UserInstructionOverride:  strings.TrimSpace(s.cfg.UserInstructionOverride),
 		ProjectDocs:              s.projectDocs,
-		ActivatedSkillBodies:     append([]string(nil), s.cfg.ActivatedSkillBodies...),
+		ActivatedSkillBodies:     append([]string(nil), s.cfg.spawn.activatedSkillBodies...),
 	}
 
 	// Skills
