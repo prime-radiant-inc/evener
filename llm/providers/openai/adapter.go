@@ -16,7 +16,6 @@ import (
 	"time"
 
 	authopenai "primeradiant.com/serf/auth/openai"
-	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 )
@@ -247,8 +246,13 @@ func (a *Adapter) setRequestHeaders(httpReq *http.Request, req llm.Request) {
 	}
 }
 
+// ClientVersion is reported in the User-Agent the OpenAI Codex backend expects.
+// It defaults to "dev"; an embedding application may set it to its own version
+// (the serf binaries set it to the build version at startup).
+var ClientVersion = "dev"
+
 func defaultUserAgent() string {
-	version := strings.TrimSpace(buildinfo.Version())
+	version := strings.TrimSpace(ClientVersion)
 	if version == "" {
 		version = "dev"
 	}

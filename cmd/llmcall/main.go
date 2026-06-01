@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
@@ -20,7 +21,7 @@ import (
 	_ "primeradiant.com/serf/llm/providers/kimi"
 	_ "primeradiant.com/serf/llm/providers/minimax"
 	_ "primeradiant.com/serf/llm/providers/ollama"
-	_ "primeradiant.com/serf/llm/providers/openai"
+	openaiprovider "primeradiant.com/serf/llm/providers/openai"
 	_ "primeradiant.com/serf/llm/providers/openaicompat"
 	_ "primeradiant.com/serf/llm/providers/openrouter"
 	_ "primeradiant.com/serf/llm/providers/openrouter_anthropic"
@@ -33,6 +34,7 @@ import (
 // - No tool calls allowed (tool_choice=none; error if any are returned).
 // - No system prompt by default; optional --system / --system-file / --system-append.
 func main() {
+	openaiprovider.ClientVersion = buildinfo.Version()
 	if err := llmcallMain(os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintf(os.Stderr, "llmcall: %v\n", err)
 		os.Exit(1)

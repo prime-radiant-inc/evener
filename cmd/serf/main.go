@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/cmd/serf/internal/cliprompt"
 	"primeradiant.com/serf/cmd/serf/internal/launchcheck"
 	"primeradiant.com/serf/cmdutil"
+	openaiprovider "primeradiant.com/serf/llm/providers/openai"
 )
 
 // Alias for brevity within flag definitions.
@@ -50,6 +51,9 @@ type runCLIFlags struct {
 }
 
 func main() {
+	// Report the serf build version in the OpenAI provider's User-Agent.
+	openaiprovider.ClientVersion = buildinfo.Version()
+
 	// Quick flags that don't need full flag.Parse().
 	if len(os.Args) > 1 && os.Args[1] == "--version" {
 		fmt.Println("serf", buildinfo.VersionLong())
