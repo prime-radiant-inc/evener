@@ -37,8 +37,8 @@ type Turn struct {
 	// Usage carries the token-usage stats reported by the provider; set only on
 	// assistant turns.
 	Usage llm.Usage `json:"usage,omitempty"`
-	// ResponseID is the provider's response identifier for an assistant turn,
-	// used for prompt-cache continuity and ATIF trajectory export.
+	// ResponseID is the provider's response identifier (from llm.Response.ID),
+	// recorded on assistant turns and surfaced in ATIF trajectory export.
 	ResponseID string `json:"response_id,omitempty"`
 }
 
