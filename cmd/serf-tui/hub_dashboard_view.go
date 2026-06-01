@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
 func (m hubModel) dashboardView() string {
@@ -172,7 +173,7 @@ func renderDashboardLaunchRow(row hubRow, selected bool, width int) string {
 	}
 	line := truncateText(cursor+" + "+row.title, width)
 	if selected {
-		return defaultTUIStyles().Selected.Render(line)
+		return tuitheme.DefaultTUIStyles().Selected.Render(line)
 	}
 	return line
 }
@@ -198,7 +199,7 @@ func renderDashboardProjectRow(row hubRow, rows []hubRow, selected bool, width i
 	if selected {
 		cursor = ">"
 	}
-	styles := defaultTUIStyles()
+	styles := tuitheme.DefaultTUIStyles()
 	line := fmt.Sprintf("%s %s %s %s  %s", cursor, marker, statusDot(row.state), dashboardCell(row.project), projectSummary(row, rows))
 	line = truncateText(line, width)
 	if selected {
@@ -223,13 +224,13 @@ func renderDashboardRecentToggleRow(row hubRow, expanded bool, selected bool, wi
 	label := "recent"
 	line := truncateText(fmt.Sprintf("%s %s %s %d %s", cursor, marker, dashboardCell(row.project), count, label), width)
 	if selected {
-		return defaultTUIStyles().Selected.Render(line)
+		return tuitheme.DefaultTUIStyles().Selected.Render(line)
 	}
-	return defaultTUIStyles().Muted.Render(line)
+	return tuitheme.DefaultTUIStyles().Muted.Render(line)
 }
 
 func stateColor(state string) lipgloss.Color {
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	switch state {
 	case "awaiting":
 		return th.StateAwaiting
@@ -253,7 +254,7 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 	// SurfaceSecondary bg highlight is the selection indicator;
 	// the marker stays one cell wide for column stability.
 	marker := StateBar(stateColor(row.state))
-	styles := defaultTUIStyles()
+	styles := tuitheme.DefaultTUIStyles()
 	line := strings.Join(nonEmptyStrings([]string{
 		marker,
 		statusDot(row.state),

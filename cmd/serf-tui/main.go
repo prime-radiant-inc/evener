@@ -11,11 +11,12 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/cmd/serf-tui/internal/hubstart"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
 func main() {
 	// All shutdown work goes through run() so deferred cleanup (notably
-	// resetTerminalBg, which restores OSC 10/11 colors the user expected
+	// tuitheme.ResetTerminalBg, which restores OSC 10/11 colors the user expected
 	// before we started) actually fires on every exit path. Calling
 	// os.Exit directly from main would skip those defers.
 	os.Exit(run())
@@ -50,13 +51,13 @@ func run() int {
 		return 1
 	}
 
-	// Probe the terminal's default fg/bg BEFORE any setTheme call, so
+	// Probe the terminal's default fg/bg BEFORE any tuitheme.SetTheme call, so
 	// (a) "system" theme detection has cached probe data and (b) the
 	// deferred restore on exit can return the exact originals.
-	probeTerminalDefaults()
-	initThemeFromStateDir(startupOpts.StateDir)
-	applyTerminalBg()
-	defer resetTerminalBg()
+	tuitheme.ProbeTerminalDefaults()
+	tuitheme.InitThemeFromStateDir(startupOpts.StateDir)
+	tuitheme.ApplyTerminalBg()
+	defer tuitheme.ResetTerminalBg()
 
 	m := newHubModel(runtime.Client, runtime.Address.BaseURL, startupOpts.StateDir)
 	var programOpts []tea.ProgramOption

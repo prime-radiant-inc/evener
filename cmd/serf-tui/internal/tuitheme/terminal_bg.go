@@ -1,4 +1,4 @@
-package main
+package tuitheme
 
 import (
 	"fmt"
@@ -22,16 +22,16 @@ var (
 	probedDone       bool
 )
 
-// probeTerminalDefaults queries the terminal for its default foreground
+// ProbeTerminalDefaults queries the terminal for its default foreground
 // and background via OSC 10/11 with the `?` argument, caches the results
 // for later restore + system-theme detection, and returns whether the
 // probe produced a usable bg value. Idempotent: subsequent calls return
 // the cached result.
 //
-// Must be called at startup BEFORE applyTerminalBg() — otherwise the
+// Must be called at startup BEFORE ApplyTerminalBg() — otherwise the
 // probe would read back our painted colors instead of the terminal's
 // originals.
-func probeTerminalDefaults() bool {
+func ProbeTerminalDefaults() bool {
 	if probedDone {
 		return probedOriginalBg != ""
 	}
@@ -114,7 +114,7 @@ func relativeLuminanceHex(hex string) float64 {
 	return 0.2126*r + 0.7152*g + 0.0722*b
 }
 
-// applyTerminalBg sends OSC 10 (default foreground) and OSC 11 (default
+// ApplyTerminalBg sends OSC 10 (default foreground) and OSC 11 (default
 // background) to align the terminal's defaults with the active theme.
 // This makes every cell we don't paint (the gap between content and
 // footer, lines shorter than the terminal width) inherit the theme
@@ -126,13 +126,13 @@ func relativeLuminanceHex(hex string) float64 {
 //
 // Supported by iTerm2, Kitty, Alacritty, WezTerm, Gnome Terminal, xterm,
 // and Terminal.app. Unsupported terminals ignore the sequences. The
-// matching resetTerminalBg() MUST run on exit to restore the user's
+// matching ResetTerminalBg() MUST run on exit to restore the user's
 // original colors.
-func applyTerminalBg() {
+func ApplyTerminalBg() {
 	if !stdoutIsTerminal() {
 		return
 	}
-	th := activeTheme()
+	th := ActiveTheme()
 	if fg := string(th.Text); fg != "" {
 		termenv.SetForegroundColor(termenv.RGBColor(fg))
 	}
@@ -141,15 +141,15 @@ func applyTerminalBg() {
 	}
 }
 
-// resetTerminalBg restores the terminal's default foreground/background
-// to the values captured by probeTerminalDefaults at startup. Sets the
+// ResetTerminalBg restores the terminal's default foreground/background
+// to the values captured by ProbeTerminalDefaults at startup. Sets the
 // exact original colors via OSC 10/11 with explicit values — more
 // reliable than OSC 110/111 reset (which not all terminals honor) since
 // we know exactly what the user had.
 //
 // Falls back to OSC 110/111 when the startup probe didn't produce
 // usable values.
-func resetTerminalBg() {
+func ResetTerminalBg() {
 	if !stdoutIsTerminal() {
 		return
 	}

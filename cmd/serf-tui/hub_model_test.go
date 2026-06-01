@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmd/serf-tui/internal/hubstart"
 	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -2876,11 +2877,11 @@ func TestHubModelSessionModelPickerRequiresCapability(t *testing.T) {
 }
 
 func TestHubModelThemePicker(t *testing.T) {
-	previous := currentThemeName()
+	previous := tuitheme.CurrentThemeName()
 	t.Cleanup(func() {
-		setTheme(previous)
+		tuitheme.SetTheme(previous)
 	})
-	setTheme("light")
+	tuitheme.SetTheme("light")
 
 	m := newSessionHubModel(nil)
 	m.session.setInputValue("/theme")
@@ -2908,8 +2909,8 @@ func TestHubModelThemePicker(t *testing.T) {
 	if m.sessionThemePicker != nil {
 		t.Fatal("theme picker should close after selection")
 	}
-	if currentThemeName() != "dark" {
-		t.Fatalf("theme=%q, want dark", currentThemeName())
+	if tuitheme.CurrentThemeName() != "dark" {
+		t.Fatalf("theme=%q, want dark", tuitheme.CurrentThemeName())
 	}
 	if got := m.View(); !strings.Contains(got, "Switched to dark theme.") {
 		t.Fatalf("missing theme switch message:\n%s", got)
@@ -2917,13 +2918,13 @@ func TestHubModelThemePicker(t *testing.T) {
 }
 
 func TestHubModelThemePickerPersistsStateDirPreference(t *testing.T) {
-	previous := currentThemeName()
+	previous := tuitheme.CurrentThemeName()
 	t.Cleanup(func() {
-		setTheme(previous)
+		tuitheme.SetTheme(previous)
 	})
 
 	stateDir := t.TempDir()
-	setTheme("light")
+	tuitheme.SetTheme("light")
 	m := newHubModel(nil, "http://hub.test", stateDir)
 	m.mode = hubModeSession
 	m.detail = hubSessionDetail{Ref: "local:01SEND", SessionID: "01SEND", Capabilities: hubSessionCapabilities{Send: true}}
@@ -2941,11 +2942,11 @@ func TestHubModelThemePickerPersistsStateDirPreference(t *testing.T) {
 		t.Fatal("theme picker selection should be synchronous")
 	}
 
-	if got, ok := loadThemePreference(stateDir); !ok || got != "dark" {
+	if got, ok := tuitheme.LoadThemePreference(stateDir); !ok || got != "dark" {
 		t.Fatalf("stored theme=%q ok=%v, want dark", got, ok)
 	}
-	if currentThemeName() != "dark" {
-		t.Fatalf("theme=%q, want dark", currentThemeName())
+	if tuitheme.CurrentThemeName() != "dark" {
+		t.Fatalf("theme=%q, want dark", tuitheme.CurrentThemeName())
 	}
 }
 

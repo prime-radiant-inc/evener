@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmd/serf-tui/internal/toolsummary"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/llm"
 )
 
@@ -39,7 +40,7 @@ func initMarkdownRenderer(width int) {
 // inline-code backgrounds, which ship as fixed dark greys ("#373737") even
 // in the "light" style.
 func themedGlamourStyle() ansi.StyleConfig {
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	var base ansi.StyleConfig
 	if th.Name == "light" {
 		base = styles.LightStyleConfig
@@ -95,7 +96,7 @@ func renderMarkdown(text string, width int) string {
 
 // markdownRendererCached returns the current renderer cache; nil means
 // the cache is empty. For testing only — exposed to verify that
-// applyThemeName invalidates the renderer cache.
+// tuitheme.ApplyThemeName invalidates the renderer cache.
 func markdownRendererCached() *glamour.TermRenderer {
 	return markdownRenderer
 }
@@ -105,7 +106,7 @@ func resetMarkdownRenderer() {
 }
 
 func init() {
-	markdownInvalidator = resetMarkdownRenderer
+	tuitheme.SetMarkdownInvalidator(resetMarkdownRenderer)
 }
 
 func containsMarkdownSyntax(text string) bool {
@@ -189,37 +190,37 @@ func renderMessage(msg chatMessage, width int, focused bool) string {
 
 	switch msg.Kind {
 	case msgUser:
-		th := activeTheme()
+		th := tuitheme.ActiveTheme()
 		barClr := th.Accent
 		bar := lipgloss.NewStyle().Foreground(barClr).Render("┃")
 		if focused {
 			bar = lipgloss.NewStyle().Foreground(barClr).Render("┃┃")
 		}
-		rendered := userBlockStyle.Width(max(1, messageWidth-lipgloss.Width(bar)-1)).Render("> " + body)
+		rendered := tuitheme.UserBlockStyle.Width(max(1, messageWidth-lipgloss.Width(bar)-1)).Render("> " + body)
 		return bar + " " + rendered
 	case msgAssistant:
 		text := strings.TrimSpace(msg.Text)
 		if text == "" {
 			return ""
 		}
-		th := activeTheme()
+		th := tuitheme.ActiveTheme()
 		bar := StateBar(th.StateProcessing)
 		barW := lipgloss.Width(bar)
-		rendered := thinkingStyle.Width(max(1, messageWidth-barW-1)).Render(renderMarkdown(text, max(1, messageWidth-barW-1)))
+		rendered := tuitheme.ThinkingStyle.Width(max(1, messageWidth-barW-1)).Render(renderMarkdown(text, max(1, messageWidth-barW-1)))
 		return bar + " " + renderSelectedMessage(rendered, focused)
 	case msgCommunicate:
-		return renderSelectedMessage(communicateStyle.Width(messageWidth).Render(renderMarkdown(msg.Text, messageWidth)), focused)
+		return renderSelectedMessage(tuitheme.CommunicateStyle.Width(messageWidth).Render(renderMarkdown(msg.Text, messageWidth)), focused)
 	case msgTool:
 		if msg.Tool == nil || msg.Tool.Hidden {
 			return ""
 		}
 		return renderToolCall(*msg.Tool, width, focused)
 	case msgSystem:
-		return renderSelectedMessage(systemStyle.Width(messageWidth).Render(body), focused)
+		return renderSelectedMessage(tuitheme.SystemStyle.Width(messageWidth).Render(body), focused)
 	case msgSteering:
-		// Steering placeholder or authoritative chip. systemStyle is the
+		// Steering placeholder or authoritative chip. tuitheme.SystemStyle is the
 		// closest existing style; refine later if needed.
-		return renderSelectedMessage(systemStyle.Width(messageWidth).Render("↻ "+body), focused)
+		return renderSelectedMessage(tuitheme.SystemStyle.Width(messageWidth).Render("↻ "+body), focused)
 	}
 	return ""
 }
@@ -250,7 +251,7 @@ func renderToolCall(tc toolCallInfo, width int, focused bool) string {
 		result = r.Result(args, tc.Output, tc.Error, tc.Duration)
 	}
 
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	stateClr := stateColorForToolDone(tc.Done, tc.Error)
 	bar := StateBar(stateClr)
 	check := lipgloss.NewStyle().Foreground(stateClr).Render(checkmarkFor(tc.Done, tc.Error))
@@ -297,7 +298,7 @@ func renderToolCall(tc toolCallInfo, width int, focused bool) string {
 			// Append error after renderer body so errors from unknown/MCP tools
 			// are always visible even when JSON output is also present.
 			if tc.Error != "" {
-				errStyle := lipgloss.NewStyle().Foreground(activeTheme().StateAwaiting)
+				errStyle := lipgloss.NewStyle().Foreground(tuitheme.ActiveTheme().StateAwaiting)
 				body = body + "\n" + errStyle.Render(tc.Error)
 			}
 			bodyLines = append(bodyLines, indentBlock(body, th.IndentToolBody))
@@ -309,13 +310,13 @@ func renderToolCall(tc toolCallInfo, width int, focused bool) string {
 		// Used when there is no Body renderer, or the renderer returned empty
 		// (e.g. read_file Body on an errored call with no output).
 		if tc.Detail != "" {
-			bodyLines = append(bodyLines, toolExpandedStyle.Width(width-4).Render(tc.Detail))
+			bodyLines = append(bodyLines, tuitheme.ToolExpandedStyle.Width(width-4).Render(tc.Detail))
 		}
 		if tc.Output != "" {
-			bodyLines = append(bodyLines, toolExpandedStyle.Width(width-4).Render(tc.Output))
+			bodyLines = append(bodyLines, tuitheme.ToolExpandedStyle.Width(width-4).Render(tc.Output))
 		}
 		if tc.Error != "" {
-			bodyLines = append(bodyLines, toolExpandedStyle.Width(width-4).Render("error: "+tc.Error))
+			bodyLines = append(bodyLines, tuitheme.ToolExpandedStyle.Width(width-4).Render("error: "+tc.Error))
 		}
 	}
 
@@ -326,7 +327,7 @@ func renderToolCall(tc toolCallInfo, width int, focused bool) string {
 }
 
 func stateColorForToolDone(done bool, errStr string) lipgloss.Color {
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	if errStr != "" {
 		return th.StateAwaiting
 	}

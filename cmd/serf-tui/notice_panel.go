@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -21,7 +22,7 @@ type noticePanel struct {
 // View renders the diagnostic voice: state-colored ▍ left bar + ● dot,
 // followed by 3 indented key/value lines. This is a non-modal inline render.
 func (n noticePanel) View() string {
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	state := strings.TrimSpace(n.State)
 	if state == "" {
 		state = "idle"
@@ -46,7 +47,7 @@ func (n noticePanel) View() string {
 
 func (n noticePanel) Text() string {
 	var lines []string
-	styles := defaultTUIStyles()
+	styles := tuitheme.DefaultTUIStyles()
 	if title := strings.TrimSpace(n.Title); title != "" {
 		lines = append(lines, styles.Section.Render(title))
 	}

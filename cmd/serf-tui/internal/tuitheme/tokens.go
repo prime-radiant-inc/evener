@@ -2,12 +2,12 @@
 //
 // Established in the TUI deep UX pass (2026-05-24). The Theme struct
 // holds every color and layout token; the `themes` registry binds names
-// to Theme structs. Active theme is swapped via applyThemeName(name) which
+// to Theme structs. Active theme is swapped via ApplyThemeName(name) which
 // also invalidates the cached markdown renderer.
 //
 // To add a new theme: define a Theme struct literal, register it in
 // themeRegistry. No other code changes needed.
-package main
+package tuitheme
 
 import "github.com/charmbracelet/lipgloss"
 
@@ -53,20 +53,31 @@ var activeThemeKey = "dark"
 // For testing only — not part of the API surface.
 var markdownInvalidationCount int
 
-// markdownInvalidator is wired by message.go init; placeholder counts calls.
+// markdownInvalidator is invoked whenever the active theme changes so the
+// markdown renderer can drop its cached, theme-colored output. The default
+// placeholder counts calls; the renderer wires its real reset via
+// SetMarkdownInvalidator.
 var markdownInvalidator = func() { markdownInvalidationCount++ }
 
-// activeTheme returns the currently selected Theme.
-func activeTheme() Theme {
+// SetMarkdownInvalidator wires the callback invoked on every theme change.
+// The markdown renderer calls this once at startup so a re-theme drops its
+// color-baked cache. tuitheme never imports the renderer; the dependency
+// points inward via this setter.
+func SetMarkdownInvalidator(fn func()) {
+	markdownInvalidator = fn
+}
+
+// ActiveTheme returns the currently selected Theme.
+func ActiveTheme() Theme {
 	if th, ok := themeRegistry[activeThemeKey]; ok {
 		return th
 	}
 	return themeRegistry["dark"]
 }
 
-// applyThemeName swaps the active theme by registry key. Not safe for
-// concurrent use; called only from setTheme() on bubbletea's main goroutine.
-func applyThemeName(name string) bool {
+// ApplyThemeName swaps the active theme by registry key. Not safe for
+// concurrent use; called only from SetTheme() on bubbletea's main goroutine.
+func ApplyThemeName(name string) bool {
 	if _, ok := themeRegistry[name]; !ok {
 		return false
 	}

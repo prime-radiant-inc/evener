@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -16,12 +17,12 @@ type detailsDrawer struct {
 }
 
 func sectionLabel(text string) string {
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	return lipgloss.NewStyle().Foreground(th.TextDim).Bold(true).Render(strings.ToUpper(text))
 }
 
 func ghostText(text string) string {
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	return lipgloss.NewStyle().Foreground(th.TextGhost).Render(text)
 }
 

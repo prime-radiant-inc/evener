@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/llm"
 )
 
@@ -193,5 +194,64 @@ func TestRenderToolCallShowsPurposeAsFirstBodyLine(t *testing.T) {
 	}
 	if !strings.Contains(lines[1], "\x1b[3m") {
 		t.Fatalf("first body line should be italic-styled, got %q", lines[1])
+	}
+}
+
+// TestWrapText_FitsOnOneLine checks no wrapping when text fits.
+func TestWrapText_FitsOnOneLine(t *testing.T) {
+	lines := wrapText("hello world", 20, 20)
+	if len(lines) != 1 || lines[0] != "hello world" {
+		t.Errorf("got %v, want [\"hello world\"]", lines)
+	}
+}
+
+// TestWrapText_WrapsAtWordBoundary checks wrapping splits on spaces.
+func TestWrapText_WrapsAtWordBoundary(t *testing.T) {
+	lines := wrapText("hello world foo", 11, 20)
+	if len(lines) != 2 {
+		t.Fatalf("got %d lines, want 2: %v", len(lines), lines)
+	}
+	if lines[0] != "hello world" {
+		t.Errorf("first line = %q, want \"hello world\"", lines[0])
+	}
+	if lines[1] != "foo" {
+		t.Errorf("second line = %q, want \"foo\"", lines[1])
+	}
+}
+
+// TestWrapText_Empty returns nil for empty input.
+func TestWrapText_Empty(t *testing.T) {
+	if lines := wrapText("", 20, 20); lines != nil {
+		t.Errorf("got %v, want nil", lines)
+	}
+}
+
+// TestWrapText_MultiLine checks multiple wraps with different first/cont budgets.
+func TestWrapText_MultiLine(t *testing.T) {
+	lines := wrapText("aaa bbb ccc ddd eee", 7, 7)
+	for _, l := range lines {
+		if len(l) > 7 {
+			t.Errorf("line %q exceeds budget 7", l)
+		}
+	}
+	joined := strings.Join(lines, " ")
+	if joined != "aaa bbb ccc ddd eee" {
+		t.Errorf("rejoined = %q, want original text", joined)
+	}
+}
+
+// TestMarkdownInvalidatorIsWired verifies the renderer's reset is wired into
+// tuitheme so a theme change drops the color-baked markdown cache.
+func TestMarkdownInvalidatorIsWired(t *testing.T) {
+	t.Cleanup(func() { tuitheme.ApplyThemeName("dark") })
+
+	_ = renderMarkdown("# hello", 40)
+	if markdownRendererCached() == nil {
+		t.Fatalf("renderMarkdown did not populate cache")
+	}
+
+	tuitheme.ApplyThemeName("light")
+	if markdownRendererCached() != nil {
+		t.Errorf("ApplyThemeName should have invalidated markdownRenderer cache")
 	}
 }

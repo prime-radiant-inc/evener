@@ -6,10 +6,11 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/cmd/serf-tui/internal/modeldisplay"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
 func (m hubModel) sessionHeaderLines() []string {
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	title := firstNonEmptyString(m.detail.Title, m.detail.SessionID, m.detail.Ref, "untitled session")
 	state := strings.TrimSpace(m.detail.State)
 	if state == "" {
@@ -194,7 +195,7 @@ func (m hubModel) renderSessionMainBody() string {
 	messages := m.session.messages
 	if m.transcriptView != nil {
 		b.WriteString("\n")
-		b.WriteString(systemStyle.Width(max(m.width, 80)).Render(m.transcriptView.banner()))
+		b.WriteString(tuitheme.SystemStyle.Width(max(m.width, 80)).Render(m.transcriptView.banner()))
 		b.WriteString("\n")
 		messages = m.transcriptView.Messages
 	}
@@ -216,7 +217,7 @@ func (m hubModel) renderSessionMainBody() string {
 				rendered = renderSelectedMessage(rendered, true)
 			}
 			if prevRendered && msg.Kind == msgUser {
-				rule := lipgloss.NewStyle().Foreground(activeTheme().RuleSoft).Render(strings.Repeat("┄", width))
+				rule := lipgloss.NewStyle().Foreground(tuitheme.ActiveTheme().RuleSoft).Render(strings.Repeat("┄", width))
 				b.WriteString(rule)
 				b.WriteString("\n")
 			}

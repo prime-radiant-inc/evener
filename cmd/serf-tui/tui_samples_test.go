@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
 func TestHubTUISampleCorpusCoversRequiredVariants(t *testing.T) {
@@ -216,11 +218,11 @@ func containsMessageKind(messages []chatMessage, kind messageKind) bool {
 // restores it afterward. NOT safe for parallel tests — theme is a global.
 func runWithTheme(t *testing.T, name string, body func()) {
 	t.Helper()
-	prev := currentThemeName()
-	if !setTheme(name) {
+	prev := tuitheme.CurrentThemeName()
+	if !tuitheme.SetTheme(name) {
 		t.Fatalf("unknown theme %q", name)
 	}
-	defer setTheme(prev)
+	defer tuitheme.SetTheme(prev)
 	body()
 }
 

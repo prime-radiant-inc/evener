@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
 type appShell struct {
@@ -16,7 +17,7 @@ type appShell struct {
 
 func (s appShell) View() string {
 	contentSections := make([]string, 0, 3)
-	styles := defaultTUIStyles()
+	styles := tuitheme.DefaultTUIStyles()
 	if topBar := strings.TrimRight(s.TopBar, "\n"); topBar != "" {
 		contentSections = append(contentSections, styles.Title.Render(topBar))
 	}

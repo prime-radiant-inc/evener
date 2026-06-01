@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
 var themePickerItems = []string{"system", "dark", "light"}
@@ -18,7 +19,7 @@ func newThemePicker() themePicker {
 	p := themePicker{}
 	// Pre-select cursor to the current theme.
 	for i, name := range themePickerItems {
-		if name == currentThemeName() {
+		if name == tuitheme.CurrentThemeName() {
 			p.cursor = i
 			break
 		}
@@ -52,14 +53,14 @@ func (p themePicker) renderItems() string {
 	var b strings.Builder
 	for i, name := range themePickerItems {
 		cursor := "  "
-		style := mpNormalStyle
+		style := tuitheme.MpNormalStyle
 		if i == p.cursor {
 			cursor = "> "
-			style = mpCursorStyle
+			style = tuitheme.MpCursorStyle
 		}
 		line := cursor + style.Render(name)
-		if name == currentThemeName() {
-			line += "  " + mpActiveTag.Render("(active)")
+		if name == tuitheme.CurrentThemeName() {
+			line += "  " + tuitheme.MpActiveTag.Render("(active)")
 		}
 		b.WriteString(line)
 		b.WriteString("\n")

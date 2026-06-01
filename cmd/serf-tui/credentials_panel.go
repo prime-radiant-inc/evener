@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -350,7 +351,7 @@ type instanceEditSubmitMsg struct {
 }
 
 func (p credentialsPanel) sourceBadgeColor(source string) lipgloss.Color {
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	switch source {
 	case "oauth", "env":
 		return th.StateIdle
@@ -362,7 +363,7 @@ func (p credentialsPanel) sourceBadgeColor(source string) lipgloss.Color {
 }
 
 func (p credentialsPanel) View() string {
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	var body string
 	if p.formOpen {
 		body = p.formView()
@@ -452,7 +453,7 @@ func (p credentialsPanel) apiStyleDisplay() string {
 }
 
 func (p credentialsPanel) formFieldLine(label, fieldName, value string, fieldIdx int) string {
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	active := p.formActiveField() == fieldName
 	cursor := "  "
 	if active {

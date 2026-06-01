@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmd/serf-tui/internal/inputhistory"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
 // model holds the per-session UI state that hubModel embeds as
@@ -44,9 +45,9 @@ type model struct {
 }
 
 // applyInputTheme sets the textarea's style to match the active theme colours.
-// Must be called after initTheme() and again whenever the theme changes.
+// Must be called after tuitheme.InitTheme() and again whenever the theme changes.
 func applyInputTheme(ta *textarea.Model) {
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	base := lipgloss.NewStyle().
 		Background(th.BgRaised).
 		Foreground(th.Text)

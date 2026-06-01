@@ -6,6 +6,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"primeradiant.com/serf/cmd/serf-tui/internal/modeldisplay"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
 // composerContext holds the metadata used to render the composer chip strip.
@@ -34,7 +35,7 @@ type composerContext struct {
 // resets at their boundaries, and unstyled join glue (separators, gap
 // spaces) would otherwise drop back to the terminal default between spans.
 func renderComposerChipStrip(ctx composerContext) string {
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	bg := th.SurfaceSecondary
 
 	// All inner spans must declare the band bg.
@@ -125,7 +126,7 @@ func renderComposerChipStrip(ctx composerContext) string {
 // context to surface. All inner spans declare Background(SurfaceSecondary)
 // so the parent chip-strip band's bg paints through without ANSI-reset
 // gaps between fragments.
-func renderChipStatus(ctx composerContext, th Theme) string {
+func renderChipStatus(ctx composerContext, th tuitheme.Theme) string {
 	if ctx.HubAddr == "" && !ctx.Connected && ctx.Provider == "" {
 		return ""
 	}

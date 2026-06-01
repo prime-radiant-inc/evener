@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
 type modelPickerItem struct {
@@ -125,9 +126,9 @@ func (m modelPicker) renderBody() string {
 
 	filterText := m.filter
 	if filterText == "" {
-		filterText = mpDimStyle.Render("type to filter...")
+		filterText = tuitheme.MpDimStyle.Render("type to filter...")
 	} else {
-		filterText = mpFilterStyle.Render(filterText)
+		filterText = tuitheme.MpFilterStyle.Render(filterText)
 	}
 	b.WriteString(fmt.Sprintf("Filter: %s", filterText))
 	b.WriteString("\n\n")
@@ -138,7 +139,7 @@ func (m modelPicker) renderBody() string {
 		if emptyText == "" {
 			emptyText = "  No matching items."
 		}
-		b.WriteString(mpDimStyle.Render(emptyText))
+		b.WriteString(tuitheme.MpDimStyle.Render(emptyText))
 		b.WriteString("\n")
 	} else {
 		maxVisible := 15
@@ -160,29 +161,29 @@ func (m modelPicker) renderBody() string {
 		for i := start; i < end; i++ {
 			item := filtered[i]
 			cursor := "  "
-			style := mpNormalStyle
+			style := tuitheme.MpNormalStyle
 			if i == m.cursor {
 				cursor = "> "
-				style = mpCursorStyle
+				style = tuitheme.MpCursorStyle
 			} else if item.id == m.active {
-				style = mpActiveStyle
+				style = tuitheme.MpActiveStyle
 			}
 			line := cursor + style.Render(item.display)
 			if item.id != item.display && item.display != "" {
-				line += "  " + mpDimStyle.Render(item.id)
+				line += "  " + tuitheme.MpDimStyle.Render(item.id)
 			}
 			if item.id == m.active {
-				line += "  " + mpActiveTag.Render("(active)")
+				line += "  " + tuitheme.MpActiveTag.Render("(active)")
 			}
 			if item.disabledReason != "" {
-				line += "  " + mpDimStyle.Render("disabled: "+item.disabledReason)
+				line += "  " + tuitheme.MpDimStyle.Render("disabled: "+item.disabledReason)
 			}
 			b.WriteString(line)
 			b.WriteString("\n")
 		}
 
 		if len(filtered) > maxVisible {
-			b.WriteString(mpDimStyle.Render(fmt.Sprintf("  ... %d items total", len(filtered))))
+			b.WriteString(tuitheme.MpDimStyle.Render(fmt.Sprintf("  ... %d items total", len(filtered))))
 			b.WriteString("\n")
 		}
 	}

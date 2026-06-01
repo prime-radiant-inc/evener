@@ -1,4 +1,4 @@
-package main
+package tuitheme
 
 import (
 	"math"
@@ -67,26 +67,26 @@ func TestThemeStructFieldsPopulated(t *testing.T) {
 }
 
 func TestSetThemeChangesActiveTheme(t *testing.T) {
-	t.Cleanup(func() { applyThemeName("dark") })
+	t.Cleanup(func() { ApplyThemeName("dark") })
 
-	applyThemeName("dark")
-	if activeTheme().Name != "dark" {
-		t.Errorf("expected dark, got %q", activeTheme().Name)
+	ApplyThemeName("dark")
+	if ActiveTheme().Name != "dark" {
+		t.Errorf("expected dark, got %q", ActiveTheme().Name)
 	}
-	applyThemeName("light")
-	if activeTheme().Name != "light" {
-		t.Errorf("expected light, got %q", activeTheme().Name)
+	ApplyThemeName("light")
+	if ActiveTheme().Name != "light" {
+		t.Errorf("expected light, got %q", ActiveTheme().Name)
 	}
 }
 
 func TestSetThemeIgnoresUnknown(t *testing.T) {
-	t.Cleanup(func() { applyThemeName("dark") })
-	applyThemeName("dark")
-	ok := applyThemeName("nonexistent")
+	t.Cleanup(func() { ApplyThemeName("dark") })
+	ApplyThemeName("dark")
+	ok := ApplyThemeName("nonexistent")
 	if ok {
-		t.Errorf("applyThemeName should return false for unknown name")
+		t.Errorf("ApplyThemeName should return false for unknown name")
 	}
-	if activeTheme().Name != "dark" {
+	if ActiveTheme().Name != "dark" {
 		t.Errorf("unknown name should not change active theme")
 	}
 }
@@ -96,36 +96,22 @@ func TestSetThemeCallsMarkdownInvalidator(t *testing.T) {
 	saved := markdownInvalidator
 	t.Cleanup(func() {
 		markdownInvalidator = saved
-		applyThemeName("dark")
+		ApplyThemeName("dark")
 		markdownInvalidationCount = 0
 	})
 	markdownInvalidationCount = 0
 	markdownInvalidator = func() { markdownInvalidationCount++ }
-	applyThemeName("light")
+	ApplyThemeName("light")
 	if markdownInvalidationCount != 1 {
 		t.Errorf("expected 1 invalidation, got %d", markdownInvalidationCount)
 	}
 }
 
 func TestSetThemeUpdatesActiveTheme(t *testing.T) {
-	t.Cleanup(func() { setTheme("dark") })
-	setTheme("light")
-	if activeTheme().Name != "light" {
-		t.Errorf("setTheme(light) did not update active theme")
-	}
-}
-
-func TestMarkdownInvalidatorIsWired(t *testing.T) {
-	t.Cleanup(func() { applyThemeName("dark") })
-
-	_ = renderMarkdown("# hello", 40)
-	if markdownRendererCached() == nil {
-		t.Fatalf("renderMarkdown did not populate cache")
-	}
-
-	applyThemeName("light")
-	if markdownRendererCached() != nil {
-		t.Errorf("applyThemeName should have invalidated markdownRenderer cache")
+	t.Cleanup(func() { SetTheme("dark") })
+	SetTheme("light")
+	if ActiveTheme().Name != "light" {
+		t.Errorf("SetTheme(light) did not update active theme")
 	}
 }
 

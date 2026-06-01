@@ -1,4 +1,4 @@
-package main
+package tuitheme
 
 import (
 	"encoding/json"
@@ -10,7 +10,7 @@ import (
 )
 
 // tuiStyles holds composed lipgloss.Style values derived from the active
-// Theme. defaultTUIStyles() rebuilds this from activeTheme() on each call so
+// Theme. DefaultTUIStyles() rebuilds this from ActiveTheme() on each call so
 // runtime theme switches take effect immediately.
 type tuiStyles struct {
 	Title      lipgloss.Style
@@ -26,9 +26,9 @@ type tuiStyles struct {
 	Ended      lipgloss.Style
 }
 
-// defaultTUIStyles builds a tuiStyles from the currently active Theme.
-func defaultTUIStyles() tuiStyles {
-	th := activeTheme()
+// DefaultTUIStyles builds a tuiStyles from the currently active Theme.
+func DefaultTUIStyles() tuiStyles {
+	th := ActiveTheme()
 	return tuiStyles{
 		Title:      lipgloss.NewStyle().Bold(true).Foreground(th.Text).Background(th.BgRaised),
 		Section:    lipgloss.NewStyle().Bold(true).Foreground(th.Accent),
@@ -47,26 +47,26 @@ func defaultTUIStyles() tuiStyles {
 // activeThemeName tracks the selected theme ("system", "dark", or "light").
 var activeThemeName string
 
-// Derived style vars — re-initialized by setTheme() via rebuildDerivedStyles().
+// Derived style vars — re-initialized by SetTheme() via rebuildDerivedStyles().
 var (
 	statusBarStyle     lipgloss.Style
 	statusConnected    lipgloss.Style
 	statusDisconnected lipgloss.Style
 	scrollModeStyle    lipgloss.Style
 
-	userBlockStyle   lipgloss.Style
-	thinkingStyle    lipgloss.Style
-	communicateStyle lipgloss.Style
-	systemStyle      lipgloss.Style
+	UserBlockStyle   lipgloss.Style
+	ThinkingStyle    lipgloss.Style
+	CommunicateStyle lipgloss.Style
+	SystemStyle      lipgloss.Style
 
 	toolCollapsedStyle lipgloss.Style
-	toolExpandedStyle  lipgloss.Style
+	ToolExpandedStyle  lipgloss.Style
 	toolNameStyle      lipgloss.Style
 	toolDurationStyle  lipgloss.Style
 
 	inputBorderStyle lipgloss.Style
 
-	viewportStyle lipgloss.Style
+	ViewportStyle lipgloss.Style
 
 	pickerTitle    lipgloss.Style
 	pickerSelected lipgloss.Style
@@ -75,30 +75,30 @@ var (
 
 	// model_picker specific
 	mpTitleStyle  lipgloss.Style
-	mpFilterStyle lipgloss.Style
-	mpActiveStyle lipgloss.Style
-	mpNormalStyle lipgloss.Style
-	mpCursorStyle lipgloss.Style
-	mpDimStyle    lipgloss.Style
-	mpActiveTag   lipgloss.Style
+	MpFilterStyle lipgloss.Style
+	MpActiveStyle lipgloss.Style
+	MpNormalStyle lipgloss.Style
+	MpCursorStyle lipgloss.Style
+	MpDimStyle    lipgloss.Style
+	MpActiveTag   lipgloss.Style
 )
 
-// initTheme detects the terminal background and populates all style vars.
+// InitTheme detects the terminal background and populates all style vars.
 // Call once at program startup before creating the bubbletea program.
-func initTheme() {
-	setTheme("system")
+func InitTheme() {
+	SetTheme("system")
 }
 
-func initThemeFromStateDir(stateDir string) {
-	if name, ok := loadThemePreference(stateDir); ok && setTheme(name) {
+func InitThemeFromStateDir(stateDir string) {
+	if name, ok := LoadThemePreference(stateDir); ok && SetTheme(name) {
 		return
 	}
-	setTheme("system")
+	SetTheme("system")
 }
 
-// setTheme switches to the named theme. Returns false if the name is unrecognised.
-// This is the public entry point; internally it routes to applyThemeName.
-func setTheme(name string) bool {
+// SetTheme switches to the named theme. Returns false if the name is unrecognised.
+// This is the public entry point; internally it routes to ApplyThemeName.
+func SetTheme(name string) bool {
 	switch name {
 	case "system", "dark", "light":
 		activeThemeName = name
@@ -107,35 +107,35 @@ func setTheme(name string) bool {
 	}
 	resolved := name
 	if name == "system" {
-		// Uses cached probe from probeTerminalDefaults() when available;
+		// Uses cached probe from ProbeTerminalDefaults() when available;
 		// falls back to termenv.HasDarkBackground() otherwise.
 		resolved = detectSystemThemeKey()
 	}
-	applyThemeName(resolved)
+	ApplyThemeName(resolved)
 	rebuildDerivedStyles()
 	// Refresh the terminal's default background to match the new theme so
 	// runtime theme swaps (e.g. via the theme picker) repaint every cell,
 	// not just the ones we re-render.
-	applyTerminalBg()
+	ApplyTerminalBg()
 	return true
 }
 
-func setThemeAndPersist(stateDir, name string) bool {
-	if !setTheme(name) {
+func SetThemeAndPersist(stateDir, name string) bool {
+	if !SetTheme(name) {
 		return false
 	}
 	_ = saveThemePreference(stateDir, name)
 	return true
 }
 
-// currentThemeName returns the name of the active theme.
-func currentThemeName() string {
+// CurrentThemeName returns the name of the active theme.
+func CurrentThemeName() string {
 	return activeThemeName
 }
 
 // rebuildDerivedStyles rebuilds all derived style vars from the currently active Theme.
 func rebuildDerivedStyles() {
-	th := activeTheme()
+	th := ActiveTheme()
 
 	statusBarStyle = lipgloss.NewStyle().
 		Background(th.BgRaised).
@@ -157,26 +157,26 @@ func rebuildDerivedStyles() {
 	// User messages: no background fill — the left bar marker (added in
 	// renderMessage) and bold-ish text are sufficient to demarcate, and
 	// avoiding a painted block keeps us off the terminal background.
-	userBlockStyle = lipgloss.NewStyle().
+	UserBlockStyle = lipgloss.NewStyle().
 		Foreground(th.Text).
 		PaddingLeft(1).
 		PaddingRight(1)
 
-	thinkingStyle = lipgloss.NewStyle().
+	ThinkingStyle = lipgloss.NewStyle().
 		Foreground(th.TextDim).
 		Italic(true)
 
-	communicateStyle = lipgloss.NewStyle().
+	CommunicateStyle = lipgloss.NewStyle().
 		Foreground(th.Text)
 
-	systemStyle = lipgloss.NewStyle().
+	SystemStyle = lipgloss.NewStyle().
 		Foreground(th.TextMuted).
 		Italic(true)
 
 	toolCollapsedStyle = lipgloss.NewStyle().
 		Foreground(th.TextDim)
 
-	toolExpandedStyle = lipgloss.NewStyle().
+	ToolExpandedStyle = lipgloss.NewStyle().
 		Foreground(th.TextDim).
 		Border(lipgloss.NormalBorder(), false, false, false, true).
 		BorderForeground(th.Rule).
@@ -196,7 +196,7 @@ func rebuildDerivedStyles() {
 	// Viewport: no background fill — let the terminal's own background
 	// show through. Painting our Bg over the entire viewport creates a
 	// rectangle that fights any non-matching terminal config.
-	viewportStyle = lipgloss.NewStyle()
+	ViewportStyle = lipgloss.NewStyle()
 
 	pickerTitle = lipgloss.NewStyle().
 		Bold(true).
@@ -214,12 +214,12 @@ func rebuildDerivedStyles() {
 		Foreground(th.TextDim)
 
 	mpTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(th.Accent)
-	mpFilterStyle = lipgloss.NewStyle().Foreground(th.Text)
-	mpActiveStyle = lipgloss.NewStyle().Foreground(th.Accent).Bold(true)
-	mpNormalStyle = lipgloss.NewStyle().Foreground(th.Text)
-	mpCursorStyle = lipgloss.NewStyle().Foreground(th.Accent).Bold(true)
-	mpDimStyle = lipgloss.NewStyle().Foreground(th.TextDim)
-	mpActiveTag = lipgloss.NewStyle().Foreground(th.AccentSecondary)
+	MpFilterStyle = lipgloss.NewStyle().Foreground(th.Text)
+	MpActiveStyle = lipgloss.NewStyle().Foreground(th.Accent).Bold(true)
+	MpNormalStyle = lipgloss.NewStyle().Foreground(th.Text)
+	MpCursorStyle = lipgloss.NewStyle().Foreground(th.Accent).Bold(true)
+	MpDimStyle = lipgloss.NewStyle().Foreground(th.TextDim)
+	MpActiveTag = lipgloss.NewStyle().Foreground(th.AccentSecondary)
 }
 
 type tuiPreferences struct {
@@ -234,7 +234,7 @@ func themePreferencePath(stateDir string) string {
 	return filepath.Join(stateDir, "tui", "preferences.json")
 }
 
-func loadThemePreference(stateDir string) (string, bool) {
+func LoadThemePreference(stateDir string) (string, bool) {
 	path := themePreferencePath(stateDir)
 	if path == "" {
 		return "", false

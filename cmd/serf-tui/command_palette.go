@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -48,7 +49,7 @@ func (p commandPalette) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (p commandPalette) renderItems() string {
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	filtered := p.panel.filtered()
 	if len(filtered) == 0 {
 		return lipgloss.NewStyle().Foreground(th.TextDim).Render("  No matching commands.")
@@ -74,7 +75,7 @@ func (p commandPalette) renderItems() string {
 }
 
 func (p commandPalette) View() string {
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	var filterLine string
 	if p.panel.filter == "" {
 		filterLine = "Filter: " + lipgloss.NewStyle().Foreground(th.TextDim).Render("type to filter...")

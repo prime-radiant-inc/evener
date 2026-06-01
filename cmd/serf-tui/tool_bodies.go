@@ -10,6 +10,7 @@ import (
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
 // diffBody renders a unified diff with per-line state tints:
@@ -21,7 +22,7 @@ func diffBody(_ ToolArgs, output string, width int) string {
 	if output == "" {
 		return ""
 	}
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	lines := strings.Split(output, "\n")
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
@@ -52,7 +53,7 @@ func diffBody(_ ToolArgs, output string, width int) string {
 // render as near-white on light terminals. github is a light-mode style
 // with strong contrast on light backgrounds.
 func chromaStyleForActiveTheme() string {
-	if activeTheme().Name == "light" {
+	if tuitheme.ActiveTheme().Name == "light" {
 		return "github"
 	}
 	return "monokai"
@@ -129,7 +130,7 @@ func fileBody(args ToolArgs, output string, width int) string {
 	if output == "" {
 		return ""
 	}
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	// Strip exactly one terminal newline so a file ending with "\n" doesn't
 	// register as having an empty trailing line (which would inflate the
 	// preview count and trigger a bogus "show 1 more lines" hint).
@@ -166,7 +167,7 @@ func taskListBody(_ ToolArgs, output string, width int) string {
 	if err := json.Unmarshal([]byte(output), &items); err != nil {
 		return ""
 	}
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	lines := make([]string, 0, len(items))
 	for _, item := range items {
 		var glyph string
@@ -235,7 +236,7 @@ func subagentBody(args ToolArgs, output string, width int) string {
 		status = "running"
 	}
 
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	summary := fmt.Sprintf("subagent %s (%d turns, %s)", shortID(agentID), turns, status)
 	styled := lipgloss.NewStyle().Foreground(th.StateSubagent).Render(summary)
 
@@ -253,7 +254,7 @@ func subagentBody(args ToolArgs, output string, width int) string {
 func shellBody(args ToolArgs, output string, width int) string {
 	var lines []string
 	if cmd := strings.TrimSpace(args.Str("command")); cmd != "" {
-		cmdStyled := lipgloss.NewStyle().Foreground(activeTheme().TextMuted).Render("$ " + cmd)
+		cmdStyled := lipgloss.NewStyle().Foreground(tuitheme.ActiveTheme().TextMuted).Render("$ " + cmd)
 		lines = append(lines, cmdStyled)
 	}
 	if output != "" {

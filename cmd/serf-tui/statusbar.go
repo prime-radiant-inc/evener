@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
 const compactThreshold = 0.90 // must match agent/context_manager.go SummarizeThreshold
@@ -25,7 +26,7 @@ type statusBarInfo struct {
 
 // renderStatusBar renders a persistent status bar using the hub session theme.
 func renderStatusBar(info statusBarInfo) string {
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	parts := []string{}
 
 	// Health dot + label

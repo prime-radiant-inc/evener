@@ -5,18 +5,19 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
 // StateBar returns a single 1-column glyph foreground-colored to state.
 func StateBar(state lipgloss.Color) string {
-	return lipgloss.NewStyle().Foreground(state).Render(activeTheme().LeftBarGlyph)
+	return lipgloss.NewStyle().Foreground(state).Render(tuitheme.ActiveTheme().LeftBarGlyph)
 }
 
 // FocusedStateBar returns the same glyph twice for selected/focused rows.
 // Total visual width is 2 columns; callers must account for this in
 // right-alignment math.
 func FocusedStateBar(state lipgloss.Color) string {
-	g := activeTheme().LeftBarGlyph
+	g := tuitheme.ActiveTheme().LeftBarGlyph
 	return lipgloss.NewStyle().Foreground(state).Render(g + g)
 }
 
@@ -33,7 +34,7 @@ func StatusBadge(state lipgloss.Color, label string) string {
 // SectionDivider renders "─ LEFT ──…────── RIGHT ┄" filling middle with
 // theme.Rule, label tone via theme.TextDim, trailing ┄ in theme.Rule.
 func SectionDivider(width int, left, right string) string {
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	if width <= 0 {
 		width = 60
 	}
@@ -84,7 +85,7 @@ func SectionDivider(width int, left, right string) string {
 // black/white rectangle that fights the surrounding paper, and the
 // typography alone is enough to mark the key apart from the action.
 func KbdHint(key, action string) string {
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	keyStyled := lipgloss.NewStyle().
 		Foreground(th.Accent).
 		Bold(true).
@@ -96,7 +97,7 @@ func KbdHint(key, action string) string {
 // DotLeader returns "left ········ right" exactly `width` columns wide
 // (best-effort). Dots are TextGhost color.
 func DotLeader(left, right string, width int) string {
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	lw := lipgloss.Width(left)
 	rw := lipgloss.Width(right)
 	if width <= 0 {
@@ -125,7 +126,7 @@ type OverlayOpts struct {
 
 // Overlay renders a rounded-border modal with title, body, and optional footer.
 func Overlay(opts OverlayOpts) string {
-	th := activeTheme()
+	th := tuitheme.ActiveTheme()
 	accent := opts.Accent
 	if accent == "" {
 		accent = th.Accent
