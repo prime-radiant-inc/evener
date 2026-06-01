@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/hubapi"
-	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/binresolve"
 )
 

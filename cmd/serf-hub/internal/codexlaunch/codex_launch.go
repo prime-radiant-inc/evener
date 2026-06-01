@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appsource"
-	"primeradiant.com/serf/internal/appwire"
 )
 
 type CodexLaunchConfig struct {

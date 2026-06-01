@@ -3,7 +3,7 @@ package main
 import (
 	"strings"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 )
 
 func authProviderArg(args string) string {

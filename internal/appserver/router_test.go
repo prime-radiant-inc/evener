@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 )
 
 func TestRouterDispatchesTypedHandler(t *testing.T) {

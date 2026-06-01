@@ -3,7 +3,7 @@ package appserver
 import (
 	"sync"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 )
 
 type SequencedNotification struct {

@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 )
 
 type codexLiveThread struct {

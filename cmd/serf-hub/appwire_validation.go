@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/internal/appwire"
 )
 
 func validateAppWireInputItems(items []appwire.InputItem) error {

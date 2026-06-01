@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/internal/appwire"
 )
 
 func TestHubModelAuthCommandsUseAppWire(t *testing.T) {

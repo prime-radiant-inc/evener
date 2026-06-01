@@ -3,7 +3,7 @@ package appsource
 import (
 	"context"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 )
 
 type Source interface {

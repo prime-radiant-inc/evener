@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/launchconfig"
 )
 

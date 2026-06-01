@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 )
 
 func codexInput(prompt string, items []appwire.InputItem) ([]map[string]any, error) {

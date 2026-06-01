@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/internal/appwire"
 	authopenai "primeradiant.com/serf/internal/auth/openai"
 	"primeradiant.com/serf/internal/auth/openai/oaitest"
 	"primeradiant.com/serf/internal/credentials"

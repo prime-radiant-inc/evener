@@ -9,9 +9,9 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
 	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/internal/appwire"
 )
 
 // writeAttachmentTempFile writes bytes to a temp PNG and returns the path.

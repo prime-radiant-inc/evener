@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
-	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/rendezvous"
 )
 

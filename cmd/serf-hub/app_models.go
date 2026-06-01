@@ -4,10 +4,10 @@ import (
 	"context"
 	"strings"
 
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/appsource"
-	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/llm/providercfg"
 )
 

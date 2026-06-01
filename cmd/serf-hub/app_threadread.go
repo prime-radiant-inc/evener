@@ -7,9 +7,9 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/internal/apptranscript"
-	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/llm"
 )
 

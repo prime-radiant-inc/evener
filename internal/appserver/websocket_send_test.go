@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 )
 
 type blockingSendTransport struct {

@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 )
 
 func CompleteDirs(params appwire.DirsCompleteParams) (appwire.DirsCompleteResponse, error) {

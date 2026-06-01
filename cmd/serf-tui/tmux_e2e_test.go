@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/internal/appwire"
 )
 
 const tuiE2EProjectDir = "/tmp/serf-tui-e2e/serf"

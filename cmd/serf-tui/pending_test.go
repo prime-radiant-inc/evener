@@ -8,10 +8,10 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/appwire/appwiretest"
 	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
-	"primeradiant.com/serf/internal/appwire"
-	"primeradiant.com/serf/internal/appwire/appwiretest"
 )
 
 // fakeClock implements pendingClock for deterministic timeout tests.

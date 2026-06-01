@@ -14,7 +14,7 @@ import (
 	"syscall"
 
 	"nhooyr.io/websocket"
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 )
 
 type CodexSourceConfig struct {

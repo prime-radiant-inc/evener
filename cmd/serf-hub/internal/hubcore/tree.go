@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 )
 
 // Tree is the sidebar data model: a flat live-triage section and a

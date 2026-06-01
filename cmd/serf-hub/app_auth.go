@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
-	"primeradiant.com/serf/internal/appwire"
 	authopenai "primeradiant.com/serf/internal/auth/openai"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/llm/providercfg"

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/internal/appwire"
-	"primeradiant.com/serf/internal/appwire/appwiretest"
+	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/appwire/appwiretest"
 )
 
 func TestScriptedTransport_ResponseAndNotification(t *testing.T) {

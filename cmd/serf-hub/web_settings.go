@@ -11,12 +11,12 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmd/serf-hub/internal/editorurl"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubedge"
 	"primeradiant.com/serf/cmd/serf-hub/internal/mcpstatus"
 	"primeradiant.com/serf/frontmatter"
-	"primeradiant.com/serf/internal/appwire"
 )
 
 func (s *WebServer) handleSettings(w http.ResponseWriter, r *http.Request) {

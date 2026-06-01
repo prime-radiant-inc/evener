@@ -6,7 +6,7 @@ import (
 	"sort"
 	"sync"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 	authopenai "primeradiant.com/serf/internal/auth/openai"
 	"primeradiant.com/serf/llm/providercfg"
 )

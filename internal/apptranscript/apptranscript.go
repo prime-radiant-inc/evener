@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/llm"
 )

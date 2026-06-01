@@ -1,6 +1,6 @@
 package launchconfig
 
-import "primeradiant.com/serf/internal/appwire"
+import "primeradiant.com/serf/appwire"
 
 // FromWire converts an appwire.LaunchConfigLayer to the internal Layer.
 func FromWire(in appwire.LaunchConfigLayer) Layer {

@@ -9,7 +9,7 @@ import (
 	"errors"
 	"sync"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 )
 
 // ScriptedTransport is a fake appwire.Transport whose Send calls are

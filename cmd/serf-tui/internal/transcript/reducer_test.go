@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 )
 
 func TestHubTranscriptReducerReconcilesUserEchoWithReplay(t *testing.T) {

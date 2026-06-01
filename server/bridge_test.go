@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 )
 
 func TestBridge_ForwardsEvents(t *testing.T) {

@@ -6,9 +6,9 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/internal/appwire"
 )
 
 func TestHubModelAgentsPickerReadsSelectedTranscriptThroughAppWire(t *testing.T) {

@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/llm"
 )
 

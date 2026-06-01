@@ -16,9 +16,9 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf/internal/rvreg"
 	"primeradiant.com/serf/cmdutil"
-	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	_ "primeradiant.com/serf/llm/providers/anthropic"

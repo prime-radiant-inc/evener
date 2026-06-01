@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 )
 
 func (s *Server) handleSteer(w http.ResponseWriter, r *http.Request) {

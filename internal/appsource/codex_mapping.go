@@ -3,7 +3,7 @@ package appsource
 import (
 	"encoding/json"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 )
 
 func mapCodexThreadStatus(status codexThreadStatus) appwire.ThreadStatus {

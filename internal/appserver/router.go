@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 )
 
 type HandlerFunc func(context.Context, json.RawMessage) (any, error)

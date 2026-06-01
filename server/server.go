@@ -7,9 +7,9 @@ import (
 	"sync"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appprojector"
 	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/httpguard"
 )
 

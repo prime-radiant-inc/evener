@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
-	"primeradiant.com/serf/internal/appwire"
 )
 
 // hubQueueMsg reports the result of a turn/queue call. On success the TUI's

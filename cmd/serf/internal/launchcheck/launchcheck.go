@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmdutil"
-	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"

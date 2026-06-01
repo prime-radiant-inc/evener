@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"nhooyr.io/websocket"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/internal/appwire"
 )
 
 func TestCodexSourceListsThreads(t *testing.T) {

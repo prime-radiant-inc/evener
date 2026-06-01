@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
-	"primeradiant.com/serf/internal/appwire"
 )
 
 func hubTranscriptPickerItems(targets []appwire.ThreadTranscriptTarget) []tuipick.ModelPickerItem {

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/auth/openai/oaitest"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/openai"

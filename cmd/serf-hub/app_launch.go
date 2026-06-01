@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
-	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/launchconfig"
 )
 

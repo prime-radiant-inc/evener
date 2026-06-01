@@ -6,10 +6,10 @@ import (
 	"sort"
 	"strings"
 
+	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
 	"primeradiant.com/serf/internal/appsource"
-	"primeradiant.com/serf/internal/appwire"
 )
 
 func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {

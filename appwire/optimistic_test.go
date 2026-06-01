@@ -7,8 +7,8 @@ import (
 	"sync"
 	"testing"
 
-	"primeradiant.com/serf/internal/appwire"
-	"primeradiant.com/serf/internal/appwire/appwiretest"
+	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/appwire/appwiretest"
 )
 
 type fakeCoordinator struct {

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"nhooyr.io/websocket"
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 )
 
 var serverConnSeq atomic.Uint64

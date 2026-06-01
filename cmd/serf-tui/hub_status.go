@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 )
 
 func renderHubSessionStatus(detail hubSessionDetail, tasks []agent.Task, auth appwire.AuthStatusResponse, taskErr, authErr error, width int) string {

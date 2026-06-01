@@ -4,7 +4,7 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 )
 
 func (m hubModel) selectedDashboardRow() (hubRow, bool) {

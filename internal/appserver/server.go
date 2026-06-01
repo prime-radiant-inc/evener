@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"primeradiant.com/serf/internal/appwire"
+	"primeradiant.com/serf/appwire"
 )
 
 type ServerConfig struct {
