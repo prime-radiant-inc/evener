@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
 	"primeradiant.com/serf/cmd/serf-tui/internal/hubstart"
 	"primeradiant.com/serf/cmd/serf-tui/internal/inputhistory"
+	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -43,9 +44,9 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.launchOverridesModal != nil {
 		updated, cmd := m.launchOverridesModal.Update(msg)
-		p := updated.(launchOverridesModal)
+		p := updated.(launchconfig.LaunchOverridesModal)
 		m.launchOverridesModal = &p
-		if p.done {
+		if p.Done() {
 			m.launchOverridesModal = nil
 		}
 		return m, cmd
@@ -242,7 +243,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			cp := *m.spawnLaunchOverrides
 			initial = &cp
 		}
-		return m, func() tea.Msg { return launchOverridesOpenMsg{Initial: initial} }
+		return m, func() tea.Msg { return launchconfig.LaunchOverridesOpenMsg{Initial: initial} }
 	}
 	if msg.Type == tea.KeyCtrlS {
 		return m.handleSessionForceSteer()

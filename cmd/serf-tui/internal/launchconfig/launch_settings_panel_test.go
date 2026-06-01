@@ -1,4 +1,4 @@
-package main
+package launchconfig
 
 import (
 	"os"
@@ -13,9 +13,9 @@ import (
 
 func TestLaunchSettingsPanelUsesOverlay(t *testing.T) {
 	withTestColorProfile(t)
-	p := newLaunchSettingsPanel(nil, "/cwd")
-	updated, _ := p.Update(launchLayerResultMsg{Layer: "global", Data: appwire.LaunchConfigLayer{Model: "openai/gpt-5"}})
-	got := updated.(launchSettingsPanel).View()
+	p := NewLaunchSettingsPanel(nil, "/cwd")
+	updated, _ := p.Update(LaunchLayerResultMsg{Layer: "global", Data: appwire.LaunchConfigLayer{Model: "openai/gpt-5"}})
+	got := updated.(LaunchSettingsPanel).View()
 	plain := ansiPattern.ReplaceAllString(got, "")
 	if !strings.Contains(plain, "╭") {
 		t.Errorf("launch_settings should use Overlay primitive: %q", plain)
@@ -26,21 +26,21 @@ func TestLaunchSettingsPanelUsesOverlay(t *testing.T) {
 }
 
 func TestLaunchSettingsPanel_TabSwitch(t *testing.T) {
-	p := newLaunchSettingsPanel(nil, "/cwd")
-	updated, _ := p.Update(launchLayerResultMsg{Layer: "global", Data: appwire.LaunchConfigLayer{Model: "openai/gpt-5"}})
-	p = updated.(launchSettingsPanel)
+	p := NewLaunchSettingsPanel(nil, "/cwd")
+	updated, _ := p.Update(LaunchLayerResultMsg{Layer: "global", Data: appwire.LaunchConfigLayer{Model: "openai/gpt-5"}})
+	p = updated.(LaunchSettingsPanel)
 	updated, _ = p.Update(tea.KeyMsg{Type: tea.KeyRight})
-	v := updated.(launchSettingsPanel).View()
+	v := updated.(LaunchSettingsPanel).View()
 	if !strings.Contains(v, "Project") {
 		t.Errorf("view should show Project tab after Right:\n%s", v)
 	}
 }
 
 func TestLaunchSettingsPanel_LoadsGlobalFirst(t *testing.T) {
-	p := newLaunchSettingsPanel(nil, "/cwd")
-	cmd := p.initialCmd()
+	p := NewLaunchSettingsPanel(nil, "/cwd")
+	cmd := p.InitialCmd()
 	if cmd == nil {
-		t.Fatal("initialCmd nil")
+		t.Fatal("InitialCmd nil")
 	}
 	if !p.loadingGlobal {
 		t.Errorf("expected loadingGlobal")
@@ -48,15 +48,15 @@ func TestLaunchSettingsPanel_LoadsGlobalFirst(t *testing.T) {
 }
 
 func TestLaunchSettingsPanel_EditEmitsModalRequest(t *testing.T) {
-	p := newLaunchSettingsPanel(nil, "/cwd")
-	updated, _ := p.Update(launchLayerResultMsg{Layer: "global", Data: appwire.LaunchConfigLayer{Model: "openai/gpt-5"}})
+	p := NewLaunchSettingsPanel(nil, "/cwd")
+	updated, _ := p.Update(LaunchLayerResultMsg{Layer: "global", Data: appwire.LaunchConfigLayer{Model: "openai/gpt-5"}})
 	// cursor starts at 0, which is "model"
 	_, cmd := updated.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("Enter should produce a cmd requesting a modal")
 	}
 	msg := cmd()
-	req, ok := msg.(launchSettingsEditRequestMsg)
+	req, ok := msg.(LaunchSettingsEditRequestMsg)
 	if !ok {
 		t.Fatalf("msg = %T", msg)
 	}
@@ -69,11 +69,11 @@ func TestLaunchSettingsPanel_EditEmitsModalRequest(t *testing.T) {
 }
 
 func TestLaunchSettingsPanel_UsesSchemaRowsWhenAvailable(t *testing.T) {
-	p := newLaunchSettingsPanel(nil, "/cwd")
-	updated, _ := p.Update(launchSchemaResultMsg{Schema: appwire.LaunchOptionSchemaResponse{Options: testLaunchSchema()}})
-	p = updated.(launchSettingsPanel)
-	updated, _ = p.Update(launchLayerResultMsg{Layer: "global", Data: appwire.LaunchConfigLayer{Agent: "serf"}})
-	view := updated.(launchSettingsPanel).View()
+	p := NewLaunchSettingsPanel(nil, "/cwd")
+	updated, _ := p.Update(LaunchSchemaResultMsg{Schema: appwire.LaunchOptionSchemaResponse{Options: testLaunchSchema()}})
+	p = updated.(LaunchSettingsPanel)
+	updated, _ = p.Update(LaunchLayerResultMsg{Layer: "global", Data: appwire.LaunchConfigLayer{Agent: "serf"}})
+	view := updated.(LaunchSettingsPanel).View()
 	if !strings.Contains(view, "Agent") {
 		t.Fatalf("view should use schema labels:\n%s", view)
 	}
@@ -83,12 +83,12 @@ func TestLaunchSettingsPanel_UsesSchemaRowsWhenAvailable(t *testing.T) {
 }
 
 func TestLaunchSettingsPanel_ProjectSchemaRowsExcludeGlobalOnly(t *testing.T) {
-	p := newLaunchSettingsPanel(nil, "/cwd")
+	p := NewLaunchSettingsPanel(nil, "/cwd")
 	p.tab = launchTabProject
-	updated, _ := p.Update(launchSchemaResultMsg{Schema: appwire.LaunchOptionSchemaResponse{Options: testLaunchSchema()}})
-	p = updated.(launchSettingsPanel)
-	updated, _ = p.Update(launchLayerResultMsg{Layer: "project", Data: appwire.LaunchConfigLayer{Agent: "serf"}})
-	view := updated.(launchSettingsPanel).View()
+	updated, _ := p.Update(LaunchSchemaResultMsg{Schema: appwire.LaunchOptionSchemaResponse{Options: testLaunchSchema()}})
+	p = updated.(LaunchSettingsPanel)
+	updated, _ = p.Update(LaunchLayerResultMsg{Layer: "project", Data: appwire.LaunchConfigLayer{Agent: "serf"}})
+	view := updated.(LaunchSettingsPanel).View()
 	if strings.Contains(view, "App replay size") {
 		t.Fatalf("project schema view should exclude global-only field:\n%s", view)
 	}
@@ -269,7 +269,7 @@ func TestApplyEdit_MCPsParsesRowsAndPreservesArgs(t *testing.T) {
 }
 
 func TestLaunchSettingsPanel_ApplyEditMCPs(t *testing.T) {
-	p := newLaunchSettingsPanel(nil, "/cwd")
+	p := NewLaunchSettingsPanel(nil, "/cwd")
 	p.global = appwire.LaunchConfigLayer{MCPs: []appwire.MCPServerSpec{{Name: "old", Command: "sh"}}}
 	gotPanel, updated, err := p.ApplyEdit("mcps", mcpEditValue(p.global.MCPs))
 	if err != nil {

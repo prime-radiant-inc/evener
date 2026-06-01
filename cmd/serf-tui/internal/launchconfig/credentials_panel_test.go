@@ -1,4 +1,4 @@
-package main
+package launchconfig
 
 import (
 	"strings"
@@ -12,13 +12,13 @@ import (
 
 func TestCredentialsPanelShowsStatusBadges(t *testing.T) {
 	withTestColorProfile(t)
-	m := newCredentialsPanel()
-	updated, _ := m.Update(instanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
 		{Name: "openai", Type: "openai", ActiveSource: "oauth", AuthModes: []string{"oauth"}},
 		{Name: "anthropic", Type: "anthropic", ActiveSource: "env", AuthModes: []string{"apiKey"}},
 		{Name: "kimi", Type: "kimi", ActiveSource: "absent", AuthModes: []string{"apiKey"}},
 	}}})
-	got := updated.(credentialsPanel).View()
+	got := updated.(CredentialsPanel).View()
 	plain := ansiPattern.ReplaceAllString(got, "")
 	for _, want := range []string{"OAUTH", "ENV", "ABSENT"} {
 		if !strings.Contains(plain, want) {
@@ -31,12 +31,12 @@ func TestCredentialsPanelShowsStatusBadges(t *testing.T) {
 }
 
 func TestCredentialsPanel_RendersList(t *testing.T) {
-	m := newCredentialsPanel()
-	updated, _ := m.Update(instanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
 		{Name: "openai", Type: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey", "oauth"}},
 		{Name: "anthropic", Type: "anthropic", ActiveSource: "absent", AuthModes: []string{"apiKey"}},
 	}}})
-	view := updated.(credentialsPanel).View()
+	view := updated.(CredentialsPanel).View()
 	for _, want := range []string{"openai", "anthropic", "OAUTH", "ABSENT"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view missing %q:\n%s", want, view)
@@ -45,8 +45,8 @@ func TestCredentialsPanel_RendersList(t *testing.T) {
 }
 
 func TestCredentialsPanel_EnterTriggersSet(t *testing.T) {
-	m := newCredentialsPanel()
-	updated, _ := m.Update(instanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
 		{Name: "anthropic", Type: "anthropic", ActiveSource: "absent", AuthModes: []string{"apiKey"}},
 	}}})
 	_, cmd := updated.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -54,7 +54,7 @@ func TestCredentialsPanel_EnterTriggersSet(t *testing.T) {
 		t.Fatal("Enter should produce a cmd")
 	}
 	msg := cmd()
-	got, ok := msg.(credentialsActionMsg)
+	got, ok := msg.(CredentialsActionMsg)
 	if !ok {
 		t.Fatalf("cmd msg = %T", msg)
 	}
@@ -67,13 +67,13 @@ func TestCredentialsPanel_EnterTriggersSet(t *testing.T) {
 
 func TestCredentialsPanel_GroupsByType(t *testing.T) {
 	withTestColorProfile(t)
-	m := newCredentialsPanel()
-	updated, _ := m.Update(instanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
 		{Name: "openai", Type: "openai", IsDefault: true, ActiveSource: "oauth", AuthModes: []string{"oauth"}},
 		{Name: "openai-compat", Type: "openai", ActiveSource: "absent", AuthModes: []string{"apiKey"}},
 		{Name: "anthropic", Type: "anthropic", ActiveSource: "env", AuthModes: []string{"apiKey"}},
 	}}})
-	got := updated.(credentialsPanel).View()
+	got := updated.(CredentialsPanel).View()
 	plain := ansiPattern.ReplaceAllString(got, "")
 
 	// Type group headers appear
@@ -98,8 +98,8 @@ func TestCredentialsPanel_GroupsByType(t *testing.T) {
 }
 
 func TestCredentialsPanel_OAuthKeyEmitsOAuth(t *testing.T) {
-	m := newCredentialsPanel()
-	updated, _ := m.Update(instanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
 		{Name: "openai", Type: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey", "oauth"}},
 	}}})
 	_, cmd := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("o")})
@@ -107,7 +107,7 @@ func TestCredentialsPanel_OAuthKeyEmitsOAuth(t *testing.T) {
 		t.Fatal("o key should produce a cmd for oauth instance")
 	}
 	msg := cmd()
-	got, ok := msg.(credentialsActionMsg)
+	got, ok := msg.(CredentialsActionMsg)
 	if !ok {
 		t.Fatalf("cmd msg = %T", msg)
 	}
@@ -117,8 +117,8 @@ func TestCredentialsPanel_OAuthKeyEmitsOAuth(t *testing.T) {
 }
 
 func TestCredentialsPanel_ClearEmitsLogout(t *testing.T) {
-	m := newCredentialsPanel()
-	updated, _ := m.Update(instanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
 		{Name: "anthropic", Type: "anthropic", ActiveSource: "env", AuthModes: []string{"apiKey"}},
 	}}})
 	_, cmd := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
@@ -126,7 +126,7 @@ func TestCredentialsPanel_ClearEmitsLogout(t *testing.T) {
 		t.Fatal("c key should produce a cmd")
 	}
 	msg := cmd()
-	got, ok := msg.(credentialsActionMsg)
+	got, ok := msg.(CredentialsActionMsg)
 	if !ok {
 		t.Fatalf("cmd msg = %T", msg)
 	}
@@ -136,8 +136,8 @@ func TestCredentialsPanel_ClearEmitsLogout(t *testing.T) {
 }
 
 func TestCredentialsPanel_StarEmitsSetDefault(t *testing.T) {
-	m := newCredentialsPanel()
-	updated, _ := m.Update(instanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
 		{Name: "openai", Type: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey"}},
 	}}})
 	_, cmd := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("*")})
@@ -145,18 +145,18 @@ func TestCredentialsPanel_StarEmitsSetDefault(t *testing.T) {
 		t.Fatal("* key should produce a cmd")
 	}
 	msg := cmd()
-	got, ok := msg.(instanceSetDefaultMsg)
+	got, ok := msg.(InstanceSetDefaultMsg)
 	if !ok {
-		t.Fatalf("cmd msg = %T, want instanceSetDefaultMsg", msg)
+		t.Fatalf("cmd msg = %T, want InstanceSetDefaultMsg", msg)
 	}
 	if got.Name != "openai" {
-		t.Errorf("instanceSetDefaultMsg.Name = %q, want openai", got.Name)
+		t.Errorf("InstanceSetDefaultMsg.Name = %q, want openai", got.Name)
 	}
 }
 
 func TestCredentialsPanel_XEmitsRemove(t *testing.T) {
-	m := newCredentialsPanel()
-	updated, _ := m.Update(instanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
 		{Name: "openai", Type: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey"}},
 	}}})
 	_, cmd := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
@@ -164,23 +164,23 @@ func TestCredentialsPanel_XEmitsRemove(t *testing.T) {
 		t.Fatal("x key should produce a cmd")
 	}
 	msg := cmd()
-	got, ok := msg.(instanceRemoveMsg)
+	got, ok := msg.(InstanceRemoveMsg)
 	if !ok {
-		t.Fatalf("cmd msg = %T, want instanceRemoveMsg", msg)
+		t.Fatalf("cmd msg = %T, want InstanceRemoveMsg", msg)
 	}
 	if got.Name != "openai" {
-		t.Errorf("instanceRemoveMsg.Name = %q, want openai", got.Name)
+		t.Errorf("InstanceRemoveMsg.Name = %q, want openai", got.Name)
 	}
 }
 
 func TestCredentialsPanel_NOpensCreateForm(t *testing.T) {
-	m := newCredentialsPanel()
-	updated, _ := m.Update(instanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
 		{Name: "openai", Type: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey"}},
 	}}})
-	panel := updated.(credentialsPanel)
+	panel := updated.(CredentialsPanel)
 	panel2, _ := panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	p2 := panel2.(credentialsPanel)
+	p2 := panel2.(CredentialsPanel)
 	if !p2.formOpen {
 		t.Error("n key should open the create/edit form")
 	}
@@ -190,13 +190,13 @@ func TestCredentialsPanel_NOpensCreateForm(t *testing.T) {
 }
 
 func TestCredentialsPanel_EOpensEditForm(t *testing.T) {
-	m := newCredentialsPanel()
-	updated, _ := m.Update(instanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
 		{Name: "openai", Type: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey"}},
 	}}})
-	panel := updated.(credentialsPanel)
+	panel := updated.(CredentialsPanel)
 	panel2, _ := panel.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
-	p2 := panel2.(credentialsPanel)
+	p2 := panel2.(CredentialsPanel)
 	if !p2.formOpen {
 		t.Error("e key should open the edit form")
 	}
@@ -206,18 +206,18 @@ func TestCredentialsPanel_EOpensEditForm(t *testing.T) {
 }
 
 func TestCredentialsPanel_NavigationSkipsGroupHeaders(t *testing.T) {
-	m := newCredentialsPanel()
+	m := NewCredentialsPanel()
 	// Two types, two instances each — group headers must be skipped by up/down.
-	updated, _ := m.Update(instanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
 		{Name: "openai", Type: "openai", ActiveSource: "oauth"},
 		{Name: "openai2", Type: "openai", ActiveSource: "absent"},
 		{Name: "anthropic", Type: "anthropic", ActiveSource: "env"},
 	}}})
-	panel := updated.(credentialsPanel)
+	panel := updated.(CredentialsPanel)
 
 	// Move down from first instance: should land on second openai instance, not the anthropic header
 	panel2, _ := panel.Update(tea.KeyMsg{Type: tea.KeyDown})
-	p2 := panel2.(credentialsPanel)
+	p2 := panel2.(CredentialsPanel)
 	inst := p2.selectedInstance()
 	if inst == nil || inst.Name != "openai2" {
 		t.Errorf("down from openai should land on openai2, got %v", inst)
@@ -225,7 +225,7 @@ func TestCredentialsPanel_NavigationSkipsGroupHeaders(t *testing.T) {
 
 	// Move down again: should skip group header and land on anthropic
 	panel3, _ := p2.Update(tea.KeyMsg{Type: tea.KeyDown})
-	p3 := panel3.(credentialsPanel)
+	p3 := panel3.(CredentialsPanel)
 	inst = p3.selectedInstance()
 	if inst == nil || inst.Name != "anthropic" {
 		t.Errorf("down from openai2 should land on anthropic (skipping header), got %v", inst)
@@ -233,13 +233,13 @@ func TestCredentialsPanel_NavigationSkipsGroupHeaders(t *testing.T) {
 }
 
 func TestCredentialsPanel_EscCloses(t *testing.T) {
-	m := newCredentialsPanel()
-	updated, _ := m.Update(instanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+	m := NewCredentialsPanel()
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
 		{Name: "openai", Type: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey"}},
 	}}})
-	panel := updated.(credentialsPanel)
+	panel := updated.(CredentialsPanel)
 	panel2, _ := panel.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	p2 := panel2.(credentialsPanel)
+	p2 := panel2.(CredentialsPanel)
 	if !p2.done {
 		t.Error("esc should set done=true")
 	}
@@ -249,10 +249,10 @@ func TestCredentialsPanel_EscCloses(t *testing.T) {
 }
 
 func TestCredentialsPanel_CreateFormCapturesType(t *testing.T) {
-	m := newCredentialsPanel()
+	m := NewCredentialsPanel()
 	// Open the create form with "n".
 	panel, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
-	p := panel.(credentialsPanel)
+	p := panel.(CredentialsPanel)
 	if !p.formOpen || p.formEditing {
 		t.Fatal("n key should open create form")
 	}
@@ -260,7 +260,7 @@ func TestCredentialsPanel_CreateFormCapturesType(t *testing.T) {
 	// Field 0 = type: type "openai".
 	for _, ch := range "openai" {
 		panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
-		p = panel.(credentialsPanel)
+		p = panel.(CredentialsPanel)
 	}
 	if p.formType != "openai" {
 		t.Fatalf("formType = %q, want openai", p.formType)
@@ -268,7 +268,7 @@ func TestCredentialsPanel_CreateFormCapturesType(t *testing.T) {
 
 	// Advance to field 1 (name).
 	panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	p = panel.(credentialsPanel)
+	p = panel.(CredentialsPanel)
 	if p.formActiveField() != "name" {
 		t.Fatalf("after first Enter, active field = %q, want name", p.formActiveField())
 	}
@@ -276,26 +276,26 @@ func TestCredentialsPanel_CreateFormCapturesType(t *testing.T) {
 	// Type a name.
 	for _, ch := range "myinst" {
 		panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
-		p = panel.(credentialsPanel)
+		p = panel.(CredentialsPanel)
 	}
 
 	// Advance to field 2 (apiStyle) — skip it.
 	panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	p = panel.(credentialsPanel)
+	p = panel.(CredentialsPanel)
 	if p.formActiveField() != "apiStyle" {
 		t.Fatalf("after second Enter, active field = %q, want apiStyle", p.formActiveField())
 	}
 
 	// Advance to field 3 (baseURL) — leave empty.
 	panel, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	p = panel.(credentialsPanel)
+	p = panel.(CredentialsPanel)
 	if p.formActiveField() != "baseURL" {
 		t.Fatalf("after third Enter, active field = %q, want baseURL", p.formActiveField())
 	}
 
 	// Submit on the last field.
 	panel, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	p = panel.(credentialsPanel)
+	p = panel.(CredentialsPanel)
 	if p.formOpen {
 		t.Error("form should be closed after submit")
 	}
@@ -303,9 +303,9 @@ func TestCredentialsPanel_CreateFormCapturesType(t *testing.T) {
 		t.Fatal("submit should produce a cmd")
 	}
 	msg := cmd()
-	got, ok := msg.(instanceCreateSubmitMsg)
+	got, ok := msg.(InstanceCreateSubmitMsg)
 	if !ok {
-		t.Fatalf("cmd msg = %T, want instanceCreateSubmitMsg", msg)
+		t.Fatalf("cmd msg = %T, want InstanceCreateSubmitMsg", msg)
 	}
 	if got.Params.Type != "openai" {
 		t.Errorf("Params.Type = %q, want openai", got.Params.Type)
@@ -316,18 +316,18 @@ func TestCredentialsPanel_CreateFormCapturesType(t *testing.T) {
 }
 
 func TestCredentialsPanel_InstanceListResultRefreshesPanel(t *testing.T) {
-	m := newCredentialsPanel()
+	m := NewCredentialsPanel()
 	// Initial load
-	updated, _ := m.Update(instanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
 		{Name: "openai", Type: "openai", ActiveSource: "oauth"},
 	}}})
 	// Second load (e.g. after a mutation)
-	updated2, _ := updated.Update(instanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
+	updated2, _ := updated.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
 		{Name: "openai", Type: "openai", ActiveSource: "oauth"},
 		{Name: "anthropic", Type: "anthropic", ActiveSource: "absent"},
 	}}})
-	view := updated2.(credentialsPanel).View()
+	view := updated2.(CredentialsPanel).View()
 	if !strings.Contains(view, "anthropic") {
-		t.Errorf("second instanceListResultMsg should refresh panel; anthropic missing:\n%s", view)
+		t.Errorf("second InstanceListResultMsg should refresh panel; anthropic missing:\n%s", view)
 	}
 }

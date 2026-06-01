@@ -1,4 +1,4 @@
-package main
+package launchconfig
 
 import (
 	"strings"
@@ -10,9 +10,9 @@ import (
 	"primeradiant.com/serf/internal/appwire"
 )
 
-// credentialsActionMsg carries a credential operation for a specific instance.
+// CredentialsActionMsg carries a credential operation for a specific instance.
 // Instance holds the instance name (not the provider type).
-type credentialsActionMsg struct {
+type CredentialsActionMsg struct {
 	Action   string // "set" | "logout" | "oauth"
 	Instance string
 }
@@ -25,9 +25,9 @@ type panelRow struct {
 	entry    *appwire.InstanceEntry
 }
 
-// credentialsPanel is the overlay model for managing provider instances.
+// CredentialsPanel is the overlay model for managing provider instances.
 // It groups instances by type and supports full CRUD keybindings.
-type credentialsPanel struct {
+type CredentialsPanel struct {
 	instances []appwire.InstanceEntry
 	rows      []panelRow // flattened display rows (headers + instance rows)
 	cursor    int        // index into rows (always points to a non-header row)
@@ -46,11 +46,11 @@ type credentialsPanel struct {
 	formBaseURL  string
 }
 
-func newCredentialsPanel() credentialsPanel {
-	return credentialsPanel{loading: true}
+func NewCredentialsPanel() CredentialsPanel {
+	return CredentialsPanel{loading: true}
 }
 
-func (p credentialsPanel) Init() tea.Cmd { return nil }
+func (p CredentialsPanel) Init() tea.Cmd { return nil }
 
 // buildRows constructs the flat header+instance row list from the instance
 // slice, grouping by type in the order they appear.
@@ -70,7 +70,7 @@ func buildPanelRows(instances []appwire.InstanceEntry) []panelRow {
 
 // selectedInstance returns a pointer to the instance at the current cursor
 // position, or nil when no selectable row exists.
-func (p credentialsPanel) selectedInstance() *appwire.InstanceEntry {
+func (p CredentialsPanel) selectedInstance() *appwire.InstanceEntry {
 	if len(p.rows) == 0 {
 		return nil
 	}
@@ -112,9 +112,9 @@ func firstSelectableRow(rows []panelRow) int {
 	return -1
 }
 
-func (p credentialsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (p CredentialsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
-	case instanceListResultMsg:
+	case InstanceListResultMsg:
 		p.loading = false
 		p.err = m.Err
 		if m.Err == nil {
@@ -141,7 +141,7 @@ func (p credentialsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return p, nil
 }
 
-func (p credentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (p CredentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.Type {
 	case tea.KeyEsc, tea.KeyCtrlC:
 		p.cancelled = true
@@ -162,10 +162,10 @@ func (p credentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		modes := strings.Join(cur.AuthModes, ",")
 		if strings.Contains(modes, "apiKey") {
-			return p, func() tea.Msg { return credentialsActionMsg{Action: "set", Instance: cur.Name} }
+			return p, func() tea.Msg { return CredentialsActionMsg{Action: "set", Instance: cur.Name} }
 		}
 		if strings.Contains(modes, "oauth") {
-			return p, func() tea.Msg { return credentialsActionMsg{Action: "oauth", Instance: cur.Name} }
+			return p, func() tea.Msg { return CredentialsActionMsg{Action: "oauth", Instance: cur.Name} }
 		}
 	case tea.KeyRunes:
 		s := string(m.Runes)
@@ -175,27 +175,27 @@ func (p credentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if cur == nil {
 				return p, nil
 			}
-			return p, func() tea.Msg { return credentialsActionMsg{Action: "logout", Instance: cur.Name} }
+			return p, func() tea.Msg { return CredentialsActionMsg{Action: "logout", Instance: cur.Name} }
 		case "o":
 			cur := p.selectedInstance()
 			if cur == nil {
 				return p, nil
 			}
-			return p, func() tea.Msg { return credentialsActionMsg{Action: "oauth", Instance: cur.Name} }
+			return p, func() tea.Msg { return CredentialsActionMsg{Action: "oauth", Instance: cur.Name} }
 		case "*":
 			cur := p.selectedInstance()
 			if cur == nil {
 				return p, nil
 			}
 			name := cur.Name
-			return p, func() tea.Msg { return instanceSetDefaultMsg{Name: name} }
+			return p, func() tea.Msg { return InstanceSetDefaultMsg{Name: name} }
 		case "x":
 			cur := p.selectedInstance()
 			if cur == nil {
 				return p, nil
 			}
 			name := cur.Name
-			return p, func() tea.Msg { return instanceRemoveMsg{Name: name} }
+			return p, func() tea.Msg { return InstanceRemoveMsg{Name: name} }
 		case "n":
 			p.formOpen = true
 			p.formEditing = false
@@ -226,7 +226,7 @@ func (p credentialsPanel) updateList(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 // updateForm handles key input while the create/edit form is shown.
 // Fields cycle through: for create (type→name→apiStyle→baseURL→submit);
 // for edit (apiStyle→baseURL→submit). Type and name are not editable for edit.
-func (p credentialsPanel) updateForm(m tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (p CredentialsPanel) updateForm(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.Type {
 	case tea.KeyEsc:
 		p.formOpen = false
@@ -250,7 +250,7 @@ func (p credentialsPanel) updateForm(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 				APIStyle: p.formAPIStyle,
 				BaseURL:  p.formBaseURL,
 			}
-			return p, func() tea.Msg { return instanceEditSubmitMsg{Params: params} }
+			return p, func() tea.Msg { return InstanceEditSubmitMsg{Params: params} }
 		}
 		params := appwire.InstanceCreateParams{
 			Type:     p.formType,
@@ -258,7 +258,7 @@ func (p credentialsPanel) updateForm(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 			APIStyle: p.formAPIStyle,
 			BaseURL:  p.formBaseURL,
 		}
-		return p, func() tea.Msg { return instanceCreateSubmitMsg{Params: params} }
+		return p, func() tea.Msg { return InstanceCreateSubmitMsg{Params: params} }
 	case tea.KeyBackspace:
 		p.formDeleteChar()
 	case tea.KeyRunes:
@@ -281,7 +281,7 @@ func (p credentialsPanel) updateForm(m tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return p, nil
 }
 
-func (p *credentialsPanel) toggleAPIStyle() {
+func (p *CredentialsPanel) toggleAPIStyle() {
 	if p.formAPIStyle == "chat-completions" {
 		p.formAPIStyle = "responses"
 	} else {
@@ -289,7 +289,7 @@ func (p *credentialsPanel) toggleAPIStyle() {
 	}
 }
 
-func (p *credentialsPanel) formDeleteChar() {
+func (p *CredentialsPanel) formDeleteChar() {
 	switch p.formActiveField() {
 	case "name":
 		if len(p.formName) > 0 {
@@ -306,7 +306,7 @@ func (p *credentialsPanel) formDeleteChar() {
 	}
 }
 
-func (p *credentialsPanel) formAppendChar(s string) {
+func (p *CredentialsPanel) formAppendChar(s string) {
 	switch p.formActiveField() {
 	case "name":
 		p.formName += s
@@ -320,7 +320,7 @@ func (p *credentialsPanel) formAppendChar(s string) {
 // formActiveField maps the current formField index to a field name.
 // For create: 0=type, 1=name, 2=apiStyle, 3=baseURL.
 // For edit:   0=apiStyle, 1=baseURL.
-func (p credentialsPanel) formActiveField() string {
+func (p CredentialsPanel) formActiveField() string {
 	if p.formEditing {
 		switch p.formField {
 		case 0:
@@ -341,17 +341,17 @@ func (p credentialsPanel) formActiveField() string {
 	}
 }
 
-// instanceCreateSubmitMsg triggers a create RPC call in hub_model.
-type instanceCreateSubmitMsg struct {
+// InstanceCreateSubmitMsg triggers a create RPC call in hub_model.
+type InstanceCreateSubmitMsg struct {
 	Params appwire.InstanceCreateParams
 }
 
-// instanceEditSubmitMsg triggers an edit RPC call in hub_model.
-type instanceEditSubmitMsg struct {
+// InstanceEditSubmitMsg triggers an edit RPC call in hub_model.
+type InstanceEditSubmitMsg struct {
 	Params appwire.InstanceEditParams
 }
 
-func (p credentialsPanel) sourceBadgeColor(source string) lipgloss.Color {
+func (p CredentialsPanel) sourceBadgeColor(source string) lipgloss.Color {
 	th := tuitheme.ActiveTheme()
 	switch source {
 	case "oauth", "env":
@@ -363,7 +363,10 @@ func (p credentialsPanel) sourceBadgeColor(source string) lipgloss.Color {
 	}
 }
 
-func (p credentialsPanel) View() string {
+// Done reports whether the panel has been dismissed.
+func (p CredentialsPanel) Done() bool { return p.done }
+
+func (p CredentialsPanel) View() string {
 	th := tuitheme.ActiveTheme()
 	var body string
 	if p.formOpen {
@@ -428,7 +431,7 @@ func (p credentialsPanel) View() string {
 }
 
 // formView renders the in-overlay create/edit form.
-func (p credentialsPanel) formView() string {
+func (p CredentialsPanel) formView() string {
 	var lines []string
 	if p.formEditing {
 		lines = append(lines, "Edit instance: "+p.formName)
@@ -446,14 +449,14 @@ func (p credentialsPanel) formView() string {
 	return strings.Join(lines, "\n")
 }
 
-func (p credentialsPanel) apiStyleDisplay() string {
+func (p CredentialsPanel) apiStyleDisplay() string {
 	if p.formAPIStyle == "" {
 		return "(default)"
 	}
 	return p.formAPIStyle
 }
 
-func (p credentialsPanel) formFieldLine(label, fieldName, value string, fieldIdx int) string {
+func (p CredentialsPanel) formFieldLine(label, fieldName, value string, fieldIdx int) string {
 	th := tuitheme.ActiveTheme()
 	active := p.formActiveField() == fieldName
 	cursor := "  "

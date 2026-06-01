@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/cmd/serf-tui/internal/hubdiagnostics"
+	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
 	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -15,12 +16,12 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 	switch notification.Method {
 	case appwire.NotifySerfAuthUpdated:
 		if m.credentialsPanel != nil && m.client != nil {
-			return cmdInstanceList(m.client)
+			return launchconfig.CmdInstanceList(m.client)
 		}
 		return nil
 	case appwire.NotifySerfLaunchUpdated:
 		if m.launchSettingsPanel != nil {
-			return m.launchSettingsPanel.initialCmd()
+			return m.launchSettingsPanel.InitialCmd()
 		}
 		return nil
 	}

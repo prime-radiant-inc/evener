@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
+	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
 	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -120,10 +121,10 @@ type hubModel struct {
 	authLoginProvider string
 	authLoginFlowID   string
 
-	credentialsPanel     *credentialsPanel
-	launchSettingsPanel  *launchSettingsPanel
+	credentialsPanel     *launchconfig.CredentialsPanel
+	launchSettingsPanel  *launchconfig.LaunchSettingsPanel
 	followupModal        *textInputModal
-	launchOverridesModal *launchOverridesModal
+	launchOverridesModal *launchconfig.LaunchOverridesModal
 
 	spawnLaunchOverrides *appwire.LaunchConfigLayer
 

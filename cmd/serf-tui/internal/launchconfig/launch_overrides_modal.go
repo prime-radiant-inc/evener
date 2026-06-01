@@ -1,4 +1,4 @@
-package main
+package launchconfig
 
 import (
 	"fmt"
@@ -9,16 +9,16 @@ import (
 	"primeradiant.com/serf/internal/appwire"
 )
 
-type launchOverridesResultMsg struct {
+type LaunchOverridesResultMsg struct {
 	Overrides *appwire.LaunchConfigLayer
 	Cancelled bool
 }
 
-type launchOverridesOpenMsg struct {
+type LaunchOverridesOpenMsg struct {
 	Initial *appwire.LaunchConfigLayer
 }
 
-type launchOverridesModal struct {
+type LaunchOverridesModal struct {
 	cur       appwire.LaunchConfigLayer
 	schema    []appwire.LaunchOption
 	cursor    int
@@ -26,23 +26,23 @@ type launchOverridesModal struct {
 	cancelled bool
 }
 
-func newLaunchOverridesModal() launchOverridesModal {
-	return launchOverridesModal{}
+func NewLaunchOverridesModal() LaunchOverridesModal {
+	return LaunchOverridesModal{}
 }
 
-func newLaunchOverridesModalWith(initial appwire.LaunchConfigLayer) launchOverridesModal {
-	return launchOverridesModal{cur: initial}
+func NewLaunchOverridesModalWith(initial appwire.LaunchConfigLayer) LaunchOverridesModal {
+	return LaunchOverridesModal{cur: initial}
 }
 
-func newLaunchOverridesModalWithSchema(initial appwire.LaunchConfigLayer, schema []appwire.LaunchOption) launchOverridesModal {
-	return launchOverridesModal{cur: initial, schema: schema}
+func NewLaunchOverridesModalWithSchema(initial appwire.LaunchConfigLayer, schema []appwire.LaunchOption) LaunchOverridesModal {
+	return LaunchOverridesModal{cur: initial, schema: schema}
 }
 
-func (m launchOverridesModal) Init() tea.Cmd { return nil }
+func (m LaunchOverridesModal) Init() tea.Cmd { return nil }
 
-func (m launchOverridesModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m LaunchOverridesModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
-	case launchSchemaResultMsg:
+	case LaunchSchemaResultMsg:
 		if v.Err == nil {
 			m.schema = v.Schema.Options
 		}
@@ -51,11 +51,11 @@ func (m launchOverridesModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyEsc, tea.KeyCtrlC:
 			m.cancelled = true
 			m.done = true
-			return m, func() tea.Msg { return launchOverridesResultMsg{Cancelled: true} }
+			return m, func() tea.Msg { return LaunchOverridesResultMsg{Cancelled: true} }
 		case tea.KeyCtrlS:
 			m.done = true
 			cp := m.cur
-			return m, func() tea.Msg { return launchOverridesResultMsg{Overrides: &cp} }
+			return m, func() tea.Msg { return LaunchOverridesResultMsg{Overrides: &cp} }
 		case tea.KeyUp:
 			if m.cursor > 0 {
 				m.cursor--
@@ -75,14 +75,14 @@ func (m launchOverridesModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, func() tea.Msg {
-				return launchSettingsEditRequestMsg{Layer: "launch", Field: row.field, CurrentValue: row.editValue, PathCompletion: row.pathCompletion}
+				return LaunchSettingsEditRequestMsg{Layer: "launch", Field: row.field, CurrentValue: row.editValue, PathCompletion: row.pathCompletion}
 			}
 		}
 	}
 	return m, nil
 }
 
-func (m launchOverridesModal) renderFields() string {
+func (m LaunchOverridesModal) renderFields() string {
 	var b strings.Builder
 	rows := m.rows()
 	for i, r := range rows {
@@ -95,7 +95,7 @@ func (m launchOverridesModal) renderFields() string {
 	return b.String()
 }
 
-func (m launchOverridesModal) View() string {
+func (m LaunchOverridesModal) View() string {
 	body := "Per-launch overrides for next thread\n\n" + m.renderFields()
 	width := 80
 	footer := tuiprim.ActionBarForWidth(width, tuiprim.KbdHint("enter", "edit"), tuiprim.KbdHint("ctrl-s", "save"), tuiprim.KbdHint("esc", "cancel"))
@@ -104,7 +104,7 @@ func (m launchOverridesModal) View() string {
 
 // ApplyEdit returns a copy of the modal with the field updated. Used by
 // the hub model after a textInputModal returns a result.
-func (m launchOverridesModal) ApplyEdit(field, value string) (launchOverridesModal, error) {
+func (m LaunchOverridesModal) ApplyEdit(field, value string) (LaunchOverridesModal, error) {
 	updated, err := applyEdit(m.cur, field, value)
 	if err != nil {
 		return m, err
@@ -113,9 +113,12 @@ func (m launchOverridesModal) ApplyEdit(field, value string) (launchOverridesMod
 	return m, nil
 }
 
-func (m launchOverridesModal) Current() appwire.LaunchConfigLayer { return m.cur }
+func (m LaunchOverridesModal) Current() appwire.LaunchConfigLayer { return m.cur }
 
-func (m launchOverridesModal) rows() []layerRow {
+// Done reports whether the modal has been dismissed (committed or cancelled).
+func (m LaunchOverridesModal) Done() bool { return m.done }
+
+func (m LaunchOverridesModal) rows() []layerRow {
 	if len(m.schema) > 0 {
 		return launchSchemaRows(m.schema, m.cur, launchLayerLaunch, launchSchemaRowsOverride)
 	}

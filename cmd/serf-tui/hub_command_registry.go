@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
 )
 
 type hubCommandScope uint8
@@ -314,10 +315,10 @@ var hubCommandRegistry = []hubCommandDefinition{
 		PaletteDetail: "manage provider API keys and OAuth sign-in",
 		Scopes:        hubCommandDashboard,
 		Run: func(m *hubModel, _ string) tea.Cmd {
-			panel := newCredentialsPanel()
+			panel := launchconfig.NewCredentialsPanel()
 			m.credentialsPanel = &panel
 			if m.client != nil {
-				return cmdInstanceList(m.client)
+				return launchconfig.CmdInstanceList(m.client)
 			}
 			return nil
 		},
@@ -330,9 +331,9 @@ var hubCommandRegistry = []hubCommandDefinition{
 		Scopes:        hubCommandDashboard,
 		Run: func(m *hubModel, _ string) tea.Cmd {
 			cwd := m.spawnWorkingDir()
-			p := newLaunchSettingsPanel(m.client, cwd)
+			p := launchconfig.NewLaunchSettingsPanel(m.client, cwd)
 			m.launchSettingsPanel = &p
-			return p.initialCmd()
+			return p.InitialCmd()
 		},
 	},
 	{

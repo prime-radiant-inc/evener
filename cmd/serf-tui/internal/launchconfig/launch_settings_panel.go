@@ -1,4 +1,4 @@
-package main
+package launchconfig
 
 import (
 	"encoding/json"
@@ -22,7 +22,7 @@ const (
 	launchTabRepo
 )
 
-type launchSettingsPanel struct {
+type LaunchSettingsPanel struct {
 	client         *appwire.Client
 	cwd            string
 	tab            launchTab
@@ -39,29 +39,29 @@ type launchSettingsPanel struct {
 	cancelled      bool
 }
 
-func newLaunchSettingsPanel(client *appwire.Client, cwd string) launchSettingsPanel {
-	return launchSettingsPanel{client: client, cwd: cwd, loadingGlobal: true, loadingProj: true, loadingResolve: true}
+func NewLaunchSettingsPanel(client *appwire.Client, cwd string) LaunchSettingsPanel {
+	return LaunchSettingsPanel{client: client, cwd: cwd, loadingGlobal: true, loadingProj: true, loadingResolve: true}
 }
 
-func (p launchSettingsPanel) initialCmd() tea.Cmd {
+func (p LaunchSettingsPanel) InitialCmd() tea.Cmd {
 	if p.client == nil {
 		return tea.Batch(
-			func() tea.Msg { return launchLayerResultMsg{Layer: "global", Err: nil} },
+			func() tea.Msg { return LaunchLayerResultMsg{Layer: "global", Err: nil} },
 		)
 	}
 	return tea.Batch(
-		cmdLaunchSchema(p.client),
-		cmdGetLayer(p.client, p.cwd, "global"),
-		cmdGetLayer(p.client, p.cwd, "project"),
-		cmdResolveLaunch(p.client, p.cwd, nil),
+		CmdLaunchSchema(p.client),
+		CmdGetLayer(p.client, p.cwd, "global"),
+		CmdGetLayer(p.client, p.cwd, "project"),
+		CmdResolveLaunch(p.client, p.cwd, nil),
 	)
 }
 
-func (p launchSettingsPanel) Init() tea.Cmd { return nil }
+func (p LaunchSettingsPanel) Init() tea.Cmd { return nil }
 
-func (p launchSettingsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (p LaunchSettingsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m := msg.(type) {
-	case launchLayerResultMsg:
+	case LaunchLayerResultMsg:
 		if m.Err != nil {
 			p.statusMessage = "load error: " + m.Err.Error()
 			return p, nil
@@ -74,24 +74,24 @@ func (p launchSettingsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			p.project = m.Data
 			p.loadingProj = false
 		}
-	case launchSchemaResultMsg:
+	case LaunchSchemaResultMsg:
 		if m.Err == nil {
 			p.schema = m.Schema.Options
 		}
-	case launchResolveResultMsg:
+	case LaunchResolveResultMsg:
 		p.resolved = m.Resolved
 		p.loadingResolve = false
 		if m.Err != nil {
 			p.statusMessage = "resolve error: " + m.Err.Error()
 		}
-	case launchSetLayerResultMsg:
+	case LaunchSetLayerResultMsg:
 		if m.Err != nil {
 			p.statusMessage = "save error: " + m.Err.Error()
 		} else {
 			p.statusMessage = "saved " + m.Layer
 			p.resolved = m.Resolved
 		}
-	case launchTrustResultMsg:
+	case LaunchTrustResultMsg:
 		if m.Err != nil {
 			p.statusMessage = "trust error: " + m.Err.Error()
 		} else {
@@ -127,7 +127,7 @@ func (p launchSettingsPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return p, nil
 }
 
-func (p launchSettingsPanel) renderTabs() string {
+func (p LaunchSettingsPanel) renderTabs() string {
 	var b strings.Builder
 	tabs := []string{"Global", "Project", "In-Repo"}
 	for i, name := range tabs {
@@ -140,7 +140,7 @@ func (p launchSettingsPanel) renderTabs() string {
 	return b.String()
 }
 
-func (p launchSettingsPanel) renderActiveTab() string {
+func (p LaunchSettingsPanel) renderActiveTab() string {
 	var b strings.Builder
 	switch p.tab {
 	case launchTabGlobal:
@@ -157,14 +157,20 @@ func (p launchSettingsPanel) renderActiveTab() string {
 	return b.String()
 }
 
-func (p launchSettingsPanel) View() string {
+// Done reports whether the panel has been dismissed.
+func (p LaunchSettingsPanel) Done() bool { return p.done }
+
+// CWD returns the working directory the panel resolves launch config against.
+func (p LaunchSettingsPanel) CWD() string { return p.cwd }
+
+func (p LaunchSettingsPanel) View() string {
 	body := p.renderTabs() + "\n\n" + p.renderActiveTab()
 	width := 80
 	footer := tuiprim.ActionBarForWidth(width, tuiprim.KbdHint("←→", "tab"), tuiprim.KbdHint("↑↓", "field"), tuiprim.KbdHint("enter", "edit"), tuiprim.KbdHint("esc", "close"))
 	return tuiprim.Overlay(tuiprim.OverlayOpts{Title: "Launch settings", Width: width, Body: body, Footer: footer})
 }
 
-func (p launchSettingsPanel) renderLayerView(label string, l appwire.LaunchConfigLayer, cursor int) string {
+func (p LaunchSettingsPanel) renderLayerView(label string, l appwire.LaunchConfigLayer, cursor int) string {
 	var b strings.Builder
 	rows := p.rowsForLayer(label, l)
 	for i, r := range rows {
@@ -178,7 +184,7 @@ func (p launchSettingsPanel) renderLayerView(label string, l appwire.LaunchConfi
 }
 
 func renderLayerView(label string, l appwire.LaunchConfigLayer, cursor int) string {
-	p := launchSettingsPanel{}
+	p := LaunchSettingsPanel{}
 	return p.renderLayerView(label, l, cursor)
 }
 
@@ -190,7 +196,7 @@ type layerRow struct {
 	pathCompletion bool
 }
 
-func (p launchSettingsPanel) rowsForLayer(layerName string, l appwire.LaunchConfigLayer) []layerRow {
+func (p LaunchSettingsPanel) rowsForLayer(layerName string, l appwire.LaunchConfigLayer) []layerRow {
 	if len(p.schema) > 0 {
 		return launchSchemaRows(p.schema, l, layerName, launchSchemaRowsSettings)
 	}
@@ -245,23 +251,23 @@ func renderRepoView(r *appwire.RepoLaunchConfigStatus) string {
 	return b.String()
 }
 
-// launchSettingsEditRequestMsg is emitted when the user presses Enter on
+// LaunchSettingsEditRequestMsg is emitted when the user presses Enter on
 // an editable field; the hub model translates it into a textInputModal.
-type launchSettingsEditRequestMsg struct {
+type LaunchSettingsEditRequestMsg struct {
 	Layer          string
 	Field          string
 	CurrentValue   string
 	PathCompletion bool
 }
 
-func (p launchSettingsPanel) editCurrent() (tea.Model, tea.Cmd) {
+func (p LaunchSettingsPanel) editCurrent() (tea.Model, tea.Cmd) {
 	if p.tab == launchTabRepo {
 		// In-repo tab: Enter applies trust when state is untrusted/changed.
 		if p.resolved.Repo == nil || p.resolved.Repo.Hash == "" {
 			return p, nil
 		}
 		if p.resolved.Repo.Trust == "untrusted" || p.resolved.Repo.Trust == "changed" {
-			return p, cmdTrustRepo(p.client, p.cwd, p.resolved.Repo.Hash)
+			return p, CmdTrustRepo(p.client, p.cwd, p.resolved.Repo.Hash)
 		}
 		return p, nil
 	}
@@ -274,7 +280,7 @@ func (p launchSettingsPanel) editCurrent() (tea.Model, tea.Cmd) {
 		return p, nil
 	}
 	return p, func() tea.Msg {
-		return launchSettingsEditRequestMsg{
+		return LaunchSettingsEditRequestMsg{
 			Layer:          p.tabName(),
 			Field:          row.field,
 			CurrentValue:   row.editValue,
@@ -283,7 +289,7 @@ func (p launchSettingsPanel) editCurrent() (tea.Model, tea.Cmd) {
 	}
 }
 
-func (p launchSettingsPanel) tabName() string {
+func (p LaunchSettingsPanel) tabName() string {
 	switch p.tab {
 	case launchTabProject:
 		return "project"
@@ -292,7 +298,7 @@ func (p launchSettingsPanel) tabName() string {
 	}
 }
 
-func (p launchSettingsPanel) currentLayer() appwire.LaunchConfigLayer {
+func (p LaunchSettingsPanel) currentLayer() appwire.LaunchConfigLayer {
 	if p.tab == launchTabProject {
 		return p.project
 	}
@@ -301,7 +307,7 @@ func (p launchSettingsPanel) currentLayer() appwire.LaunchConfigLayer {
 
 // ApplyEdit returns a copy of the current panel with the field updated to
 // `value`. Used by the hub model after a textInputModal returns a result.
-func (p launchSettingsPanel) ApplyEdit(field, value string) (launchSettingsPanel, appwire.LaunchConfigLayer, error) {
+func (p LaunchSettingsPanel) ApplyEdit(field, value string) (LaunchSettingsPanel, appwire.LaunchConfigLayer, error) {
 	layer := p.currentLayer()
 	updated, err := applyEdit(layer, field, value)
 	if err != nil {
@@ -480,7 +486,7 @@ func parseOptionalBool(value string) (*bool, error) {
 	}
 }
 
-func launchSettingsFieldUsesPathCompletion(field string) bool {
+func LaunchSettingsFieldUsesPathCompletion(field string) bool {
 	switch field {
 	case "skills_dirs", "plugin_dirs", "mcp_configs", "system_prompt_file", "system_prompt_append_file", "trace_file", "cpu_profile", "export_atif_path":
 		return true

@@ -4,12 +4,13 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
 )
 
 // newCredentialsPanelForTest returns a credentials panel suitable for
 // focus-trap testing — it has no loading state that would block key handling.
-func newCredentialsPanelForTest() *credentialsPanel {
-	p := credentialsPanel{}
+func newCredentialsPanelForTest() *launchconfig.CredentialsPanel {
+	p := launchconfig.CredentialsPanel{}
 	return &p
 }
 

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -23,9 +24,9 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.launchOverridesModal != nil {
 		updated, cmd := m.launchOverridesModal.Update(msg)
-		p := updated.(launchOverridesModal)
+		p := updated.(launchconfig.LaunchOverridesModal)
 		m.launchOverridesModal = &p
-		if p.done {
+		if p.Done() {
 			m.launchOverridesModal = nil
 		}
 		return m, cmd
@@ -50,7 +51,7 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			cp := *m.spawnLaunchOverrides
 			initial = &cp
 		}
-		return m, func() tea.Msg { return launchOverridesOpenMsg{Initial: initial} }
+		return m, func() tea.Msg { return launchconfig.LaunchOverridesOpenMsg{Initial: initial} }
 	}
 
 	switch msg.String() {

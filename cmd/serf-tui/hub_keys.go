@@ -3,6 +3,7 @@ package main
 import (
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/cmd/serf-tui/internal/inputhistory"
+	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
 )
 
 func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -50,18 +51,18 @@ func (m hubModel) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.credentialsPanel != nil {
 		updated, cmd := m.credentialsPanel.Update(msg)
-		panel := updated.(credentialsPanel)
+		panel := updated.(launchconfig.CredentialsPanel)
 		m.credentialsPanel = &panel
-		if panel.done {
+		if panel.Done() {
 			m.credentialsPanel = nil
 		}
 		return m, cmd
 	}
 	if m.launchSettingsPanel != nil {
 		updated, cmd := m.launchSettingsPanel.Update(msg)
-		p := updated.(launchSettingsPanel)
+		p := updated.(launchconfig.LaunchSettingsPanel)
 		m.launchSettingsPanel = &p
-		if p.done {
+		if p.Done() {
 			m.launchSettingsPanel = nil
 			return m, nil
 		}

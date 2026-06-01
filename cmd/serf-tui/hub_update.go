@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
 	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/internal/appwire"
@@ -519,18 +520,18 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addSessionSystem("OpenAI auth was already signed out. " + formatAuthStatusSummary(m.authStatus))
 		}
 		return m, nil
-	case authListResultMsg:
-		// authListResultMsg is no longer used; msgs are dropped.
+	case launchconfig.AuthListResultMsg:
+		// launchconfig.AuthListResultMsg is no longer used; msgs are dropped.
 		return m, nil
-	case instanceListResultMsg:
+	case launchconfig.InstanceListResultMsg:
 		if m.credentialsPanel != nil {
 			updated, cmd := m.credentialsPanel.Update(msg)
-			panel := updated.(credentialsPanel)
+			panel := updated.(launchconfig.CredentialsPanel)
 			m.credentialsPanel = &panel
 			return m, cmd
 		}
 		return m, nil
-	case instanceMutateResultMsg:
+	case launchconfig.InstanceMutateResultMsg:
 		if msg.Err != nil {
 			m.err = msg.Err
 			return m, nil
@@ -538,33 +539,33 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		// Refresh the panel with the updated list returned by the mutation.
 		if m.credentialsPanel != nil {
-			updated, cmd := m.credentialsPanel.Update(instanceListResultMsg{List: msg.List})
-			panel := updated.(credentialsPanel)
+			updated, cmd := m.credentialsPanel.Update(launchconfig.InstanceListResultMsg{List: msg.List})
+			panel := updated.(launchconfig.CredentialsPanel)
 			m.credentialsPanel = &panel
 			return m, cmd
 		}
 		return m, nil
-	case instanceSetDefaultMsg:
+	case launchconfig.InstanceSetDefaultMsg:
 		if m.client != nil {
-			return m, cmdInstanceSetDefault(m.client, msg.Name)
+			return m, launchconfig.CmdInstanceSetDefault(m.client, msg.Name)
 		}
 		return m, nil
-	case instanceRemoveMsg:
+	case launchconfig.InstanceRemoveMsg:
 		if m.client != nil {
-			return m, cmdInstanceRemove(m.client, msg.Name)
+			return m, launchconfig.CmdInstanceRemove(m.client, msg.Name)
 		}
 		return m, nil
-	case instanceCreateSubmitMsg:
+	case launchconfig.InstanceCreateSubmitMsg:
 		if m.client != nil {
-			return m, cmdInstanceCreate(m.client, msg.Params)
+			return m, launchconfig.CmdInstanceCreate(m.client, msg.Params)
 		}
 		return m, nil
-	case instanceEditSubmitMsg:
+	case launchconfig.InstanceEditSubmitMsg:
 		if m.client != nil {
-			return m, cmdInstanceEdit(m.client, msg.Params)
+			return m, launchconfig.CmdInstanceEdit(m.client, msg.Params)
 		}
 		return m, nil
-	case credentialsActionMsg:
+	case launchconfig.CredentialsActionMsg:
 		switch msg.Action {
 		case "set":
 			modal := newTextInputModalMasked(fmt.Sprintf("API key for %s:", msg.Instance), "credential-set:"+msg.Instance)
@@ -572,35 +573,35 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "logout":
 			if m.client != nil {
-				return m, cmdAuthLogout(m.client, msg.Instance)
+				return m, launchconfig.CmdAuthLogout(m.client, msg.Instance)
 			}
 			return m, nil
 		case "oauth":
 			if m.client != nil {
-				return m, cmdAuthLoginStart(m.client, msg.Instance)
+				return m, launchconfig.CmdAuthLoginStart(m.client, msg.Instance)
 			}
 			return m, nil
 		}
 		return m, nil
-	case launchOverridesOpenMsg:
-		var modal launchOverridesModal
+	case launchconfig.LaunchOverridesOpenMsg:
+		var modal launchconfig.LaunchOverridesModal
 		if msg.Initial != nil {
-			modal = newLaunchOverridesModalWith(*msg.Initial)
+			modal = launchconfig.NewLaunchOverridesModalWith(*msg.Initial)
 		} else {
-			modal = newLaunchOverridesModal()
+			modal = launchconfig.NewLaunchOverridesModal()
 		}
 		m.launchOverridesModal = &modal
 		if m.client != nil {
-			return m, cmdLaunchSchema(m.client)
+			return m, launchconfig.CmdLaunchSchema(m.client)
 		}
 		return m, nil
-	case launchOverridesResultMsg:
+	case launchconfig.LaunchOverridesResultMsg:
 		m.launchOverridesModal = nil
 		if !msg.Cancelled {
 			m.spawnLaunchOverrides = msg.Overrides
 		}
 		return m, nil
-	case launchSettingsEditRequestMsg:
+	case launchconfig.LaunchSettingsEditRequestMsg:
 		if msg.Layer == "launch" {
 			prompt := fmt.Sprintf("Edit %s (current: %s):", msg.Field, msg.CurrentValue)
 			if msg.Field == "mcps" {
@@ -608,7 +609,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			tag := "launch-override:" + msg.Field
 			var modal textInputModal
-			if msg.PathCompletion || launchSettingsFieldUsesPathCompletion(msg.Field) {
+			if msg.PathCompletion || launchconfig.LaunchSettingsFieldUsesPathCompletion(msg.Field) {
 				modal = newPathTextInputModal(prompt, tag, msg.CurrentValue)
 			} else {
 				modal = newTextInputModalWithInput(prompt, tag, msg.CurrentValue)
@@ -622,7 +623,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		tag := fmt.Sprintf("settings-edit:%s:%s", msg.Layer, msg.Field)
 		var modal textInputModal
-		if msg.PathCompletion || launchSettingsFieldUsesPathCompletion(msg.Field) {
+		if msg.PathCompletion || launchconfig.LaunchSettingsFieldUsesPathCompletion(msg.Field) {
 			modal = newPathTextInputModal(prompt, tag, msg.CurrentValue)
 		} else {
 			modal = newTextInputModalWithInput(prompt, tag, msg.CurrentValue)
@@ -637,7 +638,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if m.client != nil {
-				return m, cmdAuthApiKeySet(m.client, provider, msg.Value)
+				return m, launchconfig.CmdAuthApiKeySet(m.client, provider, msg.Value)
 			}
 			return m, nil
 		}
@@ -648,7 +649,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			if len(parts) == 2 && m.client != nil {
-				return m, cmdAuthLoginComplete(m.client, parts[0], parts[1], msg.Value)
+				return m, launchconfig.CmdAuthLoginComplete(m.client, parts[0], parts[1], msg.Value)
 			}
 			return m, nil
 		}
@@ -687,20 +688,20 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.launchSettingsPanel = &panel
-			return m, cmdSetLayer(m.client, panel.cwd, layer, updatedLayer)
+			return m, launchconfig.CmdSetLayer(m.client, panel.CWD(), layer, updatedLayer)
 		}
 		return m, nil
-	case authApiKeySetResultMsg:
+	case launchconfig.AuthApiKeySetResultMsg:
 		if msg.Err != nil {
 			m.err = msg.Err
 			return m, nil
 		}
 		m.err = nil
 		if m.credentialsPanel != nil && m.client != nil {
-			return m, cmdInstanceList(m.client)
+			return m, launchconfig.CmdInstanceList(m.client)
 		}
 		return m, nil
-	case authLoginStartResultMsg:
+	case launchconfig.AuthLoginStartResultMsg:
 		if msg.Err != nil {
 			m.err = msg.Err
 			return m, nil
@@ -709,38 +710,38 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		modal := newTextInputModal("Paste full redirect URL after sign-in:\n"+msg.URL, "oauth-redirect:"+msg.Provider+":"+msg.FlowID)
 		m.followupModal = &modal
 		return m, nil
-	case authLoginCompleteResultMsg:
+	case launchconfig.AuthLoginCompleteResultMsg:
 		if msg.Err != nil {
 			m.err = msg.Err
 			return m, nil
 		}
 		m.err = nil
 		if m.credentialsPanel != nil && m.client != nil {
-			return m, cmdInstanceList(m.client)
+			return m, launchconfig.CmdInstanceList(m.client)
 		}
 		return m, nil
-	case launchSetLayerResultMsg:
+	case launchconfig.LaunchSetLayerResultMsg:
 		if m.launchSettingsPanel != nil {
 			updated, cmd := m.launchSettingsPanel.Update(msg)
-			p := updated.(launchSettingsPanel)
+			p := updated.(launchconfig.LaunchSettingsPanel)
 			m.launchSettingsPanel = &p
 			if msg.Err == nil && m.client != nil {
 				// Refresh the just-saved layer from disk.
-				return m, tea.Batch(cmd, cmdGetLayer(m.client, msg.CWD, msg.Layer))
+				return m, tea.Batch(cmd, launchconfig.CmdGetLayer(m.client, msg.CWD, msg.Layer))
 			}
 			return m, cmd
 		}
 		return m, nil
-	case launchLayerResultMsg, launchResolveResultMsg, launchTrustResultMsg, launchSchemaResultMsg:
-		if _, ok := msg.(launchSchemaResultMsg); ok && m.launchOverridesModal != nil {
+	case launchconfig.LaunchLayerResultMsg, launchconfig.LaunchResolveResultMsg, launchconfig.LaunchTrustResultMsg, launchconfig.LaunchSchemaResultMsg:
+		if _, ok := msg.(launchconfig.LaunchSchemaResultMsg); ok && m.launchOverridesModal != nil {
 			updated, cmd := m.launchOverridesModal.Update(msg)
-			p := updated.(launchOverridesModal)
+			p := updated.(launchconfig.LaunchOverridesModal)
 			m.launchOverridesModal = &p
 			return m, cmd
 		}
 		if m.launchSettingsPanel != nil {
 			updated, cmd := m.launchSettingsPanel.Update(msg)
-			p := updated.(launchSettingsPanel)
+			p := updated.(launchconfig.LaunchSettingsPanel)
 			m.launchSettingsPanel = &p
 			return m, cmd
 		}

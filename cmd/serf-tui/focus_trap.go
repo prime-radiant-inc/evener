@@ -1,6 +1,9 @@
 package main
 
-import tea "github.com/charmbracelet/bubbletea"
+import (
+	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
+)
 
 // topmostOverlayName returns the name of the most-recently-opened
 // overlay on hubModel, or "" if none. Order matters: most-recent first.
@@ -55,27 +58,27 @@ func (m hubModel) dispatchOverlayKey(name string, msg tea.KeyMsg) (tea.Model, te
 
 	case "launch-overrides":
 		updated, cmd := m.launchOverridesModal.Update(msg)
-		p := updated.(launchOverridesModal)
+		p := updated.(launchconfig.LaunchOverridesModal)
 		m.launchOverridesModal = &p
-		if p.done {
+		if p.Done() {
 			m.launchOverridesModal = nil
 		}
 		return m, cmd
 
 	case "credentials":
 		updated, cmd := m.credentialsPanel.Update(msg)
-		panel := updated.(credentialsPanel)
+		panel := updated.(launchconfig.CredentialsPanel)
 		m.credentialsPanel = &panel
-		if panel.done {
+		if panel.Done() {
 			m.credentialsPanel = nil
 		}
 		return m, cmd
 
 	case "launch-settings":
 		updated, cmd := m.launchSettingsPanel.Update(msg)
-		p := updated.(launchSettingsPanel)
+		p := updated.(launchconfig.LaunchSettingsPanel)
 		m.launchSettingsPanel = &p
-		if p.done {
+		if p.Done() {
 			m.launchSettingsPanel = nil
 		}
 		return m, cmd
