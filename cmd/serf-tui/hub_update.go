@@ -469,285 +469,48 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case hubAuthStatusMsg:
-		if msg.err != nil {
-			m.addAuthErrorNotice("Auth error", msg.err)
-			m.recordSessionError("Auth status failed: " + msg.err.Error())
-			return m, nil
-		}
-		m.clearNoticesByCategory("auth")
-		m.authStatus = authStatusFromAppWire(msg.status)
-		m.authStatusSeen = true
-		m.clearSessionError()
-		m.addSessionSystem(formatAuthStatusSummary(m.authStatus))
-		return m, nil
+		return m.handleAuthStatus(msg)
 	case hubAuthLoginStartMsg:
-		if msg.err != nil {
-			m.addAuthErrorNotice("Auth error", msg.err)
-			return m, nil
-		}
-		m.authLoginProvider = strings.TrimSpace(msg.resp.Provider)
-		if m.authLoginProvider == "" {
-			m.authLoginProvider = "openai"
-		}
-		m.authLoginFlowID = msg.resp.FlowID
-		m.addSessionSystem("OpenAI sign-in URL:\n" + msg.resp.URL + "\nPaste the full OpenAI redirect URL and press enter.")
-		return m, nil
+		return m.handleAuthLoginStart(msg)
 	case hubAuthLoginCompleteMsg:
-		if msg.err != nil {
-			m.addAuthErrorNotice("Auth error", msg.err)
-			m.recordSessionError("Login failed: " + msg.err.Error())
-			return m, nil
-		}
-		m.clearNoticesByCategory("auth")
-		m.authLoginProvider = ""
-		m.authLoginFlowID = ""
-		m.authStatus = authStatusFromAppWire(msg.resp.Status)
-		m.authStatusSeen = true
-		m.clearSessionError()
-		m.addSessionSystem("OpenAI login complete. " + formatAuthStatusSummary(m.authStatus))
-		return m, nil
+		return m.handleAuthLoginComplete(msg)
 	case hubAuthLogoutMsg:
-		if msg.err != nil {
-			m.addAuthErrorNotice("Auth error", msg.err)
-			m.recordSessionError("Logout failed: " + msg.err.Error())
-			return m, nil
-		}
-		m.clearNoticesByCategory("auth")
-		m.authStatus = authStatusFromAppWire(msg.resp.Status)
-		m.authStatusSeen = true
-		m.clearSessionError()
-		if msg.resp.Removed {
-			m.addSessionSystem("OpenAI sign-out complete. " + formatAuthStatusSummary(m.authStatus))
-		} else {
-			m.addSessionSystem("OpenAI auth was already signed out. " + formatAuthStatusSummary(m.authStatus))
-		}
-		return m, nil
+		return m.handleAuthLogout(msg)
 	case launchconfig.AuthListResultMsg:
 		// launchconfig.AuthListResultMsg is no longer used; msgs are dropped.
 		return m, nil
 	case launchconfig.InstanceListResultMsg:
-		if m.credentialsPanel != nil {
-			updated, cmd := m.credentialsPanel.Update(msg)
-			panel := updated.(launchconfig.CredentialsPanel)
-			m.credentialsPanel = &panel
-			return m, cmd
-		}
-		return m, nil
+		return m.handleInstanceList(msg)
 	case launchconfig.InstanceMutateResultMsg:
-		if msg.Err != nil {
-			m.err = msg.Err
-			return m, nil
-		}
-		m.err = nil
-		// Refresh the panel with the updated list returned by the mutation.
-		if m.credentialsPanel != nil {
-			updated, cmd := m.credentialsPanel.Update(launchconfig.InstanceListResultMsg{List: msg.List})
-			panel := updated.(launchconfig.CredentialsPanel)
-			m.credentialsPanel = &panel
-			return m, cmd
-		}
-		return m, nil
+		return m.handleInstanceMutateResult(msg)
 	case launchconfig.InstanceSetDefaultMsg:
-		if m.client != nil {
-			return m, launchconfig.CmdInstanceSetDefault(m.client, msg.Name)
-		}
-		return m, nil
+		return m.handleInstanceSetDefault(msg)
 	case launchconfig.InstanceRemoveMsg:
-		if m.client != nil {
-			return m, launchconfig.CmdInstanceRemove(m.client, msg.Name)
-		}
-		return m, nil
+		return m.handleInstanceRemove(msg)
 	case launchconfig.InstanceCreateSubmitMsg:
-		if m.client != nil {
-			return m, launchconfig.CmdInstanceCreate(m.client, msg.Params)
-		}
-		return m, nil
+		return m.handleInstanceCreateSubmit(msg)
 	case launchconfig.InstanceEditSubmitMsg:
-		if m.client != nil {
-			return m, launchconfig.CmdInstanceEdit(m.client, msg.Params)
-		}
-		return m, nil
+		return m.handleInstanceEditSubmit(msg)
 	case launchconfig.CredentialsActionMsg:
-		switch msg.Action {
-		case "set":
-			modal := tuipick.NewTextInputModalMasked(fmt.Sprintf("API key for %s:", msg.Instance), "credential-set:"+msg.Instance)
-			m.followupModal = &modal
-			return m, nil
-		case "logout":
-			if m.client != nil {
-				return m, launchconfig.CmdAuthLogout(m.client, msg.Instance)
-			}
-			return m, nil
-		case "oauth":
-			if m.client != nil {
-				return m, launchconfig.CmdAuthLoginStart(m.client, msg.Instance)
-			}
-			return m, nil
-		}
-		return m, nil
+		return m.handleCredentialsAction(msg)
 	case launchconfig.LaunchOverridesOpenMsg:
-		var modal launchconfig.LaunchOverridesModal
-		if msg.Initial != nil {
-			modal = launchconfig.NewLaunchOverridesModalWith(*msg.Initial)
-		} else {
-			modal = launchconfig.NewLaunchOverridesModal()
-		}
-		m.launchOverridesModal = &modal
-		if m.client != nil {
-			return m, launchconfig.CmdLaunchSchema(m.client)
-		}
-		return m, nil
+		return m.handleLaunchOverridesOpen(msg)
 	case launchconfig.LaunchOverridesResultMsg:
-		m.launchOverridesModal = nil
-		if !msg.Cancelled {
-			m.spawnLaunchOverrides = msg.Overrides
-		}
-		return m, nil
+		return m.handleLaunchOverridesResult(msg)
 	case launchconfig.LaunchSettingsEditRequestMsg:
-		if msg.Layer == "launch" {
-			prompt := fmt.Sprintf("Edit %s (current: %s):", msg.Field, msg.CurrentValue)
-			if msg.Field == "mcps" {
-				prompt = fmt.Sprintf("Edit %s as JSON array, or name:command args... (current: %s):", msg.Field, msg.CurrentValue)
-			}
-			tag := "launch-override:" + msg.Field
-			var modal tuipick.TextInputModal
-			if msg.PathCompletion || launchconfig.LaunchSettingsFieldUsesPathCompletion(msg.Field) {
-				modal = tuipick.NewPathTextInputModal(prompt, tag, msg.CurrentValue)
-			} else {
-				modal = tuipick.NewTextInputModalWithInput(prompt, tag, msg.CurrentValue)
-			}
-			m.followupModal = &modal
-			return m, nil
-		}
-		prompt := fmt.Sprintf("Edit %s.%s (current: %s):", msg.Layer, msg.Field, msg.CurrentValue)
-		if msg.Field == "mcps" {
-			prompt = fmt.Sprintf("Edit %s.%s as JSON array, or name:command args... (current: %s):", msg.Layer, msg.Field, msg.CurrentValue)
-		}
-		tag := fmt.Sprintf("settings-edit:%s:%s", msg.Layer, msg.Field)
-		var modal tuipick.TextInputModal
-		if msg.PathCompletion || launchconfig.LaunchSettingsFieldUsesPathCompletion(msg.Field) {
-			modal = tuipick.NewPathTextInputModal(prompt, tag, msg.CurrentValue)
-		} else {
-			modal = tuipick.NewTextInputModalWithInput(prompt, tag, msg.CurrentValue)
-		}
-		m.followupModal = &modal
-		return m, nil
+		return m.handleLaunchSettingsEditRequest(msg)
 	case tuipick.TextInputResultMsg:
-		if strings.HasPrefix(msg.Tag, "credential-set:") {
-			provider := strings.TrimPrefix(msg.Tag, "credential-set:")
-			m.followupModal = nil
-			if msg.Cancelled || msg.Value == "" {
-				return m, nil
-			}
-			if m.client != nil {
-				return m, launchconfig.CmdAuthApiKeySet(m.client, provider, msg.Value)
-			}
-			return m, nil
-		}
-		if strings.HasPrefix(msg.Tag, "oauth-redirect:") {
-			parts := strings.SplitN(strings.TrimPrefix(msg.Tag, "oauth-redirect:"), ":", 2)
-			m.followupModal = nil
-			if msg.Cancelled || msg.Value == "" {
-				return m, nil
-			}
-			if len(parts) == 2 && m.client != nil {
-				return m, launchconfig.CmdAuthLoginComplete(m.client, parts[0], parts[1], msg.Value)
-			}
-			return m, nil
-		}
-		if strings.HasPrefix(msg.Tag, "launch-override:") {
-			field := strings.TrimPrefix(msg.Tag, "launch-override:")
-			m.followupModal = nil
-			if msg.Cancelled {
-				return m, nil
-			}
-			if m.launchOverridesModal != nil {
-				updated, err := m.launchOverridesModal.ApplyEdit(field, msg.Value)
-				if err != nil {
-					m.err = err
-					return m, nil
-				}
-				m.launchOverridesModal = &updated
-			}
-			return m, nil
-		}
-		if strings.HasPrefix(msg.Tag, "settings-edit:") {
-			parts := strings.SplitN(strings.TrimPrefix(msg.Tag, "settings-edit:"), ":", 2)
-			if len(parts) != 2 {
-				return m, nil
-			}
-			layer, field := parts[0], parts[1]
-			m.followupModal = nil
-			if msg.Cancelled {
-				return m, nil
-			}
-			if m.launchSettingsPanel == nil {
-				return m, nil
-			}
-			panel, updatedLayer, err := m.launchSettingsPanel.ApplyEdit(field, msg.Value)
-			if err != nil {
-				m.err = err
-				return m, nil
-			}
-			m.launchSettingsPanel = &panel
-			return m, launchconfig.CmdSetLayer(m.client, panel.CWD(), layer, updatedLayer)
-		}
-		return m, nil
+		return m.handleTextInputResult(msg)
 	case launchconfig.AuthApiKeySetResultMsg:
-		if msg.Err != nil {
-			m.err = msg.Err
-			return m, nil
-		}
-		m.err = nil
-		if m.credentialsPanel != nil && m.client != nil {
-			return m, launchconfig.CmdInstanceList(m.client)
-		}
-		return m, nil
+		return m.handleAuthApiKeySetResult(msg)
 	case launchconfig.AuthLoginStartResultMsg:
-		if msg.Err != nil {
-			m.err = msg.Err
-			return m, nil
-		}
-		m.err = nil
-		modal := tuipick.NewTextInputModal("Paste full redirect URL after sign-in:\n"+msg.URL, "oauth-redirect:"+msg.Provider+":"+msg.FlowID)
-		m.followupModal = &modal
-		return m, nil
+		return m.handleAuthLoginStartResult(msg)
 	case launchconfig.AuthLoginCompleteResultMsg:
-		if msg.Err != nil {
-			m.err = msg.Err
-			return m, nil
-		}
-		m.err = nil
-		if m.credentialsPanel != nil && m.client != nil {
-			return m, launchconfig.CmdInstanceList(m.client)
-		}
-		return m, nil
+		return m.handleAuthLoginCompleteResult(msg)
 	case launchconfig.LaunchSetLayerResultMsg:
-		if m.launchSettingsPanel != nil {
-			updated, cmd := m.launchSettingsPanel.Update(msg)
-			p := updated.(launchconfig.LaunchSettingsPanel)
-			m.launchSettingsPanel = &p
-			if msg.Err == nil && m.client != nil {
-				// Refresh the just-saved layer from disk.
-				return m, tea.Batch(cmd, launchconfig.CmdGetLayer(m.client, msg.CWD, msg.Layer))
-			}
-			return m, cmd
-		}
-		return m, nil
+		return m.handleLaunchSetLayerResult(msg)
 	case launchconfig.LaunchLayerResultMsg, launchconfig.LaunchResolveResultMsg, launchconfig.LaunchTrustResultMsg, launchconfig.LaunchSchemaResultMsg:
-		if _, ok := msg.(launchconfig.LaunchSchemaResultMsg); ok && m.launchOverridesModal != nil {
-			updated, cmd := m.launchOverridesModal.Update(msg)
-			p := updated.(launchconfig.LaunchOverridesModal)
-			m.launchOverridesModal = &p
-			return m, cmd
-		}
-		if m.launchSettingsPanel != nil {
-			updated, cmd := m.launchSettingsPanel.Update(msg)
-			p := updated.(launchconfig.LaunchSettingsPanel)
-			m.launchSettingsPanel = &p
-			return m, cmd
-		}
-		return m, nil
+		return m.handleLaunchResult(msg)
 	}
 	return m, nil
 }
