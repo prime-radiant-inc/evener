@@ -2,11 +2,10 @@ package appprojector
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/internal/apptranscript"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/diagnostic"
@@ -44,14 +43,14 @@ func NewAppEventProjector(threadID, ref string) *AppEventProjector {
 	}
 }
 
-func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification {
+func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification {
 	if p.threadID == "" {
 		p.threadID = event.SessionID
 	}
 
 	switch event.Kind {
-	case agent.EventSessionStart:
-		data := eventData[agent.SessionStartData](event.Data)
+	case events.EventSessionStart:
+		data := eventData[events.SessionStartData](event.Data)
 		return []AppNotification{
 			p.notification(appwire.NotifyThreadStarted, map[string]any{
 				"threadId": p.threadID,
@@ -70,7 +69,7 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			}),
 			p.threadStatus(appwire.ThreadStatusIdle),
 		}
-	case agent.EventUserInput:
+	case events.EventUserInput:
 		out := []AppNotification{}
 		if p.activeTurnID != "" {
 			turnID := p.activeTurnID
@@ -86,7 +85,7 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			}))
 		}
 		turnID := p.startTurn()
-		data := eventData[agent.UserInputData](event.Data)
+		data := eventData[events.UserInputData](event.Data)
 		item := appwire.ThreadItem{
 			Type:                 "userMessage",
 			ID:                   p.nextItemID("user"),
@@ -111,7 +110,7 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			p.threadStatus(appwire.ThreadStatusActive),
 		)
 		return out
-	case agent.EventAssistantTextStart:
+	case events.EventAssistantTextStart:
 		p.ensureTurn()
 		p.assistantItem = p.nextItemID("assistant")
 		p.assistantText = ""
@@ -126,9 +125,9 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 				Status: appwire.TurnStatusInProgress,
 			},
 		})}
-	case agent.EventAssistantTextDelta:
+	case events.EventAssistantTextDelta:
 		p.ensureAssistantItem()
-		data := eventData[agent.AssistantTextDeltaData](event.Data)
+		data := eventData[events.AssistantTextDeltaData](event.Data)
 		p.assistantText += data.Delta
 		return []AppNotification{p.notification(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
 			ThreadID: p.threadID,
@@ -137,9 +136,9 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			ItemID:   p.assistantItem,
 			Delta:    data.Delta,
 		})}
-	case agent.EventAssistantTextEnd:
+	case events.EventAssistantTextEnd:
 		p.ensureAssistantItem()
-		data := eventData[agent.AssistantTextEndData](event.Data)
+		data := eventData[events.AssistantTextEndData](event.Data)
 		text := data.Text
 		if text == "" {
 			text = p.assistantText
@@ -161,8 +160,8 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			"turnId":   turnID,
 			"item":     item,
 		})}
-	case agent.EventCommunicate:
-		data := eventData[agent.CommunicateData](event.Data)
+	case events.EventCommunicate:
+		data := eventData[events.CommunicateData](event.Data)
 		text := strings.TrimSpace(data.Message)
 		if text == "" {
 			return nil
@@ -185,9 +184,9 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			"turnId":   p.activeTurnID,
 			"item":     item,
 		})}
-	case agent.EventToolCallStart:
+	case events.EventToolCallStart:
 		p.ensureTurn()
-		data := eventData[agent.ToolCallStartData](event.Data)
+		data := eventData[events.ToolCallStartData](event.Data)
 		if data.ToolName == "communicate" {
 			p.suppressedTools[data.CallID] = struct{}{}
 			return nil
@@ -209,8 +208,8 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 				Status:        appwire.TurnStatusInProgress,
 			},
 		})}
-	case agent.EventToolCallOutputDelta:
-		data := eventData[agent.ToolCallOutputDeltaData](event.Data)
+	case events.EventToolCallOutputDelta:
+		data := eventData[events.ToolCallOutputDeltaData](event.Data)
 		if _, ok := p.suppressedTools[data.CallID]; ok {
 			return nil
 		}
@@ -222,8 +221,8 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			"callId":   data.CallID,
 			"delta":    data.Delta,
 		})}
-	case agent.EventToolCallEnd:
-		data := eventData[agent.ToolCallEndData](event.Data)
+	case events.EventToolCallEnd:
+		data := eventData[events.ToolCallEndData](event.Data)
 		if _, ok := p.suppressedTools[data.CallID]; ok {
 			delete(p.suppressedTools, data.CallID)
 			return nil
@@ -246,8 +245,8 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			"turnId":   p.activeTurnID,
 			"item":     item,
 		})}
-	case agent.EventWarning:
-		data := eventData[agent.WarningData](event.Data)
+	case events.EventWarning:
+		data := eventData[events.WarningData](event.Data)
 		info := diagnostic.FromFields(data.Source, data.Title, data.Hint, data.Message)
 		return []AppNotification{p.notification(appwire.NotifyWarning, map[string]any{
 			"threadId": p.threadID,
@@ -258,8 +257,8 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			"hint":     info.Hint,
 			"warning":  event.Data,
 		})}
-	case agent.EventError:
-		data := eventData[agent.ErrorData](event.Data)
+	case events.EventError:
+		data := eventData[events.ErrorData](event.Data)
 		message := strings.TrimSpace(data.Error)
 		if message == "" {
 			message = "session error"
@@ -274,7 +273,7 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			"title":    info.Title,
 			"hint":     info.Hint,
 			"cause":    cause,
-			"warning": agent.WarningData{
+			"warning": events.WarningData{
 				Message: message,
 				Source:  string(info.Source),
 				Title:   info.Title,
@@ -309,8 +308,8 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 				},
 			}),
 		}
-	case agent.EventSteeringInjected:
-		data := eventData[agent.SteeringInjectedData](event.Data)
+	case events.EventSteeringInjected:
+		data := eventData[events.SteeringInjectedData](event.Data)
 		images := projectUserInputImages(data.Images)
 		text := data.Text
 		if strings.TrimSpace(text) == "" {
@@ -322,59 +321,59 @@ func (p *AppEventProjector) Project(event agent.SessionEvent) []AppNotification 
 			"text":     text,
 			"images":   images,
 		})}
-	case agent.EventCompactionTurn:
-		data := eventData[agent.CompactionTurnData](event.Data)
+	case events.EventCompactionTurn:
+		data := eventData[events.CompactionTurnData](event.Data)
 		return p.systemAnnouncement("compaction", apptranscript.CompactionDescription(data.Kind), data.Text)
-	case agent.EventTurnLimit:
-		data := eventData[agent.TurnLimitData](event.Data)
+	case events.EventTurnLimit:
+		data := eventData[events.TurnLimitData](event.Data)
 		return p.systemAnnouncement("turn_limit", "Turn limit", turnLimitAnnouncement(data))
-	case agent.EventLoopDetection:
-		data := eventData[agent.LoopDetectionData](event.Data)
+	case events.EventLoopDetection:
+		data := eventData[events.LoopDetectionData](event.Data)
 		return p.systemAnnouncement("loop_detection", "Loop detection", data.Message)
-	case agent.EventSkillActivated:
-		data := eventData[agent.SkillActivatedData](event.Data)
+	case events.EventSkillActivated:
+		data := eventData[events.SkillActivatedData](event.Data)
 		return p.systemAnnouncement("skill", "Skill activated", fmt.Sprintf("Activated skill: %s", data.Name))
-	case agent.EventContextCompaction:
-		data := eventData[agent.ContextCompactionData](event.Data)
+	case events.EventContextCompaction:
+		data := eventData[events.ContextCompactionData](event.Data)
 		return p.systemAnnouncement("context_compaction", "Context compaction", contextCompactionAnnouncement(data))
-	case agent.EventPluginLoaded:
-		data := eventData[agent.PluginLoadedData](event.Data)
+	case events.EventPluginLoaded:
+		data := eventData[events.PluginLoadedData](event.Data)
 		return p.systemAnnouncement("plugin", "Plugin loaded", pluginLoadedAnnouncement(data))
-	case agent.EventHookStart:
+	case events.EventHookStart:
 		return nil
-	case agent.EventHookEnd:
-		data := eventData[agent.HookEndData](event.Data)
+	case events.EventHookEnd:
+		data := eventData[events.HookEndData](event.Data)
 		return p.systemAnnouncement("hook", "Hook", hookEndAnnouncement(data))
-	case agent.EventForkSummary:
-		data := eventData[agent.ForkSummaryData](event.Data)
+	case events.EventForkSummary:
+		data := eventData[events.ForkSummaryData](event.Data)
 		return p.systemAnnouncement("fork_summary", "Fork summary", forkSummaryAnnouncement(data))
-	case agent.EventPromptLoaded:
-		data := eventData[agent.PromptLoadedData](event.Data)
+	case events.EventPromptLoaded:
+		data := eventData[events.PromptLoadedData](event.Data)
 		return p.systemAnnouncement("prompt", "Prompt loaded", promptLoadedAnnouncement(data))
-	case agent.EventRoundTimings:
-		data := eventData[agent.RoundTimings](event.Data)
+	case events.EventRoundTimings:
+		data := eventData[events.RoundTimings](event.Data)
 		return p.systemAnnouncement("round_timings", "Round timings", roundTimingsAnnouncement(data))
-	case agent.EventQueueChanged:
-		data := eventData[agent.QueueChangedData](event.Data)
+	case events.EventQueueChanged:
+		data := eventData[events.QueueChangedData](event.Data)
 		return []AppNotification{p.notification(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
 			Queue:    appwire.QueueState{Depth: data.Depth, Preview: append([]string(nil), data.Preview...)},
 		})}
-	case agent.EventSubagentStart:
+	case events.EventSubagentStart:
 		return []AppNotification{p.notification(appwire.NotifySerfSubagentStarted, map[string]any{
 			"threadId": p.threadID,
 			"ref":      p.ref,
 			"subagent": event.Data,
 		})}
-	case agent.EventSubagentEnd:
+	case events.EventSubagentEnd:
 		return []AppNotification{p.notification(appwire.NotifySerfSubagentEnded, map[string]any{
 			"threadId": p.threadID,
 			"ref":      p.ref,
 			"subagent": event.Data,
 		})}
-	case agent.EventSessionEnd:
-		data := eventData[agent.SessionEndData](event.Data)
+	case events.EventSessionEnd:
+		data := eventData[events.SessionEndData](event.Data)
 		state := appwire.ThreadStatusClosed
 		switch data.State {
 		case appwire.ThreadStatusIdle:
@@ -470,7 +469,7 @@ func (p *AppEventProjector) threadStatus(status string) AppNotification {
 	})
 }
 
-func projectUserInputImages(images []agent.UserInputImage) []appwire.InputItem {
+func projectUserInputImages(images []events.UserInputImage) []appwire.InputItem {
 	if len(images) == 0 {
 		return nil
 	}
@@ -486,7 +485,7 @@ func projectUserInputImages(images []agent.UserInputImage) []appwire.InputItem {
 	return out
 }
 
-func turnLimitAnnouncement(data agent.TurnLimitData) string {
+func turnLimitAnnouncement(data events.TurnLimitData) string {
 	var lines []string
 	if data.MaxTurns > 0 {
 		lines = append(lines, fmt.Sprintf("Maximum turns reached: %d", data.MaxTurns))
@@ -500,7 +499,7 @@ func turnLimitAnnouncement(data agent.TurnLimitData) string {
 	return strings.Join(lines, "\n")
 }
 
-func contextCompactionAnnouncement(data agent.ContextCompactionData) string {
+func contextCompactionAnnouncement(data events.ContextCompactionData) string {
 	var lines []string
 	if strings.TrimSpace(data.Layer) != "" {
 		lines = append(lines, "Layer: "+strings.TrimSpace(data.Layer))
@@ -517,7 +516,7 @@ func contextCompactionAnnouncement(data agent.ContextCompactionData) string {
 	return strings.Join(lines, "\n")
 }
 
-func pluginLoadedAnnouncement(data agent.PluginLoadedData) string {
+func pluginLoadedAnnouncement(data events.PluginLoadedData) string {
 	name := strings.TrimSpace(data.Name)
 	if name == "" {
 		name = "plugin"
@@ -525,7 +524,7 @@ func pluginLoadedAnnouncement(data agent.PluginLoadedData) string {
 	return fmt.Sprintf("Loaded plugin %s (%d skills, %d agents, %d MCP servers)", name, data.SkillCount, data.AgentCount, data.MCPCount)
 }
 
-func hookEndAnnouncement(data agent.HookEndData) string {
+func hookEndAnnouncement(data events.HookEndData) string {
 	parts := []string{fallbackLabel(data.Event, "hook") + " hook"}
 	if pluginName := strings.TrimSpace(data.PluginName); pluginName != "" {
 		parts = append(parts, pluginName)
@@ -540,14 +539,14 @@ func hookEndAnnouncement(data agent.HookEndData) string {
 	return strings.Join(parts, " ")
 }
 
-func forkSummaryAnnouncement(data agent.ForkSummaryData) string {
+func forkSummaryAnnouncement(data events.ForkSummaryData) string {
 	if data.Turn > 0 {
 		return fmt.Sprintf("Fork summary captured at transcript turn %d", data.Turn)
 	}
 	return "Fork summary captured"
 }
 
-func promptLoadedAnnouncement(data agent.PromptLoadedData) string {
+func promptLoadedAnnouncement(data events.PromptLoadedData) string {
 	label := fallbackLabel(data.Label, "prompt")
 	if data.Size > 0 {
 		return fmt.Sprintf("Loaded prompt %s (%d B)", label, data.Size)
@@ -555,7 +554,7 @@ func promptLoadedAnnouncement(data agent.PromptLoadedData) string {
 	return "Loaded prompt " + label
 }
 
-func roundTimingsAnnouncement(data agent.RoundTimings) string {
+func roundTimingsAnnouncement(data events.RoundTimings) string {
 	parts := []string{
 		fmt.Sprintf("Round %d", data.Round),
 		"total=" + data.TotalRound.String(),
@@ -661,7 +660,7 @@ func (p *AppEventProjector) matchesLastAssistantMessage(turnID, text string) boo
 // EventError (kata ts0x) to its wire-level appwire shape (kata cmfz).
 // Returns nil when the caller did not attach a cause so the warning
 // envelope's "cause" field stays omitempty-eligible on the wire.
-func projectErrorCause(cause *agent.ErrorCause) *appwire.DiagnosticCause {
+func projectErrorCause(cause *events.ErrorCause) *appwire.DiagnosticCause {
 	if cause == nil {
 		return nil
 	}
@@ -673,17 +672,12 @@ func projectErrorCause(cause *agent.ErrorCause) *appwire.DiagnosticCause {
 	}
 }
 
-func eventData[T any](data any) T {
-	if typed, ok := data.(T); ok {
-		return typed
-	}
-	var zero T
-	raw, err := json.Marshal(data)
-	if err != nil {
-		return zero
-	}
-	if err := json.Unmarshal(raw, &zero); err != nil {
-		return zero
-	}
-	return zero
+// eventData returns the concrete payload carried by a SessionEvent.Data value.
+// Data is now the sealed events.EventData interface holding the exact payload
+// the emit site constructed, so a direct type assertion is authoritative and
+// the former JSON marshal/unmarshal round-trip is gone. A mismatched T (a
+// projector bug) yields the zero value rather than panicking.
+func eventData[T events.EventData](data events.EventData) T {
+	typed, _ := data.(T)
+	return typed
 }
