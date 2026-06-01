@@ -260,7 +260,7 @@ func buildChatCompletionsBody(req llm.Request, stream bool) (map[string]any, err
 		body["tools"] = openaichat.ToChatTools(req.Tools)
 	}
 	if req.ToolChoice != nil {
-		tc, err := toResponsesToolChoice(*req.ToolChoice)
+		tc, err := toChatCompletionsToolChoice(*req.ToolChoice)
 		if err != nil {
 			return nil, err
 		}
@@ -481,4 +481,39 @@ func buildChatMultimodalParts(parts []llm.ContentPart) ([]map[string]any, error)
 		}
 	}
 	return out, nil
+}
+
+// toChatCompletionsToolChoice converts a tool choice to the OpenAI Chat Completions
+// wire shape. A forced function is expressed as
+// {"type":"function","function":{"name":"X"}} — the function name NESTED under
+// "function". This is the shape the Chat Completions endpoint requires, and differs
+// from the Responses API, which puts the name at the top level (see
+// toResponsesToolChoice in responses.go).
+func toChatCompletionsToolChoice(tc llm.ToolChoice) (any, error) {
+	switch strings.ToLower(strings.TrimSpace(tc.Mode)) {
+	case "", "auto":
+		return "auto", nil
+	case "none":
+		return "none", nil
+	case "required":
+		return "required", nil
+	case "named":
+		if strings.TrimSpace(tc.Name) == "" {
+			return nil, &llm.ConfigurationError{Message: "tool_choice mode=named requires name"}
+		}
+		return map[string]any{
+			"type":     "function",
+			"function": map[string]any{"name": tc.Name},
+		}, nil
+	default:
+		// Backward-compatible: some callers may have used an unspecified mode to force
+		// a particular tool. Prefer explicit mode="named".
+		if strings.TrimSpace(tc.Name) != "" {
+			return map[string]any{
+				"type":     "function",
+				"function": map[string]any{"name": tc.Name},
+			}, nil
+		}
+		return nil, llm.NewUnsupportedToolChoiceError("openai", tc.Mode)
+	}
 }

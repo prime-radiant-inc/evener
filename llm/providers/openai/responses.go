@@ -630,6 +630,12 @@ func deepCopyAny(v any) any {
 	}
 }
 
+// toResponsesToolChoice converts a tool choice to the OpenAI Responses API wire
+// shape. A forced function is expressed as {"type":"function","name":"X"} — the
+// function name lives at the TOP LEVEL. This differs from Chat Completions, which
+// nests it as {"type":"function","function":{"name":"X"}} (see
+// toChatCompletionsToolChoice); sending the nested shape to /v1/responses is
+// rejected with "missing required parameter: 'tool_choice.name'".
 func toResponsesToolChoice(tc llm.ToolChoice) (any, error) {
 	switch strings.ToLower(strings.TrimSpace(tc.Mode)) {
 	case "", "auto":
@@ -642,18 +648,12 @@ func toResponsesToolChoice(tc llm.ToolChoice) (any, error) {
 		if strings.TrimSpace(tc.Name) == "" {
 			return nil, &llm.ConfigurationError{Message: "tool_choice mode=named requires name"}
 		}
-		return map[string]any{
-			"type":     "function",
-			"function": map[string]any{"name": tc.Name},
-		}, nil
+		return map[string]any{"type": "function", "name": tc.Name}, nil
 	default:
 		// Backward-compatible: some callers may have used an unspecified mode to force
 		// a particular tool. Prefer explicit mode="named".
 		if strings.TrimSpace(tc.Name) != "" {
-			return map[string]any{
-				"type":     "function",
-				"function": map[string]any{"name": tc.Name},
-			}, nil
+			return map[string]any{"type": "function", "name": tc.Name}, nil
 		}
 		return nil, llm.NewUnsupportedToolChoiceError("openai", tc.Mode)
 	}

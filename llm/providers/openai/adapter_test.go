@@ -240,9 +240,12 @@ func TestAdapter_Complete_ToolChoice_MappedPerSpec(t *testing.T) {
 				if m["type"] != "function" {
 					t.Fatalf("tool_choice.type: %#v", m["type"])
 				}
-				fn, _ := m["function"].(map[string]any)
-				if fn["name"] != "shell" {
-					t.Fatalf("tool_choice.function.name: %#v", fn["name"])
+				// Responses API: the forced function name lives at the top level.
+				if m["name"] != "shell" {
+					t.Fatalf("tool_choice.name: %#v (Responses API wants name at top level)", m["name"])
+				}
+				if _, nested := m["function"]; nested {
+					t.Fatalf("Responses API tool_choice must not nest under \"function\": %#v", m)
 				}
 			},
 		},
