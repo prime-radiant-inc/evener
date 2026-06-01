@@ -73,6 +73,48 @@ func TestEvalCollector_AccumulatesTokens(t *testing.T) {
 	}
 }
 
+func TestEvalCollector_AccumulatesCacheTokens(t *testing.T) {
+	c := newEvalCollector("compact", "gpt-4", "task")
+
+	// Two events with cache pointers set: both should accumulate.
+	c.ProcessEvent(SessionEvent{
+		Kind: EventAssistantTextEnd,
+		Data: AssistantTextEndData{
+			Usage: llm.Usage{
+				InputTokens:      10,
+				CacheReadTokens:  intPtr(100),
+				CacheWriteTokens: intPtr(40),
+			},
+		},
+	})
+	c.ProcessEvent(SessionEvent{
+		Kind: EventAssistantTextEnd,
+		Data: AssistantTextEndData{
+			Usage: llm.Usage{
+				InputTokens:      10,
+				CacheReadTokens:  intPtr(50),
+				CacheWriteTokens: intPtr(10),
+			},
+		},
+	})
+	// Event with nil cache pointers: the nil guard must skip it without
+	// panicking and must not change the cache totals.
+	c.ProcessEvent(SessionEvent{
+		Kind: EventAssistantTextEnd,
+		Data: AssistantTextEndData{
+			Usage: llm.Usage{InputTokens: 10},
+		},
+	})
+
+	m := c.Metrics()
+	if m.CacheReadTokens != 150 {
+		t.Errorf("expected 150 cache read tokens, got %d", m.CacheReadTokens)
+	}
+	if m.CacheWriteTokens != 50 {
+		t.Errorf("expected 50 cache write tokens, got %d", m.CacheWriteTokens)
+	}
+}
+
 func TestEvalCollector_CountsCompactionEvents(t *testing.T) {
 	c := newEvalCollector("compact", "gpt-4", "task")
 
@@ -227,3 +269,5 @@ func TestEvalCollector_ConcurrentAccess(t *testing.T) {
 		t.Errorf("expected 100 turns, got %d", m.TurnCount)
 	}
 }
+
+func intPtr(v int) *int { return &v }
