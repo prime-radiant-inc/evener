@@ -149,6 +149,40 @@ func WithCheapModel(p ProviderProfile, model string) ProviderProfile {
 	return &clone
 }
 
+// WithContextWindow returns a cloned profile whose ContextWindowSize reports n.
+// Passing n <= 0 returns p unchanged, so callers can pass the result of a
+// best-effort lookup (which yields 0 when unavailable) and keep the profile's
+// constructor-derived window as the fallback.
+//
+// This is the seam the app layer uses to override an openai-compat profile's
+// catalog-derived window with a live value queried from the provider, keeping
+// that network lookup out of the agent library.
+func WithContextWindow(p ProviderProfile, n int) ProviderProfile {
+	if p == nil || n <= 0 {
+		return p
+	}
+
+	var bp *baseProfile
+	switch v := p.(type) {
+	case *baseProfile:
+		bp = v
+	case *anthropicProfile:
+		bp = &v.baseProfile
+	default:
+		return p
+	}
+
+	clone := *bp
+	clone.contextWindow = n
+
+	if ap, ok := p.(*anthropicProfile); ok {
+		apClone := *ap
+		apClone.baseProfile = clone
+		return &apClone
+	}
+	return &clone
+}
+
 // replaceCommunicateOutputSchema deep-copies td.Parameters and overwrites
 // Parameters.properties.output with a deep copy of outputSchema. It also adds
 // "output" to Parameters.required if not already present.

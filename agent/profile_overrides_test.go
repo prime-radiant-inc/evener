@@ -320,3 +320,40 @@ func TestWithAllowedDecisions_WithOutputSchema_BothApplied(t *testing.T) {
 	}
 	t.Fatal("communicate tool not found")
 }
+
+func TestWithContextWindow_OverridesWhenPositive(t *testing.T) {
+	base := NewOpenAICompatProfile("kimi", "kimi-k2", 0)
+	original := base.ContextWindowSize()
+
+	p := WithContextWindow(base, 262_144)
+	if got := p.ContextWindowSize(); got != 262_144 {
+		t.Fatalf("ContextWindowSize() = %d, want 262144", got)
+	}
+	// Original profile must be unchanged (clone semantics).
+	if got := base.ContextWindowSize(); got != original {
+		t.Fatalf("original profile mutated: ContextWindowSize() = %d, want %d", got, original)
+	}
+}
+
+func TestWithContextWindow_NonPositiveIsNoOp(t *testing.T) {
+	base := NewOpenAICompatProfile("kimi", "kimi-k2", 0)
+	want := base.ContextWindowSize()
+
+	for _, n := range []int{0, -1, -100} {
+		p := WithContextWindow(base, n)
+		if got := p.ContextWindowSize(); got != want {
+			t.Fatalf("WithContextWindow(base, %d).ContextWindowSize() = %d, want %d (no-op)", n, got, want)
+		}
+	}
+}
+
+func TestWithContextWindow_PreservesAnthropicProfileType(t *testing.T) {
+	base := NewAnthropicProfile("claude-opus-4-6")
+	p := WithContextWindow(base, 500_000)
+	if _, ok := p.(*anthropicProfile); !ok {
+		t.Fatalf("WithContextWindow returned %T, want *anthropicProfile", p)
+	}
+	if got := p.ContextWindowSize(); got != 500_000 {
+		t.Fatalf("ContextWindowSize() = %d, want 500000", got)
+	}
+}
