@@ -18,6 +18,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
+	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
@@ -1124,7 +1125,7 @@ func TestWeb_WorkspaceSpawn_SubmitsPrefilledWorkingDir(t *testing.T) {
 		t.Fatalf("status: %d", rec.Code)
 	}
 	body := rec.Body.String()
-	resolved, err := canonicalizeDir(dir)
+	resolved, err := fspaths.CanonicalizeDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1495,7 +1496,7 @@ func TestWeb_ApiSpawn_WaitsForSlowSpawnerAndReturnsSession(t *testing.T) {
 	if spawner.got.Resolved.Effective.Model != "openai/gpt-5" {
 		t.Fatalf("spawn model=%q, want openai/gpt-5", spawner.got.Resolved.Effective.Model)
 	}
-	wantWorkingDir, err := canonicalizeDir(workDir)
+	wantWorkingDir, err := fspaths.CanonicalizeDir(workDir)
 	if err != nil {
 		t.Fatal(err)
 	}

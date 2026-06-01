@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/launchconfig"
 )
@@ -54,7 +55,7 @@ func (c *hubLaunchController) Schema(ctx context.Context, params appwire.EmptyPa
 }
 
 func (c *hubLaunchController) Resolve(ctx context.Context, params appwire.LaunchConfigResolveParams) (appwire.LaunchConfigResolved, error) {
-	cwd, err := canonicalizeDir(params.CWD)
+	cwd, err := fspaths.CanonicalizeDir(params.CWD)
 	if err != nil {
 		return appwire.LaunchConfigResolved{}, appwire.InvalidParams("cwd: " + err.Error())
 	}
@@ -81,7 +82,7 @@ func cloneBoolMap(in map[string]bool) map[string]bool {
 }
 
 func (c *hubLaunchController) GetLayer(ctx context.Context, params appwire.LaunchConfigGetLayerParams) (appwire.LaunchConfigLayer, error) {
-	cwd, err := canonicalizeDir(params.CWD)
+	cwd, err := fspaths.CanonicalizeDir(params.CWD)
 	if err != nil {
 		return appwire.LaunchConfigLayer{}, appwire.InvalidParams("cwd: " + err.Error())
 	}
@@ -107,7 +108,7 @@ func (c *hubLaunchController) GetLayer(ctx context.Context, params appwire.Launc
 }
 
 func (c *hubLaunchController) SetLayer(ctx context.Context, params appwire.LaunchConfigSetLayerParams) (appwire.LaunchConfigResolved, error) {
-	cwd, err := canonicalizeDir(params.CWD)
+	cwd, err := fspaths.CanonicalizeDir(params.CWD)
 	if err != nil {
 		return appwire.LaunchConfigResolved{}, appwire.InvalidParams("cwd: " + err.Error())
 	}
@@ -139,7 +140,7 @@ func (c *hubLaunchController) SetLayer(ctx context.Context, params appwire.Launc
 }
 
 func (c *hubLaunchController) TrustRepo(ctx context.Context, params appwire.LaunchConfigTrustRepoParams) (appwire.LaunchConfigResolved, error) {
-	cwd, err := canonicalizeDir(params.CWD)
+	cwd, err := fspaths.CanonicalizeDir(params.CWD)
 	if err != nil {
 		return appwire.LaunchConfigResolved{}, appwire.InvalidParams("cwd: " + err.Error())
 	}

@@ -1,4 +1,9 @@
-package main
+// Package fspaths holds the boundary-hardening filesystem helpers that turn
+// user-supplied path strings into trusted absolute paths: directory
+// canonicalization, dir-prefix sanitization, directory autocomplete, and
+// launch command/file/dir validation against the appwire path-validate
+// contract.
+package fspaths
 
 import (
 	"errors"
@@ -8,7 +13,7 @@ import (
 	"strings"
 )
 
-// canonicalizeDir resolves a user-supplied directory path to its canonical
+// CanonicalizeDir resolves a user-supplied directory path to its canonical
 // absolute form. The path must be absolute, must exist, and must be a
 // directory. Symlinks are resolved.
 //
@@ -16,7 +21,7 @@ import (
 // rather than attacks; the same code paths will get reused if the hub ever
 // exposes beyond loopback, so canonicalize at the boundary and let callers
 // trust the result.
-func canonicalizeDir(p string) (string, error) {
+func CanonicalizeDir(p string) (string, error) {
 	p = strings.TrimSpace(p)
 	if p == "" {
 		return "", errors.New("path is empty")
@@ -47,14 +52,14 @@ func canonicalizeDir(p string) (string, error) {
 	return resolved, nil
 }
 
-// sanitizeDirPrefix cleans a directory-prefix string used by the autocomplete
+// SanitizeDirPrefix cleans a directory-prefix string used by the autocomplete
 // endpoint. The prefix may not exist (the user is typing) so we don't
 // EvalSymlinks; we only normalize separators and reject traversal.
 //
 // Trailing-slash semantics are preserved: filepath.Clean drops trailing
 // slashes, but the autocomplete uses the trailing slash to distinguish
 // "list contents of dir" from "filter siblings by basename".
-func sanitizeDirPrefix(p string) (string, error) {
+func SanitizeDirPrefix(p string) (string, error) {
 	p = strings.TrimSpace(p)
 	if p == "" {
 		return "", nil

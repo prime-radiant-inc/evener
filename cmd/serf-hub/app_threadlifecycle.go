@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
@@ -50,7 +51,7 @@ func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Regis
 	}
 	workingDir := params.CWD
 	if workingDir != "" {
-		resolved, err := canonicalizeDir(workingDir)
+		resolved, err := fspaths.CanonicalizeDir(workingDir)
 		if err != nil {
 			return appwire.ThreadStartResponse{}, appwire.InvalidParams("cwd: " + err.Error())
 		}

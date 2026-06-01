@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 )
 
 func TestMain(m *testing.M) {
@@ -48,7 +50,7 @@ func TestMain(m *testing.M) {
 func canonicalTempDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	resolved, err := canonicalizeDir(dir)
+	resolved, err := fspaths.CanonicalizeDir(dir)
 	if err != nil {
 		t.Fatalf("canonicalize temp dir %s: %v", dir, err)
 	}

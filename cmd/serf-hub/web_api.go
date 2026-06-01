@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/buildinfo"
+	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/internal/hubapi"
@@ -307,7 +308,7 @@ func (s *WebServer) handleApiDirs(w http.ResponseWriter, r *http.Request) {
 	}
 	// Reject traversal; preserve trailing slash so the listDir/filter logic
 	// below still distinguishes "list dir contents" from "filter siblings".
-	cleaned, err := sanitizeDirPrefix(prefix)
+	cleaned, err := fspaths.SanitizeDirPrefix(prefix)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"results":[]}`)) //nolint:errcheck
@@ -375,7 +376,7 @@ func (s *WebServer) handleAPIPathValidate(w http.ResponseWriter, r *http.Request
 		http.Error(w, "GET required", http.StatusMethodNotAllowed)
 		return
 	}
-	resp := validateLaunchPath(appwire.PathValidateParams{
+	resp := fspaths.ValidateLaunchPath(appwire.PathValidateParams{
 		Path: r.URL.Query().Get("path"),
 		Kind: r.URL.Query().Get("kind"),
 	})

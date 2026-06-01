@@ -18,6 +18,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
+	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
@@ -2824,7 +2825,7 @@ func TestHubRPCThreadStartPropagatesSpawnerStderrAsHubLaunchError(t *testing.T) 
 }
 
 func TestValidateLaunchPathRejectsMissingPluginDir(t *testing.T) {
-	resp := validateLaunchPath(appwire.PathValidateParams{Path: filepath.Join(t.TempDir(), "missing"), Kind: "dir"})
+	resp := fspaths.ValidateLaunchPath(appwire.PathValidateParams{Path: filepath.Join(t.TempDir(), "missing"), Kind: "dir"})
 	if resp.Valid {
 		t.Fatalf("valid=%v, want false", resp.Valid)
 	}
@@ -2834,7 +2835,7 @@ func TestValidateLaunchPathRejectsMissingPluginDir(t *testing.T) {
 }
 
 func TestValidateLaunchPathAcceptsExecutableCommand(t *testing.T) {
-	resp := validateLaunchPath(appwire.PathValidateParams{Path: "sh", Kind: "command"})
+	resp := fspaths.ValidateLaunchPath(appwire.PathValidateParams{Path: "sh", Kind: "command"})
 	if !resp.Valid {
 		t.Fatalf("valid=false error=%q", resp.Error)
 	}
@@ -2845,7 +2846,7 @@ func TestValidateLaunchPathAcceptsExecutableCommand(t *testing.T) {
 
 func TestValidateLaunchPathAcceptsMissingOutputFileWithWritableParent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "trace.jsonl")
-	resp := validateLaunchPath(appwire.PathValidateParams{Path: path, Kind: "output-file"})
+	resp := fspaths.ValidateLaunchPath(appwire.PathValidateParams{Path: path, Kind: "output-file"})
 	if !resp.Valid {
 		t.Fatalf("valid=false error=%q", resp.Error)
 	}
@@ -2856,7 +2857,7 @@ func TestValidateLaunchPathAcceptsMissingOutputFileWithWritableParent(t *testing
 
 func TestValidateLaunchPathRejectsOutputFileWithMissingParent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing", "trace.jsonl")
-	resp := validateLaunchPath(appwire.PathValidateParams{Path: path, Kind: "output-file"})
+	resp := fspaths.ValidateLaunchPath(appwire.PathValidateParams{Path: path, Kind: "output-file"})
 	if resp.Valid {
 		t.Fatalf("valid=true, want false")
 	}

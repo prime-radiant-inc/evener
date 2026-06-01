@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
@@ -537,10 +538,10 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 		return hubThreadTranscriptList(ctx, cfg, sources, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfDirsComplete, func(_ context.Context, params appwire.DirsCompleteParams) (appwire.DirsCompleteResponse, error) {
-		return completeDirs(params)
+		return fspaths.CompleteDirs(params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfPathValidate, func(_ context.Context, params appwire.PathValidateParams) (appwire.PathValidateResponse, error) {
-		return validateLaunchPath(params), nil
+		return fspaths.ValidateLaunchPath(params), nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
 		return appwire.HarnessListResponse{Data: launchHarnessDescriptors(cfg)}, nil

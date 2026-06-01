@@ -1,4 +1,4 @@
-package main
+package fspaths
 
 import (
 	"os"
@@ -10,7 +10,7 @@ import (
 	"primeradiant.com/serf/internal/appwire"
 )
 
-func completeDirs(params appwire.DirsCompleteParams) (appwire.DirsCompleteResponse, error) {
+func CompleteDirs(params appwire.DirsCompleteParams) (appwire.DirsCompleteResponse, error) {
 	prefix := params.Prefix
 	if prefix == "" {
 		prefix = os.Getenv("HOME")
@@ -18,7 +18,7 @@ func completeDirs(params appwire.DirsCompleteParams) (appwire.DirsCompleteRespon
 	if strings.HasPrefix(prefix, "~/") || prefix == "~" {
 		prefix = filepath.Join(os.Getenv("HOME"), strings.TrimPrefix(prefix, "~"))
 	}
-	cleaned, err := sanitizeDirPrefix(prefix)
+	cleaned, err := SanitizeDirPrefix(prefix)
 	if err != nil {
 		return appwire.DirsCompleteResponse{}, nil
 	}
@@ -64,7 +64,7 @@ func completeDirs(params appwire.DirsCompleteParams) (appwire.DirsCompleteRespon
 	return appwire.DirsCompleteResponse{Data: results}, nil
 }
 
-func validateLaunchPath(params appwire.PathValidateParams) appwire.PathValidateResponse {
+func ValidateLaunchPath(params appwire.PathValidateParams) appwire.PathValidateResponse {
 	path := strings.TrimSpace(params.Path)
 	kind := strings.TrimSpace(params.Kind)
 	if path == "" {

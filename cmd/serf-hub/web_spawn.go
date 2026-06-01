@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/diagnostic"
@@ -43,7 +44,7 @@ func (s *WebServer) handleWorkspaceSpawn(w http.ResponseWriter, r *http.Request)
 	defaultWorkingDir := "(pick a directory)"
 	defaultWorkingDirValue := ""
 	if dir := strings.TrimSpace(r.URL.Query().Get("dir")); dir != "" {
-		if resolved, err := canonicalizeDir(dir); err == nil {
+		if resolved, err := fspaths.CanonicalizeDir(dir); err == nil {
 			defaultWorkingDir = resolved
 			defaultWorkingDirValue = resolved
 		}

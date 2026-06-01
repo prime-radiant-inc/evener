@@ -1,4 +1,4 @@
-package main
+package fspaths
 
 import (
 	"os"
@@ -8,19 +8,19 @@ import (
 )
 
 func TestCanonicalizeDir_RejectsRelative(t *testing.T) {
-	if _, err := canonicalizeDir("foo/bar"); err == nil {
+	if _, err := CanonicalizeDir("foo/bar"); err == nil {
 		t.Fatal("expected error for relative path")
 	}
 }
 
 func TestCanonicalizeDir_RejectsEmpty(t *testing.T) {
-	if _, err := canonicalizeDir(""); err == nil {
+	if _, err := CanonicalizeDir(""); err == nil {
 		t.Fatal("expected error for empty path")
 	}
 }
 
 func TestCanonicalizeDir_RejectsNonexistent(t *testing.T) {
-	if _, err := canonicalizeDir("/nonexistent/path/that/should/not/exist"); err == nil {
+	if _, err := CanonicalizeDir("/nonexistent/path/that/should/not/exist"); err == nil {
 		t.Fatal("expected error for nonexistent path")
 	}
 }
@@ -31,7 +31,7 @@ func TestCanonicalizeDir_RejectsFile(t *testing.T) {
 	if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := canonicalizeDir(f); err == nil {
+	if _, err := CanonicalizeDir(f); err == nil {
 		t.Fatal("expected error for file path")
 	}
 }
@@ -46,7 +46,7 @@ func TestCanonicalizeDir_ResolvesSymlink(t *testing.T) {
 	if err := os.Symlink(real, link); err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := canonicalizeDir(link)
+	resolved, err := CanonicalizeDir(link)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestCanonicalizeDir_NormalizesTraversal(t *testing.T) {
 		t.Fatal(err)
 	}
 	// /tmp/.../sub/../sub -> /tmp/.../sub
-	resolved, err := canonicalizeDir(sub + "/../sub")
+	resolved, err := CanonicalizeDir(sub + "/../sub")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestCanonicalizeDir_NormalizesTraversal(t *testing.T) {
 }
 
 func TestSanitizeDirPrefix_PreservesTrailingSlash(t *testing.T) {
-	got, err := sanitizeDirPrefix("/Users/jesse/")
+	got, err := SanitizeDirPrefix("/Users/jesse/")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,13 +84,13 @@ func TestSanitizeDirPrefix_PreservesTrailingSlash(t *testing.T) {
 }
 
 func TestSanitizeDirPrefix_RejectsTraversal(t *testing.T) {
-	if _, err := sanitizeDirPrefix("../etc/passwd"); err == nil {
+	if _, err := SanitizeDirPrefix("../etc/passwd"); err == nil {
 		t.Fatal("expected error for traversal")
 	}
 }
 
 func TestSanitizeDirPrefix_NormalizesInternalTraversal(t *testing.T) {
-	got, err := sanitizeDirPrefix("/Users/jesse/foo/../bar")
+	got, err := SanitizeDirPrefix("/Users/jesse/foo/../bar")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestSanitizeDirPrefix_NormalizesInternalTraversal(t *testing.T) {
 }
 
 func TestSanitizeDirPrefix_Empty(t *testing.T) {
-	got, err := sanitizeDirPrefix("")
+	got, err := SanitizeDirPrefix("")
 	if err != nil {
 		t.Fatal(err)
 	}
