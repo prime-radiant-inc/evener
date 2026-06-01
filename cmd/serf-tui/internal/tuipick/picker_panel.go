@@ -1,4 +1,4 @@
-package main
+package tuipick
 
 import (
 	"fmt"
@@ -8,16 +8,16 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 )
 
-type pickerPanelItem struct {
+type PickerPanelItem struct {
 	ID             string
 	Label          string
 	Detail         string
 	DisabledReason string
 }
 
-type pickerPanel struct {
+type PickerPanel struct {
 	title     string
-	items     []pickerPanelItem
+	items     []PickerPanelItem
 	filter    string
 	cursor    int
 	width     int
@@ -26,21 +26,21 @@ type pickerPanel struct {
 	done      bool
 }
 
-func newPickerPanel(title string, items []pickerPanelItem, width int) pickerPanel {
+func NewPickerPanel(title string, items []PickerPanelItem, width int) PickerPanel {
 	if width <= 0 {
 		width = 80
 	}
-	return pickerPanel{title: title, items: items, width: width}
+	return PickerPanel{title: title, items: items, width: width}
 }
 
-func (p pickerPanel) Init() tea.Cmd { return nil }
+func (p PickerPanel) Init() tea.Cmd { return nil }
 
-func (p pickerPanel) filtered() []pickerPanelItem {
+func (p PickerPanel) filtered() []PickerPanelItem {
 	if p.filter == "" {
 		return p.items
 	}
 	lower := strings.ToLower(p.filter)
-	var out []pickerPanelItem
+	var out []PickerPanelItem
 	for _, item := range p.items {
 		if strings.Contains(strings.ToLower(item.ID), lower) ||
 			strings.Contains(strings.ToLower(item.Label), lower) ||
@@ -51,7 +51,7 @@ func (p pickerPanel) filtered() []pickerPanelItem {
 	return out
 }
 
-func (p pickerPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (p PickerPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.Type {
@@ -93,7 +93,34 @@ func (p pickerPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return p, nil
 }
 
-func (p pickerPanel) View() string {
+// SetFilter sets the current filter string.
+func (p *PickerPanel) SetFilter(filter string) { p.filter = filter }
+
+// Done reports whether the panel has been dismissed.
+func (p PickerPanel) Done() bool { return p.done }
+
+// Selected returns the chosen item ID, or "" if none was selected.
+func (p PickerPanel) Selected() string { return p.selected }
+
+// Cancelled reports whether the panel was dismissed without a selection.
+func (p PickerPanel) Cancelled() bool { return p.cancelled }
+
+// Filtered returns the items matching the current filter, in display order.
+func (p PickerPanel) Filtered() []PickerPanelItem { return p.filtered() }
+
+// Cursor returns the index of the highlighted row within the filtered list.
+func (p PickerPanel) Cursor() int { return p.cursor }
+
+// Filter returns the current filter string.
+func (p PickerPanel) Filter() string { return p.filter }
+
+// Width returns the panel's render width.
+func (p PickerPanel) Width() int { return p.width }
+
+// Title returns the panel title.
+func (p PickerPanel) Title() string { return p.title }
+
+func (p PickerPanel) View() string {
 	var b strings.Builder
 	title := p.title
 	if title == "" {

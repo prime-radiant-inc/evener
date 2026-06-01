@@ -1,4 +1,4 @@
-package main
+package tuipick
 
 import (
 	"fmt"
@@ -9,18 +9,18 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
-type modelPickerItem struct {
-	id             string
-	display        string
-	disabledReason string
+type ModelPickerItem struct {
+	ID             string
+	Display        string
+	DisabledReason string
 }
 
-// modelPicker is an inline Bubble Tea model for selecting from a filtered list.
-type modelPicker struct {
+// ModelPicker is an inline Bubble Tea model for selecting from a filtered list.
+type ModelPicker struct {
 	title     string
 	emptyText string
 	footer    string
-	items     []modelPickerItem
+	items     []ModelPickerItem
 	active    string // currently active model (highlighted differently)
 	filter    string
 	cursor    int
@@ -30,8 +30,8 @@ type modelPicker struct {
 	done      bool
 }
 
-func newModelPicker(items []modelPickerItem, activeModel string, width int) modelPicker {
-	return modelPicker{
+func NewModelPicker(items []ModelPickerItem, activeModel string, width int) ModelPicker {
+	return ModelPicker{
 		title:     "Select model",
 		emptyText: "  No matching models.",
 		footer:    "up/down navigate  enter select  esc cancel",
@@ -41,8 +41,8 @@ func newModelPicker(items []modelPickerItem, activeModel string, width int) mode
 	}
 }
 
-func newTranscriptPicker(items []modelPickerItem, activeSessionID string, width int) modelPicker {
-	return modelPicker{
+func NewTranscriptPicker(items []ModelPickerItem, activeSessionID string, width int) ModelPicker {
+	return ModelPicker{
 		title:     "Select transcript",
 		emptyText: "  No matching sessions.",
 		footer:    "up/down navigate  enter select  esc cancel",
@@ -52,8 +52,8 @@ func newTranscriptPicker(items []modelPickerItem, activeSessionID string, width 
 	}
 }
 
-func newActionPicker(title, footer string, items []modelPickerItem, width int) modelPicker {
-	return modelPicker{
+func NewActionPicker(title, footer string, items []ModelPickerItem, width int) ModelPicker {
+	return ModelPicker{
 		title:     title,
 		emptyText: "  No actions available.",
 		footer:    footer,
@@ -62,25 +62,25 @@ func newActionPicker(title, footer string, items []modelPickerItem, width int) m
 	}
 }
 
-func (m modelPicker) Init() tea.Cmd { return nil }
+func (m ModelPicker) Init() tea.Cmd { return nil }
 
-func (m modelPicker) filtered() []modelPickerItem {
+func (m ModelPicker) filtered() []ModelPickerItem {
 	if m.filter == "" {
 		return m.items
 	}
 	lower := strings.ToLower(m.filter)
-	var out []modelPickerItem
+	var out []ModelPickerItem
 	for _, item := range m.items {
-		if strings.Contains(strings.ToLower(item.id), lower) ||
-			strings.Contains(strings.ToLower(item.display), lower) ||
-			strings.Contains(strings.ToLower(item.disabledReason), lower) {
+		if strings.Contains(strings.ToLower(item.ID), lower) ||
+			strings.Contains(strings.ToLower(item.Display), lower) ||
+			strings.Contains(strings.ToLower(item.DisabledReason), lower) {
 			out = append(out, item)
 		}
 	}
 	return out
 }
 
-func (m modelPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m ModelPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.Type {
@@ -94,10 +94,10 @@ func (m modelPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			item := filtered[m.cursor]
-			if item.disabledReason != "" {
+			if item.DisabledReason != "" {
 				return m, nil
 			}
-			m.selected = item.id
+			m.selected = item.ID
 			m.done = true
 			return m, nil
 		case tea.KeyUp:
@@ -122,7 +122,7 @@ func (m modelPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m modelPicker) renderBody() string {
+func (m ModelPicker) renderBody() string {
 	var b strings.Builder
 
 	filterText := m.filter
@@ -166,18 +166,18 @@ func (m modelPicker) renderBody() string {
 			if i == m.cursor {
 				cursor = "> "
 				style = tuitheme.MpCursorStyle
-			} else if item.id == m.active {
+			} else if item.ID == m.active {
 				style = tuitheme.MpActiveStyle
 			}
-			line := cursor + style.Render(item.display)
-			if item.id != item.display && item.display != "" {
-				line += "  " + tuitheme.MpDimStyle.Render(item.id)
+			line := cursor + style.Render(item.Display)
+			if item.ID != item.Display && item.Display != "" {
+				line += "  " + tuitheme.MpDimStyle.Render(item.ID)
 			}
-			if item.id == m.active {
+			if item.ID == m.active {
 				line += "  " + tuitheme.MpActiveTag.Render("(active)")
 			}
-			if item.disabledReason != "" {
-				line += "  " + tuitheme.MpDimStyle.Render("disabled: "+item.disabledReason)
+			if item.DisabledReason != "" {
+				line += "  " + tuitheme.MpDimStyle.Render("disabled: "+item.DisabledReason)
 			}
 			b.WriteString(line)
 			b.WriteString("\n")
@@ -191,7 +191,16 @@ func (m modelPicker) renderBody() string {
 	return b.String()
 }
 
-func (m modelPicker) View() string {
+// SetTitle overrides the picker's heading.
+func (m *ModelPicker) SetTitle(title string) { m.title = title }
+
+// Done reports whether the picker has been dismissed.
+func (m ModelPicker) Done() bool { return m.done }
+
+// Selected returns the chosen item ID, or "" if none was selected.
+func (m ModelPicker) Selected() string { return m.selected }
+
+func (m ModelPicker) View() string {
 	title := m.title
 	if title == "" {
 		title = "Select model"

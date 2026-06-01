@@ -3,6 +3,7 @@ package main
 import (
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
 )
 
 // topmostOverlayName returns the name of the most-recently-opened
@@ -49,9 +50,9 @@ func (m hubModel) dispatchOverlayKey(name string, msg tea.KeyMsg) (tea.Model, te
 	switch name {
 	case "followup":
 		updated, cmd := m.followupModal.Update(msg)
-		modal := updated.(textInputModal)
+		modal := updated.(tuipick.TextInputModal)
 		m.followupModal = &modal
-		if modal.done {
+		if modal.Done() {
 			m.followupModal = nil
 		}
 		return m, cmd

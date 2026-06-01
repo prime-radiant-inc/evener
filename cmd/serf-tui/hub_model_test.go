@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/hubstart"
 	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitext"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/internal/appserver"
@@ -510,7 +511,7 @@ func TestHubModelDashboardWideDrawerDoesNotStealTextInput(t *testing.T) {
 		t.Fatal("palette-owned printable key should not run a command")
 	}
 	m = updated.(hubModel)
-	if m.mode == hubModeSpawn || m.commandPalette == nil || m.commandPalette.panel.filter != "n" {
+	if m.mode == hubModeSpawn || m.commandPalette == nil || m.commandPalette.panel.Filter() != "n" {
 		t.Fatalf("palette did not own printable n key: mode=%v palette=%+v", m.mode, m.commandPalette)
 	}
 }
@@ -693,7 +694,7 @@ func TestHubModelCommandPaletteOwnsPrintableKeys(t *testing.T) {
 	if m.mode == hubModeSpawn {
 		t.Fatal("palette-owned n key opened spawn")
 	}
-	if m.commandPalette == nil || m.commandPalette.panel.filter != "n" {
+	if m.commandPalette == nil || m.commandPalette.panel.Filter() != "n" {
 		t.Fatalf("palette did not own printable n key: %+v", m.commandPalette)
 	}
 }
@@ -1624,7 +1625,7 @@ func TestHubModelCodexSpawnOpensHarnessModelPicker(t *testing.T) {
 	m.spawnHarnessKinds = map[string]string{"serf": "serf", "codex-local": "codex"}
 	m.spawnHarness = "codex-local"
 	m.spawnDir = "/tmp/serf"
-	m.spawnModels = []modelPickerItem{{id: "openai/gpt-5", display: "openai/gpt-5"}}
+	m.spawnModels = []tuipick.ModelPickerItem{{ID: "openai/gpt-5", Display: "openai/gpt-5"}}
 	m.spawnModel = ""
 
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
@@ -1936,7 +1937,7 @@ func TestHubModelSpawnFormFocusControlsHarnessAndModel(t *testing.T) {
 	m.spawnDir = "/tmp/serf"
 	m.spawnHarnesses = []string{"serf", "codex-local"}
 	m.spawnHarnessKinds = map[string]string{"serf": "serf", "codex-local": "codex"}
-	m.spawnModels = []modelPickerItem{{id: "openai/gpt-5", display: "openai/gpt-5"}}
+	m.spawnModels = []tuipick.ModelPickerItem{{ID: "openai/gpt-5", Display: "openai/gpt-5"}}
 	m.spawnModel = "openai/gpt-5"
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyTab})

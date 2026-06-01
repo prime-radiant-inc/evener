@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
 )
 
 type hubCommandScope uint8
@@ -303,7 +304,7 @@ var hubCommandRegistry = []hubCommandDefinition{
 		PaletteDetail: "pick a theme",
 		Scopes:        hubCommandSession,
 		Run: func(m *hubModel, _ string) tea.Cmd {
-			picker := newThemePicker()
+			picker := tuipick.NewThemePicker()
 			m.sessionThemePicker = &picker
 			return nil
 		},

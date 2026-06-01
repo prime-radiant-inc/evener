@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
 	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
 	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -86,9 +87,9 @@ type hubModel struct {
 
 	browseSelected          int
 	forkDraft               *hubForkDraft
-	sessionThemePicker      *themePicker
-	sessionModelPicker      *modelPicker
-	sessionTranscriptPicker *modelPicker
+	sessionThemePicker      *tuipick.ThemePicker
+	sessionModelPicker      *tuipick.ModelPicker
+	sessionTranscriptPicker *tuipick.ModelPicker
 	sessionPanel            *hubSessionPanel
 	sessionDetailsRequested bool
 	transcriptTargets       []appwire.ThreadTranscriptTarget
@@ -102,9 +103,9 @@ type hubModel struct {
 	spawnEmptyTaskReasons   map[string]string
 	spawnEmptyTaskNext      map[string]string
 	spawnModel              string
-	spawnModels             []modelPickerItem
-	spawnHarnessModels      map[string][]modelPickerItem
-	spawnModelPicker        *modelPicker
+	spawnModels             []tuipick.ModelPickerItem
+	spawnHarnessModels      map[string][]tuipick.ModelPickerItem
+	spawnModelPicker        *tuipick.ModelPicker
 	spawnDirInput           textinput.Model
 	spawnSubmitting         bool
 	spawnFocus              hubSpawnField
@@ -123,7 +124,7 @@ type hubModel struct {
 
 	credentialsPanel     *launchconfig.CredentialsPanel
 	launchSettingsPanel  *launchconfig.LaunchSettingsPanel
-	followupModal        *textInputModal
+	followupModal        *tuipick.TextInputModal
 	launchOverridesModal *launchconfig.LaunchOverridesModal
 
 	spawnLaunchOverrides *appwire.LaunchConfigLayer

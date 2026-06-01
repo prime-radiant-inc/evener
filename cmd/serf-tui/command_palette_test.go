@@ -3,13 +3,15 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
 )
 
 func TestCommandPaletteShowsSlashItems(t *testing.T) {
 	withTestColorProfile(t)
 	entries := []commandPaletteEntry{
 		{
-			Item:    pickerPanelItem{ID: "command:spawn", Label: "/spawn", Detail: "New session"},
+			Item:    tuipick.PickerPanelItem{ID: "command:spawn", Label: "/spawn", Detail: "New session"},
 			Kind:    commandPaletteCommand,
 			Command: "spawn",
 		},

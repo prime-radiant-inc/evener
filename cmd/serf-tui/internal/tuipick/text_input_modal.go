@@ -1,4 +1,4 @@
-package main
+package tuipick
 
 import (
 	"os"
@@ -9,13 +9,13 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 )
 
-type textInputResultMsg struct {
+type TextInputResultMsg struct {
 	Tag       string
 	Value     string
 	Cancelled bool
 }
 
-type textInputModal struct {
+type TextInputModal struct {
 	tag    string
 	title  string
 	prompt string
@@ -26,45 +26,45 @@ type textInputModal struct {
 	width  int
 }
 
-func newTextInputModal(prompt, tag string) textInputModal {
-	return textInputModal{prompt: prompt, tag: tag}
+func NewTextInputModal(prompt, tag string) TextInputModal {
+	return TextInputModal{prompt: prompt, tag: tag}
 }
 
-func newTextInputModalWithTitle(title, prompt, tag string) textInputModal {
-	return textInputModal{title: title, prompt: prompt, tag: tag, width: 60}
+func NewTextInputModalWithTitle(title, prompt, tag string) TextInputModal {
+	return TextInputModal{title: title, prompt: prompt, tag: tag, width: 60}
 }
 
-func newTextInputModalWithInput(prompt, tag, input string) textInputModal {
-	return textInputModal{prompt: prompt, tag: tag, input: input}
+func NewTextInputModalWithInput(prompt, tag, input string) TextInputModal {
+	return TextInputModal{prompt: prompt, tag: tag, input: input}
 }
 
-func newPathTextInputModal(prompt, tag, input string) textInputModal {
-	return textInputModal{prompt: prompt, tag: tag, input: input, paths: true}
+func NewPathTextInputModal(prompt, tag, input string) TextInputModal {
+	return TextInputModal{prompt: prompt, tag: tag, input: input, paths: true}
 }
 
-func newTextInputModalMasked(prompt, tag string) textInputModal {
-	return textInputModal{prompt: prompt, tag: tag, mask: true}
+func NewTextInputModalMasked(prompt, tag string) TextInputModal {
+	return TextInputModal{prompt: prompt, tag: tag, mask: true}
 }
 
-func (m textInputModal) Init() tea.Cmd { return nil }
+func (m TextInputModal) Init() tea.Cmd { return nil }
 
-func (m textInputModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m TextInputModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch v := msg.(type) {
 	case tea.KeyMsg:
 		switch v.Type {
 		case tea.KeyEsc, tea.KeyCtrlC:
 			m.done = true
-			return m, func() tea.Msg { return textInputResultMsg{Tag: m.tag, Cancelled: true} }
+			return m, func() tea.Msg { return TextInputResultMsg{Tag: m.tag, Cancelled: true} }
 		case tea.KeyEnter:
 			m.done = true
-			return m, func() tea.Msg { return textInputResultMsg{Tag: m.tag, Value: m.input} }
+			return m, func() tea.Msg { return TextInputResultMsg{Tag: m.tag, Value: m.input} }
 		case tea.KeyBackspace:
 			if len(m.input) > 0 {
 				m.input = m.input[:len(m.input)-1]
 			}
 		case tea.KeyTab:
 			if m.paths {
-				m.input = completeLastPathSegment(m.input, nil)
+				m.input = CompleteLastPathSegment(m.input, nil)
 			}
 		case tea.KeyRunes:
 			m.input += string(v.Runes)
@@ -73,7 +73,7 @@ func (m textInputModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m textInputModal) inputView() string {
+func (m TextInputModal) inputView() string {
 	display := m.input
 	if m.mask {
 		display = ""
@@ -84,7 +84,10 @@ func (m textInputModal) inputView() string {
 	return "> " + display + "_"
 }
 
-func (m textInputModal) View() string {
+// Done reports whether the modal has been dismissed (submitted or cancelled).
+func (m TextInputModal) Done() bool { return m.done }
+
+func (m TextInputModal) View() string {
 	if m.title != "" {
 		body := m.prompt + "\n\n" + m.inputView()
 		width := m.width
@@ -106,12 +109,12 @@ func (m textInputModal) View() string {
 	return m.prompt + "\n" + m.inputView() + "\n" + help
 }
 
-// completeLastPathSegment completes the last comma-separated path-like
+// CompleteLastPathSegment completes the last comma-separated path-like
 // segment of input by reading the parent directory and returning the first
 // entry whose name has the segment as a prefix. Hidden entries are skipped
 // when there's no prefix filter. accept, when non-nil, gates which entries
 // are eligible — pass nil to accept any entry.
-func completeLastPathSegment(input string, accept func(os.DirEntry) bool) string {
+func CompleteLastPathSegment(input string, accept func(os.DirEntry) bool) string {
 	start := strings.LastIndex(input, ",") + 1
 	prefix := input[start:]
 	leading := prefix[:len(prefix)-len(strings.TrimLeft(prefix, " \t"))]
@@ -157,9 +160,9 @@ func completeLastPathSegment(input string, accept func(os.DirEntry) bool) string
 	return input
 }
 
-// dirEntry returns a predicate suitable for completeLastPathSegment that
+// DirEntry returns a predicate suitable for CompleteLastPathSegment that
 // only accepts directory entries. Used by the spawn-form working-dir field
 // where files would land in a field that later rejects them on submit.
-func dirEntry() func(os.DirEntry) bool {
+func DirEntry() func(os.DirEntry) bool {
 	return func(e os.DirEntry) bool { return e.IsDir() }
 }

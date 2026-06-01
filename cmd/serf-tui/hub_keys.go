@@ -4,6 +4,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/cmd/serf-tui/internal/inputhistory"
 	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
 )
 
 func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -42,9 +43,9 @@ func (m hubModel) updateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m hubModel) updateDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.followupModal != nil {
 		updated, cmd := m.followupModal.Update(msg)
-		modal := updated.(textInputModal)
+		modal := updated.(tuipick.TextInputModal)
 		m.followupModal = &modal
-		if modal.done {
+		if modal.Done() {
 			m.followupModal = nil
 		}
 		return m, cmd
@@ -179,11 +180,11 @@ func (m hubModel) updateCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	updated, cmd := m.commandPalette.Update(msg)
 	palette := updated.(commandPalette)
 	m.commandPalette = &palette
-	if !palette.panel.done {
+	if !palette.panel.Done() {
 		return m, cmd
 	}
 	m.commandPalette = nil
-	if palette.panel.cancelled {
+	if palette.panel.Cancelled() {
 		return m, cmd
 	}
 	entry, ok := palette.selectedEntry()

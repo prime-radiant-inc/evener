@@ -4,11 +4,12 @@ import (
 	"fmt"
 	"strings"
 
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
 	"primeradiant.com/serf/internal/appwire"
 )
 
-func hubTranscriptPickerItems(targets []appwire.ThreadTranscriptTarget) []modelPickerItem {
-	items := make([]modelPickerItem, 0, len(targets))
+func hubTranscriptPickerItems(targets []appwire.ThreadTranscriptTarget) []tuipick.ModelPickerItem {
+	items := make([]tuipick.ModelPickerItem, 0, len(targets))
 	for _, target := range targets {
 		if strings.TrimSpace(target.Ref) == "" {
 			continue
@@ -30,7 +31,7 @@ func hubTranscriptPickerItems(targets []appwire.ThreadTranscriptTarget) []modelP
 		if len(details) > 0 {
 			display += " (" + strings.Join(details, ", ") + ")"
 		}
-		items = append(items, modelPickerItem{id: target.Ref, display: display})
+		items = append(items, tuipick.ModelPickerItem{ID: target.Ref, Display: display})
 	}
 	return items
 }

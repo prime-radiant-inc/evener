@@ -8,6 +8,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
 	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -361,7 +362,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.harness != "" {
 			if m.spawnHarnessModels == nil {
-				m.spawnHarnessModels = map[string][]modelPickerItem{}
+				m.spawnHarnessModels = map[string][]tuipick.ModelPickerItem{}
 			}
 			m.spawnHarnessModels[msg.harness] = msg.models
 			if m.mode == hubModeSpawn && m.spawnHarness == msg.harness {
@@ -389,7 +390,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addSessionSystem("No models available from provider.")
 			return m, nil
 		}
-		picker := newModelPicker(msg.models, m.detail.Model, m.width)
+		picker := tuipick.NewModelPicker(msg.models, m.detail.Model, m.width)
 		m.sessionModelPicker = &picker
 		m.removeTrailingSessionSystem("Fetching available models...")
 		return m, nil
@@ -407,7 +408,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.transcriptView != nil {
 			activeRef = m.transcriptView.Ref
 		}
-		picker := newTranscriptPicker(items, activeRef, m.width)
+		picker := tuipick.NewTranscriptPicker(items, activeRef, m.width)
 		m.transcriptTargets = append([]appwire.ThreadTranscriptTarget(nil), msg.targets...)
 		m.sessionTranscriptPicker = &picker
 		return m, nil
@@ -569,7 +570,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case launchconfig.CredentialsActionMsg:
 		switch msg.Action {
 		case "set":
-			modal := newTextInputModalMasked(fmt.Sprintf("API key for %s:", msg.Instance), "credential-set:"+msg.Instance)
+			modal := tuipick.NewTextInputModalMasked(fmt.Sprintf("API key for %s:", msg.Instance), "credential-set:"+msg.Instance)
 			m.followupModal = &modal
 			return m, nil
 		case "logout":
@@ -609,11 +610,11 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				prompt = fmt.Sprintf("Edit %s as JSON array, or name:command args... (current: %s):", msg.Field, msg.CurrentValue)
 			}
 			tag := "launch-override:" + msg.Field
-			var modal textInputModal
+			var modal tuipick.TextInputModal
 			if msg.PathCompletion || launchconfig.LaunchSettingsFieldUsesPathCompletion(msg.Field) {
-				modal = newPathTextInputModal(prompt, tag, msg.CurrentValue)
+				modal = tuipick.NewPathTextInputModal(prompt, tag, msg.CurrentValue)
 			} else {
-				modal = newTextInputModalWithInput(prompt, tag, msg.CurrentValue)
+				modal = tuipick.NewTextInputModalWithInput(prompt, tag, msg.CurrentValue)
 			}
 			m.followupModal = &modal
 			return m, nil
@@ -623,15 +624,15 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			prompt = fmt.Sprintf("Edit %s.%s as JSON array, or name:command args... (current: %s):", msg.Layer, msg.Field, msg.CurrentValue)
 		}
 		tag := fmt.Sprintf("settings-edit:%s:%s", msg.Layer, msg.Field)
-		var modal textInputModal
+		var modal tuipick.TextInputModal
 		if msg.PathCompletion || launchconfig.LaunchSettingsFieldUsesPathCompletion(msg.Field) {
-			modal = newPathTextInputModal(prompt, tag, msg.CurrentValue)
+			modal = tuipick.NewPathTextInputModal(prompt, tag, msg.CurrentValue)
 		} else {
-			modal = newTextInputModalWithInput(prompt, tag, msg.CurrentValue)
+			modal = tuipick.NewTextInputModalWithInput(prompt, tag, msg.CurrentValue)
 		}
 		m.followupModal = &modal
 		return m, nil
-	case textInputResultMsg:
+	case tuipick.TextInputResultMsg:
 		if strings.HasPrefix(msg.Tag, "credential-set:") {
 			provider := strings.TrimPrefix(msg.Tag, "credential-set:")
 			m.followupModal = nil
@@ -708,7 +709,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.err = nil
-		modal := newTextInputModal("Paste full redirect URL after sign-in:\n"+msg.URL, "oauth-redirect:"+msg.Provider+":"+msg.FlowID)
+		modal := tuipick.NewTextInputModal("Paste full redirect URL after sign-in:\n"+msg.URL, "oauth-redirect:"+msg.Provider+":"+msg.FlowID)
 		m.followupModal = &modal
 		return m, nil
 	case launchconfig.AuthLoginCompleteResultMsg:

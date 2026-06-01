@@ -1,4 +1,4 @@
-package main
+package tuipick
 
 import (
 	"strings"
@@ -9,7 +9,7 @@ import (
 
 func TestThemePickerUsesOverlayBorder(t *testing.T) {
 	withTestColorProfile(t)
-	p := newThemePicker()
+	p := NewThemePicker()
 	got := p.View()
 	plain := ansiPattern.ReplaceAllString(got, "")
 	if !strings.Contains(plain, "╭") {
@@ -23,21 +23,21 @@ func TestThemePickerUsesOverlayBorder(t *testing.T) {
 // TestThemePicker_InitialCursor verifies the picker pre-selects the active theme.
 func TestThemePicker_InitialCursor(t *testing.T) {
 	tuitheme.SetTheme("system")
-	p := newThemePicker()
+	p := NewThemePicker()
 	want := 0 // "system" is index 0
 	if p.cursor != want {
 		t.Errorf("cursor = %d, want %d (system)", p.cursor, want)
 	}
 
 	tuitheme.SetTheme("light")
-	p = newThemePicker()
+	p = NewThemePicker()
 	want = 2 // "light" is index 2
 	if p.cursor != want {
 		t.Errorf("cursor = %d, want %d (light)", p.cursor, want)
 	}
 
 	tuitheme.SetTheme("dark")
-	p = newThemePicker()
+	p = NewThemePicker()
 	want = 1 // "dark" is index 1
 	if p.cursor != want {
 		t.Errorf("cursor = %d, want %d (dark)", p.cursor, want)
@@ -47,9 +47,9 @@ func TestThemePicker_InitialCursor(t *testing.T) {
 // TestThemePicker_ViewContainsThemes verifies the picker View shows both themes.
 func TestThemePicker_ViewContainsThemes(t *testing.T) {
 	tuitheme.InitTheme()
-	p := newThemePicker()
+	p := NewThemePicker()
 	view := p.View()
-	for _, name := range themePickerItems {
+	for _, name := range ThemePickerItems {
 		if !strings.Contains(view, name) {
 			t.Errorf("picker view missing theme %q", name)
 		}
@@ -59,7 +59,7 @@ func TestThemePicker_ViewContainsThemes(t *testing.T) {
 func TestThemePickerRendersAsPopupPane(t *testing.T) {
 	withTestColorProfile(t)
 	tuitheme.SetTheme("dark")
-	p := newThemePicker()
+	p := NewThemePicker()
 
 	view := p.View()
 	if !strings.Contains(view, "\x1b[") {

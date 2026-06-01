@@ -139,11 +139,11 @@ func TestHubTranscriptPickerItemsIncludeSourceStatusAndTurns(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("items=%+v", items)
 	}
-	if items[0].display != "main session (codex, idle)" {
-		t.Fatalf("main transcript display=%q", items[0].display)
+	if items[0].Display != "main session (codex, idle)" {
+		t.Fatalf("main transcript display=%q", items[0].Display)
 	}
-	if items[1].display != "subagent inspect (serf, active, 2 turns)" {
-		t.Fatalf("subagent transcript display=%q", items[1].display)
+	if items[1].Display != "subagent inspect (serf, active, 2 turns)" {
+		t.Fatalf("subagent transcript display=%q", items[1].Display)
 	}
 }
 

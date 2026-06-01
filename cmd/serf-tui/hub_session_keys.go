@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/inputhistory"
 	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
 	"primeradiant.com/serf/cmd/serf-tui/internal/msgrender"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -35,9 +36,9 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.followupModal != nil && m.launchOverridesModal != nil {
 		// followupModal is open for a launch-override edit — route to it
 		updated, cmd := m.followupModal.Update(msg)
-		modal := updated.(textInputModal)
+		modal := updated.(tuipick.TextInputModal)
 		m.followupModal = &modal
-		if modal.done {
+		if modal.Done() {
 			m.followupModal = nil
 		}
 		return m, cmd
@@ -56,14 +57,14 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.sessionThemePicker != nil {
 		picker, cmd := m.sessionThemePicker.Update(msg)
 		m.sessionThemePicker = &picker
-		if picker.done {
+		if picker.Done() {
 			m.sessionThemePicker = nil
-			if picker.selected != "" {
-				tuitheme.SetThemeAndPersist(m.stateDir, picker.selected)
+			if picker.Selected() != "" {
+				tuitheme.SetThemeAndPersist(m.stateDir, picker.Selected())
 				msgrender.InitMarkdownRenderer(m.width)
 				m.session.viewport.Style = tuitheme.ViewportStyle
 				applyInputTheme(&m.session.input)
-				m.addSessionSystem(fmt.Sprintf("Switched to %s theme.", picker.selected))
+				m.addSessionSystem(fmt.Sprintf("Switched to %s theme.", picker.Selected()))
 			} else {
 				m.session.refreshViewport()
 			}
@@ -73,10 +74,10 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.sessionModelPicker != nil {
 		updated, cmd := m.sessionModelPicker.Update(msg)
-		picker := updated.(modelPicker)
+		picker := updated.(tuipick.ModelPicker)
 		m.sessionModelPicker = &picker
-		if picker.done {
-			selected := picker.selected
+		if picker.Done() {
+			selected := picker.Selected()
 			m.sessionModelPicker = nil
 			if selected != "" {
 				ref, ok := m.currentRef()
@@ -94,10 +95,10 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.sessionTranscriptPicker != nil {
 		updated, cmd := m.sessionTranscriptPicker.Update(msg)
-		picker := updated.(modelPicker)
+		picker := updated.(tuipick.ModelPicker)
 		m.sessionTranscriptPicker = &picker
-		if picker.done {
-			selected := picker.selected
+		if picker.Done() {
+			selected := picker.Selected()
 			m.sessionTranscriptPicker = nil
 			if selected != "" {
 				target, ok := hubTranscriptTargetByRef(m.transcriptTargets, selected)

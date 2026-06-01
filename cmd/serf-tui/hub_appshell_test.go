@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 )
 
@@ -74,7 +75,7 @@ func TestHubModelCtrlOReturnsDashboardFromCommandPaletteOverlay(t *testing.T) {
 
 func TestHubModelCtrlOClearsSessionOverlay(t *testing.T) {
 	m := newSessionHubModel(nil)
-	picker := newModelPicker([]modelPickerItem{{id: "openai/gpt-5", display: "openai/gpt-5"}}, "", 100)
+	picker := tuipick.NewModelPicker([]tuipick.ModelPickerItem{{ID: "openai/gpt-5", Display: "openai/gpt-5"}}, "", 100)
 	m.sessionModelPicker = &picker
 
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlO})

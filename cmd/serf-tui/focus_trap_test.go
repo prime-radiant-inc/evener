@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
 )
 
 // newCredentialsPanelForTest returns a credentials panel suitable for
@@ -32,7 +33,7 @@ func TestTopmostOverlayNameCredentials(t *testing.T) {
 func TestTopmostOverlayNameFollowupTakesPrecedence(t *testing.T) {
 	m := newHubModel(nil, "")
 	m.credentialsPanel = newCredentialsPanelForTest()
-	modal := textInputModal{prompt: "test"}
+	modal := tuipick.NewTextInputModal("test", "")
 	m.followupModal = &modal
 	if got := topmostOverlayName(m); got != "followup" {
 		t.Errorf("expected followup (topmost), got %q", got)

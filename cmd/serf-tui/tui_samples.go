@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 )
 
@@ -40,7 +41,7 @@ type tuiAuthSample struct {
 type tuiPickerSample struct {
 	Name     string
 	Title    string
-	Items    []modelPickerItem
+	Items    []tuipick.ModelPickerItem
 	Disabled []string
 	Error    string
 }
@@ -286,9 +287,9 @@ func sampleAuthStates() []tuiAuthSample {
 func samplePickerStates() []tuiPickerSample {
 	return []tuiPickerSample{
 		{Name: "loading", Title: "Select model"},
-		{Name: "populated", Title: "Select model", Items: []modelPickerItem{{id: "openai/gpt-5.5", display: "openai/gpt-5.5"}, {id: "openai/gpt-5.4", display: "openai/gpt-5.4"}}},
-		{Name: "filtered-empty", Title: "Select model", Items: []modelPickerItem{{id: "openai/gpt-5.5", display: "openai/gpt-5.5"}}},
-		{Name: "disabled-row", Title: "Select model", Items: []modelPickerItem{{id: "openai/gpt-4.1", display: "openai/gpt-4.1"}}, Disabled: []string{"openai/gpt-4.1: login required"}},
+		{Name: "populated", Title: "Select model", Items: []tuipick.ModelPickerItem{{ID: "openai/gpt-5.5", Display: "openai/gpt-5.5"}, {ID: "openai/gpt-5.4", Display: "openai/gpt-5.4"}}},
+		{Name: "filtered-empty", Title: "Select model", Items: []tuipick.ModelPickerItem{{ID: "openai/gpt-5.5", Display: "openai/gpt-5.5"}}},
+		{Name: "disabled-row", Title: "Select model", Items: []tuipick.ModelPickerItem{{ID: "openai/gpt-4.1", Display: "openai/gpt-4.1"}}, Disabled: []string{"openai/gpt-4.1: login required"}},
 		{Name: "fetch-error", Title: "Select model", Error: "provider listing failed"},
 	}
 }
@@ -420,13 +421,13 @@ func sampleRenderFromRealWidget(name string, width int) (tuiSampleRender, bool) 
 		m.err = stringsError("OpenAI login required")
 		return renderSample(name, width, m.spawnView()), true
 	case "model-picker":
-		picker := newModelPicker([]modelPickerItem{
-			{id: "openai/gpt-5.5", display: "openai/gpt-5.5"},
-			{id: "openai/gpt-4.1", display: "openai/gpt-4.1"},
+		picker := tuipick.NewModelPicker([]tuipick.ModelPickerItem{
+			{ID: "openai/gpt-5.5", Display: "openai/gpt-5.5"},
+			{ID: "openai/gpt-4.1", Display: "openai/gpt-4.1"},
 		}, "openai/gpt-5.5", width)
 		return renderSample(name, width, picker.View()), true
 	case "theme-picker":
-		picker := newThemePicker()
+		picker := tuipick.NewThemePicker()
 		return renderSample(name, width, picker.View()), true
 	case "auth-overlay":
 		view := noticePanel{
@@ -437,10 +438,10 @@ func sampleRenderFromRealWidget(name string, width int) (tuiSampleRender, bool) 
 		}.Text()
 		return renderSample(name, width, view), true
 	case "agents-picker":
-		picker := newTranscriptPicker([]modelPickerItem{
-			{id: "local:01SERF", display: "main session"},
-			{id: "local:01SERF:worker", display: "worker - restore auth commands"},
-			{id: "local:01SERF:explorer", display: "explorer - inspect old TUI"},
+		picker := tuipick.NewTranscriptPicker([]tuipick.ModelPickerItem{
+			{ID: "local:01SERF", Display: "main session"},
+			{ID: "local:01SERF:worker", Display: "worker - restore auth commands"},
+			{ID: "local:01SERF:explorer", Display: "explorer - inspect old TUI"},
 		}, "local:01SERF", width)
 		return renderSample(name, width, picker.View()), true
 	case "help-overlay":
@@ -489,11 +490,11 @@ func sampleRenderFromRealWidget(name string, width int) (tuiSampleRender, bool) 
 	case "actionbar-wrapped":
 		return renderSample(name, width, tuiprim.ActionBarForWidth(width, "enter open", "p project", "n new", "ctrl+o dashboard", "q quit")), true
 	case "picker-empty":
-		picker := newPickerPanel("Command palette", []pickerPanelItem{{ID: "open", Label: "Open session"}}, width)
-		picker.filter = "missing"
+		picker := tuipick.NewPickerPanel("Command palette", []tuipick.PickerPanelItem{{ID: "open", Label: "Open session"}}, width)
+		picker.SetFilter("missing")
 		return renderSample(name, width, picker.View()), true
 	case "picker-disabled":
-		picker := newPickerPanel("Command palette", []pickerPanelItem{
+		picker := tuipick.NewPickerPanel("Command palette", []tuipick.PickerPanelItem{
 			{ID: "clear", Label: "/clear", Detail: "clear transcript", DisabledReason: "source does not advertise clear"},
 		}, width)
 		return renderSample(name, width, picker.View()), true
@@ -539,9 +540,9 @@ func sampleSpawnModel(width int, sample tuiSpawnSample) hubModel {
 	m.spawnModel = sample.Model
 	m.spawnDir = sample.WorkingDir
 	m.spawnProject = "serf"
-	m.spawnModels = []modelPickerItem{{id: "openai/gpt-5.5", display: "openai/gpt-5.5"}, {id: "openai/gpt-4.1", display: "openai/gpt-4.1"}}
-	m.spawnHarnessModels = map[string][]modelPickerItem{
-		"codex-local": {{id: "gpt-5.3-codex", display: "gpt-5.3-codex"}},
+	m.spawnModels = []tuipick.ModelPickerItem{{ID: "openai/gpt-5.5", Display: "openai/gpt-5.5"}, {ID: "openai/gpt-4.1", Display: "openai/gpt-4.1"}}
+	m.spawnHarnessModels = map[string][]tuipick.ModelPickerItem{
+		"codex-local": {{ID: "gpt-5.3-codex", Display: "gpt-5.3-codex"}},
 	}
 	m.setSpawnFocus(hubSpawnFieldPrompt)
 	return m

@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
 	"primeradiant.com/serf/cmd/serf-tui/internal/inputhistory"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -716,7 +717,7 @@ func TestRenderComposerDraftSoftWrapsLongLines(t *testing.T) {
 func TestHubModelSessionPickerOverlayKeepsComposerDraftVisible(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.session.setInputValue("draft survives overlay")
-	picker := newModelPicker([]modelPickerItem{{id: "openai/gpt-5", display: "openai/gpt-5"}}, "", 80)
+	picker := tuipick.NewModelPicker([]tuipick.ModelPickerItem{{ID: "openai/gpt-5", Display: "openai/gpt-5"}}, "", 80)
 	m.sessionModelPicker = &picker
 
 	got := m.sessionView()
@@ -730,7 +731,7 @@ func TestHubModelSessionPickerOverlayKeepsComposerDraftVisible(t *testing.T) {
 func TestHubModelSpawnModelPickerKeepsFormDraftVisible(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.openSpawnForm()
-	m.spawnModels = []modelPickerItem{{id: "openai/gpt-5", display: "openai/gpt-5"}}
+	m.spawnModels = []tuipick.ModelPickerItem{{ID: "openai/gpt-5", Display: "openai/gpt-5"}}
 	m.spawnModel = "openai/gpt-5"
 	m.session.setInputValue("spawn draft survives overlay")
 	m.openSpawnModelPicker(m.spawnModels)

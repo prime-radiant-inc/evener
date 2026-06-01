@@ -1,4 +1,4 @@
-package main
+package tuipick
 
 import (
 	"strings"
@@ -8,18 +8,18 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
-var themePickerItems = []string{"system", "dark", "light"}
+var ThemePickerItems = []string{"system", "dark", "light"}
 
-type themePicker struct {
+type ThemePicker struct {
 	cursor   int
 	done     bool
 	selected string // set on enter; "" means cancelled
 }
 
-func newThemePicker() themePicker {
-	p := themePicker{}
+func NewThemePicker() ThemePicker {
+	p := ThemePicker{}
 	// Pre-select cursor to the current theme.
-	for i, name := range themePickerItems {
+	for i, name := range ThemePickerItems {
 		if name == tuitheme.CurrentThemeName() {
 			p.cursor = i
 			break
@@ -28,21 +28,21 @@ func newThemePicker() themePicker {
 	return p
 }
 
-func (p themePicker) Update(msg tea.Msg) (themePicker, tea.Cmd) {
+func (p ThemePicker) Update(msg tea.Msg) (ThemePicker, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyEscape, tea.KeyCtrlC:
 			p.done = true
 		case tea.KeyEnter:
-			p.selected = themePickerItems[p.cursor]
+			p.selected = ThemePickerItems[p.cursor]
 			p.done = true
 		case tea.KeyUp:
 			if p.cursor > 0 {
 				p.cursor--
 			}
 		case tea.KeyDown:
-			if p.cursor < len(themePickerItems)-1 {
+			if p.cursor < len(ThemePickerItems)-1 {
 				p.cursor++
 			}
 		}
@@ -50,9 +50,9 @@ func (p themePicker) Update(msg tea.Msg) (themePicker, tea.Cmd) {
 	return p, nil
 }
 
-func (p themePicker) renderItems() string {
+func (p ThemePicker) renderItems() string {
 	var b strings.Builder
-	for i, name := range themePickerItems {
+	for i, name := range ThemePickerItems {
 		cursor := "  "
 		style := tuitheme.MpNormalStyle
 		if i == p.cursor {
@@ -69,7 +69,13 @@ func (p themePicker) renderItems() string {
 	return b.String()
 }
 
-func (p themePicker) View() string {
+// Done reports whether the picker has been dismissed.
+func (p ThemePicker) Done() bool { return p.done }
+
+// Selected returns the chosen theme name, or "" if cancelled.
+func (p ThemePicker) Selected() string { return p.selected }
+
+func (p ThemePicker) View() string {
 	width := 44
 	body := p.renderItems()
 	footer := tuiprim.ActionBarForWidth(width, tuiprim.KbdHint("↑↓", "navigate"), tuiprim.KbdHint("enter", "select"), tuiprim.KbdHint("esc", "cancel"))

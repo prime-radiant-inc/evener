@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -14,9 +15,9 @@ import (
 func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.followupModal != nil && m.launchOverridesModal != nil {
 		updated, cmd := m.followupModal.Update(msg)
-		modal := updated.(textInputModal)
+		modal := updated.(tuipick.TextInputModal)
 		m.followupModal = &modal
-		if modal.done {
+		if modal.Done() {
 			m.followupModal = nil
 		}
 		return m, cmd
@@ -34,12 +35,12 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	if m.spawnModelPicker != nil {
 		updated, cmd := m.spawnModelPicker.Update(msg)
-		picker := updated.(modelPicker)
+		picker := updated.(tuipick.ModelPicker)
 		m.spawnModelPicker = &picker
-		if picker.done {
+		if picker.Done() {
 			m.spawnModelPicker = nil
-			if picker.selected != "" {
-				m.spawnModel = picker.selected
+			if picker.Selected() != "" {
+				m.spawnModel = picker.Selected()
 			}
 		}
 		return m, cmd
@@ -64,7 +65,7 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Spawn working-dir accepts directories only; without this
 			// filter Tab could land a file path in the field which the
 			// later submit validation would reject.
-			completed := completeLastPathSegment(current, dirEntry())
+			completed := tuipick.CompleteLastPathSegment(current, tuipick.DirEntry())
 			if completed != current {
 				m.spawnDirInput.SetValue(completed)
 				m.spawnDir = strings.TrimSpace(completed)
@@ -339,7 +340,7 @@ func (m hubModel) spawnHarnessUsesSerfModels() bool {
 	return m.spawnHarnessKind() != "codex"
 }
 
-func (m hubModel) spawnSelectableModels() []modelPickerItem {
+func (m hubModel) spawnSelectableModels() []tuipick.ModelPickerItem {
 	if !m.spawnHarnessUsesSerfModels() {
 		return m.spawnHarnessModels[m.spawnHarness]
 	}
@@ -357,18 +358,18 @@ func (m *hubModel) syncSpawnModelWithHarness() {
 	if strings.TrimSpace(m.spawnModel) == "" {
 		models := m.spawnSelectableModels()
 		if model, ok := firstEnabledModel(models); ok {
-			m.spawnModel = model.id
+			m.spawnModel = model.ID
 		}
 	}
 }
 
-func firstEnabledModel(models []modelPickerItem) (modelPickerItem, bool) {
+func firstEnabledModel(models []tuipick.ModelPickerItem) (tuipick.ModelPickerItem, bool) {
 	for _, model := range models {
-		if strings.TrimSpace(model.disabledReason) == "" {
+		if strings.TrimSpace(model.DisabledReason) == "" {
 			return model, true
 		}
 	}
-	return modelPickerItem{}, false
+	return tuipick.ModelPickerItem{}, false
 }
 
 func (m hubModel) spawnModelDisabledReason(model string) string {
@@ -377,8 +378,8 @@ func (m hubModel) spawnModelDisabledReason(model string) string {
 		return ""
 	}
 	for _, item := range m.spawnSelectableModels() {
-		if strings.TrimSpace(item.id) == model || strings.TrimSpace(item.display) == model {
-			return strings.TrimSpace(item.disabledReason)
+		if strings.TrimSpace(item.ID) == model || strings.TrimSpace(item.Display) == model {
+			return strings.TrimSpace(item.DisabledReason)
 		}
 	}
 	return ""
@@ -398,9 +399,9 @@ func (m hubModel) spawnEmptyTaskUnsupportedNextAction() string {
 	return strings.TrimSpace(m.spawnEmptyTaskNext[m.spawnHarness])
 }
 
-func (m *hubModel) openSpawnModelPicker(models []modelPickerItem) {
-	picker := newModelPicker(models, m.spawnModel, m.width)
-	picker.title = m.spawnModelPickerTitle()
+func (m *hubModel) openSpawnModelPicker(models []tuipick.ModelPickerItem) {
+	picker := tuipick.NewModelPicker(models, m.spawnModel, m.width)
+	picker.SetTitle(m.spawnModelPickerTitle())
 	m.spawnModelPicker = &picker
 	m.err = nil
 }

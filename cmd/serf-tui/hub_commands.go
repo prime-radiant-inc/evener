@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuipick"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -78,12 +79,12 @@ type hubSpawnMsg struct {
 
 type hubModelsMsg struct {
 	harness string
-	models  []modelPickerItem
+	models  []tuipick.ModelPickerItem
 	err     error
 }
 
 type hubSessionModelsMsg struct {
-	models []modelPickerItem
+	models []tuipick.ModelPickerItem
 	err    error
 }
 
@@ -92,7 +93,7 @@ type hubSpawnOptionsMsg struct {
 	harnessKinds                map[string]string
 	emptyTaskUnsupportedReasons map[string]string
 	emptyTaskUnsupportedNext    map[string]string
-	models                      []modelPickerItem
+	models                      []tuipick.ModelPickerItem
 	err                         error
 	modelErr                    error
 }
@@ -308,8 +309,8 @@ func logoutHubAuth(client *appwire.Client, provider string) tea.Cmd {
 	}
 }
 
-func modelPickerItems(models []appwire.ModelDescriptor, rawModelID bool) []modelPickerItem {
-	items := make([]modelPickerItem, 0, len(models))
+func modelPickerItems(models []appwire.ModelDescriptor, rawModelID bool) []tuipick.ModelPickerItem {
+	items := make([]tuipick.ModelPickerItem, 0, len(models))
 	for _, option := range models {
 		model := strings.TrimSpace(option.Model)
 		provider := strings.TrimSpace(option.Provider)
@@ -324,12 +325,12 @@ func modelPickerItems(models []appwire.ModelDescriptor, rawModelID bool) []model
 		if rawModelID {
 			id = model
 		}
-		items = append(items, modelPickerItem{id: id, display: display})
+		items = append(items, tuipick.ModelPickerItem{ID: id, Display: display})
 	}
 	return items
 }
 
-func modelPickerItemsFromResponse(resp appwire.ModelListResponse, rawModelID bool) []modelPickerItem {
+func modelPickerItemsFromResponse(resp appwire.ModelListResponse, rawModelID bool) []tuipick.ModelPickerItem {
 	items := modelPickerItems(resp.Data, rawModelID)
 	if len(resp.Diagnostics) == 0 {
 		return items
@@ -354,16 +355,16 @@ func modelPickerItemsFromResponse(resp appwire.ModelListResponse, rawModelID boo
 			continue
 		}
 		if reason := reasons[provider]; reason != "" {
-			items[i].disabledReason = reason
+			items[i].DisabledReason = reason
 		}
 	}
 	return items
 }
 
-func modelPickerItemProvider(item modelPickerItem) string {
-	display := strings.TrimSpace(item.display)
+func modelPickerItemProvider(item tuipick.ModelPickerItem) string {
+	display := strings.TrimSpace(item.Display)
 	if display == "" {
-		display = strings.TrimSpace(item.id)
+		display = strings.TrimSpace(item.ID)
 	}
 	provider, _, ok := strings.Cut(display, "/")
 	if !ok {
