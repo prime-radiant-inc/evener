@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/rendezvous"

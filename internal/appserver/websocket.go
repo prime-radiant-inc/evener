@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 	"primeradiant.com/serf/appwire"
 )
 

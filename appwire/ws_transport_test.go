@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 func TestWSTransportRoundTrip(t *testing.T) {

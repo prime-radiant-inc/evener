@@ -13,7 +13,7 @@ import (
 	"sync"
 	"syscall"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 	"primeradiant.com/serf/appwire"
 )
 

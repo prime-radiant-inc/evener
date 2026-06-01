@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 )
 
 type WSTransport struct {

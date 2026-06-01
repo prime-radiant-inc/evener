@@ -289,7 +289,7 @@ func StartHubClient(ctx context.Context, cfg HubStartConfig) (HubRuntime, error)
 		cfg.HTTPClient = &http.Client{}
 	}
 	// Wrap the HTTP client to inject the bearer token on every request.
-	// This covers both the WebSocket upgrade (nhooyr/websocket uses HTTPClient)
+	// This covers both the WebSocket upgrade (coder/websocket uses HTTPClient)
 	// and any plain HTTP calls made via hubapi.Client.
 	if cfg.AuthToken != "" {
 		cfg.HTTPClient = HTTPClientWithBearer(cfg.HTTPClient, cfg.AuthToken)

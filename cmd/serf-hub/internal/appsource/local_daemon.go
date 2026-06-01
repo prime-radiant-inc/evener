@@ -12,7 +12,7 @@ import (
 	"strings"
 	"syscall"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/rendezvous"
 )
