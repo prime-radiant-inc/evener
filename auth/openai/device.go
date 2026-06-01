@@ -194,11 +194,7 @@ func PollDeviceAuthOnce(ctx context.Context, client *http.Client, cfg Config, dc
 		if payload.AuthorizationCode == "" || payload.CodeVerifier == "" {
 			return DeviceCodeSuccess{}, false, errors.New("device poll response missing authorization_code or code_verifier")
 		}
-		return DeviceCodeSuccess{
-			AuthorizationCode: payload.AuthorizationCode,
-			CodeChallenge:     payload.CodeChallenge,
-			CodeVerifier:      payload.CodeVerifier,
-		}, false, nil
+		return DeviceCodeSuccess(payload), false, nil
 	}
 	if status == http.StatusForbidden || status == http.StatusNotFound {
 		return DeviceCodeSuccess{}, true, nil

@@ -98,7 +98,7 @@ type Service struct {
 	now                 func() time.Time
 	openBrowser         func(string) error
 	readRedirectURL     func(context.Context) (string, error)
-	startCallbackServer func(Config, int, string) (callbackServer, error)
+	startCallbackServer func(context.Context, Config, int, string) (callbackServer, error)
 	exchangeCode        func(context.Context, *http.Client, Config, TokenExchangeRequest) (TokenSet, error)
 	refreshToken        func(context.Context, *http.Client, Config, RefreshTokenRequest) (TokenSet, error)
 	requestDeviceCode   func(context.Context, *http.Client, Config) (DeviceCode, error)
@@ -136,8 +136,8 @@ func NewService(cfg Config, client *http.Client) *Service {
 			<-ctx.Done()
 			return "", ctx.Err()
 		},
-		startCallbackServer: func(cfg Config, port int, expectedState string) (callbackServer, error) {
-			return StartCallbackServer(cfg, port, expectedState)
+		startCallbackServer: func(ctx context.Context, cfg Config, port int, expectedState string) (callbackServer, error) {
+			return StartCallbackServer(ctx, cfg, port, expectedState)
 		},
 		exchangeCode:                 ExchangeCode,
 		refreshToken:                 RefreshToken,
@@ -199,11 +199,11 @@ func (s *Service) Login(ctx context.Context, stateDir, instanceName string) (Aut
 		return AuthStatus{}, fmt.Errorf("generate PKCE values: %w", err)
 	}
 
-	callback, err := s.startCallbackServer(s.config(), DefaultCallbackPort, state)
+	callback, err := s.startCallbackServer(ctx, s.config(), DefaultCallbackPort, state)
 	if err != nil {
 		return AuthStatus{}, err
 	}
-	defer callback.Close()
+	defer func() { _ = callback.Close() }()
 
 	redirectURI := callback.RedirectURI()
 	authorizeURL, err := s.config().AuthorizeURL(AuthorizeURLOptions{
@@ -664,14 +664,18 @@ func firstNonEmpty(values ...string) string {
 }
 
 func defaultBrowserOpener(rawURL string) error {
+	// The opener (open/rundll32/xdg-open) launches the user's browser and exits
+	// immediately; we Start it and never Wait. It is deliberately detached from
+	// the login context — cancelling login must not kill the spawned browser —
+	// so context.Background is the correct context here.
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("open", rawURL)
+		cmd = exec.CommandContext(context.Background(), "open", rawURL)
 	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", rawURL)
+		cmd = exec.CommandContext(context.Background(), "rundll32", "url.dll,FileProtocolHandler", rawURL)
 	default:
-		cmd = exec.Command("xdg-open", rawURL)
+		cmd = exec.CommandContext(context.Background(), "xdg-open", rawURL)
 	}
 	return cmd.Start()
 }

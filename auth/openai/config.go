@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -89,13 +90,13 @@ func (c Config) RedirectURI(port int) string {
 
 func (c Config) AuthorizeURL(options AuthorizeURLOptions) (string, error) {
 	if strings.TrimSpace(options.RedirectURI) == "" {
-		return "", fmt.Errorf("redirect URI is required")
+		return "", errors.New("redirect URI is required")
 	}
 	if strings.TrimSpace(options.State) == "" {
-		return "", fmt.Errorf("state is required")
+		return "", errors.New("state is required")
 	}
 	if strings.TrimSpace(options.CodeChallenge) == "" {
-		return "", fmt.Errorf("PKCE code challenge is required")
+		return "", errors.New("PKCE code challenge is required")
 	}
 
 	issuer, err := url.Parse(strings.TrimRight(c.issuerBaseURL(), "/"))

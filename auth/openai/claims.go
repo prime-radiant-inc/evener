@@ -33,12 +33,12 @@ func ParseIDTokenClaims(idToken string) (TokenClaims, error) {
 
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return TokenClaims{}, fmt.Errorf("%w: decode payload: %v", ErrInvalidIDToken, err)
+		return TokenClaims{}, fmt.Errorf("%w: decode payload: %w", ErrInvalidIDToken, err)
 	}
 
 	var raw map[string]any
 	if err := json.Unmarshal(payload, &raw); err != nil {
-		return TokenClaims{}, fmt.Errorf("%w: decode claims: %v", ErrInvalidIDToken, err)
+		return TokenClaims{}, fmt.Errorf("%w: decode claims: %w", ErrInvalidIDToken, err)
 	}
 
 	return TokenClaims{

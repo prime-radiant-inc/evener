@@ -89,10 +89,10 @@ func LoadAuth(stateDir, instanceName string) (AuthRecord, error) {
 
 	var record AuthRecord
 	if err := json.Unmarshal(data, &record); err != nil {
-		return AuthRecord{}, fmt.Errorf("%w: %v", ErrAuthCorrupt, err)
+		return AuthRecord{}, fmt.Errorf("%w: %w", ErrAuthCorrupt, err)
 	}
 	if err := record.Validate(); err != nil {
-		return AuthRecord{}, fmt.Errorf("%w: %v", ErrAuthCorrupt, err)
+		return AuthRecord{}, fmt.Errorf("%w: %w", ErrAuthCorrupt, err)
 	}
 	return record, nil
 }
@@ -164,17 +164,17 @@ func (r AuthRecord) Validate() error {
 	case r.Version != 1:
 		return fmt.Errorf("unsupported auth record version %d", r.Version)
 	case r.Source == "":
-		return fmt.Errorf("auth source is required")
+		return errors.New("auth source is required")
 	case r.AccessToken == "":
-		return fmt.Errorf("access token is required")
+		return errors.New("access token is required")
 	case r.RefreshToken == "":
-		return fmt.Errorf("refresh token is required")
+		return errors.New("refresh token is required")
 	case r.TokenType == "":
-		return fmt.Errorf("token type is required")
+		return errors.New("token type is required")
 	case r.Expiry.IsZero():
-		return fmt.Errorf("expiry is required")
+		return errors.New("expiry is required")
 	case r.ObtainedAt.IsZero():
-		return fmt.Errorf("obtained_at is required")
+		return errors.New("obtained_at is required")
 	}
 	return nil
 }

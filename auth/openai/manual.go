@@ -24,7 +24,7 @@ var (
 func ParseRedirectURL(raw string) (string, string, error) {
 	redirectURL, err := url.Parse(raw)
 	if err != nil {
-		return "", "", fmt.Errorf("%w: %v", ErrInvalidRedirectURL, err)
+		return "", "", fmt.Errorf("%w: %w", ErrInvalidRedirectURL, err)
 	}
 	if redirectURL.Scheme == "" || redirectURL.Host == "" {
 		return "", "", ErrInvalidRedirectURL

@@ -22,7 +22,7 @@ func TestLoginSucceedsViaCallbackPath(t *testing.T) {
 	}
 
 	svc := newTestService(now)
-	svc.startCallbackServer = func(_ Config, port int, _ string) (callbackServer, error) {
+	svc.startCallbackServer = func(_ context.Context, _ Config, port int, _ string) (callbackServer, error) {
 		gotPort = port
 		return server, nil
 	}
@@ -88,7 +88,7 @@ func TestLoginSucceedsViaManualPastebackPath(t *testing.T) {
 	}
 
 	svc := newTestService(now)
-	svc.startCallbackServer = func(_ Config, port int, state string) (callbackServer, error) {
+	svc.startCallbackServer = func(_ context.Context, _ Config, port int, state string) (callbackServer, error) {
 		expectedState = state
 		gotPort = port
 		return server, nil
@@ -136,7 +136,7 @@ func TestLoginManualPastebackDoesNotWaitForCallbackTimeout(t *testing.T) {
 
 	svc := newTestService(now)
 	svc.cfg = Config{CallbackTimeout: 10 * time.Second}
-	svc.startCallbackServer = func(_ Config, _ int, state string) (callbackServer, error) {
+	svc.startCallbackServer = func(_ context.Context, _ Config, _ int, state string) (callbackServer, error) {
 		expectedState = state
 		return &stubCallbackServer{
 			redirectURI: "http://localhost:1455/auth/callback",
@@ -181,7 +181,7 @@ func TestLoginBrowserOpenFailureIsNonFatal(t *testing.T) {
 
 	svc := newTestService(now)
 	svc.openBrowser = func(string) error { return errors.New("browser unavailable") }
-	svc.startCallbackServer = func(Config, int, string) (callbackServer, error) {
+	svc.startCallbackServer = func(context.Context, Config, int, string) (callbackServer, error) {
 		return &stubCallbackServer{
 			redirectURI: "http://localhost:1455/auth/callback",
 			waitResult:  CallbackResult{Code: "callback-code", State: "expected-state"},
@@ -507,7 +507,7 @@ func newTestService(now time.Time) *Service {
 			<-ctx.Done()
 			return "", ctx.Err()
 		},
-		startCallbackServer: func(Config, int, string) (callbackServer, error) {
+		startCallbackServer: func(context.Context, Config, int, string) (callbackServer, error) {
 			return &stubCallbackServer{
 				redirectURI: "http://localhost:1455/auth/callback",
 				waitResult:  CallbackResult{Code: "callback-code", State: "expected-state"},

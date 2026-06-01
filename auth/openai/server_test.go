@@ -84,7 +84,7 @@ func startTestCallbackServer(t *testing.T, expectedState string, timeout time.Du
 	cfg := DefaultConfig()
 	cfg.CallbackTimeout = timeout
 
-	server, err := StartCallbackServer(cfg, 0, expectedState)
+	server, err := StartCallbackServer(context.Background(), cfg, 0, expectedState)
 	if err != nil {
 		t.Fatalf("StartCallbackServer() error = %v", err)
 	}

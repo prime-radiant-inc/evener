@@ -36,15 +36,15 @@ type callbackResult struct {
 }
 
 // StartCallbackServer starts a localhost listener on port. Use port 0 to ask the OS for a free port.
-func StartCallbackServer(cfg Config, port int, expectedState string) (*CallbackServer, error) {
-	listener, err := listenCallbackPort(port)
+func StartCallbackServer(ctx context.Context, cfg Config, port int, expectedState string) (*CallbackServer, error) {
+	listener, err := listenCallbackPort(ctx, port)
 	if err != nil {
 		return nil, fmt.Errorf("listen for OpenAI callback: %w", err)
 	}
 
 	actualPort, err := listenerPort(listener.Addr())
 	if err != nil {
-		listener.Close()
+		_ = listener.Close()
 		return nil, err
 	}
 
@@ -88,10 +88,10 @@ func (s *CallbackServer) Wait(ctx context.Context) (CallbackResult, error) {
 
 	select {
 	case result := <-s.result:
-		s.Close()
+		_ = s.Close()
 		return result.result, result.err
 	case <-ctx.Done():
-		s.Close()
+		_ = s.Close()
 		return CallbackResult{}, ctx.Err()
 	}
 }
@@ -119,14 +119,14 @@ func (s *CallbackServer) handleCallback(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		http.Error(w, "OpenAI authentication failed. You can close this window.", http.StatusBadRequest)
 		s.complete(callbackResult{err: err})
-		go s.Close()
+		go func() { _ = s.Close() }()
 		return
 	}
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = w.Write([]byte("OpenAI authentication was successful. You can close this window."))
 	s.complete(callbackResult{result: CallbackResult{Code: code, State: state}})
-	go s.Close()
+	go func() { _ = s.Close() }()
 }
 
 func parseCallbackRequest(r *http.Request) (string, string, error) {
@@ -153,13 +153,14 @@ func listenerPort(addr net.Addr) (int, error) {
 	return tcpAddr.Port, nil
 }
 
-func listenCallbackPort(port int) (net.Listener, error) {
-	listener, err := net.Listen("tcp", net.JoinHostPort("localhost", strconv.Itoa(port)))
+func listenCallbackPort(ctx context.Context, port int) (net.Listener, error) {
+	var lc net.ListenConfig
+	listener, err := lc.Listen(ctx, "tcp", net.JoinHostPort("localhost", strconv.Itoa(port)))
 	if err == nil {
 		return listener, nil
 	}
 	if port == DefaultCallbackPort {
-		return net.Listen("tcp", net.JoinHostPort("localhost", strconv.Itoa(FallbackCallbackPort)))
+		return lc.Listen(ctx, "tcp", net.JoinHostPort("localhost", strconv.Itoa(FallbackCallbackPort)))
 	}
 	return nil, err
 }
