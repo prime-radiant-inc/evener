@@ -31,10 +31,35 @@ type Session struct {
 	eventsClosed bool         // set under eventsMu.Lock immediately before close(events)
 	envInfo      EnvironmentInfo
 
-	mu                    sync.Mutex
+	// --- Synchronization / lock discipline ---
+	//
+	// The turn loop (ProcessInput → processOneInput) is the primary owner of
+	// most mutable state. External callers — SetModel/SetReasoningEffort,
+	// Steer/Enqueue/DrainAsSteer, Snapshot/State/DetailedStatus, and Close —
+	// run on other goroutines and race it, so the primitives below guard the
+	// shared fields. Several collaborators carry their OWN locks and are NOT
+	// covered by mu: contextMgr (contextManager.mu), reg (toolRegistry.mu),
+	// subagents (subagentManager.mu / per-child sub.mu), taskStore
+	// (TaskStore.mu — note it may be SHARED with child sessions when
+	// ShareTasksWithChildren is set), and transcript (TranscriptWriter.mu).
+	//
+	// mu guards: history, state, closing, turns, modelResponses, totalRounds,
+	//   sessionEndEmitted, profile (swapped here; read via currentProfile()),
+	//   the mutable cfg knobs (ReasoningEffort, command timeouts,
+	//   MaxToolRoundsPerInput), cachedSystemPrompt, cachedToolDefs, the
+	//   communicate* transient fields, steeringQueue, followups, inputQueue,
+	//   loopDetectionCount, the task* reminder counters, depth, and the name*
+	//   fields. It does NOT guard reg — the ToolRegistry self-synchronizes.
+	//   (readOnlyStreak is mutated only by the loop and is intentionally
+	//   lock-free / loop-private; loopDetectionCount is taken under mu.)
+	mu sync.Mutex
+
+	// responseSideEffectsMu serializes a response's user-visible side-effect
+	// bundle (emit + appendTurn + counter bump) against teardown.
+	// LOCK ORDER: responseSideEffectsMu > mu (Close acquires it before mu).
 	responseSideEffectsMu sync.Mutex
-	toolEventsWG          sync.WaitGroup
-	sendersWG             sync.WaitGroup // detached event emitters (subagent runs, session namer); Close() joins before closing events
+	toolEventsWG          sync.WaitGroup // in-flight ToolCallStart/End emit pairs; Close() joins before closing events
+	sendersWG             sync.WaitGroup // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
 	state                 SessionState
 	closing               bool
 	turns                 int // user input count (for MaxTurns enforcement)
@@ -57,7 +82,10 @@ type Session struct {
 	// messages into a single steering message sent to the in-flight turn.
 	// Each entry carries text plus any attached images (kata t5j6) so the
 	// composer can queue image-bearing messages alongside text.
-	inputQueue    []queuedInput
+	inputQueue []queuedInput
+	// queueEventsMu makes an inputQueue mutation and its EventQueueChanged emit
+	// atomic to external observers (Enqueue/DrainAsSteer/pop/pushQueueHead).
+	// LOCK ORDER: queueEventsMu > mu.
 	queueEventsMu sync.Mutex
 
 	// communicate tool state (transient, reset each processOneInput call)
