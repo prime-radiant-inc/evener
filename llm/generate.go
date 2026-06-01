@@ -136,7 +136,9 @@ type GenerateResult struct {
 	TotalUsage   Usage
 	Steps        []StepResult
 	Response     Response
-	Output       any
+	// Output holds the parsed, schema-validated object and is populated only by
+	// GenerateObject; a plain Generate call leaves it nil.
+	Output any
 }
 
 func newResult(step StepResult, totalUsage Usage, steps []StepResult, resp Response) *GenerateResult {
