@@ -7,10 +7,10 @@
 // Path carve-outs (all of these speak the codex/appwire wire protocol and
 // therefore require camelCase JSON tags):
 //
-//	internal/appwire/        — the protocol definition itself.
-//	internal/appsource/      — clients of the codex/appwire protocol.
-//	internal/appserver/      — server-side implementation of the protocol.
-//	server/appwire_*.go      — the hub's appwire runtime glue.
+//	appwire/ — the protocol definition itself.
+//	cmd/serf-hub/internal/appsource/ — clients of the codex/appwire protocol.
+//	internal/appserver/ — server-side implementation of the protocol.
+//	server/appwire_*.go — the hub's appwire runtime glue.
 //
 // Plus one fully-exempt tree, where each provider's upstream wire format
 // owns the casing:
@@ -76,22 +76,22 @@ var excludeSuffixes = []string{
 // protocol. Codex's wire format is camelCase, so JSON tags in any of these
 // trees MUST be camelCase and the snake_case-default rule does not apply.
 //
-//   - internal/appwire/    is the protocol definition itself.
-//   - internal/appsource/  contains clients of the protocol (CodexSource
+//   - appwire/ is the protocol definition itself.
+//   - cmd/serf-hub/internal/appsource/  contains clients of the protocol (CodexSource
 //     serializes/deserializes the codex wire format).
 //   - internal/appserver/  contains the server-side implementation that
 //     speaks the same wire format back to clients.
 //   - internal/appprojector/ projects codex/appwire payloads (its tests
 //     parse the same camelCase wire shapes).
-//   - internal/launchconfig/ defines the launch-option schema that appwire
+//   - cmd/serf-hub/internal/launchconfig/ defines the launch-option schema that appwire
 //     mirrors on the wire (appwire.LaunchOption carries the identical
 //     camelCase tags); its JSON tags must match the wire spelling verbatim.
 var appwirePrefixes = []string{
-	"internal/appwire/",
-	"internal/appsource/",
+	"appwire/",
+	"cmd/serf-hub/internal/appsource/",
 	"internal/appserver/",
 	"internal/appprojector/",
-	"internal/launchconfig/",
+	"cmd/serf-hub/internal/launchconfig/",
 }
 
 // appwireServerPrefix matches the hub's appwire runtime glue files
@@ -318,8 +318,8 @@ func tagKey(v string) (key string, skip bool) {
 // checkJSONTag enforces snake_case JSON tags, with two path-based carve-outs:
 //
 //   - Files that speak the codex/appwire wire protocol are exempt because the
-//     protocol forces camelCase. That covers internal/appwire/ (the protocol
-//     definition itself), internal/appsource/ and internal/appserver/ (its
+//     protocol forces camelCase. That covers appwire/ (the protocol
+//     definition itself), cmd/serf-hub/internal/appsource/ and internal/appserver/ (its
 //     clients and server-side implementation), and server/appwire_*.go (the
 //     hub runtime glue that threads appwire payloads through the hub).
 //   - Files under llm/providers/ are exempt entirely; each provider's tag
