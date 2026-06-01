@@ -46,8 +46,16 @@ linters:
       enabled-tags:
         - diagnostic
         - performance
+      # hugeParam/rangeValCopy/rangeExprCopy fight this codebase's deliberate
+      # value-semantics (interface method sets, public APIs, value receivers,
+      # MarshalJSON, bubbletea models) — micro-perf noise, not bug-catching.
+      # The rest of the performance tag (equalFold, appendCombine, …) and all
+      # of diagnostic stay enabled.
       disabled-checks:
         - ifElseChain
+        - hugeParam
+        - rangeValCopy
+        - rangeExprCopy
   exclusions:
     generated: lax
     rules:
