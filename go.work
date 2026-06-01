@@ -1,0 +1,10 @@
+go 1.25.6
+
+use (
+	.
+	./auth
+	./llm
+)
+
+replace primeradiant.com/serf/auth v0.0.0 => ./auth
+replace primeradiant.com/serf/llm v0.0.0 => ./llm
