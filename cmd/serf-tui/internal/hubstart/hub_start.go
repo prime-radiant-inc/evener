@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/hubapi"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/binresolve"
-	"primeradiant.com/serf/internal/hubapi"
 )
 
 const DefaultHubAddr = "127.0.0.1:9180"

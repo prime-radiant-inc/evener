@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
+	"primeradiant.com/serf/hubapi"
 	"primeradiant.com/serf/internal/appwire"
-	"primeradiant.com/serf/internal/hubapi"
 )
 
 // searchResult is one item in the /api/search response.

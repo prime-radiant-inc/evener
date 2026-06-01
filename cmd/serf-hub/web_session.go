@@ -9,8 +9,8 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
+	"primeradiant.com/serf/hubapi"
 	"primeradiant.com/serf/internal/appwire"
-	"primeradiant.com/serf/internal/hubapi"
 )
 
 func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string) {

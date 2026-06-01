@@ -11,8 +11,8 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
+	"primeradiant.com/serf/hubapi"
 	"primeradiant.com/serf/internal/appwire"
-	"primeradiant.com/serf/internal/hubapi"
 	"primeradiant.com/serf/rendezvous"
 )
 
