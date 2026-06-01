@@ -78,7 +78,7 @@ type RegisteredHook struct {
 	Prompt     string // for prompt hooks
 	Timeout    int    // seconds (default: 60 for command, 30 for prompt)
 	Model      string // for prompt hooks (optional)
-	PluginName string
+	PluginName string // name of the plugin that registered this hook
 	PluginDir  string // CLAUDE_PLUGIN_ROOT
 }
 

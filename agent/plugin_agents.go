@@ -10,22 +10,23 @@ import (
 	"primeradiant.com/serf/agent/internal/frontmatter"
 )
 
-// TaskTemplate defines a default task in an agent's workflow.
+// TaskTemplate defines a default task in an agent's workflow. When a session
+// starts from such an agent, its templates seed the initial task list.
 type TaskTemplate struct {
-	Title           string `json:"title"`
-	Prompt          string `json:"prompt"`
-	ReasoningEffort string `json:"reasoning_effort,omitempty"`
-	Type            string `json:"type,omitempty"`
-	Insert          string `json:"insert,omitempty"`
+	Title           string `json:"title"`                      // becomes the Task description
+	Prompt          string `json:"prompt"`                     // instruction for the task
+	ReasoningEffort string `json:"reasoning_effort,omitempty"` // per-task reasoning effort override
+	Type            string `json:"type,omitempty"`             // TaskType string; empty defaults to "implement"
+	Insert          string `json:"insert,omitempty"`           // expansion marker, e.g. "parent_tasks"
 }
 
 // PluginAgent represents a subagent defined by a plugin.
 type PluginAgent struct {
-	Name         string
-	Description  string
-	Model        string // "inherit", "sonnet", "opus", "haiku"
-	Color        string
-	AllTools     bool
+	Name         string         // agent name (unqualified)
+	Description  string         // when-to-use description shown to the model
+	Model        string         // "inherit", "sonnet", "opus", "haiku"
+	Color        string         // display color hint from frontmatter
+	AllTools     bool           // when true, the agent may use every tool (Tools is ignored)
 	Tools        []string       // serf canonical names (mapped at load time)
 	Skills       []string       // skill names to auto-inject at dispatch time
 	Tasks        []TaskTemplate // default workflow tasks from YAML

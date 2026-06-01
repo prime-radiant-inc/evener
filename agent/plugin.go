@@ -64,7 +64,7 @@ func expandPluginRoot(s string, pluginDir string) string {
 
 // LoadedPlugin represents a plugin that has been loaded from disk.
 type LoadedPlugin struct {
-	Manifest   PluginManifest
+	Manifest   PluginManifest                 // parsed plugin.json
 	Dir        string                         // absolute path = CLAUDE_PLUGIN_ROOT
 	Skills     map[string]SkillMeta           // namespaced as "plugin-name:skill-name"
 	Agents     map[string]PluginAgent         // namespaced as "plugin-name:agent-name"
