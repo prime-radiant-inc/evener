@@ -4,6 +4,8 @@ A non-interactive coding agent. Give it a prompt, it does the work.
 
 Serf uses the LLM's native tool-calling to read files, write files, run commands, and search code in a loop until the work is complete. It supports OpenAI, Anthropic, and Google models.
 
+For how the code is organized — modules, layout, and the build workspace — see [docs/architecture.md](docs/architecture.md).
+
 ## Build
 
 ```bash
