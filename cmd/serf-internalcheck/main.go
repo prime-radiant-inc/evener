@@ -74,7 +74,7 @@ func findLeaks() ([]string, error) {
 	packages.Visit(pkgs, nil, func(p *packages.Package) {
 		for _, e := range p.Errors {
 			if loadErr == nil {
-				loadErr = fmt.Errorf("loading %s: %v", p.PkgPath, e)
+				loadErr = fmt.Errorf("loading %s: %w", p.PkgPath, e)
 			}
 		}
 	})

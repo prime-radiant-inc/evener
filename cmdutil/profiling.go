@@ -15,12 +15,12 @@ func StartCPUProfile(path string) (stop func(), err error) {
 		return nil, fmt.Errorf("cannot create CPU profile: %w", err)
 	}
 	if err := pprof.StartCPUProfile(f); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("cannot start CPU profile: %w", err)
 	}
 	return func() {
 		pprof.StopCPUProfile()
-		f.Close()
+		_ = f.Close()
 	}, nil
 }
 
@@ -32,11 +32,11 @@ func StartTrace(path string) (stop func(), err error) {
 		return nil, fmt.Errorf("cannot create trace file: %w", err)
 	}
 	if err := trace.Start(f); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("cannot start trace: %w", err)
 	}
 	return func() {
 		trace.Stop()
-		f.Close()
+		_ = f.Close()
 	}, nil
 }

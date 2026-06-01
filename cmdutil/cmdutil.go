@@ -4,6 +4,7 @@ package cmdutil
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,7 +22,7 @@ import (
 // GitOriginURLFromDir runs "git remote get-url origin" in dir and returns the
 // URL, or "" if not a git repo or no origin remote is configured.
 func GitOriginURLFromDir(dir string) string {
-	cmd := exec.Command("git", "remote", "get-url", "origin")
+	cmd := exec.CommandContext(context.Background(), "git", "remote", "get-url", "origin")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
@@ -106,7 +107,7 @@ func ParseModelRef(raw string) (ModelRef, error) {
 	provider = strings.ToLower(strings.TrimSpace(provider))
 	model = strings.TrimSpace(model)
 	if raw == "" {
-		return ModelRef{}, fmt.Errorf("model is required: use provider/model")
+		return ModelRef{}, errors.New("model is required: use provider/model")
 	}
 	if !ok || provider == "" || model == "" {
 		return ModelRef{}, fmt.Errorf("model %q must use provider/model", raw)
@@ -129,7 +130,7 @@ func ResolveModelRef(modelValue, envModel, resumeProvider, resumeModel string) (
 	if resumeProvider != "" && resumeModel != "" {
 		return ModelRef{Provider: resumeProvider, Model: resumeModel}, nil
 	}
-	return ModelRef{}, fmt.Errorf("no model: use --model provider/model or set SERF_MODEL=provider/model")
+	return ModelRef{}, errors.New("no model: use --model provider/model or set SERF_MODEL=provider/model")
 }
 
 // StringSliceFlag implements flag.Value for a repeatable string flag.
@@ -321,11 +322,11 @@ var queryModelContextWindow = func(provider, model string) int {
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
 		if resp != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 		return 0
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB limit
 	if err != nil {
