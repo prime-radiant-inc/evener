@@ -1,6 +1,7 @@
 package hubapi
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -36,7 +37,7 @@ func (r Ref) PathEscaped() string {
 // ParseRef validates and parses a hub session ref.
 func ParseRef(raw string) (Ref, error) {
 	if raw == "" {
-		return Ref{}, fmt.Errorf("empty ref")
+		return Ref{}, errors.New("empty ref")
 	}
 	if !refPattern.MatchString(raw) {
 		return Ref{}, fmt.Errorf("invalid ref %q", raw)

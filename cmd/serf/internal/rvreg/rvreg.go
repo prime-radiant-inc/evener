@@ -1,7 +1,7 @@
 package rvreg
 
 import (
-	"fmt"
+	"errors"
 	"sync"
 
 	"primeradiant.com/serf/rendezvous"
@@ -31,7 +31,7 @@ func (r *Registration) Register(runDir string, entry rendezvous.Entry) error {
 
 func (r *Registration) UpdateSessionID(sessionID string) error {
 	if sessionID == "" {
-		return fmt.Errorf("session id is required")
+		return errors.New("session id is required")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

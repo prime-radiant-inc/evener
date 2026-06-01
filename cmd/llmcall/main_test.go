@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,7 +38,7 @@ func (a *fakeAdapter) Complete(ctx context.Context, req llm.Request) (llm.Respon
 func (a *fakeAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	_ = ctx
 	_ = req
-	return nil, fmt.Errorf("not implemented")
+	return nil, errors.New("not implemented")
 }
 
 func TestRunLLMCall_DefaultsToNoSystemPrompt(t *testing.T) {

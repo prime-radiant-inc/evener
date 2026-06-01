@@ -282,7 +282,7 @@ func (i *PastIndex) searchFTS(q string) ([]PastEntry, bool) {
 
 func ftsQuery(q string) string {
 	tokens := strings.FieldsFunc(strings.ToLower(q), func(r rune) bool {
-		return !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_')
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_'
 	})
 	if len(tokens) == 0 {
 		return ""

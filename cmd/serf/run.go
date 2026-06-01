@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -106,7 +107,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		prompt = "Continue where you left off."
 	}
 	if prompt == "" && meta == nil {
-		return fmt.Errorf("no prompt provided")
+		return errors.New("no prompt provided")
 	}
 
 	effort, err := cmdutil.ResolveReasoningEffort(cfg.reasoningEffort, os.Getenv("SERF_REASONING_EFFORT"))

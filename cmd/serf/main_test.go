@@ -461,7 +461,7 @@ func TestIsHeadlessLoginForDecisionTable(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		tc := tc
+
 		t.Run(tc.name, func(t *testing.T) {
 			getenv := func(key string) string { return tc.env[key] }
 			if got := isHeadlessLoginFor(tc.goos, getenv); got != tc.want {

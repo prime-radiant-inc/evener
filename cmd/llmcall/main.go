@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -134,7 +135,7 @@ func llmcallMain(args []string, stdout, stderr io.Writer) error {
 	}
 
 	if err := fs.Parse(args); err != nil {
-		if err == flag.ErrHelp {
+		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
 		return err
@@ -168,7 +169,7 @@ func llmcallMain(args []string, stdout, stderr io.Writer) error {
 	}
 	if cfg.prompt == "" {
 		fs.Usage()
-		return fmt.Errorf("no prompt provided")
+		return errors.New("no prompt provided")
 	}
 
 	if timeoutStr != "" {
@@ -193,10 +194,10 @@ func llmcallMain(args []string, stdout, stderr io.Writer) error {
 		cfg.model = os.Getenv("SERF_MODEL")
 	}
 	if cfg.provider == "" {
-		return fmt.Errorf("no provider specified: use --provider or set LLM_PROVIDER/SERF_PROVIDER")
+		return errors.New("no provider specified: use --provider or set LLM_PROVIDER/SERF_PROVIDER")
 	}
 	if cfg.model == "" {
-		return fmt.Errorf("no model specified: use --model or set LLM_MODEL/SERF_MODEL")
+		return errors.New("no model specified: use --model or set LLM_MODEL/SERF_MODEL")
 	}
 
 	cfg.systemAppend = []string(systemAppend)
@@ -331,7 +332,7 @@ func runLLMCall(ctx context.Context, cfg llmCallConfig) error {
 
 func buildSystemPrompt(systemText, systemFile string, appendFiles []string) (string, error) {
 	if systemText != "" && systemFile != "" {
-		return "", fmt.Errorf("provide only one of --system or --system-file")
+		return "", errors.New("provide only one of --system or --system-file")
 	}
 
 	base := strings.TrimSpace(systemText)

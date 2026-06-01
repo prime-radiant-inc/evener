@@ -1,9 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -258,7 +259,7 @@ func TestInputEndpoint_TextAndImage(t *testing.T) {
 		if msg.Images[0].Name != "x.png" {
 			t.Errorf("name: got %q, want x.png", msg.Images[0].Name)
 		}
-		if string(msg.Images[0].Data) != string(pngBytes) {
+		if !bytes.Equal(msg.Images[0].Data, pngBytes) {
 			t.Errorf("data mismatch")
 		}
 	case <-time.After(time.Second):
@@ -335,7 +336,7 @@ func TestCompactEndpoint_NoFunc(t *testing.T) {
 func TestCompactEndpoint_Error(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetCompactFunc(func(ctx context.Context) error {
-		return fmt.Errorf("compaction failed")
+		return errors.New("compaction failed")
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/compact", nil)
@@ -627,7 +628,7 @@ func TestModelsEndpoint_NoFunc(t *testing.T) {
 func TestModelsEndpoint_Error(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetListModelsFunc(func(ctx context.Context) ([]ModelsResponseItem, error) {
-		return nil, fmt.Errorf("upstream error")
+		return nil, errors.New("upstream error")
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/models", nil)

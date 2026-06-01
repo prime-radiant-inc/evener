@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -128,7 +129,8 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 
 func writeSpawnError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
-	if wire, ok := err.(appwire.WireError); ok {
+	var wire appwire.WireError
+	if errors.As(err, &wire) {
 		switch wire.Code {
 		case appwire.CodeInvalidParams:
 			status = http.StatusBadRequest

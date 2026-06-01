@@ -1,7 +1,5 @@
 package appwire
 
-import "fmt"
-
 const (
 	CodeParseError     = -32700
 	CodeInvalidRequest = -32600
@@ -59,7 +57,7 @@ func InvalidRequest(message string) WireError {
 func MethodNotFound(method string) WireError {
 	return WireError{
 		Code:    CodeMethodNotFound,
-		Message: fmt.Sprintf("method not found: %s", method),
+		Message: "method not found: " + method,
 		Data:    ErrorData{SerfErrorInfo: ErrorMethodNotFound},
 	}
 }

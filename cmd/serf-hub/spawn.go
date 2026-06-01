@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -239,7 +240,7 @@ func buildSpawnArgs(req hubcore.SpawnRequest) []string {
 		args = append(args, "--run-dir", req.RunDir)
 	}
 	if req.AppReplaySize > 0 {
-		args = append(args, "--app-replay-size", fmt.Sprintf("%d", req.AppReplaySize))
+		args = append(args, "--app-replay-size", strconv.Itoa(req.AppReplaySize))
 	}
 	args = append(args, launchconfig.ToArgs(req.Resolved)...)
 	return args
@@ -345,7 +346,7 @@ func ResumeDaemon(ctx context.Context, serfBinary, runDir string, req hubcore.Re
 		args = append(args, "--run-dir", req.RunDir)
 	}
 	if req.AppReplaySize > 0 {
-		args = append(args, "--app-replay-size", fmt.Sprintf("%d", req.AppReplaySize))
+		args = append(args, "--app-replay-size", strconv.Itoa(req.AppReplaySize))
 	}
 	args = append(args, launchconfig.ToArgs(req.Resolved)...)
 	cmd := exec.Command(serfBinary, args...)
@@ -504,7 +505,7 @@ noConfig:
 	// Use List() so providers that need no credentials (e.g. ollama) are
 	// correctly identified via their SourceNone status.
 	for _, p := range store.List() {
-		if p.Name != strings.ToLower(provider) {
+		if !strings.EqualFold(p.Name, provider) {
 			continue
 		}
 		if p.Source == credentials.SourceNone {

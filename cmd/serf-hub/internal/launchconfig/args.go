@@ -1,7 +1,7 @@
 package launchconfig
 
 import (
-	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -31,10 +31,10 @@ func ToArgs(r Resolved) []string {
 		add("--context-strategy", e.ContextStrategy)
 	}
 	if e.MaxRounds != nil {
-		add("--max-rounds", fmt.Sprintf("%d", *e.MaxRounds))
+		add("--max-rounds", strconv.Itoa(*e.MaxRounds))
 	}
 	if e.MaxSubagentDepth != nil {
-		add("--max-subagent-depth", fmt.Sprintf("%d", *e.MaxSubagentDepth))
+		add("--max-subagent-depth", strconv.Itoa(*e.MaxSubagentDepth))
 	}
 	if e.NoProjectPrompts != nil && *e.NoProjectPrompts {
 		out = append(out, "--no-project-prompts")
@@ -43,7 +43,7 @@ func ToArgs(r Resolved) []string {
 		out = append(out, "--non-interactive")
 	}
 	if e.AppReplaySize != nil {
-		add("--app-replay-size", fmt.Sprintf("%d", *e.AppReplaySize))
+		add("--app-replay-size", strconv.Itoa(*e.AppReplaySize))
 	}
 	if e.SystemPromptMode == "file" && e.SystemPromptFile != "" {
 		add("--system-prompt", e.SystemPromptFile)

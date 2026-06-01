@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -96,7 +97,7 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
 	if *device && *noDevice {
-		return fmt.Errorf("conflicting flags: --device and --no-device cannot both be set")
+		return errors.New("conflicting flags: --device and --no-device cannot both be set")
 	}
 
 	resolvedStateDir, err := resolveOpenAIStateDir(*workDir, *stateDir)
@@ -239,7 +240,7 @@ func makeRedirectURLReader(stdin io.Reader, stderr io.Writer) func(context.Conte
 		}
 		line = strings.TrimSpace(line)
 		if line == "" {
-			return "", fmt.Errorf("redirect URL is required")
+			return "", errors.New("redirect URL is required")
 		}
 		return line, nil
 	}

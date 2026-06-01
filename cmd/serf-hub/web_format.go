@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -171,7 +172,7 @@ func formatTokenCount(n int) string {
 		n = 0
 	}
 	if n < 1000 {
-		return fmt.Sprintf("%d", n)
+		return strconv.Itoa(n)
 	}
 	return fmt.Sprintf("%dk", (n+500)/1000)
 }

@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
@@ -15,7 +15,7 @@ func sourceForThread(sources *appsource.Registry, ref, threadID string) (appsour
 	}
 	source, ok := sources.Source("local")
 	if !ok {
-		return nil, fmt.Errorf("source not found: local")
+		return nil, errors.New("source not found: local")
 	}
 	if threadID == "" {
 		return source, nil

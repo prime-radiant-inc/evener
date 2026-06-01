@@ -495,7 +495,7 @@ func normalizeAuthProvider(provider string) string {
 // instance name is not found.
 func (c *hubAuthController) resolveInstanceType(name string) (typ, behaviorTag string, err error) {
 	if c.providersConfigPath == "" {
-		return "", "", fmt.Errorf("no providers config path configured")
+		return "", "", errors.New("no providers config path configured")
 	}
 	cfg, exists, err := providercfg.LoadFile(c.providersConfigPath)
 	if err != nil {

@@ -332,7 +332,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		return p.systemAnnouncement("loop_detection", "Loop detection", data.Message)
 	case events.EventSkillActivated:
 		data := eventData[events.SkillActivatedData](event.Data)
-		return p.systemAnnouncement("skill", "Skill activated", fmt.Sprintf("Activated skill: %s", data.Name))
+		return p.systemAnnouncement("skill", "Skill activated", "Activated skill: "+data.Name)
 	case events.EventContextCompaction:
 		data := eventData[events.ContextCompactionData](event.Data)
 		return p.systemAnnouncement("context_compaction", "Context compaction", contextCompactionAnnouncement(data))

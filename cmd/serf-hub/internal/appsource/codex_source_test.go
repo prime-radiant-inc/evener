@@ -1,6 +1,7 @@
 package appsource
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -447,7 +448,7 @@ func assertCodexImageItems(t *testing.T, got, want []appwire.InputItem) {
 			got[i].MediaType != want[i].MediaType ||
 			got[i].Path != want[i].Path ||
 			got[i].Name != want[i].Name ||
-			string(got[i].Data) != string(want[i].Data) {
+			!bytes.Equal(got[i].Data, want[i].Data) {
 			t.Fatalf("images[%d]=%+v, want %+v", i, got[i], want[i])
 		}
 	}

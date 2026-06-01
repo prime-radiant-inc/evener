@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -235,7 +236,7 @@ func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsou
 	if err != nil {
 		return appwire.ThreadResumeResponse{}, err
 	}
-	return appwire.ThreadResumeResponse{Thread: threadResp.Thread}, nil
+	return appwire.ThreadResumeResponse(threadResp), nil
 }
 
 func resumeRequestForConfig(cfg hubcore.WebConfig, id string) (hubcore.ResumeRequest, error) {
@@ -317,11 +318,11 @@ func threadForkRequiresTurnCapability(params appwire.ThreadForkParams) bool {
 func parseSourceTurnID(raw string) (int, error) {
 	raw = strings.TrimSpace(strings.TrimPrefix(raw, "turn_"))
 	if raw == "" {
-		return 0, fmt.Errorf("sourceTurnId is required")
+		return 0, errors.New("sourceTurnId is required")
 	}
 	turn, err := strconv.Atoi(raw)
 	if err != nil || turn < 1 {
-		return 0, fmt.Errorf("sourceTurnId must be a positive turn number")
+		return 0, errors.New("sourceTurnId must be a positive turn number")
 	}
 	return turn, nil
 }

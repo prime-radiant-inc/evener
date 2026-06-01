@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -56,7 +57,7 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 
 	resolve := func(forceResume bool) (hubcore.LiveEntry, error) {
 		if s.cfg.Roster == nil {
-			return hubcore.LiveEntry{}, fmt.Errorf("spawner not configured")
+			return hubcore.LiveEntry{}, errors.New("spawner not configured")
 		}
 		if !forceResume {
 			if le, ok := s.cfg.Roster.Find(id); ok {
@@ -65,7 +66,7 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		}
 		// Resume path: spawn the daemon and wait for it to register.
 		if s.cfg.Spawner == nil {
-			return hubcore.LiveEntry{}, fmt.Errorf("spawner not configured")
+			return hubcore.LiveEntry{}, errors.New("spawner not configured")
 		}
 		lock := s.lockForSession(id)
 		lock.Lock()
@@ -83,7 +84,7 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		}
 		le := waitForRosterMatch(s.cfg.Roster, id, entry.PID, 5*time.Second)
 		if le.Address == "" {
-			return hubcore.LiveEntry{}, fmt.Errorf("daemon not in roster after resume")
+			return hubcore.LiveEntry{}, errors.New("daemon not in roster after resume")
 		}
 		return le, nil
 	}
@@ -93,7 +94,7 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 	startTurn := func(forceResume bool) error {
 		if forceResume {
 			if !isLocalRouteID(id) {
-				return fmt.Errorf("remote source session is not resumable by local spawner")
+				return errors.New("remote source session is not resumable by local spawner")
 			}
 			if _, rerr := resolve(forceResume); rerr != nil {
 				return rerr
@@ -462,7 +463,7 @@ func (s *WebServer) forkSession(parentID string, body forkRequest) (string, erro
 		stateDir = s.cfg.StateDir
 	}
 	if stateDir == "" {
-		return "", fmt.Errorf("state dir not resolvable for parent session")
+		return "", errors.New("state dir not resolvable for parent session")
 	}
 
 	childID, err := agent.ForkSession(stateDir, parentID, body.Turn, body.EditedMessage, body.Label)

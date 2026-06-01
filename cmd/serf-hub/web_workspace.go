@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -141,14 +142,14 @@ func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, i
 			rows = append(rows, detailsRow{"model", m.ProfileID + " · " + m.Model})
 		}
 		if m.TurnCount > 0 {
-			rows = append(rows, detailsRow{"turns", fmt.Sprintf("%d", m.TurnCount)})
+			rows = append(rows, detailsRow{"turns", strconv.Itoa(m.TurnCount)})
 		}
 		if m.LastInputTokens > 0 {
-			rows = append(rows, detailsRow{"last input tokens", fmt.Sprintf("%d", m.LastInputTokens)})
+			rows = append(rows, detailsRow{"last input tokens", strconv.Itoa(m.LastInputTokens)})
 		}
 		if m.ParentSessionID != "" {
 			rows = append(rows, detailsRow{"forked from", m.ParentSessionID})
-			rows = append(rows, detailsRow{"divergence turn", fmt.Sprintf("%d", m.DivergenceTurn)})
+			rows = append(rows, detailsRow{"divergence turn", strconv.Itoa(m.DivergenceTurn)})
 		}
 		if m.IsSubagent {
 			rows = append(rows, detailsRow{"kind", "subagent"})
@@ -158,7 +159,7 @@ func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, i
 	if s.cfg.Roster != nil {
 		if le, ok := s.cfg.Roster.Find(id); ok {
 			rows = append(rows, detailsRow{"daemon", le.Address})
-			rows = append(rows, detailsRow{"pid", fmt.Sprintf("%d", le.PID)})
+			rows = append(rows, detailsRow{"pid", strconv.Itoa(le.PID)})
 		}
 	}
 	if s.cfg.Past != nil {

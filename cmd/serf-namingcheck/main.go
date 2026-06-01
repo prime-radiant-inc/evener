@@ -540,7 +540,7 @@ func checkTOMLFile(path, rel string) ([]Violation, error) {
 			rest := line[strings.Index(line, "=")+1:]
 			for _, delim := range []string{`"""`, `'''`} {
 				if idx := strings.Index(rest, delim); idx >= 0 {
-					if strings.Index(rest[idx+3:], delim) < 0 {
+					if !strings.Contains(rest[idx+3:], delim) {
 						inMultilineString = true
 						multilineDelim = delim
 					}

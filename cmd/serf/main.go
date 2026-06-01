@@ -78,7 +78,7 @@ func main() {
 
 	fs, flags := newRunFlagSet(os.Stderr)
 	if err := fs.Parse(os.Args[1:]); err != nil {
-		if err == flag.ErrHelp {
+		if errors.Is(err, flag.ErrHelp) {
 			return
 		}
 		os.Exit(2)

@@ -3,7 +3,7 @@ package appwire
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"strconv"
 )
 
@@ -34,7 +34,7 @@ func (id ID) MarshalJSON() ([]byte, error) {
 
 func (id *ID) UnmarshalJSON(data []byte) error {
 	if len(data) == 0 || bytes.Equal(data, []byte("null")) {
-		return fmt.Errorf("request id must not be null")
+		return errors.New("request id must not be null")
 	}
 	id.raw = append(id.raw[:0], data...)
 	return nil
@@ -122,7 +122,7 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	if probe.JSONRPC != nil {
-		return fmt.Errorf("jsonrpc field is not part of AppWire")
+		return errors.New("jsonrpc field is not part of AppWire")
 	}
 	switch {
 	case len(probe.Error) > 0:
@@ -150,7 +150,7 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		}
 		m.Notification = &notif
 	default:
-		return fmt.Errorf("invalid JSON-RPC message")
+		return errors.New("invalid JSON-RPC message")
 	}
 	return nil
 }
@@ -166,7 +166,7 @@ func (m Message) MarshalJSON() ([]byte, error) {
 	case m.Error != nil:
 		return json.Marshal(m.Error)
 	default:
-		return nil, fmt.Errorf("invalid JSON-RPC message")
+		return nil, errors.New("invalid JSON-RPC message")
 	}
 }
 
