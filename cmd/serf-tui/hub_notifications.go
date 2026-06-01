@@ -8,6 +8,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/hubdiagnostics"
 	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
 	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
+	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -80,7 +81,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		var params appwire.ToolOutputDeltaParams
 		if json.Unmarshal(notification.Params, &params) == nil {
 			reducer := m.sessionTranscriptReducer()
-			reducer.applyToolOutputDelta(params.ItemID, params.Delta)
+			reducer.ApplyToolOutputDelta(params.ItemID, params.Delta)
 			m.applySessionTranscriptReducer(reducer)
 		}
 	case appwire.NotifyTurnCompleted:
@@ -120,10 +121,10 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		if json.Unmarshal(notification.Params, &params) == nil {
 			text := strings.TrimSpace(params.Text)
 			if text == "" {
-				text = imageItemsPlaceholder(params.Images)
+				text = transcript.ImageItemsPlaceholder(params.Images)
 			}
 			if text != "" {
-				m.session.messages = append(m.session.messages, chatMessage{Kind: msgSteering, Text: text})
+				m.session.messages = append(m.session.messages, transcript.ChatMessage{Kind: transcript.MsgSteering, Text: text})
 			}
 		}
 	case appwire.NotifyWarning:
@@ -195,7 +196,7 @@ func reconcilePendingFromNotification(pending *pendingpkg.PendingCoordinator, n 
 		if p.Item.Type == "userMessage" && (p.Item.Text != "" || len(p.Item.Images) > 0) {
 			text := p.Item.Text
 			if text == "" {
-				text = imageItemsPlaceholder(p.Item.Images)
+				text = transcript.ImageItemsPlaceholder(p.Item.Images)
 			}
 			pending.TryReconcile(appwire.MethodTurnStart, text, ref)
 		}
@@ -212,7 +213,7 @@ func reconcilePendingFromNotification(pending *pendingpkg.PendingCoordinator, n 
 			}
 			text := item.Text
 			if text == "" {
-				text = imageItemsPlaceholder(item.Images)
+				text = transcript.ImageItemsPlaceholder(item.Images)
 			}
 			pending.TryReconcile(appwire.MethodTurnStart, text, ref)
 		}
@@ -230,10 +231,10 @@ func notificationPendingRef(n appwire.Notification) string {
 	return strings.TrimSpace(p.ThreadID)
 }
 
-// markPendingFailedByID flips the chatMessage with the given PendingID
+// markPendingFailedByID flips the transcript.ChatMessage with the given PendingID
 // from Pending → Failed and stamps the reason. ID-keyed so simultaneous
 // placeholders of the same kind (e.g. a steer and a drain both rendered
-// as msgSteering) can't cross-fail each other.
+// as transcript.MsgSteering) can't cross-fail each other.
 func (m *hubModel) markPendingFailedByID(id int64, reason string) {
 	for i := range m.session.messages {
 		if m.session.messages[i].PendingID != id {
@@ -246,7 +247,7 @@ func (m *hubModel) markPendingFailedByID(id int64, reason string) {
 	}
 }
 
-// removePendingByID drops the chatMessage with the given PendingID
+// removePendingByID drops the transcript.ChatMessage with the given PendingID
 // after the authoritative event has rendered separately.
 func (m *hubModel) removePendingByID(id int64) {
 	for i := range m.session.messages {
@@ -314,28 +315,28 @@ func (m hubModel) notificationMatchesCurrentSession(notification appwire.Notific
 
 func (m *hubModel) applyAgentMessageDelta(turnID, itemID, delta string) {
 	reducer := m.sessionTranscriptReducer()
-	reducer.applyAgentMessageDelta(turnID, itemID, delta)
+	reducer.ApplyAgentMessageDelta(turnID, itemID, delta)
 	m.applySessionTranscriptReducer(reducer)
 }
 
 func (m *hubModel) applyThreadItem(item appwire.ThreadItem, completed bool) {
 	reducer := m.sessionTranscriptReducer()
-	reducer.applyThreadItem(item, turnIndexFromID(item.TurnID), completed)
+	reducer.ApplyThreadItem(item, transcript.TurnIndexFromID(item.TurnID), completed)
 	m.applySessionTranscriptReducer(reducer)
 }
 
-func (m *hubModel) sessionTranscriptReducer() hubTranscriptReducer {
-	return newHubTranscriptReducer(m.session.messages, m.session.activeTools, m.session.activeMessages)
+func (m *hubModel) sessionTranscriptReducer() transcript.TranscriptReducer {
+	return transcript.NewTranscriptReducer(m.session.messages, m.session.activeTools, m.session.activeMessages)
 }
 
-func (m *hubModel) applySessionTranscriptReducer(reducer hubTranscriptReducer) {
-	m.session.messages = reducer.messages
-	m.session.activeTools = reducer.activeTools
-	m.session.activeMessages = reducer.activeMessages
+func (m *hubModel) applySessionTranscriptReducer(reducer transcript.TranscriptReducer) {
+	m.session.messages = reducer.Messages()
+	m.session.activeTools = reducer.ActiveTools()
+	m.session.activeMessages = reducer.ActiveMessages()
 }
 
-func (m *hubModel) replaceSessionTranscript(messages []chatMessage) {
-	m.session.messages = append([]chatMessage(nil), messages...)
+func (m *hubModel) replaceSessionTranscript(messages []transcript.ChatMessage) {
+	m.session.messages = append([]transcript.ChatMessage(nil), messages...)
 	m.session.activeTools = nil
 	m.session.activeMessages = nil
 	m.browseSelected = -1

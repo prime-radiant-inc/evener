@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
+	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -19,7 +20,7 @@ type hubTreeMsg struct {
 
 type hubSessionMsg struct {
 	detail               hubSessionDetail
-	messages             []chatMessage
+	messages             []transcript.ChatMessage
 	ref                  string
 	expectedState        string
 	expectedRefreshToken int
@@ -123,7 +124,7 @@ type hubTranscriptTargetsMsg struct {
 
 type hubTranscriptMsg struct {
 	target   appwire.ThreadTranscriptTarget
-	messages []chatMessage
+	messages []transcript.ChatMessage
 	err      error
 }
 
@@ -155,7 +156,7 @@ func fetchHubSessionRead(client *appwire.Client, ref appwire.Ref, expectedState 
 		if err != nil {
 			return hubSessionMsg{ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken, err: err}
 		}
-		return hubSessionMsg{detail: hubDetailFromThread(resp.Thread), messages: messagesFromThread(resp.Thread), ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken}
+		return hubSessionMsg{detail: hubDetailFromThread(resp.Thread), messages: transcript.MessagesFromThread(resp.Thread), ref: ref.String(), expectedState: expectedState, expectedRefreshToken: expectedRefreshToken}
 	}
 }
 
@@ -188,7 +189,7 @@ func fetchHubTranscript(client *appwire.Client, target appwire.ThreadTranscriptT
 		if err != nil {
 			return hubTranscriptMsg{target: target, err: err}
 		}
-		return hubTranscriptMsg{target: target, messages: messagesFromThread(resp.Thread)}
+		return hubTranscriptMsg{target: target, messages: transcript.MessagesFromThread(resp.Thread)}
 	}
 }
 

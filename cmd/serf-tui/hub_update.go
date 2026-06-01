@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
 	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
+	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -120,22 +121,22 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.Entry.Method {
 		case appwire.MethodTurnSteer:
-			m.session.messages = append(m.session.messages, chatMessage{
-				Kind:      msgSteering,
+			m.session.messages = append(m.session.messages, transcript.ChatMessage{
+				Kind:      transcript.MsgSteering,
 				Text:      msg.Entry.Text,
 				Pending:   true,
 				PendingID: msg.Entry.ID,
 			})
 		case appwire.MethodTurnStart:
-			m.session.messages = append(m.session.messages, chatMessage{
-				Kind:      msgUser,
+			m.session.messages = append(m.session.messages, transcript.ChatMessage{
+				Kind:      transcript.MsgUser,
 				Text:      msg.Entry.Text,
 				Pending:   true,
 				PendingID: msg.Entry.ID,
 			})
 		case appwire.MethodTurnDrainAsSteer:
-			m.session.messages = append(m.session.messages, chatMessage{
-				Kind:      msgSteering,
+			m.session.messages = append(m.session.messages, transcript.ChatMessage{
+				Kind:      transcript.MsgSteering,
 				Text:      fmt.Sprintf("draining %d → steering", len(m.sessionQueue)),
 				Pending:   true,
 				PendingID: msg.Entry.ID,
@@ -174,7 +175,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Preserve pendingAttachments on error so the user can retry
 			// without re-pasting (kata re91).
 			reducer := m.sessionTranscriptReducer()
-			reducer.removeUserMessageEcho(msg.text)
+			reducer.RemoveUserMessageEcho(msg.text)
 			m.applySessionTranscriptReducer(reducer)
 			if !m.restoreFailedComposerPayload(msg.draft, msg.submittedAttachments) {
 				m.noteUnrestoredFailedComposerPayload("Send", msg.draft, msg.submittedAttachments)

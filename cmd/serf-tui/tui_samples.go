@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 )
 
@@ -11,7 +12,7 @@ type hubTUISampleCorpus struct {
 	DashboardTree    hubTreeResponse
 	ProjectHistory   hubTreeProject
 	Sessions         map[string]hubSessionDetail
-	TranscriptEvents []chatMessage
+	TranscriptEvents []transcript.ChatMessage
 	SpawnOptions     []tuiSpawnSample
 	AuthStates       []tuiAuthSample
 	PickerStates     []tuiPickerSample
@@ -234,11 +235,11 @@ func sampleSessionDetails() map[string]hubSessionDetail {
 	}
 }
 
-func sampleTranscriptEvents() []chatMessage {
-	return []chatMessage{
-		{Kind: msgUser, Text: "What agent harness is running right now?", TurnIndex: 0},
-		{Kind: msgAssistant, Text: "The running agent harness identifies itself as serf."},
-		{Kind: msgTool, Tool: &toolCallInfo{
+func sampleTranscriptEvents() []transcript.ChatMessage {
+	return []transcript.ChatMessage{
+		{Kind: transcript.MsgUser, Text: "What agent harness is running right now?", TurnIndex: 0},
+		{Kind: transcript.MsgAssistant, Text: "The running agent harness identifies itself as serf."},
+		{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{
 			Name:        "tasks",
 			Description: "Understand task -> Do the work -> Verify",
 			Output:      "all task steps completed",
@@ -246,7 +247,7 @@ func sampleTranscriptEvents() []chatMessage {
 			Done:        true,
 			Expanded:    true,
 		}},
-		{Kind: msgSystem, Text: "Model change is not available for this session."},
+		{Kind: transcript.MsgSystem, Text: "Model change is not available for this session."},
 	}
 }
 
@@ -524,7 +525,7 @@ func sampleSessionModel(width int, detail hubSessionDetail) hubModel {
 	m.session = newModel(nil)
 	m.session.width = width
 	m.session.height = 32
-	m.session.messages = []chatMessage{{Kind: msgAssistant, Text: "Ready for the next task."}}
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgAssistant, Text: "Ready for the next task."}}
 	m.session.refreshViewport()
 	return m
 }

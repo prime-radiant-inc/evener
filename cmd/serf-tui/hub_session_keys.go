@@ -364,7 +364,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		reducer := m.sessionTranscriptReducer()
-		reducer.applyUserMessageEcho(text)
+		reducer.ApplyUserMessageEcho(text)
 		m.applySessionTranscriptReducer(reducer)
 		if text != "" {
 			m.session.addHistory(text)

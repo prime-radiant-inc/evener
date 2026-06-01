@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/llm"
 )
@@ -33,10 +34,10 @@ func TestHistoryToMessages_UserAndCommunicate(t *testing.T) {
 	if len(msgs) != 2 {
 		t.Fatalf("expected 2 messages, got %d: %+v", len(msgs), msgs)
 	}
-	if msgs[0].Kind != msgUser || msgs[0].Text != "what is 2+2?" {
+	if msgs[0].Kind != transcript.MsgUser || msgs[0].Text != "what is 2+2?" {
 		t.Errorf("msg[0] = %+v, want user 'what is 2+2?'", msgs[0])
 	}
-	if msgs[1].Kind != msgCommunicate || msgs[1].Text != "The answer is 4." {
+	if msgs[1].Kind != transcript.MsgCommunicate || msgs[1].Text != "The answer is 4." {
 		t.Errorf("msg[1] = %+v, want communicate 'The answer is 4.'", msgs[1])
 	}
 }
@@ -74,10 +75,10 @@ func TestHistoryToMessages_ToolCalls(t *testing.T) {
 	if len(msgs) != 3 {
 		t.Fatalf("expected 3 messages, got %d: %+v", len(msgs), msgs)
 	}
-	if msgs[0].Kind != msgUser {
-		t.Errorf("msg[0].Kind = %v, want msgUser", msgs[0].Kind)
+	if msgs[0].Kind != transcript.MsgUser {
+		t.Errorf("msg[0].Kind = %v, want transcript.MsgUser", msgs[0].Kind)
 	}
-	if msgs[1].Kind != msgTool || msgs[1].Tool == nil {
+	if msgs[1].Kind != transcript.MsgTool || msgs[1].Tool == nil {
 		t.Fatalf("msg[1] should be a tool call, got %+v", msgs[1])
 	}
 	if msgs[1].Tool.Name != "shell" {
@@ -86,7 +87,7 @@ func TestHistoryToMessages_ToolCalls(t *testing.T) {
 	if msgs[1].Tool.Output != "file1.go\nfile2.go" {
 		t.Errorf("tool output = %q, want file listing", msgs[1].Tool.Output)
 	}
-	if msgs[2].Kind != msgCommunicate || msgs[2].Text != "Found 2 files." {
+	if msgs[2].Kind != transcript.MsgCommunicate || msgs[2].Text != "Found 2 files." {
 		t.Errorf("msg[2] = %+v, want communicate 'Found 2 files.'", msgs[2])
 	}
 }
@@ -111,11 +112,11 @@ func TestHistoryToMessages_ThinkingText(t *testing.T) {
 	if len(msgs) != 2 {
 		t.Fatalf("expected 2 messages, got %d: %+v", len(msgs), msgs)
 	}
-	if msgs[0].Kind != msgAssistant || msgs[0].Text != "Let me think about this..." {
+	if msgs[0].Kind != transcript.MsgAssistant || msgs[0].Text != "Let me think about this..." {
 		t.Errorf("msg[0] = %+v, want assistant thinking", msgs[0])
 	}
-	if msgs[1].Kind != msgCommunicate {
-		t.Errorf("msg[1].Kind = %v, want msgCommunicate", msgs[1].Kind)
+	if msgs[1].Kind != transcript.MsgCommunicate {
+		t.Errorf("msg[1].Kind = %v, want transcript.MsgCommunicate", msgs[1].Kind)
 	}
 }
 
@@ -135,7 +136,7 @@ func TestRenderMessage_RendersAssistantMarkdown(t *testing.T) {
 		markdownRendererWidth = previousWidth
 	})
 
-	got := renderMessage(chatMessage{Kind: msgAssistant, Text: "**bold**\n\n- one"}, 80, false)
+	got := renderMessage(transcript.ChatMessage{Kind: transcript.MsgAssistant, Text: "**bold**\n\n- one"}, 80, false)
 
 	if strings.Contains(got, "**bold**") || strings.Contains(got, "- one") {
 		t.Fatalf("assistant markdown rendered raw:\n%q", got)
@@ -146,7 +147,7 @@ func TestRenderMessage_RendersAssistantMarkdown(t *testing.T) {
 }
 
 func TestRenderMessage_KeepsPlainAssistantTextSearchable(t *testing.T) {
-	got := renderMessage(chatMessage{Kind: msgAssistant, Text: "main transcript answer"}, 80, false)
+	got := renderMessage(transcript.ChatMessage{Kind: transcript.MsgAssistant, Text: "main transcript answer"}, 80, false)
 
 	if !strings.Contains(got, "main transcript answer") {
 		t.Fatalf("plain assistant text should remain contiguous:\n%q", got)
@@ -154,7 +155,7 @@ func TestRenderMessage_KeepsPlainAssistantTextSearchable(t *testing.T) {
 }
 
 func TestRenderToolCallUsesRegistry(t *testing.T) {
-	tc := toolCallInfo{
+	tc := transcript.ToolCallInfo{
 		Name:        "read_file",
 		Description: `{"file_path":"src/x.go"}`,
 		Output:      "line1\nline2\nline3",
@@ -175,7 +176,7 @@ func TestRenderToolCallUsesRegistry(t *testing.T) {
 
 func TestRenderToolCallShowsPurposeAsFirstBodyLine(t *testing.T) {
 	withTestColorProfile(t)
-	tc := toolCallInfo{
+	tc := transcript.ToolCallInfo{
 		Name:     "exec_command",
 		RawArgs:  `{"command":"go test ./cmd/serf-tui","purpose":"Verify tool renderer purpose display"}`,
 		Output:   "ok",

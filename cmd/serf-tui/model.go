@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmd/serf-tui/internal/inputhistory"
+	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
@@ -29,7 +30,7 @@ type model struct {
 	// UI components.
 	viewport viewport.Model
 	input    textarea.Model
-	messages []chatMessage
+	messages []transcript.ChatMessage
 
 	// Input history (in-memory only; hub-mode does not persist it).
 	history      []string // escaped entries
@@ -64,7 +65,7 @@ func applyInputTheme(ta *textarea.Model) {
 	ta.Cursor.TextStyle = lipgloss.NewStyle().Foreground(th.Text)
 }
 
-func newModel(initialMessages []chatMessage) model {
+func newModel(initialMessages []transcript.ChatMessage) model {
 	ta := textarea.New()
 	ta.Placeholder = "Type a message..."
 	ta.Prompt = ""
@@ -86,11 +87,11 @@ func newModel(initialMessages []chatMessage) model {
 	}
 }
 
-// toolIndices returns the indices in m.messages that are msgTool entries.
+// toolIndices returns the indices in m.messages that are transcript.MsgTool entries.
 func (m *model) toolIndices() []int {
 	var idx []int
 	for i := range m.messages {
-		if m.messages[i].Kind == msgTool && m.messages[i].Tool != nil && !m.messages[i].Tool.Hidden {
+		if m.messages[i].Kind == transcript.MsgTool && m.messages[i].Tool != nil && !m.messages[i].Tool.Hidden {
 			idx = append(idx, i)
 		}
 	}

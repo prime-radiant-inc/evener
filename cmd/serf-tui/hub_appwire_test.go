@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -93,7 +94,7 @@ func TestHubModelAppliesAppWireNotifications(t *testing.T) {
 		}).Notification,
 	})
 	got := updated.(hubModel)
-	if len(got.session.messages) != 1 || got.session.messages[0].Kind != msgAssistant || got.session.messages[0].Text != "hello world" {
+	if len(got.session.messages) != 1 || got.session.messages[0].Kind != transcript.MsgAssistant || got.session.messages[0].Text != "hello world" {
 		t.Fatalf("messages=%+v", got.session.messages)
 	}
 	updated, _ = got.Update(hubNotificationMsg{
@@ -172,9 +173,9 @@ func TestHubModelCompletesLiveToolWithoutDuplicateMessage(t *testing.T) {
 	})
 
 	got := updated.(hubModel)
-	var tools []chatMessage
+	var tools []transcript.ChatMessage
 	for _, msg := range got.session.messages {
-		if msg.Kind == msgTool {
+		if msg.Kind == transcript.MsgTool {
 			tools = append(tools, msg)
 		}
 	}
@@ -212,7 +213,7 @@ func TestHubModelAppliesSteeringInjectedNotification(t *testing.T) {
 		t.Fatalf("messages=%+v", got.session.messages)
 	}
 	msg := got.session.messages[0]
-	if msg.Kind != msgSteering || msg.Text != "check the logs" || msg.Pending || msg.Failed {
+	if msg.Kind != transcript.MsgSteering || msg.Text != "check the logs" || msg.Pending || msg.Failed {
 		t.Fatalf("message=%+v, want authoritative steering", msg)
 	}
 }
@@ -288,7 +289,7 @@ func TestHubModelSurfacesStructuredWarningDiagnostic(t *testing.T) {
 	})
 
 	got := updated.(hubModel)
-	if len(got.session.messages) != 1 || got.session.messages[0].Kind != msgSystem || got.session.messages[0].Text != "Provider error: openai error (status=429): rate limited" {
+	if len(got.session.messages) != 1 || got.session.messages[0].Kind != transcript.MsgSystem || got.session.messages[0].Text != "Provider error: openai error (status=429): rate limited" {
 		t.Fatalf("messages=%+v", got.session.messages)
 	}
 }
@@ -326,16 +327,16 @@ func TestHubModelTurnCompletedAppliesSnapshotItems(t *testing.T) {
 	if len(got.session.messages) != 2 {
 		t.Fatalf("messages=%+v, want user and assistant snapshot items", got.session.messages)
 	}
-	if got.session.messages[0].Kind != msgUser || got.session.messages[0].Text != "hello" {
+	if got.session.messages[0].Kind != transcript.MsgUser || got.session.messages[0].Text != "hello" {
 		t.Fatalf("user message=%+v", got.session.messages[0])
 	}
-	if got.session.messages[1].Kind != msgAssistant || got.session.messages[1].Text != "done" {
+	if got.session.messages[1].Kind != transcript.MsgAssistant || got.session.messages[1].Text != "done" {
 		t.Fatalf("assistant message=%+v", got.session.messages[1])
 	}
 }
 
 func TestMessagesFromThreadIncludesFailedTurnDiagnostic(t *testing.T) {
-	messages := messagesFromThread(appwire.Thread{
+	messages := transcript.MessagesFromThread(appwire.Thread{
 		Turns: []appwire.Turn{{
 			ID:     "turn_1",
 			Status: appwire.TurnStatusFailed,
@@ -347,7 +348,7 @@ func TestMessagesFromThreadIncludesFailedTurnDiagnostic(t *testing.T) {
 		}},
 	})
 
-	if len(messages) != 1 || messages[0].Kind != msgSystem || messages[0].Text != "Serf configuration error: configuration error: unknown provider: openrouter" {
+	if len(messages) != 1 || messages[0].Kind != transcript.MsgSystem || messages[0].Text != "Serf configuration error: configuration error: unknown provider: openrouter" {
 		t.Fatalf("messages=%+v", messages)
 	}
 }
@@ -362,10 +363,10 @@ func TestHubThreadFixtureKeepsSplitToolResultsGrouped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	messages := messagesFromThread(thread)
-	var tools []toolCallInfo
+	messages := transcript.MessagesFromThread(thread)
+	var tools []transcript.ToolCallInfo
 	for _, msg := range messages {
-		if msg.Kind == msgTool && msg.Tool != nil {
+		if msg.Kind == transcript.MsgTool && msg.Tool != nil {
 			tools = append(tools, *msg.Tool)
 		}
 	}

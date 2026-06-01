@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
+	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/appwire/appwiretest"
 )
@@ -456,16 +457,16 @@ func TestPendingCoordinator_DispatchDoesNotDropBeyondFormerOutboxCap(t *testing.
 }
 
 func TestHubReducer_RendersPendingChatMessage(t *testing.T) {
-	r := newHubTranscriptReducer(nil, nil, nil)
+	r := transcript.NewTranscriptReducer(nil, nil, nil)
 
-	r.appendPendingSteering("look at this")
+	r.AppendPendingSteering("look at this")
 
-	if len(r.messages) != 1 {
-		t.Fatalf("expected 1 message, got %d", len(r.messages))
+	if len(r.Messages()) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(r.Messages()))
 	}
-	got := r.messages[0]
-	if got.Kind != msgSteering {
-		t.Fatalf("kind = %v, want msgSteering", got.Kind)
+	got := r.Messages()[0]
+	if got.Kind != transcript.MsgSteering {
+		t.Fatalf("kind = %v, want transcript.MsgSteering", got.Kind)
 	}
 	if !got.Pending {
 		t.Fatal("Pending should be true")
@@ -476,11 +477,11 @@ func TestHubReducer_RendersPendingChatMessage(t *testing.T) {
 }
 
 func TestHubReducer_MarksFailed(t *testing.T) {
-	r := newHubTranscriptReducer(nil, nil, nil)
-	r.appendPendingSteering("look at this")
-	r.markPendingFailed(r.messages[0].PendingID, "boom")
+	r := transcript.NewTranscriptReducer(nil, nil, nil)
+	r.AppendPendingSteering("look at this")
+	r.MarkPendingFailed(r.Messages()[0].PendingID, "boom")
 
-	got := r.messages[0]
+	got := r.Messages()[0]
 	if got.Pending {
 		t.Fatal("Pending should be false after fail")
 	}
@@ -493,30 +494,30 @@ func TestHubReducer_MarksFailed(t *testing.T) {
 }
 
 func TestHubReducer_RemovesPendingOnConfirm(t *testing.T) {
-	r := newHubTranscriptReducer(nil, nil, nil)
-	r.appendPendingSteering("look at this")
-	id := r.messages[0].PendingID
-	r.removePending(id)
-	if len(r.messages) != 0 {
+	r := transcript.NewTranscriptReducer(nil, nil, nil)
+	r.AppendPendingSteering("look at this")
+	id := r.Messages()[0].PendingID
+	r.RemovePending(id)
+	if len(r.Messages()) != 0 {
 		t.Fatal("confirmed entries should be removed; authoritative one renders separately")
 	}
 }
 
 func TestHubReducer_PendingUserConfirmPreservesAuthoritativeMetadata(t *testing.T) {
-	r := newHubTranscriptReducer(nil, nil, nil)
-	pendingID := r.appendPendingUser("ship it")
+	r := transcript.NewTranscriptReducer(nil, nil, nil)
+	pendingID := r.AppendPendingUser("ship it")
 
-	r.applyThreadItem(appwire.ThreadItem{
+	r.ApplyThreadItem(appwire.ThreadItem{
 		ID:   "item_user_1",
 		Type: "userMessage",
 		Text: "ship it",
 	}, 7, false)
-	r.removePending(pendingID)
+	r.RemovePending(pendingID)
 
-	if len(r.messages) != 1 {
-		t.Fatalf("messages=%d, want authoritative user row only", len(r.messages))
+	if len(r.Messages()) != 1 {
+		t.Fatalf("messages=%d, want authoritative user row only", len(r.Messages()))
 	}
-	got := r.messages[0]
+	got := r.Messages()[0]
 	if got.Pending || got.PendingID != 0 {
 		t.Fatalf("message still pending: %+v", got)
 	}

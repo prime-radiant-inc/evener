@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
@@ -34,7 +35,7 @@ func TestHubTUISampleCorpusCoversRequiredVariants(t *testing.T) {
 		t.Fatalf("codex readonly sample should preserve source label and unsupported actions: %+v", codex)
 	}
 
-	if len(corpus.TranscriptEvents) == 0 || !containsMessageKind(corpus.TranscriptEvents, msgTool) {
+	if len(corpus.TranscriptEvents) == 0 || !containsMessageKind(corpus.TranscriptEvents, transcript.MsgTool) {
 		t.Fatalf("transcript event samples must include tool grouping input: %+v", corpus.TranscriptEvents)
 	}
 	if len(corpus.Diagnostics) < 2 {
@@ -205,7 +206,7 @@ func hasLiveAndRecent(nodes []hubTreeNode) bool {
 	return live && recent
 }
 
-func containsMessageKind(messages []chatMessage, kind messageKind) bool {
+func containsMessageKind(messages []transcript.ChatMessage, kind transcript.MessageKind) bool {
 	for _, msg := range messages {
 		if msg.Kind == kind {
 			return true

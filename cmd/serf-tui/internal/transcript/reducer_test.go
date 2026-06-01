@@ -1,4 +1,4 @@
-package main
+package transcript
 
 import (
 	"reflect"
@@ -9,9 +9,9 @@ import (
 )
 
 func TestHubTranscriptReducerReconcilesUserEchoWithReplay(t *testing.T) {
-	reducer := newHubTranscriptReducer([]chatMessage{{Kind: msgUser, Text: "please inspect this"}}, nil, nil)
+	reducer := NewTranscriptReducer([]ChatMessage{{Kind: MsgUser, Text: "please inspect this"}}, nil, nil)
 
-	reducer.applyThreadItem(appwire.ThreadItem{
+	reducer.ApplyThreadItem(appwire.ThreadItem{
 		Type:   "userMessage",
 		ID:     "user_1",
 		TurnID: "turn_7",
@@ -21,15 +21,15 @@ func TestHubTranscriptReducerReconcilesUserEchoWithReplay(t *testing.T) {
 	if len(reducer.messages) != 1 {
 		t.Fatalf("expected replayed user message to reconcile with echo, got %+v", reducer.messages)
 	}
-	if reducer.messages[0].Kind != msgUser || reducer.messages[0].Text != "please inspect this" || reducer.messages[0].TurnIndex != 7 || reducer.messages[0].ItemID != "user_1" {
+	if reducer.messages[0].Kind != MsgUser || reducer.messages[0].Text != "please inspect this" || reducer.messages[0].TurnIndex != 7 || reducer.messages[0].ItemID != "user_1" {
 		t.Fatalf("reconciled user message = %+v", reducer.messages[0])
 	}
 }
 
 func TestHubTranscriptReducerKeepsImageOnlyUserMessage(t *testing.T) {
-	reducer := newHubTranscriptReducer(nil, nil, nil)
+	reducer := NewTranscriptReducer(nil, nil, nil)
 
-	reducer.applyThreadItem(appwire.ThreadItem{
+	reducer.ApplyThreadItem(appwire.ThreadItem{
 		Type: "userMessage",
 		ID:   "user_img",
 		Images: []appwire.InputItem{{
@@ -42,15 +42,15 @@ func TestHubTranscriptReducerKeepsImageOnlyUserMessage(t *testing.T) {
 	if len(reducer.messages) != 1 {
 		t.Fatalf("messages len=%d, want 1", len(reducer.messages))
 	}
-	if reducer.messages[0].Kind != msgUser || reducer.messages[0].Text != "[image]" || reducer.messages[0].TurnIndex != 3 {
+	if reducer.messages[0].Kind != MsgUser || reducer.messages[0].Text != "[image]" || reducer.messages[0].TurnIndex != 3 {
 		t.Fatalf("image-only user message = %+v", reducer.messages[0])
 	}
 }
 
 func TestHubTranscriptReducerRendersSystemMessage(t *testing.T) {
-	reducer := newHubTranscriptReducer(nil, nil, nil)
+	reducer := NewTranscriptReducer(nil, nil, nil)
 
-	reducer.applyThreadItem(appwire.ThreadItem{
+	reducer.ApplyThreadItem(appwire.ThreadItem{
 		Type:        "systemMessage",
 		ID:          "item_system_prompt",
 		TurnID:      "turn_system",
@@ -62,15 +62,15 @@ func TestHubTranscriptReducerRendersSystemMessage(t *testing.T) {
 		t.Fatalf("messages len=%d, want 1", len(reducer.messages))
 	}
 	msg := reducer.messages[0]
-	if msg.Kind != msgSystem || msg.Text != "System prompt\nYou are Serf." || msg.ItemID != "item_system_prompt" {
+	if msg.Kind != MsgSystem || msg.Text != "System prompt\nYou are Serf." || msg.ItemID != "item_system_prompt" {
 		t.Fatalf("system message = %+v", msg)
 	}
 }
 
 func TestHubTranscriptReducerRendersHookSystemMessageAsOneLine(t *testing.T) {
-	reducer := newHubTranscriptReducer(nil, nil, nil)
+	reducer := NewTranscriptReducer(nil, nil, nil)
 
-	reducer.applyThreadItem(appwire.ThreadItem{
+	reducer.ApplyThreadItem(appwire.ThreadItem{
 		Type:        "systemMessage",
 		ID:          "item_hook_1",
 		TurnID:      "turn_1",
@@ -82,13 +82,13 @@ func TestHubTranscriptReducerRendersHookSystemMessageAsOneLine(t *testing.T) {
 		t.Fatalf("messages len=%d, want 1", len(reducer.messages))
 	}
 	msg := reducer.messages[0]
-	if msg.Kind != msgSystem || msg.Text != "SessionStart hook superpowers using-superpowers command exit 0" || strings.Contains(msg.Text, "\n") {
+	if msg.Kind != MsgSystem || msg.Text != "SessionStart hook superpowers using-superpowers command exit 0" || strings.Contains(msg.Text, "\n") {
 		t.Fatalf("hook system message = %+v", msg)
 	}
 }
 
 func TestHubTranscriptReducerSuppressesReplayedCompletedTool(t *testing.T) {
-	reducer := newHubTranscriptReducer(nil, nil, nil)
+	reducer := NewTranscriptReducer(nil, nil, nil)
 	started := appwire.ThreadItem{
 		Type:          "commandExecution",
 		ID:            "tool_1",
@@ -102,13 +102,13 @@ func TestHubTranscriptReducerSuppressesReplayedCompletedTool(t *testing.T) {
 	completed.Output = "alpha\n"
 	completed.Status = "completed"
 
-	reducer.applyThreadItem(started, 1, false)
-	reducer.applyThreadItem(completed, 1, true)
-	reducer.applyThreadItem(completed, 1, false)
+	reducer.ApplyThreadItem(started, 1, false)
+	reducer.ApplyThreadItem(completed, 1, true)
+	reducer.ApplyThreadItem(completed, 1, false)
 
-	var tools []chatMessage
+	var tools []ChatMessage
 	for _, msg := range reducer.messages {
-		if msg.Kind == msgTool {
+		if msg.Kind == MsgTool {
 			tools = append(tools, msg)
 		}
 	}
@@ -121,7 +121,7 @@ func TestHubTranscriptReducerSuppressesReplayedCompletedTool(t *testing.T) {
 }
 
 func TestHubTranscriptReducerPairsTranscriptToolStartAndResultAcrossTurns(t *testing.T) {
-	reducer := newHubTranscriptReducer(nil, nil, nil)
+	reducer := NewTranscriptReducer(nil, nil, nil)
 	started := appwire.ThreadItem{
 		Type:          "commandExecution",
 		ID:            "tool_start",
@@ -141,8 +141,8 @@ func TestHubTranscriptReducerPairsTranscriptToolStartAndResultAcrossTurns(t *tes
 		Status:   appwire.TurnStatusCompleted,
 	}
 
-	reducer.applyThreadItem(started, 1, false)
-	reducer.applyThreadItem(completed, 2, true)
+	reducer.ApplyThreadItem(started, 1, false)
+	reducer.ApplyThreadItem(completed, 2, true)
 
 	tools := transcriptTools(reducer.messages)
 	if len(tools) != 1 {
@@ -157,15 +157,15 @@ func TestHubTranscriptReducerPairsTranscriptToolStartAndResultAcrossTurns(t *tes
 }
 
 func TestHubTranscriptReducerScopesItemIDReconciliationByTurn(t *testing.T) {
-	reducer := newHubTranscriptReducer(nil, nil, nil)
+	reducer := NewTranscriptReducer(nil, nil, nil)
 
-	reducer.applyThreadItem(appwire.ThreadItem{
+	reducer.ApplyThreadItem(appwire.ThreadItem{
 		Type:   "userMessage",
 		ID:     "item_reused",
 		TurnID: "turn_1",
 		Text:   "first",
 	}, 1, true)
-	reducer.applyThreadItem(appwire.ThreadItem{
+	reducer.ApplyThreadItem(appwire.ThreadItem{
 		Type:   "userMessage",
 		ID:     "item_reused",
 		TurnID: "turn_2",
@@ -181,15 +181,15 @@ func TestHubTranscriptReducerScopesItemIDReconciliationByTurn(t *testing.T) {
 }
 
 func TestHubTranscriptReducerScopesNonNumericTurnIDs(t *testing.T) {
-	reducer := newHubTranscriptReducer(nil, nil, nil)
+	reducer := NewTranscriptReducer(nil, nil, nil)
 
-	reducer.applyThreadItem(appwire.ThreadItem{
+	reducer.ApplyThreadItem(appwire.ThreadItem{
 		Type:   "agentMessage",
 		ID:     "assistant_reused",
 		TurnID: "turn_codex",
 		Text:   "first",
 	}, 0, true)
-	reducer.applyThreadItem(appwire.ThreadItem{
+	reducer.ApplyThreadItem(appwire.ThreadItem{
 		Type:   "agentMessage",
 		ID:     "assistant_reused",
 		TurnID: "turn_stream",
@@ -205,10 +205,10 @@ func TestHubTranscriptReducerScopesNonNumericTurnIDs(t *testing.T) {
 }
 
 func TestHubTranscriptReducerScopesAssistantDeltasByTurnID(t *testing.T) {
-	reducer := newHubTranscriptReducer(nil, nil, nil)
+	reducer := NewTranscriptReducer(nil, nil, nil)
 
-	reducer.applyAgentMessageDelta("turn_codex", "assistant_reused", "first")
-	reducer.applyAgentMessageDelta("turn_stream", "assistant_reused", "second")
+	reducer.ApplyAgentMessageDelta("turn_codex", "assistant_reused", "first")
+	reducer.ApplyAgentMessageDelta("turn_stream", "assistant_reused", "second")
 
 	if len(reducer.messages) != 2 {
 		t.Fatalf("messages=%+v, want separate delta-created assistant entries", reducer.messages)
@@ -245,19 +245,19 @@ func TestHubTranscriptReducerLiveAndReplayReconstructSameTranscript(t *testing.T
 		Status: "completed",
 	}
 
-	live := newHubTranscriptReducer(nil, nil, nil)
-	live.applyUserMessageEcho(user.Text)
-	live.applyThreadItem(user, 1, false)
-	live.applyAgentMessageDelta("turn_1", "agent_1", "Thinking **bo")
-	live.applyAgentMessageDelta("turn_1", "agent_1", "ld**")
-	live.applyThreadItem(toolStart, 1, false)
-	live.applyToolOutputDelta("tool_1", "alpha\n")
-	live.applyThreadItem(toolDone, 1, true)
-	live.applyThreadItem(assistantDone, 1, true)
+	live := NewTranscriptReducer(nil, nil, nil)
+	live.ApplyUserMessageEcho(user.Text)
+	live.ApplyThreadItem(user, 1, false)
+	live.ApplyAgentMessageDelta("turn_1", "agent_1", "Thinking **bo")
+	live.ApplyAgentMessageDelta("turn_1", "agent_1", "ld**")
+	live.ApplyThreadItem(toolStart, 1, false)
+	live.ApplyToolOutputDelta("tool_1", "alpha\n")
+	live.ApplyThreadItem(toolDone, 1, true)
+	live.ApplyThreadItem(assistantDone, 1, true)
 
-	replay := newHubTranscriptReducer(nil, nil, nil)
+	replay := NewTranscriptReducer(nil, nil, nil)
 	for _, item := range []appwire.ThreadItem{user, {Type: "agentMessage", ID: "agent_1", TurnID: "turn_1", Text: "Thinking **bold**\nDone.", Status: "completed"}, toolDone} {
-		replay.applyThreadItem(item, 1, item.Status == "completed")
+		replay.ApplyThreadItem(item, 1, item.Status == "completed")
 	}
 
 	if got, want := transcriptSnapshot(live.messages), transcriptSnapshot(replay.messages); !reflect.DeepEqual(got, want) {
@@ -266,10 +266,10 @@ func TestHubTranscriptReducerLiveAndReplayReconstructSameTranscript(t *testing.T
 }
 
 func TestHubTranscriptReducerToolOutputDeltaBeforeStartStaysInOneToolGroup(t *testing.T) {
-	reducer := newHubTranscriptReducer(nil, nil, nil)
+	reducer := NewTranscriptReducer(nil, nil, nil)
 
-	reducer.applyToolOutputDelta("tool_late", "first\n")
-	reducer.applyThreadItem(appwire.ThreadItem{
+	reducer.ApplyToolOutputDelta("tool_late", "first\n")
+	reducer.ApplyThreadItem(appwire.ThreadItem{
 		Type:          "commandExecution",
 		ID:            "tool_late",
 		CallID:        "call_late",
@@ -283,7 +283,7 @@ func TestHubTranscriptReducerToolOutputDeltaBeforeStartStaysInOneToolGroup(t *te
 		t.Fatalf("expected one tool group, got %+v", reducer.messages)
 	}
 	msg := reducer.messages[0]
-	if msg.Kind != msgTool || msg.ItemID != "tool_late" || msg.ToolCallID != "call_late" || msg.Tool == nil {
+	if msg.Kind != MsgTool || msg.ItemID != "tool_late" || msg.ToolCallID != "call_late" || msg.Tool == nil {
 		t.Fatalf("tool message = %+v", msg)
 	}
 	if msg.Tool.Name != "shell" || msg.Tool.Output != "first\n" || !msg.Tool.Done {
@@ -292,9 +292,9 @@ func TestHubTranscriptReducerToolOutputDeltaBeforeStartStaysInOneToolGroup(t *te
 }
 
 func TestHubTranscriptReducerPreservesSerfAndCodexToolShapes(t *testing.T) {
-	reducer := newHubTranscriptReducer(nil, nil, nil)
+	reducer := NewTranscriptReducer(nil, nil, nil)
 
-	reducer.applyThreadItem(appwire.ThreadItem{
+	reducer.ApplyThreadItem(appwire.ThreadItem{
 		Type:          "commandExecution",
 		ID:            "serf_tool",
 		CallID:        "serf_call",
@@ -304,7 +304,7 @@ func TestHubTranscriptReducerPreservesSerfAndCodexToolShapes(t *testing.T) {
 		Error:         "open /tmp/missing.go: no such file or directory",
 		Status:        "completed",
 	}, 1, true)
-	reducer.applyThreadItem(appwire.ThreadItem{
+	reducer.ApplyThreadItem(appwire.ThreadItem{
 		Type:          "commandExecution",
 		ID:            "codex_tool",
 		CallID:        "codex_tool",
@@ -328,7 +328,7 @@ func TestHubTranscriptReducerPreservesSerfAndCodexToolShapes(t *testing.T) {
 }
 
 type transcriptMessageSnapshot struct {
-	Kind       messageKind
+	Kind       MessageKind
 	Text       string
 	TurnIndex  int
 	ItemID     string
@@ -344,7 +344,7 @@ type toolInfoSnapshot struct {
 	Done        bool
 }
 
-func transcriptSnapshot(messages []chatMessage) []transcriptMessageSnapshot {
+func transcriptSnapshot(messages []ChatMessage) []transcriptMessageSnapshot {
 	out := make([]transcriptMessageSnapshot, 0, len(messages))
 	for _, msg := range messages {
 		snap := transcriptMessageSnapshot{
@@ -368,10 +368,10 @@ func transcriptSnapshot(messages []chatMessage) []transcriptMessageSnapshot {
 	return out
 }
 
-func transcriptTools(messages []chatMessage) []toolCallInfo {
-	var tools []toolCallInfo
+func transcriptTools(messages []ChatMessage) []ToolCallInfo {
+	var tools []ToolCallInfo
 	for _, msg := range messages {
-		if msg.Kind == msgTool && msg.Tool != nil {
+		if msg.Kind == MsgTool && msg.Tool != nil {
 			tools = append(tools, *msg.Tool)
 		}
 	}

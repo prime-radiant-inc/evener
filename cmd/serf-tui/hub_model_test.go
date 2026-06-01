@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmd/serf-tui/internal/hubstart"
 	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
+	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitext"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/internal/appserver"
@@ -650,7 +651,7 @@ func TestHubModelEndedSessionCanResumeOnSend(t *testing.T) {
 	m.mode = hubModeSession
 	m.detail = detail
 	m.session = newModel(nil)
-	m.session.messages = []chatMessage{{Kind: msgAssistant, Text: "finished transcript"}}
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgAssistant, Text: "finished transcript"}}
 
 	got := m.sessionView()
 	for _, unwanted := range []string{"read-only", "source does not support send"} {
@@ -771,9 +772,9 @@ func TestHubModelBrowseSelectionHighlightsSelectedMessage(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.width = 100
 	m.session.width = 100
-	m.session.messages = []chatMessage{
-		{Kind: msgUser, Text: "first request", TurnIndex: 1},
-		{Kind: msgAssistant, Text: "first response"},
+	m.session.messages = []transcript.ChatMessage{
+		{Kind: transcript.MsgUser, Text: "first request", TurnIndex: 1},
+		{Kind: transcript.MsgAssistant, Text: "first response"},
 	}
 	m.session.scrollMode = true
 	m.browseSelected = 0
@@ -798,7 +799,7 @@ func TestHubModelBrowsePageKeysScrollDisplayedLines(t *testing.T) {
 	m.session.width = 100
 	m.session.height = 12
 	for i := 1; i <= 16; i++ {
-		m.session.messages = append(m.session.messages, chatMessage{Kind: msgUser, Text: fmt.Sprintf("request %d", i), TurnIndex: i})
+		m.session.messages = append(m.session.messages, transcript.ChatMessage{Kind: transcript.MsgUser, Text: fmt.Sprintf("request %d", i), TurnIndex: i})
 	}
 	m.session.refreshViewport()
 	m.sessionView() // populate transcript viewport in compose mode before entering browse
@@ -835,7 +836,7 @@ func TestHubModelSessionBrowsePageUpShowsEarlierTranscript(t *testing.T) {
 	m.session.width = 100
 	m.session.height = 12
 	for i := 1; i <= 12; i++ {
-		m.session.messages = append(m.session.messages, chatMessage{Kind: msgUser, Text: fmt.Sprintf("request %02d", i), TurnIndex: i})
+		m.session.messages = append(m.session.messages, transcript.ChatMessage{Kind: transcript.MsgUser, Text: fmt.Sprintf("request %02d", i), TurnIndex: i})
 	}
 	m.session.refreshViewport()
 	initial := ansiPattern.ReplaceAllString(m.sessionView(), "")
@@ -885,7 +886,7 @@ func TestHubModelBrowseArrowKeysStayWithComposer(t *testing.T) {
 	m.height = 12
 	m.session.width = 100
 	m.session.height = 12
-	m.session.messages = []chatMessage{{Kind: msgUser, Text: "request", TurnIndex: 1}}
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgUser, Text: "request", TurnIndex: 1}}
 	m.session.setInputValue("abcd")
 	m.session.refreshViewport()
 	m.enterSessionBrowse(false)
@@ -917,7 +918,7 @@ func TestHubModelEscBrowseArrowKeysScrollTranscriptWhenComposerEmpty(t *testing.
 	m.session.width = 100
 	m.session.height = 12
 	for i := 1; i <= 12; i++ {
-		m.session.messages = append(m.session.messages, chatMessage{Kind: msgUser, Text: fmt.Sprintf("request %02d", i), TurnIndex: i})
+		m.session.messages = append(m.session.messages, transcript.ChatMessage{Kind: transcript.MsgUser, Text: fmt.Sprintf("request %02d", i), TurnIndex: i})
 	}
 	m.session.refreshViewport()
 	m.sessionView() // populate transcript viewport at bottom before Escape enters browse
@@ -951,7 +952,7 @@ func TestHubModelEscBrowseArrowKeysScrollTranscriptWhenComposerEmpty(t *testing.
 
 func TestHubModelBrowseUpDownUseComposerHistory(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.session.messages = []chatMessage{{Kind: msgUser, Text: "request", TurnIndex: 1}}
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgUser, Text: "request", TurnIndex: 1}}
 	m.session.history = []string{"first request", "second request"}
 	m.session.setInputValue("")
 	m.enterSessionBrowse(false)
@@ -976,7 +977,7 @@ func TestHubModelBrowseMouseWheelScrollsViewport(t *testing.T) {
 	m.session.width = 100
 	m.session.height = 12
 	for i := 1; i <= 12; i++ {
-		m.session.messages = append(m.session.messages, chatMessage{Kind: msgUser, Text: fmt.Sprintf("request %02d", i), TurnIndex: i})
+		m.session.messages = append(m.session.messages, transcript.ChatMessage{Kind: transcript.MsgUser, Text: fmt.Sprintf("request %02d", i), TurnIndex: i})
 	}
 	m.session.refreshViewport()
 	m.enterSessionBrowse(false)
@@ -1006,7 +1007,7 @@ func TestHubModelMouseWheelFromComposeEntersBrowseAndScrolls(t *testing.T) {
 	m.session.width = 100
 	m.session.height = 12
 	for i := 1; i <= 12; i++ {
-		m.session.messages = append(m.session.messages, chatMessage{Kind: msgUser, Text: fmt.Sprintf("request %02d", i), TurnIndex: i})
+		m.session.messages = append(m.session.messages, transcript.ChatMessage{Kind: transcript.MsgUser, Text: fmt.Sprintf("request %02d", i), TurnIndex: i})
 	}
 	m.session.refreshViewport()
 	m.sessionView() // sizes and fills the hub session viewport at the bottom
@@ -1034,7 +1035,7 @@ func TestHubModelBrowseKeepsComposerVisibleAndTyping(t *testing.T) {
 	m.height = 12
 	m.session.width = 100
 	m.session.height = 12
-	m.session.messages = []chatMessage{{Kind: msgUser, Text: "request", TurnIndex: 1}}
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgUser, Text: "request", TurnIndex: 1}}
 	m.enterSessionBrowse(false)
 
 	if view := ansiPattern.ReplaceAllString(m.sessionView(), ""); !strings.Contains(view, "> █") {
@@ -1058,11 +1059,11 @@ func TestHubModelBrowseCtrlTTogglesAllToolEntries(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.width = 100
 	m.session.width = 100
-	m.session.messages = []chatMessage{
-		{Kind: msgAssistant, Text: "before tool"},
+	m.session.messages = []transcript.ChatMessage{
+		{Kind: transcript.MsgAssistant, Text: "before tool"},
 		{
-			Kind: msgTool,
-			Tool: &toolCallInfo{
+			Kind: transcript.MsgTool,
+			Tool: &transcript.ToolCallInfo{
 				Name:        "shell",
 				Description: "run test",
 				Output:      "expanded output",
@@ -1070,10 +1071,10 @@ func TestHubModelBrowseCtrlTTogglesAllToolEntries(t *testing.T) {
 				Expanded:    false,
 			},
 		},
-		{Kind: msgAssistant, Text: "between tools"},
+		{Kind: transcript.MsgAssistant, Text: "between tools"},
 		{
-			Kind: msgTool,
-			Tool: &toolCallInfo{
+			Kind: transcript.MsgTool,
+			Tool: &transcript.ToolCallInfo{
 				Name:        "read_file",
 				Description: "inspect file",
 				Output:      "second expanded output",
@@ -1127,7 +1128,7 @@ func TestHubModelSessionBrowseExitKeysReturnToCompose(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newSessionHubModel(nil)
-			m.session.messages = []chatMessage{{Kind: msgUser, Text: "request", TurnIndex: 1}}
+			m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgUser, Text: "request", TurnIndex: 1}}
 			m.enterSessionBrowse(false)
 			updated, _ := m.Update(tc.msg)
 			got := updated.(hubModel)
@@ -2429,7 +2430,7 @@ func TestHubModelTasksAndDetailsUseAppWire(t *testing.T) {
 
 func TestHubModelSameSessionRefreshReplacesTranscript(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.session.messages = []chatMessage{{Kind: msgAssistant, Text: "stale transcript"}}
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgAssistant, Text: "stale transcript"}}
 	m.session.activeTools = map[string]int{"call_old": 0}
 	m.session.activeMessages = map[string]int{"item_old": 0}
 	m.browseSelected = 0
@@ -2441,7 +2442,7 @@ func TestHubModelSameSessionRefreshReplacesTranscript(t *testing.T) {
 			SessionID: "01SEND",
 			State:     appwire.ThreadStatusIdle,
 		},
-		messages: []chatMessage{{Kind: msgAssistant, Text: "fresh transcript"}},
+		messages: []transcript.ChatMessage{{Kind: transcript.MsgAssistant, Text: "fresh transcript"}},
 	})
 	got := updated.(hubModel)
 	if len(got.session.messages) != 1 || got.session.messages[0].Text != "fresh transcript" {
@@ -2458,7 +2459,7 @@ func TestHubModelSameSessionRefreshReplacesTranscript(t *testing.T) {
 func TestHubModelExpectedStatusRefreshDoesNotReplaceTranscript(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.State = appwire.ThreadStatusActive
-	m.session.messages = []chatMessage{{Kind: msgAssistant, Text: "live transcript"}}
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgAssistant, Text: "live transcript"}}
 
 	updated, _ := m.Update(hubSessionMsg{
 		ref:           "local:01SEND",
@@ -2468,7 +2469,7 @@ func TestHubModelExpectedStatusRefreshDoesNotReplaceTranscript(t *testing.T) {
 			SessionID: "01SEND",
 			State:     appwire.ThreadStatusActive,
 		},
-		messages: []chatMessage{{Kind: msgAssistant, Text: "status payload transcript"}},
+		messages: []transcript.ChatMessage{{Kind: transcript.MsgAssistant, Text: "status payload transcript"}},
 	})
 	got := updated.(hubModel)
 	if len(got.session.messages) != 1 || got.session.messages[0].Text != "live transcript" {
@@ -2591,7 +2592,7 @@ func TestHubModelStatusUsesHubThreadTasksAndAuth(t *testing.T) {
 
 func TestHubModelSessionPanelRendersAsCenteredModalOverlay(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.session.messages = []chatMessage{{Kind: msgCommunicate, Text: "main transcript answer"}}
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgCommunicate, Text: "main transcript answer"}}
 	panel := hubSessionPanel{Body: "details\nSession:  01SEND\nDir:      /tmp/project"}
 	m.sessionPanel = &panel
 
@@ -2618,7 +2619,7 @@ func TestHubModelSessionPanelBoundsLongTranscriptToVisibleShell(t *testing.T) {
 	m.width = 140
 	m.height = 18
 	for i := 0; i < 30; i++ {
-		m.session.messages = append(m.session.messages, chatMessage{Kind: msgCommunicate, Text: fmt.Sprintf("main transcript answer %02d", i)})
+		m.session.messages = append(m.session.messages, transcript.ChatMessage{Kind: transcript.MsgCommunicate, Text: fmt.Sprintf("main transcript answer %02d", i)})
 	}
 	m.sessionPanel = &hubSessionPanel{Body: "details\nSession:  01SEND\nDir:      /tmp/project"}
 
@@ -3026,10 +3027,10 @@ func TestHubModelIgnoresAsyncCompletionForDifferentSession(t *testing.T) {
 func TestHubModelSendErrorRemovesOptimisticUserEcho(t *testing.T) {
 	m := newSessionHubModel(nil)
 	reducer := m.sessionTranscriptReducer()
-	reducer.applyUserMessageEcho("ship it")
+	reducer.ApplyUserMessageEcho("ship it")
 	m.applySessionTranscriptReducer(reducer)
-	m.session.messages = append(m.session.messages, chatMessage{
-		Kind:      msgUser,
+	m.session.messages = append(m.session.messages, transcript.ChatMessage{
+		Kind:      transcript.MsgUser,
 		Text:      "ship it",
 		Failed:    true,
 		PendingID: 42,
@@ -3040,7 +3041,7 @@ func TestHubModelSendErrorRemovesOptimisticUserEcho(t *testing.T) {
 
 	failedRows := 0
 	for _, msg := range got.session.messages {
-		if msg.Kind != msgUser || msg.Text != "ship it" {
+		if msg.Kind != transcript.MsgUser || msg.Text != "ship it" {
 			continue
 		}
 		if msg.Failed && msg.PendingID == 42 {
@@ -3074,9 +3075,9 @@ func TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild(t *testing.T) {
 
 	m := newSessionHubModel(client)
 	m.detail.Capabilities.Fork = true
-	m.session.messages = []chatMessage{
-		{Kind: msgUser, Text: "original request", TurnIndex: 3},
-		{Kind: msgAssistant, Text: "answer"},
+	m.session.messages = []transcript.ChatMessage{
+		{Kind: transcript.MsgUser, Text: "original request", TurnIndex: 3},
+		{Kind: transcript.MsgAssistant, Text: "answer"},
 	}
 	m.session.scrollMode = true
 	m.browseSelected = 0
@@ -3118,7 +3119,7 @@ func TestHubModelBrowseForkDraftPostsForkAndNavigatesToChild(t *testing.T) {
 func TestHubModelBrowseForkRequiresUserTurnWithTurnIndex(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.Capabilities.Fork = true
-	m.session.messages = []chatMessage{{Kind: msgUser, Text: "not persisted"}}
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgUser, Text: "not persisted"}}
 	m.session.scrollMode = true
 	m.browseSelected = 0
 
@@ -3136,9 +3137,9 @@ func TestHubModelBrowseForkRequiresUserTurnWithTurnIndex(t *testing.T) {
 func TestHubModelBrowseForkRequiresSelectedUserMessage(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.Capabilities.Fork = true
-	m.session.messages = []chatMessage{
-		{Kind: msgAssistant, Text: "assistant answer"},
-		{Kind: msgUser, Text: "forkable request", TurnIndex: 1},
+	m.session.messages = []transcript.ChatMessage{
+		{Kind: transcript.MsgAssistant, Text: "assistant answer"},
+		{Kind: transcript.MsgUser, Text: "forkable request", TurnIndex: 1},
 	}
 	m.session.scrollMode = true
 	m.browseSelected = 0
@@ -3168,7 +3169,7 @@ func TestHubModelForkFailurePreservesDraftAndLabel(t *testing.T) {
 
 	m := newSessionHubModel(client)
 	m.detail.Capabilities.Fork = true
-	m.session.messages = []chatMessage{{Kind: msgUser, Text: "original request", TurnIndex: 3}}
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgUser, Text: "original request", TurnIndex: 3}}
 	m.session.scrollMode = true
 	m.browseSelected = 0
 
@@ -3354,9 +3355,9 @@ func TestHubModelSessionFooterShowsBrowseAndDashboardKeys(t *testing.T) {
 func TestHubModelForkCommandEntersBrowseMode(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.Capabilities.Fork = true
-	m.session.messages = []chatMessage{
-		{Kind: msgUser, Text: "original request", TurnIndex: 1},
-		{Kind: msgAssistant, Text: "answer", TurnIndex: 1},
+	m.session.messages = []transcript.ChatMessage{
+		{Kind: transcript.MsgUser, Text: "original request", TurnIndex: 1},
+		{Kind: transcript.MsgAssistant, Text: "answer", TurnIndex: 1},
 	}
 	m.session.refreshViewport()
 	m.session.setInputValue("/fork")

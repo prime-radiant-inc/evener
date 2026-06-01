@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -57,7 +58,7 @@ func TestHubModelLiveAgentCompletionUpdatesDeltaWithoutDuplicate(t *testing.T) {
 	got := updated.(hubModel)
 	assistantCount := 0
 	for _, msg := range got.session.messages {
-		if msg.Kind == msgAssistant {
+		if msg.Kind == transcript.MsgAssistant {
 			assistantCount++
 			if msg.Text != "partial **markdown** final" {
 				t.Fatalf("assistant text=%q, want final markdown text", msg.Text)
@@ -70,7 +71,7 @@ func TestHubModelLiveAgentCompletionUpdatesDeltaWithoutDuplicate(t *testing.T) {
 }
 
 func TestToolGroupRendersErrorResult(t *testing.T) {
-	got := renderToolCall(toolCallInfo{
+	got := renderToolCall(transcript.ToolCallInfo{
 		Name:        "read_file",
 		Description: "read missing file",
 		Error:       "open missing.go: no such file or directory",
@@ -89,11 +90,11 @@ func TestToolGroupRendersErrorResult(t *testing.T) {
 
 func TestHubModelBrowseSelectedToolRendersFocusedAndCtrlTToggles(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.session.messages = []chatMessage{
-		{Kind: msgAssistant, Text: "before tool"},
+	m.session.messages = []transcript.ChatMessage{
+		{Kind: transcript.MsgAssistant, Text: "before tool"},
 		{
-			Kind: msgTool,
-			Tool: &toolCallInfo{
+			Kind: transcript.MsgTool,
+			Tool: &transcript.ToolCallInfo{
 				Name:        "shell",
 				Description: "run test",
 				Output:      "ok",

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -48,7 +49,7 @@ func TestHubModelAgentsPickerReadsSelectedTranscriptThroughAppWire(t *testing.T)
 	defer cleanup()
 
 	m := newSessionHubModel(client)
-	m.session.messages = []chatMessage{{Kind: msgCommunicate, Text: "main answer"}}
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgCommunicate, Text: "main answer"}}
 	m.session.setInputValue("/agents")
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
@@ -107,7 +108,7 @@ func TestHubModelUnavailableAgentTranscriptKeepsParentSession(t *testing.T) {
 	defer cleanup()
 
 	m := newSessionHubModel(client)
-	m.session.messages = []chatMessage{{Kind: msgCommunicate, Text: "main answer"}}
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgCommunicate, Text: "main answer"}}
 	m.session.setInputValue("/agents")
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	updated, _ = updated.(hubModel).Update(cmd())
@@ -187,7 +188,7 @@ func TestHubModelAgentsPickerShowsCodexSourceAndLiveSubagent(t *testing.T) {
 	m.detail.Ref = "codex:01CODEX"
 	m.detail.SourceLabel = "codex"
 	m.session.sessionID = "01CODEX"
-	m.session.messages = []chatMessage{{Kind: msgCommunicate, Text: "main codex answer"}}
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgCommunicate, Text: "main codex answer"}}
 	m.session.setInputValue("/agents")
 	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {

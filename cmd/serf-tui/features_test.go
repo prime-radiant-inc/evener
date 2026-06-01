@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 )
 
 // ---------------------------------------------------------------------------
@@ -14,7 +15,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestRenderToolCall_Collapsed(t *testing.T) {
-	tc := toolCallInfo{
+	tc := transcript.ToolCallInfo{
 		Name:        "shell",
 		Description: "list files",
 		Expanded:    false,
@@ -38,7 +39,7 @@ func TestRenderToolCall_Collapsed(t *testing.T) {
 }
 
 func TestRenderToolCall_Expanded(t *testing.T) {
-	tc := toolCallInfo{
+	tc := transcript.ToolCallInfo{
 		Name:        "shell",
 		Description: "list files",
 		Detail:      "full args here",
@@ -61,7 +62,7 @@ func TestRenderToolCall_Expanded(t *testing.T) {
 }
 
 func TestRenderToolCall_FocusedChangesArrow(t *testing.T) {
-	tc := toolCallInfo{
+	tc := transcript.ToolCallInfo{
 		Name:        "shell",
 		Description: "list files",
 		Expanded:    false,
@@ -93,8 +94,8 @@ func TestRenderToolCall_FocusedChangesArrow(t *testing.T) {
 }
 
 func TestRenderToolCall_DoneVsInProgress(t *testing.T) {
-	done := toolCallInfo{Name: "x", Done: true, Duration: 1 * time.Second}
-	pending := toolCallInfo{Name: "x", Done: false}
+	done := transcript.ToolCallInfo{Name: "x", Done: true, Duration: 1 * time.Second}
+	pending := transcript.ToolCallInfo{Name: "x", Done: false}
 
 	doneOut := renderToolCall(done, 80, false)
 	pendingOut := renderToolCall(pending, 80, false)
@@ -211,7 +212,7 @@ func TestRenderTasks_WidthMinimum(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestToolIndices_Empty(t *testing.T) {
-	m := model{messages: []chatMessage{}}
+	m := model{messages: []transcript.ChatMessage{}}
 	indices := m.toolIndices()
 	if len(indices) != 0 {
 		t.Errorf("empty messages: got %d indices, want 0", len(indices))
@@ -220,23 +221,23 @@ func TestToolIndices_Empty(t *testing.T) {
 
 func TestToolIndices_MixedMessages(t *testing.T) {
 	m := model{
-		messages: []chatMessage{
-			{Kind: msgUser, Text: "hello"},
-			{Kind: msgTool, Tool: &toolCallInfo{Name: "shell"}},
-			{Kind: msgAssistant, Text: "thinking"},
-			{Kind: msgTool, Tool: &toolCallInfo{Name: "read_file"}},
-			{Kind: msgSystem, Text: "note"},
-			{Kind: msgTool, Tool: &toolCallInfo{Name: "write_file"}},
+		messages: []transcript.ChatMessage{
+			{Kind: transcript.MsgUser, Text: "hello"},
+			{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Name: "shell"}},
+			{Kind: transcript.MsgAssistant, Text: "thinking"},
+			{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Name: "read_file"}},
+			{Kind: transcript.MsgSystem, Text: "note"},
+			{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Name: "write_file"}},
 		},
 	}
 	indices := m.toolIndices()
 	if len(indices) != 3 {
 		t.Errorf("got %d tool indices, want 3: %v", len(indices), indices)
 	}
-	// Verify they point to msgTool messages
+	// Verify they point to transcript.MsgTool messages
 	for _, idx := range indices {
-		if m.messages[idx].Kind != msgTool {
-			t.Errorf("index %d is not a msgTool", idx)
+		if m.messages[idx].Kind != transcript.MsgTool {
+			t.Errorf("index %d is not a transcript.MsgTool", idx)
 		}
 	}
 	// Check order is preserved
@@ -247,9 +248,9 @@ func TestToolIndices_MixedMessages(t *testing.T) {
 
 func TestToolIndices_NoTools(t *testing.T) {
 	m := model{
-		messages: []chatMessage{
-			{Kind: msgUser, Text: "hello"},
-			{Kind: msgAssistant, Text: "thinking"},
+		messages: []transcript.ChatMessage{
+			{Kind: transcript.MsgUser, Text: "hello"},
+			{Kind: transcript.MsgAssistant, Text: "thinking"},
 		},
 	}
 	indices := m.toolIndices()
@@ -264,9 +265,9 @@ func TestToolIndices_NoTools(t *testing.T) {
 
 func TestFocusTool_InitialDown(t *testing.T) {
 	m := model{
-		messages: []chatMessage{
-			{Kind: msgTool, Tool: &toolCallInfo{Name: "a", Done: true}},
-			{Kind: msgTool, Tool: &toolCallInfo{Name: "b", Done: true}},
+		messages: []transcript.ChatMessage{
+			{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Name: "a", Done: true}},
+			{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Name: "b", Done: true}},
 		},
 		focusedToolIdx: -1,
 	}
@@ -279,10 +280,10 @@ func TestFocusTool_InitialDown(t *testing.T) {
 
 func TestFocusTool_UpDown(t *testing.T) {
 	m := model{
-		messages: []chatMessage{
-			{Kind: msgTool, Tool: &toolCallInfo{Name: "a", Done: true}},
-			{Kind: msgTool, Tool: &toolCallInfo{Name: "b", Done: true}},
-			{Kind: msgTool, Tool: &toolCallInfo{Name: "c", Done: true}},
+		messages: []transcript.ChatMessage{
+			{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Name: "a", Done: true}},
+			{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Name: "b", Done: true}},
+			{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Name: "c", Done: true}},
 		},
 		focusedToolIdx: 1, // pointing at "b"
 	}
@@ -317,8 +318,8 @@ func TestFocusTool_UpDown(t *testing.T) {
 
 func TestFocusTool_NoTools(t *testing.T) {
 	m := model{
-		messages: []chatMessage{
-			{Kind: msgUser, Text: "hello"},
+		messages: []transcript.ChatMessage{
+			{Kind: transcript.MsgUser, Text: "hello"},
 		},
 		focusedToolIdx: -1,
 	}
@@ -335,9 +336,9 @@ func TestFocusTool_NoTools(t *testing.T) {
 
 func TestIsToolFocused(t *testing.T) {
 	m := model{
-		messages: []chatMessage{
-			{Kind: msgTool, Tool: &toolCallInfo{Name: "a", Done: true}},
-			{Kind: msgTool, Tool: &toolCallInfo{Name: "b", Done: true}},
+		messages: []transcript.ChatMessage{
+			{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Name: "a", Done: true}},
+			{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Name: "b", Done: true}},
 		},
 		scrollMode:     true,
 		focusedToolIdx: 1,
@@ -353,8 +354,8 @@ func TestIsToolFocused(t *testing.T) {
 
 func TestIsToolFocused_NotInScrollMode(t *testing.T) {
 	m := model{
-		messages: []chatMessage{
-			{Kind: msgTool, Tool: &toolCallInfo{Name: "a", Done: true}},
+		messages: []transcript.ChatMessage{
+			{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Name: "a", Done: true}},
 		},
 		scrollMode:     false,
 		focusedToolIdx: 0,
@@ -371,9 +372,9 @@ func TestIsToolFocused_NotInScrollMode(t *testing.T) {
 
 func TestRenderMessage_PassesFocusedToTool(t *testing.T) {
 	// Test that renderMessage accepts focused parameter
-	msg := chatMessage{
-		Kind: msgTool,
-		Tool: &toolCallInfo{
+	msg := transcript.ChatMessage{
+		Kind: transcript.MsgTool,
+		Tool: &transcript.ToolCallInfo{
 			Name:        "test",
 			Description: "desc",
 			Expanded:    false,
@@ -433,7 +434,7 @@ func TestTaskType_Constants(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRenderToolCall_OutputHiddenWhenCollapsed(t *testing.T) {
-	tc := toolCallInfo{
+	tc := transcript.ToolCallInfo{
 		Name:        "shell",
 		Description: "short",
 		Output:      "LOTS OF OUTPUT THAT SHOULD BE HIDDEN",
@@ -454,7 +455,7 @@ func TestRenderToolCall_OutputHiddenWhenCollapsed(t *testing.T) {
 }
 
 func TestRenderToolCall_OutputShownWhenExpanded(t *testing.T) {
-	tc := toolCallInfo{
+	tc := transcript.ToolCallInfo{
 		Name:        "shell",
 		Description: "short",
 		Output:      "OUTPUT HERE",

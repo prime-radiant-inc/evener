@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/cmd/serf-tui/internal/modeldisplay"
+	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
@@ -217,7 +218,7 @@ func (m hubModel) renderSessionMainBody() string {
 			if m.transcriptView == nil && m.session.scrollMode && m.browseSelected == i {
 				rendered = renderSelectedMessage(rendered, true)
 			}
-			if prevRendered && msg.Kind == msgUser {
+			if prevRendered && msg.Kind == transcript.MsgUser {
 				rule := lipgloss.NewStyle().Foreground(tuitheme.ActiveTheme().RuleSoft).Render(strings.Repeat("┄", width))
 				b.WriteString(rule)
 				b.WriteString("\n")

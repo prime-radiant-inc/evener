@@ -3,10 +3,12 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 )
 
 func TestUserMessageGetsAccentBar(t *testing.T) {
-	msg := chatMessage{Kind: msgUser, Text: "Hello"}
+	msg := transcript.ChatMessage{Kind: transcript.MsgUser, Text: "Hello"}
 	got := renderMessage(msg, 80, false)
 	if !strings.Contains(got, "┃") {
 		t.Errorf("user message should carry ┃ bar: %q", got)
@@ -14,7 +16,7 @@ func TestUserMessageGetsAccentBar(t *testing.T) {
 }
 
 func TestAssistantMessageGetsStateBar(t *testing.T) {
-	msg := chatMessage{Kind: msgAssistant, Text: "Working on it"}
+	msg := transcript.ChatMessage{Kind: transcript.MsgAssistant, Text: "Working on it"}
 	got := renderMessage(msg, 80, false)
 	if !strings.Contains(got, "▍") {
 		t.Errorf("assistant message should carry ▍ bar: %q", got)
@@ -22,7 +24,7 @@ func TestAssistantMessageGetsStateBar(t *testing.T) {
 }
 
 func TestScrollBrowseFocusedTurnHasDoubleBar(t *testing.T) {
-	msg := chatMessage{Kind: msgUser, Text: "X"}
+	msg := transcript.ChatMessage{Kind: transcript.MsgUser, Text: "X"}
 	got := renderMessage(msg, 80, true)
 	if strings.Count(got, "┃") < 2 {
 		t.Errorf("focused user turn should have double-bar: %q", got)

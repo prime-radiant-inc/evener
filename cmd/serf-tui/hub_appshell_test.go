@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 )
 
@@ -18,7 +19,7 @@ func TestHubModelAppShellKeepsDashboardFooterUnderPaletteOverlay(t *testing.T) {
 
 func TestHubModelAppShellSessionTopBarAndComposerRegion(t *testing.T) {
 	m := newSessionHubModel(nil)
-	m.session.messages = []chatMessage{{Kind: msgAssistant, Text: "Ready for shell work."}}
+	m.session.messages = []transcript.ChatMessage{{Kind: transcript.MsgAssistant, Text: "Ready for shell work."}}
 
 	got := m.View()
 	requireOrderedText(t, got, "serf / session / send task", "Ready for shell work.", "> ")

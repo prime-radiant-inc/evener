@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmd/serf-tui/internal/toolsummary"
+	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/llm"
@@ -142,33 +143,7 @@ func isOrderedMarkdownListItem(line string) bool {
 	return i > 0 && i+1 < len(line) && line[i] == '.' && line[i+1] == ' '
 }
 
-type messageKind int
-
-const (
-	msgUser        messageKind = iota
-	msgAssistant               // LLM thinking/reasoning text
-	msgCommunicate             // agent's communicate output (the actual response)
-	msgTool
-	msgSystem
-	msgSteering // user-initiated steering placeholder + authoritative steering chip
-)
-
-type toolCallInfo struct {
-	Name        string
-	Description string // compact one-liner header
-	Detail      string // rich multi-line body shown when expanded
-	RawArgs     string // raw JSON arguments string; preferred over Description for arg parsing
-	Output      string
-	Error       string
-	Duration    time.Duration
-	Expanded    bool
-	Done        bool
-	Hidden      bool // suppress from display (e.g. communicate)
-}
-
-const toolCollapseThreshold = 5
-
-func renderMessage(msg chatMessage, width int, focused bool) string {
+func renderMessage(msg transcript.ChatMessage, width int, focused bool) string {
 	messageWidth := width
 	if focused {
 		messageWidth = max(1, width-2)
@@ -190,7 +165,7 @@ func renderMessage(msg chatMessage, width int, focused bool) string {
 	body := prefix + msg.Text + suffix
 
 	switch msg.Kind {
-	case msgUser:
+	case transcript.MsgUser:
 		th := tuitheme.ActiveTheme()
 		barClr := th.Accent
 		bar := lipgloss.NewStyle().Foreground(barClr).Render("┃")
@@ -199,7 +174,7 @@ func renderMessage(msg chatMessage, width int, focused bool) string {
 		}
 		rendered := tuitheme.UserBlockStyle.Width(max(1, messageWidth-lipgloss.Width(bar)-1)).Render("> " + body)
 		return bar + " " + rendered
-	case msgAssistant:
+	case transcript.MsgAssistant:
 		text := strings.TrimSpace(msg.Text)
 		if text == "" {
 			return ""
@@ -209,16 +184,16 @@ func renderMessage(msg chatMessage, width int, focused bool) string {
 		barW := lipgloss.Width(bar)
 		rendered := tuitheme.ThinkingStyle.Width(max(1, messageWidth-barW-1)).Render(renderMarkdown(text, max(1, messageWidth-barW-1)))
 		return bar + " " + renderSelectedMessage(rendered, focused)
-	case msgCommunicate:
+	case transcript.MsgCommunicate:
 		return renderSelectedMessage(tuitheme.CommunicateStyle.Width(messageWidth).Render(renderMarkdown(msg.Text, messageWidth)), focused)
-	case msgTool:
+	case transcript.MsgTool:
 		if msg.Tool == nil || msg.Tool.Hidden {
 			return ""
 		}
 		return renderToolCall(*msg.Tool, width, focused)
-	case msgSystem:
+	case transcript.MsgSystem:
 		return renderSelectedMessage(tuitheme.SystemStyle.Width(messageWidth).Render(body), focused)
-	case msgSteering:
+	case transcript.MsgSteering:
 		// Steering placeholder or authoritative chip. tuitheme.SystemStyle is the
 		// closest existing style; refine later if needed.
 		return renderSelectedMessage(tuitheme.SystemStyle.Width(messageWidth).Render("↻ "+body), focused)
@@ -235,7 +210,7 @@ func renderSelectedMessage(rendered string, focused bool) string {
 	return strings.Join(lines, "\n")
 }
 
-func renderToolCall(tc toolCallInfo, width int, focused bool) string {
+func renderToolCall(tc transcript.ToolCallInfo, width int, focused bool) string {
 	r, _ := lookupToolRenderer(tc.Name)
 	// Prefer RawArgs (populated from source ArgumentsJSON). Fall back to
 	// extracting JSON from Description for legacy paths where RawArgs is empty.
@@ -368,8 +343,8 @@ func indentBlock(s string, indent int) string {
 }
 
 // argsJSONFromDescription extracts the embedded JSON args from a
-// toolCallInfo.Description if present, else returns "".
-// The existing toolCallInfo.Description is a human summary or raw JSON.
+// transcript.ToolCallInfo.Description if present, else returns "".
+// The existing transcript.ToolCallInfo.Description is a human summary or raw JSON.
 // We detect JSON by checking if the string starts with '{'.
 func argsJSONFromDescription(s string) string {
 	trimmed := strings.TrimSpace(s)
@@ -408,33 +383,9 @@ func wrapText(text string, firstBudget, contBudget int) []string {
 	return lines
 }
 
-type chatMessage struct {
-	Kind       messageKind
-	Text       string
-	TurnID     string
-	TurnIndex  int
-	ItemID     string
-	ToolCallID string
-	Tool       *toolCallInfo
-
-	// PendingID is non-zero when this message is an optimistic placeholder
-	// created in response to a user click before the authoritative event
-	// arrives. It matches the PendingEntry.ID from the pending coordinator (pendingpkg).
-	PendingID int64
-	// Pending is true while the optimistic call is in flight. The renderer
-	// prefixes the row with a spinner glyph and dims the color while true.
-	Pending bool
-	// Failed is true if the optimistic call rejected or timed out without
-	// reconciling. Mutually exclusive with Pending. Renderer shows a red
-	// ✗ prefix and the Reason.
-	Failed bool
-	// Reason is the failure message when Failed is true.
-	Reason string
-}
-
 // historyToMessages converts session history turns into TUI chat messages
 // for display when resuming a session.
-func historyToMessages(turns []agent.Turn) []chatMessage {
+func historyToMessages(turns []agent.Turn) []transcript.ChatMessage {
 	// Collect tool results keyed by call ID for matching with tool calls.
 	toolResults := make(map[string]llm.ToolResultData)
 	for _, t := range turns {
@@ -448,13 +399,13 @@ func historyToMessages(turns []agent.Turn) []chatMessage {
 		}
 	}
 
-	var msgs []chatMessage
+	var msgs []transcript.ChatMessage
 	for _, t := range turns {
 		switch t.Kind {
 		case agent.TurnUserInput:
 			text := t.Message.Text()
 			if strings.TrimSpace(text) != "" {
-				msgs = append(msgs, chatMessage{Kind: msgUser, Text: text})
+				msgs = append(msgs, transcript.ChatMessage{Kind: transcript.MsgUser, Text: text})
 			}
 
 		case agent.TurnAssistant:
@@ -463,7 +414,7 @@ func historyToMessages(turns []agent.Turn) []chatMessage {
 				case llm.ContentText:
 					// Skip empty text (common in tool-only responses).
 					if strings.TrimSpace(p.Text) != "" {
-						msgs = append(msgs, chatMessage{Kind: msgAssistant, Text: p.Text})
+						msgs = append(msgs, transcript.ChatMessage{Kind: transcript.MsgAssistant, Text: p.Text})
 					}
 
 				case llm.ContentToolCall:
@@ -474,7 +425,7 @@ func historyToMessages(turns []agent.Turn) []chatMessage {
 					if tc.Name == "communicate" {
 						msg := extractCommunicate(tc)
 						if msg != "" {
-							msgs = append(msgs, chatMessage{Kind: msgCommunicate, Text: msg})
+							msgs = append(msgs, transcript.ChatMessage{Kind: transcript.MsgCommunicate, Text: msg})
 						}
 						continue
 					}
@@ -484,7 +435,7 @@ func historyToMessages(turns []agent.Turn) []chatMessage {
 					toolDesc, toolDetail := toolsummary.SummarizeTool(tc.Name, argsJSON)
 					result := toolResults[tc.ID]
 					output := fmt.Sprintf("%v", result.Content)
-					info := &toolCallInfo{
+					info := &transcript.ToolCallInfo{
 						Name:        tc.Name,
 						Description: toolDesc,
 						Detail:      toolDetail,
@@ -496,7 +447,7 @@ func historyToMessages(turns []agent.Turn) []chatMessage {
 					if result.IsError {
 						info.Error = output
 					}
-					msgs = append(msgs, chatMessage{Kind: msgTool, Tool: info})
+					msgs = append(msgs, transcript.ChatMessage{Kind: transcript.MsgTool, Tool: info})
 				}
 			}
 		}
