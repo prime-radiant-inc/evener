@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/msgrender"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -66,7 +67,7 @@ func (m *hubModel) returnToDashboard() {
 
 func (m hubModel) lastBrowseMessageIndex() int {
 	for i := len(m.session.messages) - 1; i >= 0; i-- {
-		if renderMessage(m.session.messages[i], max(m.width, 80), false) != "" {
+		if msgrender.RenderMessage(m.session.messages[i], max(m.width, 80), false) != "" {
 			return i
 		}
 	}
@@ -87,7 +88,7 @@ func (m *hubModel) moveBrowseSelection(delta int) {
 		if idx < 0 || idx >= len(m.session.messages) {
 			break
 		}
-		if renderMessage(m.session.messages[idx], max(m.width, 80), false) != "" {
+		if msgrender.RenderMessage(m.session.messages[idx], max(m.width, 80), false) != "" {
 			m.browseSelected = idx
 			m.session.scrollToMessage(idx)
 			return

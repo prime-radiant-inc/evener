@@ -1,4 +1,4 @@
-package main
+package msgrender
 
 import (
 	"strconv"
@@ -80,9 +80,9 @@ func TestSubagentBodyHandlesNarrowWidth(t *testing.T) {
 }
 
 func TestShellBodyHighlightsOutput(t *testing.T) {
-	got := shellBody(ToolArgs{"command": "ls"}, "file1.go\nfile2.go\nfile3.go", 60)
+	got := ShellBody(ToolArgs{"command": "ls"}, "file1.go\nfile2.go\nfile3.go", 60)
 	if got == "" {
-		t.Errorf("shellBody should return non-empty for non-empty output")
+		t.Errorf("ShellBody should return non-empty for non-empty output")
 	}
 }
 

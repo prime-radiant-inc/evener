@@ -1,4 +1,4 @@
-package main
+package msgrender
 
 import (
 	"bytes"
@@ -248,10 +248,10 @@ func subagentBody(args ToolArgs, output string, width int) string {
 	return styled
 }
 
-// shellBody renders shell command output, optionally with bash chroma highlighting.
+// ShellBody renders shell command output, optionally with bash chroma highlighting.
 // It prepends the command (from args) as a styled prompt line so that long or
 // multi-line commands are visible in the expanded view.
-func shellBody(args ToolArgs, output string, width int) string {
+func ShellBody(args ToolArgs, output string, width int) string {
 	var lines []string
 	if cmd := strings.TrimSpace(args.Str("command")); cmd != "" {
 		cmdStyled := lipgloss.NewStyle().Foreground(tuitheme.ActiveTheme().TextMuted).Render("$ " + cmd)

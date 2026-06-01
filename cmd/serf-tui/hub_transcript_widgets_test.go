@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/msgrender"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -71,7 +72,7 @@ func TestHubModelLiveAgentCompletionUpdatesDeltaWithoutDuplicate(t *testing.T) {
 }
 
 func TestToolGroupRendersErrorResult(t *testing.T) {
-	got := renderToolCall(transcript.ToolCallInfo{
+	got := msgrender.RenderToolCall(transcript.ToolCallInfo{
 		Name:        "read_file",
 		Description: "read missing file",
 		Error:       "open missing.go: no such file or directory",

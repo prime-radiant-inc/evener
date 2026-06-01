@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmd/serf-tui/internal/inputhistory"
+	"primeradiant.com/serf/cmd/serf-tui/internal/msgrender"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
@@ -142,7 +143,7 @@ func (m *model) scrollToMessage(msgIdx int) {
 	line := 0
 	for i, msg := range m.messages {
 		focused := m.isToolFocused(i)
-		rendered := renderMessage(msg, m.width, focused)
+		rendered := msgrender.RenderMessage(msg, m.width, focused)
 		if rendered == "" {
 			continue
 		}
@@ -214,7 +215,7 @@ func (m *model) refreshViewport() {
 	currentMessages := m.messages
 	for i, msg := range currentMessages {
 		focused := m.isToolFocused(i)
-		rendered := renderMessage(msg, m.width, focused)
+		rendered := msgrender.RenderMessage(msg, m.width, focused)
 		if rendered != "" {
 			lines = append(lines, rendered, "") // blank line between messages
 		}

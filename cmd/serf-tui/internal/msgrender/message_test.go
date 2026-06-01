@@ -1,4 +1,4 @@
-package main
+package msgrender
 
 import (
 	"encoding/json"
@@ -136,7 +136,7 @@ func TestRenderMessage_RendersAssistantMarkdown(t *testing.T) {
 		markdownRendererWidth = previousWidth
 	})
 
-	got := renderMessage(transcript.ChatMessage{Kind: transcript.MsgAssistant, Text: "**bold**\n\n- one"}, 80, false)
+	got := RenderMessage(transcript.ChatMessage{Kind: transcript.MsgAssistant, Text: "**bold**\n\n- one"}, 80, false)
 
 	if strings.Contains(got, "**bold**") || strings.Contains(got, "- one") {
 		t.Fatalf("assistant markdown rendered raw:\n%q", got)
@@ -147,7 +147,7 @@ func TestRenderMessage_RendersAssistantMarkdown(t *testing.T) {
 }
 
 func TestRenderMessage_KeepsPlainAssistantTextSearchable(t *testing.T) {
-	got := renderMessage(transcript.ChatMessage{Kind: transcript.MsgAssistant, Text: "main transcript answer"}, 80, false)
+	got := RenderMessage(transcript.ChatMessage{Kind: transcript.MsgAssistant, Text: "main transcript answer"}, 80, false)
 
 	if !strings.Contains(got, "main transcript answer") {
 		t.Fatalf("plain assistant text should remain contiguous:\n%q", got)
@@ -162,7 +162,7 @@ func TestRenderToolCallUsesRegistry(t *testing.T) {
 		Duration:    50 * time.Millisecond,
 		Done:        true,
 	}
-	got := renderToolCall(tc, 100, false)
+	got := RenderToolCall(tc, 100, false)
 	if !strings.Contains(got, "read") {
 		t.Errorf("output should include verb 'read': %q", got)
 	}
@@ -185,7 +185,7 @@ func TestRenderToolCallShowsPurposeAsFirstBodyLine(t *testing.T) {
 		Expanded: true,
 	}
 
-	got := renderToolCall(tc, 100, false)
+	got := RenderToolCall(tc, 100, false)
 	lines := strings.Split(got, "\n")
 	if len(lines) < 2 {
 		t.Fatalf("expected purpose body line under header, got %q", got)

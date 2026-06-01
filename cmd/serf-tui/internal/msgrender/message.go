@@ -1,4 +1,4 @@
-package main
+package msgrender
 
 import (
 	"encoding/json"
@@ -21,7 +21,7 @@ import (
 var markdownRenderer *glamour.TermRenderer
 var markdownRendererWidth int
 
-func initMarkdownRenderer(width int) {
+func InitMarkdownRenderer(width int) {
 	if width <= 0 {
 		width = 80
 	}
@@ -84,7 +84,7 @@ func renderMarkdown(text string, width int) string {
 		return text
 	}
 	if markdownRenderer == nil || markdownRendererWidth != width {
-		initMarkdownRenderer(width)
+		InitMarkdownRenderer(width)
 	}
 	if markdownRenderer == nil {
 		return text
@@ -143,7 +143,7 @@ func isOrderedMarkdownListItem(line string) bool {
 	return i > 0 && i+1 < len(line) && line[i] == '.' && line[i+1] == ' '
 }
 
-func renderMessage(msg transcript.ChatMessage, width int, focused bool) string {
+func RenderMessage(msg transcript.ChatMessage, width int, focused bool) string {
 	messageWidth := width
 	if focused {
 		messageWidth = max(1, width-2)
@@ -183,25 +183,25 @@ func renderMessage(msg transcript.ChatMessage, width int, focused bool) string {
 		bar := tuiprim.StateBar(th.StateProcessing)
 		barW := lipgloss.Width(bar)
 		rendered := tuitheme.ThinkingStyle.Width(max(1, messageWidth-barW-1)).Render(renderMarkdown(text, max(1, messageWidth-barW-1)))
-		return bar + " " + renderSelectedMessage(rendered, focused)
+		return bar + " " + RenderSelectedMessage(rendered, focused)
 	case transcript.MsgCommunicate:
-		return renderSelectedMessage(tuitheme.CommunicateStyle.Width(messageWidth).Render(renderMarkdown(msg.Text, messageWidth)), focused)
+		return RenderSelectedMessage(tuitheme.CommunicateStyle.Width(messageWidth).Render(renderMarkdown(msg.Text, messageWidth)), focused)
 	case transcript.MsgTool:
 		if msg.Tool == nil || msg.Tool.Hidden {
 			return ""
 		}
-		return renderToolCall(*msg.Tool, width, focused)
+		return RenderToolCall(*msg.Tool, width, focused)
 	case transcript.MsgSystem:
-		return renderSelectedMessage(tuitheme.SystemStyle.Width(messageWidth).Render(body), focused)
+		return RenderSelectedMessage(tuitheme.SystemStyle.Width(messageWidth).Render(body), focused)
 	case transcript.MsgSteering:
 		// Steering placeholder or authoritative chip. tuitheme.SystemStyle is the
 		// closest existing style; refine later if needed.
-		return renderSelectedMessage(tuitheme.SystemStyle.Width(messageWidth).Render("↻ "+body), focused)
+		return RenderSelectedMessage(tuitheme.SystemStyle.Width(messageWidth).Render("↻ "+body), focused)
 	}
 	return ""
 }
 
-func renderSelectedMessage(rendered string, focused bool) string {
+func RenderSelectedMessage(rendered string, focused bool) string {
 	if !focused || rendered == "" {
 		return rendered
 	}
@@ -210,7 +210,7 @@ func renderSelectedMessage(rendered string, focused bool) string {
 	return strings.Join(lines, "\n")
 }
 
-func renderToolCall(tc transcript.ToolCallInfo, width int, focused bool) string {
+func RenderToolCall(tc transcript.ToolCallInfo, width int, focused bool) string {
 	r, _ := lookupToolRenderer(tc.Name)
 	// Prefer RawArgs (populated from source ArgumentsJSON). Fall back to
 	// extracting JSON from Description for legacy paths where RawArgs is empty.

@@ -7,11 +7,12 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmd/serf-tui/internal/msgrender"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 )
 
 // ---------------------------------------------------------------------------
-// renderToolCall: focused parameter changes arrow character
+// msgrender.RenderToolCall: focused parameter changes arrow character
 // ---------------------------------------------------------------------------
 
 func TestRenderToolCall_Collapsed(t *testing.T) {
@@ -22,7 +23,7 @@ func TestRenderToolCall_Collapsed(t *testing.T) {
 		Done:        true,
 		Duration:    1 * time.Second,
 	}
-	out := renderToolCall(tc, 80, false)
+	out := msgrender.RenderToolCall(tc, 80, false)
 
 	// New format uses state bar ▍ and checkmark ✓
 	if !strings.Contains(out, "▍") {
@@ -48,16 +49,16 @@ func TestRenderToolCall_Expanded(t *testing.T) {
 		Done:        true,
 		Duration:    500 * time.Millisecond,
 	}
-	out := renderToolCall(tc, 80, false)
+	out := msgrender.RenderToolCall(tc, 80, false)
 
 	// New format: state bar ▍ and checkmark ✓ (no longer ▾ arrow)
 	if !strings.Contains(out, "▍") {
 		t.Errorf("expanded tool should show ▍ state bar, got: %s", out)
 	}
-	// Shell now has a Body renderer (shellBody) which renders Output via chroma.
+	// Shell now has a Body renderer (msgrender.ShellBody) which renders Output via chroma.
 	// Output content is shown (possibly ANSI-escaped); Detail is suppressed by Body.
 	if !strings.Contains(out, "file1.go") {
-		t.Errorf("expanded tool should show output via shellBody, got: %s", out)
+		t.Errorf("expanded tool should show output via msgrender.ShellBody, got: %s", out)
 	}
 }
 
@@ -71,18 +72,18 @@ func TestRenderToolCall_FocusedChangesArrow(t *testing.T) {
 	}
 
 	// Unfocused: single state bar ▍
-	unfocused := renderToolCall(tc, 80, false)
+	unfocused := msgrender.RenderToolCall(tc, 80, false)
 
 	// Focused: double state bar ▍▍ (tuiprim.FocusedStateBar)
 	tc.Expanded = false
-	focusedCollapsed := renderToolCall(tc, 80, true)
+	focusedCollapsed := msgrender.RenderToolCall(tc, 80, true)
 	// tuiprim.FocusedStateBar renders the glyph twice
 	if strings.Count(focusedCollapsed, "▍") < 2 {
 		t.Errorf("focused collapsed tool should show double ▍▍, got: %s", focusedCollapsed)
 	}
 
 	tc.Expanded = true
-	focusedExpanded := renderToolCall(tc, 80, true)
+	focusedExpanded := msgrender.RenderToolCall(tc, 80, true)
 	if strings.Count(focusedExpanded, "▍") < 2 {
 		t.Errorf("focused expanded tool should show double ▍▍, got: %s", focusedExpanded)
 	}
@@ -97,8 +98,8 @@ func TestRenderToolCall_DoneVsInProgress(t *testing.T) {
 	done := transcript.ToolCallInfo{Name: "x", Done: true, Duration: 1 * time.Second}
 	pending := transcript.ToolCallInfo{Name: "x", Done: false}
 
-	doneOut := renderToolCall(done, 80, false)
-	pendingOut := renderToolCall(pending, 80, false)
+	doneOut := msgrender.RenderToolCall(done, 80, false)
+	pendingOut := msgrender.RenderToolCall(pending, 80, false)
 
 	// Done shows duration (new format: "1.0s" not "[1.0s]")
 	if !strings.Contains(doneOut, "1.0s") {
@@ -367,11 +368,11 @@ func TestIsToolFocused_NotInScrollMode(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// renderMessage passes focused to renderToolCall
+// msgrender.RenderMessage passes focused to msgrender.RenderToolCall
 // ---------------------------------------------------------------------------
 
 func TestRenderMessage_PassesFocusedToTool(t *testing.T) {
-	// Test that renderMessage accepts focused parameter
+	// Test that msgrender.RenderMessage accepts focused parameter
 	msg := transcript.ChatMessage{
 		Kind: transcript.MsgTool,
 		Tool: &transcript.ToolCallInfo{
@@ -384,13 +385,13 @@ func TestRenderMessage_PassesFocusedToTool(t *testing.T) {
 	}
 
 	// Unfocused rendering: single state bar ▍
-	unfocused := renderMessage(msg, 80, false)
+	unfocused := msgrender.RenderMessage(msg, 80, false)
 	if !strings.Contains(unfocused, "▍") {
 		t.Errorf("unfocused should use ▍ state bar, got: %s", unfocused)
 	}
 
 	// Focused rendering: double state bar ▍▍
-	focused := renderMessage(msg, 80, true)
+	focused := msgrender.RenderMessage(msg, 80, true)
 	if strings.Count(focused, "▍") < 2 {
 		t.Errorf("focused should use double ▍▍ bar, got: %s", focused)
 	}
@@ -430,7 +431,7 @@ func TestTaskType_Constants(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// renderToolCall hides output when not expanded
+// msgrender.RenderToolCall hides output when not expanded
 // ---------------------------------------------------------------------------
 
 func TestRenderToolCall_OutputHiddenWhenCollapsed(t *testing.T) {
@@ -442,7 +443,7 @@ func TestRenderToolCall_OutputHiddenWhenCollapsed(t *testing.T) {
 		Done:        true,
 		Duration:    1 * time.Second,
 	}
-	out := renderToolCall(tc, 80, false)
+	out := msgrender.RenderToolCall(tc, 80, false)
 
 	// Output should not appear when collapsed
 	if strings.Contains(out, "LOTS OF OUTPUT") {
@@ -463,9 +464,9 @@ func TestRenderToolCall_OutputShownWhenExpanded(t *testing.T) {
 		Done:        true,
 		Duration:    1 * time.Second,
 	}
-	out := renderToolCall(tc, 80, false)
+	out := msgrender.RenderToolCall(tc, 80, false)
 
-	// shellBody renders output via chroma, which may split tokens across ANSI codes.
+	// msgrender.ShellBody renders output via chroma, which may split tokens across ANSI codes.
 	// Check for both words to confirm output is present.
 	if !strings.Contains(out, "OUTPUT") || !strings.Contains(out, "HERE") {
 		t.Errorf("expanded tool should show output, got: %s", out)

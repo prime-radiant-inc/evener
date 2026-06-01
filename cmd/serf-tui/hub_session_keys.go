@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/hubstart"
 	"primeradiant.com/serf/cmd/serf-tui/internal/inputhistory"
 	"primeradiant.com/serf/cmd/serf-tui/internal/launchconfig"
+	"primeradiant.com/serf/cmd/serf-tui/internal/msgrender"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -59,7 +60,7 @@ func (m hubModel) updateSessionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.sessionThemePicker = nil
 			if picker.selected != "" {
 				tuitheme.SetThemeAndPersist(m.stateDir, picker.selected)
-				initMarkdownRenderer(m.width)
+				msgrender.InitMarkdownRenderer(m.width)
 				m.session.viewport.Style = tuitheme.ViewportStyle
 				applyInputTheme(&m.session.input)
 				m.addSessionSystem(fmt.Sprintf("Switched to %s theme.", picker.selected))

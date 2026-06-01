@@ -1,4 +1,4 @@
-package main
+package msgrender
 
 import (
 	"encoding/json"
@@ -442,9 +442,9 @@ func init() {
 	spawnR.Body = subagentBody
 	toolRenderers["spawn_agent"] = spawnR
 
-	// Wave 6, task 6.5: wire shellBody + webSearchBody.
+	// Wave 6, task 6.5: wire ShellBody + webSearchBody.
 	shellR := toolRenderers["shell"]
-	shellR.Body = shellBody
+	shellR.Body = ShellBody
 	toolRenderers["shell"] = shellR
 	toolRenderers["exec_command"] = shellR
 	toolRenderers["run_shell_command"] = shellR
