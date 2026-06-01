@@ -19,6 +19,8 @@ type (
 	SessionEvent = events.SessionEvent
 	// EventKind re-exports events.EventKind.
 	EventKind = events.EventKind
+	// EventData re-exports the sealed events.EventData payload interface.
+	EventData = events.EventData
 )
 
 // Payload structs and their shared helper types.
