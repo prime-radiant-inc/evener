@@ -2,9 +2,13 @@ go 1.25.6
 
 use (
 	.
+	./agent
 	./auth
 	./llm
 )
 
 replace primeradiant.com/serf/auth v0.0.0 => ./auth
+
 replace primeradiant.com/serf/llm v0.0.0 => ./llm
+
+replace primeradiant.com/serf/agent v0.0.0 => ./agent

@@ -69,6 +69,7 @@ require (
 	modernc.org/libc v1.72.3 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
+	primeradiant.com/serf/agent v0.0.0
 	primeradiant.com/serf/auth v0.0.0
 	primeradiant.com/serf/llm v0.0.0
 )
