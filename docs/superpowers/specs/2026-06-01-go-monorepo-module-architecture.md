@@ -97,13 +97,17 @@ primeradiant.com/serf/                      (repo root)
 ## 6. The cross-cutting utilities (the only judgment calls)
 
 A few packages are used by a library **and** an app and so can't sit in app-side `internal/`.
-Each needs a one-line placement call, decided by verified usage:
+
+**DECIDED (Jesse): duplicate.** Each product that needs one of these small utils gets its own
+copy in its own `internal/` (agent keeps `agent/internal/{frontmatter,diagnostic}`; the hub/app
+gets its own copy under `cmd/<bin>/internal/`). This keeps every product self-contained with no
+inter-product util dependency.
 
 - **`frontmatter`** (generic YAML frontmatter parser) — used by `agent` (skills.go) and
-  `cmd/serf-hub`. Options: (a) its own tiny module both require; (b) fold into `agent`'s public
-  surface; (c) duplicate (it's small). Recommend (a) if it's reused elsewhere, else (b).
-- **`diagnostic`** — used by `agent` (diagnostics.go) and apps. Same options; if apps stop
-  needing it directly, it becomes `agent/internal/diagnostic`.
+  `cmd/serf-hub` → duplicate. **Caveat:** it's a parser the engine and the hub must *agree* on;
+  if the copies ever drift (the hub displaying skill metadata that differs from what the engine
+  loads), fold it into `agent`'s public surface instead (the apps already depend on `agent`).
+- **`diagnostic`** — used by `agent` (diagnostics.go) and apps → duplicate.
 - **`appwire` / `launchconfig` imported by `agent`'s *test*** (`session_fallback_test.go`) — a
   **layering violation**. Must be cut (rewrite the test against agent primitives) before the
   modules can compile, since a library module cannot depend on the app module.
