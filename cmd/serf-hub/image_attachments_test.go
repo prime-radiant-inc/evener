@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
@@ -80,9 +81,9 @@ func TestWeb_ApiSpawn_ForwardsImageItemsToThreadStart(t *testing.T) {
 	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
 	defer codexHTTP.Close()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID:       "codex",
 			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
@@ -192,13 +193,13 @@ func TestWeb_Send_ImageAttachmentsForwardedToDaemonStartTurn(t *testing.T) {
 		ThreadID:  "01SENDIMG",
 		SessionID: "01SENDIMG",
 	})
-	r := NewRoster(dir, fakeProber{sessionID: "01SENDIMG", status: appwire.ThreadStatusAwaiting})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01SENDIMG", status: appwire.ThreadStatusAwaiting})
 	r.Refresh()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  r,
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 	})
 
 	body := sendRequest{
@@ -296,13 +297,13 @@ func TestWeb_Send_ItemsShapeForwardedToDaemonStartTurn(t *testing.T) {
 		ThreadID:  "01SENDITEMS",
 		SessionID: "01SENDITEMS",
 	})
-	r := NewRoster(dir, fakeProber{sessionID: "01SENDITEMS", status: appwire.ThreadStatusAwaiting})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01SENDITEMS", status: appwire.ThreadStatusAwaiting})
 	r.Refresh()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  r,
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 	})
 
 	// Build the v80q wire body: prompt as text, plus an image item carrying
@@ -401,13 +402,13 @@ func TestWeb_Queue_ItemsShapeForwardedToDaemonQueueTurn(t *testing.T) {
 		ThreadID:  "01QUEUEITEMS",
 		SessionID: "01QUEUEITEMS",
 	})
-	r := NewRoster(dir, fakeProber{sessionID: "01QUEUEITEMS", status: "GENERATING"})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01QUEUEITEMS", status: "GENERATING"})
 	r.Refresh()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  r,
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 	})
 
 	reqBody := map[string]any{
@@ -516,13 +517,13 @@ func TestWeb_DrainAsSteer_ItemsShapeSendsAtomicDrain(t *testing.T) {
 		ThreadID:  "01DRAINITEMS",
 		SessionID: "01DRAINITEMS",
 	})
-	r := NewRoster(dir, fakeProber{sessionID: "01DRAINITEMS", status: "GENERATING"})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01DRAINITEMS", status: "GENERATING"})
 	r.Refresh()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  r,
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 	})
 
 	reqBody := map[string]any{

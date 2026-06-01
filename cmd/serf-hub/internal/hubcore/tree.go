@@ -1,4 +1,4 @@
-package main
+package hubcore
 
 import (
 	"fmt"
@@ -44,9 +44,9 @@ type TreeNode struct {
 	Children  []TreeNode
 }
 
-// attentionRank maps a state string to a sort key.
+// AttentionRank maps a state string to a sort key.
 // Higher rank = more attention needed. Sorted descending for live triage.
-func attentionRank(state string) int {
+func AttentionRank(state string) int {
 	switch state {
 	case "awaiting":
 		return 4
@@ -84,8 +84,8 @@ func rollupRank(state string) int {
 	}
 }
 
-// ageString formats a duration since t as a human-readable string.
-func ageString(t time.Time) string {
+// AgeString formats a duration since t as a human-readable string.
+func AgeString(t time.Time) string {
 	if t.IsZero() {
 		return ""
 	}
@@ -118,7 +118,7 @@ func projectName(m agent.SessionMeta) string {
 func nodeTitle(m agent.SessionMeta, kind string) string {
 	base := agent.SessionDisplayName(m)
 	if base == "" {
-		base = shortID(m.ID)
+		base = ShortID(m.ID)
 	}
 	if kind == "fork" && m.ForkLabel != "" {
 		return base + " · " + m.ForkLabel
@@ -126,17 +126,17 @@ func nodeTitle(m agent.SessionMeta, kind string) string {
 	return base
 }
 
-// shortID renders an unnamed session ID compactly.
-func shortID(id string) string {
+// ShortID renders an unnamed session ID compactly.
+func ShortID(id string) string {
 	if len(id) <= 14 {
 		return id
 	}
 	return "session " + id[len(id)-6:]
 }
 
-// normalizeState accepts Codex thread status terms and maps them to hub UI
+// NormalizeState accepts Codex thread status terms and maps them to hub UI
 // display states.
-func normalizeState(s string) string {
+func NormalizeState(s string) string {
 	switch s {
 	case "":
 		return "idle"
@@ -198,7 +198,7 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 	// stateFor resolves the display state for a session ID.
 	stateFor := func(id string) string {
 		if le, ok := liveMap[id]; ok {
-			return normalizeState(le.Status)
+			return NormalizeState(le.Status)
 		}
 		return "ended"
 	}
@@ -277,9 +277,9 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 				Branch:    m.EnvInfo.GitBranch,
 				State:     stateFor(m.ID),
 				Kind:      kind,
-				CreatedAt: orderCreatedAt(m.CreatedAt, m.UpdatedAt),
-				UpdatedAt: orderUpdatedAt(m.UpdatedAt, m.CreatedAt),
-				Age:       ageString(orderUpdatedAt(m.UpdatedAt, m.CreatedAt)),
+				CreatedAt: OrderCreatedAt(m.CreatedAt, m.UpdatedAt),
+				UpdatedAt: OrderUpdatedAt(m.UpdatedAt, m.CreatedAt),
+				Age:       AgeString(OrderUpdatedAt(m.UpdatedAt, m.CreatedAt)),
 			}
 
 			// Build children: subagents first, then forks, each sorted by UpdatedAt desc.
@@ -310,9 +310,9 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 					Project:   pname,
 					State:     stateFor(c.ID),
 					Kind:      "subagent",
-					CreatedAt: orderCreatedAt(c.CreatedAt, c.UpdatedAt),
-					UpdatedAt: orderUpdatedAt(c.UpdatedAt, c.CreatedAt),
-					Age:       ageString(orderUpdatedAt(c.UpdatedAt, c.CreatedAt)),
+					CreatedAt: OrderCreatedAt(c.CreatedAt, c.UpdatedAt),
+					UpdatedAt: OrderUpdatedAt(c.UpdatedAt, c.CreatedAt),
+					Age:       AgeString(OrderUpdatedAt(c.UpdatedAt, c.CreatedAt)),
 				})
 			}
 			for _, c := range forks {
@@ -322,9 +322,9 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 					Project:   pname,
 					State:     stateFor(c.ID),
 					Kind:      "fork",
-					CreatedAt: orderCreatedAt(c.CreatedAt, c.UpdatedAt),
-					UpdatedAt: orderUpdatedAt(c.UpdatedAt, c.CreatedAt),
-					Age:       ageString(orderUpdatedAt(c.UpdatedAt, c.CreatedAt)),
+					CreatedAt: OrderCreatedAt(c.CreatedAt, c.UpdatedAt),
+					UpdatedAt: OrderUpdatedAt(c.UpdatedAt, c.CreatedAt),
+					Age:       AgeString(OrderUpdatedAt(c.UpdatedAt, c.CreatedAt)),
 				})
 			}
 
@@ -386,19 +386,19 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 			node.Kind = kind
 			node.Title = nodeTitle(*meta, kind)
 			node.Project = projectName(*meta)
-			node.CreatedAt = orderCreatedAt(meta.CreatedAt, meta.UpdatedAt)
-			node.UpdatedAt = orderUpdatedAt(meta.UpdatedAt, meta.CreatedAt)
-			node.Age = ageString(node.UpdatedAt)
+			node.CreatedAt = OrderCreatedAt(meta.CreatedAt, meta.UpdatedAt)
+			node.UpdatedAt = OrderUpdatedAt(meta.UpdatedAt, meta.CreatedAt)
+			node.Age = AgeString(node.UpdatedAt)
 		} else {
-			node.Title = shortID(le.SessionID)
+			node.Title = ShortID(le.SessionID)
 			node.CreatedAt = le.StartedAt
 			node.UpdatedAt = le.StartedAt
-			node.Age = ageString(le.StartedAt)
+			node.Age = AgeString(le.StartedAt)
 		}
 		liveNodes = append(liveNodes, node)
 	}
 	sort.SliceStable(liveNodes, func(i, j int) bool {
-		ri, rj := attentionRank(liveNodes[i].State), attentionRank(liveNodes[j].State)
+		ri, rj := AttentionRank(liveNodes[i].State), AttentionRank(liveNodes[j].State)
 		if ri != rj {
 			return ri > rj
 		}

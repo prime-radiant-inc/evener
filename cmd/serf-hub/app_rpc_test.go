@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
@@ -38,13 +39,13 @@ func TestHubRPCThreadListUsesAppWireRendezvous(t *testing.T) {
 		ThreadID:  "th_1",
 		SessionID: "sess_1",
 	})
-	roster := NewRoster(runDir, nil)
+	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
 
-	hub := newHubRPCTestServer(t, WebConfig{
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		RunDir: runDir,
 		Roster: roster,
-		Past:   NewPastIndex(""),
+		Past:   hubcore.NewPastIndex(""),
 	})
 	defer hub.Close()
 
@@ -68,7 +69,7 @@ func TestHubRPCThreadListUsesAppWireRendezvous(t *testing.T) {
 }
 
 func TestHubRPCDoesNotAdvertiseUnsupportedTurnLists(t *testing.T) {
-	hub := newHubRPCTestServer(t, WebConfig{Past: NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 
 	client := dialHubRPC(t, hub)
@@ -85,11 +86,11 @@ func TestHubRPCDoesNotAdvertiseUnsupportedTurnLists(t *testing.T) {
 
 func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 	toolNames := map[string]string{}
-	items := appItemsFromReplayTurn("turn_1", 1, replayTurn{
+	items := appItemsFromReplayTurn("turn_1", 1, hubcore.ReplayTurn{
 		Kind: "ASSISTANT",
-		Message: replayMessage{Content: []replayPart{{
+		Message: hubcore.ReplayMessage{Content: []hubcore.ReplayPart{{
 			Kind: "tool_call",
-			ToolCall: &replayToolCall{
+			ToolCall: &hubcore.ReplayToolCall{
 				ID:        "call_1",
 				Name:      "communicate",
 				Arguments: []byte(`{"message":"done","await_reply":false}`),
@@ -101,11 +102,11 @@ func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 		t.Fatalf("communicate items=%+v", items)
 	}
 
-	results := appItemsFromReplayTurn("turn_2", 2, replayTurn{
+	results := appItemsFromReplayTurn("turn_2", 2, hubcore.ReplayTurn{
 		Kind: "TOOL_RESULTS",
-		Message: replayMessage{Content: []replayPart{{
+		Message: hubcore.ReplayMessage{Content: []hubcore.ReplayPart{{
 			Kind:       "tool_result",
-			ToolResult: &replayToolResult{ToolCallID: "call_1", Content: `{"accepted":true}`},
+			ToolResult: &hubcore.ReplayToolResult{ToolCallID: "call_1", Content: `{"accepted":true}`},
 		}}},
 	}, toolNames)
 	if len(results) != 0 {
@@ -114,11 +115,11 @@ func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
 }
 
 func TestAppItemsFromReplayTurnDoesNotAcceptLegacyToolCallKind(t *testing.T) {
-	items := appItemsFromReplayTurn("turn_1", 1, replayTurn{
+	items := appItemsFromReplayTurn("turn_1", 1, hubcore.ReplayTurn{
 		Kind: "ASSISTANT",
-		Message: replayMessage{Content: []replayPart{{
+		Message: hubcore.ReplayMessage{Content: []hubcore.ReplayPart{{
 			Kind: "commandExecution",
-			ToolCall: &replayToolCall{
+			ToolCall: &hubcore.ReplayToolCall{
 				ID:        "call_legacy",
 				Name:      "read_file",
 				Arguments: []byte(`{"file_path":"/tmp/example.txt"}`),
@@ -133,11 +134,11 @@ func TestAppItemsFromReplayTurnDoesNotAcceptLegacyToolCallKind(t *testing.T) {
 
 func TestAppItemsFromReplayTurnAcceptsCurrentToolCallKind(t *testing.T) {
 	toolNames := map[string]string{}
-	items := appItemsFromReplayTurn("turn_1", 1, replayTurn{
+	items := appItemsFromReplayTurn("turn_1", 1, hubcore.ReplayTurn{
 		Kind: "ASSISTANT",
-		Message: replayMessage{Content: []replayPart{{
+		Message: hubcore.ReplayMessage{Content: []hubcore.ReplayPart{{
 			Kind: "tool_call",
-			ToolCall: &replayToolCall{
+			ToolCall: &hubcore.ReplayToolCall{
 				ID:        "call_read",
 				Name:      "read_file",
 				Arguments: []byte(`{"file_path":"/tmp/example.txt","purpose":"Inspect example output."}`),
@@ -157,11 +158,11 @@ func TestAppItemsFromReplayTurnAcceptsCurrentToolCallKind(t *testing.T) {
 
 func TestAppItemsFromReplayTurnSteeringCarriesImageMetadata(t *testing.T) {
 	img := []byte("png")
-	items := appItemsFromReplayTurn("turn_3", 3, replayTurn{
+	items := appItemsFromReplayTurn("turn_3", 3, hubcore.ReplayTurn{
 		Kind: "STEERING",
-		Message: replayMessage{Content: []replayPart{{
+		Message: hubcore.ReplayMessage{Content: []hubcore.ReplayPart{{
 			Kind: "image",
-			Image: &replayImage{
+			Image: &hubcore.ReplayImage{
 				Data:      img,
 				MediaType: "image/png",
 				Name:      "steer.png",
@@ -182,9 +183,9 @@ func TestAppItemsFromReplayTurnSteeringCarriesImageMetadata(t *testing.T) {
 }
 
 func TestAppItemsFromReplayTurnIncludesCompactionTurns(t *testing.T) {
-	checkpoint := appItemsFromReplayTurn("turn_4", 4, replayTurn{
+	checkpoint := appItemsFromReplayTurn("turn_4", 4, hubcore.ReplayTurn{
 		Kind:    "CHECKPOINT",
-		Message: replayMessage{Content: []replayPart{{Kind: "text", Text: "[CONTEXT CHECKPOINT]\nfirst compacted state"}}},
+		Message: hubcore.ReplayMessage{Content: []hubcore.ReplayPart{{Kind: "text", Text: "[CONTEXT CHECKPOINT]\nfirst compacted state"}}},
 	}, map[string]string{})
 	if len(checkpoint) != 1 {
 		t.Fatalf("checkpoint items=%+v", checkpoint)
@@ -193,9 +194,9 @@ func TestAppItemsFromReplayTurnIncludesCompactionTurns(t *testing.T) {
 		t.Fatalf("checkpoint item=%+v", got)
 	}
 
-	summary := appItemsFromReplayTurn("turn_5", 5, replayTurn{
+	summary := appItemsFromReplayTurn("turn_5", 5, hubcore.ReplayTurn{
 		Kind:    "SUMMARY",
-		Message: replayMessage{Content: []replayPart{{Kind: "text", Text: "[CONTEXT SUMMARY]\nsecond compacted state"}}},
+		Message: hubcore.ReplayMessage{Content: []hubcore.ReplayPart{{Kind: "text", Text: "[CONTEXT SUMMARY]\nsecond compacted state"}}},
 	}, map[string]string{})
 	if len(summary) != 1 {
 		t.Fatalf("summary items=%+v", summary)
@@ -215,13 +216,13 @@ func TestHubRPCThreadListUsesRosterStatusAndSessionID(t *testing.T) {
 		ThreadID:  "01OLD",
 		SessionID: "01OLD",
 	})
-	roster := NewRoster(runDir, fakeProber{sessionID: "01NEW", status: appwire.ThreadStatusAwaiting})
+	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: "01NEW", status: appwire.ThreadStatusAwaiting})
 	roster.Refresh()
 
-	hub := newHubRPCTestServer(t, WebConfig{
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		RunDir: runDir,
 		Roster: roster,
-		Past:   NewPastIndex(""),
+		Past:   hubcore.NewPastIndex(""),
 	})
 	defer hub.Close()
 
@@ -251,11 +252,11 @@ func TestHubRPCThreadListIncludesPastThreads(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "past")
 	sessionID := buildRPCParentSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	hub := newHubRPCTestServer(t, WebConfig{Past: past})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -294,7 +295,7 @@ func TestHubRPCThreadListOrdersLiveThreadsDeterministically(t *testing.T) {
 		StartedAt: base,
 	})
 
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Past: NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -340,7 +341,7 @@ func TestHubThreadListIncludesEveryRegisteredSource(t *testing.T) {
 	sources.Add(appsource.NewLocalDaemonSource("local", func() []rendezvous.Entry { return entries }, nil))
 	sources.Add(appsource.NewLocalDaemonSource("codex", func() []rendezvous.Entry { return entries }, nil))
 
-	resp, err := hubThreadList(context.Background(), WebConfig{Past: NewPastIndex("")}, sources, appwire.ThreadListParams{})
+	resp, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, sources, appwire.ThreadListParams{})
 	if err != nil {
 		t.Fatalf("hubThreadList: %v", err)
 	}
@@ -355,8 +356,8 @@ func TestHubThreadListIncludesEveryRegisteredSource(t *testing.T) {
 func TestHubThreadListIncludesManagedCodexLaunchThreads(t *testing.T) {
 	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
-	cfg := WebConfig{
-		Past:          NewPastIndex(""),
+	cfg := hubcore.WebConfig{
+		Past:          hubcore.NewPastIndex(""),
 		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	}
@@ -377,8 +378,8 @@ func TestHubThreadListIncludesManagedCodexLaunchThreads(t *testing.T) {
 func TestHubThreadListDoesNotLaunchManagedCodexOutsideSourceFilter(t *testing.T) {
 	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
-	cfg := WebConfig{
-		Past:          NewPastIndex(""),
+	cfg := hubcore.WebConfig{
+		Past:          hubcore.NewPastIndex(""),
 		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	}
@@ -408,8 +409,8 @@ func TestHubThreadListDoesNotLaunchManagedCodexOutsideSourceFilter(t *testing.T)
 func TestHubThreadListReturnsManagedCodexLaunchErrorWhenSelectedSourceFails(t *testing.T) {
 	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "exit")})
 	defer shutdownCodexLauncher(t, launcher)
-	cfg := WebConfig{
-		Past:          NewPastIndex(""),
+	cfg := hubcore.WebConfig{
+		Past:          hubcore.NewPastIndex(""),
 		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "exit")},
 		CodexLauncher: launcher,
 	}
@@ -432,7 +433,7 @@ func TestHubThreadListContinuesWhenOptionalSourceFails(t *testing.T) {
 	sources.Add(&listThreadSource{id: "local", thread: localThread})
 	sources.Add(&listThreadSource{id: "codex", listErr: errors.New("codex offline")})
 
-	resp, err := hubThreadList(context.Background(), WebConfig{Past: NewPastIndex("")}, sources, appwire.ThreadListParams{})
+	resp, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, sources, appwire.ThreadListParams{})
 	if err != nil {
 		t.Fatalf("hubThreadList: %v", err)
 	}
@@ -445,7 +446,7 @@ func TestHubThreadListReturnsErrorWhenOnlySelectedSourceFails(t *testing.T) {
 	sources := appsource.NewRegistry()
 	sources.Add(&listThreadSource{id: "codex", listErr: errors.New("codex offline")})
 
-	_, err := hubThreadList(context.Background(), WebConfig{Past: NewPastIndex("")}, sources, appwire.ThreadListParams{SourceIDs: []string{"codex"}})
+	_, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, sources, appwire.ThreadListParams{SourceIDs: []string{"codex"}})
 	if err == nil || !strings.Contains(err.Error(), "codex offline") {
 		t.Fatalf("hubThreadList error=%v, want codex offline", err)
 	}
@@ -464,14 +465,14 @@ func TestHubThreadListReturnsErrorWhenAnySelectedSourceFails(t *testing.T) {
 	sources.Add(&listThreadSource{id: "local", thread: localThread})
 	sources.Add(&listThreadSource{id: "codex", listErr: errors.New("codex offline")})
 
-	_, err := hubThreadList(context.Background(), WebConfig{Past: NewPastIndex("")}, sources, appwire.ThreadListParams{SourceIDs: []string{"local", "codex"}})
+	_, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, sources, appwire.ThreadListParams{SourceIDs: []string{"local", "codex"}})
 	if err == nil || !strings.Contains(err.Error(), "codex offline") {
 		t.Fatalf("hubThreadList error=%v, want codex offline", err)
 	}
 }
 
 func TestNewHubSourceRegistryAddsConfiguredCodexSources(t *testing.T) {
-	sources := newHubSourceRegistry(WebConfig{
+	sources := newHubSourceRegistry(hubcore.WebConfig{
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID:       "codex-local",
 			Endpoint: "ws://127.0.0.1:9900",
@@ -504,13 +505,13 @@ func TestHubThreadListOrdersPastSearchByUpdatedCreatedTitleAndID(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	sources := appsource.NewRegistry()
 
-	resp, err := hubThreadList(context.Background(), WebConfig{Past: past}, sources, appwire.ThreadListParams{SearchTerm: "task"})
+	resp, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: past}, sources, appwire.ThreadListParams{SearchTerm: "task"})
 	if err != nil {
 		t.Fatalf("hubThreadList: %v", err)
 	}
@@ -543,7 +544,7 @@ func TestHubThreadListSearchMatchesProviderOnlyProfile(t *testing.T) {
 		},
 	}})
 
-	resp, err := hubThreadList(context.Background(), WebConfig{Past: NewPastIndex("")}, sources, appwire.ThreadListParams{SearchTerm: "openai"})
+	resp, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, sources, appwire.ThreadListParams{SearchTerm: "openai"})
 	if err != nil {
 		t.Fatalf("hubThreadList: %v", err)
 	}
@@ -589,13 +590,13 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 		SessionID: "01LIVE",
 		StartedAt: liveStarted,
 	})
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	sources := newHubSourceRegistry(WebConfig{RunDir: runDir})
+	sources := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
 
-	resp, err := hubThreadList(context.Background(), WebConfig{Past: past}, sources, appwire.ThreadListParams{})
+	resp, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: past}, sources, appwire.ThreadListParams{})
 	if err != nil {
 		t.Fatalf("hubThreadList: %v", err)
 	}
@@ -630,13 +631,13 @@ func TestHubRPCThreadReadRoutesToDaemon(t *testing.T) {
 		ThreadID:  "th_1",
 		SessionID: "sess_1",
 	})
-	roster := NewRoster(runDir, nil)
+	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
 
-	hub := newHubRPCTestServer(t, WebConfig{
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		RunDir: runDir,
 		Roster: roster,
-		Past:   NewPastIndex(""),
+		Past:   hubcore.NewPastIndex(""),
 	})
 	defer hub.Close()
 
@@ -659,11 +660,11 @@ func TestHubRPCThreadReadReturnsPastTranscript(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "past")
 	sessionID := buildRPCParentSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	hub := newHubRPCTestServer(t, WebConfig{Past: past})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -748,11 +749,11 @@ func TestHubRPCThreadReadIncludesTranscriptPrelude(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	hub := newHubRPCTestServer(t, WebConfig{Past: past})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -786,11 +787,11 @@ func TestHubRPCThreadReadIncludesAPICallErrorAsFailedTurn(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "failed")
 	sessionID := buildRPCFailedSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	hub := newHubRPCTestServer(t, WebConfig{Past: past})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -818,11 +819,11 @@ func TestHubRPCThreadReadUsesStructuredAPICallDiagnostic(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "failed")
 	sessionID := buildRPCStructuredFailedSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	hub := newHubRPCTestServer(t, WebConfig{Past: past})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -850,7 +851,7 @@ func TestSanitizeStaleProcessingStatusFlipsFailedAPICallToError(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "stuck")
 	sessionID := buildRPCFailedSession(t, stateDir) // tail = api_call with Error
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -861,7 +862,7 @@ func TestSanitizeStaleProcessingStatusFlipsFailedAPICallToError(t *testing.T) {
 		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 		Serf:      appwire.SerfThread{Ref: "local:" + sessionID},
 	}
-	out := sanitizeStaleProcessingStatus(WebConfig{Past: past}, thread)
+	out := sanitizeStaleProcessingStatus(hubcore.WebConfig{Past: past}, thread)
 	if out.Status.Type != appwire.ThreadStatusSystemError {
 		t.Fatalf("status=%q want=%q", out.Status.Type, appwire.ThreadStatusSystemError)
 	}
@@ -875,7 +876,7 @@ func TestSanitizeStaleProcessingStatusLeavesCompletedAssistantTailAlone(t *testi
 	// ASSISTANT turn so the tail is a successful assistant message.
 	transcriptPath := filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl")
 	appendAssistantToTranscript(t, transcriptPath)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -886,7 +887,7 @@ func TestSanitizeStaleProcessingStatusLeavesCompletedAssistantTailAlone(t *testi
 		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 		Serf:      appwire.SerfThread{Ref: "local:" + sessionID},
 	}
-	out := sanitizeStaleProcessingStatus(WebConfig{Past: past}, thread)
+	out := sanitizeStaleProcessingStatus(hubcore.WebConfig{Past: past}, thread)
 	if out.Status.Type != appwire.ThreadStatusActive {
 		t.Fatalf("status=%q want=%q (mid-tool processing must be preserved)", out.Status.Type, appwire.ThreadStatusActive)
 	}
@@ -898,7 +899,7 @@ func TestSanitizeStaleProcessingStatusLeavesUserInputTailAlone(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "userin")
 	sessionID := buildRPCParentSession(t, stateDir) // tail is USER_INPUT
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -909,7 +910,7 @@ func TestSanitizeStaleProcessingStatusLeavesUserInputTailAlone(t *testing.T) {
 		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 		Serf:      appwire.SerfThread{Ref: "local:" + sessionID},
 	}
-	out := sanitizeStaleProcessingStatus(WebConfig{Past: past}, thread)
+	out := sanitizeStaleProcessingStatus(hubcore.WebConfig{Past: past}, thread)
 	if out.Status.Type != appwire.ThreadStatusActive {
 		t.Fatalf("status=%q want=%q (USER_INPUT tail is not a stuck signal)", out.Status.Type, appwire.ThreadStatusActive)
 	}
@@ -919,7 +920,7 @@ func TestSanitizeStaleProcessingStatusIgnoresNonLocalSources(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "codex")
 	sessionID := buildRPCFailedSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -930,7 +931,7 @@ func TestSanitizeStaleProcessingStatusIgnoresNonLocalSources(t *testing.T) {
 		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 		Serf:      appwire.SerfThread{Ref: "codex:" + sessionID},
 	}
-	out := sanitizeStaleProcessingStatus(WebConfig{Past: past}, thread)
+	out := sanitizeStaleProcessingStatus(hubcore.WebConfig{Past: past}, thread)
 	if out.Status.Type != appwire.ThreadStatusActive {
 		t.Fatalf("status=%q want=%q (only local sessions get the override)", out.Status.Type, appwire.ThreadStatusActive)
 	}
@@ -940,7 +941,7 @@ func TestSanitizeStaleProcessingStatusLeavesNonProcessingAlone(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "idle")
 	sessionID := buildRPCFailedSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -954,7 +955,7 @@ func TestSanitizeStaleProcessingStatusLeavesNonProcessingAlone(t *testing.T) {
 			Status:    appwire.ThreadStatus{Type: status},
 			Serf:      appwire.SerfThread{Ref: "local:" + sessionID},
 		}
-		out := sanitizeStaleProcessingStatus(WebConfig{Past: past}, thread)
+		out := sanitizeStaleProcessingStatus(hubcore.WebConfig{Past: past}, thread)
 		if out.Status.Type != status {
 			t.Fatalf("status %q overwritten to %q", status, out.Status.Type)
 		}
@@ -968,7 +969,7 @@ func TestHubRPCThreadReadFlipsStuckProcessingToError(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "stuck")
 	sessionID := buildRPCFailedSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -995,10 +996,10 @@ func TestHubRPCThreadReadFlipsStuckProcessingToError(t *testing.T) {
 		ThreadID:  sessionID,
 		SessionID: sessionID,
 	})
-	roster := NewRoster(runDir, nil)
+	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
 
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Roster: roster, Past: past})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: past})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -1030,7 +1031,7 @@ func TestHubRPCThreadReadMergesPastTurnsForLiveDaemon(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "past")
 	sessionID := buildRPCParentSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -1057,10 +1058,10 @@ func TestHubRPCThreadReadMergesPastTurnsForLiveDaemon(t *testing.T) {
 		ThreadID:  sessionID,
 		SessionID: sessionID,
 	})
-	roster := NewRoster(runDir, nil)
+	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
 
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Roster: roster, Past: past})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: past})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -1087,12 +1088,12 @@ func TestHubRPCThreadReadDoesNotReturnLocalPastForNonLocalMissingSource(t *testi
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "local")
 	sessionID := buildRPCParentSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
-	hub := newHubRPCTestServer(t, WebConfig{Past: past})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -1110,7 +1111,7 @@ func TestHubRPCThreadReadDoesNotMergeLocalPastIntoNonLocalLiveThread(t *testing.
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "local")
 	sessionID := buildRPCParentSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -1128,7 +1129,7 @@ func TestHubRPCThreadReadDoesNotMergeLocalPastIntoNonLocalLiveThread(t *testing.
 		canceled:      make(chan struct{}, 1),
 	}
 	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(WebConfig{HubAddr: srv.Listener.Addr().String(), Past: past})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: past})
 	web.sources.Add(source)
 	srv.Config.Handler = web.Handler()
 	srv.Start()
@@ -1169,13 +1170,13 @@ func TestHubRPCThreadReadRelaysDaemonNotifications(t *testing.T) {
 		ThreadID:  "th_1",
 		SessionID: "sess_1",
 	})
-	roster := NewRoster(runDir, nil)
+	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
 
-	hub := newHubRPCTestServer(t, WebConfig{
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		RunDir: runDir,
 		Roster: roster,
-		Past:   NewPastIndex(""),
+		Past:   hubcore.NewPastIndex(""),
 	})
 	defer hub.Close()
 
@@ -1232,7 +1233,7 @@ func TestHubRPCThreadReadRelaysNotificationsBySourceQualifiedThread(t *testing.T
 		canceled:      make(chan struct{}, 2),
 	}
 	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
 	web.sources.Add(sourceA)
 	web.sources.Add(sourceB)
 	srv.Config.Handler = web.Handler()
@@ -1299,7 +1300,7 @@ func TestHubRPCThreadReadSubscribeOverridesSourceReadRelayPolicy(t *testing.T) {
 		},
 	}
 	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
 	web.sources.Add(source)
 	srv.Config.Handler = web.Handler()
 	srv.Start()
@@ -1362,7 +1363,7 @@ func TestHubRPCThreadReadReplaceSubscriptionDropsPreviousRelaySubscriber(t *test
 		canceled:      make(chan struct{}, 1),
 	}
 	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
 	web.sources.Add(sourceA)
 	web.sources.Add(sourceB)
 	srv.Config.Handler = web.Handler()
@@ -1435,7 +1436,7 @@ func TestHubRPCThreadReadRetiresRelayWhenClientDisconnects(t *testing.T) {
 		canceled: make(chan struct{}),
 	}
 	srv := httptest.NewUnstartedServer(nil)
-	cfg := WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")}
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
 	web := NewWebServer(cfg)
 	web.sources.Add(source)
 	srv.Config.Handler = web.Handler()
@@ -1476,8 +1477,8 @@ func TestHubRPCThreadReadKeepsRelayWhenSubscriberArrivesDuringIdleRetirement(t *
 	idleReached := make(chan struct{})
 	releaseIdle := make(chan struct{})
 	var idleOnce sync.Once
-	cfg := WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")}
-	cfg.relayHooks.idleExit = func(threadID string) {
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.IdleExit = func(threadID string) {
 		if threadID != "th_1" {
 			return
 		}
@@ -1558,8 +1559,8 @@ func TestHubRPCThreadReadKeepsReplacementRelayTrackedAfterIdleCleanup(t *testing
 	afterIdleDelete := make(chan struct{})
 	releaseCleanup := make(chan struct{})
 	var idleOnce sync.Once
-	cfg := WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")}
-	cfg.relayHooks.afterIdleDelete = func(threadID string) {
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.AfterIdleDelete = func(threadID string) {
 		if threadID != "th_cleanup" {
 			return
 		}
@@ -1626,7 +1627,7 @@ func TestHubRPCThreadReadPropagatesInFlightRelaySubscribeFailure(t *testing.T) {
 		release:              make(chan struct{}),
 	}
 	srv := httptest.NewUnstartedServer(nil)
-	cfg := WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")}
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
 	web := NewWebServer(cfg)
 	web.sources.Add(source)
 	srv.Config.Handler = web.Handler()
@@ -1696,7 +1697,7 @@ func TestHubRPCThreadReadSubscribeFailureDoesNotLeaveClientSubscribed(t *testing
 		},
 	}
 	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
 	web.sources.Add(source)
 	srv.Config.Handler = web.Handler()
 	srv.Start()
@@ -1748,7 +1749,7 @@ func TestHubThreadListKeepsLocalPastWhenNonLocalLiveIDCollides(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "local")
 	sessionID := buildRPCParentSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -1764,7 +1765,7 @@ func TestHubThreadListKeepsLocalPastWhenNonLocalLiveIDCollides(t *testing.T) {
 		},
 	})
 
-	resp, err := hubThreadList(context.Background(), WebConfig{Past: past}, sources, appwire.ThreadListParams{})
+	resp, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: past}, sources, appwire.ThreadListParams{})
 	if err != nil {
 		t.Fatalf("hubThreadList: %v", err)
 	}
@@ -1792,7 +1793,7 @@ func TestHubThreadListMatchesCodexNativeStatusFilters(t *testing.T) {
 		Serf:      appwire.SerfThread{Ref: "codex:th_codex"},
 	}})
 
-	resp, err := hubThreadList(context.Background(), WebConfig{Past: NewPastIndex("")}, sources, appwire.ThreadListParams{
+	resp, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, sources, appwire.ThreadListParams{
 		Statuses: []string{"active"},
 	})
 	if err != nil {
@@ -2171,10 +2172,10 @@ func TestHubRPCThreadActionsRouteToDaemon(t *testing.T) {
 		ThreadID:  "th_1",
 		SessionID: "sess_1",
 	})
-	roster := NewRoster(runDir, nil)
+	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
 
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Roster: roster, Past: NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -2210,7 +2211,7 @@ func TestHubRPCThreadCompactStartResumesPastThread(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "past")
 	sessionID := buildRPCParentSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -2239,10 +2240,10 @@ func TestHubRPCThreadCompactStartResumesPastThread(t *testing.T) {
 	defer daemonHTTP.Close()
 
 	runDir := t.TempDir()
-	var gotReq ResumeRequest
+	var gotReq hubcore.ResumeRequest
 	resumeCalls := 0
 	spawner := &fakeRPCSpawner{
-		resume: func(_ context.Context, req ResumeRequest) (rendezvous.Entry, error) {
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
 			gotReq = req
 			resumeCalls++
 			entry := rendezvous.Entry{
@@ -2257,8 +2258,8 @@ func TestHubRPCThreadCompactStartResumesPastThread(t *testing.T) {
 			return entry, nil
 		},
 	}
-	roster := NewRoster(runDir, nil)
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	roster := hubcore.NewRoster(runDir, nil)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -2315,10 +2316,10 @@ func TestHubRPCUnsupportedThreadActionReturnsStructuredUnavailable(t *testing.T)
 		ThreadID:  "th_1",
 		SessionID: "sess_1",
 	})
-	roster := NewRoster(runDir, nil)
+	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
 
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Roster: roster, Past: NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -2363,7 +2364,7 @@ func TestHubRPCModelListUsesSerfLaunchContractWhenDaemonFails(t *testing.T) {
 		ThreadID:  "th_1",
 		SessionID: "th_1",
 	})
-	roster := NewRoster(runDir, nil)
+	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
 
 	spawner := &fakeRPCSpawner{
@@ -2371,11 +2372,11 @@ func TestHubRPCModelListUsesSerfLaunchContractWhenDaemonFails(t *testing.T) {
 			return []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}, nil
 		},
 	}
-	hub := newHubRPCTestServer(t, WebConfig{
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		RunDir:  runDir,
 		Roster:  roster,
 		Spawner: spawner,
-		Models:  []modelDescriptor{{Provider: "openai", Model: "gpt-stale"}},
+		Models:  []hubcore.ModelDescriptor{{Provider: "openai", Model: "gpt-stale"}},
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -2410,10 +2411,10 @@ func TestHubRPCModelListFallsBackToLocalDaemonWithoutLaunchContract(t *testing.T
 		ThreadID:  "th_1",
 		SessionID: "th_1",
 	})
-	roster := NewRoster(runDir, nil)
+	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
 
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Roster: roster})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -2447,7 +2448,7 @@ func TestHubRPCModelListPrefersSerfLaunchContract(t *testing.T) {
 		ThreadID:  "th_1",
 		SessionID: "th_1",
 	})
-	roster := NewRoster(runDir, nil)
+	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
 
 	spawner := &fakeRPCSpawner{
@@ -2455,7 +2456,7 @@ func TestHubRPCModelListPrefersSerfLaunchContract(t *testing.T) {
 			return []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}, nil
 		},
 	}
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -2486,7 +2487,7 @@ func TestHubRPCModelListUsesWorkingDirForSerfLaunchContract(t *testing.T) {
 			}, nil
 		},
 	}
-	hub := newHubRPCTestServer(t, WebConfig{Spawner: spawner})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Spawner: spawner})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -2513,7 +2514,7 @@ func TestHubRPCModelListRoutesCodexHarnessToSource(t *testing.T) {
 	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
 	defer codexHTTP.Close()
 
-	hub := newHubRPCTestServer(t, WebConfig{
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID:       "codex-local",
 			Endpoint: "ws" + codexHTTP.URL[len("http"):],
@@ -2560,10 +2561,10 @@ func TestHubRPCModelListDoesNotUseLocalDaemonWhenLaunchContractIsEmpty(t *testin
 		ThreadID:  "th_1",
 		SessionID: "th_1",
 	})
-	roster := NewRoster(runDir, nil)
+	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
 
-	hub := newHubRPCTestServer(t, WebConfig{
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		RunDir:  runDir,
 		Roster:  roster,
 		Spawner: &fakeRPCModelContractSpawner{contract: appwire.ModelListResponse{}},
@@ -2601,7 +2602,7 @@ func TestHubRPCModelListDoesNotUseLocalDaemonWhenLaunchContractHasOnlyDiagnostic
 		ThreadID:  "th_1",
 		SessionID: "th_1",
 	})
-	roster := NewRoster(runDir, nil)
+	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
 
 	spawner := &fakeRPCModelContractSpawner{
@@ -2614,7 +2615,7 @@ func TestHubRPCModelListDoesNotUseLocalDaemonWhenLaunchContractHasOnlyDiagnostic
 			}},
 		},
 	}
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -2648,10 +2649,10 @@ exit 2
 		t.Fatal(err)
 	}
 
-	hub := newHubRPCTestServer(t, WebConfig{
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		RunDir:  t.TempDir(),
 		Spawner: &HubSpawner{Cfg: DefaultConfig(), SerfBinary: bin, RunDir: t.TempDir(), HubToken: "generated-token"},
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -2685,9 +2686,9 @@ exit 2
 
 func TestHubRPCThreadStartKeepsProviderForModelIDsWithSlashes(t *testing.T) {
 	runDir := t.TempDir()
-	var got SpawnRequest
+	var got hubcore.SpawnRequest
 	spawner := &fakeRPCSpawner{
-		spawn: func(_ context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+		spawn: func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
 			got = req
 			return rendezvous.Entry{
 				PID:       106,
@@ -2698,7 +2699,7 @@ func TestHubRPCThreadStartKeepsProviderForModelIDsWithSlashes(t *testing.T) {
 			}, nil
 		},
 	}
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Spawner: spawner, Past: NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -2720,9 +2721,9 @@ func TestHubRPCThreadStartKeepsProviderForModelIDsWithSlashes(t *testing.T) {
 
 func TestHubRPCThreadStartPassesExplicitNonInteractive(t *testing.T) {
 	runDir := t.TempDir()
-	var got SpawnRequest
+	var got hubcore.SpawnRequest
 	spawner := &fakeRPCSpawner{
-		spawn: func(_ context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+		spawn: func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
 			got = req
 			return rendezvous.Entry{
 				PID:       107,
@@ -2733,7 +2734,7 @@ func TestHubRPCThreadStartPassesExplicitNonInteractive(t *testing.T) {
 			}, nil
 		},
 	}
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Spawner: spawner, Past: NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -2756,9 +2757,9 @@ func TestHubRPCThreadStartPassesExplicitNonInteractive(t *testing.T) {
 
 func TestHubRPCThreadStartPassesNonInteractiveLaunchOverride(t *testing.T) {
 	runDir := t.TempDir()
-	var got SpawnRequest
+	var got hubcore.SpawnRequest
 	spawner := &fakeRPCSpawner{
-		spawn: func(_ context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+		spawn: func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
 			got = req
 			return rendezvous.Entry{
 				PID:       108,
@@ -2769,7 +2770,7 @@ func TestHubRPCThreadStartPassesNonInteractiveLaunchOverride(t *testing.T) {
 			}, nil
 		},
 	}
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Spawner: spawner, Past: NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -2801,11 +2802,11 @@ func TestHubRPCThreadStartPropagatesSpawnerStderrAsHubLaunchError(t *testing.T) 
 		`serf serve: session creation: plugin initialization: resolving plugin dir "/Users/jesse/git/superpowers/superpowers": lstat /Users: no such file or directory`,
 	}, ": ")
 	spawner := &fakeRPCSpawner{
-		spawn: func(_ context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+		spawn: func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
 			return rendezvous.Entry{}, errors.New(spawnErr)
 		},
 	}
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Spawner: spawner, Past: NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -2870,7 +2871,7 @@ func TestHubRPCThreadStartRejectsModelOutsideSerfLaunchContractBeforeSpawn(t *te
 	runDir := t.TempDir()
 	var spawnCalled bool
 	spawner := &fakeRPCSpawner{
-		spawn: func(_ context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+		spawn: func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
 			spawnCalled = true
 			return rendezvous.Entry{}, nil
 		},
@@ -2878,10 +2879,10 @@ func TestHubRPCThreadStartRejectsModelOutsideSerfLaunchContractBeforeSpawn(t *te
 			return []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}, nil
 		},
 	}
-	hub := newHubRPCTestServer(t, WebConfig{
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		RunDir:  runDir,
 		Spawner: spawner,
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -2903,7 +2904,7 @@ func TestHubRPCThreadStartRejectsModelOutsideSerfLaunchContractBeforeSpawn(t *te
 
 func TestHubRPCThreadStartAllowsModelWhenProviderDoesNotEnumerateLaunchModels(t *testing.T) {
 	runDir := t.TempDir()
-	var got SpawnRequest
+	var got hubcore.SpawnRequest
 	spawner := &fakeRPCModelContractSpawner{
 		contract: appwire.ModelListResponse{
 			Data: []appwire.ModelDescriptor{{Provider: "ollama", Model: "local"}},
@@ -2915,7 +2916,7 @@ func TestHubRPCThreadStartAllowsModelWhenProviderDoesNotEnumerateLaunchModels(t 
 			}},
 		},
 	}
-	spawner.spawn = func(_ context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+	spawner.spawn = func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
 		got = req
 		return rendezvous.Entry{
 			PID:       107,
@@ -2925,7 +2926,7 @@ func TestHubRPCThreadStartAllowsModelWhenProviderDoesNotEnumerateLaunchModels(t 
 			SessionID: "sess_non_enumerable_model",
 		}, nil
 	}
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Spawner: spawner, Past: NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -2947,7 +2948,7 @@ func TestHubRPCThreadStartAllowsModelWhenProviderDoesNotEnumerateLaunchModels(t 
 
 func TestHubRPCThreadStartAllowsModelWhenProviderHasLaunchDiagnostic(t *testing.T) {
 	runDir := t.TempDir()
-	var got SpawnRequest
+	var got hubcore.SpawnRequest
 	spawner := &fakeRPCModelContractSpawner{
 		contract: appwire.ModelListResponse{
 			Diagnostics: []appwire.ModelListDiagnostic{{
@@ -2958,7 +2959,7 @@ func TestHubRPCThreadStartAllowsModelWhenProviderHasLaunchDiagnostic(t *testing.
 			}},
 		},
 	}
-	spawner.spawn = func(_ context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+	spawner.spawn = func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
 		got = req
 		return rendezvous.Entry{
 			PID:       108,
@@ -2968,7 +2969,7 @@ func TestHubRPCThreadStartAllowsModelWhenProviderHasLaunchDiagnostic(t *testing.
 			SessionID: "sess_degraded_model",
 		}, nil
 	}
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Spawner: spawner, Past: NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -3002,11 +3003,11 @@ func TestHubRPCThreadStartRejectsProviderMissingFromDegradedLaunchContract(t *te
 			}},
 		},
 	}
-	spawner.spawn = func(_ context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+	spawner.spawn = func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
 		spawnCalled = true
 		return rendezvous.Entry{}, nil
 	}
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Spawner: spawner, Past: NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -3030,7 +3031,7 @@ func TestHubRPCThreadStartRejectsProviderMissingFromDegradedLaunchContract(t *te
 
 func TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider(t *testing.T) {
 	runDir := t.TempDir()
-	var got SpawnRequest
+	var got hubcore.SpawnRequest
 	spawner := &fakeRPCModelContractSpawner{
 		contract: appwire.ModelListResponse{
 			Data: []appwire.ModelDescriptor{{Provider: "ollama", Model: "local"}},
@@ -3042,11 +3043,11 @@ func TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider(t *testing.T)
 			}},
 		},
 	}
-	spawner.spawn = func(_ context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+	spawner.spawn = func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
 		got = req
 		return rendezvous.Entry{PID: 301, ThreadID: "th_openrouter_anthropic", SessionID: "th_openrouter_anthropic"}, nil
 	}
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Spawner: spawner, Past: NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -3074,15 +3075,15 @@ func TestHubRPCThreadStartRejectsMalformedModelBeforeSpawn(t *testing.T) {
 	runDir := t.TempDir()
 	var spawnCalled bool
 	spawner := &fakeRPCSpawner{
-		spawn: func(_ context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+		spawn: func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
 			spawnCalled = true
 			return rendezvous.Entry{}, nil
 		},
 	}
-	hub := newHubRPCTestServer(t, WebConfig{
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		RunDir:  runDir,
 		Spawner: spawner,
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -3112,9 +3113,9 @@ func TestHubRPCThreadStartRejectsMalformedModelBeforeSpawn(t *testing.T) {
 
 func TestThreadStart_LaunchOverridesApplied(t *testing.T) {
 	runDir := t.TempDir()
-	var got SpawnRequest
+	var got hubcore.SpawnRequest
 	spawner := &fakeRPCSpawner{
-		spawn: func(_ context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+		spawn: func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
 			got = req
 			return rendezvous.Entry{
 				PID:       200,
@@ -3126,11 +3127,11 @@ func TestThreadStart_LaunchOverridesApplied(t *testing.T) {
 		},
 	}
 	maxRounds := 7
-	hub := newHubRPCTestServer(t, WebConfig{
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		RunDir:       runDir,
 		HubStateRoot: t.TempDir(),
 		Spawner:      spawner,
-		Past:         NewPastIndex(""),
+		Past:         hubcore.NewPastIndex(""),
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -3181,10 +3182,10 @@ func TestHubRPCThreadStartUsesGlobalLaunchDefaultModel(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SetLayer: %v", err)
 	}
-	var got SpawnRequest
+	var got hubcore.SpawnRequest
 	spawner := &fakeRPCModelContractSpawner{
 		fakeRPCSpawner: fakeRPCSpawner{
-			spawn: func(_ context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+			spawn: func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
 				got = req
 				return rendezvous.Entry{
 					PID:       201,
@@ -3200,11 +3201,11 @@ func TestHubRPCThreadStartUsesGlobalLaunchDefaultModel(t *testing.T) {
 			Model:    "gpt-5",
 		}}},
 	}
-	hub := newHubRPCTestServer(t, WebConfig{
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		RunDir:       runDir,
 		HubStateRoot: stateRoot,
 		Spawner:      spawner,
-		Past:         NewPastIndex(""),
+		Past:         hubcore.NewPastIndex(""),
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
@@ -3269,8 +3270,8 @@ func TestHubRPCThreadStartRoutesByHarnessToConfiguredCodexSource(t *testing.T) {
 	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
 	defer codexHTTP.Close()
 
-	hub := newHubRPCTestServer(t, WebConfig{
-		Past: NewPastIndex(""),
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past: hubcore.NewPastIndex(""),
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID:       "codex",
 			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
@@ -3302,8 +3303,8 @@ func TestHubRPCThreadStartRoutesByHarnessToConfiguredCodexSource(t *testing.T) {
 func TestHubRPCThreadStartLaunchesConfiguredCodexAppServer(t *testing.T) {
 	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
-	hub := newHubRPCTestServer(t, WebConfig{
-		Past:          NewPastIndex(""),
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:          hubcore.NewPastIndex(""),
 		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	})
@@ -3329,8 +3330,8 @@ func TestHubRPCThreadStartLaunchesConfiguredCodexAppServer(t *testing.T) {
 func TestHubRPCThreadStartRelaunchesConfiguredCodexAppServerAfterExit(t *testing.T) {
 	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
-	hub := newHubRPCTestServer(t, WebConfig{
-		Past:          NewPastIndex(""),
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:          hubcore.NewPastIndex(""),
 		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	})
@@ -3378,8 +3379,8 @@ func TestHubRPCThreadResumeEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
 	}
 	waitLaunchedCodexExited(t, first)
 
-	hub := newHubRPCTestServer(t, WebConfig{
-		Past:          NewPastIndex(""),
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:          hubcore.NewPastIndex(""),
 		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	})
@@ -3410,8 +3411,8 @@ func TestHubRPCThreadForkEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
 	}
 	waitLaunchedCodexExited(t, first)
 
-	hub := newHubRPCTestServer(t, WebConfig{
-		Past:          NewPastIndex(""),
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:          hubcore.NewPastIndex(""),
 		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	})
@@ -3433,8 +3434,8 @@ func TestHubRPCThreadForkEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
 func TestHubRPCTurnStartEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
 	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
-	web := NewWebServer(WebConfig{
-		Past:          NewPastIndex(""),
+	web := NewWebServer(hubcore.WebConfig{
+		Past:          hubcore.NewPastIndex(""),
 		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	})
@@ -3470,7 +3471,7 @@ func TestHubRPCTurnStartEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
 	}
 }
 
-func makeResumeSession(t *testing.T, root, sessionID, profileID, model string) (string, *PastIndex) {
+func makeResumeSession(t *testing.T, root, sessionID, profileID, model string) (string, *hubcore.PastIndex) {
 	t.Helper()
 	stateDir := filepath.Join(root, "projects", sessionID)
 	if err := agent.SaveSessionMeta(stateDir, agent.SessionMeta{
@@ -3483,7 +3484,7 @@ func makeResumeSession(t *testing.T, root, sessionID, profileID, model string) (
 	}); err != nil {
 		t.Fatal(err)
 	}
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -3495,7 +3496,7 @@ func TestResumeRequestForConfigPassesThroughOpenAIProfileID(t *testing.T) {
 	sessionID := "01PROFILE0000000000000001"
 	stateDir, past := makeResumeSession(t, root, sessionID, "openai", "gpt-4o")
 
-	req, err := resumeRequestForConfig(WebConfig{Past: past}, sessionID)
+	req, err := resumeRequestForConfig(hubcore.WebConfig{Past: past}, sessionID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3515,7 +3516,7 @@ func TestResumeRequestForConfigPassesThroughCustomProfileID(t *testing.T) {
 	sessionID := "01PROFILE0000000000000002"
 	_, past := makeResumeSession(t, root, sessionID, "work", "gpt-4o")
 
-	req, err := resumeRequestForConfig(WebConfig{Past: past}, sessionID)
+	req, err := resumeRequestForConfig(hubcore.WebConfig{Past: past}, sessionID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3532,7 +3533,7 @@ func TestResumeRequestForConfigErrorsOnEmptyProfileID(t *testing.T) {
 	sessionID := "01PROFILE0000000000000003"
 	_, past := makeResumeSession(t, root, sessionID, "", "gpt-4o")
 
-	_, err := resumeRequestForConfig(WebConfig{Past: past}, sessionID)
+	_, err := resumeRequestForConfig(hubcore.WebConfig{Past: past}, sessionID)
 	if err == nil {
 		t.Fatal("expected error for empty profile id, got nil")
 	}
@@ -3558,8 +3559,8 @@ func TestHubRPCThreadStartAllowsBlankCodexPromptWithoutTurnStart(t *testing.T) {
 	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
 	defer codexHTTP.Close()
 
-	hub := newHubRPCTestServer(t, WebConfig{
-		Past: NewPastIndex(""),
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past: hubcore.NewPastIndex(""),
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID:       "codex",
 			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
@@ -3590,7 +3591,7 @@ func TestHubRPCThreadStartAllowsBlankCodexPromptWithoutTurnStart(t *testing.T) {
 }
 
 func TestHubRPCHarnessListIncludesConfiguredCodexSources(t *testing.T) {
-	hub := newHubRPCTestServer(t, WebConfig{
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID: "codex-local",
 		}, {}},
@@ -3634,7 +3635,7 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 
 	runDir := t.TempDir()
 	spawner := &fakeRPCSpawner{
-		resume: func(ctx context.Context, req ResumeRequest) (rendezvous.Entry, error) {
+		resume: func(ctx context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
 			if req.SessionID != "sess_old" {
 				t.Fatalf("resume session=%q", req.SessionID)
 			}
@@ -3651,7 +3652,7 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 		},
 	}
 
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Spawner: spawner, Past: NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -3688,8 +3689,8 @@ func TestHubRPCThreadResumeRoutesConfiguredCodexSource(t *testing.T) {
 	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
 	defer codexHTTP.Close()
 
-	hub := newHubRPCTestServer(t, WebConfig{
-		Past: NewPastIndex(""),
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past: hubcore.NewPastIndex(""),
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID:       "codex",
 			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
@@ -3732,8 +3733,8 @@ func TestHubRPCThreadReadDoesNotResumeConfiguredCodexSource(t *testing.T) {
 	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
 	defer codexHTTP.Close()
 
-	hub := newHubRPCTestServer(t, WebConfig{
-		Past: NewPastIndex(""),
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past: hubcore.NewPastIndex(""),
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID:       "codex",
 			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
@@ -3782,8 +3783,8 @@ func TestHubRPCThreadCompactRoutesConfiguredCodexSource(t *testing.T) {
 	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
 	defer codexHTTP.Close()
 
-	hub := newHubRPCTestServer(t, WebConfig{
-		Past: NewPastIndex(""),
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past: hubcore.NewPastIndex(""),
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID:       "codex",
 			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
@@ -3832,8 +3833,8 @@ func TestHubRPCThreadForkRoutesConfiguredCodexSource(t *testing.T) {
 	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
 	defer codexHTTP.Close()
 
-	hub := newHubRPCTestServer(t, WebConfig{
-		Past: NewPastIndex(""),
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past: hubcore.NewPastIndex(""),
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID:       "codex",
 			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
@@ -3873,7 +3874,7 @@ func TestHubRPCThreadStartRelaysReturnedSourceThread(t *testing.T) {
 		},
 	}
 	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
 	web.sources.Add(source)
 	srv.Config.Handler = web.Handler()
 	srv.Start()
@@ -3928,7 +3929,7 @@ func TestHubRPCThreadStartReturnsThreadWhenPostStartRelayFails(t *testing.T) {
 		},
 	}
 	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
 	web.sources.Add(source)
 	srv.Config.Handler = web.Handler()
 	srv.Start()
@@ -3979,7 +3980,7 @@ func TestHubRPCThreadResumeRelaysReturnedSourceThread(t *testing.T) {
 		},
 	}
 	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
 	web.sources.Add(source)
 	srv.Config.Handler = web.Handler()
 	srv.Start()
@@ -4022,7 +4023,7 @@ func TestHubRPCTurnStartResumesPastThread(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "past")
 	sessionID := buildRPCParentSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -4041,7 +4042,7 @@ func TestHubRPCTurnStartResumesPastThread(t *testing.T) {
 
 	runDir := t.TempDir()
 	spawner := &fakeRPCSpawner{
-		resume: func(context.Context, ResumeRequest) (rendezvous.Entry, error) {
+		resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
 			entry := rendezvous.Entry{
 				PID:       106,
 				Protocol:  appwire.ProtocolVersion,
@@ -4054,8 +4055,8 @@ func TestHubRPCTurnStartResumesPastThread(t *testing.T) {
 			return entry, nil
 		},
 	}
-	roster := NewRoster(runDir, nil)
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	roster := hubcore.NewRoster(runDir, nil)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -4075,7 +4076,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterRelaySubscribeUnavailable(t *testi
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "past")
 	sessionID := buildRPCParentSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -4092,7 +4093,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterRelaySubscribeUnavailable(t *testi
 		},
 	}
 	spawner := &fakeRPCSpawner{
-		resume: func(context.Context, ResumeRequest) (rendezvous.Entry, error) {
+		resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
 			return rendezvous.Entry{
 				Protocol:  appwire.ProtocolVersion,
 				SourceID:  "local",
@@ -4102,7 +4103,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterRelaySubscribeUnavailable(t *testi
 		},
 	}
 	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(WebConfig{HubAddr: srv.Listener.Addr().String(), Spawner: spawner, Past: past})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Spawner: spawner, Past: past})
 	web.sources.Add(source)
 	srv.Config.Handler = web.Handler()
 	srv.Start()
@@ -4128,7 +4129,7 @@ func TestHubRPCTurnStartDoesNotResumePastThreadOnLiveStartError(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "past")
 	sessionID := buildRPCParentSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -4153,16 +4154,16 @@ func TestHubRPCTurnStartDoesNotResumePastThreadOnLiveStartError(t *testing.T) {
 		ThreadID:  sessionID,
 		SessionID: sessionID,
 	})
-	roster := NewRoster(runDir, nil)
+	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
 	resumeCalled := false
 	spawner := &fakeRPCSpawner{
-		resume: func(context.Context, ResumeRequest) (rendezvous.Entry, error) {
+		resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
 			resumeCalled = true
 			return rendezvous.Entry{}, errors.New("resume should not be called")
 		},
 	}
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -4183,7 +4184,7 @@ func TestHubRPCTurnStartDoesNotResumePastThreadOnGenericSubstringError(t *testin
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "past")
 	sessionID := buildRPCParentSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -4208,16 +4209,16 @@ func TestHubRPCTurnStartDoesNotResumePastThreadOnGenericSubstringError(t *testin
 		ThreadID:  sessionID,
 		SessionID: sessionID,
 	})
-	roster := NewRoster(runDir, nil)
+	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
 	resumeCalled := false
 	spawner := &fakeRPCSpawner{
-		resume: func(context.Context, ResumeRequest) (rendezvous.Entry, error) {
+		resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
 			resumeCalled = true
 			return rendezvous.Entry{}, errors.New("resume should not be called")
 		},
 	}
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -4238,7 +4239,7 @@ func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "past")
 	sessionID := buildRPCParentSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -4256,7 +4257,7 @@ func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 
 	runDir := t.TempDir()
 	spawner := &fakeRPCSpawner{
-		resume: func(context.Context, ResumeRequest) (rendezvous.Entry, error) {
+		resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
 			entry := rendezvous.Entry{
 				PID:       107,
 				Protocol:  appwire.ProtocolVersion,
@@ -4269,8 +4270,8 @@ func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
 			return entry, nil
 		},
 	}
-	roster := NewRoster(runDir, nil)
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	roster := hubcore.NewRoster(runDir, nil)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -4307,7 +4308,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "past")
 	sessionID := buildRPCParentSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -4341,11 +4342,11 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 		ThreadID:  sessionID,
 		SessionID: sessionID,
 	})
-	roster := NewRoster(runDir, nil)
+	roster := hubcore.NewRoster(runDir, nil)
 	roster.Refresh()
 	resumeCalled := false
 	spawner := &fakeRPCSpawner{
-		resume: func(context.Context, ResumeRequest) (rendezvous.Entry, error) {
+		resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
 			resumeCalled = true
 			entry := rendezvous.Entry{
 				PID:       110,
@@ -4360,7 +4361,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 			return entry, nil
 		},
 	}
-	hub := newHubRPCTestServer(t, WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -4386,7 +4387,7 @@ func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) 
 // auto-resume retry fires when the managed daemon dies mid-turn.
 func TestHubKnowsRefAcceptsManagedLaunchRefWithoutPastEntry(t *testing.T) {
 	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}})
-	cfg := WebConfig{Past: NewPastIndex(""), CodexLauncher: launcher}
+	cfg := hubcore.WebConfig{Past: hubcore.NewPastIndex(""), CodexLauncher: launcher}
 	if !hubKnowsRef(cfg, "codex-managed:th_known") {
 		t.Fatal("hubKnowsRef should accept managed-launch ref")
 	}
@@ -4477,8 +4478,8 @@ func TestHubRPCTurnStartResumesManagedLaunchRefOnSessionUnavailable(t *testing.T
 	}
 	seedManagedSource(t, launcher, "codex-managed", fake)
 
-	hub := newHubRPCTestServer(t, WebConfig{
-		Past:          NewPastIndex(""),
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:          hubcore.NewPastIndex(""),
 		CodexLaunches: []codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}},
 		CodexLauncher: launcher,
 	})
@@ -4556,7 +4557,7 @@ func (s *sessionUnavailableOnceSource) counts() (start, resume int) {
 // error without attempting a resume.
 func TestHubRPCTurnStartDoesNotResumeUnknownNonLocalRef(t *testing.T) {
 	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
 	fake := &sessionUnavailableOnceSource{
 		relayLifecycleSource: relayLifecycleSource{canceled: make(chan struct{}, 1)},
 		id:                   "codex",
@@ -4613,7 +4614,7 @@ func TestHubRPCDirsCompleteReturnsMatchingDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hub := newHubRPCTestServer(t, WebConfig{Past: NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -4651,7 +4652,7 @@ func TestHubRPCThreadForkRoutesNonLocalCapableSource(t *testing.T) {
 		}},
 	}
 	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
 	web.sources.Add(source)
 	srv.Config.Handler = web.Handler()
 	srv.Start()
@@ -4702,7 +4703,7 @@ func TestHubRPCThreadForkRoutesNonLocalWholeThreadForkWithoutTurnForkCapability(
 		}},
 	}
 	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
 	web.sources.Add(source)
 	srv.Config.Handler = web.Handler()
 	srv.Start()
@@ -4743,7 +4744,7 @@ func TestHubRPCThreadForkReturnsUnavailableWhenNonLocalSourceCannotFork(t *testi
 		},
 	}
 	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(WebConfig{HubAddr: srv.Listener.Addr().String(), Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
 	web.sources.Add(source)
 	srv.Config.Handler = web.Handler()
 	srv.Start()
@@ -4777,12 +4778,12 @@ func TestHubRPCThreadForkCreatesForkedThread(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "fork")
 	parentID := buildRPCParentSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
-	hub := newHubRPCTestServer(t, WebConfig{Past: past})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -4812,8 +4813,8 @@ func TestHubRPCThreadForkCreatesForkedThread(t *testing.T) {
 }
 
 type fakeRPCSpawner struct {
-	spawn        func(context.Context, SpawnRequest) (rendezvous.Entry, error)
-	resume       func(context.Context, ResumeRequest) (rendezvous.Entry, error)
+	spawn        func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error)
+	resume       func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error)
 	launchModels func(context.Context) ([]appwire.ModelDescriptor, error)
 }
 
@@ -4847,14 +4848,14 @@ func (f *fakeRPCWorkingDirModelContractSpawner) ListLaunchModelContractForWorkin
 	return f.contractForWorkingDir(ctx, cwd)
 }
 
-func (f *fakeRPCSpawner) Spawn(ctx context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+func (f *fakeRPCSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
 	if f.spawn != nil {
 		return f.spawn(ctx, req)
 	}
 	return rendezvous.Entry{}, appwire.Unavailable("spawn not configured")
 }
 
-func (f *fakeRPCSpawner) Resume(ctx context.Context, req ResumeRequest) (rendezvous.Entry, error) {
+func (f *fakeRPCSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
 	if f.resume != nil {
 		return f.resume(ctx, req)
 	}
@@ -5065,8 +5066,8 @@ func TestHubRPCInstanceListRoutesToController(t *testing.T) {
 	if err := providercfg.WriteFile(tomlPath, cfg); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	hub := newHubRPCTestServer(t, WebConfig{
-		Past:                NewPastIndex(""),
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
 		ProviderConfig:      &cfg,
 		ProvidersConfigPath: tomlPath,
 		HubStateRoot:        dir,
@@ -5110,7 +5111,7 @@ func dialHubRPC(t *testing.T, hub *httptest.Server) *appwire.Client {
 	return client
 }
 
-func newHubRPCTestServer(t *testing.T, cfg WebConfig) *httptest.Server {
+func newHubRPCTestServer(t *testing.T, cfg hubcore.WebConfig) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewUnstartedServer(nil)
 	cfg.HubAddr = srv.Listener.Addr().String()

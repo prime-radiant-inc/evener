@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -63,8 +64,8 @@ func TestHubRPCRealCodexSourceAllowsBlankStart(t *testing.T) {
 	endpoint, shutdown := startRealCodexAppServer(t, binary)
 	defer shutdown()
 
-	hub := newHubRPCTestServer(t, WebConfig{
-		Past: NewPastIndex(""),
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past: hubcore.NewPastIndex(""),
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID:       "codex-real",
 			Endpoint: endpoint,
@@ -97,8 +98,8 @@ func TestHubRPCRealCodexSourceModelList(t *testing.T) {
 	endpoint, shutdown := startRealCodexAppServer(t, binary)
 	defer shutdown()
 
-	hub := newHubRPCTestServer(t, WebConfig{
-		Past: NewPastIndex(""),
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past: hubcore.NewPastIndex(""),
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID:       "codex-real",
 			Endpoint: endpoint,

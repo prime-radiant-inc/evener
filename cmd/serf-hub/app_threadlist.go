@@ -6,12 +6,13 @@ import (
 	"sort"
 	"strings"
 
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
 )
 
-func hubThreadList(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 	var threads []appwire.Thread
 	liveIDs := map[string]struct{}{}
 	if err := ensureManagedCodexSources(ctx, cfg, sources, params); err != nil {
@@ -58,7 +59,7 @@ func hubThreadList(ctx context.Context, cfg WebConfig, sources *appsource.Regist
 		}
 	}
 	sort.SliceStable(threads, func(i, j int) bool {
-		return appwireThreadLess(threads[i], threads[j])
+		return hubcore.AppwireThreadLess(threads[i], threads[j])
 	})
 	if params.Limit > 0 && len(threads) > params.Limit {
 		threads = threads[:params.Limit]
@@ -66,7 +67,7 @@ func hubThreadList(ctx context.Context, cfg WebConfig, sources *appsource.Regist
 	return appwire.ThreadListResponse{Data: threads}, nil
 }
 
-func ensureManagedCodexSources(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadListParams) error {
+func ensureManagedCodexSources(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadListParams) error {
 	if cfg.CodexLauncher == nil || sources == nil {
 		return nil
 	}
@@ -120,14 +121,14 @@ func sourceExplicitlyRequestedForList(sourceID string, params appwire.ThreadList
 	return false
 }
 
-func mergePastMetadataForList(cfg WebConfig, sourceID string, live appwire.Thread) appwire.Thread {
+func mergePastMetadataForList(cfg hubcore.WebConfig, sourceID string, live appwire.Thread) appwire.Thread {
 	if cfg.Past == nil {
 		return live
 	}
 	if threadListSourceID(sourceID, live) != "local" {
 		return live
 	}
-	var entry PastEntry
+	var entry hubcore.PastEntry
 	var ok bool
 	for _, id := range []string{live.ID, live.SessionID} {
 		if id == "" {
@@ -250,7 +251,7 @@ func normalizeThreadListStatusFilter(status string) string {
 // error (kata r6y9). All other tail shapes — completed assistant turns, bare
 // USER_INPUT entries with no api_call yet, successful api_calls mid-round — are
 // left alone because the daemon may legitimately still be processing them.
-func sanitizeStaleProcessingStatus(cfg WebConfig, thread appwire.Thread) appwire.Thread {
+func sanitizeStaleProcessingStatus(cfg hubcore.WebConfig, thread appwire.Thread) appwire.Thread {
 	if cfg.Past == nil {
 		return thread
 	}

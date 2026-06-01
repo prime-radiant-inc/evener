@@ -1,4 +1,4 @@
-package main
+package hubcore
 
 import (
 	"strings"
@@ -17,13 +17,13 @@ type sessionOrderKey struct {
 }
 
 func sessionOrderLess(a, b sessionOrderKey) bool {
-	au := orderUpdatedAt(a.updated, a.created)
-	bu := orderUpdatedAt(b.updated, b.created)
+	au := OrderUpdatedAt(a.updated, a.created)
+	bu := OrderUpdatedAt(b.updated, b.created)
 	if !au.Equal(bu) {
 		return au.After(bu)
 	}
-	ac := orderCreatedAt(a.created, a.updated)
-	bc := orderCreatedAt(b.created, b.updated)
+	ac := OrderCreatedAt(a.created, a.updated)
+	bc := OrderCreatedAt(b.created, b.updated)
 	if !ac.Equal(bc) {
 		return ac.After(bc)
 	}
@@ -33,14 +33,14 @@ func sessionOrderLess(a, b sessionOrderKey) bool {
 	return compareOrderText(a.id, b.id) < 0
 }
 
-func orderUpdatedAt(updated, created time.Time) time.Time {
+func OrderUpdatedAt(updated, created time.Time) time.Time {
 	if !updated.IsZero() {
 		return updated
 	}
 	return created
 }
 
-func orderCreatedAt(created, updated time.Time) time.Time {
+func OrderCreatedAt(created, updated time.Time) time.Time {
 	if !created.IsZero() {
 		return created
 	}
@@ -84,7 +84,7 @@ func sessionMetaLess(a, b agent.SessionMeta) bool {
 	return sessionOrderLess(sessionMetaOrderKey(a), sessionMetaOrderKey(b))
 }
 
-func appwireThreadLess(a, b appwire.Thread) bool {
+func AppwireThreadLess(a, b appwire.Thread) bool {
 	return sessionOrderLess(appwireThreadOrderKey(a), appwireThreadOrderKey(b))
 }
 
@@ -97,21 +97,21 @@ func appwireThreadOrderKey(thread appwire.Thread) sessionOrderKey {
 		title = thread.SessionID
 	}
 	return sessionOrderKey{
-		updated: unixTime(thread.UpdatedAt),
-		created: unixTime(thread.CreatedAt),
+		updated: UnixTime(thread.UpdatedAt),
+		created: UnixTime(thread.CreatedAt),
 		title:   title,
 		id:      strutil.FirstNonEmpty(thread.ID, thread.SessionID),
 	}
 }
 
-func unixTime(seconds int64) time.Time {
+func UnixTime(seconds int64) time.Time {
 	if seconds <= 0 {
 		return time.Time{}
 	}
 	return time.Unix(seconds, 0).UTC()
 }
 
-func unixSeconds(t time.Time) int64 {
+func UnixSeconds(t time.Time) int64 {
 	if t.IsZero() {
 		return 0
 	}
@@ -141,6 +141,6 @@ func liveEntryLess(a, b LiveEntry) bool {
 	return sessionOrderLess(liveEntryFallbackOrderKey(a), liveEntryFallbackOrderKey(b))
 }
 
-func liveEntryWithPastLess(a, b LiveEntry, past *PastIndex) bool {
+func LiveEntryWithPastLess(a, b LiveEntry, past *PastIndex) bool {
 	return sessionOrderLess(liveEntryOrderKey(a, past), liveEntryOrderKey(b, past))
 }

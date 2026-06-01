@@ -1,4 +1,4 @@
-package main
+package hubcore
 
 import (
 	"encoding/json"
@@ -31,7 +31,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) (sessionID, status string, 
 	if err != nil {
 		return "", "", false
 	}
-	setDaemonAuthorization(req.Header, entry.HubToken)
+	SetDaemonAuthorization(req.Header, entry.HubToken)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", "", false

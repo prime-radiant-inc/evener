@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -33,12 +34,12 @@ func TestHubRPCTranscriptTargetsUseSerfParentRefs(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
-	hub := newHubRPCTestServer(t, WebConfig{Past: past})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()

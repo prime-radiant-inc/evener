@@ -3,6 +3,7 @@ package main
 import (
 	"testing"
 
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -10,7 +11,7 @@ func TestValidateAppWireInputItemsRejectsOversizedImage(t *testing.T) {
 	err := validateAppWireInputItems([]appwire.InputItem{{
 		Type: "input_image",
 		Name: "too-large.png",
-		Data: make([]byte, sendMaxImageBytes+1),
+		Data: make([]byte, hubcore.SendMaxImageBytes+1),
 	}})
 	if err == nil {
 		t.Fatal("validateAppWireInputItems accepted oversized image")
@@ -19,13 +20,13 @@ func TestValidateAppWireInputItemsRejectsOversizedImage(t *testing.T) {
 
 func TestValidateAppWireInputItemsCountsExistingImages(t *testing.T) {
 	items := []appwire.InputItem{{Type: "input_image", Data: []byte("x")}}
-	if err := validateAppWireInputItemsWithExisting(items, sendMaxImageItems); err == nil {
+	if err := validateAppWireInputItemsWithExisting(items, hubcore.SendMaxImageItems); err == nil {
 		t.Fatal("validateAppWireInputItemsWithExisting accepted combined image count over limit")
 	}
 }
 
 func TestValidateAppWireInputItemsRejectsTooManyImages(t *testing.T) {
-	items := make([]appwire.InputItem, sendMaxImageItems+1)
+	items := make([]appwire.InputItem, hubcore.SendMaxImageItems+1)
 	for i := range items {
 		items[i] = appwire.InputItem{Type: "image", Data: []byte("x")}
 	}
@@ -35,17 +36,17 @@ func TestValidateAppWireInputItemsRejectsTooManyImages(t *testing.T) {
 }
 
 func TestTranscriptJSONLMaxLineCoversMaxImagePayload(t *testing.T) {
-	encodedImageBytes := ((sendMaxImageBytes + 2) / 3) * 4
-	encodedPayloadBytes := sendMaxImageItems*encodedImageBytes + 1024*1024
+	encodedImageBytes := ((hubcore.SendMaxImageBytes + 2) / 3) * 4
+	encodedPayloadBytes := hubcore.SendMaxImageItems*encodedImageBytes + 1024*1024
 	if transcriptJSONLMaxLineBytes < encodedPayloadBytes {
 		t.Fatalf("transcriptJSONLMaxLineBytes=%d, want at least %d", transcriptJSONLMaxLineBytes, encodedPayloadBytes)
 	}
 }
 
 func TestSendMaxRequestBytesCoversMaxImagePayload(t *testing.T) {
-	encodedImageBytes := ((sendMaxImageBytes + 2) / 3) * 4
-	encodedPayloadBytes := sendMaxImageItems*encodedImageBytes + 1024*1024
-	if sendMaxRequestBytes < encodedPayloadBytes {
-		t.Fatalf("sendMaxRequestBytes=%d, want at least %d", sendMaxRequestBytes, encodedPayloadBytes)
+	encodedImageBytes := ((hubcore.SendMaxImageBytes + 2) / 3) * 4
+	encodedPayloadBytes := hubcore.SendMaxImageItems*encodedImageBytes + 1024*1024
+	if hubcore.SendMaxRequestBytes < encodedPayloadBytes {
+		t.Fatalf("hubcore.SendMaxRequestBytes=%d, want at least %d", hubcore.SendMaxRequestBytes, encodedPayloadBytes)
 	}
 }

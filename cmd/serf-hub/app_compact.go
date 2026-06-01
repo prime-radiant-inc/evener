@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -27,7 +28,7 @@ func isSessionUnavailableError(err error) bool {
 	return wire.Code == appwire.CodeUnavailable && serfErrorInfoFromData(wire.Data) == string(appwire.ErrorSessionUnavailable)
 }
 
-func compactThreadWithResume(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadCompactStartParams) error {
+func compactThreadWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadCompactStartParams) error {
 	err := compactThreadOnce(ctx, cfg, sources, params)
 	if err == nil {
 		return nil
@@ -44,7 +45,7 @@ func compactThreadWithResume(ctx context.Context, cfg WebConfig, sources *appsou
 	return compactThreadOnce(ctx, cfg, sources, params)
 }
 
-func compactThreadOnce(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadCompactStartParams) error {
+func compactThreadOnce(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadCompactStartParams) error {
 	source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
 	if err != nil {
 		return err

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/hubapi"
@@ -258,7 +259,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 	}
 	if s.cfg.Roster != nil {
 		if le, ok := s.cfg.Roster.Find(id); ok {
-			state := normalizeState(le.Status)
+			state := hubcore.NormalizeState(le.Status)
 			data := WorkspaceData{
 				ID:           id,
 				SourceLabel:  "serf",
@@ -271,7 +272,7 @@ func (s *WebServer) workspaceData(id string) WorkspaceData {
 			}
 			if status := s.fetchStatus(le); status != nil {
 				if status.State != "" {
-					data.State = normalizeState(status.State)
+					data.State = hubcore.NormalizeState(status.State)
 					data.StateLabel = stateLabel(data.State)
 				}
 				if status.Model != "" {
@@ -336,7 +337,7 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 	if title == "" {
 		title = strutil.FirstNonEmpty(thread.SessionID, thread.ID)
 	}
-	state := normalizeState(thread.Status.Type)
+	state := hubcore.NormalizeState(thread.Status.Type)
 	if state == "" {
 		state = "idle"
 	}
@@ -456,7 +457,7 @@ func (s *WebServer) fillForkLineage(data *WorkspaceData, m agent.SessionMeta) {
 		if candidate.ParentSessionID == m.ID && !candidate.IsSubagent && candidate.ForkLabel == "" {
 			data.ForkOfTitle = agent.SessionDisplayName(candidate)
 			if data.ForkOfTitle == "" {
-				data.ForkOfTitle = shortID(candidate.ID)
+				data.ForkOfTitle = hubcore.ShortID(candidate.ID)
 			}
 			return
 		}
@@ -466,27 +467,27 @@ func (s *WebServer) fillForkLineage(data *WorkspaceData, m agent.SessionMeta) {
 // liveTitle prefers a friendly title for a running session: pull
 // OriginalPrompt from the past index if it's been written there, otherwise
 // fall back to a short session ID.
-func liveTitle(id string, le LiveEntry, past *PastIndex) string {
+func liveTitle(id string, le hubcore.LiveEntry, past *hubcore.PastIndex) string {
 	if past != nil {
 		if pe, ok := past.Find(id); ok {
 			return pastTitle(pe)
 		}
 	}
-	return shortID(id)
+	return hubcore.ShortID(id)
 }
 
-func pastTitle(pe PastEntry) string {
+func pastTitle(pe hubcore.PastEntry) string {
 	if title := agent.SessionDisplayName(pe.Meta); title != "" {
 		return title
 	}
-	return shortID(pe.Meta.ID)
+	return hubcore.ShortID(pe.Meta.ID)
 }
 
-func searchPastTitle(pe PastEntry) string {
+func searchPastTitle(pe hubcore.PastEntry) string {
 	if title := strings.TrimSpace(pe.Meta.Name); title != "" {
 		return title
 	}
-	return shortID(pe.Meta.ID)
+	return hubcore.ShortID(pe.Meta.ID)
 }
 
 func stateLabel(state string) string {

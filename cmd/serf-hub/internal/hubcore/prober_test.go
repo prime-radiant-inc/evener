@@ -1,4 +1,4 @@
-package main
+package hubcore
 
 import (
 	"encoding/json"

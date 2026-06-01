@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	authopenai "primeradiant.com/serf/internal/auth/openai"
 	"primeradiant.com/serf/internal/auth/openai/oaitest"
 	"primeradiant.com/serf/internal/credentials"
@@ -18,7 +19,7 @@ import (
 
 func TestBuildSpawnArgs(t *testing.T) {
 	ssering := 4096
-	req := SpawnRequest{
+	req := hubcore.SpawnRequest{
 		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
 			Model:           "openai/gpt-5.2",
 			FastCheapModel:  "openai/gpt-5-mini",
@@ -68,7 +69,7 @@ func TestBuildSpawnArgs_FromResolved(t *testing.T) {
 		Agent:      "default",
 		SkillsDirs: []string{"/sk"},
 	}}
-	req := SpawnRequest{Resolved: r, WorkingDir: "/wd", StateDir: "/st", RunDir: "/rn"}
+	req := hubcore.SpawnRequest{Resolved: r, WorkingDir: "/wd", StateDir: "/st", RunDir: "/rn"}
 	got := buildSpawnArgs(req)
 	wantHas := []string{"--addr", "127.0.0.1:0", "--dir", "/wd", "--state-dir", "/st", "--run-dir", "/rn", "--model", "openai/gpt-5", "--agent", "default", "--skills-dir", "/sk"}
 	for _, w := range wantHas {
@@ -86,19 +87,19 @@ func TestBuildSpawnArgs_FromResolved(t *testing.T) {
 }
 
 func TestBuildSpawnArgsNonInteractiveOnlyWhenRequested(t *testing.T) {
-	interactive := buildSpawnArgs(SpawnRequest{Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5"}}})
+	interactive := buildSpawnArgs(hubcore.SpawnRequest{Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5"}}})
 	if hasArg(interactive, "--non-interactive") {
 		t.Fatalf("interactive spawn args unexpectedly included --non-interactive: %v", interactive)
 	}
 	enabled := true
-	nonInteractive := buildSpawnArgs(SpawnRequest{
+	nonInteractive := buildSpawnArgs(hubcore.SpawnRequest{
 		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5", NonInteractive: &enabled}},
 	})
 	if !hasArg(nonInteractive, "--non-interactive") {
 		t.Fatalf("non-interactive spawn args missing --non-interactive: %v", nonInteractive)
 	}
 	disabled := false
-	explicitInteractive := buildSpawnArgs(SpawnRequest{
+	explicitInteractive := buildSpawnArgs(hubcore.SpawnRequest{
 		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5", NonInteractive: &disabled}},
 	})
 	if hasArg(explicitInteractive, "--non-interactive") {
@@ -186,7 +187,7 @@ func TestBuildSpawnArgsPreparedInlinePromptsUseFilesWithoutLeakingText(t *testin
 	}
 	cleanup()
 
-	args := buildSpawnArgs(SpawnRequest{Resolved: resolved, StateDir: stateDir})
+	args := buildSpawnArgs(hubcore.SpawnRequest{Resolved: resolved, StateDir: stateDir})
 	joined := strings.Join(args, "\x00")
 	if strings.Contains(joined, systemPrompt) || strings.Contains(joined, appendPrompt) {
 		t.Fatalf("buildSpawnArgs leaked inline prompt body text: %#v", args)
@@ -319,7 +320,7 @@ exit 42
 		t.Fatal(err)
 	}
 	start := time.Now()
-	_, err := SpawnDaemon(context.Background(), bin, filepath.Join(dir, "run"), SpawnRequest{
+	_, err := SpawnDaemon(context.Background(), bin, filepath.Join(dir, "run"), hubcore.SpawnRequest{
 		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5.2"}},
 	}, 10*time.Second)
 	if err == nil {
@@ -421,7 +422,7 @@ exit 2
 	cfg.SpawnTimeout = 2 * time.Second
 	spawner := HubSpawner{Cfg: cfg, SerfBinary: bin, RunDir: runDir, HubToken: "generated-token"}
 
-	entry, err := spawner.Spawn(context.Background(), SpawnRequest{
+	entry, err := spawner.Spawn(context.Background(), hubcore.SpawnRequest{
 		Resolved:   launchconfig.Resolved{Effective: launchconfig.Layer{Model: "ollama/test"}},
 		WorkingDir: dir,
 		Provider:   "ollama",
@@ -480,7 +481,7 @@ exit 2
 	cfg.StateGlob = filepath.Join(stateHome, "serf", "projects", "*")
 	spawner := HubSpawner{Cfg: cfg, SerfBinary: bin, RunDir: runDir, HubToken: "generated-token"}
 
-	if _, err := spawner.Spawn(context.Background(), SpawnRequest{
+	if _, err := spawner.Spawn(context.Background(), hubcore.SpawnRequest{
 		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
 			Model: "ollama/test",
 			Env:   map[string]string{"XDG_STATE_HOME": stateHome},

@@ -1,4 +1,4 @@
-package main
+package hubcore
 
 import (
 	"database/sql"
@@ -54,6 +54,11 @@ func NewPastIndexWithDB(projectGlob, dbPath string) *PastIndex {
 	idx := NewPastIndex(projectGlob)
 	idx.dbPath = dbPath
 	return idx
+}
+
+// StateGlob returns the project glob the index scans.
+func (i *PastIndex) StateGlob() string {
+	return i.stateGlob
 }
 
 // Rebuild scans every project under stateGlob and reloads the index.

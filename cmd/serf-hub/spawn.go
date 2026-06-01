@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/appwire"
 	authopenai "primeradiant.com/serf/internal/auth/openai"
@@ -26,30 +27,7 @@ import (
 const serfLaunchCheckTimeout = 30 * time.Second
 const daemonLaunchStderrLimit = 64 * 1024
 
-// SpawnRequest carries the per-spawn knobs passed directly from the caller.
-type SpawnRequest struct {
-	Resolved      launchconfig.Resolved
-	WorkingDir    string
-	StateDir      string
-	RunDir        string
-	AppReplaySize int
-	Env           []string // populated by ToEnv during Spawn
-	Provider      string   // for credential injection
-}
-
-// ResumeRequest carries the resolved state needed to resume a saved session.
-type ResumeRequest struct {
-	SessionID     string
-	WorkingDir    string
-	StateDir      string
-	Resolved      launchconfig.Resolved
-	RunDir        string
-	AppReplaySize int
-	Env           []string // populated by ToEnv during Resume
-	Provider      string   // for credential injection
-}
-
-// HubSpawner fulfills the Spawner interface using SpawnDaemon.
+// HubSpawner fulfills the hubcore.Spawner interface using SpawnDaemon.
 type HubSpawner struct {
 	Cfg                 Config
 	SerfBinary          string // path to the serf binary; "" → "serf" on PATH
@@ -111,7 +89,7 @@ func (h *HubSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, w
 	return listSerfLaunchModelContract(ctx, h.SerfBinary, env)
 }
 
-func (h *HubSpawner) Spawn(ctx context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
 	timeout := h.Cfg.SpawnTimeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
@@ -156,7 +134,7 @@ func applyLaunchDefaultsForSpawn(resolved launchconfig.Resolved, defaults launch
 	return resolved
 }
 
-func (h *HubSpawner) Resume(ctx context.Context, req ResumeRequest) (rendezvous.Entry, error) {
+func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
 	timeout := h.Cfg.SpawnTimeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
@@ -245,11 +223,11 @@ func prepareResolvedForSpawn(stateDir string, resolved launchconfig.Resolved) (l
 	return resolved, func() {}, nil
 }
 
-// buildSpawnArgs assembles the arg slice for `serf serve` from a SpawnRequest.
+// buildSpawnArgs assembles the arg slice for `serf serve` from a hubcore.SpawnRequest.
 //
 // Always passes --addr 127.0.0.1:0 so the daemon binds an ephemeral port,
 // which it reports via its rendezvous file.
-func buildSpawnArgs(req SpawnRequest) []string {
+func buildSpawnArgs(req hubcore.SpawnRequest) []string {
 	args := []string{"--addr", "127.0.0.1:0"}
 	if req.WorkingDir != "" {
 		args = append(args, "--dir", req.WorkingDir)
@@ -267,13 +245,13 @@ func buildSpawnArgs(req SpawnRequest) []string {
 	return args
 }
 
-// SpawnDaemon launches a `serf serve` subprocess from the given SpawnRequest,
+// SpawnDaemon launches a `serf serve` subprocess from the given hubcore.SpawnRequest,
 // then waits up to timeout for its rendezvous file to appear.
 //
 // Returns the rendezvous Entry on success, or error on timeout / spawn failure.
 // Caller does NOT manage the subprocess lifecycle — the spawned daemon
 // runs independently and lives until killed or sent /shutdown.
-func SpawnDaemon(ctx context.Context, serfBinary string, runDir string, req SpawnRequest, timeout time.Duration) (rendezvous.Entry, error) {
+func SpawnDaemon(ctx context.Context, serfBinary string, runDir string, req hubcore.SpawnRequest, timeout time.Duration) (rendezvous.Entry, error) {
 	if serfBinary == "" {
 		serfBinary = "serf"
 	}
@@ -352,7 +330,7 @@ func WaitForRendezvous(ctx context.Context, runDir string, pid int, opts ...Wait
 //
 // Note: resume always creates a NEW session_id (the daemon mints a fresh
 // one). Caller resolves it via roster lookup after rendezvous appears.
-func ResumeDaemon(ctx context.Context, serfBinary, runDir string, req ResumeRequest, timeout time.Duration) (rendezvous.Entry, error) {
+func ResumeDaemon(ctx context.Context, serfBinary, runDir string, req hubcore.ResumeRequest, timeout time.Duration) (rendezvous.Entry, error) {
 	if serfBinary == "" {
 		serfBinary = "serf"
 	}

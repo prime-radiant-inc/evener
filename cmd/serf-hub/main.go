@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-hub/internal/claudeplugins"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hostlock"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubedge"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/binresolve"
@@ -86,10 +87,10 @@ func main() {
 	}
 
 	// Roster + past index
-	prober := &StatusProber{Timeout: 500 * time.Millisecond}
-	roster := NewRoster(runDir, prober)
+	prober := &hubcore.StatusProber{Timeout: 500 * time.Millisecond}
+	roster := hubcore.NewRoster(runDir, prober)
 
-	past := NewPastIndexWithDB(stateGlob, pastIndexDB)
+	past := hubcore.NewPastIndexWithDB(stateGlob, pastIndexDB)
 	if err := past.Rebuild(); err != nil {
 		fmt.Fprintf(os.Stderr, "[hub] past index rebuild: %v\n", err)
 	}
@@ -158,15 +159,15 @@ func main() {
 
 	// Keep configured providers available for settings; launch choices come
 	// from the Serf harness contract exposed by HubSpawner.
-	var models []modelDescriptor
+	var models []hubcore.ModelDescriptor
 	for _, p := range cfg.Providers {
 		for _, m := range p.Models {
-			models = append(models, modelDescriptor{Provider: p.Name, Model: m})
+			models = append(models, hubcore.ModelDescriptor{Provider: p.Name, Model: m})
 		}
 	}
 
 	// Web
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr:             cfg.Addr,
 		AuthToken:           authToken,
 		HubStateRoot:        cfg.HubStateRoot,

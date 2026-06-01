@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"html/template"
 	"sync"
 	"time"
@@ -10,12 +9,6 @@ import (
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/hubapi"
 )
-
-// modelDescriptor is a provider/model pair used by the spawn chip and /api/models.
-type modelDescriptor struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-}
 
 // searchResult is one item in the /api/search response.
 type searchResult struct {
@@ -114,53 +107,6 @@ type providerDisplay struct {
 	Models []string
 }
 
-type replayHeader struct {
-	SessionID string `json:"session_id"`
-	ProfileID string `json:"profile_id"`
-	Model     string `json:"model"`
-}
-
-type replayEntry struct {
-	Turn replayTurn `json:"turn"`
-}
-
-type replayTurn struct {
-	Kind    string        `json:"kind"`
-	Message replayMessage `json:"message"`
-}
-
-type replayMessage struct {
-	Role    string       `json:"role"`
-	Content []replayPart `json:"content"`
-}
-
-type replayPart struct {
-	Kind       string            `json:"kind"`
-	Text       string            `json:"text,omitempty"`
-	Image      *replayImage      `json:"image,omitempty"`
-	ToolCall   *replayToolCall   `json:"tool_call,omitempty"`
-	ToolResult *replayToolResult `json:"tool_result,omitempty"`
-}
-
-type replayImage struct {
-	Data      []byte `json:"data,omitempty"`
-	MediaType string `json:"media_type,omitempty"`
-	Name      string `json:"name,omitempty"`
-}
-
-type replayToolCall struct {
-	ID        string          `json:"id"`
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments,omitempty"`
-}
-
-type replayToolResult struct {
-	ToolCallID string `json:"tool_call_id"`
-	Name       string `json:"name,omitempty"`
-	Content    any    `json:"content,omitempty"`
-	IsError    bool   `json:"is_error,omitempty"`
-}
-
 // spawnViewData is the template data for the spawn partial.
 type spawnViewData struct {
 	DefaultModel           string
@@ -247,14 +193,6 @@ type sendRequest struct {
 	Text  string              `json:"text"`
 	Items []appwire.InputItem `json:"items,omitempty"`
 }
-
-// Per-request limits for image attachments. Match the browser-side cap so
-// REST and AppWire accept the same image payload surface.
-const (
-	sendMaxImageItems   = 8
-	sendMaxImageBytes   = 8 * 1024 * 1024  // per-image
-	sendMaxRequestBytes = 96 * 1024 * 1024 // total request body
-)
 
 // steerRequest is the JSON body for POST /s/<id>/steer.
 type steerRequest struct {

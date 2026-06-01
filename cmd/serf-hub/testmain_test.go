@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
+	"primeradiant.com/serf/rendezvous"
 )
 
 func TestMain(m *testing.M) {
@@ -55,4 +56,26 @@ func canonicalTempDir(t *testing.T) string {
 		t.Fatalf("canonicalize temp dir %s: %v", dir, err)
 	}
 	return resolved
+}
+
+func writeRendezvous(t *testing.T, dir string, e rendezvous.Entry) {
+	t.Helper()
+	if _, err := rendezvous.Write(dir, e); err != nil {
+		t.Fatalf("write rendezvous: %v", err)
+	}
+}
+
+// fakeProber is a hubcore.Prober that reports a fixed session_id/status (or
+// fails), letting tests stand up a roster with a deterministic probe result.
+type fakeProber struct {
+	sessionID  string
+	status     string
+	shouldFail bool
+}
+
+func (p fakeProber) Probe(rendezvous.Entry) (sessionID, status string, ok bool) {
+	if p.shouldFail {
+		return "", "", false
+	}
+	return p.sessionID, p.status, true
 }

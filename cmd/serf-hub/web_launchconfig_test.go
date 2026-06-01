@@ -5,10 +5,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 )
 
 func TestWeb_CredentialsRoute(t *testing.T) {
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: NewRoster(t.TempDir(), nil), Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: hubcore.NewPastIndex("")})
 	req := httptest.NewRequest(http.MethodGet, "/credentials", nil)
 	req.Host = "127.0.0.1:9180"
 	rec := httptest.NewRecorder()
@@ -22,7 +24,7 @@ func TestWeb_CredentialsRoute(t *testing.T) {
 }
 
 func TestWeb_CredentialsPartial(t *testing.T) {
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: NewRoster(t.TempDir(), nil), Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: hubcore.NewPastIndex("")})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/credentials", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")

@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
@@ -28,9 +29,9 @@ import (
 )
 
 func TestWeb_Landing_Renders(t *testing.T) {
-	r := NewRoster(t.TempDir(), nil)
-	idx := NewPastIndex("")
-	web := NewWebServer(WebConfig{
+	r := hubcore.NewRoster(t.TempDir(), nil)
+	idx := hubcore.NewPastIndex("")
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  r,
 		Past:    idx,
@@ -100,9 +101,9 @@ func TestWeb_CodexSessionRouteReadsConfiguredSource(t *testing.T) {
 	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
 	defer codexHTTP.Close()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID:       "codex-local",
 			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
@@ -146,7 +147,7 @@ func TestWeb_CodexSessionRouteReadsConfiguredSource(t *testing.T) {
 }
 
 func TestWeb_WorkspaceRendersDisabledSteerControlForIdleSendCapableAppThread(t *testing.T) {
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: hubcore.NewPastIndex("")})
 	web.sources.Add(&scriptedAppSource{
 		id: "codex",
 		thread: appwire.Thread{
@@ -181,7 +182,7 @@ func TestWeb_WorkspaceRendersDisabledSteerControlForIdleSendCapableAppThread(t *
 }
 
 func TestWeb_WorkspaceRendersBottomStopForActiveSession(t *testing.T) {
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: hubcore.NewPastIndex("")})
 	started := time.Now().Add(-2 * time.Minute).Unix()
 	web.sources.Add(&scriptedAppSource{
 		id: "codex",
@@ -249,9 +250,9 @@ func TestAPI_CodexSessionDetailReadsConfiguredSource(t *testing.T) {
 	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
 	defer codexHTTP.Close()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID:       "codex",
 			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
@@ -307,9 +308,9 @@ func TestWeb_APITreeIncludesConfiguredCodexSourceThreads(t *testing.T) {
 	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
 	defer codexHTTP.Close()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID:       "codex",
 			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
@@ -364,9 +365,9 @@ func TestWeb_APITreeMarksConfiguredCodexEndedThreadsRecent(t *testing.T) {
 	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
 	defer codexHTTP.Close()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID:       "codex",
 			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
@@ -421,9 +422,9 @@ func TestWeb_SidebarIncludesConfiguredCodexSourceThreads(t *testing.T) {
 	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
 	defer codexHTTP.Close()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID:       "codex",
 			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
@@ -449,9 +450,9 @@ func TestWeb_SidebarIncludesConfiguredCodexSourceThreads(t *testing.T) {
 func TestAPI_ManagedCodexSessionDetailEnsuresSource(t *testing.T) {
 	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr:       "127.0.0.1:9180",
-		Past:          NewPastIndex(""),
+		Past:          hubcore.NewPastIndex(""),
 		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	})
@@ -476,9 +477,9 @@ func TestAPI_ManagedCodexSessionDetailEnsuresSource(t *testing.T) {
 func TestWeb_APITreeIncludesManagedCodexLaunchThreads(t *testing.T) {
 	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr:       "127.0.0.1:9180",
-		Past:          NewPastIndex(""),
+		Past:          hubcore.NewPastIndex(""),
 		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	})
@@ -532,9 +533,9 @@ func TestAPI_CodexUnsupportedActionReturnsStructuredUnavailable(t *testing.T) {
 	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
 	defer codexHTTP.Close()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID:       "codex",
 			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
@@ -573,9 +574,9 @@ func TestAPI_CodexModelChangeReturnsStructuredUnavailable(t *testing.T) {
 			},
 		},
 	}
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	web.sources.Add(source)
 
@@ -619,9 +620,9 @@ func TestAPI_SendUnavailableCapabilityDoesNotStartTurn(t *testing.T) {
 			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_unavailable"}}, nil
 		},
 	}
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	web.sources.Add(source)
 
@@ -658,9 +659,9 @@ func TestAPI_SendEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
 	}
 	waitLaunchedCodexExited(t, first)
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr:       "127.0.0.1:9180",
-		Past:          NewPastIndex(""),
+		Past:          hubcore.NewPastIndex(""),
 		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	})
@@ -701,9 +702,9 @@ func TestWeb_LocalSendUnavailableCapabilityDoesNotStartTurn(t *testing.T) {
 			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_unavailable"}}, nil
 		},
 	}
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	web.sources.Add(source)
 
@@ -725,7 +726,7 @@ func TestWeb_LocalSendUnavailableCapabilityDoesNotStartTurn(t *testing.T) {
 }
 
 func TestWeb_AppShell_RendersSidebarAndWorkspaceMounts(t *testing.T) {
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: NewRoster(t.TempDir(), nil), Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: hubcore.NewPastIndex("")})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "127.0.0.1:9180"
 	rec := httptest.NewRecorder()
@@ -755,7 +756,7 @@ func TestWeb_AppShell_RendersSidebarAndWorkspaceMounts(t *testing.T) {
 }
 
 func TestWeb_InternalPartialsRequireHXRequest(t *testing.T) {
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: NewRoster(t.TempDir(), nil), Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: hubcore.NewPastIndex("")})
 	for _, path := range []string{
 		"/_partials/sidebar",
 		"/_partials/workspace/empty",
@@ -773,7 +774,7 @@ func TestWeb_InternalPartialsRequireHXRequest(t *testing.T) {
 }
 
 func TestWeb_LegacyPartialRoutesDoNotServeFragments(t *testing.T) {
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: NewRoster(t.TempDir(), nil), Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: hubcore.NewPastIndex("")})
 	for _, path := range []string{"/sidebar", "/workspace/empty", "/workspace/spawn"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Host = "127.0.0.1:9180"
@@ -786,7 +787,7 @@ func TestWeb_LegacyPartialRoutesDoNotServeFragments(t *testing.T) {
 }
 
 func TestWeb_SettingsFullPageLoadsInternalPartial(t *testing.T) {
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: NewRoster(t.TempDir(), nil), Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: hubcore.NewPastIndex("")})
 	req := httptest.NewRequest(http.MethodGet, "/settings/theme", nil)
 	req.Host = "127.0.0.1:9180"
 	rec := httptest.NewRecorder()
@@ -811,14 +812,14 @@ func TestWeb_Sidebar_RendersTreeWithLiveAndProjects(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
@@ -858,14 +859,14 @@ func TestWeb_Sidebar_ProjectLinksEscapeWorkingDir(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
@@ -905,14 +906,14 @@ func TestWeb_ProjectSettingsListEscapesWorkingDir(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/settings/project", nil)
@@ -938,7 +939,7 @@ func TestWeb_ProjectSettingsListEscapesWorkingDir(t *testing.T) {
 }
 
 func TestWeb_Assets_ServeHtmx(t *testing.T) {
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180"})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
 	req := httptest.NewRequest(http.MethodGet, "/assets/htmx.min.js", nil)
 	req.Host = "127.0.0.1:9180"
 	rec := httptest.NewRecorder()
@@ -952,7 +953,7 @@ func TestWeb_Assets_ServeHtmx(t *testing.T) {
 }
 
 func TestWeb_Assets_ServeRenderer(t *testing.T) {
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180"})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
 	req := httptest.NewRequest(http.MethodGet, "/assets/renderer.js", nil)
 	req.Host = "127.0.0.1:9180"
 	rec := httptest.NewRecorder()
@@ -966,10 +967,10 @@ func TestWeb_Assets_ServeRenderer(t *testing.T) {
 }
 
 func TestWeb_WorkspaceSpawn_RendersForm(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/workspace/spawn", nil)
 	req.Host = "127.0.0.1:9180"
@@ -1008,10 +1009,10 @@ func TestSpawnTemplate_HasSchemaAdvancedRoot(t *testing.T) {
 	t.Setenv("SERF_REASONING_EFFORT", "high")
 	t.Setenv("OPENAI_API_KEY", "secret-token")
 	t.Setenv("SERF_API_TOKEN", "secret-token")
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/workspace/spawn", nil)
 	req.Host = "127.0.0.1:9180"
@@ -1084,10 +1085,10 @@ func TestSpawnTemplate_HasSchemaAdvancedRoot(t *testing.T) {
 }
 
 func TestWeb_WorkspaceSpawn_DoesNotSubmitPlaceholderDefaults(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/workspace/spawn", nil)
 	req.Host = "127.0.0.1:9180"
@@ -1111,10 +1112,10 @@ func TestWeb_WorkspaceSpawn_DoesNotSubmitPlaceholderDefaults(t *testing.T) {
 
 func TestWeb_WorkspaceSpawn_SubmitsPrefilledWorkingDir(t *testing.T) {
 	dir := t.TempDir()
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/workspace/spawn?dir="+url.QueryEscape(dir), nil)
 	req.Host = "127.0.0.1:9180"
@@ -1139,10 +1140,10 @@ func TestWeb_WorkspaceSpawn_SubmitsPrefilledWorkingDir(t *testing.T) {
 // on /_partials/workspace/spawn (and the /new wrapper that forwards it) reaches the
 // rendered textarea. The palette's /spawn command relies on this.
 func TestWeb_WorkspaceSpawn_PrefillsPromptFromQuery(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/workspace/spawn?prompt="+url.QueryEscape("do the thing"), nil)
 	req.Host = "127.0.0.1:9180"
@@ -1164,10 +1165,10 @@ func TestWeb_WorkspaceSpawn_PrefillsPromptFromQuery(t *testing.T) {
 // renders the app shell wired to /_partials/workspace/spawn?prompt=<text> so the textarea
 // pre-fill kicks in once the workspace partial loads.
 func TestWeb_Index_NewRouteForwardsPromptToWorkspace(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	req := httptest.NewRequest(http.MethodGet, "/new?prompt="+url.QueryEscape("hello world"), nil)
 	req.Host = "127.0.0.1:9180"
@@ -1219,13 +1220,13 @@ func TestWeb_SessionImage_ServesShaReferencedInputImage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
 
@@ -1246,10 +1247,10 @@ func TestWeb_SessionImage_ServesShaReferencedInputImage(t *testing.T) {
 
 // TestWeb_SessionImage_BadSha verifies that non-hex sha paths get 400.
 func TestWeb_SessionImage_BadSha(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	req := httptest.NewRequest(http.MethodGet, "/s/01ABC/images/not-hex", nil)
 	req.Host = "127.0.0.1:9180"
@@ -1286,11 +1287,11 @@ func TestWeb_SessionImage_UnknownSha(t *testing.T) {
 	if err := tw.Close(); err != nil {
 		t.Fatal(err)
 	}
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: NewRoster(t.TempDir(), nil), Past: idx})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: idx})
 
 	allZeros := strings.Repeat("0", 64)
 	req := httptest.NewRequest(http.MethodGet, "/s/01NOIMG/images/"+allZeros, nil)
@@ -1398,10 +1399,10 @@ func testRawJSON(t *testing.T, v any) json.RawMessage {
 
 type fakeSpawner struct{}
 
-func (fakeSpawner) Spawn(_ context.Context, _ SpawnRequest) (rendezvous.Entry, error) {
+func (fakeSpawner) Spawn(_ context.Context, _ hubcore.SpawnRequest) (rendezvous.Entry, error) {
 	return rendezvous.Entry{PID: 1, Address: "127.0.0.1:0"}, nil
 }
-func (fakeSpawner) Resume(_ context.Context, _ ResumeRequest) (rendezvous.Entry, error) {
+func (fakeSpawner) Resume(_ context.Context, _ hubcore.ResumeRequest) (rendezvous.Entry, error) {
 	return rendezvous.Entry{PID: 1, Address: "127.0.0.1:0"}, nil
 }
 
@@ -1426,10 +1427,10 @@ type delayedRosterSpawner struct {
 	runDir string
 	delay  time.Duration
 	entry  rendezvous.Entry
-	got    SpawnRequest
+	got    hubcore.SpawnRequest
 }
 
-func (s *delayedRosterSpawner) Spawn(ctx context.Context, req SpawnRequest) (rendezvous.Entry, error) {
+func (s *delayedRosterSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
 	s.got = req
 	timer := time.NewTimer(s.delay)
 	defer timer.Stop()
@@ -1448,7 +1449,7 @@ func (s *delayedRosterSpawner) Spawn(ctx context.Context, req SpawnRequest) (ren
 	return entry, nil
 }
 
-func (s *delayedRosterSpawner) Resume(_ context.Context, _ ResumeRequest) (rendezvous.Entry, error) {
+func (s *delayedRosterSpawner) Resume(_ context.Context, _ hubcore.ResumeRequest) (rendezvous.Entry, error) {
 	return rendezvous.Entry{}, nil
 }
 
@@ -1466,10 +1467,10 @@ func TestWeb_ApiSpawn_WaitsForSlowSpawnerAndReturnsSession(t *testing.T) {
 		},
 	}
 	srv := httptest.NewUnstartedServer(nil)
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: srv.Listener.Addr().String(),
-		Roster:  NewRoster(runDir, fakeProber{sessionID: "01SLOWSPAWN", status: "idle"}),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(runDir, fakeProber{sessionID: "01SLOWSPAWN", status: "idle"}),
+		Past:    hubcore.NewPastIndex(""),
 		Spawner: spawner,
 	})
 	srv.Config.Handler = web.Handler()
@@ -1543,9 +1544,9 @@ func TestWeb_ApiSpawn_HarnessRoutesToConfiguredCodexSource(t *testing.T) {
 	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
 	defer codexHTTP.Close()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID:       "codex",
 			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
@@ -1605,9 +1606,9 @@ func TestWeb_ApiSpawn_CodexSourcePassesRemoteWorkingDirThrough(t *testing.T) {
 	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
 	defer codexHTTP.Close()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID:       "codex",
 			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
@@ -1649,9 +1650,9 @@ func TestWeb_ApiSpawn_AllowsBlankCodexPromptWithoutTurnStart(t *testing.T) {
 	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
 	defer codexHTTP.Close()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID:       "codex",
 			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
@@ -1703,10 +1704,10 @@ func TestSpawnRequestJSONAcceptsPrompt(t *testing.T) {
 }
 
 func TestWeb_ApiSpawn_RejectsBareModel(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 		Spawner: &fakeSpawner{},
 	})
 	body := strings.NewReader(`{"model":"gpt-5","working_dir":"/tmp"}`)
@@ -1725,10 +1726,10 @@ func TestWeb_ApiSpawn_RejectsBareModel(t *testing.T) {
 }
 
 func TestWeb_ApiSpawn_RejectsRelativeWorkingDir(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 		Spawner: &fakeSpawner{},
 	})
 	body := strings.NewReader(`{"working_dir":"relative/path"}`)
@@ -1744,10 +1745,10 @@ func TestWeb_ApiSpawn_RejectsRelativeWorkingDir(t *testing.T) {
 }
 
 func TestWeb_ApiSpawn_RejectsMissingWorkingDir(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 		Spawner: &fakeSpawner{},
 	})
 	body := strings.NewReader(`{"working_dir":"/this/path/does/not/exist/1234567890"}`)
@@ -1763,10 +1764,10 @@ func TestWeb_ApiSpawn_RejectsMissingWorkingDir(t *testing.T) {
 }
 
 func TestWeb_ApiSpawn_503WhenNoSpawner(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	body := strings.NewReader(`{"prompt":"do something"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/spawn", body)
@@ -1781,13 +1782,13 @@ func TestWeb_ApiSpawn_503WhenNoSpawner(t *testing.T) {
 }
 
 func TestWeb_ApiSpawn_RejectsOversizeRequest(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 		Spawner: &fakeSpawner{},
 	})
-	req := httptest.NewRequest(http.MethodPost, "/api/spawn", strings.NewReader(`{"prompt":"`+strings.Repeat("x", sendMaxRequestBytes)+`"}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/spawn", strings.NewReader(`{"prompt":"`+strings.Repeat("x", hubcore.SendMaxRequestBytes)+`"}`))
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Origin", "http://127.0.0.1:9180")
 	req.Header.Set("Content-Type", "application/json")
@@ -1799,10 +1800,10 @@ func TestWeb_ApiSpawn_RejectsOversizeRequest(t *testing.T) {
 }
 
 func TestWeb_ApiSpawn_RejectsOversizeItem(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 		Spawner: &fakeSpawner{},
 	})
 	body := spawnRequest{
@@ -1810,7 +1811,7 @@ func TestWeb_ApiSpawn_RejectsOversizeItem(t *testing.T) {
 		Items: []appwire.InputItem{{
 			Type:      "image",
 			MediaType: "image/png",
-			Data:      make([]byte, sendMaxImageBytes+1),
+			Data:      make([]byte, hubcore.SendMaxImageBytes+1),
 			Name:      "big.png",
 		}},
 	}
@@ -1835,9 +1836,9 @@ func TestWeb_ApiSpawn_CodexLaunchFailureReturnsStructuredDiagnostic(t *testing.T
 		Binary: "/tmp/serf-no-such-codex-binary",
 		Listen: "ws://127.0.0.1:0",
 	}
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr:       "127.0.0.1:9180",
-		Past:          NewPastIndex(""),
+		Past:          hubcore.NewPastIndex(""),
 		CodexLaunches: []codexlaunch.CodexLaunchConfig{cfg},
 		CodexLauncher: codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{cfg}),
 	})
@@ -1863,10 +1864,10 @@ func TestWeb_ApiSpawn_CodexLaunchFailureReturnsStructuredDiagnostic(t *testing.T
 // TestWeb_SessionRoute_FullPage_ServesAppShell verifies that GET /s/<id> without
 // HX-Request returns the app shell (not the workspace partial).
 func TestWeb_SessionRoute_FullPage_ServesAppShell(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	req := httptest.NewRequest(http.MethodGet, "/s/anysession", nil)
 	req.Host = "127.0.0.1:9180"
@@ -1890,10 +1891,10 @@ func TestWeb_SessionRoute_FullPage_ServesAppShell(t *testing.T) {
 }
 
 func TestWeb_SessionRoute_LocalRefCanonicalizesWorkspaceURL(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	req := httptest.NewRequest(http.MethodGet, "/s/local:01LOCAL", nil)
 	req.Host = "127.0.0.1:9180"
@@ -1915,13 +1916,13 @@ func TestWeb_SessionRoute_LocalRefCanonicalizesWorkspaceURL(t *testing.T) {
 func TestWeb_WorkspacePartial_LiveSession_RendersHeader(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{PID: 10, Address: "127.0.0.1:55556"})
-	r := NewRoster(dir, fakeProber{sessionID: "01LIVE001", status: "idle"})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01LIVE001", status: "idle"})
 	r.Refresh()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  r,
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01LIVE001/workspace", nil)
 	req.Host = "127.0.0.1:9180"
@@ -1952,13 +1953,13 @@ func TestWeb_WorkspacePartial_LiveSession_RendersHeader(t *testing.T) {
 func TestWeb_WorkspacePartial_LocalRefCanonicalizesToLiveSession(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{PID: 10, Address: "127.0.0.1:55556"})
-	r := NewRoster(dir, fakeProber{sessionID: "01LIVE001", status: "idle"})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01LIVE001", status: "idle"})
 	r.Refresh()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  r,
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/s/local:01LIVE001/workspace", nil)
 	req.Host = "127.0.0.1:9180"
@@ -1983,14 +1984,14 @@ func TestWeb_WorkspacePartial_PastSession_RendersTitleAndState(t *testing.T) {
 	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
 		ID: "01PAST001", UpdatedAt: time.Now(), OriginalPrompt: "fix the widget", TurnCount: 7,
 	})
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01PAST001/workspace", nil)
@@ -2021,14 +2022,14 @@ func TestWeb_WorkspacePartial_RendersBottomStripAffordances(t *testing.T) {
 	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
 		ID: "01BOTTOM01", UpdatedAt: time.Now(), OriginalPrompt: "render bottom strip",
 	})
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01BOTTOM01/workspace", nil)
@@ -2067,14 +2068,14 @@ func TestWeb_WorkspacePartial_RendersWorkingDirInStatusRow(t *testing.T) {
 		ID: "01CWD00001", UpdatedAt: time.Now(), OriginalPrompt: "cwd test",
 		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/tmp/foo", GitBranch: "feature/bar"},
 	})
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01CWD00001/workspace", nil)
@@ -2114,14 +2115,14 @@ func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
 		ID: "01STATE001", UpdatedAt: time.Now(),
 		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/tmp/wd", GitBranch: "main"},
 	})
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01STATE001/state", nil)
@@ -2167,14 +2168,12 @@ func TestWorkspaceDataUsesDaemonStatusTurnCountForLiveLocalSession(t *testing.T)
 	defer daemon.Close()
 
 	addr := strings.TrimPrefix(daemon.URL, "http://")
-	roster := &Roster{bySess: map[string]LiveEntry{
-		"01TURNCOUNT": {
-			Entry:     rendezvous.Entry{Address: addr, SessionID: "01TURNCOUNT", Model: "gpt-5", WorkingDir: "/tmp/turns"},
-			SessionID: "01TURNCOUNT",
-			Status:    "active",
-		},
-	}}
-	web := NewWebServer(WebConfig{Roster: roster})
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:     rendezvous.Entry{Address: addr, SessionID: "01TURNCOUNT", Model: "gpt-5", WorkingDir: "/tmp/turns"},
+		SessionID: "01TURNCOUNT",
+		Status:    "active",
+	})
+	web := NewWebServer(hubcore.WebConfig{Roster: roster})
 
 	got := web.workspaceData("01TURNCOUNT")
 	if got.TurnCount != 37 {
@@ -2185,10 +2184,10 @@ func TestWorkspaceDataUsesDaemonStatusTurnCountForLiveLocalSession(t *testing.T)
 // TestWeb_Send_ClosedSessionRequiresSpawner verifies that POSTing to /s/<id>/send
 // when the session is not live and no spawner is configured returns 503.
 func TestWeb_Send_ClosedSessionRequiresSpawner(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	body := strings.NewReader(`{"text":"hi"}`)
 	req := httptest.NewRequest(http.MethodPost, "/s/NOSESSION/send", body)
@@ -2206,7 +2205,7 @@ func TestWeb_SendLiveStartTurnErrorDoesNotResume(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "past")
 	sessionID := buildRPCParentSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -2246,15 +2245,15 @@ func TestWeb_SendLiveStartTurnErrorDoesNotResume(t *testing.T) {
 		Model:      "gpt-5",
 		StartedAt:  time.Now(),
 	})
-	roster := NewRoster(runDir, fakeProber{sessionID: sessionID, status: "idle"})
+	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: "idle"})
 	roster.Refresh()
 	resumeCalled := false
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		RunDir:  runDir,
 		Roster:  roster,
 		Spawner: &fakeRPCSpawner{
-			resume: func(context.Context, ResumeRequest) (rendezvous.Entry, error) {
+			resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
 				resumeCalled = true
 				return rendezvous.Entry{}, errors.New("resume should not be called")
 			},
@@ -2284,7 +2283,7 @@ func TestWeb_Send_EndedRosterEntryResumesForwardsAndKeepsReplay(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "past")
 	sessionID := buildRPCParentSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -2318,7 +2317,7 @@ func TestWeb_Send_EndedRosterEntryResumesForwardsAndKeepsReplay(t *testing.T) {
 		StartedAt:  time.Now().Add(-time.Hour),
 	})
 	spawner := &fakeRPCSpawner{
-		resume: func(_ context.Context, req ResumeRequest) (rendezvous.Entry, error) {
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
 			if req.SessionID != sessionID {
 				t.Fatalf("resume session=%q, want %q", req.SessionID, sessionID)
 			}
@@ -2344,9 +2343,9 @@ func TestWeb_Send_EndedRosterEntryResumesForwardsAndKeepsReplay(t *testing.T) {
 			return entry, nil
 		},
 	}
-	roster := NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusClosed})
+	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusClosed})
 	roster.Refresh()
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		RunDir:  runDir,
 		Roster:  roster,
@@ -2408,14 +2407,14 @@ func TestWeb_Fork_CallsForkSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr:  "127.0.0.1:9180",
-		Roster:   NewRoster(t.TempDir(), nil),
+		Roster:   hubcore.NewRoster(t.TempDir(), nil),
 		Past:     idx,
 		StateDir: proj,
 	})
@@ -2450,13 +2449,13 @@ func TestWeb_ApiSearch_FiltersPast(t *testing.T) {
 		ID: "01OTHER", UpdatedAt: time.Now(), OriginalPrompt: "unrelated work",
 		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/beta"},
 	})
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/search?q=frobnitz", nil)
@@ -2497,13 +2496,13 @@ func TestWeb_ApiSearch_PastUsesGeneratedNameTitle(t *testing.T) {
 		OriginalPrompt: "unrelated original prompt",
 		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/projects/alpha"},
 	})
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/search?q=generated", nil)
@@ -2528,33 +2527,32 @@ func TestWeb_ApiSearch_PastUsesGeneratedNameTitle(t *testing.T) {
 
 func TestWeb_ApiSearch_OrdersLiveResultsByStartedAtAndID(t *testing.T) {
 	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
-	r := NewRoster(t.TempDir(), nil)
-	r.byPID = map[int]LiveEntry{
-		2: {
+	r := hubcore.NewRosterWithEntries(
+		hubcore.LiveEntry{
 			Entry:     rendezvous.Entry{PID: 2, StartedAt: base.Add(-time.Hour), WorkingDir: "/projects/serf"},
 			SessionID: "02LIVEOLD",
 			Status:    appwire.ThreadStatusIdle,
 		},
-		1: {
+		hubcore.LiveEntry{
 			Entry:     rendezvous.Entry{PID: 1, StartedAt: base, WorkingDir: "/projects/serf"},
 			SessionID: "01LIVENEW",
 			Status:    appwire.ThreadStatusIdle,
 		},
-		4: {
+		hubcore.LiveEntry{
 			Entry:     rendezvous.Entry{PID: 4, StartedAt: base.Add(-2 * time.Hour), WorkingDir: "/projects/serf"},
 			SessionID: "04LIVETIEB",
 			Status:    appwire.ThreadStatusIdle,
 		},
-		3: {
+		hubcore.LiveEntry{
 			Entry:     rendezvous.Entry{PID: 3, StartedAt: base.Add(-2 * time.Hour), WorkingDir: "/projects/serf"},
 			SessionID: "03LIVETIEA",
 			Status:    appwire.ThreadStatusIdle,
 		},
-	}
-	web := NewWebServer(WebConfig{
+	)
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  r,
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/search?q=live", nil)
 	req.Host = "127.0.0.1:9180"
@@ -2581,10 +2579,10 @@ func TestWeb_ApiSearch_OrdersLiveResultsByStartedAtAndID(t *testing.T) {
 // TestWeb_Settings_Theme_Renders checks that GET /settings/theme returns 200
 // with the theme radio inputs present.
 func TestWeb_Settings_Theme_Renders(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/settings/theme", nil)
 	req.Host = "127.0.0.1:9180"
@@ -2619,7 +2617,7 @@ func TestWeb_ApiModels_ReturnsListWithProviderEnv(t *testing.T) {
 		t.Skip("OPENAI_API_KEY not set; live list models requires a real API key")
 	}
 
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180"})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
 	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
 	req.Host = "127.0.0.1:9180"
 	rec := httptest.NewRecorder()
@@ -2671,14 +2669,14 @@ func TestWeb_ApiModels_ReturnsSerfLaunchContractWhenLiveUnavailable(t *testing.T
 	t.Setenv("OPENROUTER_API_KEY", "")
 	disableLiveOllamaForModelTest(t)
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Spawner: &fakeRPCSpawner{
 			launchModels: func(context.Context) ([]appwire.ModelDescriptor, error) {
 				return []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}, nil
 			},
 		},
-		Models: []modelDescriptor{{Provider: "openai", Model: "gpt-stale"}},
+		Models: []hubcore.ModelDescriptor{{Provider: "openai", Model: "gpt-stale"}},
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
 	req.Host = "127.0.0.1:9180"
@@ -2715,7 +2713,7 @@ func TestWeb_ApiModels_UsesWorkingDirForSerfLaunchContract(t *testing.T) {
 		},
 	}
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Spawner: spawner,
 	})
@@ -2764,7 +2762,7 @@ func TestWeb_ApiModels_DoesNotUseLiveProvidersWhenLaunchContractIsEmpty(t *testi
 	t.Setenv("OPENROUTER_API_KEY", "test-key")
 	t.Setenv("OPENROUTER_BASE_URL", live.URL+"/v1")
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Spawner: &fakeRPCModelContractSpawner{
 			contract: appwire.ModelListResponse{},
@@ -2797,7 +2795,7 @@ func TestWeb_ApiModels_RoutesCodexHarnessToSource(t *testing.T) {
 	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
 	defer codexHTTP.Close()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID:       "codex-local",
@@ -2830,7 +2828,7 @@ func TestWeb_ApiModels_RoutesCodexHarnessToSource(t *testing.T) {
 }
 
 func TestWeb_ApiModels_ReturnsLaunchErrorWhenLaunchModelListerFails(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Spawner: &fakeRPCModelContractSpawner{
 			err: errors.New("serf launch-check returned invalid response"),
@@ -2853,7 +2851,7 @@ func TestWeb_SettingsProvidersShowsLaunchModelDiagnostics(t *testing.T) {
 	// The /settings/providers tab is now a redirect stub pointing to the
 	// unified /credentials screen. Verify it returns 200 and includes the
 	// redirect link to /credentials.
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Spawner: &fakeRPCSpawner{},
 	})
@@ -2875,7 +2873,7 @@ func TestWeb_SettingsProvidersShowsLaunchModelDiagnostics(t *testing.T) {
 func TestWeb_SettingsProvidersShowsLaunchModelErrorDiagnostic(t *testing.T) {
 	// The /settings/providers tab is now a redirect stub; verify it returns 200
 	// regardless of whether the spawner errors during model list resolution.
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Spawner: &fakeRPCModelContractSpawner{
 			err: errors.New("serf launch-check returned invalid response"),
@@ -2924,7 +2922,7 @@ func TestWeb_ApiModels_FiltersOpenRouterLiveModelsToToolCapable(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "test-key")
 	t.Setenv("OPENROUTER_BASE_URL", live.URL+"/v1")
 
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180"})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
 	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
 	req.Host = "127.0.0.1:9180"
 	rec := httptest.NewRecorder()
@@ -2966,7 +2964,7 @@ func TestWeb_ApiModels_NoProvidersConfigured(t *testing.T) {
 	disableLiveOllamaForModelTest(t)
 	disableStoredOpenAIAuthForModelTest(t)
 
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180"})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
 	req := httptest.NewRequest(http.MethodGet, "/api/models", nil)
 	req.Host = "127.0.0.1:9180"
 	rec := httptest.NewRecorder()
@@ -2994,7 +2992,7 @@ func TestWeb_ApiDirs_ReturnsMatchingDirs(t *testing.T) {
 		}
 	}
 
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180"})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
 	req := httptest.NewRequest(http.MethodGet, "/api/dirs?prefix="+parent+"/", nil)
 	req.Host = "127.0.0.1:9180"
 	rec := httptest.NewRecorder()
@@ -3041,7 +3039,7 @@ func TestWeb_ApiDirs_FiltersByBasename(t *testing.T) {
 		}
 	}
 
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180"})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
 	prefix := parent + "/ap"
 	req := httptest.NewRequest(http.MethodGet, "/api/dirs?prefix="+prefix, nil)
 	req.Host = "127.0.0.1:9180"
@@ -3073,10 +3071,10 @@ func TestWeb_ApiDirs_FiltersByBasename(t *testing.T) {
 // GET /settings/providers returns 200 and includes a link to the unified
 // /credentials screen (the providers tab is now a redirect stub).
 func TestWeb_Settings_Providers_RendersSerfLaunchContract(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 		Spawner: &fakeRPCSpawner{
 			launchModels: func(context.Context) ([]appwire.ModelDescriptor, error) {
 				return []appwire.ModelDescriptor{
@@ -3086,7 +3084,7 @@ func TestWeb_Settings_Providers_RendersSerfLaunchContract(t *testing.T) {
 				}, nil
 			},
 		},
-		Models: []modelDescriptor{{Provider: "openai", Model: "gpt-stale"}},
+		Models: []hubcore.ModelDescriptor{{Provider: "openai", Model: "gpt-stale"}},
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/settings/providers", nil)
 	req.Host = "127.0.0.1:9180"
@@ -3129,13 +3127,13 @@ func TestWeb_SessionTasks_PastReturnsPersistedFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
 
@@ -3170,13 +3168,13 @@ func TestWeb_SessionTasks_PastNoTasksFile(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01NOTASKS/tasks", nil)
@@ -3204,13 +3202,13 @@ func TestWeb_SessionTasks_LiveProxiesDaemon(t *testing.T) {
 		})
 	})
 	defer daemon.Close()
-	r := NewRoster(dir, fakeProber{sessionID: "01LIVETASK", status: "idle"})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01LIVETASK", status: "idle"})
 	r.Refresh()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  r,
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01LIVETASK/tasks", nil)
 	req.Host = "127.0.0.1:9180"
@@ -3314,13 +3312,13 @@ func TestWeb_Send_ForwardsTextAndImages(t *testing.T) {
 		})
 	})
 	defer daemon.Close()
-	r := NewRoster(dir, fakeProber{sessionID: "01SENDIMG", status: "idle"})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01SENDIMG", status: "idle"})
 	r.Refresh()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  r,
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 	})
 
 	imgBytes := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a} // PNG header
@@ -3376,13 +3374,13 @@ func TestWeb_Send_ImageOnly_Forwards(t *testing.T) {
 		})
 	})
 	defer daemon.Close()
-	r := NewRoster(dir, fakeProber{sessionID: "01IMGONLY", status: "idle"})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01IMGONLY", status: "idle"})
 	r.Refresh()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  r,
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 	})
 
 	imgBytes := []byte{0xff, 0xd8, 0xff, 0xe0} // JPEG header bytes
@@ -3431,13 +3429,13 @@ func TestWeb_Send_ImageOnly_Forwards(t *testing.T) {
 func TestWeb_Send_RejectsEmptyTextAndNoItems(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{PID: 23, Address: "127.0.0.1:55557"})
-	r := NewRoster(dir, fakeProber{sessionID: "01NOEMPTY", status: "idle"})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01NOEMPTY", status: "idle"})
 	r.Refresh()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  r,
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 	})
 
 	cases := []string{`{}`, `{"text":""}`, `{"text":"","items":[]}`}
@@ -3455,22 +3453,22 @@ func TestWeb_Send_RejectsEmptyTextAndNoItems(t *testing.T) {
 }
 
 // TestWeb_Send_RejectsOversizeImage verifies that the hub-side accept cap
-// rejects image input items larger than sendMaxImageBytes with 413, before forwarding
+// rejects image input items larger than hubcore.SendMaxImageBytes with 413, before forwarding
 // to the daemon.
 func TestWeb_Send_RejectsOversizeImage(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{PID: 99, Address: "127.0.0.1:1"})
-	r := NewRoster(dir, fakeProber{sessionID: "01TOOBIG", status: "idle"})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01TOOBIG", status: "idle"})
 	r.Refresh()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  r,
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 	})
 
 	// One byte over the per-image cap.
-	bigData := make([]byte, sendMaxImageBytes+1)
+	bigData := make([]byte, hubcore.SendMaxImageBytes+1)
 	body := sendRequest{
 		Text: "look",
 		Items: []appwire.InputItem{{
@@ -3501,13 +3499,13 @@ func TestWeb_Send_RejectsOversizeImage(t *testing.T) {
 func TestWeb_Sidebar_LiveRowDataState(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{PID: 30, Address: "127.0.0.1:55570"})
-	r := NewRoster(dir, fakeProber{sessionID: "01LIVEACC", status: appwire.ThreadStatusAwaiting})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01LIVEACC", status: appwire.ThreadStatusAwaiting})
 	r.Refresh()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  r,
-		Past:    NewPastIndex(""),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
 	req.Host = "127.0.0.1:9180"
@@ -3566,14 +3564,14 @@ func TestWeb_Sidebar_ProjectHeader_HasChevronAndName(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
@@ -3606,16 +3604,16 @@ func TestWeb_WorkspacePartial_RosterEndedSessionKeepsResumeSendEnabled(t *testin
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 10, Address: "127.0.0.1:55556", WorkingDir: "/projects/serf"})
-	r := NewRoster(runDir, fakeProber{sessionID: "01ENDED001", status: appwire.ThreadStatusClosed})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01ENDED001", status: appwire.ThreadStatusClosed})
 	r.Refresh()
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		Roster:  r,
 		Past:    idx,
@@ -3666,14 +3664,14 @@ func TestWeb_Workspace_ForkOriginalBanner(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/s/01ORIGINAL/workspace", nil)
@@ -3726,10 +3724,10 @@ func TestWeb_SessionAction_InterruptForwards(t *testing.T) {
 		})
 	})
 	defer daemon.Close()
-	r := NewRoster(dir, fakeProber{sessionID: "01ACTINT", status: appwire.ThreadStatusActive})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01ACTINT", status: appwire.ThreadStatusActive})
 	r.Refresh()
 
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 
 	req := httptest.NewRequest(http.MethodPost, "/s/01ACTINT/interrupt", strings.NewReader(`{"turn_id":"turn_1"}`))
 	req.Host = "127.0.0.1:9180"
@@ -3756,10 +3754,10 @@ func TestWeb_SessionAction_CompactForwards(t *testing.T) {
 		})
 	})
 	defer daemon.Close()
-	r := NewRoster(dir, fakeProber{sessionID: "01ACTCMP", status: "idle"})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01ACTCMP", status: "idle"})
 	r.Refresh()
 
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 
 	req := httptest.NewRequest(http.MethodPost, "/s/01ACTCMP/compact", nil)
 	req.Host = "127.0.0.1:9180"
@@ -3779,7 +3777,7 @@ func TestWeb_SessionAction_CompactResumesPastThread(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "past")
 	sessionID := buildRPCParentSession(t, stateDir)
-	past := NewPastIndex(filepath.Join(root, "projects", "*"))
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -3810,7 +3808,7 @@ func TestWeb_SessionAction_CompactResumesPastThread(t *testing.T) {
 	runDir := t.TempDir()
 	resumeCalls := 0
 	spawner := &fakeRPCSpawner{
-		resume: func(_ context.Context, req ResumeRequest) (rendezvous.Entry, error) {
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
 			if req.SessionID != sessionID || req.StateDir != stateDir {
 				t.Fatalf("resume request=%+v", req)
 			}
@@ -3827,8 +3825,8 @@ func TestWeb_SessionAction_CompactResumesPastThread(t *testing.T) {
 			return entry, nil
 		},
 	}
-	roster := NewRoster(runDir, nil)
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	roster := hubcore.NewRoster(runDir, nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
 
 	req := httptest.NewRequest(http.MethodPost, "/s/"+sessionID+"/compact", nil)
 	req.Host = "127.0.0.1:9180"
@@ -3857,10 +3855,10 @@ func TestWeb_SessionAction_ShutdownForwards(t *testing.T) {
 		})
 	})
 	defer daemon.Close()
-	r := NewRoster(dir, fakeProber{sessionID: "01ACTSHD", status: "idle"})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01ACTSHD", status: "idle"})
 	r.Refresh()
 
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 
 	req := httptest.NewRequest(http.MethodPost, "/s/01ACTSHD/shutdown", nil)
 	req.Host = "127.0.0.1:9180"
@@ -3886,10 +3884,10 @@ func TestWeb_SessionAction_ClearForwards(t *testing.T) {
 		})
 	})
 	defer daemon.Close()
-	r := NewRoster(dir, fakeProber{sessionID: "01ACTCLR", status: "idle"})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01ACTCLR", status: "idle"})
 	r.Refresh()
 
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 
 	req := httptest.NewRequest(http.MethodPost, "/s/01ACTCLR/clear", nil)
 	req.Host = "127.0.0.1:9180"
@@ -3910,9 +3908,9 @@ func TestWeb_SessionAction_ClearForwards(t *testing.T) {
 // or otherwise side-effecting.
 func TestWeb_SessionAction_NotLive_404(t *testing.T) {
 	dir := t.TempDir()
-	r := NewRoster(dir, fakeProber{})
+	r := hubcore.NewRoster(dir, fakeProber{})
 	r.Refresh()
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 
 	for _, action := range []string{"interrupt", "compact", "shutdown", "clear"} {
 		req := httptest.NewRequest(http.MethodPost, "/s/01NOLIVE/"+action, nil)
@@ -3938,10 +3936,10 @@ func TestWeb_Steer_ForwardsBodyToDaemon(t *testing.T) {
 		})
 	})
 	defer daemon.Close()
-	r := NewRoster(dir, fakeProber{sessionID: "01STEER", status: appwire.ThreadStatusActive})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01STEER", status: appwire.ThreadStatusActive})
 	r.Refresh()
 
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 
 	req := httptest.NewRequest(http.MethodPost, "/s/01STEER/steer", strings.NewReader(`{"text":"stop using mocks"}`))
 	req.Host = "127.0.0.1:9180"
@@ -3963,10 +3961,10 @@ func TestWeb_Steer_ForwardsBodyToDaemon(t *testing.T) {
 func TestWeb_Steer_RejectsEmptyText(t *testing.T) {
 	dir := t.TempDir()
 	writeRendezvous(t, dir, rendezvous.Entry{PID: 34, Address: "127.0.0.1:1"})
-	r := NewRoster(dir, fakeProber{sessionID: "01STEEREMPTY", status: appwire.ThreadStatusActive})
+	r := hubcore.NewRoster(dir, fakeProber{sessionID: "01STEEREMPTY", status: appwire.ThreadStatusActive})
 	r.Refresh()
 
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 	req := httptest.NewRequest(http.MethodPost, "/s/01STEEREMPTY/steer", strings.NewReader(`{"text":"   "}`))
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("Origin", "http://127.0.0.1:9180")
@@ -3982,9 +3980,9 @@ func TestWeb_Steer_RejectsEmptyText(t *testing.T) {
 // 404 (no auto-resume — steering an ended model isn't meaningful).
 func TestWeb_Steer_NotLive_404(t *testing.T) {
 	dir := t.TempDir()
-	r := NewRoster(dir, fakeProber{})
+	r := hubcore.NewRoster(dir, fakeProber{})
 	r.Refresh()
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 
 	req := httptest.NewRequest(http.MethodPost, "/s/01STEEROFF/steer", strings.NewReader(`{"text":"hello"}`))
 	req.Host = "127.0.0.1:9180"
@@ -4032,7 +4030,7 @@ func TestWeb_Sidebar_RollupState_AwaitingHasPriority(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -4048,10 +4046,10 @@ func TestWeb_Sidebar_RollupState_AwaitingHasPriority(t *testing.T) {
 		"127.0.0.1:1001": {SessionID: "01AWAIT", Status: appwire.ThreadStatusAwaiting},
 		"127.0.0.1:1002": {SessionID: "01IDLE", Status: appwire.ThreadStatusIdle},
 	}}
-	r := NewRoster(rDir, prober)
+	r := hubcore.NewRoster(rDir, prober)
 	r.Refresh()
 
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
 	req.Host = "127.0.0.1:9180"
 	req.Header.Set("HX-Request", "true")
@@ -4081,13 +4079,13 @@ func TestWeb_Sidebar_RollupState_NoLiveChildrenHides(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    idx,
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
@@ -4119,10 +4117,10 @@ func settingsRequest(t *testing.T, web *WebServer, section string) string {
 }
 
 func TestLaunchSerfSettings_UsesSchemaRoot(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	globalBody := settingsRequest(t, web, "launch-serf")
 	for _, want := range []string{
@@ -4204,10 +4202,10 @@ func writeFakePlugin(t *testing.T, root, name, version, skillName, skillDesc str
 // plugins tab renders the client-side container and launchconfig script hook
 // rather than SSR content. The actual list is populated by the browser.
 func TestWeb_Settings_PluginsPane_RendersClientScaffolding(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	body := settingsRequest(t, web, "plugins")
 	for _, want := range []string{"plugins-form", "launchconfig.getLayer", "pluginDirs"} {
@@ -4221,10 +4219,10 @@ func TestWeb_Settings_PluginsPane_RendersClientScaffolding(t *testing.T) {
 // PluginDirs are configured and the default root has no plugins.
 func TestWeb_Settings_PluginsPane_EmptyState(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // empty XDG → no plugins
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	body := settingsRequest(t, web, "plugins")
 	if !strings.Contains(body, "plugins-form") {
@@ -4236,10 +4234,10 @@ func TestWeb_Settings_PluginsPane_EmptyState(t *testing.T) {
 // skills tab renders the client-side container and launchconfig script hook
 // rather than SSR content. The actual list is populated by the browser.
 func TestWeb_Settings_SkillsPane_RendersClientScaffolding(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	body := settingsRequest(t, web, "skills")
 	for _, want := range []string{"skills-form", "launchconfig.getLayer", "skillsDirs"} {
@@ -4253,10 +4251,10 @@ func TestWeb_Settings_SkillsPane_RendersClientScaffolding(t *testing.T) {
 // has been discovered.
 func TestWeb_Settings_SkillsPane_EmptyState(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	body := settingsRequest(t, web, "skills")
 	if !strings.Contains(body, "skills-form") {
@@ -4268,10 +4266,10 @@ func TestWeb_Settings_SkillsPane_EmptyState(t *testing.T) {
 // renders the client-side container and launchconfig script hook rather than
 // SSR content. The actual list is populated by the browser.
 func TestWeb_Settings_McpPane_RendersClientScaffolding(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	body := settingsRequest(t, web, "mcp")
 	for _, want := range []string{"mcps-form", "launchconfig.getLayer", "mcps-add"} {
@@ -4284,10 +4282,10 @@ func TestWeb_Settings_McpPane_RendersClientScaffolding(t *testing.T) {
 // TestWeb_Settings_McpPane_EmptyState renders cleanly when the config
 // file is missing.
 func TestWeb_Settings_McpPane_EmptyState(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr:       "127.0.0.1:9180",
-		Roster:        NewRoster(t.TempDir(), nil),
-		Past:          NewPastIndex(""),
+		Roster:        hubcore.NewRoster(t.TempDir(), nil),
+		Past:          hubcore.NewPastIndex(""),
 		MCPConfigPath: filepath.Join(t.TempDir(), "does-not-exist.json"),
 	})
 	body := settingsRequest(t, web, "mcp")
@@ -4297,10 +4295,10 @@ func TestWeb_Settings_McpPane_EmptyState(t *testing.T) {
 }
 
 func TestWeb_SettingsLaunchListPanesAvoidHTMLInterpolation(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	for _, section := range []string{"plugins", "skills", "mcp"} {
 		body := settingsRequest(t, web, section)
@@ -4316,10 +4314,10 @@ func TestWeb_SettingsLaunchListPanesAvoidHTMLInterpolation(t *testing.T) {
 }
 
 func TestWeb_SettingsErrorPathsAvoidHTMLInterpolation(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	req := httptest.NewRequest(http.MethodGet, "/_partials/settings/project?cwd=/tmp/project", nil)
 	req.Host = "127.0.0.1:9180"
@@ -4349,10 +4347,10 @@ func TestWeb_SettingsErrorPathsAvoidHTMLInterpolation(t *testing.T) {
 // The full shell is rendered when HX-Target is anything other than
 // "settings-content" (i.e. on initial workspace load or direct navigation).
 func TestWeb_Settings_NavPresentForAllSections(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
-		Roster:  NewRoster(t.TempDir(), nil),
-		Past:    NewPastIndex(""),
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
 	})
 	for _, sec := range []string{"general", "plugins", "skills", "mcp", "theme", "hub"} {
 		body := settingsRequest(t, web, sec)
@@ -4366,10 +4364,10 @@ func TestWeb_Settings_NavPresentForAllSections(t *testing.T) {
 }
 
 func TestWeb_APIHealth(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		RunDir:  "/tmp/serf-run",
-		Past:    NewPastIndex("/tmp/state/projects/*"),
+		Past:    hubcore.NewPastIndex("/tmp/state/projects/*"),
 		Spawner: &fakeSpawner{},
 	})
 	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
@@ -4392,7 +4390,7 @@ func TestWeb_APIHealth(t *testing.T) {
 }
 
 func TestWeb_APIHealthReportsCodexLaunchSpawnCapability(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr:       "127.0.0.1:9180",
 		CodexLaunches: []codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}},
 	})
@@ -4424,7 +4422,7 @@ func TestWeb_APITreeReturnsRefsAndNormalizesAwaitingInput(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
@@ -4432,9 +4430,9 @@ func TestWeb_APITreeReturnsRefsAndNormalizesAwaitingInput(t *testing.T) {
 	writeRendezvous(t, runDir, rendezvous.Entry{
 		PID: 44, Address: "127.0.0.1:4444", WorkingDir: "/projects/serf", Model: "gpt-5",
 	})
-	r := NewRoster(runDir, fakeProber{sessionID: "01TREE", status: appwire.ThreadStatusAwaiting})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01TREE", status: appwire.ThreadStatusAwaiting})
 	r.Refresh()
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
 	req.Host = "127.0.0.1:9180"
@@ -4465,12 +4463,12 @@ func TestWeb_APITreeGroupsLiveOnlySessionsByProject(t *testing.T) {
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 50, Address: "127.0.0.1:4050", WorkingDir: "/projects/serf", Model: "gpt-5"})
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 51, Address: "127.0.0.1:4051", WorkingDir: "/projects/serf", Model: "gpt-5"})
-	r := NewRoster(runDir, perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{
+	r := hubcore.NewRoster(runDir, perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{
 		"127.0.0.1:4050": {SessionID: "01LIVEA", Status: appwire.ThreadStatusIdle},
 		"127.0.0.1:4051": {SessionID: "01LIVEB", Status: appwire.ThreadStatusAwaiting},
 	}})
 	r.Refresh()
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
 	req.Host = "127.0.0.1:9180"
@@ -4503,9 +4501,9 @@ func TestWeb_APITreeGroupsLiveOnlySessionsByProject(t *testing.T) {
 func TestWeb_APITreeSkipsLiveEntriesUntilSessionIDKnown(t *testing.T) {
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 52, Address: "127.0.0.1:4052", WorkingDir: "/projects/serf", Model: "gpt-5"})
-	r := NewRoster(runDir, fakeProber{sessionID: "", status: appwire.ThreadStatusIdle})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "", status: appwire.ThreadStatusIdle})
 	r.Refresh()
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
 	req.Host = "127.0.0.1:9180"
@@ -4526,9 +4524,9 @@ func TestWeb_APITreeSkipsLiveEntriesUntilSessionIDKnown(t *testing.T) {
 func TestWeb_SidebarSkipsLiveEntriesUntilSessionIDKnown(t *testing.T) {
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 53, Address: "127.0.0.1:4053", WorkingDir: "/projects/serf", Model: "gpt-5"})
-	r := NewRoster(runDir, fakeProber{sessionID: "", status: appwire.ThreadStatusIdle})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "", status: appwire.ThreadStatusIdle})
 	r.Refresh()
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 
 	req := httptest.NewRequest(http.MethodGet, "/_partials/sidebar", nil)
 	req.Host = "127.0.0.1:9180"
@@ -4555,15 +4553,15 @@ func TestWeb_APISessionDetailsLiveAndPast(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 45, Address: "127.0.0.1:4545", WorkingDir: "/projects/serf", Model: "gpt-5"})
-	r := NewRoster(runDir, fakeProber{sessionID: "01DETAIL", status: appwire.ThreadStatusIdle})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01DETAIL", status: appwire.ThreadStatusIdle})
 	r.Refresh()
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/local:01DETAIL", nil)
 	req.Host = "127.0.0.1:9180"
@@ -4599,15 +4597,15 @@ func TestWeb_APISessionDetailsLiveWithoutAppWireDoesNotAdvertiseActions(t *testi
 	}); err != nil {
 		t.Fatal(err)
 	}
-	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 45, Address: "127.0.0.1:4545", WorkingDir: "/projects/serf", Model: "gpt-5"})
-	r := NewRoster(runDir, fakeProber{sessionID: "01DETAIL", status: appwire.ThreadStatusIdle})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01DETAIL", status: appwire.ThreadStatusIdle})
 	r.Refresh()
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
 
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/local:01DETAIL", nil)
 	req.Host = "127.0.0.1:9180"
@@ -4631,9 +4629,9 @@ func TestWeb_APISessionDetailsLiveWithoutAppWireDoesNotAdvertiseActions(t *testi
 func TestWeb_WorkspaceDataLocalLiveUsesAppWireCapabilities(t *testing.T) {
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 64, Address: "127.0.0.1:6464", WorkingDir: "/projects/serf", Model: "gpt-5"})
-	r := NewRoster(runDir, fakeProber{sessionID: "01CAPS", status: appwire.ThreadStatusIdle})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01CAPS", status: appwire.ThreadStatusIdle})
 	r.Refresh()
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 	web.sources.Add(&scriptedAppSource{
 		id: "local",
 		thread: appwire.Thread{
@@ -4671,9 +4669,9 @@ func TestWeb_WorkspaceDataLocalLiveUsesAppWireCapabilities(t *testing.T) {
 func TestWeb_APISessionDetailsLocalLiveUsesAppWireForkCapability(t *testing.T) {
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: 65, Address: "127.0.0.1:6565", WorkingDir: "/projects/serf", Model: "gpt-5"})
-	r := NewRoster(runDir, fakeProber{sessionID: "01FORKCAP", status: appwire.ThreadStatusIdle})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01FORKCAP", status: appwire.ThreadStatusIdle})
 	r.Refresh()
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 	web.sources.Add(&scriptedAppSource{
 		id: "local",
 		thread: appwire.Thread{
@@ -4708,9 +4706,9 @@ func TestWeb_APISessionDetailsLocalLiveUsesAppWireForkCapability(t *testing.T) {
 func TestWeb_ManagedCodexLiveWorkspaceCapabilitiesEnsureSource(t *testing.T) {
 	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr:       "127.0.0.1:9180",
-		Past:          NewPastIndex(""),
+		Past:          hubcore.NewPastIndex(""),
 		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
 		CodexLauncher: launcher,
 	})
@@ -4722,7 +4720,7 @@ func TestWeb_ManagedCodexLiveWorkspaceCapabilitiesEnsureSource(t *testing.T) {
 }
 
 func TestWeb_APISpawnSchema(t *testing.T) {
-	web := NewWebServer(WebConfig{
+	web := NewWebServer(hubcore.WebConfig{
 		HubAddr: "127.0.0.1:9180",
 		CodexSources: []appsource.CodexSourceConfig{{
 			ID: "codex-local",
@@ -4781,9 +4779,9 @@ func TestWeb_APISessionActionClearReturnsRef(t *testing.T) {
 		})
 	})
 	defer daemon.Close()
-	r := NewRoster(runDir, fakeProber{sessionID: "01OLD", status: appwire.ThreadStatusIdle})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01OLD", status: appwire.ThreadStatusIdle})
 	r.Refresh()
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:01OLD/clear", nil)
 	req.Host = "127.0.0.1:9180"
@@ -4815,9 +4813,9 @@ func TestWeb_APISessionActionModelForwardsBody(t *testing.T) {
 		})
 	})
 	defer daemon.Close()
-	r := NewRoster(runDir, fakeProber{sessionID: "01MODEL", status: appwire.ThreadStatusIdle})
+	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01MODEL", status: appwire.ThreadStatusIdle})
 	r.Refresh()
-	web := NewWebServer(WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: NewPastIndex("")})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
 
 	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:01MODEL/model", strings.NewReader(`{"model":"gpt-5.5"}`))
 	req.Host = "127.0.0.1:9180"

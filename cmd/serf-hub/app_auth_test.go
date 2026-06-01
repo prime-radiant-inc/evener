@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/internal/appwire"
 	authopenai "primeradiant.com/serf/internal/auth/openai"
 	"primeradiant.com/serf/internal/auth/openai/oaitest"
@@ -38,7 +39,7 @@ func TestHubRPCAuthStatusUsesUserScopedOpenAIAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hub := newHubRPCTestServer(t, WebConfig{Past: NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -82,7 +83,7 @@ func TestHubRPCAuthStatusPrefersStoredOAuthOverEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hub := newHubRPCTestServer(t, WebConfig{Past: NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -105,7 +106,7 @@ func TestHubRPCAuthStatusFallsBackToEnvWhenNoStoredOAuth(t *testing.T) {
 	xdgStateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", xdgStateHome)
 
-	hub := newHubRPCTestServer(t, WebConfig{Past: NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -250,7 +251,7 @@ func TestHubRPCAuthLogoutRemovesUserScopedOpenAIAuth(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hub := newHubRPCTestServer(t, WebConfig{Past: NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()

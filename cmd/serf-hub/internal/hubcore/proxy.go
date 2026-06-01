@@ -1,4 +1,4 @@
-package main
+package hubcore
 
 import (
 	"net/http"
@@ -62,7 +62,7 @@ func (p *RESTProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.URL.Path = "/" + rest
 	r.Host = entry.Address
 	r.Header.Del("Origin")
-	setDaemonAuthorization(r.Header, entry.HubToken)
+	SetDaemonAuthorization(r.Header, entry.HubToken)
 	rp.ServeHTTP(w, r)
 }
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/hubapi"
@@ -21,7 +22,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	metas, live := s.navigationTreeInputs(r.Context())
-	tree := BuildTree(metas, live)
+	tree := hubcore.BuildTree(metas, live)
 	resp := hubapi.TreeResponse{
 		GeneratedAt: time.Now().UTC(),
 		Sources:     s.apiTreeSources(),
@@ -58,21 +59,21 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 			project = "(no project)"
 		}
 		key := projectKey(project)
-		node := TreeNode{
+		node := hubcore.TreeNode{
 			ID:        le.SessionID,
 			Title:     liveTitle(le.SessionID, le, s.cfg.Past),
 			Project:   project,
-			State:     normalizeState(le.Status),
+			State:     hubcore.NormalizeState(le.Status),
 			Kind:      "session",
 			CreatedAt: le.StartedAt,
 			UpdatedAt: le.StartedAt,
-			Age:       ageString(le.StartedAt),
+			Age:       hubcore.AgeString(le.StartedAt),
 		}
 		apiNode := s.apiTreeNode("project", key, node, true)
 		if idx, ok := projectIndexes[key]; ok {
 			p := &resp.Projects[idx]
 			p.Sessions = append(p.Sessions, apiNode)
-			if attentionRank(node.State) > attentionRank(p.RollupState) {
+			if hubcore.AttentionRank(node.State) > hubcore.AttentionRank(p.RollupState) {
 				p.RollupState = node.State
 			}
 			continue
@@ -89,8 +90,8 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	writeAPIJSON(w, http.StatusOK, resp)
 }
 
-func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]agent.SessionMeta, []LiveEntry) {
-	var live []LiveEntry
+func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]agent.SessionMeta, []hubcore.LiveEntry) {
+	var live []hubcore.LiveEntry
 	if s.cfg.Roster != nil {
 		live = s.cfg.Roster.List()
 	}
@@ -144,15 +145,15 @@ func (s *WebServer) ensureManagedCodexSources(ctx context.Context) {
 	_ = ensureManagedCodexSources(ctx, s.cfg, s.sources, appwire.ThreadListParams{})
 }
 
-func appThreadTreeEntries(thread appwire.Thread) (agent.SessionMeta, LiveEntry, bool) {
+func appThreadTreeEntries(thread appwire.Thread) (agent.SessionMeta, hubcore.LiveEntry, bool) {
 	ref, ok := appThreadTreeRef(thread)
 	if !ok {
-		return agent.SessionMeta{}, LiveEntry{}, false
+		return agent.SessionMeta{}, hubcore.LiveEntry{}, false
 	}
 	refText := ref.String()
 	title := strutil.FirstNonEmpty(thread.Name, thread.Preview, thread.SessionID, thread.ID, refText)
-	createdAt := unixTime(thread.CreatedAt)
-	updatedAt := unixTime(thread.UpdatedAt)
+	createdAt := hubcore.UnixTime(thread.CreatedAt)
+	updatedAt := hubcore.UnixTime(thread.UpdatedAt)
 	meta := agent.SessionMeta{
 		ID:             refText,
 		ProfileID:      ref.SourceID,
@@ -168,14 +169,14 @@ func appThreadTreeEntries(thread appwire.Thread) (agent.SessionMeta, LiveEntry, 
 		meta.EnvInfo.GitBranch = thread.GitInfo.Branch
 		meta.EnvInfo.GitOriginURL = thread.GitInfo.OriginURL
 	}
-	entry := LiveEntry{
+	entry := hubcore.LiveEntry{
 		Entry: rendezvous.Entry{
 			SourceID:   ref.SourceID,
 			ThreadID:   ref.ThreadID,
 			SessionID:  refText,
 			WorkingDir: thread.CWD,
 			Model:      thread.ModelProvider,
-			StartedAt:  orderCreatedAt(createdAt, updatedAt),
+			StartedAt:  hubcore.OrderCreatedAt(createdAt, updatedAt),
 		},
 		SessionID: refText,
 		Status:    thread.Status.Type,
@@ -258,7 +259,7 @@ func hubCapabilitiesFromAppwire(caps appwire.ThreadCapabilities) hubapi.SessionC
 
 func hubDetailFromAppThread(thread appwire.Thread) hubapi.SessionDetail {
 	ref := hubRefFromAppThread(thread)
-	state := normalizeState(thread.Status.Type)
+	state := hubcore.NormalizeState(thread.Status.Type)
 	if state == "" {
 		state = "idle"
 	}
@@ -313,11 +314,11 @@ func (s *WebServer) isLive(sessionID string) bool {
 	return ok
 }
 
-func treeNodeCanActLive(n TreeNode) bool {
-	return normalizeState(n.State) != "ended"
+func treeNodeCanActLive(n hubcore.TreeNode) bool {
+	return hubcore.NormalizeState(n.State) != "ended"
 }
 
-func (s *WebServer) apiTreeNode(scope, projectKey string, n TreeNode, live bool) hubapi.TreeNode {
+func (s *WebServer) apiTreeNode(scope, projectKey string, n hubcore.TreeNode, live bool) hubapi.TreeNode {
 	ref := hubRefFromTreeNodeID(n.ID)
 	refText := ref.String()
 	rowID := scope + ":" + refText
@@ -353,9 +354,9 @@ func hubRefFromTreeNodeID(id string) hubapi.Ref {
 	return hubapi.LocalRef(id)
 }
 
-func (s *WebServer) liveEntry(sessionID string) (LiveEntry, bool) {
+func (s *WebServer) liveEntry(sessionID string) (hubcore.LiveEntry, bool) {
 	if s.cfg.Roster == nil {
-		return LiveEntry{}, false
+		return hubcore.LiveEntry{}, false
 	}
 	return s.cfg.Roster.Find(sessionID)
 }

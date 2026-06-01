@@ -10,13 +10,14 @@ import (
 	"time"
 
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/rendezvous"
 )
 
-func newHubSourceRegistry(cfg WebConfig) *appsource.Registry {
+func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 	registry := appsource.NewRegistry()
 	registry.Add(appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
 		if cfg.Roster != nil {
@@ -63,7 +64,7 @@ func relayOnThreadRead(source appsource.Source) bool {
 	return true
 }
 
-func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Server {
+func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
 	server := appserver.NewServer(appserver.ServerConfig{
 		ServerName: "serf-hub",
 		Version:    Version,
@@ -192,8 +193,8 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 					return
 				case <-ticker.C:
 					if server.SubscriberCount(relayKey) == 0 {
-						if cfg.relayHooks.idleExit != nil {
-							cfg.relayHooks.idleExit(threadID)
+						if cfg.RelayHooks.IdleExit != nil {
+							cfg.RelayHooks.IdleExit(threadID)
 						}
 						relayMu.Lock()
 						if server.SubscriberCount(relayKey) == 0 {
@@ -201,8 +202,8 @@ func newHubAppServer(cfg WebConfig, sources *appsource.Registry) *appserver.Serv
 								delete(relayedThreads, relayKey)
 							}
 							relayMu.Unlock()
-							if cfg.relayHooks.afterIdleDelete != nil {
-								cfg.relayHooks.afterIdleDelete(threadID)
+							if cfg.RelayHooks.AfterIdleDelete != nil {
+								cfg.RelayHooks.AfterIdleDelete(threadID)
 							}
 							cancelRelay()
 							return

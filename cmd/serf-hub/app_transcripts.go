@@ -7,12 +7,13 @@ import (
 	"os"
 	"strings"
 
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
 )
 
-func hubThreadTranscriptList(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
+func hubThreadTranscriptList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
 	root, err := hubTranscriptRoot(ctx, cfg, sources, params.Ref)
 	if err != nil {
 		return appwire.ThreadTranscriptListResponse{}, err
@@ -88,7 +89,7 @@ func hubThreadTranscriptList(ctx context.Context, cfg WebConfig, sources *appsou
 	return appwire.ThreadTranscriptListResponse{Data: targets}, nil
 }
 
-func hubTranscriptRoot(ctx context.Context, cfg WebConfig, sources *appsource.Registry, ref string) (appwire.Thread, error) {
+func hubTranscriptRoot(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, ref string) (appwire.Thread, error) {
 	source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, ref, "")
 	if err == nil {
 		resp, readErr := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false})

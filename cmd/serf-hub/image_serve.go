@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 )
 
 // imageShaRegexp limits paths to lowercase hex sha256 (64 chars). The browser
@@ -76,7 +78,7 @@ func findImageInTranscript(path, wantSha string) ([]byte, string, bool) {
 		if head.Kind != "entry" {
 			continue
 		}
-		var rec replayEntry
+		var rec hubcore.ReplayEntry
 		if err := json.Unmarshal(line, &rec); err != nil {
 			continue
 		}

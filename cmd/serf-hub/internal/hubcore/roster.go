@@ -1,4 +1,4 @@
-package main
+package hubcore
 
 import (
 	"context"
@@ -55,6 +55,22 @@ func NewRoster(runDir string, prober Prober) *Roster {
 		byPID:     make(map[int]LiveEntry),
 		failCount: make(map[int]int),
 	}
+}
+
+// NewRosterWithEntries returns a Roster pre-seeded with the given live entries,
+// bypassing the rendezvous-dir scan. Each entry is indexed by its PID (for List)
+// and, when non-empty, by its SessionID (for Find), mirroring how Refresh
+// populates the roster. It exists so callers in other packages can stand up a
+// roster with synthetic live entries (the rendezvous dir and prober are empty).
+func NewRosterWithEntries(entries ...LiveEntry) *Roster {
+	r := NewRoster("", nil)
+	for _, e := range entries {
+		r.byPID[e.PID] = e
+		if e.SessionID != "" {
+			r.bySess[e.SessionID] = e
+		}
+	}
+	return r
 }
 
 // Refresh re-scans the rendezvous dir and updates the in-memory roster.

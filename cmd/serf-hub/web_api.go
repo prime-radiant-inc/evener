@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/internal/hubapi"
@@ -23,7 +24,7 @@ func (s *WebServer) handleApiSearch(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.Roster != nil {
 		live := s.cfg.Roster.List()
 		sort.SliceStable(live, func(i, j int) bool {
-			return liveEntryWithPastLess(live[i], live[j], s.cfg.Past)
+			return hubcore.LiveEntryWithPastLess(live[i], live[j], s.cfg.Past)
 		})
 		for _, le := range live {
 			if le.SessionID == "" {
@@ -34,7 +35,7 @@ func (s *WebServer) handleApiSearch(w http.ResponseWriter, r *http.Request) {
 				resp.Live = append(resp.Live, searchResult{
 					ID:      le.SessionID,
 					Title:   title,
-					State:   normalizeState(le.Status),
+					State:   hubcore.NormalizeState(le.Status),
 					Project: filepath.Base(le.WorkingDir),
 					Age:     "now",
 				})
@@ -50,7 +51,7 @@ func (s *WebServer) handleApiSearch(w http.ResponseWriter, r *http.Request) {
 				Title:   searchPastTitle(e),
 				State:   "ended",
 				Project: filepath.Base(e.Meta.EnvInfo.WorkingDir),
-				Age:     ageString(e.Meta.UpdatedAt),
+				Age:     hubcore.AgeString(e.Meta.UpdatedAt),
 			})
 		}
 	}
@@ -144,7 +145,7 @@ func (s *WebServer) apiStateGlob() string {
 	if s.cfg.Past == nil {
 		return ""
 	}
-	return s.cfg.Past.stateGlob
+	return s.cfg.Past.StateGlob()
 }
 
 func (s *WebServer) handleAPISpawnSchema(w http.ResponseWriter, r *http.Request) {

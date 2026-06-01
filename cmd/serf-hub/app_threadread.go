@@ -7,12 +7,13 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/internal/apptranscript"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/llm"
 )
 
-func pastThreadForRead(cfg WebConfig, params appwire.ThreadReadParams) (appwire.Thread, bool) {
+func pastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.Thread, bool) {
 	if cfg.Past == nil {
 		return appwire.Thread{}, false
 	}
@@ -56,7 +57,7 @@ func liveThreadCanMergeLocalPast(live appwire.Thread) bool {
 	return true
 }
 
-func mergePastThreadForRead(cfg WebConfig, params appwire.ThreadReadParams, live appwire.Thread) appwire.Thread {
+func mergePastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadParams, live appwire.Thread) appwire.Thread {
 	if !liveThreadCanMergeLocalPast(live) {
 		return live
 	}
@@ -116,7 +117,7 @@ func mergePastThreadForRead(cfg WebConfig, params appwire.ThreadReadParams, live
 	return live
 }
 
-func pastEntryThread(entry PastEntry, includeTurns bool) appwire.Thread {
+func pastEntryThread(entry hubcore.PastEntry, includeTurns bool) appwire.Thread {
 	title := agent.SessionDisplayName(entry.Meta)
 	if title == "" {
 		title = entry.Meta.ID
@@ -133,16 +134,16 @@ func pastEntryThread(entry PastEntry, includeTurns bool) appwire.Thread {
 	} else if entry.Meta.ParentSessionID != "" {
 		kind = "fork"
 	}
-	createdAt := orderCreatedAt(entry.Meta.CreatedAt, entry.Meta.UpdatedAt)
-	updatedAt := orderUpdatedAt(entry.Meta.UpdatedAt, entry.Meta.CreatedAt)
+	createdAt := hubcore.OrderCreatedAt(entry.Meta.CreatedAt, entry.Meta.UpdatedAt)
+	updatedAt := hubcore.OrderUpdatedAt(entry.Meta.UpdatedAt, entry.Meta.CreatedAt)
 	thread := appwire.Thread{
 		ID:            entry.Meta.ID,
 		SessionID:     entry.Meta.ID,
 		Preview:       title,
 		Name:          title,
 		ModelProvider: entry.Meta.Model,
-		CreatedAt:     unixSeconds(createdAt),
-		UpdatedAt:     unixSeconds(updatedAt),
+		CreatedAt:     hubcore.UnixSeconds(createdAt),
+		UpdatedAt:     hubcore.UnixSeconds(updatedAt),
 		Status:        appwire.ThreadStatus{Type: appwire.ThreadStatusNotLoaded},
 		Path:          filepath.Base(cwd),
 		CWD:           cwd,
@@ -164,11 +165,11 @@ func pastEntryThread(entry PastEntry, includeTurns bool) appwire.Thread {
 	return thread
 }
 
-func pastEntryTurns(entry PastEntry) []appwire.Turn {
+func pastEntryTurns(entry hubcore.PastEntry) []appwire.Turn {
 	transcriptPath := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
 	toolNames := map[string]string{}
 	return apptranscript.TurnsFromFile(transcriptPath, transcriptJSONLMaxLineBytes, func(raw json.RawMessage, turnID string, entryIndex int) []appwire.ThreadItem {
-		var entryRec replayEntry
+		var entryRec hubcore.ReplayEntry
 		if err := json.Unmarshal(raw, &entryRec); err != nil {
 			return nil
 		}
@@ -176,7 +177,7 @@ func pastEntryTurns(entry PastEntry) []appwire.Turn {
 	})
 }
 
-func appItemsFromReplayTurn(turnID string, turnIndex int, turn replayTurn, toolNames map[string]string) []appwire.ThreadItem {
+func appItemsFromReplayTurn(turnID string, turnIndex int, turn hubcore.ReplayTurn, toolNames map[string]string) []appwire.ThreadItem {
 	agentTurn, imageNames := replayTurnToAgentTurn(turn)
 	return apptranscript.ProjectTurn(turnID, turnIndex, agentTurn, toolNames, func(image llm.ImageData) appwire.InputItem {
 		item := apptranscript.DefaultImageProjector(image)
@@ -193,7 +194,7 @@ func appItemsFromReplayTurn(turnID string, turnIndex int, turn replayTurn, toolN
 	})
 }
 
-func replayTurnToAgentTurn(turn replayTurn) (agent.Turn, map[string]string) {
+func replayTurnToAgentTurn(turn hubcore.ReplayTurn) (agent.Turn, map[string]string) {
 	imageNames := map[string]string{}
 	content := make([]llm.ContentPart, 0, len(turn.Message.Content))
 	for _, part := range turn.Message.Content {

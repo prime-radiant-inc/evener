@@ -1,11 +1,11 @@
-package main
+package hubcore
 
 import (
 	"net/http"
 	"strings"
 )
 
-func setDaemonAuthorization(header http.Header, token string) {
+func SetDaemonAuthorization(header http.Header, token string) {
 	token = strings.TrimSpace(token)
 	if token == "" {
 		header.Del("Authorization")

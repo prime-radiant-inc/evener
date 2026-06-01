@@ -8,12 +8,13 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/hubapi"
 )
 
 func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string) {
-	r.Body = http.MaxBytesReader(w, r.Body, sendMaxRequestBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, hubcore.SendMaxRequestBytes)
 	var body sendRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -28,8 +29,8 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		return
 	}
 	for i, it := range body.Items {
-		if len(it.Data) > sendMaxImageBytes {
-			http.Error(w, fmt.Sprintf("items[%d] %q exceeds %d-byte limit", i, it.Name, sendMaxImageBytes), http.StatusRequestEntityTooLarge)
+		if len(it.Data) > hubcore.SendMaxImageBytes {
+			http.Error(w, fmt.Sprintf("items[%d] %q exceeds %d-byte limit", i, it.Name, hubcore.SendMaxImageBytes), http.StatusRequestEntityTooLarge)
 			return
 		}
 	}
@@ -53,9 +54,9 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		}
 	}
 
-	resolve := func(forceResume bool) (LiveEntry, error) {
+	resolve := func(forceResume bool) (hubcore.LiveEntry, error) {
 		if s.cfg.Roster == nil {
-			return LiveEntry{}, fmt.Errorf("spawner not configured")
+			return hubcore.LiveEntry{}, fmt.Errorf("spawner not configured")
 		}
 		if !forceResume {
 			if le, ok := s.cfg.Roster.Find(id); ok {
@@ -64,7 +65,7 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		}
 		// Resume path: spawn the daemon and wait for it to register.
 		if s.cfg.Spawner == nil {
-			return LiveEntry{}, fmt.Errorf("spawner not configured")
+			return hubcore.LiveEntry{}, fmt.Errorf("spawner not configured")
 		}
 		lock := s.lockForSession(id)
 		lock.Lock()
@@ -74,15 +75,15 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 		}
 		resumeReq, err := s.resumeRequestFor(id)
 		if err != nil {
-			return LiveEntry{}, fmt.Errorf("resume: %w", err)
+			return hubcore.LiveEntry{}, fmt.Errorf("resume: %w", err)
 		}
 		entry, err := s.cfg.Spawner.Resume(r.Context(), resumeReq)
 		if err != nil {
-			return LiveEntry{}, fmt.Errorf("resume: %w", err)
+			return hubcore.LiveEntry{}, fmt.Errorf("resume: %w", err)
 		}
 		le := waitForRosterMatch(s.cfg.Roster, id, entry.PID, 5*time.Second)
 		if le.Address == "" {
-			return LiveEntry{}, fmt.Errorf("daemon not in roster after resume")
+			return hubcore.LiveEntry{}, fmt.Errorf("daemon not in roster after resume")
 		}
 		return le, nil
 	}
@@ -144,7 +145,7 @@ func (s *WebServer) handleSend(w http.ResponseWriter, r *http.Request, id string
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (s *WebServer) resumeRequestFor(id string) (ResumeRequest, error) {
+func (s *WebServer) resumeRequestFor(id string) (hubcore.ResumeRequest, error) {
 	return resumeRequestForConfig(s.cfg, id)
 }
 
@@ -195,7 +196,7 @@ func (s *WebServer) handleSteer(w http.ResponseWriter, r *http.Request, id strin
 // session. Unlike /send, queueing requires the session to be processing — the
 // daemon returns Conflict when idle, which we surface as 409.
 func (s *WebServer) handleQueue(w http.ResponseWriter, r *http.Request, id string) {
-	r.Body = http.MaxBytesReader(w, r.Body, sendMaxRequestBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, hubcore.SendMaxRequestBytes)
 	var body queueRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -211,8 +212,8 @@ func (s *WebServer) handleQueue(w http.ResponseWriter, r *http.Request, id strin
 		return
 	}
 	for i, it := range body.Items {
-		if len(it.Data) > sendMaxImageBytes {
-			http.Error(w, fmt.Sprintf("items[%d] %q exceeds %d-byte limit", i, it.Name, sendMaxImageBytes), http.StatusRequestEntityTooLarge)
+		if len(it.Data) > hubcore.SendMaxImageBytes {
+			http.Error(w, fmt.Sprintf("items[%d] %q exceeds %d-byte limit", i, it.Name, hubcore.SendMaxImageBytes), http.StatusRequestEntityTooLarge)
 			return
 		}
 	}
@@ -242,7 +243,7 @@ func (s *WebServer) handleQueue(w http.ResponseWriter, r *http.Request, id strin
 // STEERING injection on the in-flight turn. Rides on the Steer capability;
 // the daemon returns Conflict when idle or when the queue is empty.
 func (s *WebServer) handleDrainAsSteer(w http.ResponseWriter, r *http.Request, id string) {
-	r.Body = http.MaxBytesReader(w, r.Body, sendMaxRequestBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, hubcore.SendMaxRequestBytes)
 	var body drainAsSteerRequest
 	// Empty bodies are valid (legacy classic drain). json.NewDecoder errors
 	// only when the body has content that can't be parsed — silently
@@ -263,8 +264,8 @@ func (s *WebServer) handleDrainAsSteer(w http.ResponseWriter, r *http.Request, i
 		return
 	}
 	for i, it := range body.Items {
-		if len(it.Data) > sendMaxImageBytes {
-			http.Error(w, fmt.Sprintf("items[%d] %q exceeds %d-byte limit", i, it.Name, sendMaxImageBytes), http.StatusRequestEntityTooLarge)
+		if len(it.Data) > hubcore.SendMaxImageBytes {
+			http.Error(w, fmt.Sprintf("items[%d] %q exceeds %d-byte limit", i, it.Name, hubcore.SendMaxImageBytes), http.StatusRequestEntityTooLarge)
 			return
 		}
 	}
@@ -476,8 +477,8 @@ func (s *WebServer) forkSession(parentID string, body forkRequest) (string, erro
 }
 
 // waitForRosterMatch polls the roster until it sees a daemon with the given PID
-// and session ID, or until timeout. Returns the matched LiveEntry (Address == "" on timeout).
-func waitForRosterMatch(r *Roster, sessionID string, pid int, timeout time.Duration) LiveEntry {
+// and session ID, or until timeout. Returns the matched hubcore.LiveEntry (Address == "" on timeout).
+func waitForRosterMatch(r *hubcore.Roster, sessionID string, pid int, timeout time.Duration) hubcore.LiveEntry {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		r.Refresh()
@@ -486,17 +487,17 @@ func waitForRosterMatch(r *Roster, sessionID string, pid int, timeout time.Durat
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
-	return LiveEntry{}
+	return hubcore.LiveEntry{}
 }
 
 // fetchStatus reads /status from the daemon at le.Address, returning nil on any error.
-func (s *WebServer) fetchStatus(le LiveEntry) *daemonStatus {
+func (s *WebServer) fetchStatus(le hubcore.LiveEntry) *daemonStatus {
 	client := &http.Client{Timeout: 1 * time.Second}
 	req, err := http.NewRequest(http.MethodGet, "http://"+le.Address+"/status", nil) //nolint:gosec
 	if err != nil {
 		return nil
 	}
-	setDaemonAuthorization(req.Header, le.HubToken)
+	hubcore.SetDaemonAuthorization(req.Header, le.HubToken)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil

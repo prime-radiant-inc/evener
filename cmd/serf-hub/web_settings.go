@@ -456,7 +456,7 @@ func readSkillFrontmatter(path string) (string, string, bool) {
 }
 
 // mcpConfigPathForSettings returns the configured MCP file path, or the
-// XDG default when WebConfig.MCPConfigPath is empty.
+// XDG default when hubcore.WebConfig.MCPConfigPath is empty.
 func (s *WebServer) mcpConfigPathForSettings() string {
 	if s.cfg.MCPConfigPath != "" {
 		return s.cfg.MCPConfigPath

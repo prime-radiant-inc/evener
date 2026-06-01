@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/diagnostic"
@@ -86,7 +87,7 @@ func safeSpawnEnv() map[string]string {
 	return out
 }
 
-func launchHarnessIDs(cfg WebConfig) []string {
+func launchHarnessIDs(cfg hubcore.WebConfig) []string {
 	descriptors := launchHarnessDescriptors(cfg)
 	out := make([]string, 0, len(descriptors))
 	for _, descriptor := range descriptors {
@@ -101,7 +102,7 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "POST required", http.StatusMethodNotAllowed)
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, sendMaxRequestBytes)
+	r.Body = http.MaxBytesReader(w, r.Body, hubcore.SendMaxRequestBytes)
 	var req spawnRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -112,8 +113,8 @@ func (s *WebServer) handleApiSpawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i, it := range req.Items {
-		if len(it.Data) > sendMaxImageBytes {
-			http.Error(w, fmt.Sprintf("items[%d] %q exceeds %d-byte limit", i, it.Name, sendMaxImageBytes), http.StatusRequestEntityTooLarge)
+		if len(it.Data) > hubcore.SendMaxImageBytes {
+			http.Error(w, fmt.Sprintf("items[%d] %q exceeds %d-byte limit", i, it.Name, hubcore.SendMaxImageBytes), http.StatusRequestEntityTooLarge)
 			return
 		}
 	}
@@ -187,11 +188,11 @@ func (s *WebServer) handleApiModels(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(models) //nolint:errcheck
 }
 
-func serfLaunchModelsOrEmpty(ctx context.Context, cfg WebConfig) []appwire.ModelDescriptor {
+func serfLaunchModelsOrEmpty(ctx context.Context, cfg hubcore.WebConfig) []appwire.ModelDescriptor {
 	return serfLaunchModelListOrEmpty(ctx, cfg).Data
 }
 
-func serfLaunchModelListOrEmpty(ctx context.Context, cfg WebConfig) appwire.ModelListResponse {
+func serfLaunchModelListOrEmpty(ctx context.Context, cfg hubcore.WebConfig) appwire.ModelListResponse {
 	resp, err := serfLaunchModelList(ctx, cfg, "")
 	if err != nil {
 		return appwire.ModelListResponse{}

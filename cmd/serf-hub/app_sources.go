@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -22,14 +23,14 @@ func sourceForThread(sources *appsource.Registry, ref, threadID string) (appsour
 	return source, nil
 }
 
-func sourceForThreadWithManagedLaunch(ctx context.Context, cfg WebConfig, sources *appsource.Registry, ref, threadID string) (appsource.Source, error) {
+func sourceForThreadWithManagedLaunch(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, ref, threadID string) (appsource.Source, error) {
 	if sourceID, ok := managedLaunchSourceIDForRef(cfg, ref); ok {
 		return cfg.CodexLauncher.EnsureSource(ctx, sourceID, sources)
 	}
 	return sourceForThread(sources, ref, threadID)
 }
 
-func managedLaunchSourceIDForRef(cfg WebConfig, ref string) (string, bool) {
+func managedLaunchSourceIDForRef(cfg hubcore.WebConfig, ref string) (string, bool) {
 	if ref == "" || cfg.CodexLauncher == nil {
 		return "", false
 	}
@@ -45,7 +46,7 @@ func managedLaunchSourceIDForRef(cfg WebConfig, ref string) (string, bool) {
 // index. Used to gate auto-resume retries after live-action failures so that
 // non-local refs (which never appear in the local past index) still get the
 // retry when their backing daemon dies.
-func hubKnowsRef(cfg WebConfig, ref string) bool {
+func hubKnowsRef(cfg hubcore.WebConfig, ref string) bool {
 	if _, ok := managedLaunchSourceIDForRef(cfg, ref); ok {
 		return true
 	}

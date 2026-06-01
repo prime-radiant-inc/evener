@@ -8,13 +8,14 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmd/serf-hub/internal/fspaths"
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/launchconfig"
 )
 
-func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
 	if err := validateAppWireInputItems(params.Input); err != nil {
 		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
 	}
@@ -98,7 +99,7 @@ func hubThreadStart(ctx context.Context, cfg WebConfig, sources *appsource.Regis
 	if err := validateSerfLaunchModel(ctx, cfg, modelRef, workingDir); err != nil {
 		return appwire.ThreadStartResponse{}, err
 	}
-	entry, err := cfg.Spawner.Spawn(ctx, SpawnRequest{
+	entry, err := cfg.Spawner.Spawn(ctx, hubcore.SpawnRequest{
 		Resolved:   spawnResolved,
 		WorkingDir: workingDir,
 		Provider:   modelRef.Provider,
@@ -165,7 +166,7 @@ func launchSourceID(params appwire.ThreadStartParams) string {
 	return ""
 }
 
-func hubThreadResume(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+func hubThreadResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
 	if params.Ref != "" {
 		ref, err := appwire.ParseRef(params.Ref)
 		if err != nil {
@@ -237,15 +238,15 @@ func hubThreadResume(ctx context.Context, cfg WebConfig, sources *appsource.Regi
 	return appwire.ThreadResumeResponse{Thread: threadResp.Thread}, nil
 }
 
-func resumeRequestForConfig(cfg WebConfig, id string) (ResumeRequest, error) {
-	req := ResumeRequest{SessionID: id}
+func resumeRequestForConfig(cfg hubcore.WebConfig, id string) (hubcore.ResumeRequest, error) {
+	req := hubcore.ResumeRequest{SessionID: id}
 	if cfg.Past != nil {
 		if pe, ok := cfg.Past.Find(id); ok {
 			req.WorkingDir = pe.Meta.EnvInfo.WorkingDir
 			req.StateDir = pe.StateDir
 			provider := strings.TrimSpace(pe.Meta.ProfileID)
 			if provider == "" {
-				return ResumeRequest{}, fmt.Errorf("session %s has no provider profile: cannot resume", id)
+				return hubcore.ResumeRequest{}, fmt.Errorf("session %s has no provider profile: cannot resume", id)
 			}
 			if pe.Meta.Model != "" {
 				req.Provider = provider
@@ -258,7 +259,7 @@ func resumeRequestForConfig(cfg WebConfig, id string) (ResumeRequest, error) {
 	return req, nil
 }
 
-func hubThreadFork(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
+func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
 	ref, err := appwire.ParseRef(params.Ref)
 	if err != nil {
 		return appwire.ThreadForkResponse{}, err

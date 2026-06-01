@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -16,11 +17,11 @@ func validateAppWireInputItemsWithExisting(items []appwire.InputItem, imageCount
 			continue
 		}
 		imageCount++
-		if imageCount > sendMaxImageItems {
-			return fmt.Errorf("items exceeds %d-image limit", sendMaxImageItems)
+		if imageCount > hubcore.SendMaxImageItems {
+			return fmt.Errorf("items exceeds %d-image limit", hubcore.SendMaxImageItems)
 		}
-		if len(it.Data) > sendMaxImageBytes {
-			return fmt.Errorf("items[%d] %q exceeds %d-byte limit", i, it.Name, sendMaxImageBytes)
+		if len(it.Data) > hubcore.SendMaxImageBytes {
+			return fmt.Errorf("items[%d] %q exceeds %d-byte limit", i, it.Name, hubcore.SendMaxImageBytes)
 		}
 	}
 	return nil

@@ -4,13 +4,14 @@ import (
 	"context"
 	"strings"
 
+	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/llm/providercfg"
 )
 
-func hubModelList(ctx context.Context, cfg WebConfig, sources *appsource.Registry, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
+func hubModelList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
 	harness := strings.TrimSpace(params.Harness)
 	if harness != "" && harness != "serf" && harness != "local" {
 		source, err := sourceForModelHarness(ctx, cfg, sources, harness)
@@ -45,7 +46,7 @@ func hubModelList(ctx context.Context, cfg WebConfig, sources *appsource.Registr
 	return appwire.ModelListResponse{}, nil
 }
 
-func sourceForModelHarness(ctx context.Context, cfg WebConfig, sources *appsource.Registry, harness string) (appsource.Source, error) {
+func sourceForModelHarness(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, harness string) (appsource.Source, error) {
 	if cfg.CodexLauncher != nil && cfg.CodexLauncher.Manages(harness) {
 		return cfg.CodexLauncher.EnsureSource(ctx, harness, sources)
 	}
@@ -56,7 +57,7 @@ func sourceForModelHarness(ctx context.Context, cfg WebConfig, sources *appsourc
 	return source, nil
 }
 
-func validateSerfLaunchModel(ctx context.Context, cfg WebConfig, ref cmdutil.ModelRef, workingDir string) error {
+func validateSerfLaunchModel(ctx context.Context, cfg hubcore.WebConfig, ref cmdutil.ModelRef, workingDir string) error {
 	contract, err := serfLaunchModelList(ctx, cfg, workingDir)
 	if err != nil || (len(contract.Data) == 0 && len(contract.Diagnostics) == 0) {
 		return nil
@@ -109,7 +110,7 @@ func providerHasLaunchDiagnostic(diagnostics []appwire.ModelListDiagnostic, prov
 	return false
 }
 
-func serfLaunchModels(ctx context.Context, cfg WebConfig) ([]appwire.ModelDescriptor, error) {
+func serfLaunchModels(ctx context.Context, cfg hubcore.WebConfig) ([]appwire.ModelDescriptor, error) {
 	resp, err := serfLaunchModelList(ctx, cfg, "")
 	if err != nil {
 		return nil, err
@@ -117,7 +118,7 @@ func serfLaunchModels(ctx context.Context, cfg WebConfig) ([]appwire.ModelDescri
 	return resp.Data, nil
 }
 
-func serfLaunchModelList(ctx context.Context, cfg WebConfig, workingDir string) (appwire.ModelListResponse, error) {
+func serfLaunchModelList(ctx context.Context, cfg hubcore.WebConfig, workingDir string) (appwire.ModelListResponse, error) {
 	if strings.TrimSpace(workingDir) != "" {
 		if lister, ok := cfg.Spawner.(SerfLaunchModelContractWorkingDirLister); ok && lister != nil {
 			resp, err := lister.ListLaunchModelContractForWorkingDir(ctx, workingDir)
@@ -149,7 +150,7 @@ func serfLaunchModelList(ctx context.Context, cfg WebConfig, workingDir string) 
 	return appwire.ModelListResponse{Data: sanitizeModelDescriptors(models)}, nil
 }
 
-func hasSerfLaunchModelLister(cfg WebConfig) bool {
+func hasSerfLaunchModelLister(cfg hubcore.WebConfig) bool {
 	if lister, ok := cfg.Spawner.(SerfLaunchModelContractWorkingDirLister); ok && lister != nil {
 		return true
 	}
@@ -191,7 +192,7 @@ func sanitizeModelDiagnostics(diagnostics []appwire.ModelListDiagnostic) []appwi
 	return out
 }
 
-func launchHarnessDescriptors(cfg WebConfig) []appwire.HarnessDescriptor {
+func launchHarnessDescriptors(cfg hubcore.WebConfig) []appwire.HarnessDescriptor {
 	out := []appwire.HarnessDescriptor{{ID: "serf", Label: "serf", Kind: "serf"}}
 	seen := map[string]bool{"serf": true}
 	for _, source := range cfg.CodexSources {
