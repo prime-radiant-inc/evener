@@ -1,7 +1,7 @@
 # Serf Go monorepo — module architecture
 
 Date: 2026-06-01 · Ratified by Jesse.
-Status: **executing — M1 ✅ M2 ✅ merged; M3 in progress.** This doc is kept **current as each phase lands** — see §1a.
+Status: **executing — M1 ✅ M2 ✅ M3 ✅; M4 next.** This doc is kept **current as each phase lands** — see §1a.
 
 ## 1a. Execution status & decisions (living)
 

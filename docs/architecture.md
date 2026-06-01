@@ -82,10 +82,9 @@ fix.) In workspace mode `go build`/`go test`/`go vet ./...` operate across all m
 
 ## Current status
 
-- ✅ `auth`, `llm` carved into their own modules; `go.work` workspace established.
-- ⏳ `agent` being carved into its module (decoupled from the app; module wiring in
-  progress).
-- Pending: the remaining top-level `internal/` packages (`appprojector`, `appserver`,
-  `apptranscript`, `httpguard` → with the engine's `server/`; `binresolve` → duplicated
-  hub+tui; `credentials` → stays until `cmdutil` dissolves) relocate to their owners as
-  the root settles into the app module. See the dated spec for the phase-by-phase plan.
+- ✅ `auth`, `llm`, `agent` all carved into their own modules; the `go.work` workspace is
+  established; all four `go.mod` files are clean and publishable (replace-free).
+- ⏳ Next: the root settles fully into the **app module** — the remaining top-level
+  `internal/` packages (`appprojector`, `appserver`, `apptranscript`, `httpguard` → with
+  the engine's `server/`; `binresolve` → duplicated hub+tui; `credentials` → stays until
+  `cmdutil` dissolves) relocate to their owners. See the dated spec for the phase plan.
