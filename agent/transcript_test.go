@@ -1537,7 +1537,7 @@ func TestMaybeCompact_CallsOnCompactionTurn(t *testing.T) {
 		callbackTurns = append(callbackTurns, turn)
 	}
 
-	emitFn := func(kind EventKind, data any) {}
+	emitFn := func(kind EventKind, data EventData) {}
 
 	cm.MaybeCompact(context.Background(), &history, 0, emitFn)
 

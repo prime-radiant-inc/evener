@@ -824,7 +824,7 @@ func TestMaybeCompact_NoCompactionBelow80Percent(t *testing.T) {
 	)
 
 	var events []SessionEvent
-	emitFn := func(kind EventKind, data any) {
+	emitFn := func(kind EventKind, data EventData) {
 		events = append(events, SessionEvent{Kind: kind, Data: data})
 	}
 
@@ -847,7 +847,7 @@ func TestMaybeCompact_BelowThreshold_NoAction(t *testing.T) {
 	}
 
 	var events []SessionEvent
-	emitFn := func(kind EventKind, data any) {
+	emitFn := func(kind EventKind, data EventData) {
 		events = append(events, SessionEvent{Kind: kind, Data: data})
 	}
 
@@ -882,7 +882,7 @@ func TestMaybeCompact_CheckpointThreshold(t *testing.T) {
 	)
 
 	var events []SessionEvent
-	emitFn := func(kind EventKind, data any) {
+	emitFn := func(kind EventKind, data EventData) {
 		events = append(events, SessionEvent{Kind: kind, Data: data})
 	}
 
@@ -920,7 +920,7 @@ func TestMaybeCompact_EmitsEvents(t *testing.T) {
 	)
 
 	var events []SessionEvent
-	emitFn := func(kind EventKind, data any) {
+	emitFn := func(kind EventKind, data EventData) {
 		events = append(events, SessionEvent{Kind: kind, Data: data})
 	}
 
@@ -960,7 +960,7 @@ func TestMaybeCompact_RespectsSysPromptSize(t *testing.T) {
 	}
 
 	var events []SessionEvent
-	emitFn := func(kind EventKind, data any) {
+	emitFn := func(kind EventKind, data EventData) {
 		events = append(events, SessionEvent{Kind: kind, Data: data})
 	}
 
@@ -1727,7 +1727,7 @@ func TestContextManager_ResetsAfterCompaction(t *testing.T) {
 	)
 
 	var events []SessionEvent
-	emitFn := func(kind EventKind, data any) {
+	emitFn := func(kind EventKind, data EventData) {
 		events = append(events, SessionEvent{Kind: kind, Data: data})
 	}
 
@@ -1918,7 +1918,7 @@ func TestMaybeCompact_SummarizeThreshold(t *testing.T) {
 	}
 
 	var layers []string
-	emitFn := func(kind EventKind, data any) {
+	emitFn := func(kind EventKind, data EventData) {
 		if kind == EventContextCompaction {
 			if cd, ok := data.(ContextCompactionData); ok {
 				layers = append(layers, cd.Layer)
@@ -2061,7 +2061,7 @@ func TestForceCompact_RunsAllLayers(t *testing.T) {
 	}
 
 	var layers []string
-	emitFn := func(kind EventKind, data any) {
+	emitFn := func(kind EventKind, data EventData) {
 		if kind == EventContextCompaction {
 			if d, ok := data.(ContextCompactionData); ok {
 				layers = append(layers, d.Layer)
@@ -2102,7 +2102,7 @@ func TestForceCompact_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 		NewTurn(TurnAssistant, llm.Assistant("recent2")),
 	}
 
-	emitFn := func(kind EventKind, data any) {}
+	emitFn := func(kind EventKind, data EventData) {}
 	cm.ForceCompact(context.Background(), &history, emitFn)
 
 	// L3 creates a checkpoint turn. OnCompactionTurn should have been called.
@@ -2147,7 +2147,7 @@ func TestForceCompact_FiresOnCompactionTurn_Summary(t *testing.T) {
 		NewTurn(TurnAssistant, llm.Assistant("recent2")),
 	}
 
-	emitFn := func(kind EventKind, data any) {}
+	emitFn := func(kind EventKind, data EventData) {}
 	cm.ForceCompact(context.Background(), &history, emitFn)
 
 	// Both L3 (checkpoint) and L4 (summary) should fire callbacks.
@@ -2183,7 +2183,7 @@ func TestForceCompact_BelowThreshold(t *testing.T) {
 	}
 
 	var layers []string
-	emitFn := func(kind EventKind, data any) {
+	emitFn := func(kind EventKind, data EventData) {
 		if kind == EventContextCompaction {
 			if d, ok := data.(ContextCompactionData); ok {
 				layers = append(layers, d.Layer)

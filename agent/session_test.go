@@ -64,7 +64,7 @@ func (s compactionEventStrategy) Name() string { return "compaction-event-test" 
 
 func (s compactionEventStrategy) Tools() []RegisteredTool { return nil }
 
-func (s compactionEventStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s compactionEventStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, EventData)) error {
 	_ = ctx
 	_ = history
 	_ = sysPromptChars
@@ -1378,7 +1378,7 @@ func TestSession_PreCompactHookOnlyRunsWhenCompactionEmits(t *testing.T) {
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
 	runner := newHookRunner(nil, "")
-	runner.SetEventCallback(func(kind EventKind, data any) {
+	runner.SetEventCallback(func(kind EventKind, data EventData) {
 		sess.emit(kind, data)
 	})
 	runner.Add(HookPreCompact, RegisteredHook{
@@ -1420,7 +1420,7 @@ func TestSession_PreCompactHookRunsAtCompactionBoundary(t *testing.T) {
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
 	runner := newHookRunner(nil, "")
-	runner.SetEventCallback(func(kind EventKind, data any) {
+	runner.SetEventCallback(func(kind EventKind, data EventData) {
 		sess.emit(kind, data)
 	})
 	runner.Add(HookPreCompact, RegisteredHook{

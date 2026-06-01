@@ -15,12 +15,12 @@ import "sync"
 type subagentManager struct {
 	mu   sync.Mutex
 	subs map[string]*subagent
-	emit func(EventKind, any)
+	emit func(EventKind, EventData)
 }
 
 // newSubagentManager creates a manager that captures the parent session's emit
 // closure for forwarding subagent lifecycle events.
-func newSubagentManager(emit func(EventKind, any)) *subagentManager {
+func newSubagentManager(emit func(EventKind, EventData)) *subagentManager {
 	return &subagentManager{
 		subs: map[string]*subagent{},
 		emit: emit,

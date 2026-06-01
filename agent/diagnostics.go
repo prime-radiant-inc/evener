@@ -32,7 +32,7 @@ func warningDataFromError(message string, err error) WarningData {
 	}
 }
 
-func enrichDiagnosticData(kind EventKind, data any) any {
+func enrichDiagnosticData(kind EventKind, data EventData) EventData {
 	switch kind {
 	case EventWarning:
 		switch d := data.(type) {

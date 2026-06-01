@@ -798,7 +798,7 @@ func TestHookRunner_EmitsHookEvents(t *testing.T) {
 	})
 
 	var collected []SessionEvent
-	runner.SetEventCallback(func(kind EventKind, data any) {
+	runner.SetEventCallback(func(kind EventKind, data EventData) {
 		collected = append(collected, SessionEvent{Kind: kind, Data: data})
 	})
 

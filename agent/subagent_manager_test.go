@@ -11,7 +11,7 @@ type fakeEmit struct {
 	events []EventKind
 }
 
-func (f *fakeEmit) emit(kind EventKind, _ any) {
+func (f *fakeEmit) emit(kind EventKind, _ EventData) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.events = append(f.events, kind)

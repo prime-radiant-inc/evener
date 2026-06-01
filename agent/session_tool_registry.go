@@ -21,7 +21,7 @@ import (
 // seam. registerSubagentTools still captures *Session directly.
 type toolDeps struct {
 	// emit publishes a session event (best-effort, same as Session.emit).
-	emit func(kind EventKind, data any)
+	emit func(kind EventKind, data EventData)
 
 	// steering queue access for the communicate handler.
 	steer           func(msg string)

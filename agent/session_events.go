@@ -3,7 +3,8 @@ package agent
 import (
 	"context"
 	"fmt"
-	"time"
+
+	"primeradiant.com/serf/agent/events"
 )
 
 // Events returns the session's receive-only channel of SessionEvent values.
@@ -20,17 +21,18 @@ func (s *Session) emitSessionStartEnvelope(start SessionStartData, promptSources
 	}
 }
 
-func (s *Session) emit(kind EventKind, data any) {
+// emit sends data on the session's event stream. The kind argument is retained
+// for the ContextStrategy/strategyHost interface contract (strategies call
+// emit/Emit with an explicit kind), but the event's Kind is authoritative from
+// the payload: events.New derives it via data.eventKind(), so Kind and payload
+// can never disagree even if a caller passes a mismatched kind.
+func (s *Session) emit(kind EventKind, data EventData) {
 	if s == nil || s.events == nil {
 		return
 	}
 	data = enrichDiagnosticData(kind, data)
-	ev := SessionEvent{
-		Kind:      kind,
-		Timestamp: time.Now().UTC(),
-		SessionID: s.id,
-		Data:      data,
-	}
+	ev := events.New(data)
+	ev.SessionID = s.id
 	// eventsMu makes the send mutually exclusive with Close()'s close(s.events).
 	// emit is called from caller-owned goroutines the session cannot join
 	// (Enqueue/DrainAsSteer, the ProcessInput loop), so the lock — not a recover()
@@ -50,17 +52,13 @@ func (s *Session) emit(kind EventKind, data any) {
 	}
 }
 
-func warningHookMessage(data any) string {
+func warningHookMessage(data EventData) string {
 	switch v := data.(type) {
 	case WarningData:
 		return v.Message
 	case *WarningData:
 		if v != nil {
 			return v.Message
-		}
-	case map[string]any:
-		if msg, ok := v["message"].(string); ok {
-			return msg
 		}
 	}
 	return fmt.Sprint(data)

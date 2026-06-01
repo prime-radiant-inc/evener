@@ -350,7 +350,7 @@ func TestLive_Hooks_CommandExecution(t *testing.T) {
 	// Track events
 	var events []SessionEvent
 	var mu sync.Mutex
-	runner.SetEventCallback(func(kind EventKind, data any) {
+	runner.SetEventCallback(func(kind EventKind, data EventData) {
 		mu.Lock()
 		events = append(events, SessionEvent{Kind: kind, Data: data})
 		mu.Unlock()

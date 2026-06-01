@@ -48,7 +48,7 @@ var rootOnlyAgentManagementTools = []string{"spawn_agent", "resume_agent", "wait
 type subagent struct {
 	id   string
 	sess *Session
-	emit func(EventKind, any)
+	emit func(EventKind, EventData)
 
 	mu             sync.Mutex
 	running        bool

@@ -31,7 +31,7 @@ func (s *oodaStrategy) Name() string { return "ooda" }
 
 // ManageContext applies normal compaction layers from sessionLogStrategy,
 // then injects the session log as an orientation message at the end of history.
-func (s *oodaStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s *oodaStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, EventData)) error {
 	// Apply normal compaction layers.
 	if err := s.sessionLogStrategy.ManageContext(ctx, history, sysPromptChars, emitFn); err != nil {
 		return err

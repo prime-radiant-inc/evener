@@ -45,7 +45,7 @@ func (s *obsMaskStrategy) AfterAction(ctx context.Context, history []Turn, clien
 // event via emitFn, and any compaction resets the manager's cached token
 // measurements. It is a no-op when no contextManager is set or the context
 // window size is non-positive.
-func (s *obsMaskStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s *obsMaskStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, EventData)) error {
 	if s.cm == nil {
 		return nil
 	}

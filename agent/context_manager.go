@@ -180,7 +180,7 @@ func (cm *contextManager) MaybeCompact(
 	ctx context.Context,
 	history *[]Turn,
 	sysPromptChars int,
-	emitFn func(EventKind, any),
+	emitFn func(EventKind, EventData),
 ) {
 	cw := cm.currentProfile().ContextWindowSize()
 	if cw <= 0 {
@@ -266,7 +266,7 @@ func (cm *contextManager) MaybeCompact(
 func (cm *contextManager) ForceCompact(
 	ctx context.Context,
 	history *[]Turn,
-	emitFn func(EventKind, any),
+	emitFn func(EventKind, EventData),
 ) {
 	// Reset token measurement so inter-layer estimates use char/4.
 	cm.mu.Lock()

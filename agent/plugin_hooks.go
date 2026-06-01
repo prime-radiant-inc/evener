@@ -356,12 +356,12 @@ type hookRunner struct {
 	hooks   map[HookEvent][]RegisteredHook
 	client  promptHookClient
 	model   string
-	onEvent func(EventKind, any) // optional event callback
+	onEvent func(EventKind, EventData) // optional event callback
 }
 
 // SetEventCallback sets an optional callback that is invoked for hook
 // lifecycle events (HookStart, HookEnd).
-func (r *hookRunner) SetEventCallback(fn func(EventKind, any)) {
+func (r *hookRunner) SetEventCallback(fn func(EventKind, EventData)) {
 	r.onEvent = fn
 }
 

@@ -74,23 +74,22 @@ const (
 )
 
 // SessionEvent is a single timestamped event on a session's event stream,
-// tagged by Kind and carrying an optional typed Data payload.
+// tagged by Kind and carrying a typed Data payload. Data is restricted to the
+// sealed EventData set, so only this package's payload types can ride the
+// stream and Kind is always consistent with the payload (see New).
 type SessionEvent struct {
 	Kind      EventKind `json:"kind"`
 	Timestamp time.Time `json:"timestamp"`
 	SessionID string    `json:"session_id"`
-	Data      any       `json:"data,omitempty"`
+	Data      EventData `json:"data,omitempty"`
 }
 
-// DataMap returns Data as map[string]any for backward compatibility.
+// DataMap returns Data as a map[string]any by marshaling the typed payload
+// through JSON. Returns nil when Data is nil.
 func (e SessionEvent) DataMap() map[string]any {
 	if e.Data == nil {
 		return nil
 	}
-	if m, ok := e.Data.(map[string]any); ok {
-		return m
-	}
-	// For typed structs, marshal/unmarshal through JSON.
 	b, err := json.Marshal(e.Data)
 	if err != nil {
 		return nil

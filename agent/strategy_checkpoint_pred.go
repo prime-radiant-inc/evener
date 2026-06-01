@@ -43,7 +43,7 @@ func (s *checkpointPredStrategy) AfterAction(ctx context.Context, history []Turn
 // event, except the summarization layer, which emits one only on success and
 // an EventWarning on failure. It is a no-op when no contextManager or context
 // window is configured.
-func (s *checkpointPredStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s *checkpointPredStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, EventData)) error {
 	if s.cm == nil {
 		return nil
 	}

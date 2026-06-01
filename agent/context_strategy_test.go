@@ -22,7 +22,7 @@ func (s *spyStrategy) Name() string { return "spy" }
 
 func (s *spyStrategy) Tools() []RegisteredTool { return s.toolsDefs }
 
-func (s *spyStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s *spyStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, EventData)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.manageContextCalls++
@@ -87,7 +87,7 @@ func TestCompactStrategyManageContext_Delegation(t *testing.T) {
 
 	// Track emitted events.
 	var emittedEvent EventKind
-	emitFn := func(kind EventKind, data any) {
+	emitFn := func(kind EventKind, data EventData) {
 		emittedEvent = kind
 	}
 

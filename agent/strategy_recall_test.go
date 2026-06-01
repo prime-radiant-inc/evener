@@ -81,7 +81,7 @@ func TestRecallStrategy_ManageContext_DelegatesToCompact(t *testing.T) {
 	}
 
 	emitted := false
-	emitFn := func(kind EventKind, data any) {
+	emitFn := func(kind EventKind, data EventData) {
 		emitted = true
 	}
 

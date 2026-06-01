@@ -94,10 +94,10 @@ type steeringTurnRecord struct {
 	text string
 }
 
-func (s *Session) compactionEmitFunc(ctx context.Context, history *[]Turn) (func(EventKind, any), func()) {
+func (s *Session) compactionEmitFunc(ctx context.Context, history *[]Turn) (func(EventKind, EventData), func()) {
 	preCompactRan := false
 	var pendingSteering []steeringTurnRecord
-	emitFn := func(kind EventKind, data any) {
+	emitFn := func(kind EventKind, data EventData) {
 		if kind == EventContextCompaction && !preCompactRan {
 			preCompactRan = true
 			pendingSteering = append(pendingSteering, s.runPreCompactHook(ctx, history)...)

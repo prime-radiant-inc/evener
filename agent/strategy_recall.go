@@ -31,7 +31,7 @@ func (s *recallStrategy) Name() string { return "recall" }
 
 // ManageContext delegates to the underlying compactStrategy to manage the
 // conversation history.
-func (s *recallStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s *recallStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, EventData)) error {
 	return s.compact.ManageContext(ctx, history, sysPromptChars, emitFn)
 }
 

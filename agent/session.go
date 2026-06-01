@@ -154,9 +154,10 @@ func (s *Session) ID() string { return s.id }
 // side-effect semantics are unchanged.
 var _ strategyHost = (*Session)(nil)
 
-// Emit forwards to the session's internal emit, sending a session event of the
-// given kind with the given data.
-func (s *Session) Emit(kind EventKind, data any) { s.emit(kind, data) }
+// Emit forwards to the session's internal emit, sending a session event with
+// the given payload. The kind argument satisfies the strategyHost interface
+// contract; the emitted event's Kind is derived from the payload.
+func (s *Session) Emit(kind EventKind, data EventData) { s.emit(kind, data) }
 
 // WithResponseSideEffects forwards to the session's internal
 // withResponseSideEffects, running fn with the response side-effect semantics

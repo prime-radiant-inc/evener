@@ -53,7 +53,7 @@ func sessionLogRecallToolDef(strategy *sessionLogStrategy) RegisteredTool {
 //   - Layer 2: thinking clearing
 //   - Layer 3 (replaced): session-log checkpoint instead of deterministic checkpoint
 //   - Layer 4: LLM summarization fallback
-func (s *sessionLogStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s *sessionLogStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, EventData)) error {
 	if s.cm == nil {
 		return nil
 	}

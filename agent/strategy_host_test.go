@@ -22,7 +22,7 @@ type fakeStrategyHost struct {
 	sideFx   int // number of WithResponseSideEffects invocations
 }
 
-func (h *fakeStrategyHost) Emit(kind EventKind, _ any) {
+func (h *fakeStrategyHost) Emit(kind EventKind, _ EventData) {
 	h.emitted = append(h.emitted, kind)
 }
 

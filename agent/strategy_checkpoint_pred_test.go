@@ -46,7 +46,7 @@ func TestCheckpointPredStrategy_ManageContext_NoCompactionBelowThreshold(t *test
 	}
 
 	emitted := false
-	emitFn := func(kind EventKind, data any) { emitted = true }
+	emitFn := func(kind EventKind, data EventData) { emitted = true }
 
 	err := s.ManageContext(context.Background(), &history, 0, emitFn)
 	if err != nil {
@@ -83,7 +83,7 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_FallbackOnError(t *testing.
 	}
 
 	var layers []string
-	emitFn := func(kind EventKind, data any) {
+	emitFn := func(kind EventKind, data EventData) {
 		if kind == EventContextCompaction {
 			if cd, ok := data.(ContextCompactionData); ok {
 				layers = append(layers, cd.Layer)
@@ -155,7 +155,7 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_WithLLM(t *testing.T) {
 		NewTurn(TurnAssistant, llm.Assistant("almost done")),
 	}
 
-	emitFn := func(kind EventKind, data any) {}
+	emitFn := func(kind EventKind, data EventData) {}
 
 	err := s.ManageContext(context.Background(), &history, 0, emitFn)
 	if err != nil {
@@ -208,7 +208,7 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_TurnKind(t *testing.T) {
 		NewTurn(TurnAssistant, llm.Assistant("almost done")),
 	}
 
-	emitFn := func(kind EventKind, data any) {}
+	emitFn := func(kind EventKind, data EventData) {}
 
 	err := s.ManageContext(context.Background(), &history, 0, emitFn)
 	if err != nil {
@@ -250,7 +250,7 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_FallbackCheckpoint(t *test
 		NewTurn(TurnAssistant, llm.Assistant("almost done")),
 	}
 
-	emitFn := func(kind EventKind, data any) {}
+	emitFn := func(kind EventKind, data EventData) {}
 
 	err := s.ManageContext(context.Background(), &history, 0, emitFn)
 	if err != nil {
@@ -307,7 +307,7 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_PredictiveCheckpoint(t *te
 		NewTurn(TurnAssistant, llm.Assistant("almost done")),
 	}
 
-	emitFn := func(kind EventKind, data any) {}
+	emitFn := func(kind EventKind, data EventData) {}
 
 	err := s.ManageContext(context.Background(), &history, 0, emitFn)
 	if err != nil {
@@ -380,7 +380,7 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 		NewTurn(TurnAssistant, llm.Assistant("almost done")),
 	}
 
-	emitFn := func(kind EventKind, data any) {}
+	emitFn := func(kind EventKind, data EventData) {}
 
 	err := s.ManageContext(context.Background(), &history, 0, emitFn)
 	if err != nil {

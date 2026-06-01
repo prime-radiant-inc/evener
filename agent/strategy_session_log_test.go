@@ -90,7 +90,7 @@ func TestSessionLogStrategy_ManageContext_ObservationMaskAtHighPressure(t *testi
 	}
 
 	var emittedLayers []string
-	emitFn := func(kind EventKind, data any) {
+	emitFn := func(kind EventKind, data EventData) {
 		if kind == EventContextCompaction {
 			if cd, ok := data.(ContextCompactionData); ok {
 				emittedLayers = append(emittedLayers, cd.Layer)
@@ -185,7 +185,7 @@ func TestSessionLogStrategy_ManageContext_SessionLogCheckpointAtHighPressure(t *
 	}
 
 	var emittedLayers []string
-	emitFn := func(kind EventKind, data any) {
+	emitFn := func(kind EventKind, data EventData) {
 		if kind == EventContextCompaction {
 			if cd, ok := data.(ContextCompactionData); ok {
 				emittedLayers = append(emittedLayers, cd.Layer)
@@ -491,7 +491,7 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("almost done")},
 	}
 
-	emitFn := func(kind EventKind, data any) {}
+	emitFn := func(kind EventKind, data EventData) {}
 
 	err := sls.ManageContext(context.Background(), &history, 0, emitFn)
 	if err != nil {
@@ -554,7 +554,7 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("almost done")},
 	}
 
-	emitFn := func(kind EventKind, data any) {}
+	emitFn := func(kind EventKind, data EventData) {}
 
 	err := sls.ManageContext(context.Background(), &history, 0, emitFn)
 	if err != nil {

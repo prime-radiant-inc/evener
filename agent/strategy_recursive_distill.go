@@ -44,7 +44,7 @@ func (s *recursiveDistillStrategy) Tools() []RegisteredTool { return nil }
 // ManageContext runs the standard compact compaction and then, if any
 // distilled summaries exist, injects the distilled memory hierarchy as a
 // steering message at the end of history.
-func (s *recursiveDistillStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s *recursiveDistillStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, EventData)) error {
 	// Run standard compact compaction.
 	s.cm.MaybeCompact(ctx, history, sysPromptChars, emitFn)
 

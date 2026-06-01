@@ -665,7 +665,7 @@ func (s *Session) initPlugins(sessionStartKind SessionStartKind) error {
 		})
 	}
 
-	runner.SetEventCallback(func(kind EventKind, data any) {
+	runner.SetEventCallback(func(kind EventKind, data EventData) {
 		s.emit(kind, data)
 	})
 	s.hookRunner = runner

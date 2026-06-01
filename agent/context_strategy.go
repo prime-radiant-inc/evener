@@ -11,7 +11,7 @@ import (
 // breaks the context⇄session back-cycle: the strategy_*.go files no longer
 // reference the concrete *Session type. *Session satisfies strategyHost.
 type strategyHost interface {
-	Emit(kind EventKind, data any)
+	Emit(kind EventKind, data EventData)
 	WithResponseSideEffects(ctx context.Context, fn func()) error
 	StateDir() string
 	ID() string
@@ -26,7 +26,7 @@ type strategyHost interface {
 type ContextStrategy interface {
 	// ManageContext is called before each LLM request. It may modify history
 	// in place to reduce context pressure.
-	ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error
+	ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, EventData)) error
 
 	// AfterAction is called after each completed tool round.
 	AfterAction(ctx context.Context, history []Turn, client *llm.Client) error
@@ -61,7 +61,7 @@ func (s *compactStrategy) AfterAction(ctx context.Context, history []Turn, clien
 
 // ManageContext delegates to the contextManager's MaybeCompact to reduce context
 // pressure before an LLM request and returns nil.
-func (s *compactStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s *compactStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, EventData)) error {
 	s.cm.MaybeCompact(ctx, history, sysPromptChars, emitFn)
 	return nil
 }

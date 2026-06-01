@@ -46,7 +46,7 @@ func TestObsMaskStrategy_ManageContext_NoCompactionBelowThreshold(t *testing.T) 
 	}
 
 	emitted := false
-	emitFn := func(kind EventKind, data any) { emitted = true }
+	emitFn := func(kind EventKind, data EventData) { emitted = true }
 
 	err := s.ManageContext(context.Background(), &history, 0, emitFn)
 	if err != nil {
@@ -172,7 +172,7 @@ func TestObsMaskStrategy_ManageContext_FiresOnCompactionTurn_Checkpoint(t *testi
 		NewTurn(TurnAssistant, llm.Assistant("almost done")),
 	}
 
-	emitFn := func(kind EventKind, data any) {}
+	emitFn := func(kind EventKind, data EventData) {}
 
 	err := s.ManageContext(context.Background(), &history, 0, emitFn)
 	if err != nil {

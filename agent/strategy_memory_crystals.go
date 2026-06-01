@@ -45,7 +45,7 @@ func (s *memoryCrystalsStrategy) Tools() []RegisteredTool { return nil }
 // ManageContext runs standard compact compaction and then, if any crystals
 // have been collected, injects the crystal bank into history as a steering
 // message.
-func (s *memoryCrystalsStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, any)) error {
+func (s *memoryCrystalsStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, EventData)) error {
 	// Run standard compact compaction.
 	s.cm.MaybeCompact(ctx, history, sysPromptChars, emitFn)
 
