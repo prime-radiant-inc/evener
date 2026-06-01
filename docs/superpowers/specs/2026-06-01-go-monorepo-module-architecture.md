@@ -1,7 +1,25 @@
 # Serf Go monorepo — module architecture
 
 Date: 2026-06-01 · Ratified by Jesse.
-Status: **ratified, not yet executed.** Migration is sequenced after the in-flight refactors land.
+Status: **executing — M1 ✅ M2 ✅ merged; M3 in progress.** This doc is kept **current as each phase lands** — see §1a.
+
+## 1a. Execution status & decisions (living)
+
+**Phases** (see §7 for detail):
+- **M1 — de-mix `internal/`** ✅ merged. Promoted `appwire`,`hubapi` → top-level contracts; sank `appsource`,`launchconfig` → `cmd/serf-hub/internal/`. `internal/` went 12 → 8 packages.
+- **M2 — carve `llm`** ✅ merged. Carved **`auth`** and **`llm`** into their own modules; established the go.work workspace.
+- **M3 — carve `agent`** ⏳ in progress. agent decoupled from the app (now self-contained); module carve next.
+- **M4** (root = app module; relocate the remaining `internal/` travelers) and **M5** (per-module hygiene) — pending.
+
+**Decisions made during execution (these AMEND the original plan below):**
+- **`auth/openai` = its own module** (`primeradiant.com/serf/auth`), NOT folded into llm. Review-panel call: it's OpenAI-OAuth machinery (login flow + a localhost callback server, ~31 symbols) that the hub drives far more than llm consumes; keeping it separate preserves llm's Pike-grade surface. It sits below llm; llm/agent/apps all depend on it.
+- **Build version = injected, never imported.** A library must not import the app's `buildinfo`. `llm` exposes `openai.ClientVersion`; `agent` exposes `agent.BuildVersion` (both default `"dev"`, per-process package-level settings); the serf binaries set them from build info at startup.
+- **`frontmatter`, `diagnostic` = duplicated** into `agent/internal/` (the §6 "duplicate" decision) so agent is self-contained; the app keeps the top-level copies.
+- **The three binaries stay under `cmd/`** of one app module (Jesse-confirmed): they are one application coupled only by protocols (AppWire subprocess, hubapi HTTP), so module boundaries are reserved for the *libraries* (which have importers), not the run-only binaries.
+
+**go.work mechanics (load-bearing).** `go.work use ./auth ./llm …` ALONE fails to resolve an *unpublished* sibling once a module has external deps — `go build` 404s trying to fetch it. **Fix: versioned `replace … v0.0.0 => ./dir` directives IN `go.work`** (committed, repo-local — invisible to external `go get`), with the go.mod requires at `@v0.0.0`. This keeps the published go.mods replace-free while a fresh clone builds out-of-the-box. `go.work` is committed.
+
+**Correction to §4/§7 below:** the original annotation sinking `appprojector`/`apptranscript`/`appserver` into **serf-hub** is **wrong per the import graph** — all three are imported by the *engine's* top-level `server/` package (and `appprojector` isn't imported by serf-hub at all). They travel with the engine in M4. `binresolve` → duplicate (hub+tui); `credentials` → stays top-level until `cmdutil` dissolves (M4).
 
 ## 1. Decision
 
