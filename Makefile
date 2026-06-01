@@ -1,4 +1,4 @@
-.PHONY: build build-hub build-tui build-all build-linux build-namingcheck test test-short vet lint lint-naming lint-internal clean
+.PHONY: build build-hub build-tui build-all build-linux build-namingcheck test test-short vet lint lint-naming lint-internal lint-docs clean
 
 LDFLAGS := -X primeradiant.com/serf/buildinfo.GitSHA=$$(git rev-parse --short HEAD) \
            -X primeradiant.com/serf/buildinfo.GitDirty=$$(git diff --quiet && echo "" || echo "true") \
@@ -44,10 +44,15 @@ lint-naming:
 lint-internal:
 	go run ./cmd/serf-internalcheck
 
+# lint-docs fails if any exported package-level declaration in the published
+# library packages (llm, agent, agent/events, auth/openai) lacks a doc comment.
+lint-docs:
+	go run ./cmd/serf-docscheck
+
 build-namingcheck:
 	go build -o serf-namingcheck ./cmd/serf-namingcheck/
 
-lint: lint-naming lint-internal
+lint: lint-naming lint-internal lint-docs
 	golangci-lint run ./...
 
 clean:

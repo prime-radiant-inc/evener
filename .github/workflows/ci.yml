@@ -31,5 +31,8 @@ jobs:
       - name: Internal-type leak check (no internal/ types in exported agent/llm API)
         run: go run ./cmd/serf-internalcheck
 
+      - name: Library doc-completeness check (exported library API is documented)
+        run: go run ./cmd/serf-docscheck
+
       - name: Test (race detector — the permanent -race gate)
         run: go test -race -short -count=1 ./...
