@@ -170,7 +170,10 @@ func (l *CodexLauncher) launchLocked(ctx context.Context, cfg CodexLaunchConfig)
 		timeout = 30 * time.Second
 	}
 	args := buildCodexLaunchArgs(binary, cfg.Args, listen)
-	cmd := exec.Command(binary, args...)
+	// NOT CommandContext: the launched codex app-server must outlive this
+	// call's ctx (the caller owns it via LaunchedCodex). ctx scopes only the
+	// readiness wait below; on timeout we kill the process explicitly.
+	cmd := exec.Command(binary, args...) //nolint:noctx // detached app-server must outlive ctx (see comment)
 	cmd.Dir = cfg.WorkingDir
 	cmd.Env = codexLaunchEnv(cfg.Env)
 	stdout, err := cmd.StdoutPipe()
@@ -322,7 +325,7 @@ func CodexReady(ctx context.Context, client *http.Client, endpoint string) bool 
 	if err != nil {
 		return false
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // response body close on read path; error is not actionable
 	return resp.StatusCode == http.StatusOK
 }
 

@@ -70,7 +70,7 @@ func LoadOrCreateAuthToken(hubStateRoot string) (string, error) {
 		return "", fmt.Errorf("auth token: write %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return "", fmt.Errorf("auth token: rename %s: %w", path, err)
 	}
 	return tok, nil

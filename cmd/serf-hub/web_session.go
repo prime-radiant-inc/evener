@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -494,7 +495,9 @@ func waitForRosterMatch(r *hubcore.Roster, sessionID string, pid int, timeout ti
 // fetchStatus reads /status from the daemon at le.Address, returning nil on any error.
 func (s *WebServer) fetchStatus(le hubcore.LiveEntry) *daemonStatus {
 	client := &http.Client{Timeout: 1 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, "http://"+le.Address+"/status", nil) //nolint:gosec
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+le.Address+"/status", nil) //nolint:gosec
 	if err != nil {
 		return nil
 	}
@@ -503,7 +506,7 @@ func (s *WebServer) fetchStatus(le hubcore.LiveEntry) *daemonStatus {
 	if err != nil {
 		return nil
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // response body close on read path; error is not actionable
 	var info daemonStatus
 	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
 		return nil

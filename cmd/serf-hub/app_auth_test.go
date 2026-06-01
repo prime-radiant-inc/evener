@@ -185,7 +185,7 @@ func TestOpenAIStateDirFromEnvUsesWindowsHomePrecedence(t *testing.T) {
 		value, ok := env[key]
 		return value, ok
 	})
-	want := filepath.Join(`C:\Users\Jesse`, ".local", "state", "serf")
+	want := filepath.Join(`C:\Users\Jesse`, ".local", "state", "serf") //nolint:gocritic // filepathJoin: base is a full home path; mirrors the impl under test
 	if got != want {
 		t.Fatalf("stateDir=%q, want %q", got, want)
 	}
@@ -201,7 +201,7 @@ func TestOpenAIStateDirFromEnvUsesWindowsHomeDrivePath(t *testing.T) {
 		value, ok := env[key]
 		return value, ok
 	})
-	want := filepath.Join(`D:\Users\Jesse`, ".local", "state", "serf")
+	want := filepath.Join(`D:\Users\Jesse`, ".local", "state", "serf") //nolint:gocritic // filepathJoin: base is a full home path; mirrors the impl under test
 	if got != want {
 		t.Fatalf("stateDir=%q, want %q", got, want)
 	}

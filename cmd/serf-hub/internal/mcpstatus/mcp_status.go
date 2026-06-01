@@ -1,6 +1,7 @@
 package mcpstatus
 
 import (
+	"context"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -8,6 +9,8 @@ import (
 
 	"primeradiant.com/serf/agent"
 )
+
+const mcpProbeTimeout = 750 * time.Millisecond
 
 // ProbeMCPStatus inspects a configured MCP server and returns a single-snapshot
 // status. The hub does not itself run MCP servers — agents spawn them per
@@ -41,8 +44,10 @@ func ProbeMCPStatus(c agent.MCPServerConfig) string {
 		if c.URL == "" {
 			return "unknown"
 		}
-		client := &http.Client{Timeout: 750 * time.Millisecond}
-		req, err := http.NewRequest(http.MethodHead, c.URL, nil)
+		client := &http.Client{Timeout: mcpProbeTimeout}
+		headCtx, headCancel := context.WithTimeout(context.Background(), mcpProbeTimeout)
+		defer headCancel()
+		req, err := http.NewRequestWithContext(headCtx, http.MethodHead, c.URL, nil)
 		if err != nil {
 			return "unknown"
 		}
@@ -51,11 +56,13 @@ func ProbeMCPStatus(c agent.MCPServerConfig) string {
 		}
 		resp, err := client.Do(req)
 		if err == nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return "available"
 		}
 		// Some servers don't accept HEAD; fall back to a 0-byte GET.
-		req, err = http.NewRequest(http.MethodGet, c.URL, nil)
+		getCtx, getCancel := context.WithTimeout(context.Background(), mcpProbeTimeout)
+		defer getCancel()
+		req, err = http.NewRequestWithContext(getCtx, http.MethodGet, c.URL, nil)
 		if err != nil {
 			return "unreachable"
 		}
@@ -66,7 +73,7 @@ func ProbeMCPStatus(c agent.MCPServerConfig) string {
 		if err != nil {
 			return "unreachable"
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return "available"
 	default:
 		return "unknown"

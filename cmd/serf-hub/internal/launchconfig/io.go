@@ -40,8 +40,8 @@ func SaveLayer(path string, layer Layer) error {
 	}
 	var buf bytes.Buffer
 	if err := toml.NewEncoder(&buf).Encode(layer); err != nil {
-		f.Close()
-		os.Remove(tmp)
+		_ = f.Close()
+		_ = os.Remove(tmp)
 		return fmt.Errorf("launchconfig: encode %s: %w", tmp, err)
 	}
 	data := buf.String()
@@ -49,21 +49,21 @@ func SaveLayer(path string, layer Layer) error {
 		data = "model_fallbacks = []\n" + data
 	}
 	if _, err := f.WriteString(data); err != nil {
-		f.Close()
-		os.Remove(tmp)
+		_ = f.Close()
+		_ = os.Remove(tmp)
 		return fmt.Errorf("launchconfig: write %s: %w", tmp, err)
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmp)
+		_ = f.Close()
+		_ = os.Remove(tmp)
 		return fmt.Errorf("launchconfig: sync %s: %w", tmp, err)
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return fmt.Errorf("launchconfig: close %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return fmt.Errorf("launchconfig: rename %s -> %s: %w", tmp, path, err)
 	}
 	return nil
@@ -109,21 +109,21 @@ func SaveMeta(path string, meta Meta) error {
 		return fmt.Errorf("launchconfig: open %s: %w", tmp, err)
 	}
 	if err := toml.NewEncoder(f).Encode(meta); err != nil {
-		f.Close()
-		os.Remove(tmp)
+		_ = f.Close()
+		_ = os.Remove(tmp)
 		return fmt.Errorf("launchconfig: encode %s: %w", tmp, err)
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmp)
+		_ = f.Close()
+		_ = os.Remove(tmp)
 		return fmt.Errorf("launchconfig: sync %s: %w", tmp, err)
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return fmt.Errorf("launchconfig: close %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return fmt.Errorf("launchconfig: rename %s -> %s: %w", tmp, path, err)
 	}
 	return nil

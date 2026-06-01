@@ -110,6 +110,7 @@ type MetaTrust struct {
 	// with different .serf/launch.toml content does not require re-prompting.
 	Hashes []string `toml:"hashes,omitempty"`
 	// Hash is the singular trusted hash from the original TOFU implementation.
+	//
 	// Deprecated: new code reads Hashes; old single-hash entries are migrated
 	// to Hashes on first write.
 	Hash      string    `toml:"hash,omitempty"`

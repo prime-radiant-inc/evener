@@ -38,9 +38,7 @@ import (
 
 // serveLoadClient is the injectable hook for tests. Production code calls
 // cmdutil.LoadClient; tests may replace this to inject a stub client.
-var serveLoadClient = func(opts ...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
-	return cmdutil.LoadClient(opts...)
-}
+var serveLoadClient = cmdutil.LoadClient
 
 func newServeLLMClient(stateDir string, warnings io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
 	client, cfg, hasConfig, err := serveLoadClient(llm.WithStateDir(stateDir))
@@ -227,7 +225,8 @@ func runServe(args []string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	listener, err := net.Listen("tcp", *addr)
+	var lc net.ListenConfig
+	listener, err := lc.Listen(ctx, "tcp", *addr)
 	if err != nil {
 		sess.Close()
 		return fmt.Errorf("listen %s: %w", *addr, err)
@@ -419,7 +418,7 @@ func runServe(args []string) error {
 	httpSrv := &http.Server{Handler: srv}
 	go func() {
 		<-ctx.Done()
-		httpSrv.Close()
+		_ = httpSrv.Close()
 		getSession().Close()
 	}()
 

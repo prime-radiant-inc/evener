@@ -233,7 +233,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(ModelsResponse{Models: models})
+	_ = json.NewEncoder(w).Encode(ModelsResponse{Models: models})
 }
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
@@ -294,7 +294,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	status.Capabilities = capabilities
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(status)
+	_ = json.NewEncoder(w).Encode(status)
 }
 
 func (s *Server) handleInterrupt(w http.ResponseWriter, r *http.Request) {

@@ -24,7 +24,7 @@ func AcquireLock(path string) (func(), error) {
 		return nil, fmt.Errorf("open lock: %w", err)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("flock: %w (another serf-hub may already be running)", err)
 	}
 	return func() {

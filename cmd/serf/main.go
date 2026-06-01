@@ -96,7 +96,7 @@ func main() {
 		stop, err := cmdutil.StartTrace(*flags.traceFile)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "serf: %v\n", err)
-			os.Exit(1)
+			os.Exit(1) //nolint:gocritic // exitAfterDefer: fatal trace-setup failure; the optional cpu-profile finalizer is the only skipped defer
 		}
 		defer stop()
 	}
@@ -191,25 +191,25 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 }
 
 func printRunUsage(w io.Writer, fs *flag.FlagSet) {
-	fmt.Fprintf(w, "Usage: serf --model <provider/model> [flags] <prompt>\n")
-	fmt.Fprintf(w, "       serf <command> [flags]\n\n")
-	fmt.Fprintf(w, "A non-interactive coding agent.\n\n")
-	fmt.Fprintf(w, "The prompt can be passed as arguments or piped via stdin.\n")
-	fmt.Fprintf(w, "--model can be omitted when SERF_MODEL supplies a default or when resuming.\n\n")
-	fmt.Fprintf(w, "Commands:\n")
+	_, _ = fmt.Fprintf(w, "Usage: serf --model <provider/model> [flags] <prompt>\n")
+	_, _ = fmt.Fprintf(w, "       serf <command> [flags]\n\n")
+	_, _ = fmt.Fprintf(w, "A non-interactive coding agent.\n\n")
+	_, _ = fmt.Fprintf(w, "The prompt can be passed as arguments or piped via stdin.\n")
+	_, _ = fmt.Fprintf(w, "--model can be omitted when SERF_MODEL supplies a default or when resuming.\n\n")
+	_, _ = fmt.Fprintf(w, "Commands:\n")
 	printRunCommands(w)
-	fmt.Fprintf(w, "\nRun 'serf <command> --help' for command-specific flags.\n\n")
-	fmt.Fprintf(w, "Options:\n")
+	_, _ = fmt.Fprintf(w, "\nRun 'serf <command> --help' for command-specific flags.\n\n")
+	_, _ = fmt.Fprintf(w, "Options:\n")
 	printLongFlagDefaults(w, fs)
-	fmt.Fprintf(w, "\nEnvironment variables:\n")
+	_, _ = fmt.Fprintf(w, "\nEnvironment variables:\n")
 	printRunEnvVars(w)
 }
 
 func printRunCommands(w io.Writer) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(tw, "  openai\tManage OpenAI OAuth login (login, logout, status)\n")
-	fmt.Fprintf(tw, "  serve\tRun the serf HTTP/RPC server\n")
-	fmt.Fprintf(tw, "  launch-check\tValidate launch contract for a provider/model\n")
+	_, _ = fmt.Fprintf(tw, "  openai\tManage OpenAI OAuth login (login, logout, status)\n")
+	_, _ = fmt.Fprintf(tw, "  serve\tRun the serf HTTP/RPC server\n")
+	_, _ = fmt.Fprintf(tw, "  launch-check\tValidate launch contract for a provider/model\n")
 	_ = tw.Flush()
 }
 
@@ -225,18 +225,18 @@ func printLongFlagDefaults(w io.Writer, fs *flag.FlagSet) {
 		if bf, ok := f.Value.(boolFlag); !ok || !bf.IsBoolFlag() {
 			option += " <" + param + ">"
 		}
-		fmt.Fprintf(tw, "  %s\t%s\n", option, usage)
+		_, _ = fmt.Fprintf(tw, "  %s\t%s\n", option, usage)
 	})
 	_ = tw.Flush()
 }
 
 func printRunEnvVars(w io.Writer) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintf(tw, "  SERF_MODEL\tDefault model as provider/model (used when --model is omitted)\n")
-	fmt.Fprintf(tw, "  SERF_REASONING_EFFORT\tDefault reasoning effort (low|medium|high|xhigh|none)\n")
-	fmt.Fprintf(tw, "  OPENAI_API_KEY\tOpenAI API key\n")
-	fmt.Fprintf(tw, "  ANTHROPIC_API_KEY\tAnthropic API key\n")
-	fmt.Fprintf(tw, "  GEMINI_API_KEY\tGoogle Gemini API key\n")
+	_, _ = fmt.Fprintf(tw, "  SERF_MODEL\tDefault model as provider/model (used when --model is omitted)\n")
+	_, _ = fmt.Fprintf(tw, "  SERF_REASONING_EFFORT\tDefault reasoning effort (low|medium|high|xhigh|none)\n")
+	_, _ = fmt.Fprintf(tw, "  OPENAI_API_KEY\tOpenAI API key\n")
+	_, _ = fmt.Fprintf(tw, "  ANTHROPIC_API_KEY\tAnthropic API key\n")
+	_, _ = fmt.Fprintf(tw, "  GEMINI_API_KEY\tGoogle Gemini API key\n")
 	_ = tw.Flush()
 }
 

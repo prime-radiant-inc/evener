@@ -64,7 +64,7 @@ func findImageInTranscript(path, wantSha string) ([]byte, string, bool) {
 	if err != nil {
 		return nil, "", false
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // read-only file; close error is not actionable
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
 	for scanner.Scan() {

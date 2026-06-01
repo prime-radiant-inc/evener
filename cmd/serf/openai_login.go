@@ -74,20 +74,20 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 	device := fs.Bool("device", false, "force device-code flow")
 	noDevice := fs.Bool("no-device", false, "force browser flow")
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "Usage: serf openai login [flags]\n\n")
-		fmt.Fprintf(stderr, "Start the OpenAI OAuth login flow.\n\n")
-		fmt.Fprintf(stderr, "By default, serf picks between the browser flow and the device-code flow\n")
-		fmt.Fprintf(stderr, "automatically. It uses device-code when it looks like there is no graphical\n")
-		fmt.Fprintf(stderr, "session: when $SSH_CONNECTION or $SSH_TTY is set, or on Linux/BSD when\n")
-		fmt.Fprintf(stderr, "neither $DISPLAY nor $WAYLAND_DISPLAY is set. macOS and Windows default to\n")
-		fmt.Fprintf(stderr, "the browser flow unless an SSH session is detected. Setting\n")
-		fmt.Fprintf(stderr, "SERF_LOGIN_HEADLESS=1 (or 0) overrides the detection.\n\n")
-		fmt.Fprintf(stderr, "Flags:\n")
-		fmt.Fprintf(stderr, "  --dir <path>         Working directory hint\n")
-		fmt.Fprintf(stderr, "  --state-dir <path>   Override OpenAI auth state directory\n")
-		fmt.Fprintf(stderr, "  --instance <name>    Instance name (default: openai)\n")
-		fmt.Fprintf(stderr, "  --device             Force device-code flow (headless / remote sessions)\n")
-		fmt.Fprintf(stderr, "  --no-device          Force browser flow (overrides auto-detection)\n")
+		_, _ = fmt.Fprintf(stderr, "Usage: serf openai login [flags]\n\n")
+		_, _ = fmt.Fprintf(stderr, "Start the OpenAI OAuth login flow.\n\n")
+		_, _ = fmt.Fprintf(stderr, "By default, serf picks between the browser flow and the device-code flow\n")
+		_, _ = fmt.Fprintf(stderr, "automatically. It uses device-code when it looks like there is no graphical\n")
+		_, _ = fmt.Fprintf(stderr, "session: when $SSH_CONNECTION or $SSH_TTY is set, or on Linux/BSD when\n")
+		_, _ = fmt.Fprintf(stderr, "neither $DISPLAY nor $WAYLAND_DISPLAY is set. macOS and Windows default to\n")
+		_, _ = fmt.Fprintf(stderr, "the browser flow unless an SSH session is detected. Setting\n")
+		_, _ = fmt.Fprintf(stderr, "SERF_LOGIN_HEADLESS=1 (or 0) overrides the detection.\n\n")
+		_, _ = fmt.Fprintf(stderr, "Flags:\n")
+		_, _ = fmt.Fprintf(stderr, "  --dir <path>         Working directory hint\n")
+		_, _ = fmt.Fprintf(stderr, "  --state-dir <path>   Override OpenAI auth state directory\n")
+		_, _ = fmt.Fprintf(stderr, "  --instance <name>    Instance name (default: openai)\n")
+		_, _ = fmt.Fprintf(stderr, "  --device             Force device-code flow (headless / remote sessions)\n")
+		_, _ = fmt.Fprintf(stderr, "  --no-device          Force browser flow (overrides auto-detection)\n")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -113,20 +113,20 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 	defer cancel()
 
 	mode, reason := chooseLoginMode(*device, *noDevice)
-	fmt.Fprintf(stdout, "auth_mode=%s", mode)
+	_, _ = fmt.Fprintf(stdout, "auth_mode=%s", mode)
 	if reason != "" {
-		fmt.Fprintf(stdout, " auth_mode_reason=%s", reason)
+		_, _ = fmt.Fprintf(stdout, " auth_mode_reason=%s", reason)
 	}
-	fmt.Fprintln(stdout)
+	_, _ = fmt.Fprintln(stdout)
 
 	if mode == "device" {
 		return runOpenAIDeviceLogin(ctx, resolvedStateDir, instanceName, stdout, stderr)
 	}
 
 	openBrowser := func(rawURL string) error {
-		fmt.Fprintf(stdout, "url=%s\n", rawURL)
+		_, _ = fmt.Fprintf(stdout, "url=%s\n", rawURL)
 		if err := openAIBrowserOpener(rawURL); err != nil {
-			fmt.Fprintf(stderr, "browser_open_error=%v\n", err)
+			_, _ = fmt.Fprintf(stderr, "browser_open_error=%v\n", err)
 		}
 		return nil
 	}
@@ -136,7 +136,7 @@ func runOpenAILogin(args []string, stdin io.Reader, stdout, stderr io.Writer) er
 		return err
 	}
 
-	fmt.Fprintln(stdout, formatOpenAIStatus(status))
+	_, _ = fmt.Fprintln(stdout, formatOpenAIStatus(status))
 	return nil
 }
 
@@ -192,22 +192,22 @@ func runOpenAIDeviceLogin(ctx context.Context, stateDir, instanceName string, st
 	prompt := func(dc authopenai.DeviceCode) {
 		// Machine-readable lines first, mirroring the browser flow's
 		// `url=` convention so scripts can parse stdout uniformly.
-		fmt.Fprintf(stdout, "device_code_url=%s\n", dc.VerificationURL)
-		fmt.Fprintf(stdout, "device_code=%s\n", dc.UserCode)
+		_, _ = fmt.Fprintf(stdout, "device_code_url=%s\n", dc.VerificationURL)
+		_, _ = fmt.Fprintf(stdout, "device_code=%s\n", dc.UserCode)
 		// Human-readable guidance on stderr — keeps stdout pristine for
 		// pipelines that only want the key=value pairs and the final
 		// status line.
-		fmt.Fprintf(stderr, "\nTo sign in, open this URL on any device:\n  %s\n", dc.VerificationURL)
-		fmt.Fprintf(stderr, "and enter the code:\n  %s\n", dc.UserCode)
-		fmt.Fprintln(stderr, "\nDevice codes are a common phishing target. Never share this code.")
-		fmt.Fprintln(stderr, "Waiting for authorization (this command will exit automatically)...")
+		_, _ = fmt.Fprintf(stderr, "\nTo sign in, open this URL on any device:\n  %s\n", dc.VerificationURL)
+		_, _ = fmt.Fprintf(stderr, "and enter the code:\n  %s\n", dc.UserCode)
+		_, _ = fmt.Fprintln(stderr, "\nDevice codes are a common phishing target. Never share this code.")
+		_, _ = fmt.Fprintln(stderr, "Waiting for authorization (this command will exit automatically)...")
 	}
 
 	notifyConcurrentLogin := func() {
 		// Machine-readable signal first so scripts can branch on it,
 		// then a human-readable explanation on stderr.
-		fmt.Fprintln(stdout, "concurrent_login=detected")
-		fmt.Fprintln(stderr, "Detected concurrent login; using existing OAuth state.")
+		_, _ = fmt.Fprintln(stdout, "concurrent_login=detected")
+		_, _ = fmt.Fprintln(stderr, "Detected concurrent login; using existing OAuth state.")
 	}
 
 	status, err := openAIDeviceLoginAction(ctx, stateDir, instanceName, prompt, notifyConcurrentLogin)
@@ -215,7 +215,7 @@ func runOpenAIDeviceLogin(ctx context.Context, stateDir, instanceName string, st
 		return err
 	}
 
-	fmt.Fprintln(stdout, formatOpenAIStatus(status))
+	_, _ = fmt.Fprintln(stdout, formatOpenAIStatus(status))
 	return nil
 }
 
@@ -232,7 +232,7 @@ func makeRedirectURLReader(stdin io.Reader, stderr io.Writer) func(context.Conte
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		fmt.Fprintln(stderr, "Paste the full redirect URL and press Enter:")
+		_, _ = fmt.Fprintln(stderr, "Paste the full redirect URL and press Enter:")
 
 		line, err := bufio.NewReader(stdin).ReadString('\n')
 		if err != nil && err != io.EOF {
@@ -247,10 +247,10 @@ func makeRedirectURLReader(stdin io.Reader, stderr io.Writer) func(context.Conte
 }
 
 func printOpenAIUsage(w io.Writer) {
-	fmt.Fprintf(w, "Usage: serf openai <command> [flags]\n\n")
-	fmt.Fprintf(w, "Manage Serf's OpenAI OAuth state.\n\n")
-	fmt.Fprintf(w, "Commands:\n")
-	fmt.Fprintf(w, "  login    Sign in with OpenAI OAuth\n")
-	fmt.Fprintf(w, "  logout   Delete locally stored OpenAI OAuth state\n")
-	fmt.Fprintf(w, "  status   Show current OpenAI auth status\n")
+	_, _ = fmt.Fprintf(w, "Usage: serf openai <command> [flags]\n\n")
+	_, _ = fmt.Fprintf(w, "Manage Serf's OpenAI OAuth state.\n\n")
+	_, _ = fmt.Fprintf(w, "Commands:\n")
+	_, _ = fmt.Fprintf(w, "  login    Sign in with OpenAI OAuth\n")
+	_, _ = fmt.Fprintf(w, "  logout   Delete locally stored OpenAI OAuth state\n")
+	_, _ = fmt.Fprintf(w, "  status   Show current OpenAI auth status\n")
 }

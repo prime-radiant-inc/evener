@@ -243,7 +243,7 @@ func checkGoFile(path, rel string) ([]Violation, error) {
 	if err != nil {
 		// Don't fail the whole run on a parse error; surface it as a
 		// violation so it's visible.
-		return []Violation{{File: rel, Line: 1, Message: "parse error: " + err.Error()}}, nil
+		return []Violation{{File: rel, Line: 1, Message: "parse error: " + err.Error()}}, nil //nolint:nilerr // err is handled: reported as a violation, not a fatal scan failure
 	}
 
 	// Build the set of line numbers that carry the ignore marker so we can

@@ -25,7 +25,7 @@ func ScanPrelude(path string, maxLineBytes int) (agent.TranscriptHeader, *agent.
 	if err != nil {
 		return agent.TranscriptHeader{}, nil
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // read-only file; close error is not actionable
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
@@ -334,7 +334,7 @@ func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) []appw
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // read-only file; close error is not actionable
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)

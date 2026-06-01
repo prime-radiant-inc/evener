@@ -122,16 +122,16 @@ func llmcallMain(args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&traceFile, "trace", "", "write execution trace to file")
 
 	fs.Usage = func() {
-		fmt.Fprintf(stderr, "Usage:\n")
-		fmt.Fprintf(stderr, "  llmcall --provider <provider> --model <model> [flags] <prompt>\n")
-		fmt.Fprintf(stderr, "  echo <prompt> | llmcall --provider <provider> --model <model> [flags]\n\n")
-		fmt.Fprintf(stderr, "Notes:\n")
-		fmt.Fprintf(stderr, "  - Single LLM call (no agent loop).\n")
-		fmt.Fprintf(stderr, "  - Tool calls are forbidden (tool_choice=none).\n")
-		fmt.Fprintf(stderr, "  - No system prompt by default.\n\n")
-		fmt.Fprintf(stderr, "Required:\n")
-		fmt.Fprintf(stderr, "  --provider <name>        LLM provider (or LLM_PROVIDER/SERF_PROVIDER)\n")
-		fmt.Fprintf(stderr, "  --model <id>             model identifier (or LLM_MODEL/SERF_MODEL)\n")
+		_, _ = fmt.Fprintf(stderr, "Usage:\n")
+		_, _ = fmt.Fprintf(stderr, "  llmcall --provider <provider> --model <model> [flags] <prompt>\n")
+		_, _ = fmt.Fprintf(stderr, "  echo <prompt> | llmcall --provider <provider> --model <model> [flags]\n\n")
+		_, _ = fmt.Fprintf(stderr, "Notes:\n")
+		_, _ = fmt.Fprintf(stderr, "  - Single LLM call (no agent loop).\n")
+		_, _ = fmt.Fprintf(stderr, "  - Tool calls are forbidden (tool_choice=none).\n")
+		_, _ = fmt.Fprintf(stderr, "  - No system prompt by default.\n\n")
+		_, _ = fmt.Fprintf(stderr, "Required:\n")
+		_, _ = fmt.Fprintf(stderr, "  --provider <name>        LLM provider (or LLM_PROVIDER/SERF_PROVIDER)\n")
+		_, _ = fmt.Fprintf(stderr, "  --model <id>             model identifier (or LLM_MODEL/SERF_MODEL)\n")
 	}
 
 	if err := fs.Parse(args); err != nil {

@@ -282,7 +282,7 @@ func (s *WebServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 
 func (s *WebServer) handleWorkspaceEmpty(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprint(w, `<div class="empty-state empty-state-workspace">
+	_, _ = fmt.Fprint(w, `<div class="empty-state empty-state-workspace">
   <p class="empty-state-title">Welcome to serf-hub</p>
   <p class="empty-state-body">Spawn a session to start working with an agent, or search across live and past sessions. The hub keeps every session alive in the sidebar — pick one to jump in.</p>
   <div class="empty-state-actions">

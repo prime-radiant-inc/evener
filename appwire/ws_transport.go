@@ -20,7 +20,10 @@ func DialWebSocket(ctx context.Context, url string, client *http.Client) (*WSTra
 
 func DialWebSocketWithHeaders(ctx context.Context, url string, client *http.Client, header http.Header) (*WSTransport, error) {
 	opts := &websocket.DialOptions{HTTPClient: client, HTTPHeader: header}
-	conn, _, err := websocket.Dial(ctx, url, opts)
+	// coder/websocket nils resp.Body on a successful handshake (the underlying
+	// stream becomes the Conn, closed via WSTransport.Close) and reads+closes
+	// it itself on failure, so there is no response body for us to close here.
+	conn, _, err := websocket.Dial(ctx, url, opts) //nolint:bodyclose // library manages the handshake response body (see comment)
 	if err != nil {
 		return nil, err
 	}

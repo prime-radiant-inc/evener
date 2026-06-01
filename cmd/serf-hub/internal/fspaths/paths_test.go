@@ -38,19 +38,19 @@ func TestCanonicalizeDir_RejectsFile(t *testing.T) {
 
 func TestCanonicalizeDir_ResolvesSymlink(t *testing.T) {
 	tmp := t.TempDir()
-	real := filepath.Join(tmp, "real")
-	if err := os.Mkdir(real, 0o755); err != nil {
+	realDir := filepath.Join(tmp, "real")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	link := filepath.Join(tmp, "link")
-	if err := os.Symlink(real, link); err != nil {
+	if err := os.Symlink(realDir, link); err != nil {
 		t.Fatal(err)
 	}
 	resolved, err := CanonicalizeDir(link)
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected, _ := filepath.EvalSymlinks(real)
+	expected, _ := filepath.EvalSymlinks(realDir)
 	if resolved != expected {
 		t.Fatalf("expected %s, got %s", expected, resolved)
 	}

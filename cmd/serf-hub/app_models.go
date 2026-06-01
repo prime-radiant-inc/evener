@@ -60,7 +60,7 @@ func sourceForModelHarness(ctx context.Context, cfg hubcore.WebConfig, sources *
 func validateSerfLaunchModel(ctx context.Context, cfg hubcore.WebConfig, ref cmdutil.ModelRef, workingDir string) error {
 	contract, err := serfLaunchModelList(ctx, cfg, workingDir)
 	if err != nil || (len(contract.Data) == 0 && len(contract.Diagnostics) == 0) {
-		return nil
+		return nil //nolint:nilerr // fail open: if the model list can't be enumerated, don't block launch
 	}
 	providerEnumerated := false
 	for _, model := range contract.Data {

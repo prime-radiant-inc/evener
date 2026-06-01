@@ -24,7 +24,7 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	defer ws.Close(websocket.StatusNormalClosure, "")
+	defer ws.Close(websocket.StatusNormalClosure, "") //nolint:errcheck // connection cleanup; close error is not actionable
 
 	transport := appwire.NewWSTransport(ws)
 	ctx, cancel := context.WithCancel(r.Context())

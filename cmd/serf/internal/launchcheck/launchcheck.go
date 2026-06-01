@@ -25,9 +25,7 @@ import (
 
 // launchCheckLoadClient is the injectable hook for tests. Production code calls
 // cmdutil.LoadClient; tests may replace this to inject a stub client or config.
-var launchCheckLoadClient = func(opts ...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
-	return cmdutil.LoadClient(opts...)
-}
+var launchCheckLoadClient = cmdutil.LoadClient
 
 // launchCheckLoadConfig resolves the providers config path (same logic as
 // LoadClient) and parses it. Returns (cfg, true, nil) when the file exists and
@@ -103,9 +101,9 @@ func RunLaunchCheck(args []string, stdout, stderr io.Writer) error {
 		return enc.Encode(resp)
 	}
 	if resp.Provider != "" {
-		fmt.Fprintf(stdout, "ok protocol=%s provider=%s model=%s\n", resp.Protocol, resp.Provider, resp.Model)
+		_, _ = fmt.Fprintf(stdout, "ok protocol=%s provider=%s model=%s\n", resp.Protocol, resp.Provider, resp.Model)
 	} else {
-		fmt.Fprintf(stdout, "ok protocol=%s\n", resp.Protocol)
+		_, _ = fmt.Fprintf(stdout, "ok protocol=%s\n", resp.Protocol)
 	}
 	return nil
 }

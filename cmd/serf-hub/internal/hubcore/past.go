@@ -11,7 +11,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // registers the "sqlite" driver for database/sql
 )
 
 // PastEntry is one indexed past session.
@@ -175,6 +175,15 @@ func (i *PastIndex) mergeSearchResults(a, b []PastEntry, limit, offset int) []Pa
 	return paginatePastEntries(out, limit, offset)
 }
 
+const createPastSessionsFTS = `CREATE VIRTUAL TABLE IF NOT EXISTS past_sessions_fts USING fts5(
+id,
+name,
+original_prompt,
+working_dir,
+state_dir UNINDEXED,
+sort_rank UNINDEXED
+)`
+
 func (i *PastIndex) rebuildFTS(entries []PastEntry) error {
 	dbDir := filepath.Dir(i.dbPath)
 	if err := os.MkdirAll(dbDir, 0o700); err != nil {
@@ -190,31 +199,28 @@ func (i *PastIndex) rebuildFTS(entries []PastEntry) error {
 			_ = db.Close()
 		}
 	}()
-	if _, err := db.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS past_sessions_fts USING fts5(
-id,
-name,
-original_prompt,
-working_dir,
-state_dir UNINDEXED,
-sort_rank UNINDEXED
-)`); err != nil {
+	// These are local, in-process SQLite file operations (modernc.org/sqlite);
+	// PastIndex.Rebuild is a context-free API, so the non-Context variants are
+	// used deliberately. (noctx)
+	if _, err := db.Exec(createPastSessionsFTS); err != nil { //nolint:noctx
 		return err
 	}
-	tx, err := db.Begin()
+	tx, err := db.Begin() //nolint:noctx
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM past_sessions_fts`); err != nil {
+	// best-effort rollback; the Commit/Close path below owns the real error
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DELETE FROM past_sessions_fts`); err != nil { //nolint:noctx
 		return err
 	}
-	stmt, err := tx.Prepare(`INSERT INTO past_sessions_fts(id, name, original_prompt, working_dir, state_dir, sort_rank) VALUES (?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT INTO past_sessions_fts(id, name, original_prompt, working_dir, state_dir, sort_rank) VALUES (?, ?, ?, ?, ?, ?)`) //nolint:noctx
 	if err != nil {
 		return err
 	}
-	defer stmt.Close()
+	defer func() { _ = stmt.Close() }()
 	for rank, entry := range entries {
-		if _, err := stmt.Exec(entry.ID, entry.Meta.Name, entry.Meta.OriginalPrompt, entry.Meta.EnvInfo.WorkingDir, entry.StateDir, rank); err != nil {
+		if _, err := stmt.Exec(entry.ID, entry.Meta.Name, entry.Meta.OriginalPrompt, entry.Meta.EnvInfo.WorkingDir, entry.StateDir, rank); err != nil { //nolint:noctx
 			return err
 		}
 	}
@@ -252,12 +258,13 @@ func (i *PastIndex) searchFTS(q string) ([]PastEntry, bool) {
 	if err != nil {
 		return nil, false
 	}
-	defer db.Close()
-	rows, err := db.Query(`SELECT id FROM past_sessions_fts WHERE past_sessions_fts MATCH ? ORDER BY CAST(sort_rank AS INTEGER) ASC`, query)
+	defer func() { _ = db.Close() }()
+	// local in-process SQLite query; PastIndex.Search is a context-free API. (noctx)
+	rows, err := db.Query(`SELECT id FROM past_sessions_fts WHERE past_sessions_fts MATCH ? ORDER BY CAST(sort_rank AS INTEGER) ASC`, query) //nolint:noctx
 	if err != nil {
 		return nil, false
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var ids []string
 	for rows.Next() {
 		var id string

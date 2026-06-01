@@ -132,7 +132,7 @@ func transcriptTailSummary(path string) (kind string, hasError bool) {
 	if err != nil {
 		return "", false
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // read-only file; close error is not actionable
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
 	var lastLine []byte

@@ -251,7 +251,7 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 		}
 		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, ref, thread.ID)
 		if err != nil {
-			return nil
+			return nil //nolint:nilerr // best-effort relay: an unresolvable source means nothing to relay, not a caller error
 		}
 		if err := startRelay(ctx, source, appwire.ThreadReadParams{Ref: ref, IncludeTurns: false}, thread); err != nil {
 			if isSessionUnavailableError(err) {

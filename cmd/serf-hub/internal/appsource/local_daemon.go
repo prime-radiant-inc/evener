@@ -150,7 +150,7 @@ func (s *LocalDaemonSource) restInterrupt(ctx context.Context, entry rendezvous.
 		}
 		return localDaemonDialError(err)
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // response body close on read path; error is not actionable
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return appwire.Unavailable(strings.TrimSpace(string(body)))
@@ -265,7 +265,7 @@ func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.
 	client := appwire.NewClient(transport)
 	client.Start(ctx)
 	if _, err := client.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "serf-hub"}}); err != nil {
-		transport.Close()
+		_ = transport.Close()
 		if cerr := ctx.Err(); cerr != nil {
 			return nil, cerr
 		}
@@ -274,7 +274,7 @@ func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.
 	readParams := params
 	readParams.Subscribe = true
 	if _, err := client.ThreadRead(ctx, readParams); err != nil {
-		transport.Close()
+		_ = transport.Close()
 		if cerr := ctx.Err(); cerr != nil {
 			return nil, cerr
 		}
@@ -283,7 +283,7 @@ func (s *LocalDaemonSource) SubscribeThread(ctx context.Context, params appwire.
 	out := make(chan appwire.Notification, 128)
 	go func() {
 		defer close(out)
-		defer transport.Close()
+		defer transport.Close() //nolint:errcheck // transport cleanup; error is not actionable
 		for {
 			select {
 			case <-ctx.Done():
@@ -311,7 +311,7 @@ func (s *LocalDaemonSource) withClient(ctx context.Context, entry rendezvous.Ent
 		}
 		return localDaemonDialError(err)
 	}
-	defer transport.Close()
+	defer transport.Close() //nolint:errcheck // transport cleanup; error is not actionable
 	client := appwire.NewClient(transport)
 	client.Start(ctx)
 	if _, err := client.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "serf-hub"}}); err != nil {

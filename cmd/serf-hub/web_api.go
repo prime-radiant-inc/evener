@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -386,17 +387,17 @@ func (s *WebServer) handleAPIPathValidate(w http.ResponseWriter, r *http.Request
 
 // gitHeadBranch runs `git rev-parse --abbrev-ref HEAD` in dir and returns
 // the branch name. In detached HEAD state it falls back to the short SHA.
-func gitHeadBranch(dir string) (string, error) {
-	out, err := exec.Command("git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
+func gitHeadBranch(ctx context.Context, dir string) (string, error) {
+	out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
 	if err != nil {
 		return "", err
 	}
 	branch := strings.TrimSpace(string(out))
 	if branch == "HEAD" {
 		// Detached HEAD — return short SHA instead.
-		out2, err2 := exec.Command("git", "-C", dir, "rev-parse", "--short", "HEAD").Output()
+		out2, err2 := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--short", "HEAD").Output()
 		if err2 != nil {
-			return branch, nil
+			return branch, nil //nolint:nilerr // detached HEAD: short-SHA refinement is best-effort; the literal "HEAD" is a valid fallback
 		}
 		branch = strings.TrimSpace(string(out2))
 	}
@@ -417,7 +418,7 @@ func (s *WebServer) handleApiGitHead(w http.ResponseWriter, r *http.Request) {
 			cwd = abs
 		}
 		if _, err := os.Stat(cwd); err == nil {
-			if out, err := gitHeadBranch(cwd); err == nil {
+			if out, err := gitHeadBranch(r.Context(), cwd); err == nil {
 				branch = out
 			}
 		}

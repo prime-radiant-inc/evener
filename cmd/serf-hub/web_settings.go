@@ -472,7 +472,7 @@ func (s *WebServer) discoverMCPsForSettings(path string) ([]mcpDisplay, error) {
 		return nil, nil
 	}
 	if _, err := os.Stat(path); err != nil {
-		return nil, nil
+		return nil, nil //nolint:nilerr // a missing MCP config file is the empty state, not an error
 	}
 	configs, err := agent.LoadMCPConfigFile(path)
 	if err != nil {

@@ -193,7 +193,7 @@ func (r *Roster) Watch(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer w.Close()
+	defer w.Close() //nolint:errcheck // watcher cleanup; close error is not actionable
 
 	// Add the runDir; create it if absent so the watcher can attach.
 	_ = ensureDir(r.runDir)

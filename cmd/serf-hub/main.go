@@ -99,7 +99,7 @@ func main() {
 	hubToken, err := newHubToken()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
-		os.Exit(1)
+		os.Exit(1) //nolint:gocritic // exitAfterDefer: the deferred release() only drops a flock the kernel frees on process exit
 	}
 	hubStateRoot := cfg.HubStateRoot
 	authToken, err := hubedge.LoadOrCreateAuthToken(hubStateRoot)

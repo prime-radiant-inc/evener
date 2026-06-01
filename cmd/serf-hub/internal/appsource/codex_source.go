@@ -431,7 +431,7 @@ func (s *CodexSource) withClient(ctx context.Context, fn func(*appwire.Client) e
 	if err != nil {
 		return err
 	}
-	defer closeClient()
+	defer func() { _ = closeClient() }()
 	return codexSourceCallError(fn(client))
 }
 

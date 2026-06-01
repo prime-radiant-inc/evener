@@ -20,7 +20,7 @@ func CompleteDirs(params appwire.DirsCompleteParams) (appwire.DirsCompleteRespon
 	}
 	cleaned, err := SanitizeDirPrefix(prefix)
 	if err != nil {
-		return appwire.DirsCompleteResponse{}, nil
+		return appwire.DirsCompleteResponse{}, nil //nolint:nilerr // autocomplete: an unsanitizable prefix yields no suggestions, not an error
 	}
 	prefix = cleaned
 
@@ -37,7 +37,7 @@ func CompleteDirs(params appwire.DirsCompleteParams) (appwire.DirsCompleteRespon
 
 	entries, err := os.ReadDir(listDir)
 	if err != nil {
-		return appwire.DirsCompleteResponse{}, nil
+		return appwire.DirsCompleteResponse{}, nil //nolint:nilerr // autocomplete: an unreadable directory yields no suggestions, not an error
 	}
 	limit := params.Limit
 	if limit <= 0 || limit > 30 {

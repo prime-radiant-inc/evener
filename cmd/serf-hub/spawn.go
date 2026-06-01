@@ -258,7 +258,10 @@ func SpawnDaemon(ctx context.Context, serfBinary string, runDir string, req hubc
 	}
 	args := append([]string{"serve"}, buildSpawnArgs(req)...)
 
-	cmd := exec.Command(serfBinary, args...)
+	// NOT CommandContext: the spawned daemon must outlive this call's ctx (it
+	// runs independently until killed or sent /shutdown). ctx scopes only the
+	// rendezvous wait below; on timeout we kill the process explicitly.
+	cmd := exec.Command(serfBinary, args...) //nolint:noctx // detached daemon must outlive ctx (see comment)
 	cmd.Env = req.Env
 	var stderr tailBuffer
 	stderr.limit = daemonLaunchStderrLimit
@@ -349,7 +352,10 @@ func ResumeDaemon(ctx context.Context, serfBinary, runDir string, req hubcore.Re
 		args = append(args, "--app-replay-size", strconv.Itoa(req.AppReplaySize))
 	}
 	args = append(args, launchconfig.ToArgs(req.Resolved)...)
-	cmd := exec.Command(serfBinary, args...)
+	// NOT CommandContext: the resumed daemon must outlive this call's ctx (it
+	// runs independently until killed or sent /shutdown). ctx scopes only the
+	// rendezvous wait below; on timeout we kill the process explicitly.
+	cmd := exec.Command(serfBinary, args...) //nolint:noctx // detached daemon must outlive ctx (see comment)
 	cmd.Env = req.Env
 	var stderr tailBuffer
 	stderr.limit = daemonLaunchStderrLimit

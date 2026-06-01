@@ -144,7 +144,7 @@ func TestRoster_FindMissing(t *testing.T) {
 
 func TestRoster_DefaultRunDir(t *testing.T) {
 	t.Setenv("HOME", "/tmp/fakehome")
-	want := filepath.Join("/tmp/fakehome", ".serf", "run")
+	want := filepath.Join("/tmp/fakehome", ".serf", "run") //nolint:gocritic // filepathJoin: base is a full home path; mirrors rendezvous.DefaultDir
 	if got := rendezvous.DefaultDir(); got != want {
 		t.Fatalf("DefaultDir: got %q want %q", got, want)
 	}

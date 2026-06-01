@@ -12,7 +12,7 @@ func TestAcquireLock_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AcquireLock: %v", err)
 	}
-	defer rel()
+	rel()
 }
 
 func TestAcquireLock_FailsIfHeld(t *testing.T) {

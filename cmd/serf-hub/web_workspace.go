@@ -125,8 +125,10 @@ func (s *WebServer) renderWorkspacePartial(w http.ResponseWriter, r *http.Reques
 func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, id string) {
 	type detailsRow struct{ Label, Value string }
 	var rows []detailsRow
-	rows = append(rows, detailsRow{"source", sourceLabelFromRefText(appRefFromRouteID(id))})
-	rows = append(rows, detailsRow{"session id", id})
+	rows = append(rows,
+		detailsRow{"source", sourceLabelFromRefText(appRefFromRouteID(id))},
+		detailsRow{"session id", id},
+	)
 
 	addMeta := func(m agent.SessionMeta) {
 		if m.OriginalPrompt != "" {
@@ -148,8 +150,10 @@ func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, i
 			rows = append(rows, detailsRow{"last input tokens", strconv.Itoa(m.LastInputTokens)})
 		}
 		if m.ParentSessionID != "" {
-			rows = append(rows, detailsRow{"forked from", m.ParentSessionID})
-			rows = append(rows, detailsRow{"divergence turn", strconv.Itoa(m.DivergenceTurn)})
+			rows = append(rows,
+				detailsRow{"forked from", m.ParentSessionID},
+				detailsRow{"divergence turn", strconv.Itoa(m.DivergenceTurn)},
+			)
 		}
 		if m.IsSubagent {
 			rows = append(rows, detailsRow{"kind", "subagent"})
@@ -158,8 +162,10 @@ func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, i
 
 	if s.cfg.Roster != nil {
 		if le, ok := s.cfg.Roster.Find(id); ok {
-			rows = append(rows, detailsRow{"daemon", le.Address})
-			rows = append(rows, detailsRow{"pid", strconv.Itoa(le.PID)})
+			rows = append(rows,
+				detailsRow{"daemon", le.Address},
+				detailsRow{"pid", strconv.Itoa(le.PID)},
+			)
 		}
 	}
 	if s.cfg.Past != nil {
@@ -169,12 +175,12 @@ func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, i
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintln(w, `<header class="details-panel-header"><span>details</span><button class="details-panel-close" aria-label="close panel" onclick="document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))">✕</button></header>`)
-	fmt.Fprintln(w, `<dl class="details-list">`)
+	_, _ = fmt.Fprintln(w, `<header class="details-panel-header"><span>details</span><button class="details-panel-close" aria-label="close panel" onclick="document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))">✕</button></header>`)
+	_, _ = fmt.Fprintln(w, `<dl class="details-list">`)
 	for _, row := range rows {
-		fmt.Fprintf(w, `<dt>%s</dt><dd>%s</dd>`, htmlEscape(row.Label), htmlEscape(row.Value))
+		_, _ = fmt.Fprintf(w, `<dt>%s</dt><dd>%s</dd>`, htmlEscape(row.Label), htmlEscape(row.Value))
 	}
-	fmt.Fprintln(w, `</dl>`)
+	_, _ = fmt.Fprintln(w, `</dl>`)
 }
 
 // renderSessionTasks returns the session's task list as JSON. For live

@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -27,7 +28,9 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) (sessionID, status string, 
 		timeout = 500 * time.Millisecond
 	}
 	client := &http.Client{Timeout: timeout}
-	req, err := http.NewRequest(http.MethodGet, "http://"+entry.Address+"/status", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+entry.Address+"/status", nil)
 	if err != nil {
 		return "", "", false
 	}
@@ -36,7 +39,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) (sessionID, status string, 
 	if err != nil {
 		return "", "", false
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // response body close on read path; error is not actionable
 	if resp.StatusCode != http.StatusOK {
 		return "", "", false
 	}
