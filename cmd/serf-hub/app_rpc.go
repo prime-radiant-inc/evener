@@ -261,6 +261,27 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 		}
 		return nil
 	}
+	registerThreadHandlers(server, cfg, sources, startRelay, startTurn, startRelayForThread)
+	registerAuthHandlers(server, authController)
+	registerInstanceHandlers(server, instancesController)
+	launchController := newHubLaunchController(hubStateRoot)
+	registerLaunchHandlers(server, launchController)
+	registerMiscHandlers(server, cfg, sources)
+	return server
+}
+
+// registerThreadHandlers registers the thread- and turn-lifecycle RPC handlers
+// on the server. The relay closures (startRelay, startTurn, startRelayForThread)
+// are constructed by newHubAppServer and passed in so the handlers close over
+// the same relay state.
+func registerThreadHandlers(
+	server *appserver.Server,
+	cfg hubcore.WebConfig,
+	sources *appsource.Registry,
+	startRelay func(context.Context, appsource.Source, appwire.ThreadReadParams, appwire.Thread) error,
+	startTurn func(context.Context, appsource.Source, appwire.TurnStartParams) (appwire.TurnStartResponse, error),
+	startRelayForThread func(context.Context, appwire.Thread) error,
+) {
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 		return hubThreadList(ctx, cfg, sources, params)
 	})
@@ -432,6 +453,11 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 		}
 		return appwire.EmptyResponse{}, source.SetThreadModel(ctx, params)
 	})
+}
+
+// registerAuthHandlers registers the serf/auth/* RPC handlers, routed to the
+// auth controller. Successful mutations broadcast serf/auth/updated.
+func registerAuthHandlers(server *appserver.Server, authController *hubAuthController) {
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfAuthStatus, func(_ context.Context, params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
 		return authController.Status(params)
 	})
@@ -472,36 +498,47 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 		}
 		return resp, err
 	})
-	if instancesController != nil {
-		appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceList, func(_ context.Context, _ appwire.EmptyParams) (appwire.InstanceListResponse, error) {
-			return instancesController.List(), nil
-		})
-		appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceCreate, func(_ context.Context, params appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
-			if err := instancesController.Create(params); err != nil {
-				return appwire.InstanceListResponse{}, err
-			}
-			return instancesController.List(), nil
-		})
-		appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
-			if err := instancesController.Edit(params); err != nil {
-				return appwire.InstanceListResponse{}, err
-			}
-			return instancesController.List(), nil
-		})
-		appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
-			if err := instancesController.Remove(params); err != nil {
-				return appwire.InstanceListResponse{}, err
-			}
-			return instancesController.List(), nil
-		})
-		appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceSetDefault, func(_ context.Context, params appwire.InstanceSetDefaultParams) (appwire.InstanceListResponse, error) {
-			if err := instancesController.SetDefault(params); err != nil {
-				return appwire.InstanceListResponse{}, err
-			}
-			return instancesController.List(), nil
-		})
+}
+
+// registerInstanceHandlers registers the serf/instance/* CRUD handlers. When no
+// instances controller is configured (providers.toml path unset), no handlers
+// are registered — matching the original inline guard.
+func registerInstanceHandlers(server *appserver.Server, instancesController *hubInstancesController) {
+	if instancesController == nil {
+		return
 	}
-	launchController := newHubLaunchController(hubStateRoot)
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceList, func(_ context.Context, _ appwire.EmptyParams) (appwire.InstanceListResponse, error) {
+		return instancesController.List(), nil
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceCreate, func(_ context.Context, params appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
+		if err := instancesController.Create(params); err != nil {
+			return appwire.InstanceListResponse{}, err
+		}
+		return instancesController.List(), nil
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
+		if err := instancesController.Edit(params); err != nil {
+			return appwire.InstanceListResponse{}, err
+		}
+		return instancesController.List(), nil
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
+		if err := instancesController.Remove(params); err != nil {
+			return appwire.InstanceListResponse{}, err
+		}
+		return instancesController.List(), nil
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodSerfInstanceSetDefault, func(_ context.Context, params appwire.InstanceSetDefaultParams) (appwire.InstanceListResponse, error) {
+		if err := instancesController.SetDefault(params); err != nil {
+			return appwire.InstanceListResponse{}, err
+		}
+		return instancesController.List(), nil
+	})
+}
+
+// registerLaunchHandlers registers the serf/launch/* RPC handlers, routed to the
+// launch controller. Successful layer/trust mutations broadcast serf/launch/updated.
+func registerLaunchHandlers(server *appserver.Server, launchController *hubLaunchController) {
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfLaunchResolve, func(ctx context.Context, params appwire.LaunchConfigResolveParams) (appwire.LaunchConfigResolved, error) {
 		return launchController.Resolve(ctx, params)
 	})
@@ -525,6 +562,12 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 		}
 		return resp, err
 	})
+}
+
+// registerMiscHandlers registers the remaining hub RPC handlers: model list,
+// task list, transcript list, directory completion, path validation, and the
+// harness descriptor list.
+func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) {
 	appserver.HandleTyped(server.Router(), appwire.MethodModelList, func(ctx context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
 		return hubModelList(ctx, cfg, sources, params)
 	})
@@ -547,7 +590,6 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 	appserver.HandleTyped(server.Router(), appwire.MethodSerfHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
 		return appwire.HarnessListResponse{Data: launchHarnessDescriptors(cfg)}, nil
 	})
-	return server
 }
 
 // notifyAuthUpdated broadcasts a serf/auth/updated notification to all connected clients.

@@ -5119,3 +5119,96 @@ func newHubRPCTestServer(t *testing.T, cfg hubcore.WebConfig) *httptest.Server {
 	srv.Start()
 	return srv
 }
+
+// TestHubRPCRegistersExpectedHandlerSet locks in the exact set of RPC methods
+// the hub app server registers. It dispatches every expected method (with a
+// providers config present so the instance handlers register too) and asserts
+// none responds with methodNotFound, then confirms an unknown method does. This
+// guards the constructor decomposition (registerThreadHandlers / Auth /
+// Instance / Launch / Misc) against accidentally dropping a registration.
+func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	provCfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
+			{Name: "my-openai", Type: "openai", APIStyle: "responses"},
+		},
+	}
+	if err := providercfg.WriteFile(tomlPath, provCfg); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		ProviderConfig:      &provCfg,
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	expected := []string{
+		appwire.MethodThreadList,
+		appwire.MethodThreadRead,
+		appwire.MethodThreadStart,
+		appwire.MethodThreadResume,
+		appwire.MethodThreadFork,
+		appwire.MethodTurnStart,
+		appwire.MethodTurnSteer,
+		appwire.MethodTurnInterrupt,
+		appwire.MethodTurnQueue,
+		appwire.MethodTurnDrainAsSteer,
+		appwire.MethodThreadClear,
+		appwire.MethodThreadCompactStart,
+		appwire.MethodThreadShutdown,
+		appwire.MethodThreadModelSet,
+		appwire.MethodSerfAuthStatus,
+		appwire.MethodSerfAuthLoginStart,
+		appwire.MethodSerfAuthLoginComplete,
+		appwire.MethodSerfAuthLogout,
+		appwire.MethodSerfAuthList,
+		appwire.MethodSerfAuthApiKeySet,
+		appwire.MethodSerfAuthDeviceStart,
+		appwire.MethodSerfAuthDevicePoll,
+		appwire.MethodSerfInstanceList,
+		appwire.MethodSerfInstanceCreate,
+		appwire.MethodSerfInstanceEdit,
+		appwire.MethodSerfInstanceRemove,
+		appwire.MethodSerfInstanceSetDefault,
+		appwire.MethodSerfLaunchResolve,
+		appwire.MethodSerfLaunchSchema,
+		appwire.MethodSerfLaunchGetLayer,
+		appwire.MethodSerfLaunchSetLayer,
+		appwire.MethodSerfLaunchTrustRepo,
+		appwire.MethodModelList,
+		appwire.MethodSerfTasksList,
+		appwire.MethodSerfThreadTranscriptsList,
+		appwire.MethodSerfDirsComplete,
+		appwire.MethodSerfPathValidate,
+		appwire.MethodSerfHarnessesList,
+	}
+
+	for _, method := range expected {
+		// We only care about the dispatch outcome, not the response body, so
+		// pass a nil out. A registered handler may succeed or reject the empty
+		// params with some other error; what it must never return is
+		// methodNotFound.
+		err := client.Request(context.Background(), method, appwire.EmptyParams{}, nil)
+		var wire appwire.WireError
+		if errors.As(err, &wire) && wire.Code == appwire.CodeMethodNotFound {
+			t.Errorf("method %q is not registered (methodNotFound)", method)
+		}
+	}
+
+	// Sanity check: an unregistered method must report methodNotFound, proving
+	// the assertion above is meaningful.
+	err := client.Request(context.Background(), "serf/__definitely_not_registered__", appwire.EmptyParams{}, nil)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeMethodNotFound {
+		t.Fatalf("expected methodNotFound for unknown method, got %T: %v", err, err)
+	}
+}
