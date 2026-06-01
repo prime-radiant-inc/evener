@@ -1,10 +1,64 @@
 version: "2"
 
+run:
+  timeout: 5m
+  tests: true
+
 linters:
-  default: standard
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
   enable:
+    - bodyclose
+    - copyloopvar
+    - durationcheck
+    - errname
+    - errorlint
+    - gocheckcompilerdirectives
     - gocritic
+    - misspell
+    - nakedret
+    - nilerr
+    - noctx
+    - perfsprint
+    - predeclared
+    - revive
+    - unconvert
+    - usestdlibvars
+  settings:
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: superfluous-else
+        - name: unreachable-code
+        - name: redefines-builtin-id
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+      disabled-checks:
+        - ifElseChain
+  exclusions:
+    generated: lax
+    rules:
+      # Tests routinely ignore these intentionally.
+      - path: _test\.go
+        linters:
+          - bodyclose
+          - noctx
+          - errcheck
 
 formatters:
   enable:
     - gofmt
+    - goimports
