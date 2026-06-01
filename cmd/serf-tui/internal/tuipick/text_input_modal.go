@@ -49,8 +49,7 @@ func NewTextInputModalMasked(prompt, tag string) TextInputModal {
 func (m TextInputModal) Init() tea.Cmd { return nil }
 
 func (m TextInputModal) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch v := msg.(type) {
-	case tea.KeyMsg:
+	if v, ok := msg.(tea.KeyMsg); ok {
 		switch v.Type {
 		case tea.KeyEsc, tea.KeyCtrlC:
 			m.done = true
@@ -77,9 +76,11 @@ func (m TextInputModal) inputView() string {
 	display := m.input
 	if m.mask {
 		display = ""
+		var displaySb80 strings.Builder
 		for range m.input {
-			display += "•"
+			displaySb80.WriteString("•")
 		}
+		display += displaySb80.String()
 	}
 	return "> " + display + "_"
 }

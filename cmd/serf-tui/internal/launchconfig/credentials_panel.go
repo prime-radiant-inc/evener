@@ -434,17 +434,21 @@ func (p CredentialsPanel) View() string {
 func (p CredentialsPanel) formView() string {
 	var lines []string
 	if p.formEditing {
-		lines = append(lines, "Edit instance: "+p.formName)
-		lines = append(lines, "")
-		lines = append(lines, p.formFieldLine("API Style", "apiStyle", p.apiStyleDisplay(), 0))
-		lines = append(lines, p.formFieldLine("Base URL", "baseURL", p.formBaseURL, 1))
+		lines = append(lines,
+			"Edit instance: "+p.formName,
+			"",
+			p.formFieldLine("API Style", "apiStyle", p.apiStyleDisplay(), 0),
+			p.formFieldLine("Base URL", "baseURL", p.formBaseURL, 1),
+		)
 	} else {
-		lines = append(lines, "New instance")
-		lines = append(lines, "")
-		lines = append(lines, p.formFieldLine("Type", "type", p.formType, 0))
-		lines = append(lines, p.formFieldLine("Name", "name", p.formName, 1))
-		lines = append(lines, p.formFieldLine("API Style", "apiStyle", p.apiStyleDisplay(), 2))
-		lines = append(lines, p.formFieldLine("Base URL", "baseURL", p.formBaseURL, 3))
+		lines = append(lines,
+			"New instance",
+			"",
+			p.formFieldLine("Type", "type", p.formType, 0),
+			p.formFieldLine("Name", "name", p.formName, 1),
+			p.formFieldLine("API Style", "apiStyle", p.apiStyleDisplay(), 2),
+			p.formFieldLine("Base URL", "baseURL", p.formBaseURL, 3),
+		)
 	}
 	return strings.Join(lines, "\n")
 }

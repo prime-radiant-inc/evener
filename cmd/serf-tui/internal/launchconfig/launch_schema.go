@@ -3,6 +3,7 @@ package launchconfig
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"primeradiant.com/serf/appwire"
@@ -74,7 +75,7 @@ func launchOptionValue(opt appwire.LaunchOption, l appwire.LaunchConfigLayer) (s
 		if p == nil {
 			return "(default)"
 		}
-		return fmt.Sprintf("%d", *p)
+		return strconv.Itoa(*p)
 	}
 	ptrBoolStr := func(p *bool) string {
 		if p == nil {

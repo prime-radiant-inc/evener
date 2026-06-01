@@ -74,32 +74,6 @@ func (m hubModel) lastBrowseMessageIndex() int {
 	return -1
 }
 
-func (m *hubModel) moveBrowseSelection(delta int) {
-	if len(m.session.messages) == 0 {
-		m.browseSelected = -1
-		return
-	}
-	idx := m.browseSelected
-	if idx < 0 || idx >= len(m.session.messages) {
-		idx = m.lastBrowseMessageIndex()
-	}
-	for {
-		idx += delta
-		if idx < 0 || idx >= len(m.session.messages) {
-			break
-		}
-		if msgrender.RenderMessage(m.session.messages[idx], max(m.width, 80), false) != "" {
-			m.browseSelected = idx
-			m.session.scrollToMessage(idx)
-			return
-		}
-	}
-	m.session.viewport, _ = m.session.viewport.Update(tea.KeyMsg{Type: tea.KeyUp})
-	if delta > 0 {
-		m.session.viewport, _ = m.session.viewport.Update(tea.KeyMsg{Type: tea.KeyDown})
-	}
-}
-
 func (m *hubModel) moveBrowsePage(direction int) {
 	step := m.session.viewport.Height
 	if step < 1 {
@@ -117,24 +91,6 @@ func (m hubModel) selectedBrowseMessage() (int, transcript.ChatMessage, bool) {
 		return -1, transcript.ChatMessage{}, false
 	}
 	return m.browseSelected, m.session.messages[m.browseSelected], true
-}
-
-func (m *hubModel) toggleSelectedBrowseEntry() {
-	idx, msg, ok := m.selectedBrowseMessage()
-	if !ok || msg.Kind != transcript.MsgTool || msg.Tool == nil || !msg.Tool.Done {
-		return
-	}
-	m.setSelectedBrowseEntryExpanded(!msg.Tool.Expanded)
-	m.session.scrollToMessage(idx)
-}
-
-func (m *hubModel) setSelectedBrowseEntryExpanded(expanded bool) {
-	idx, msg, ok := m.selectedBrowseMessage()
-	if !ok || msg.Kind != transcript.MsgTool || msg.Tool == nil || !msg.Tool.Done {
-		return
-	}
-	m.session.messages[idx].Tool.Expanded = expanded
-	m.session.refreshViewport()
 }
 
 func (m *hubModel) toggleAllBrowseToolEntries() {

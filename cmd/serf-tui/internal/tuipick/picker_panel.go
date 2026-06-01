@@ -52,8 +52,7 @@ func (p PickerPanel) filtered() []PickerPanelItem {
 }
 
 func (p PickerPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	if msg, ok := msg.(tea.KeyMsg); ok {
 		switch msg.Type {
 		case tea.KeyEscape, tea.KeyCtrlC:
 			p.cancelled = true

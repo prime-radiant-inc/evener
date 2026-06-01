@@ -96,11 +96,11 @@ func (m hubModel) sessionTurnActionState() bool {
 }
 
 func (m hubModel) sessionComposerPanel() composerPanel {
-	// "/help" is inlined rather than routed through hubCommandHint("help")
-	// because syncSessionViewport (called from enterSessionBrowse) reaches
-	// this function via sessionChromeText; routing through hubCommandHint
-	// would close an init cycle hubCommandRegistry → enterSessionBrowse →
-	// syncSessionViewport → … → hubCommandByName → hubCommandRegistry.
+	// "/help" is inlined as a literal rather than looked up via
+	// hubCommandByName because syncSessionViewport (called from
+	// enterSessionBrowse) reaches this function via sessionChromeText; a
+	// lookup would close an init cycle hubCommandRegistry → enterSessionBrowse
+	// → syncSessionViewport → … → hubCommandByName → hubCommandRegistry.
 	keys := []string{"esc: browse", "ctrl+p: palette", "ctrl+o: dashboard", "/help"}
 	panel := composerPanel{
 		Draft:         m.session.input.Value(),
@@ -137,7 +137,8 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 			queueHints = append(queueHints, "ctrl+s: send as steer")
 			panel.CanSteer = true
 		}
-		panel.Keys = append(queueHints, keys...)
+		queueHints = append(queueHints, keys...)
+		panel.Keys = queueHints
 		queueDepth := len(m.sessionQueue)
 		if queueDepth > 0 {
 			panel.ChipContext.Mode = "QUEUE " + itoa(queueDepth)

@@ -67,16 +67,6 @@ func (m hubModel) sessionHeaderLines() []string {
 	return []string{rule, titleLine, meta}
 }
 
-func sessionHeaderModelSummary(detail hubSessionDetail) string {
-	if model := strings.TrimSpace(detail.Model); model != "" {
-		return "model: " + model
-	}
-	if provider := strings.TrimSpace(detail.Profile); provider != "" {
-		return "provider: " + provider
-	}
-	return "model: unknown"
-}
-
 func (m hubModel) sessionHeaderWidth() int {
 	if m.width > 0 {
 		return m.width
@@ -238,7 +228,7 @@ func (m hubModel) renderSessionMainBody() string {
 // share the same chrome calculation.
 func (m *hubModel) sessionChromeText() (topBar, overlayText, footer string) {
 	title := firstNonEmptyString(m.detail.Title, m.detail.SessionID, m.detail.Ref, "untitled session")
-	topBar = truncateSessionLine(fmt.Sprintf("serf / session / %s", title), m.sessionHeaderWidth())
+	topBar = truncateSessionLine("serf / session / "+title, m.sessionHeaderWidth())
 	var overlay strings.Builder
 	if m.sessionModelPicker != nil {
 		overlay.WriteString(m.sessionModelPicker.View())
@@ -284,7 +274,7 @@ func (m *hubModel) sessionChromeText() (topBar, overlayText, footer string) {
 		kbdFooter = m.sessionComposerPanel().View()
 	}
 	footer = kbdFooter
-	return
+	return topBar, overlayText, footer
 }
 
 // syncSessionViewport writes the current mainBody and correct geometry into

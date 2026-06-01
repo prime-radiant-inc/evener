@@ -358,8 +358,12 @@ func WriteTempPNG(data []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
 	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return "", err
+	}
+	if err := f.Close(); err != nil {
 		_ = os.Remove(f.Name())
 		return "", err
 	}
@@ -379,7 +383,7 @@ func FileURIToPath(uri string) string {
 		return ""
 	}
 	if rest[0] != '/' {
-		// file://host/path → drop host segment.
+		// Drop the leading host segment from a "file://host/path" form.
 		idx := strings.IndexByte(rest, '/')
 		if idx < 0 {
 			return ""

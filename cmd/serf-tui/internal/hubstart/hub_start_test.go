@@ -3,7 +3,6 @@ package hubstart
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -174,7 +173,7 @@ func TestStartHubClientDistinguishesStartupFailures(t *testing.T) {
 		err  error
 		kind StartupErrorKind
 	}{
-		{name: "bind failure", err: fmt.Errorf("listen tcp 127.0.0.1:9180: bind: address already in use"), kind: StartupErrorBindFailure},
+		{name: "bind failure", err: errors.New("listen tcp 127.0.0.1:9180: bind: address already in use"), kind: StartupErrorBindFailure},
 		{name: "other start failure", err: errors.New("permission denied"), kind: StartupErrorUnhealthyHub},
 	}
 	for _, tt := range tests {

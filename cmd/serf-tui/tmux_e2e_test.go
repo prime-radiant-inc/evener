@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -44,7 +46,7 @@ func requireFullTmuxE2E(t *testing.T) {
 	}
 }
 
-var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[\x20-\x2f]*[\x40-\x7e]`)
 
 func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	requireTmux(t)
@@ -844,7 +846,7 @@ func startTUITmuxSized(t *testing.T, bin, hubURL string, width, height int) *tmu
 	t.Helper()
 	session := fmt.Sprintf("serf-tui-e2e-%d", time.Now().UnixNano())
 	command := shellQuote(bin) + " -debug -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
-	runTmux(t, "new-session", "-d", "-x", fmt.Sprint(width), "-y", fmt.Sprint(height), "-s", session, command)
+	runTmux(t, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
 	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
 	app := &tmuxTUI{t: t, session: session}
 	app.WaitFor("SERF LIVE")
@@ -855,7 +857,7 @@ func startTUITmuxAltScreen(t *testing.T, bin, hubURL string, width, height int) 
 	t.Helper()
 	session := fmt.Sprintf("serf-tui-e2e-%d", time.Now().UnixNano())
 	command := shellQuote(bin) + " -no-auto-start-hub -hub-addr " + shellQuote(hubURL)
-	runTmux(t, "new-session", "-d", "-x", fmt.Sprint(width), "-y", fmt.Sprint(height), "-s", session, command)
+	runTmux(t, "new-session", "-d", "-x", strconv.Itoa(width), "-y", strconv.Itoa(height), "-s", session, command)
 	runTmux(t, "set-option", "-t", session, "remain-on-exit", "on")
 	app := &tmuxTUI{t: t, session: session}
 	app.WaitFor("SERF LIVE")
@@ -903,7 +905,7 @@ func (a *tmuxTUI) CaptureHistory() string {
 
 func (a *tmuxTUI) Resize(width, height int) {
 	a.t.Helper()
-	runTmux(a.t, "resize-window", "-t", a.session, "-x", fmt.Sprint(width), "-y", fmt.Sprint(height))
+	runTmux(a.t, "resize-window", "-t", a.session, "-x", strconv.Itoa(width), "-y", strconv.Itoa(height))
 }
 
 func (a *tmuxTUI) WaitFor(wants ...string) string {
@@ -1425,7 +1427,7 @@ func (h *tuiE2EHub) handleThreadStart(_ context.Context, params appwire.ThreadSt
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.failSpawn {
-		return appwire.ThreadStartResponse{}, fmt.Errorf("spawn failed")
+		return appwire.ThreadStartResponse{}, errors.New("spawn failed")
 	}
 	h.spawnCount++
 	id := fmt.Sprintf("02SPAWN%d", h.spawnCount)
@@ -1484,7 +1486,7 @@ func (h *tuiE2EHub) handleTurnStart(_ context.Context, params appwire.TurnStartP
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.failSend {
-		return appwire.TurnStartResponse{}, fmt.Errorf("send failed")
+		return appwire.TurnStartResponse{}, errors.New("send failed")
 	}
 	h.sends = append(h.sends, testInputText(params.Input))
 	return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_sent", Status: appwire.TurnStatusInProgress}}, nil
@@ -1516,7 +1518,7 @@ func (h *tuiE2EHub) handleTasksList(context.Context, appwire.TaskListParams) (ap
 	fail := h.failTasks
 	h.mu.Unlock()
 	if fail {
-		return appwire.TaskListResponse{}, fmt.Errorf("tasks failed")
+		return appwire.TaskListResponse{}, errors.New("tasks failed")
 	}
 	return appwire.TaskListResponse{Data: []agent.Task{{ID: 1, Type: agent.TaskTypeImplement, Description: "wire tui e2e", Status: agent.TaskInProgress}}}, nil
 }
@@ -1574,7 +1576,7 @@ func (h *tuiE2EHub) handleThreadFork(_ context.Context, params appwire.ThreadFor
 	defer h.mu.Unlock()
 	if h.failFork {
 		h.forks = append(h.forks, params)
-		return appwire.ThreadForkResponse{}, fmt.Errorf("fork failed")
+		return appwire.ThreadForkResponse{}, errors.New("fork failed")
 	}
 	id := "02FORK"
 	h.forks = append(h.forks, params)

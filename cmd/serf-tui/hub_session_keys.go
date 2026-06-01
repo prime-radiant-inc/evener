@@ -398,14 +398,6 @@ func (m *hubModel) runHubSlashCommand(cmd, args string) tea.Cmd {
 	return runHubCommandDefinition(m, definition, args)
 }
 
-func (m hubModel) ctrlCRestoreMessage() string {
-	restore := m.restoreInstructionMessage()
-	if restore == "" {
-		return "Press ctrl+c again to quit."
-	}
-	return "Press ctrl+c again to quit.\n" + restore
-}
-
 func (m hubModel) restoreInstructionMessage() string {
 	hubURL := strings.TrimSpace(m.hubURL)
 	if hubURL == "" {

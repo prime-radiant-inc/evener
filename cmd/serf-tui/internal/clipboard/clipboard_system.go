@@ -14,13 +14,27 @@ package clipboard
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
 )
+
+// clipboardProbeTimeout bounds each external clipboard tool invocation so a
+// hung helper (xclip/wl-paste/osascript/PowerShell) cannot stall the UI.
+const clipboardProbeTimeout = 5 * time.Second
+
+// clipboardCommandOutput runs an external clipboard tool with a bounded
+// timeout and returns its standard output.
+func clipboardCommandOutput(name string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), clipboardProbeTimeout)
+	defer cancel()
+	return exec.CommandContext(ctx, name, args...).Output()
+}
 
 // SystemClipboardSource is the production implementation of
 // [ClipboardSource]. The zero value is usable; the wrapper exposes
@@ -84,16 +98,19 @@ if ($img -ne $null) {
   Write-Output $p
 } else { exit 1 }`
 
+	ctx, cancel := context.WithTimeout(context.Background(), clipboardProbeTimeout)
+	defer cancel()
 	for _, name := range []string{"powershell.exe", "pwsh.exe", "pwsh", "powershell"} {
 		if _, err := exec.LookPath(name); err != nil {
 			continue
 		}
-		cmd := exec.Command(name, "-NoProfile", "-NonInteractive", "-Command", script)
+		cmd := exec.CommandContext(ctx, name, "-NoProfile", "-NonInteractive", "-Command", script)
 		var out bytes.Buffer
 		cmd.Stdout = &out
 		if err := cmd.Run(); err != nil {
 			// Exit code 1 means "no image"; anything else is a real failure.
-			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 				return "", ErrNoClipboardImage
 			}
 			continue
@@ -134,8 +151,9 @@ func readFilePathsMacOS() ([]string, error) {
   set theFiles to the clipboard as «class furl»
   return POSIX path of theFiles
 end try`
-	out, err := exec.Command("osascript", "-e", script).Output()
+	out, err := clipboardCommandOutput("osascript", "-e", script)
 	if err != nil {
+		//nolint:nilerr // best-effort probe: a failed osascript call means "no file list on the clipboard", so fall through to the next paste strategy (see PasteClipboardImage).
 		return nil, nil
 	}
 	line := strings.TrimSpace(string(out))
@@ -156,8 +174,10 @@ func readImageBytesMacOS() ([]byte, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("temp file: %w", err)
 	}
-	tmp.Close()
-	defer os.Remove(tmp.Name())
+	// osascript writes to this path itself; close the empty handle now and
+	// remove the file on the way out. Both are best-effort cleanup.
+	_ = tmp.Close()
+	defer func() { _ = os.Remove(tmp.Name()) }()
 	script := fmt.Sprintf(`try
   set png to (the clipboard as «class PNGf»)
   set f to open for access POSIX file %q with write permission
@@ -168,7 +188,7 @@ func readImageBytesMacOS() ([]byte, string, error) {
 on error
   return "noimage"
 end try`, tmp.Name())
-	out, err := exec.Command("osascript", "-e", script).Output()
+	out, err := clipboardCommandOutput("osascript", "-e", script)
 	if err != nil {
 		return nil, "", err
 	}
@@ -192,12 +212,13 @@ func readFilePathsX11() ([]string, error) {
 	if _, err := exec.LookPath("xclip"); err != nil {
 		return nil, ErrClipboardUnavailable
 	}
-	targets, _ := exec.Command("xclip", "-selection", "clipboard", "-t", "TARGETS", "-o").Output()
+	targets, _ := clipboardCommandOutput("xclip", "-selection", "clipboard", "-t", "TARGETS", "-o")
 	if !bytes.Contains(targets, []byte("text/uri-list")) {
 		return nil, nil
 	}
-	out, err := exec.Command("xclip", "-selection", "clipboard", "-t", "text/uri-list", "-o").Output()
+	out, err := clipboardCommandOutput("xclip", "-selection", "clipboard", "-t", "text/uri-list", "-o")
 	if err != nil {
+		//nolint:nilerr // best-effort probe: a failed xclip conversion means "no file list available", so fall through to the next paste strategy (see PasteClipboardImage).
 		return nil, nil
 	}
 	return ParseURIList(string(out)), nil
@@ -210,11 +231,11 @@ func readImageBytesX11() ([]byte, string, error) {
 	if _, err := exec.LookPath("xclip"); err != nil {
 		return nil, "", ErrClipboardUnavailable
 	}
-	targets, _ := exec.Command("xclip", "-selection", "clipboard", "-t", "TARGETS", "-o").Output()
+	targets, _ := clipboardCommandOutput("xclip", "-selection", "clipboard", "-t", "TARGETS", "-o")
 	if !bytes.Contains(targets, []byte("image/png")) {
 		return nil, "", ErrNoClipboardImage
 	}
-	out, err := exec.Command("xclip", "-selection", "clipboard", "-t", "image/png", "-o").Output()
+	out, err := clipboardCommandOutput("xclip", "-selection", "clipboard", "-t", "image/png", "-o")
 	if err != nil {
 		return nil, "", err
 	}
@@ -231,12 +252,13 @@ func readFilePathsWayland() ([]string, error) {
 	if _, err := exec.LookPath("wl-paste"); err != nil {
 		return nil, ErrClipboardUnavailable
 	}
-	types, _ := exec.Command("wl-paste", "--list-types").Output()
+	types, _ := clipboardCommandOutput("wl-paste", "--list-types")
 	if !bytes.Contains(types, []byte("text/uri-list")) {
 		return nil, nil
 	}
-	out, err := exec.Command("wl-paste", "--no-newline", "--type", "text/uri-list").Output()
+	out, err := clipboardCommandOutput("wl-paste", "--no-newline", "--type", "text/uri-list")
 	if err != nil {
+		//nolint:nilerr // best-effort probe: a failed wl-paste conversion means "no file list available", so fall through to the next paste strategy (see PasteClipboardImage).
 		return nil, nil
 	}
 	return ParseURIList(string(out)), nil
@@ -247,11 +269,11 @@ func readImageBytesWayland() ([]byte, string, error) {
 	if _, err := exec.LookPath("wl-paste"); err != nil {
 		return nil, "", ErrClipboardUnavailable
 	}
-	types, _ := exec.Command("wl-paste", "--list-types").Output()
+	types, _ := clipboardCommandOutput("wl-paste", "--list-types")
 	if !bytes.Contains(types, []byte("image/png")) {
 		return nil, "", ErrNoClipboardImage
 	}
-	out, err := exec.Command("wl-paste", "--no-newline", "--type", "image/png").Output()
+	out, err := clipboardCommandOutput("wl-paste", "--no-newline", "--type", "image/png")
 	if err != nil {
 		return nil, "", err
 	}

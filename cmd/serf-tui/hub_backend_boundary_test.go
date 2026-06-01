@@ -39,7 +39,8 @@ func TestHubCommandRoutingStaysInsideAppWireClientBoundary(t *testing.T) {
 		"client.ThreadClear(",
 		"client.ThreadShutdown(",
 		"client.ThreadModelSet(",
-		"client.TurnSteer(",
+		// Steering is routed through turn/drainAsSteer (kata 0bq1); the TUI no
+		// longer issues a bare client.TurnSteer( from a session-action helper.
 		"client.TurnQueue(",
 		"client.TurnDrainAsSteer(",
 		"client.ThreadFork(",

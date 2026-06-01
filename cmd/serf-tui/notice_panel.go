@@ -142,11 +142,8 @@ func noticeKey(notice noticePanel) string {
 // legacy payloads still fall back to a message-prefix match so existing
 // behavior is preserved.
 func classifyWarningCategory(message string, cause *appwire.DiagnosticCause) string {
-	if cause != nil {
-		switch cause.Kind {
-		case "provider":
-			return "provider"
-		}
+	if cause != nil && cause.Kind == "provider" {
+		return "provider"
 	}
 	trimmed := strings.ToLower(strings.TrimSpace(message))
 	switch {

@@ -61,27 +61,3 @@ func sessionShellBodyHeight(totalHeight int, topBar, overlay, footer string) int
 	}
 	return height
 }
-
-func limitSessionBodyLines(text string, maxLines int) string {
-	if maxLines <= 0 {
-		return ""
-	}
-	lines := tuitext.MultilineLines(text)
-	if len(lines) <= maxLines {
-		return strings.Join(lines, "\n")
-	}
-	if maxLines <= 4 {
-		return strings.Join(lines[len(lines)-maxLines:], "\n")
-	}
-	head := 4
-	tail := maxLines - head - 1
-	if tail < 1 {
-		tail = 1
-		head = maxLines - tail - 1
-	}
-	limited := make([]string, 0, maxLines)
-	limited = append(limited, lines[:head]...)
-	limited = append(limited, "...")
-	limited = append(limited, lines[len(lines)-tail:]...)
-	return strings.Join(limited, "\n")
-}

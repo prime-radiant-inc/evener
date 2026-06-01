@@ -65,7 +65,7 @@ func SummarizeTool(toolName, argsJSON string) (desc, detail string) {
 		if strings.Contains(cmd, "\n") || len(cmd) > 80 {
 			detail = cmd
 		}
-		return
+		return desc, detail
 
 	case "read_file":
 		path := shortPath(str("file_path"))
@@ -81,7 +81,7 @@ func SummarizeTool(toolName, argsJSON string) (desc, detail string) {
 		default:
 			desc = path
 		}
-		return
+		return desc, detail
 
 	case "write_file":
 		path := shortPath(str("file_path"))
@@ -91,7 +91,7 @@ func SummarizeTool(toolName, argsJSON string) (desc, detail string) {
 			lines = 0
 		}
 		desc = fmt.Sprintf("%s (%d lines)", path, lines)
-		return
+		return desc, detail
 
 	case "edit_file":
 		path := str("file_path")
@@ -99,7 +99,7 @@ func SummarizeTool(toolName, argsJSON string) (desc, detail string) {
 		new_ := str("new_string")
 		desc = shortPath(path)
 		detail = unifiedDiff(path, old, new_)
-		return
+		return desc, detail
 
 	case "glob":
 		pattern := str("pattern")
@@ -108,7 +108,7 @@ func SummarizeTool(toolName, argsJSON string) (desc, detail string) {
 		} else {
 			desc = pattern
 		}
-		return
+		return desc, detail
 
 	case "grep":
 		pattern := str("pattern")
@@ -117,7 +117,7 @@ func SummarizeTool(toolName, argsJSON string) (desc, detail string) {
 		} else {
 			desc = fmt.Sprintf("%q", pattern)
 		}
-		return
+		return desc, detail
 
 	case "task_list":
 		action := str("action")
@@ -133,16 +133,16 @@ func SummarizeTool(toolName, argsJSON string) (desc, detail string) {
 		default:
 			desc = action
 		}
-		return
+		return desc, detail
 
 	case "web_search":
 		desc = fmt.Sprintf("%q", str("query"))
-		return
+		return desc, detail
 
 	case "web_fetch":
 		url := str("url")
 		desc = trunc(url, 80)
-		return
+		return desc, detail
 
 	case "spawn_agent":
 		task := str("task")
@@ -154,19 +154,19 @@ func SummarizeTool(toolName, argsJSON string) (desc, detail string) {
 		if strings.Contains(task, "\n") || len(task) > 80 {
 			detail = task
 		}
-		return
+		return desc, detail
 
 	case "resume_agent":
 		desc = str("agent_id")
-		return
+		return desc, detail
 
 	case "wait", "close_agent":
 		desc = str("agent_id")
-		return
+		return desc, detail
 
 	case "use_skill":
 		desc = str("skill_name")
-		return
+		return desc, detail
 
 	case "communicate":
 		msg := trunc(str("message"), 60)
@@ -182,11 +182,11 @@ func SummarizeTool(toolName, argsJSON string) (desc, detail string) {
 		} else {
 			desc = "(communicating)"
 		}
-		return
+		return desc, detail
 
 	default:
 		desc = fallbackSummary(args)
-		return
+		return desc, detail
 	}
 }
 

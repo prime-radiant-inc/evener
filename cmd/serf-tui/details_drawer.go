@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -55,7 +56,7 @@ func (d detailsDrawer) View() string {
 		fmt.Fprintf(&b, "Branch:   %s\n", detail.Branch)
 	}
 	if detail.TurnCount > 0 {
-		fmt.Fprintf(&b, "Turns:    %s\n", ghostText(fmt.Sprintf("%d", detail.TurnCount)))
+		fmt.Fprintf(&b, "Turns:    %s\n", ghostText(strconv.Itoa(detail.TurnCount)))
 	}
 	if detail.ContextPressure > 0 {
 		fmt.Fprintf(&b, "Context:  %s\n", ghostText(fmt.Sprintf("%.0f%% used", detail.ContextPressure*100)))

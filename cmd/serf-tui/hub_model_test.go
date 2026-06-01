@@ -518,7 +518,7 @@ func TestHubModelDashboardWideDrawerDoesNotStealTextInput(t *testing.T) {
 
 func TestHubModelDashboardWideDetailsShowDiagnosticSelection(t *testing.T) {
 	m := sampleHubModel(140)
-	m.err = fmt.Errorf("hub connection lost")
+	m.err = errors.New("hub connection lost")
 
 	got := m.dashboardView()
 	for _, want := range []string{"Diagnostic", "hub connection lost", "Next:     refresh dashboard or check Hub health"} {
@@ -988,13 +988,13 @@ func TestHubModelBrowseMouseWheelScrollsViewport(t *testing.T) {
 		t.Fatal("test setup expected scrollable transcript at bottom")
 	}
 
-	updated, _ := m.Update(tea.MouseMsg{Type: tea.MouseWheelUp, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	updated, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
 	got := updated.(hubModel)
 	if got.session.viewport.YOffset >= bottom {
 		t.Fatalf("wheel up should scroll viewport upward, offset=%d bottom=%d", got.session.viewport.YOffset, bottom)
 	}
 
-	updated, _ = got.Update(tea.MouseMsg{Type: tea.MouseWheelDown, Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
+	updated, _ = got.Update(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress})
 	got = updated.(hubModel)
 	if got.session.viewport.YOffset <= bottom-1 {
 		t.Fatalf("wheel down should scroll viewport downward, offset=%d previous upper bound=%d", got.session.viewport.YOffset, bottom-1)
@@ -1020,7 +1020,7 @@ func TestHubModelMouseWheelFromComposeEntersBrowseAndScrolls(t *testing.T) {
 		t.Fatal("test setup should start in compose mode")
 	}
 
-	updated, _ := m.Update(tea.MouseMsg{Type: tea.MouseWheelUp, Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
+	updated, _ := m.Update(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress})
 	got := updated.(hubModel)
 	if !got.session.scrollMode {
 		t.Fatal("wheel up from compose should enter transcript browse")
@@ -1367,7 +1367,7 @@ func TestHubModelSessionStatusLineShowsConnectionAuthBusyAndError(t *testing.T) 
 		Email:        "bot@example.com",
 	}})
 	m = updated.(hubModel)
-	m.err = fmt.Errorf("recoverable send failed")
+	m.err = errors.New("recoverable send failed")
 
 	got := m.sessionView()
 	for _, want := range []string{
@@ -1555,7 +1555,7 @@ func TestHubModelSpawnCyclesConfiguredHarnesses(t *testing.T) {
 	}
 	updated, _ = form.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
 	form = updated.(hubModel)
-	updated, cmd = form.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd = form.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("spawn form submit returned nil command")
 	}
@@ -1863,7 +1863,7 @@ func TestHubModelDashboardSpawnEditsWorkingDirBeforePosting(t *testing.T) {
 	form = updated.(hubModel)
 	form.session.setInputValue("spawn with custom cwd")
 
-	updated, cmd = form.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd = form.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("spawn form submit returned nil command")
 	}
@@ -2371,7 +2371,7 @@ func TestHubModelSendUsesAppWireTurnStart(t *testing.T) {
 func TestHubModelBusySendPreservesInput(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-			return appwire.TurnStartResponse{}, fmt.Errorf("busy")
+			return appwire.TurnStartResponse{}, errors.New("busy")
 		})
 	})
 	defer cleanup()
@@ -2940,7 +2940,7 @@ func TestHubModelThemePickerPersistsStateDirPreference(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("theme picker navigation should be synchronous")
 	}
-	updated, cmd = updated.(hubModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, cmd = updated.(hubModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd != nil {
 		t.Fatal("theme picker selection should be synchronous")
 	}
@@ -3163,7 +3163,7 @@ func TestHubModelForkFailurePreservesDraftAndLabel(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadFork, func(_ context.Context, params appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
 			gotReq = params
-			return appwire.ThreadForkResponse{}, fmt.Errorf("fork failed from test")
+			return appwire.ThreadForkResponse{}, errors.New("fork failed from test")
 		})
 	})
 	defer cleanup()
@@ -3728,7 +3728,7 @@ func TestHubModelFirstCtrlCInterruptsActiveTurn(t *testing.T) {
 		t.Fatalf("session should announce interrupt:\n%s", view)
 	}
 
-	updated, cmd = got.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_, cmd = got.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	requireQuitCommand(t, cmd)
 }
 

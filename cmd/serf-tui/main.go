@@ -74,7 +74,7 @@ func run() int {
 		return 1
 	}
 	if message := postQuitMessageFromModel(finalModel); message != "" {
-		fmt.Fprintln(os.Stdout, message)
+		_, _ = fmt.Fprintln(os.Stdout, message)
 	}
 	return 0
 }

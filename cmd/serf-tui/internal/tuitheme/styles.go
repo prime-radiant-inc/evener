@@ -9,10 +9,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// tuiStyles holds composed lipgloss.Style values derived from the active
+// TUIStyles holds composed lipgloss.Style values derived from the active
 // Theme. DefaultTUIStyles() rebuilds this from ActiveTheme() on each call so
 // runtime theme switches take effect immediately.
-type tuiStyles struct {
+type TUIStyles struct {
 	Title      lipgloss.Style
 	Section    lipgloss.Style
 	Muted      lipgloss.Style
@@ -26,10 +26,10 @@ type tuiStyles struct {
 	Ended      lipgloss.Style
 }
 
-// DefaultTUIStyles builds a tuiStyles from the currently active Theme.
-func DefaultTUIStyles() tuiStyles {
+// DefaultTUIStyles builds a TUIStyles from the currently active Theme.
+func DefaultTUIStyles() TUIStyles {
 	th := ActiveTheme()
-	return tuiStyles{
+	return TUIStyles{
 		Title:      lipgloss.NewStyle().Bold(true).Foreground(th.Text).Background(th.BgRaised),
 		Section:    lipgloss.NewStyle().Bold(true).Foreground(th.Accent),
 		Muted:      lipgloss.NewStyle().Foreground(th.TextDim),
@@ -49,10 +49,7 @@ var activeThemeName string
 
 // Derived style vars — re-initialized by SetTheme() via rebuildDerivedStyles().
 var (
-	statusBarStyle     lipgloss.Style
-	statusConnected    lipgloss.Style
-	statusDisconnected lipgloss.Style
-	scrollModeStyle    lipgloss.Style
+	statusBarStyle lipgloss.Style
 
 	UserBlockStyle   lipgloss.Style
 	ThinkingStyle    lipgloss.Style
@@ -62,19 +59,12 @@ var (
 	toolCollapsedStyle lipgloss.Style
 	ToolExpandedStyle  lipgloss.Style
 	toolNameStyle      lipgloss.Style
-	toolDurationStyle  lipgloss.Style
 
 	inputBorderStyle lipgloss.Style
 
 	ViewportStyle lipgloss.Style
 
-	pickerTitle    lipgloss.Style
-	pickerSelected lipgloss.Style
-	pickerNormal   lipgloss.Style
-	pickerDim      lipgloss.Style
-
 	// model_picker specific
-	mpTitleStyle  lipgloss.Style
 	MpFilterStyle lipgloss.Style
 	MpActiveStyle lipgloss.Style
 	MpNormalStyle lipgloss.Style
@@ -141,19 +131,6 @@ func rebuildDerivedStyles() {
 		Background(th.BgRaised).
 		Foreground(th.Text)
 
-	statusConnected = lipgloss.NewStyle().
-		Foreground(th.StateIdle).
-		Bold(true)
-
-	statusDisconnected = lipgloss.NewStyle().
-		Foreground(th.StateAwaiting).
-		Bold(true)
-
-	scrollModeStyle = lipgloss.NewStyle().
-		Foreground(th.BgRaised).
-		Background(th.StateIdle).
-		Bold(true)
-
 	// User messages: no background fill — the left bar marker (added in
 	// renderMessage) and bold-ish text are sufficient to demarcate, and
 	// avoiding a painted block keeps us off the terminal background.
@@ -186,9 +163,6 @@ func rebuildDerivedStyles() {
 		Foreground(th.Accent).
 		Bold(true)
 
-	toolDurationStyle = lipgloss.NewStyle().
-		Foreground(th.TextGhost)
-
 	inputBorderStyle = lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder(), true, false, false, false).
 		BorderForeground(th.Rule)
@@ -198,22 +172,6 @@ func rebuildDerivedStyles() {
 	// rectangle that fights any non-matching terminal config.
 	ViewportStyle = lipgloss.NewStyle()
 
-	pickerTitle = lipgloss.NewStyle().
-		Bold(true).
-		Foreground(th.Accent).
-		MarginBottom(1)
-
-	pickerSelected = lipgloss.NewStyle().
-		Foreground(th.Accent).
-		Bold(true)
-
-	pickerNormal = lipgloss.NewStyle().
-		Foreground(th.Text)
-
-	pickerDim = lipgloss.NewStyle().
-		Foreground(th.TextDim)
-
-	mpTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(th.Accent)
 	MpFilterStyle = lipgloss.NewStyle().Foreground(th.Text)
 	MpActiveStyle = lipgloss.NewStyle().Foreground(th.Accent).Bold(true)
 	MpNormalStyle = lipgloss.NewStyle().Foreground(th.Text)

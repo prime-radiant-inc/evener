@@ -2,6 +2,7 @@ package launchconfig
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -183,11 +184,6 @@ func (p LaunchSettingsPanel) renderLayerView(label string, l appwire.LaunchConfi
 	return b.String()
 }
 
-func renderLayerView(label string, l appwire.LaunchConfigLayer, cursor int) string {
-	p := LaunchSettingsPanel{}
-	return p.renderLayerView(label, l, cursor)
-}
-
 type layerRow struct {
 	field          string
 	label          string
@@ -208,7 +204,7 @@ func layerRows(l appwire.LaunchConfigLayer) []layerRow {
 		if p == nil {
 			return "(default)"
 		}
-		return fmt.Sprintf("%d", *p)
+		return strconv.Itoa(*p)
 	}
 	ptrBoolStr := func(p *bool) string {
 		if p == nil {
@@ -559,7 +555,7 @@ func parseMCPs(value string) ([]appwire.MCPServerSpec, error) {
 		name = strings.TrimSpace(name)
 		rest = strings.TrimSpace(rest)
 		if !ok || name == "" {
-			return nil, fmt.Errorf("mcp line %d must be name:command args...", i+1)
+			return nil, fmt.Errorf("mcp line %d must be in the form name:command args", i+1)
 		}
 		parts := strings.Fields(rest)
 		if len(parts) == 0 {
@@ -607,7 +603,7 @@ func validatePathEntries(entries []string, kind string) error {
 func validateLocalLaunchPath(path, kind string) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return fmt.Errorf("path is required")
+		return errors.New("path is required")
 	}
 	if strings.HasPrefix(path, "~/") || path == "~" {
 		path = filepath.Join(os.Getenv("HOME"), strings.TrimPrefix(path, "~"))
@@ -617,11 +613,11 @@ func validateLocalLaunchPath(path, kind string) error {
 		return err
 	}
 	if !filepath.IsAbs(path) {
-		return fmt.Errorf("absolute path required")
+		return errors.New("absolute path required")
 	}
 	if kind == "outputFile" {
 		if info, err := os.Stat(path); err == nil && info.IsDir() {
-			return fmt.Errorf("path is a directory")
+			return errors.New("path is a directory")
 		}
 		parent := filepath.Dir(path)
 		info, err := os.Stat(parent)
@@ -629,10 +625,10 @@ func validateLocalLaunchPath(path, kind string) error {
 			return fmt.Errorf("parent directory: %w", err)
 		}
 		if !info.IsDir() {
-			return fmt.Errorf("parent path is not a directory")
+			return errors.New("parent path is not a directory")
 		}
 		if info.Mode().Perm()&0o222 == 0 {
-			return fmt.Errorf("parent directory is not writable")
+			return errors.New("parent directory is not writable")
 		}
 		return nil
 	}
@@ -643,18 +639,18 @@ func validateLocalLaunchPath(path, kind string) error {
 	switch kind {
 	case "dir":
 		if !info.IsDir() {
-			return fmt.Errorf("path is not a directory")
+			return errors.New("path is not a directory")
 		}
 	case "file":
 		if info.IsDir() {
-			return fmt.Errorf("path is a directory")
+			return errors.New("path is a directory")
 		}
 	case "command", "executable":
 		if info.IsDir() {
-			return fmt.Errorf("path is a directory")
+			return errors.New("path is a directory")
 		}
 		if info.Mode()&0o111 == 0 {
-			return fmt.Errorf("path is not executable")
+			return errors.New("path is not executable")
 		}
 	}
 	return nil
@@ -670,7 +666,7 @@ func parseEnvMap(value string) (map[string]string, error) {
 		key, val, ok := strings.Cut(entry, "=")
 		key = strings.TrimSpace(key)
 		if !ok || key == "" {
-			return nil, fmt.Errorf("env entries must be KEY=value")
+			return nil, errors.New("env entries must be KEY=value")
 		}
 		out[key] = strings.TrimSpace(val)
 	}

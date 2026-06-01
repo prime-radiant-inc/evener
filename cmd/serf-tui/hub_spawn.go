@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -138,7 +139,7 @@ func (m hubModel) activateSpawnModelField() (tea.Model, tea.Cmd) {
 		if !m.spawnHarnessUsesSerfModels() {
 			m.err = fmt.Errorf("no %s models available; using harness default", m.spawnHarness)
 		} else {
-			m.err = fmt.Errorf("no models available")
+			m.err = errors.New("no models available")
 		}
 		return m, nil
 	}
@@ -163,7 +164,7 @@ func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 		}
 	}
 	if m.spawnHarnessUsesSerfModels() && strings.TrimSpace(m.spawnModel) == "" {
-		m.err = fmt.Errorf("choose a model before spawning")
+		m.err = errors.New("choose a model before spawning")
 		return m, nil
 	}
 	if reason := m.spawnModelDisabledReason(strings.TrimSpace(m.spawnModel)); reason != "" {

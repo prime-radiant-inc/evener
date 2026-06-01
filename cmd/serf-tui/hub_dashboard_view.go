@@ -447,11 +447,6 @@ func dashboardSessionDetails(row hubRow) string {
 	return b.String()
 }
 
-func projectLiveCount(project hubRow, rows []hubRow) int {
-	liveCount, _ := projectSessionCounts(project, rows)
-	return liveCount
-}
-
 func projectSessionCounts(project hubRow, rows []hubRow) (int, int) {
 	if project.kind == hubRowProject && (project.liveCount > 0 || project.recentCount > 0) {
 		return project.liveCount, project.recentCount

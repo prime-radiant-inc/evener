@@ -9,7 +9,7 @@ import (
 )
 
 // ansiPattern matches ANSI escape sequences for stripping styled output in tests.
-var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
+var ansiPattern = regexp.MustCompile(`\x1b\[[0-9;?]*[\x20-\x2f]*[\x40-\x7e]`)
 
 // withTestColorProfile forces lipgloss into TrueColor for the duration of a
 // test so style rendering emits ANSI escapes regardless of the host terminal,

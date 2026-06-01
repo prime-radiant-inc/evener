@@ -445,10 +445,3 @@ func hubCommandHelp(caps hubSessionCapabilities) string {
 	)
 	return strings.Join(lines, "\n")
 }
-
-func hubCommandHint(name string) string {
-	if command, ok := hubCommandByName(name); ok {
-		return "/" + command.Name
-	}
-	return "/" + name
-}

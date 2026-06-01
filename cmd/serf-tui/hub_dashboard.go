@@ -55,10 +55,6 @@ func (m hubModel) projectKeyForSession() (string, bool) {
 	return want, true
 }
 
-func buildHubRows(tree hubTreeResponse) []hubRow {
-	return buildDashboardRows(tree)
-}
-
 func buildDashboardRows(tree hubTreeResponse) []hubRow {
 	type dashboardGroup struct {
 		key       string
@@ -437,22 +433,6 @@ func (m *hubModel) focusDashboardProject(projectKey string) {
 		}
 	}
 	m.clampSelection()
-}
-
-func (m hubModel) sessionSearchRows() []hubRow {
-	key, ok := m.projectKeyForSession()
-	if ok {
-		for _, project := range m.tree.Projects {
-			projectKey := project.Key
-			if projectKey == "" {
-				projectKey = hubProjectKey(project.Name)
-			}
-			if projectKey == key {
-				return buildProjectRows(project)
-			}
-		}
-	}
-	return m.dashboardRows()
 }
 
 func filterHubRows(rows []hubRow, query string) []hubRow {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -98,14 +99,14 @@ func formatTokenCount(n int) string {
 	if n >= 1000 {
 		return fmt.Sprintf("%dk", n/1000)
 	}
-	return fmt.Sprintf("%d", n)
+	return strconv.Itoa(n)
 }
 
 // formatTokens formats a token count compactly for the standalone model view:
 // e.g. 1234 → "1.2k", 12345 → "12k".
 func formatTokens(n int) string {
 	if n < 1000 {
-		return fmt.Sprintf("%d", n)
+		return strconv.Itoa(n)
 	}
 	if n < 10000 {
 		return fmt.Sprintf("%.1fk", float64(n)/1000)

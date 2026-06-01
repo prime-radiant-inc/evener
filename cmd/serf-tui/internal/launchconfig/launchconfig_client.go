@@ -37,10 +37,6 @@ type AuthListResultMsg struct {
 	List appwire.AuthListResponse
 	Err  error
 }
-type authStatusResultMsg struct {
-	Status appwire.AuthStatusResponse
-	Err    error
-}
 type AuthApiKeySetResultMsg struct {
 	Status appwire.AuthStatusResponse
 	Err    error
@@ -99,16 +95,6 @@ func CmdLaunchSchema(client *appwire.Client) tea.Cmd {
 		var resp appwire.LaunchOptionSchemaResponse
 		err := client.Request(ctx, appwire.MethodSerfLaunchSchema, appwire.EmptyParams{}, &resp)
 		return LaunchSchemaResultMsg{Schema: resp, Err: err}
-	}
-}
-
-func cmdAuthList(client *appwire.Client) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		var resp appwire.AuthListResponse
-		err := client.Request(ctx, appwire.MethodSerfAuthList, appwire.EmptyParams{}, &resp)
-		return AuthListResultMsg{List: resp, Err: err}
 	}
 }
 

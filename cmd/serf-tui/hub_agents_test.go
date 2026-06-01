@@ -114,7 +114,7 @@ func TestHubModelUnavailableAgentTranscriptKeepsParentSession(t *testing.T) {
 	updated, _ = updated.(hubModel).Update(cmd())
 	m = updated.(hubModel)
 
-	updated, cmd = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
 	updated, cmd = updated.(hubModel).Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("selecting unavailable transcript should attempt a Hub read")

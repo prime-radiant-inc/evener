@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -143,10 +143,6 @@ func fetchHubSession(client *appwire.Client, ref appwire.Ref) tea.Cmd {
 	return fetchHubSessionRead(client, ref, "", 0, true, true)
 }
 
-func fetchHubSessionExpectingState(client *appwire.Client, ref appwire.Ref, expectedState string) tea.Cmd {
-	return fetchHubSessionExpectingStateToken(client, ref, expectedState, 0)
-}
-
 func fetchHubSessionExpectingStateToken(client *appwire.Client, ref appwire.Ref, expectedState string, expectedRefreshToken int) tea.Cmd {
 	return fetchHubSessionRead(client, ref, expectedState, expectedRefreshToken, false, false)
 }
@@ -204,16 +200,6 @@ func sendHubSpawn(client *appwire.Client, req hubSpawnRequest) tea.Cmd {
 			LaunchOverrides: req.LaunchOverrides,
 		})
 		return hubSpawnMsg{resp: hubSpawnResponse{Ref: resp.Thread.Serf.Ref}, err: err}
-	}
-}
-
-func fetchHubModels(client *appwire.Client, workingDir string) tea.Cmd {
-	return func() tea.Msg {
-		resp, err := client.ModelList(context.Background(), appwire.ModelListParams{CWD: strings.TrimSpace(workingDir)})
-		if err != nil {
-			return hubModelsMsg{err: err}
-		}
-		return hubModelsMsg{models: modelPickerItemsFromResponse(resp, false)}
 	}
 }
 
@@ -448,13 +434,6 @@ func sendHubAction(client *appwire.Client, ref appwire.Ref, action string, turnI
 	}
 }
 
-func sendHubSteer(client *appwire.Client, ref appwire.Ref, turnID string, text string) tea.Cmd {
-	return func() tea.Msg {
-		err := client.TurnSteer(context.Background(), appwire.TurnSteerParams{Ref: ref.String(), ExpectedTurnID: turnID, Input: textInput(text)})
-		return hubActionMsg{action: "steer", err: err}
-	}
-}
-
 func appendTextInput(text string, items []appwire.InputItem) []appwire.InputItem {
 	input := textInput(text)
 	return append(input, items...)
@@ -478,7 +457,7 @@ func sendHubFork(client *appwire.Client, ref appwire.Ref, req hubForkRequest) te
 	return func() tea.Msg {
 		resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
 			Ref:          ref.String(),
-			SourceTurnID: fmt.Sprint(req.Turn),
+			SourceTurnID: strconv.Itoa(req.Turn),
 			EditedInput:  req.EditedMessage,
 			Label:        req.Label,
 		})

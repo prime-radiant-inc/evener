@@ -137,29 +137,6 @@ func (m *model) isToolFocused(msgIdx int) bool {
 	return m.scrollMode && msgIdx == m.focusedToolIdx
 }
 
-// scrollToMessage scrolls the viewport so the rendered output for the given
-// message index is visible, roughly centered in the viewport.
-func (m *model) scrollToMessage(msgIdx int) {
-	line := 0
-	for i, msg := range m.messages {
-		focused := m.isToolFocused(i)
-		rendered := msgrender.RenderMessage(msg, m.width, focused)
-		if rendered == "" {
-			continue
-		}
-		if i == msgIdx {
-			// Center the target in the viewport.
-			target := line - m.viewport.Height/2
-			if target < 0 {
-				target = 0
-			}
-			m.viewport.SetYOffset(target)
-			return
-		}
-		line += strings.Count(rendered, "\n") + 2 // +1 for the line itself, +1 for blank separator
-	}
-}
-
 // resetInput clears the input and shrinks it back to one line.
 func (m *model) resetInput() {
 	m.input.Reset()
@@ -257,10 +234,7 @@ func writeWrappedList(b *strings.Builder, label string, items []string, width in
 }
 
 // renderTasks formats a list of agent tasks for display.
-func renderTasks(tasks []agent.Task, width int) string {
-	if width <= 0 {
-		width = 80
-	}
+func renderTasks(tasks []agent.Task, _ int) string {
 	if len(tasks) == 0 {
 		return "No tasks."
 	}

@@ -83,23 +83,23 @@ func ParseTUIStartupOptions(args []string, getenv func(string) string) (TUIStart
 	fs.StringVar(&opts.AuthToken, "auth-token", opts.AuthToken, "hub capability token (overrides SERF_HUB_AUTH_TOKEN and token file)")
 	fs.BoolVar(&opts.Debug, "debug", opts.Debug, "disable alternate screen")
 	fs.Usage = func() {
-		w := fs.Output()
-		fmt.Fprintf(w, "Usage: serf-tui [flags]\n\n")
-		fmt.Fprintf(w, "Serf TUI — interactive terminal UI for serf-hub.\n\n")
-		fmt.Fprintf(w, "Flags:\n")
-		fmt.Fprintf(w, "  --hub-addr <addr>        serf hub address (default: %s)\n", opts.HubAddr)
-		fmt.Fprintf(w, "  --hub-bin <path>         path to serf-hub binary\n")
-		fmt.Fprintf(w, "  --no-auto-start-hub      do not start a local hub when unreachable\n")
-		fmt.Fprintf(w, "  --state-dir <path>       override Serf state directory\n")
-		fmt.Fprintf(w, "  --log-file <path>        write startup diagnostics to this file\n")
-		fmt.Fprintf(w, "  --auth-token <token>     hub capability token (overrides SERF_HUB_AUTH_TOKEN and token file)\n")
-		fmt.Fprintf(w, "  --debug                  disable alternate screen\n\n")
-		fmt.Fprintf(w, "Environment variables:\n")
-		fmt.Fprintf(w, "  SERF_HUB_ADDR            default value for --hub-addr\n")
-		fmt.Fprintf(w, "  SERF_HUB_BIN             default value for --hub-bin\n")
-		fmt.Fprintf(w, "  SERF_STATE_DIR           default value for --state-dir\n")
-		fmt.Fprintf(w, "  SERF_TUI_LOG_FILE        default value for --log-file\n")
-		fmt.Fprintf(w, "  SERF_HUB_AUTH_TOKEN      default value for --auth-token\n")
+		// Write failures to the flag usage writer are unactionable.
+		_, _ = fmt.Fprintf(fs.Output(), "Usage: serf-tui [flags]\n\n"+
+			"Serf TUI — interactive terminal UI for serf-hub.\n\n"+
+			"Flags:\n"+
+			"  --hub-addr <addr>        serf hub address (default: %s)\n"+
+			"  --hub-bin <path>         path to serf-hub binary\n"+
+			"  --no-auto-start-hub      do not start a local hub when unreachable\n"+
+			"  --state-dir <path>       override Serf state directory\n"+
+			"  --log-file <path>        write startup diagnostics to this file\n"+
+			"  --auth-token <token>     hub capability token (overrides SERF_HUB_AUTH_TOKEN and token file)\n"+
+			"  --debug                  disable alternate screen\n\n"+
+			"Environment variables:\n"+
+			"  SERF_HUB_ADDR            default value for --hub-addr\n"+
+			"  SERF_HUB_BIN             default value for --hub-bin\n"+
+			"  SERF_STATE_DIR           default value for --state-dir\n"+
+			"  SERF_TUI_LOG_FILE        default value for --log-file\n"+
+			"  SERF_HUB_AUTH_TOKEN      default value for --auth-token\n", opts.HubAddr)
 	}
 	if err := fs.Parse(args); err != nil {
 		return TUIStartupOptions{}, err
@@ -252,7 +252,7 @@ func NormalizeHubAddress(raw string) (HubAddress, error) {
 		return HubAddress{}, fmt.Errorf("unsupported hub URL scheme %q", u.Scheme)
 	}
 	if u.Host == "" {
-		return HubAddress{}, fmt.Errorf("hub address must include a host")
+		return HubAddress{}, errors.New("hub address must include a host")
 	}
 	u.Path = strings.TrimRight(u.Path, "/")
 	u.RawQuery = ""
@@ -387,11 +387,11 @@ func dialHubRPC(ctx context.Context, addr HubAddress, httpClient *http.Client) (
 		ClientInfo: appwire.ClientInfo{Name: "serf-tui", Version: "tui"},
 	})
 	if err != nil {
-		client.Close()
+		_ = client.Close()
 		return nil, err
 	}
 	if init.ProtocolVersion != "" && init.ProtocolVersion != appwire.ProtocolVersion {
-		client.Close()
+		_ = client.Close()
 		return nil, StartupError{
 			Kind:   StartupErrorIncompatibleAPI,
 			Addr:   addr.BaseURL,
@@ -414,6 +414,9 @@ func hubRPCURL(addr HubAddress) string {
 }
 
 func StartLocalHub(req HubStartRequest) error {
+	// The hub is intentionally detached (Process.Release below) to outlive the
+	// TUI, so it must NOT be bound to a cancellable context that would kill it.
+	//nolint:noctx // launched process is deliberately released to run independently.
 	cmd := exec.Command(req.Binary, "--addr", req.BindAddr)
 	if req.StateDir != "" {
 		cmd.Env = append(os.Environ(),
@@ -438,7 +441,7 @@ func StartLocalHub(req HubStartRequest) error {
 		}
 		out = f
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 	var startupOutput bytes.Buffer
 	cmdOut := io.MultiWriter(out, &startupOutput)
 	cmd.Stdout = cmdOut
@@ -478,6 +481,7 @@ func checkHubEnvironment(ctx context.Context, addr HubAddress, httpClient *http.
 	}
 	health, err := client.Health(ctx)
 	if err != nil || strings.TrimSpace(health.StateGlob) == "" {
+		//nolint:nilerr // best-effort stale-environment probe: if the hub's health endpoint is unreachable or reports no state glob, we cannot detect a glob mismatch, so report no conflict (hub reachability is validated elsewhere).
 		return nil
 	}
 	expected := filepath.Join(filepath.Clean(stateDir), "projects", "*")
@@ -554,11 +558,12 @@ func WriteStartupDiagnostic(logFile string, err error) {
 	if openErr != nil {
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	kind := StartupErrorKind("unknown")
 	var startupErr StartupError
 	if errors.As(err, &startupErr) {
 		kind = startupErr.Kind
 	}
-	fmt.Fprintf(f, "serf-tui startup failed kind=%s error=%s\n", kind, err)
+	// Best-effort diagnostic; a write failure here is unactionable.
+	_, _ = fmt.Fprintf(f, "serf-tui startup failed kind=%s error=%s\n", kind, err)
 }

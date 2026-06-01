@@ -75,20 +75,3 @@ func firstNonEmptyString(values ...string) string {
 	}
 	return ""
 }
-
-func authHint(status authStatus) string {
-	if strings.TrimSpace(status.Provider) != "openai" {
-		return ""
-	}
-	switch status.ActiveSource {
-	case authopenai.AuthSourceEnv:
-		if status.HasStoredOAuth {
-			return "oa: env+oauth"
-		}
-		return "oa: env"
-	case authopenai.AuthSourceOAuth:
-		return "oa: oauth"
-	default:
-		return "oa: login"
-	}
-}

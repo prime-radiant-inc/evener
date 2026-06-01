@@ -39,10 +39,10 @@ func AbbreviateModel(id string) string {
 	return id
 }
 
-// AbbreviatePath shortens a filesystem path to at most max characters,
+// AbbreviatePath shortens a filesystem path to at most maxLen characters,
 // replacing $HOME prefix with ~ and middle-truncating if needed.
-func AbbreviatePath(p string, max int) string {
-	if len(p) <= max {
+func AbbreviatePath(p string, maxLen int) string {
+	if len(p) <= maxLen {
 		return p
 	}
 	// Replace /home/<user> prefix with ~
@@ -51,11 +51,11 @@ func AbbreviatePath(p string, max int) string {
 			p = "~" + p[len("/home/")+i:]
 		}
 	}
-	if len(p) <= max {
+	if len(p) <= maxLen {
 		return p
 	}
 	// Middle-truncate
-	keep := max - 1
+	keep := maxLen - 1
 	head := keep / 2
 	tail := keep - head
 	return p[:head] + "…" + p[len(p)-tail:]

@@ -81,8 +81,7 @@ func (m ModelPicker) filtered() []ModelPickerItem {
 }
 
 func (m ModelPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
+	if msg, ok := msg.(tea.KeyMsg); ok {
 		switch msg.Type {
 		case tea.KeyEscape, tea.KeyCtrlC:
 			m.cancelled = true
@@ -131,7 +130,7 @@ func (m ModelPicker) renderBody() string {
 	} else {
 		filterText = tuitheme.MpFilterStyle.Render(filterText)
 	}
-	b.WriteString(fmt.Sprintf("Filter: %s", filterText))
+	b.WriteString("Filter: " + filterText)
 	b.WriteString("\n\n")
 
 	filtered := m.filtered()

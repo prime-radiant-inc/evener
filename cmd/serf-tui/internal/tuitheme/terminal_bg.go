@@ -133,11 +133,12 @@ func ApplyTerminalBg() {
 		return
 	}
 	th := ActiveTheme()
+	out := termenv.DefaultOutput()
 	if fg := string(th.Text); fg != "" {
-		termenv.SetForegroundColor(termenv.RGBColor(fg))
+		out.SetForegroundColor(termenv.RGBColor(fg))
 	}
 	if bg := string(th.Bg); bg != "" {
-		termenv.SetBackgroundColor(termenv.RGBColor(bg))
+		out.SetBackgroundColor(termenv.RGBColor(bg))
 	}
 }
 
@@ -153,13 +154,14 @@ func ResetTerminalBg() {
 	if !stdoutIsTerminal() {
 		return
 	}
+	out := termenv.DefaultOutput()
 	if probedOriginalFg != "" {
-		termenv.SetForegroundColor(termenv.RGBColor(probedOriginalFg))
+		out.SetForegroundColor(termenv.RGBColor(probedOriginalFg))
 	} else {
 		_, _ = os.Stdout.WriteString("\x1b]110\x07")
 	}
 	if probedOriginalBg != "" {
-		termenv.SetBackgroundColor(termenv.RGBColor(probedOriginalBg))
+		out.SetBackgroundColor(termenv.RGBColor(probedOriginalBg))
 	} else {
 		_, _ = os.Stdout.WriteString("\x1b]111\x07")
 	}
