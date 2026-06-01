@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -78,7 +79,7 @@ func (m hubModel) renderNotices() string {
 		lines = append(lines, notice.View())
 	}
 	lines = append(lines, "ctrl+x: dismiss notice")
-	return renderPopupPane(strings.Join(lines, "\n\n"), m.width) + "\n"
+	return tuiprim.RenderPopupPane(strings.Join(lines, "\n\n"), m.width) + "\n"
 }
 
 func (m *hubModel) addNotice(notice noticePanel) {

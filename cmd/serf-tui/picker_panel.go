@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 )
 
 type pickerPanelItem struct {
@@ -127,5 +128,5 @@ func (p pickerPanel) View() string {
 	}
 	b.WriteString("\n")
 	b.WriteString("type filter  up/down navigate  enter select  esc close")
-	return renderPopupPane(b.String(), p.width)
+	return tuiprim.RenderPopupPane(b.String(), p.width)
 }

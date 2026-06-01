@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
@@ -195,7 +196,7 @@ func (m modelPicker) View() string {
 	if title == "" {
 		title = "Select model"
 	}
-	// Match old renderPopupPane width logic: popup is min(max(termWidth,44),96)
+	// Match old tuiprim.RenderPopupPane width logic: popup is min(max(termWidth,44),96)
 	// so content at 90 chars won't be word-wrapped by the Overlay frame.
 	w := m.width
 	if w <= 0 {
@@ -203,8 +204,8 @@ func (m modelPicker) View() string {
 	}
 	w = min(max(w, 44), 96)
 	body := m.renderBody()
-	footer := actionBarForWidth(w, KbdHint("↑↓", "navigate"), KbdHint("enter", "select"), KbdHint("esc", "cancel"))
-	return Overlay(OverlayOpts{
+	footer := tuiprim.ActionBarForWidth(w, tuiprim.KbdHint("↑↓", "navigate"), tuiprim.KbdHint("enter", "select"), tuiprim.KbdHint("esc", "cancel"))
+	return tuiprim.Overlay(tuiprim.OverlayOpts{
 		Title:  title,
 		Width:  w,
 		Body:   body,

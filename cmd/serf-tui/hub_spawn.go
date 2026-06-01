@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -504,8 +505,8 @@ func (m hubModel) spawnView() string {
 
 	var footer strings.Builder
 	keys := []string{"tab: next field", "shift+tab: previous", m.spawnFieldHint(), "esc: cancel", "ctrl+o: dashboard"}
-	footer.WriteString(actionBarForWidth(m.width, keys...))
-	return appShell{
+	footer.WriteString(tuiprim.ActionBarForWidth(m.width, keys...))
+	return tuiprim.AppShell{
 		TopBar:  topBar,
 		Body:    b.String(),
 		Overlay: overlay,

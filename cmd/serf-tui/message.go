@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/cmd/serf-tui/internal/toolsummary"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/llm"
 )
@@ -204,7 +205,7 @@ func renderMessage(msg chatMessage, width int, focused bool) string {
 			return ""
 		}
 		th := tuitheme.ActiveTheme()
-		bar := StateBar(th.StateProcessing)
+		bar := tuiprim.StateBar(th.StateProcessing)
 		barW := lipgloss.Width(bar)
 		rendered := tuitheme.ThinkingStyle.Width(max(1, messageWidth-barW-1)).Render(renderMarkdown(text, max(1, messageWidth-barW-1)))
 		return bar + " " + renderSelectedMessage(rendered, focused)
@@ -253,7 +254,7 @@ func renderToolCall(tc toolCallInfo, width int, focused bool) string {
 
 	th := tuitheme.ActiveTheme()
 	stateClr := stateColorForToolDone(tc.Done, tc.Error)
-	bar := StateBar(stateClr)
+	bar := tuiprim.StateBar(stateClr)
 	check := lipgloss.NewStyle().Foreground(stateClr).Render(checkmarkFor(tc.Done, tc.Error))
 	verbStyled := lipgloss.NewStyle().Foreground(th.Accent).Bold(true).Render(verb)
 	targetStyled := lipgloss.NewStyle().Foreground(th.Text).Render(target)
@@ -269,10 +270,10 @@ func renderToolCall(tc toolCallInfo, width int, focused bool) string {
 	right := lipgloss.NewStyle().Foreground(th.TextDim).Render(result) + "  " +
 		lipgloss.NewStyle().Foreground(th.TextGhost).Render(durText)
 
-	header := DotLeader(left, right, width)
+	header := tuiprim.DotLeader(left, right, width)
 	if focused {
 		// Replace the single state bar with the double focus bar.
-		header = strings.Replace(header, bar, FocusedStateBar(th.Accent), 1)
+		header = strings.Replace(header, bar, tuiprim.FocusedStateBar(th.Accent), 1)
 	}
 
 	var bodyLines []string

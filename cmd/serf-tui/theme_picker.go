@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
@@ -71,6 +72,6 @@ func (p themePicker) renderItems() string {
 func (p themePicker) View() string {
 	width := 44
 	body := p.renderItems()
-	footer := actionBarForWidth(width, KbdHint("↑↓", "navigate"), KbdHint("enter", "select"), KbdHint("esc", "cancel"))
-	return Overlay(OverlayOpts{Title: "Select theme", Width: width, Body: body, Footer: footer})
+	footer := tuiprim.ActionBarForWidth(width, tuiprim.KbdHint("↑↓", "navigate"), tuiprim.KbdHint("enter", "select"), tuiprim.KbdHint("esc", "cancel"))
+	return tuiprim.Overlay(tuiprim.OverlayOpts{Title: "Select theme", Width: width, Body: body, Footer: footer})
 }

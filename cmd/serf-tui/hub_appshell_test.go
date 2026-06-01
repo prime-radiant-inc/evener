@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 )
 
 func TestHubModelAppShellKeepsDashboardFooterUnderPaletteOverlay(t *testing.T) {
@@ -25,7 +26,7 @@ func TestHubModelAppShellSessionTopBarAndComposerRegion(t *testing.T) {
 
 func TestHubModelAppShellAddsSubtleChromeStyles(t *testing.T) {
 	withTestColorProfile(t)
-	got := appShell{
+	got := tuiprim.AppShell{
 		TopBar: "serf live",
 		Body:   "Live now\n> idle serf session",
 		Footer: "enter open",
@@ -37,7 +38,7 @@ func TestHubModelAppShellAddsSubtleChromeStyles(t *testing.T) {
 }
 
 func TestHubModelAppShellAnchorsFooterToKnownHeight(t *testing.T) {
-	got := appShell{
+	got := tuiprim.AppShell{
 		TopBar: "serf live",
 		Body:   "one live session",
 		Footer: "up/down select  enter open",
@@ -89,7 +90,7 @@ func TestHubModelCtrlOClearsSessionOverlay(t *testing.T) {
 }
 
 func TestActionBarWrapsBeforeDroppingDashboardHint(t *testing.T) {
-	got := actionBarForWidth(60, "up/down select", "enter open", "p project", "n new", "/ palette", "ctrl+o dashboard", "q quit")
+	got := tuiprim.ActionBarForWidth(60, "up/down select", "enter open", "p project", "n new", "/ palette", "ctrl+o dashboard", "q quit")
 
 	if !strings.Contains(got, "ctrl+o dashboard") {
 		t.Fatalf("wrapped action bar dropped dashboard hint:\n%s", got)
@@ -104,7 +105,7 @@ func TestActionBarWrapsBeforeDroppingDashboardHint(t *testing.T) {
 func TestDashboardFooterUsesTextKeyNames(t *testing.T) {
 	withTestColorProfile(t)
 	got := dashboardFooter(100)
-	// KbdHint chips: verify key and action labels are both present
+	// tuiprim.KbdHint chips: verify key and action labels are both present
 	for _, label := range []string{"select", "open", "new", "filter", "dashboard", "quit"} {
 		if !strings.Contains(got, label) {
 			t.Fatalf("dashboard footer missing label %q:\n%s", label, got)

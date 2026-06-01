@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 )
 
 type textInputResultMsg struct {
@@ -90,12 +91,12 @@ func (m textInputModal) View() string {
 		if width <= 0 {
 			width = 60
 		}
-		hints := []string{KbdHint("enter", "confirm"), KbdHint("esc", "cancel")}
+		hints := []string{tuiprim.KbdHint("enter", "confirm"), tuiprim.KbdHint("esc", "cancel")}
 		if m.paths {
-			hints = append([]string{KbdHint("tab", "complete path")}, hints...)
+			hints = append([]string{tuiprim.KbdHint("tab", "complete path")}, hints...)
 		}
-		footer := actionBarForWidth(width, hints...)
-		return Overlay(OverlayOpts{Title: m.title, Width: width, Body: body, Footer: footer})
+		footer := tuiprim.ActionBarForWidth(width, hints...)
+		return tuiprim.Overlay(tuiprim.OverlayOpts{Title: m.title, Width: width, Body: body, Footer: footer})
 	}
 	// Legacy plain view (no title set).
 	help := "[Enter] confirm  [Esc] cancel"

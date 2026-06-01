@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -159,8 +160,8 @@ func (p launchSettingsPanel) renderActiveTab() string {
 func (p launchSettingsPanel) View() string {
 	body := p.renderTabs() + "\n\n" + p.renderActiveTab()
 	width := 80
-	footer := actionBarForWidth(width, KbdHint("←→", "tab"), KbdHint("↑↓", "field"), KbdHint("enter", "edit"), KbdHint("esc", "close"))
-	return Overlay(OverlayOpts{Title: "Launch settings", Width: width, Body: body, Footer: footer})
+	footer := tuiprim.ActionBarForWidth(width, tuiprim.KbdHint("←→", "tab"), tuiprim.KbdHint("↑↓", "field"), tuiprim.KbdHint("enter", "edit"), tuiprim.KbdHint("esc", "close"))
+	return tuiprim.Overlay(tuiprim.OverlayOpts{Title: "Launch settings", Width: width, Body: body, Footer: footer})
 }
 
 func (p launchSettingsPanel) renderLayerView(label string, l appwire.LaunchConfigLayer, cursor int) string {

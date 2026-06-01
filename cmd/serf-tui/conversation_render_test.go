@@ -31,7 +31,7 @@ func TestScrollBrowseFocusedTurnHasDoubleBar(t *testing.T) {
 
 func TestForkDraftHasSectionDivider(t *testing.T) {
 	header := forkDraftHeader("feat/widget", 1, 80)
-	// SectionDivider uppercases the left label, so check case-insensitively.
+	// tuiprim.SectionDivider uppercases the left label, so check case-insensitively.
 	lc := strings.ToLower(header)
 	if !strings.Contains(lc, "fork draft") || !strings.Contains(header, "feat/widget") {
 		t.Errorf("fork draft header missing pieces: %q", header)

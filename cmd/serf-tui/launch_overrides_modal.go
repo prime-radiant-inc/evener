@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -97,8 +98,8 @@ func (m launchOverridesModal) renderFields() string {
 func (m launchOverridesModal) View() string {
 	body := "Per-launch overrides for next thread\n\n" + m.renderFields()
 	width := 80
-	footer := actionBarForWidth(width, KbdHint("enter", "edit"), KbdHint("ctrl-s", "save"), KbdHint("esc", "cancel"))
-	return Overlay(OverlayOpts{Title: "Launch overrides", Width: width, Body: body, Footer: footer})
+	footer := tuiprim.ActionBarForWidth(width, tuiprim.KbdHint("enter", "edit"), tuiprim.KbdHint("ctrl-s", "save"), tuiprim.KbdHint("esc", "cancel"))
+	return tuiprim.Overlay(tuiprim.OverlayOpts{Title: "Launch overrides", Width: width, Body: body, Footer: footer})
 }
 
 // ApplyEdit returns a copy of the modal with the field updated. Used by

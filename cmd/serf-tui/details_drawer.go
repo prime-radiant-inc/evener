@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -33,7 +34,7 @@ func (d detailsDrawer) View() string {
 	// Header: section label + state badge.
 	b.WriteString(sectionLabel("details"))
 	if state := strings.TrimSpace(detail.State); state != "" {
-		b.WriteString("  " + StatusBadge(stateColor(state), state))
+		b.WriteString("  " + tuiprim.StatusBadge(stateColor(state), state))
 	}
 	b.WriteString("\n")
 

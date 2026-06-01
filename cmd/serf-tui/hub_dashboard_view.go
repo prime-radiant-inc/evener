@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitext"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
@@ -29,16 +30,16 @@ func (m hubModel) dashboardView() string {
 		b.WriteString("\n\n")
 	}
 	if m.commandPalette != nil {
-		return appShell{
+		return tuiprim.AppShell{
 			TopBar:  topBar,
 			Body:    b.String(),
 			Overlay: m.commandPalette.View(),
-			Footer:  actionBarForWidth(m.width, "up/down select", "enter open/toggle", "n new", "/ palette", "ctrl+o dashboard", "q quit"),
+			Footer:  tuiprim.ActionBarForWidth(m.width, "up/down select", "enter open/toggle", "n new", "/ palette", "ctrl+o dashboard", "q quit"),
 			Height:  m.height,
 		}.View()
 	}
 	if m.followupModal != nil {
-		return appShell{
+		return tuiprim.AppShell{
 			TopBar:  topBar,
 			Body:    b.String(),
 			Overlay: m.followupModal.View(),
@@ -47,7 +48,7 @@ func (m hubModel) dashboardView() string {
 		}.View()
 	}
 	if m.credentialsPanel != nil {
-		return appShell{
+		return tuiprim.AppShell{
 			TopBar:  topBar,
 			Body:    b.String(),
 			Overlay: m.credentialsPanel.View(),
@@ -56,7 +57,7 @@ func (m hubModel) dashboardView() string {
 		}.View()
 	}
 	if m.launchSettingsPanel != nil {
-		return appShell{
+		return tuiprim.AppShell{
 			TopBar:  topBar,
 			Body:    b.String(),
 			Overlay: m.launchSettingsPanel.View(),
@@ -71,7 +72,7 @@ func (m hubModel) dashboardView() string {
 	if len(rows) == 0 {
 		if strings.TrimSpace(m.dashboardFilter.Value()) != "" {
 			b.WriteString("No sessions match this filter.\n\n")
-			return appShell{
+			return tuiprim.AppShell{
 				TopBar: topBar,
 				Body:   b.String(),
 				Footer: "esc clear filter",
@@ -79,7 +80,7 @@ func (m hubModel) dashboardView() string {
 			}.View()
 		}
 		b.WriteString("No live sessions are running.\n\n")
-		return appShell{
+		return tuiprim.AppShell{
 			TopBar: topBar,
 			Body:   b.String(),
 			Footer: emptyDashboardFooter(width),
@@ -98,7 +99,7 @@ func (m hubModel) dashboardView() string {
 		b.WriteString(renderDashboardRowsWindow(rows, m.selected, width, width <= 72, rowLimit))
 	}
 	b.WriteString("\n")
-	return appShell{
+	return tuiprim.AppShell{
 		TopBar: topBar,
 		Body:   b.String(),
 		Footer: footer,
@@ -112,7 +113,7 @@ func (m hubModel) dashboardUsesWideLayout() bool {
 
 func dashboardHeader(hubURL string, liveCount int, width int) string {
 	right := fmt.Sprintf("%s · %d live", hubURL, liveCount)
-	return SectionDivider(width, "SERF LIVE", right)
+	return tuiprim.SectionDivider(width, "SERF LIVE", right)
 }
 
 func renderDashboardRows(rows []hubRow, selected int, width int, compact bool) string {
@@ -249,12 +250,12 @@ func stateColor(state string) lipgloss.Color {
 }
 
 func renderDashboardSessionRow(row hubRow, selected bool, width int, compact bool, _ string) string {
-	// Single-glyph marker either way. FocusedStateBar would render
+	// Single-glyph marker either way. tuiprim.FocusedStateBar would render
 	// ▍▍ which, after ANSI-stripping for the selected highlight,
 	// shifts the row content one cell right on selection. The
 	// SurfaceSecondary bg highlight is the selection indicator;
 	// the marker stays one cell wide for column stability.
-	marker := StateBar(stateColor(row.state))
+	marker := tuiprim.StateBar(stateColor(row.state))
 	styles := tuitheme.DefaultTUIStyles()
 	line := strings.Join(tuitext.NonEmptyStrings([]string{
 		marker,
@@ -268,14 +269,14 @@ func renderDashboardSessionRow(row hubRow, selected bool, width int, compact boo
 	}), " ")
 	_ = compact // compact/non-compact share layout today; keep param for the call sites
 	// Use ANSI-aware truncation: the joined line carries SGR escapes from
-	// StateBar and dashboardCell helpers. tuitext.TruncateText slices raw runes
+	// tuiprim.StateBar and dashboardCell helpers. tuitext.TruncateText slices raw runes
 	// and would chop through escape sequences (a tail-end \x1b[0m or fg
 	// switch gets cut, leaking style into the next row), and the selected
 	// branch below relies on ANSI being intact before it strips them.
 	line = ansi.Truncate(line, width, "")
 	if selected {
 		// Strip inner ANSI styling so the Selected style's background
-		// paints the whole row. Inner styled spans (StateBar, statusDot)
+		// paints the whole row. Inner styled spans (tuiprim.StateBar, statusDot)
 		// emit \x1b[0m resets that would otherwise break the parent's bg
 		// after the first colored fragment, leaving most of the row
 		// without the highlight. The selection bg itself is now the
@@ -336,14 +337,14 @@ func dashboardProjectExpanded(rows []hubRow, index int) bool {
 
 func dashboardFooter(width int) string {
 	tokens := []string{
-		KbdHint("↑↓", "select"),
-		KbdHint("enter", "open"),
-		KbdHint("n", "new"),
-		KbdHint("/", "filter"),
-		KbdHint("ctrl+o", "dashboard"),
-		KbdHint("q", "quit"),
+		tuiprim.KbdHint("↑↓", "select"),
+		tuiprim.KbdHint("enter", "open"),
+		tuiprim.KbdHint("n", "new"),
+		tuiprim.KbdHint("/", "filter"),
+		tuiprim.KbdHint("ctrl+o", "dashboard"),
+		tuiprim.KbdHint("q", "quit"),
 	}
-	return actionBarForWidth(width, tokens...)
+	return tuiprim.ActionBarForWidth(width, tokens...)
 }
 
 func emptyDashboardFooter(width int) string {
@@ -383,7 +384,7 @@ func (m hubModel) dashboardDetailsView(rows []hubRow, width int) string {
 }
 
 func renderDetailsPane(text string, width int) string {
-	return renderStyledPane(text, width)
+	return tuiprim.RenderStyledPane(text, width)
 }
 
 func (m hubModel) dashboardProjectDetails(row hubRow, rows []hubRow) string {

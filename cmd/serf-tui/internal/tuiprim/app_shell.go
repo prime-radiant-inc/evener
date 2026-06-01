@@ -1,4 +1,4 @@
-package main
+package tuiprim
 
 import (
 	"strings"
@@ -8,7 +8,7 @@ import (
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
-type appShell struct {
+type AppShell struct {
 	TopBar  string
 	Body    string
 	Overlay string
@@ -16,7 +16,7 @@ type appShell struct {
 	Height  int
 }
 
-func (s appShell) View() string {
+func (s AppShell) View() string {
 	contentSections := make([]string, 0, 3)
 	styles := tuitheme.DefaultTUIStyles()
 	if topBar := strings.TrimRight(s.TopBar, "\n"); topBar != "" {
@@ -53,13 +53,13 @@ func (s appShell) View() string {
 	return content + strings.Repeat("\n", gap) + footer
 }
 
-func actionBar(keys ...string) string {
+func ActionBar(keys ...string) string {
 	return strings.Join(keys, "  ")
 }
 
-func actionBarForWidth(width int, keys ...string) string {
+func ActionBarForWidth(width int, keys ...string) string {
 	if width <= 0 {
-		return actionBar(keys...)
+		return ActionBar(keys...)
 	}
 	lines := make([]string, 0, 1)
 	current := ""

@@ -72,10 +72,10 @@ func TestRenderToolCall_FocusedChangesArrow(t *testing.T) {
 	// Unfocused: single state bar ▍
 	unfocused := renderToolCall(tc, 80, false)
 
-	// Focused: double state bar ▍▍ (FocusedStateBar)
+	// Focused: double state bar ▍▍ (tuiprim.FocusedStateBar)
 	tc.Expanded = false
 	focusedCollapsed := renderToolCall(tc, 80, true)
-	// FocusedStateBar renders the glyph twice
+	// tuiprim.FocusedStateBar renders the glyph twice
 	if strings.Count(focusedCollapsed, "▍") < 2 {
 		t.Errorf("focused collapsed tool should show double ▍▍, got: %s", focusedCollapsed)
 	}

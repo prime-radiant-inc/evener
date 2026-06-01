@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -390,7 +391,7 @@ func (p credentialsPanel) View() string {
 				star = "★"
 			}
 			name := lipgloss.NewStyle().Foreground(th.Text).Render(inst.Name)
-			badge := StatusBadge(p.sourceBadgeColor(inst.ActiveSource), inst.ActiveSource)
+			badge := tuiprim.StatusBadge(p.sourceBadgeColor(inst.ActiveSource), inst.ActiveSource)
 			// Optional apiStyle/baseURL hint
 			hint := ""
 			if inst.APIStyle != "" || inst.BaseURL != "" {
@@ -410,20 +411,20 @@ func (p credentialsPanel) View() string {
 	width := 60
 	var footer string
 	if p.formOpen {
-		footer = actionBarForWidth(width, KbdHint("enter", "next/submit"), KbdHint("esc", "cancel"))
+		footer = tuiprim.ActionBarForWidth(width, tuiprim.KbdHint("enter", "next/submit"), tuiprim.KbdHint("esc", "cancel"))
 	} else {
-		footer = actionBarForWidth(width,
-			KbdHint("enter", "set key"),
-			KbdHint("o", "OAuth"),
-			KbdHint("c", "clear"),
-			KbdHint("n", "new"),
-			KbdHint("e", "edit"),
-			KbdHint("x", "remove"),
-			KbdHint("*", "default"),
-			KbdHint("esc", "close"),
+		footer = tuiprim.ActionBarForWidth(width,
+			tuiprim.KbdHint("enter", "set key"),
+			tuiprim.KbdHint("o", "OAuth"),
+			tuiprim.KbdHint("c", "clear"),
+			tuiprim.KbdHint("n", "new"),
+			tuiprim.KbdHint("e", "edit"),
+			tuiprim.KbdHint("x", "remove"),
+			tuiprim.KbdHint("*", "default"),
+			tuiprim.KbdHint("esc", "close"),
 		)
 	}
-	return Overlay(OverlayOpts{Title: "Instances", Width: width, Body: body, Footer: footer})
+	return tuiprim.Overlay(tuiprim.OverlayOpts{Title: "Instances", Width: width, Body: body, Footer: footer})
 }
 
 // formView renders the in-overlay create/edit form.

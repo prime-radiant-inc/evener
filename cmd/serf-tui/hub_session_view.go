@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"primeradiant.com/serf/cmd/serf-tui/internal/modeldisplay"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
@@ -18,12 +19,12 @@ func (m hubModel) sessionHeaderLines() []string {
 	}
 
 	// Line 1: section divider rule with breadcrumb + turn count
-	rule := SectionDivider(m.sessionHeaderWidth(), "SERF / SESSION", fmt.Sprintf("%d turns", m.detail.TurnCount))
+	rule := tuiprim.SectionDivider(m.sessionHeaderWidth(), "SERF / SESSION", fmt.Sprintf("%d turns", m.detail.TurnCount))
 
 	// Line 2: title + state badge (truncate title if needed to fit width)
 	// Use stateLabel to normalize raw states (e.g. "closed" → "ended").
 	normalizedState := stateLabel(state)
-	badge := StatusBadge(stateColor(normalizedState), normalizedState)
+	badge := tuiprim.StatusBadge(stateColor(normalizedState), normalizedState)
 	badgeW := lipgloss.Width(badge)
 	maxTitleW := m.sessionHeaderWidth() - 2 - 3 - badgeW // 2-space indent + 3-space gap
 	if maxTitleW < 4 {
@@ -145,11 +146,11 @@ func (m hubModel) sessionCapabilityStatusLabel() string {
 	}
 }
 
-// forkDraftHeader returns a SectionDivider for the fork-draft UI surface,
+// forkDraftHeader returns a tuiprim.SectionDivider for the fork-draft UI surface,
 // showing the branch name and diverge-turn info as the right label.
 func forkDraftHeader(branch string, divergeTurn int, width int) string {
 	right := fmt.Sprintf("%s@diverge:%d", branch, divergeTurn)
-	return SectionDivider(width, "fork draft", right)
+	return tuiprim.SectionDivider(width, "fork draft", right)
 }
 
 // providerFromModel extracts the provider prefix from "provider/model" strings.
@@ -231,7 +232,7 @@ func (m hubModel) renderSessionMainBody() string {
 }
 
 // sessionChromeText returns the overlay and footer strings used for body-height
-// computation and the appShell. Extracted so syncSessionViewport and sessionView
+// computation and the tuiprim.AppShell. Extracted so syncSessionViewport and sessionView
 // share the same chrome calculation.
 func (m *hubModel) sessionChromeText() (topBar, overlayText, footer string) {
 	title := firstNonEmptyString(m.detail.Title, m.detail.SessionID, m.detail.Ref, "untitled session")
@@ -269,14 +270,14 @@ func (m *hubModel) sessionChromeText() (topBar, overlayText, footer string) {
 	var kbdFooter string
 	switch {
 	case m.transcriptView != nil:
-		kbdFooter = actionBarForWidth(m.width, "esc/i/q: return to chat", "ctrl+o: dashboard")
+		kbdFooter = tuiprim.ActionBarForWidth(m.width, "esc/i/q: return to chat", "ctrl+o: dashboard")
 	case m.session.scrollMode:
 		keys := []string{"esc/i/q: compose", "ctrl+t: expand tools"}
 		if m.detail.Capabilities.Fork {
 			keys = append(keys, "f: fork selected user turn")
 		}
 		keys = append(keys, "ctrl+o: dashboard")
-		kbdFooter = actionBarForWidth(m.width, keys...) + "\n" + m.sessionComposerPanel().View()
+		kbdFooter = tuiprim.ActionBarForWidth(m.width, keys...) + "\n" + m.sessionComposerPanel().View()
 	default:
 		kbdFooter = m.sessionComposerPanel().View()
 	}
@@ -312,7 +313,7 @@ func (m *hubModel) sessionView() string {
 	topBar, overlayText, footer := m.sessionChromeText()
 	bodyHeight := sessionShellBodyHeight(m.height, topBar, overlayText, footer)
 	body := m.sessionBody("", bodyHeight, overlayText != "")
-	return appShell{
+	return tuiprim.AppShell{
 		TopBar:  topBar,
 		Body:    body,
 		Overlay: overlayText,
@@ -344,5 +345,5 @@ func (m hubModel) sessionPanelOverlay() string {
 	if width <= 0 {
 		width = 100
 	}
-	return renderPopupPane(m.sessionPanel.View(), width)
+	return tuiprim.RenderPopupPane(m.sessionPanel.View(), width)
 }

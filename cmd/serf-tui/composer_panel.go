@@ -6,6 +6,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
@@ -229,7 +230,7 @@ func (p composerPanel) View() string {
 			b.WriteString("\n")
 		}
 	} else if len(p.Keys) > 0 {
-		b.WriteString(mutedStyle.Render(actionBarForWidth(p.Width, p.Keys...)))
+		b.WriteString(mutedStyle.Render(tuiprim.ActionBarForWidth(p.Width, p.Keys...)))
 		b.WriteString("\n")
 	}
 	return b.String()

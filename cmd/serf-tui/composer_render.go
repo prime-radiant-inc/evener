@@ -6,6 +6,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"primeradiant.com/serf/cmd/serf-tui/internal/modeldisplay"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 )
 
@@ -77,7 +78,7 @@ func renderComposerChipStrip(ctx composerContext) string {
 			modeColor = th.StateAwaiting
 		}
 		// Build a mode chip inline with the band bg (instead of using
-		// the shared StatusBadge, which has no band bg).
+		// the shared tuiprim.StatusBadge, which has no band bg).
 		mode := lipgloss.NewStyle().Background(bg).Foreground(modeColor).Bold(true).Render("● " + strings.ToUpper(ctx.Mode))
 		rightParts = append(rightParts, mode)
 	}
@@ -186,38 +187,38 @@ func composeProviderModel(provider, model string) string {
 func composerFooterHints(mode string, width int, canSteer bool) string {
 	switch mode {
 	case "queue":
-		hints := []string{KbdHint("enter", "queue")}
+		hints := []string{tuiprim.KbdHint("enter", "queue")}
 		if canSteer {
-			hints = append(hints, KbdHint("ctrl+s", "steer"))
+			hints = append(hints, tuiprim.KbdHint("ctrl+s", "steer"))
 		}
 		hints = append(hints,
-			KbdHint("esc", "browse"),
-			KbdHint("⌘P", "palette"),
-			KbdHint("⌘O", "dashboard"),
+			tuiprim.KbdHint("esc", "browse"),
+			tuiprim.KbdHint("⌘P", "palette"),
+			tuiprim.KbdHint("⌘O", "dashboard"),
 		)
-		return actionBarForWidth(width, hints...)
+		return tuiprim.ActionBarForWidth(width, hints...)
 	case "fork":
-		return actionBarForWidth(width,
-			KbdHint("enter", "fork"),
-			KbdHint("esc", "cancel"),
-			KbdHint("⌘O", "dashboard"),
+		return tuiprim.ActionBarForWidth(width,
+			tuiprim.KbdHint("enter", "fork"),
+			tuiprim.KbdHint("esc", "cancel"),
+			tuiprim.KbdHint("⌘O", "dashboard"),
 		)
 	case "scroll-browse":
-		return actionBarForWidth(width,
-			KbdHint("↑↓", "select"),
-			KbdHint("enter", "expand"),
-			KbdHint("f", "fork"),
-			KbdHint("c", "copy"),
-			KbdHint("esc", "compose"),
-			KbdHint("⌘O", "dashboard"),
+		return tuiprim.ActionBarForWidth(width,
+			tuiprim.KbdHint("↑↓", "select"),
+			tuiprim.KbdHint("enter", "expand"),
+			tuiprim.KbdHint("f", "fork"),
+			tuiprim.KbdHint("c", "copy"),
+			tuiprim.KbdHint("esc", "compose"),
+			tuiprim.KbdHint("⌘O", "dashboard"),
 		)
 	default: // compose
-		return actionBarForWidth(width,
-			KbdHint("enter", "send"),
-			KbdHint("shift+enter", "newline"),
-			KbdHint("⌘P", "palette"),
-			KbdHint("esc", "browse"),
-			KbdHint("/help", ""),
+		return tuiprim.ActionBarForWidth(width,
+			tuiprim.KbdHint("enter", "send"),
+			tuiprim.KbdHint("shift+enter", "newline"),
+			tuiprim.KbdHint("⌘P", "palette"),
+			tuiprim.KbdHint("esc", "browse"),
+			tuiprim.KbdHint("/help", ""),
 		)
 	}
 }

@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -271,7 +272,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.clearSessionError()
 		m.detail = msg.detail
-		panel := hubSessionPanel{Body: renderHubSessionStatus(msg.detail, msg.tasks, msg.auth, msg.taskErr, msg.authErr, popupPaneContentWidth(m.width))}
+		panel := hubSessionPanel{Body: renderHubSessionStatus(msg.detail, msg.tasks, msg.auth, msg.taskErr, msg.authErr, tuiprim.PopupPaneContentWidth(m.width))}
 		m.sessionPanel = &panel
 		m.session.refreshViewport()
 		return m, nil

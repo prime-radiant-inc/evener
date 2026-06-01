@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"time"
+
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 )
 
 type hubTUISampleCorpus struct {
@@ -457,34 +459,34 @@ func sampleRenderFromRealWidget(name string, width int) (tuiSampleRender, bool) 
 		}.Text()
 		return renderSample(name, width, view), true
 	case "appshell-normal":
-		return renderSample(name, width, appShell{
+		return renderSample(name, width, tuiprim.AppShell{
 			TopBar: "serf live",
 			Body:   "Live now\n> idle serf session\n  codex smoke",
-			Footer: actionBarForWidth(width, "enter open", "n new", "ctrl+o dashboard", "q quit"),
+			Footer: tuiprim.ActionBarForWidth(width, "enter open", "n new", "ctrl+o dashboard", "q quit"),
 		}.View()), true
 	case "appshell-loading":
-		return renderSample(name, width, appShell{
+		return renderSample(name, width, tuiprim.AppShell{
 			TopBar: "serf live",
 			Body:   "Loading hub dashboard...",
-			Footer: actionBarForWidth(width, "ctrl+o dashboard", "q quit"),
+			Footer: tuiprim.ActionBarForWidth(width, "ctrl+o dashboard", "q quit"),
 		}.View()), true
 	case "appshell-error":
-		return renderSample(name, width, appShell{
+		return renderSample(name, width, tuiprim.AppShell{
 			TopBar: "serf live",
 			Body: noticePanel{
 				Title:      "Hub unavailable",
 				Summary:    "Could not reach the configured Hub.",
 				NextAction: "Retry after checking the hub process.",
 			}.Text(),
-			Footer: actionBarForWidth(width, "r retry", "ctrl+o dashboard", "q quit"),
+			Footer: tuiprim.ActionBarForWidth(width, "r retry", "ctrl+o dashboard", "q quit"),
 		}.View()), true
 	case "topbar-session":
 		title := "serf / session / Restore hub TUI widgets"
 		return renderSample(name, width, truncateSessionLine(title, width)), true
 	case "actionbar-normal":
-		return renderSample(name, width, actionBarForWidth(width, "enter open", "p project", "n new", "ctrl+o dashboard", "q quit")), true
+		return renderSample(name, width, tuiprim.ActionBarForWidth(width, "enter open", "p project", "n new", "ctrl+o dashboard", "q quit")), true
 	case "actionbar-wrapped":
-		return renderSample(name, width, actionBarForWidth(width, "enter open", "p project", "n new", "ctrl+o dashboard", "q quit")), true
+		return renderSample(name, width, tuiprim.ActionBarForWidth(width, "enter open", "p project", "n new", "ctrl+o dashboard", "q quit")), true
 	case "picker-empty":
 		picker := newPickerPanel("Command palette", []pickerPanelItem{{ID: "open", Label: "Open session"}}, width)
 		picker.filter = "missing"

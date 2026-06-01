@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -88,8 +89,8 @@ func (p commandPalette) View() string {
 		width = 80
 	}
 	width = min(max(width, 44), 96)
-	footer := actionBarForWidth(width, KbdHint("↑↓", "navigate"), KbdHint("enter", "run"), KbdHint("esc", "cancel"))
-	return Overlay(OverlayOpts{Title: p.panel.title, Width: width, Body: body, Footer: footer})
+	footer := tuiprim.ActionBarForWidth(width, tuiprim.KbdHint("↑↓", "navigate"), tuiprim.KbdHint("enter", "run"), tuiprim.KbdHint("esc", "cancel"))
+	return tuiprim.Overlay(tuiprim.OverlayOpts{Title: p.panel.title, Width: width, Body: body, Footer: footer})
 }
 
 func (p commandPalette) selectedEntry() (commandPaletteEntry, bool) {
