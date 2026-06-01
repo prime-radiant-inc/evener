@@ -68,7 +68,10 @@ directives in `go.work`** (repo-local — invisible to external `go get`). This 
 the committed `go.mod` files replace-free and publishable while a fresh clone builds
 out-of-the-box. (`go.work use` alone does *not* resolve an unpublished sibling once a
 module has external deps — it 404s trying to fetch it; the in-`go.work` replace is the
-fix.) In workspace mode `go build`/`go test`/`go vet ./...` operate across all modules.
+fix.) Note: `./...` resolves **per-module** in a workspace, not across it — so the lint /
+vet / test gates loop over every module (`make vet` / `make test-race` / `make lint-golangci`
+iterate `. agent llm auth`); a root-only `go test ./...` silently skips the agent/llm/auth
+library suites.
 
 ## Boundaries Go enforces
 
@@ -90,7 +93,10 @@ single module, shared code in `internal/` is the correct Go idiom; *duplicating*
 binary would be worse. The "no glue drawer" goal was about **not mixing library and app
 code** — and that is fully resolved: the libraries are separate modules, so the app's
 `internal/` now holds only app code. (`appprojector` and `httpguard` are engine-`server/`-
-only and could later sink to `cmd/serf/internal/` alongside `server/`.)
+only and could later sink to `cmd/serf/internal/` alongside `server/`.) Relaxing the
+migration's original "zero top-level `internal/`" target is the **decided end-state**:
+per-binary duplication would be strictly worse, and the real goal — no library/app code
+mixing — is already met by the module carve.
 
 ## Current status
 
@@ -105,3 +111,10 @@ only and could later sink to `cmd/serf/internal/` alongside `server/`.)
   `llm`/`agent`/`auth/openai` carry runnable `Example`s.
 - ✅ Validated externally consumable: a scratch module that `require`s `agent` resolves
   only `agent` + `llm` + `auth` (plus their third-party deps) — no app code.
+- ✅ **Whole-repo golangci-lint gate**: a curated best-practice `.golangci.yml` (errcheck,
+  govet, staticcheck, unused, ineffassign, errorlint, bodyclose, misspell, unconvert, revive,
+  gocritic, nilerr, noctx, nakedret, perfsprint, …; the gocritic value-copy checks
+  `hugeParam`/`rangeValCopy`/`rangeExprCopy` are disabled — they fight the codebase's
+  deliberate value semantics) is driven to **zero across all four modules** and gates in CI
+  beside the three custom AST checks. The `vet` / `test-race` / `lint-golangci` make targets
+  (and CI) loop over `. agent llm auth`, so the **library test suites now run in CI** too.
