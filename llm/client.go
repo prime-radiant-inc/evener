@@ -313,6 +313,7 @@ type providerStampStream struct {
 	out         chan StreamEvent
 	once        sync.Once
 	done        chan struct{}
+	closing     chan struct{}
 }
 
 func newProviderStampStream(inner Stream, provider, behaviorTag string) *providerStampStream {
@@ -322,23 +323,42 @@ func newProviderStampStream(inner Stream, provider, behaviorTag string) *provide
 		behaviorTag: behaviorTag,
 		out:         make(chan StreamEvent, 128),
 		done:        make(chan struct{}),
+		closing:     make(chan struct{}),
 	}
 	go s.pump()
 	return s
 }
 
+// pump forwards events from the inner stream, stamping the provider name (and
+// behavior tag) onto FINISH responses and errors. It exits when the inner
+// stream closes its events channel OR when Close signals s.closing. The closing
+// signal is selected on both the inner receive and the out send so that Close
+// returns promptly even if the consumer has stopped draining and the inner
+// stream never closes its channel — otherwise this goroutine would leak.
 func (s *providerStampStream) pump() {
 	defer close(s.done)
 	defer close(s.out)
-	for ev := range s.inner.Events() {
-		if ev.Type == StreamEventError && ev.Err != nil {
-			ev.Err = RewriteErrorProvider(ev.Err, s.provider)
-			ev.Err = StampErrorBehaviorTag(ev.Err, s.behaviorTag)
+	for {
+		select {
+		case <-s.closing:
+			return
+		case ev, ok := <-s.inner.Events():
+			if !ok {
+				return
+			}
+			if ev.Type == StreamEventError && ev.Err != nil {
+				ev.Err = RewriteErrorProvider(ev.Err, s.provider)
+				ev.Err = StampErrorBehaviorTag(ev.Err, s.behaviorTag)
+			}
+			if ev.Type == StreamEventFinish && ev.Response != nil {
+				ev.Response.Provider = s.provider
+			}
+			select {
+			case s.out <- ev:
+			case <-s.closing:
+				return
+			}
 		}
-		if ev.Type == StreamEventFinish && ev.Response != nil {
-			ev.Response.Provider = s.provider
-		}
-		s.out <- ev
 	}
 }
 
@@ -346,7 +366,10 @@ func (s *providerStampStream) Events() <-chan StreamEvent { return s.out }
 
 func (s *providerStampStream) Close() error {
 	var err error
-	s.once.Do(func() { err = s.inner.Close() })
+	s.once.Do(func() {
+		close(s.closing)
+		err = s.inner.Close()
+	})
 	<-s.done
 	return err
 }

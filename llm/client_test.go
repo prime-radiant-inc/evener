@@ -317,6 +317,53 @@ func (s *wrappedStream) Close() error {
 	return err
 }
 
+// nonClosingStream is an adversarial Stream whose Close() deliberately does NOT
+// close its events channel. A correct wrapper must own its own shutdown rather
+// than relying on the inner stream's Close() to unblock its pump.
+type nonClosingStream struct{ events chan StreamEvent }
+
+func (s *nonClosingStream) Events() <-chan StreamEvent { return s.events }
+func (s *nonClosingStream) Close() error               { return nil }
+
+// TestProviderStampStream_CloseWithoutDraining verifies that Close() on the
+// provider-stamping wrapper returns promptly and that Events() closes, even when
+// the consumer never drains and the inner stream never closes its events
+// channel. providerStampStream wraps every provider's stream, so a consumer that
+// aborts mid-stream (Close without draining) must not leak the pump goroutine.
+// (Ported from the ollama rewriteStream regression after F7 folded that wrapper
+// away; the robustness now lives in the canonical wrapper.)
+func TestProviderStampStream_CloseWithoutDraining(t *testing.T) {
+	inner := &nonClosingStream{events: make(chan StreamEvent)}
+	ps := newProviderStampStream(inner, "ollama", "")
+
+	// out is buffered at 128. Sending 129 events to the unbuffered inner channel
+	// fills the buffer and parks the pump on the 129th forward-to-out; when the
+	// 129th send returns, the pump is deterministically blocked mid-forward.
+	for i := 0; i < 129; i++ {
+		inner.events <- StreamEvent{Type: StreamEventTextDelta, Delta: "x"}
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- ps.Close() }()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close() hung — pump did not respond to the shutdown signal")
+	}
+
+	drained := make(chan struct{})
+	go func() {
+		for range ps.Events() {
+		}
+		close(drained)
+	}()
+	select {
+	case <-drained:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Events() did not close after Close() — pump goroutine leaked")
+	}
+}
+
 func TestClient_Stream_DoesNotRetryAutomatically(t *testing.T) {
 	c := NewClient()
 	a := &streamAdapter{name: "openai", fail: true}
