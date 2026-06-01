@@ -387,11 +387,15 @@ func TestCommunicate_EmitsEvent(t *testing.T) {
 		t.Fatalf("expected 1 COMMUNICATE event, got %d", len(srEvents))
 	}
 
-	if msg, _ := srEvents[0].DataMap()["message"].(string); msg != "Final answer" {
-		t.Fatalf("event 0 message: got %q want %q", msg, "Final answer")
+	d, ok := srEvents[0].Data.(events.CommunicateData)
+	if !ok {
+		t.Fatalf("event 0 data: got %T want events.CommunicateData", srEvents[0].Data)
 	}
-	if awaitReply, _ := srEvents[0].DataMap()["await_reply"].(bool); awaitReply {
-		t.Fatalf("event 0 await_reply: got %v want false", awaitReply)
+	if d.Message != "Final answer" {
+		t.Fatalf("event 0 message: got %q want %q", d.Message, "Final answer")
+	}
+	if d.AwaitReply {
+		t.Fatalf("event 0 await_reply: got %v want false", d.AwaitReply)
 	}
 }
 

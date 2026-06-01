@@ -1,12 +1,11 @@
 // Package events defines the public session event stream: the [EventKind]
 // taxonomy, the [SessionEvent] envelope, and the typed payload structs carried
-// on a session's event channel. Consumers (projectors, CLI renderers, the
-// server bridge) read these types directly; the agent package re-exports the
-// whole cluster via type aliases for in-package use and source compatibility.
+// on a session's event channel. Consumers (the agent package, projectors, CLI
+// renderers, the server bridge) import this package and use these types
+// directly.
 package events
 
 import (
-	"encoding/json"
 	"time"
 
 	"primeradiant.com/serf/llm"
@@ -82,21 +81,6 @@ type SessionEvent struct {
 	Timestamp time.Time `json:"timestamp"`
 	SessionID string    `json:"session_id"`
 	Data      EventData `json:"data,omitempty"`
-}
-
-// DataMap returns Data as a map[string]any by marshaling the typed payload
-// through JSON. Returns nil when Data is nil.
-func (e SessionEvent) DataMap() map[string]any {
-	if e.Data == nil {
-		return nil
-	}
-	b, err := json.Marshal(e.Data)
-	if err != nil {
-		return nil
-	}
-	var m map[string]any
-	_ = json.Unmarshal(b, &m)
-	return m
 }
 
 // ToStreamEvent maps this agent-level event to an llm.StreamEvent.

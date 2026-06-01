@@ -16,6 +16,22 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// marshalToMap serializes an event payload to JSON and decodes it back into a
+// map[string]any, so tests can assert the wire-level JSON shape (e.g. that a
+// legacy key is absent) of a payload struct.
+func marshalToMap(t *testing.T, data events.EventData) map[string]any {
+	t.Helper()
+	b, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	return m
+}
+
 type fakeAdapter struct {
 	name string
 
@@ -2107,8 +2123,8 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 		if ev.Kind == events.EventLoopDetection {
 			loopEv = true
 		}
-		if ev.Kind == events.EventSteeringInjected {
-			if s, _ := ev.DataMap()["text"].(string); strings.Contains(s, "stuck") {
+		if d, ok := ev.Data.(events.SteeringInjectedData); ok {
+			if strings.Contains(d.Text, "stuck") {
 				steerEv = true
 			}
 		}
@@ -3112,8 +3128,8 @@ func TestSession_ToolCallEnd_UsesOutputKeyOnSuccess(t *testing.T) {
 	if d.Error != "" {
 		t.Fatalf("TOOL_CALL_END for success should not have error, got %q", d.Error)
 	}
-	// DataMap should not have legacy keys "full_output" or "is_error".
-	dm := found.DataMap()
+	// The wire JSON should not carry legacy keys "full_output" or "is_error".
+	dm := marshalToMap(t, found.Data)
 	if _, ok := dm["full_output"]; ok {
 		t.Fatal("TOOL_CALL_END should not have 'full_output' key")
 	}
@@ -3194,8 +3210,8 @@ func TestSession_ToolCallEnd_UsesErrorKeyOnFailure(t *testing.T) {
 	if d.Output != "" {
 		t.Fatalf("TOOL_CALL_END for error should not have output, got %q", d.Output)
 	}
-	// DataMap should not have legacy keys "full_output" or "is_error".
-	dm := found.DataMap()
+	// The wire JSON should not carry legacy keys "full_output" or "is_error".
+	dm := marshalToMap(t, found.Data)
 	if _, ok := dm["full_output"]; ok {
 		t.Fatal("TOOL_CALL_END should not have 'full_output' key")
 	}
@@ -3251,8 +3267,8 @@ func TestSession_AssistantTextStart_IncludesModel(t *testing.T) {
 	if found == nil {
 		t.Fatal("no ASSISTANT_TEXT_START event found")
 	}
-	model, ok := found.DataMap()["model"].(string)
-	if !ok || model != "test-model-42" {
+	d, ok := found.Data.(events.AssistantTextStartData)
+	if !ok || d.Model != "test-model-42" {
 		t.Fatalf("expected model 'test-model-42' in ASSISTANT_TEXT_START, got: %v", found.Data)
 	}
 }
@@ -3498,8 +3514,8 @@ func TestSession_LoopDetection_WarningWording(t *testing.T) {
 	// Verify the LOOP_DETECTION event message matches the spec wording.
 	var loopMsg string
 	for _, ev := range evs {
-		if ev.Kind == events.EventLoopDetection {
-			loopMsg, _ = ev.DataMap()["message"].(string)
+		if d, ok := ev.Data.(events.LoopDetectionData); ok {
+			loopMsg = d.Message
 			break
 		}
 	}

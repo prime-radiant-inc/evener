@@ -892,10 +892,8 @@ func TestMaybeCompact_CheckpointThreshold(t *testing.T) {
 	// At 85%, checkpoint should trigger (threshold is 80%).
 	foundCheckpoint := false
 	for _, e := range evs {
-		if e.Kind == events.EventContextCompaction {
-			if layer, ok := e.DataMap()["layer"].(string); ok && layer == "checkpoint" {
-				foundCheckpoint = true
-			}
+		if d, ok := e.Data.(events.ContextCompactionData); ok && d.Layer == "checkpoint" {
+			foundCheckpoint = true
 		}
 	}
 	if !foundCheckpoint {
@@ -930,13 +928,13 @@ func TestMaybeCompact_EmitsEvents(t *testing.T) {
 	// Should have at least one compaction event.
 	compactionCount := 0
 	for _, e := range evs {
-		if e.Kind == events.EventContextCompaction {
+		if d, ok := e.Data.(events.ContextCompactionData); ok {
 			compactionCount++
-			// Each event should have layer and token counts.
-			if _, ok := e.DataMap()["layer"]; !ok {
+			// Each event should carry a layer and token counts.
+			if d.Layer == "" {
 				t.Fatalf("compaction event missing 'layer': %+v", e.Data)
 			}
-			if _, ok := e.DataMap()["est_tokens_before"]; !ok {
+			if d.EstTokensBefore == 0 {
 				t.Fatalf("compaction event missing 'est_tokens_before': %+v", e.Data)
 			}
 		}
@@ -971,10 +969,8 @@ func TestMaybeCompact_RespectsSysPromptSize(t *testing.T) {
 	// With sys prompt, we're at ~80%, should trigger checkpoint.
 	foundCheckpoint := false
 	for _, e := range evs {
-		if e.Kind == events.EventContextCompaction {
-			if layer, ok := e.DataMap()["layer"].(string); ok && layer == "checkpoint" {
-				foundCheckpoint = true
-			}
+		if d, ok := e.Data.(events.ContextCompactionData); ok && d.Layer == "checkpoint" {
+			foundCheckpoint = true
 		}
 	}
 	if !foundCheckpoint {

@@ -21,15 +21,16 @@ import (
 )
 
 // toolCallEndOutput extracts the output from a TOOL_CALL_END event,
-// checking both "output" (success) and "error" (failure) keys.
+// returning Output (success) when set, otherwise Error (failure).
 func toolCallEndOutput(ev events.SessionEvent) string {
-	if v, ok := ev.DataMap()["output"]; ok {
-		return fmt.Sprint(v)
+	d, ok := ev.Data.(events.ToolCallEndData)
+	if !ok {
+		return ""
 	}
-	if v, ok := ev.DataMap()["error"]; ok {
-		return fmt.Sprint(v)
+	if d.Output != "" {
+		return d.Output
 	}
-	return ""
+	return d.Error
 }
 
 func TestSession_MaxToolRoundsPerInput_StopsLoop(t *testing.T) {
@@ -378,25 +379,22 @@ func TestSession_EventSystem_ToolCall_EmitsStartDeltaEnd(t *testing.T) {
 	seenDelta := false
 	seenEnd := false
 	for ev := range sess.Events() {
-		switch ev.Kind {
-		case events.EventToolCallStart:
-			if ev.DataMap()["call_id"] != "c1" || ev.DataMap()["tool_name"] != "write_file" {
+		switch d := ev.Data.(type) {
+		case events.ToolCallStartData:
+			if d.CallID != "c1" || d.ToolName != "write_file" {
 				continue
 			}
 			seenStart = true
-			if ev.DataMap()["call_id"] != "c1" || ev.DataMap()["tool_name"] != "write_file" {
-				t.Fatalf("TOOL_CALL_START data: %+v", ev.Data)
-			}
-		case events.EventToolCallOutputDelta:
-			if ev.DataMap()["call_id"] != "c1" {
+		case events.ToolCallOutputDeltaData:
+			if d.CallID != "c1" {
 				continue
 			}
 			seenDelta = true
 			if !seenStart || seenEnd {
 				t.Fatalf("TOOL_CALL_OUTPUT_DELTA ordering violated (start=%t end=%t)", seenStart, seenEnd)
 			}
-		case events.EventToolCallEnd:
-			if ev.DataMap()["call_id"] != "c1" {
+		case events.ToolCallEndData:
+			if d.CallID != "c1" {
 				continue
 			}
 			seenEnd = true
@@ -591,13 +589,13 @@ func TestSession_Steer_IsInjectedAfterCurrentToolRound(t *testing.T) {
 	steerIdx := -1
 	i := 0
 	for ev := range sess.Events() {
-		switch ev.Kind {
-		case events.EventToolCallEnd:
-			if ev.DataMap()["tool_name"] == "slow" {
+		switch d := ev.Data.(type) {
+		case events.ToolCallEndData:
+			if d.ToolName == "slow" {
 				toolEndIdx = i
 			}
-		case events.EventSteeringInjected:
-			if ev.DataMap()["text"] != "steer: do X" {
+		case events.SteeringInjectedData:
+			if d.Text != "steer: do X" {
 				t.Fatalf("STEERING_INJECTED data: %+v", ev.Data)
 			}
 			steerIdx = i
@@ -863,10 +861,8 @@ func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) 
 
 	warn := ""
 	for ev := range sess.Events() {
-		if ev.Kind == events.EventWarning {
-			if msg, ok := ev.DataMap()["message"].(string); ok {
-				warn = msg
-			}
+		if d, ok := ev.Data.(events.WarningData); ok {
+			warn = d.Message
 		}
 	}
 	if warn == "" {
@@ -1535,14 +1531,11 @@ func TestSession_ContextLengthError_EmitsWarningAndClosesSession(t *testing.T) {
 	warn := false
 	end := false
 	for ev := range sess.Events() {
-		if ev.Kind == events.EventWarning {
-			data := ev.DataMap()
-			if msg, ok := data["message"].(string); ok && strings.Contains(msg, "Context length") {
-				if data["source"] != "provider" || data["title"] != "Provider error" {
-					t.Fatalf("warning diagnostic=%+v", data)
-				}
-				warn = true
+		if d, ok := ev.Data.(events.WarningData); ok && strings.Contains(d.Message, "Context length") {
+			if d.Source != "provider" || d.Title != "Provider error" {
+				t.Fatalf("warning diagnostic=%+v", d)
 			}
+			warn = true
 		}
 		if ev.Kind == events.EventSessionEnd {
 			end = true
@@ -1579,14 +1572,11 @@ func TestSession_LLMError_EmitsErrorEvent(t *testing.T) {
 
 	errEv := false
 	for ev := range sess.Events() {
-		if ev.Kind == events.EventError {
-			data := ev.DataMap()
-			if s, _ := data["error"].(string); strings.Contains(s, "openai") {
-				if data["source"] != "provider" || data["title"] != "Provider error" {
-					t.Fatalf("error diagnostic=%+v", data)
-				}
-				errEv = true
+		if d, ok := ev.Data.(events.ErrorData); ok && strings.Contains(d.Error, "openai") {
+			if d.Source != "provider" || d.Title != "Provider error" {
+				t.Fatalf("error diagnostic=%+v", d)
 			}
+			errEv = true
 		}
 	}
 	if !errEv {
@@ -1659,12 +1649,12 @@ func TestSession_ConfigurationError_EmitsSerfDiagnosticEvent(t *testing.T) {
 	sess.Close()
 
 	for ev := range sess.Events() {
-		if ev.Kind != events.EventError {
+		d, ok := ev.Data.(events.ErrorData)
+		if !ok {
 			continue
 		}
-		data := ev.DataMap()
-		if data["source"] != "serf" || data["title"] != "Serf configuration error" {
-			t.Fatalf("error diagnostic=%+v", data)
+		if d.Source != "serf" || d.Title != "Serf configuration error" {
+			t.Fatalf("error diagnostic=%+v", d)
 		}
 		return
 	}
@@ -1693,12 +1683,12 @@ func TestSession_RuntimeError_EmitsSerfDiagnosticEvent(t *testing.T) {
 	sess.Close()
 
 	for ev := range sess.Events() {
-		if ev.Kind != events.EventError {
+		d, ok := ev.Data.(events.ErrorData)
+		if !ok {
 			continue
 		}
-		data := ev.DataMap()
-		if data["source"] != "serf" || data["title"] != "Serf error" {
-			t.Fatalf("error diagnostic=%+v", data)
+		if d.Source != "serf" || d.Title != "Serf error" {
+			t.Fatalf("error diagnostic=%+v", d)
 		}
 		return
 	}
@@ -3477,9 +3467,9 @@ func TestSession_SessionEnd_AfterProcessInput(t *testing.T) {
 	endCount := 0
 	var inputCompleteEnd bool
 	for _, ev := range evs {
-		if ev.Kind == events.EventSessionEnd {
+		if d, ok := ev.Data.(events.SessionEndData); ok {
 			endCount++
-			if r, _ := ev.DataMap()["reason"].(string); r == "input_complete" {
+			if d.Reason == "input_complete" {
 				inputCompleteEnd = true
 			}
 		}
@@ -3553,11 +3543,11 @@ func TestSession_ToolNameMapping_ReverseDispatch(t *testing.T) {
 	defer mu.Unlock()
 	var toolStartNames, toolEndNames []string
 	for _, ev := range evs {
-		if ev.Kind == events.EventToolCallStart {
-			toolStartNames = append(toolStartNames, fmt.Sprint(ev.DataMap()["tool_name"]))
+		if d, ok := ev.Data.(events.ToolCallStartData); ok {
+			toolStartNames = append(toolStartNames, d.ToolName)
 		}
-		if ev.Kind == events.EventToolCallEnd {
-			toolEndNames = append(toolEndNames, fmt.Sprint(ev.DataMap()["tool_name"]))
+		if d, ok := ev.Data.(events.ToolCallEndData); ok {
+			toolEndNames = append(toolEndNames, d.ToolName)
 		}
 	}
 	filteredStartNames := slices.DeleteFunc(append([]string(nil), toolStartNames...), func(name string) bool { return name == "communicate" })
@@ -3647,14 +3637,20 @@ func TestSession_ToolNameMapping_EventsUseCanonicalName(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	for _, ev := range evs {
-		if ev.Kind == events.EventToolCallStart || ev.Kind == events.EventToolCallEnd {
-			name := fmt.Sprint(ev.DataMap()["tool_name"])
-			if name == "grep_files" {
-				t.Fatalf("event %s should use canonical name 'grep', got provider name 'grep_files'", ev.Kind)
-			}
-			if name != "grep" {
-				continue // other tools (from other events)
-			}
+		var name string
+		switch d := ev.Data.(type) {
+		case events.ToolCallStartData:
+			name = d.ToolName
+		case events.ToolCallEndData:
+			name = d.ToolName
+		default:
+			continue
+		}
+		if name == "grep_files" {
+			t.Fatalf("event %s should use canonical name 'grep', got provider name 'grep_files'", ev.Kind)
+		}
+		if name != "grep" {
+			continue // other tools (from other events)
 		}
 	}
 }
@@ -3717,9 +3713,8 @@ func TestSession_ToolPurpose_IncludedInToolCallStartEvent(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	for _, ev := range evs {
-		if ev.Kind == events.EventToolCallStart {
-			desc, ok := ev.DataMap()["description"].(string)
-			if ok && desc == "List project files" {
+		if d, ok := ev.Data.(events.ToolCallStartData); ok {
+			if d.Description == "List project files" {
 				return // success
 			}
 		}
@@ -3790,7 +3785,7 @@ func TestSession_ReadBeforeWrite_WarnsOnUnreadFile(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	for _, ev := range evs {
-		if ev.Kind == events.EventToolCallEnd && fmt.Sprint(ev.DataMap()["tool_name"]) == "write_file" {
+		if d, ok := ev.Data.(events.ToolCallEndData); ok && d.ToolName == "write_file" {
 			output := toolCallEndOutput(ev)
 			if strings.Contains(output, "WARNING") && strings.Contains(output, "not been read") {
 				return // success
@@ -3875,7 +3870,7 @@ func TestSession_ReadBeforeWrite_NoWarningAfterRead(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	for _, ev := range evs {
-		if ev.Kind == events.EventToolCallEnd && fmt.Sprint(ev.DataMap()["tool_name"]) == "write_file" {
+		if d, ok := ev.Data.(events.ToolCallEndData); ok && d.ToolName == "write_file" {
 			output := toolCallEndOutput(ev)
 			if strings.Contains(output, "WARNING") {
 				t.Fatal("should not warn about write after read")
@@ -3942,7 +3937,7 @@ func TestSession_ReadBeforeWrite_NewFileNoWarning(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	for _, ev := range evs {
-		if ev.Kind == events.EventToolCallEnd && fmt.Sprint(ev.DataMap()["tool_name"]) == "write_file" {
+		if d, ok := ev.Data.(events.ToolCallEndData); ok && d.ToolName == "write_file" {
 			output := toolCallEndOutput(ev)
 			if strings.Contains(output, "WARNING") {
 				t.Fatal("should not warn when creating a new file")
@@ -4105,35 +4100,21 @@ func TestSession_TaskList_AppendAndUpdate_EmitToolStateSnapshots(t *testing.T) {
 	}
 	var ends []endCall
 	for ev := range sess.Events() {
-		if ev.Kind != events.EventToolCallEnd {
-			continue
-		}
-		d := ev.DataMap()
-		if d["tool_name"] != "task_list" {
-			continue
-		}
-		raw, ok := d["tool_state"]
+		d, ok := ev.Data.(events.ToolCallEndData)
 		if !ok {
+			continue
+		}
+		if d.ToolName != "task_list" {
+			continue
+		}
+		if len(d.ToolState) == 0 {
 			t.Fatalf("TOOL_CALL_END for task_list missing tool_state; data=%+v", d)
 		}
-		// DataMap() returns a map[string]any — tool_state is a
-		// json.RawMessage which comes through as a string or []byte depending
-		// on round-trip. Re-marshal and unmarshal to normalize.
-		js, err := json.Marshal(raw)
-		if err != nil {
-			t.Fatalf("marshal tool_state: %v", err)
-		}
-		// If it came through as a JSON string containing JSON (double-encoded),
-		// peel one layer.
-		var unquoted string
-		if err := json.Unmarshal(js, &unquoted); err == nil && strings.HasPrefix(strings.TrimSpace(unquoted), "[") {
-			js = []byte(unquoted)
-		}
 		var tasks []Task
-		if err := json.Unmarshal(js, &tasks); err != nil {
-			t.Fatalf("tool_state not a []Task: %v; raw=%s", err, js)
+		if err := json.Unmarshal(d.ToolState, &tasks); err != nil {
+			t.Fatalf("tool_state not a []Task: %v; raw=%s", err, d.ToolState)
 		}
-		ends = append(ends, endCall{callID: fmt.Sprint(d["call_id"]), state: tasks})
+		ends = append(ends, endCall{callID: d.CallID, state: tasks})
 	}
 
 	if len(ends) < 2 {

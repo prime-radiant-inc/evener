@@ -1,19 +1,34 @@
 package agent_test
 
 import (
+	"encoding/json"
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
 )
 
-func TestPluginLoadedData_DataMap(t *testing.T) {
-	ev := events.SessionEvent{Kind: events.EventPluginLoaded, Data: events.PluginLoadedData{
-		Name: "test", Dir: "/tmp", SkillCount: 2, AgentCount: 1, MCPCount: 3,
-	}}
-	dm := ev.DataMap()
-	if dm == nil {
-		t.Fatal("DataMap returned nil")
+// payloadJSONMap marshals an event payload to JSON and decodes it back into a
+// map[string]any, mirroring how the payload rides the wire. It lets these
+// tests assert the json-tag and numeric-coercion contract of each payload
+// struct directly.
+func payloadJSONMap(t *testing.T, data events.EventData) map[string]any {
+	t.Helper()
+	b, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
 	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	return m
+}
+
+func TestPluginLoadedData_JSONShape(t *testing.T) {
+	data := events.PluginLoadedData{
+		Name: "test", Dir: "/tmp", SkillCount: 2, AgentCount: 1, MCPCount: 3,
+	}
+	dm := payloadJSONMap(t, data)
 	if dm["name"] != "test" {
 		t.Errorf("name = %v, want %q", dm["name"], "test")
 	}
@@ -31,14 +46,11 @@ func TestPluginLoadedData_DataMap(t *testing.T) {
 	}
 }
 
-func TestHookStartData_DataMap(t *testing.T) {
-	ev := events.SessionEvent{Kind: events.EventHookStart, Data: events.HookStartData{
+func TestHookStartData_JSONShape(t *testing.T) {
+	data := events.HookStartData{
 		Event: "PreToolUse", HookType: "command", Matcher: "Write", PluginName: "my-plugin",
-	}}
-	dm := ev.DataMap()
-	if dm == nil {
-		t.Fatal("DataMap returned nil")
 	}
+	dm := payloadJSONMap(t, data)
 	if dm["event"] != "PreToolUse" {
 		t.Errorf("event = %v, want %q", dm["event"], "PreToolUse")
 	}
@@ -53,15 +65,12 @@ func TestHookStartData_DataMap(t *testing.T) {
 	}
 }
 
-func TestHookEndData_DataMap(t *testing.T) {
-	ev := events.SessionEvent{Kind: events.EventHookEnd, Data: events.HookEndData{
+func TestHookEndData_JSONShape(t *testing.T) {
+	data := events.HookEndData{
 		Event: "PostToolUse", HookType: "prompt", Matcher: "*",
 		PluginName: "test-plugin", ExitCode: 0, DurationMS: 150,
-	}}
-	dm := ev.DataMap()
-	if dm == nil {
-		t.Fatal("DataMap returned nil")
 	}
+	dm := payloadJSONMap(t, data)
 	if dm["event"] != "PostToolUse" {
 		t.Errorf("event = %v, want %q", dm["event"], "PostToolUse")
 	}
@@ -83,11 +92,11 @@ func TestHookEndData_DataMap(t *testing.T) {
 }
 
 func TestHookEndData_NonZeroExitCode(t *testing.T) {
-	ev := events.SessionEvent{Kind: events.EventHookEnd, Data: events.HookEndData{
+	data := events.HookEndData{
 		Event: "PreToolUse", HookType: "command", Matcher: "Write",
 		PluginName: "err-plugin", ExitCode: 2, DurationMS: 50,
-	}}
-	dm := ev.DataMap()
+	}
+	dm := payloadJSONMap(t, data)
 	if dm["exit_code"] != float64(2) {
 		t.Errorf("exit_code = %v, want 2", dm["exit_code"])
 	}
