@@ -4,7 +4,6 @@
 package minimax
 
 import (
-	"context"
 	"net/http"
 	"os"
 	"strings"
@@ -12,29 +11,25 @@ import (
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/anthropic"
+	"primeradiant.com/serf/llm/providers/internal/providerfwd"
 )
 
 const defaultBaseURL = "https://api.minimax.io/anthropic"
 
-type adapter struct {
-	name  string
-	inner *anthropic.Adapter
-}
+const providerName = "minimax"
 
-func (a *adapter) Name() string {
-	if a.name != "" {
-		return a.name
-	}
-	return "minimax"
-}
+// adapter is the minimax provider adapter: a forwarder over the Anthropic
+// backing adapter (MiniMax exposes an Anthropic-compatible API) that presents
+// the "minimax" provider name. ListModels and the completion methods are
+// promoted from the embedded backing adapter.
+type adapter = providerfwd.Anthropic
 
-func (a *adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	return a.inner.Complete(ctx, req)
-}
-
-func (a *adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	return a.inner.Stream(ctx, req)
-}
+// Compile-time assertions that the minimax adapter satisfies the provider
+// contract and, via concrete embedding, the optional ModelLister capability.
+var (
+	_ llm.ProviderAdapter = (*adapter)(nil)
+	_ llm.ModelLister     = (*adapter)(nil)
+)
 
 // InstanceParams holds the configuration for a single minimax adapter instance.
 type InstanceParams struct {
@@ -50,23 +45,20 @@ func NewForInstance(params InstanceParams) *adapter {
 	if base == "" {
 		base = defaultBaseURL
 	}
-	return &adapter{
-		name: params.Name,
-		inner: &anthropic.Adapter{
-			APIKey:  params.APIKey,
-			BaseURL: strings.TrimRight(base, "/"),
-			Client:  &http.Client{Timeout: 0},
-		},
-	}
+	return providerfwd.NewAnthropic(params.Name, providerName, &anthropic.Adapter{
+		APIKey:  params.APIKey,
+		BaseURL: strings.TrimRight(base, "/"),
+		Client:  &http.Client{Timeout: 0},
+	})
 }
 
 // newTestAdapter constructs an adapter for testing with a custom base URL and client.
 func newTestAdapter(baseURL, apiKey string, client *http.Client) *adapter {
-	return &adapter{inner: &anthropic.Adapter{
+	return providerfwd.NewAnthropic("", providerName, &anthropic.Adapter{
 		APIKey:  apiKey,
 		BaseURL: strings.TrimRight(baseURL, "/"),
 		Client:  client,
-	}}
+	})
 }
 
 func init() {
@@ -77,7 +69,7 @@ func init() {
 		}
 		base := strings.TrimSpace(os.Getenv("MINIMAX_BASE_URL"))
 		return NewForInstance(InstanceParams{
-			Name:    "minimax",
+			Name:    providerName,
 			BaseURL: base,
 			APIKey:  key,
 		}), true, nil

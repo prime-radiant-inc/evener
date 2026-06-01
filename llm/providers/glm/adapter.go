@@ -3,36 +3,30 @@
 package glm
 
 import (
-	"context"
 	"os"
 	"strings"
 
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/serf/llm/providers/internal/providerfwd"
 	"primeradiant.com/serf/llm/providers/openaicompat"
 )
 
 const defaultBaseURL = "https://api.z.ai/api/paas/v4" // GLM uses v4, not v1
 
-type adapter struct {
-	name  string
-	inner *openaicompat.Adapter
-}
+const providerName = "glm"
 
-func (a *adapter) Name() string {
-	if a.name != "" {
-		return a.name
-	}
-	return "glm"
-}
+// adapter is the glm provider adapter: a forwarder over the openai-compatible
+// backing adapter that presents the "glm" provider name. ListModels and the
+// completion methods are promoted from the embedded backing adapter.
+type adapter = providerfwd.OpenAICompat
 
-func (a *adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	return a.inner.Complete(ctx, req)
-}
-
-func (a *adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	return a.inner.Stream(ctx, req)
-}
+// Compile-time assertions that the glm adapter satisfies the provider contract
+// and, via concrete embedding, the optional ModelLister capability.
+var (
+	_ llm.ProviderAdapter = (*adapter)(nil)
+	_ llm.ModelLister     = (*adapter)(nil)
+)
 
 // InstanceParams holds the configuration for a single glm adapter instance.
 type InstanceParams struct {
@@ -48,15 +42,12 @@ func NewForInstance(params InstanceParams) *adapter {
 	if base == "" {
 		base = defaultBaseURL
 	}
-	return &adapter{
-		name: params.Name,
-		inner: openaicompat.NewForInstance(openaicompat.OpenAICompatInstanceParams{
-			Name:    params.Name,
-			BaseURL: base,
-			APIKey:  params.APIKey,
-			Quirks:  openaicompat.QuirksPreset("glm-5"),
-		}),
-	}
+	return providerfwd.NewOpenAICompat(params.Name, providerName, openaicompat.NewForInstance(openaicompat.OpenAICompatInstanceParams{
+		Name:    params.Name,
+		BaseURL: base,
+		APIKey:  params.APIKey,
+		Quirks:  openaicompat.QuirksPreset("glm-5"),
+	}))
 }
 
 func init() {
@@ -67,7 +58,7 @@ func init() {
 		}
 		base := strings.TrimSpace(os.Getenv("GLM_BASE_URL"))
 		return NewForInstance(InstanceParams{
-			Name:    "glm",
+			Name:    providerName,
 			BaseURL: base,
 			APIKey:  key,
 		}), true, nil

@@ -15,7 +15,6 @@
 package openrouter_anthropic
 
 import (
-	"context"
 	"net/http"
 	"os"
 	"strings"
@@ -23,35 +22,26 @@ import (
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/llm/providers/anthropic"
+	"primeradiant.com/serf/llm/providers/internal/providerfwd"
 )
 
 const defaultBaseURL = "https://openrouter.ai/api"
 
-type adapter struct {
-	name  string
-	inner *anthropic.Adapter
-}
+const providerName = "openrouter-anthropic"
 
-func (a *adapter) Name() string {
-	if a.name != "" {
-		return a.name
-	}
-	return "openrouter-anthropic"
-}
+// adapter is the openrouter-anthropic provider adapter: a forwarder over the
+// Anthropic backing adapter (pointed at OpenRouter's Anthropic Messages
+// endpoint) that presents the "openrouter-anthropic" provider name. ListModels
+// and the completion methods are promoted from the embedded backing adapter.
+type adapter = providerfwd.Anthropic
 
-func (a *adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	return a.inner.Complete(ctx, req)
-}
-
-func (a *adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	return a.inner.Stream(ctx, req)
-}
-
-// ListModels forwards to the inner Anthropic adapter, which queries
-// OpenRouter's Anthropic-compatible /models endpoint.
-func (a *adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
-	return a.inner.ListModels(ctx)
-}
+// Compile-time assertions that the openrouter-anthropic adapter satisfies the
+// provider contract and, via concrete embedding, the optional ModelLister
+// capability.
+var (
+	_ llm.ProviderAdapter = (*adapter)(nil)
+	_ llm.ModelLister     = (*adapter)(nil)
+)
 
 // InstanceParams holds the configuration for a single openrouter-anthropic adapter instance.
 type InstanceParams struct {
@@ -67,23 +57,20 @@ func NewForInstance(params InstanceParams) *adapter {
 	if base == "" {
 		base = defaultBaseURL
 	}
-	return &adapter{
-		name: params.Name,
-		inner: &anthropic.Adapter{
-			APIKey:  params.APIKey,
-			BaseURL: strings.TrimRight(base, "/"),
-			Client:  &http.Client{Timeout: 0},
-		},
-	}
+	return providerfwd.NewAnthropic(params.Name, providerName, &anthropic.Adapter{
+		APIKey:  params.APIKey,
+		BaseURL: strings.TrimRight(base, "/"),
+		Client:  &http.Client{Timeout: 0},
+	})
 }
 
 // newTestAdapter constructs an adapter for testing with a custom base URL and client.
 func newTestAdapter(baseURL, apiKey string, client *http.Client) *adapter {
-	return &adapter{inner: &anthropic.Adapter{
+	return providerfwd.NewAnthropic("", providerName, &anthropic.Adapter{
 		APIKey:  apiKey,
 		BaseURL: strings.TrimRight(baseURL, "/"),
 		Client:  client,
-	}}
+	})
 }
 
 func init() {
@@ -94,7 +81,7 @@ func init() {
 		}
 		base := strings.TrimSpace(os.Getenv("OPENROUTER_BASE_URL"))
 		return NewForInstance(InstanceParams{
-			Name:    "openrouter-anthropic",
+			Name:    providerName,
 			BaseURL: base,
 			APIKey:  key,
 		}), true, nil

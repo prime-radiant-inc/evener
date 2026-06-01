@@ -7,11 +7,12 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providers/internal/providerfwd"
 	"primeradiant.com/serf/llm/providers/openaicompat"
 )
 
 func TestAdapter_Name(t *testing.T) {
-	a := &adapter{inner: &openaicompat.Adapter{}}
+	a := providerfwd.NewOpenAICompat("", providerName, &openaicompat.Adapter{})
 	if a.Name() != "kimi" {
 		t.Fatalf("Name() = %q, want kimi", a.Name())
 	}
@@ -28,12 +29,12 @@ func TestAdapter_Complete_DelegatesToInner(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	a := &adapter{inner: &openaicompat.Adapter{
+	a := providerfwd.NewOpenAICompat("", providerName, &openaicompat.Adapter{
 		APIKey:  "test-key",
 		BaseURL: srv.URL,
 		Client:  srv.Client(),
 		Quirks:  openaicompat.QuirksPreset("kimi-k2.5"),
-	}}
+	})
 
 	resp, err := a.Complete(context.Background(), llm.Request{
 		Model:    "kimi-k2.5",
@@ -53,6 +54,34 @@ func TestAdapter_DefaultBaseURL(t *testing.T) {
 	}
 }
 
+// TestClient_ListModels_Forwards verifies that the kimi adapter exposes
+// ListModels (via its openaicompat backing) so that llm.Client.ListModels
+// reaches the provider's /models endpoint.
+func TestClient_ListModels_Forwards(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"kimi-k2.5"},{"id":"moonshot-v1-8k"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := providerfwd.NewOpenAICompat("", providerName, &openaicompat.Adapter{BaseURL: srv.URL, Client: srv.Client()})
+
+	if _, ok := llm.ProviderAdapter(a).(llm.ModelLister); !ok {
+		t.Fatal("kimi adapter does not implement llm.ModelLister — ListModels not promoted")
+	}
+
+	c := llm.NewClient()
+	c.Register(a)
+
+	models, err := c.ListModels(context.Background(), a.Name())
+	if err != nil {
+		t.Fatalf("Client.ListModels: %v", err)
+	}
+	if len(models) != 2 {
+		t.Fatalf("len(models) = %d, want 2", len(models))
+	}
+}
+
 func TestNewForInstance_Name(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "kc", APIKey: "k"})
 	if a.Name() != "kc" {
@@ -63,22 +92,22 @@ func TestNewForInstance_Name(t *testing.T) {
 func TestNewForInstance_DefaultBaseURL(t *testing.T) {
 	// When BaseURL is empty, the type's default must be applied.
 	a := NewForInstance(InstanceParams{Name: "kc", APIKey: "k"})
-	if a.inner.BaseURL != defaultBaseURL {
-		t.Fatalf("inner.BaseURL = %q, want %q", a.inner.BaseURL, defaultBaseURL)
+	if a.Adapter.BaseURL != defaultBaseURL {
+		t.Fatalf("backing BaseURL = %q, want %q", a.Adapter.BaseURL, defaultBaseURL)
 	}
 }
 
 func TestNewForInstance_DefaultQuirks(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "kc", APIKey: "k"})
-	if !a.inner.Quirks.LockTemperature {
+	if !a.Adapter.Quirks.LockTemperature {
 		t.Fatal("expected kimi quirks (LockTemperature) to be applied")
 	}
 }
 
 func TestNewForInstance_CustomBaseURL(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "kc", APIKey: "k", BaseURL: "http://custom"})
-	if a.inner.BaseURL != "http://custom" {
-		t.Fatalf("inner.BaseURL = %q, want http://custom", a.inner.BaseURL)
+	if a.Adapter.BaseURL != "http://custom" {
+		t.Fatalf("backing BaseURL = %q, want http://custom", a.Adapter.BaseURL)
 	}
 }
 

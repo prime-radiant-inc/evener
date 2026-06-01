@@ -3,36 +3,30 @@
 package kimi
 
 import (
-	"context"
 	"os"
 	"strings"
 
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/serf/llm/providers/internal/providerfwd"
 	"primeradiant.com/serf/llm/providers/openaicompat"
 )
 
 const defaultBaseURL = "https://api.moonshot.ai/v1" // includes /v1 per OpenAI SDK convention
 
-type adapter struct {
-	name  string
-	inner *openaicompat.Adapter
-}
+const providerName = "kimi"
 
-func (a *adapter) Name() string {
-	if a.name != "" {
-		return a.name
-	}
-	return "kimi"
-}
+// adapter is the kimi provider adapter: a forwarder over the openai-compatible
+// backing adapter that presents the "kimi" provider name. ListModels and the
+// completion methods are promoted from the embedded backing adapter.
+type adapter = providerfwd.OpenAICompat
 
-func (a *adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	return a.inner.Complete(ctx, req)
-}
-
-func (a *adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	return a.inner.Stream(ctx, req)
-}
+// Compile-time assertions that the kimi adapter satisfies the provider contract
+// and, via concrete embedding, the optional ModelLister capability.
+var (
+	_ llm.ProviderAdapter = (*adapter)(nil)
+	_ llm.ModelLister     = (*adapter)(nil)
+)
 
 // InstanceParams holds the configuration for a single kimi adapter instance.
 type InstanceParams struct {
@@ -48,15 +42,12 @@ func NewForInstance(params InstanceParams) *adapter {
 	if base == "" {
 		base = defaultBaseURL
 	}
-	return &adapter{
-		name: params.Name,
-		inner: openaicompat.NewForInstance(openaicompat.OpenAICompatInstanceParams{
-			Name:    params.Name,
-			BaseURL: base,
-			APIKey:  params.APIKey,
-			Quirks:  openaicompat.QuirksPreset("kimi-k2.5"),
-		}),
-	}
+	return providerfwd.NewOpenAICompat(params.Name, providerName, openaicompat.NewForInstance(openaicompat.OpenAICompatInstanceParams{
+		Name:    params.Name,
+		BaseURL: base,
+		APIKey:  params.APIKey,
+		Quirks:  openaicompat.QuirksPreset("kimi-k2.5"),
+	}))
 }
 
 func init() {
@@ -67,7 +58,7 @@ func init() {
 		}
 		base := strings.TrimSpace(os.Getenv("KIMI_BASE_URL"))
 		return NewForInstance(InstanceParams{
-			Name:    "kimi",
+			Name:    providerName,
 			BaseURL: base,
 			APIKey:  key,
 		}), true, nil

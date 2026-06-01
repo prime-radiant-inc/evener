@@ -4,42 +4,31 @@
 package openrouter
 
 import (
-	"context"
 	"os"
 	"strings"
 
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
+	"primeradiant.com/serf/llm/providers/internal/providerfwd"
 	"primeradiant.com/serf/llm/providers/openaicompat"
 )
 
 const defaultBaseURL = "https://openrouter.ai/api/v1" // includes /v1 per OpenAI SDK convention
 
-type adapter struct {
-	name  string
-	inner *openaicompat.Adapter
-}
+const providerName = "openrouter"
 
-func (a *adapter) Name() string {
-	if a.name != "" {
-		return a.name
-	}
-	return "openrouter"
-}
+// adapter is the openrouter provider adapter: a forwarder over the
+// openai-compatible backing adapter that presents the "openrouter" provider
+// name. ListModels and the completion methods are promoted from the embedded
+// backing adapter.
+type adapter = providerfwd.OpenAICompat
 
-func (a *adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	return a.inner.Complete(ctx, req)
-}
-
-func (a *adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
-	return a.inner.Stream(ctx, req)
-}
-
-// ListModels forwards to the inner OpenAI-compatible adapter, which fetches
-// /v1/models from OpenRouter's API.
-func (a *adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
-	return a.inner.ListModels(ctx)
-}
+// Compile-time assertions that the openrouter adapter satisfies the provider
+// contract and, via concrete embedding, the optional ModelLister capability.
+var (
+	_ llm.ProviderAdapter = (*adapter)(nil)
+	_ llm.ModelLister     = (*adapter)(nil)
+)
 
 // InstanceParams holds the configuration for a single openrouter adapter instance.
 type InstanceParams struct {
@@ -55,15 +44,12 @@ func NewForInstance(params InstanceParams) *adapter {
 	if base == "" {
 		base = defaultBaseURL
 	}
-	return &adapter{
-		name: params.Name,
-		inner: openaicompat.NewForInstance(openaicompat.OpenAICompatInstanceParams{
-			Name:    params.Name,
-			BaseURL: base,
-			APIKey:  params.APIKey,
-			Quirks:  openaicompat.QuirksPreset("openrouter"),
-		}),
-	}
+	return providerfwd.NewOpenAICompat(params.Name, providerName, openaicompat.NewForInstance(openaicompat.OpenAICompatInstanceParams{
+		Name:    params.Name,
+		BaseURL: base,
+		APIKey:  params.APIKey,
+		Quirks:  openaicompat.QuirksPreset("openrouter"),
+	}))
 }
 
 func init() {
@@ -74,7 +60,7 @@ func init() {
 		}
 		base := strings.TrimSpace(os.Getenv("OPENROUTER_BASE_URL"))
 		return NewForInstance(InstanceParams{
-			Name:    "openrouter",
+			Name:    providerName,
 			BaseURL: base,
 			APIKey:  key,
 		}), true, nil

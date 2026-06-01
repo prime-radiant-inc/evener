@@ -9,10 +9,11 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/llm"
+	"primeradiant.com/serf/llm/providers/internal/providerfwd"
 )
 
 func TestAdapter_Name(t *testing.T) {
-	a := &adapter{inner: nil}
+	a := providerfwd.NewAnthropic("", providerName, nil)
 	if a.Name() != "minimax" {
 		t.Fatalf("Name() = %q, want minimax", a.Name())
 	}
@@ -111,6 +112,37 @@ func TestAdapter_DefaultBaseURL(t *testing.T) {
 	}
 }
 
+// TestClient_ListModels_Forwards verifies that the minimax adapter exposes
+// ListModels (via its anthropic backing) so that llm.Client.ListModels
+// reaches the provider's Anthropic-style /v1/models endpoint.
+func TestClient_ListModels_Forwards(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"MiniMax-M2.7","display_name":"MiniMax M2.7"}],"has_more":false}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := newTestAdapter(srv.URL, "k", srv.Client())
+
+	if _, ok := llm.ProviderAdapter(a).(llm.ModelLister); !ok {
+		t.Fatal("minimax adapter does not implement llm.ModelLister — ListModels not promoted")
+	}
+
+	c := llm.NewClient()
+	c.Register(a)
+
+	models, err := c.ListModels(context.Background(), a.Name())
+	if err != nil {
+		t.Fatalf("Client.ListModels: %v", err)
+	}
+	if len(models) != 1 {
+		t.Fatalf("len(models) = %d, want 1", len(models))
+	}
+	if models[0].ID != "MiniMax-M2.7" {
+		t.Fatalf("model ID = %q, want MiniMax-M2.7", models[0].ID)
+	}
+}
+
 func TestNewForInstance_Name(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "mm", APIKey: "k"})
 	if a.Name() != "mm" {
@@ -120,7 +152,7 @@ func TestNewForInstance_Name(t *testing.T) {
 
 func TestNewForInstance_DefaultBaseURL(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "mm", APIKey: "k"})
-	if a.inner.BaseURL != defaultBaseURL {
-		t.Fatalf("inner.BaseURL = %q, want %q", a.inner.BaseURL, defaultBaseURL)
+	if a.Adapter.BaseURL != defaultBaseURL {
+		t.Fatalf("backing BaseURL = %q, want %q", a.Adapter.BaseURL, defaultBaseURL)
 	}
 }
