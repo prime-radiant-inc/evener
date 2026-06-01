@@ -67,9 +67,7 @@ type Session struct {
 	modelResponses        int // LLM round-trip count (for meta.json turn_count)
 	history               []Turn
 
-	forkParentID   string
-	forkDivergence int
-	forkLabel      string
+	fork forkInfo
 
 	reg *toolRegistry
 
@@ -186,6 +184,15 @@ type sessionName struct {
 	updated       time.Time // when value last changed
 	set           bool      // a name has been assigned
 	promptPending bool      // a naming LLM call is in flight
+}
+
+// forkInfo records a session's fork lineage — where it diverged from a parent
+// session. Set once at construction and read by Meta/Snapshot; the zero value
+// means "not a fork." Immutable after construction.
+type forkInfo struct {
+	parentID   string // parent session ID ("" if not a fork)
+	divergence int    // turn index at which this session diverged
+	label      string // human-facing fork label
 }
 
 // ID returns the session's identifier.

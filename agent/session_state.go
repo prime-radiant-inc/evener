@@ -57,9 +57,9 @@ func (s *Session) Meta() SessionMeta {
 	parentID := s.cfg.spawn.parentSessionID
 	divergence := 0
 	isSubagent := s.cfg.spawn.parentSessionID != ""
-	if s.forkDivergence > 0 {
-		parentID = s.forkParentID
-		divergence = s.forkDivergence
+	if s.fork.divergence > 0 {
+		parentID = s.fork.parentID
+		divergence = s.fork.divergence
 		isSubagent = false
 	}
 	return SessionMeta{
@@ -78,7 +78,7 @@ func (s *Session) Meta() SessionMeta {
 		OriginalPrompt:  originalPrompt,
 		ParentSessionID: parentID,
 		DivergenceTurn:  divergence,
-		ForkLabel:       s.forkLabel,
+		ForkLabel:       s.fork.label,
 		IsSubagent:      isSubagent,
 	}
 }

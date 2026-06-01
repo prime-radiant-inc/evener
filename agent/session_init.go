@@ -371,9 +371,11 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 		events:         make(chan events.SessionEvent, 256),
 		history:        resumeHistory,
 		modelResponses: meta.TurnCount,
-		forkParentID:   meta.ParentSessionID,
-		forkDivergence: meta.DivergenceTurn,
-		forkLabel:      meta.ForkLabel,
+		fork: forkInfo{
+			parentID:   meta.ParentSessionID,
+			divergence: meta.DivergenceTurn,
+			label:      meta.ForkLabel,
+		},
 		naming: sessionName{
 			value:   meta.Name,
 			source:  meta.NameSource,
