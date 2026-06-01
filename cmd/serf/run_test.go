@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
-	"primeradiant.com/serf/internal/auth/openai/oaitest"
+	"primeradiant.com/serf/auth/openai/oaitest"
 	"primeradiant.com/serf/llm"
 )
 

@@ -15,10 +15,10 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/appwire"
+	authopenai "primeradiant.com/serf/auth/openai"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
 	"primeradiant.com/serf/cmdutil"
-	authopenai "primeradiant.com/serf/internal/auth/openai"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/rendezvous"

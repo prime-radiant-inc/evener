@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/appwire"
-	"primeradiant.com/serf/internal/auth/openai/oaitest"
+	"primeradiant.com/serf/auth/openai/oaitest"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/openai"
 	_ "primeradiant.com/serf/llm/providers/openrouter"

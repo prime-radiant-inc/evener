@@ -12,7 +12,7 @@ import (
 	"runtime"
 	"strings"
 
-	authopenai "primeradiant.com/serf/internal/auth/openai"
+	authopenai "primeradiant.com/serf/auth/openai"
 )
 
 var openAILoginAction = func(ctx context.Context, stateDir, instanceName string, openBrowser func(string) error, readRedirectURL func(context.Context) (string, error)) (authopenai.AuthStatus, error) {

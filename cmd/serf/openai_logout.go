@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	authopenai "primeradiant.com/serf/internal/auth/openai"
+	authopenai "primeradiant.com/serf/auth/openai"
 )
 
 var openAILogoutAction = func(stateDir, instanceName string) (bool, error) {

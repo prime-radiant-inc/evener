@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
+	authopenai "primeradiant.com/serf/auth/openai"
 	"primeradiant.com/serf/buildinfo"
-	authopenai "primeradiant.com/serf/internal/auth/openai"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 )

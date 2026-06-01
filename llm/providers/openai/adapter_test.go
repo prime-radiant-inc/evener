@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	authopenai "primeradiant.com/serf/internal/auth/openai"
-	"primeradiant.com/serf/internal/auth/openai/oaitest"
+	authopenai "primeradiant.com/serf/auth/openai"
+	"primeradiant.com/serf/auth/openai/oaitest"
 	"primeradiant.com/serf/llm"
 )
 

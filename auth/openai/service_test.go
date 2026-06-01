@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/internal/auth/openai/oaitest"
+	"primeradiant.com/serf/auth/openai/oaitest"
 )
 
 func TestLoginSucceedsViaCallbackPath(t *testing.T) {

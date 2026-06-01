@@ -33,7 +33,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/internal/auth/openai"
+	"primeradiant.com/serf/auth/openai"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 )

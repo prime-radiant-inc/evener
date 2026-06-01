@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	authopenai "primeradiant.com/serf/internal/auth/openai"
+	authopenai "primeradiant.com/serf/auth/openai"
 )
 
 var openAIStatusAction = func(stateDir, instanceName string) (authopenai.AuthStatus, error) {

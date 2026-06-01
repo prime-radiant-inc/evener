@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"primeradiant.com/serf/appwire"
-	authopenai "primeradiant.com/serf/internal/auth/openai"
+	authopenai "primeradiant.com/serf/auth/openai"
 	"primeradiant.com/serf/llm/providercfg"
 )
 

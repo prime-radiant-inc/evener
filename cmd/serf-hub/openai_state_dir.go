@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"strings"
 
-	authopenai "primeradiant.com/serf/internal/auth/openai"
+	authopenai "primeradiant.com/serf/auth/openai"
 )
 
 func openAIStateDirFromEnvList(env []string) string {
