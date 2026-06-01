@@ -137,11 +137,13 @@ func newToolDeps(s *Session) *toolDeps {
 		},
 		setCommunicateResult: func(awaitReply bool, message, reply, output string) {
 			s.mu.Lock()
-			s.communicated = true
-			s.communicateAwaitReply = awaitReply
-			s.communicateText = message
-			s.communicateReply = reply
-			s.communicateOutput = output
+			s.comm = communicateResult{
+				called:     true,
+				awaitReply: awaitReply,
+				text:       message,
+				reply:      reply,
+				output:     output,
+			}
 			s.mu.Unlock()
 		},
 		skill: func(name string) (SkillMeta, bool) {

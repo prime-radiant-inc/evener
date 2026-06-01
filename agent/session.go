@@ -48,7 +48,7 @@ type Session struct {
 	//   sessionEndEmitted, profile (swapped here; read via currentProfile()),
 	//   the mutable cfg knobs (ReasoningEffort, command timeouts,
 	//   MaxToolRoundsPerInput), cachedSystemPrompt, cachedToolDefs, the
-	//   communicate* transient fields, steeringQueue, followups, inputQueue,
+	//   comm communicate-result, steeringQueue, followups, inputQueue,
 	//   loopDetectionCount, the task* reminder counters, depth, and the name*
 	//   fields. It does NOT guard reg — the ToolRegistry self-synchronizes.
 	//   (readOnlyStreak is mutated only by the loop and is intentionally
@@ -89,12 +89,8 @@ type Session struct {
 	// LOCK ORDER: queueEventsMu > mu.
 	queueEventsMu sync.Mutex
 
-	// communicate tool state (transient, reset each processOneInput call)
-	communicated          bool
-	communicateAwaitReply bool
-	communicateText       string
-	communicateReply      string
-	communicateOutput     string
+	// communicate/result tool state (transient, reset each processOneInput call)
+	comm communicateResult
 
 	// subagents
 	depth     int
@@ -171,6 +167,18 @@ type Session struct {
 	systemPromptOverride string
 	cachedSystemPrompt   string
 	promptSourceLog      []promptSource
+}
+
+// communicateResult records whether and how the agent delivered a result via
+// the communicate/result tool during the current ProcessInput call. It is
+// transient — reset at the top of each call, then read back by Communicated,
+// CommunicateOutput, and the turn loop's deliver step. Guarded by s.mu.
+type communicateResult struct {
+	called     bool   // communicate/result was invoked this turn
+	awaitReply bool   // the call expects a user reply rather than completing
+	text       string // the message shown to the user
+	reply      string // the text handed back to the caller
+	output     string // canonical structured output (CommunicateOutput)
 }
 
 // ID returns the session's identifier.
@@ -375,7 +383,7 @@ func openAIModelFamilyMatch(model, family string) bool {
 func (s *Session) Communicated() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.communicated
+	return s.comm.called
 }
 
 // CommunicateOutput returns the canonical structured output from the most recent
@@ -383,7 +391,7 @@ func (s *Session) Communicated() bool {
 func (s *Session) CommunicateOutput() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.communicateOutput
+	return s.comm.output
 }
 
 // extractOriginalPrompt returns the text of the first user input in the session history.

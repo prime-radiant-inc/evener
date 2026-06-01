@@ -471,11 +471,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		return "", errors.New("session is closed")
 	}
 	s.setStateIfOpenLocked(SessionProcessing)
-	s.communicated = false
-	s.communicateAwaitReply = false
-	s.communicateText = ""
-	s.communicateReply = ""
-	s.communicateOutput = ""
+	s.comm = communicateResult{}
 	s.mu.Unlock()
 
 	select {
@@ -1277,9 +1273,9 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 // completion, meaning the turn should continue to the next round.
 func (s *Session) deliverIfCommunicated(ctx context.Context) (done bool, text string) {
 	s.mu.Lock()
-	delivered := s.communicated
-	awaitReply := s.communicateAwaitReply
-	text = s.communicateReply
+	delivered := s.comm.called
+	awaitReply := s.comm.awaitReply
+	text = s.comm.reply
 	s.mu.Unlock()
 	if !delivered {
 		return false, ""
