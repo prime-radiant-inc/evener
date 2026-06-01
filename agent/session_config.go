@@ -96,15 +96,6 @@ type SessionConfig struct {
 	// (403/404/422/etc — see llm.Classify). Empty means no fallback. Kata cxw8.
 	ModelFallbacks []string `json:"model_fallbacks,omitempty"`
 
-	// ContextStrategyOverride, when non-nil, is used instead of creating
-	// a strategy from the ContextStrategy string. For testing.
-	ContextStrategyOverride ContextStrategy `json:"-"`
-
-	// CompactionThresholdScale multiplies all compaction thresholds by this
-	// factor. 1.0 = defaults, 0.1 = trigger at 10% of normal pressure.
-	// Used for evaluation testing. 0 means use defaults.
-	CompactionThresholdScale float64 `json:"compaction_threshold_scale,omitempty"`
-
 	// StateDir, when non-empty, enables incremental session persistence.
 	// Snapshots are written to <StateDir>/sessions/ and tasks to <StateDir>/tasks/.
 	StateDir string `json:"-"`
@@ -132,6 +123,25 @@ type SessionConfig struct {
 	// never set by package consumers and never persisted (json:"-"), matching
 	// the pre-refactor json:"-" behavior of each individual field.
 	spawn spawnConfig `json:"-"`
+
+	// testOnly holds injection points used only by package-internal tests. It is
+	// never set by app callers and never persisted (json:"-").
+	testOnly testConfig `json:"-"`
+}
+
+// testConfig holds injection points used ONLY by package-internal (package
+// agent) tests to make context-strategy selection and compaction thresholds
+// deterministic. Never set by app callers; never persisted (json:"-" on the
+// parent field).
+type testConfig struct {
+	// contextStrategyOverride, when non-nil, is used instead of creating a
+	// strategy from the ContextStrategy string.
+	contextStrategyOverride ContextStrategy
+
+	// compactionThresholdScale multiplies all compaction thresholds by this
+	// factor. 1.0 = defaults, 0.1 = trigger at 10% of normal pressure. 0 means
+	// use defaults.
+	compactionThresholdScale float64
 }
 
 // spawnConfig holds the SessionConfig fields that only spawnAgent (plus the

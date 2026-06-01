@@ -1370,7 +1370,7 @@ func TestSession_PreCompactHookOnlyRunsWhenCompactionEmits(t *testing.T) {
 	}})
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
-		ContextStrategyOverride: compactionEventStrategy{},
+		testOnly: testConfig{contextStrategyOverride: compactionEventStrategy{}},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -1412,7 +1412,7 @@ func TestSession_PreCompactHookRunsAtCompactionBoundary(t *testing.T) {
 	}})
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
-		ContextStrategyOverride: compactionEventStrategy{emitCompaction: true},
+		testOnly: testConfig{contextStrategyOverride: compactionEventStrategy{emitCompaction: true}},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

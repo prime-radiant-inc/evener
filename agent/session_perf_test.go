@@ -386,7 +386,7 @@ func TestAfterAction_ReceivesCurrentHistory(t *testing.T) {
 	c.Register(f)
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
-		ContextStrategyOverride: capturer,
+		testOnly: testConfig{contextStrategyOverride: capturer},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

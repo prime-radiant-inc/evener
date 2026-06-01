@@ -143,7 +143,7 @@ func TestSession_ContextStrategy_SpyHooks(t *testing.T) {
 	c.Register(f)
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
-		ContextStrategyOverride: spy,
+		testOnly: testConfig{contextStrategyOverride: spy},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -200,7 +200,7 @@ func TestCompactionThresholdScale(t *testing.T) {
 
 	// Scale=0.5 applies normally (all results ≥ 0.20 floor).
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
-		CompactionThresholdScale: 0.5,
+		testOnly: testConfig{compactionThresholdScale: 0.5},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -214,7 +214,7 @@ func TestCompactionThresholdScale(t *testing.T) {
 
 	// Scale=0.1 clamps to 0.20 floor.
 	sess2, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
-		CompactionThresholdScale: 0.1,
+		testOnly: testConfig{compactionThresholdScale: 0.1},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

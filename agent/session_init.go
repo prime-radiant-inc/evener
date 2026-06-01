@@ -16,8 +16,8 @@ import (
 
 // selectStrategy creates the appropriate ContextStrategy from config.
 func selectStrategy(cfg SessionConfig, cm *contextManager, sess *Session) (ContextStrategy, error) {
-	if cfg.ContextStrategyOverride != nil {
-		return cfg.ContextStrategyOverride, nil
+	if cfg.testOnly.contextStrategyOverride != nil {
+		return cfg.testOnly.contextStrategyOverride, nil
 	}
 	switch cfg.ContextStrategy {
 	case "", "compact":
@@ -151,7 +151,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		s.transcript = tw
 	}
 
-	applyThresholdScale(s.contextMgr, cfg.CompactionThresholdScale)
+	applyThresholdScale(s.contextMgr, cfg.testOnly.compactionThresholdScale)
 	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
 
 	// Create context strategy.
@@ -283,7 +283,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		s.transcript = tw
 	}
 
-	applyThresholdScale(s.contextMgr, cfg.CompactionThresholdScale)
+	applyThresholdScale(s.contextMgr, cfg.testOnly.compactionThresholdScale)
 	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
 
 	// Create context strategy.
@@ -421,7 +421,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 		s.transcript = tw
 	}
 
-	applyThresholdScale(s.contextMgr, cfg.CompactionThresholdScale)
+	applyThresholdScale(s.contextMgr, cfg.testOnly.compactionThresholdScale)
 	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
 
 	// Create context strategy.
