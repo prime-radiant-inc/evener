@@ -92,32 +92,15 @@ func (c *evalCollector) ProcessEvent(ev SessionEvent) {
 	}
 }
 
-// addUsage extracts token counts from the Usage field, which may be llm.Usage
-// or map[string]any (when deserialized from JSON).
-func (c *evalCollector) addUsage(usage any) {
-	switch u := usage.(type) {
-	case llm.Usage:
-		c.metrics.TotalInputTokens += u.InputTokens
-		c.metrics.TotalOutputTokens += u.OutputTokens
-		if u.CacheReadTokens != nil {
-			c.metrics.CacheReadTokens += *u.CacheReadTokens
-		}
-		if u.CacheWriteTokens != nil {
-			c.metrics.CacheWriteTokens += *u.CacheWriteTokens
-		}
-	case map[string]any:
-		if v, ok := u["input_tokens"].(float64); ok {
-			c.metrics.TotalInputTokens += int(v)
-		}
-		if v, ok := u["output_tokens"].(float64); ok {
-			c.metrics.TotalOutputTokens += int(v)
-		}
-		if v, ok := u["cache_read_tokens"].(float64); ok {
-			c.metrics.CacheReadTokens += int(v)
-		}
-		if v, ok := u["cache_write_tokens"].(float64); ok {
-			c.metrics.CacheWriteTokens += int(v)
-		}
+// addUsage accumulates token counts from an AssistantTextEndData usage record.
+func (c *evalCollector) addUsage(u llm.Usage) {
+	c.metrics.TotalInputTokens += u.InputTokens
+	c.metrics.TotalOutputTokens += u.OutputTokens
+	if u.CacheReadTokens != nil {
+		c.metrics.CacheReadTokens += *u.CacheReadTokens
+	}
+	if u.CacheWriteTokens != nil {
+		c.metrics.CacheWriteTokens += *u.CacheWriteTokens
 	}
 }
 

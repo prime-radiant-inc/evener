@@ -2240,10 +2240,7 @@ func TestAssistantTextEnd_EnrichedData(t *testing.T) {
 	}
 
 	// Verify usage is present and has expected values.
-	usage, ok2 := endData.Usage.(llm.Usage)
-	if !ok2 {
-		t.Fatalf("usage: expected llm.Usage, got %T", endData.Usage)
-	}
+	usage := endData.Usage
 	if usage.InputTokens != 100 {
 		t.Fatalf("usage.input_tokens: got %d want 100", usage.InputTokens)
 	}

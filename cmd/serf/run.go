@@ -240,16 +240,15 @@ func drainEventsHuman(events <-chan agent.SessionEvent, w io.Writer) <-chan stru
 					if d.Reasoning != "" {
 						fmt.Fprintf(w, "[thinking] (%d chars)\n", len(d.Reasoning)) //nolint:errcheck
 					}
-					if usage, ok := d.Usage.(llm.Usage); ok {
-						line := fmt.Sprintf("[usage] in=%d out=%d total=%d", usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
-						if usage.CacheReadTokens != nil {
-							line += fmt.Sprintf(" cache_read=%d", *usage.CacheReadTokens)
-						}
-						if usage.CacheWriteTokens != nil {
-							line += fmt.Sprintf(" cache_write=%d", *usage.CacheWriteTokens)
-						}
-						fmt.Fprintln(w, line) //nolint:errcheck
+					usage := d.Usage
+					line := fmt.Sprintf("[usage] in=%d out=%d total=%d", usage.InputTokens, usage.OutputTokens, usage.TotalTokens)
+					if usage.CacheReadTokens != nil {
+						line += fmt.Sprintf(" cache_read=%d", *usage.CacheReadTokens)
 					}
+					if usage.CacheWriteTokens != nil {
+						line += fmt.Sprintf(" cache_write=%d", *usage.CacheWriteTokens)
+					}
+					fmt.Fprintln(w, line) //nolint:errcheck
 				}
 			case agent.EventToolCallStart:
 				if d, ok := ev.Data.(agent.ToolCallStartData); ok {

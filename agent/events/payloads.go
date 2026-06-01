@@ -1,6 +1,10 @@
 package events
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"primeradiant.com/serf/llm"
+)
 
 // Typed event payload structs. JSON tags match the map keys used previously.
 
@@ -57,11 +61,11 @@ type AssistantTextDeltaData struct {
 
 // AssistantTextEndData is the payload for an EventAssistantTextEnd event.
 type AssistantTextEndData struct {
-	Text         string `json:"text"`
-	Usage        any    `json:"usage,omitempty"`
-	FinishReason string `json:"finish_reason"`
-	Model        string `json:"model"`
-	Reasoning    string `json:"reasoning,omitempty"`
+	Text         string    `json:"text"`
+	Usage        llm.Usage `json:"usage,omitempty"`
+	FinishReason string    `json:"finish_reason"`
+	Model        string    `json:"model"`
+	Reasoning    string    `json:"reasoning,omitempty"`
 }
 
 // ToolCallStartData is the payload for an EventToolCallStart event.

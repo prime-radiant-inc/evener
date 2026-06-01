@@ -145,32 +145,6 @@ func TestEvalCollector_IgnoresUnrelatedEvents(t *testing.T) {
 	}
 }
 
-func TestEvalCollector_HandlesUsageAsMapFallback(t *testing.T) {
-	// Usage could come through as a map[string]any if deserialized from JSON.
-	c := newEvalCollector("compact", "gpt-4", "task")
-
-	c.ProcessEvent(SessionEvent{
-		Kind: EventAssistantTextEnd,
-		Data: AssistantTextEndData{
-			Usage: map[string]any{
-				"input_tokens":  float64(50),
-				"output_tokens": float64(25),
-			},
-		},
-	})
-
-	m := c.Metrics()
-	if m.TurnCount != 1 {
-		t.Errorf("expected 1 turn, got %d", m.TurnCount)
-	}
-	if m.TotalInputTokens != 50 {
-		t.Errorf("expected 50 input tokens, got %d", m.TotalInputTokens)
-	}
-	if m.TotalOutputTokens != 25 {
-		t.Errorf("expected 25 output tokens, got %d", m.TotalOutputTokens)
-	}
-}
-
 func TestEvalCollector_TotalTokensComputed(t *testing.T) {
 	c := newEvalCollector("compact", "gpt-4", "task")
 
