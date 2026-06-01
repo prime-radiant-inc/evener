@@ -347,7 +347,7 @@ func (a *Adapter) completeViaStream(ctx context.Context, req llm.Request) (llm.R
 	if err != nil {
 		return llm.Response{}, err
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	acc := llm.NewStreamAccumulator()
 	for ev := range stream.Events() {
@@ -355,14 +355,14 @@ func (a *Adapter) completeViaStream(ctx context.Context, req llm.Request) (llm.R
 			if ev.Err != nil {
 				return llm.Response{}, ev.Err
 			}
-			return llm.Response{}, fmt.Errorf("openai stream failed")
+			return llm.Response{}, errors.New("openai stream failed")
 		}
 		acc.Process(ev)
 	}
 
 	resp := acc.Response()
 	if resp == nil {
-		return llm.Response{}, fmt.Errorf("openai stream completed without final response")
+		return llm.Response{}, errors.New("openai stream completed without final response")
 	}
 	return *resp, nil
 }

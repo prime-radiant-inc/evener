@@ -92,22 +92,22 @@ func TestNewForInstance_Name(t *testing.T) {
 func TestNewForInstance_DefaultBaseURL(t *testing.T) {
 	// When BaseURL is empty, the type's default must be applied.
 	a := NewForInstance(InstanceParams{Name: "kc", APIKey: "k"})
-	if a.Adapter.BaseURL != defaultBaseURL {
-		t.Fatalf("backing BaseURL = %q, want %q", a.Adapter.BaseURL, defaultBaseURL)
+	if a.BaseURL != defaultBaseURL {
+		t.Fatalf("backing BaseURL = %q, want %q", a.BaseURL, defaultBaseURL)
 	}
 }
 
 func TestNewForInstance_DefaultQuirks(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "kc", APIKey: "k"})
-	if !a.Adapter.Quirks.LockTemperature {
+	if !a.Quirks.LockTemperature {
 		t.Fatal("expected kimi quirks (LockTemperature) to be applied")
 	}
 }
 
 func TestNewForInstance_CustomBaseURL(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "kc", APIKey: "k", BaseURL: "http://custom"})
-	if a.Adapter.BaseURL != "http://custom" {
-		t.Fatalf("backing BaseURL = %q, want http://custom", a.Adapter.BaseURL)
+	if a.BaseURL != "http://custom" {
+		t.Fatalf("backing BaseURL = %q, want http://custom", a.BaseURL)
 	}
 }
 

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -24,7 +23,7 @@ func (a *scriptedStreamAdapter) Name() string { return a.name }
 func (a *scriptedStreamAdapter) Complete(ctx context.Context, req Request) (Response, error) {
 	_ = ctx
 	_ = req
-	return Response{}, fmt.Errorf("not implemented")
+	return Response{}, errors.New("not implemented")
 }
 
 func (a *scriptedStreamAdapter) Stream(ctx context.Context, req Request) (Stream, error) {
@@ -32,7 +31,7 @@ func (a *scriptedStreamAdapter) Stream(ctx context.Context, req Request) (Stream
 	a.requests = append(a.requests, req)
 	if len(a.scripts) == 0 {
 		a.mu.Unlock()
-		return nil, fmt.Errorf("no scripted stream remaining")
+		return nil, errors.New("no scripted stream remaining")
 	}
 	s := a.scripts[0]
 	a.scripts = a.scripts[1:]
@@ -622,16 +621,16 @@ func TestStreamGenerate_RetriesStreamTruncation(t *testing.T) {
 	}
 	defer res.Close() //nolint:errcheck
 
-	var gotText string
+	var gotText strings.Builder
 	for ev := range res.Events() {
 		if ev.Type == StreamEventTextDelta {
-			gotText += ev.Delta
+			gotText.WriteString(ev.Delta)
 		}
 		if ev.Type == StreamEventError {
 			t.Fatalf("unexpected ERROR event: %v", ev.Err)
 		}
 	}
-	if got, want := gotText, "hello"; got != want {
+	if got, want := gotText.String(), "hello"; got != want {
 		t.Fatalf("text: got %q want %q", got, want)
 	}
 	if got := len(a.Requests()); got != 3 {
@@ -723,17 +722,17 @@ func TestStreamGenerate_RetriesErrorEventWithoutForwardingAttemptError(t *testin
 	}
 	defer res.Close() //nolint:errcheck
 
-	var gotText string
+	var gotText strings.Builder
 	for ev := range res.Events() {
 		if ev.Type == StreamEventTextDelta {
-			gotText += ev.Delta
+			gotText.WriteString(ev.Delta)
 		}
 		if ev.Type == StreamEventError {
 			t.Fatalf("retryable attempt error was forwarded before successful retry: %v", ev.Err)
 		}
 	}
-	if gotText != "ok" {
-		t.Fatalf("text: got %q want ok", gotText)
+	if gotText.String() != "ok" {
+		t.Fatalf("text: got %q want ok", gotText.String())
 	}
 	if got := len(a.Requests()); got != 2 {
 		t.Fatalf("expected retry after attempt error; got %d attempts", got)
@@ -1356,7 +1355,7 @@ func TestStreamGenerate_StopWhen_TerminatesToolLoopEarly(t *testing.T) {
 			// Round 3: should never be reached.
 			func(ctx context.Context, req Request) (Stream, error) {
 				t.Fatal("StopWhen should have prevented round 3")
-				return nil, fmt.Errorf("unreachable")
+				return nil, errors.New("unreachable")
 			},
 		},
 	}

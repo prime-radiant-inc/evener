@@ -1,6 +1,7 @@
 package openaicompat
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -429,7 +430,7 @@ func TestAdapter_Stream_ToolCalls(t *testing.T) {
 func TestHTTPErrorMapping_IncludesRetryAfter(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "30")
-		w.WriteHeader(429)
+		w.WriteHeader(http.StatusTooManyRequests)
 		json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "rate limited"}}) //nolint:errcheck
 	}))
 	defer srv.Close()
@@ -2103,21 +2104,21 @@ func TestStream_ReasoningDetails_EmitsReasoningEvents(t *testing.T) {
 	}
 	defer st.Close()
 
-	var reasoningText, contentText string
+	var reasoningText, contentText strings.Builder
 	for ev := range st.Events() {
 		if ev.Type == llm.StreamEventReasoningDelta {
-			reasoningText += ev.ReasoningDelta
+			reasoningText.WriteString(ev.ReasoningDelta)
 		}
 		if ev.Type == llm.StreamEventTextDelta {
-			contentText += ev.Delta
+			contentText.WriteString(ev.Delta)
 		}
 	}
 
-	if reasoningText != "Let me count..." {
-		t.Fatalf("reasoning deltas: %q", reasoningText)
+	if reasoningText.String() != "Let me count..." {
+		t.Fatalf("reasoning deltas: %q", reasoningText.String())
 	}
-	if contentText != "There are 3." {
-		t.Fatalf("text deltas: %q", contentText)
+	if contentText.String() != "There are 3." {
+		t.Fatalf("text deltas: %q", contentText.String())
 	}
 }
 
@@ -2196,7 +2197,7 @@ func TestRescueClaudeXMLArgs(t *testing.T) {
 			}
 			gj, _ := json.Marshal(g)
 			wj, _ := json.Marshal(w)
-			if string(gj) != string(wj) {
+			if !bytes.Equal(gj, wj) {
 				t.Fatalf("\n got: %s\nwant: %s", gj, wj)
 			}
 		})

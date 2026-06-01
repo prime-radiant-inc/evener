@@ -556,7 +556,7 @@ func (a *instanceAdapter) Stream(_ context.Context, req Request) (Stream, error)
 			defer s.CloseSend()
 			s.Send(StreamEvent{Type: StreamEventError, Err: a.errToReturn})
 		}()
-		return s, nil
+		return s, nil //nolint:nilerr // error is surfaced via a stream event, as real adapters do
 	}
 	sctx, cancel := context.WithCancel(context.Background())
 	_ = sctx

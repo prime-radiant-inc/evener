@@ -73,14 +73,14 @@ func TestNewForInstance_Name(t *testing.T) {
 
 func TestNewForInstance_DefaultBaseURL(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "oc", APIKey: "k"})
-	if a.Adapter.BaseURL != defaultBaseURL {
-		t.Fatalf("backing BaseURL = %q, want %q", a.Adapter.BaseURL, defaultBaseURL)
+	if a.BaseURL != defaultBaseURL {
+		t.Fatalf("backing BaseURL = %q, want %q", a.BaseURL, defaultBaseURL)
 	}
 }
 
 func TestNewForInstance_DefaultQuirks(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "oc", APIKey: "k"})
-	if !a.Adapter.Quirks.TranslateMaxToXHigh {
+	if !a.Quirks.TranslateMaxToXHigh {
 		t.Fatal("expected openrouter quirks (TranslateMaxToXHigh) to be applied")
 	}
 }

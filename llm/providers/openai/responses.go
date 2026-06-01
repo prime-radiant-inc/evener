@@ -247,9 +247,10 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 		dec := json.NewDecoder(bytes.NewReader(ev.Data))
 		dec.UseNumber()
 		if err := dec.Decode(&payload); err != nil {
-			// Emit raw passthrough and continue.
+			// Emit raw passthrough and continue; returning the error would
+			// abort the whole stream on a single malformed event.
 			s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: map[string]any{"event": ev.Event, "data": string(ev.Data)}})
-			return nil
+			return nil //nolint:nilerr // decode failure is surfaced as a raw passthrough event, not a fatal error
 		}
 		typ, _ := payload["type"].(string)
 		if typ == "" {

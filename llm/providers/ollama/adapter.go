@@ -120,13 +120,13 @@ func normalizeHost(h string) string {
 		switch {
 		case strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]"):
 			// Bracketed IPv6 with no port.
-			h = h + ":11434"
+			h += ":11434"
 		case strings.Count(h, ":") >= 2:
 			// Bare IPv6 with no port: "::1" or "fe80::1".
 			h = "[" + h + "]:11434"
 		default:
 			// Hostname or IPv4 without a port.
-			h = h + ":11434"
+			h += ":11434"
 		}
 	}
 	return "http://" + h + "/v1"
@@ -139,9 +139,9 @@ type InstanceParams struct {
 	APIKey  string
 }
 
-// NewForInstance constructs an ollama adapter from explicit parameters.
+// newForInstance constructs an ollama adapter from explicit parameters.
 // Empty BaseURL falls back to the ollama default (http://localhost:11434/v1).
-func NewForInstance(params InstanceParams) *adapter {
+func newForInstance(params InstanceParams) *adapter {
 	base := strings.TrimSpace(params.BaseURL)
 	if base == "" {
 		base = defaultBaseURL
@@ -168,7 +168,7 @@ func init() {
 		}), true, nil
 	})
 	llm.RegisterInstanceAdapterFactory("ollama", "", func(inst providercfg.InstanceConfig, _ string) (llm.ProviderAdapter, error) {
-		return NewForInstance(InstanceParams{
+		return newForInstance(InstanceParams{
 			Name:    inst.Name,
 			BaseURL: inst.BaseURL,
 			APIKey:  inst.APIKey,

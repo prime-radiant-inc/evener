@@ -199,23 +199,23 @@ func TestDefaultBaseURL(t *testing.T) {
 }
 
 func TestNewForInstance_Name(t *testing.T) {
-	a := NewForInstance(InstanceParams{Name: "ol"})
+	a := newForInstance(InstanceParams{Name: "ol"})
 	if a.Name() != "ol" {
 		t.Fatalf("Name() = %q, want ol", a.Name())
 	}
 }
 
 func TestNewForInstance_DefaultBaseURL(t *testing.T) {
-	a := NewForInstance(InstanceParams{Name: "ol"})
-	if a.Adapter.BaseURL != defaultBaseURL {
-		t.Fatalf("Adapter.BaseURL = %q, want %q", a.Adapter.BaseURL, defaultBaseURL)
+	a := newForInstance(InstanceParams{Name: "ol"})
+	if a.BaseURL != defaultBaseURL {
+		t.Fatalf("Adapter.BaseURL = %q, want %q", a.BaseURL, defaultBaseURL)
 	}
 }
 
 func TestNewForInstance_CustomBaseURL(t *testing.T) {
-	a := NewForInstance(InstanceParams{Name: "ol", BaseURL: "http://custom/v1"})
-	if a.Adapter.BaseURL != "http://custom/v1" {
-		t.Fatalf("Adapter.BaseURL = %q, want http://custom/v1", a.Adapter.BaseURL)
+	a := newForInstance(InstanceParams{Name: "ol", BaseURL: "http://custom/v1"})
+	if a.BaseURL != "http://custom/v1" {
+		t.Fatalf("Adapter.BaseURL = %q, want http://custom/v1", a.BaseURL)
 	}
 }
 
@@ -456,8 +456,8 @@ func TestAdapter_AbortErrorNotRestamped(t *testing.T) {
 // TestAdapter_Complete_RewritesNonHTTPErrorProvider verifies that non-HTTP
 // typed adapter errors (e.g. UnsupportedToolChoiceError, which the backing
 // adapter returns synchronously before any network call) are also stamped with
-// "ollama" by the Client. These derive from nonHTTPErrorBase, a different type
-// than httpErrorBase, so the rewrite plumbing must cover both.
+// "ollama" by the Client. These derive from nonHTTPBaseError, a different type
+// than httpBaseError, so the rewrite plumbing must cover both.
 func TestAdapter_Complete_RewritesNonHTTPErrorProvider(t *testing.T) {
 	// No server needed — the error fires before any HTTP call.
 	c := clientFor(&openaicompat.Adapter{

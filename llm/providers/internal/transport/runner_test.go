@@ -20,7 +20,7 @@ func respFrom(body string) *http.Response {
 
 // drain runs the runner to completion on its stream and returns the emitted
 // events. The runner is the single producer, so CloseSend happens after Run.
-func drain(t *testing.T, r *StreamRunner, ctx context.Context) []llm.StreamEvent {
+func drain(ctx context.Context, t *testing.T, r *StreamRunner) []llm.StreamEvent {
 	t.Helper()
 	done := make(chan struct{})
 	go func() {
@@ -62,7 +62,7 @@ func TestRun_TeeOnlyWhenRawBodyEnabled(t *testing.T) {
 		Finished:      &finished,
 		IncompleteMsg: "incomplete",
 	}
-	got := drain(t, r, context.Background())
+	got := drain(context.Background(), t, r)
 
 	if !sawEvent {
 		t.Fatal("OnEvent was never invoked; runner did not read the body")
@@ -82,10 +82,8 @@ func TestRun_TeeOnlyWhenRawBodyEnabled(t *testing.T) {
 		if !strings.Contains(lastBuf.String(), "[DONE]") {
 			t.Fatalf("RawBodyEnabled: tee buffer did not capture body, got %q", lastBuf.String())
 		}
-	} else {
-		if lastBuf != nil {
-			t.Fatalf("RawBody disabled: expected nil sseBuf, got %q", lastBuf.String())
-		}
+	} else if lastBuf != nil {
+		t.Fatalf("RawBody disabled: expected nil sseBuf, got %q", lastBuf.String())
 	}
 }
 
@@ -108,7 +106,7 @@ func TestRun_EpilogueWrapsContextErrorOnCancel(t *testing.T) {
 		Finished:      &finished,
 		IncompleteMsg: "anthropic stream ended without completion",
 	}
-	got := drain(t, r, ctx)
+	got := drain(ctx, t, r)
 
 	var errEv *llm.StreamEvent
 	for i := range got {
@@ -145,7 +143,7 @@ func TestRun_EpilogueStreamErrorOnIncomplete(t *testing.T) {
 		Finished:      &finished,
 		IncompleteMsg: "google stream ended without completion",
 	}
-	got := drain(t, r, context.Background())
+	got := drain(context.Background(), t, r)
 
 	var errEv *llm.StreamEvent
 	for i := range got {
@@ -185,7 +183,7 @@ func TestRun_NoErrorWhenFinished(t *testing.T) {
 		Finished:      &finished,
 		IncompleteMsg: "should not appear",
 	}
-	got := drain(t, r, ctx)
+	got := drain(ctx, t, r)
 
 	for _, ev := range got {
 		if ev.Type == llm.StreamEventError {
@@ -217,7 +215,7 @@ func TestRun_NeverCallsCancel(t *testing.T) {
 		Finished:      &finished,
 		IncompleteMsg: "openai-compatible stream ended without completion",
 	}
-	_ = drain(t, r, context.Background())
+	_ = drain(context.Background(), t, r)
 
 	if cancelled {
 		t.Fatal("runner invoked the stream cancel hook; it must never cancel")

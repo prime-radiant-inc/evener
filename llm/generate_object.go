@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -90,7 +91,7 @@ func (r *StreamObjectResult) Close() error { return r.outStream.Close() }
 // Response returns the inner stream response, or any object parse/validation error.
 func (r *StreamObjectResult) Response() (*Response, error) {
 	if r == nil {
-		return nil, fmt.Errorf("stream object result is nil")
+		return nil, errors.New("stream object result is nil")
 	}
 	<-r.done
 	resp, err := r.inner.Response()
@@ -250,11 +251,14 @@ func tryParsePartialJSON(s string) any {
 	attempt = strings.TrimRight(attempt, " \t\n\r,")
 
 	// Append closers in reverse order.
+	var b strings.Builder
+	b.Grow(len(attempt) + len(closers))
+	b.WriteString(attempt)
 	for i := len(closers) - 1; i >= 0; i-- {
-		attempt += string(closers[i])
+		b.WriteByte(closers[i])
 	}
 
-	return tryUnmarshal(attempt)
+	return tryUnmarshal(b.String())
 }
 
 // stripMarkdownCodeFence removes markdown code fences (```json ... ```) that

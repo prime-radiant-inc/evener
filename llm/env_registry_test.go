@@ -159,16 +159,16 @@ func TestDefaultClient_LazyInitializationFromEnv(t *testing.T) {
 	defaultClientMu.Lock()
 	savedInit := defaultClientInit
 	savedClient := defaultClient
-	savedErr := defaultClientErr
+	savedErr := errDefaultClient
 	defaultClientInit = false
 	defaultClient = nil
-	defaultClientErr = nil
+	errDefaultClient = nil
 	defaultClientMu.Unlock()
 	t.Cleanup(func() {
 		defaultClientMu.Lock()
 		defaultClientInit = savedInit
 		defaultClient = savedClient
-		defaultClientErr = savedErr
+		errDefaultClient = savedErr
 		defaultClientMu.Unlock()
 	})
 
@@ -194,16 +194,16 @@ func TestSetDefaultClient_OverridesLazyInit(t *testing.T) {
 	defaultClientMu.Lock()
 	savedInit := defaultClientInit
 	savedClient := defaultClient
-	savedErr := defaultClientErr
+	savedErr := errDefaultClient
 	defaultClientInit = false
 	defaultClient = nil
-	defaultClientErr = nil
+	errDefaultClient = nil
 	defaultClientMu.Unlock()
 	t.Cleanup(func() {
 		defaultClientMu.Lock()
 		defaultClientInit = savedInit
 		defaultClient = savedClient
-		defaultClientErr = savedErr
+		errDefaultClient = savedErr
 		defaultClientMu.Unlock()
 	})
 

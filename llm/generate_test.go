@@ -751,7 +751,7 @@ func TestGenerate_RepairToolCall_FixesInvalidArgs(t *testing.T) {
 						}
 					}
 				}
-				return Response{}, fmt.Errorf("expected tool result for call1")
+				return Response{}, errors.New("expected tool result for call1")
 			},
 		},
 	}
@@ -817,7 +817,7 @@ func TestGenerate_RepairToolCall_FailedRepair_SendsErrorToModel(t *testing.T) {
 						}
 					}
 				}
-				return Response{}, fmt.Errorf("expected error tool result")
+				return Response{}, errors.New("expected error tool result")
 			},
 		},
 	}
@@ -831,7 +831,7 @@ func TestGenerate_RepairToolCall_FailedRepair_SendsErrorToModel(t *testing.T) {
 		Prompt:        &prompt,
 		MaxToolRounds: &rounds,
 		RepairToolCall: func(ctx context.Context, call ToolCallData, validationError error) (json.RawMessage, error) {
-			return nil, fmt.Errorf("cannot repair")
+			return nil, errors.New("cannot repair")
 		},
 		Tools: []Tool{
 			{
@@ -1030,7 +1030,7 @@ func TestGenerate_ToolExecuteError_SentAsIsError(t *testing.T) {
 		Tools: []Tool{{
 			Definition: ToolDefinition{Name: "failing_tool", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}},
 			Execute: func(ctx context.Context, args any) (any, error) {
-				return nil, fmt.Errorf("something went wrong")
+				return nil, errors.New("something went wrong")
 			},
 		}},
 	})
@@ -1306,7 +1306,7 @@ func TestGenerate_WebSearch_PropagatedToRequest(t *testing.T) {
 		steps: []func(req Request) (Response, error){
 			func(req Request) (Response, error) {
 				if !req.WebSearch {
-					return Response{}, fmt.Errorf("expected req.WebSearch=true, got false")
+					return Response{}, errors.New("expected req.WebSearch=true, got false")
 				}
 				return Response{Message: Assistant("searched")}, nil
 			},
@@ -1343,7 +1343,7 @@ func TestGenerate_WebSearch_DefaultFalse(t *testing.T) {
 		steps: []func(req Request) (Response, error){
 			func(req Request) (Response, error) {
 				if req.WebSearch {
-					return Response{}, fmt.Errorf("expected req.WebSearch=false by default, got true")
+					return Response{}, errors.New("expected req.WebSearch=false by default, got true")
 				}
 				return Response{Message: Assistant("ok")}, nil
 			},
@@ -1386,7 +1386,6 @@ func makeTimingToolIndex(t *testing.T, sleepDur time.Duration, records *[]callRe
 	t.Helper()
 	tools := make([]Tool, len(toolSpecs))
 	for i, spec := range toolSpecs {
-		i, spec := i, spec // capture loop vars
 		tools[i] = Tool{
 			Definition: ToolDefinition{
 				Name:       spec.name,

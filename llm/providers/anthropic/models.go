@@ -39,7 +39,7 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return nil, fmt.Errorf("list models: HTTP %d", resp.StatusCode)
 		}
 
@@ -52,7 +52,7 @@ func (a *Adapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 			LastID  string `json:"last_id"`
 		}
 		err = json.NewDecoder(resp.Body).Decode(&page)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err != nil {
 			return nil, err
 		}

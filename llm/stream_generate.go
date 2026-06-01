@@ -2,7 +2,7 @@ package llm
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"math/rand/v2"
 	"strings"
 	"sync"
@@ -49,7 +49,7 @@ func (r *StreamResult) TextStream() <-chan string {
 // accumulated response and any terminal error. It returns an error if r is nil.
 func (r *StreamResult) Response() (*Response, error) {
 	if r == nil {
-		return nil, fmt.Errorf("stream result is nil")
+		return nil, errors.New("stream result is nil")
 	}
 	<-r.done
 	r.mu.Lock()
@@ -177,7 +177,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 				var st Stream
 				st, streamErr = gs.client.Stream(callCtx, req)
 				if streamErr != nil {
-					return
+					return finishEv, acc, hasPartialOutput, streamErr
 				}
 
 				acc = NewStreamAccumulator()
@@ -213,7 +213,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 							// is emitted once below after retries are ruled out.
 							_ = st.Close()
 							streamErr = ev.Err
-							return
+							return finishEv, acc, hasPartialOutput, streamErr
 						}
 						outStream.Send(ev)
 					default:
@@ -231,7 +231,7 @@ func StreamGenerate(ctx context.Context, opts GenerateOptions) (*StreamResult, e
 						streamErr = NewStreamError(strings.TrimSpace(req.Provider), "stream ended without finish event", nil)
 					}
 				}
-				return
+				return finishEv, acc, hasPartialOutput, streamErr
 			}
 
 			// Retry the open+consume cycle using the policy's backoff.

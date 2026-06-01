@@ -2,7 +2,6 @@ package llm
 
 import (
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 )
@@ -45,43 +44,53 @@ func TestErrorFromHTTPStatus_MappingAndRetryable(t *testing.T) {
 		err := ErrorFromHTTPStatus("p", tc.status, "msg", nil, nil)
 		switch tc.wantType.(type) {
 		case *invalidRequestError:
-			if _, ok := err.(*invalidRequestError); !ok {
+			var target *invalidRequestError
+			if !errors.As(err, &target) {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
 		case *authenticationError:
-			if _, ok := err.(*authenticationError); !ok {
+			var target *authenticationError
+			if !errors.As(err, &target) {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
 		case *accessDeniedError:
-			if _, ok := err.(*accessDeniedError); !ok {
+			var target *accessDeniedError
+			if !errors.As(err, &target) {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
 		case *notFoundError:
-			if _, ok := err.(*notFoundError); !ok {
+			var target *notFoundError
+			if !errors.As(err, &target) {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
 		case *requestTimeoutError:
-			if _, ok := err.(*requestTimeoutError); !ok {
+			var target *requestTimeoutError
+			if !errors.As(err, &target) {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
 		case *contextLengthError:
-			if _, ok := err.(*contextLengthError); !ok {
+			var target *contextLengthError
+			if !errors.As(err, &target) {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
 		case *rateLimitError:
-			if _, ok := err.(*rateLimitError); !ok {
+			var target *rateLimitError
+			if !errors.As(err, &target) {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
 		case *serverError:
-			if _, ok := err.(*serverError); !ok {
+			var target *serverError
+			if !errors.As(err, &target) {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
 		case *unknownHTTPError:
-			if _, ok := err.(*unknownHTTPError); !ok {
+			var target *unknownHTTPError
+			if !errors.As(err, &target) {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
 		}
-		e, ok := err.(Error)
+		var e Error
+		ok := errors.As(err, &e)
 		if !ok {
 			t.Fatalf("status %d: not an llm.Error (%T)", tc.status, err)
 		}
@@ -92,7 +101,7 @@ func TestErrorFromHTTPStatus_MappingAndRetryable(t *testing.T) {
 }
 
 func TestContentFilterError_ImplementsErrorInterface(t *testing.T) {
-	err := &contentFilterError{httpErrorBase{provider: "test", statusCode: 400, message: "blocked", retryable: false}}
+	err := &contentFilterError{httpBaseError{provider: "test", statusCode: 400, message: "blocked", retryable: false}}
 	var llmErr Error
 	if !errors.As(err, &llmErr) {
 		t.Fatalf("ContentFilterError does not implement Error interface")
@@ -106,7 +115,7 @@ func TestContentFilterError_ImplementsErrorInterface(t *testing.T) {
 }
 
 func TestQuotaExceededError_ImplementsErrorInterface(t *testing.T) {
-	err := &quotaExceededError{httpErrorBase{provider: "test", statusCode: 429, message: "quota exceeded", retryable: false}}
+	err := &quotaExceededError{httpBaseError{provider: "test", statusCode: 429, message: "quota exceeded", retryable: false}}
 	var llmErr Error
 	if !errors.As(err, &llmErr) {
 		t.Fatalf("QuotaExceededError does not implement Error interface")
@@ -175,8 +184,8 @@ func TestRaw_ExposesRawResponse(t *testing.T) {
 }
 
 func TestUnwrap_ErrorChain(t *testing.T) {
-	cause := fmt.Errorf("underlying network problem")
-	err := &serverError{httpErrorBase{
+	cause := errors.New("underlying network problem")
+	err := &serverError{httpBaseError{
 		provider:   "openai",
 		statusCode: 500,
 		message:    "server error",
@@ -189,8 +198,8 @@ func TestUnwrap_ErrorChain(t *testing.T) {
 }
 
 func TestNonHTTPError_Unwrap(t *testing.T) {
-	cause := fmt.Errorf("context canceled")
-	err := &AbortError{nonHTTPErrorBase{
+	cause := errors.New("context canceled")
+	err := &AbortError{nonHTTPBaseError{
 		message: "aborted",
 		cause:   cause,
 	}}
@@ -200,7 +209,7 @@ func TestNonHTTPError_Unwrap(t *testing.T) {
 }
 
 func TestNonHTTPError_ErrorCode_Raw(t *testing.T) {
-	err := &AbortError{nonHTTPErrorBase{message: "aborted"}}
+	err := &AbortError{nonHTTPBaseError{message: "aborted"}}
 	var e Error
 	if !errors.As(err, &e) {
 		t.Fatal("expected Error interface")
@@ -311,11 +320,11 @@ func TestRegular403_StillNonRetryable(t *testing.T) {
 }
 
 func TestConfigurationError_Unwrap_ExposesCause(t *testing.T) {
-	cause := fmt.Errorf("missing API key")
+	cause := errors.New("missing API key")
 	err := &ConfigurationError{Message: "bad config", Cause: cause}
 
 	// Unwrap returns cause.
-	if got := errors.Unwrap(err); got != cause {
+	if got := errors.Unwrap(err); !errors.Is(got, cause) {
 		t.Fatalf("Unwrap() = %v, want %v", got, cause)
 	}
 	// errors.Is traverses the chain.

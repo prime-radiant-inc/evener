@@ -42,7 +42,7 @@ func TestWrapContextError_WrappedCanceledUnwraps(t *testing.T) {
 
 func TestWrapContextError_PassThrough(t *testing.T) {
 	sentinel := errors.New("boom")
-	if got := WrapContextError("openai", sentinel); got != sentinel {
+	if got := WrapContextError("openai", sentinel); !errors.Is(got, sentinel) {
 		t.Fatalf("WrapContextError(non-context) = %v, want the error returned unchanged", got)
 	}
 	if WrapContextError("openai", nil) != nil {

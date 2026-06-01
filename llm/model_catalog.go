@@ -3,6 +3,7 @@ package llm
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -77,7 +78,7 @@ func (c *ModelCatalog) ListModels(provider string) []ModelInfo {
 	}
 	var out []ModelInfo
 	for _, m := range c.Models {
-		if strings.ToLower(m.Provider) == p {
+		if strings.EqualFold(m.Provider, p) {
 			out = append(out, m)
 		}
 	}
@@ -167,7 +168,7 @@ func parseLiteLLMCatalog(data []byte) (*ModelCatalog, error) {
 		return nil, err
 	}
 	if len(raw) == 0 {
-		return nil, fmt.Errorf("litellm catalog is empty")
+		return nil, errors.New("litellm catalog is empty")
 	}
 
 	var models []ModelInfo

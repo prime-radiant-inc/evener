@@ -1,7 +1,7 @@
 package llm
 
 import (
-	"fmt"
+	"errors"
 	"os"
 	"sync"
 )
@@ -78,7 +78,7 @@ func NewFromEnv(opts ...EnvOption) (*Client, error) {
 		}
 	}
 	if len(c.ProviderNames()) == 0 {
-		return nil, fmt.Errorf("no LLM providers configured via environment variables")
+		return nil, errors.New("no LLM providers configured via environment variables")
 	}
 	return c, nil
 }
@@ -87,7 +87,7 @@ var (
 	defaultClientMu   sync.Mutex
 	defaultClientInit bool
 	defaultClient     *Client
-	defaultClientErr  error
+	errDefaultClient  error
 )
 
 // SetDefaultClient sets the module-level default client and disables lazy env initialization.
@@ -95,7 +95,7 @@ func SetDefaultClient(c *Client) {
 	defaultClientMu.Lock()
 	defer defaultClientMu.Unlock()
 	defaultClient = c
-	defaultClientErr = nil
+	errDefaultClient = nil
 	defaultClientInit = true
 }
 
@@ -104,7 +104,7 @@ func SetDefaultClient(c *Client) {
 func DefaultClient() (*Client, error) {
 	defaultClientMu.Lock()
 	if defaultClientInit {
-		c, err := defaultClient, defaultClientErr
+		c, err := defaultClient, errDefaultClient
 		defaultClientMu.Unlock()
 		return c, err
 	}
@@ -114,7 +114,7 @@ func DefaultClient() (*Client, error) {
 
 	defaultClientMu.Lock()
 	defaultClient = c
-	defaultClientErr = err
+	errDefaultClient = err
 	defaultClientInit = true
 	defaultClientMu.Unlock()
 	return c, err

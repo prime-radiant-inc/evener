@@ -58,7 +58,7 @@ func rescueClaudeXMLArgs(raw string) string {
 			continue
 		}
 		trimmed := strings.TrimSpace(s)
-		if !(strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{")) {
+		if !strings.HasPrefix(trimmed, "[") && !strings.HasPrefix(trimmed, "{") {
 			continue
 		}
 		var asJSON any

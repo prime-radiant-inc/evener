@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -183,7 +184,9 @@ func (a *Adapter) decodeChatCompletionsStream(sctx context.Context, cancel conte
 				Usage map[string]any `json:"usage"`
 			}
 			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-				return nil
+				// Skip a single malformed chunk and keep the stream alive;
+				// returning the error would abort the whole stream.
+				return nil //nolint:nilerr // unparseable chunk is intentionally skipped, not fatal
 			}
 			if chunk.Model != "" {
 				model = chunk.Model
@@ -244,7 +247,7 @@ func (a *Adapter) decodeChatCompletionsStream(sctx context.Context, cancel conte
 // request body. This is used by the Responses-API fallback path.
 func buildChatCompletionsBody(req llm.Request, stream bool) (map[string]any, error) {
 	if requestHasToolResultImages(req) {
-		return nil, fmt.Errorf("openai chat completions fallback does not support tool-result images")
+		return nil, errors.New("openai chat completions fallback does not support tool-result images")
 	}
 	body := map[string]any{
 		"model": req.Model,

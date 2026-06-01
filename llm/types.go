@@ -2,7 +2,7 @@ package llm
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 	"strings"
 	"time"
 )
@@ -492,10 +492,10 @@ func (r Response) ReasoningText() string {
 // has a valid name and parameter schema, returning the first error found.
 func (req Request) Validate() error {
 	if strings.TrimSpace(req.Model) == "" {
-		return fmt.Errorf("request.model is required")
+		return errors.New("request.model is required")
 	}
 	if len(req.Messages) == 0 {
-		return fmt.Errorf("request.messages is required")
+		return errors.New("request.messages is required")
 	}
 	for _, t := range req.Tools {
 		if err := ValidateToolName(t.Name); err != nil {

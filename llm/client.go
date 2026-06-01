@@ -120,7 +120,7 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 	prov = normalizeProviderName(prov)
 	adapter, ok := c.providers[prov]
 	if !ok {
-		return Response{}, &ConfigurationError{Message: fmt.Sprintf("unknown provider: %s", prov)}
+		return Response{}, &ConfigurationError{Message: "unknown provider: " + prov}
 	}
 	req.Provider = prov
 
@@ -161,7 +161,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 	prov = normalizeProviderName(prov)
 	adapter, ok := c.providers[prov]
 	if !ok {
-		return nil, &ConfigurationError{Message: fmt.Sprintf("unknown provider: %s", prov)}
+		return nil, &ConfigurationError{Message: "unknown provider: " + prov}
 	}
 	req.Provider = prov
 
@@ -271,7 +271,7 @@ func (c *Client) ListModels(ctx context.Context, provider string) ([]ModelInfo, 
 	provider = normalizeProviderName(provider)
 	a, ok := c.providers[provider]
 	if !ok {
-		return nil, &ConfigurationError{Message: fmt.Sprintf("unknown provider: %s", provider)}
+		return nil, &ConfigurationError{Message: "unknown provider: " + provider}
 	}
 	lister, ok := a.(ModelLister)
 	if !ok {

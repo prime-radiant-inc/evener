@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -38,7 +39,7 @@ type GoogleInstanceParams struct {
 // Empty BaseURL falls back to the default Gemini API endpoint.
 func NewForInstance(params GoogleInstanceParams) (*Adapter, error) {
 	if strings.TrimSpace(params.APIKey) == "" {
-		return nil, fmt.Errorf("GEMINI_API_KEY is required")
+		return nil, errors.New("GEMINI_API_KEY is required")
 	}
 	base := strings.TrimSpace(params.BaseURL)
 	if base == "" {
@@ -154,7 +155,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	_ = json.Unmarshal(rawBytes, &raw)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
-		msg := fmt.Sprintf("generateContent failed: %s", strings.TrimSpace(string(rawBytes)))
+		msg := "generateContent failed: " + strings.TrimSpace(string(rawBytes))
 		httpErr := llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
 		return llm.Response{}, classifyGeminiError(resp.StatusCode, rawBytes, ra, httpErr)
 	}
@@ -225,7 +226,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		var raw map[string]any
 		_ = json.Unmarshal(rawBytes, &raw)
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
-		msg := fmt.Sprintf("streamGenerateContent failed: %s", strings.TrimSpace(string(rawBytes)))
+		msg := "streamGenerateContent failed: " + strings.TrimSpace(string(rawBytes))
 		httpErr := llm.ErrorFromHTTPStatus("google", resp.StatusCode, msg, raw, ra)
 		cancel()
 		return nil, classifyGeminiError(resp.StatusCode, rawBytes, ra, httpErr)
@@ -282,8 +283,10 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 			dec := json.NewDecoder(bytes.NewReader(ev.Data))
 			dec.UseNumber()
 			if err := dec.Decode(&raw); err != nil {
+				// Undecodable event: forward it raw and keep the stream alive
+				// rather than aborting on a single malformed/unknown event.
 				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: map[string]any{"event": ev.Event, "data": string(ev.Data)}})
-				return nil
+				return nil //nolint:nilerr // decode failure is surfaced as a raw passthrough event, not a fatal error
 			}
 
 			// candidates[0].content.parts

@@ -1927,7 +1927,7 @@ func TestStream_ReasoningTokens_NilWhenProviderOmits(t *testing.T) {
 func TestComplete_ParsesRetryAfterHeader(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Retry-After", "30")
-		w.WriteHeader(429)
+		w.WriteHeader(http.StatusTooManyRequests)
 		fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"rate limited"}}`) //nolint:errcheck
 	}))
 	t.Cleanup(srv.Close)
@@ -2835,7 +2835,8 @@ func TestAdapter_ListModels_Pagination(t *testing.T) {
 		afterID := r.URL.Query().Get("after_id")
 		w.Header().Set("Content-Type", "application/json")
 
-		if afterID == "" {
+		switch afterID {
+		case "":
 			// First page: return 2 models, signal more available.
 			w.Write([]byte(`{
 				"data": [
@@ -2846,7 +2847,7 @@ func TestAdapter_ListModels_Pagination(t *testing.T) {
 				"first_id": "claude-haiku-4-5-20251001",
 				"last_id": "claude-opus-4-6-20260205"
 			}`))
-		} else if afterID == "claude-opus-4-6-20260205" {
+		case "claude-opus-4-6-20260205":
 			// Second page: return 1 more model, no more pages.
 			w.Write([]byte(`{
 				"data": [
@@ -2856,7 +2857,7 @@ func TestAdapter_ListModels_Pagination(t *testing.T) {
 				"first_id": "claude-sonnet-4-6-20260205",
 				"last_id": "claude-sonnet-4-6-20260205"
 			}`))
-		} else {
+		default:
 			t.Errorf("unexpected after_id: %q", afterID)
 			w.Write([]byte(`{"data": [], "has_more": false}`))
 		}

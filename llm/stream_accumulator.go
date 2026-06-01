@@ -1,7 +1,6 @@
 package llm
 
 import (
-	"encoding/json"
 	"strings"
 )
 
@@ -178,10 +177,6 @@ func (a *StreamAccumulator) buildResponse() *Response {
 		tc := a.toolCalls[id]
 		if tc != nil {
 			cp := *tc
-			// Normalize arguments: ensure valid JSON raw message.
-			if len(cp.Arguments) > 0 {
-				cp.Arguments = json.RawMessage(cp.Arguments)
-			}
 			parts = append(parts, ContentPart{
 				Kind:     ContentToolCall,
 				ToolCall: &cp,

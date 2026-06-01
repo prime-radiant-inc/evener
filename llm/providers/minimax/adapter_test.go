@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/llm"
@@ -95,14 +96,14 @@ func TestAdapter_Stream_DelegatesToAnthropicInner(t *testing.T) {
 		t.Fatalf("Stream: %v", err)
 	}
 
-	var gotText string
+	var gotText strings.Builder
 	for ev := range stream.Events() {
 		if ev.Type == llm.StreamEventTextDelta {
-			gotText += ev.Delta
+			gotText.WriteString(ev.Delta)
 		}
 	}
-	if gotText != "streamed" {
-		t.Fatalf("streamed text: %q", gotText)
+	if gotText.String() != "streamed" {
+		t.Fatalf("streamed text: %q", gotText.String())
 	}
 }
 
@@ -152,7 +153,7 @@ func TestNewForInstance_Name(t *testing.T) {
 
 func TestNewForInstance_DefaultBaseURL(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "mm", APIKey: "k"})
-	if a.Adapter.BaseURL != defaultBaseURL {
-		t.Fatalf("backing BaseURL = %q, want %q", a.Adapter.BaseURL, defaultBaseURL)
+	if a.BaseURL != defaultBaseURL {
+		t.Fatalf("backing BaseURL = %q, want %q", a.BaseURL, defaultBaseURL)
 	}
 }

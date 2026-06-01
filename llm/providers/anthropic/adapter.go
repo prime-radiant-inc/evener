@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -35,7 +36,7 @@ type AnthropicInstanceParams struct {
 // Empty BaseURL falls back to the default Anthropic API endpoint.
 func NewForInstance(params AnthropicInstanceParams) (*Adapter, error) {
 	if strings.TrimSpace(params.APIKey) == "" {
-		return nil, fmt.Errorf("ANTHROPIC_API_KEY is required")
+		return nil, errors.New("ANTHROPIC_API_KEY is required")
 	}
 	base := strings.TrimSpace(params.BaseURL)
 	if base == "" {
@@ -133,7 +134,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (llm.Response, 
 	_ = json.Unmarshal(rawBytes, &raw)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
-		msg := fmt.Sprintf("messages.create failed: %s", strings.TrimSpace(string(rawBytes)))
+		msg := "messages.create failed: " + strings.TrimSpace(string(rawBytes))
 		return llm.Response{}, llm.ErrorFromHTTPStatus("anthropic", resp.StatusCode, msg, raw, ra)
 	}
 
@@ -186,7 +187,7 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 		var raw map[string]any
 		_ = json.Unmarshal(rawBytes, &raw)
 		ra := llm.ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
-		msg := fmt.Sprintf("messages.create(stream) failed: %s", strings.TrimSpace(string(rawBytes)))
+		msg := "messages.create(stream) failed: " + strings.TrimSpace(string(rawBytes))
 		cancel()
 		return nil, llm.ErrorFromHTTPStatus("anthropic", resp.StatusCode, msg, raw, ra)
 	}
@@ -268,8 +269,10 @@ func (a *Adapter) decodeStream(sctx context.Context, cancel context.CancelFunc, 
 			dec := json.NewDecoder(bytes.NewReader(ev.Data))
 			dec.UseNumber()
 			if err := dec.Decode(&payload); err != nil {
+				// Undecodable event: forward it raw and keep the stream alive
+				// rather than aborting on a single malformed/unknown event.
 				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: map[string]any{"event": ev.Event, "data": string(ev.Data)}})
-				return nil
+				return nil //nolint:nilerr // decode failure is surfaced as a raw passthrough event, not a fatal error
 			}
 
 			switch ev.Event {

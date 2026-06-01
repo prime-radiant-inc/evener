@@ -174,7 +174,7 @@ func clampEffort(requested string, supportedLevels []string) string {
 
 	// Check if requested is directly supported.
 	for _, lvl := range supportedLevels {
-		if strings.ToLower(lvl) == requested {
+		if strings.EqualFold(lvl, requested) {
 			return requested
 		}
 	}
@@ -209,7 +209,7 @@ func clampEffort(requested string, supportedLevels []string) string {
 	// No lower level available; return the lowest supported level.
 	for _, h := range hierarchy {
 		for _, lvl := range supportedLevels {
-			if strings.ToLower(lvl) == h {
+			if strings.EqualFold(lvl, h) {
 				return h
 			}
 		}

@@ -7,7 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -75,7 +75,7 @@ func init() {
 func NewFromEnv() (*Adapter, error) {
 	base := strings.TrimSpace(os.Getenv("OPENAI_COMPATIBLE_BASE_URL"))
 	if base == "" {
-		return nil, fmt.Errorf("OPENAI_COMPATIBLE_BASE_URL is required")
+		return nil, errors.New("OPENAI_COMPATIBLE_BASE_URL is required")
 	}
 	key := strings.TrimSpace(os.Getenv("OPENAI_COMPATIBLE_API_KEY"))
 
@@ -323,7 +323,9 @@ func (a *Adapter) decodeStream(sctx context.Context, resp *http.Response, s *llm
 
 			var chunk chatCompletionChunk
 			if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-				return nil
+				// Skip a single malformed chunk and keep the stream alive;
+				// returning the error would abort the whole stream.
+				return nil //nolint:nilerr // unparseable chunk is intentionally skipped, not fatal
 			}
 			if chunk.Model != "" {
 				model = chunk.Model

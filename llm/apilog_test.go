@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -173,7 +173,7 @@ func TestAPILoggerLogsErrors(t *testing.T) {
 	defer logger.Close()
 
 	fakeAdapter := func(ctx context.Context, req Request) (Response, error) {
-		return Response{}, fmt.Errorf("rate limited")
+		return Response{}, errors.New("rate limited")
 	}
 
 	wrapped := logger.WrapComplete(fakeAdapter)

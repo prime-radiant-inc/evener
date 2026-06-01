@@ -80,8 +80,8 @@ func TestNewForInstance_Name(t *testing.T) {
 
 func TestNewForInstance_DefaultBaseURL(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "ora", APIKey: "k"})
-	if a.Adapter.BaseURL != defaultBaseURL {
-		t.Fatalf("backing BaseURL = %q, want %q", a.Adapter.BaseURL, defaultBaseURL)
+	if a.BaseURL != defaultBaseURL {
+		t.Fatalf("backing BaseURL = %q, want %q", a.BaseURL, defaultBaseURL)
 	}
 }
 

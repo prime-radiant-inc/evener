@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -152,7 +153,7 @@ func parseSSEWithTimeout(ctx context.Context, r io.Reader, fn func(ev SSEEvent) 
 
 			line := res.line
 			err := res.err
-			if err != nil && err != io.EOF {
+			if err != nil && !errors.Is(err, io.EOF) {
 				return err
 			}
 			line = strings.TrimRight(line, "\r\n")
@@ -161,7 +162,7 @@ func parseSSEWithTimeout(ctx context.Context, r io.Reader, fn func(ev SSEEvent) 
 				return perr
 			}
 
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return p.flush(fn)
 			}
 

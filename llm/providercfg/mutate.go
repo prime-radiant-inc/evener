@@ -1,6 +1,7 @@
 package providercfg
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,7 +28,9 @@ func WriteFile(path string, cfg Config) error {
 		return fmt.Errorf("providers.toml: create temp file: %w", err)
 	}
 	tmpName := tmp.Name()
-	cleanup := func() { tmp.Close(); os.Remove(tmpName) }
+	// Best-effort cleanup of the abandoned temp file on an error path; the
+	// caller already receives the real failure, so these errors are ignored.
+	cleanup := func() { _ = tmp.Close(); _ = os.Remove(tmpName) }
 
 	if _, err := tmp.Write(data); err != nil {
 		cleanup()
@@ -42,11 +45,11 @@ func WriteFile(path string, cfg Config) error {
 		return fmt.Errorf("providers.toml: sync: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("providers.toml: close: %w", err)
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
+		_ = os.Remove(tmpName)
 		return fmt.Errorf("providers.toml: rename: %w", err)
 	}
 
@@ -97,7 +100,7 @@ func (c Config) WithDefault(name string) Config {
 // non-empty, all-lowercase, no '/'. It does not check uniqueness.
 func ValidateInstanceName(name string) error {
 	if name == "" {
-		return fmt.Errorf("instance name must not be empty")
+		return errors.New("instance name must not be empty")
 	}
 	for _, r := range name {
 		if unicode.IsUpper(r) {

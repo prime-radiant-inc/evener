@@ -96,14 +96,14 @@ func TestNewForInstance_Name(t *testing.T) {
 
 func TestNewForInstance_DefaultBaseURL(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "gc", APIKey: "k"})
-	if a.Adapter.BaseURL != defaultBaseURL {
-		t.Fatalf("backing BaseURL = %q, want %q", a.Adapter.BaseURL, defaultBaseURL)
+	if a.BaseURL != defaultBaseURL {
+		t.Fatalf("backing BaseURL = %q, want %q", a.BaseURL, defaultBaseURL)
 	}
 }
 
 func TestNewForInstance_DefaultQuirks(t *testing.T) {
 	a := NewForInstance(InstanceParams{Name: "gc", APIKey: "k"})
-	if !a.Adapter.Quirks.StripEmptyContent {
+	if !a.Quirks.StripEmptyContent {
 		t.Fatal("expected glm quirks (StripEmptyContent) to be applied")
 	}
 }

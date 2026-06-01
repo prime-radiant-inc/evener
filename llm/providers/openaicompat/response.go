@@ -2,6 +2,7 @@ package openaicompat
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -122,7 +123,7 @@ func fromChatCompletionResponse(raw map[string]any, quirks ProviderQuirks) (llm.
 	}
 
 	if len(parsed.Choices) == 0 {
-		return llm.Response{}, fmt.Errorf("no choices in response")
+		return llm.Response{}, errors.New("no choices in response")
 	}
 	choice := parsed.Choices[0]
 

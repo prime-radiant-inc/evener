@@ -376,13 +376,15 @@ func TestAdapter_Complete_DeveloperRole_MergedWithSystemInstruction(t *testing.T
 	}
 
 	// Both sys and dev instructions should be merged into systemInstruction
-	combined := ""
+	var sb strings.Builder
 	for _, pAny := range parts {
 		p, _ := pAny.(map[string]any)
 		if text, ok := p["text"].(string); ok {
-			combined += text + " "
+			sb.WriteString(text)
+			sb.WriteString(" ")
 		}
 	}
+	combined := sb.String()
 	if !strings.Contains(combined, "sys-instruction") {
 		t.Fatalf("systemInstruction parts missing sys-instruction: %q", combined)
 	}
@@ -1191,7 +1193,7 @@ func TestAdapter_Stream_GRPCStatusMapping(t *testing.T) {
 	// gRPC status in the body should override HTTP status classification.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(400)
+		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"error":{"code":400,"message":"Resource has been exhausted","status":"RESOURCE_EXHAUSTED"}}`))
 	}))
 	t.Cleanup(srv.Close)
@@ -2233,14 +2235,14 @@ func TestStream_EmitsReasoningEventsForThoughtParts(t *testing.T) {
 	}
 	defer stream2.Close() //nolint:errcheck
 
-	var reasoningText string
+	var reasoningText strings.Builder
 	for ev := range stream2.Events() {
 		if ev.Type == llm.StreamEventReasoningDelta {
-			reasoningText += ev.ReasoningDelta
+			reasoningText.WriteString(ev.ReasoningDelta)
 		}
 	}
-	if reasoningText != "Let me think..." {
-		t.Errorf("reasoning delta = %q, want %q", reasoningText, "Let me think...")
+	if got := reasoningText.String(); got != "Let me think..." {
+		t.Errorf("reasoning delta = %q, want %q", got, "Let me think...")
 	}
 }
 

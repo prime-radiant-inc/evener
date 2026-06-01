@@ -395,7 +395,7 @@ func executeSingleToolCall(ctx context.Context, toolIndex map[string]Tool, call 
 	t, ok := toolIndex[call.Name]
 	if !ok || t.Execute == nil {
 		r.IsError = true
-		r.Content = fmt.Sprintf("unknown tool: %s", call.Name)
+		r.Content = "unknown tool: " + call.Name
 		results[idx] = r
 		return
 	}

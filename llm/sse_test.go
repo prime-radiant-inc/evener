@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -85,7 +86,7 @@ func TestParseSSE_ContextCancellation_WithTimeout(t *testing.T) {
 		return nil
 	}, WithStreamReadTimeout(5*time.Second))
 	// Context fires before the stream-read timeout.
-	if err != context.DeadlineExceeded {
+	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("expected context.DeadlineExceeded, got: %v", err)
 	}
 	if len(events) != 1 {

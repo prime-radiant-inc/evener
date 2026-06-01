@@ -61,7 +61,7 @@ func (e *ConfigurationError) Raw() any { return nil }
 // Unwrap returns the underlying Cause, if any.
 func (e *ConfigurationError) Unwrap() error { return e.Cause }
 
-type httpErrorBase struct {
+type httpBaseError struct {
 	provider    string
 	behaviorTag string
 	statusCode  int
@@ -75,7 +75,7 @@ type httpErrorBase struct {
 
 // Error returns the error message in the form "<provider> error (status=<code>): <message>",
 // falling back to "request failed" when the message is empty.
-func (e *httpErrorBase) Error() string {
+func (e *httpBaseError) Error() string {
 	msg := strings.TrimSpace(e.message)
 	if msg == "" {
 		msg = "request failed"
@@ -84,79 +84,79 @@ func (e *httpErrorBase) Error() string {
 }
 
 // Provider returns the provider that produced the error.
-func (e *httpErrorBase) Provider() string        { return e.provider }
-func (e *httpErrorBase) setProvider(name string) { e.provider = strings.TrimSpace(name) }
+func (e *httpBaseError) Provider() string        { return e.provider }
+func (e *httpBaseError) setProvider(name string) { e.provider = strings.TrimSpace(name) }
 
 // BehaviorTag returns the provider behavior tag (provider type) stamped onto
 // the error, or the empty string if none was set.
-func (e *httpErrorBase) BehaviorTag() string       { return e.behaviorTag }
-func (e *httpErrorBase) setBehaviorTag(tag string) { e.behaviorTag = strings.TrimSpace(tag) }
+func (e *httpBaseError) BehaviorTag() string       { return e.behaviorTag }
+func (e *httpBaseError) setBehaviorTag(tag string) { e.behaviorTag = strings.TrimSpace(tag) }
 
 // StatusCode returns the HTTP status code that produced the error.
-func (e *httpErrorBase) StatusCode() int { return e.statusCode }
+func (e *httpBaseError) StatusCode() int { return e.statusCode }
 
 // ErrorCode returns the provider-specific error code extracted from the response
 // body, or the empty string if none was found.
-func (e *httpErrorBase) ErrorCode() string { return e.errorCode }
+func (e *httpBaseError) ErrorCode() string { return e.errorCode }
 
 // Retryable reports whether retrying the request might succeed.
-func (e *httpErrorBase) Retryable() bool { return e.retryable }
+func (e *httpBaseError) Retryable() bool { return e.retryable }
 
 // RetryAfter returns the suggested delay before retrying, typically parsed from
 // the provider's Retry-After header, or nil if none applies.
-func (e *httpErrorBase) RetryAfter() *time.Duration { return e.retryAfter }
+func (e *httpBaseError) RetryAfter() *time.Duration { return e.retryAfter }
 
 // Raw returns the decoded raw provider response body, or nil if unavailable.
-func (e *httpErrorBase) Raw() any { return e.rawResponse }
+func (e *httpBaseError) Raw() any { return e.rawResponse }
 
 // Unwrap returns the underlying cause, exposing it to errors.Is/errors.As.
-func (e *httpErrorBase) Unwrap() error { return e.cause }
+func (e *httpBaseError) Unwrap() error { return e.cause }
 
 // invalidRequestError reports a malformed or rejected request, typically from
 // an HTTP 400 or 422 status. It is not retryable. Its category is [KindInvalidRequest].
-type invalidRequestError struct{ httpErrorBase }
+type invalidRequestError struct{ httpBaseError }
 
 // authenticationError reports failed authentication, typically from an HTTP 401
 // status. It is not retryable. Its category is [KindAuthentication].
-type authenticationError struct{ httpErrorBase }
+type authenticationError struct{ httpBaseError }
 
 // accessDeniedError reports a forbidden request, typically from an HTTP 403
 // status. It is not retryable, except for transient provider bans (e.g. OpenAI
 // cyber_policy_violation) which are marked retryable. Its category is [KindAccessDenied].
-type accessDeniedError struct{ httpErrorBase }
+type accessDeniedError struct{ httpBaseError }
 
 // notFoundError reports a missing resource, typically from an HTTP 404 status
 // or a "not found" message. It is not retryable. Its category is [KindNotFound].
-type notFoundError struct{ httpErrorBase }
+type notFoundError struct{ httpBaseError }
 
 // requestTimeoutError reports a request timeout, from an HTTP 408 status or a
 // non-HTTP deadline. It is retryable. Its category is [KindTimeout].
-type requestTimeoutError struct{ httpErrorBase }
+type requestTimeoutError struct{ httpBaseError }
 
 // contextLengthError reports that the request exceeded the model's context
 // window, typically from an HTTP 413 status or a "context length" message. It
 // is not retryable. Its category is [KindContextLength].
-type contextLengthError struct{ httpErrorBase }
+type contextLengthError struct{ httpBaseError }
 
 // contentFilterError reports that the request or response was blocked by a
 // content filter or safety/usage policy. It is not retryable. Its category is [KindContentFilter].
-type contentFilterError struct{ httpErrorBase }
+type contentFilterError struct{ httpBaseError }
 
 // quotaExceededError reports that a quota or billing limit was exceeded,
 // detected from a "quota" or "billing" message. It is not retryable. Its category is [KindQuotaExceeded].
-type quotaExceededError struct{ httpErrorBase }
+type quotaExceededError struct{ httpBaseError }
 
 // rateLimitError reports that a rate limit was hit, typically from an HTTP 429
 // status. It is retryable. Its category is [KindRateLimit].
-type rateLimitError struct{ httpErrorBase }
+type rateLimitError struct{ httpBaseError }
 
 // serverError reports a server-side failure, typically from an HTTP 500, 502,
 // 503, or 504 status. It is retryable. Its category is [KindServer].
-type serverError struct{ httpErrorBase }
+type serverError struct{ httpBaseError }
 
 // unknownHTTPError reports an HTTP failure with a status code that does not map
 // to a more specific error type. It defaults to retryable. Its category is [KindUnknown].
-type unknownHTTPError struct{ httpErrorBase }
+type unknownHTTPError struct{ httpBaseError }
 
 // extractErrorCode attempts to find an error code from a raw API response body.
 // Supports OpenAI ({"error":{"code":"..."}}) and Anthropic ({"error":{"type":"..."}}) formats.
@@ -244,7 +244,7 @@ func StampErrorBehaviorTag(err error, tag string) error {
 // responses are further refined by message via classifyByMessage. Unrecognized
 // status codes yield a retryable UnknownHTTPError.
 func ErrorFromHTTPStatus(provider string, statusCode int, message string, raw any, retryAfter *time.Duration) error {
-	base := httpErrorBase{
+	base := httpBaseError{
 		provider:    strings.TrimSpace(provider),
 		statusCode:  statusCode,
 		message:     message,
@@ -299,7 +299,7 @@ func ErrorFromHTTPStatus(provider string, statusCode int, message string, raw an
 
 // classifyByMessage checks the error message for classification signals when
 // the HTTP status code is ambiguous (e.g., 400/422). Returns nil if no match.
-func classifyByMessage(base httpErrorBase) error {
+func classifyByMessage(base httpBaseError) error {
 	// Check error code first — more reliable than message parsing.
 	switch base.errorCode {
 	case "invalid_prompt", "content_policy_violation":
@@ -332,7 +332,7 @@ func classifyByMessage(base httpErrorBase) error {
 // Unwrap so errors.Is(err, context.DeadlineExceeded) holds. Pass nil when there is
 // no underlying cause (e.g. an HTTP 408 synthesized from a status code).
 func NewRequestTimeoutError(provider string, message string, cause error) error {
-	base := httpErrorBase{
+	base := httpBaseError{
 		provider:   strings.TrimSpace(provider),
 		statusCode: 0,
 		message:    message,
