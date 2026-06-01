@@ -122,6 +122,37 @@ func TestResolvedToWire(t *testing.T) {
 	_ = reflect.TypeOf(got)
 }
 
+// TestLaunchConfigLayer_ConfigPlumbingRoundtrip: ModelFallbacks survives the
+// wire (appwire.LaunchConfigLayer ⇄ launchconfig.Layer) and merges correctly
+// across layers (launch overrides global).
+func TestLaunchConfigLayer_ConfigPlumbingRoundtrip(t *testing.T) {
+	// Wire → internal.
+	wireLayer := appwire.LaunchConfigLayer{
+		ModelFallbacks: []string{"openai/gpt-5.4", "anthropic/claude-haiku-4-5"},
+	}
+	internal := FromWire(wireLayer)
+	if got, want := internal.ModelFallbacks, wireLayer.ModelFallbacks; !reflect.DeepEqual(got, want) {
+		t.Errorf("FromWire ModelFallbacks: got %v want %v", got, want)
+	}
+
+	// Internal → wire roundtrip.
+	roundtrip := ToWire(internal)
+	if got, want := roundtrip.ModelFallbacks, wireLayer.ModelFallbacks; !reflect.DeepEqual(got, want) {
+		t.Errorf("ToWire ModelFallbacks: got %v want %v", got, want)
+	}
+
+	// Verify the JSON tag is snake_case (project convention for launch
+	// config-adjacent surfaces; appwire is camelCase per codex requirement).
+	// The appwire side uses camelCase: encode and check the key.
+	enc, err := json.Marshal(wireLayer)
+	if err != nil {
+		t.Fatalf("marshal appwire: %v", err)
+	}
+	if !strings.Contains(string(enc), `"modelFallbacks"`) {
+		t.Errorf("appwire JSON tag for ModelFallbacks: expected camelCase 'modelFallbacks', got: %s", enc)
+	}
+}
+
 func jsonContains(raw []byte, needle string) bool {
 	return strings.Contains(string(raw), needle)
 }

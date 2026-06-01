@@ -2,15 +2,12 @@ package agent_test
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/internal/agenttest"
-	"primeradiant.com/serf/internal/appwire"
-	"primeradiant.com/serf/internal/launchconfig"
 	"primeradiant.com/serf/llm"
 )
 
@@ -322,47 +319,4 @@ func TestFallbackChain_EmptyFallbacksNoEffect(t *testing.T) {
 	if len(got) != 1 || got[0] != "primary" {
 		t.Errorf("attempted models: got %v, want exactly [primary]", got)
 	}
-}
-
-// TestFallbackChain_ConfigPlumbing: ModelFallbacks survives the wire
-// (appwire.LaunchConfigLayer ⇄ launchconfig.Layer) and merges correctly
-// across layers (launch overrides global).
-func TestFallbackChain_ConfigPlumbing(t *testing.T) {
-	// Wire → internal.
-	wireLayer := appwire.LaunchConfigLayer{
-		ModelFallbacks: []string{"openai/gpt-5.4", "anthropic/claude-haiku-4-5"},
-	}
-	internal := launchconfig.FromWire(wireLayer)
-	if got, want := internal.ModelFallbacks, wireLayer.ModelFallbacks; !equalStrings(got, want) {
-		t.Errorf("FromWire ModelFallbacks: got %v want %v", got, want)
-	}
-
-	// Internal → wire roundtrip.
-	roundtrip := launchconfig.ToWire(internal)
-	if got, want := roundtrip.ModelFallbacks, wireLayer.ModelFallbacks; !equalStrings(got, want) {
-		t.Errorf("ToWire ModelFallbacks: got %v want %v", got, want)
-	}
-
-	// Verify the JSON tag is snake_case (project convention for launch
-	// config-adjacent surfaces; appwire is camelCase per codex requirement).
-	// The appwire side uses camelCase: encode and check the key.
-	enc, err := json.Marshal(wireLayer)
-	if err != nil {
-		t.Fatalf("marshal appwire: %v", err)
-	}
-	if !strings.Contains(string(enc), `"modelFallbacks"`) {
-		t.Errorf("appwire JSON tag for ModelFallbacks: expected camelCase 'modelFallbacks', got: %s", enc)
-	}
-}
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }
