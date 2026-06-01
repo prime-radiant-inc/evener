@@ -15,6 +15,9 @@ type nonHTTPErrorBase struct {
 	cause       error
 }
 
+// Error returns the error message. It is prefixed with "<provider> error: "
+// when a provider is set, and falls back to "request failed" when the message
+// is empty.
 func (e *nonHTTPErrorBase) Error() string {
 	msg := strings.TrimSpace(e.message)
 	if msg == "" {
@@ -25,16 +28,34 @@ func (e *nonHTTPErrorBase) Error() string {
 	}
 	return fmt.Sprintf("%s error: %s", e.provider, msg)
 }
-func (e *nonHTTPErrorBase) Provider() string           { return e.provider }
-func (e *nonHTTPErrorBase) setProvider(name string)    { e.provider = strings.TrimSpace(name) }
-func (e *nonHTTPErrorBase) BehaviorTag() string        { return e.behaviorTag }
-func (e *nonHTTPErrorBase) setBehaviorTag(tag string)  { e.behaviorTag = strings.TrimSpace(tag) }
-func (e *nonHTTPErrorBase) StatusCode() int            { return 0 }
-func (e *nonHTTPErrorBase) ErrorCode() string          { return "" }
-func (e *nonHTTPErrorBase) Retryable() bool            { return e.retryable }
+
+// Provider returns the provider this error is attributed to, or the empty
+// string when it has no provider attribution (e.g. user cancellation).
+func (e *nonHTTPErrorBase) Provider() string        { return e.provider }
+func (e *nonHTTPErrorBase) setProvider(name string) { e.provider = strings.TrimSpace(name) }
+
+// BehaviorTag returns the provider behavior tag (provider type) stamped onto
+// the error, or the empty string if none was set.
+func (e *nonHTTPErrorBase) BehaviorTag() string       { return e.behaviorTag }
+func (e *nonHTTPErrorBase) setBehaviorTag(tag string) { e.behaviorTag = strings.TrimSpace(tag) }
+
+// StatusCode returns 0; these errors are not HTTP failures.
+func (e *nonHTTPErrorBase) StatusCode() int { return 0 }
+
+// ErrorCode returns the empty string; non-HTTP errors carry no provider error code.
+func (e *nonHTTPErrorBase) ErrorCode() string { return "" }
+
+// Retryable reports whether retrying the request might succeed.
+func (e *nonHTTPErrorBase) Retryable() bool { return e.retryable }
+
+// RetryAfter returns the suggested delay before retrying, or nil if none applies.
 func (e *nonHTTPErrorBase) RetryAfter() *time.Duration { return e.retryAfter }
-func (e *nonHTTPErrorBase) Raw() any                   { return nil }
-func (e *nonHTTPErrorBase) Unwrap() error              { return e.cause }
+
+// Raw returns nil; non-HTTP errors have no raw provider response.
+func (e *nonHTTPErrorBase) Raw() any { return nil }
+
+// Unwrap returns the underlying cause, exposing it to errors.Is/errors.As.
+func (e *nonHTTPErrorBase) Unwrap() error { return e.cause }
 
 // AbortError is a non-HTTP error reporting a user-initiated cancellation.
 type AbortError struct{ nonHTTPErrorBase }

@@ -73,6 +73,8 @@ type httpErrorBase struct {
 	cause       error
 }
 
+// Error returns the error message in the form "<provider> error (status=<code>): <message>",
+// falling back to "request failed" when the message is empty.
 func (e *httpErrorBase) Error() string {
 	msg := strings.TrimSpace(e.message)
 	if msg == "" {
@@ -80,16 +82,35 @@ func (e *httpErrorBase) Error() string {
 	}
 	return fmt.Sprintf("%s error (status=%d): %s", e.provider, e.statusCode, msg)
 }
-func (e *httpErrorBase) Provider() string           { return e.provider }
-func (e *httpErrorBase) setProvider(name string)    { e.provider = strings.TrimSpace(name) }
-func (e *httpErrorBase) BehaviorTag() string        { return e.behaviorTag }
-func (e *httpErrorBase) setBehaviorTag(tag string)  { e.behaviorTag = strings.TrimSpace(tag) }
-func (e *httpErrorBase) StatusCode() int            { return e.statusCode }
-func (e *httpErrorBase) ErrorCode() string          { return e.errorCode }
-func (e *httpErrorBase) Retryable() bool            { return e.retryable }
+
+// Provider returns the provider that produced the error.
+func (e *httpErrorBase) Provider() string        { return e.provider }
+func (e *httpErrorBase) setProvider(name string) { e.provider = strings.TrimSpace(name) }
+
+// BehaviorTag returns the provider behavior tag (provider type) stamped onto
+// the error, or the empty string if none was set.
+func (e *httpErrorBase) BehaviorTag() string       { return e.behaviorTag }
+func (e *httpErrorBase) setBehaviorTag(tag string) { e.behaviorTag = strings.TrimSpace(tag) }
+
+// StatusCode returns the HTTP status code that produced the error.
+func (e *httpErrorBase) StatusCode() int { return e.statusCode }
+
+// ErrorCode returns the provider-specific error code extracted from the response
+// body, or the empty string if none was found.
+func (e *httpErrorBase) ErrorCode() string { return e.errorCode }
+
+// Retryable reports whether retrying the request might succeed.
+func (e *httpErrorBase) Retryable() bool { return e.retryable }
+
+// RetryAfter returns the suggested delay before retrying, typically parsed from
+// the provider's Retry-After header, or nil if none applies.
 func (e *httpErrorBase) RetryAfter() *time.Duration { return e.retryAfter }
-func (e *httpErrorBase) Raw() any                   { return e.rawResponse }
-func (e *httpErrorBase) Unwrap() error              { return e.cause }
+
+// Raw returns the decoded raw provider response body, or nil if unavailable.
+func (e *httpErrorBase) Raw() any { return e.rawResponse }
+
+// Unwrap returns the underlying cause, exposing it to errors.Is/errors.As.
+func (e *httpErrorBase) Unwrap() error { return e.cause }
 
 // invalidRequestError reports a malformed or rejected request, typically from
 // an HTTP 400 or 422 status. It is not retryable. Its category is [KindInvalidRequest].
