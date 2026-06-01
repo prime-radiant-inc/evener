@@ -39,9 +39,9 @@ const (
 // machine, rooted at RootDir and governed by EnvPolicy. It tracks the PIDs of
 // started processes so they can be terminated on cleanup.
 type LocalExecutionEnvironment struct {
-	RootDir     string
-	EnvPolicy   EnvVarPolicy
-	runningPIDs *sync.Map // pid (int) → struct{}
+	RootDir     string       // directory that file operations and commands are rooted at
+	EnvPolicy   EnvVarPolicy // which env vars child processes inherit
+	runningPIDs *sync.Map    // pid (int) → struct{}
 }
 
 // NewLocalExecutionEnvironment returns a LocalExecutionEnvironment rooted at

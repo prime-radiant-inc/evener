@@ -26,23 +26,24 @@ func resolveEffortLevels(model string, providerDefault []string) []string {
 // EnvironmentInfo holds the working directory, platform, version, date, and
 // git/workspace details describing the environment an agent runs in.
 type EnvironmentInfo struct {
-	WorkingDir            string        `json:"working_dir"`
-	Platform              string        `json:"platform"`
-	OSVersion             string        `json:"os_version"`
-	Today                 string        `json:"today"`            // YYYY-MM-DD
-	KnowledgeCutoff       string        `json:"knowledge_cutoff"` // YYYY-MM-DD
-	IsGitRepo             bool          `json:"is_git_repo"`
-	GitBranch             string        `json:"git_branch,omitempty"`
-	GitOriginURL          string        `json:"git_origin_url,omitempty"`
-	GitModifiedFiles      int           `json:"git_modified_files"`
-	GitUntrackedFiles     int           `json:"git_untracked_files"`
-	GitRecentCommitTitles []string      `json:"git_recent_commit_titles,omitempty"`
-	Workspace             WorkspaceInfo `json:"workspace,omitempty"`
+	WorkingDir            string        `json:"working_dir"`                        // the agent's working directory
+	Platform              string        `json:"platform"`                           // OS platform (e.g. "darwin")
+	OSVersion             string        `json:"os_version"`                         // human-readable OS version
+	Today                 string        `json:"today"`                              // YYYY-MM-DD
+	KnowledgeCutoff       string        `json:"knowledge_cutoff"`                   // YYYY-MM-DD
+	IsGitRepo             bool          `json:"is_git_repo"`                        // whether WorkingDir is inside a git repo
+	GitBranch             string        `json:"git_branch,omitempty"`               // current branch name
+	GitOriginURL          string        `json:"git_origin_url,omitempty"`           // "origin" remote URL
+	GitModifiedFiles      int           `json:"git_modified_files"`                 // count of tracked files with changes
+	GitUntrackedFiles     int           `json:"git_untracked_files"`                // count of untracked files
+	GitRecentCommitTitles []string      `json:"git_recent_commit_titles,omitempty"` // recent commit subject lines
+	Workspace             WorkspaceInfo `json:"workspace,omitempty"`                // detected build/workspace layout
 }
 
 // ProviderProfile describes a provider's identity, model, tool definitions,
 // and capabilities, and produces derived profiles via WithModel.
 type ProviderProfile interface {
+	// ID returns the profile identifier, typically "provider/model".
 	ID() string
 	// BehaviorTag returns the stable behavior identity for this profile.
 	// It equals the provider type for all providers except openai with the
@@ -50,22 +51,41 @@ type ProviderProfile interface {
 	// is preserved across WithModel and WithProviderID calls so code that
 	// keys on provider-specific behavior can use the tag instead of the id.
 	BehaviorTag() string
+	// Model returns the model name this profile drives.
 	Model() string
+	// ToolDefinitions returns the tool schemas advertised to the model.
 	ToolDefinitions() []llm.ToolDefinition
+	// SupportsParallelToolCalls reports whether the model may emit multiple
+	// tool calls in a single response.
 	SupportsParallelToolCalls() bool
+	// ContextWindowSize returns the model's context window in tokens.
 	ContextWindowSize() int
+	// ProjectDocFiles returns the project-doc filenames this provider loads
+	// from the working directory (e.g. CLAUDE.md, AGENTS.md), in priority order.
 	ProjectDocFiles() []string
+	// CheapModel returns a cheaper model from the same provider for auxiliary
+	// work such as session naming and summarization.
 	CheapModel() string
+	// WithModel returns a copy of this profile that drives a different model.
 	WithModel(model string) ProviderProfile
+	// ProviderOptions returns provider-specific request options passed through
+	// to the LLM call.
 	ProviderOptions() map[string]any
+	// SupportsReasoning reports whether the model accepts a reasoning-effort
+	// control.
 	SupportsReasoning() bool
 	// ReasoningEffortLevels returns the valid effort strings this provider
 	// accepts, in ascending order. Returns an empty slice when the provider
 	// does not support reasoning control.
 	ReasoningEffortLevels() []string
+	// SupportsStreaming reports whether the provider supports streaming responses.
 	SupportsStreaming() bool
+	// SupportsWebSearch reports whether the provider offers a native web-search tool.
 	SupportsWebSearch() bool
+	// DefaultCommandTimeoutMS returns the provider's preferred default shell
+	// command timeout in milliseconds.
 	DefaultCommandTimeoutMS() int
+	// KnowledgeCutoff returns the model's training knowledge-cutoff date (YYYY-MM-DD).
 	KnowledgeCutoff() string
 	// ToolNameMap returns the canonical→provider-specific tool name mapping.
 	// Returns nil for providers that use canonical names (e.g. Anthropic).

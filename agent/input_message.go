@@ -5,9 +5,9 @@ import "primeradiant.com/serf/llm"
 // ImageAttachment carries a single image attached to user input.
 // Data is the raw image bytes; JSON un/marshals it as base64.
 type ImageAttachment struct {
-	MediaType string `json:"media_type"`
-	Data      []byte `json:"data"`
-	Name      string `json:"name,omitempty"`
+	MediaType string `json:"media_type"`     // MIME type, e.g. "image/png"
+	Data      []byte `json:"data"`           // raw image bytes (base64 in JSON)
+	Name      string `json:"name,omitempty"` // original filename, when known
 }
 
 // userInputImagesFromAttachments converts the attachments into the

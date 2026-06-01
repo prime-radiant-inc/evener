@@ -90,9 +90,9 @@ func cloneSchemaValue(v any) any {
 // ToolOutputLimit specifies the character and line bounds, and the truncation
 // strategy, applied to a tool's output before it is sent to the model.
 type ToolOutputLimit struct {
-	MaxChars int                `json:"max_chars,omitempty"`
-	MaxLines int                `json:"max_lines,omitempty"`
-	Strategy TruncationStrategy `json:"strategy,omitempty"`
+	MaxChars int                `json:"max_chars,omitempty"` // max output characters (0 = no char limit)
+	MaxLines int                `json:"max_lines,omitempty"` // max output lines (0 = no line limit)
+	Strategy TruncationStrategy `json:"strategy,omitempty"`  // how to trim when a limit is exceeded
 }
 
 // toolExecResult holds the outcome of executing a single tool call, including

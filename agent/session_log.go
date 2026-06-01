@@ -12,13 +12,13 @@ import (
 
 // SessionLogEntry is a structured summary of one action.
 type SessionLogEntry struct {
-	Kind         string   `json:"kind,omitempty"`
-	Turn         int      `json:"turn"`
-	Action       string   `json:"action"` // tool name or "assistant"
-	Summary      string   `json:"summary"`
-	Outcome      string   `json:"outcome"` // "success" or "failure"
-	FilesTouched []string `json:"files_touched,omitempty"`
-	Failures     []string `json:"failures,omitempty"`
+	Kind         string   `json:"kind,omitempty"`          // optional category tag (e.g. "advisory")
+	Turn         int      `json:"turn"`                    // turn index the action occurred on
+	Action       string   `json:"action"`                  // tool name or "assistant"
+	Summary      string   `json:"summary"`                 // one-line description of the action
+	Outcome      string   `json:"outcome"`                 // "success" or "failure"
+	FilesTouched []string `json:"files_touched,omitempty"` // paths created or modified
+	Failures     []string `json:"failures,omitempty"`      // failure messages, when Outcome is "failure"
 }
 
 // SessionLog manages a structured, append-only log of session actions.

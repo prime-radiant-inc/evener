@@ -8,8 +8,8 @@ var ErrPermissionDenied = errors.New("permission denied")
 // PermissionDeniedError records that permission was denied for a specific tool,
 // along with an explanatory message.
 type PermissionDeniedError struct {
-	Tool    string
-	Message string
+	Tool    string // name of the tool whose use was denied
+	Message string // human-readable reason for the denial
 }
 
 // Error returns the error message describing the tool and reason for which

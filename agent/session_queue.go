@@ -351,8 +351,8 @@ func (s *Session) prependSteering(entries []steeringMessage) {
 // messages without reaching into private state. Text + Images are copies;
 // mutating them is safe and has no effect on the queue.
 type SteeringEntry struct {
-	Text   string
-	Images []ImageAttachment
+	Text   string            // the steering message text
+	Images []ImageAttachment // any images attached to the steering message
 }
 
 // SteeringQueueSnapshot returns a copy of the session's current steering

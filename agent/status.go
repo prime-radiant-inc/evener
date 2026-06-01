@@ -10,7 +10,7 @@ type ToolInfo struct {
 
 // MCPServerInfo describes a connected MCP server and its tools.
 type MCPServerInfo struct {
-	Name  string   `json:"name"`
+	Name  string   `json:"name"`  // server name as configured
 	Tools []string `json:"tools"` // namespaced tool names
 }
 
@@ -33,13 +33,14 @@ type SubagentInfo struct {
 
 // DetailedStatus captures the full session configuration for /status display.
 type DetailedStatus struct {
-	Tools     []ToolInfo        `json:"tools,omitempty"`
-	MCP       []MCPServerInfo   `json:"mcp,omitempty"`
-	Skills    []SkillMeta       `json:"skills,omitempty"`
-	Plugins   []PluginInfo      `json:"plugins,omitempty"`
+	Tools   []ToolInfo      `json:"tools,omitempty"`   // every registered tool and its source
+	MCP     []MCPServerInfo `json:"mcp,omitempty"`     // connected MCP servers
+	Skills  []SkillMeta     `json:"skills,omitempty"`  // discovered skills, sorted by name
+	Plugins []PluginInfo    `json:"plugins,omitempty"` // loaded plugins
+	// Hooks maps each hook event to the number of registered hooks for it.
 	Hooks     map[HookEvent]int `json:"hooks,omitempty"`
-	Subagents []SubagentInfo    `json:"subagents,omitempty"`
-	Agents    []string          `json:"agents,omitempty"` // public agent names
+	Subagents []SubagentInfo    `json:"subagents,omitempty"` // active sub-agents
+	Agents    []string          `json:"agents,omitempty"`    // public agent names
 }
 
 // DetailedStatus builds a snapshot of the session's loaded tools, MCP servers,

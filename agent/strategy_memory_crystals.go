@@ -10,9 +10,9 @@ import (
 
 // MemoryCrystal is a structured micro-summary of key facts from a session action.
 type MemoryCrystal struct {
-	Turn   int    `json:"turn"`
-	Action string `json:"action"`
-	Facts  string `json:"facts"`
+	Turn   int    `json:"turn"`   // turn index the crystal was extracted from
+	Action string `json:"action"` // the action that produced the facts
+	Facts  string `json:"facts"`  // compact, machine-readable key facts
 }
 
 // memoryCrystalsStrategy uses compact compaction as the base, but periodically
