@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appprojector"
 	"primeradiant.com/serf/internal/appserver"
@@ -39,7 +39,7 @@ func (s *Server) AppNotificationsAfter(cursor uint64, threadID string) []appserv
 	return s.appNotifier.ReplayAfter(cursor, threadID)
 }
 
-func (s *Server) RecordAppEvent(event agent.SessionEvent) {
+func (s *Server) RecordAppEvent(event events.SessionEvent) {
 	s.mu.Lock()
 	if !s.acceptsSessionEventLocked(event.SessionID) {
 		s.mu.Unlock()

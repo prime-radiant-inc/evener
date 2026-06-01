@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -174,7 +175,7 @@ func TestParsePluginHooks_DefaultTimeouts(t *testing.T) {
 }
 
 func TestParsePluginHooks_AllEvents(t *testing.T) {
-	events := []HookEvent{
+	evs := []HookEvent{
 		HookPreToolUse, HookPostToolUse, HookStop, HookSubagentStop,
 		HookUserPromptSubmit, HookSessionStart, HookSessionEnd,
 		HookPreCompact, HookNotification,
@@ -182,7 +183,7 @@ func TestParsePluginHooks_AllEvents(t *testing.T) {
 
 	// Build JSON with all event types
 	inner := ""
-	for i, e := range events {
+	for i, e := range evs {
 		if i > 0 {
 			inner += ","
 		}
@@ -195,7 +196,7 @@ func TestParsePluginHooks_AllEvents(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	for _, e := range events {
+	for _, e := range evs {
 		if _, ok := hooks[e]; !ok {
 			t.Errorf("missing event %q", e)
 		}
@@ -797,9 +798,9 @@ func TestHookRunner_EmitsHookEvents(t *testing.T) {
 		PluginName: "my-plugin",
 	})
 
-	var collected []SessionEvent
-	runner.SetEventCallback(func(kind EventKind, data EventData) {
-		collected = append(collected, SessionEvent{Kind: kind, Data: data})
+	var collected []events.SessionEvent
+	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+		collected = append(collected, events.SessionEvent{Kind: kind, Data: data})
 	})
 
 	input := hookInput{
@@ -812,9 +813,9 @@ func TestHookRunner_EmitsHookEvents(t *testing.T) {
 	var starts, ends int
 	for _, ev := range collected {
 		switch ev.Kind {
-		case EventHookStart:
+		case events.EventHookStart:
 			starts++
-			d, ok := ev.Data.(HookStartData)
+			d, ok := ev.Data.(events.HookStartData)
 			if !ok {
 				t.Fatal("HookStart data wrong type")
 			}
@@ -830,9 +831,9 @@ func TestHookRunner_EmitsHookEvents(t *testing.T) {
 			if d.PluginName != "my-plugin" {
 				t.Errorf("PluginName = %q, want %q", d.PluginName, "my-plugin")
 			}
-		case EventHookEnd:
+		case events.EventHookEnd:
 			ends++
-			d, ok := ev.Data.(HookEndData)
+			d, ok := ev.Data.(events.HookEndData)
 			if !ok {
 				t.Fatal("HookEnd data wrong type")
 			}

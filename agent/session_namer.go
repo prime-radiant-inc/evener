@@ -9,6 +9,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -280,11 +281,11 @@ func isSessionNameCompactionTurn(turn Turn) bool {
 func (s *Session) handleCompactionTurn(t Turn) {
 	if s.transcript != nil {
 		if err := s.transcript.Append(t); err != nil {
-			s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})
 		}
 	}
 	if isSessionNameCompactionTurn(t) {
-		s.emit(EventCompactionTurn, CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
+		s.emit(events.EventCompactionTurn, events.CompactionTurnData{Kind: string(t.Kind), Text: t.Message.Text()})
 	}
 	s.launchCompactionNamer(s.sessionCtx, t)
 	// After compaction, inject full task list if tasks exist.
@@ -386,11 +387,11 @@ func (s *Session) appendSessionNamerLog(entry SessionLogEntry) {
 	logPath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".log.jsonl")
 	log, err := NewSessionLog(logPath)
 	if err != nil {
-		s.emit(EventWarning, WarningData{Message: fmt.Sprintf("session namer log open failed: %v", err)})
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("session namer log open failed: %v", err)})
 		return
 	}
 	if err := log.Append(entry); err != nil {
-		s.emit(EventWarning, WarningData{Message: fmt.Sprintf("session namer log append failed: %v", err)})
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("session namer log append failed: %v", err)})
 	}
 }
 

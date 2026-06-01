@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"primeradiant.com/serf/agent/events"
 )
 
 // minWaitTimeoutMS is the minimum timeout for the wait tool, preventing the model
@@ -48,7 +50,7 @@ var rootOnlyAgentManagementTools = []string{"spawn_agent", "resume_agent", "wait
 type subagent struct {
 	id   string
 	sess *Session
-	emit func(EventKind, EventData)
+	emit func(events.EventKind, events.EventData)
 
 	mu             sync.Mutex
 	running        bool
@@ -302,7 +304,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		if err := subStore.PopulateFromTemplates(agent.Tasks, parentTasks); err != nil {
 			// Non-fatal: surface as a warning so the spawn still proceeds but the
 			// failure is observable instead of silently swallowed.
-			s.emit(EventWarning, warningDataFromError("failed to populate subagent tasks from templates", err))
+			s.emit(events.EventWarning, warningDataFromError("failed to populate subagent tasks from templates", err))
 		}
 		// Inject the first task's prompt as a steering message.
 		if current, ok := subStore.CurrentInProgress(); ok {
@@ -342,7 +344,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		sub.run(context.Background(), task)
 	}()
 
-	s.emit(EventSubagentStart, SubagentStartData{
+	s.emit(events.EventSubagentStart, events.SubagentStartData{
 		AgentID: sub.id,
 		Task:    task,
 	})
@@ -387,7 +389,7 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 	sub.endEmitted = false
 	sub.mu.Unlock()
 
-	s.emit(EventSubagentStart, SubagentStartData{
+	s.emit(events.EventSubagentStart, events.SubagentStartData{
 		AgentID: sub.id,
 		Task:    input,
 	})
@@ -533,7 +535,7 @@ func (a *subagent) run(ctx context.Context, input string) {
 		close(done)
 	}
 	if emitEnd && emit != nil {
-		emit(EventSubagentEnd, SubagentEndData{
+		emit(events.EventSubagentEnd, events.SubagentEndData{
 			AgentID:   a.id,
 			Status:    string(status),
 			TurnsUsed: turnsUsed,

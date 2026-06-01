@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/openai"
 )
@@ -48,23 +49,23 @@ func integrationSession(t *testing.T) *Session {
 // drainEvents starts a goroutine that drains the session's event channel to
 // prevent blocking. Returns a function that stops draining and returns all
 // collected events.
-func drainEvents(sess *Session) func() []SessionEvent {
-	var events []SessionEvent
+func drainEvents(sess *Session) func() []events.SessionEvent {
+	var evs []events.SessionEvent
 	var mu sync.Mutex
 	done := make(chan struct{})
 	go func() {
 		for ev := range sess.Events() {
 			mu.Lock()
-			events = append(events, ev)
+			evs = append(evs, ev)
 			mu.Unlock()
 		}
 		close(done)
 	}()
-	return func() []SessionEvent {
+	return func() []events.SessionEvent {
 		<-done
 		mu.Lock()
 		defer mu.Unlock()
-		return events
+		return evs
 	}
 }
 
@@ -78,7 +79,7 @@ func TestIntegration_SimpleFileCreation(t *testing.T) {
 
 	_, err := sess.ProcessInput(ctx, "Create a file called hello.txt containing exactly 'Hello, World!' and nothing else. Do not include any extra newlines or whitespace.", nil)
 	sess.Close()
-	events := collectEvents()
+	evs := collectEvents()
 
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -93,8 +94,8 @@ func TestIntegration_SimpleFileCreation(t *testing.T) {
 
 	// Verify we got tool call events (the model used tools).
 	var sawToolCall bool
-	for _, ev := range events {
-		if ev.Kind == EventToolCallStart {
+	for _, ev := range evs {
+		if ev.Kind == events.EventToolCallStart {
 			sawToolCall = true
 			break
 		}
@@ -150,7 +151,7 @@ func TestIntegration_ShellCommand(t *testing.T) {
 
 	output, err := sess.ProcessInput(ctx, "Run the shell command: echo 'hello from shell'. Report the output.", nil)
 	sess.Close()
-	events := collectEvents()
+	evs := collectEvents()
 
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -158,8 +159,8 @@ func TestIntegration_ShellCommand(t *testing.T) {
 
 	// Verify the model called a shell tool by checking events.
 	var shellCalled bool
-	for _, ev := range events {
-		if ev.Kind == EventToolCallStart {
+	for _, ev := range evs {
+		if ev.Kind == events.EventToolCallStart {
 			name, _ := ev.DataMap()["tool_name"].(string)
 			// OpenAI profile maps "shell" to "exec_command"
 			if name == "shell" || name == "exec_command" {
@@ -174,8 +175,8 @@ func TestIntegration_ShellCommand(t *testing.T) {
 
 	// Verify the tool output contains the expected string.
 	var sawHello bool
-	for _, ev := range events {
-		if ev.Kind == EventToolCallEnd {
+	for _, ev := range evs {
+		if ev.Kind == events.EventToolCallEnd {
 			fullOutput, _ := ev.DataMap()["output"].(string)
 			if strings.Contains(fullOutput, "hello from shell") {
 				sawHello = true
@@ -230,7 +231,7 @@ func TestIntegration_Steering(t *testing.T) {
 
 	_, err := sess.ProcessInput(ctx, "Create a file called main.txt with the content 'main task'.", nil)
 	sess.Close()
-	events := collectEvents()
+	evs := collectEvents()
 
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -238,8 +239,8 @@ func TestIntegration_Steering(t *testing.T) {
 
 	// Verify steering was injected.
 	var sawSteering bool
-	for _, ev := range events {
-		if ev.Kind == EventSteeringInjected {
+	for _, ev := range evs {
+		if ev.Kind == events.EventSteeringInjected {
 			sawSteering = true
 			break
 		}
@@ -287,7 +288,7 @@ func TestIntegration_Subagent(t *testing.T) {
 			"'Create a file called subagent_output.txt containing exactly the text: created by subagent'. "+
 			"Wait for it to finish, then close it. Do not use the task_list tool.", nil)
 	sess.Close()
-	events := collectEvents()
+	evs := collectEvents()
 
 	if err != nil {
 		t.Fatalf("ProcessInput: %v", err)
@@ -295,8 +296,8 @@ func TestIntegration_Subagent(t *testing.T) {
 
 	// Verify spawn_agent was called by checking events.
 	var sawSpawn bool
-	for _, ev := range events {
-		if ev.Kind == EventToolCallStart {
+	for _, ev := range evs {
+		if ev.Kind == events.EventToolCallStart {
 			name, _ := ev.DataMap()["tool_name"].(string)
 			if name == "spawn_agent" {
 				sawSpawn = true

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -21,7 +22,7 @@ import (
 // seam. registerSubagentTools still captures *Session directly.
 type toolDeps struct {
 	// emit publishes a session event (best-effort, same as Session.emit).
-	emit func(kind EventKind, data EventData)
+	emit func(kind events.EventKind, data events.EventData)
 
 	// steering queue access for the communicate handler.
 	steer           func(msg string)
@@ -755,7 +756,7 @@ func registerCommunicateTool(reg *toolRegistry, deps *toolDeps) {
 				return nil, err
 			}
 
-			deps.emit(EventCommunicate, CommunicateData{
+			deps.emit(events.EventCommunicate, events.CommunicateData{
 				AwaitReply: awaitReply,
 				Message:    message,
 			})
@@ -804,7 +805,7 @@ func registerSkillTool(reg *toolRegistry, deps *toolDeps) {
 				if !ok {
 					return nil, fmt.Errorf("skill %q not found", skillName)
 				}
-				deps.emit(EventSkillActivated, SkillActivatedData{Name: skillName})
+				deps.emit(events.EventSkillActivated, events.SkillActivatedData{Name: skillName})
 				body, err := LoadSkillBody(meta)
 				if err != nil {
 					return nil, fmt.Errorf("loading skill %q: %w", skillName, err)

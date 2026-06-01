@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -140,7 +141,7 @@ func (s *Session) describeImage(ctx context.Context, r toolExecResult) string {
 
 	resp, err := s.client.Complete(ctx, req)
 	if err != nil {
-		s.emit(EventWarning, WarningData{Message: fmt.Sprintf("vision side-channel failed: %v", err)})
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("vision side-channel failed: %v", err)})
 		return ""
 	}
 
@@ -247,7 +248,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) toolExecR
 	}
 
 	argsJSON, _ := json.Marshal(call.Arguments)
-	startData := ToolCallStartData{
+	startData := events.ToolCallStartData{
 		ToolName:      call.Name,
 		CallID:        call.ID,
 		ArgumentsJSON: string(argsJSON),
@@ -275,7 +276,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) toolExecR
 		s.toolEventsWG.Add(1)
 		startEmitted = true
 		toolEventOpen = true
-		s.emit(EventToolCallStart, startData)
+		s.emit(events.EventToolCallStart, startData)
 	}); err != nil {
 		return skippedToolResult(call, err)
 	}
@@ -286,7 +287,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) toolExecR
 		}
 		res := skippedToolResult(call, err)
 		s.responseSideEffectsMu.Lock()
-		s.emit(EventToolCallEnd, ToolCallEndData{
+		s.emit(events.EventToolCallEnd, events.ToolCallEndData{
 			ToolName: res.ToolName,
 			CallID:   res.CallID,
 			Error:    res.FullOutput,
@@ -312,7 +313,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) toolExecR
 
 	s.responseSideEffectsMu.Lock()
 	if err := s.errIfClosing(); err != nil {
-		s.emit(EventToolCallEnd, ToolCallEndData{
+		s.emit(events.EventToolCallEnd, events.ToolCallEndData{
 			ToolName: call.Name,
 			CallID:   call.ID,
 			Error:    skippedToolResult(call, err).FullOutput,
@@ -330,14 +331,14 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) toolExecR
 		if j > len(full) {
 			j = len(full)
 		}
-		s.emit(EventToolCallOutputDelta, ToolCallOutputDeltaData{
+		s.emit(events.EventToolCallOutputDelta, events.ToolCallOutputDeltaData{
 			ToolName: res.ToolName,
 			CallID:   res.CallID,
 			Delta:    full[i:j],
 		})
 	}
 
-	endData := ToolCallEndData{
+	endData := events.ToolCallEndData{
 		ToolName:  res.ToolName,
 		CallID:    res.CallID,
 		ToolState: res.ToolState,
@@ -347,7 +348,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) toolExecR
 	} else {
 		endData.Output = res.FullOutput
 	}
-	s.emit(EventToolCallEnd, endData)
+	s.emit(events.EventToolCallEnd, endData)
 	s.responseSideEffectsMu.Unlock()
 	closeToolEvent()
 	startEmitted = false

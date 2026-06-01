@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -36,9 +37,9 @@ func ExampleNewSession() {
 	_ = sess
 }
 
-// Session.Events returns a channel of [agent.SessionEvent] values reporting a
+// Session.Events returns a channel of [events.SessionEvent] values reporting a
 // turn as it happens. Range over it from a separate goroutine to render
-// progress live; each event carries an [agent.EventKind] and a typed payload.
+// progress live; each event carries an [events.EventKind] and a typed payload.
 // The channel closes when [agent.Session.Close] is called.
 func ExampleSession_Events() {
 	var sess *agent.Session // obtained from agent.NewSession
@@ -46,16 +47,16 @@ func ExampleSession_Events() {
 	go func() {
 		for ev := range sess.Events() {
 			switch ev.Kind {
-			case agent.EventAssistantTextDelta:
+			case events.EventAssistantTextDelta:
 				// Incremental assistant text.
-				if d, ok := ev.Data.(agent.AssistantTextDeltaData); ok {
+				if d, ok := ev.Data.(events.AssistantTextDeltaData); ok {
 					fmt.Print(d.Delta)
 				}
-			case agent.EventToolCallStart:
-				if d, ok := ev.Data.(agent.ToolCallStartData); ok {
+			case events.EventToolCallStart:
+				if d, ok := ev.Data.(events.ToolCallStartData); ok {
 					fmt.Printf("\n[tool] %s\n", d.ToolName)
 				}
-			case agent.EventSessionEnd:
+			case events.EventSessionEnd:
 				return
 			}
 		}

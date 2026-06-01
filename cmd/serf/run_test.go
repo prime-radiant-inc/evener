@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/auth/openai/oaitest"
 	"primeradiant.com/serf/llm"
 )
@@ -290,34 +291,34 @@ func TestResumeLast_NoSessions(t *testing.T) {
 
 // --- Drain event tests ---
 
-func testEvents() []agent.SessionEvent {
+func testEvents() []events.SessionEvent {
 	now := time.Date(2025, 6, 1, 12, 0, 0, 0, time.UTC)
-	return []agent.SessionEvent{
-		{Kind: agent.EventSessionStart, Timestamp: now, SessionID: "sess1", Data: agent.SessionStartData{Model: "gpt-5.2", Profile: "openai"}},
-		{Kind: agent.EventAssistantTextEnd, Timestamp: now, SessionID: "sess1", Data: agent.AssistantTextEndData{
+	return []events.SessionEvent{
+		{Kind: events.EventSessionStart, Timestamp: now, SessionID: "sess1", Data: events.SessionStartData{Model: "gpt-5.2", Profile: "openai"}},
+		{Kind: events.EventAssistantTextEnd, Timestamp: now, SessionID: "sess1", Data: events.AssistantTextEndData{
 			Text:         "here is my answer",
 			Reasoning:    "let me think carefully",
 			FinishReason: "stop",
 			Model:        "gpt-5.2",
 			Usage:        llm.Usage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150, CacheReadTokens: intPtr(80), CacheWriteTokens: intPtr(20)},
 		}},
-		{Kind: agent.EventToolCallStart, Timestamp: now, SessionID: "sess1", Data: agent.ToolCallStartData{
+		{Kind: events.EventToolCallStart, Timestamp: now, SessionID: "sess1", Data: events.ToolCallStartData{
 			ToolName:      "write_file",
 			CallID:        "call_1",
 			ArgumentsJSON: `{"file_path":"/tmp/test.txt","content":"hello world this is a longer argument string for testing truncation behavior"}`,
 		}},
-		{Kind: agent.EventToolCallEnd, Timestamp: now, SessionID: "sess1", Data: agent.ToolCallEndData{
+		{Kind: events.EventToolCallEnd, Timestamp: now, SessionID: "sess1", Data: events.ToolCallEndData{
 			ToolName: "write_file",
 			CallID:   "call_1",
 		}},
-		{Kind: agent.EventWarning, Timestamp: now, SessionID: "sess1", Data: agent.WarningData{Message: "context window 80% full"}},
-		{Kind: agent.EventError, Timestamp: now, SessionID: "sess1", Data: agent.ErrorData{Error: "something went wrong"}},
+		{Kind: events.EventWarning, Timestamp: now, SessionID: "sess1", Data: events.WarningData{Message: "context window 80% full"}},
+		{Kind: events.EventError, Timestamp: now, SessionID: "sess1", Data: events.ErrorData{Error: "something went wrong"}},
 	}
 }
 
-func feedEvents(events []agent.SessionEvent) <-chan agent.SessionEvent {
-	ch := make(chan agent.SessionEvent, len(events))
-	for _, ev := range events {
+func feedEvents(evs []events.SessionEvent) <-chan events.SessionEvent {
+	ch := make(chan events.SessionEvent, len(evs))
+	for _, ev := range evs {
 		ch <- ev
 	}
 	close(ch)
@@ -325,15 +326,15 @@ func feedEvents(events []agent.SessionEvent) <-chan agent.SessionEvent {
 }
 
 func TestDrainEventsVerbose(t *testing.T) {
-	events := testEvents()
-	ch := feedEvents(events)
+	evs := testEvents()
+	ch := feedEvents(evs)
 	var buf bytes.Buffer
 	done := drainEventsVerbose(ch, &buf)
 	<-done
 
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
-	if len(lines) != len(events) {
-		t.Fatalf("expected %d NDJSON lines, got %d:\n%s", len(events), len(lines), buf.String())
+	if len(lines) != len(evs) {
+		t.Fatalf("expected %d NDJSON lines, got %d:\n%s", len(evs), len(lines), buf.String())
 	}
 
 	// Each line must be valid JSON with a kind field.
@@ -376,8 +377,8 @@ func TestDrainEventsVerbose(t *testing.T) {
 }
 
 func TestDrainEventsHuman(t *testing.T) {
-	events := testEvents()
-	ch := feedEvents(events)
+	evs := testEvents()
+	ch := feedEvents(evs)
 	var buf bytes.Buffer
 	done := drainEventsHuman(ch, &buf)
 	<-done
@@ -458,14 +459,14 @@ func TestRunConfig_PluginDirsPassthrough(t *testing.T) {
 }
 
 func TestDrainEventsHuman_PluginEvents(t *testing.T) {
-	ch := make(chan agent.SessionEvent, 3)
-	ch <- agent.SessionEvent{Kind: agent.EventPluginLoaded, Data: agent.PluginLoadedData{
+	ch := make(chan events.SessionEvent, 3)
+	ch <- events.SessionEvent{Kind: events.EventPluginLoaded, Data: events.PluginLoadedData{
 		Name: "test-plugin", SkillCount: 2, AgentCount: 1, MCPCount: 0,
 	}}
-	ch <- agent.SessionEvent{Kind: agent.EventHookStart, Data: agent.HookStartData{
+	ch <- events.SessionEvent{Kind: events.EventHookStart, Data: events.HookStartData{
 		Event: "PreToolUse", HookType: "command", Matcher: "Write",
 	}}
-	ch <- agent.SessionEvent{Kind: agent.EventHookEnd, Data: agent.HookEndData{
+	ch <- events.SessionEvent{Kind: events.EventHookEnd, Data: events.HookEndData{
 		Event: "PreToolUse", HookType: "command", Matcher: "Write", DurationMS: 42,
 	}}
 	close(ch)

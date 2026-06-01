@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -72,7 +73,7 @@ func TestSession_Close_NoRaceWithConcurrentEmit(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 200; j++ {
-				sess.emit(EventWarning, WarningData{Message: "concurrent"})
+				sess.emit(events.EventWarning, events.WarningData{Message: "concurrent"})
 			}
 		}()
 		// Close concurrently with the caller-owned emits.

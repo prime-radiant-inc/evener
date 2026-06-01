@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"time"
+
+	"primeradiant.com/serf/agent/events"
 )
 
 // SessionState represents the current lifecycle state of a session.
@@ -135,7 +137,7 @@ func (s *Session) abortResponseProcessing(ctx context.Context) error {
 		return context.Canceled
 	}
 	if err := ctx.Err(); err != nil {
-		s.emit(EventError, errorDataFromError(err))
+		s.emit(events.EventError, errorDataFromError(err))
 		return err
 	}
 	return nil

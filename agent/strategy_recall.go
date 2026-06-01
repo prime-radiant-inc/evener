@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -31,7 +32,7 @@ func (s *recallStrategy) Name() string { return "recall" }
 
 // ManageContext delegates to the underlying compactStrategy to manage the
 // conversation history.
-func (s *recallStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, EventData)) error {
+func (s *recallStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
 	return s.compact.ManageContext(ctx, history, sysPromptChars, emitFn)
 }
 

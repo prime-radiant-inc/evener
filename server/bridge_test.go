@@ -4,22 +4,22 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/appwire"
 )
 
 func TestBridge_ForwardsEvents(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
-	events := make(chan agent.SessionEvent, 10)
+	evs := make(chan events.SessionEvent, 10)
 
-	go Bridge(srv, events)
+	go Bridge(srv, evs)
 
-	events <- agent.SessionEvent{
-		Kind:      agent.EventAssistantTextDelta,
+	evs <- events.SessionEvent{
+		Kind:      events.EventAssistantTextDelta,
 		SessionID: "s1",
-		Data:      agent.AssistantTextDeltaData{Delta: "hello"},
+		Data:      events.AssistantTextDeltaData{Delta: "hello"},
 	}
-	close(events)
+	close(evs)
 
 	// Give bridge time to process
 	time.Sleep(50 * time.Millisecond)
@@ -32,19 +32,19 @@ func TestBridge_ForwardsEvents(t *testing.T) {
 
 func TestBridge_UpdatesStatusOnSessionStart(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
-	events := make(chan agent.SessionEvent, 10)
+	evs := make(chan events.SessionEvent, 10)
 
-	go Bridge(srv, events)
+	go Bridge(srv, evs)
 
-	events <- agent.SessionEvent{
-		Kind:      agent.EventSessionStart,
+	evs <- events.SessionEvent{
+		Kind:      events.EventSessionStart,
 		SessionID: "s1",
-		Data: agent.SessionStartData{
+		Data: events.SessionStartData{
 			Profile: "openai",
 			Model:   "gpt-5",
 		},
 	}
-	close(events)
+	close(evs)
 	time.Sleep(50 * time.Millisecond)
 
 	status := srv.GetStatus()
@@ -61,21 +61,21 @@ func TestBridge_UpdatesStatusOnSessionStart(t *testing.T) {
 
 func TestBridge_IncrementsturnsOnAssistantTextEnd(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
-	events := make(chan agent.SessionEvent, 10)
+	evs := make(chan events.SessionEvent, 10)
 
-	go Bridge(srv, events)
+	go Bridge(srv, evs)
 
-	events <- agent.SessionEvent{
-		Kind:      agent.EventAssistantTextEnd,
+	evs <- events.SessionEvent{
+		Kind:      events.EventAssistantTextEnd,
 		SessionID: "s1",
-		Data:      agent.AssistantTextEndData{Text: "hi"},
+		Data:      events.AssistantTextEndData{Text: "hi"},
 	}
-	events <- agent.SessionEvent{
-		Kind:      agent.EventAssistantTextEnd,
+	evs <- events.SessionEvent{
+		Kind:      events.EventAssistantTextEnd,
 		SessionID: "s1",
-		Data:      agent.AssistantTextEndData{Text: "bye"},
+		Data:      events.AssistantTextEndData{Text: "bye"},
 	}
-	close(events)
+	close(evs)
 	time.Sleep(50 * time.Millisecond)
 
 	status := srv.GetStatus()
@@ -86,16 +86,16 @@ func TestBridge_IncrementsturnsOnAssistantTextEnd(t *testing.T) {
 
 func TestBridge_ClosesOnSessionEnd(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
-	events := make(chan agent.SessionEvent, 10)
+	evs := make(chan events.SessionEvent, 10)
 
-	go Bridge(srv, events)
+	go Bridge(srv, evs)
 
-	events <- agent.SessionEvent{
-		Kind:      agent.EventSessionEnd,
+	evs <- events.SessionEvent{
+		Kind:      events.EventSessionEnd,
 		SessionID: "s1",
-		Data:      agent.SessionEndData{Reason: "done"},
+		Data:      events.SessionEndData{Reason: "done"},
 	}
-	close(events)
+	close(evs)
 	time.Sleep(50 * time.Millisecond)
 
 	status := srv.GetStatus()
@@ -113,16 +113,16 @@ func TestBridge_ClosesOnSessionEnd(t *testing.T) {
 
 func TestBridge_UsesSessionEndStateWhenProvided(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
-	events := make(chan agent.SessionEvent, 10)
+	evs := make(chan events.SessionEvent, 10)
 
-	go Bridge(srv, events)
+	go Bridge(srv, evs)
 
-	events <- agent.SessionEvent{
-		Kind:      agent.EventSessionEnd,
+	evs <- events.SessionEvent{
+		Kind:      events.EventSessionEnd,
 		SessionID: "s1",
-		Data:      agent.SessionEndData{Reason: "input_complete", State: "idle"},
+		Data:      events.SessionEndData{Reason: "input_complete", State: "idle"},
 	}
-	close(events)
+	close(evs)
 	time.Sleep(50 * time.Millisecond)
 
 	status := srv.GetStatus()
@@ -135,16 +135,16 @@ func TestBridge_InterruptedSessionEndDoesNotClearProcessing(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	srv.SetProcessing(true)
 	srv.SetState("active")
-	events := make(chan agent.SessionEvent, 10)
+	evs := make(chan events.SessionEvent, 10)
 
-	go Bridge(srv, events)
+	go Bridge(srv, evs)
 
-	events <- agent.SessionEvent{
-		Kind:      agent.EventSessionEnd,
+	evs <- events.SessionEvent{
+		Kind:      events.EventSessionEnd,
 		SessionID: "s1",
-		Data:      agent.SessionEndData{Reason: "interrupted", State: "idle", Interrupted: true},
+		Data:      events.SessionEndData{Reason: "interrupted", State: "idle", Interrupted: true},
 	}
-	close(events)
+	close(evs)
 	time.Sleep(50 * time.Millisecond)
 
 	status := srv.GetStatus()
@@ -164,20 +164,20 @@ func TestBridge_IgnoresStaleEventsAfterSessionIdentityChanges(t *testing.T) {
 	srv.SetAppIdentity("local", "new-session")
 	srv.UpdateSessionInfo("new-session", "gpt-5", "openai")
 	srv.SetState("idle")
-	events := make(chan agent.SessionEvent, 10)
+	evs := make(chan events.SessionEvent, 10)
 	done := make(chan struct{})
 
 	go func() {
 		defer close(done)
-		Bridge(srv, events)
+		Bridge(srv, evs)
 	}()
 
-	events <- agent.SessionEvent{
-		Kind:      agent.EventSessionEnd,
+	evs <- events.SessionEvent{
+		Kind:      events.EventSessionEnd,
 		SessionID: "old-session",
-		Data:      agent.SessionEndData{Reason: "clear", State: "closed"},
+		Data:      events.SessionEndData{Reason: "clear", State: "closed"},
 	}
-	close(events)
+	close(evs)
 	<-done
 
 	status := srv.GetStatus()
@@ -191,24 +191,24 @@ func TestBridge_IgnoresStaleEventsAfterSessionIdentityChanges(t *testing.T) {
 
 func TestBridgeWithObserver_InvokesObserverAndForwardsEvents(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
-	events := make(chan agent.SessionEvent, 10)
-	observed := make(chan agent.SessionEvent, 1)
+	evs := make(chan events.SessionEvent, 10)
+	observed := make(chan events.SessionEvent, 1)
 	done := make(chan struct{})
 
 	go func() {
 		defer close(done)
-		BridgeWithObserver(srv, events, func(ev agent.SessionEvent) {
+		BridgeWithObserver(srv, evs, func(ev events.SessionEvent) {
 			observed <- ev
 		})
 	}()
 
-	want := agent.SessionEvent{
-		Kind:      agent.EventAssistantTextDelta,
+	want := events.SessionEvent{
+		Kind:      events.EventAssistantTextDelta,
 		SessionID: "s1",
-		Data:      agent.AssistantTextDeltaData{Delta: "hello"},
+		Data:      events.AssistantTextDeltaData{Delta: "hello"},
 	}
-	events <- want
-	close(events)
+	evs <- want
+	close(evs)
 	<-done
 
 	select {
@@ -224,21 +224,21 @@ func TestBridgeWithObserver_InvokesObserverAndForwardsEvents(t *testing.T) {
 func TestBridge_RecordsAppWireNotifications(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	srv.SetAppIdentity("local", "th_1")
-	events := make(chan agent.SessionEvent, 10)
+	evs := make(chan events.SessionEvent, 10)
 
-	go Bridge(srv, events)
+	go Bridge(srv, evs)
 
-	events <- agent.SessionEvent{
-		Kind:      agent.EventUserInput,
+	evs <- events.SessionEvent{
+		Kind:      events.EventUserInput,
 		SessionID: "th_1",
-		Data:      agent.UserInputData{Text: "hello"},
+		Data:      events.UserInputData{Text: "hello"},
 	}
-	events <- agent.SessionEvent{
-		Kind:      agent.EventAssistantTextDelta,
+	evs <- events.SessionEvent{
+		Kind:      events.EventAssistantTextDelta,
 		SessionID: "th_1",
-		Data:      agent.AssistantTextDeltaData{Delta: "hi"},
+		Data:      events.AssistantTextDeltaData{Delta: "hi"},
 	}
-	close(events)
+	close(evs)
 	time.Sleep(50 * time.Millisecond)
 
 	items := srv.AppNotificationsAfter(0, "th_1")

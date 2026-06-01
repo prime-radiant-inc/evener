@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -81,7 +82,7 @@ func TestRecallStrategy_ManageContext_DelegatesToCompact(t *testing.T) {
 	}
 
 	emitted := false
-	emitFn := func(kind EventKind, data EventData) {
+	emitFn := func(kind events.EventKind, data events.EventData) {
 		emitted = true
 	}
 

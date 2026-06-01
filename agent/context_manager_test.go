@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -823,15 +824,15 @@ func TestMaybeCompact_NoCompactionBelow80Percent(t *testing.T) {
 		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
 	)
 
-	var events []SessionEvent
-	emitFn := func(kind EventKind, data EventData) {
-		events = append(events, SessionEvent{Kind: kind, Data: data})
+	var evs []events.SessionEvent
+	emitFn := func(kind events.EventKind, data events.EventData) {
+		evs = append(evs, events.SessionEvent{Kind: kind, Data: data})
 	}
 
 	cm.MaybeCompact(context.Background(), &history, 0, emitFn)
 
-	for _, e := range events {
-		if e.Kind == EventContextCompaction {
+	for _, e := range evs {
+		if e.Kind == events.EventContextCompaction {
 			t.Fatalf("no compaction should fire at 70%% pressure, got event: %+v", e.Data)
 		}
 	}
@@ -846,15 +847,15 @@ func TestMaybeCompact_BelowThreshold_NoAction(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("ok")},
 	}
 
-	var events []SessionEvent
-	emitFn := func(kind EventKind, data EventData) {
-		events = append(events, SessionEvent{Kind: kind, Data: data})
+	var evs []events.SessionEvent
+	emitFn := func(kind events.EventKind, data events.EventData) {
+		evs = append(evs, events.SessionEvent{Kind: kind, Data: data})
 	}
 
 	cm.MaybeCompact(context.Background(), &history, 100, emitFn)
 	// No compaction events should have been emitted.
-	for _, e := range events {
-		if e.Kind == EventContextCompaction {
+	for _, e := range evs {
+		if e.Kind == events.EventContextCompaction {
 			t.Fatalf("unexpected CONTEXT_COMPACTION event below threshold")
 		}
 	}
@@ -881,24 +882,24 @@ func TestMaybeCompact_CheckpointThreshold(t *testing.T) {
 		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
 	)
 
-	var events []SessionEvent
-	emitFn := func(kind EventKind, data EventData) {
-		events = append(events, SessionEvent{Kind: kind, Data: data})
+	var evs []events.SessionEvent
+	emitFn := func(kind events.EventKind, data events.EventData) {
+		evs = append(evs, events.SessionEvent{Kind: kind, Data: data})
 	}
 
 	cm.MaybeCompact(context.Background(), &history, 0, emitFn)
 
 	// At 85%, checkpoint should trigger (threshold is 80%).
 	foundCheckpoint := false
-	for _, e := range events {
-		if e.Kind == EventContextCompaction {
+	for _, e := range evs {
+		if e.Kind == events.EventContextCompaction {
 			if layer, ok := e.DataMap()["layer"].(string); ok && layer == "checkpoint" {
 				foundCheckpoint = true
 			}
 		}
 	}
 	if !foundCheckpoint {
-		t.Fatalf("expected checkpoint compaction event; got events: %+v", events)
+		t.Fatalf("expected checkpoint compaction event; got events: %+v", evs)
 	}
 
 	// History should have been replaced with checkpoint + recent.
@@ -919,17 +920,17 @@ func TestMaybeCompact_EmitsEvents(t *testing.T) {
 		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
 	)
 
-	var events []SessionEvent
-	emitFn := func(kind EventKind, data EventData) {
-		events = append(events, SessionEvent{Kind: kind, Data: data})
+	var evs []events.SessionEvent
+	emitFn := func(kind events.EventKind, data events.EventData) {
+		evs = append(evs, events.SessionEvent{Kind: kind, Data: data})
 	}
 
 	cm.MaybeCompact(context.Background(), &history, 0, emitFn)
 
 	// Should have at least one compaction event.
 	compactionCount := 0
-	for _, e := range events {
-		if e.Kind == EventContextCompaction {
+	for _, e := range evs {
+		if e.Kind == events.EventContextCompaction {
 			compactionCount++
 			// Each event should have layer and token counts.
 			if _, ok := e.DataMap()["layer"]; !ok {
@@ -959,9 +960,9 @@ func TestMaybeCompact_RespectsSysPromptSize(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
 	}
 
-	var events []SessionEvent
-	emitFn := func(kind EventKind, data EventData) {
-		events = append(events, SessionEvent{Kind: kind, Data: data})
+	var evs []events.SessionEvent
+	emitFn := func(kind events.EventKind, data events.EventData) {
+		evs = append(evs, events.SessionEvent{Kind: kind, Data: data})
 	}
 
 	// sys prompt is 2800 chars ≈ 700 tokens + history ~100 tokens = 800/1000 = 80%
@@ -969,15 +970,15 @@ func TestMaybeCompact_RespectsSysPromptSize(t *testing.T) {
 
 	// With sys prompt, we're at ~80%, should trigger checkpoint.
 	foundCheckpoint := false
-	for _, e := range events {
-		if e.Kind == EventContextCompaction {
+	for _, e := range evs {
+		if e.Kind == events.EventContextCompaction {
 			if layer, ok := e.DataMap()["layer"].(string); ok && layer == "checkpoint" {
 				foundCheckpoint = true
 			}
 		}
 	}
 	if !foundCheckpoint {
-		t.Fatalf("expected checkpoint compaction event when sys prompt pushes over threshold; got events: %+v", events)
+		t.Fatalf("expected checkpoint compaction event when sys prompt pushes over threshold; got events: %+v", evs)
 	}
 }
 
@@ -1171,12 +1172,12 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for ev := range sess.Events() {
-			events = append(events, ev)
+			evs = append(evs, ev)
 		}
 	}()
 
@@ -1189,8 +1190,8 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 	<-done
 
 	foundCompaction := false
-	for _, e := range events {
-		if e.Kind == EventContextCompaction {
+	for _, e := range evs {
+		if e.Kind == events.EventContextCompaction {
 			foundCompaction = true
 		}
 	}
@@ -1726,9 +1727,9 @@ func TestContextManager_ResetsAfterCompaction(t *testing.T) {
 		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
 	)
 
-	var events []SessionEvent
-	emitFn := func(kind EventKind, data EventData) {
-		events = append(events, SessionEvent{Kind: kind, Data: data})
+	var evs []events.SessionEvent
+	emitFn := func(kind events.EventKind, data events.EventData) {
+		evs = append(evs, events.SessionEvent{Kind: kind, Data: data})
 	}
 
 	cm.MaybeCompact(context.Background(), &history, 0, emitFn)
@@ -1918,9 +1919,9 @@ func TestMaybeCompact_SummarizeThreshold(t *testing.T) {
 	}
 
 	var layers []string
-	emitFn := func(kind EventKind, data EventData) {
-		if kind == EventContextCompaction {
-			if cd, ok := data.(ContextCompactionData); ok {
+	emitFn := func(kind events.EventKind, data events.EventData) {
+		if kind == events.EventContextCompaction {
+			if cd, ok := data.(events.ContextCompactionData); ok {
 				layers = append(layers, cd.Layer)
 			}
 		}
@@ -2061,9 +2062,9 @@ func TestForceCompact_RunsAllLayers(t *testing.T) {
 	}
 
 	var layers []string
-	emitFn := func(kind EventKind, data EventData) {
-		if kind == EventContextCompaction {
-			if d, ok := data.(ContextCompactionData); ok {
+	emitFn := func(kind events.EventKind, data events.EventData) {
+		if kind == events.EventContextCompaction {
+			if d, ok := data.(events.ContextCompactionData); ok {
 				layers = append(layers, d.Layer)
 			}
 		}
@@ -2102,7 +2103,7 @@ func TestForceCompact_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 		NewTurn(TurnAssistant, llm.Assistant("recent2")),
 	}
 
-	emitFn := func(kind EventKind, data EventData) {}
+	emitFn := func(kind events.EventKind, data events.EventData) {}
 	cm.ForceCompact(context.Background(), &history, emitFn)
 
 	// L3 creates a checkpoint turn. OnCompactionTurn should have been called.
@@ -2147,7 +2148,7 @@ func TestForceCompact_FiresOnCompactionTurn_Summary(t *testing.T) {
 		NewTurn(TurnAssistant, llm.Assistant("recent2")),
 	}
 
-	emitFn := func(kind EventKind, data EventData) {}
+	emitFn := func(kind events.EventKind, data events.EventData) {}
 	cm.ForceCompact(context.Background(), &history, emitFn)
 
 	// Both L3 (checkpoint) and L4 (summary) should fire callbacks.
@@ -2183,9 +2184,9 @@ func TestForceCompact_BelowThreshold(t *testing.T) {
 	}
 
 	var layers []string
-	emitFn := func(kind EventKind, data EventData) {
-		if kind == EventContextCompaction {
-			if d, ok := data.(ContextCompactionData); ok {
+	emitFn := func(kind events.EventKind, data events.EventData) {
+		if kind == events.EventContextCompaction {
+			if d, ok := data.(events.ContextCompactionData); ok {
 				layers = append(layers, d.Layer)
 			}
 		}

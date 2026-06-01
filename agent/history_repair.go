@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -112,7 +113,7 @@ func (s *Session) repairOrphanedToolResults(reason string) int {
 		if reason != "" {
 			msg += ": " + reason
 		}
-		s.emit(EventWarning, WarningData{Message: msg})
+		s.emit(events.EventWarning, events.WarningData{Message: msg})
 		s.maybeAutoSave()
 	}
 	return repairs

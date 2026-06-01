@@ -287,7 +287,7 @@ type TurnError struct {
 // warning/error notification. Today the only Kind is "provider" (an HTTP
 // failure from an LLM adapter); consumers can typed-branch on Kind
 // instead of substring-matching the message (kata cmfz). The agent's
-// agent.ErrorCause projects to this shape; absence is signaled by an
+// events.ErrorCause projects to this shape; absence is signaled by an
 // omitted/nil pointer on the carrying envelope.
 type DiagnosticCause struct {
 	Kind     string `json:"kind"`

@@ -9,15 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/events"
 )
 
 func TestIntegration_InputToAppwire(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 
 	// Simulate session events
-	events := make(chan agent.SessionEvent, 10)
-	go Bridge(srv, events)
+	evs := make(chan events.SessionEvent, 10)
+	go Bridge(srv, evs)
 
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
@@ -74,23 +74,23 @@ func TestIntegration_InputToAppwire(t *testing.T) {
 		t.Error("context should be cancelled after interrupt")
 	}
 
-	close(events)
+	close(evs)
 }
 
 func TestIntegration_StatusUpdates(t *testing.T) {
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 
-	events := make(chan agent.SessionEvent, 10)
-	go Bridge(srv, events)
+	evs := make(chan events.SessionEvent, 10)
+	go Bridge(srv, evs)
 
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
 	// Send session start event
-	events <- agent.SessionEvent{
-		Kind:      agent.EventSessionStart,
+	evs <- events.SessionEvent{
+		Kind:      events.EventSessionStart,
 		SessionID: "test-session",
-		Data: agent.SessionStartData{
+		Data: events.SessionStartData{
 			Profile: "openai",
 			Model:   "gpt-5",
 		},
@@ -119,5 +119,5 @@ func TestIntegration_StatusUpdates(t *testing.T) {
 		t.Errorf("state: got %q, want idle", status.State)
 	}
 
-	close(events)
+	close(evs)
 }

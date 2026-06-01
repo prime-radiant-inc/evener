@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -94,11 +95,11 @@ type steeringTurnRecord struct {
 	text string
 }
 
-func (s *Session) compactionEmitFunc(ctx context.Context, history *[]Turn) (func(EventKind, EventData), func()) {
+func (s *Session) compactionEmitFunc(ctx context.Context, history *[]Turn) (func(events.EventKind, events.EventData), func()) {
 	preCompactRan := false
 	var pendingSteering []steeringTurnRecord
-	emitFn := func(kind EventKind, data EventData) {
-		if kind == EventContextCompaction && !preCompactRan {
+	emitFn := func(kind events.EventKind, data events.EventData) {
+		if kind == events.EventContextCompaction && !preCompactRan {
 			preCompactRan = true
 			pendingSteering = append(pendingSteering, s.runPreCompactHook(ctx, history)...)
 		}
@@ -135,10 +136,10 @@ func (s *Session) flushSteeringTurnRecords(records []steeringTurnRecord) {
 	for _, record := range records {
 		if s.transcript != nil {
 			if err := s.transcript.Append(record.turn); err != nil {
-				s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 			}
 		}
-		s.emit(EventSteeringInjected, SteeringInjectedData{Text: record.text})
+		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: record.text})
 	}
 }
 
@@ -197,7 +198,7 @@ func (s *Session) Close() {
 
 		// 5-6. Emit SESSION_END with final state.
 		if emitEnd {
-			s.emit(EventSessionEnd, SessionEndData{
+			s.emit(events.EventSessionEnd, events.SessionEndData{
 				Reason: "session_closed",
 				State:  string(SessionClosed),
 				Turns:  turns,
@@ -221,7 +222,7 @@ func (s *Session) Close() {
 		if s.cfg.ExportATIFPath != "" && s.stateDir != "" && s.cfg.spawn.depth == 0 {
 			tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
 			if err := exportATIF(tpath, s.cfg.ExportATIFPath); err != nil {
-				s.emit(EventWarning, WarningData{Message: fmt.Sprintf("ATIF export failed: %v", err)})
+				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("ATIF export failed: %v", err)})
 			}
 		}
 
@@ -306,10 +307,10 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 					// in the transcript that consumers (TUI / hub) render.
 					interruptMsg := "<SYSTEM-REMINDER>The user interrupted the previous turn before it completed. Any partial tool output above is incomplete. Wait for the user's next message before continuing.</SYSTEM-REMINDER>"
 					s.appendTurn(TurnSteering, llm.User(interruptMsg))
-					s.emit(EventSteeringInjected, SteeringInjectedData{Text: interruptMsg})
+					s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: interruptMsg})
 				}
 				if emitEnd {
-					s.emit(EventSessionEnd, SessionEndData{
+					s.emit(events.EventSessionEnd, events.SessionEndData{
 						Reason:      "interrupted",
 						State:       string(SessionIdle),
 						Turns:       turns,
@@ -355,7 +356,7 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 			turns := s.modelResponses
 			state := s.state
 			s.mu.Unlock()
-			s.emit(EventSessionEnd, SessionEndData{
+			s.emit(events.EventSessionEnd, events.SessionEndData{
 				Reason: "input_complete",
 				State:  string(state),
 				Turns:  turns,
@@ -388,7 +389,7 @@ func (s *Session) maybeWarnContextUsage(profile ProviderProfile, msgs []llm.Mess
 
 	pct := int(math.Round((approxTokens / float64(cw)) * 100.0))
 	msg := fmt.Sprintf("Context usage at ~%d%% of context window", pct)
-	s.emit(EventWarning, WarningData{
+	s.emit(events.EventWarning, events.WarningData{
 		Message:           msg,
 		ApproxTokens:      int(math.Round(approxTokens)),
 		ContextWindowSize: cw,
@@ -479,7 +480,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 	select {
 	case <-ctx.Done():
-		s.emit(EventError, errorDataFromError(ctx.Err()))
+		s.emit(events.EventError, errorDataFromError(ctx.Err()))
 		s.mu.Lock()
 		if s.state == SessionProcessing && !s.closingOrClosedLocked() {
 			s.state = SessionIdle
@@ -501,7 +502,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 	for round := 0; s.cfg.MaxToolRoundsPerInput < 0 || round < s.cfg.MaxToolRoundsPerInput; round++ {
 		roundStart := time.Now()
-		var timings RoundTimings
+		var timings events.RoundTimings
 		timings.Round = round
 
 		s.mu.Lock()
@@ -510,7 +511,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		select {
 		case <-ctx.Done():
-			s.emit(EventError, errorDataFromError(ctx.Err()))
+			s.emit(events.EventError, errorDataFromError(ctx.Err()))
 			s.mu.Lock()
 			if s.state == SessionProcessing && !s.closingOrClosedLocked() {
 				s.state = SessionIdle
@@ -592,7 +593,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			round-- // Don't count pause_turn as a tool round.
 			timings.TotalRound = time.Since(roundStart)
 			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
-			s.emit(EventRoundTimings, timings)
+			s.emit(events.EventRoundTimings, timings)
 			continue
 		}
 
@@ -609,7 +610,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			round-- // Don't count empty/bare-text retries as tool rounds.
 			timings.TotalRound = time.Since(roundStart)
 			timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall
-			s.emit(EventRoundTimings, timings)
+			s.emit(events.EventRoundTimings, timings)
 			continue
 		}
 
@@ -661,7 +662,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// Emit round timings before checking result delivery.
 		timings.TotalRound = time.Since(roundStart)
 		timings.LoopOverhead = timings.TotalRound - timings.SystemPrompt - timings.ContextMgmt - timings.HistoryExpand - timings.ToolDefs - timings.LLMCall - timings.ToolExec - timings.Persistence - timings.AfterAction
-		s.emit(EventRoundTimings, timings)
+		s.emit(events.EventRoundTimings, timings)
 
 		// communicate sets the flag; exit the loop with the communicated message.
 		if done, text := s.deliverIfCommunicated(ctx); done {
@@ -669,7 +670,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 	}
 
-	s.emit(EventTurnLimit, TurnLimitData{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput})
+	s.emit(events.EventTurnLimit, events.TurnLimitData{MaxToolRoundsPerInput: s.cfg.MaxToolRoundsPerInput})
 	s.mu.Lock()
 	s.setStateIfOpenLocked(SessionIdle)
 	s.mu.Unlock()
@@ -688,7 +689,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	s.mu.Lock()
 	userInputTurn := len(s.history) + 1
 	s.mu.Unlock()
-	s.emit(EventUserInput, UserInputData{
+	s.emit(events.EventUserInput, events.UserInputData{
 		Text:   input,
 		Images: userInputImagesFromAttachments(images),
 		Turn:   userInputTurn,
@@ -713,7 +714,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	s.mu.Unlock()
 
 	if s.cfg.MaxTurns > 0 && turns >= s.cfg.MaxTurns {
-		s.emit(EventTurnLimit, TurnLimitData{MaxTurns: s.cfg.MaxTurns})
+		s.emit(events.EventTurnLimit, events.TurnLimitData{MaxTurns: s.cfg.MaxTurns})
 		s.mu.Lock()
 		s.setStateIfOpenLocked(SessionIdle)
 		s.mu.Unlock()
@@ -727,7 +728,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	for _, msg := range s.drainSteering() {
 		s.appendTurn(TurnSteering, steeringMessageToLLM(msg))
-		s.emit(EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	}
 	return true
 }
@@ -739,7 +740,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 // context management and expands history. It records the SystemPrompt, ContextMgmt,
 // and HistoryExpand phase timings into t. It never returns an error: the input
 // phases only emit warnings.
-func (s *Session) prepareModelRequest(ctx context.Context, round int, t *RoundTimings) (profile ProviderProfile, sys string, history []llm.Message, req llm.Request) {
+func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.RoundTimings) (profile ProviderProfile, sys string, history []llm.Message, req llm.Request) {
 	// --- Phase: SystemPrompt ---
 	tPhaseStart := time.Now()
 
@@ -773,7 +774,7 @@ func (s *Session) prepareModelRequest(ctx context.Context, round int, t *RoundTi
 		s.mu.Lock()
 		s.history = repaired
 		s.mu.Unlock()
-		s.emit(EventWarning, WarningData{Message: fmt.Sprintf("Recovered %d interrupted tool call(s) before model request", repairs)})
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("Recovered %d interrupted tool call(s) before model request", repairs)})
 		s.maybeAutoSave()
 	}
 
@@ -784,7 +785,7 @@ func (s *Session) prepareModelRequest(ctx context.Context, round int, t *RoundTi
 
 		emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &historyTurns)
 		if err := s.strategy.ManageContext(ctx, &historyTurns, len(sys), emitFn); err != nil {
-			s.emit(EventWarning, warningDataFromError("context strategy error: "+err.Error(), err))
+			s.emit(events.EventWarning, warningDataFromError("context strategy error: "+err.Error(), err))
 		}
 		flushCompactionHooks()
 
@@ -826,7 +827,7 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 	// allowing the next request to succeed. Try once.
 	if llm.Kind(err) == llm.KindContentFilter && !*contentFilterRetried && s.contextMgr != nil {
 		*contentFilterRetried = true
-		s.emit(EventWarning, warningDataFromError("Content filter hit — compacting context and retrying", err))
+		s.emit(events.EventWarning, warningDataFromError("Content filter hit — compacting context and retrying", err))
 		s.mu.Lock()
 		histCopy := append([]Turn{}, s.history...)
 		s.mu.Unlock()
@@ -841,11 +842,11 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 
 	errData := errorDataFromError(err)
 	errData.Cause = providerCauseFromError(err, req.Model)
-	s.emit(EventError, errData)
+	s.emit(events.EventError, errData)
 
 	// Spec: context overflow should emit a warning (no automatic compaction).
 	if llm.Kind(err) == llm.KindContextLength {
-		s.emit(EventWarning, warningDataFromError("Context length exceeded", err))
+		s.emit(events.EventWarning, warningDataFromError("Context length exceeded", err))
 	}
 	// Spec: non-retryable/unrecoverable errors transition the session to closed.
 	var le llm.Error
@@ -907,7 +908,7 @@ func (s *Session) recordResponseUsage(resp llm.Response) {
 func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, modelResp sessionModelResponse, txt string, skipHistory bool) error {
 	return s.withResponseSideEffects(ctx, func() {
 		if !modelResp.StreamedAssistant {
-			s.emit(EventAssistantTextStart, AssistantTextStartData{
+			s.emit(events.EventAssistantTextStart, events.AssistantTextStartData{
 				Model: resp.Model,
 			})
 		}
@@ -915,9 +916,9 @@ func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, 
 			s.appendAssistantTurn(resp)
 		}
 		if !modelResp.StreamedAssistant && strings.TrimSpace(txt) != "" {
-			s.emit(EventAssistantTextDelta, AssistantTextDeltaData{Delta: txt})
+			s.emit(events.EventAssistantTextDelta, events.AssistantTextDeltaData{Delta: txt})
 		}
-		textEndData := AssistantTextEndData{
+		textEndData := events.AssistantTextEndData{
 			Text:         txt,
 			Usage:        resp.Usage,
 			FinishReason: resp.Finish.Reason,
@@ -926,7 +927,7 @@ func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, 
 		if reasoning := resp.ReasoningText(); reasoning != "" {
 			textEndData.Reasoning = reasoning
 		}
-		s.emit(EventAssistantTextEnd, textEndData)
+		s.emit(events.EventAssistantTextEnd, textEndData)
 		s.mu.Lock()
 		s.modelResponses++
 		s.mu.Unlock()
@@ -946,7 +947,7 @@ func (s *Session) handleNoToolCalls(noContent bool, t *retryTracker) (retry bool
 		t.consecutiveEmpty++
 		t.totalEmpty++
 		if t.consecutiveEmpty <= maxEmptyRetries && t.totalEmpty <= maxTotalEmptyResponses {
-			s.emit(EventWarning, WarningData{
+			s.emit(events.EventWarning, events.WarningData{
 				Message: fmt.Sprintf("empty response from model (retry %d/%d)", t.consecutiveEmpty, maxEmptyRetries),
 			})
 			var steering string
@@ -962,11 +963,11 @@ func (s *Session) handleNoToolCalls(noContent bool, t *retryTracker) (retry bool
 					"got this. Try a completely different approach."
 			}
 			s.appendTurn(TurnSteering, llm.User(steering))
-			s.emit(EventSteeringInjected, SteeringInjectedData{Text: steering})
+			s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: steering})
 			return true, nil
 		}
 		err := &emptyResponseExhaustedError{retries: maxEmptyRetries}
-		s.emit(EventError, errorDataFromError(err))
+		s.emit(events.EventError, errorDataFromError(err))
 		s.mu.Lock()
 		s.setStateIfOpenLocked(SessionIdle)
 		s.mu.Unlock()
@@ -976,7 +977,7 @@ func (s *Session) handleNoToolCalls(noContent bool, t *retryTracker) (retry bool
 	t.consecutiveEmpty = 0
 	t.consecutiveBareText++
 	if t.consecutiveBareText <= maxBareTextRetries {
-		s.emit(EventWarning, WarningData{
+		s.emit(events.EventWarning, events.WarningData{
 			Message: fmt.Sprintf("bare text response without tool call (retry %d/%d)", t.consecutiveBareText, maxBareTextRetries),
 		})
 		steering := "You responded with bare text instead of a tool call. " +
@@ -984,14 +985,14 @@ func (s *Session) handleNoToolCalls(noContent bool, t *retryTracker) (retry bool
 			"If that bare text was meant for the user, call " + s.resultToolName() + " now with that text in message, set await_reply=true only if you need user input, and include the output envelope. " +
 			"Otherwise call your next tool and keep working."
 		s.appendTurn(TurnSteering, llm.User(steering))
-		s.emit(EventSteeringInjected, SteeringInjectedData{Text: steering})
+		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: steering})
 		return true, nil
 	}
 	err := &bareTextWithoutResultToolError{
 		toolName: s.resultToolName(),
 		retries:  maxBareTextRetries,
 	}
-	s.emit(EventError, errorDataFromError(err))
+	s.emit(events.EventError, errorDataFromError(err))
 	s.mu.Lock()
 	s.setStateIfOpenLocked(SessionIdle)
 	s.mu.Unlock()
@@ -1174,7 +1175,7 @@ func (s *Session) notifyStrategyAfterAction(ctx context.Context) error {
 	s.mu.Unlock()
 	if err := s.strategy.AfterAction(ctx, hist, s.client); err != nil {
 		if abortErr := s.withResponseSideEffects(ctx, func() {
-			s.emit(EventWarning, WarningData{Message: "strategy AfterAction error: " + err.Error()})
+			s.emit(events.EventWarning, events.WarningData{Message: "strategy AfterAction error: " + err.Error()})
 		}); abortErr != nil {
 			return abortErr
 		}
@@ -1204,9 +1205,9 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 
 			warning := s.stuckEscalation(count)
 			if abortErr := s.withResponseSideEffects(ctx, func() {
-				s.emit(EventLoopDetection, LoopDetectionData{Message: warning})
+				s.emit(events.EventLoopDetection, events.LoopDetectionData{Message: warning})
 				s.appendTurn(TurnSteering, llm.User(warning))
-				s.emit(EventSteeringInjected, SteeringInjectedData{Text: warning})
+				s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: warning})
 			}); abortErr != nil {
 				return abortErr
 			}
@@ -1231,7 +1232,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 		nudge := "<SYSTEM-REMINDER>You have spent several turns reading without writing or running anything. Review your current task. If you have enough context to make progress, write code or run a command now. A first attempt you can test and fix is more valuable than more reading.</SYSTEM-REMINDER>"
 		if abortErr := s.withResponseSideEffects(ctx, func() {
 			s.appendTurn(TurnSteering, llm.User(nudge))
-			s.emit(EventSteeringInjected, SteeringInjectedData{Text: nudge})
+			s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: nudge})
 		}); abortErr != nil {
 			return abortErr
 		}
@@ -1239,7 +1240,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 		nudge := "<SYSTEM-REMINDER>You have been reading for 10 turns without acting. Stop reading. Write the deliverable file now, even if incomplete. You can iterate after you have something to test.</SYSTEM-REMINDER>"
 		if abortErr := s.withResponseSideEffects(ctx, func() {
 			s.appendTurn(TurnSteering, llm.User(nudge))
-			s.emit(EventSteeringInjected, SteeringInjectedData{Text: nudge})
+			s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: nudge})
 		}); abortErr != nil {
 			return abortErr
 		}
@@ -1249,7 +1250,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 	if abortErr := s.withResponseSideEffects(ctx, func() {
 		for _, msg := range s.drainSteering() {
 			s.appendTurn(TurnSteering, steeringMessageToLLM(msg))
-			s.emit(EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+			s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 		}
 	}); abortErr != nil {
 		return abortErr
@@ -1259,7 +1260,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 	if abortErr := s.withResponseSideEffects(ctx, func() {
 		if reminder := s.maybeInjectTaskReminder(); reminder != "" {
 			s.appendTurn(TurnSteering, llm.User(reminder))
-			s.emit(EventSteeringInjected, SteeringInjectedData{Text: reminder})
+			s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder})
 		}
 	}); abortErr != nil {
 		return abortErr
@@ -1551,7 +1552,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		if assistantStarted {
 			return
 		}
-		s.emit(EventAssistantTextStart, AssistantTextStartData{Model: req.Model})
+		s.emit(events.EventAssistantTextStart, events.AssistantTextStartData{Model: req.Model})
 		assistantStarted = true
 		streamedAssistant = true
 	}
@@ -1560,7 +1561,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 			return
 		}
 		emitAssistantStart()
-		s.emit(EventAssistantTextDelta, AssistantTextDeltaData{Delta: delta})
+		s.emit(events.EventAssistantTextDelta, events.AssistantTextDeltaData{Delta: delta})
 	}
 	emitCommunicatePreview := func(callID string) {
 		args := ""

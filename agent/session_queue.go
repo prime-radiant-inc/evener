@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -44,8 +45,8 @@ type steeringMessage struct {
 	Images []ImageAttachment
 }
 
-func steeringInjectedDataFromMessage(msg steeringMessage) SteeringInjectedData {
-	return SteeringInjectedData{
+func steeringInjectedDataFromMessage(msg steeringMessage) events.SteeringInjectedData {
+	return events.SteeringInjectedData{
 		Text:   msg.Text,
 		Images: userInputImagesFromAttachments(msg.Images),
 	}
@@ -133,7 +134,7 @@ func (s *Session) EnqueueWithImages(ctx context.Context, text string, images []I
 	s.inputQueue = append(s.inputQueue, entry)
 	data := s.queueChangedDataLocked()
 	s.mu.Unlock()
-	s.emit(EventQueueChanged, data)
+	s.emit(events.EventQueueChanged, data)
 	return nil
 }
 
@@ -181,7 +182,7 @@ func (s *Session) DrainAsSteerWithInput(ctx context.Context, text string, images
 	s.inputQueue = nil
 	data := s.queueChangedDataLocked()
 	s.mu.Unlock()
-	s.emit(EventQueueChanged, data)
+	s.emit(events.EventQueueChanged, data)
 	texts := make([]string, 0, len(entries))
 	var drainedImages []ImageAttachment
 	for _, entry := range entries {
@@ -267,7 +268,7 @@ func (s *Session) popQueueHead() queuedInput {
 	s.inputQueue = s.inputQueue[1:]
 	data := s.queueChangedDataLocked()
 	s.mu.Unlock()
-	s.emit(EventQueueChanged, data)
+	s.emit(events.EventQueueChanged, data)
 	return entry
 }
 
@@ -281,13 +282,13 @@ func (s *Session) pushQueueHead(entry queuedInput) {
 	s.inputQueue = append([]queuedInput{entry}, s.inputQueue...)
 	data := s.queueChangedDataLocked()
 	s.mu.Unlock()
-	s.emit(EventQueueChanged, data)
+	s.emit(events.EventQueueChanged, data)
 }
 
 // queueChangedDataLocked builds a QueueChangedData snapshot from the
 // current inputQueue. The caller must hold s.mu.
-func (s *Session) queueChangedDataLocked() QueueChangedData {
-	data := QueueChangedData{Depth: len(s.inputQueue)}
+func (s *Session) queueChangedDataLocked() events.QueueChangedData {
+	data := events.QueueChangedData{Depth: len(s.inputQueue)}
 	if len(s.inputQueue) > 0 {
 		data.Preview = make([]string, len(s.inputQueue))
 		for i, entry := range s.inputQueue {

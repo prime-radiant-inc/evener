@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -357,12 +358,12 @@ func TestCommunicate_EmitsEvent(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	evDone := make(chan struct{})
 	go func() {
 		defer close(evDone)
 		for ev := range sess.Events() {
-			events = append(events, ev)
+			evs = append(evs, ev)
 		}
 	}()
 
@@ -376,9 +377,9 @@ func TestCommunicate_EmitsEvent(t *testing.T) {
 	<-evDone
 
 	// Should have exactly 1 COMMUNICATE event.
-	var srEvents []SessionEvent
-	for _, ev := range events {
-		if ev.Kind == EventCommunicate {
+	var srEvents []events.SessionEvent
+	for _, ev := range evs {
+		if ev.Kind == events.EventCommunicate {
 			srEvents = append(srEvents, ev)
 		}
 	}

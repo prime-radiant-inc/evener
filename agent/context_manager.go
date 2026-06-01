@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -180,7 +181,7 @@ func (cm *contextManager) MaybeCompact(
 	ctx context.Context,
 	history *[]Turn,
 	sysPromptChars int,
-	emitFn func(EventKind, EventData),
+	emitFn func(events.EventKind, events.EventData),
 ) {
 	cw := cm.currentProfile().ContextWindowSize()
 	if cw <= 0 {
@@ -211,7 +212,7 @@ func (cm *contextManager) MaybeCompact(
 		before := estimateTokens(*history)
 		*history = checkpoint(*history, cm.PreserveRecentTurns, &cm.Meta, cm.resultToolName())
 		after := estimateTokens(*history)
-		emitFn(EventContextCompaction, ContextCompactionData{
+		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "checkpoint",
 			TurnsBefore:     turnsBefore,
 			TurnsAfter:      len(*history),
@@ -232,13 +233,13 @@ func (cm *contextManager) MaybeCompact(
 		result, err := cm.summarizeWithLLM(ctx, *history, cm.PreserveRecentTurns)
 		if err != nil {
 			// On error, emit warning but continue with current history.
-			emitFn(EventWarning, WarningData{
+			emitFn(events.EventWarning, events.WarningData{
 				Message: "LLM summarization failed: " + err.Error(),
 			})
 		} else {
 			*history = result
 			after := estimateTokens(*history)
-			emitFn(EventContextCompaction, ContextCompactionData{
+			emitFn(events.EventContextCompaction, events.ContextCompactionData{
 				Layer:           "summarize",
 				TurnsBefore:     turnsBefore,
 				TurnsAfter:      len(*history),
@@ -266,7 +267,7 @@ func (cm *contextManager) MaybeCompact(
 func (cm *contextManager) ForceCompact(
 	ctx context.Context,
 	history *[]Turn,
-	emitFn func(EventKind, EventData),
+	emitFn func(events.EventKind, events.EventData),
 ) {
 	// Reset token measurement so inter-layer estimates use char/4.
 	cm.mu.Lock()
@@ -279,7 +280,7 @@ func (cm *contextManager) ForceCompact(
 	before := estimateTokens(*history)
 	*history = checkpoint(*history, cm.PreserveRecentTurns, &cm.Meta, cm.resultToolName())
 	after := estimateTokens(*history)
-	emitFn(EventContextCompaction, ContextCompactionData{
+	emitFn(events.EventContextCompaction, events.ContextCompactionData{
 		Layer:           "checkpoint",
 		TurnsBefore:     turnsBefore,
 		TurnsAfter:      len(*history),
@@ -296,13 +297,13 @@ func (cm *contextManager) ForceCompact(
 		before = estimateTokens(*history)
 		result, err := cm.summarizeWithLLM(ctx, *history, cm.PreserveRecentTurns)
 		if err != nil {
-			emitFn(EventWarning, WarningData{
+			emitFn(events.EventWarning, events.WarningData{
 				Message: "LLM summarization failed: " + err.Error(),
 			})
 		} else {
 			*history = result
 			after := estimateTokens(*history)
-			emitFn(EventContextCompaction, ContextCompactionData{
+			emitFn(events.EventContextCompaction, events.ContextCompactionData{
 				Layer:           "summarize",
 				TurnsBefore:     turnsBefore,
 				TurnsAfter:      len(*history),

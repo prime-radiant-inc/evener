@@ -8,16 +8,16 @@ import (
 )
 
 // Events returns the session's receive-only channel of SessionEvent values.
-func (s *Session) Events() <-chan SessionEvent { return s.events }
+func (s *Session) Events() <-chan events.SessionEvent { return s.events }
 
-func (s *Session) emitSessionStartEnvelope(start SessionStartData, promptSources []promptSource) {
-	s.emit(EventSessionStart, start)
+func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, promptSources []promptSource) {
+	s.emit(events.EventSessionStart, start)
 	for _, data := range s.pendingPluginEvents {
-		s.emit(EventPluginLoaded, data)
+		s.emit(events.EventPluginLoaded, data)
 	}
 	s.pendingPluginEvents = nil
 	for _, src := range promptSources {
-		s.emit(EventPromptLoaded, PromptLoadedData{Label: src.Label, Size: src.Size})
+		s.emit(events.EventPromptLoaded, events.PromptLoadedData{Label: src.Label, Size: src.Size})
 	}
 }
 
@@ -26,7 +26,7 @@ func (s *Session) emitSessionStartEnvelope(start SessionStartData, promptSources
 // emit/Emit with an explicit kind), but the event's Kind is authoritative from
 // the payload: events.New derives it via data.eventKind(), so Kind and payload
 // can never disagree even if a caller passes a mismatched kind.
-func (s *Session) emit(kind EventKind, data EventData) {
+func (s *Session) emit(kind events.EventKind, data events.EventData) {
 	if s == nil || s.events == nil {
 		return
 	}
@@ -47,16 +47,16 @@ func (s *Session) emit(kind EventKind, data EventData) {
 		}
 	}
 	s.eventsMu.RUnlock()
-	if kind == EventWarning {
+	if kind == events.EventWarning {
 		s.runNotificationHook(context.Background(), warningHookMessage(data))
 	}
 }
 
-func warningHookMessage(data EventData) string {
+func warningHookMessage(data events.EventData) string {
 	switch v := data.(type) {
-	case WarningData:
+	case events.WarningData:
 		return v.Message
-	case *WarningData:
+	case *events.WarningData:
 		if v != nil {
 			return v.Message
 		}

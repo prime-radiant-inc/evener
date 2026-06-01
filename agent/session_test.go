@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -64,12 +65,12 @@ func (s compactionEventStrategy) Name() string { return "compaction-event-test" 
 
 func (s compactionEventStrategy) Tools() []registeredTool { return nil }
 
-func (s compactionEventStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, EventData)) error {
+func (s compactionEventStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
 	_ = ctx
 	_ = history
 	_ = sysPromptChars
 	if s.emitCompaction {
-		emitFn(EventContextCompaction, ContextCompactionData{Layer: "test"})
+		emitFn(events.EventContextCompaction, events.ContextCompactionData{Layer: "test"})
 	}
 	return nil
 }
@@ -81,13 +82,13 @@ func (s compactionEventStrategy) AfterAction(ctx context.Context, history []Turn
 	return nil
 }
 
-func countHookStarts(events []SessionEvent, event HookEvent) int {
+func countHookStarts(evs []events.SessionEvent, event HookEvent) int {
 	count := 0
-	for _, ev := range events {
-		if ev.Kind != EventHookStart {
+	for _, ev := range evs {
+		if ev.Kind != events.EventHookStart {
 			continue
 		}
-		if data, ok := ev.Data.(HookStartData); ok && data.Event == string(event) {
+		if data, ok := ev.Data.(events.HookStartData); ok && data.Event == string(event) {
 			count++
 		}
 	}
@@ -1378,7 +1379,7 @@ func TestSession_PreCompactHookOnlyRunsWhenCompactionEmits(t *testing.T) {
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
 	runner := newHookRunner(nil, "")
-	runner.SetEventCallback(func(kind EventKind, data EventData) {
+	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
 		sess.emit(kind, data)
 	})
 	runner.Add(HookPreCompact, RegisteredHook{
@@ -1420,7 +1421,7 @@ func TestSession_PreCompactHookRunsAtCompactionBoundary(t *testing.T) {
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
 	runner := newHookRunner(nil, "")
-	runner.SetEventCallback(func(kind EventKind, data EventData) {
+	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
 		sess.emit(kind, data)
 	})
 	runner.Add(HookPreCompact, RegisteredHook{
@@ -1475,10 +1476,10 @@ func TestSession_CompactEmitsCompactionTurnEvent(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	var got []CompactionTurnData
+	var got []events.CompactionTurnData
 	for _, ev := range *eventsPtr {
-		if ev.Kind == EventCompactionTurn {
-			data, ok := ev.Data.(CompactionTurnData)
+		if ev.Kind == events.EventCompactionTurn {
+			data, ok := ev.Data.(events.CompactionTurnData)
 			if !ok {
 				t.Fatalf("compaction turn data=%T", ev.Data)
 			}
@@ -1486,7 +1487,7 @@ func TestSession_CompactEmitsCompactionTurnEvent(t *testing.T) {
 		}
 	}
 	if len(got) == 0 {
-		t.Fatalf("missing %s event in %+v", EventCompactionTurn, *eventsPtr)
+		t.Fatalf("missing %s event in %+v", events.EventCompactionTurn, *eventsPtr)
 	}
 	if got[0].Kind != string(TurnCheckpoint) || !strings.Contains(got[0].Text, "[CONTEXT CHECKPOINT]") {
 		t.Fatalf("first compaction event=%+v", got[0])
@@ -1514,7 +1515,7 @@ func TestSession_NotificationHookRunsOnWarning(t *testing.T) {
 	})
 	sess.hookRunner = runner
 
-	sess.emit(EventWarning, WarningData{Message: "heads up"})
+	sess.emit(events.EventWarning, events.WarningData{Message: "heads up"})
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("Notification hook did not run: %v", err)
 	}
@@ -1654,12 +1655,12 @@ func TestSession_ToolOutputTruncation_OverridesLimitsAndKeepsFullOutputInEvents(
 	totalDeltaBytes := 0
 	for ev := range sess.Events() {
 		switch ev.Kind {
-		case EventToolCallOutputDelta:
-			if d, ok := ev.Data.(ToolCallOutputDeltaData); ok && d.ToolName == "shell" {
+		case events.EventToolCallOutputDelta:
+			if d, ok := ev.Data.(events.ToolCallOutputDeltaData); ok && d.ToolName == "shell" {
 				totalDeltaBytes += len(d.Delta)
 			}
-		case EventToolCallEnd:
-			if d, ok := ev.Data.(ToolCallEndData); ok && d.ToolName == "shell" {
+		case events.EventToolCallEnd:
+			if d, ok := ev.Data.(events.ToolCallEndData); ok && d.ToolName == "shell" {
 				if d.Output != "" {
 					full = d.Output
 				} else {
@@ -2103,10 +2104,10 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 	loopEv := false
 	steerEv := false
 	for ev := range sess.Events() {
-		if ev.Kind == EventLoopDetection {
+		if ev.Kind == events.EventLoopDetection {
 			loopEv = true
 		}
-		if ev.Kind == EventSteeringInjected {
+		if ev.Kind == events.EventSteeringInjected {
 			if s, _ := ev.DataMap()["text"].(string); strings.Contains(s, "stuck") {
 				steerEv = true
 			}
@@ -2182,12 +2183,12 @@ func TestAssistantTextEnd_EnrichedData(t *testing.T) {
 	}
 
 	// Collect events.
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for ev := range sess.Events() {
-			events = append(events, ev)
+			evs = append(evs, ev)
 		}
 	}()
 
@@ -2202,19 +2203,19 @@ func TestAssistantTextEnd_EnrichedData(t *testing.T) {
 	<-done
 
 	// Find the ASSISTANT_TEXT_END event.
-	var found *SessionEvent
-	for i, ev := range events {
-		if ev.Kind == EventAssistantTextEnd {
-			found = &events[i]
+	var found *events.SessionEvent
+	for i, ev := range evs {
+		if ev.Kind == events.EventAssistantTextEnd {
+			found = &evs[i]
 			break
 		}
 	}
 	if found == nil {
-		t.Fatalf("no ASSISTANT_TEXT_END event found; events: %v", events)
+		t.Fatalf("no ASSISTANT_TEXT_END event found; events: %v", evs)
 	}
 
 	// Type-assert to the typed payload struct.
-	endData, ok := found.Data.(AssistantTextEndData)
+	endData, ok := found.Data.(events.AssistantTextEndData)
 	if !ok {
 		t.Fatalf("expected AssistantTextEndData, got %T", found.Data)
 	}
@@ -2391,7 +2392,7 @@ func TestSession_SessionEnd_EmittedExactlyOnce(t *testing.T) {
 	defer mu.Unlock()
 	count := 0
 	for _, ev := range *eventsPtr {
-		if ev.Kind == EventSessionEnd {
+		if ev.Kind == events.EventSessionEnd {
 			count++
 		}
 	}
@@ -2621,13 +2622,13 @@ func TestSession_ExecToolEmitsEndWhenCloseBeginsAfterStart(t *testing.T) {
 		return "ran", nil
 	})
 
-	eventsDone := make(chan []SessionEvent, 1)
+	eventsDone := make(chan []events.SessionEvent, 1)
 	go func() {
-		var events []SessionEvent
+		var evs []events.SessionEvent
 		for ev := range sess.Events() {
-			events = append(events, ev)
+			evs = append(evs, ev)
 		}
-		eventsDone <- events
+		eventsDone <- evs
 	}()
 
 	resultDone := make(chan toolExecResult, 1)
@@ -2673,31 +2674,31 @@ func TestSession_ExecToolEmitsEndWhenCloseBeginsAfterStart(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Close did not finish")
 	}
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	select {
-	case events = <-eventsDone:
+	case evs = <-eventsDone:
 	case <-time.After(time.Second):
 		t.Fatal("events channel did not close")
 	}
 
 	starts := 0
 	ends := 0
-	var end ToolCallEndData
-	for _, ev := range events {
+	var end events.ToolCallEndData
+	for _, ev := range evs {
 		switch ev.Kind {
-		case EventToolCallStart:
-			if data, ok := ev.Data.(ToolCallStartData); ok && data.CallID == "slow_call" {
+		case events.EventToolCallStart:
+			if data, ok := ev.Data.(events.ToolCallStartData); ok && data.CallID == "slow_call" {
 				starts++
 			}
-		case EventToolCallEnd:
-			if data, ok := ev.Data.(ToolCallEndData); ok && data.CallID == "slow_call" {
+		case events.EventToolCallEnd:
+			if data, ok := ev.Data.(events.ToolCallEndData); ok && data.CallID == "slow_call" {
 				ends++
 				end = data
 			}
 		}
 	}
 	if starts != 1 || ends != 1 {
-		t.Fatalf("tool events starts=%d ends=%d events=%+v", starts, ends, events)
+		t.Fatalf("tool events starts=%d ends=%d events=%+v", starts, ends, evs)
 	}
 	if !strings.Contains(end.Error, "session is closing") {
 		t.Fatalf("terminal tool end error=%q, want closing error", end.Error)
@@ -2817,13 +2818,13 @@ func TestSession_CloseCancelsInFlightWithoutInterruptMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	eventsDone := make(chan []SessionEvent, 1)
+	eventsDone := make(chan []events.SessionEvent, 1)
 	go func() {
-		var events []SessionEvent
+		var evs []events.SessionEvent
 		for ev := range sess.Events() {
-			events = append(events, ev)
+			evs = append(evs, ev)
 		}
-		eventsDone <- events
+		eventsDone <- evs
 	}()
 
 	processDone := make(chan error, 1)
@@ -2841,21 +2842,21 @@ func TestSession_CloseCancelsInFlightWithoutInterruptMarker(t *testing.T) {
 		t.Fatal("ProcessInput did not return after Close()")
 	}
 
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	select {
-	case events = <-eventsDone:
+	case evs = <-eventsDone:
 	case <-time.After(5 * time.Second):
 		t.Fatal("events channel did not close")
 	}
 
-	for _, ev := range events {
-		if ev.Kind == EventSteeringInjected {
+	for _, ev := range evs {
+		if ev.Kind == events.EventSteeringInjected {
 			t.Fatalf("Close emitted interrupt steering marker: %+v", ev)
 		}
-		if ev.Kind != EventSessionEnd {
+		if ev.Kind != events.EventSessionEnd {
 			continue
 		}
-		data, ok := ev.Data.(SessionEndData)
+		data, ok := ev.Data.(events.SessionEndData)
 		if !ok {
 			continue
 		}
@@ -2929,7 +2930,7 @@ func TestSession_GracefulShutdown_CorrectOrdering(t *testing.T) {
 	go func() {
 		defer close(doneCh)
 		for ev := range sess.Events() {
-			if ev.Kind == EventSessionEnd {
+			if ev.Kind == events.EventSessionEnd {
 				trackEnv.Append("session_end_received")
 			}
 		}
@@ -3074,12 +3075,12 @@ func TestSession_ToolCallEnd_UsesOutputKeyOnSuccess(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for ev := range sess.Events() {
-			events = append(events, ev)
+			evs = append(evs, ev)
 		}
 	}()
 
@@ -3091,10 +3092,10 @@ func TestSession_ToolCallEnd_UsesOutputKeyOnSuccess(t *testing.T) {
 	sess.Close()
 	<-done
 
-	var found *SessionEvent
-	for i, ev := range events {
-		if ev.Kind == EventToolCallEnd {
-			found = &events[i]
+	var found *events.SessionEvent
+	for i, ev := range evs {
+		if ev.Kind == events.EventToolCallEnd {
+			found = &evs[i]
 			break
 		}
 	}
@@ -3103,7 +3104,7 @@ func TestSession_ToolCallEnd_UsesOutputKeyOnSuccess(t *testing.T) {
 	}
 
 	// Success: Output is populated, Error is empty (not present).
-	d, ok := found.Data.(ToolCallEndData)
+	d, ok := found.Data.(events.ToolCallEndData)
 	if !ok {
 		t.Fatalf("expected ToolCallEndData, got %T", found.Data)
 	}
@@ -3154,12 +3155,12 @@ func TestSession_ToolCallEnd_UsesErrorKeyOnFailure(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for ev := range sess.Events() {
-			events = append(events, ev)
+			evs = append(evs, ev)
 		}
 	}()
 
@@ -3171,10 +3172,10 @@ func TestSession_ToolCallEnd_UsesErrorKeyOnFailure(t *testing.T) {
 	sess.Close()
 	<-done
 
-	var found *SessionEvent
-	for i, ev := range events {
-		if ev.Kind == EventToolCallEnd {
-			found = &events[i]
+	var found *events.SessionEvent
+	for i, ev := range evs {
+		if ev.Kind == events.EventToolCallEnd {
+			found = &evs[i]
 			break
 		}
 	}
@@ -3183,7 +3184,7 @@ func TestSession_ToolCallEnd_UsesErrorKeyOnFailure(t *testing.T) {
 	}
 
 	// Error: Error field should be populated, Output empty.
-	d, ok := found.Data.(ToolCallEndData)
+	d, ok := found.Data.(events.ToolCallEndData)
 	if !ok {
 		t.Fatalf("expected ToolCallEndData, got %T", found.Data)
 	}
@@ -3223,12 +3224,12 @@ func TestSession_AssistantTextStart_IncludesModel(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for ev := range sess.Events() {
-			events = append(events, ev)
+			evs = append(evs, ev)
 		}
 	}()
 
@@ -3240,10 +3241,10 @@ func TestSession_AssistantTextStart_IncludesModel(t *testing.T) {
 	sess.Close()
 	<-done
 
-	var found *SessionEvent
-	for i, ev := range events {
-		if ev.Kind == EventAssistantTextStart {
-			found = &events[i]
+	var found *events.SessionEvent
+	for i, ev := range evs {
+		if ev.Kind == events.EventAssistantTextStart {
+			found = &evs[i]
 			break
 		}
 	}
@@ -3303,12 +3304,12 @@ func TestSession_StreamsCommunicateToolArgumentsAsAssistantDeltas(t *testing.T) 
 		t.Fatalf("NewSession: %v", err)
 	}
 
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for ev := range sess.Events() {
-			events = append(events, ev)
+			evs = append(evs, ev)
 		}
 	}()
 
@@ -3330,18 +3331,18 @@ func TestSession_StreamsCommunicateToolArgumentsAsAssistantDeltas(t *testing.T) 
 	}
 
 	var deltas []string
-	for _, ev := range events {
-		if ev.Kind != EventAssistantTextDelta {
+	for _, ev := range evs {
+		if ev.Kind != events.EventAssistantTextDelta {
 			continue
 		}
-		data, ok := ev.Data.(AssistantTextDeltaData)
+		data, ok := ev.Data.(events.AssistantTextDeltaData)
 		if !ok {
 			t.Fatalf("ASSISTANT_TEXT_DELTA data type = %T", ev.Data)
 		}
 		deltas = append(deltas, data.Delta)
 	}
 	if strings.Join(deltas, "") != "Hello" {
-		t.Fatalf("assistant deltas = %q, want chunks composing Hello; events=%v", deltas, events)
+		t.Fatalf("assistant deltas = %q, want chunks composing Hello; events=%v", deltas, evs)
 	}
 	if len(deltas) < 2 {
 		t.Fatalf("assistant deltas = %q, want multiple streamed chunks", deltas)
@@ -3477,12 +3478,12 @@ func TestSession_LoopDetection_WarningWording(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for ev := range sess.Events() {
-			events = append(events, ev)
+			evs = append(evs, ev)
 		}
 	}()
 
@@ -3496,8 +3497,8 @@ func TestSession_LoopDetection_WarningWording(t *testing.T) {
 
 	// Verify the LOOP_DETECTION event message matches the spec wording.
 	var loopMsg string
-	for _, ev := range events {
-		if ev.Kind == EventLoopDetection {
+	for _, ev := range evs {
+		if ev.Kind == events.EventLoopDetection {
 			loopMsg, _ = ev.DataMap()["message"].(string)
 			break
 		}
@@ -3789,10 +3790,10 @@ func TestSession_ContentFilterRecovery_CompactsAndRetries(t *testing.T) {
 	evDone := make(chan struct{})
 	go func() {
 		for ev := range sess.Events() {
-			if ev.Kind == EventContextCompaction {
+			if ev.Kind == events.EventContextCompaction {
 				compactionCount++
 			}
-			if ev.Kind == EventError {
+			if ev.Kind == events.EventError {
 				errorCount++
 			}
 		}
@@ -4725,12 +4726,12 @@ func TestProviderErrorEmitsStructuredCause(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for ev := range sess.Events() {
-			events = append(events, ev)
+			evs = append(evs, ev)
 		}
 	}()
 
@@ -4742,17 +4743,17 @@ func TestProviderErrorEmitsStructuredCause(t *testing.T) {
 	sess.Close()
 	<-done
 
-	var found *SessionEvent
-	for i, ev := range events {
-		if ev.Kind == EventError {
-			found = &events[i]
+	var found *events.SessionEvent
+	for i, ev := range evs {
+		if ev.Kind == events.EventError {
+			found = &evs[i]
 			break
 		}
 	}
 	if found == nil {
 		t.Fatal("no EventError emitted for provider failure")
 	}
-	d, ok := found.Data.(ErrorData)
+	d, ok := found.Data.(events.ErrorData)
 	if !ok {
 		t.Fatalf("EventError data: got %T, want ErrorData", found.Data)
 	}
@@ -4849,12 +4850,12 @@ func TestNonProviderErrorOmitsCause(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for ev := range sess.Events() {
-			events = append(events, ev)
+			evs = append(evs, ev)
 		}
 	}()
 
@@ -4866,17 +4867,17 @@ func TestNonProviderErrorOmitsCause(t *testing.T) {
 	sess.Close()
 	<-done
 
-	var found *SessionEvent
-	for i, ev := range events {
-		if ev.Kind == EventError {
-			found = &events[i]
+	var found *events.SessionEvent
+	for i, ev := range evs {
+		if ev.Kind == events.EventError {
+			found = &evs[i]
 			break
 		}
 	}
 	if found == nil {
 		t.Fatal("no EventError emitted for non-provider failure")
 	}
-	d, ok := found.Data.(ErrorData)
+	d, ok := found.Data.(events.ErrorData)
 	if !ok {
 		t.Fatalf("EventError data: got %T, want ErrorData", found.Data)
 	}

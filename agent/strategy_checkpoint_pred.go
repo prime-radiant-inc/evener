@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -43,7 +44,7 @@ func (s *checkpointPredStrategy) AfterAction(ctx context.Context, history []Turn
 // event, except the summarization layer, which emits one only on success and
 // an EventWarning on failure. It is a no-op when no contextManager or context
 // window is configured.
-func (s *checkpointPredStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, EventData)) error {
+func (s *checkpointPredStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
 	if s.cm == nil {
 		return nil
 	}
@@ -71,7 +72,7 @@ func (s *checkpointPredStrategy) ManageContext(ctx context.Context, history *[]T
 		before := estimateTokens(*history)
 		maskObservations(*history, s.cm.PreserveRecentTurns, s.cm.resultToolName())
 		after := estimateTokens(*history)
-		emitFn(EventContextCompaction, ContextCompactionData{
+		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "observation_mask",
 			TurnsBefore:     len(*history),
 			TurnsAfter:      len(*history),
@@ -87,7 +88,7 @@ func (s *checkpointPredStrategy) ManageContext(ctx context.Context, history *[]T
 		before := estimateTokens(*history)
 		clearThinking(*history, s.cm.PreserveRecentTurns)
 		after := estimateTokens(*history)
-		emitFn(EventContextCompaction, ContextCompactionData{
+		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "thinking_clear",
 			TurnsBefore:     len(*history),
 			TurnsAfter:      len(*history),
@@ -106,14 +107,14 @@ func (s *checkpointPredStrategy) ManageContext(ctx context.Context, history *[]T
 		if err != nil {
 			// Fall back to deterministic checkpoint on error.
 			*history = checkpoint(*history, s.cm.PreserveRecentTurns, &s.cm.Meta, s.cm.resultToolName())
-			emitFn(EventWarning, WarningData{
+			emitFn(events.EventWarning, events.WarningData{
 				Message: "Predictive checkpoint failed, using deterministic: " + err.Error(),
 			})
 		} else {
 			*history = result
 		}
 		after := estimateTokens(*history)
-		emitFn(EventContextCompaction, ContextCompactionData{
+		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "checkpoint_pred",
 			TurnsBefore:     turnsBefore,
 			TurnsAfter:      len(*history),
@@ -133,13 +134,13 @@ func (s *checkpointPredStrategy) ManageContext(ctx context.Context, history *[]T
 		before := estimateTokens(*history)
 		result, err := s.cm.summarizeWithLLM(ctx, *history, s.cm.PreserveRecentTurns)
 		if err != nil {
-			emitFn(EventWarning, WarningData{
+			emitFn(events.EventWarning, events.WarningData{
 				Message: "LLM summarization failed: " + err.Error(),
 			})
 		} else {
 			*history = result
 			after := estimateTokens(*history)
-			emitFn(EventContextCompaction, ContextCompactionData{
+			emitFn(events.EventContextCompaction, events.ContextCompactionData{
 				Layer:           "summarize",
 				TurnsBefore:     turnsBefore,
 				TurnsAfter:      len(*history),

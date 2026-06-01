@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -46,7 +47,7 @@ func TestObsMaskStrategy_ManageContext_NoCompactionBelowThreshold(t *testing.T) 
 	}
 
 	emitted := false
-	emitFn := func(kind EventKind, data EventData) { emitted = true }
+	emitFn := func(kind events.EventKind, data events.EventData) { emitted = true }
 
 	err := s.ManageContext(context.Background(), &history, 0, emitFn)
 	if err != nil {
@@ -172,7 +173,7 @@ func TestObsMaskStrategy_ManageContext_FiresOnCompactionTurn_Checkpoint(t *testi
 		NewTurn(TurnAssistant, llm.Assistant("almost done")),
 	}
 
-	emitFn := func(kind EventKind, data EventData) {}
+	emitFn := func(kind events.EventKind, data events.EventData) {}
 
 	err := s.ManageContext(context.Background(), &history, 0, emitFn)
 	if err != nil {

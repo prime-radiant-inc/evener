@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/agent/events"
 )
 
 // setupFullTestPlugin creates a temp directory with a complete plugin containing
@@ -206,9 +208,9 @@ func TestPlugin_EndToEnd_HookExecution(t *testing.T) {
 	}
 
 	// Track events
-	var events []EventKind
-	runner.SetEventCallback(func(kind EventKind, data EventData) {
-		events = append(events, kind)
+	var evs []events.EventKind
+	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+		evs = append(evs, kind)
 	})
 
 	// Fire SessionStart
@@ -229,13 +231,13 @@ func TestPlugin_EndToEnd_HookExecution(t *testing.T) {
 	}
 
 	// Verify lifecycle events were emitted (HookStart + HookEnd per hook)
-	if len(events) != 2 {
-		t.Fatalf("expected 2 events (HookStart + HookEnd), got %d: %v", len(events), events)
+	if len(evs) != 2 {
+		t.Fatalf("expected 2 events (HookStart + HookEnd), got %d: %v", len(evs), evs)
 	}
-	if events[0] != EventHookStart {
-		t.Errorf("events[0] = %q, want %q", events[0], EventHookStart)
+	if evs[0] != events.EventHookStart {
+		t.Errorf("events[0] = %q, want %q", evs[0], events.EventHookStart)
 	}
-	if events[1] != EventHookEnd {
-		t.Errorf("events[1] = %q, want %q", events[1], EventHookEnd)
+	if evs[1] != events.EventHookEnd {
+		t.Errorf("events[1] = %q, want %q", evs[1], events.EventHookEnd)
 	}
 }

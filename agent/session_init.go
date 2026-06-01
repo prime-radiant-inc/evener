@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/oklog/ulid/v2"
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/llm"
 )
@@ -87,7 +88,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		stateDir:       cfg.StateDir,
 		installID:      installid.LoadOrCreateInstallationID(cfg.StateDir),
 		state:          SessionIdle,
-		events:         make(chan SessionEvent, 256),
+		events:         make(chan events.SessionEvent, 256),
 		history:        []Turn{},
 		readFiles:      map[string]bool{},
 		sessionCtx:     sessCtx,
@@ -149,7 +150,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
 		tw, twErr := NewTranscriptWriter(tpath, hdr)
 		if twErr != nil {
-			s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript create failed: %v", twErr)})
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript create failed: %v", twErr)})
 		}
 		if tw != nil {
 			tw.SyncInterval = 1 * time.Second
@@ -176,7 +177,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 		}
 	}
 
-	s.emitSessionStartEnvelope(SessionStartData{
+	s.emitSessionStartEnvelope(events.SessionStartData{
 		Profile:           profile.ID(),
 		Model:             profile.Model(),
 		ContextWindowSize: profile.ContextWindowSize(),
@@ -234,7 +235,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		stateDir:       cfg.StateDir,
 		installID:      installid.LoadOrCreateInstallationID(cfg.StateDir),
 		state:          SessionIdle,
-		events:         make(chan SessionEvent, 256),
+		events:         make(chan events.SessionEvent, 256),
 		history:        resumeHistory,
 		modelResponses: snap.TurnCount,
 		readFiles:      map[string]bool{},
@@ -280,7 +281,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 			}
 			tw, twErr = NewTranscriptWriter(tpath, hdr)
 			if twErr != nil {
-				s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript open failed: %v", twErr)})
+				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript open failed: %v", twErr)})
 			}
 		}
 		if tw != nil {
@@ -308,7 +309,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 		}
 	}
 
-	s.emitSessionStartEnvelope(SessionStartData{
+	s.emitSessionStartEnvelope(events.SessionStartData{
 		Profile:           profile.ID(),
 		Model:             profile.Model(),
 		Restored:          true,
@@ -366,7 +367,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 		stateDir:       cfg.StateDir,
 		installID:      installid.LoadOrCreateInstallationID(cfg.StateDir),
 		state:          SessionIdle,
-		events:         make(chan SessionEvent, 256),
+		events:         make(chan events.SessionEvent, 256),
 		history:        resumeHistory,
 		modelResponses: meta.TurnCount,
 		forkParentID:   meta.ParentSessionID,
@@ -418,7 +419,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 			}
 			tw, twErr = NewTranscriptWriter(tpath, hdr)
 			if twErr != nil {
-				s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript open failed: %v", twErr)})
+				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript open failed: %v", twErr)})
 			}
 		}
 		if tw != nil {
@@ -445,7 +446,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 		}
 	}
 
-	s.emitSessionStartEnvelope(SessionStartData{
+	s.emitSessionStartEnvelope(events.SessionStartData{
 		Profile:           profile.ID(),
 		Model:             profile.Model(),
 		Restored:          true,
@@ -662,7 +663,7 @@ func (s *Session) initPlugins(sessionStartKind SessionStartKind) error {
 
 		s.pluginMCPConfigs = append(s.pluginMCPConfigs, p.MCPConfigs...)
 
-		s.pendingPluginEvents = append(s.pendingPluginEvents, PluginLoadedData{
+		s.pendingPluginEvents = append(s.pendingPluginEvents, events.PluginLoadedData{
 			Name:       p.Manifest.Name,
 			Dir:        p.Dir,
 			SkillCount: len(p.Skills),
@@ -671,7 +672,7 @@ func (s *Session) initPlugins(sessionStartKind SessionStartKind) error {
 		})
 	}
 
-	runner.SetEventCallback(func(kind EventKind, data EventData) {
+	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
 		s.emit(kind, data)
 	})
 	s.hookRunner = runner

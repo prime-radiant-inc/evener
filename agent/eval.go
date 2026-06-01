@@ -3,6 +3,7 @@ package agent
 import (
 	"sync"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -65,29 +66,29 @@ func newEvalCollector(strategy, model, task string) *evalCollector {
 }
 
 // ProcessEvent handles a SessionEvent and updates the collected metrics.
-func (c *evalCollector) ProcessEvent(ev SessionEvent) {
+func (c *evalCollector) ProcessEvent(ev events.SessionEvent) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	switch ev.Kind {
-	case EventAssistantTextEnd:
+	case events.EventAssistantTextEnd:
 		c.metrics.TurnCount++
-		if d, ok := ev.Data.(AssistantTextEndData); ok {
+		if d, ok := ev.Data.(events.AssistantTextEndData); ok {
 			c.addUsage(d.Usage)
 		}
 
-	case EventContextCompaction:
+	case events.EventContextCompaction:
 		c.metrics.CompactionEvents++
-		if d, ok := ev.Data.(ContextCompactionData); ok && d.Layer != "" {
+		if d, ok := ev.Data.(events.ContextCompactionData); ok && d.Layer != "" {
 			c.metrics.CompactionLayers = append(c.metrics.CompactionLayers, d.Layer)
 		}
 
-	case EventToolCallStart:
-		if d, ok := ev.Data.(ToolCallStartData); ok && d.ToolName == "recall" {
+	case events.EventToolCallStart:
+		if d, ok := ev.Data.(events.ToolCallStartData); ok && d.ToolName == "recall" {
 			c.metrics.RecallCalls++
 		}
 
-	case EventForkSummary:
+	case events.EventForkSummary:
 		c.metrics.ForkSummaryCalls++
 	}
 }

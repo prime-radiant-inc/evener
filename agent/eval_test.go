@@ -3,6 +3,7 @@ package agent
 import (
 	"testing"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -27,16 +28,16 @@ func TestEvalCollector_CountsTurns(t *testing.T) {
 	c := newEvalCollector("compact", "gpt-4", "task")
 
 	// Two assistant text end events = 2 turns.
-	c.ProcessEvent(SessionEvent{
-		Kind: EventAssistantTextEnd,
-		Data: AssistantTextEndData{
+	c.ProcessEvent(events.SessionEvent{
+		Kind: events.EventAssistantTextEnd,
+		Data: events.AssistantTextEndData{
 			Text:  "hello",
 			Usage: llm.Usage{InputTokens: 10, OutputTokens: 5},
 		},
 	})
-	c.ProcessEvent(SessionEvent{
-		Kind: EventAssistantTextEnd,
-		Data: AssistantTextEndData{
+	c.ProcessEvent(events.SessionEvent{
+		Kind: events.EventAssistantTextEnd,
+		Data: events.AssistantTextEndData{
 			Text:  "world",
 			Usage: llm.Usage{InputTokens: 20, OutputTokens: 8},
 		},
@@ -51,15 +52,15 @@ func TestEvalCollector_CountsTurns(t *testing.T) {
 func TestEvalCollector_AccumulatesTokens(t *testing.T) {
 	c := newEvalCollector("compact", "gpt-4", "task")
 
-	c.ProcessEvent(SessionEvent{
-		Kind: EventAssistantTextEnd,
-		Data: AssistantTextEndData{
+	c.ProcessEvent(events.SessionEvent{
+		Kind: events.EventAssistantTextEnd,
+		Data: events.AssistantTextEndData{
 			Usage: llm.Usage{InputTokens: 100, OutputTokens: 50},
 		},
 	})
-	c.ProcessEvent(SessionEvent{
-		Kind: EventAssistantTextEnd,
-		Data: AssistantTextEndData{
+	c.ProcessEvent(events.SessionEvent{
+		Kind: events.EventAssistantTextEnd,
+		Data: events.AssistantTextEndData{
 			Usage: llm.Usage{InputTokens: 200, OutputTokens: 30},
 		},
 	})
@@ -77,9 +78,9 @@ func TestEvalCollector_AccumulatesCacheTokens(t *testing.T) {
 	c := newEvalCollector("compact", "gpt-4", "task")
 
 	// Two events with cache pointers set: both should accumulate.
-	c.ProcessEvent(SessionEvent{
-		Kind: EventAssistantTextEnd,
-		Data: AssistantTextEndData{
+	c.ProcessEvent(events.SessionEvent{
+		Kind: events.EventAssistantTextEnd,
+		Data: events.AssistantTextEndData{
 			Usage: llm.Usage{
 				InputTokens:      10,
 				CacheReadTokens:  intPtr(100),
@@ -87,9 +88,9 @@ func TestEvalCollector_AccumulatesCacheTokens(t *testing.T) {
 			},
 		},
 	})
-	c.ProcessEvent(SessionEvent{
-		Kind: EventAssistantTextEnd,
-		Data: AssistantTextEndData{
+	c.ProcessEvent(events.SessionEvent{
+		Kind: events.EventAssistantTextEnd,
+		Data: events.AssistantTextEndData{
 			Usage: llm.Usage{
 				InputTokens:      10,
 				CacheReadTokens:  intPtr(50),
@@ -99,9 +100,9 @@ func TestEvalCollector_AccumulatesCacheTokens(t *testing.T) {
 	})
 	// Event with nil cache pointers: the nil guard must skip it without
 	// panicking and must not change the cache totals.
-	c.ProcessEvent(SessionEvent{
-		Kind: EventAssistantTextEnd,
-		Data: AssistantTextEndData{
+	c.ProcessEvent(events.SessionEvent{
+		Kind: events.EventAssistantTextEnd,
+		Data: events.AssistantTextEndData{
 			Usage: llm.Usage{InputTokens: 10},
 		},
 	})
@@ -118,13 +119,13 @@ func TestEvalCollector_AccumulatesCacheTokens(t *testing.T) {
 func TestEvalCollector_CountsCompactionEvents(t *testing.T) {
 	c := newEvalCollector("compact", "gpt-4", "task")
 
-	c.ProcessEvent(SessionEvent{
-		Kind: EventContextCompaction,
-		Data: ContextCompactionData{Layer: "aggressive"},
+	c.ProcessEvent(events.SessionEvent{
+		Kind: events.EventContextCompaction,
+		Data: events.ContextCompactionData{Layer: "aggressive"},
 	})
-	c.ProcessEvent(SessionEvent{
-		Kind: EventContextCompaction,
-		Data: ContextCompactionData{Layer: "moderate"},
+	c.ProcessEvent(events.SessionEvent{
+		Kind: events.EventContextCompaction,
+		Data: events.ContextCompactionData{Layer: "moderate"},
 	})
 
 	m := c.Metrics()
@@ -146,19 +147,19 @@ func TestEvalCollector_CountsRecallCalls(t *testing.T) {
 	c := newEvalCollector("recall", "gpt-4", "task")
 
 	// recall via ToolCallStart
-	c.ProcessEvent(SessionEvent{
-		Kind: EventToolCallStart,
-		Data: ToolCallStartData{ToolName: "recall", CallID: "c1"},
+	c.ProcessEvent(events.SessionEvent{
+		Kind: events.EventToolCallStart,
+		Data: events.ToolCallStartData{ToolName: "recall", CallID: "c1"},
 	})
 	// non-recall tool should not increment
-	c.ProcessEvent(SessionEvent{
-		Kind: EventToolCallStart,
-		Data: ToolCallStartData{ToolName: "shell", CallID: "c2"},
+	c.ProcessEvent(events.SessionEvent{
+		Kind: events.EventToolCallStart,
+		Data: events.ToolCallStartData{ToolName: "shell", CallID: "c2"},
 	})
 	// another recall
-	c.ProcessEvent(SessionEvent{
-		Kind: EventToolCallStart,
-		Data: ToolCallStartData{ToolName: "recall", CallID: "c3"},
+	c.ProcessEvent(events.SessionEvent{
+		Kind: events.EventToolCallStart,
+		Data: events.ToolCallStartData{ToolName: "recall", CallID: "c3"},
 	})
 
 	m := c.Metrics()
@@ -170,10 +171,10 @@ func TestEvalCollector_CountsRecallCalls(t *testing.T) {
 func TestEvalCollector_IgnoresUnrelatedEvents(t *testing.T) {
 	c := newEvalCollector("compact", "gpt-4", "task")
 
-	c.ProcessEvent(SessionEvent{Kind: EventSessionStart, Data: SessionStartData{Profile: "openai", Model: "gpt-4"}})
-	c.ProcessEvent(SessionEvent{Kind: EventUserInput, Data: UserInputData{Text: "hello"}})
-	c.ProcessEvent(SessionEvent{Kind: EventAssistantTextDelta, Data: AssistantTextDeltaData{Delta: "hi"}})
-	c.ProcessEvent(SessionEvent{Kind: EventSessionEnd, Data: SessionEndData{Reason: "done"}})
+	c.ProcessEvent(events.SessionEvent{Kind: events.EventSessionStart, Data: events.SessionStartData{Profile: "openai", Model: "gpt-4"}})
+	c.ProcessEvent(events.SessionEvent{Kind: events.EventUserInput, Data: events.UserInputData{Text: "hello"}})
+	c.ProcessEvent(events.SessionEvent{Kind: events.EventAssistantTextDelta, Data: events.AssistantTextDeltaData{Delta: "hi"}})
+	c.ProcessEvent(events.SessionEvent{Kind: events.EventSessionEnd, Data: events.SessionEndData{Reason: "done"}})
 
 	m := c.Metrics()
 	if m.TurnCount != 0 {
@@ -190,15 +191,15 @@ func TestEvalCollector_IgnoresUnrelatedEvents(t *testing.T) {
 func TestEvalCollector_TotalTokensComputed(t *testing.T) {
 	c := newEvalCollector("compact", "gpt-4", "task")
 
-	c.ProcessEvent(SessionEvent{
-		Kind: EventAssistantTextEnd,
-		Data: AssistantTextEndData{
+	c.ProcessEvent(events.SessionEvent{
+		Kind: events.EventAssistantTextEnd,
+		Data: events.AssistantTextEndData{
 			Usage: llm.Usage{InputTokens: 100, OutputTokens: 50},
 		},
 	})
-	c.ProcessEvent(SessionEvent{
-		Kind: EventAssistantTextEnd,
-		Data: AssistantTextEndData{
+	c.ProcessEvent(events.SessionEvent{
+		Kind: events.EventAssistantTextEnd,
+		Data: events.AssistantTextEndData{
 			Usage: llm.Usage{InputTokens: 200, OutputTokens: 30},
 		},
 	})
@@ -219,13 +220,13 @@ func TestEvalCollector_TotalTokensComputed(t *testing.T) {
 func TestEvalCollector_CountsForkSummaryCalls(t *testing.T) {
 	c := newEvalCollector("session-log", "gpt-4", "task")
 
-	c.ProcessEvent(SessionEvent{
-		Kind: EventForkSummary,
-		Data: ForkSummaryData{Turn: 3},
+	c.ProcessEvent(events.SessionEvent{
+		Kind: events.EventForkSummary,
+		Data: events.ForkSummaryData{Turn: 3},
 	})
-	c.ProcessEvent(SessionEvent{
-		Kind: EventForkSummary,
-		Data: ForkSummaryData{Turn: 7},
+	c.ProcessEvent(events.SessionEvent{
+		Kind: events.EventForkSummary,
+		Data: events.ForkSummaryData{Turn: 7},
 	})
 
 	m := c.Metrics()
@@ -249,9 +250,9 @@ func TestEvalCollector_ConcurrentAccess(t *testing.T) {
 	go func() {
 		defer close(done)
 		for i := 0; i < 100; i++ {
-			c.ProcessEvent(SessionEvent{
-				Kind: EventAssistantTextEnd,
-				Data: AssistantTextEndData{
+			c.ProcessEvent(events.SessionEvent{
+				Kind: events.EventAssistantTextEnd,
+				Data: events.AssistantTextEndData{
 					Usage: llm.Usage{InputTokens: 1, OutputTokens: 1},
 				},
 			})

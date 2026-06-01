@@ -7,15 +7,16 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/appwire"
 )
 
 func TestAppEventProjectorProjectsAssistantDelta(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 
-	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
-	projector.Project(agent.SessionEvent{Kind: agent.EventAssistantTextStart, SessionID: "th_1", Data: agent.AssistantTextStartData{Model: "gpt-5"}})
-	out := projector.Project(agent.SessionEvent{Kind: agent.EventAssistantTextDelta, SessionID: "th_1", Data: agent.AssistantTextDeltaData{Delta: "hi"}})
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_1", Data: events.AssistantTextStartData{Model: "gpt-5"}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventAssistantTextDelta, SessionID: "th_1", Data: events.AssistantTextDeltaData{Delta: "hi"}})
 
 	if len(out) != 1 {
 		t.Fatalf("notifications=%+v", out)
@@ -34,7 +35,7 @@ func TestAppEventProjectorProjectsAssistantDelta(t *testing.T) {
 
 func TestAppEventProjectorCarriesUserInputTranscriptEntryIndex(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	out := projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello", Turn: 3}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello", Turn: 3}})
 	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
 	if item.TranscriptEntryIndex != 3 {
 		t.Fatalf("transcript entry index=%d, want 3", item.TranscriptEntryIndex)
@@ -43,7 +44,7 @@ func TestAppEventProjectorCarriesUserInputTranscriptEntryIndex(t *testing.T) {
 
 func TestAppEventProjectorJSONUsesCodexLifecycleShape(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	out := projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
+	out := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
 
 	started := notificationParamsJSON(t, out, appwire.NotifyTurnStarted)
 	var turnStarted struct {
@@ -79,12 +80,12 @@ func TestAppEventProjectorJSONUsesCodexLifecycleShape(t *testing.T) {
 
 func TestAppEventProjectorCarriesUserInputImages(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	out := projector.Project(agent.SessionEvent{
-		Kind:      agent.EventUserInput,
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventUserInput,
 		SessionID: "th_1",
-		Data: agent.UserInputData{
+		Data: events.UserInputData{
 			Text: "",
-			Images: []agent.UserInputImage{{
+			Images: []events.UserInputImage{{
 				MediaType: "image/png",
 				Data:      []byte("png"),
 				Name:      "shot.png",
@@ -102,10 +103,10 @@ func TestAppEventProjectorCarriesUserInputImages(t *testing.T) {
 
 func TestAppEventProjectorCompletesActiveTurnBeforeQueuedUserInput(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	first := projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "first"}})
+	first := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "first"}})
 	firstTurnID := notificationTurnID(t, first, appwire.NotifyTurnStarted)
 
-	second := projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "second"}})
+	second := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "second"}})
 	if len(second) < 2 {
 		t.Fatalf("second notifications=%+v", second)
 	}
@@ -128,10 +129,10 @@ func TestAppEventProjectorCompletesActiveTurnBeforeQueuedUserInput(t *testing.T)
 
 func TestAppEventProjectorProjectsThreadLifecycle(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	started := projector.Project(agent.SessionEvent{
-		Kind:      agent.EventSessionStart,
+	started := projector.Project(events.SessionEvent{
+		Kind:      events.EventSessionStart,
 		SessionID: "th_1",
-		Data:      agent.SessionStartData{Profile: "openai", Model: "gpt-5"},
+		Data:      events.SessionStartData{Profile: "openai", Model: "gpt-5"},
 	})
 
 	thread := notificationThread(t, started, appwire.NotifyThreadStarted)
@@ -145,10 +146,10 @@ func TestAppEventProjectorProjectsThreadLifecycle(t *testing.T) {
 		t.Fatalf("started status=%+v, want idle", status)
 	}
 
-	closed := projector.Project(agent.SessionEvent{
-		Kind:      agent.EventSessionEnd,
+	closed := projector.Project(events.SessionEvent{
+		Kind:      events.EventSessionEnd,
 		SessionID: "th_1",
-		Data:      agent.SessionEndData{Reason: "done", State: "closed"},
+		Data:      events.SessionEndData{Reason: "done", State: "closed"},
 	})
 	if !hasAppNotification(closed, appwire.NotifyThreadClosed) {
 		t.Fatalf("closed lifecycle missing thread/closed: %+v", closed)
@@ -160,9 +161,9 @@ func TestAppEventProjectorProjectsThreadLifecycle(t *testing.T) {
 
 func TestAppEventProjectorCompletesTurnOnSessionEnd(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	started := projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
-	assistantEnd := projector.Project(agent.SessionEvent{Kind: agent.EventAssistantTextEnd, SessionID: "th_1", Data: agent.AssistantTextEndData{Text: "hi"}})
-	sessionEnd := projector.Project(agent.SessionEvent{Kind: agent.EventSessionEnd, SessionID: "th_1", Data: agent.SessionEndData{Reason: "input_complete", State: "idle"}})
+	started := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	assistantEnd := projector.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{Text: "hi"}})
+	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}})
 
 	if len(started) == 0 || started[0].Method != appwire.NotifyTurnStarted {
 		t.Fatalf("started=%+v", started)
@@ -180,8 +181,8 @@ func TestAppEventProjectorCompletesTurnOnSessionEnd(t *testing.T) {
 
 func TestAppEventProjectorMapsAwaitingSessionEnd(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
-	sessionEnd := projector.Project(agent.SessionEvent{Kind: agent.EventSessionEnd, SessionID: "th_1", Data: agent.SessionEndData{
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{
 		Reason: "input_complete",
 		State:  "awaiting",
 	}})
@@ -217,8 +218,8 @@ func TestAppEventProjectorMapsAwaitingSessionEnd(t *testing.T) {
 // active turn must be reported as canceled, not completed.
 func TestAppEventProjectorMarksInterruptedTurnCanceled(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
-	sessionEnd := projector.Project(agent.SessionEvent{Kind: agent.EventSessionEnd, SessionID: "th_1", Data: agent.SessionEndData{
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{
 		Reason:      "interrupted",
 		State:       "idle",
 		Interrupted: true,
@@ -260,11 +261,11 @@ func TestAppEventProjectorMarksInterruptedTurnCanceled(t *testing.T) {
 
 func TestAppEventProjectorLetsInterruptedSessionEndCancelAfterContextCanceledError(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
-	errOut := projector.Project(agent.SessionEvent{
-		Kind:      agent.EventError,
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	errOut := projector.Project(events.SessionEvent{
+		Kind:      events.EventError,
 		SessionID: "th_1",
-		Data:      agent.ErrorData{Error: "context canceled"},
+		Data:      events.ErrorData{Error: "context canceled"},
 	})
 	if !hasAppNotification(errOut, appwire.NotifyWarning) {
 		t.Fatalf("context canceled EventError missing warning: %+v", errOut)
@@ -273,7 +274,7 @@ func TestAppEventProjectorLetsInterruptedSessionEndCancelAfterContextCanceledErr
 		t.Fatalf("context canceled EventError completed turn before interrupted SessionEnd: %+v", errOut)
 	}
 
-	sessionEnd := projector.Project(agent.SessionEvent{Kind: agent.EventSessionEnd, SessionID: "th_1", Data: agent.SessionEndData{
+	sessionEnd := projector.Project(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{
 		Reason:      "interrupted",
 		State:       "idle",
 		Interrupted: true,
@@ -300,14 +301,14 @@ func TestAppEventProjectorLetsInterruptedSessionEndCancelAfterContextCanceledErr
 
 func TestAppEventProjectorKeepsToolEventsInActiveTurnAfterAssistantText(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	started := projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
+	started := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
 	turnID := notificationTurnID(t, started, appwire.NotifyTurnStarted)
 
-	assistantEnd := projector.Project(agent.SessionEvent{Kind: agent.EventAssistantTextEnd, SessionID: "th_1", Data: agent.AssistantTextEndData{Text: "I'll check."}})
+	assistantEnd := projector.Project(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{Text: "I'll check."}})
 	if hasAppNotification(assistantEnd, appwire.NotifyTurnCompleted) {
 		t.Fatalf("assistant end completed turn early: %+v", assistantEnd)
 	}
-	toolStart := projector.Project(agent.SessionEvent{Kind: agent.EventToolCallStart, SessionID: "th_1", Data: agent.ToolCallStartData{
+	toolStart := projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
 		ToolName:      "shell",
 		CallID:        "call_1",
 		ArgumentsJSON: `{"command":"pwd"}`,
@@ -320,7 +321,7 @@ func TestAppEventProjectorKeepsToolEventsInActiveTurnAfterAssistantText(t *testi
 
 func TestAppEventProjectorCarriesToolDescription(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	out := projector.Project(agent.SessionEvent{Kind: agent.EventToolCallStart, SessionID: "th_1", Data: agent.ToolCallStartData{
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
 		ToolName:      "shell",
 		CallID:        "call_1",
 		ArgumentsJSON: `{"command":"pwd"}`,
@@ -335,12 +336,12 @@ func TestAppEventProjectorCarriesToolDescription(t *testing.T) {
 
 func TestAppEventProjectorProjectsCommunicateAsAssistantMessage(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
 
-	out := projector.Project(agent.SessionEvent{
-		Kind:      agent.EventCommunicate,
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventCommunicate,
 		SessionID: "th_1",
-		Data:      agent.CommunicateData{Message: "done"},
+		Data:      events.CommunicateData{Message: "done"},
 	})
 
 	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
@@ -351,25 +352,25 @@ func TestAppEventProjectorProjectsCommunicateAsAssistantMessage(t *testing.T) {
 
 func TestAppEventProjectorSuppressesCommunicateToolEvents(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
-	projector.Project(agent.SessionEvent{
-		Kind:      agent.EventAssistantTextEnd,
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{
+		Kind:      events.EventAssistantTextEnd,
 		SessionID: "th_1",
-		Data:      agent.AssistantTextEndData{Text: "done"},
+		Data:      events.AssistantTextEndData{Text: "done"},
 	})
 
-	for _, ev := range []agent.SessionEvent{
-		{Kind: agent.EventToolCallStart, SessionID: "th_1", Data: agent.ToolCallStartData{
+	for _, ev := range []events.SessionEvent{
+		{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
 			ToolName:      "communicate",
 			CallID:        "call_1",
 			ArgumentsJSON: `{"message":"done"}`,
 		}},
-		{Kind: agent.EventToolCallOutputDelta, SessionID: "th_1", Data: agent.ToolCallOutputDeltaData{
+		{Kind: events.EventToolCallOutputDelta, SessionID: "th_1", Data: events.ToolCallOutputDeltaData{
 			ToolName: "communicate",
 			CallID:   "call_1",
 			Delta:    `{"accepted":true}`,
 		}},
-		{Kind: agent.EventToolCallEnd, SessionID: "th_1", Data: agent.ToolCallEndData{
+		{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
 			ToolName: "communicate",
 			CallID:   "call_1",
 			Output:   `{"accepted":true}`,
@@ -383,14 +384,14 @@ func TestAppEventProjectorSuppressesCommunicateToolEvents(t *testing.T) {
 
 func TestAppEventProjectorIncludesCallIDOnToolOutputDelta(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
-	projector.Project(agent.SessionEvent{Kind: agent.EventToolCallStart, SessionID: "th_1", Data: agent.ToolCallStartData{
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
 		ToolName:      "shell",
 		CallID:        "call_1",
 		ArgumentsJSON: `{"command":"pwd"}`,
 	}})
 
-	out := projector.Project(agent.SessionEvent{Kind: agent.EventToolCallOutputDelta, SessionID: "th_1", Data: agent.ToolCallOutputDeltaData{
+	out := projector.Project(events.SessionEvent{Kind: events.EventToolCallOutputDelta, SessionID: "th_1", Data: events.ToolCallOutputDeltaData{
 		CallID: "call_1",
 		Delta:  "partial\n",
 	}})
@@ -412,10 +413,10 @@ func TestAppEventProjectorIncludesCallIDOnToolOutputDelta(t *testing.T) {
 
 func TestAppEventProjectorProjectsSubagentEvents(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	out := projector.Project(agent.SessionEvent{
-		Kind:      agent.EventSubagentStart,
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventSubagentStart,
 		SessionID: "th_1",
-		Data:      agent.SubagentStartData{AgentID: "a1", Task: "inspect"},
+		Data:      events.SubagentStartData{AgentID: "a1", Task: "inspect"},
 	})
 	if len(out) != 1 || out[0].Method != appwire.NotifySerfSubagentStarted {
 		t.Fatalf("out=%+v", out)
@@ -428,10 +429,10 @@ func TestAppEventProjectorProjectsSubagentEvents(t *testing.T) {
 // preview.
 func TestAppEventProjectorProjectsQueueChanged(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	out := projector.Project(agent.SessionEvent{
-		Kind:      agent.EventQueueChanged,
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventQueueChanged,
 		SessionID: "th_1",
-		Data: agent.QueueChangedData{
+		Data: events.QueueChangedData{
 			Depth:   2,
 			Preview: []string{"first line", "second"},
 		},
@@ -456,10 +457,10 @@ func TestAppEventProjectorProjectsQueueChanged(t *testing.T) {
 
 func TestAppEventProjectorProjectsSteeringInjected(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	out := projector.Project(agent.SessionEvent{
-		Kind:      agent.EventSteeringInjected,
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventSteeringInjected,
 		SessionID: "th_1",
-		Data:      agent.SteeringInjectedData{Text: "stay focused"},
+		Data:      events.SteeringInjectedData{Text: "stay focused"},
 	})
 	if len(out) != 1 || out[0].Method != appwire.NotifySerfSteeringInjected {
 		t.Fatalf("out=%+v", out)
@@ -476,10 +477,10 @@ func TestAppEventProjectorProjectsSteeringInjected(t *testing.T) {
 func TestAppEventProjectorProjectsCompactionTurn(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 
-	out := projector.Project(agent.SessionEvent{
-		Kind:      agent.EventCompactionTurn,
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventCompactionTurn,
 		SessionID: "th_1",
-		Data: agent.CompactionTurnData{
+		Data: events.CompactionTurnData{
 			Kind: string(agent.TurnSummary),
 			Text: "[CONTEXT SUMMARY]\nkept the useful state",
 		},
@@ -500,13 +501,13 @@ func TestAppEventProjectorProjectsCompactionTurn(t *testing.T) {
 
 func TestAppEventProjectorProjectsCompactionTurnInActiveTurn(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	started := projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
+	started := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
 	turnID := notificationTurnID(t, started, appwire.NotifyTurnStarted)
 
-	out := projector.Project(agent.SessionEvent{
-		Kind:      agent.EventCompactionTurn,
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventCompactionTurn,
 		SessionID: "th_1",
-		Data: agent.CompactionTurnData{
+		Data: events.CompactionTurnData{
 			Kind: string(agent.TurnCheckpoint),
 			Text: "[CONTEXT CHECKPOINT]\nkept raw context",
 		},
@@ -524,7 +525,7 @@ func TestAppEventProjectorProjectsCompactionTurnInActiveTurn(t *testing.T) {
 func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testing.T) {
 	tests := []struct {
 		name        string
-		event       agent.SessionEvent
+		event       events.SessionEvent
 		description string
 		contains    []string
 		notContains []string
@@ -532,31 +533,31 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 	}{
 		{
 			name:        "turn limit max turns",
-			event:       agent.SessionEvent{Kind: agent.EventTurnLimit, SessionID: "th_1", Data: agent.TurnLimitData{MaxTurns: 3}},
+			event:       events.SessionEvent{Kind: events.EventTurnLimit, SessionID: "th_1", Data: events.TurnLimitData{MaxTurns: 3}},
 			description: "Turn limit",
 			contains:    []string{"Maximum turns reached: 3"},
 		},
 		{
 			name:        "turn limit tool rounds",
-			event:       agent.SessionEvent{Kind: agent.EventTurnLimit, SessionID: "th_1", Data: agent.TurnLimitData{MaxToolRoundsPerInput: 7}},
+			event:       events.SessionEvent{Kind: events.EventTurnLimit, SessionID: "th_1", Data: events.TurnLimitData{MaxToolRoundsPerInput: 7}},
 			description: "Turn limit",
 			contains:    []string{"Maximum tool rounds per input reached: 7"},
 		},
 		{
 			name:        "loop detection",
-			event:       agent.SessionEvent{Kind: agent.EventLoopDetection, SessionID: "th_1", Data: agent.LoopDetectionData{Message: "Repeated tool pattern detected"}},
+			event:       events.SessionEvent{Kind: events.EventLoopDetection, SessionID: "th_1", Data: events.LoopDetectionData{Message: "Repeated tool pattern detected"}},
 			description: "Loop detection",
 			contains:    []string{"Repeated tool pattern detected"},
 		},
 		{
 			name:        "skill activated",
-			event:       agent.SessionEvent{Kind: agent.EventSkillActivated, SessionID: "th_1", Data: agent.SkillActivatedData{Name: "using-superpowers"}},
+			event:       events.SessionEvent{Kind: events.EventSkillActivated, SessionID: "th_1", Data: events.SkillActivatedData{Name: "using-superpowers"}},
 			description: "Skill activated",
 			contains:    []string{"using-superpowers"},
 		},
 		{
 			name: "context compaction",
-			event: agent.SessionEvent{Kind: agent.EventContextCompaction, SessionID: "th_1", Data: agent.ContextCompactionData{
+			event: events.SessionEvent{Kind: events.EventContextCompaction, SessionID: "th_1", Data: events.ContextCompactionData{
 				Layer:           "L4",
 				TurnsBefore:     42,
 				TurnsAfter:      8,
@@ -568,7 +569,7 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 		},
 		{
 			name: "plugin loaded",
-			event: agent.SessionEvent{Kind: agent.EventPluginLoaded, SessionID: "th_1", Data: agent.PluginLoadedData{
+			event: events.SessionEvent{Kind: events.EventPluginLoaded, SessionID: "th_1", Data: events.PluginLoadedData{
 				Name: "superpowers", SkillCount: 5, AgentCount: 2, MCPCount: 1,
 			}},
 			description: "Plugin loaded",
@@ -576,7 +577,7 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 		},
 		{
 			name: "hook end",
-			event: agent.SessionEvent{Kind: agent.EventHookEnd, SessionID: "th_1", Data: agent.HookEndData{
+			event: events.SessionEvent{Kind: events.EventHookEnd, SessionID: "th_1", Data: events.HookEndData{
 				Event: "SessionStart", HookType: "command", Matcher: "using-superpowers", PluginName: "superpowers", ExitCode: 0, DurationMS: 37,
 			}},
 			description: "Hook",
@@ -586,19 +587,19 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 		},
 		{
 			name:        "fork summary",
-			event:       agent.SessionEvent{Kind: agent.EventForkSummary, SessionID: "th_1", Data: agent.ForkSummaryData{Turn: 12}},
+			event:       events.SessionEvent{Kind: events.EventForkSummary, SessionID: "th_1", Data: events.ForkSummaryData{Turn: 12}},
 			description: "Fork summary",
 			contains:    []string{"turn 12"},
 		},
 		{
 			name:        "prompt loaded",
-			event:       agent.SessionEvent{Kind: agent.EventPromptLoaded, SessionID: "th_1", Data: agent.PromptLoadedData{Label: "system.md", Size: 2048}},
+			event:       events.SessionEvent{Kind: events.EventPromptLoaded, SessionID: "th_1", Data: events.PromptLoadedData{Label: "system.md", Size: 2048}},
 			description: "Prompt loaded",
 			contains:    []string{"system.md", "2048 B"},
 		},
 		{
 			name: "round timings",
-			event: agent.SessionEvent{Kind: agent.EventRoundTimings, SessionID: "th_1", Data: agent.RoundTimings{
+			event: events.SessionEvent{Kind: events.EventRoundTimings, SessionID: "th_1", Data: events.RoundTimings{
 				Round:        2,
 				TotalRound:   1500 * time.Millisecond,
 				LLMCall:      1200 * time.Millisecond,
@@ -646,7 +647,7 @@ func TestAppEventProjectorProjectsAgentOnlyEventsAsSystemAnnouncements(t *testin
 
 func TestAppEventProjectorDoesNotDisplayHookStart(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	out := projector.Project(agent.SessionEvent{Kind: agent.EventHookStart, SessionID: "th_1", Data: agent.HookStartData{
+	out := projector.Project(events.SessionEvent{Kind: events.EventHookStart, SessionID: "th_1", Data: events.HookStartData{
 		Event: "SessionStart", HookType: "command", Matcher: "using-superpowers", PluginName: "superpowers",
 	}})
 
@@ -657,13 +658,13 @@ func TestAppEventProjectorDoesNotDisplayHookStart(t *testing.T) {
 
 func TestAppEventProjectorProjectsAgentOnlyAnnouncementInActiveTurn(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	started := projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
+	started := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
 	turnID := notificationTurnID(t, started, appwire.NotifyTurnStarted)
 
-	out := projector.Project(agent.SessionEvent{
-		Kind:      agent.EventSkillActivated,
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventSkillActivated,
 		SessionID: "th_1",
-		Data:      agent.SkillActivatedData{Name: "using-superpowers"},
+		Data:      events.SkillActivatedData{Name: "using-superpowers"},
 	})
 
 	if len(out) != 1 || out[0].Method != appwire.NotifyItemCompleted {
@@ -677,10 +678,10 @@ func TestAppEventProjectorProjectsAgentOnlyAnnouncementInActiveTurn(t *testing.T
 
 func TestAppEventProjectorProjectsImageOnlySteeringInjected(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	out := projector.Project(agent.SessionEvent{
-		Kind:      agent.EventSteeringInjected,
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventSteeringInjected,
 		SessionID: "th_1",
-		Data: agent.SteeringInjectedData{Images: []agent.UserInputImage{{
+		Data: events.SteeringInjectedData{Images: []events.UserInputImage{{
 			MediaType: "image/png",
 			Data:      []byte("png"),
 			Name:      "shot.png",
@@ -709,14 +710,14 @@ func TestAppEventProjectorProjectsImageOnlySteeringInjected(t *testing.T) {
 // on Cause.Kind instead of substring-matching the message.
 func TestProjector_ForwardsProviderCause(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
 
-	out := projector.Project(agent.SessionEvent{
-		Kind:      agent.EventError,
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventError,
 		SessionID: "th_1",
-		Data: agent.ErrorData{
+		Data: events.ErrorData{
 			Error: "anthropic: 503 service unavailable",
-			Cause: &agent.ErrorCause{
+			Cause: &events.ErrorCause{
 				Kind:     "provider",
 				Provider: "anthropic",
 				Model:    "claude-opus-4-7",
@@ -786,12 +787,12 @@ func TestProjector_ForwardsProviderCause(t *testing.T) {
 // and the warning envelope's cause field stays absent (or nil).
 func TestProjector_OmitsCauseWhenAbsent(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
 
-	out := projector.Project(agent.SessionEvent{
-		Kind:      agent.EventError,
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventError,
 		SessionID: "th_1",
-		Data:      agent.ErrorData{Error: "something else broke"},
+		Data:      events.ErrorData{Error: "something else broke"},
 	})
 
 	var warning *AppNotification
@@ -823,12 +824,12 @@ func TestProjector_OmitsCauseWhenAbsent(t *testing.T) {
 // the cause field is added.
 func TestProjector_BackcompatNonProviderError(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	projector.Project(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}})
+	projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}})
 
-	out := projector.Project(agent.SessionEvent{
-		Kind:      agent.EventError,
+	out := projector.Project(events.SessionEvent{
+		Kind:      events.EventError,
 		SessionID: "th_1",
-		Data: agent.ErrorData{
+		Data: events.ErrorData{
 			Error:  "subscribe failed",
 			Source: "hub",
 			Title:  "Live updates unavailable",

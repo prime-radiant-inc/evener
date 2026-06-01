@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -1309,12 +1310,12 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 	}
 
 	// Drain events in background to prevent blocking.
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for ev := range sess.Events() {
-			events = append(events, ev)
+			evs = append(evs, ev)
 		}
 	}()
 
@@ -1344,8 +1345,8 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 
 	// --- Verify compaction occurred ---
 	foundCompaction := false
-	for _, e := range events {
-		if e.Kind == EventContextCompaction {
+	for _, e := range evs {
+		if e.Kind == events.EventContextCompaction {
 			foundCompaction = true
 		}
 	}
@@ -1537,7 +1538,7 @@ func TestMaybeCompact_CallsOnCompactionTurn(t *testing.T) {
 		callbackTurns = append(callbackTurns, turn)
 	}
 
-	emitFn := func(kind EventKind, data EventData) {}
+	emitFn := func(kind events.EventKind, data events.EventData) {}
 
 	cm.MaybeCompact(context.Background(), &history, 0, emitFn)
 
@@ -1730,8 +1731,8 @@ func TestSession_TranscriptWriteFailureEmitsWarning(t *testing.T) {
 	go func() {
 		defer close(done)
 		for ev := range sess.Events() {
-			if ev.Kind == EventWarning {
-				if wd, ok := ev.Data.(WarningData); ok {
+			if ev.Kind == events.EventWarning {
+				if wd, ok := ev.Data.(events.WarningData); ok {
 					warnings = append(warnings, wd.Message)
 				}
 			}

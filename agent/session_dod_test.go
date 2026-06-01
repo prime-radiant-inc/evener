@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/llm"
@@ -21,7 +22,7 @@ import (
 
 // toolCallEndOutput extracts the output from a TOOL_CALL_END event,
 // checking both "output" (success) and "error" (failure) keys.
-func toolCallEndOutput(ev SessionEvent) string {
+func toolCallEndOutput(ev events.SessionEvent) string {
 	if v, ok := ev.DataMap()["output"]; ok {
 		return fmt.Sprint(v)
 	}
@@ -122,9 +123,9 @@ func TestSession_MaxToolRoundsPerInput_EmitsTurnLimitEvent(t *testing.T) {
 
 	turnLimit := false
 	for ev := range sess.Events() {
-		if ev.Kind == EventTurnLimit {
+		if ev.Kind == events.EventTurnLimit {
 			turnLimit = true
-			if d, ok := ev.Data.(TurnLimitData); !ok || d.MaxToolRoundsPerInput != 2 {
+			if d, ok := ev.Data.(events.TurnLimitData); !ok || d.MaxToolRoundsPerInput != 2 {
 				t.Fatalf("expected max_tool_rounds_per_input=2 in event data, got %v", ev.Data)
 			}
 		}
@@ -220,18 +221,18 @@ func TestSession_LifecycleEvents_BracketSession(t *testing.T) {
 	}
 	sess.Close()
 
-	var kinds []EventKind
+	var kinds []events.EventKind
 	for ev := range sess.Events() {
 		kinds = append(kinds, ev.Kind)
 	}
 	if len(kinds) < 2 {
 		t.Fatalf("expected at least 2 events, got %v", kinds)
 	}
-	if kinds[0] != EventSessionStart {
-		t.Fatalf("first event: got %q want %q (kinds=%v)", kinds[0], EventSessionStart, kinds)
+	if kinds[0] != events.EventSessionStart {
+		t.Fatalf("first event: got %q want %q (kinds=%v)", kinds[0], events.EventSessionStart, kinds)
 	}
-	if kinds[len(kinds)-1] != EventSessionEnd {
-		t.Fatalf("last event: got %q want %q (kinds=%v)", kinds[len(kinds)-1], EventSessionEnd, kinds)
+	if kinds[len(kinds)-1] != events.EventSessionEnd {
+		t.Fatalf("last event: got %q want %q (kinds=%v)", kinds[len(kinds)-1], events.EventSessionEnd, kinds)
 	}
 }
 
@@ -256,21 +257,21 @@ func TestSession_EventSystem_NaturalCompletion_EmitsUserAndAssistantTextEventsIn
 	}
 	sess.Close()
 
-	var kinds []EventKind
+	var kinds []events.EventKind
 	for ev := range sess.Events() {
 		kinds = append(kinds, ev.Kind)
 	}
 
 	// Assert ordered subsequence.
-	want := []EventKind{
-		EventSessionStart,
-		EventUserInput,
-		EventAssistantTextStart,
-		EventAssistantTextEnd,
-		EventToolCallStart,
-		EventCommunicate,
-		EventToolCallEnd,
-		EventSessionEnd,
+	want := []events.EventKind{
+		events.EventSessionStart,
+		events.EventUserInput,
+		events.EventAssistantTextStart,
+		events.EventAssistantTextEnd,
+		events.EventToolCallStart,
+		events.EventCommunicate,
+		events.EventToolCallEnd,
+		events.EventSessionEnd,
 	}
 	at := 0
 	for _, k := range kinds {
@@ -311,10 +312,10 @@ func TestSession_EventSystem_UserInputCarriesTurnIndex(t *testing.T) {
 
 	var emittedTurns []int
 	for ev := range sess.Events() {
-		if ev.Kind != EventUserInput {
+		if ev.Kind != events.EventUserInput {
 			continue
 		}
-		d, ok := ev.Data.(UserInputData)
+		d, ok := ev.Data.(events.UserInputData)
 		if !ok {
 			t.Fatalf("USER_INPUT data type: %T", ev.Data)
 		}
@@ -378,7 +379,7 @@ func TestSession_EventSystem_ToolCall_EmitsStartDeltaEnd(t *testing.T) {
 	seenEnd := false
 	for ev := range sess.Events() {
 		switch ev.Kind {
-		case EventToolCallStart:
+		case events.EventToolCallStart:
 			if ev.DataMap()["call_id"] != "c1" || ev.DataMap()["tool_name"] != "write_file" {
 				continue
 			}
@@ -386,7 +387,7 @@ func TestSession_EventSystem_ToolCall_EmitsStartDeltaEnd(t *testing.T) {
 			if ev.DataMap()["call_id"] != "c1" || ev.DataMap()["tool_name"] != "write_file" {
 				t.Fatalf("TOOL_CALL_START data: %+v", ev.Data)
 			}
-		case EventToolCallOutputDelta:
+		case events.EventToolCallOutputDelta:
 			if ev.DataMap()["call_id"] != "c1" {
 				continue
 			}
@@ -394,7 +395,7 @@ func TestSession_EventSystem_ToolCall_EmitsStartDeltaEnd(t *testing.T) {
 			if !seenStart || seenEnd {
 				t.Fatalf("TOOL_CALL_OUTPUT_DELTA ordering violated (start=%t end=%t)", seenStart, seenEnd)
 			}
-		case EventToolCallEnd:
+		case events.EventToolCallEnd:
 			if ev.DataMap()["call_id"] != "c1" {
 				continue
 			}
@@ -447,7 +448,7 @@ func TestSession_MaxTurns_StopsAcrossInputsAndEmitsEvent(t *testing.T) {
 
 	turnLimit := false
 	for ev := range sess.Events() {
-		if ev.Kind == EventTurnLimit {
+		if ev.Kind == events.EventTurnLimit {
 			turnLimit = true
 		}
 	}
@@ -591,11 +592,11 @@ func TestSession_Steer_IsInjectedAfterCurrentToolRound(t *testing.T) {
 	i := 0
 	for ev := range sess.Events() {
 		switch ev.Kind {
-		case EventToolCallEnd:
+		case events.EventToolCallEnd:
 			if ev.DataMap()["tool_name"] == "slow" {
 				toolEndIdx = i
 			}
-		case EventSteeringInjected:
+		case events.EventSteeringInjected:
 			if ev.DataMap()["text"] != "steer: do X" {
 				t.Fatalf("STEERING_INJECTED data: %+v", ev.Data)
 			}
@@ -862,7 +863,7 @@ func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) 
 
 	warn := ""
 	for ev := range sess.Events() {
-		if ev.Kind == EventWarning {
+		if ev.Kind == events.EventWarning {
 			if msg, ok := ev.DataMap()["message"].(string); ok {
 				warn = msg
 			}
@@ -901,7 +902,7 @@ func TestSession_ContextWindowAwareness_DoesNotWarnUnderThreshold(t *testing.T) 
 
 	warned := false
 	for ev := range sess.Events() {
-		if ev.Kind == EventWarning {
+		if ev.Kind == events.EventWarning {
 			warned = true
 		}
 	}
@@ -1002,16 +1003,16 @@ func TestSession_AbortSignal_KeepsSessionAliveAndEmitsInterruptedSessionEnd(t *t
 		for ev := range sess.Events() {
 			evMu.Lock()
 			switch ev.Kind {
-			case EventError:
+			case events.EventError:
 				gotErr = true
-			case EventSessionEnd:
+			case events.EventSessionEnd:
 				gotEnd = true
-				if d, ok := ev.Data.(SessionEndData); ok && d.Interrupted && d.Reason == "interrupted" && d.State == string(SessionIdle) {
+				if d, ok := ev.Data.(events.SessionEndData); ok && d.Interrupted && d.Reason == "interrupted" && d.State == string(SessionIdle) {
 					sawInterruptedEnd = true
 				}
-			case EventToolCallEnd:
+			case events.EventToolCallEnd:
 				gotToolEnd = true
-			case EventSteeringInjected:
+			case events.EventSteeringInjected:
 				gotSteering = true
 			}
 			evMu.Unlock()
@@ -1181,8 +1182,8 @@ func TestSession_AbortDrainsQueuedInputWithFreshContext(t *testing.T) {
 	go func() {
 		defer close(evDone)
 		for ev := range sess.Events() {
-			if ev.Kind == EventSessionEnd {
-				if d, ok := ev.Data.(SessionEndData); ok {
+			if ev.Kind == events.EventSessionEnd {
+				if d, ok := ev.Data.(events.SessionEndData); ok {
 					evMu.Lock()
 					endKinds = append(endKinds, d.Reason)
 					evMu.Unlock()
@@ -1505,7 +1506,7 @@ func TestSession_AuthenticationError_ClosesSession(t *testing.T) {
 
 	gotEnd := false
 	for ev := range sess.Events() {
-		if ev.Kind == EventSessionEnd {
+		if ev.Kind == events.EventSessionEnd {
 			gotEnd = true
 		}
 	}
@@ -1534,7 +1535,7 @@ func TestSession_ContextLengthError_EmitsWarningAndClosesSession(t *testing.T) {
 	warn := false
 	end := false
 	for ev := range sess.Events() {
-		if ev.Kind == EventWarning {
+		if ev.Kind == events.EventWarning {
 			data := ev.DataMap()
 			if msg, ok := data["message"].(string); ok && strings.Contains(msg, "Context length") {
 				if data["source"] != "provider" || data["title"] != "Provider error" {
@@ -1543,7 +1544,7 @@ func TestSession_ContextLengthError_EmitsWarningAndClosesSession(t *testing.T) {
 				warn = true
 			}
 		}
-		if ev.Kind == EventSessionEnd {
+		if ev.Kind == events.EventSessionEnd {
 			end = true
 		}
 	}
@@ -1578,7 +1579,7 @@ func TestSession_LLMError_EmitsErrorEvent(t *testing.T) {
 
 	errEv := false
 	for ev := range sess.Events() {
-		if ev.Kind == EventError {
+		if ev.Kind == events.EventError {
 			data := ev.DataMap()
 			if s, _ := data["error"].(string); strings.Contains(s, "openai") {
 				if data["source"] != "provider" || data["title"] != "Provider error" {
@@ -1658,7 +1659,7 @@ func TestSession_ConfigurationError_EmitsSerfDiagnosticEvent(t *testing.T) {
 	sess.Close()
 
 	for ev := range sess.Events() {
-		if ev.Kind != EventError {
+		if ev.Kind != events.EventError {
 			continue
 		}
 		data := ev.DataMap()
@@ -1692,7 +1693,7 @@ func TestSession_RuntimeError_EmitsSerfDiagnosticEvent(t *testing.T) {
 	sess.Close()
 
 	for ev := range sess.Events() {
-		if ev.Kind != EventError {
+		if ev.Kind != events.EventError {
 			continue
 		}
 		data := ev.DataMap()
@@ -2771,7 +2772,7 @@ func TestLoopDetection_PatternLength2(t *testing.T) {
 	go func() {
 		found := false
 		for ev := range sess.Events() {
-			if ev.Kind == EventLoopDetection {
+			if ev.Kind == events.EventLoopDetection {
 				found = true
 			}
 		}
@@ -3047,10 +3048,10 @@ func TestSession_GracefulShutdown_SessionEndIncludesStateAndTurns(t *testing.T) 
 	}
 	sess.Close()
 
-	var endPayload *SessionEndData
+	var endPayload *events.SessionEndData
 	for ev := range sess.Events() {
-		if ev.Kind == EventSessionEnd {
-			if d, ok := ev.Data.(SessionEndData); ok {
+		if ev.Kind == events.EventSessionEnd {
+			if d, ok := ev.Data.(events.SessionEndData); ok {
 				endPayload = &d
 			}
 		}
@@ -3453,12 +3454,12 @@ func TestSession_SessionEnd_AfterProcessInput(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		for ev := range sess.Events() {
-			events = append(events, ev)
+			evs = append(evs, ev)
 		}
 	}()
 
@@ -3475,8 +3476,8 @@ func TestSession_SessionEnd_AfterProcessInput(t *testing.T) {
 
 	endCount := 0
 	var inputCompleteEnd bool
-	for _, ev := range events {
-		if ev.Kind == EventSessionEnd {
+	for _, ev := range evs {
+		if ev.Kind == events.EventSessionEnd {
 			endCount++
 			if r, _ := ev.DataMap()["reason"].(string); r == "input_complete" {
 				inputCompleteEnd = true
@@ -3526,13 +3527,13 @@ func TestSession_ToolNameMapping_ReverseDispatch(t *testing.T) {
 	}
 	defer sess.Close()
 
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	var mu sync.Mutex
 	done := make(chan struct{})
 	go func() {
 		for ev := range sess.Events() {
 			mu.Lock()
-			events = append(events, ev)
+			evs = append(evs, ev)
 			mu.Unlock()
 		}
 		close(done)
@@ -3551,11 +3552,11 @@ func TestSession_ToolNameMapping_ReverseDispatch(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	var toolStartNames, toolEndNames []string
-	for _, ev := range events {
-		if ev.Kind == EventToolCallStart {
+	for _, ev := range evs {
+		if ev.Kind == events.EventToolCallStart {
 			toolStartNames = append(toolStartNames, fmt.Sprint(ev.DataMap()["tool_name"]))
 		}
-		if ev.Kind == EventToolCallEnd {
+		if ev.Kind == events.EventToolCallEnd {
 			toolEndNames = append(toolEndNames, fmt.Sprint(ev.DataMap()["tool_name"]))
 		}
 	}
@@ -3622,13 +3623,13 @@ func TestSession_ToolNameMapping_EventsUseCanonicalName(t *testing.T) {
 	}
 	defer sess.Close()
 
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	var mu sync.Mutex
 	done := make(chan struct{})
 	go func() {
 		for ev := range sess.Events() {
 			mu.Lock()
-			events = append(events, ev)
+			evs = append(evs, ev)
 			mu.Unlock()
 		}
 		close(done)
@@ -3645,8 +3646,8 @@ func TestSession_ToolNameMapping_EventsUseCanonicalName(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	for _, ev := range events {
-		if ev.Kind == EventToolCallStart || ev.Kind == EventToolCallEnd {
+	for _, ev := range evs {
+		if ev.Kind == events.EventToolCallStart || ev.Kind == events.EventToolCallEnd {
 			name := fmt.Sprint(ev.DataMap()["tool_name"])
 			if name == "grep_files" {
 				t.Fatalf("event %s should use canonical name 'grep', got provider name 'grep_files'", ev.Kind)
@@ -3692,13 +3693,13 @@ func TestSession_ToolPurpose_IncludedInToolCallStartEvent(t *testing.T) {
 	}
 	defer sess.Close()
 
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	var mu sync.Mutex
 	done := make(chan struct{})
 	go func() {
 		for ev := range sess.Events() {
 			mu.Lock()
-			events = append(events, ev)
+			evs = append(evs, ev)
 			mu.Unlock()
 		}
 		close(done)
@@ -3715,8 +3716,8 @@ func TestSession_ToolPurpose_IncludedInToolCallStartEvent(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	for _, ev := range events {
-		if ev.Kind == EventToolCallStart {
+	for _, ev := range evs {
+		if ev.Kind == events.EventToolCallStart {
 			desc, ok := ev.DataMap()["description"].(string)
 			if ok && desc == "List project files" {
 				return // success
@@ -3765,13 +3766,13 @@ func TestSession_ReadBeforeWrite_WarnsOnUnreadFile(t *testing.T) {
 	}
 	defer sess.Close()
 
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	var mu sync.Mutex
 	done := make(chan struct{})
 	go func() {
 		for ev := range sess.Events() {
 			mu.Lock()
-			events = append(events, ev)
+			evs = append(evs, ev)
 			mu.Unlock()
 		}
 		close(done)
@@ -3788,8 +3789,8 @@ func TestSession_ReadBeforeWrite_WarnsOnUnreadFile(t *testing.T) {
 	// Check that the tool output contains a warning about writing to an unread file.
 	mu.Lock()
 	defer mu.Unlock()
-	for _, ev := range events {
-		if ev.Kind == EventToolCallEnd && fmt.Sprint(ev.DataMap()["tool_name"]) == "write_file" {
+	for _, ev := range evs {
+		if ev.Kind == events.EventToolCallEnd && fmt.Sprint(ev.DataMap()["tool_name"]) == "write_file" {
 			output := toolCallEndOutput(ev)
 			if strings.Contains(output, "WARNING") && strings.Contains(output, "not been read") {
 				return // success
@@ -3851,13 +3852,13 @@ func TestSession_ReadBeforeWrite_NoWarningAfterRead(t *testing.T) {
 	}
 	defer sess.Close()
 
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	var mu sync.Mutex
 	done := make(chan struct{})
 	go func() {
 		for ev := range sess.Events() {
 			mu.Lock()
-			events = append(events, ev)
+			evs = append(evs, ev)
 			mu.Unlock()
 		}
 		close(done)
@@ -3873,8 +3874,8 @@ func TestSession_ReadBeforeWrite_NoWarningAfterRead(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	for _, ev := range events {
-		if ev.Kind == EventToolCallEnd && fmt.Sprint(ev.DataMap()["tool_name"]) == "write_file" {
+	for _, ev := range evs {
+		if ev.Kind == events.EventToolCallEnd && fmt.Sprint(ev.DataMap()["tool_name"]) == "write_file" {
 			output := toolCallEndOutput(ev)
 			if strings.Contains(output, "WARNING") {
 				t.Fatal("should not warn about write after read")
@@ -3918,13 +3919,13 @@ func TestSession_ReadBeforeWrite_NewFileNoWarning(t *testing.T) {
 	}
 	defer sess.Close()
 
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	var mu sync.Mutex
 	done := make(chan struct{})
 	go func() {
 		for ev := range sess.Events() {
 			mu.Lock()
-			events = append(events, ev)
+			evs = append(evs, ev)
 			mu.Unlock()
 		}
 		close(done)
@@ -3940,8 +3941,8 @@ func TestSession_ReadBeforeWrite_NewFileNoWarning(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	for _, ev := range events {
-		if ev.Kind == EventToolCallEnd && fmt.Sprint(ev.DataMap()["tool_name"]) == "write_file" {
+	for _, ev := range evs {
+		if ev.Kind == events.EventToolCallEnd && fmt.Sprint(ev.DataMap()["tool_name"]) == "write_file" {
 			output := toolCallEndOutput(ev)
 			if strings.Contains(output, "WARNING") {
 				t.Fatal("should not warn when creating a new file")
@@ -4104,7 +4105,7 @@ func TestSession_TaskList_AppendAndUpdate_EmitToolStateSnapshots(t *testing.T) {
 	}
 	var ends []endCall
 	for ev := range sess.Events() {
-		if ev.Kind != EventToolCallEnd {
+		if ev.Kind != events.EventToolCallEnd {
 			continue
 		}
 		d := ev.DataMap()
@@ -4483,12 +4484,12 @@ func TestSession_SubagentEndEvent_EmittedOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	evDone := make(chan struct{})
 	go func() {
 		defer close(evDone)
 		for ev := range sess.Events() {
-			events = append(events, ev)
+			evs = append(evs, ev)
 		}
 	}()
 
@@ -4528,8 +4529,8 @@ func TestSession_SubagentEndEvent_EmittedOnce(t *testing.T) {
 	<-evDone
 
 	endCount := 0
-	for _, ev := range events {
-		if ev.Kind == EventSubagentEnd {
+	for _, ev := range evs {
+		if ev.Kind == events.EventSubagentEnd {
 			endCount++
 		}
 	}

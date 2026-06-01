@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -18,11 +19,11 @@ type fakeStrategyHost struct {
 	id       string
 	profile  ProviderProfile
 	client   *llm.Client
-	emitted  []EventKind
+	emitted  []events.EventKind
 	sideFx   int // number of WithResponseSideEffects invocations
 }
 
-func (h *fakeStrategyHost) Emit(kind EventKind, _ EventData) {
+func (h *fakeStrategyHost) Emit(kind events.EventKind, _ events.EventData) {
 	h.emitted = append(h.emitted, kind)
 }
 
@@ -101,7 +102,7 @@ func TestSessionLogStrategy_OperatesWithFakeHost(t *testing.T) {
 	if host.sideFx != 1 {
 		t.Errorf("expected 1 WithResponseSideEffects call, got %d", host.sideFx)
 	}
-	if len(host.emitted) != 1 || host.emitted[0] != EventForkSummary {
+	if len(host.emitted) != 1 || host.emitted[0] != events.EventForkSummary {
 		t.Errorf("expected one EventForkSummary emit, got %v", host.emitted)
 	}
 	// The log entry was persisted via the host-derived path (StateDir + ID).

@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -122,9 +123,9 @@ func TestRegisteredTool_BridgedExecute_RejectsNonMapArgs(t *testing.T) {
 }
 
 func TestSessionEvent_ToStreamEvent_TextDelta(t *testing.T) {
-	e := SessionEvent{
-		Kind: EventAssistantTextDelta,
-		Data: AssistantTextDeltaData{Delta: "hello"},
+	e := events.SessionEvent{
+		Kind: events.EventAssistantTextDelta,
+		Data: events.AssistantTextDeltaData{Delta: "hello"},
 	}
 	se := e.ToStreamEvent()
 	if se == nil {
@@ -139,7 +140,7 @@ func TestSessionEvent_ToStreamEvent_TextDelta(t *testing.T) {
 }
 
 func TestSessionEvent_ToStreamEvent_TextStart(t *testing.T) {
-	e := SessionEvent{Kind: EventAssistantTextStart}
+	e := events.SessionEvent{Kind: events.EventAssistantTextStart}
 	se := e.ToStreamEvent()
 	if se == nil {
 		t.Fatal("expected non-nil StreamEvent")
@@ -150,7 +151,7 @@ func TestSessionEvent_ToStreamEvent_TextStart(t *testing.T) {
 }
 
 func TestSessionEvent_ToStreamEvent_TextEnd(t *testing.T) {
-	e := SessionEvent{Kind: EventAssistantTextEnd}
+	e := events.SessionEvent{Kind: events.EventAssistantTextEnd}
 	se := e.ToStreamEvent()
 	if se == nil {
 		t.Fatal("expected non-nil StreamEvent")
@@ -161,9 +162,9 @@ func TestSessionEvent_ToStreamEvent_TextEnd(t *testing.T) {
 }
 
 func TestSessionEvent_ToStreamEvent_ToolCallStart(t *testing.T) {
-	e := SessionEvent{
-		Kind: EventToolCallStart,
-		Data: ToolCallStartData{CallID: "c1", ToolName: "shell"},
+	e := events.SessionEvent{
+		Kind: events.EventToolCallStart,
+		Data: events.ToolCallStartData{CallID: "c1", ToolName: "shell"},
 	}
 	se := e.ToStreamEvent()
 	if se == nil {
@@ -184,9 +185,9 @@ func TestSessionEvent_ToStreamEvent_ToolCallStart(t *testing.T) {
 }
 
 func TestSessionEvent_ToStreamEvent_ToolCallEnd(t *testing.T) {
-	e := SessionEvent{
-		Kind: EventToolCallEnd,
-		Data: ToolCallEndData{CallID: "c2", ToolName: "read_file"},
+	e := events.SessionEvent{
+		Kind: events.EventToolCallEnd,
+		Data: events.ToolCallEndData{CallID: "c2", ToolName: "read_file"},
 	}
 	se := e.ToStreamEvent()
 	if se == nil {
@@ -207,7 +208,7 @@ func TestSessionEvent_ToStreamEvent_ToolCallEnd(t *testing.T) {
 }
 
 func TestSessionEvent_ToStreamEvent_SessionStart(t *testing.T) {
-	e := SessionEvent{Kind: EventSessionStart}
+	e := events.SessionEvent{Kind: events.EventSessionStart}
 	se := e.ToStreamEvent()
 	if se == nil {
 		t.Fatal("expected non-nil StreamEvent")
@@ -218,7 +219,7 @@ func TestSessionEvent_ToStreamEvent_SessionStart(t *testing.T) {
 }
 
 func TestSessionEvent_ToStreamEvent_SessionEnd(t *testing.T) {
-	e := SessionEvent{Kind: EventSessionEnd}
+	e := events.SessionEvent{Kind: events.EventSessionEnd}
 	se := e.ToStreamEvent()
 	if se == nil {
 		t.Fatal("expected non-nil StreamEvent")
@@ -229,21 +230,21 @@ func TestSessionEvent_ToStreamEvent_SessionEnd(t *testing.T) {
 }
 
 func TestSessionEvent_ToStreamEvent_AgentOnlyEvent_ReturnsNil(t *testing.T) {
-	agentOnlyKinds := []EventKind{
-		EventSteeringInjected,
-		EventTurnLimit,
-		EventLoopDetection,
-		EventSkillActivated,
-		EventContextCompaction,
-		EventWarning,
-		EventError,
-		EventSubagentStart,
-		EventSubagentEnd,
-		EventUserInput,
-		EventToolCallOutputDelta,
+	agentOnlyKinds := []events.EventKind{
+		events.EventSteeringInjected,
+		events.EventTurnLimit,
+		events.EventLoopDetection,
+		events.EventSkillActivated,
+		events.EventContextCompaction,
+		events.EventWarning,
+		events.EventError,
+		events.EventSubagentStart,
+		events.EventSubagentEnd,
+		events.EventUserInput,
+		events.EventToolCallOutputDelta,
 	}
 	for _, kind := range agentOnlyKinds {
-		e := SessionEvent{Kind: kind}
+		e := events.SessionEvent{Kind: kind}
 		se := e.ToStreamEvent()
 		if se != nil {
 			t.Errorf("expected nil for agent-only event %s, got %+v", kind, se)

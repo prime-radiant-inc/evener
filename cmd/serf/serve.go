@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf/internal/rvreg"
 	"primeradiant.com/serf/cmdutil"
@@ -260,12 +261,12 @@ func runServe(args []string) error {
 		currentMu.Unlock()
 	}
 
-	var eventObserver func(agent.SessionEvent)
+	var eventObserver func(events.SessionEvent)
 	if *verbose {
 		enc := json.NewEncoder(os.Stderr)
 		enc.SetEscapeHTML(false)
 		var verboseMu sync.Mutex
-		eventObserver = func(ev agent.SessionEvent) {
+		eventObserver = func(ev events.SessionEvent) {
 			verboseMu.Lock()
 			defer verboseMu.Unlock()
 			_ = enc.Encode(ev)

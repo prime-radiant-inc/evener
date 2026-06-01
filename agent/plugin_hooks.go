@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -356,12 +357,12 @@ type hookRunner struct {
 	hooks   map[HookEvent][]RegisteredHook
 	client  promptHookClient
 	model   string
-	onEvent func(EventKind, EventData) // optional event callback
+	onEvent func(events.EventKind, events.EventData) // optional event callback
 }
 
 // SetEventCallback sets an optional callback that is invoked for hook
 // lifecycle events (HookStart, HookEnd).
-func (r *hookRunner) SetEventCallback(fn func(EventKind, EventData)) {
+func (r *hookRunner) SetEventCallback(fn func(events.EventKind, events.EventData)) {
 	r.onEvent = fn
 }
 
@@ -558,7 +559,7 @@ func (r *hookRunner) runAll(ctx context.Context, event HookEvent, toolName strin
 		go func(idx int, h RegisteredHook) {
 			defer wg.Done()
 			if r.onEvent != nil {
-				r.onEvent(EventHookStart, HookStartData{
+				r.onEvent(events.EventHookStart, events.HookStartData{
 					Event:      string(event),
 					HookType:   h.Type,
 					Matcher:    h.Matcher,
@@ -569,7 +570,7 @@ func (r *hookRunner) runAll(ctx context.Context, event HookEvent, toolName strin
 			results[idx] = r.runHook(ctx, h, input)
 			elapsed := time.Since(start)
 			if r.onEvent != nil {
-				r.onEvent(EventHookEnd, HookEndData{
+				r.onEvent(events.EventHookEnd, events.HookEndData{
 					Event:      string(event),
 					HookType:   h.Type,
 					Matcher:    h.Matcher,

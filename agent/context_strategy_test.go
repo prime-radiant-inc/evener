@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -22,7 +23,7 @@ func (s *spyStrategy) Name() string { return "spy" }
 
 func (s *spyStrategy) Tools() []registeredTool { return s.toolsDefs }
 
-func (s *spyStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, EventData)) error {
+func (s *spyStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.manageContextCalls++
@@ -86,8 +87,8 @@ func TestCompactStrategyManageContext_Delegation(t *testing.T) {
 	}
 
 	// Track emitted events.
-	var emittedEvent EventKind
-	emitFn := func(kind EventKind, data EventData) {
+	var emittedEvent events.EventKind
+	emitFn := func(kind events.EventKind, data events.EventData) {
 		emittedEvent = kind
 	}
 
@@ -100,7 +101,7 @@ func TestCompactStrategyManageContext_Delegation(t *testing.T) {
 	}
 
 	// Verify that a compaction event was emitted.
-	if emittedEvent != EventContextCompaction {
+	if emittedEvent != events.EventContextCompaction {
 		t.Fatalf("expected EventContextCompaction to be emitted, got %v", emittedEvent)
 	}
 

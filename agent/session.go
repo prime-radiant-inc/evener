@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/llm"
 )
@@ -26,7 +27,7 @@ type Session struct {
 	stateDir       string
 	installID      string
 
-	events       chan SessionEvent
+	events       chan events.SessionEvent
 	eventsMu     sync.RWMutex // guards send-vs-close on events; all sends go through emit()
 	eventsClosed bool         // set under eventsMu.Lock immediately before close(events)
 	envInfo      EnvironmentInfo
@@ -113,7 +114,7 @@ type Session struct {
 
 	// Plugin-provided components
 	plugins             []LoadedPlugin
-	pendingPluginEvents []PluginLoadedData
+	pendingPluginEvents []events.PluginLoadedData
 	hookRunner          *hookRunner
 	pluginAgents        map[string]PluginAgent
 	pluginMCPConfigs    []MCPServerConfig
@@ -185,7 +186,7 @@ var _ strategyHost = (*Session)(nil)
 // Emit forwards to the session's internal emit, sending a session event with
 // the given payload. The kind argument satisfies the strategyHost interface
 // contract; the emitted event's Kind is derived from the payload.
-func (s *Session) Emit(kind EventKind, data EventData) { s.emit(kind, data) }
+func (s *Session) Emit(kind events.EventKind, data events.EventData) { s.emit(kind, data) }
 
 // WithResponseSideEffects forwards to the session's internal
 // withResponseSideEffects, running fn with the response side-effect semantics
@@ -404,7 +405,7 @@ func (s *Session) appendTurn(kind TurnKind, m llm.Message) {
 	s.history = append(s.history, t)
 	s.mu.Unlock()
 	if err := s.transcript.Append(t); err != nil {
-		s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 }
 
@@ -422,7 +423,7 @@ func (s *Session) appendAssistantTurn(resp llm.Response) {
 	s.history = append(s.history, t)
 	s.mu.Unlock()
 	if err := s.transcript.Append(t); err != nil {
-		s.emit(EventWarning, WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
 }
 
@@ -435,7 +436,7 @@ func (s *Session) maybeAutoSave() {
 	}
 	meta := s.Meta()
 	if err := SaveSessionMeta(s.stateDir, meta); err != nil {
-		s.emit(EventWarning, WarningData{
+		s.emit(events.EventWarning, events.WarningData{
 			Message: fmt.Sprintf("auto-save failed: %v", err),
 		})
 	}

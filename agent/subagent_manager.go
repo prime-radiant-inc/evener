@@ -1,6 +1,10 @@
 package agent
 
-import "sync"
+import (
+	"sync"
+
+	"primeradiant.com/serf/agent/events"
+)
 
 // subagentManager owns the parent session's child-subagent map. It exists to
 // break the subagent⇄session back-reference cycle: a subagent no longer holds a
@@ -15,12 +19,12 @@ import "sync"
 type subagentManager struct {
 	mu   sync.Mutex
 	subs map[string]*subagent
-	emit func(EventKind, EventData)
+	emit func(events.EventKind, events.EventData)
 }
 
 // newSubagentManager creates a manager that captures the parent session's emit
 // closure for forwarding subagent lifecycle events.
-func newSubagentManager(emit func(EventKind, EventData)) *subagentManager {
+func newSubagentManager(emit func(events.EventKind, events.EventData)) *subagentManager {
 	return &subagentManager{
 		subs: map[string]*subagent{},
 		emit: emit,

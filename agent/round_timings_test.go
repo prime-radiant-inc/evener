@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/llm"
 )
@@ -79,14 +80,14 @@ func TestRoundTimings_Emitted(t *testing.T) {
 	}
 
 	// Drain events and collect timings.
-	var timings []agent.RoundTimings
-	events := sess.Events()
+	var timings []events.RoundTimings
+	evs := sess.Events()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for ev := range events {
-			if ev.Kind == agent.EventRoundTimings {
-				if rt, ok := ev.Data.(agent.RoundTimings); ok {
+		for ev := range evs {
+			if ev.Kind == events.EventRoundTimings {
+				if rt, ok := ev.Data.(events.RoundTimings); ok {
 					timings = append(timings, rt)
 				}
 			}
@@ -130,7 +131,7 @@ func TestRoundTimings_Emitted(t *testing.T) {
 }
 
 func TestRoundTimings_SerializesToJSON(t *testing.T) {
-	rt := agent.RoundTimings{
+	rt := events.RoundTimings{
 		Round:        3,
 		SystemPrompt: 5 * time.Millisecond,
 		LLMCall:      100 * time.Millisecond,

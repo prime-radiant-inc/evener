@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/promptpath"
 	"primeradiant.com/serf/llm"
 )
@@ -160,7 +161,7 @@ func (s *Session) renderSystemPrompt() string {
 	if err != nil {
 		// Template rendering should not fail — embedded templates are compiled into the binary.
 		// Log the error and return a minimal prompt rather than silently degrading to legacy.
-		s.emit(EventWarning, WarningData{Message: fmt.Sprintf("template render failed: %v", err)})
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("template render failed: %v", err)})
 		return fmt.Sprintf("Template rendering failed: %v. Please report this bug.", err)
 	}
 	if trimmed := strings.TrimSpace(s.systemPromptOverride); trimmed != "" {

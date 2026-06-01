@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -45,7 +46,7 @@ func (s *obsMaskStrategy) AfterAction(ctx context.Context, history []Turn, clien
 // event via emitFn, and any compaction resets the manager's cached token
 // measurements. It is a no-op when no contextManager is set or the context
 // window size is non-positive.
-func (s *obsMaskStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(EventKind, EventData)) error {
+func (s *obsMaskStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
 	if s.cm == nil {
 		return nil
 	}
@@ -75,7 +76,7 @@ func (s *obsMaskStrategy) ManageContext(ctx context.Context, history *[]Turn, sy
 		before := estimateTokens(*history)
 		aggressiveMaskObservations(*history, s.cm.PreserveRecentTurns)
 		after := estimateTokens(*history)
-		emitFn(EventContextCompaction, ContextCompactionData{
+		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "aggressive_obs_mask",
 			TurnsBefore:     len(*history),
 			TurnsAfter:      len(*history),
@@ -92,7 +93,7 @@ func (s *obsMaskStrategy) ManageContext(ctx context.Context, history *[]Turn, sy
 		before := estimateTokens(*history)
 		*history = checkpoint(*history, s.cm.PreserveRecentTurns, &s.cm.Meta, s.cm.resultToolName())
 		after := estimateTokens(*history)
-		emitFn(EventContextCompaction, ContextCompactionData{
+		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "checkpoint",
 			TurnsBefore:     turnsBefore,
 			TurnsAfter:      len(*history),

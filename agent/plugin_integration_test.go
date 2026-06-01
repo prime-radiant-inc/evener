@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -215,13 +216,13 @@ func TestInitPlugins_CombinesMultiplePlugins(t *testing.T) {
 
 func TestEventPluginLoaded_Exists(t *testing.T) {
 	// Verify the constant is defined and has the expected value
-	if EventPluginLoaded != "PLUGIN_LOADED" {
-		t.Errorf("EventPluginLoaded = %q, want %q", EventPluginLoaded, "PLUGIN_LOADED")
+	if events.EventPluginLoaded != "PLUGIN_LOADED" {
+		t.Errorf("EventPluginLoaded = %q, want %q", events.EventPluginLoaded, "PLUGIN_LOADED")
 	}
 }
 
 func TestPluginLoadedData_Fields(t *testing.T) {
-	data := PluginLoadedData{
+	data := events.PluginLoadedData{
 		Name:       "test-plugin",
 		Dir:        "/some/path",
 		SkillCount: 3,

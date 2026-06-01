@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -68,7 +69,7 @@ func TestOODAStrategy_ManageContext_NoOrientMessageWhenLogEmpty(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("world")},
 	}
 
-	err := ooda.ManageContext(context.Background(), &history, 0, func(EventKind, EventData) {})
+	err := ooda.ManageContext(context.Background(), &history, 0, func(events.EventKind, events.EventData) {})
 	if err != nil {
 		t.Fatalf("ManageContext returned error: %v", err)
 	}
@@ -122,7 +123,7 @@ func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *tes
 		{Kind: TurnAssistant, Message: llm.Assistant("world")},
 	}
 
-	err := ooda.ManageContext(context.Background(), &history, 0, func(EventKind, EventData) {})
+	err := ooda.ManageContext(context.Background(), &history, 0, func(events.EventKind, events.EventData) {})
 	if err != nil {
 		t.Fatalf("ManageContext returned error: %v", err)
 	}
@@ -190,7 +191,7 @@ func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("world")},
 	}
 
-	err := ooda.ManageContext(context.Background(), &history, 0, func(EventKind, EventData) {})
+	err := ooda.ManageContext(context.Background(), &history, 0, func(events.EventKind, events.EventData) {})
 	if err != nil {
 		t.Fatalf("ManageContext returned error: %v", err)
 	}
@@ -262,9 +263,9 @@ func TestOODAStrategy_ManageContext_AppliesCompactionLayers(t *testing.T) {
 	}
 
 	var emittedLayers []string
-	emitFn := func(kind EventKind, data EventData) {
-		if kind == EventContextCompaction {
-			if cd, ok := data.(ContextCompactionData); ok {
+	emitFn := func(kind events.EventKind, data events.EventData) {
+		if kind == events.EventContextCompaction {
+			if cd, ok := data.(events.ContextCompactionData); ok {
 				emittedLayers = append(emittedLayers, cd.Layer)
 			}
 		}

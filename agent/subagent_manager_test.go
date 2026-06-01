@@ -3,15 +3,17 @@ package agent
 import (
 	"sync"
 	"testing"
+
+	"primeradiant.com/serf/agent/events"
 )
 
 // fakeEmit records the events forwarded through a manager's emit closure.
 type fakeEmit struct {
 	mu     sync.Mutex
-	events []EventKind
+	events []events.EventKind
 }
 
-func (f *fakeEmit) emit(kind EventKind, _ EventData) {
+func (f *fakeEmit) emit(kind events.EventKind, _ events.EventData) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.events = append(f.events, kind)
@@ -97,8 +99,8 @@ func TestSubagentManager_DrainForCloseReturnsAllAndClears(t *testing.T) {
 func TestSubagentManager_EmitClosureIsCaptured(t *testing.T) {
 	fe := &fakeEmit{}
 	m := newSubagentManager(fe.emit)
-	m.emit(EventSubagentStart, nil)
-	m.emit(EventSubagentEnd, nil)
+	m.emit(events.EventSubagentStart, nil)
+	m.emit(events.EventSubagentEnd, nil)
 	if got := fe.count(); got != 2 {
 		t.Fatalf("captured emit forwarded %d events, want 2", got)
 	}

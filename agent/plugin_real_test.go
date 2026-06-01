@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/agent/events"
 )
 
 // pluginCacheDir is where the official Anthropic plugins are cached.
@@ -194,9 +196,9 @@ func TestRealPlugin_Superpowers_HookExecution(t *testing.T) {
 	runner := newHookRunnerFromPlugin(lp)
 
 	// Track events
-	var events []EventKind
-	runner.SetEventCallback(func(kind EventKind, data EventData) {
-		events = append(events, kind)
+	var evs []events.EventKind
+	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+		evs = append(evs, kind)
 	})
 
 	// Execute SessionStart hook - it reads using-superpowers SKILL.md and outputs JSON
@@ -221,8 +223,8 @@ func TestRealPlugin_Superpowers_HookExecution(t *testing.T) {
 	}
 
 	// Verify lifecycle events fired
-	if len(events) < 2 {
-		t.Errorf("expected at least 2 events (HookStart + HookEnd), got %d", len(events))
+	if len(evs) < 2 {
+		t.Errorf("expected at least 2 events (HookStart + HookEnd), got %d", len(evs))
 	}
 }
 

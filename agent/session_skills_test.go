@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -127,12 +128,12 @@ func TestUseSkill_EmitsEvent(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	evDone := make(chan struct{})
 	go func() {
 		defer close(evDone)
 		for ev := range sess.Events() {
-			events = append(events, ev)
+			evs = append(evs, ev)
 		}
 	}()
 
@@ -145,9 +146,9 @@ func TestUseSkill_EmitsEvent(t *testing.T) {
 	sess.Close()
 	<-evDone
 
-	var skillEvents []SessionEvent
-	for _, ev := range events {
-		if ev.Kind == EventSkillActivated {
+	var skillEvents []events.SessionEvent
+	for _, ev := range evs {
+		if ev.Kind == events.EventSkillActivated {
 			skillEvents = append(skillEvents, ev)
 		}
 	}

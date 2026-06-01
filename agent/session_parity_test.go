@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -43,19 +44,19 @@ func newParitySession(t *testing.T, pc providerCase, steps []func(llm.Request) l
 
 // collectEvents drains Events() channel into a slice.
 // Returns a pointer to the slice so the goroutine's appends are visible to the caller.
-func collectEvents(sess *Session) (*[]SessionEvent, *sync.Mutex, <-chan struct{}) {
-	events := &[]SessionEvent{}
+func collectEvents(sess *Session) (*[]events.SessionEvent, *sync.Mutex, <-chan struct{}) {
+	evs := &[]events.SessionEvent{}
 	var mu sync.Mutex
 	done := make(chan struct{})
 	go func() {
 		for ev := range sess.Events() {
 			mu.Lock()
-			*events = append(*events, ev)
+			*evs = append(*evs, ev)
 			mu.Unlock()
 		}
 		close(done)
 	}()
-	return events, &mu, done
+	return evs, &mu, done
 }
 
 func TestParity_SimpleFileCreation(t *testing.T) {
@@ -521,7 +522,7 @@ func TestParity_LoopDetectionWarning(t *testing.T) {
 			defer mu.Unlock()
 			loopDetected := false
 			for _, ev := range *eventsPtr {
-				if ev.Kind == EventLoopDetection {
+				if ev.Kind == events.EventLoopDetection {
 					loopDetected = true
 				}
 			}

@@ -1,6 +1,9 @@
 package agent
 
-import "primeradiant.com/serf/llm"
+import (
+	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/llm"
+)
 
 // ImageAttachment carries a single image attached to user input.
 // Data is the raw image bytes; JSON un/marshals it as base64.
@@ -13,13 +16,13 @@ type ImageAttachment struct {
 // userInputImagesFromAttachments converts the attachments into the
 // UserInputImage slice the USER_INPUT event payload expects,
 // returning nil when there are no images.
-func userInputImagesFromAttachments(images []ImageAttachment) []UserInputImage {
+func userInputImagesFromAttachments(images []ImageAttachment) []events.UserInputImage {
 	if len(images) == 0 {
 		return nil
 	}
-	out := make([]UserInputImage, 0, len(images))
+	out := make([]events.UserInputImage, 0, len(images))
 	for _, img := range images {
-		out = append(out, UserInputImage{
+		out = append(out, events.UserInputImage{
 			MediaType: img.MediaType,
 			Data:      img.Data,
 			Name:      img.Name,

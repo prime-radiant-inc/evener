@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/llm"
@@ -79,15 +80,15 @@ func TestServerAppWireTurnStartAcceptsCodexInput(t *testing.T) {
 func TestServerAppWireTurnStartIDMatchesProjectedNotifications(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventUserInput,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventUserInput,
 		SessionID: "th_1",
-		Data:      agent.UserInputData{Text: "earlier"},
+		Data:      events.UserInputData{Text: "earlier"},
 	})
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventAssistantTextEnd,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventAssistantTextEnd,
 		SessionID: "th_1",
-		Data:      agent.AssistantTextEndData{Text: "done"},
+		Data:      events.AssistantTextEndData{Text: "done"},
 	})
 	history := srv.AppNotificationsAfter(0, "th_1")
 	cursor := history[len(history)-1].Seq
@@ -106,10 +107,10 @@ func TestServerAppWireTurnStartIDMatchesProjectedNotifications(t *testing.T) {
 		t.Fatalf("response result=%T", resp.Response.Result)
 	}
 
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventUserInput,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventUserInput,
 		SessionID: "th_1",
-		Data:      agent.UserInputData{Text: "hello"},
+		Data:      events.UserInputData{Text: "hello"},
 	})
 
 	notifications := srv.AppNotificationsAfter(cursor, "th_1")
@@ -148,20 +149,20 @@ func TestServerAppWireTurnStartIDMatchesProjectedNotifications(t *testing.T) {
 func TestServerAppWireThreadReadIncludesProjectedTurns(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventUserInput,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventUserInput,
 		SessionID: "th_1",
-		Data:      agent.UserInputData{Text: "hello"},
+		Data:      events.UserInputData{Text: "hello"},
 	})
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventAssistantTextEnd,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventAssistantTextEnd,
 		SessionID: "th_1",
-		Data:      agent.AssistantTextEndData{Text: "hi there"},
+		Data:      events.AssistantTextEndData{Text: "hi there"},
 	})
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventSessionEnd,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventSessionEnd,
 		SessionID: "th_1",
-		Data:      agent.SessionEndData{Reason: "input_complete", State: "idle"},
+		Data:      events.SessionEndData{Reason: "input_complete", State: "idle"},
 	})
 
 	conn := srv.AppServer().NewConnection("test")
@@ -195,40 +196,40 @@ func TestServerAppWireThreadReadIncludesProjectedTurns(t *testing.T) {
 func TestServerAppWireThreadReadIncludesInProgressDeltas(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventUserInput,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventUserInput,
 		SessionID: "th_1",
-		Data:      agent.UserInputData{Text: "run"},
+		Data:      events.UserInputData{Text: "run"},
 	})
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventAssistantTextStart,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventAssistantTextStart,
 		SessionID: "th_1",
-		Data:      agent.AssistantTextStartData{},
+		Data:      events.AssistantTextStartData{},
 	})
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventAssistantTextDelta,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventAssistantTextDelta,
 		SessionID: "th_1",
-		Data:      agent.AssistantTextDeltaData{Delta: "partial "},
+		Data:      events.AssistantTextDeltaData{Delta: "partial "},
 	})
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventAssistantTextDelta,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventAssistantTextDelta,
 		SessionID: "th_1",
-		Data:      agent.AssistantTextDeltaData{Delta: "answer"},
+		Data:      events.AssistantTextDeltaData{Delta: "answer"},
 	})
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventToolCallStart,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventToolCallStart,
 		SessionID: "th_1",
-		Data:      agent.ToolCallStartData{ToolName: "shell", CallID: "call_1", ArgumentsJSON: `{"cmd":"go test"}`},
+		Data:      events.ToolCallStartData{ToolName: "shell", CallID: "call_1", ArgumentsJSON: `{"cmd":"go test"}`},
 	})
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventToolCallOutputDelta,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventToolCallOutputDelta,
 		SessionID: "th_1",
-		Data:      agent.ToolCallOutputDeltaData{ToolName: "shell", CallID: "call_1", Delta: "ok "},
+		Data:      events.ToolCallOutputDeltaData{ToolName: "shell", CallID: "call_1", Delta: "ok "},
 	})
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventToolCallOutputDelta,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventToolCallOutputDelta,
 		SessionID: "th_1",
-		Data:      agent.ToolCallOutputDeltaData{ToolName: "shell", CallID: "call_1", Delta: "done"},
+		Data:      events.ToolCallOutputDeltaData{ToolName: "shell", CallID: "call_1", Delta: "done"},
 	})
 
 	conn := srv.AppServer().NewConnection("test")
@@ -265,50 +266,50 @@ func TestServerAppWireThreadReadIncludesInProgressDeltas(t *testing.T) {
 func TestServerAppWireThreadReadMergesCompletionItemsWithDeltas(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventUserInput,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventUserInput,
 		SessionID: "th_1",
-		Data:      agent.UserInputData{Text: "run"},
+		Data:      events.UserInputData{Text: "run"},
 	})
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventAssistantTextStart,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventAssistantTextStart,
 		SessionID: "th_1",
-		Data:      agent.AssistantTextStartData{},
+		Data:      events.AssistantTextStartData{},
 	})
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventAssistantTextDelta,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventAssistantTextDelta,
 		SessionID: "th_1",
-		Data:      agent.AssistantTextDeltaData{Delta: "partial "},
+		Data:      events.AssistantTextDeltaData{Delta: "partial "},
 	})
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventAssistantTextDelta,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventAssistantTextDelta,
 		SessionID: "th_1",
-		Data:      agent.AssistantTextDeltaData{Delta: "answer"},
+		Data:      events.AssistantTextDeltaData{Delta: "answer"},
 	})
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventAssistantTextEnd,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventAssistantTextEnd,
 		SessionID: "th_1",
-		Data:      agent.AssistantTextEndData{},
+		Data:      events.AssistantTextEndData{},
 	})
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventToolCallStart,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventToolCallStart,
 		SessionID: "th_1",
-		Data:      agent.ToolCallStartData{ToolName: "shell", CallID: "call_1", ArgumentsJSON: `{"cmd":"go test"}`},
+		Data:      events.ToolCallStartData{ToolName: "shell", CallID: "call_1", ArgumentsJSON: `{"cmd":"go test"}`},
 	})
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventToolCallOutputDelta,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventToolCallOutputDelta,
 		SessionID: "th_1",
-		Data:      agent.ToolCallOutputDeltaData{ToolName: "shell", CallID: "call_1", Delta: "ok "},
+		Data:      events.ToolCallOutputDeltaData{ToolName: "shell", CallID: "call_1", Delta: "ok "},
 	})
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventToolCallOutputDelta,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventToolCallOutputDelta,
 		SessionID: "th_1",
-		Data:      agent.ToolCallOutputDeltaData{ToolName: "shell", CallID: "call_1", Delta: "done"},
+		Data:      events.ToolCallOutputDeltaData{ToolName: "shell", CallID: "call_1", Delta: "done"},
 	})
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventToolCallEnd,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventToolCallEnd,
 		SessionID: "th_1",
-		Data:      agent.ToolCallEndData{ToolName: "shell", CallID: "call_1"},
+		Data:      events.ToolCallEndData{ToolName: "shell", CallID: "call_1"},
 	})
 
 	conn := srv.AppServer().NewConnection("test")
@@ -345,25 +346,25 @@ func TestServerAppWireThreadReadMergesCompletionItemsWithDeltas(t *testing.T) {
 func TestServerAppWireThreadReadUsesCommunicateAsAssistantMessage(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	for _, ev := range []agent.SessionEvent{
-		{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "hello"}},
-		{Kind: agent.EventToolCallStart, SessionID: "th_1", Data: agent.ToolCallStartData{
+	for _, ev := range []events.SessionEvent{
+		{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "hello"}},
+		{Kind: events.EventToolCallStart, SessionID: "th_1", Data: events.ToolCallStartData{
 			ToolName:      "communicate",
 			CallID:        "call_1",
 			ArgumentsJSON: `{"message":"done","await_reply":false}`,
 		}},
-		{Kind: agent.EventCommunicate, SessionID: "th_1", Data: agent.CommunicateData{Message: "done"}},
-		{Kind: agent.EventToolCallOutputDelta, SessionID: "th_1", Data: agent.ToolCallOutputDeltaData{
+		{Kind: events.EventCommunicate, SessionID: "th_1", Data: events.CommunicateData{Message: "done"}},
+		{Kind: events.EventToolCallOutputDelta, SessionID: "th_1", Data: events.ToolCallOutputDeltaData{
 			ToolName: "communicate",
 			CallID:   "call_1",
 			Delta:    `{"accepted":true}`,
 		}},
-		{Kind: agent.EventToolCallEnd, SessionID: "th_1", Data: agent.ToolCallEndData{
+		{Kind: events.EventToolCallEnd, SessionID: "th_1", Data: events.ToolCallEndData{
 			ToolName: "communicate",
 			CallID:   "call_1",
 			Output:   `{"accepted":true}`,
 		}},
-		{Kind: agent.EventSessionEnd, SessionID: "th_1", Data: agent.SessionEndData{Reason: "input_complete", State: "idle"}},
+		{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{Reason: "input_complete", State: "idle"}},
 	} {
 		srv.RecordAppEvent(ev)
 	}
@@ -660,15 +661,15 @@ func TestServerAppWireErrorEventNotifiesSubscribers(t *testing.T) {
 		t.Fatalf("ThreadRead: %v", err)
 	}
 
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventUserInput,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventUserInput,
 		SessionID: "th_1",
-		Data:      agent.UserInputData{Text: "hello"},
+		Data:      events.UserInputData{Text: "hello"},
 	})
-	srv.RecordAppEvent(agent.SessionEvent{
-		Kind:      agent.EventError,
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventError,
 		SessionID: "th_1",
-		Data:      agent.ErrorData{Error: "provider unavailable"},
+		Data:      events.ErrorData{Error: "provider unavailable"},
 	})
 
 	var sawWarning bool
@@ -918,9 +919,9 @@ func TestServerAppWireThreadReadUsesTranscriptWhenReplayBufferDroppedPrefix(t *t
 	srv := NewServer(ServerConfig{AppReplaySize: 2})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetTranscriptPathFunc(func() string { return path })
-	srv.RecordAppEvent(agent.SessionEvent{Kind: agent.EventUserInput, SessionID: "th_1", Data: agent.UserInputData{Text: "tail"}})
-	srv.RecordAppEvent(agent.SessionEvent{Kind: agent.EventAssistantTextEnd, SessionID: "th_1", Data: agent.AssistantTextEndData{Text: "only tail"}})
-	srv.RecordAppEvent(agent.SessionEvent{Kind: agent.EventSessionEnd, SessionID: "th_1", Data: agent.SessionEndData{State: appwire.ThreadStatusIdle}})
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "tail"}})
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventAssistantTextEnd, SessionID: "th_1", Data: events.AssistantTextEndData{Text: "only tail"}})
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionEnd, SessionID: "th_1", Data: events.SessionEndData{State: appwire.ThreadStatusIdle}})
 
 	resp, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{IncludeTurns: true})
 	if err != nil {

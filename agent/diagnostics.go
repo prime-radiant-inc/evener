@@ -4,17 +4,18 @@ import (
 	"errors"
 	"strings"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/diagnostic"
 	"primeradiant.com/serf/llm"
 )
 
-func errorDataFromError(err error) ErrorData {
+func errorDataFromError(err error) events.ErrorData {
 	message := ""
 	if err != nil {
 		message = err.Error()
 	}
 	info := diagnostic.FromError(err)
-	return ErrorData{
+	return events.ErrorData{
 		Error:  message,
 		Source: string(info.Source),
 		Title:  info.Title,
@@ -22,9 +23,9 @@ func errorDataFromError(err error) ErrorData {
 	}
 }
 
-func warningDataFromError(message string, err error) WarningData {
+func warningDataFromError(message string, err error) events.WarningData {
 	info := diagnostic.FromError(err)
-	return WarningData{
+	return events.WarningData{
 		Message: strings.TrimSpace(message),
 		Source:  string(info.Source),
 		Title:   info.Title,
@@ -32,24 +33,24 @@ func warningDataFromError(message string, err error) WarningData {
 	}
 }
 
-func enrichDiagnosticData(kind EventKind, data EventData) EventData {
+func enrichDiagnosticData(kind events.EventKind, data events.EventData) events.EventData {
 	switch kind {
-	case EventWarning:
+	case events.EventWarning:
 		switch d := data.(type) {
-		case WarningData:
+		case events.WarningData:
 			return enrichWarningData(d)
-		case *WarningData:
+		case *events.WarningData:
 			if d == nil {
 				return data
 			}
 			enriched := enrichWarningData(*d)
 			return &enriched
 		}
-	case EventError:
+	case events.EventError:
 		switch d := data.(type) {
-		case ErrorData:
+		case events.ErrorData:
 			return enrichErrorData(d)
-		case *ErrorData:
+		case *events.ErrorData:
 			if d == nil {
 				return data
 			}
@@ -60,7 +61,7 @@ func enrichDiagnosticData(kind EventKind, data EventData) EventData {
 	return data
 }
 
-func enrichWarningData(data WarningData) WarningData {
+func enrichWarningData(data events.WarningData) events.WarningData {
 	info := diagnostic.FromFields(data.Source, data.Title, data.Hint, data.Message)
 	data.Source = string(info.Source)
 	data.Title = info.Title
@@ -68,7 +69,7 @@ func enrichWarningData(data WarningData) WarningData {
 	return data
 }
 
-func enrichErrorData(data ErrorData) ErrorData {
+func enrichErrorData(data events.ErrorData) events.ErrorData {
 	info := diagnostic.FromFields(data.Source, data.Title, data.Hint, data.Error)
 	data.Source = string(info.Source)
 	data.Title = info.Title
@@ -79,7 +80,7 @@ func enrichErrorData(data ErrorData) ErrorData {
 // providerCauseFromError returns a structured ErrorCause for an err that
 // unwraps to an llm.Error with a non-empty Provider. Returns nil otherwise
 // — consumers treat a nil Cause as "source unknown" (kata ts0x).
-func providerCauseFromError(err error, model string) *ErrorCause {
+func providerCauseFromError(err error, model string) *events.ErrorCause {
 	if err == nil {
 		return nil
 	}
@@ -91,7 +92,7 @@ func providerCauseFromError(err error, model string) *ErrorCause {
 	if provider == "" {
 		return nil
 	}
-	return &ErrorCause{
+	return &events.ErrorCause{
 		Kind:     "provider",
 		Provider: provider,
 		Model:    model,

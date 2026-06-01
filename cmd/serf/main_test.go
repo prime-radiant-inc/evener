@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/events"
 	authopenai "primeradiant.com/serf/auth/openai"
 	"primeradiant.com/serf/auth/openai/oaitest"
 	"primeradiant.com/serf/llm"
@@ -43,7 +44,7 @@ func TestNewSessionFromEnv(t *testing.T) {
 	// Session should emit SESSION_START on creation.
 	select {
 	case ev := <-sess.Events():
-		if ev.Kind != agent.EventSessionStart {
+		if ev.Kind != events.EventSessionStart {
 			t.Fatalf("expected SESSION_START, got %s", ev.Kind)
 		}
 	default:

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 )
 
@@ -90,9 +91,9 @@ func TestSessionLogStrategy_ManageContext_ObservationMaskAtHighPressure(t *testi
 	}
 
 	var emittedLayers []string
-	emitFn := func(kind EventKind, data EventData) {
-		if kind == EventContextCompaction {
-			if cd, ok := data.(ContextCompactionData); ok {
+	emitFn := func(kind events.EventKind, data events.EventData) {
+		if kind == events.EventContextCompaction {
+			if cd, ok := data.(events.ContextCompactionData); ok {
 				emittedLayers = append(emittedLayers, cd.Layer)
 			}
 		}
@@ -185,9 +186,9 @@ func TestSessionLogStrategy_ManageContext_SessionLogCheckpointAtHighPressure(t *
 	}
 
 	var emittedLayers []string
-	emitFn := func(kind EventKind, data EventData) {
-		if kind == EventContextCompaction {
-			if cd, ok := data.(ContextCompactionData); ok {
+	emitFn := func(kind events.EventKind, data events.EventData) {
+		if kind == events.EventContextCompaction {
+			if cd, ok := data.(events.ContextCompactionData); ok {
 				emittedLayers = append(emittedLayers, cd.Layer)
 			}
 		}
@@ -491,7 +492,7 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("almost done")},
 	}
 
-	emitFn := func(kind EventKind, data EventData) {}
+	emitFn := func(kind events.EventKind, data events.EventData) {}
 
 	err := sls.ManageContext(context.Background(), &history, 0, emitFn)
 	if err != nil {
@@ -554,7 +555,7 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 		{Kind: TurnAssistant, Message: llm.Assistant("almost done")},
 	}
 
-	emitFn := func(kind EventKind, data EventData) {}
+	emitFn := func(kind events.EventKind, data events.EventData) {}
 
 	err := sls.ManageContext(context.Background(), &history, 0, emitFn)
 	if err != nil {

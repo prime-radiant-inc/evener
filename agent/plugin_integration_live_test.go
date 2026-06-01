@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/openai"
 )
@@ -348,11 +349,11 @@ func TestLive_Hooks_CommandExecution(t *testing.T) {
 	runner := newHookRunnerFromPlugin(lp)
 
 	// Track events
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	var mu sync.Mutex
-	runner.SetEventCallback(func(kind EventKind, data EventData) {
+	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
 		mu.Lock()
-		events = append(events, SessionEvent{Kind: kind, Data: data})
+		evs = append(evs, events.SessionEvent{Kind: kind, Data: data})
 		mu.Unlock()
 	})
 
@@ -422,11 +423,11 @@ func TestLive_Hooks_CommandExecution(t *testing.T) {
 	defer mu.Unlock()
 	hookStarts := 0
 	hookEnds := 0
-	for _, ev := range events {
+	for _, ev := range evs {
 		switch ev.Kind {
-		case EventHookStart:
+		case events.EventHookStart:
 			hookStarts++
-		case EventHookEnd:
+		case events.EventHookEnd:
 			hookEnds++
 		}
 	}
@@ -526,13 +527,13 @@ func TestLive_Session_WithPlugin(t *testing.T) {
 	}
 
 	// Drain events
-	var events []SessionEvent
+	var evs []events.SessionEvent
 	var mu sync.Mutex
 	done := make(chan struct{})
 	go func() {
 		for ev := range sess.Events() {
 			mu.Lock()
-			events = append(events, ev)
+			evs = append(evs, ev)
 			mu.Unlock()
 		}
 		close(done)
@@ -606,11 +607,11 @@ func TestLive_Session_WithPlugin(t *testing.T) {
 
 	foundPluginLoaded := false
 	foundHookStart := false
-	for _, ev := range events {
+	for _, ev := range evs {
 		switch ev.Kind {
-		case EventPluginLoaded:
+		case events.EventPluginLoaded:
 			foundPluginLoaded = true
-		case EventHookStart:
+		case events.EventHookStart:
 			foundHookStart = true
 		}
 	}

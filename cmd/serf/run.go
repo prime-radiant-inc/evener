@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
@@ -204,13 +205,13 @@ func run(ctx context.Context, cfg runConfig) error {
 }
 
 // drainEventsVerbose writes every event as a JSON line (NDJSON) to w.
-func drainEventsVerbose(events <-chan agent.SessionEvent, w io.Writer) <-chan struct{} {
+func drainEventsVerbose(eventCh <-chan events.SessionEvent, w io.Writer) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		enc := json.NewEncoder(w)
 		enc.SetEscapeHTML(false)
-		for ev := range events {
+		for ev := range eventCh {
 			enc.Encode(ev) //nolint:errcheck
 		}
 	}()
@@ -218,22 +219,22 @@ func drainEventsVerbose(events <-chan agent.SessionEvent, w io.Writer) <-chan st
 }
 
 // drainEventsHuman writes human-readable status lines to w.
-func drainEventsHuman(events <-chan agent.SessionEvent, w io.Writer) <-chan struct{} {
+func drainEventsHuman(eventCh <-chan events.SessionEvent, w io.Writer) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for ev := range events {
+		for ev := range eventCh {
 			switch ev.Kind {
-			case agent.EventSessionStart:
-				if d, ok := ev.Data.(agent.SessionStartData); ok && d.Model != "" {
+			case events.EventSessionStart:
+				if d, ok := ev.Data.(events.SessionStartData); ok && d.Model != "" {
 					fmt.Fprintf(w, "[model] %s (%s)\n", d.Model, d.Profile) //nolint:errcheck
 				}
-			case agent.EventPromptLoaded:
-				if d, ok := ev.Data.(agent.PromptLoadedData); ok {
+			case events.EventPromptLoaded:
+				if d, ok := ev.Data.(events.PromptLoadedData); ok {
 					fmt.Fprintf(w, "[prompt] %s (%dB)\n", d.Label, d.Size) //nolint:errcheck
 				}
-			case agent.EventAssistantTextEnd:
-				if d, ok := ev.Data.(agent.AssistantTextEndData); ok {
+			case events.EventAssistantTextEnd:
+				if d, ok := ev.Data.(events.AssistantTextEndData); ok {
 					if strings.TrimSpace(d.Text) != "" {
 						fmt.Fprintf(w, "[assistant] %s\n", d.Text) //nolint:errcheck
 					}
@@ -250,53 +251,53 @@ func drainEventsHuman(events <-chan agent.SessionEvent, w io.Writer) <-chan stru
 					}
 					fmt.Fprintln(w, line) //nolint:errcheck
 				}
-			case agent.EventToolCallStart:
-				if d, ok := ev.Data.(agent.ToolCallStartData); ok {
+			case events.EventToolCallStart:
+				if d, ok := ev.Data.(events.ToolCallStartData); ok {
 					args := d.ArgumentsJSON
 					if len(args) > 100 {
 						args = args[:97] + "..."
 					}
 					fmt.Fprintf(w, "[tool] %s %s\n", d.ToolName, args) //nolint:errcheck
 				}
-			case agent.EventToolCallEnd:
-				if d, ok := ev.Data.(agent.ToolCallEndData); ok {
+			case events.EventToolCallEnd:
+				if d, ok := ev.Data.(events.ToolCallEndData); ok {
 					if d.Error != "" {
 						fmt.Fprintf(w, "[tool] %s: error\n", d.ToolName) //nolint:errcheck
 					} else {
 						fmt.Fprintf(w, "[tool] %s: done\n", d.ToolName) //nolint:errcheck
 					}
 				}
-			case agent.EventCommunicate:
-				if d, ok := ev.Data.(agent.CommunicateData); ok {
+			case events.EventCommunicate:
+				if d, ok := ev.Data.(events.CommunicateData); ok {
 					if d.AwaitReply {
 						fmt.Fprintf(w, "[communicate:await_reply] %s\n", d.Message) //nolint:errcheck
 					} else {
 						fmt.Fprintf(w, "[communicate] %s\n", d.Message) //nolint:errcheck
 					}
 				}
-			case agent.EventPluginLoaded:
-				if d, ok := ev.Data.(agent.PluginLoadedData); ok {
+			case events.EventPluginLoaded:
+				if d, ok := ev.Data.(events.PluginLoadedData); ok {
 					fmt.Fprintf(w, "[plugin] loaded %s (%d skills, %d agents, %d mcp)\n", //nolint:errcheck
 						d.Name, d.SkillCount, d.AgentCount, d.MCPCount)
 				}
-			case agent.EventHookStart:
-				if d, ok := ev.Data.(agent.HookStartData); ok {
+			case events.EventHookStart:
+				if d, ok := ev.Data.(events.HookStartData); ok {
 					fmt.Fprintf(w, "[hook] %s %s (%s)\n", d.Event, d.Matcher, d.HookType) //nolint:errcheck
 				}
-			case agent.EventHookEnd:
-				if d, ok := ev.Data.(agent.HookEndData); ok {
+			case events.EventHookEnd:
+				if d, ok := ev.Data.(events.HookEndData); ok {
 					fmt.Fprintf(w, "[hook] %s %s done (%dms)\n", d.Event, d.Matcher, d.DurationMS) //nolint:errcheck
 				}
-			case agent.EventSkillActivated:
-				if d, ok := ev.Data.(agent.SkillActivatedData); ok {
+			case events.EventSkillActivated:
+				if d, ok := ev.Data.(events.SkillActivatedData); ok {
 					fmt.Fprintf(w, "[skill] activated %s\n", d.Name) //nolint:errcheck
 				}
-			case agent.EventWarning:
-				if d, ok := ev.Data.(agent.WarningData); ok {
+			case events.EventWarning:
+				if d, ok := ev.Data.(events.WarningData); ok {
 					fmt.Fprintf(w, "[warning] %s\n", d.Message) //nolint:errcheck
 				}
-			case agent.EventError:
-				if d, ok := ev.Data.(agent.ErrorData); ok {
+			case events.EventError:
+				if d, ok := ev.Data.(events.ErrorData); ok {
 					fmt.Fprintf(w, "[error] %s\n", d.Error) //nolint:errcheck
 				}
 			}
