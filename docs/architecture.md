@@ -98,6 +98,10 @@ only and could later sink to `cmd/serf/internal/` alongside `server/`.)
   established; all four `go.mod` files are clean and publishable (replace-free).
 - ✅ App `internal/` holds only app-shared code (no library/app mixing) — the structural
   goal of the migration is met.
-- ⏳ Remaining: per-module hygiene (namingcheck/internalcheck per library module; a
-  `go get …/agent` smoke proving the published graph is clean) and the library-surface
-  finish (runnable `Example`s + a godoc/stylecheck lint gate on the public API).
+- ✅ The library public API is fully documented and **gated in CI**: `serf-docscheck`
+  fails the build if any exported package-level declaration in `llm`, `agent`,
+  `agent/events`, or `auth/openai` lacks a doc comment — running alongside
+  `serf-namingcheck` (tag casing) and `serf-internalcheck` (no internal-type leaks).
+  `llm`/`agent`/`auth/openai` carry runnable `Example`s.
+- ✅ Validated externally consumable: a scratch module that `require`s `agent` resolves
+  only `agent` + `llm` + `auth` (plus their third-party deps) — no app code.
