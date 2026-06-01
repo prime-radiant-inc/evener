@@ -103,7 +103,7 @@ echo '{"decision":"approve"}'
 
 	// Make scripts executable
 	for _, script := range []string{"session-start.sh", "pre-tool-use.sh", "stop.sh"} {
-		if err := os.Chmod(filepath.Join(dir, "hooks/scripts", script), 0755); err != nil {
+		if err := os.Chmod(filepath.Join(dir, "hooks", "scripts", script), 0755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -824,7 +824,7 @@ func TestLive_ToolRestriction_PluginAgent(t *testing.T) {
 // ---------- Test: Real superpowers plugin through Session ----------
 
 func TestLive_Session_RealSuperpowersPlugin(t *testing.T) {
-	superpowersDir := filepath.Join(pluginCacheDir, "superpowers/4.3.0")
+	superpowersDir := filepath.Join(pluginCacheDir, "superpowers", "4.3.0")
 	if _, err := os.Stat(superpowersDir); err != nil {
 		t.Skip("superpowers plugin not installed")
 	}

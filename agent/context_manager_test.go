@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -1362,9 +1363,11 @@ func TestSummarizeWithLLM_RequestsInterleavedConversationTimeline(t *testing.T) 
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
+				var promptSb1365 strings.Builder
 				for _, m := range req.Messages {
-					prompt += m.Text()
+					promptSb1365.WriteString(m.Text())
 				}
+				prompt += promptSb1365.String()
 				return llm.Response{Message: llm.Assistant("summary")}
 			},
 		},
@@ -1951,7 +1954,7 @@ type errorAdapter struct {
 
 func (a *errorAdapter) Name() string { return a.name }
 func (a *errorAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
-	return llm.Response{}, fmt.Errorf("simulated LLM error")
+	return llm.Response{}, errors.New("simulated LLM error")
 }
 func (a *errorAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	return nil, llm.ErrStreamUnsupported

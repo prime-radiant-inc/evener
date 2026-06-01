@@ -317,7 +317,7 @@ func TestIntegration_Subagent(t *testing.T) {
 		var found string
 		_ = filepath.Walk(workDir, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
-				return nil
+				return nil //nolint:nilerr // best-effort search: skip unreadable entries and keep walking
 			}
 			if info.Name() == "subagent_output.txt" {
 				found = path

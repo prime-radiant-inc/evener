@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,13 +59,13 @@ func selectStrategy(cfg SessionConfig, cm *contextManager, sess *Session) (conte
 // if initialization fails.
 func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnvironment, cfg SessionConfig) (*Session, error) {
 	if client == nil {
-		return nil, fmt.Errorf("llm client is nil")
+		return nil, errors.New("llm client is nil")
 	}
 	if profile == nil {
-		return nil, fmt.Errorf("profile is nil")
+		return nil, errors.New("profile is nil")
 	}
 	if env == nil {
-		return nil, fmt.Errorf("execution environment is nil")
+		return nil, errors.New("execution environment is nil")
 	}
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
@@ -162,11 +163,11 @@ func NewSession(client *llm.Client, profile ProviderProfile, env ExecutionEnviro
 	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
 
 	// Create context strategy.
-	strat, err := selectStrategy(cfg, s.contextMgr, s)
+	strategy, err := selectStrategy(cfg, s.contextMgr, s)
 	if err != nil {
 		return nil, err
 	}
-	s.strategy = strat
+	s.strategy = strategy
 
 	// Register any tools provided by the context strategy.
 	if s.strategy != nil {
@@ -198,13 +199,13 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 	cfg.applyDefaults()
 
 	if client == nil {
-		return nil, fmt.Errorf("llm client is nil")
+		return nil, errors.New("llm client is nil")
 	}
 	if profile == nil {
-		return nil, fmt.Errorf("profile is nil")
+		return nil, errors.New("profile is nil")
 	}
 	if env == nil {
-		return nil, fmt.Errorf("execution environment is nil")
+		return nil, errors.New("execution environment is nil")
 	}
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
@@ -294,11 +295,11 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env ExecutionEn
 	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
 
 	// Create context strategy.
-	strat, err := selectStrategy(cfg, s.contextMgr, s)
+	strategy, err := selectStrategy(cfg, s.contextMgr, s)
 	if err != nil {
 		return nil, err
 	}
-	s.strategy = strat
+	s.strategy = strategy
 
 	// Register any tools provided by the context strategy.
 	if s.strategy != nil {
@@ -330,13 +331,13 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 	cfg.applyDefaults()
 
 	if client == nil {
-		return nil, fmt.Errorf("llm client is nil")
+		return nil, errors.New("llm client is nil")
 	}
 	if profile == nil {
-		return nil, fmt.Errorf("profile is nil")
+		return nil, errors.New("profile is nil")
 	}
 	if env == nil {
-		return nil, fmt.Errorf("execution environment is nil")
+		return nil, errors.New("execution environment is nil")
 	}
 	if err := env.Initialize(); err != nil {
 		return nil, fmt.Errorf("env initialize: %w", err)
@@ -432,11 +433,11 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env Exe
 	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
 
 	// Create context strategy.
-	strat, err := selectStrategy(cfg, s.contextMgr, s)
+	strategy, err := selectStrategy(cfg, s.contextMgr, s)
 	if err != nil {
 		return nil, err
 	}
-	s.strategy = strat
+	s.strategy = strategy
 
 	if s.strategy != nil {
 		for _, tool := range s.strategy.Tools() {

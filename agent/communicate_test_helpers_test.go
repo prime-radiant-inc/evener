@@ -39,14 +39,6 @@ func finalResponse(message string) llm.Response {
 	return communicateResponse(false, message)
 }
 
-func messageResponse(message string) llm.Response {
-	return communicateResponse(false, message)
-}
-
-func askResponse(message string) llm.Response {
-	return communicateResponse(true, message)
-}
-
 func wrapCommunicateResponse(resp llm.Response) llm.Response {
 	text := strings.TrimSpace(resp.Text())
 	if text == "" || len(resp.ToolCalls()) > 0 {
@@ -54,8 +46,7 @@ func wrapCommunicateResponse(resp llm.Response) llm.Response {
 	}
 
 	awaitReply := looksLikeQuestion(text)
-	wrapped := communicateResponse(awaitReply, text)
-	wrapped = resp
+	wrapped := resp
 	wrapped.Message = resp.Message
 	wrapped.Message.Content = append(append([]llm.ContentPart{}, resp.Message.Content...), llm.ContentPart{
 		Kind: llm.ContentToolCall,

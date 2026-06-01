@@ -959,40 +959,6 @@ func TestParity_SubagentNoMCPInheritance(t *testing.T) {
 	})
 }
 
-// nonLocalEnv is a minimal ExecutionEnvironment that is NOT *LocalExecutionEnvironment.
-// Used to test that working_dir override fails gracefully for non-local envs.
-type nonLocalEnv struct {
-	dir string
-}
-
-func (e *nonLocalEnv) Initialize() error        { return nil }
-func (e *nonLocalEnv) Cleanup()                 {}
-func (e *nonLocalEnv) WorkingDirectory() string { return e.dir }
-func (e *nonLocalEnv) Platform() string         { return "test" }
-func (e *nonLocalEnv) OSVersion() string        { return "test/1.0" }
-func (e *nonLocalEnv) ReadFile(path string, offsetLine *int, limitLines *int) (string, error) {
-	return "", fmt.Errorf("not implemented")
-}
-func (e *nonLocalEnv) WriteFile(path string, content string) (string, error) {
-	return "", fmt.Errorf("not implemented")
-}
-func (e *nonLocalEnv) EditFile(path string, oldString string, newString string, replaceAll bool) (string, error) {
-	return "", fmt.Errorf("not implemented")
-}
-func (e *nonLocalEnv) FileExists(path string) bool { return false }
-func (e *nonLocalEnv) Glob(pattern string, basePath string) ([]string, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-func (e *nonLocalEnv) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
-	return "", fmt.Errorf("not implemented")
-}
-func (e *nonLocalEnv) ListDirectory(path string, depth int) ([]DirEntry, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-func (e *nonLocalEnv) ExecCommand(ctx context.Context, command string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
-	return ExecResult{}, fmt.Errorf("not implemented")
-}
-
 func TestParity_WorkingDirRemovedFromSchema(t *testing.T) {
 	// working_dir was removed from spawn_agent — subagents always use parent's working dir.
 	pc := providerCases[0]

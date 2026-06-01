@@ -49,7 +49,7 @@ func extractEmbeddedSkills() (string, error) {
 	})
 
 	if err != nil {
-		os.RemoveAll(dir)
+		_ = os.RemoveAll(dir) // best-effort cleanup of partial extraction; the extract error is what matters
 		return "", fmt.Errorf("extracting embedded skills: %w", err)
 	}
 

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -35,7 +36,7 @@ var kebabCaseRe = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 // (lowercase alphanumeric with hyphens, no leading/trailing hyphens).
 func validatePluginName(name string) error {
 	if name == "" {
-		return fmt.Errorf("plugin name must not be empty")
+		return errors.New("plugin name must not be empty")
 	}
 	if !kebabCaseRe.MatchString(name) {
 		return fmt.Errorf("plugin name %q must be kebab-case (lowercase alphanumeric with hyphens, no leading/trailing hyphens)", name)

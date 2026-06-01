@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -303,7 +303,7 @@ func TestSessionLogStrategy_AfterAction_LLMErrorIsNonFatal(t *testing.T) {
 	adapter := &stubSummarizeAdapter{
 		name: "openai",
 		respFn: func(req llm.Request) (llm.Response, error) {
-			return llm.Response{}, fmt.Errorf("rate limited")
+			return llm.Response{}, errors.New("rate limited")
 		},
 	}
 	client := llm.NewClient()

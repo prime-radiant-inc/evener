@@ -38,7 +38,7 @@ type toolDeps struct {
 	// cmdTimeouts is a live getter for the default and max shell command
 	// timeouts. It reads cfg on every call so SetTimeout mutations are visible;
 	// the values are NOT snapshotted at registration time.
-	cmdTimeouts func() (def, max int)
+	cmdTimeouts func() (def, maxTimeout int)
 
 	// readGuard exposes the read-before-write guardrail without leaking the raw
 	// readFiles map or its mutex.
@@ -208,7 +208,7 @@ func registerFileTools(reg *toolRegistry, deps *toolDeps) error {
 			warn := deps.readGuard.ReadBeforeWriteWarning(path)
 			result, err := env.WriteFile(path, fmt.Sprint(args["content"]))
 			if err == nil && warn != "" {
-				return warn + fmt.Sprint(result), nil
+				return warn + result, nil
 			}
 			return result, err
 		},
@@ -229,7 +229,7 @@ func registerFileTools(reg *toolRegistry, deps *toolDeps) error {
 			warn := deps.readGuard.ReadBeforeWriteWarning(path)
 			result, err := env.EditFile(path, fmt.Sprint(args["old_string"]), fmt.Sprint(args["new_string"]), replaceAll)
 			if err == nil && warn != "" {
-				return warn + fmt.Sprint(result), nil
+				return warn + result, nil
 			}
 			return result, err
 		},
@@ -414,7 +414,7 @@ func registerSubagentTools(reg *toolRegistry, s *Session) {
 			// Blocking mode: extract agent_id and wait for completion.
 			var spawnResult map[string]any
 			if err := json.Unmarshal([]byte(result.(string)), &spawnResult); err != nil {
-				return result, nil
+				return result, nil //nolint:nilerr // spawn succeeded; unparseable result just skips the blocking-wait enhancement
 			}
 			agentID, _ := spawnResult["agent_id"].(string)
 			if agentID == "" {
@@ -458,7 +458,9 @@ func registerSubagentTools(reg *toolRegistry, s *Session) {
 				}
 				if sub := s.subagents.get(agentID); sub != nil {
 					store := sub.sess.getOrCreateTaskStore()
-					store.Append(items)
+					if _, err := store.Append(items); err != nil {
+						return nil, fmt.Errorf("seed subagent task list: %w", err)
+					}
 				}
 			}
 			result, err := s.sendInput(ctx, agentID, fmt.Sprint(args["message"]))
@@ -521,13 +523,13 @@ func registerTaskTools(reg *toolRegistry, deps *toolDeps) {
 			case "append":
 				raw, ok := args["tasks"].([]any)
 				if !ok || len(raw) == 0 {
-					return nil, fmt.Errorf("append requires a non-empty 'tasks' array")
+					return nil, errors.New("append requires a non-empty 'tasks' array")
 				}
 				var items []TaskInput
 				for _, r := range raw {
 					m, ok := r.(map[string]any)
 					if !ok {
-						return nil, fmt.Errorf("each task must be an object with description and prompt")
+						return nil, errors.New("each task must be an object with description and prompt")
 					}
 					var depIDs []int
 					if depsRaw, ok := m["depends_on"].([]any); ok {
@@ -570,13 +572,13 @@ func registerTaskTools(reg *toolRegistry, deps *toolDeps) {
 			case "update":
 				raw, ok := args["updates"].([]any)
 				if !ok || len(raw) == 0 {
-					return nil, fmt.Errorf("update requires a non-empty 'updates' array")
+					return nil, errors.New("update requires a non-empty 'updates' array")
 				}
 				var updates []TaskUpdate
 				for _, r := range raw {
 					m, ok := r.(map[string]any)
 					if !ok {
-						return nil, fmt.Errorf("each update must be an object with id and status")
+						return nil, errors.New("each update must be an object with id and status")
 					}
 					id := 0
 					if v, ok := m["id"].(float64); ok {
@@ -732,7 +734,7 @@ func registerCommunicateTool(reg *toolRegistry, deps *toolDeps) {
 			}
 			awaitReply, ok := args["await_reply"].(bool)
 			if !ok {
-				return nil, fmt.Errorf("communicate requires await_reply")
+				return nil, errors.New("communicate requires await_reply")
 			}
 
 			originalOutput := normalizeNodeOutput(args["output"])
@@ -740,7 +742,7 @@ func registerCommunicateTool(reg *toolRegistry, deps *toolDeps) {
 				message = strings.TrimSpace(originalOutput.Message)
 			}
 			if message == "" {
-				return nil, fmt.Errorf("communicate requires message or output.message")
+				return nil, errors.New("communicate requires message or output.message")
 			}
 			explicitStructuredOutput := hasMeaningfulNodeOutput(originalOutput)
 			effectiveOutput := originalOutput

@@ -74,11 +74,13 @@ func TestWebSearch_MakesGroundingCall(t *testing.T) {
 	}
 	// Verify the query was passed as the user message.
 	userText := ""
+	var userTextSb77 strings.Builder
 	for _, m := range groundingReq.Messages {
 		if m.Role == llm.RoleUser {
-			userText += m.Text()
+			userTextSb77.WriteString(m.Text())
 		}
 	}
+	userText += userTextSb77.String()
 	if !strings.Contains(userText, "Go 1.23 release date") {
 		t.Fatalf("grounding request user message should contain the query, got: %s", userText)
 	}

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -246,9 +247,9 @@ func transportForConfig(cfg MCPServerConfig) (mcp.Transport, error) {
 	switch cfg.Type {
 	case "stdio", "":
 		if cfg.Command == "" {
-			return nil, fmt.Errorf("stdio transport requires a command")
+			return nil, errors.New("stdio transport requires a command")
 		}
-		cmd := exec.Command(cfg.Command, cfg.Args...)
+		cmd := exec.Command(cfg.Command, cfg.Args...) //nolint:noctx // MCP SDK's CommandTransport.Connect(ctx) owns the server process lifecycle
 		// Merge process env with configured env vars.
 		if len(cfg.Env) > 0 {
 			cmd.Env = mergeEnv(cfg.Env)
@@ -257,7 +258,7 @@ func transportForConfig(cfg MCPServerConfig) (mcp.Transport, error) {
 
 	case "sse":
 		if cfg.URL == "" {
-			return nil, fmt.Errorf("sse transport requires a url")
+			return nil, errors.New("sse transport requires a url")
 		}
 		t := &mcp.SSEClientTransport{Endpoint: cfg.URL}
 		if len(cfg.Headers) > 0 {
@@ -267,7 +268,7 @@ func transportForConfig(cfg MCPServerConfig) (mcp.Transport, error) {
 
 	case "http":
 		if cfg.URL == "" {
-			return nil, fmt.Errorf("http transport requires a url")
+			return nil, errors.New("http transport requires a url")
 		}
 		t := &mcp.StreamableClientTransport{Endpoint: cfg.URL}
 		if len(cfg.Headers) > 0 {

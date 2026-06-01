@@ -3,7 +3,6 @@ package agent
 import (
 	"bufio"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -147,12 +146,6 @@ func formatTree(root string, entries []treeEntry, truncated bool) string {
 		return ""
 	}
 
-	// Group files by their parent directory depth+path.
-	type dirGroup struct {
-		depth int
-		files []string
-	}
-
 	var b strings.Builder
 	b.WriteString(root + "/\n")
 
@@ -196,14 +189,14 @@ func detectBuildSystem(root string) string {
 
 	// Makefile: extract targets.
 	if targets := parseMakefileTargets(filepath.Join(root, "Makefile")); len(targets) > 0 {
-		parts = append(parts, fmt.Sprintf("Makefile targets: %s", strings.Join(targets, ", ")))
+		parts = append(parts, "Makefile targets: "+strings.Join(targets, ", "))
 	} else if targets := parseMakefileTargets(filepath.Join(root, "makefile")); len(targets) > 0 {
-		parts = append(parts, fmt.Sprintf("Makefile targets: %s", strings.Join(targets, ", ")))
+		parts = append(parts, "Makefile targets: "+strings.Join(targets, ", "))
 	}
 
 	// package.json: extract scripts.
 	if scripts := parsePackageJsonScripts(filepath.Join(root, "package.json")); len(scripts) > 0 {
-		parts = append(parts, fmt.Sprintf("package.json scripts: %s", strings.Join(scripts, ", ")))
+		parts = append(parts, "package.json scripts: "+strings.Join(scripts, ", "))
 	}
 
 	// CMakeLists.txt.
@@ -216,7 +209,7 @@ func detectBuildSystem(root string) string {
 		lines := strings.Split(string(b), "\n")
 		for _, line := range lines {
 			if strings.HasPrefix(line, "module ") {
-				parts = append(parts, fmt.Sprintf("Go module (go.mod): %s", strings.TrimPrefix(line, "module ")))
+				parts = append(parts, "Go module (go.mod): "+strings.TrimPrefix(line, "module "))
 				break
 			}
 		}
@@ -259,7 +252,7 @@ func parseMakefileTargets(path string) []string {
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
 
 	var targets []string
 	seen := make(map[string]bool)

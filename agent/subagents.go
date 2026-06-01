@@ -140,10 +140,10 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	maxDepth := s.cfg.MaxSubagentDepth
 	s.mu.Unlock()
 	if depth > 0 {
-		return "", fmt.Errorf("subagent management is top-level only")
+		return "", errors.New("subagent management is top-level only")
 	}
 	if depth >= maxDepth {
-		return "", fmt.Errorf("subagent depth limit reached")
+		return "", errors.New("subagent depth limit reached")
 	}
 
 	// Look up plugin agent configuration when agent_type is specified.
@@ -277,7 +277,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		if le, ok := s.env.(*LocalExecutionEnvironment); ok {
 			subEnv = le.WithWorkingDirectory(workingDir)
 		} else {
-			return "", fmt.Errorf("execution environment does not support working_dir override")
+			return "", errors.New("execution environment does not support working_dir override")
 		}
 	}
 
@@ -329,7 +329,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
 		subSess.Close()
-		return "", fmt.Errorf("session is closed")
+		return "", errors.New("session is closed")
 	}
 	s.subagents.track(sub)
 	s.sendersWG.Add(1)
@@ -374,7 +374,7 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return "", fmt.Errorf("session is closed")
+		return "", errors.New("session is closed")
 	}
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
@@ -417,7 +417,7 @@ func (s *Session) waitAgent(ctx context.Context, agentID string, timeoutMS int) 
 
 	done := sub.done
 	if done == nil {
-		return "", fmt.Errorf("agent has no active run")
+		return "", errors.New("agent has no active run")
 	}
 	if timeoutMS <= 0 {
 		select {
@@ -433,7 +433,7 @@ func (s *Session) waitAgent(ctx context.Context, agentID string, timeoutMS int) 
 			return "", ctx.Err()
 		case <-done:
 		case <-t.C:
-			return "", fmt.Errorf("wait timeout")
+			return "", errors.New("wait timeout")
 		}
 	}
 	sub.mu.Lock()

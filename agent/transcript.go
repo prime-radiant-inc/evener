@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -104,17 +105,17 @@ func NewTranscriptWriter(path string, header TranscriptHeader) (*TranscriptWrite
 
 	data, err := json.Marshal(header)
 	if err != nil {
-		f.Close()
+		_ = f.Close() // cleanup on error path; the marshal error is what matters
 		return nil, fmt.Errorf("marshal transcript header: %w", err)
 	}
 
 	if _, err := f.Write(append(data, '\n')); err != nil {
-		f.Close()
+		_ = f.Close() // cleanup on error path; the write error is what matters
 		return nil, fmt.Errorf("write transcript header: %w", err)
 	}
 
 	if err := f.Sync(); err != nil {
-		f.Close()
+		_ = f.Close() // cleanup on error path; the sync error is what matters
 		return nil, fmt.Errorf("sync transcript header: %w", err)
 	}
 
@@ -247,23 +248,22 @@ func OpenTranscriptWriter(path string) (*TranscriptWriter, error) {
 
 	data, err := io.ReadAll(f)
 	if err != nil {
-		f.Close()
+		_ = f.Close() // cleanup on error path; the read error is what matters
 		return nil, fmt.Errorf("read transcript for resume: %w", err)
 	}
 
 	// Truncate any trailing partial line: if the file doesn't end with '\n',
 	// find the last newline and truncate there.
-	validLen := int64(len(data))
 	if len(data) > 0 && data[len(data)-1] != '\n' {
 		lastNL := bytes.LastIndexByte(data, '\n')
 		if lastNL < 0 {
-			f.Close()
-			return nil, fmt.Errorf("transcript has no complete lines")
+			_ = f.Close() // cleanup on error path; the validation error is what matters
+			return nil, errors.New("transcript has no complete lines")
 		}
-		validLen = int64(lastNL + 1)
+		validLen := int64(lastNL + 1)
 		data = data[:validLen]
 		if err := f.Truncate(validLen); err != nil {
-			f.Close()
+			_ = f.Close() // cleanup on error path; the truncate error is what matters
 			return nil, fmt.Errorf("truncate partial line: %w", err)
 		}
 	}
@@ -287,7 +287,7 @@ func OpenTranscriptWriter(path string) (*TranscriptWriter, error) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		f.Close()
+		_ = f.Close() // cleanup on error path; the scan error is what matters
 		return nil, fmt.Errorf("scanning transcript entries: %w", err)
 	}
 
@@ -300,7 +300,7 @@ func OpenTranscriptWriter(path string) (*TranscriptWriter, error) {
 
 	// Seek to end for subsequent appends.
 	if _, err := f.Seek(0, io.SeekEnd); err != nil {
-		f.Close()
+		_ = f.Close() // cleanup on error path; the seek error is what matters
 		return nil, fmt.Errorf("seek to end of transcript: %w", err)
 	}
 
@@ -315,7 +315,7 @@ func readTranscript(path string) (TranscriptHeader, []TranscriptEntry, int, erro
 	if err != nil {
 		return TranscriptHeader{}, nil, 0, fmt.Errorf("open transcript: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
@@ -325,7 +325,7 @@ func readTranscript(path string) (TranscriptHeader, []TranscriptEntry, int, erro
 		if err := scanner.Err(); err != nil {
 			return TranscriptHeader{}, nil, 0, fmt.Errorf("reading transcript header: %w", err)
 		}
-		return TranscriptHeader{}, nil, 0, fmt.Errorf("transcript file is empty: no header")
+		return TranscriptHeader{}, nil, 0, errors.New("transcript file is empty: no header")
 	}
 
 	var header TranscriptHeader
@@ -375,7 +375,7 @@ func readTranscriptFull(path string) (transcriptData, error) {
 	if err != nil {
 		return transcriptData{}, fmt.Errorf("open transcript: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
@@ -385,7 +385,7 @@ func readTranscriptFull(path string) (transcriptData, error) {
 		if err := scanner.Err(); err != nil {
 			return transcriptData{}, fmt.Errorf("reading transcript header: %w", err)
 		}
-		return transcriptData{}, fmt.Errorf("transcript file is empty: no header")
+		return transcriptData{}, errors.New("transcript file is empty: no header")
 	}
 
 	var data transcriptData

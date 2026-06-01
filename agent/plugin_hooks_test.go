@@ -183,12 +183,14 @@ func TestParsePluginHooks_AllEvents(t *testing.T) {
 
 	// Build JSON with all event types
 	inner := ""
+	var innerSb186 strings.Builder
 	for i, e := range evs {
 		if i > 0 {
-			inner += ","
+			innerSb186.WriteString(",")
 		}
-		inner += `"` + string(e) + `": [{"matcher": "*", "hooks": [{"type": "command", "command": "echo ` + string(e) + `"}]}]`
+		innerSb186.WriteString(`"` + string(e) + `": [{"matcher": "*", "hooks": [{"type": "command", "command": "echo ` + string(e) + `"}]}]`)
 	}
+	inner += innerSb186.String()
 	data := []byte(`{` + inner + `}`)
 
 	hooks, err := parsePluginHooks(data, "/plugins/test", "test-plugin")

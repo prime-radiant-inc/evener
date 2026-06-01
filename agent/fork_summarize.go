@@ -92,10 +92,10 @@ Respond with ONLY the JSON object, no markdown formatting.
 	return b.String()
 }
 
-// truncate shortens s to max characters, appending "..." if truncated.
-func truncate(s string, max int) string {
-	if len(s) > max {
-		return s[:max] + "..."
+// truncate shortens s to limit characters, appending "..." if truncated.
+func truncate(s string, limit int) string {
+	if len(s) > limit {
+		return s[:limit] + "..."
 	}
 	return s
 }

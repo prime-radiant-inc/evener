@@ -1935,7 +1935,7 @@ func TestSession_WaitAgent_FailedSubagentReturnsResult(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) (llm.Response, error){
 			func(req llm.Request) (llm.Response, error) {
-				return llm.Response{}, fmt.Errorf("simulated child failure")
+				return llm.Response{}, errors.New("simulated child failure")
 			},
 		},
 	}
@@ -1997,7 +1997,7 @@ func TestSession_SpawnAgent_BlockingFailureReturnsResult(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) (llm.Response, error){
 			func(req llm.Request) (llm.Response, error) {
-				return llm.Response{}, fmt.Errorf("simulated child failure")
+				return llm.Response{}, errors.New("simulated child failure")
 			},
 		},
 	}
@@ -2531,23 +2531,23 @@ func (e *captureEnv) Platform() string         { return "linux" }
 func (e *captureEnv) OSVersion() string        { return "test" }
 
 func (e *captureEnv) ReadFile(path string, offsetLine *int, limitLines *int) (string, error) {
-	return "", fmt.Errorf("not implemented")
+	return "", errors.New("not implemented")
 }
 func (e *captureEnv) WriteFile(path string, content string) (string, error) {
-	return "", fmt.Errorf("not implemented")
+	return "", errors.New("not implemented")
 }
 func (e *captureEnv) EditFile(path string, oldString string, newString string, replaceAll bool) (string, error) {
-	return "", fmt.Errorf("not implemented")
+	return "", errors.New("not implemented")
 }
 func (e *captureEnv) FileExists(path string) bool { return false }
 func (e *captureEnv) Glob(pattern string, basePath string) ([]string, error) {
-	return nil, fmt.Errorf("not implemented")
+	return nil, errors.New("not implemented")
 }
 func (e *captureEnv) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
-	return "", fmt.Errorf("not implemented")
+	return "", errors.New("not implemented")
 }
 func (e *captureEnv) ListDirectory(path string, depth int) ([]DirEntry, error) {
-	return nil, fmt.Errorf("not implemented")
+	return nil, errors.New("not implemented")
 }
 func (e *captureEnv) ExecCommand(ctx context.Context, command string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
 	_ = ctx
@@ -2590,23 +2590,23 @@ func (e *timeoutEnv) WorkingDirectory() string { return e.wd }
 func (e *timeoutEnv) Platform() string         { return "linux" }
 func (e *timeoutEnv) OSVersion() string        { return "test" }
 func (e *timeoutEnv) ReadFile(path string, offsetLine *int, limitLines *int) (string, error) {
-	return "", fmt.Errorf("not implemented")
+	return "", errors.New("not implemented")
 }
 func (e *timeoutEnv) WriteFile(path string, content string) (string, error) {
-	return "", fmt.Errorf("not implemented")
+	return "", errors.New("not implemented")
 }
 func (e *timeoutEnv) EditFile(path string, oldString string, newString string, replaceAll bool) (string, error) {
-	return "", fmt.Errorf("not implemented")
+	return "", errors.New("not implemented")
 }
 func (e *timeoutEnv) FileExists(path string) bool { return false }
 func (e *timeoutEnv) Glob(pattern string, basePath string) ([]string, error) {
-	return nil, fmt.Errorf("not implemented")
+	return nil, errors.New("not implemented")
 }
 func (e *timeoutEnv) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
-	return "", fmt.Errorf("not implemented")
+	return "", errors.New("not implemented")
 }
 func (e *timeoutEnv) ListDirectory(path string, depth int) ([]DirEntry, error) {
-	return nil, fmt.Errorf("not implemented")
+	return nil, errors.New("not implemented")
 }
 func (e *timeoutEnv) ExecCommand(ctx context.Context, command string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
 	_ = ctx
@@ -2614,7 +2614,7 @@ func (e *timeoutEnv) ExecCommand(ctx context.Context, command string, timeoutMS 
 	_ = envVars
 	// Pretend git isn't available for this environment (session snapshot + doc discovery fall back cleanly).
 	if strings.HasPrefix(strings.TrimSpace(command), "git ") {
-		return ExecResult{ExitCode: 1}, fmt.Errorf("not a git repo")
+		return ExecResult{ExitCode: 1}, errors.New("not a git repo")
 	}
 	return ExecResult{
 		Stdout:     "partial output\n",

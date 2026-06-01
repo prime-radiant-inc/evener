@@ -31,10 +31,11 @@ func ExampleNewSession() {
 		fmt.Println("error:", err)
 		return
 	}
-	defer sess.Close()
 
-	// out, err := sess.ProcessInput(ctx, "List the Go files.", nil)
-	_ = sess
+	// A real caller would drive the session with sess.ProcessInput (see the doc
+	// comment above for why this example stops at construction) and would defer
+	// sess.Close() to release resources. Here we close it directly.
+	sess.Close()
 }
 
 // Session.Events returns a channel of [events.SessionEvent] values reporting a

@@ -92,11 +92,11 @@ func extractCheckpointConversation(text string) []checkpointConversationEntry {
 		return entries
 	}
 
-	open := "<conversation>"
-	close := "</conversation>"
-	if idx := strings.Index(text, open); idx >= 0 {
-		rest := text[idx+len(open):]
-		if end := strings.Index(rest, close); end >= 0 {
+	openTag := "<conversation>"
+	closeTag := "</conversation>"
+	if idx := strings.Index(text, openTag); idx >= 0 {
+		rest := text[idx+len(openTag):]
+		if end := strings.Index(rest, closeTag); end >= 0 {
 			var entries []checkpointConversationEntry
 			if err := json.Unmarshal([]byte(rest[:end]), &entries); err == nil {
 				return cleanCheckpointConversation(entries)
@@ -153,15 +153,12 @@ func extractCheckpointWorkingNotes(text string) []string {
 }
 
 func markdownSection(text, heading string) string {
-	start := -1
 	bodyStart := -1
 	prefix := heading + "\n"
 	if strings.HasPrefix(text, prefix) {
-		start = 0
 		bodyStart = len(prefix)
 	} else if idx := strings.Index(text, "\n"+prefix); idx >= 0 {
-		start = idx + 1
-		bodyStart = start + len(prefix)
+		bodyStart = idx + 1 + len(prefix)
 	}
 	if bodyStart < 0 {
 		return ""
@@ -269,11 +266,11 @@ func cleanCheckpointConversation(entries []checkpointConversationEntry) []checkp
 // Falls back to legacy "Original task:" format for backward compatibility.
 func extractCheckpointJSON(text, tag string) []string {
 	// New format: <tag>[...]</tag>
-	open := "<" + tag + ">"
-	close := "</" + tag + ">"
-	if idx := strings.Index(text, open); idx >= 0 {
-		rest := text[idx+len(open):]
-		if end := strings.Index(rest, close); end >= 0 {
+	openTag := "<" + tag + ">"
+	closeTag := "</" + tag + ">"
+	if idx := strings.Index(text, openTag); idx >= 0 {
+		rest := text[idx+len(openTag):]
+		if end := strings.Index(rest, closeTag); end >= 0 {
 			var msgs []string
 			if err := json.Unmarshal([]byte(rest[:end]), &msgs); err == nil {
 				return msgs

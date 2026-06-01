@@ -112,14 +112,16 @@ func (e *LocalExecutionEnvironment) Platform() string {
 // "uname -rs"; on windows it runs "ver". If the command fails it falls back to
 // "GOOS/GOARCH".
 func (e *LocalExecutionEnvironment) OSVersion() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	switch runtime.GOOS {
 	case "darwin", "linux":
-		out, err := exec.Command("uname", "-rs").Output()
+		out, err := exec.CommandContext(ctx, "uname", "-rs").Output()
 		if err == nil {
 			return strings.TrimSpace(string(out))
 		}
 	case "windows":
-		out, err := exec.Command("cmd", "/c", "ver").Output()
+		out, err := exec.CommandContext(ctx, "cmd", "/c", "ver").Output()
 		if err == nil {
 			return strings.TrimSpace(string(out))
 		}
@@ -476,7 +478,7 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 
 	err = filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil // skip unreadable entries
+			return nil //nolint:nilerr // best-effort grep: skip unreadable entries and keep walking
 		}
 		if d.IsDir() {
 			if strings.HasPrefix(d.Name(), ".") && p != path {
@@ -496,7 +498,7 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 		}
 		data, err := os.ReadFile(p)
 		if err != nil {
-			return nil // skip unreadable files
+			return nil //nolint:nilerr // best-effort grep: skip unreadable files and keep walking
 		}
 		// Skip binary files
 		if bytes.IndexByte(data, 0) >= 0 {
@@ -623,7 +625,8 @@ func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command str
 
 	exitCode := 0
 	if waitErr != nil {
-		if ee, ok := waitErr.(*exec.ExitError); ok {
+		ee := &exec.ExitError{}
+		if errors.As(waitErr, &ee) {
 			exitCode = ee.ExitCode()
 		} else if timedOut {
 			exitCode = 124
@@ -744,16 +747,18 @@ func injectLocalVenvPath(env []string, roots []string) []string {
 }
 
 // shellCommand returns an *exec.Cmd that runs the given command string
-// through the platform's default shell.
+// through the platform's default shell. The command's lifecycle (cancellation,
+// timeout) is managed by the caller (ExecCommand) via its own process-group
+// SIGTERM->SIGKILL escalation, so CommandContext is deliberately not used here.
 func shellCommand(command string) *exec.Cmd {
 	if runtime.GOOS == "windows" {
-		return exec.Command("cmd.exe", "/c", command)
+		return exec.Command("cmd.exe", "/c", command) //nolint:noctx // lifecycle managed by ExecCommand's process-group kill
 	}
 	shell := "/bin/bash"
 	if _, err := os.Stat(shell); err != nil {
 		shell = "/bin/sh"
 	}
-	return exec.Command(shell, "-c", command)
+	return exec.Command(shell, "-c", command) //nolint:noctx // lifecycle managed by ExecCommand's process-group kill
 }
 
 func (e *LocalExecutionEnvironment) resolve(path string) string {
@@ -774,7 +779,7 @@ func (e *LocalExecutionEnvironment) resolve(path string) string {
 func (e *LocalExecutionEnvironment) resolveWrite(path string) (string, error) {
 	p := strings.TrimSpace(path)
 	if p == "" {
-		return "", fmt.Errorf("empty path")
+		return "", errors.New("empty path")
 	}
 	abs := p
 	if !filepath.IsAbs(abs) {

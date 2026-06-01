@@ -32,7 +32,7 @@ func hammerSetters(t *testing.T, sess *Session) {
 		func() { sess.SetReasoningEffort("high") },
 		func() { _ = sess.DetailedStatus() },
 	} {
-		fn := fn
+
 		setters.Add(1)
 		go func() {
 			defer setters.Done()

@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -162,7 +164,7 @@ func parseV4APatch(patch string) ([]patchOp, error) {
 func parseV4APatchLines(lines []string) ([]patchOp, error) {
 	i := 0
 	if i >= len(lines) || strings.TrimSpace(lines[i]) != "*** Begin Patch" {
-		return nil, fmt.Errorf("apply_patch: expected '*** Begin Patch'")
+		return nil, errors.New("apply_patch: expected '*** Begin Patch'")
 	}
 	i++
 
@@ -229,13 +231,13 @@ func parseV4APatchLines(lines []string) ([]patchOp, error) {
 			return nil, fmt.Errorf("apply_patch: unexpected line: %q", l)
 		}
 	}
-	return nil, fmt.Errorf("apply_patch: missing '*** End Patch'")
+	return nil, errors.New("apply_patch: missing '*** End Patch'")
 }
 
 func safeJoin(rootDir, rel string) (string, error) {
 	r := strings.TrimSpace(rel)
 	if r == "" {
-		return "", fmt.Errorf("empty path")
+		return "", errors.New("empty path")
 	}
 	// Allow absolute paths that fall under rootDir by stripping the prefix.
 	if filepath.IsAbs(r) {
@@ -333,7 +335,7 @@ func formatLineSnippet(lines []string, line, radius int) string {
 	}
 	start := maxInt(1, line-radius)
 	end := minInt(len(lines), line+radius)
-	width := len(fmt.Sprint(end))
+	width := len(strconv.Itoa(end))
 	var b strings.Builder
 	for i := start; i <= end; i++ {
 		marker := " "

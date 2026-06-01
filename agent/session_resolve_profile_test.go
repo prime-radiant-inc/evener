@@ -262,7 +262,7 @@ func TestValidateModelFallbacks_SameTag_Allowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err) // must succeed for same-tag fallback
 	}
-	defer sess.Close()
+	sess.Close()
 }
 
 // testResolverFull extends testResolver with minimax and openrouter-anthropic support.

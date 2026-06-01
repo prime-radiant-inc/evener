@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -2151,18 +2152,6 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 	}
 }
 
-func anyToString(v any) string {
-	switch x := v.(type) {
-	case nil:
-		return ""
-	case string:
-		return x
-	default:
-		b, _ := json.Marshal(x)
-		return string(b)
-	}
-}
-
 func TestAssistantTextEnd_EnrichedData(t *testing.T) {
 	dir := t.TempDir()
 
@@ -4025,7 +4014,7 @@ func TestSession_SystemPromptAsUserPreservesImageParts(t *testing.T) {
 				sawTask = true
 			}
 		case llm.ContentImage:
-			if part.Image != nil && part.Image.MediaType == "image/png" && string(part.Image.Data) == string(imgBytes) {
+			if part.Image != nil && part.Image.MediaType == "image/png" && bytes.Equal(part.Image.Data, imgBytes) {
 				sawImage = true
 			}
 		}
@@ -4142,7 +4131,7 @@ func TestSession_ProcessInput_WithImage_BuildsMultiPartUserMessage(t *testing.T)
 			if p.Image.MediaType != "image/png" {
 				t.Errorf("image media_type: got %q, want image/png", p.Image.MediaType)
 			}
-			if string(p.Image.Data) != string(imgBytes) {
+			if !bytes.Equal(p.Image.Data, imgBytes) {
 				t.Errorf("image bytes mismatch")
 			}
 			sawImage = true

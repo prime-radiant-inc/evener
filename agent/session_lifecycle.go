@@ -69,7 +69,7 @@ type retryTracker struct {
 // checkpoint, and LLM summarization). Safe to call while idle.
 func (s *Session) Compact(ctx context.Context) error {
 	if s.contextMgr == nil {
-		return fmt.Errorf("context manager not initialized")
+		return errors.New("context manager not initialized")
 	}
 
 	s.contextMgr.Meta = s.buildCompactionMeta()
@@ -227,7 +227,7 @@ func (s *Session) Close() {
 		}
 
 		if s.embeddedSkillsDir != "" {
-			os.RemoveAll(s.embeddedSkillsDir)
+			_ = os.RemoveAll(s.embeddedSkillsDir) // best-effort temp-dir cleanup during shutdown
 		}
 
 		// 8. Reassert closed in case an in-flight turn reached a late state transition.
@@ -262,7 +262,7 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return "", fmt.Errorf("session is closed")
+		return "", errors.New("session is closed")
 	}
 	s.sessionEndEmitted = false
 	s.mu.Unlock()
@@ -468,7 +468,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return "", fmt.Errorf("session is closed")
+		return "", errors.New("session is closed")
 	}
 	s.setStateIfOpenLocked(SessionProcessing)
 	s.communicated = false
@@ -1228,7 +1228,8 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 	} else {
 		s.readOnlyStreak = 0
 	}
-	if s.readOnlyStreak == 5 {
+	switch s.readOnlyStreak {
+	case 5:
 		nudge := "<SYSTEM-REMINDER>You have spent several turns reading without writing or running anything. Review your current task. If you have enough context to make progress, write code or run a command now. A first attempt you can test and fix is more valuable than more reading.</SYSTEM-REMINDER>"
 		if abortErr := s.withResponseSideEffects(ctx, func() {
 			s.appendTurn(TurnSteering, llm.User(nudge))
@@ -1236,7 +1237,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 		}); abortErr != nil {
 			return abortErr
 		}
-	} else if s.readOnlyStreak == 10 {
+	case 10:
 		nudge := "<SYSTEM-REMINDER>You have been reading for 10 turns without acting. Stop reading. Write the deliverable file now, even if incomplete. You can iterate after you have something to test.</SYSTEM-REMINDER>"
 		if abortErr := s.withResponseSideEffects(ctx, func() {
 			s.appendTurn(TurnSteering, llm.User(nudge))
@@ -1436,7 +1437,9 @@ func (s *Session) logAPICall(round int, roundStart time.Time, llmLatency time.Du
 				Raw:           resp.Raw,
 			}
 		}
-		s.transcript.AppendAPICall(apiCall)
+		if werr := s.transcript.AppendAPICall(apiCall); werr != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", werr)})
+		}
 	}
 }
 
@@ -1743,9 +1746,10 @@ func (s *Session) stuckEscalation(count int) string {
 		// Bump reasoning effort to help the agent think harder.
 		s.mu.Lock()
 		prev := s.cfg.ReasoningEffort
-		if prev == "" || prev == "low" || prev == "medium" {
+		switch prev {
+		case "", "low", "medium":
 			s.cfg.ReasoningEffort = "high"
-		} else if prev == "high" {
+		case "high":
 			s.cfg.ReasoningEffort = "xhigh"
 		}
 		s.mu.Unlock()

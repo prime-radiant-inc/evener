@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -390,7 +391,7 @@ func applyUpdatedToolInput(call *llm.ToolCallData, updated map[string]any) error
 
 func skippedToolResult(call llm.ToolCallData, err error) toolExecResult {
 	msg := "tool skipped: session is closing"
-	if err != nil && err != context.Canceled {
+	if err != nil && !errors.Is(err, context.Canceled) {
 		msg = "tool skipped: " + err.Error()
 	}
 	return toolExecResult{
@@ -454,29 +455,6 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 		return abortErr
 	}
 	return nil
-}
-
-// customToolDescriptions returns formatted descriptions of tools in the registry
-// that were registered after session initialization (not core or MCP tools).
-func (s *Session) customToolDescriptions() string {
-	// Build MCP tool name set for exclusion (MCP tools have their own section).
-	mcpNames := make(map[string]bool, len(s.mcpTools))
-	for _, td := range s.mcpTools {
-		mcpNames[td.Name] = true
-	}
-
-	var b strings.Builder
-	for _, td := range s.reg.Definitions() {
-		if s.coreToolNames[td.Name] || mcpNames[td.Name] {
-			continue
-		}
-		desc := strings.TrimSpace(td.Description)
-		if desc == "" {
-			desc = "(no description)"
-		}
-		b.WriteString(fmt.Sprintf("- %s: %s\n", td.Name, desc))
-	}
-	return b.String()
 }
 
 // allToolDefinitions returns cached tool definitions.

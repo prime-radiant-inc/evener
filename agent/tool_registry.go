@@ -392,7 +392,7 @@ func (r *toolRegistry) ExecuteCall(ctx context.Context, env ExecutionEnvironment
 	t, ok := r.tools[name]
 	r.mu.RUnlock()
 	if !ok {
-		msg := fmt.Sprintf("unknown tool: %s", name)
+		msg := "unknown tool: " + name
 		return truncateResult(name, callID, msg, true, defaultToolLimit(name))
 	}
 
@@ -478,36 +478,36 @@ func truncateResult(toolName, callID, full string, isErr bool, lim ToolOutputLim
 	}
 }
 
-func truncateChars(s string, max int, strat TruncationStrategy) string {
+func truncateChars(s string, limit int, strategy TruncationStrategy) string {
 	runes := []rune(s)
-	if max <= 0 || len(runes) <= max {
+	if limit <= 0 || len(runes) <= limit {
 		return s
 	}
-	removed := len(runes) - max
-	switch strat {
+	removed := len(runes) - limit
+	switch strategy {
 	case TruncTail:
 		// Spec: keep the last max_chars characters and prepend a warning.
 		marker := fmt.Sprintf("[WARNING: Tool output was truncated. First %d characters were removed. The full output is available in the event stream.]\n\n", removed)
-		return marker + string(runes[len(runes)-max:])
+		return marker + string(runes[len(runes)-limit:])
 	default:
 		// Spec: head/tail split plus an explicit warning about omitted middle.
-		headCount := max / 2
-		tailCount := max - headCount
+		headCount := limit / 2
+		tailCount := limit - headCount
 		marker := fmt.Sprintf("\n\n[WARNING: Tool output was truncated. %d characters were removed from the middle. The full output is available in the event stream. If you need to see specific parts, re-run the tool with more targeted parameters.]\n\n", removed)
 		return string(runes[:headCount]) + marker + string(runes[len(runes)-tailCount:])
 	}
 }
 
-func truncateLines(s string, max int) string {
-	if max <= 0 {
+func truncateLines(s string, limit int) string {
+	if limit <= 0 {
 		return s
 	}
 	lines := strings.Split(s, "\n")
-	if len(lines) <= max {
+	if len(lines) <= limit {
 		return s
 	}
-	headCount := max / 2
-	tailCount := max - headCount
+	headCount := limit / 2
+	tailCount := limit - headCount
 	omitted := len(lines) - headCount - tailCount
 	marker := fmt.Sprintf("\n[... %d lines omitted ...]\n", omitted)
 	head := strings.Join(lines[:headCount], "\n")

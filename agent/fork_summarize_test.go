@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"testing"
 
 	"primeradiant.com/serf/llm"
@@ -230,7 +230,7 @@ func TestForkSummarize_LLMError(t *testing.T) {
 	adapter := &stubSummarizeAdapter{
 		name: "openai",
 		respFn: func(req llm.Request) (llm.Response, error) {
-			return llm.Response{}, fmt.Errorf("rate limited")
+			return llm.Response{}, errors.New("rate limited")
 		},
 	}
 	client := llm.NewClient()

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -174,7 +175,7 @@ func expandEnvVars(s string) (string, error) {
 func ParseMCPInline(spec string) (MCPServerConfig, error) {
 	spec = strings.TrimSpace(spec)
 	if spec == "" {
-		return MCPServerConfig{}, fmt.Errorf("empty MCP inline spec")
+		return MCPServerConfig{}, errors.New("empty MCP inline spec")
 	}
 
 	colon := strings.Index(spec, ":")

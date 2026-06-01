@@ -2,7 +2,7 @@ package agent
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"strings"
 	"time"
 
@@ -352,7 +352,7 @@ func (p *baseProfile) toolRegistry() *toolRegistry {
 		_ = reg.Register(registeredTool{
 			Tool: llm.Tool{Definition: td},
 			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
-				return nil, fmt.Errorf("tool executor not wired")
+				return nil, errors.New("tool executor not wired")
 			},
 		})
 	}

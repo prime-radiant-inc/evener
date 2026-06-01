@@ -365,10 +365,3 @@ func TestRecallStrategy_TranscriptPath(t *testing.T) {
 		t.Errorf("transcriptPath = %q, want %q", got, expected)
 	}
 }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}

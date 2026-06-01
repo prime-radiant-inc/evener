@@ -1414,7 +1414,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 
 	// --- Verify compaction turn is sequenced correctly ---
 	// The compaction turn should appear after the turns that preceded it, not at the very start.
-	var firstCompactionSeq int = -1
+	var firstCompactionSeq = -1
 	for _, e := range entries {
 		if e.Turn.Kind == TurnCheckpoint || e.Turn.Kind == TurnSummary {
 			firstCompactionSeq = e.Seq
@@ -1859,13 +1859,14 @@ func TestReadTranscript_ReturnsCorruptLineCount(t *testing.T) {
 	lines := bytes.Split(data, []byte("\n"))
 	// lines: header, entry0, entry1, entry2, "" (trailing)
 	// Insert corrupt lines between entry1 and entry2.
-	var rebuilt [][]byte
-	rebuilt = append(rebuilt, lines[0]) // header
-	rebuilt = append(rebuilt, lines[1]) // entry0
-	rebuilt = append(rebuilt, []byte(`{not valid json`))
-	rebuilt = append(rebuilt, lines[2]) // entry1
-	rebuilt = append(rebuilt, []byte(`also corrupt`))
-	rebuilt = append(rebuilt, lines[3]) // entry2
+	rebuilt := [][]byte{
+		lines[0], // header
+		lines[1], // entry0
+		[]byte(`{not valid json`),
+		lines[2], // entry1
+		[]byte(`also corrupt`),
+		lines[3], // entry2
+	}
 	os.WriteFile(path, bytes.Join(rebuilt, []byte("\n")), 0o644)
 	// Append final newline.
 	f, _ := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)

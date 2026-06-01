@@ -52,7 +52,7 @@ func (l *SessionLog) loadFromDisk() error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
@@ -95,7 +95,7 @@ func (l *SessionLog) appendToDisk(entry SessionLogEntry) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // best-effort observability log; the write error below is what matters
 
 	data, err := json.Marshal(entry)
 	if err != nil {

@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,7 +39,7 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 		}
 		return "", fmt.Errorf("open parent transcript: %w", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
@@ -48,7 +49,7 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 		if err := scanner.Err(); err != nil {
 			return "", fmt.Errorf("reading parent transcript header: %w", err)
 		}
-		return "", fmt.Errorf("parent transcript is empty")
+		return "", errors.New("parent transcript is empty")
 	}
 
 	var parentHeader TranscriptHeader
@@ -142,7 +143,9 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 	if err != nil {
 		return "", fmt.Errorf("create child transcript: %w", err)
 	}
-	defer tw.Close()
+	// Safety net for early error returns; the success path closes tw explicitly
+	// below (line ~165) and checks that error, after which this defer is a no-op.
+	defer func() { _ = tw.Close() }()
 
 	modelResponses := 0
 	// Replay prefix entries into the child transcript.

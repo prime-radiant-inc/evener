@@ -168,14 +168,18 @@ func TestWebFetchTool_Integration(t *testing.T) {
 	// Verify the cheap model request includes the question and content.
 	sysText := ""
 	userText := ""
+	var sysTextSb171 strings.Builder
+	var userTextSb171 strings.Builder
 	for _, m := range cheapReq.Messages {
 		if m.Role == "system" {
-			sysText += m.Text()
+			sysTextSb171.WriteString(m.Text())
 		}
 		if m.Role == "user" {
-			userText += m.Text()
+			userTextSb171.WriteString(m.Text())
 		}
 	}
+	sysText += sysTextSb171.String()
+	userText += userTextSb171.String()
 	if !strings.Contains(sysText, "web content") {
 		t.Fatalf("cheap model system prompt missing expected text: %s", sysText)
 	}

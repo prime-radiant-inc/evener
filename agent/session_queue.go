@@ -118,14 +118,14 @@ func (s *Session) EnqueueWithImages(ctx context.Context, text string, images []I
 		return err
 	}
 	if strings.TrimSpace(text) == "" && len(images) == 0 {
-		return fmt.Errorf("queue: text or images required")
+		return errors.New("queue: text or images required")
 	}
 	s.queueEventsMu.Lock()
 	defer s.queueEventsMu.Unlock()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return fmt.Errorf("queue: session is closed")
+		return errors.New("queue: session is closed")
 	}
 	entry := queuedInput{Text: text}
 	if len(images) > 0 {
@@ -161,11 +161,11 @@ func (s *Session) DrainAsSteerWithInput(ctx context.Context, text string, images
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return fmt.Errorf("drain: session is closed")
+		return errors.New("drain: session is closed")
 	}
 	if s.state != SessionProcessing {
 		s.mu.Unlock()
-		return fmt.Errorf("drain: no active turn to steer")
+		return errors.New("drain: no active turn to steer")
 	}
 	if strings.TrimSpace(text) != "" || len(images) > 0 {
 		entry := queuedInput{Text: text}
@@ -176,7 +176,7 @@ func (s *Session) DrainAsSteerWithInput(ctx context.Context, text string, images
 	}
 	if len(s.inputQueue) == 0 {
 		s.mu.Unlock()
-		return fmt.Errorf("drain: queue is empty")
+		return errors.New("drain: queue is empty")
 	}
 	entries := append([]queuedInput{}, s.inputQueue...)
 	s.inputQueue = nil

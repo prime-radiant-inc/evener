@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 
@@ -80,12 +81,12 @@ func buildRecallTool(getHost func() strategyHost) registeredTool {
 		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
 			question, ok := args["question"].(string)
 			if !ok || question == "" {
-				return nil, fmt.Errorf("recall requires a non-empty 'question' string")
+				return nil, errors.New("recall requires a non-empty 'question' string")
 			}
 
 			host := getHost()
 			if host == nil {
-				return nil, fmt.Errorf("recall: no session reference available")
+				return nil, errors.New("recall: no session reference available")
 			}
 
 			// Save a full snapshot (with history) for the transcript search tools.
@@ -162,7 +163,7 @@ func recallTranscriptTools(snapPath string) []llm.Tool {
 			Execute: func(ctx context.Context, args any) (any, error) {
 				m, ok := args.(map[string]any)
 				if !ok {
-					return nil, fmt.Errorf("expected map args")
+					return nil, errors.New("expected map args")
 				}
 				query, _ := m["query"].(string)
 				matches, err := SearchTranscript(snapPath, query)
@@ -198,7 +199,7 @@ func recallTranscriptTools(snapPath string) []llm.Tool {
 			Execute: func(ctx context.Context, args any) (any, error) {
 				m, ok := args.(map[string]any)
 				if !ok {
-					return nil, fmt.Errorf("expected map args")
+					return nil, errors.New("expected map args")
 				}
 				start := int(m["start"].(float64))
 				end := int(m["end"].(float64))
@@ -238,7 +239,7 @@ func recallTranscriptTools(snapPath string) []llm.Tool {
 			Execute: func(ctx context.Context, args any) (any, error) {
 				m, ok := args.(map[string]any)
 				if !ok {
-					return nil, fmt.Errorf("expected map args")
+					return nil, errors.New("expected map args")
 				}
 				kind, _ := m["kind"].(string)
 				contains, _ := m["contains"].(string)

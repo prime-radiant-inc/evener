@@ -2,7 +2,7 @@ package agent
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"strings"
 	"testing"
 
@@ -175,7 +175,7 @@ func TestRunRetentionProbes_NoQuestions(t *testing.T) {
 func TestRunRetentionProbes_AgentCallFails(t *testing.T) {
 	adapter := &stubProbeAdapter{
 		name:   "openai",
-		errors: []error{fmt.Errorf("rate limited")},
+		errors: []error{errors.New("rate limited")},
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
@@ -196,7 +196,7 @@ func TestRunRetentionProbes_JudgeCallFails(t *testing.T) {
 		responses: []llm.Response{
 			{Message: llm.Assistant("some answer")},
 		},
-		errors: []error{nil, fmt.Errorf("judge failed")},
+		errors: []error{nil, errors.New("judge failed")},
 	}
 	client := llm.NewClient()
 	client.Register(adapter)

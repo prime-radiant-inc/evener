@@ -352,7 +352,7 @@ func TestFilterTurns(t *testing.T) {
 				if matches[i].Index != wantIdx {
 					t.Errorf("match %d: got index %d, want %d", i, matches[i].Index, wantIdx)
 				}
-				if string(matches[i].Kind) != string(history[wantIdx].Kind) {
+				if matches[i].Kind != string(history[wantIdx].Kind) {
 					t.Errorf("match %d: got kind %s, want %s", i, matches[i].Kind, history[wantIdx].Kind)
 				}
 			}

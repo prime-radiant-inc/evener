@@ -8,6 +8,7 @@ package agent
 // text-only.
 
 import (
+	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -64,7 +65,7 @@ func TestSession_DrainAsSteer_CarriesImagesIntoSteeringMessage(t *testing.T) {
 	if len(entry.Images) != 1 {
 		t.Fatalf("steering images: got %d, want 1", len(entry.Images))
 	}
-	if entry.Images[0].MediaType != "image/png" || string(entry.Images[0].Data) != string(sessionPngSig) {
+	if entry.Images[0].MediaType != "image/png" || !bytes.Equal(entry.Images[0].Data, sessionPngSig) {
 		t.Errorf("steering image mismatch: %+v", entry.Images[0])
 	}
 
@@ -74,7 +75,7 @@ func TestSession_DrainAsSteer_CarriesImagesIntoSteeringMessage(t *testing.T) {
 	msg := steeringMessageToLLM(entry)
 	var sawImage bool
 	for _, p := range msg.Content {
-		if p.Kind == llm.ContentImage && p.Image != nil && p.Image.MediaType == "image/png" && string(p.Image.Data) == string(sessionPngSig) {
+		if p.Kind == llm.ContentImage && p.Image != nil && p.Image.MediaType == "image/png" && bytes.Equal(p.Image.Data, sessionPngSig) {
 			sawImage = true
 		}
 	}
@@ -188,7 +189,7 @@ func TestSession_Enqueue_DrainCarriesImagesIntoUserTurn(t *testing.T) {
 			if p.Image == nil {
 				t.Fatal("image content part has nil Image")
 			}
-			if p.Image.MediaType == "image/png" && string(p.Image.Data) == string(sessionPngSig) {
+			if p.Image.MediaType == "image/png" && bytes.Equal(p.Image.Data, sessionPngSig) {
 				sawImage = true
 			}
 		}

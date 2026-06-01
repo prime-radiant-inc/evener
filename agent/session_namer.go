@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -33,15 +34,15 @@ type sessionNameResult struct {
 // nameSession derives a short human-readable session title using a single cheap-model LLM call.
 func nameSession(ctx context.Context, client *llm.Client, profile ProviderProfile, source, text string) (sessionNameResult, error) {
 	if client == nil {
-		return sessionNameResult{}, fmt.Errorf("session namer: llm client is nil")
+		return sessionNameResult{}, errors.New("session namer: llm client is nil")
 	}
 	if profile == nil {
-		return sessionNameResult{}, fmt.Errorf("session namer: profile is nil")
+		return sessionNameResult{}, errors.New("session namer: profile is nil")
 	}
 	source = normalizeSessionNameSource(source)
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return sessionNameResult{}, fmt.Errorf("session namer: source text is empty")
+		return sessionNameResult{}, errors.New("session namer: source text is empty")
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -51,7 +52,7 @@ func nameSession(ctx context.Context, client *llm.Client, profile ProviderProfil
 
 	model := sessionNamerModel(profile)
 	if model == "" {
-		return sessionNameResult{}, fmt.Errorf("session namer: model is empty")
+		return sessionNameResult{}, errors.New("session namer: model is empty")
 	}
 	maxTokens := 80
 	temp := 0.0
@@ -75,7 +76,7 @@ func nameSession(ctx context.Context, client *llm.Client, profile ProviderProfil
 	name, _ := obj["name"].(string)
 	name = sanitizeSessionName(name)
 	if name == "" {
-		return sessionNameResult{}, fmt.Errorf("session namer: generated name is empty")
+		return sessionNameResult{}, errors.New("session namer: generated name is empty")
 	}
 	return sessionNameResult{Name: name, Source: source, Usage: res.TotalUsage}, nil
 }
@@ -105,7 +106,7 @@ func configuredSessionNamerModel(profile ProviderProfile) string {
 	case *baseProfile:
 		return p.configuredCheapModel()
 	case *anthropicProfile:
-		return p.baseProfile.configuredCheapModel()
+		return p.configuredCheapModel()
 	default:
 		return ""
 	}

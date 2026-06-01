@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"log"
 	"os"
 	"strings"
@@ -496,7 +496,7 @@ func TestToolRegistry_Middleware_CanBlockExecution(t *testing.T) {
 	}
 
 	reg.Use(func(ctx context.Context, name string, args map[string]any) error {
-		return fmt.Errorf("permission denied: tool blocked by policy")
+		return errors.New("permission denied: tool blocked by policy")
 	})
 
 	result := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{Name: "test_tool", ID: "c1"})
@@ -687,25 +687,25 @@ func TestExecuteCall_ImageResult_PopulatesImageFields(t *testing.T) {
 
 func TestDefaultToolLimit_MatchesSpecTable(t *testing.T) {
 	type want struct {
-		tool  string
-		chars int
-		lines int
-		strat TruncationStrategy
+		tool     string
+		chars    int
+		lines    int
+		strategy TruncationStrategy
 	}
 	cases := []want{
-		{tool: "read_file", chars: 50_000, lines: 0, strat: TruncHeadTail},
-		{tool: "shell", chars: 30_000, lines: 512, strat: TruncHeadTail},
-		{tool: "grep", chars: 20_000, lines: 200, strat: TruncTail},
-		{tool: "glob", chars: 20_000, lines: 500, strat: TruncTail},
-		{tool: "edit_file", chars: 10_000, lines: 0, strat: TruncTail},
-		{tool: "apply_patch", chars: 10_000, lines: 0, strat: TruncTail},
-		{tool: "write_file", chars: 1_000, lines: 0, strat: TruncTail},
-		{tool: "spawn_agent", chars: 20_000, lines: 0, strat: TruncHeadTail},
+		{tool: "read_file", chars: 50_000, lines: 0, strategy: TruncHeadTail},
+		{tool: "shell", chars: 30_000, lines: 512, strategy: TruncHeadTail},
+		{tool: "grep", chars: 20_000, lines: 200, strategy: TruncTail},
+		{tool: "glob", chars: 20_000, lines: 500, strategy: TruncTail},
+		{tool: "edit_file", chars: 10_000, lines: 0, strategy: TruncTail},
+		{tool: "apply_patch", chars: 10_000, lines: 0, strategy: TruncTail},
+		{tool: "write_file", chars: 1_000, lines: 0, strategy: TruncTail},
+		{tool: "spawn_agent", chars: 20_000, lines: 0, strategy: TruncHeadTail},
 	}
 	for _, tc := range cases {
 		lim := defaultToolLimit(tc.tool)
-		if lim.MaxChars != tc.chars || lim.MaxLines != tc.lines || lim.Strategy != tc.strat {
-			t.Fatalf("%s: got=%+v want MaxChars=%d MaxLines=%d Strategy=%s", tc.tool, lim, tc.chars, tc.lines, tc.strat)
+		if lim.MaxChars != tc.chars || lim.MaxLines != tc.lines || lim.Strategy != tc.strategy {
+			t.Fatalf("%s: got=%+v want MaxChars=%d MaxLines=%d Strategy=%s", tc.tool, lim, tc.chars, tc.lines, tc.strategy)
 		}
 	}
 }

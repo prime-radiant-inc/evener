@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -85,9 +86,9 @@ func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 			case "all":
 				allTools = true
 			case "*":
-				return PluginAgent{}, fmt.Errorf("agent field \"tools\" uses the scalar form \"all\" for unrestricted access; use `tools: all`")
+				return PluginAgent{}, errors.New("agent field \"tools\" uses the scalar form \"all\" for unrestricted access; use `tools: all`")
 			default:
-				return PluginAgent{}, fmt.Errorf("agent field \"tools\" must be a list of strings or the string \"all\"")
+				return PluginAgent{}, errors.New("agent field \"tools\" must be a list of strings or the string \"all\"")
 			}
 		case []any:
 			for _, item := range v {
@@ -97,13 +98,13 @@ func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 				}
 				switch strings.TrimSpace(strings.ToLower(s)) {
 				case "all", "*":
-					return PluginAgent{}, fmt.Errorf("agent field \"tools\" uses the scalar form \"all\" for unrestricted access; use `tools: all`")
+					return PluginAgent{}, errors.New("agent field \"tools\" uses the scalar form \"all\" for unrestricted access; use `tools: all`")
 				default:
 					tools = append(tools, mapClaudeToolName(s))
 				}
 			}
 		default:
-			return PluginAgent{}, fmt.Errorf("agent field \"tools\" must be a list of strings or the string \"all\"")
+			return PluginAgent{}, errors.New("agent field \"tools\" must be a list of strings or the string \"all\"")
 		}
 	}
 
@@ -111,7 +112,7 @@ func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 	if raw, ok := doc.Meta["skills"]; ok {
 		items, ok := raw.([]any)
 		if !ok {
-			return PluginAgent{}, fmt.Errorf("agent field \"skills\" must be a list of strings")
+			return PluginAgent{}, errors.New("agent field \"skills\" must be a list of strings")
 		}
 		for _, item := range items {
 			s, ok := item.(string)
@@ -126,12 +127,12 @@ func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 	if raw, ok := doc.Meta["tasks"]; ok {
 		items, ok := raw.([]any)
 		if !ok {
-			return PluginAgent{}, fmt.Errorf("agent field \"tasks\" must be a list")
+			return PluginAgent{}, errors.New("agent field \"tasks\" must be a list")
 		}
 		for _, item := range items {
 			m, ok := item.(map[string]any)
 			if !ok {
-				return PluginAgent{}, fmt.Errorf("each task must be an object with title and prompt")
+				return PluginAgent{}, errors.New("each task must be an object with title and prompt")
 			}
 			tt := TaskTemplate{}
 			if v, ok := m["title"].(string); ok {

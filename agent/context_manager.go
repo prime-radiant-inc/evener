@@ -874,9 +874,9 @@ func (cm *contextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 	// ~80k chars ≈ 20k tokens, leaving room for the instruction prefix and response.
 	const maxHistoryChars = 80_000
 
-	truncText := func(s string, max int) string {
-		if len(s) > max {
-			return s[:max] + "..."
+	truncText := func(s string, limit int) string {
+		if len(s) > limit {
+			return s[:limit] + "..."
 		}
 		return s
 	}

@@ -257,8 +257,7 @@ func (s *sessionLogStrategy) AfterAction(ctx context.Context, history []Turn, cl
 	}
 	entry, err := ForkSummarize(ctx, client, s.session.Profile(), recent, len(history))
 	if err != nil {
-		// Non-fatal: log the error but don't fail the session.
-		return nil
+		return nil //nolint:nilerr // fork summarization is best-effort; failure must not fail the session
 	}
 	return s.session.WithResponseSideEffects(ctx, func() {
 		s.session.Emit(events.EventForkSummary, events.ForkSummaryData{Turn: entry.Turn})

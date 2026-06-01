@@ -362,9 +362,6 @@ func TestAfterAction_ReceivesCurrentHistory(t *testing.T) {
 	}
 
 	// Override AfterAction to capture what it sees.
-	type captureSpy struct {
-		*spyStrategy
-	}
 	capturer := &afterActionCapture{
 		spyStrategy: spy,
 		onAfterAction: func(history []Turn) {

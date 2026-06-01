@@ -105,7 +105,7 @@ func (s *memoryCrystalsStrategy) AfterAction(ctx context.Context, history []Turn
 
 	crystal, err := s.crystallize(ctx, client, recent, turnCount)
 	if err != nil {
-		return nil // Non-fatal.
+		return nil //nolint:nilerr // crystallization is a best-effort optimization; failure is non-fatal
 	}
 
 	s.crystals = append(s.crystals, crystal)
