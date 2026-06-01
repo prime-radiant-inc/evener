@@ -5,8 +5,8 @@ import (
 	"errors"
 
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/internal/appsource"
 )
 
 func shouldResumeAfterTurnStartError(err error) bool {

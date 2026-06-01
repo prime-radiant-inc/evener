@@ -11,12 +11,12 @@ import (
 	"time"
 
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/httpsec"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubedge"
 	"primeradiant.com/serf/internal/appserver"
-	"primeradiant.com/serf/internal/appsource"
 )
 
 // WebServer wires routes, templates, and middleware.

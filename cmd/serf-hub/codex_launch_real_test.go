@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/internal/appsource"
 )
 
 func TestCodexLauncherRealAppServerSmoke(t *testing.T) {

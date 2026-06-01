@@ -8,9 +8,9 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
-	"primeradiant.com/serf/internal/appsource"
 )
 
 func hubThreadTranscriptList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {

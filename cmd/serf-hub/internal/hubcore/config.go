@@ -3,8 +3,8 @@ package hubcore
 import (
 	"context"
 
+	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
-	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/internal/launchconfig"
 	"primeradiant.com/serf/llm/providercfg"

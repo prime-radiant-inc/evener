@@ -5,8 +5,8 @@ import (
 	"fmt"
 
 	"primeradiant.com/serf/appwire"
+	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
-	"primeradiant.com/serf/internal/appsource"
 )
 
 func sourceForThread(sources *appsource.Registry, ref, threadID string) (appsource.Source, error) {
