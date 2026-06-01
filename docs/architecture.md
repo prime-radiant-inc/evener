@@ -80,11 +80,24 @@ fix.) In workspace mode `go build`/`go test`/`go vet ./...` operate across all m
 - External: `go get primeradiant.com/serf/agent` pulls `agent` + `llm` + `auth` and
   nothing else.
 
+## The app module's `internal/`
+
+The root app module keeps a top-level `internal/` for code **shared across its three
+binaries** (engine / supervisor / client are one module). Most of it genuinely is shared
+— e.g. `appserver` (engine `server/` + hub + tui), `diagnostic` (engine + hub + server),
+`apptranscript`, `binresolve` (hub + tui), `credentials` (all three via `cmdutil`). For a
+single module, shared code in `internal/` is the correct Go idiom; *duplicating* it per
+binary would be worse. The "no glue drawer" goal was about **not mixing library and app
+code** — and that is fully resolved: the libraries are separate modules, so the app's
+`internal/` now holds only app code. (`appprojector` and `httpguard` are engine-`server/`-
+only and could later sink to `cmd/serf/internal/` alongside `server/`.)
+
 ## Current status
 
 - ✅ `auth`, `llm`, `agent` all carved into their own modules; the `go.work` workspace is
   established; all four `go.mod` files are clean and publishable (replace-free).
-- ⏳ Next: the root settles fully into the **app module** — the remaining top-level
-  `internal/` packages (`appprojector`, `appserver`, `apptranscript`, `httpguard` → with
-  the engine's `server/`; `binresolve` → duplicated hub+tui; `credentials` → stays until
-  `cmdutil` dissolves) relocate to their owners. See the dated spec for the phase plan.
+- ✅ App `internal/` holds only app-shared code (no library/app mixing) — the structural
+  goal of the migration is met.
+- ⏳ Remaining: per-module hygiene (namingcheck/internalcheck per library module; a
+  `go get …/agent` smoke proving the published graph is clean) and the library-surface
+  finish (runnable `Example`s + a godoc/stylecheck lint gate on the public API).
