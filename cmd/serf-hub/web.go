@@ -314,15 +314,6 @@ func splitProviderModel(raw string) (string, string) {
 	return provider, model
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
 func (s *WebServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 	metas, live := s.navigationTreeInputs(r.Context())
 	tree := BuildTree(metas, live)

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/hubapi"
 )
@@ -333,7 +334,7 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 		title = thread.Preview
 	}
 	if title == "" {
-		title = firstNonEmpty(thread.SessionID, thread.ID)
+		title = strutil.FirstNonEmpty(thread.SessionID, thread.ID)
 	}
 	state := normalizeState(thread.Status.Type)
 	if state == "" {

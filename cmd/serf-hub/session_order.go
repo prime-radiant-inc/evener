@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
 	"primeradiant.com/serf/internal/appwire"
 )
 
@@ -99,7 +100,7 @@ func appwireThreadOrderKey(thread appwire.Thread) sessionOrderKey {
 		updated: unixTime(thread.UpdatedAt),
 		created: unixTime(thread.CreatedAt),
 		title:   title,
-		id:      firstNonEmpty(thread.ID, thread.SessionID),
+		id:      strutil.FirstNonEmpty(thread.ID, thread.SessionID),
 	}
 }
 
@@ -127,7 +128,7 @@ func liveEntryOrderKey(le LiveEntry, past *PastIndex) sessionOrderKey {
 }
 
 func liveEntryFallbackOrderKey(le LiveEntry) sessionOrderKey {
-	id := firstNonEmpty(le.SessionID, le.ThreadID, le.Address)
+	id := strutil.FirstNonEmpty(le.SessionID, le.ThreadID, le.Address)
 	return sessionOrderKey{
 		updated: le.StartedAt,
 		created: le.StartedAt,

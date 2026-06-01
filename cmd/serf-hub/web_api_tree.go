@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/internal/hubapi"
 	"primeradiant.com/serf/rendezvous"
@@ -128,7 +129,7 @@ func (s *WebServer) remoteTreeThreads(ctx context.Context) []appwire.Thread {
 			sourceID := threadListSourceID(source.ID(), thread)
 			thread.Source = sourceID
 			if thread.Serf.Ref == "" {
-				threadID := firstNonEmpty(thread.ID, thread.SessionID)
+				threadID := strutil.FirstNonEmpty(thread.ID, thread.SessionID)
 				if threadID != "" {
 					thread.Serf.Ref = appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
 				}
@@ -149,7 +150,7 @@ func appThreadTreeEntries(thread appwire.Thread) (agent.SessionMeta, LiveEntry, 
 		return agent.SessionMeta{}, LiveEntry{}, false
 	}
 	refText := ref.String()
-	title := firstNonEmpty(thread.Name, thread.Preview, thread.SessionID, thread.ID, refText)
+	title := strutil.FirstNonEmpty(thread.Name, thread.Preview, thread.SessionID, thread.ID, refText)
 	createdAt := unixTime(thread.CreatedAt)
 	updatedAt := unixTime(thread.UpdatedAt)
 	meta := agent.SessionMeta{
@@ -189,7 +190,7 @@ func appThreadTreeRef(thread appwire.Thread) (appwire.Ref, bool) {
 		}
 	}
 	sourceID := strings.TrimSpace(thread.Source)
-	threadID := firstNonEmpty(thread.ID, thread.SessionID)
+	threadID := strutil.FirstNonEmpty(thread.ID, thread.SessionID)
 	if sourceID == "" || threadID == "" {
 		return appwire.Ref{}, false
 	}

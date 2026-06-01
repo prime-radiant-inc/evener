@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -26,7 +27,7 @@ func hubThreadTranscriptList(ctx context.Context, cfg WebConfig, sources *appsou
 
 	targets := []appwire.ThreadTranscriptTarget{{
 		Ref:      rootRef,
-		ThreadID: firstNonEmpty(root.ID, root.SessionID),
+		ThreadID: strutil.FirstNonEmpty(root.ID, root.SessionID),
 		Title:    "main session (live)",
 		Kind:     "main",
 		Status:   root.Status.Type,
@@ -45,10 +46,10 @@ func hubThreadTranscriptList(ctx context.Context, cfg WebConfig, sources *appsou
 			return
 		}
 		seen[ref] = struct{}{}
-		title := firstNonEmpty(thread.Name, thread.Preview, thread.AgentNickname, "subagent "+firstNonEmpty(thread.ID, thread.SessionID, ref))
+		title := strutil.FirstNonEmpty(thread.Name, thread.Preview, thread.AgentNickname, "subagent "+strutil.FirstNonEmpty(thread.ID, thread.SessionID, ref))
 		targets = append(targets, appwire.ThreadTranscriptTarget{
 			Ref:       ref,
-			ThreadID:  firstNonEmpty(thread.ID, thread.SessionID),
+			ThreadID:  strutil.FirstNonEmpty(thread.ID, thread.SessionID),
 			Title:     title,
 			Kind:      "subagent",
 			Status:    thread.Status.Type,
@@ -68,7 +69,7 @@ func hubThreadTranscriptList(ctx context.Context, cfg WebConfig, sources *appsou
 					thread.Source = source.ID()
 				}
 				if thread.Serf.Ref == "" {
-					threadID := firstNonEmpty(thread.ID, thread.SessionID)
+					threadID := strutil.FirstNonEmpty(thread.ID, thread.SessionID)
 					if threadID != "" {
 						thread.Serf.Ref = appwire.Ref{SourceID: source.ID(), ThreadID: threadID}.String()
 					}
@@ -107,7 +108,7 @@ func threadRef(thread appwire.Thread) string {
 		return thread.Serf.Ref
 	}
 	sourceID := strings.TrimSpace(thread.Source)
-	threadID := firstNonEmpty(thread.ID, thread.SessionID)
+	threadID := strutil.FirstNonEmpty(thread.ID, thread.SessionID)
 	if sourceID == "" || threadID == "" {
 		return ""
 	}

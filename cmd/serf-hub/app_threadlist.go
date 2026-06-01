@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
 	"primeradiant.com/serf/internal/appsource"
 	"primeradiant.com/serf/internal/appwire"
 )
@@ -256,7 +257,7 @@ func sanitizeStaleProcessingStatus(cfg WebConfig, thread appwire.Thread) appwire
 	if thread.Status.Type != appwire.ThreadStatusActive {
 		return thread
 	}
-	threadID := firstNonEmpty(thread.ID, thread.SessionID)
+	threadID := strutil.FirstNonEmpty(thread.ID, thread.SessionID)
 	if threadID == "" {
 		return thread
 	}

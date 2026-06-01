@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
 	"primeradiant.com/serf/internal/appwire"
 	"primeradiant.com/serf/rendezvous"
 )
@@ -123,7 +124,7 @@ func (r *Roster) List() []LiveEntry {
 	bySession := make(map[string]LiveEntry, len(r.byPID))
 	out := make([]LiveEntry, 0, len(r.byPID))
 	for _, e := range r.byPID {
-		sessionID := firstNonEmpty(e.SessionID, e.Entry.SessionID, e.ThreadID)
+		sessionID := strutil.FirstNonEmpty(e.SessionID, e.Entry.SessionID, e.ThreadID)
 		if sessionID == "" {
 			out = append(out, e)
 			continue

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
 	"primeradiant.com/serf/internal/appwire"
 	authopenai "primeradiant.com/serf/internal/auth/openai"
 	"primeradiant.com/serf/internal/credentials"
@@ -241,9 +242,9 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 	record := c.authRecordFromTokens(tokens)
 	record.Provider = provider
 	if claims, err := authopenai.ParseIDTokenClaims(tokens.IDToken); err == nil {
-		record.Email = firstNonEmpty(claims.Email, record.Email)
-		record.AccountID = firstNonEmpty(claims.AccountID, record.AccountID)
-		record.WorkspaceID = firstNonEmpty(claims.WorkspaceID, record.WorkspaceID)
+		record.Email = strutil.FirstNonEmpty(claims.Email, record.Email)
+		record.AccountID = strutil.FirstNonEmpty(claims.AccountID, record.AccountID)
+		record.WorkspaceID = strutil.FirstNonEmpty(claims.WorkspaceID, record.WorkspaceID)
 	}
 	if err := authopenai.SaveAuth(c.stateDir, provider, record); err != nil {
 		return appwire.AuthLoginCompleteResponse{}, err
@@ -381,7 +382,7 @@ func (c *hubAuthController) authRecordFromTokens(tokens authopenai.TokenSet) aut
 		Provider:     "openai",
 		Source:       authopenai.AuthSourceOAuth,
 		ObtainedAt:   c.now(),
-		TokenType:    firstNonEmpty(tokens.TokenType, "Bearer"),
+		TokenType:    strutil.FirstNonEmpty(tokens.TokenType, "Bearer"),
 		Scope:        tokens.Scope,
 		AccessToken:  tokens.AccessToken,
 		RefreshToken: tokens.RefreshToken,
@@ -455,9 +456,9 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 	record := c.authRecordFromTokens(tokens)
 	record.Provider = provider
 	if claims, err := authopenai.ParseIDTokenClaims(tokens.IDToken); err == nil {
-		record.Email = firstNonEmpty(claims.Email, record.Email)
-		record.AccountID = firstNonEmpty(claims.AccountID, record.AccountID)
-		record.WorkspaceID = firstNonEmpty(claims.WorkspaceID, record.WorkspaceID)
+		record.Email = strutil.FirstNonEmpty(claims.Email, record.Email)
+		record.AccountID = strutil.FirstNonEmpty(claims.AccountID, record.AccountID)
+		record.WorkspaceID = strutil.FirstNonEmpty(claims.WorkspaceID, record.WorkspaceID)
 	}
 	if err := authopenai.SaveAuth(c.stateDir, provider, record); err != nil {
 		return appwire.AuthDevicePollResponse{}, err
@@ -625,9 +626,9 @@ func (c *hubAuthController) openAIInstanceStatus(name string) (appwire.AuthStatu
 		status.HasStoredOAuth = true
 		status.StoredEmail = record.Email
 		if status.ActiveSource == authopenai.AuthSourceOAuth {
-			status.Email = firstNonEmpty(status.Email, record.Email)
-			status.AccountID = firstNonEmpty(status.AccountID, record.AccountID)
-			status.WorkspaceID = firstNonEmpty(status.WorkspaceID, record.WorkspaceID)
+			status.Email = strutil.FirstNonEmpty(status.Email, record.Email)
+			status.AccountID = strutil.FirstNonEmpty(status.AccountID, record.AccountID)
+			status.WorkspaceID = strutil.FirstNonEmpty(status.WorkspaceID, record.WorkspaceID)
 		}
 	}
 	return status, nil
