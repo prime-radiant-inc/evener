@@ -11,9 +11,9 @@ import (
 
 // TranscriptMatch represents a turn that matched a search or filter.
 type TranscriptMatch struct {
-	Index   int    `json:"index"`
-	Kind    string `json:"kind"`
-	Preview string `json:"preview"`
+	Index   int    `json:"index"`   // position of the turn in the history
+	Kind    string `json:"kind"`    // the matched turn's TurnKind
+	Preview string `json:"preview"` // first 200 chars of the turn text
 }
 
 // SearchTranscript loads a snapshot from path and returns all turns containing

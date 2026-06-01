@@ -31,11 +31,15 @@ const (
 // Turn is the Session's typed history item. Steering turns are kept distinct for observability,
 // but are converted to user-role messages when building the LLM request.
 type Turn struct {
-	Kind       TurnKind    `json:"kind"`
-	Message    llm.Message `json:"message"`
-	Timestamp  time.Time   `json:"timestamp"`
-	Usage      llm.Usage   `json:"usage,omitempty"`
-	ResponseID string      `json:"response_id,omitempty"`
+	Kind      TurnKind    `json:"kind"`      // category of this history item
+	Message   llm.Message `json:"message"`   // the underlying LLM message
+	Timestamp time.Time   `json:"timestamp"` // when the turn was recorded (UTC)
+	// Usage carries the token-usage stats reported by the provider; set only on
+	// assistant turns.
+	Usage llm.Usage `json:"usage,omitempty"`
+	// ResponseID is the provider's response identifier for an assistant turn,
+	// used for prompt-cache continuity and ATIF trajectory export.
+	ResponseID string `json:"response_id,omitempty"`
 }
 
 // NewTurn creates a Turn with the current UTC time.

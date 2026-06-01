@@ -16,34 +16,45 @@ import (
 // is retained for backward compatibility with external tools (transcript_tools.go,
 // serfeval) that read snapshot files directly.
 type SessionSnapshot struct {
-	ID              string          `json:"id"`
-	ProfileID       string          `json:"profile_id"`
-	Model           string          `json:"model"`
-	Config          SessionConfig   `json:"config"`
-	EnvInfo         EnvironmentInfo `json:"env_info"`
-	History         []Turn          `json:"history"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
-	TurnCount       int             `json:"turn_count"`
-	LastInputTokens int             `json:"last_input_tokens,omitempty"`
+	ID        string          `json:"id"`         // session identifier
+	ProfileID string          `json:"profile_id"` // ID of the provider profile in use
+	Model     string          `json:"model"`      // model name the session is driving
+	Config    SessionConfig   `json:"config"`     // the session's configuration
+	EnvInfo   EnvironmentInfo `json:"env_info"`   // captured environment description
+	History   []Turn          `json:"history"`    // full conversation transcript
+	CreatedAt time.Time       `json:"created_at"` // when the session was first created
+	UpdatedAt time.Time       `json:"updated_at"` // last time the snapshot was written
+	TurnCount int             `json:"turn_count"` // number of user-input turns processed
+	// LastInputTokens is the prompt-token count reported by the provider on the
+	// most recent LLM call; used to display context-window pressure on resume.
+	LastInputTokens int `json:"last_input_tokens,omitempty"`
 }
 
 // SessionMeta holds session metadata without the full conversation history.
 // The history is always recovered from the transcript JSONL file.
 type SessionMeta struct {
-	ID              string          `json:"id"`
-	ProfileID       string          `json:"profile_id"`
-	Model           string          `json:"model"`
-	Config          SessionConfig   `json:"config"`
-	EnvInfo         EnvironmentInfo `json:"env_info"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
-	TurnCount       int             `json:"turn_count"`
-	LastInputTokens int             `json:"last_input_tokens,omitempty"`
-	Name            string          `json:"name,omitempty"`
-	NameSource      string          `json:"name_source,omitempty"`
-	NameUpdatedAt   time.Time       `json:"name_updated_at,omitzero"`
-	OriginalPrompt  string          `json:"original_prompt,omitempty"`
+	ID        string          `json:"id"`         // session identifier
+	ProfileID string          `json:"profile_id"` // ID of the provider profile in use
+	Model     string          `json:"model"`      // model name the session is driving
+	Config    SessionConfig   `json:"config"`     // the session's configuration
+	EnvInfo   EnvironmentInfo `json:"env_info"`   // captured environment description
+	CreatedAt time.Time       `json:"created_at"` // when the session was first created
+	UpdatedAt time.Time       `json:"updated_at"` // last time the meta was written
+	TurnCount int             `json:"turn_count"` // number of user-input turns processed
+	// LastInputTokens is the prompt-token count from the most recent LLM call,
+	// used to display context-window pressure on resume.
+	LastInputTokens int `json:"last_input_tokens,omitempty"`
+	// Name is the generated human-readable session title, if one has been
+	// produced (see SessionDisplayName).
+	Name string `json:"name,omitempty"`
+	// NameSource records how Name was derived: "prompt" (from the first user
+	// input) or "compaction" (from a context-compaction summary).
+	NameSource string `json:"name_source,omitempty"`
+	// NameUpdatedAt is when Name was last (re)generated.
+	NameUpdatedAt time.Time `json:"name_updated_at,omitzero"`
+	// OriginalPrompt is the first user input, kept as the fallback display name
+	// for sessions written before naming existed.
+	OriginalPrompt string `json:"original_prompt,omitempty"`
 	// ParentSessionID, DivergenceTurn, and ForkLabel are non-empty on sessions
 	// that branched from another via the fork operation. ParentSessionID names
 	// the original session (the one whose transcript prefix this session shares);

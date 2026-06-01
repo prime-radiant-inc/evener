@@ -38,36 +38,42 @@ const (
 
 // Task is a single work item in the agent's task list.
 type Task struct {
-	ID              int        `json:"id"`
-	Type            TaskType   `json:"type"`
-	Description     string     `json:"description"`
-	Prompt          string     `json:"prompt"`
-	Status          TaskStatus `json:"status"`
-	DependsOn       []int      `json:"depends_on,omitempty"`
-	Notes           []string   `json:"notes,omitempty"`
-	ReasoningEffort string     `json:"reasoning_effort,omitempty"`
-	Insert          string     `json:"insert,omitempty"`
+	ID          int        `json:"id"`          // store-assigned, 1-based identifier
+	Type        TaskType   `json:"type"`        // classification of the work
+	Description string     `json:"description"` // short human-readable summary
+	Prompt      string     `json:"prompt"`      // full instruction handed to whoever runs the task
+	Status      TaskStatus `json:"status"`      // current lifecycle state
+	// DependsOn lists IDs of tasks that must complete before this one is ready.
+	DependsOn []int `json:"depends_on,omitempty"`
+	// Notes accumulates free-form progress notes appended over the task's life.
+	Notes []string `json:"notes,omitempty"`
+	// ReasoningEffort overrides the reasoning effort for a subagent that runs
+	// this task (low|medium|high); empty uses the session default.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// Insert is a template-expansion marker (e.g. "parent_tasks") carried over
+	// from the task template it was created from; empty for ordinary tasks.
+	Insert string `json:"insert,omitempty"`
 }
 
 // TaskInput is the data needed to create a new task.
 type TaskInput struct {
-	Type            TaskType `json:"type"`
-	Description     string   `json:"description"`
-	Prompt          string   `json:"prompt"`
-	DependsOn       []int    `json:"depends_on,omitempty"`
-	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
-	Insert          string   `json:"insert,omitempty"`
+	Type            TaskType `json:"type"`                       // classification of the work
+	Description     string   `json:"description"`                // short human-readable summary
+	Prompt          string   `json:"prompt"`                     // full instruction for the task
+	DependsOn       []int    `json:"depends_on,omitempty"`       // IDs of prerequisite tasks
+	ReasoningEffort string   `json:"reasoning_effort,omitempty"` // per-task reasoning effort override
+	Insert          string   `json:"insert,omitempty"`           // template-expansion marker (see Task.Insert)
 }
 
 // TaskUpdate is a status change for an existing task.
 // DependsOn nil means no change; &[]int{} clears the dependency list.
 // ReasoningEffort empty means no change; a non-empty value replaces it.
 type TaskUpdate struct {
-	ID              int        `json:"id"`
-	Status          TaskStatus `json:"status"`
-	Notes           string     `json:"notes,omitempty"`
-	DependsOn       *[]int     `json:"depends_on,omitempty"`
-	ReasoningEffort string     `json:"reasoning_effort,omitempty"`
+	ID              int        `json:"id"`                         // identifies the task to update
+	Status          TaskStatus `json:"status"`                     // the new status to apply
+	Notes           string     `json:"notes,omitempty"`            // a progress note to append (not replace)
+	DependsOn       *[]int     `json:"depends_on,omitempty"`       // nil: no change; &[]int{}: clear
+	ReasoningEffort string     `json:"reasoning_effort,omitempty"` // empty: no change; non-empty: replace
 }
 
 // TaskStore manages a persistent list of tasks stored as JSON.

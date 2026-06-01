@@ -8,11 +8,27 @@ import "primeradiant.com/serf/llm"
 // settings, and session persistence. Zero-valued fields are filled in by
 // applyDefaults where defaults apply.
 type SessionConfig struct {
-	MaxToolRoundsPerInput   int `json:"max_tool_rounds_per_input,omitempty"`
-	MaxTurns                int `json:"max_turns,omitempty"`
+	// MaxToolRoundsPerInput caps how many tool-call rounds a single
+	// ProcessInput may run before the turn stops with a TURN_LIMIT event.
+	// Zero defaults to 200.
+	MaxToolRoundsPerInput int `json:"max_tool_rounds_per_input,omitempty"`
+
+	// MaxTurns caps the number of user inputs the session will accept over its
+	// lifetime; the (N+1)th input stops with a TURN_LIMIT event. Zero means
+	// unlimited.
+	MaxTurns int `json:"max_turns,omitempty"`
+
+	// DefaultCommandTimeoutMS is the timeout applied to a shell/exec tool call
+	// when the model does not request one. Zero defaults to 10000 (10s).
 	DefaultCommandTimeoutMS int `json:"default_command_timeout_ms,omitempty"`
-	MaxCommandTimeoutMS     int `json:"max_command_timeout_ms,omitempty"`
-	MaxSubagentDepth        int `json:"max_subagent_depth,omitempty"`
+
+	// MaxCommandTimeoutMS is the ceiling on any per-command timeout the model
+	// may request. Zero defaults to 600000 (10m).
+	MaxCommandTimeoutMS int `json:"max_command_timeout_ms,omitempty"`
+
+	// MaxSubagentDepth limits how deeply sub-agents may spawn further
+	// sub-agents (root session is depth 0). Zero defaults to 1.
+	MaxSubagentDepth int `json:"max_subagent_depth,omitempty"`
 
 	// ToolOutputLimits overrides default per-tool truncation behavior.
 	ToolOutputLimits map[string]ToolOutputLimit `json:"tool_output_limits,omitempty"`
@@ -77,8 +93,15 @@ type SessionConfig struct {
 	// Used for A/B testing tool names. Empty means "communicate".
 	ResultToolName string `json:"result_tool_name,omitempty"`
 
+	// EnableLoopDetection toggles repeated-tool-call loop detection, which
+	// nudges the model with an escalating warning when it repeats the same tool
+	// signatures. A nil pointer defaults to enabled; set to a pointer to false
+	// to disable.
 	EnableLoopDetection *bool `json:"enable_loop_detection,omitempty"`
-	LoopDetectionWindow int   `json:"loop_detection_window,omitempty"`
+
+	// LoopDetectionWindow is the number of recent tool-call signatures examined
+	// for a repeating pattern. Zero defaults to 10.
+	LoopDetectionWindow int `json:"loop_detection_window,omitempty"`
 
 	// LLMRetryPolicy controls retries for retryable Unified LLM errors (429, 5xx, etc).
 	// Nil means use llm.DefaultRetryPolicy().
@@ -89,7 +112,9 @@ type SessionConfig struct {
 	// cannot reach an unexported field). They are json:"-" and carry no
 	// serialization cost, so they stay on the public struct.
 	LLMRetryPolicy *llm.RetryPolicy `json:"-"`
-	LLMSleep       llm.SleepFunc    `json:"-"`
+	// LLMSleep is the sleep function used between LLM retries; nil uses the
+	// default time.Sleep. A test-injection point (see LLMRetryPolicy above).
+	LLMSleep llm.SleepFunc `json:"-"`
 
 	// ModelFallbacks is a literal-order chain of "provider/model" identifiers
 	// to try when the primary model returns a Permanent-class provider error

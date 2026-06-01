@@ -19,19 +19,21 @@ const transcriptJSONLMaxLineBytes = 128 << 20
 
 // TranscriptHeader is the first line of a transcript JSONL file.
 type TranscriptHeader struct {
-	Kind             string    `json:"kind"`           // Always "header"
-	FormatVersion    int       `json:"format_version"` // Currently 1
-	SessionID        string    `json:"session_id"`
+	Kind          string `json:"kind"`           // Always "header"
+	FormatVersion int    `json:"format_version"` // Currently 1
+	SessionID     string `json:"session_id"`     // ID of the session this transcript records
+	// ParentSessionID and ParentToolCallID are set only for spawned subagent
+	// transcripts: the parent session and the tool call that spawned this run.
 	ParentSessionID  string    `json:"parent_session_id,omitempty"`
 	ParentToolCallID string    `json:"parent_tool_call_id,omitempty"`
-	Task             string    `json:"task,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
-	ProfileID        string    `json:"profile_id"`
-	Model            string    `json:"model"`
-	WorkingDir       string    `json:"working_dir,omitempty"`
-	Depth            int       `json:"depth,omitempty"`
-	BuildVersion     string    `json:"build_version,omitempty"`
-	SystemPrompt     string    `json:"system_prompt,omitempty"`
+	Task             string    `json:"task,omitempty"`          // task description for a spawned subagent
+	CreatedAt        time.Time `json:"created_at"`              // when the session was created
+	ProfileID        string    `json:"profile_id"`              // provider profile ID at creation
+	Model            string    `json:"model"`                   // model name at creation
+	WorkingDir       string    `json:"working_dir,omitempty"`   // the agent's working directory
+	Depth            int       `json:"depth,omitempty"`         // subagent nesting depth (0 for root)
+	BuildVersion     string    `json:"build_version,omitempty"` // serf build version that wrote the file
+	SystemPrompt     string    `json:"system_prompt,omitempty"` // initial system prompt
 	// AgentTasks is the full task list the agent started with (from the
 	// agent's YAML frontmatter for root sessions, or from the parent's
 	// task_list parameter for spawned subagents). Captured at session
@@ -44,26 +46,28 @@ type TranscriptHeader struct {
 // TranscriptEntry is a single turn in the transcript JSONL file.
 type TranscriptEntry struct {
 	Kind string `json:"kind"` // Always "entry"
-	Seq  int    `json:"seq"`
-	Turn Turn   `json:"turn"`
+	Seq  int    `json:"seq"`  // monotonically increasing line sequence number
+	Turn Turn   `json:"turn"` // the recorded conversation turn
 }
 
 // TranscriptAPICall records an LLM API call in the transcript JSONL file.
 type TranscriptAPICall struct {
-	Kind                string              `json:"kind"` // Always "api_call"
-	Seq                 int                 `json:"seq"`
-	Round               int                 `json:"round"`
-	Timestamp           string              `json:"ts"`
-	LatencyMs           int64               `json:"latency_ms"`
-	SystemPrompt        string              `json:"system_prompt"`
-	ContextHistoryTurns int                 `json:"context_history_turns,omitempty"`
-	SystemPromptBytes   int                 `json:"system_prompt_bytes,omitempty"`
-	Request             llm.APILogRequest   `json:"request"`
-	Response            *llm.APILogResponse `json:"response,omitempty"`
-	Error               string              `json:"error,omitempty"`
-	Source              string              `json:"source,omitempty"`
-	Title               string              `json:"title,omitempty"`
-	Hint                string              `json:"hint,omitempty"`
+	Kind                string              `json:"kind"`                            // Always "api_call"
+	Seq                 int                 `json:"seq"`                             // line sequence number in the transcript
+	Round               int                 `json:"round"`                           // tool-call round within the turn
+	Timestamp           string              `json:"ts"`                              // RFC3339 time the round started
+	LatencyMs           int64               `json:"latency_ms"`                      // LLM call latency in milliseconds
+	SystemPrompt        string              `json:"system_prompt"`                   // system prompt sent on this call
+	ContextHistoryTurns int                 `json:"context_history_turns,omitempty"` // number of history turns in the request
+	SystemPromptBytes   int                 `json:"system_prompt_bytes,omitempty"`   // byte length of SystemPrompt
+	Request             llm.APILogRequest   `json:"request"`                         // sanitized request log
+	Response            *llm.APILogResponse `json:"response,omitempty"`              // sanitized response log; nil on error
+	Error               string              `json:"error,omitempty"`                 // error message when the call failed
+	// Source, Title, and Hint are the diagnostic classification of Error
+	// (provider/model/etc.), populated only on failed calls.
+	Source string `json:"source,omitempty"`
+	Title  string `json:"title,omitempty"`
+	Hint   string `json:"hint,omitempty"`
 }
 
 // TranscriptWriter appends turns to an immutable JSONL transcript file.
