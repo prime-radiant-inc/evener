@@ -11,10 +11,10 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// CompactionMeta holds session-level metadata injected into compaction summaries.
+// compactionMeta holds session-level metadata injected into compaction summaries.
 // The session populates this before each ManageContext call so that checkpoint
 // and summarize have access to data outside the turn history.
-type CompactionMeta struct {
+type compactionMeta struct {
 	TranscriptPath  string   // path to the full session transcript JSONL
 	ActivatedSkills []string // skill names activated during this session
 }
@@ -55,7 +55,7 @@ type contextManager struct {
 
 	// Meta holds session-level metadata for enriching compaction summaries.
 	// Set by the session before each ManageContext call.
-	Meta CompactionMeta
+	Meta compactionMeta
 }
 
 // newContextManager creates a contextManager with default thresholds.
@@ -554,7 +554,7 @@ func clearThinking(history []Turn, preserveRecent int) {
 // messages verbatim, agent responses, file/tool metadata, task list, and skills.
 // User messages and agent responses are stored as an interleaved Markdown
 // conversation for readable round-tripping across repeated compactions.
-func checkpoint(history []Turn, preserveRecent int, meta *CompactionMeta, resultToolName string) []Turn {
+func checkpoint(history []Turn, preserveRecent int, meta *compactionMeta, resultToolName string) []Turn {
 	if len(history) <= preserveRecent {
 		return history
 	}
@@ -718,7 +718,7 @@ func collectCheckpointData(history []Turn, cutoff int, resultToolName string) ch
 // modified files, tool counts, recent shell results, activated skills), then the
 // conversation and working notes fit into maxChars by shedding the oldest working
 // notes first and then the oldest conversation entries.
-func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) string {
+func formatCheckpoint(data checkpointData, meta *compactionMeta, maxChars int) string {
 	// Build the fixed-size sections first (metadata), then fill remaining
 	// budget with user messages and agent responses.
 	var fixed strings.Builder

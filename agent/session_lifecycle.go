@@ -143,8 +143,8 @@ func (s *Session) flushSteeringTurnRecords(records []steeringTurnRecord) {
 }
 
 // buildCompactionMeta gathers session-level metadata for enriching compaction summaries.
-func (s *Session) buildCompactionMeta() CompactionMeta {
-	meta := CompactionMeta{}
+func (s *Session) buildCompactionMeta() compactionMeta {
+	meta := compactionMeta{}
 
 	// Transcript path.
 	if s.stateDir != "" {
