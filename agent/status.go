@@ -1,6 +1,10 @@
 package agent
 
-import "sort"
+import (
+	"sort"
+
+	"primeradiant.com/serf/agent/skill"
+)
 
 // ToolInfo describes a registered tool and its source.
 type ToolInfo struct {
@@ -33,10 +37,10 @@ type SubagentInfo struct {
 
 // DetailedStatus captures the full session configuration for /status display.
 type DetailedStatus struct {
-	Tools   []ToolInfo      `json:"tools,omitempty"`   // every registered tool and its source
-	MCP     []MCPServerInfo `json:"mcp,omitempty"`     // connected MCP servers
-	Skills  []SkillMeta     `json:"skills,omitempty"`  // discovered skills, sorted by name
-	Plugins []PluginInfo    `json:"plugins,omitempty"` // loaded plugins
+	Tools   []ToolInfo        `json:"tools,omitempty"`   // every registered tool and its source
+	MCP     []MCPServerInfo   `json:"mcp,omitempty"`     // connected MCP servers
+	Skills  []skill.SkillMeta `json:"skills,omitempty"`  // discovered skills, sorted by name
+	Plugins []PluginInfo      `json:"plugins,omitempty"` // loaded plugins
 	// Hooks maps each hook event to the number of registered hooks for it.
 	Hooks     map[HookEvent]int `json:"hooks,omitempty"`
 	Subagents []SubagentInfo    `json:"subagents,omitempty"` // active sub-agents

@@ -8,11 +8,12 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/llm"
 )
 
 func TestExtractEmbeddedSkills_CreatesDir(t *testing.T) {
-	dir, err := extractEmbeddedSkills()
+	dir, err := skill.ExtractEmbeddedSkills()
 	if err != nil {
 		t.Fatalf("extractEmbeddedSkills: %v", err)
 	}
@@ -29,7 +30,7 @@ func TestExtractEmbeddedSkills_CreatesDir(t *testing.T) {
 }
 
 func TestExtractEmbeddedSkills_EmptyAfterOpsTaskRemoval(t *testing.T) {
-	dir, err := extractEmbeddedSkills()
+	dir, err := skill.ExtractEmbeddedSkills()
 	if err != nil {
 		t.Fatalf("extractEmbeddedSkills: %v", err)
 	}
@@ -37,15 +38,15 @@ func TestExtractEmbeddedSkills_EmptyAfterOpsTaskRemoval(t *testing.T) {
 
 	// No embedded skills remain after ops-task removal.
 	// The skill catalog is populated by filesystem-discovered project skills only.
-	skills := make(map[string]SkillMeta)
-	scanSkillsDir(dir, skills)
+	skills := make(map[string]skill.SkillMeta)
+	skill.ScanSkillsDir(dir, skills)
 	if len(skills) != 0 {
 		t.Fatalf("expected 0 embedded skills, got %d", len(skills))
 	}
 }
 
 func TestExtractEmbeddedSkills_DiscoverableByDiscoverSkills(t *testing.T) {
-	dir, err := extractEmbeddedSkills()
+	dir, err := skill.ExtractEmbeddedSkills()
 	if err != nil {
 		t.Fatalf("extractEmbeddedSkills: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestExtractEmbeddedSkills_DiscoverableByDiscoverSkills(t *testing.T) {
 	initGitRepo(t, root)
 
 	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := DiscoverSkills(env, dir)
+	skills := skill.DiscoverSkills(env, dir)
 
 	// No embedded skills remain, so only project skills (none here) are found.
 	if len(skills) != 0 {
@@ -66,7 +67,7 @@ func TestExtractEmbeddedSkills_DiscoverableByDiscoverSkills(t *testing.T) {
 }
 
 func TestExtractEmbeddedSkills_FilesystemShadowsEmbedded(t *testing.T) {
-	dir, err := extractEmbeddedSkills()
+	dir, err := skill.ExtractEmbeddedSkills()
 	if err != nil {
 		t.Fatalf("extractEmbeddedSkills: %v", err)
 	}
@@ -79,7 +80,7 @@ func TestExtractEmbeddedSkills_FilesystemShadowsEmbedded(t *testing.T) {
 		"---\nname: test-driven-development\ndescription: \"Project TDD\"\n---\nCustom TDD.\n")
 
 	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := DiscoverSkills(env, dir)
+	skills := skill.DiscoverSkills(env, dir)
 
 	tdd := skills["test-driven-development"]
 	if tdd.Name != "test-driven-development" {
@@ -312,14 +313,14 @@ func TestEmbeddedSkills_UseSkillUnknownReturnsError(t *testing.T) {
 
 func TestEmbeddedSkills_AllSkillsLoadable(t *testing.T) {
 	// Verify every embedded skill can be discovered and its body loaded.
-	dir, err := extractEmbeddedSkills()
+	dir, err := skill.ExtractEmbeddedSkills()
 	if err != nil {
 		t.Fatalf("extractEmbeddedSkills: %v", err)
 	}
 	defer os.RemoveAll(dir)
 
-	skills := make(map[string]SkillMeta)
-	scanSkillsDir(dir, skills)
+	skills := make(map[string]skill.SkillMeta)
+	skill.ScanSkillsDir(dir, skills)
 
 	// No embedded skills remain after ops-task removal.
 	// This test verifies the extraction still works without error.
@@ -406,7 +407,7 @@ func TestNonInteractive_NotPresentWhenFalse(t *testing.T) {
 }
 
 // builtinSkillNames returns a slice of skill names for test output.
-func builtinSkillNames(skills map[string]SkillMeta) []string {
+func builtinSkillNames(skills map[string]skill.SkillMeta) []string {
 	names := make([]string, 0, len(skills))
 	for name := range skills {
 		names = append(names, name)

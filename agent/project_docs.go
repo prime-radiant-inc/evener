@@ -1,11 +1,9 @@
 package agent
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"primeradiant.com/serf/agent/execenv"
 )
@@ -41,11 +39,11 @@ func LoadProjectDocs(env execenv.ExecutionEnvironment, filenames ...string) ([]P
 	}
 
 	root := cwd
-	if gr := gitRootOrEmpty(env, cwd); gr != "" {
+	if gr := execenv.GitRootOrEmpty(env, cwd); gr != "" {
 		root = gr
 	}
 
-	dirs := dirsFromRootToCwd(root, cwd)
+	dirs := execenv.DirsFromRootToCwd(root, cwd)
 	out := []ProjectDoc{}
 	used := 0
 	for _, dir := range dirs {
@@ -92,58 +90,5 @@ func LoadProjectDocs(env execenv.ExecutionEnvironment, filenames ...string) ([]P
 	return out, false
 }
 
-func dirsFromRootToCwd(root, cwd string) []string {
-	root = filepath.Clean(root)
-	cwd = filepath.Clean(cwd)
-
-	rel, err := filepath.Rel(root, cwd)
-	if err != nil {
-		return []string{cwd}
-	}
-	if rel == "." {
-		return []string{root}
-	}
-	// If cwd is outside root, just treat cwd as the only directory.
-	if strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
-		return []string{cwd}
-	}
-
-	out := []string{root}
-	cur := root
-	for _, p := range strings.Split(rel, string(filepath.Separator)) {
-		if p == "" || p == "." {
-			continue
-		}
-		cur = filepath.Join(cur, p)
-		out = append(out, cur)
-	}
-	return out
-}
-
-func gitRootOrEmpty(env execenv.ExecutionEnvironment, cwd string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	res, err := env.ExecCommand(ctx, "git rev-parse --show-toplevel", 2_000, cwd, nil)
-	if err != nil || res.ExitCode != 0 {
-		return ""
-	}
-	root := strings.TrimSpace(res.Stdout)
-	if root == "" {
-		return ""
-	}
-	// Best-effort sanity check: ensure the returned root is a prefix of cwd.
-	// Resolve symlinks to handle macOS /var -> /private/var and similar.
-	if resolved, err := filepath.EvalSymlinks(root); err == nil {
-		root = resolved
-	}
-	if resolved, err := filepath.EvalSymlinks(cwd); err == nil {
-		cwd = resolved
-	}
-	root = filepath.Clean(root)
-	cwd = filepath.Clean(cwd)
-	if root != cwd && !strings.HasPrefix(cwd, root+string(filepath.Separator)) {
-		return ""
-	}
-	return root
-}
+// (gitRootOrEmpty and dirsFromRootToCwd moved to agent/execenv as
+// GitRootOrEmpty / DirsFromRootToCwd — see agent/execenv/gitpath.go.)

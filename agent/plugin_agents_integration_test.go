@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/llm"
 )
 
@@ -515,7 +516,7 @@ func TestSpawnAgent_PluginAgentType_InjectsSkillContent(t *testing.T) {
 	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: test-skill\ndescription: A test skill\n---\nThis is the test skill body content for injection.\n"), 0644)
 
 	// Register the skill in the session's skills map
-	sess.skills["test-skill"] = SkillMeta{
+	sess.skills["test-skill"] = skill.SkillMeta{
 		Name:        "test-skill",
 		Description: "A test skill",
 		Dir:         skillDir,

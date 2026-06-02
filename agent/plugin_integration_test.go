@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/llm"
 )
 
@@ -185,7 +186,7 @@ func TestInitPlugins_CombinesMultiplePlugins(t *testing.T) {
 	}
 
 	// Simulate initPlugins: merge skills from all plugins
-	allSkills := map[string]SkillMeta{}
+	allSkills := map[string]skill.SkillMeta{}
 	runner := newHookRunner(nil, "test-model")
 	allAgents := map[string]PluginAgent{}
 

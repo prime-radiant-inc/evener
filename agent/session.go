@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/llm"
 )
 
@@ -101,7 +102,7 @@ type Session struct {
 	strategy   contextStrategy
 
 	// skills discovered at session startup
-	skills            map[string]SkillMeta
+	skills            map[string]skill.SkillMeta
 	embeddedSkillsDir string // temp dir for extracted embedded skills; cleaned up in Close
 
 	// MCP server connections

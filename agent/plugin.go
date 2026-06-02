@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"primeradiant.com/serf/agent/skill"
 )
 
 // PluginManifest represents a parsed plugin.json file.
@@ -67,7 +69,7 @@ func expandPluginRoot(s string, pluginDir string) string {
 type LoadedPlugin struct {
 	Manifest   PluginManifest                 // parsed plugin.json
 	Dir        string                         // absolute path = CLAUDE_PLUGIN_ROOT
-	Skills     map[string]SkillMeta           // namespaced as "plugin-name:skill-name"
+	Skills     map[string]skill.SkillMeta     // namespaced as "plugin-name:skill-name"
 	Agents     map[string]PluginAgent         // namespaced as "plugin-name:agent-name"
 	Hooks      map[HookEvent][]RegisteredHook // keyed by event type
 	MCPConfigs []MCPServerConfig              // namespaced as "plugin_<name>_<server>"
@@ -75,13 +77,13 @@ type LoadedPlugin struct {
 
 // discoverPluginSkills scans a plugin's skills directories and returns
 // skills namespaced as "pluginName:skillName".
-func discoverPluginSkills(pluginDir, pluginName string) map[string]SkillMeta {
+func discoverPluginSkills(pluginDir, pluginName string) map[string]skill.SkillMeta {
 	dirs := resolveComponentDirs(pluginDir, "skills", nil)
-	raw := map[string]SkillMeta{}
+	raw := map[string]skill.SkillMeta{}
 	for _, dir := range dirs {
-		scanSkillsDir(dir, raw)
+		skill.ScanSkillsDir(dir, raw)
 	}
-	namespaced := make(map[string]SkillMeta, len(raw))
+	namespaced := make(map[string]skill.SkillMeta, len(raw))
 	for name, meta := range raw {
 		namespaced[pluginName+":"+name] = meta
 	}

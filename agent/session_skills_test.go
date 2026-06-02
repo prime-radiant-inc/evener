@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/llm"
 )
 
@@ -305,7 +306,7 @@ func TestDiscoverSkills_PopulatedOnSession(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: manual\ndescription: \"Manual skill\"\n---\nManual.\n"), 0o644)
 
 	env := execenv.NewLocalExecutionEnvironment(nonGit)
-	skills := DiscoverSkills(env)
+	skills := skill.DiscoverSkills(env)
 	if _, ok := skills["manual"]; !ok {
 		t.Errorf("expected skill 'manual' discovered in non-git directory")
 	}

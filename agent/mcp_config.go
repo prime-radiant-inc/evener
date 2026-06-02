@@ -245,7 +245,7 @@ func DiscoverMCPConfigs(env execenv.ExecutionEnvironment, extraFiles, inlineSpec
 	// Layer 2: Per-project config (.serf/mcp.json at git root).
 	if env != nil {
 		cwd := env.WorkingDirectory()
-		root := gitRootOrEmpty(env, cwd)
+		root := execenv.GitRootOrEmpty(env, cwd)
 		if root != "" {
 			projPath := filepath.Join(root, ".serf", "mcp.json")
 			if configs, err := LoadMCPConfigFile(projPath); err == nil {

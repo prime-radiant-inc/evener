@@ -1,4 +1,4 @@
-package agent
+package skill
 
 import (
 	"fmt"
@@ -37,26 +37,26 @@ func DiscoverSkills(env execenv.ExecutionEnvironment, extraDirs ...string) map[s
 	}
 
 	root := cwd
-	if gr := gitRootOrEmpty(env, cwd); gr != "" {
+	if gr := execenv.GitRootOrEmpty(env, cwd); gr != "" {
 		root = gr
 	}
 
-	dirs := dirsFromRootToCwd(root, cwd)
+	dirs := execenv.DirsFromRootToCwd(root, cwd)
 	out := map[string]SkillMeta{}
 
 	for _, dir := range dirs {
-		scanSkillsDir(filepath.Join(dir, "skills"), out)
+		ScanSkillsDir(filepath.Join(dir, "skills"), out)
 	}
 	for _, dir := range extraDirs {
-		scanSkillsDir(dir, out)
+		ScanSkillsDir(dir, out)
 	}
 
 	return out
 }
 
-// scanSkillsDir scans a directory for skill subdirectories containing SKILL.md.
+// ScanSkillsDir scans a directory for skill subdirectories containing SKILL.md.
 // Found skills are added to out, overwriting any existing entry with the same name.
-func scanSkillsDir(dir string, out map[string]SkillMeta) {
+func ScanSkillsDir(dir string, out map[string]SkillMeta) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return

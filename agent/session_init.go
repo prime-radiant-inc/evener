@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/llm"
 )
 
@@ -500,13 +501,13 @@ func (s *Session) initSessionState(sessionStartKind SessionStartKind) ([]promptS
 
 	// Extract embedded skills to a temp dir as the base layer.
 	// Filesystem-discovered skills (project + extraDirs) shadow embedded ones.
-	s.skills = make(map[string]SkillMeta)
-	if dir, err := extractEmbeddedSkills(); err == nil {
+	s.skills = make(map[string]skill.SkillMeta)
+	if dir, err := skill.ExtractEmbeddedSkills(); err == nil {
 		s.embeddedSkillsDir = dir
 		// Scan extracted dir directly (skill subdirs are immediate children).
-		scanSkillsDir(dir, s.skills)
+		skill.ScanSkillsDir(dir, s.skills)
 	}
-	for name, meta := range DiscoverSkills(s.env, s.cfg.SkillsDirs...) {
+	for name, meta := range skill.DiscoverSkills(s.env, s.cfg.SkillsDirs...) {
 		s.skills[name] = meta // filesystem shadows embedded
 	}
 

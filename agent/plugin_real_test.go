@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/skill"
 )
 
 // pluginCacheDir is where the official Anthropic plugins are cached.
@@ -102,7 +103,7 @@ func TestRealPlugin_Superpowers_Skills(t *testing.T) {
 
 	// Verify skill body can be loaded.
 	if meta, ok := lp.Skills["superpowers:brainstorming"]; ok {
-		body, err := LoadSkillBody(meta)
+		body, err := skill.LoadSkillBody(meta)
 		if err != nil {
 			t.Fatalf("LoadSkillBody(brainstorming): %v", err)
 		}
@@ -638,7 +639,7 @@ func TestRealPlugin_AggregateSkills(t *testing.T) {
 		t.Fatalf("LoadPlugins: %v", err)
 	}
 
-	allSkills := map[string]SkillMeta{}
+	allSkills := map[string]skill.SkillMeta{}
 	for _, p := range plugins {
 		for k, v := range p.Skills {
 			allSkills[k] = v
@@ -771,7 +772,7 @@ func newHookRunnerFromPlugins(plugins []LoadedPlugin) *hookRunner {
 	return runner
 }
 
-func skillNames(m map[string]SkillMeta) []string {
+func skillNames(m map[string]skill.SkillMeta) []string {
 	names := make([]string, 0, len(m))
 	for k := range m {
 		names = append(names, k)

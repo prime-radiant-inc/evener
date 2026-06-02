@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/skill"
 )
 
 // writeSkillDirect writes a SKILL.md directly into <dir>/<name>/SKILL.md.
@@ -41,7 +42,7 @@ func TestDiscoverSkills_FindsSkillsDir(t *testing.T) {
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nHello instructions.\n")
 
 	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := DiscoverSkills(env)
+	skills := skill.DiscoverSkills(env)
 
 	if len(skills) != 1 {
 		t.Fatalf("expected 1 skill, got %d: %v", len(skills), skills)
@@ -74,7 +75,7 @@ func TestDiscoverSkills_DeeperShadows(t *testing.T) {
 
 	// cwd is the deeper directory.
 	env := execenv.NewLocalExecutionEnvironment(sub)
-	skills := DiscoverSkills(env)
+	skills := skill.DiscoverSkills(env)
 
 	if len(skills) != 1 {
 		t.Fatalf("expected 1 skill (shadowed), got %d: %v", len(skills), skills)
@@ -90,7 +91,7 @@ func TestDiscoverSkills_NoSkillsDir(t *testing.T) {
 	initGitRepo(t, root)
 
 	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := DiscoverSkills(env)
+	skills := skill.DiscoverSkills(env)
 
 	if len(skills) != 0 {
 		t.Errorf("expected 0 skills, got %d", len(skills))
@@ -105,7 +106,7 @@ func TestDiscoverSkills_MissingName(t *testing.T) {
 	writeSkillMD(t, root, "bad", "---\ndescription: \"No name\"\n---\nBody.\n")
 
 	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := DiscoverSkills(env)
+	skills := skill.DiscoverSkills(env)
 
 	if len(skills) != 0 {
 		t.Errorf("expected 0 skills (no name), got %d: %v", len(skills), skills)
@@ -120,7 +121,7 @@ func TestDiscoverSkills_MissingDescription(t *testing.T) {
 	writeSkillMD(t, root, "bad", "---\nname: bad\n---\nBody.\n")
 
 	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := DiscoverSkills(env)
+	skills := skill.DiscoverSkills(env)
 
 	if len(skills) != 0 {
 		t.Errorf("expected 0 skills (no description), got %d: %v", len(skills), skills)
@@ -134,14 +135,14 @@ func TestLoadSkillBody_ReturnsBody(t *testing.T) {
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nHello instructions.\n")
 
 	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := DiscoverSkills(env)
+	skills := skill.DiscoverSkills(env)
 
 	s, ok := skills["greet"]
 	if !ok {
 		t.Fatal("expected skill named 'greet'")
 	}
 
-	body, err := LoadSkillBody(s)
+	body, err := skill.LoadSkillBody(s)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -157,7 +158,7 @@ func TestDiscoverSkills_AllowedTools(t *testing.T) {
 	writeSkillMD(t, root, "deploy", "---\nname: deploy\ndescription: \"Deploy skill\"\nallowed-tools:\n  - shell\n  - read_file\n---\nDeploy instructions.\n")
 
 	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := DiscoverSkills(env)
+	skills := skill.DiscoverSkills(env)
 
 	s, ok := skills["deploy"]
 	if !ok {
@@ -181,7 +182,7 @@ func TestDiscoverSkills_ExtraDirs(t *testing.T) {
 	writeSkillDirect(t, extraDir, "external", "---\nname: external\ndescription: \"External skill\"\n---\nExternal instructions.\n")
 
 	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := DiscoverSkills(env, extraDir)
+	skills := skill.DiscoverSkills(env, extraDir)
 
 	if len(skills) != 1 {
 		t.Fatalf("expected 1 skill, got %d: %v", len(skills), skills)
@@ -201,7 +202,7 @@ func TestDiscoverSkills_ExtraDirShadows(t *testing.T) {
 	writeSkillDirect(t, extraDir, "greet", "---\nname: greet\ndescription: \"External greeting\"\n---\nExternal.\n")
 
 	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := DiscoverSkills(env, extraDir)
+	skills := skill.DiscoverSkills(env, extraDir)
 
 	if len(skills) != 1 {
 		t.Fatalf("expected 1 skill, got %d: %v", len(skills), skills)
@@ -220,7 +221,7 @@ func TestDiscoverSkills_ExtraDirMissing(t *testing.T) {
 
 	env := execenv.NewLocalExecutionEnvironment(root)
 	// Nonexistent extra dir should be silently skipped.
-	skills := DiscoverSkills(env, "/nonexistent/path/that/does/not/exist")
+	skills := skill.DiscoverSkills(env, "/nonexistent/path/that/does/not/exist")
 
 	if len(skills) != 1 {
 		t.Fatalf("expected 1 skill, got %d: %v", len(skills), skills)
@@ -238,7 +239,7 @@ func TestDiscoverSkills_MultipleSkills(t *testing.T) {
 	writeSkillMD(t, root, "deploy", "---\nname: deploy\ndescription: \"Deploy\"\n---\nDeploy.\n")
 
 	env := execenv.NewLocalExecutionEnvironment(root)
-	skills := DiscoverSkills(env)
+	skills := skill.DiscoverSkills(env)
 
 	if len(skills) != 2 {
 		t.Fatalf("expected 2 skills, got %d: %v", len(skills), skills)

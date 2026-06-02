@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/promptpath"
 	"primeradiant.com/serf/llm"
 )
@@ -119,7 +120,7 @@ func (s *Session) buildPromptData() promptData {
 
 // renderSystemPrompt renders the system prompt using the template resolver.
 func (s *Session) renderSystemPrompt() string {
-	gitRoot := gitRootOrEmpty(s.env, s.envInfo.WorkingDir)
+	gitRoot := execenv.GitRootOrEmpty(s.env, s.envInfo.WorkingDir)
 	projDir := promptpath.ProjectPromptsDir(gitRoot)
 	if s.cfg.NoProjectPrompts {
 		projDir = ""

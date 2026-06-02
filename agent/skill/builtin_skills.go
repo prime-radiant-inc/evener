@@ -1,4 +1,4 @@
-package agent
+package skill
 
 import (
 	"embed"
@@ -11,11 +11,11 @@ import (
 //go:embed all:skills
 var embeddedSkills embed.FS
 
-// extractEmbeddedSkills writes the embedded skills to a temporary directory
+// ExtractEmbeddedSkills writes the embedded skills to a temporary directory
 // and returns the path. The caller is responsible for cleanup (os.RemoveAll).
 // The returned directory contains skill subdirectories (e.g. test-driven-development/SKILL.md)
 // and is suitable for use as an extraDirs argument to DiscoverSkills.
-func extractEmbeddedSkills() (string, error) {
+func ExtractEmbeddedSkills() (string, error) {
 	dir, err := os.MkdirTemp("", "serf-skills-*")
 	if err != nil {
 		return "", fmt.Errorf("creating temp dir for embedded skills: %w", err)

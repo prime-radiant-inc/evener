@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/skill"
 )
 
 // minWaitTimeoutMS is the minimum timeout for the wait tool, preventing the model
@@ -231,7 +232,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	}
 	if agent != nil && len(agent.Skills) > 0 {
 		for _, skillName := range agent.Skills {
-			body, err := ResolveSkillContent(s.skills, skillName)
+			body, err := skill.ResolveSkillContent(s.skills, skillName)
 			if err != nil {
 				continue
 			}

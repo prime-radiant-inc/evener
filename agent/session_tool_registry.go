@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/llm"
 )
 
@@ -57,7 +58,7 @@ type toolDeps struct {
 	setCommunicateResult func(awaitReply bool, message, reply, output string)
 
 	// skill looks up a discovered skill by name.
-	skill func(name string) (SkillMeta, bool)
+	skill func(name string) (skill.SkillMeta, bool)
 
 	// reasoningEffortLevels is captured once for the task_list tool definition.
 	reasoningEffortLevels []string
@@ -147,7 +148,7 @@ func newToolDeps(s *Session) *toolDeps {
 			}
 			s.mu.Unlock()
 		},
-		skill: func(name string) (SkillMeta, bool) {
+		skill: func(name string) (skill.SkillMeta, bool) {
 			meta, ok := s.skills[name]
 			return meta, ok
 		},
@@ -811,7 +812,7 @@ func registerSkillTool(reg *toolRegistry, deps *toolDeps) {
 					return nil, fmt.Errorf("skill %q not found", skillName)
 				}
 				deps.emit(events.EventSkillActivated, events.SkillActivatedData{Name: skillName})
-				body, err := LoadSkillBody(meta)
+				body, err := skill.LoadSkillBody(meta)
 				if err != nil {
 					return nil, fmt.Errorf("loading skill %q: %w", skillName, err)
 				}
