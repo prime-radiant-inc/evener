@@ -13,6 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/llm"
 )
 
@@ -109,7 +110,7 @@ func (m *mcpManager) ToolDefinitions() []llm.ToolDefinition {
 // RegisterTools registers execution closures for all MCP tools into the
 // given toolRegistry. Returns an error if any namespaced tool name collides
 // with an existing registration or fails validation.
-func (m *mcpManager) RegisterTools(reg *toolRegistry) error {
+func (m *mcpManager) RegisterTools(reg *tool.Registry) error {
 	if m == nil {
 		return nil
 	}
@@ -123,10 +124,7 @@ func (m *mcpManager) RegisterTools(reg *toolRegistry) error {
 			// Check for collision with existing tools. This is safe because
 			// RegisterTools is called only during single-threaded session init,
 			// after registerCoreTools has already completed.
-			reg.mu.RLock()
-			_, exists := reg.tools[td.Name]
-			reg.mu.RUnlock()
-			if exists {
+			if reg.Get(td.Name) != nil {
 				return fmt.Errorf("MCP tool %q collides with existing tool", td.Name)
 			}
 
@@ -134,7 +132,7 @@ func (m *mcpManager) RegisterTools(reg *toolRegistry) error {
 			origName := conn.origNames[td.Name]
 			sess := conn.session
 
-			if err := reg.Register(registeredTool{
+			if err := reg.Register(tool.RegisteredTool{
 				Tool: llm.Tool{Definition: td},
 				Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 					result, err := sess.CallTool(ctx, &mcp.CallToolParams{

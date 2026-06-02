@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -34,7 +35,7 @@ type contextStrategy interface {
 	AfterAction(ctx context.Context, history []schema.Turn, client *llm.Client) error
 
 	// Tools returns additional tool definitions this strategy wants registered.
-	Tools() []registeredTool
+	Tools() []tool.RegisteredTool
 
 	// Name returns the strategy identifier for config/logging.
 	Name() string
@@ -54,7 +55,7 @@ func newCompactStrategy(cm *contextManager) *compactStrategy {
 func (s *compactStrategy) Name() string { return "compact" }
 
 // Tools returns no additional tool definitions for this strategy.
-func (s *compactStrategy) Tools() []registeredTool { return nil }
+func (s *compactStrategy) Tools() []tool.RegisteredTool { return nil }
 
 // AfterAction does nothing for this strategy and always returns nil.
 func (s *compactStrategy) AfterAction(ctx context.Context, history []schema.Turn, client *llm.Client) error {

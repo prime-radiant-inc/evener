@@ -1,8 +1,8 @@
-package agent
+package tool
 
 import "primeradiant.com/serf/llm"
 
-func defReadFile() llm.ToolDefinition {
+func DefReadFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "read_file",
 		Description: "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading an image or PDF, describe what you hope to learn — the system will provide a detailed description alongside the file.",
@@ -20,7 +20,7 @@ func defReadFile() llm.ToolDefinition {
 	}
 }
 
-func defWriteFile() llm.ToolDefinition {
+func DefWriteFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "write_file",
 		Description: "Write content to a file. Creates the file and parent directories if needed, and replaces the entire file contents when the file already exists. Use this for new files or intentional full rewrites; prefer the exact-edit tool for small changes to existing files.",
@@ -36,7 +36,7 @@ func defWriteFile() llm.ToolDefinition {
 	}
 }
 
-func defListDir() llm.ToolDefinition {
+func DefListDir() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "list_dir",
 		Description: "List the contents of a directory path. Use depth to control recursion when exploring project structure (1 means this directory only).",
@@ -51,7 +51,7 @@ func defListDir() llm.ToolDefinition {
 	}
 }
 
-func defEditFile() llm.ToolDefinition {
+func DefEditFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "edit_file",
 		Description: "Replace an exact string occurrence in an existing file. Always read the file first so you know the exact text to match. old_string must identify a unique location in the file, so include enough surrounding context to make it unambiguous. Keep each call small and focused. Set replace_all only for deliberate whole-file replacements such as a symbol rename.",
@@ -69,7 +69,7 @@ func defEditFile() llm.ToolDefinition {
 	}
 }
 
-func defShell() llm.ToolDefinition {
+func DefShell() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "shell",
 		Description: "Execute a shell command and return stdout, stderr, and exit code. Use this for build, test, git, runtime, and inspection commands. When using the shell to search text or files, prefer rg or rg --files if available.",
@@ -85,7 +85,7 @@ func defShell() llm.ToolDefinition {
 	}
 }
 
-func defGrep() llm.ToolDefinition {
+func DefGrep() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "grep",
 		Description: "Search file contents using regex patterns. Use this to find definitions, references, and recurring patterns across files.",
@@ -109,7 +109,7 @@ func defGrep() llm.ToolDefinition {
 	}
 }
 
-func defGlob() llm.ToolDefinition {
+func DefGlob() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "glob",
 		Description: "Find files matching a glob pattern. Use this for pattern-based file discovery. If a provider aliases this tool to a name like list_dir, it still performs glob matching rather than a literal directory listing.",
@@ -125,7 +125,7 @@ func defGlob() llm.ToolDefinition {
 	}
 }
 
-func defApplyPatch() llm.ToolDefinition {
+func DefApplyPatch() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "apply_patch",
 		Description: `Apply code changes using the v4a patch format. Supports creating, deleting, and modifying files in a single operation.
@@ -190,7 +190,7 @@ Important:
 	}
 }
 
-func defSpawnAgent() llm.ToolDefinition {
+func DefSpawnAgent() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "spawn_agent",
 		Description: "Spawn a sub-agent to work on a scoped task. Only you can call this tool; subagents never receive it. With blocking=true, the returned output is the subagent's own result JSON. Check `success`, `status`, and `output` yourself before trusting it. If the subagent reports a bounce, placeholder text, or otherwise fails to do the work, resume it with sharper instructions or spawn a better-suited agent instead of treating the delegation as complete.",
@@ -228,7 +228,7 @@ func defSpawnAgent() llm.ToolDefinition {
 	}
 }
 
-func defSendInput() llm.ToolDefinition {
+func DefSendInput() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "resume_agent",
 		Description: "Resume a sub-agent with new instructions. The agent keeps all its previous context (files read, analysis done, code written) and continues from where it left off. Use this instead of spawning a new agent when you want to iterate — e.g. send reviewer feedback to an implementer, or ask a planner to revise. Use blocking=true (recommended) to wait for the result JSON in one call.",
@@ -261,7 +261,7 @@ func defSendInput() llm.ToolDefinition {
 	}
 }
 
-func defWait() llm.ToolDefinition {
+func DefWait() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "wait",
 		Description: "Wait for a non-blocking sub-agent to finish and return its result JSON. Only use this after spawn_agent with blocking=false. Do NOT use after blocking=true — that already returned the result. The result includes `success`, `status`, `output`, `turns_used`, and `transcript`; inspect `success` yourself instead of assuming the subagent solved the task. Use timeout_ms of 300000 (5 minutes) or more — short timeouts waste rounds on retries.",
@@ -277,7 +277,7 @@ func defWait() llm.ToolDefinition {
 	}
 }
 
-func defCloseAgent() llm.ToolDefinition {
+func DefCloseAgent() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "close_agent",
 		Description: "Close a sub-agent session, waiting for any active run to stop first. Returns the same result JSON shape as wait(), then removes the sub-agent from the active session list.",
@@ -292,7 +292,7 @@ func defCloseAgent() llm.ToolDefinition {
 	}
 }
 
-func defWebFetch() llm.ToolDefinition {
+func DefWebFetch() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "web_fetch",
 		Description: "Fetch a URL, convert HTML to markdown, cache the results, and answer a question about the content using a cheap model.",
@@ -308,7 +308,7 @@ func defWebFetch() llm.ToolDefinition {
 	}
 }
 
-func defWebSearch() llm.ToolDefinition {
+func DefWebSearch() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "web_search",
 		Description: "Search the web for current information. Returns grounded results from Google Search. Use when you need up-to-date facts, documentation, error messages, or API references.",
@@ -326,11 +326,11 @@ func defWebSearch() llm.ToolDefinition {
 	}
 }
 
-func defCommunicate() llm.ToolDefinition {
-	return defCommunicateNamed("communicate")
+func DefCommunicate() llm.ToolDefinition {
+	return DefCommunicateNamed("communicate")
 }
 
-func defCommunicateNamed(name string) llm.ToolDefinition {
+func DefCommunicateNamed(name string) llm.ToolDefinition {
 	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        name,
@@ -374,7 +374,7 @@ func defCommunicateNamed(name string) llm.ToolDefinition {
 	}
 }
 
-func defTaskList(effortLevels []string) llm.ToolDefinition {
+func DefTaskList(effortLevels []string) llm.ToolDefinition {
 	reasoningDesc := "Raise or lower the reasoning budget for this task. Omit to leave unchanged."
 	reasoningSchema := map[string]any{
 		"type":        "string",
@@ -442,7 +442,7 @@ func defTaskList(effortLevels []string) llm.ToolDefinition {
 	}
 }
 
-func defUseSkill() llm.ToolDefinition {
+func DefUseSkill() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "use_skill",
 		Description: "Activate a skill to load its full instructions into context. Use a skill name from the skill catalog in the system prompt.",

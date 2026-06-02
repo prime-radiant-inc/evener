@@ -15,6 +15,7 @@ import (
 	"unicode/utf16"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -1002,8 +1003,8 @@ func (s *Session) handleNoToolCalls(noContent bool, t *retryTracker) (retry bool
 // serializes everything else; otherwise it runs them in order. On cancellation it
 // records canceled results for the outstanding calls — keeping history well-formed —
 // and returns the abort error alongside the partial results.
-func (s *Session) execToolBatch(ctx context.Context, calls []llm.ToolCallData, profile ProviderProfile) ([]toolExecResult, error) {
-	results := make([]toolExecResult, len(calls))
+func (s *Session) execToolBatch(ctx context.Context, calls []llm.ToolCallData, profile ProviderProfile) ([]tool.ExecResult, error) {
+	results := make([]tool.ExecResult, len(calls))
 	if profile.SupportsParallelToolCalls() && len(calls) > 1 {
 		// Ordered-group algorithm: batch consecutive read-only calls for
 		// parallel execution; serialize everything else.
@@ -1105,7 +1106,7 @@ func (s *Session) execToolBatch(ctx context.Context, calls []llm.ToolCallData, p
 // images themselves — they immediately write code) and injects the description as
 // steering so the agent can use it. It returns the abort error if the turn is
 // canceled mid-persist.
-func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallData, results []toolExecResult) error {
+func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallData, results []tool.ExecResult) error {
 	// Aggregate all tool results into a single TurnToolResults turn.
 	var parts []llm.ContentPart
 	for _, r := range results {

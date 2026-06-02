@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -45,8 +46,8 @@ func (s *recallStrategy) AfterAction(ctx context.Context, history []schema.Turn,
 }
 
 // Tools returns the strategy's registered tools, namely the "recall" tool.
-func (s *recallStrategy) Tools() []registeredTool {
-	return []registeredTool{recallToolDef(s)}
+func (s *recallStrategy) Tools() []tool.RegisteredTool {
+	return []tool.RegisteredTool{recallToolDef(s)}
 }
 
 // transcriptPath returns the path where the session snapshot is stored.
@@ -54,16 +55,16 @@ func transcriptPath(stateDir, sessionID string) string {
 	return filepath.Join(stateDir, "sessions", sessionID+".json")
 }
 
-// recallToolDef builds the registeredTool for the "recall" tool.
-func recallToolDef(strategy *recallStrategy) registeredTool {
+// recallToolDef builds the tool.RegisteredTool for the "recall" tool.
+func recallToolDef(strategy *recallStrategy) tool.RegisteredTool {
 	return buildRecallTool(func() strategyHost { return strategy.session })
 }
 
-// buildRecallTool creates a recall registeredTool that uses getHost to
+// buildRecallTool creates a recall tool.RegisteredTool that uses getHost to
 // obtain the parent session at call time. Shared by recallStrategy and
 // sessionLogStrategy.
-func buildRecallTool(getHost func() strategyHost) registeredTool {
-	return registeredTool{
+func buildRecallTool(getHost func() strategyHost) tool.RegisteredTool {
+	return tool.RegisteredTool{
 		Tool: llm.Tool{
 			Definition: llm.ToolDefinition{
 				Name:        "recall",

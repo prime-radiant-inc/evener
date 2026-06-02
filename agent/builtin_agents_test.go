@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/llm"
 )
 
@@ -303,7 +304,7 @@ func TestAvailableAgentsSection_UsesAvailableAgentsTag(t *testing.T) {
 // --- spawn_agent blocking parameter ---
 
 func TestDefSpawnAgent_HasBlockingParameter(t *testing.T) {
-	def := defSpawnAgent()
+	def := tool.DefSpawnAgent()
 	props, ok := def.Parameters["properties"].(map[string]any)
 	if !ok {
 		t.Fatal("expected properties map")
@@ -729,7 +730,7 @@ func TestMinWaitTimeoutMS_IsAtLeast120Seconds(t *testing.T) {
 }
 
 func TestWaitToolDescription_SuggestsFiveMinutes(t *testing.T) {
-	def := defWait()
+	def := tool.DefWait()
 	if !strings.Contains(def.Description, "300000") {
 		t.Errorf("wait description should suggest 300000ms, got: %s", def.Description)
 	}
@@ -738,7 +739,7 @@ func TestWaitToolDescription_SuggestsFiveMinutes(t *testing.T) {
 // --- spawn_agent reasoning_effort parameter ---
 
 func TestSpawnAgent_ReasoningEffortParameter(t *testing.T) {
-	def := defSpawnAgent()
+	def := tool.DefSpawnAgent()
 	props, ok := def.Parameters["properties"].(map[string]any)
 	if !ok {
 		t.Fatal("expected properties map")
@@ -1078,7 +1079,7 @@ func TestBuiltinAgents_SubagentHasTaskList(t *testing.T) {
 // --- spawn_agent blocking description ---
 
 func TestSpawnAgent_BlockingDescription_NoFireAndForget(t *testing.T) {
-	def := defSpawnAgent()
+	def := tool.DefSpawnAgent()
 	props := def.Parameters["properties"].(map[string]any)
 	blocking := props["blocking"].(map[string]any)
 	desc := fmt.Sprint(blocking["description"])

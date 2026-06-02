@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -32,7 +33,7 @@ func newObsMaskStrategy(cm *contextManager) *obsMaskStrategy {
 func (s *obsMaskStrategy) Name() string { return "obs-mask" }
 
 // Tools returns the tools registered by this strategy; it registers none.
-func (s *obsMaskStrategy) Tools() []registeredTool { return nil }
+func (s *obsMaskStrategy) Tools() []tool.RegisteredTool { return nil }
 
 // AfterAction is a no-op; this strategy performs no work after each action.
 func (s *obsMaskStrategy) AfterAction(ctx context.Context, history []schema.Turn, client *llm.Client) error {

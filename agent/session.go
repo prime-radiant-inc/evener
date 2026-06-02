@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/installid"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/agent/task"
@@ -43,7 +44,7 @@ type Session struct {
 	// Steer/Enqueue/DrainAsSteer, Snapshot/State/DetailedStatus, and Close —
 	// run on other goroutines and race it, so the primitives below guard the
 	// shared fields. Several collaborators carry their OWN locks and are NOT
-	// covered by mu: contextMgr (contextManager.mu), reg (toolRegistry.mu),
+	// covered by mu: contextMgr (contextManager.mu), reg (tool.Registry.mu),
 	// subagents (subagentManager.mu / per-child sub.mu), taskStore
 	// (TaskStore.mu — note it may be SHARED with child sessions when
 	// ShareTasksWithChildren is set), and transcript (TranscriptWriter.mu).
@@ -54,7 +55,7 @@ type Session struct {
 	//   MaxToolRoundsPerInput), cachedSystemPrompt, cachedToolDefs, the
 	//   comm communicate-result, steeringQueue, followups, inputQueue,
 	//   loopDetectionCount, the task* reminder counters, depth, and the
-	//   naming name-state. It does NOT guard reg — the ToolRegistry self-synchronizes.
+	//   naming name-state. It does NOT guard reg — the tool.Registry self-synchronizes.
 	//   (readOnlyStreak is mutated only by the loop and is intentionally
 	//   lock-free / loop-private; loopDetectionCount is taken under mu.)
 	mu sync.Mutex
@@ -73,7 +74,7 @@ type Session struct {
 
 	fork forkInfo
 
-	reg *toolRegistry
+	reg *tool.Registry
 
 	steeringQueue []steeringMessage
 	followups     []string
@@ -275,8 +276,8 @@ func (s *Session) reapplyProviderSpecificTools(oldTag, newTag string) {
 	switch {
 	case newTag == "google" && oldTag != "google":
 		// Switching to Gemini: wire the real web_search executor.
-		_ = s.reg.Register(registeredTool{
-			Tool: llm.Tool{Definition: defWebSearch()},
+		_ = s.reg.Register(tool.RegisteredTool{
+			Tool: llm.Tool{Definition: tool.DefWebSearch()},
 			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 				query := fmt.Sprint(args["query"])
 				return s.webSearch(ctx, query)

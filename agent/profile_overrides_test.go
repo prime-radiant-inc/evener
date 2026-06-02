@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/llm"
 )
 
@@ -12,7 +13,7 @@ func TestDefCommunicate_DefaultSchema_NoDecisionField(t *testing.T) {
 	// Default communicate schema should NOT include the decision field.
 	// Decision is only needed for orchestration (toil) and gives the model
 	// an escape hatch to rationalize giving up in standalone mode.
-	td := defCommunicate()
+	td := tool.DefCommunicate()
 	props, _ := td.Parameters["properties"].(map[string]any)
 	output, _ := props["output"].(map[string]any)
 	outProps, _ := output["properties"].(map[string]any)
@@ -105,7 +106,7 @@ func TestWithAllowedDecisions_NilDecisions_NoOp(t *testing.T) {
 }
 
 func TestWithAllowedDecisions_RegistryPreservesDecisionSchema(t *testing.T) {
-	// Regression test: newToolRegistry registers the profile's communicate
+	// Regression test: tool.NewRegistry registers the profile's communicate
 	// definition (with decision). Then re-registering with the base definition
 	// but checking for an existing entry first should preserve decision.
 	p := WithAllowedDecisions(NewOpenAIProfile("gpt-5.2"), []string{"approved", "rejected"})
@@ -114,18 +115,18 @@ func TestWithAllowedDecisions_RegistryPreservesDecisionSchema(t *testing.T) {
 	// Registry should have communicate with decision from profile.
 	existing := reg.Get("communicate")
 	if existing == nil {
-		t.Fatal("communicate not found in registry after newToolRegistry")
+		t.Fatal("communicate not found in registry after tool.NewRegistry")
 	}
 
 	// Simulate registerCoreTools pattern (the fix):
 	// Use existing definition from registry instead of base.
-	resultToolDef := defCommunicateNamed("communicate")
+	resultToolDef := tool.DefCommunicateNamed("communicate")
 	if ex := reg.Get("communicate"); ex != nil {
 		resultToolDef = ex.Definition
 	}
 
 	// Re-register with the preserved definition + an executor.
-	err := reg.Register(registeredTool{
+	err := reg.Register(tool.RegisteredTool{
 		Tool: llm.Tool{Definition: resultToolDef},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return nil, nil

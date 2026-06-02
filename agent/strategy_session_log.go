@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -41,12 +42,12 @@ func newSessionLogStrategy(cm *contextManager, host strategyHost) (*sessionLogSt
 func (s *sessionLogStrategy) Name() string { return "session-log" }
 
 // Tools returns the tools provided by this strategy, namely the recall tool.
-func (s *sessionLogStrategy) Tools() []registeredTool {
-	return []registeredTool{sessionLogRecallToolDef(s)}
+func (s *sessionLogStrategy) Tools() []tool.RegisteredTool {
+	return []tool.RegisteredTool{sessionLogRecallToolDef(s)}
 }
 
-// sessionLogRecallToolDef builds the recall registeredTool for this strategy.
-func sessionLogRecallToolDef(strategy *sessionLogStrategy) registeredTool {
+// sessionLogRecallToolDef builds the recall tool.RegisteredTool for this strategy.
+func sessionLogRecallToolDef(strategy *sessionLogStrategy) tool.RegisteredTool {
 	return buildRecallTool(func() strategyHost { return strategy.session })
 }
 

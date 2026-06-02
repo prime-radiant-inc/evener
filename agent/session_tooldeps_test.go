@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/llm"
 )
 
@@ -58,7 +59,7 @@ func TestToolDeps_ShellTimeoutClamp(t *testing.T) {
 		cmdTimeouts: func() (int, int) { return defTimeout, maxTimeout },
 	}
 
-	reg := newToolRegistry()
+	reg := tool.NewRegistry()
 	if err := registerShellTools(reg, deps); err != nil {
 		t.Fatalf("registerShellTools: %v", err)
 	}
@@ -117,7 +118,7 @@ func TestToolDeps_ReadBeforeWriteWarning(t *testing.T) {
 		},
 	}
 
-	reg := newToolRegistry()
+	reg := tool.NewRegistry()
 	if err := registerFileTools(reg, deps); err != nil {
 		t.Fatalf("registerFileTools: %v", err)
 	}

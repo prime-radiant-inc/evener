@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/llm"
 )
 
@@ -84,7 +85,7 @@ func TestRealMCP_ToolDiscovery(t *testing.T) {
 func TestRealMCP_Echo(t *testing.T) {
 	mgr := newEverythingManager(t)
 
-	reg := newToolRegistry()
+	reg := tool.NewRegistry()
 	if err := mgr.RegisterTools(reg); err != nil {
 		t.Fatalf("RegisterTools: %v", err)
 	}
@@ -106,7 +107,7 @@ func TestRealMCP_Echo(t *testing.T) {
 func TestRealMCP_GetSum(t *testing.T) {
 	mgr := newEverythingManager(t)
 
-	reg := newToolRegistry()
+	reg := tool.NewRegistry()
 	if err := mgr.RegisterTools(reg); err != nil {
 		t.Fatalf("RegisterTools: %v", err)
 	}
@@ -128,7 +129,7 @@ func TestRealMCP_GetSum(t *testing.T) {
 func TestRealMCP_ImageContent(t *testing.T) {
 	mgr := newEverythingManager(t)
 
-	reg := newToolRegistry()
+	reg := tool.NewRegistry()
 	if err := mgr.RegisterTools(reg); err != nil {
 		t.Fatalf("RegisterTools: %v", err)
 	}
@@ -176,7 +177,7 @@ func TestRealMCP_EnvPassing(t *testing.T) {
 	}
 	t.Cleanup(mgr.Close)
 
-	reg := newToolRegistry()
+	reg := tool.NewRegistry()
 	if err := mgr.RegisterTools(reg); err != nil {
 		t.Fatalf("RegisterTools: %v", err)
 	}
@@ -201,7 +202,7 @@ func TestRealMCP_EnvPassing(t *testing.T) {
 func TestRealMCP_AnnotatedMessage(t *testing.T) {
 	mgr := newEverythingManager(t)
 
-	reg := newToolRegistry()
+	reg := tool.NewRegistry()
 	if err := mgr.RegisterTools(reg); err != nil {
 		t.Fatalf("RegisterTools: %v", err)
 	}

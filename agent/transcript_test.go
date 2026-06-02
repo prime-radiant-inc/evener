@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -1299,8 +1300,8 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 		model:         "gpt-5.2",
 		contextWindow: 500,
 		toolDefs: []llm.ToolDefinition{
-			defReadFile(),
-			defCommunicate(),
+			tool.DefReadFile(),
+			tool.DefCommunicate(),
 		},
 	}
 

@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -18,12 +19,12 @@ type spyStrategy struct {
 	mu                 sync.Mutex
 	manageContextCalls int
 	afterActionCalls   int
-	toolsDefs          []registeredTool
+	toolsDefs          []tool.RegisteredTool
 }
 
 func (s *spyStrategy) Name() string { return "spy" }
 
-func (s *spyStrategy) Tools() []registeredTool { return s.toolsDefs }
+func (s *spyStrategy) Tools() []tool.RegisteredTool { return s.toolsDefs }
 
 func (s *spyStrategy) ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
 	s.mu.Lock()

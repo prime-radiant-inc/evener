@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -35,7 +36,7 @@ func TestSession_ProcessInputRepairsOrphanedAssistantToolCallsBeforeModelRequest
 	}
 
 	var dangerousRuns atomic.Int32
-	if err := sess.reg.Register(registeredTool{
+	if err := sess.reg.Register(tool.RegisteredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{
 			Name:        "dangerous",
 			Description: "side-effecting test tool that must not be replayed during history repair",

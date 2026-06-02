@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/llm"
 )
 
@@ -90,11 +91,11 @@ func TestBehaviorTag_PromptCache_OpenAICompatible(t *testing.T) {
 
 // webSearchExecIsReal returns true if the web_search tool in reg has a real
 // executor (the one registered by registerCoreTools for the google path) rather
-// than the placeholder that newToolRegistry installs ("tool executor not wired").
+// than the placeholder that tool.NewRegistry installs ("tool executor not wired").
 // We distinguish them by calling the executor and checking whether the error
 // text is the sentinel placeholder string. The real executor may panic on nil
 // client/context; we recover from that (it still means it was the real path).
-func webSearchExecIsReal(t *testing.T, reg *toolRegistry) (isReal bool) {
+func webSearchExecIsReal(t *testing.T, reg *tool.Registry) (isReal bool) {
 	t.Helper()
 	tool := reg.Get("web_search")
 	if tool == nil || tool.Exec == nil {
@@ -179,8 +180,8 @@ func TestBehaviorTag_Gemini_OpenAIDoesNotRegisterWebSearch(t *testing.T) {
 	}
 
 	// Use a fresh empty registry to isolate registerCoreTools behavior from
-	// what newToolRegistry pre-populates from profile.ToolDefinitions().
-	emptyReg := newToolRegistry()
+	// what tool.NewRegistry pre-populates from profile.ToolDefinitions().
+	emptyReg := tool.NewRegistry()
 	if err := registerCoreTools(emptyReg, sess); err != nil {
 		t.Fatalf("registerCoreTools (empty reg): %v", err)
 	}

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 )
 
 func TestParseImageResult_ExtractsImageData(t *testing.T) {
@@ -18,9 +19,9 @@ func TestParseImageResult_ExtractsImageData(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString(pngHeader)
 	readOutput := fmt.Sprintf("[image: png, %d bytes, base64 data follows]\n%s", len(pngHeader), encoded)
 
-	got := parseImageResult("photo.png", readOutput)
+	got := tool.ParseImageResult("photo.png", readOutput)
 	if got == nil {
-		t.Fatal("expected non-nil imageResult")
+		t.Fatal("expected non-nil tool.ImageResult")
 	}
 	if !bytes.Equal(got.Data, pngHeader) {
 		t.Fatalf("Data mismatch: got %v, want %v", got.Data, pngHeader)
@@ -34,15 +35,15 @@ func TestParseImageResult_ExtractsImageData(t *testing.T) {
 }
 
 func TestParseImageResult_ReturnsNilForNonImage(t *testing.T) {
-	got := parseImageResult("code.go", "1 | package main\n2 | func main() {}\n")
+	got := tool.ParseImageResult("code.go", "1 | package main\n2 | func main() {}\n")
 	if got != nil {
 		t.Fatal("expected nil for non-image content")
 	}
 }
 
 func TestReadFile_Image_EndToEnd_ToolExecResult(t *testing.T) {
-	// End-to-end: read_file on a real PNG → env returns base64 → parseImageResult
-	// extracts bytes → toolExecResult has ImageData set. This is the path that
+	// End-to-end: read_file on a real PNG → env returns base64 → tool.ParseImageResult
+	// extracts bytes → tool.ExecResult has ImageData set. This is the path that
 	// sends images to the model for visual inspection.
 	dir := t.TempDir()
 	env := execenv.NewLocalExecutionEnvironment(dir)
@@ -62,10 +63,10 @@ func TestReadFile_Image_EndToEnd_ToolExecResult(t *testing.T) {
 		t.Fatalf("expected [image: prefix, got: %q", output[:min(len(output), 50)])
 	}
 
-	// Step 2: parseImageResult extracts the image data.
-	img := parseImageResult("board.png", output)
+	// Step 2: tool.ParseImageResult extracts the image data.
+	img := tool.ParseImageResult("board.png", output)
 	if img == nil {
-		t.Fatal("parseImageResult returned nil — image not detected")
+		t.Fatal("tool.ParseImageResult returned nil — image not detected")
 	}
 	if !bytes.Equal(img.Data, pngData) {
 		t.Fatalf("image data mismatch: got %d bytes, want %d", len(img.Data), len(pngData))
@@ -80,7 +81,7 @@ func TestParseDocumentResult_ExtractsPDFData(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString(pdfContent)
 	readOutput := fmt.Sprintf("[document: pdf, %d bytes, base64 data follows]\n%s", len(pdfContent), encoded)
 
-	got := parseDocumentResult("invoice.pdf", readOutput)
+	got := tool.ParseDocumentResult("invoice.pdf", readOutput)
 	if got == nil {
 		t.Fatal("expected non-nil result for document")
 	}
@@ -96,7 +97,7 @@ func TestParseDocumentResult_ExtractsPDFData(t *testing.T) {
 }
 
 func TestParseDocumentResult_ReturnsNilForNonDocument(t *testing.T) {
-	got := parseDocumentResult("code.go", "1 | package main\n2 | func main() {}\n")
+	got := tool.ParseDocumentResult("code.go", "1 | package main\n2 | func main() {}\n")
 	if got != nil {
 		t.Fatal("expected nil for non-document content")
 	}
@@ -120,10 +121,10 @@ func TestReadFile_PDF_EndToEnd_ToolExecResult(t *testing.T) {
 		t.Fatalf("expected [document: prefix, got: %q", output[:min(len(output), 50)])
 	}
 
-	// Step 2: parseDocumentResult extracts the document data.
-	doc := parseDocumentResult("report.pdf", output)
+	// Step 2: tool.ParseDocumentResult extracts the document data.
+	doc := tool.ParseDocumentResult("report.pdf", output)
 	if doc == nil {
-		t.Fatal("parseDocumentResult returned nil")
+		t.Fatal("tool.ParseDocumentResult returned nil")
 	}
 	if !bytes.Equal(doc.Data, pdfData) {
 		t.Fatalf("data mismatch: got %d bytes, want %d", len(doc.Data), len(pdfData))

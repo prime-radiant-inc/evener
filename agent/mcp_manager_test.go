@@ -9,6 +9,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/llm"
 )
 
@@ -74,7 +75,7 @@ func TestMCPManager_InMemory(t *testing.T) {
 	}
 
 	// Register and execute.
-	reg := newToolRegistry()
+	reg := tool.NewRegistry()
 	if err := mgr.RegisterTools(reg); err != nil {
 		t.Fatalf("RegisterTools: %v", err)
 	}
@@ -163,7 +164,7 @@ func TestMCPManager_MultipleServers(t *testing.T) {
 	}
 
 	// Verify invocation routes to correct server.
-	reg := newToolRegistry()
+	reg := tool.NewRegistry()
 	if err := mgr.RegisterTools(reg); err != nil {
 		t.Fatal(err)
 	}
@@ -216,8 +217,8 @@ func TestMCPManager_BuiltinCollision(t *testing.T) {
 	defer mgr.Close()
 
 	// Pre-register s__echo in the registry to simulate collision.
-	reg := newToolRegistry()
-	if err := reg.Register(registeredTool{
+	reg := tool.NewRegistry()
+	if err := reg.Register(tool.RegisteredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "s__echo", Description: "pre-existing"}},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "built-in", nil
@@ -264,7 +265,7 @@ func TestMCPManager_ToolNameTooLong(t *testing.T) {
 	}
 	defer mgr.Close()
 
-	reg := newToolRegistry()
+	reg := tool.NewRegistry()
 	err = mgr.RegisterTools(reg)
 	if err == nil {
 		t.Fatal("expected tool name too long error, got nil")

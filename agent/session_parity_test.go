@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/llm"
 )
 
@@ -570,7 +571,7 @@ func TestParity_SteeringMidTask(t *testing.T) {
 			}
 			sess, _ := newParitySession(t, pc, steps)
 			defer sess.Close()
-			_ = sess.reg.Register(registeredTool{
+			_ = sess.reg.Register(tool.RegisteredTool{
 				Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "slow_tool"}},
 				Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 					started <- struct{}{}

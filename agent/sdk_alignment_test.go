@@ -6,12 +6,13 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/llm"
 )
 
 func TestRegisteredTool_EmbedsLLMTool(t *testing.T) {
 	var execCalled bool
-	rt := registeredTool{
+	rt := tool.RegisteredTool{
 		Tool: llm.Tool{
 			Definition: llm.ToolDefinition{
 				Name:        "test_embed",
@@ -34,7 +35,7 @@ func TestRegisteredTool_EmbedsLLMTool(t *testing.T) {
 	}
 
 	// Register should bridge Execute from Exec.
-	reg := newToolRegistry()
+	reg := tool.NewRegistry()
 	if err := reg.Register(rt); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -61,7 +62,7 @@ func TestRegisteredTool_EmbedsLLMTool(t *testing.T) {
 
 func TestRegisteredTool_ExecuteNotBridgedWhenAlreadySet(t *testing.T) {
 	var executeCalled bool
-	rt := registeredTool{
+	rt := tool.RegisteredTool{
 		Tool: llm.Tool{
 			Definition: llm.ToolDefinition{
 				Name: "preset_exec",
@@ -76,7 +77,7 @@ func TestRegisteredTool_ExecuteNotBridgedWhenAlreadySet(t *testing.T) {
 		},
 	}
 
-	reg := newToolRegistry()
+	reg := tool.NewRegistry()
 	if err := reg.Register(rt); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -99,7 +100,7 @@ func TestRegisteredTool_ExecuteNotBridgedWhenAlreadySet(t *testing.T) {
 }
 
 func TestRegisteredTool_BridgedExecute_RejectsNonMapArgs(t *testing.T) {
-	rt := registeredTool{
+	rt := tool.RegisteredTool{
 		Tool: llm.Tool{
 			Definition: llm.ToolDefinition{
 				Name: "bridge_reject",
@@ -110,7 +111,7 @@ func TestRegisteredTool_BridgedExecute_RejectsNonMapArgs(t *testing.T) {
 		},
 	}
 
-	reg := newToolRegistry()
+	reg := tool.NewRegistry()
 	if err := reg.Register(rt); err != nil {
 		t.Fatalf("Register: %v", err)
 	}

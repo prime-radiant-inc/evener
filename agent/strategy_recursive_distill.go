@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -41,7 +42,7 @@ func newRecursiveDistillStrategy(cm *contextManager) *recursiveDistillStrategy {
 func (s *recursiveDistillStrategy) Name() string { return "recursive-distill" }
 
 // Tools returns nil, as this strategy registers no tools.
-func (s *recursiveDistillStrategy) Tools() []registeredTool { return nil }
+func (s *recursiveDistillStrategy) Tools() []tool.RegisteredTool { return nil }
 
 // ManageContext runs the standard compact compaction and then, if any
 // distilled summaries exist, injects the distilled memory hierarchy as a

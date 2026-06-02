@@ -46,6 +46,12 @@ func hexHash(input string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
+// shortHash returns SHA256(b)[:8] as hex, used for compact tool-call
+// signatures when deduplicating repeated calls.
+func shortHash(b []byte) string {
+	return hexHash(string(b))
+}
+
 // xdgStateHome returns $XDG_STATE_HOME or ~/.local/state as default.
 func xdgStateHome() string {
 	if v := os.Getenv("XDG_STATE_HOME"); v != "" {

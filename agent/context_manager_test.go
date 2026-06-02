@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
@@ -1096,8 +1097,8 @@ func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 		model:         "gpt-5.2",
 		contextWindow: 500,
 		toolDefs: []llm.ToolDefinition{
-			defReadFile(),
-			defCommunicate(),
+			tool.DefReadFile(),
+			tool.DefCommunicate(),
 		},
 	}
 
@@ -1162,8 +1163,8 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 		model:         "gpt-5.2",
 		contextWindow: 500, // Tiny window to force compaction.
 		toolDefs: []llm.ToolDefinition{
-			defReadFile(),
-			defCommunicate(),
+			tool.DefReadFile(),
+			tool.DefCommunicate(),
 		},
 	}
 

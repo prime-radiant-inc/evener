@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
@@ -37,7 +38,7 @@ func (s *Session) resultToolName() string {
 
 // RegisterTool registers a custom tool at runtime.
 func (s *Session) RegisterTool(name, description string, params map[string]any, fn func(ctx context.Context, args any) (any, error)) {
-	_ = s.reg.Register(registeredTool{
+	_ = s.reg.Register(tool.RegisteredTool{
 		Tool: llm.Tool{
 			Definition: llm.ToolDefinition{
 				Name:        name,
@@ -57,7 +58,7 @@ func (s *Session) RegisterTool(name, description string, params map[string]any, 
 // describeImage makes a side-channel API call with no tools to describe an image
 // using the model's native vision. Returns the text description, or "" on error.
 // The call includes context from the current task so the description is relevant.
-func (s *Session) describeImage(ctx context.Context, r toolExecResult) string {
+func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
 	if len(r.ImageData) == 0 {
 		return ""
 	}
@@ -205,7 +206,7 @@ func (s *Session) providerVisibleToolNames(names []string) []string {
 	return out
 }
 
-func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) toolExecResult {
+func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.ExecResult {
 	if err := s.abortIfClosing(ctx); err != nil {
 		return skippedToolResult(call, err)
 	}
@@ -226,7 +227,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) toolExecR
 			if preResult.DenyMessage != "" {
 				denyMsg = preResult.DenyMessage
 			}
-			return toolExecResult{
+			return tool.ExecResult{
 				ToolName:   call.Name,
 				CallID:     call.ID,
 				Output:     denyMsg,
@@ -237,7 +238,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) toolExecR
 		if len(preResult.UpdatedInput) > 0 {
 			if err := applyUpdatedToolInput(&call, preResult.UpdatedInput); err != nil {
 				msg := "invalid hook updatedInput: " + err.Error()
-				return toolExecResult{
+				return tool.ExecResult{
 					ToolName:   call.Name,
 					CallID:     call.ID,
 					Output:     msg,
@@ -392,12 +393,12 @@ func applyUpdatedToolInput(call *llm.ToolCallData, updated map[string]any) error
 	return nil
 }
 
-func skippedToolResult(call llm.ToolCallData, err error) toolExecResult {
+func skippedToolResult(call llm.ToolCallData, err error) tool.ExecResult {
 	msg := "tool skipped: session is closing"
 	if err != nil && !errors.Is(err, context.Canceled) {
 		msg = "tool skipped: " + err.Error()
 	}
-	return toolExecResult{
+	return tool.ExecResult{
 		ToolName:   call.Name,
 		CallID:     call.ID,
 		Output:     msg,
@@ -406,7 +407,7 @@ func skippedToolResult(call llm.ToolCallData, err error) toolExecResult {
 	}
 }
 
-func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []toolExecResult, err error) {
+func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []tool.ExecResult, err error) {
 	if len(calls) == 0 {
 		return
 	}
@@ -415,13 +416,13 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 	}
 	parts := make([]llm.ContentPart, 0, len(calls))
 	for i, call := range calls {
-		res := toolExecResult{}
+		res := tool.ExecResult{}
 		if i < len(results) {
 			res = results[i]
 		}
 		if res.CallID == "" {
 			msg := "tool canceled: " + err.Error()
-			res = toolExecResult{
+			res = tool.ExecResult{
 				ToolName:   call.Name,
 				CallID:     call.ID,
 				Output:     msg,
@@ -445,7 +446,7 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 	s.appendTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: parts})
 }
 
-func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallData, results []toolExecResult, parts []llm.ContentPart) error {
+func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallData, results []tool.ExecResult, parts []llm.ContentPart) error {
 	if abortErr := s.withResponseSideEffects(ctx, func() {
 		s.appendTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: parts})
 		// Persist the completed tool round so resumed sessions always include
@@ -558,7 +559,7 @@ func (s *Session) rebuildToolDefsCache() {
 		defs = append(defs, td)
 	}
 	for i := range defs {
-		defs[i] = withPurposeParameter(defs[i])
+		defs[i] = tool.WithPurposeParameter(defs[i])
 	}
 
 	s.cachedToolDefs = defs

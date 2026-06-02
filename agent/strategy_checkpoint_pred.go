@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -30,7 +31,7 @@ func newCheckpointPredStrategy(cm *contextManager) *checkpointPredStrategy {
 func (s *checkpointPredStrategy) Name() string { return "checkpoint-pred" }
 
 // Tools returns nil; this strategy registers no tools.
-func (s *checkpointPredStrategy) Tools() []registeredTool { return nil }
+func (s *checkpointPredStrategy) Tools() []tool.RegisteredTool { return nil }
 
 // AfterAction is a no-op for this strategy and always returns nil.
 func (s *checkpointPredStrategy) AfterAction(ctx context.Context, history []schema.Turn, client *llm.Client) error {

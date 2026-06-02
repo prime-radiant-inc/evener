@@ -1,4 +1,4 @@
-package agent
+package tool
 
 import (
 	"errors"
@@ -10,9 +10,9 @@ import (
 	"strings"
 )
 
-// applyPatch applies a codex-rs-style apply_patch v4a patch to files under rootDir.
+// ApplyPatch applies a codex-rs-style apply_patch v4a patch to files under rootDir.
 // This is a best-effort implementation intended for local agent loops.
-func applyPatch(rootDir string, patch string) (string, error) {
+func ApplyPatch(rootDir string, patch string) (string, error) {
 	ops, err := parseV4APatch(patch)
 	if err != nil {
 		return "", err

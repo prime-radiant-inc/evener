@@ -16,6 +16,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/openai"
 )
@@ -314,7 +315,7 @@ func TestLive_MCP_StdioServer(t *testing.T) {
 	}
 
 	// Register tools and invoke
-	reg := newToolRegistry()
+	reg := tool.NewRegistry()
 	if err := mgr.RegisterTools(reg); err != nil {
 		t.Fatalf("RegisterTools: %v", err)
 	}
@@ -765,11 +766,11 @@ func TestLive_ToolRestriction_PluginAgent(t *testing.T) {
 	}
 
 	// Build a full tool registry
-	reg := newToolRegistry()
+	reg := tool.NewRegistry()
 	// Register some dummy tools (including communicate, which subagents always need)
 	for _, name := range []string{"read_file", "grep", "glob", "shell", "write_file", "edit_file", "communicate"} {
 		n := name
-		if err := reg.Register(registeredTool{
+		if err := reg.Register(tool.RegisteredTool{
 			Tool: llm.Tool{Definition: llm.ToolDefinition{
 				Name:        n,
 				Description: "test tool " + n,

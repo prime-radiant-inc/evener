@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/llm"
 )
 
@@ -1691,7 +1692,7 @@ func TestBuildSystemPrompt_ToolUsageBeforeProjectDocs(t *testing.T) {
 }
 
 func TestApplyPatch_DescriptionIncludesCapabilities(t *testing.T) {
-	d := defApplyPatch()
+	d := tool.DefApplyPatch()
 	if !strings.Contains(d.Description, "creating") || !strings.Contains(d.Description, "deleting") || !strings.Contains(d.Description, "modifying") {
 		t.Fatalf("apply_patch description missing capability summary: %q", d.Description)
 	}
@@ -1707,7 +1708,7 @@ func TestProviderProfile_NewToolRegistry_ContainsProfileTools(t *testing.T) {
 		t.Run(p.ID(), func(t *testing.T) {
 			reg := newProfileToolRegistry(p)
 			if reg == nil {
-				t.Fatal("newToolRegistry() returned nil")
+				t.Fatal("tool.NewRegistry() returned nil")
 			}
 
 			// Build the set of canonical names from p.toolDefs (the internal

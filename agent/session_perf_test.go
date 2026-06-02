@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -101,7 +102,7 @@ func TestCachedToolDefs_IncludesMCPTools(t *testing.T) {
 		Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
 	}
 	sess.mcpTools = append(sess.mcpTools, mcpTool)
-	_ = sess.reg.Register(registeredTool{
+	_ = sess.reg.Register(tool.RegisteredTool{
 		Tool: llm.Tool{Definition: mcpTool},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
@@ -138,7 +139,7 @@ func TestCachedToolDefs_IncludesRegistryOnlyTools(t *testing.T) {
 	defer sess.Close()
 
 	// Register a custom tool directly.
-	customTool := registeredTool{
+	customTool := tool.RegisteredTool{
 		Tool: llm.Tool{
 			Definition: llm.ToolDefinition{
 				Name:        "custom_tool",
@@ -468,7 +469,7 @@ func TestCachedSystemPromptComponents_DoesNotDuplicateMCPToolDescriptions(t *tes
 		Description: "Test MCP tool",
 	}
 	sess.mcpTools = append(sess.mcpTools, mcpTool)
-	_ = sess.reg.Register(registeredTool{
+	_ = sess.reg.Register(tool.RegisteredTool{
 		Tool: llm.Tool{Definition: mcpTool},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil

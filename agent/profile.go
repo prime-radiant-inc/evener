@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 )
@@ -194,7 +195,7 @@ func cloneStringMap(in map[string]string) map[string]string {
 }
 
 // cloneAnyMap/cloneAnyValue copy provider option data. Tool schemas use
-// cloneSchemaMap via cloneToolDefinition instead.
+// tool.CloneSchemaMap via cloneToolDefinition instead.
 func cloneAnyMap(in map[string]any) map[string]any {
 	if in == nil {
 		return nil
@@ -230,7 +231,7 @@ func cloneAnyValue(v any) any {
 }
 
 func cloneToolDefinition(td llm.ToolDefinition) llm.ToolDefinition {
-	td.Parameters = cloneSchemaMap(td.Parameters)
+	td.Parameters = tool.CloneSchemaMap(td.Parameters)
 	return td
 }
 
@@ -246,43 +247,43 @@ func toolDefinitionsForCapabilities(capabilities []toolCapability, efforts []str
 	}
 
 	if enabled[capabilityFiles] {
-		add(defReadFile())
+		add(tool.DefReadFile())
 	}
 	if enabled[capabilityCodexEditing] {
-		add(defApplyPatch())
+		add(tool.DefApplyPatch())
 	}
 	if enabled[capabilityFiles] {
-		add(defWriteFile())
+		add(tool.DefWriteFile())
 	}
 	if enabled[capabilityExactEditing] {
-		add(defEditFile())
+		add(tool.DefEditFile())
 	}
 	if enabled[capabilityShellSearch] {
-		add(defShell())
-		add(defGrep())
-		add(defGlob())
+		add(tool.DefShell())
+		add(tool.DefGrep())
+		add(tool.DefGlob())
 	}
 	if enabled[capabilityDirectoryListing] {
-		add(defListDir())
+		add(tool.DefListDir())
 	}
 	if enabled[capabilityAgentControl] {
-		add(defSpawnAgent())
-		add(defSendInput())
-		add(defWait())
-		add(defCloseAgent())
+		add(tool.DefSpawnAgent())
+		add(tool.DefSendInput())
+		add(tool.DefWait())
+		add(tool.DefCloseAgent())
 	}
 	if enabled[capabilityWorkflow] {
-		add(defTaskList(efforts))
+		add(tool.DefTaskList(efforts))
 	}
 	if enabled[capabilityWebFetch] {
-		add(defWebFetch())
+		add(tool.DefWebFetch())
 	}
 	if enabled[capabilityWebSearch] {
-		add(defWebSearch())
+		add(tool.DefWebSearch())
 	}
 	if enabled[capabilityWorkflow] {
-		add(defCommunicate())
-		add(defUseSkill())
+		add(tool.DefCommunicate())
+		add(tool.DefUseSkill())
 	}
 	return defs
 }
@@ -328,7 +329,7 @@ func (p *baseProfile) ToolDefinitions() []llm.ToolDefinition {
 		if mapped, ok := p.toolNameMap[d.Name]; ok {
 			defs[i].Name = mapped
 		}
-		defs[i] = withPurposeParameter(defs[i])
+		defs[i] = tool.WithPurposeParameter(defs[i])
 	}
 	return defs
 }
@@ -347,10 +348,10 @@ func (p *baseProfile) ToolNameMap() map[string]string {
 // definitions (canonical names) and placeholder executors; the Session wires
 // real executors after construction. Reached via newProfileToolRegistry rather
 // than the public ProviderProfile interface.
-func (p *baseProfile) toolRegistry() *toolRegistry {
-	reg := newToolRegistry()
+func (p *baseProfile) toolRegistry() *tool.Registry {
+	reg := tool.NewRegistry()
 	for _, td := range p.toolDefs {
-		_ = reg.Register(registeredTool{
+		_ = reg.Register(tool.RegisteredTool{
 			Tool: llm.Tool{Definition: td},
 			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 				return nil, errors.New("tool executor not wired")
@@ -364,11 +365,11 @@ func (p *baseProfile) toolRegistry() *toolRegistry {
 // Every profile embeds *baseProfile, which carries the unexported toolRegistry
 // method, so this keeps the toolRegistry type off the public ProviderProfile
 // interface while remaining callable for any ProviderProfile.
-func newProfileToolRegistry(p ProviderProfile) *toolRegistry {
-	if b, ok := p.(interface{ toolRegistry() *toolRegistry }); ok {
+func newProfileToolRegistry(p ProviderProfile) *tool.Registry {
+	if b, ok := p.(interface{ toolRegistry() *tool.Registry }); ok {
 		return b.toolRegistry()
 	}
-	return newToolRegistry()
+	return tool.NewRegistry()
 }
 func (p *baseProfile) SupportsParallelToolCalls() bool { return p.parallel }
 func (p *baseProfile) ContextWindowSize() int          { return p.contextWindow }

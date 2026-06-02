@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/skill"
 	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
@@ -158,7 +159,7 @@ func newToolDeps(s *Session) *toolDeps {
 	}
 }
 
-func registerCoreTools(reg *toolRegistry, s *Session) error {
+func registerCoreTools(reg *tool.Registry, s *Session) error {
 	deps := newToolDeps(s)
 	if err := registerFileTools(reg, deps); err != nil {
 		return err
@@ -174,10 +175,10 @@ func registerCoreTools(reg *toolRegistry, s *Session) error {
 	return nil
 }
 
-func registerFileTools(reg *toolRegistry, deps *toolDeps) error {
+func registerFileTools(reg *tool.Registry, deps *toolDeps) error {
 	// read_file
-	if err := reg.Register(registeredTool{
-		Tool: llm.Tool{Definition: defReadFile(), ReadOnly: true},
+	if err := reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: tool.DefReadFile(), ReadOnly: true},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			path := fmt.Sprint(args["file_path"])
@@ -188,12 +189,12 @@ func registerFileTools(reg *toolRegistry, deps *toolDeps) error {
 			if err == nil {
 				deps.readGuard.TrackRead(path)
 				// If the file is an image or document (PDF), return an
-				// imageResult so the vision side-channel can process it.
-				if img := parseImageResult(path, result); img != nil {
+				// tool.ImageResult so the vision side-channel can process it.
+				if img := tool.ParseImageResult(path, result); img != nil {
 					img.Purpose = purpose
 					return *img, nil
 				}
-				if doc := parseDocumentResult(path, result); doc != nil {
+				if doc := tool.ParseDocumentResult(path, result); doc != nil {
 					doc.Purpose = purpose
 					return *doc, nil
 				}
@@ -205,8 +206,8 @@ func registerFileTools(reg *toolRegistry, deps *toolDeps) error {
 	}
 
 	// write_file
-	if err := reg.Register(registeredTool{
-		Tool: llm.Tool{Definition: defWriteFile()},
+	if err := reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: tool.DefWriteFile()},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			path := fmt.Sprint(args["file_path"])
@@ -222,8 +223,8 @@ func registerFileTools(reg *toolRegistry, deps *toolDeps) error {
 	}
 
 	// edit_file
-	_ = reg.Register(registeredTool{
-		Tool: llm.Tool{Definition: defEditFile()},
+	_ = reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: tool.DefEditFile()},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			path := fmt.Sprint(args["file_path"])
@@ -243,10 +244,10 @@ func registerFileTools(reg *toolRegistry, deps *toolDeps) error {
 	return nil
 }
 
-func registerShellTools(reg *toolRegistry, deps *toolDeps) error {
+func registerShellTools(reg *tool.Registry, deps *toolDeps) error {
 	// shell
-	if err := reg.Register(registeredTool{
-		Tool: llm.Tool{Definition: defShell()},
+	if err := reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: tool.DefShell()},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			cmd := fmt.Sprint(args["command"])
 			defTimeout, maxTimeout := deps.cmdTimeouts()
@@ -286,8 +287,8 @@ func registerShellTools(reg *toolRegistry, deps *toolDeps) error {
 	}
 
 	// list_dir (Gemini-aligned)
-	_ = reg.Register(registeredTool{
-		Tool: llm.Tool{Definition: defListDir(), ReadOnly: true},
+	_ = reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: tool.DefListDir(), ReadOnly: true},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			path := fmt.Sprint(args["path"])
@@ -300,8 +301,8 @@ func registerShellTools(reg *toolRegistry, deps *toolDeps) error {
 	})
 
 	// grep
-	if err := reg.Register(registeredTool{
-		Tool: llm.Tool{Definition: defGrep(), ReadOnly: true},
+	if err := reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: tool.DefGrep(), ReadOnly: true},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			pat := fmt.Sprint(args["pattern"])
@@ -326,8 +327,8 @@ func registerShellTools(reg *toolRegistry, deps *toolDeps) error {
 	}
 
 	// glob
-	if err := reg.Register(registeredTool{
-		Tool: llm.Tool{Definition: defGlob(), ReadOnly: true},
+	if err := reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: tool.DefGlob(), ReadOnly: true},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			pat := fmt.Sprint(args["pattern"])
@@ -343,22 +344,22 @@ func registerShellTools(reg *toolRegistry, deps *toolDeps) error {
 	}
 
 	// apply_patch (OpenAI-specific; best-effort implementation lives in this repo)
-	_ = reg.Register(registeredTool{
-		Tool: llm.Tool{Definition: defApplyPatch()},
+	_ = reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: tool.DefApplyPatch()},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			patch := fmt.Sprint(args["patch"])
-			return applyPatch(env.WorkingDirectory(), patch)
+			return tool.ApplyPatch(env.WorkingDirectory(), patch)
 		},
 	})
 
 	return nil
 }
 
-func registerSubagentTools(reg *toolRegistry, s *Session) {
+func registerSubagentTools(reg *tool.Registry, s *Session) {
 	// Subagent tools (best-effort; synchronous completion for v1).
-	_ = reg.Register(registeredTool{
-		Tool: llm.Tool{Definition: defSpawnAgent()},
+	_ = reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: tool.DefSpawnAgent()},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			task := fmt.Sprint(args["task"])
@@ -439,8 +440,8 @@ func registerSubagentTools(reg *toolRegistry, s *Session) {
 			return waitResult, waitErr
 		},
 	})
-	_ = reg.Register(registeredTool{
-		Tool: llm.Tool{Definition: defSendInput()},
+	_ = reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: tool.DefSendInput()},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			agentID := fmt.Sprint(args["agent_id"])
@@ -489,8 +490,8 @@ func registerSubagentTools(reg *toolRegistry, s *Session) {
 			return waitResult, waitErr
 		},
 	})
-	_ = reg.Register(registeredTool{
-		Tool: llm.Tool{Definition: defWait()},
+	_ = reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: tool.DefWait()},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			timeout := 0
@@ -504,8 +505,8 @@ func registerSubagentTools(reg *toolRegistry, s *Session) {
 			return s.waitAgent(ctx, fmt.Sprint(args["agent_id"]), timeout)
 		},
 	})
-	_ = reg.Register(registeredTool{
-		Tool: llm.Tool{Definition: defCloseAgent()},
+	_ = reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: tool.DefCloseAgent()},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			return s.closeAgent(fmt.Sprint(args["agent_id"]))
@@ -513,10 +514,10 @@ func registerSubagentTools(reg *toolRegistry, s *Session) {
 	})
 }
 
-func registerTaskTools(reg *toolRegistry, deps *toolDeps) {
+func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 	// Task management.
-	_ = reg.Register(registeredTool{
-		Tool: llm.Tool{Definition: defTaskList(deps.reasoningEffortLevels)},
+	_ = reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: tool.DefTaskList(deps.reasoningEffortLevels)},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			deps.taskGuard.MarkUsed()
@@ -570,7 +571,7 @@ func registerTaskTools(reg *toolRegistry, deps *toolDeps) {
 				// message when the agent actually transitions one to
 				// in_progress, either manually or via auto-advance.
 				total, done := store.Progress()
-				return toolStateResult{
+				return tool.StateResult{
 					Output: fmt.Sprintf("Added %d task(s). Progress: %d/%d tasks complete.", len(added), done, total),
 					State:  store.View(),
 				}, nil
@@ -645,7 +646,7 @@ func registerTaskTools(reg *toolRegistry, deps *toolDeps) {
 				}
 
 				if !completedAny && manuallyStartedID == 0 {
-					return toolStateResult{Output: "Updated.", State: store.View()}, nil
+					return tool.StateResult{Output: "Updated.", State: store.View()}, nil
 				}
 
 				var msg strings.Builder
@@ -683,7 +684,7 @@ func registerTaskTools(reg *toolRegistry, deps *toolDeps) {
 
 				total, done := store.Progress()
 				msg.WriteString(fmt.Sprintf("Progress: %d/%d tasks complete.", done, total))
-				return toolStateResult{Output: msg.String(), State: store.View()}, nil
+				return tool.StateResult{Output: msg.String(), State: store.View()}, nil
 			default:
 				return nil, fmt.Errorf("unknown task_list action %q: use view, append, or update", action)
 			}
@@ -691,10 +692,10 @@ func registerTaskTools(reg *toolRegistry, deps *toolDeps) {
 	})
 }
 
-func registerWebTools(reg *toolRegistry, deps *toolDeps) {
+func registerWebTools(reg *tool.Registry, deps *toolDeps) {
 	// Web fetch.
-	_ = reg.Register(registeredTool{
-		Tool: llm.Tool{Definition: defWebFetch()},
+	_ = reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: tool.DefWebFetch()},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			rawURL := fmt.Sprint(args["url"])
 			question := fmt.Sprint(args["question"])
@@ -707,8 +708,8 @@ func registerWebTools(reg *toolRegistry, deps *toolDeps) {
 	// registering a function tool named "web_search" for those providers
 	// causes a duplicate name collision with the adapter-injected server tool.
 	if deps.webSearchEnabled {
-		_ = reg.Register(registeredTool{
-			Tool: llm.Tool{Definition: defWebSearch()},
+		_ = reg.Register(tool.RegisteredTool{
+			Tool: llm.Tool{Definition: tool.DefWebSearch()},
 			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 				query := fmt.Sprint(args["query"])
 				return deps.web.search(ctx, query)
@@ -717,16 +718,16 @@ func registerWebTools(reg *toolRegistry, deps *toolDeps) {
 	}
 }
 
-func registerCommunicateTool(reg *toolRegistry, deps *toolDeps) {
+func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 	// communicate is the only user-facing message channel.
 	// Use the profile's definition if available (it may have been modified by
 	// WithAllowedDecisions to add extra fields to the output schema).
 	// Fall back to the base definition otherwise.
-	resultToolDef := defCommunicateNamed(deps.resultToolName())
+	resultToolDef := tool.DefCommunicateNamed(deps.resultToolName())
 	if existing := reg.Get(deps.resultToolName()); existing != nil {
 		resultToolDef = existing.Definition
 	}
-	_ = reg.Register(registeredTool{
+	_ = reg.Register(tool.RegisteredTool{
 		Tool: llm.Tool{Definition: resultToolDef},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
@@ -798,12 +799,12 @@ func registerCommunicateTool(reg *toolRegistry, deps *toolDeps) {
 	})
 }
 
-func registerSkillTool(reg *toolRegistry, deps *toolDeps) {
+func registerSkillTool(reg *tool.Registry, deps *toolDeps) {
 	// use_skill (progressive disclosure of skill instructions).
 	// Present for provider profiles that include the use_skill tool definition.
 	if reg.Get("use_skill") != nil {
-		_ = reg.Register(registeredTool{
-			Tool: llm.Tool{Definition: defUseSkill()},
+		_ = reg.Register(tool.RegisteredTool{
+			Tool: llm.Tool{Definition: tool.DefUseSkill()},
 			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 				_ = ctx
 				_ = env

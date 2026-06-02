@@ -1,9 +1,11 @@
-package agent
+package tool
 
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -20,8 +22,8 @@ import (
 
 const toolPurposeDescription = "Briefly explain why you are calling this tool and what you expect to learn or accomplish."
 
-func withPurposeParameter(td llm.ToolDefinition) llm.ToolDefinition {
-	params := cloneSchemaMap(td.Parameters)
+func WithPurposeParameter(td llm.ToolDefinition) llm.ToolDefinition {
+	params := CloneSchemaMap(td.Parameters)
 	if params == nil {
 		params = map[string]any{"type": "object"}
 	}
@@ -45,7 +47,7 @@ func withPurposeParameter(td llm.ToolDefinition) llm.ToolDefinition {
 	return td
 }
 
-func cloneSchemaMap(in map[string]any) map[string]any {
+func CloneSchemaMap(in map[string]any) map[string]any {
 	if in == nil {
 		return nil
 	}
@@ -59,7 +61,7 @@ func cloneSchemaMap(in map[string]any) map[string]any {
 func cloneSchemaValue(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
-		return cloneSchemaMap(x)
+		return CloneSchemaMap(x)
 	case []any:
 		out := make([]any, len(x))
 		for i, item := range x {
@@ -79,10 +81,10 @@ func cloneSchemaValue(v any) any {
 	}
 }
 
-// toolExecResult holds the outcome of executing a single tool call, including
+// ExecResult holds the outcome of executing a single tool call, including
 // the truncated output sent to the model, the full untruncated output, timing,
 // and any image or state side-channel data.
-type toolExecResult struct {
+type ExecResult struct {
 	ToolName string
 	CallID   string
 
@@ -98,7 +100,7 @@ type toolExecResult struct {
 	DurationMS int64
 
 	// ImageData and ImageMediaType carry image bytes when a tool returns
-	// an imageResult (e.g. read_file on a PNG). Providers include these
+	// an ImageResult (e.g. read_file on a PNG). Providers include these
 	// alongside the text output so the model can "see" the image.
 	ImageData      []byte
 	ImageMediaType string
@@ -111,29 +113,29 @@ type toolExecResult struct {
 	ToolState json.RawMessage
 }
 
-// toolStateResult is returned by tool executors that want to emit a
+// StateResult is returned by tool executors that want to emit a
 // structured state snapshot alongside the terse string reply. Output is
 // what goes to the LLM; State is JSON-marshaled into TOOL_CALL_END's
 // tool_state field.
-type toolStateResult struct {
+type StateResult struct {
 	Output string
 	State  any
 }
 
-// imageResult is returned by tool executors (e.g. read_file) when a file is
+// ImageResult is returned by tool executors (e.g. read_file) when a file is
 // an image. Text is the human-readable description sent as the tool output;
 // Data and MediaType carry the raw image for multimodal models.
-type imageResult struct {
+type ImageResult struct {
 	Text      string
 	Data      []byte
 	MediaType string
 	Purpose   string // what the caller hopes to learn from this image
 }
 
-// parseImageResult checks if ReadFile output is an image response (the [image: ...]
+// ParseImageResult checks if ReadFile output is an image response (the [image: ...]
 // format produced by execenv.LocalExecutionEnvironment) and extracts the raw bytes.
 // Returns nil if the output is not an image.
-func parseImageResult(path, readFileOutput string) *imageResult {
+func ParseImageResult(path, readFileOutput string) *ImageResult {
 	if !strings.HasPrefix(readFileOutput, "[image:") {
 		return nil
 	}
@@ -150,17 +152,17 @@ func parseImageResult(path, readFileOutput string) *imageResult {
 	if mt == "" {
 		mt = "image/png"
 	}
-	return &imageResult{
+	return &ImageResult{
 		Text:      readFileOutput[:idx],
 		Data:      data,
 		MediaType: mt,
 	}
 }
 
-// parseDocumentResult checks if ReadFile output is a document response (the [document: ...]
-// format produced by execenv.LocalExecutionEnvironment for PDFs). Returns an imageResult so the
+// ParseDocumentResult checks if ReadFile output is a document response (the [document: ...]
+// format produced by execenv.LocalExecutionEnvironment for PDFs). Returns an ImageResult so the
 // same vision side-channel pipeline handles both images and documents.
-func parseDocumentResult(path, readFileOutput string) *imageResult {
+func ParseDocumentResult(path, readFileOutput string) *ImageResult {
 	if !strings.HasPrefix(readFileOutput, "[document:") {
 		return nil
 	}
@@ -177,17 +179,17 @@ func parseDocumentResult(path, readFileOutput string) *imageResult {
 	if mt == "" {
 		mt = "application/pdf"
 	}
-	return &imageResult{
+	return &ImageResult{
 		Text:      readFileOutput[:idx],
 		Data:      data,
 		MediaType: mt,
 	}
 }
 
-// registeredTool is a registered tool: the embedded llm.Tool (definition and
+// RegisteredTool is a registered tool: the embedded llm.Tool (definition and
 // Execute), its compiled validation schema, output limit, and the agent-layer
 // executor that receives the execenv.ExecutionEnvironment.
-type registeredTool struct {
+type RegisteredTool struct {
 	llm.Tool // embeds Definition + Execute
 	Schema   *jsonschema.Schema
 	Limit    schema.ToolOutputLimit
@@ -199,22 +201,22 @@ type registeredTool struct {
 // Return a non-nil error to block execution (the error message is returned to the LLM).
 type toolMiddleware func(ctx context.Context, toolName string, args map[string]any) error
 
-// toolRegistry is a concurrency-safe collection of registered tools and the
+// Registry is a concurrency-safe collection of registered tools and the
 // middleware run before their execution.
-type toolRegistry struct {
+type Registry struct {
 	mu         sync.RWMutex
-	tools      map[string]registeredTool
+	tools      map[string]RegisteredTool
 	middleware []toolMiddleware
 }
 
-// newToolRegistry returns an empty toolRegistry ready for tool registration.
-func newToolRegistry() *toolRegistry {
-	return &toolRegistry{tools: map[string]registeredTool{}}
+// NewRegistry returns an empty Registry ready for tool registration.
+func NewRegistry() *Registry {
+	return &Registry{tools: map[string]RegisteredTool{}}
 }
 
 // Use appends a middleware to the tool execution pipeline.
 // Middleware runs after argument validation but before tool execution.
-func (r *toolRegistry) Use(mw toolMiddleware) {
+func (r *Registry) Use(mw toolMiddleware) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.middleware = append(r.middleware, mw)
@@ -225,11 +227,11 @@ func (r *toolRegistry) Use(mw toolMiddleware) {
 // definition, applies a default output limit when none is set, compiles (or
 // reuses) the argument schema, and bridges llm.Tool.Execute from Exec when
 // unset.
-func (r *toolRegistry) Register(t registeredTool) error {
+func (r *Registry) Register(t RegisteredTool) error {
 	if err := llm.ValidateToolName(t.Definition.Name); err != nil {
 		return err
 	}
-	t.Definition = withPurposeParameter(t.Definition)
+	t.Definition = WithPurposeParameter(t.Definition)
 	if strings.TrimSpace(t.Definition.Description) == "" {
 		log.Printf("WARNING: tool %q registered with empty description", t.Definition.Name)
 	}
@@ -241,7 +243,7 @@ func (r *toolRegistry) Register(t registeredTool) error {
 	}
 	if t.Schema == nil {
 		// Reuse already-compiled schema when re-registering a tool (e.g.
-		// registerCoreTools re-registers tools from newToolRegistry). This
+		// registerCoreTools re-registers tools from NewRegistry). This
 		// avoids recompilation and guards against transient jsonschema
 		// library panics from os.Getwd() failures in ephemeral worktrees.
 		r.mu.RLock()
@@ -271,14 +273,14 @@ func (r *toolRegistry) Register(t registeredTool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.tools == nil {
-		r.tools = map[string]registeredTool{}
+		r.tools = map[string]RegisteredTool{}
 	}
 	r.tools[t.Definition.Name] = t
 	return nil
 }
 
 // Definitions returns the tool definitions for all registered tools.
-func (r *toolRegistry) Definitions() []llm.ToolDefinition {
+func (r *Registry) Definitions() []llm.ToolDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make([]llm.ToolDefinition, 0, len(r.tools))
@@ -292,12 +294,12 @@ func (r *toolRegistry) Definitions() []llm.ToolDefinition {
 // The result tool (communicate or its configured alias) is always kept
 // (subagents need it to return results). The resultToolName parameter
 // specifies the name to preserve; pass empty string for "communicate".
-func (r *toolRegistry) Restrict(allowed map[string]bool) {
+func (r *Registry) Restrict(allowed map[string]bool) {
 	r.RestrictKeepingResultTool(allowed, "communicate")
 }
 
 // RestrictKeepingResultTool is like Restrict but allows specifying the result tool name.
-func (r *toolRegistry) RestrictKeepingResultTool(allowed map[string]bool, resultToolName string) {
+func (r *Registry) RestrictKeepingResultTool(allowed map[string]bool, resultToolName string) {
 	if resultToolName == "" {
 		resultToolName = "communicate"
 	}
@@ -312,14 +314,14 @@ func (r *toolRegistry) RestrictKeepingResultTool(allowed map[string]bool, result
 }
 
 // Remove deletes a single tool from the registry.
-func (r *toolRegistry) Remove(name string) {
+func (r *Registry) Remove(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.tools, name)
 }
 
 // RegisteredNames returns a set of all currently registered tool names.
-func (r *toolRegistry) RegisteredNames() map[string]bool {
+func (r *Registry) RegisteredNames() map[string]bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	names := make(map[string]bool, len(r.tools))
@@ -330,14 +332,14 @@ func (r *toolRegistry) RegisteredNames() map[string]bool {
 }
 
 // Unregister deletes the named tool from the registry.
-func (r *toolRegistry) Unregister(name string) {
+func (r *Registry) Unregister(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.tools, name)
 }
 
 // Get returns the named registered tool, or nil if it is not registered.
-func (r *toolRegistry) Get(name string) *registeredTool {
+func (r *Registry) Get(name string) *RegisteredTool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	t, ok := r.tools[name]
@@ -347,8 +349,36 @@ func (r *toolRegistry) Get(name string) *registeredTool {
 	return &t
 }
 
+// OverrideLimits applies per-tool output-limit overrides to already-registered
+// tools. For each named tool present in the registry, the non-zero fields of
+// the override replace the corresponding fields of that tool's current limit;
+// unknown tool names are ignored. A nil or empty map is a no-op.
+func (r *Registry) OverrideLimits(overrides map[string]schema.ToolOutputLimit) {
+	if len(overrides) == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for name, lim := range overrides {
+		t, ok := r.tools[name]
+		if !ok {
+			continue
+		}
+		if lim.MaxChars > 0 {
+			t.Limit.MaxChars = lim.MaxChars
+		}
+		if lim.MaxLines > 0 {
+			t.Limit.MaxLines = lim.MaxLines
+		}
+		if lim.Strategy != "" {
+			t.Limit.Strategy = lim.Strategy
+		}
+		r.tools[name] = t
+	}
+}
+
 // Names returns the names of all registered tools, sorted alphabetically.
-func (r *toolRegistry) Names() []string {
+func (r *Registry) Names() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	out := make([]string, 0, len(r.tools))
@@ -361,11 +391,11 @@ func (r *toolRegistry) Names() []string {
 
 // ExecuteCall runs a single tool call: it looks up the tool, parses and
 // schema-validates the arguments, runs the registered middleware, invokes the
-// executor, and returns a truncated toolExecResult. Unknown tools, invalid
+// executor, and returns a truncated ExecResult. Unknown tools, invalid
 // arguments, failed validation, blocking middleware, and executor errors are
-// each returned as an error result. imageResult and toolStateResult values are
+// each returned as an error result. ImageResult and StateResult values are
 // unpacked into the result's image and state fields.
-func (r *toolRegistry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData) toolExecResult {
+func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData) ExecResult {
 	name := call.Name
 	callID := call.ID
 	if strings.TrimSpace(callID) == "" {
@@ -420,8 +450,8 @@ func (r *toolRegistry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnv
 		return truncateResult(name, callID, full, true, t.Limit)
 	}
 
-	// imageResult carries both text and raw image bytes.
-	if img, ok := v.(imageResult); ok {
+	// ImageResult carries both text and raw image bytes.
+	if img, ok := v.(ImageResult); ok {
 		res := truncateResult(name, callID, img.Text, false, t.Limit)
 		res.ImageData = img.Data
 		res.ImageMediaType = img.MediaType
@@ -429,15 +459,15 @@ func (r *toolRegistry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnv
 		return res
 	}
 
-	// toolStateResult carries an LLM-facing Output plus a JSON-serializable
+	// StateResult carries an LLM-facing Output plus a JSON-serializable
 	// State snapshot that rides along on the TOOL_CALL_END event.
-	if st, ok := v.(toolStateResult); ok {
+	if st, ok := v.(StateResult); ok {
 		res := truncateResult(name, callID, st.Output, false, t.Limit)
 		if st.State != nil {
 			if data, err := json.Marshal(st.State); err == nil {
 				res.ToolState = data
 			} else {
-				log.Printf("tool %s: marshal toolStateResult.State: %v", name, err)
+				log.Printf("tool %s: marshal StateResult.State: %v", name, err)
 			}
 		}
 		return res
@@ -447,13 +477,13 @@ func (r *toolRegistry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnv
 	return truncateResult(name, callID, full, false, t.Limit)
 }
 
-func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOutputLimit) toolExecResult {
+func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOutputLimit) ExecResult {
 	out := full
 	out = truncateChars(out, lim.MaxChars, lim.Strategy)
 	if lim.MaxLines > 0 {
 		out = truncateLines(out, lim.MaxLines)
 	}
-	return toolExecResult{
+	return ExecResult{
 		ToolName:   toolName,
 		CallID:     callID,
 		Output:     out,
@@ -581,5 +611,6 @@ func toolValueToString(v any) string {
 }
 
 func shortHash(b []byte) string {
-	return hexHash(string(b))
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:8])
 }

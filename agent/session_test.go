@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -88,7 +89,7 @@ type compactionEventStrategy struct {
 
 func (s compactionEventStrategy) Name() string { return "compaction-event-test" }
 
-func (s compactionEventStrategy) Tools() []registeredTool { return nil }
+func (s compactionEventStrategy) Tools() []tool.RegisteredTool { return nil }
 
 func (s compactionEventStrategy) ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
 	_ = ctx
@@ -1811,7 +1812,7 @@ func TestSession_ParallelToolCalls_RunConcurrentlyWhenSupported(t *testing.T) {
 	// Register a slow read-only tool that blocks until the test releases it.
 	// ReadOnly: true ensures the ordered-group algorithm batches both calls
 	// for parallel execution (non-read-only tools are serialized).
-	_ = sess.reg.Register(registeredTool{
+	_ = sess.reg.Register(tool.RegisteredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{
 			Name: "slow",
 			Parameters: map[string]any{
@@ -1892,8 +1893,8 @@ func TestSession_ParallelToolCalls_NonReadOnlyToolsSerialize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	makeTool := func(name string, readOnly bool) registeredTool {
-		return registeredTool{
+	makeTool := func(name string, readOnly bool) tool.RegisteredTool {
+		return tool.RegisteredTool{
 			Tool: llm.Tool{
 				Definition: llm.ToolDefinition{
 					Name:       name,
@@ -2644,7 +2645,7 @@ func TestSession_ExecToolEmitsEndWhenCloseBeginsAfterStart(t *testing.T) {
 		eventsDone <- evs
 	}()
 
-	resultDone := make(chan toolExecResult, 1)
+	resultDone := make(chan tool.ExecResult, 1)
 	go func() {
 		resultDone <- sess.execTool(context.Background(), llm.ToolCallData{
 			ID:        "slow_call",
@@ -2671,7 +2672,7 @@ func TestSession_ExecToolEmitsEndWhenCloseBeginsAfterStart(t *testing.T) {
 	}
 	close(releaseTool)
 
-	var res toolExecResult
+	var res tool.ExecResult
 	select {
 	case res = <-resultDone:
 	case <-time.After(time.Second):
@@ -2736,7 +2737,7 @@ func TestSession_AppendCanceledToolResultsPreservesCompletedStatus(t *testing.T)
 		{ID: "ok_call", Name: "ok_tool"},
 		{ID: "canceled_call", Name: "slow_tool"},
 	}
-	results := []toolExecResult{{
+	results := []tool.ExecResult{{
 		ToolName:   "ok_tool",
 		CallID:     "ok_call",
 		Output:     "ok",
@@ -2781,7 +2782,7 @@ func TestSession_AppendToolResultsSynthesizesCanceledResultsOnCancel(t *testing.
 		{ID: "ok_call", Name: "ok_tool"},
 		{ID: "canceled_call", Name: "slow_tool"},
 	}
-	results := []toolExecResult{{
+	results := []tool.ExecResult{{
 		ToolName:   "ok_tool",
 		CallID:     "ok_call",
 		Output:     "ok",
@@ -3036,7 +3037,7 @@ func TestSession_CustomRegisteredTool_AppearsInSystemPrompt(t *testing.T) {
 	defer sess.Close()
 
 	// Register a custom tool after session creation.
-	if err := sess.reg.Register(registeredTool{
+	if err := sess.reg.Register(tool.RegisteredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "my_custom_tool", Description: "Does custom things"}},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil

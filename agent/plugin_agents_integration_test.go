@@ -10,14 +10,15 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/llm"
 )
 
 func TestToolRegistry_Restrict(t *testing.T) {
-	reg := newToolRegistry()
+	reg := tool.NewRegistry()
 	for _, name := range []string{"read_file", "write_file", "grep", "shell", "communicate"} {
-		_ = reg.Register(registeredTool{
+		_ = reg.Register(tool.RegisteredTool{
 			Tool: llm.Tool{Definition: llm.ToolDefinition{Name: name, Description: name}},
 			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 				return "ok", nil
@@ -40,14 +41,14 @@ func TestToolRegistry_Restrict(t *testing.T) {
 }
 
 func TestToolRegistry_Restrict_KeepsCommunicate(t *testing.T) {
-	reg := newToolRegistry()
-	_ = reg.Register(registeredTool{
+	reg := tool.NewRegistry()
+	_ = reg.Register(tool.RegisteredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "communicate", Description: "communicate"}},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
 		},
 	})
-	_ = reg.Register(registeredTool{
+	_ = reg.Register(tool.RegisteredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "shell", Description: "shell"}},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
@@ -559,7 +560,7 @@ func TestSpawnAgent_PluginAgentType_InjectsSkillContent(t *testing.T) {
 }
 
 func TestDefSpawnAgent_HasAgentTypeParameter(t *testing.T) {
-	def := defSpawnAgent()
+	def := tool.DefSpawnAgent()
 	props, ok := def.Parameters["properties"].(map[string]any)
 	if !ok {
 		t.Fatal("expected properties map")

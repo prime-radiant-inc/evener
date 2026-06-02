@@ -529,26 +529,7 @@ func (s *Session) initSessionState(sessionStartKind SessionStartKind) ([]promptS
 	if err := registerCoreTools(reg, s); err != nil {
 		return nil, err
 	}
-	if len(s.cfg.ToolOutputLimits) > 0 {
-		reg.mu.Lock()
-		for name, lim := range s.cfg.ToolOutputLimits {
-			t, ok := reg.tools[name]
-			if !ok {
-				continue
-			}
-			if lim.MaxChars > 0 {
-				t.Limit.MaxChars = lim.MaxChars
-			}
-			if lim.MaxLines > 0 {
-				t.Limit.MaxLines = lim.MaxLines
-			}
-			if lim.Strategy != "" {
-				t.Limit.Strategy = lim.Strategy
-			}
-			reg.tools[name] = t
-		}
-		reg.mu.Unlock()
-	}
+	reg.OverrideLimits(s.cfg.ToolOutputLimits)
 	s.reg = reg
 
 	s.coreToolNames = reg.RegisteredNames()
