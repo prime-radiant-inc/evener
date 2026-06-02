@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -44,7 +45,7 @@ func TestUseSkill_ReturnsBody(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -90,7 +91,7 @@ func TestUseSkill_NotFound_ReturnsError(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "anthropic"})
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -123,7 +124,7 @@ func TestUseSkill_EmitsEvent(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -183,7 +184,7 @@ func TestUseSkill_SystemPromptContainsSkillList(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -222,7 +223,7 @@ func TestOpenAI_SkillsSectionUsesUseSkill(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -263,7 +264,7 @@ func TestOpenAIUseSkillToolExecutes(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -274,7 +275,7 @@ func TestOpenAIUseSkillToolExecutes(t *testing.T) {
 		t.Fatal("OpenAI session registry missing use_skill executor")
 	}
 
-	result := sess.reg.ExecuteCall(context.Background(), NewLocalExecutionEnvironment(root), llm.ToolCallData{
+	result := sess.reg.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(root), llm.ToolCallData{
 		ID:        "call_use_skill",
 		Name:      "use_skill",
 		Arguments: json.RawMessage(`{"skill_name":"greet","purpose":"test skill loading"}`),
@@ -303,7 +304,7 @@ func TestDiscoverSkills_PopulatedOnSession(t *testing.T) {
 	}
 	_ = os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: manual\ndescription: \"Manual skill\"\n---\nManual.\n"), 0o644)
 
-	env := NewLocalExecutionEnvironment(nonGit)
+	env := execenv.NewLocalExecutionEnvironment(nonGit)
 	skills := DiscoverSkills(env)
 	if _, ok := skills["manual"]; !ok {
 		t.Errorf("expected skill 'manual' discovered in non-git directory")

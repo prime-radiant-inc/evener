@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 )
 
 // minWaitTimeoutMS is the minimum timeout for the wait tool, preventing the model
@@ -274,7 +275,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 
 	subEnv := s.env
 	if workingDir = strings.TrimSpace(workingDir); workingDir != "" {
-		if le, ok := s.env.(*LocalExecutionEnvironment); ok {
+		if le, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
 			subEnv = le.WithWorkingDirectory(workingDir)
 		} else {
 			return "", errors.New("execution environment does not support working_dir override")

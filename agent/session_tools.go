@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -42,7 +43,7 @@ func (s *Session) RegisterTool(name, description string, params map[string]any, 
 				Parameters:  params,
 			},
 		},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return fn(ctx, args)
 		},
 	})

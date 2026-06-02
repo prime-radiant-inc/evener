@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -78,7 +79,7 @@ func buildRecallTool(getHost func() strategyHost) registeredTool {
 				},
 			},
 		},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			question, ok := args["question"].(string)
 			if !ok || question == "" {
 				return nil, errors.New("recall requires a non-empty 'question' string")

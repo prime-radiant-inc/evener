@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -266,7 +267,7 @@ func TestTaskWorkflow_ParentTasksNotClobberedByNewSession(t *testing.T) {
 	})
 
 	// Simulate a subagent session (has ParentSessionID set).
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{
 		AgentName:      "implementer",
 		NonInteractive: true,
 		StateDir:       dir,
@@ -302,7 +303,7 @@ func TestTaskWorkflow_RootSessionPopulatesTasks(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{
 		AgentName:      "coordinator",
 		NonInteractive: true,
 		StateDir:       dir,
@@ -334,7 +335,7 @@ func TestTaskWorkflow_DefaultRootSessionDoesNotPopulateTasks(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		AgentName:      "default",
 		NonInteractive: true,
 		StateDir:       dir,
@@ -362,7 +363,7 @@ func TestTaskWorkflow_NewSessionPopulatesCorrectTasks(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{
 		AgentName:      "implementer",
 		NonInteractive: true,
 		StateDir:       dir,

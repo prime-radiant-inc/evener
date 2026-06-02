@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"primeradiant.com/serf/agent/execenv"
 )
 
 // ProjectDoc holds a single loaded project instruction file: its identifier path and raw content.
@@ -24,7 +26,7 @@ const (
 // LoadProjectDocs discovers and loads project instruction files from git root (or working directory when not
 // in a git repo) down to the current working directory. Files are loaded in depth order (root first; deeper
 // files have higher precedence) and filtered by the active provider profile (caller-provided list).
-func LoadProjectDocs(env ExecutionEnvironment, filenames ...string) ([]ProjectDoc, bool) {
+func LoadProjectDocs(env execenv.ExecutionEnvironment, filenames ...string) ([]ProjectDoc, bool) {
 	if env == nil {
 		return nil, false
 	}
@@ -118,7 +120,7 @@ func dirsFromRootToCwd(root, cwd string) []string {
 	return out
 }
 
-func gitRootOrEmpty(env ExecutionEnvironment, cwd string) string {
+func gitRootOrEmpty(env execenv.ExecutionEnvironment, cwd string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -119,7 +120,7 @@ func TestMCPIntegration_ToolCallThroughSession(t *testing.T) {
 	c.Register(f)
 
 	dir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -147,7 +148,7 @@ type imageResult struct {
 }
 
 // parseImageResult checks if ReadFile output is an image response (the [image: ...]
-// format produced by LocalExecutionEnvironment) and extracts the raw bytes.
+// format produced by execenv.LocalExecutionEnvironment) and extracts the raw bytes.
 // Returns nil if the output is not an image.
 func parseImageResult(path, readFileOutput string) *imageResult {
 	if !strings.HasPrefix(readFileOutput, "[image:") {
@@ -174,7 +175,7 @@ func parseImageResult(path, readFileOutput string) *imageResult {
 }
 
 // parseDocumentResult checks if ReadFile output is a document response (the [document: ...]
-// format produced by LocalExecutionEnvironment for PDFs). Returns an imageResult so the
+// format produced by execenv.LocalExecutionEnvironment for PDFs). Returns an imageResult so the
 // same vision side-channel pipeline handles both images and documents.
 func parseDocumentResult(path, readFileOutput string) *imageResult {
 	if !strings.HasPrefix(readFileOutput, "[document:") {
@@ -202,13 +203,13 @@ func parseDocumentResult(path, readFileOutput string) *imageResult {
 
 // registeredTool is a registered tool: the embedded llm.Tool (definition and
 // Execute), its compiled validation schema, output limit, and the agent-layer
-// executor that receives the ExecutionEnvironment.
+// executor that receives the execenv.ExecutionEnvironment.
 type registeredTool struct {
 	llm.Tool // embeds Definition + Execute
 	Schema   *jsonschema.Schema
 	Limit    ToolOutputLimit
 	// Agent-layer executor with environment context.
-	Exec func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error)
+	Exec func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error)
 }
 
 // toolMiddleware is called after argument validation but before tool execution.
@@ -381,7 +382,7 @@ func (r *toolRegistry) Names() []string {
 // arguments, failed validation, blocking middleware, and executor errors are
 // each returned as an error result. imageResult and toolStateResult values are
 // unpacked into the result's image and state fields.
-func (r *toolRegistry) ExecuteCall(ctx context.Context, env ExecutionEnvironment, call llm.ToolCallData) toolExecResult {
+func (r *toolRegistry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnvironment, call llm.ToolCallData) toolExecResult {
 	name := call.Name
 	callID := call.ID
 	if strings.TrimSpace(callID) == "" {

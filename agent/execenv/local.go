@@ -1,4 +1,4 @@
-package agent
+package execenv
 
 import (
 	"bytes"
@@ -239,8 +239,8 @@ func (e *LocalExecutionEnvironment) EditFile(path string, oldString string, newS
 }
 
 // findFuzzyMatch scans the file content for a substring that matches
-// oldString when whitespace is normalized (using normalizeWS from apply_patch.go).
-// Returns the actual substring from the file, or "" if no match.
+// oldString when whitespace is normalized. Returns the actual substring from
+// the file, or "" if no match.
 func findFuzzyMatch(content, oldString string) string {
 	normOld := normalizeWS(oldString)
 	if normOld == "" {
@@ -265,6 +265,11 @@ func findFuzzyMatch(content, oldString string) string {
 		}
 	}
 	return ""
+}
+
+// normalizeWS collapses all whitespace runs to single spaces and trims ends.
+func normalizeWS(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // detectImageFormat checks file extension and magic bytes to identify image files.

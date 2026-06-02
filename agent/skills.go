@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/frontmatter"
 )
 
@@ -22,7 +23,7 @@ type SkillMeta struct {
 // Extra directories are scanned after the root→cwd walk, so they shadow
 // project skills with the same name.
 // Returns a deduplicated map[name]SkillMeta (later entries shadow earlier).
-func DiscoverSkills(env ExecutionEnvironment, extraDirs ...string) map[string]SkillMeta {
+func DiscoverSkills(env execenv.ExecutionEnvironment, extraDirs ...string) map[string]SkillMeta {
 	if env == nil {
 		return nil
 	}

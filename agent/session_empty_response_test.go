@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/llm"
 )
@@ -45,7 +46,7 @@ func TestEmptyResponse_RetriesWithSteering(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestEmptyResponse_ExhaustsRetries(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -139,7 +140,7 @@ func TestEmptyResponse_ResetsOnProgress(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -186,7 +187,7 @@ func TestEmptyResponse_DoesNotConsumeToolRounds(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		MaxToolRoundsPerInput: 3,
 	})
 	if err != nil {
@@ -234,7 +235,7 @@ func TestBareText_DoesNotConsumeToolRounds(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		MaxToolRoundsPerInput: 3,
 		NonInteractive:        true,
 	})
@@ -295,7 +296,7 @@ func TestBareText_RedirectsToCommunicate(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{NonInteractive: true})
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{NonInteractive: true})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -337,7 +338,7 @@ func TestBareText_ExhaustsRetries(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{NonInteractive: true})
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{NonInteractive: true})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -410,7 +411,7 @@ func TestEmptyResponse_PhasePreservedInHistory(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.3-codex"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

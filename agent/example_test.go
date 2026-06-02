@@ -5,12 +5,13 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
 // NewSession wires together the four things a session needs: an [llm.Client]
 // (the transport), a [agent.ProviderProfile] (selects the model and its
-// provider-specific behavior), an [agent.ExecutionEnvironment] (where tools
+// provider-specific behavior), an [execenv.ExecutionEnvironment] (where tools
 // run), and a [agent.SessionConfig].
 //
 // This example only builds and tears down the session; driving a real turn with
@@ -19,7 +20,7 @@ import (
 func ExampleNewSession() {
 	client := llm.NewClient()
 	profile := agent.NewOpenAIProfile("gpt-5.2")
-	env := agent.NewLocalExecutionEnvironment("/path/to/project")
+	env := execenv.NewLocalExecutionEnvironment("/path/to/project")
 
 	cfg := agent.SessionConfig{
 		MaxToolRoundsPerInput: 50,

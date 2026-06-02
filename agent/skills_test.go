@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"primeradiant.com/serf/agent/execenv"
 )
 
 // writeSkillDirect writes a SKILL.md directly into <dir>/<name>/SKILL.md.
@@ -38,7 +40,7 @@ func TestDiscoverSkills_FindsSkillsDir(t *testing.T) {
 
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nHello instructions.\n")
 
-	env := NewLocalExecutionEnvironment(root)
+	env := execenv.NewLocalExecutionEnvironment(root)
 	skills := DiscoverSkills(env)
 
 	if len(skills) != 1 {
@@ -71,7 +73,7 @@ func TestDiscoverSkills_DeeperShadows(t *testing.T) {
 	writeSkillMD(t, sub, "greet", "---\nname: greet\ndescription: \"Sub greeting\"\n---\nSub.\n")
 
 	// cwd is the deeper directory.
-	env := NewLocalExecutionEnvironment(sub)
+	env := execenv.NewLocalExecutionEnvironment(sub)
 	skills := DiscoverSkills(env)
 
 	if len(skills) != 1 {
@@ -87,7 +89,7 @@ func TestDiscoverSkills_NoSkillsDir(t *testing.T) {
 	root := t.TempDir()
 	initGitRepo(t, root)
 
-	env := NewLocalExecutionEnvironment(root)
+	env := execenv.NewLocalExecutionEnvironment(root)
 	skills := DiscoverSkills(env)
 
 	if len(skills) != 0 {
@@ -102,7 +104,7 @@ func TestDiscoverSkills_MissingName(t *testing.T) {
 	// SKILL.md without name field — should be skipped.
 	writeSkillMD(t, root, "bad", "---\ndescription: \"No name\"\n---\nBody.\n")
 
-	env := NewLocalExecutionEnvironment(root)
+	env := execenv.NewLocalExecutionEnvironment(root)
 	skills := DiscoverSkills(env)
 
 	if len(skills) != 0 {
@@ -117,7 +119,7 @@ func TestDiscoverSkills_MissingDescription(t *testing.T) {
 	// SKILL.md without description field — should be skipped.
 	writeSkillMD(t, root, "bad", "---\nname: bad\n---\nBody.\n")
 
-	env := NewLocalExecutionEnvironment(root)
+	env := execenv.NewLocalExecutionEnvironment(root)
 	skills := DiscoverSkills(env)
 
 	if len(skills) != 0 {
@@ -131,7 +133,7 @@ func TestLoadSkillBody_ReturnsBody(t *testing.T) {
 
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nHello instructions.\n")
 
-	env := NewLocalExecutionEnvironment(root)
+	env := execenv.NewLocalExecutionEnvironment(root)
 	skills := DiscoverSkills(env)
 
 	s, ok := skills["greet"]
@@ -154,7 +156,7 @@ func TestDiscoverSkills_AllowedTools(t *testing.T) {
 
 	writeSkillMD(t, root, "deploy", "---\nname: deploy\ndescription: \"Deploy skill\"\nallowed-tools:\n  - shell\n  - read_file\n---\nDeploy instructions.\n")
 
-	env := NewLocalExecutionEnvironment(root)
+	env := execenv.NewLocalExecutionEnvironment(root)
 	skills := DiscoverSkills(env)
 
 	s, ok := skills["deploy"]
@@ -178,7 +180,7 @@ func TestDiscoverSkills_ExtraDirs(t *testing.T) {
 	extraDir := t.TempDir()
 	writeSkillDirect(t, extraDir, "external", "---\nname: external\ndescription: \"External skill\"\n---\nExternal instructions.\n")
 
-	env := NewLocalExecutionEnvironment(root)
+	env := execenv.NewLocalExecutionEnvironment(root)
 	skills := DiscoverSkills(env, extraDir)
 
 	if len(skills) != 1 {
@@ -198,7 +200,7 @@ func TestDiscoverSkills_ExtraDirShadows(t *testing.T) {
 	extraDir := t.TempDir()
 	writeSkillDirect(t, extraDir, "greet", "---\nname: greet\ndescription: \"External greeting\"\n---\nExternal.\n")
 
-	env := NewLocalExecutionEnvironment(root)
+	env := execenv.NewLocalExecutionEnvironment(root)
 	skills := DiscoverSkills(env, extraDir)
 
 	if len(skills) != 1 {
@@ -216,7 +218,7 @@ func TestDiscoverSkills_ExtraDirMissing(t *testing.T) {
 
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting\"\n---\nGreet.\n")
 
-	env := NewLocalExecutionEnvironment(root)
+	env := execenv.NewLocalExecutionEnvironment(root)
 	// Nonexistent extra dir should be silently skipped.
 	skills := DiscoverSkills(env, "/nonexistent/path/that/does/not/exist")
 
@@ -235,7 +237,7 @@ func TestDiscoverSkills_MultipleSkills(t *testing.T) {
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting\"\n---\nGreet.\n")
 	writeSkillMD(t, root, "deploy", "---\nname: deploy\ndescription: \"Deploy\"\n---\nDeploy.\n")
 
-	env := NewLocalExecutionEnvironment(root)
+	env := execenv.NewLocalExecutionEnvironment(root)
 	skills := DiscoverSkills(env)
 
 	if len(skills) != 2 {

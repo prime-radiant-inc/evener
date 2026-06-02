@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -44,7 +45,7 @@ func TestWebSearch_MakesGroundingCall(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(fa)
 
-	sess, err := NewSession(c, newGeminiProfile("gemini-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, newGeminiProfile("gemini-test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -104,7 +105,7 @@ func TestWebSearch_DirectCall(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(fa)
 
-	sess, err := NewSession(c, newGeminiProfile("gemini-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, newGeminiProfile("gemini-test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

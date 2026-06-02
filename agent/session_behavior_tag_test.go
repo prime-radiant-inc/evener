@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -130,7 +131,7 @@ func TestBehaviorTag_Gemini_RenamedGoogleRegistersWebSearch(t *testing.T) {
 	dir := t.TempDir()
 	sess := &Session{
 		profile: renamedGemini,
-		env:     NewLocalExecutionEnvironment(dir),
+		env:     execenv.NewLocalExecutionEnvironment(dir),
 	}
 
 	reg := newProfileToolRegistry(renamedGemini)
@@ -152,7 +153,7 @@ func TestBehaviorTag_Gemini_OriginalGeminiRegistersWebSearch(t *testing.T) {
 	dir := t.TempDir()
 	sess := &Session{
 		profile: geminiProfile,
-		env:     NewLocalExecutionEnvironment(dir),
+		env:     execenv.NewLocalExecutionEnvironment(dir),
 	}
 
 	reg := newProfileToolRegistry(geminiProfile)
@@ -174,7 +175,7 @@ func TestBehaviorTag_Gemini_OpenAIDoesNotRegisterWebSearch(t *testing.T) {
 	dir := t.TempDir()
 	sess := &Session{
 		profile: openaiProfile,
-		env:     NewLocalExecutionEnvironment(dir),
+		env:     execenv.NewLocalExecutionEnvironment(dir),
 	}
 
 	// Use a fresh empty registry to isolate registerCoreTools behavior from
@@ -205,7 +206,7 @@ func TestBehaviorTag_SectionResolver_RenamedOpenAILoadsOpenAISection(t *testing.
 
 	// Renamed OpenAI instance: id="work", tag="openai".
 	renamedProfile := WithProviderID(NewOpenAIProfile("gpt-5.5"), "work")
-	sess, err := NewSession(c, renamedProfile, NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, renamedProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 	})
 	if err != nil {
@@ -243,7 +244,7 @@ func TestBehaviorTag_SectionResolver_OpenAICompatibleDoesNotLoadOpenAISection(t 
 		behaviorTag: "openai-compatible",
 	}
 
-	sess, err := NewSession(c, compatProfile, NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, compatProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 	})
 	if err != nil {

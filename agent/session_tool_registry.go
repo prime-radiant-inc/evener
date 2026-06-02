@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -175,7 +176,7 @@ func registerFileTools(reg *toolRegistry, deps *toolDeps) error {
 	// read_file
 	if err := reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defReadFile(), ReadOnly: true},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			path := fmt.Sprint(args["file_path"])
 			offset := optionalIntArg(args, "offset")
@@ -204,7 +205,7 @@ func registerFileTools(reg *toolRegistry, deps *toolDeps) error {
 	// write_file
 	if err := reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defWriteFile()},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			path := fmt.Sprint(args["file_path"])
 			warn := deps.readGuard.ReadBeforeWriteWarning(path)
@@ -221,7 +222,7 @@ func registerFileTools(reg *toolRegistry, deps *toolDeps) error {
 	// edit_file
 	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defEditFile()},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			path := fmt.Sprint(args["file_path"])
 			replaceAll := false
@@ -244,7 +245,7 @@ func registerShellTools(reg *toolRegistry, deps *toolDeps) error {
 	// shell
 	if err := reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defShell()},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			cmd := fmt.Sprint(args["command"])
 			defTimeout, maxTimeout := deps.cmdTimeouts()
 			timeout := defTimeout
@@ -285,7 +286,7 @@ func registerShellTools(reg *toolRegistry, deps *toolDeps) error {
 	// list_dir (Gemini-aligned)
 	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defListDir(), ReadOnly: true},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			path := fmt.Sprint(args["path"])
 			depth := 1
@@ -299,7 +300,7 @@ func registerShellTools(reg *toolRegistry, deps *toolDeps) error {
 	// grep
 	if err := reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defGrep(), ReadOnly: true},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			pat := fmt.Sprint(args["pattern"])
 			path := fmt.Sprint(args["path"])
@@ -325,7 +326,7 @@ func registerShellTools(reg *toolRegistry, deps *toolDeps) error {
 	// glob
 	if err := reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defGlob(), ReadOnly: true},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			pat := fmt.Sprint(args["pattern"])
 			path := fmt.Sprint(args["path"])
@@ -342,7 +343,7 @@ func registerShellTools(reg *toolRegistry, deps *toolDeps) error {
 	// apply_patch (OpenAI-specific; best-effort implementation lives in this repo)
 	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defApplyPatch()},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			patch := fmt.Sprint(args["patch"])
 			return applyPatch(env.WorkingDirectory(), patch)
@@ -356,7 +357,7 @@ func registerSubagentTools(reg *toolRegistry, s *Session) {
 	// Subagent tools (best-effort; synchronous completion for v1).
 	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defSpawnAgent()},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			task := fmt.Sprint(args["task"])
 			model := ""
@@ -438,7 +439,7 @@ func registerSubagentTools(reg *toolRegistry, s *Session) {
 	})
 	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defSendInput()},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			agentID := fmt.Sprint(args["agent_id"])
 			// Append task_list items before sending input.
@@ -488,7 +489,7 @@ func registerSubagentTools(reg *toolRegistry, s *Session) {
 	})
 	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defWait()},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			timeout := 0
 			if v, ok := args["timeout_ms"].(float64); ok && int(v) > 0 {
@@ -503,7 +504,7 @@ func registerSubagentTools(reg *toolRegistry, s *Session) {
 	})
 	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defCloseAgent()},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			return s.closeAgent(fmt.Sprint(args["agent_id"]))
 		},
@@ -514,7 +515,7 @@ func registerTaskTools(reg *toolRegistry, deps *toolDeps) {
 	// Task management.
 	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defTaskList(deps.reasoningEffortLevels)},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			deps.taskGuard.MarkUsed()
 			store := deps.taskGuard.Store()
@@ -692,7 +693,7 @@ func registerWebTools(reg *toolRegistry, deps *toolDeps) {
 	// Web fetch.
 	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: defWebFetch()},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			rawURL := fmt.Sprint(args["url"])
 			question := fmt.Sprint(args["question"])
 			return deps.web.fetch(ctx, rawURL, question)
@@ -706,7 +707,7 @@ func registerWebTools(reg *toolRegistry, deps *toolDeps) {
 	if deps.webSearchEnabled {
 		_ = reg.Register(registeredTool{
 			Tool: llm.Tool{Definition: defWebSearch()},
-			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 				query := fmt.Sprint(args["query"])
 				return deps.web.search(ctx, query)
 			},
@@ -725,7 +726,7 @@ func registerCommunicateTool(reg *toolRegistry, deps *toolDeps) {
 	}
 	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: resultToolDef},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			if err := deps.abort(ctx); err != nil {
 				return nil, err
@@ -801,7 +802,7 @@ func registerSkillTool(reg *toolRegistry, deps *toolDeps) {
 	if reg.Get("use_skill") != nil {
 		_ = reg.Register(registeredTool{
 			Tool: llm.Tool{Definition: defUseSkill()},
-			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 				_ = ctx
 				_ = env
 				skillName := fmt.Sprint(args["skill_name"])

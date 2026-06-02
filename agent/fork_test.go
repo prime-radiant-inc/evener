@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -163,7 +164,7 @@ func TestForkSession_ChildLineagePreservedAcrossMetaRewrite(t *testing.T) {
 	}
 
 	c := llm.NewClient()
-	sess, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(t.TempDir()), childMeta, stateDir)
+	sess, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), childMeta, stateDir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -192,7 +193,7 @@ func TestForkSession_ParentForkLabelPreservedAcrossMetaRewrite(t *testing.T) {
 	}
 
 	c := llm.NewClient()
-	sess, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(t.TempDir()), parentMeta, stateDir)
+	sess, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), parentMeta, stateDir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}

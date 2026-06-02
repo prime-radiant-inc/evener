@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/agent/execenv"
 )
 
 func TestLoadMCPConfigFile_Basic(t *testing.T) {
@@ -388,7 +390,7 @@ func TestExpandEnvVars_MissingVarInConfig(t *testing.T) {
 	}
 }
 
-// fakeEnvForMCP is a minimal ExecutionEnvironment for testing MCP config discovery.
+// fakeEnvForMCP is a minimal execenv.ExecutionEnvironment for testing MCP config discovery.
 type fakeEnvForMCP struct {
 	workDir string
 	gitRoot string
@@ -401,11 +403,11 @@ func (f *fakeEnvForMCP) WorkingDirectory() string { return f.workDir }
 func (f *fakeEnvForMCP) Platform() string         { return "test" }
 func (f *fakeEnvForMCP) OSVersion() string        { return "test" }
 
-func (f *fakeEnvForMCP) ExecCommand(_ context.Context, command string, _ int, _ string, _ map[string]string) (ExecResult, error) {
+func (f *fakeEnvForMCP) ExecCommand(_ context.Context, command string, _ int, _ string, _ map[string]string) (execenv.ExecResult, error) {
 	if f.gitRoot != "" && strings.Contains(command, "git rev-parse --show-toplevel") {
-		return ExecResult{Stdout: f.gitRoot, ExitCode: 0}, nil
+		return execenv.ExecResult{Stdout: f.gitRoot, ExitCode: 0}, nil
 	}
-	return ExecResult{ExitCode: 1}, nil
+	return execenv.ExecResult{ExitCode: 1}, nil
 }
 
 func (f *fakeEnvForMCP) ReadFile(string, *int, *int) (string, error)           { return "", nil }
@@ -416,4 +418,4 @@ func (f *fakeEnvForMCP) Glob(string, string) ([]string, error)                 {
 func (f *fakeEnvForMCP) Grep(string, string, string, bool, int, string) (string, error) {
 	return "", nil
 }
-func (f *fakeEnvForMCP) ListDirectory(string, int) ([]DirEntry, error) { return nil, nil }
+func (f *fakeEnvForMCP) ListDirectory(string, int) ([]execenv.DirEntry, error) { return nil, nil }

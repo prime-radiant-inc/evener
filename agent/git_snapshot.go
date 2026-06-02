@@ -4,11 +4,13 @@ import (
 	"context"
 	"strings"
 	"time"
+
+	"primeradiant.com/serf/agent/execenv"
 )
 
 // gitOriginURL returns the git remote origin URL for the repo at cwd,
 // or "" if not a git repo or no origin remote is configured.
-func gitOriginURL(env ExecutionEnvironment, cwd string) string {
+func gitOriginURL(env execenv.ExecutionEnvironment, cwd string) string {
 	if env == nil {
 		return ""
 	}
@@ -25,7 +27,7 @@ func gitOriginURL(env ExecutionEnvironment, cwd string) string {
 	return strings.TrimSpace(res.Stdout)
 }
 
-func snapshotGit(env ExecutionEnvironment, cwd string) (inRepo bool, branch string, modifiedFiles int, untrackedFiles int, recentCommitTitles []string) {
+func snapshotGit(env execenv.ExecutionEnvironment, cwd string) (inRepo bool, branch string, modifiedFiles int, untrackedFiles int, recentCommitTitles []string) {
 	if env == nil {
 		return false, "", 0, 0, nil
 	}
@@ -34,7 +36,7 @@ func snapshotGit(env ExecutionEnvironment, cwd string) (inRepo bool, branch stri
 		cwd = env.WorkingDirectory()
 	}
 
-	run := func(cmd string) (ExecResult, error) {
+	run := func(cmd string) (execenv.ExecResult, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		return env.ExecCommand(ctx, cmd, 2_000, cwd, nil)

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -29,7 +30,7 @@ func TestSessionNameFromPrompt_UpdatesMetaAndAdvisoryLog(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 	profile := NewOpenAIProfile("gpt-5.2")
-	sess, err := NewSession(client, profile, NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -80,7 +81,7 @@ func TestSessionNameFromPrompt_LogsAdvisoryFailureWithoutFailingSession(t *testi
 	client := llm.NewClient()
 	client.Register(adapter)
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
-	sess, err := NewSession(client, profile, NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -112,7 +113,7 @@ func TestSessionLaunchesInitialPromptNamerAsynchronously(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
-	sess, err := NewSession(client, profile, NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -146,7 +147,7 @@ func TestSessionInitialPromptNamerSkipsWhilePending(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
-	sess, err := NewSession(client, profile, NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -188,7 +189,7 @@ func TestSessionProcessInput_LaunchesInitialPromptNamer(t *testing.T) {
 		},
 	}})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
-	sess, err := NewSession(client, profile, NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -221,7 +222,7 @@ func TestSessionNameFromCompactionTurn_RefreshesPromptName(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
-	sess, err := NewSession(client, profile, NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -267,7 +268,7 @@ func TestSessionNameFromCompactionTurn_SkipsNonCompactionAndManualName(t *testin
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
-	sess, err := NewSession(client, profile, NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -307,7 +308,7 @@ func TestSessionLaunchesCompactionNamerAsynchronously(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")
-	sess, err := NewSession(client, profile, NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -349,7 +350,7 @@ func TestRestoreSessionFromMeta_PreservesManualNameAgainstCompaction(t *testing.
 		NameSource:    "manual",
 		NameUpdatedAt: time.Now().UTC(),
 	}
-	sess, err := RestoreSessionFromMeta(client, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), meta, dir)
+	sess, err := RestoreSessionFromMeta(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}

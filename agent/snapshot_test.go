@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -264,7 +265,7 @@ func TestRestoreSession_RestoresHistoryAndID(t *testing.T) {
 	adapter := &snapshotFakeAdapter{name: "openai"}
 	c.Register(adapter)
 
-	sess, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), snap, "")
+	sess, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), snap, "")
 	if err != nil {
 		t.Fatalf("RestoreSession: %v", err)
 	}
@@ -318,7 +319,7 @@ func TestSession_AutoSave_WritesMetaAfterProcessInput(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&snapshotFakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 200,
 		StateDir:              dir,
 	})
@@ -388,7 +389,7 @@ func TestSession_AutoSave_PersistsToolResults(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 200,
 		StateDir:              dir,
 	})
@@ -477,7 +478,7 @@ func TestSession_AutoSave_DoesNotPersistMidToolRound(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 200,
 		StateDir:              dir,
 	})
@@ -576,7 +577,7 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 	c.Register(&snapshotFakeAdapter{name: "openai"})
 
 	// Phase 1: Create a new session with auto-save and process input.
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 200,
 		StateDir:              dir,
 	})
@@ -617,7 +618,7 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 
 	// Phase 2: Restore from meta + transcript and process more input.
 	meta := list[0]
-	sess2, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), meta, dir)
+	sess2, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -687,7 +688,7 @@ func TestRestoreSession_CanProcessInput(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&snapshotFakeAdapter{name: "openai"})
 
-	sess, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), snap, "")
+	sess, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), snap, "")
 	if err != nil {
 		t.Fatalf("RestoreSession: %v", err)
 	}
@@ -748,7 +749,7 @@ func TestRestoreSession_UsesTranscriptOverSnapshot(t *testing.T) {
 	adapter := &snapshotFakeAdapter{name: "openai"}
 	c.Register(adapter)
 
-	sess, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), snap, stateDir)
+	sess, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), snap, stateDir)
 	if err != nil {
 		t.Fatalf("RestoreSession: %v", err)
 	}
@@ -817,7 +818,7 @@ func TestRestoreSession_FallsBackToSnapshotWithoutTranscript(t *testing.T) {
 	adapter := &snapshotFakeAdapter{name: "openai"}
 	c.Register(adapter)
 
-	sess, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), snap, stateDir)
+	sess, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), snap, stateDir)
 	if err != nil {
 		t.Fatalf("RestoreSession: %v", err)
 	}
@@ -898,7 +899,7 @@ func TestRestoreSession_TranscriptWithCompaction(t *testing.T) {
 	adapter := &snapshotFakeAdapter{name: "openai"}
 	c.Register(adapter)
 
-	sess, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), snap, stateDir)
+	sess, err := RestoreSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), snap, stateDir)
 	if err != nil {
 		t.Fatalf("RestoreSession: %v", err)
 	}
@@ -1021,7 +1022,7 @@ func TestMetaTurnCount_CountsModelResponses(t *testing.T) {
 	c.Register(f)
 
 	dir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir),
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir),
 		SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

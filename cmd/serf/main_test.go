@@ -14,6 +14,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	authopenai "primeradiant.com/serf/auth/openai"
 	"primeradiant.com/serf/auth/openai/oaitest"
 	"primeradiant.com/serf/llm"
@@ -33,7 +34,7 @@ func TestNewSessionFromEnv(t *testing.T) {
 	}
 
 	profile := agent.NewOpenAIProfile("gpt-5.4-mini")
-	env := agent.NewLocalExecutionEnvironment(t.TempDir())
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 
 	sess, err := agent.NewSession(client, profile, env, agent.SessionConfig{})
 	if err != nil {
@@ -65,7 +66,7 @@ func TestProcessInputSimplePrompt(t *testing.T) {
 	}
 
 	profile := agent.NewOpenAIProfile("gpt-5.4-mini")
-	env := agent.NewLocalExecutionEnvironment(t.TempDir())
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 
 	sess, err := agent.NewSession(client, profile, env, agent.SessionConfig{
 		MaxToolRoundsPerInput: 5,
@@ -101,7 +102,7 @@ func TestProcessInputWithToolUse(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	profile := agent.NewOpenAIProfile("gpt-5.4-mini")
-	env := agent.NewLocalExecutionEnvironment(tmpDir)
+	env := execenv.NewLocalExecutionEnvironment(tmpDir)
 
 	sess, err := agent.NewSession(client, profile, env, agent.SessionConfig{
 		MaxToolRoundsPerInput: 10,

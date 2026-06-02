@@ -1,10 +1,9 @@
-package agent
+package execenv
 
 import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -230,34 +229,6 @@ func TestReadFile_ImageReturnsBase64(t *testing.T) {
 	}
 }
 
-func TestParseImageResult_ExtractsImageData(t *testing.T) {
-	// Simulate what ReadFile returns for an image.
-	pngHeader := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01}
-	encoded := base64.StdEncoding.EncodeToString(pngHeader)
-	readOutput := fmt.Sprintf("[image: png, %d bytes, base64 data follows]\n%s", len(pngHeader), encoded)
-
-	got := parseImageResult("photo.png", readOutput)
-	if got == nil {
-		t.Fatal("expected non-nil imageResult")
-	}
-	if !bytes.Equal(got.Data, pngHeader) {
-		t.Fatalf("Data mismatch: got %v, want %v", got.Data, pngHeader)
-	}
-	if got.MediaType != "image/png" {
-		t.Fatalf("MediaType = %q, want image/png", got.MediaType)
-	}
-	if !strings.Contains(got.Text, "[image: png") {
-		t.Fatalf("Text should contain header, got: %q", got.Text)
-	}
-}
-
-func TestParseImageResult_ReturnsNilForNonImage(t *testing.T) {
-	got := parseImageResult("code.go", "1 | package main\n2 | func main() {}\n")
-	if got != nil {
-		t.Fatal("expected nil for non-image content")
-	}
-}
-
 func TestReadFile_NonImageBinaryStillErrors(t *testing.T) {
 	dir := t.TempDir()
 	env := NewLocalExecutionEnvironment(dir)
@@ -273,41 +244,6 @@ func TestReadFile_NonImageBinaryStillErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "binary") {
 		t.Fatalf("expected 'binary' in error message, got: %v", err)
-	}
-}
-
-func TestReadFile_Image_EndToEnd_ToolExecResult(t *testing.T) {
-	// End-to-end: read_file on a real PNG → env returns base64 → parseImageResult
-	// extracts bytes → toolExecResult has ImageData set. This is the path that
-	// sends images to the model for visual inspection.
-	dir := t.TempDir()
-	env := NewLocalExecutionEnvironment(dir)
-
-	// Write a minimal valid PNG (just the magic bytes + enough to detect).
-	pngData := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x01}
-	if err := os.WriteFile(filepath.Join(dir, "board.png"), pngData, 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Step 1: ReadFile returns base64 image output.
-	output, err := env.ReadFile("board.png", nil, nil)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if !strings.HasPrefix(output, "[image:") {
-		t.Fatalf("expected [image: prefix, got: %q", output[:min(len(output), 50)])
-	}
-
-	// Step 2: parseImageResult extracts the image data.
-	img := parseImageResult("board.png", output)
-	if img == nil {
-		t.Fatal("parseImageResult returned nil — image not detected")
-	}
-	if !bytes.Equal(img.Data, pngData) {
-		t.Fatalf("image data mismatch: got %d bytes, want %d", len(img.Data), len(pngData))
-	}
-	if img.MediaType != "image/png" {
-		t.Fatalf("MediaType = %q, want image/png", img.MediaType)
 	}
 }
 
@@ -362,64 +298,6 @@ func TestReadFile_PDF_DetectedByMagicBytes(t *testing.T) {
 	}
 	if !strings.HasPrefix(result, "[document:") {
 		t.Fatalf("expected [document: prefix, got: %q", result[:min(len(result), 50)])
-	}
-}
-
-func TestParseDocumentResult_ExtractsPDFData(t *testing.T) {
-	pdfContent := []byte("%PDF-1.4 content\x00\x01")
-	encoded := base64.StdEncoding.EncodeToString(pdfContent)
-	readOutput := fmt.Sprintf("[document: pdf, %d bytes, base64 data follows]\n%s", len(pdfContent), encoded)
-
-	got := parseDocumentResult("invoice.pdf", readOutput)
-	if got == nil {
-		t.Fatal("expected non-nil result for document")
-	}
-	if !bytes.Equal(got.Data, pdfContent) {
-		t.Fatalf("Data mismatch: got %v, want %v", got.Data, pdfContent)
-	}
-	if got.MediaType != "application/pdf" {
-		t.Fatalf("MediaType = %q, want application/pdf", got.MediaType)
-	}
-	if !strings.Contains(got.Text, "[document: pdf") {
-		t.Fatalf("Text should contain header, got: %q", got.Text)
-	}
-}
-
-func TestParseDocumentResult_ReturnsNilForNonDocument(t *testing.T) {
-	got := parseDocumentResult("code.go", "1 | package main\n2 | func main() {}\n")
-	if got != nil {
-		t.Fatal("expected nil for non-document content")
-	}
-}
-
-func TestReadFile_PDF_EndToEnd_ToolExecResult(t *testing.T) {
-	dir := t.TempDir()
-	env := NewLocalExecutionEnvironment(dir)
-
-	pdfData := []byte("%PDF-1.4 invoice content\x00\x01\x02")
-	if err := os.WriteFile(filepath.Join(dir, "report.pdf"), pdfData, 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Step 1: ReadFile returns base64 document output.
-	output, err := env.ReadFile("report.pdf", nil, nil)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	if !strings.HasPrefix(output, "[document:") {
-		t.Fatalf("expected [document: prefix, got: %q", output[:min(len(output), 50)])
-	}
-
-	// Step 2: parseDocumentResult extracts the document data.
-	doc := parseDocumentResult("report.pdf", output)
-	if doc == nil {
-		t.Fatal("parseDocumentResult returned nil")
-	}
-	if !bytes.Equal(doc.Data, pdfData) {
-		t.Fatalf("data mismatch: got %d bytes, want %d", len(doc.Data), len(pdfData))
-	}
-	if doc.MediaType != "application/pdf" {
-		t.Fatalf("MediaType = %q, want application/pdf", doc.MediaType)
 	}
 }
 
@@ -1100,4 +978,30 @@ func TestGrepNative_OutputMode_Count(t *testing.T) {
 	if !strings.Contains(result, "b.txt:1") {
 		t.Errorf("expected b.txt:1 in count output: %q", result)
 	}
+}
+
+func TestSubagent_WorkingDir_SharesParentPIDTracking(t *testing.T) {
+	dir := t.TempDir()
+	subDir := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	env := NewLocalExecutionEnvironment(dir)
+	defer env.Cleanup()
+
+	childEnv := env.WithWorkingDirectory(subDir)
+	if childEnv.WorkingDirectory() != subDir {
+		t.Fatalf("child working dir: %q, want %q", childEnv.WorkingDirectory(), subDir)
+	}
+
+	// Store a PID in the child and verify it's visible from the parent.
+	childEnv.runningPIDs.Store(12345, struct{}{})
+	_, ok := env.runningPIDs.Load(12345)
+	if !ok {
+		t.Fatal("PID stored in child env not visible in parent env — PID tracking is not shared")
+	}
+
+	// Clean up fake PID to avoid Cleanup() trying to signal it.
+	env.runningPIDs.Delete(12345)
 }

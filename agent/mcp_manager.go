@@ -12,6 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -135,7 +136,7 @@ func (m *mcpManager) RegisterTools(reg *toolRegistry) error {
 
 			if err := reg.Register(registeredTool{
 				Tool: llm.Tool{Definition: td},
-				Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+				Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 					result, err := sess.CallTool(ctx, &mcp.CallToolParams{
 						Name:      origName,
 						Arguments: args,

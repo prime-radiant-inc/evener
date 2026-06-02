@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -288,7 +289,7 @@ func TestSessionConfig_SpawnFieldsDropOnPersist(t *testing.T) {
 func TestSession_ID_ReturnsULID(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("test-model"), NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("test-model"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

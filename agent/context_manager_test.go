@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -519,7 +520,7 @@ func TestCheckpoint_DoesNotFreezeStaleTaskState(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 100_000}
-	env := NewLocalExecutionEnvironment(dir)
+	env := execenv.NewLocalExecutionEnvironment(dir)
 	sess, err := NewSession(c, profile, env, SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -993,7 +994,7 @@ func TestSession_ContextManager_Created(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1026,7 +1027,7 @@ func TestSession_ContextManager_AccumulatesUsage(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -1082,7 +1083,7 @@ func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 
 	// Write a big file that will fill a small context window.
 	bigContent := strings.Repeat("line of content\n", 200)
-	env := NewLocalExecutionEnvironment(dir)
+	env := execenv.NewLocalExecutionEnvironment(dir)
 	if _, err := env.WriteFile("big.txt", bigContent); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -1149,7 +1150,7 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 	})
 
 	bigContent := strings.Repeat("line of content\n", 300)
-	env := NewLocalExecutionEnvironment(dir)
+	env := execenv.NewLocalExecutionEnvironment(dir)
 	if _, err := env.WriteFile("big.txt", bigContent); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}

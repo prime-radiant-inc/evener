@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/llm"
 )
@@ -17,7 +18,7 @@ func TestOpenAIPromptCacheDefaults_RequestCapture(t *testing.T) {
 	}}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.5"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -84,7 +85,7 @@ func TestOpenAIPromptCacheDefaults_FallbackUnsupportedModelClearsRetention(t *te
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.5"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		LLMRetryPolicy: &policy,
 		ModelFallbacks: []string{"gpt-4o-mini"},
 	})

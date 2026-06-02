@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -143,7 +144,7 @@ func TestSession_ContextStrategy_SpyHooks(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		testOnly: testConfig{contextStrategyOverride: spy},
 	})
 	if err != nil {
@@ -179,7 +180,7 @@ func TestSession_ContextStrategy_UnknownStrategyError(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	_, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	_, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		ContextStrategy: "nonexistent",
 	})
 	if err == nil {
@@ -200,7 +201,7 @@ func TestCompactionThresholdScale(t *testing.T) {
 	}
 
 	// Scale=0.5 applies normally (all results ≥ 0.20 floor).
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		testOnly: testConfig{compactionThresholdScale: 0.5},
 	})
 	if err != nil {
@@ -214,7 +215,7 @@ func TestCompactionThresholdScale(t *testing.T) {
 	sess.Close()
 
 	// Scale=0.1 clamps to 0.20 floor.
-	sess2, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess2, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		testOnly: testConfig{compactionThresholdScale: 0.1},
 	})
 	if err != nil {
@@ -234,7 +235,7 @@ func TestSession_ContextStrategy_DefaultIsCompact(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

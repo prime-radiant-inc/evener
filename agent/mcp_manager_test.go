@@ -8,6 +8,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -218,7 +219,7 @@ func TestMCPManager_BuiltinCollision(t *testing.T) {
 	reg := newToolRegistry()
 	if err := reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "s__echo", Description: "pre-existing"}},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "built-in", nil
 		},
 	}); err != nil {

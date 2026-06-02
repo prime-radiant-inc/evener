@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -903,7 +904,7 @@ func TestSession_TranscriptCreatedOnNewSession(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: stateDir,
 	})
 	if err != nil {
@@ -951,7 +952,7 @@ func TestSession_NoTranscriptWithoutStateDir(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -977,7 +978,7 @@ func TestSession_TranscriptRecordsTurns(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: stateDir,
 	})
 	if err != nil {
@@ -1056,7 +1057,7 @@ func TestSession_ContextDiagnosticsRecordedOnAPICall(t *testing.T) {
 		},
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: stateDir,
 	})
 	if err != nil {
@@ -1098,7 +1099,7 @@ func TestSession_TranscriptClosedOnSessionClose(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: stateDir,
 	})
 	if err != nil {
@@ -1133,7 +1134,7 @@ func TestSubagent_TranscriptHasParentLinkage(t *testing.T) {
 			depth:           2,
 		},
 	}
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1172,7 +1173,7 @@ func TestRootSession_TranscriptHasEmptyParentFields(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai"})
 
 	// Root session: no parent fields set.
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
 		StateDir: stateDir,
 	})
 	if err != nil {
@@ -1208,7 +1209,7 @@ func TestSubagent_DepthSetFromConfig(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
 		spawn: spawnConfig{depth: 3},
 	})
 	if err != nil {
@@ -1286,7 +1287,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 
 	// Write a big file that will fill a small context window.
 	bigContent := strings.Repeat("line of content\n", 200)
-	env := NewLocalExecutionEnvironment(dir)
+	env := execenv.NewLocalExecutionEnvironment(dir)
 	if _, err := env.WriteFile("big.txt", bigContent); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -1569,7 +1570,7 @@ func TestSubagent_TranscriptPersistsAfterCloseAgent(t *testing.T) {
 		},
 	})
 
-	parentSess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+	parentSess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
 		StateDir:         stateDir,
 		MaxSubagentDepth: 1,
 	})
@@ -1711,7 +1712,7 @@ func TestSession_TranscriptWriteFailureEmitsWarning(t *testing.T) {
 		},
 	})
 
-	env := NewLocalExecutionEnvironment(t.TempDir())
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	cfg := SessionConfig{StateDir: stateDir}
 	sess, err := NewSession(c, &baseProfile{
 		id:            "openai",
@@ -1979,7 +1980,7 @@ func TestSession_TranscriptHeaderContainsSystemPrompt(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: stateDir,
 	})
 	if err != nil {

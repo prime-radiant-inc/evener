@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -27,7 +28,7 @@ func TestSession_ProcessInputRepairsOrphanedAssistantToolCallsBeforeModelRequest
 	c := llm.NewClient()
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -39,7 +40,7 @@ func TestSession_ProcessInputRepairsOrphanedAssistantToolCallsBeforeModelRequest
 			Description: "side-effecting test tool that must not be replayed during history repair",
 			Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
 		}},
-		Exec: func(context.Context, ExecutionEnvironment, map[string]any) (any, error) {
+		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
 			dangerousRuns.Add(1)
 			return "ran", nil
 		},

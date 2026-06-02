@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -52,7 +53,7 @@ func TestSetModel_CrossProvider_SwapsProfileAndPreservesOverride(t *testing.T) {
 	}
 	startProfile := WithCommunicateOutputSchema(NewOpenAIProfile("gpt-5.4"), customSchema)
 
-	sess, err := NewSession(c, startProfile, NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, startProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolver,
 	})
@@ -110,7 +111,7 @@ func TestSetModel_CrossProvider_WithoutResolver_NoSwap(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		// No ResolveProfile — cross-provider switch must NOT happen.
 	})
@@ -141,7 +142,7 @@ func TestSetModel_SameProvider_WithResolver_UsesWithModel(t *testing.T) {
 		return testResolver(ref)
 	}
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   resolver,
 	})
@@ -172,7 +173,7 @@ func TestSetModel_CrossProvider_SwitchToGoogle_RegistersWebSearch(t *testing.T) 
 	c.Register(&fakeAdapter{name: "openai"})
 	c.Register(&fakeAdapter{name: "gemini"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolver,
 	})
@@ -202,7 +203,7 @@ func TestSetModel_CrossProvider_SwitchAwayFromGoogle_RemovesWebSearch(t *testing
 	c.Register(&fakeAdapter{name: "gemini"})
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, newGeminiProfile("gemini-2.5-pro"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, newGeminiProfile("gemini-2.5-pro"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolver,
 	})
@@ -233,7 +234,7 @@ func TestValidateModelFallbacks_CrossTag_Errors(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai"})
 	c.Register(&fakeAdapter{name: "anthropic"})
 
-	_, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	_, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolver,
 		ModelFallbacks:   []string{"anthropic/claude-opus-4-6"},
@@ -254,7 +255,7 @@ func TestValidateModelFallbacks_SameTag_Allowed(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai"})
 
 	// Same-tag fallback: openai/gpt-5.4 → openai/gpt-4.1-mini (both tag="openai").
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolver,
 		ModelFallbacks:   []string{"openai/gpt-4.1-mini"},
@@ -298,7 +299,7 @@ func TestSetModel_CrossProvider_ToOllama(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai"})
 	c.Register(&fakeAdapter{name: "ollama"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolverFull,
 	})
@@ -324,7 +325,7 @@ func TestSetModel_CrossProvider_ToOllama_WithCatalog(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai"})
 	c.Register(&fakeAdapter{name: "ollama"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolverFull,
 	})
@@ -351,7 +352,7 @@ func TestSetModel_CrossProvider_FromAnthropicToOllama(t *testing.T) {
 	c.Register(&fakeAdapter{name: "anthropic"})
 	c.Register(&fakeAdapter{name: "ollama"})
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-opus-4-6"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, newAnthropicProfile("claude-opus-4-6"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolverFull,
 	})
@@ -377,7 +378,7 @@ func TestSetModel_CrossProvider_ToMiniMax(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai"})
 	c.Register(&fakeAdapter{name: "minimax"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolverFull,
 	})
@@ -403,7 +404,7 @@ func TestSetModel_CrossProvider_FromMiniMax(t *testing.T) {
 	c.Register(&fakeAdapter{name: "minimax"})
 	c.Register(&fakeAdapter{name: "anthropic"})
 
-	sess, err := NewSession(c, newMiniMaxProfile("MiniMax-M2.7"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, newMiniMaxProfile("MiniMax-M2.7"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolverFull,
 	})
@@ -430,7 +431,7 @@ func TestSetModel_CrossProvider_ToOpenRouter_PreservesSlashModel(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai"})
 	c.Register(&fakeAdapter{name: "openrouter"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolverFull,
 	})
@@ -463,7 +464,7 @@ func TestSetModel_CrossProvider_FromOpenRouterToOllama(t *testing.T) {
 	c.Register(&fakeAdapter{name: "ollama"})
 
 	sess, err := NewSession(c, newOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0),
-		NewLocalExecutionEnvironment(dir), SessionConfig{
+		execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 			NoProjectPrompts: true,
 			ResolveProfile:   testResolverFull,
 		})
@@ -490,7 +491,7 @@ func TestSetModel_CrossProvider_ToAnthropicFromOpenAI(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai"})
 	c.Register(&fakeAdapter{name: "anthropic"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolverFull,
 	})
@@ -517,7 +518,7 @@ func TestSetModel_CrossProvider_FromAnthropicToOpenAI(t *testing.T) {
 	c.Register(&fakeAdapter{name: "anthropic"})
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-opus-4-6"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, newAnthropicProfile("claude-opus-4-6"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   testResolverFull,
 	})

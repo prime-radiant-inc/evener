@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -107,7 +108,7 @@ func TestRestoreSessionFromMeta_DoesNotMatchStartupSessionStartHooks(t *testing.
 		StateDir:   stateDir,
 	}
 
-	fresh, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(workDir), cfg)
+	fresh, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -122,7 +123,7 @@ func TestRestoreSessionFromMeta_DoesNotMatchStartupSessionStartHooks(t *testing.
 		Model:     "gpt-5.2",
 		Config:    cfg,
 	}
-	restored, err := RestoreSessionFromMeta(client, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(workDir), meta, stateDir)
+	restored, err := RestoreSessionFromMeta(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), meta, stateDir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}

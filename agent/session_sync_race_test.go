@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -55,7 +56,7 @@ func TestSession_ProcessInput_NoRaceWithSetters(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"}) // Stream unsupported → Complete path
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -87,7 +88,7 @@ func TestSession_ProcessInputStreaming_NoRaceWithSetters(t *testing.T) {
 			st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
 		},
 	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 2, // bound the tool loop; each round canonicalizes the tool name
 	})
 	if err != nil {
@@ -104,7 +105,7 @@ func TestSpawnAgent_NoRaceWithSetReasoningEffort(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{MaxSubagentDepth: 1})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{MaxSubagentDepth: 1})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

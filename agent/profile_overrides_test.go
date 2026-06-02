@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -126,7 +127,7 @@ func TestWithAllowedDecisions_RegistryPreservesDecisionSchema(t *testing.T) {
 	// Re-register with the preserved definition + an executor.
 	err := reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: resultToolDef},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return nil, nil
 		},
 	})

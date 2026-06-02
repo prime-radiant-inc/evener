@@ -7,12 +7,13 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
-// readBeforeWriteEnv is a minimal ExecutionEnvironment that reports a fixed set
+// readBeforeWriteEnv is a minimal execenv.ExecutionEnvironment that reports a fixed set
 // of paths as existing and records WriteFile calls. It exists so the
-// read-before-write guardrail can be exercised without a LocalExecutionEnvironment.
+// read-before-write guardrail can be exercised without a execenv.LocalExecutionEnvironment.
 type readBeforeWriteEnv struct {
 	existing map[string]bool
 }
@@ -38,11 +39,11 @@ func (e *readBeforeWriteEnv) Glob(pattern string, basePath string) ([]string, er
 func (e *readBeforeWriteEnv) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string) (string, error) {
 	return "", errors.New("not implemented")
 }
-func (e *readBeforeWriteEnv) ListDirectory(path string, depth int) ([]DirEntry, error) {
+func (e *readBeforeWriteEnv) ListDirectory(path string, depth int) ([]execenv.DirEntry, error) {
 	return nil, errors.New("not implemented")
 }
-func (e *readBeforeWriteEnv) ExecCommand(ctx context.Context, command string, timeoutMS int, workingDir string, envVars map[string]string) (ExecResult, error) {
-	return ExecResult{}, errors.New("not implemented")
+func (e *readBeforeWriteEnv) ExecCommand(ctx context.Context, command string, timeoutMS int, workingDir string, envVars map[string]string) (execenv.ExecResult, error) {
+	return execenv.ExecResult{}, errors.New("not implemented")
 }
 
 // TestToolDeps_ShellTimeoutClamp drives the shell tool through registerShellTools

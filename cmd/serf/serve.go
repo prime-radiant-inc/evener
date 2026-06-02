@@ -17,6 +17,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf/internal/rvreg"
 	"primeradiant.com/serf/cmdutil"
@@ -176,7 +177,7 @@ func runServe(args []string) error {
 	if err != nil {
 		return err
 	}
-	env := agent.NewLocalExecutionEnvironment(wd)
+	env := execenv.NewLocalExecutionEnvironment(wd)
 	sessionCfg := agent.SessionConfig{
 		MaxToolRoundsPerInput:  cmdutil.MaxRoundsToConfig(*maxRounds),
 		ShareTasksWithChildren: *shareTaskStore,

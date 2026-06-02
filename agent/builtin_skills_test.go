@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -55,7 +56,7 @@ func TestExtractEmbeddedSkills_DiscoverableByDiscoverSkills(t *testing.T) {
 	root := t.TempDir()
 	initGitRepo(t, root)
 
-	env := NewLocalExecutionEnvironment(root)
+	env := execenv.NewLocalExecutionEnvironment(root)
 	skills := DiscoverSkills(env, dir)
 
 	// No embedded skills remain, so only project skills (none here) are found.
@@ -77,7 +78,7 @@ func TestExtractEmbeddedSkills_FilesystemShadowsEmbedded(t *testing.T) {
 	writeSkillMD(t, root, "test-driven-development",
 		"---\nname: test-driven-development\ndescription: \"Project TDD\"\n---\nCustom TDD.\n")
 
-	env := NewLocalExecutionEnvironment(root)
+	env := execenv.NewLocalExecutionEnvironment(root)
 	skills := DiscoverSkills(env, dir)
 
 	tdd := skills["test-driven-development"]
@@ -108,7 +109,7 @@ func TestEmbeddedSkills_InSystemPrompt(t *testing.T) {
 	c.Register(f)
 
 	// Anthropic profile has use_skill tool, so skills are listed in system prompt.
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -149,7 +150,7 @@ func TestOpenAI_SkillsWithUseSkillInSystemPrompt(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -195,7 +196,7 @@ func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
 	c.Register(f)
 
 	// Anthropic profile renders skills in system prompt, so we can verify shadowing.
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -246,7 +247,7 @@ func TestEmbeddedSkills_UseSkillWithProjectSkill(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -292,7 +293,7 @@ func TestEmbeddedSkills_UseSkillUnknownReturnsError(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -348,7 +349,7 @@ func TestNonInteractive_SystemPromptContainsGuidance(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(root), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{
 		NonInteractive: true,
 	})
 	if err != nil {
@@ -388,7 +389,7 @@ func TestNonInteractive_NotPresentWhenFalse(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(root), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{
 		NonInteractive: false,
 	})
 	if err != nil {

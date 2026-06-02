@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -17,7 +18,7 @@ func TestToolRegistry_Restrict(t *testing.T) {
 	for _, name := range []string{"read_file", "write_file", "grep", "shell", "communicate"} {
 		_ = reg.Register(registeredTool{
 			Tool: llm.Tool{Definition: llm.ToolDefinition{Name: name, Description: name}},
-			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 				return "ok", nil
 			},
 		})
@@ -41,13 +42,13 @@ func TestToolRegistry_Restrict_KeepsCommunicate(t *testing.T) {
 	reg := newToolRegistry()
 	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "communicate", Description: "communicate"}},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
 		},
 	})
 	_ = reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "shell", Description: "shell"}},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
 		},
 	})
@@ -70,7 +71,7 @@ func TestSpawnAgent_UnknownPluginAgentType(t *testing.T) {
 		name: "openai",
 	})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 2,
 	})
 	if err != nil {
@@ -112,7 +113,7 @@ func TestSpawnAgent_PluginAgentType_SystemPrompt(t *testing.T) {
 	}
 	c.Register(adapter)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 2,
 	})
 	if err != nil {
@@ -174,7 +175,7 @@ func TestSpawnAgent_PluginAgentType_ModelOverride(t *testing.T) {
 	}
 	c.Register(adapter)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 2,
 	})
 	if err != nil {
@@ -227,7 +228,7 @@ func TestSpawnAgent_PluginAgentType_InheritModel(t *testing.T) {
 	}
 	c.Register(adapter)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 2,
 	})
 	if err != nil {
@@ -282,7 +283,7 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 	}
 	c.Register(adapter)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 2,
 	})
 	if err != nil {
@@ -347,7 +348,7 @@ func TestSpawnAgent_PluginAgentType_RejectsTopLevelOnlyAgent(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 2,
 	})
 	if err != nil {
@@ -393,7 +394,7 @@ func TestSpawnAgent_PluginAgentType_GrantTools_AddsProviderVisibleTool(t *testin
 	}
 	c.Register(adapter)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 2,
 	})
 	if err != nil {
@@ -451,7 +452,7 @@ func TestSpawnAgent_GrantTools_RejectsUnavailableParentTool(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 2,
 		spawn:            spawnConfig{allowedToolNames: []string{"read_file", "spawn_agent"}},
 	})
@@ -500,7 +501,7 @@ func TestSpawnAgent_PluginAgentType_InjectsSkillContent(t *testing.T) {
 	}
 	c.Register(adapter)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 2,
 	})
 	if err != nil {

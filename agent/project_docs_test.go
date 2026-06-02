@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/agent/execenv"
 )
 
 func TestLoadProjectDocs_WalksFromGitRootToWorkingDir_InDepthOrder(t *testing.T) {
@@ -23,7 +25,7 @@ func TestLoadProjectDocs_WalksFromGitRootToWorkingDir_InDepthOrder(t *testing.T)
 	_ = os.WriteFile(filepath.Join(root, "a", "AGENTS.md"), []byte("A\n"), 0o644)
 	_ = os.WriteFile(filepath.Join(root, "a", "b", "AGENTS.md"), []byte("B\n"), 0o644)
 
-	env := NewLocalExecutionEnvironment(nested)
+	env := execenv.NewLocalExecutionEnvironment(nested)
 	docs, truncated := LoadProjectDocs(env, "AGENTS.md")
 	if truncated {
 		t.Fatalf("did not expect truncation")
@@ -51,7 +53,7 @@ func TestLoadProjectDocs_TruncatesTo32KBAndAddsMarker(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	env := NewLocalExecutionEnvironment(root)
+	env := execenv.NewLocalExecutionEnvironment(root)
 	docs, truncated := LoadProjectDocs(env, "AGENTS.md")
 	if !truncated {
 		t.Fatalf("expected truncation")

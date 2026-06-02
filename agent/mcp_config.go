@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"primeradiant.com/serf/agent/execenv"
 )
 
 // MCPServerConfig describes a single MCP server connection.
@@ -228,7 +230,7 @@ func MergeMCPConfigs(layers ...[]MCPServerConfig) []MCPServerConfig {
 // DiscoverMCPConfigs loads MCP configs from all sources:
 // global (~/.config/serf/mcp.json) -> project (.serf/mcp.json at git root)
 // -> CLI files -> CLI inline specs. Later sources shadow earlier by name.
-func DiscoverMCPConfigs(env ExecutionEnvironment, extraFiles, inlineSpecs []string) ([]MCPServerConfig, error) {
+func DiscoverMCPConfigs(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string) ([]MCPServerConfig, error) {
 	var layers [][]MCPServerConfig
 
 	// Layer 1: Global config.

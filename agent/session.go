@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/llm"
 )
@@ -23,7 +24,7 @@ type Session struct {
 	client         *llm.Client
 	profile        ProviderProfile
 	resolveProfile func(ref string) (ProviderProfile, error) // cross-provider resolver; may be nil
-	env            ExecutionEnvironment
+	env            execenv.ExecutionEnvironment
 	stateDir       string
 	installID      string
 
@@ -273,7 +274,7 @@ func (s *Session) reapplyProviderSpecificTools(oldTag, newTag string) {
 		// Switching to Gemini: wire the real web_search executor.
 		_ = s.reg.Register(registeredTool{
 			Tool: llm.Tool{Definition: defWebSearch()},
-			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 				query := fmt.Sprint(args["query"])
 				return s.webSearch(ctx, query)
 			},

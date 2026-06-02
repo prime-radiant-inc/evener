@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
@@ -141,7 +142,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err != nil {
 		return err
 	}
-	env := agent.NewLocalExecutionEnvironment(cfg.workDir)
+	env := execenv.NewLocalExecutionEnvironment(cfg.workDir)
 
 	var sess *agent.Session
 	if meta != nil {

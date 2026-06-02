@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/llm"
 )
@@ -42,7 +43,7 @@ func TestFallbackChain_PermanentErrorTriesNextModel(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		LLMRetryPolicy: &policy,
 		ModelFallbacks: []string{"fallback-b", "fallback-c"},
 	})
@@ -99,7 +100,7 @@ func TestFallbackChain_EndpointFallbackErrorTriesNextModel(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		LLMRetryPolicy: &policy,
 		ModelFallbacks: []string{"fallback-b"},
 	})
@@ -161,7 +162,7 @@ func TestFallbackChain_ExhaustionReturnsLastError(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		LLMRetryPolicy: &policy,
 		ModelFallbacks: []string{"fallback-b", "fallback-c"},
 	})
@@ -221,7 +222,7 @@ func TestFallbackChain_RetryableSkipsFallback(t *testing.T) {
 	// Burn budget quickly: 1 retry = 2 primary attempts total, no sleeps.
 	policy := llm.RetryPolicy{MaxRetries: 1, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond}
 	sleep := func(ctx context.Context, d time.Duration) error { return nil }
-	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		LLMRetryPolicy: &policy,
 		LLMSleep:       sleep,
 		ModelFallbacks: []string{"fallback-b"},
@@ -267,7 +268,7 @@ func TestFallbackChain_RejectsCrossProviderFallbacks(t *testing.T) {
 	c.Register(openaiAdapter)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	_, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
+	_, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		LLMRetryPolicy: &policy,
 		ModelFallbacks: []string{"anthropic/claude-test", "fallback-b"},
 	})
@@ -296,7 +297,7 @@ func TestFallbackChain_EmptyFallbacksNoEffect(t *testing.T) {
 	c.Register(f)
 
 	policy := llm.RetryPolicy{MaxRetries: 0}
-	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("primary"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{
 		LLMRetryPolicy: &policy,
 		// ModelFallbacks left nil — empty chain.
 	})

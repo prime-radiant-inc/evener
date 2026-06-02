@@ -33,6 +33,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/auth/openai"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
@@ -195,7 +196,7 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 	const openAIMarker = "they execute in the order you"
 
 	// ── work instance gets openai behavior ──
-	workSess, err := NewSession(c, workProfile, NewLocalExecutionEnvironment(dir), SessionConfig{
+	workSess, err := NewSession(c, workProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 	})
 	if err != nil {
@@ -218,7 +219,7 @@ func TestPhase1b_CompatX_NoOpenAIBehavior(t *testing.T) {
 	}
 
 	// ── compat-x instance does NOT get openai behavior ──
-	compatSess, err := NewSession(c, compatProfile, NewLocalExecutionEnvironment(dir), SessionConfig{
+	compatSess, err := NewSession(c, compatProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 	})
 	if err != nil {
@@ -324,7 +325,7 @@ func TestPhase1b_SetModel_Work2_PreservesOutputSchema(t *testing.T) {
 		return ResolveProfileFromConfig(phase1bCfg, ref)
 	}
 
-	sess, err := NewSession(c, startProfile, NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, startProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   resolver,
 	})
@@ -390,7 +391,7 @@ func TestPhase1b_Resume_ProfileIDPreserved(t *testing.T) {
 		t.Fatalf("ResolveProfileFromConfig(work): %v", err)
 	}
 
-	sess, err := NewSession(c, workProfile, NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, workProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 	})
 	if err != nil {

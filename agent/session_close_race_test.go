@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -26,7 +27,7 @@ func TestSession_Close_NoRaceWithSubagentEmit(t *testing.T) {
 				func(req llm.Request) llm.Response { return finalResponse("done") },
 			},
 		})
-		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 			MaxSubagentDepth: 1,
 		})
 		if err != nil {
@@ -64,7 +65,7 @@ func TestSession_Close_NoRaceWithConcurrentEmit(t *testing.T) {
 				func(req llm.Request) llm.Response { return finalResponse("done") },
 			},
 		})
-		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 		if err != nil {
 			t.Fatalf("NewSession: %v", err)
 		}

@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"primeradiant.com/serf/agent/execenv"
 )
 
 func TestGitOriginURL_ReturnsOrigin(t *testing.T) {
@@ -16,7 +18,7 @@ func TestGitOriginURL_ReturnsOrigin(t *testing.T) {
 		t.Fatalf("EvalSymlinks: %v", err)
 	}
 
-	env := NewLocalExecutionEnvironment(dir)
+	env := execenv.NewLocalExecutionEnvironment(dir)
 
 	// Init a repo and set an origin.
 	mustExec(t, env, dir, "git init")
@@ -31,7 +33,7 @@ func TestGitOriginURL_ReturnsOrigin(t *testing.T) {
 func TestGitOriginURL_NoOrigin(t *testing.T) {
 	dir := t.TempDir()
 	dir, _ = filepath.EvalSymlinks(dir)
-	env := NewLocalExecutionEnvironment(dir)
+	env := execenv.NewLocalExecutionEnvironment(dir)
 
 	mustExec(t, env, dir, "git init")
 
@@ -44,7 +46,7 @@ func TestGitOriginURL_NoOrigin(t *testing.T) {
 func TestGitOriginURL_NotGitRepo(t *testing.T) {
 	dir := t.TempDir()
 	dir, _ = filepath.EvalSymlinks(dir)
-	env := NewLocalExecutionEnvironment(dir)
+	env := execenv.NewLocalExecutionEnvironment(dir)
 
 	got := gitOriginURL(env, dir)
 	if got != "" {
@@ -61,7 +63,7 @@ func TestGitOriginURL_NilEnv(t *testing.T) {
 
 func TestSnapshotGit_InGitRepo(t *testing.T) {
 	dir := t.TempDir()
-	env := NewLocalExecutionEnvironment(dir)
+	env := execenv.NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
 	ctx := context.Background()
 	if _, err := env.ExecCommand(ctx, "git init", 5000, dir, nil); err != nil {
@@ -100,7 +102,7 @@ func TestSnapshotGit_InGitRepo(t *testing.T) {
 
 func TestSnapshotGit_NotAGitRepo(t *testing.T) {
 	dir := t.TempDir()
-	env := NewLocalExecutionEnvironment(dir)
+	env := execenv.NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
 	inRepo, _, _, _, _ := snapshotGit(env, dir)
 	if inRepo {
@@ -110,7 +112,7 @@ func TestSnapshotGit_NotAGitRepo(t *testing.T) {
 
 func TestSnapshotGit_FreshRepoNoCommits(t *testing.T) {
 	dir := t.TempDir()
-	env := NewLocalExecutionEnvironment(dir)
+	env := execenv.NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
 	ctx := context.Background()
 	if _, err := env.ExecCommand(ctx, "git init", 5000, dir, nil); err != nil {
@@ -128,7 +130,7 @@ func TestSnapshotGit_FreshRepoNoCommits(t *testing.T) {
 
 func TestSnapshotGit_TracksModifiedAndUntracked(t *testing.T) {
 	dir := t.TempDir()
-	env := NewLocalExecutionEnvironment(dir)
+	env := execenv.NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
 	ctx := context.Background()
 	if _, err := env.ExecCommand(ctx, "git init", 5000, dir, nil); err != nil {
@@ -164,7 +166,7 @@ func TestSnapshotGit_TracksModifiedAndUntracked(t *testing.T) {
 }
 
 // mustExec runs a git command in dir and fails the test on error.
-func mustExec(t *testing.T, env ExecutionEnvironment, dir, cmd string) {
+func mustExec(t *testing.T, env execenv.ExecutionEnvironment, dir, cmd string) {
 	t.Helper()
 	// Set HOME to temp dir so git doesn't try to read user config.
 	t.Setenv("HOME", t.TempDir())

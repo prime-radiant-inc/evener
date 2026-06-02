@@ -6,13 +6,13 @@
 //   - an [llm.Client] — the transport to one or more model providers;
 //   - a [ProviderProfile] — selects the model and its provider-specific behavior
 //     (construct one with, e.g., [NewOpenAIProfile]);
-//   - an [ExecutionEnvironment] — where the agent's tools run, such as the local
-//     filesystem and shell via [NewLocalExecutionEnvironment].
+//   - an [execenv.ExecutionEnvironment] — where the agent's tools run, such as the
+//     local filesystem and shell via [execenv.NewLocalExecutionEnvironment].
 //
 // Build a session with [NewSession] and run a turn with [Session.ProcessInput]:
 //
 //	sess, err := agent.NewSession(client, agent.NewOpenAIProfile("gpt-5.2"),
-//		agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
+//		execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
 //	if err != nil {
 //		return err
 //	}

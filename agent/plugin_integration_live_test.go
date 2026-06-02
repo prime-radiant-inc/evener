@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/openai"
 )
@@ -517,7 +518,7 @@ func TestLive_Session_WithPlugin(t *testing.T) {
 		t.Fatalf("NewFromEnv: %v", err)
 	}
 
-	sess, err := NewSession(client, NewOpenAIProfile(integrationTestModel), NewLocalExecutionEnvironment(workDir), SessionConfig{
+	sess, err := NewSession(client, NewOpenAIProfile(integrationTestModel), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{
 		PluginDirs:            []string{pluginDir},
 		MaxToolRoundsPerInput: 10,
 		MaxTurns:              3,
@@ -636,7 +637,7 @@ func TestLive_Session_MCPToolCall(t *testing.T) {
 		t.Fatalf("NewFromEnv: %v", err)
 	}
 
-	sess, err := NewSession(client, NewOpenAIProfile(integrationTestModel), NewLocalExecutionEnvironment(workDir), SessionConfig{
+	sess, err := NewSession(client, NewOpenAIProfile(integrationTestModel), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{
 		PluginDirs:            []string{pluginDir},
 		MaxToolRoundsPerInput: 20,
 		MaxTurns:              5,
@@ -725,7 +726,7 @@ func TestLive_Session_PluginAgentsInSystemPrompt(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(workDir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{
 		PluginDirs: []string{pluginDir},
 		MaxTurns:   2,
 	})
@@ -774,7 +775,7 @@ func TestLive_ToolRestriction_PluginAgent(t *testing.T) {
 				Description: "test tool " + n,
 				Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
 			}},
-			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 				return n + " called", nil
 			},
 		}); err != nil {
@@ -853,7 +854,7 @@ func TestLive_Session_RealSuperpowersPlugin(t *testing.T) {
 	c.Register(f)
 
 	workDir := t.TempDir()
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(workDir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{
 		PluginDirs: []string{superpowersDir},
 		MaxTurns:   2,
 	})

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 )
@@ -351,7 +352,7 @@ func (p *baseProfile) toolRegistry() *toolRegistry {
 	for _, td := range p.toolDefs {
 		_ = reg.Register(registeredTool{
 			Tool: llm.Tool{Definition: td},
-			Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 				return nil, errors.New("tool executor not wired")
 			},
 		})
@@ -1089,7 +1090,7 @@ func newOpenAICompatProfile(id, model string, contextWindow int) ProviderProfile
 	return &bp
 }
 
-func envInfoFromEnv(env ExecutionEnvironment) EnvironmentInfo {
+func envInfoFromEnv(env execenv.ExecutionEnvironment) EnvironmentInfo {
 	wd := ""
 	plat := ""
 	osv := ""

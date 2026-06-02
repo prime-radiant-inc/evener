@@ -27,6 +27,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -87,7 +88,7 @@ func TestProviderInstance_RenamedOpenAI_IdentityAndBehavior(t *testing.T) {
 		t.Fatalf("BehaviorTag() = %q, want openai", got)
 	}
 
-	sess, err := NewSession(c, renamedProfile, NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, renamedProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 	})
 	if err != nil {
@@ -156,7 +157,7 @@ func TestProviderInstance_OpenAICompatible_NoOpenAIBehavior(t *testing.T) {
 		behaviorTag: "openai-compatible",
 	}
 
-	sess, err := NewSession(c, compatProfile, NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, compatProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 	})
 	if err != nil {
@@ -209,7 +210,7 @@ func TestProviderInstance_CrossInstanceSwitch_PreservesOverrideAndIdentity(t *te
 		customSchema,
 	)
 
-	sess, err := NewSession(c, startProfile, NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, startProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   instanceTestResolver,
 	})
@@ -273,7 +274,7 @@ func TestProviderInstance_ProviderConditionalTool_GoogleSwitchWiresWebSearch(t *
 
 	startProfile := WithProviderID(NewOpenAIProfile("gpt-5.4"), "work")
 
-	sess, err := NewSession(c, startProfile, NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, startProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,
 		ResolveProfile:   instanceTestResolver,
 	})

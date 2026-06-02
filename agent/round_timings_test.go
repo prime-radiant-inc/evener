@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/llm"
 )
@@ -74,7 +75,7 @@ func TestRoundTimings_Emitted(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.2"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
+	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -193,7 +194,7 @@ func BenchmarkRoundOverhead(b *testing.B) {
 		adapter.steps = makeSteps()
 		adapter.mu.Unlock()
 
-		sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.2"), agent.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
+		sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
 		if err != nil {
 			b.Fatalf("NewSession: %v", err)
 		}

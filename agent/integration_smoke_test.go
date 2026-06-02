@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/openai"
 )
@@ -36,7 +37,7 @@ func integrationSession(t *testing.T) *Session {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	sess, err := NewSession(client, NewOpenAIProfile(integrationTestModel), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(client, NewOpenAIProfile(integrationTestModel), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 20,
 		MaxTurns:              5,
 	})
@@ -269,7 +270,7 @@ func TestIntegration_Subagent(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	sess, err := NewSession(client, NewOpenAIProfile(integrationTestModel), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(client, NewOpenAIProfile(integrationTestModel), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 40,
 		MaxTurns:              5,
 	})

@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -13,7 +14,7 @@ func renderAvailableAgentsSectionForTest(t *testing.T, agents map[string]PluginA
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
 
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

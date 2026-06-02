@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -29,7 +30,7 @@ func TestCachedToolDefs_MatchUncached(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -59,7 +60,7 @@ func TestCachedToolDefs_AlwaysIncludesCommunicate(t *testing.T) {
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -86,7 +87,7 @@ func TestCachedToolDefs_IncludesMCPTools(t *testing.T) {
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -101,7 +102,7 @@ func TestCachedToolDefs_IncludesMCPTools(t *testing.T) {
 	sess.mcpTools = append(sess.mcpTools, mcpTool)
 	_ = sess.reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: mcpTool},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
 		},
 	})
@@ -129,7 +130,7 @@ func TestCachedToolDefs_IncludesRegistryOnlyTools(t *testing.T) {
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -144,7 +145,7 @@ func TestCachedToolDefs_IncludesRegistryOnlyTools(t *testing.T) {
 				Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
 			},
 		},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
 		},
 	}
@@ -189,7 +190,7 @@ func TestToolDefs_WebSearchExcludedForNonGemini(t *testing.T) {
 			c := llm.NewClient()
 			c.Register(&fakeAdapter{name: tc.adapter})
 
-			sess, err := NewSession(c, tc.profile, NewLocalExecutionEnvironment(dir), SessionConfig{})
+			sess, err := NewSession(c, tc.profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 			if err != nil {
 				t.Fatalf("NewSession: %v", err)
 			}
@@ -231,7 +232,7 @@ func TestToolDefs_NoDuplicateNames(t *testing.T) {
 			c := llm.NewClient()
 			c.Register(&fakeAdapter{name: tc.adapter})
 
-			sess, err := NewSession(c, tc.profile, NewLocalExecutionEnvironment(dir), SessionConfig{})
+			sess, err := NewSession(c, tc.profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 			if err != nil {
 				t.Fatalf("NewSession: %v", err)
 			}
@@ -257,7 +258,7 @@ func TestToolDefs_MCPToolSameNameAsProfileTool_NoDuplicate(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "anthropic"})
 
-	sess, err := NewSession(c, newAnthropicProfile("claude-test"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -326,7 +327,7 @@ func TestHistoryCopyReduction_ContextAndExpansionShareCopy(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -382,7 +383,7 @@ func TestAfterAction_ReceivesCurrentHistory(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		testOnly: testConfig{contextStrategyOverride: capturer},
 	})
 	if err != nil {
@@ -436,7 +437,7 @@ func TestCachedSystemPromptComponents_SkillList(t *testing.T) {
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -454,7 +455,7 @@ func TestCachedSystemPromptComponents_DoesNotDuplicateMCPToolDescriptions(t *tes
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -468,7 +469,7 @@ func TestCachedSystemPromptComponents_DoesNotDuplicateMCPToolDescriptions(t *tes
 	sess.mcpTools = append(sess.mcpTools, mcpTool)
 	_ = sess.reg.Register(registeredTool{
 		Tool: llm.Tool{Definition: mcpTool},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
 		},
 	})
@@ -500,7 +501,7 @@ func TestCachedSystemPromptComponents_NonInteractiveGuidance(t *testing.T) {
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NonInteractive: true,
 	})
 	if err != nil {
@@ -521,7 +522,7 @@ func TestCachedSystemPromptComponents_AgentSection(t *testing.T) {
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -550,7 +551,7 @@ func TestCachedSystemPromptComponents_UsesProviderVisibleToolNames(t *testing.T)
 	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), coordinatorWorkflowSessionConfig(t, SessionConfig{
 		AgentName: "reviewer",
 	}))
 	if err != nil {
@@ -591,7 +592,7 @@ func TestSystemPromptConsistency_WithAndWithoutCache(t *testing.T) {
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NonInteractive: true,
 	})
 	if err != nil {
@@ -658,7 +659,7 @@ func TestSession_ProjectDocsLoadedOnceAtInit(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&snapshotFakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 200,
 	})
 	if err != nil {
@@ -684,7 +685,7 @@ func TestSession_CachedProjectDocsUsedInSystemPrompt(t *testing.T) {
 	adapter := &snapshotFakeAdapter{name: "openai"}
 	c.Register(adapter)
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 200,
 	})
 	if err != nil {
@@ -884,7 +885,7 @@ func TestSession_MaybeAutoSave_WritesMetaNotSnapshot(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&snapshotFakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 200,
 		StateDir:              dir,
 	})
@@ -937,7 +938,7 @@ func TestSession_Meta_ReturnsLightweightMeta(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&snapshotFakeAdapter{name: "openai"})
 
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), SessionConfig{
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 200,
 	})
 	if err != nil {
@@ -996,7 +997,7 @@ func TestRestoreSession_FromMetaAndTranscript(t *testing.T) {
 	adapter := &snapshotFakeAdapter{name: "openai"}
 	c.Register(adapter)
 
-	sess, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), meta, stateDir)
+	sess, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, stateDir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -1055,7 +1056,7 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 	adapter := &snapshotFakeAdapter{name: "openai"}
 	c.Register(adapter)
 
-	sess, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), meta, stateDir)
+	sess, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, stateDir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}
@@ -1111,7 +1112,7 @@ func TestRestoreSessionFromMeta_TranscriptWithCompaction(t *testing.T) {
 	adapter := &snapshotFakeAdapter{name: "openai"}
 	c.Register(adapter)
 
-	sess, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), NewLocalExecutionEnvironment(dir), meta, stateDir)
+	sess, err := RestoreSessionFromMeta(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, stateDir)
 	if err != nil {
 		t.Fatalf("RestoreSessionFromMeta: %v", err)
 	}

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -18,7 +19,7 @@ func TestRegisteredTool_EmbedsLLMTool(t *testing.T) {
 				Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
 			},
 		},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			execCalled = true
 			return "agent-exec-ok", nil
 		},
@@ -70,7 +71,7 @@ func TestRegisteredTool_ExecuteNotBridgedWhenAlreadySet(t *testing.T) {
 				return "direct-execute", nil
 			},
 		},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "agent-exec", nil
 		},
 	}
@@ -104,7 +105,7 @@ func TestRegisteredTool_BridgedExecute_RejectsNonMapArgs(t *testing.T) {
 				Name: "bridge_reject",
 			},
 		},
-		Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
 		},
 	}

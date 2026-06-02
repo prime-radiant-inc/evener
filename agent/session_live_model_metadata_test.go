@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -32,7 +33,7 @@ func TestNewSessionAppliesLiveOpenAIModelContextWindow(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.5"), NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.5"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -59,7 +60,7 @@ func TestSessionSetModelAppliesLiveOpenAIModelContextWindow(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.4"), NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

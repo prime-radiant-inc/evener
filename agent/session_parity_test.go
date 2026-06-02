@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
 
@@ -35,7 +36,7 @@ func newParitySession(t *testing.T, pc providerCase, steps []func(llm.Request) l
 	c := llm.NewClient()
 	f := &fakeAdapter{name: pc.adapterName, steps: steps}
 	c.Register(f)
-	sess, err := NewSession(c, pc.profile("test-model"), NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, pc.profile("test-model"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession(%s): %v", pc.name, err)
 	}
@@ -571,7 +572,7 @@ func TestParity_SteeringMidTask(t *testing.T) {
 			defer sess.Close()
 			_ = sess.reg.Register(registeredTool{
 				Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "slow_tool"}},
-				Exec: func(ctx context.Context, env ExecutionEnvironment, args map[string]any) (any, error) {
+				Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 					started <- struct{}{}
 					<-release
 					return "ok", nil
