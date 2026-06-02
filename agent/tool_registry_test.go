@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -213,7 +214,7 @@ func TestToolRegistry_TruncationMarkers(t *testing.T) {
 			_ = env
 			return strings.Repeat("x", 2000), nil
 		},
-		Limit: ToolOutputLimit{MaxChars: 200, Strategy: TruncTail},
+		Limit: schema.ToolOutputLimit{MaxChars: 200, Strategy: schema.TruncTail},
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -247,7 +248,7 @@ func TestToolRegistry_TruncationOrder_CharsFirstThenLines(t *testing.T) {
 			_ = args
 			return full, nil
 		},
-		Limit: ToolOutputLimit{MaxChars: 200, MaxLines: 2, Strategy: TruncTail},
+		Limit: schema.ToolOutputLimit{MaxChars: 200, MaxLines: 2, Strategy: schema.TruncTail},
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -289,7 +290,7 @@ func TestToolRegistry_TruncationLines_UsesHeadTailAndOmittedMarker(t *testing.T)
 			_ = args
 			return full, nil
 		},
-		Limit: ToolOutputLimit{MaxChars: 10_000, MaxLines: 4, Strategy: TruncHeadTail},
+		Limit: schema.ToolOutputLimit{MaxChars: 10_000, MaxLines: 4, Strategy: schema.TruncHeadTail},
 	}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -429,7 +430,7 @@ func TestTruncateChars_UTF8Aware(t *testing.T) {
 	}
 
 	// Truncate to 3 characters (runes), not 3 bytes.
-	result := truncateChars(input, 3, TruncHeadTail)
+	result := truncateChars(input, 3, schema.TruncHeadTail)
 	// Should contain valid UTF-8 (no broken characters).
 	if !utf8.ValidString(result) {
 		t.Error("truncated result must be valid UTF-8")
@@ -443,13 +444,13 @@ func TestTruncateChars_UTF8Aware(t *testing.T) {
 		t.Error("expected last emoji in tail portion")
 	}
 
-	// TruncTail: keep last 3 characters
-	result2 := truncateChars(input, 3, TruncTail)
+	// schema.TruncTail: keep last 3 characters
+	result2 := truncateChars(input, 3, schema.TruncTail)
 	if !utf8.ValidString(result2) {
-		t.Error("TruncTail result must be valid UTF-8")
+		t.Error("schema.TruncTail result must be valid UTF-8")
 	}
 	if !strings.Contains(result2, "😂🤣😃") {
-		t.Error("TruncTail should keep last 3 emojis")
+		t.Error("schema.TruncTail should keep last 3 emojis")
 	}
 }
 
@@ -695,17 +696,17 @@ func TestDefaultToolLimit_MatchesSpecTable(t *testing.T) {
 		tool     string
 		chars    int
 		lines    int
-		strategy TruncationStrategy
+		strategy schema.TruncationStrategy
 	}
 	cases := []want{
-		{tool: "read_file", chars: 50_000, lines: 0, strategy: TruncHeadTail},
-		{tool: "shell", chars: 30_000, lines: 512, strategy: TruncHeadTail},
-		{tool: "grep", chars: 20_000, lines: 200, strategy: TruncTail},
-		{tool: "glob", chars: 20_000, lines: 500, strategy: TruncTail},
-		{tool: "edit_file", chars: 10_000, lines: 0, strategy: TruncTail},
-		{tool: "apply_patch", chars: 10_000, lines: 0, strategy: TruncTail},
-		{tool: "write_file", chars: 1_000, lines: 0, strategy: TruncTail},
-		{tool: "spawn_agent", chars: 20_000, lines: 0, strategy: TruncHeadTail},
+		{tool: "read_file", chars: 50_000, lines: 0, strategy: schema.TruncHeadTail},
+		{tool: "shell", chars: 30_000, lines: 512, strategy: schema.TruncHeadTail},
+		{tool: "grep", chars: 20_000, lines: 200, strategy: schema.TruncTail},
+		{tool: "glob", chars: 20_000, lines: 500, strategy: schema.TruncTail},
+		{tool: "edit_file", chars: 10_000, lines: 0, strategy: schema.TruncTail},
+		{tool: "apply_patch", chars: 10_000, lines: 0, strategy: schema.TruncTail},
+		{tool: "write_file", chars: 1_000, lines: 0, strategy: schema.TruncTail},
+		{tool: "spawn_agent", chars: 20_000, lines: 0, strategy: schema.TruncHeadTail},
 	}
 	for _, tc := range cases {
 		lim := defaultToolLimit(tc.tool)

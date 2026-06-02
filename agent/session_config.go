@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
 )
@@ -34,7 +35,7 @@ type SessionConfig struct {
 	MaxSubagentDepth int `json:"max_subagent_depth,omitempty"`
 
 	// ToolOutputLimits overrides default per-tool truncation behavior.
-	ToolOutputLimits map[string]ToolOutputLimit `json:"tool_output_limits,omitempty"`
+	ToolOutputLimits map[string]schema.ToolOutputLimit `json:"tool_output_limits,omitempty"`
 
 	// UserInstructionOverride is appended to the end of the system prompt (highest priority).
 	UserInstructionOverride string `json:"user_instruction_override,omitempty"`

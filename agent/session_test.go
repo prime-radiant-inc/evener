@@ -1632,8 +1632,8 @@ func TestSession_ToolOutputTruncation_OverridesLimitsAndKeepsFullOutputInEvents(
 	c.Register(f)
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		ToolOutputLimits: map[string]ToolOutputLimit{
-			"shell": {MaxChars: 800, Strategy: TruncHeadTail},
+		ToolOutputLimits: map[string]schema.ToolOutputLimit{
+			"shell": {MaxChars: 800, Strategy: schema.TruncHeadTail},
 		},
 	})
 	if err != nil {
@@ -1729,8 +1729,8 @@ func TestSession_ToolOutputTruncation_CanOverrideLineLimitViaSessionConfig(t *te
 	c.Register(f)
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		ToolOutputLimits: map[string]ToolOutputLimit{
-			"shell": {MaxChars: 100_000, MaxLines: 4, Strategy: TruncHeadTail},
+		ToolOutputLimits: map[string]schema.ToolOutputLimit{
+			"shell": {MaxChars: 100_000, MaxLines: 4, Strategy: schema.TruncHeadTail},
 		},
 	})
 	if err != nil {

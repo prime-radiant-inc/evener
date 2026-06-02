@@ -104,10 +104,10 @@ func TestTurn_JSONRoundTrip_ToolResults(t *testing.T) {
 }
 
 func TestToolOutputLimit_JSONRoundTrip(t *testing.T) {
-	orig := ToolOutputLimit{
+	orig := schema.ToolOutputLimit{
 		MaxChars: 50000,
 		MaxLines: 200,
-		Strategy: TruncHeadTail,
+		Strategy: schema.TruncHeadTail,
 	}
 	data, err := json.Marshal(orig)
 	if err != nil {
@@ -128,7 +128,7 @@ func TestToolOutputLimit_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("expected strategy key in JSON, got keys: %v", raw)
 	}
 
-	var got ToolOutputLimit
+	var got schema.ToolOutputLimit
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

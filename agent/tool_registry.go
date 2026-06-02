@@ -14,17 +14,8 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v5"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
-)
-
-// TruncationStrategy selects how tool output exceeding a limit is shortened.
-type TruncationStrategy string
-
-const (
-	// TruncHeadTail keeps the head and tail of the output, removing the middle.
-	TruncHeadTail TruncationStrategy = "head_tail"
-	// TruncTail keeps the last portion of the output, removing the start.
-	TruncTail TruncationStrategy = "tail"
 )
 
 const toolPurposeDescription = "Briefly explain why you are calling this tool and what you expect to learn or accomplish."
@@ -86,14 +77,6 @@ func cloneSchemaValue(v any) any {
 	default:
 		return v
 	}
-}
-
-// ToolOutputLimit specifies the character and line bounds, and the truncation
-// strategy, applied to a tool's output before it is sent to the model.
-type ToolOutputLimit struct {
-	MaxChars int                `json:"max_chars,omitempty"` // max output characters (0 = no char limit)
-	MaxLines int                `json:"max_lines,omitempty"` // max output lines (0 = no line limit)
-	Strategy TruncationStrategy `json:"strategy,omitempty"`  // how to trim when a limit is exceeded
 }
 
 // toolExecResult holds the outcome of executing a single tool call, including
@@ -207,7 +190,7 @@ func parseDocumentResult(path, readFileOutput string) *imageResult {
 type registeredTool struct {
 	llm.Tool // embeds Definition + Execute
 	Schema   *jsonschema.Schema
-	Limit    ToolOutputLimit
+	Limit    schema.ToolOutputLimit
 	// Agent-layer executor with environment context.
 	Exec func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error)
 }
@@ -464,7 +447,7 @@ func (r *toolRegistry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnv
 	return truncateResult(name, callID, full, false, t.Limit)
 }
 
-func truncateResult(toolName, callID, full string, isErr bool, lim ToolOutputLimit) toolExecResult {
+func truncateResult(toolName, callID, full string, isErr bool, lim schema.ToolOutputLimit) toolExecResult {
 	out := full
 	out = truncateChars(out, lim.MaxChars, lim.Strategy)
 	if lim.MaxLines > 0 {
@@ -479,14 +462,14 @@ func truncateResult(toolName, callID, full string, isErr bool, lim ToolOutputLim
 	}
 }
 
-func truncateChars(s string, limit int, strategy TruncationStrategy) string {
+func truncateChars(s string, limit int, strategy schema.TruncationStrategy) string {
 	runes := []rune(s)
 	if limit <= 0 || len(runes) <= limit {
 		return s
 	}
 	removed := len(runes) - limit
 	switch strategy {
-	case TruncTail:
+	case schema.TruncTail:
 		// Spec: keep the last max_chars characters and prepend a warning.
 		marker := fmt.Sprintf("[WARNING: Tool output was truncated. First %d characters were removed. The full output is available in the event stream.]\n\n", removed)
 		return marker + string(runes[len(runes)-limit:])
@@ -516,34 +499,34 @@ func truncateLines(s string, limit int) string {
 	return head + marker + tail
 }
 
-func defaultToolLimit(toolName string) ToolOutputLimit {
+func defaultToolLimit(toolName string) schema.ToolOutputLimit {
 	switch toolName {
 	case "read_file":
-		return ToolOutputLimit{MaxChars: 50_000, Strategy: TruncHeadTail}
+		return schema.ToolOutputLimit{MaxChars: 50_000, Strategy: schema.TruncHeadTail}
 	case "shell":
-		return ToolOutputLimit{MaxChars: 30_000, MaxLines: 512, Strategy: TruncHeadTail}
+		return schema.ToolOutputLimit{MaxChars: 30_000, MaxLines: 512, Strategy: schema.TruncHeadTail}
 	case "grep":
-		return ToolOutputLimit{MaxChars: 20_000, MaxLines: 200, Strategy: TruncTail}
+		return schema.ToolOutputLimit{MaxChars: 20_000, MaxLines: 200, Strategy: schema.TruncTail}
 	case "glob":
-		return ToolOutputLimit{MaxChars: 20_000, MaxLines: 500, Strategy: TruncTail}
+		return schema.ToolOutputLimit{MaxChars: 20_000, MaxLines: 500, Strategy: schema.TruncTail}
 	case "edit_file":
-		return ToolOutputLimit{MaxChars: 10_000, Strategy: TruncTail}
+		return schema.ToolOutputLimit{MaxChars: 10_000, Strategy: schema.TruncTail}
 	case "apply_patch":
-		return ToolOutputLimit{MaxChars: 10_000, Strategy: TruncTail}
+		return schema.ToolOutputLimit{MaxChars: 10_000, Strategy: schema.TruncTail}
 	case "write_file":
-		return ToolOutputLimit{MaxChars: 1_000, Strategy: TruncTail}
+		return schema.ToolOutputLimit{MaxChars: 1_000, Strategy: schema.TruncTail}
 	case "spawn_agent":
-		return ToolOutputLimit{MaxChars: 20_000, Strategy: TruncHeadTail}
+		return schema.ToolOutputLimit{MaxChars: 20_000, Strategy: schema.TruncHeadTail}
 	case "task_list":
-		return ToolOutputLimit{MaxChars: 20_000, Strategy: TruncTail}
+		return schema.ToolOutputLimit{MaxChars: 20_000, Strategy: schema.TruncTail}
 	case "web_fetch":
-		return ToolOutputLimit{MaxChars: 20_000, Strategy: TruncHeadTail}
+		return schema.ToolOutputLimit{MaxChars: 20_000, Strategy: schema.TruncHeadTail}
 	case "communicate":
-		return ToolOutputLimit{MaxChars: 5_000, Strategy: TruncTail}
+		return schema.ToolOutputLimit{MaxChars: 5_000, Strategy: schema.TruncTail}
 	case "use_skill":
-		return ToolOutputLimit{MaxChars: 32_000, Strategy: TruncTail}
+		return schema.ToolOutputLimit{MaxChars: 32_000, Strategy: schema.TruncTail}
 	default:
-		return ToolOutputLimit{MaxChars: 20_000, Strategy: TruncHeadTail}
+		return schema.ToolOutputLimit{MaxChars: 20_000, Strategy: schema.TruncHeadTail}
 	}
 }
 
