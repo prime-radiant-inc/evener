@@ -21,7 +21,7 @@ import (
 type providerCase struct {
 	name        string // human-readable
 	adapterName string // fakeAdapter.Name()
-	profile     func(model string) ProviderProfile
+	profile     func(model string) *Profile
 }
 
 var providerCases = []providerCase{

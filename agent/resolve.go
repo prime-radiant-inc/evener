@@ -8,7 +8,7 @@ import (
 	"primeradiant.com/serf/llm/providercfg"
 )
 
-// ResolveProfileFromConfig maps an instance name to a ProviderProfile using
+// ResolveProfileFromConfig maps an instance name to a *Profile using
 // the loaded providercfg.Config.
 //
 // ref is parsed as "<instanceName>/<model>" where model may contain additional
@@ -23,7 +23,7 @@ import (
 // The context window is passed as 0 to newOpenAICompatProfile — the catalog
 // lookup inside the constructor keys on the behavior tag and resolves the
 // right window from the embedded model catalog.
-func ResolveProfileFromConfig(cfg providercfg.Config, ref string) (ProviderProfile, error) {
+func ResolveProfileFromConfig(cfg providercfg.Config, ref string) (*Profile, error) {
 	instName, model, ok := strings.Cut(ref, "/")
 	if !ok || instName == "" || model == "" {
 		return nil, fmt.Errorf("invalid model ref %q: must be instanceName/model", ref)
@@ -49,7 +49,7 @@ func ResolveProfileFromConfig(cfg providercfg.Config, ref string) (ProviderProfi
 	typ := string(inst.Type)
 	style := string(inst.APIStyle)
 
-	var raw ProviderProfile
+	var raw *Profile
 	switch typ {
 	case "openai":
 		if style == string(providercfg.StyleChatCompletions) {

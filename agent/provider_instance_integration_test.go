@@ -36,7 +36,7 @@ import (
 // instanceTestResolver maps "work/<model>" → renamed openai "work",
 // "work2/<model>" → renamed openai "work2", "google/<model>" → gemini "google".
 // Unknown prefixes return (nil, nil), falling through to WithModel.
-func instanceTestResolver(ref string) (ProviderProfile, error) {
+func instanceTestResolver(ref string) (*Profile, error) {
 	parts := strings.SplitN(ref, "/", 2)
 	if len(parts) != 2 {
 		return nil, nil
@@ -148,14 +148,7 @@ func TestProviderInstance_OpenAICompatible_NoOpenAIBehavior(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai-compatible"})
 
-	compatProfile := taggedProfile{
-		tinyProfile: tinyProfile{
-			id:  "openai-compatible",
-			mod: "gpt-4o",
-			cw:  128_000,
-		},
-		behaviorTag: "openai-compatible",
-	}
+	compatProfile := &Profile{id: "openai-compatible", behaviorTag: "openai-compatible", model: "gpt-4o", contextWindow: 128_000}
 
 	sess, err := NewSession(c, compatProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,

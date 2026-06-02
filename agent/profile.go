@@ -24,59 +24,11 @@ func resolveEffortLevels(model string, providerDefault []string) []string {
 	return providerDefault
 }
 
-// ProviderProfile describes a provider's identity, model, tool definitions,
-// and capabilities, and produces derived profiles via WithModel.
-type ProviderProfile interface {
-	// ID returns the profile identifier, typically "provider/model".
-	ID() string
-	// BehaviorTag returns the stable behavior identity for this profile.
-	// It equals the provider type for all providers except openai with the
-	// chat-completions style, which returns "openai-compatible". The tag
-	// is preserved across WithModel and WithProviderID calls so code that
-	// keys on provider-specific behavior can use the tag instead of the id.
-	BehaviorTag() string
-	// Model returns the model name this profile drives.
-	Model() string
-	// ToolDefinitions returns the tool schemas advertised to the model.
-	ToolDefinitions() []llm.ToolDefinition
-	// SupportsParallelToolCalls reports whether the model may emit multiple
-	// tool calls in a single response.
-	SupportsParallelToolCalls() bool
-	// ContextWindowSize returns the model's context window in tokens.
-	ContextWindowSize() int
-	// ProjectDocFiles returns the project-doc filenames this provider loads
-	// from the working directory (e.g. CLAUDE.md, AGENTS.md), in priority order.
-	ProjectDocFiles() []string
-	// CheapModel returns a cheaper model from the same provider for auxiliary
-	// work such as session naming and summarization.
-	CheapModel() string
-	// WithModel returns a copy of this profile that drives a different model.
-	WithModel(model string) ProviderProfile
-	// ProviderOptions returns provider-specific request options passed through
-	// to the LLM call.
-	ProviderOptions() map[string]any
-	// SupportsReasoning reports whether the model accepts a reasoning-effort
-	// control.
-	SupportsReasoning() bool
-	// ReasoningEffortLevels returns the valid effort strings this provider
-	// accepts, in ascending order. Returns an empty slice when the provider
-	// does not support reasoning control.
-	ReasoningEffortLevels() []string
-	// SupportsStreaming reports whether the provider supports streaming responses.
-	SupportsStreaming() bool
-	// SupportsWebSearch reports whether the provider offers a native web-search tool.
-	SupportsWebSearch() bool
-	// DefaultCommandTimeoutMS returns the provider's preferred default shell
-	// command timeout in milliseconds.
-	DefaultCommandTimeoutMS() int
-	// KnowledgeCutoff returns the model's training knowledge-cutoff date (YYYY-MM-DD).
-	KnowledgeCutoff() string
-	// ToolNameMap returns the canonical→provider-specific tool name mapping.
-	// Returns nil for providers that use canonical names (e.g. Anthropic).
-	ToolNameMap() map[string]string
-}
-
-type baseProfile struct {
+// Profile describes a provider's identity, model, tool definitions, and
+// capabilities, and produces derived profiles via WithModel and the With*
+// decorator functions. Construct one with NewOpenAIProfile or
+// ResolveProfileFromConfig; the zero value is not usable.
+type Profile struct {
 	id              string
 	behaviorTag     string
 	model           string
@@ -270,7 +222,7 @@ func toolDefinitionsForCapabilities(capabilities []toolCapability, efforts []str
 	return defs
 }
 
-func buildBaseProfile(spec profileSpec) baseProfile {
+func buildBaseProfile(spec profileSpec) Profile {
 	model := strings.TrimSpace(spec.model)
 	efforts := spec.resolvedEfforts
 	if efforts == nil {
@@ -282,7 +234,7 @@ func buildBaseProfile(spec profileSpec) baseProfile {
 		defaultTimeout = 120_000
 	}
 
-	return baseProfile{
+	return Profile{
 		id:              spec.id,
 		behaviorTag:     spec.behaviorTag,
 		model:           model,
@@ -302,10 +254,10 @@ func buildBaseProfile(spec profileSpec) baseProfile {
 	}
 }
 
-func (p *baseProfile) ID() string          { return p.id }
-func (p *baseProfile) BehaviorTag() string { return p.behaviorTag }
-func (p *baseProfile) Model() string       { return p.model }
-func (p *baseProfile) ToolDefinitions() []llm.ToolDefinition {
+func (p *Profile) ID() string          { return p.id }
+func (p *Profile) BehaviorTag() string { return p.behaviorTag }
+func (p *Profile) Model() string       { return p.model }
+func (p *Profile) ToolDefinitions() []llm.ToolDefinition {
 	defs := append([]llm.ToolDefinition{}, p.toolDefs...)
 	for i, d := range defs {
 		if mapped, ok := p.toolNameMap[d.Name]; ok {
@@ -315,7 +267,7 @@ func (p *baseProfile) ToolDefinitions() []llm.ToolDefinition {
 	}
 	return defs
 }
-func (p *baseProfile) ToolNameMap() map[string]string {
+func (p *Profile) ToolNameMap() map[string]string {
 	if len(p.toolNameMap) == 0 {
 		return nil
 	}
@@ -326,11 +278,10 @@ func (p *baseProfile) ToolNameMap() map[string]string {
 	return m
 }
 
-// toolRegistry returns a toolRegistry pre-populated with the profile's tool
+// toolRegistry returns a *tool.Registry pre-populated with the profile's tool
 // definitions (canonical names) and placeholder executors; the Session wires
-// real executors after construction. Reached via newProfileToolRegistry rather
-// than the public ProviderProfile interface.
-func (p *baseProfile) toolRegistry() *tool.Registry {
+// real executors after construction.
+func (p *Profile) toolRegistry() *tool.Registry {
 	reg := tool.NewRegistry()
 	for _, td := range p.toolDefs {
 		_ = reg.Register(tool.RegisteredTool{
@@ -343,31 +294,28 @@ func (p *baseProfile) toolRegistry() *tool.Registry {
 	return reg
 }
 
-// newProfileToolRegistry builds the placeholder toolRegistry for a profile.
-// Every profile embeds *baseProfile, which carries the unexported toolRegistry
-// method, so this keeps the toolRegistry type off the public ProviderProfile
-// interface while remaining callable for any ProviderProfile.
-func newProfileToolRegistry(p ProviderProfile) *tool.Registry {
-	if b, ok := p.(interface{ toolRegistry() *tool.Registry }); ok {
-		return b.toolRegistry()
+// newProfileToolRegistry builds the placeholder tool registry for a profile.
+func newProfileToolRegistry(p *Profile) *tool.Registry {
+	if p == nil {
+		return tool.NewRegistry()
 	}
-	return tool.NewRegistry()
+	return p.toolRegistry()
 }
-func (p *baseProfile) SupportsParallelToolCalls() bool { return p.parallel }
-func (p *baseProfile) ContextWindowSize() int          { return p.contextWindow }
-func (p *baseProfile) ProjectDocFiles() []string {
+func (p *Profile) SupportsParallelToolCalls() bool { return p.parallel }
+func (p *Profile) ContextWindowSize() int          { return p.contextWindow }
+func (p *Profile) ProjectDocFiles() []string {
 	return append([]string{}, p.docFiles...)
 }
-func (p *baseProfile) ProviderOptions() map[string]any { return p.providerOpts }
-func (p *baseProfile) SupportsReasoning() bool         { return p.reasoning }
-func (p *baseProfile) ReasoningEffortLevels() []string {
+func (p *Profile) ProviderOptions() map[string]any { return p.providerOpts }
+func (p *Profile) SupportsReasoning() bool         { return p.reasoning }
+func (p *Profile) ReasoningEffortLevels() []string {
 	return append([]string(nil), p.effortLevels...)
 }
-func (p *baseProfile) SupportsStreaming() bool      { return p.streaming }
-func (p *baseProfile) SupportsWebSearch() bool      { return p.webSearch }
-func (p *baseProfile) DefaultCommandTimeoutMS() int { return p.defaultTimeout }
-func (p *baseProfile) KnowledgeCutoff() string      { return p.knowledgeCutoff }
-func (p *baseProfile) CheapModel() string {
+func (p *Profile) SupportsStreaming() bool      { return p.streaming }
+func (p *Profile) SupportsWebSearch() bool      { return p.webSearch }
+func (p *Profile) DefaultCommandTimeoutMS() int { return p.defaultTimeout }
+func (p *Profile) KnowledgeCutoff() string      { return p.knowledgeCutoff }
+func (p *Profile) CheapModel() string {
 	if strings.TrimSpace(p.cheapModel) != "" {
 		return strings.TrimSpace(p.cheapModel)
 	}
@@ -467,22 +415,16 @@ func decidePrefixAction(behaviorTag, instanceName, prefix string) prefixAction {
 // constructor so the new provider's defaults (toolNameMap, etc.) take
 // effect.
 //
-// Handles both *baseProfile and *anthropicProfile shapes; returns
-// `rebuilt` unchanged for any other type.
-func preserveBaseOverrides(rebuilt, original ProviderProfile) ProviderProfile {
-	rebuiltBP := basePtrOf(rebuilt)
-	if rebuiltBP == nil {
-		return rebuilt
-	}
-	origBP := basePtrOf(original)
-	if origBP == nil {
+// `rebuilt` is returned unchanged when either profile is nil.
+func preserveBaseOverrides(rebuilt, original *Profile) *Profile {
+	if rebuilt == nil || original == nil {
 		return rebuilt
 	}
 
 	var origCommunicate *llm.ToolDefinition
-	for i := range origBP.toolDefs {
-		if origBP.toolDefs[i].Name == "communicate" {
-			origCommunicate = &origBP.toolDefs[i]
+	for i := range original.toolDefs {
+		if original.toolDefs[i].Name == "communicate" {
+			origCommunicate = &original.toolDefs[i]
 			break
 		}
 	}
@@ -490,7 +432,7 @@ func preserveBaseOverrides(rebuilt, original ProviderProfile) ProviderProfile {
 		return rebuilt
 	}
 
-	defs := append([]llm.ToolDefinition(nil), rebuiltBP.toolDefs...)
+	defs := append([]llm.ToolDefinition(nil), rebuilt.toolDefs...)
 	replaced := false
 	for i := range defs {
 		if defs[i].Name == "communicate" {
@@ -504,20 +446,8 @@ func preserveBaseOverrides(rebuilt, original ProviderProfile) ProviderProfile {
 		// for Serf profiles but possible for custom callers); append it.
 		defs = append(defs, *origCommunicate)
 	}
-	rebuiltBP.toolDefs = defs
+	rebuilt.toolDefs = defs
 	return rebuilt
-}
-
-// basePtrOf returns the embedded *baseProfile if the profile is a
-// *baseProfile or *anthropicProfile, else nil.
-func basePtrOf(p ProviderProfile) *baseProfile {
-	switch v := p.(type) {
-	case *baseProfile:
-		return v
-	case *anthropicProfile:
-		return &v.baseProfile
-	}
-	return nil
 }
 
 // restampInstanceIdentity sets the behaviorTag and id on a freshly rebuilt
@@ -526,13 +456,12 @@ func basePtrOf(p ProviderProfile) *baseProfile {
 // constructor derives both id and behaviorTag from the behaviorTag argument
 // (ensuring correct tag), but the instance may carry a user-assigned id
 // distinct from the tag — re-stamp both so neither drifts.
-func restampInstanceIdentity(p ProviderProfile, behaviorTag, id string) ProviderProfile {
-	bp := basePtrOf(p)
-	if bp == nil {
-		return p
+func restampInstanceIdentity(p *Profile, behaviorTag, id string) *Profile {
+	if p == nil {
+		return nil
 	}
-	bp.behaviorTag = behaviorTag
-	bp.id = id
+	p.behaviorTag = behaviorTag
+	p.id = id
 	return p
 }
 
@@ -544,7 +473,7 @@ func restampInstanceIdentity(p ProviderProfile, behaviorTag, id string) Provider
 // True for providers whose constructors look up per-model state (every
 // openai-compat provider; openrouter-anthropic). False for providers
 // whose model-derived state is fixed at construction (openai, minimax)
-// or handled by their own WithModel (anthropicProfile).
+// or handled by the dedicated anthropic branch of WithModel.
 func rebuildOnSameProviderChange(behaviorTag string) bool {
 	switch behaviorTag {
 	case "kimi", "glm", "openrouter", "ollama", "openrouter-anthropic":
@@ -553,11 +482,36 @@ func rebuildOnSameProviderChange(behaviorTag string) bool {
 	return false
 }
 
-func (p *baseProfile) WithModel(model string) ProviderProfile {
+func (p *Profile) WithModel(model string) *Profile {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		model = p.model
 	}
+
+	// Anthropic re-derives its context window and provider options from the
+	// model string: the [1m] suffix selects the 1M-token-context beta. It takes
+	// a dedicated path rather than the generic clone/rebuild below.
+	if p.behaviorTag == "anthropic" {
+		// Strip the redundant "anthropic/" self-prefix; cross-provider refs are
+		// the Session resolver's job, so leave them unchanged here.
+		if parts := strings.SplitN(model, "/", 2); len(parts) == 2 {
+			provider := strings.ToLower(parts[0])
+			if provider == "anthropic" {
+				model = parts[1]
+			}
+		}
+		clone := *p
+		clone.model = model
+		has1M := strings.HasSuffix(model, anthropicSuffix1M)
+		if has1M {
+			clone.contextWindow = 1_000_000
+		} else {
+			clone.contextWindow = 200_000
+		}
+		clone.providerOpts = anthropicProviderOpts(has1M)
+		return &clone
+	}
+
 	// Parse "provider/model" strings. decidePrefixAction classifies each
 	// slashed ref as strip (redundant self-prefix), keep (model namespace
 	// slash on meta-providers), or switch (cross-provider, now handled by
@@ -580,7 +534,7 @@ func (p *baseProfile) WithModel(model string) ProviderProfile {
 	}
 	// Same-provider override: rebuild via constructor for providers
 	// whose model-derived state needs recomputation, otherwise shallow
-	// clone (existing behavior for openai, anthropic-via-baseProfile,
+	// clone (existing behavior for openai, anthropic-via-Profile,
 	// google, minimax — their model-derived state is fixed).
 	//
 	// The rebuild path must preserve any tool-schema overrides applied
@@ -591,7 +545,7 @@ func (p *baseProfile) WithModel(model string) ProviderProfile {
 	// providerOpts the caller has layered on, since those can also be
 	// override-driven (e.g. test harnesses).
 	if rebuildOnSameProviderChange(p.behaviorTag) {
-		var rebuilt ProviderProfile
+		var rebuilt *Profile
 		switch p.behaviorTag {
 		case "openrouter-anthropic":
 			rebuilt = newOpenRouterAnthropicProfile(model)
@@ -609,8 +563,8 @@ func (p *baseProfile) WithModel(model string) ProviderProfile {
 	return &clone
 }
 
-// NewOpenAIProfile returns a ProviderProfile for OpenAI using the given model.
-func NewOpenAIProfile(model string) ProviderProfile {
+// NewOpenAIProfile returns a *Profile for OpenAI using the given model.
+func NewOpenAIProfile(model string) *Profile {
 	bp := buildBaseProfile(profileSpec{
 		id:              "openai",
 		behaviorTag:     providercfg.BehaviorTag("openai", string(providercfg.StyleResponses)),
@@ -657,47 +611,11 @@ func anthropicProviderOpts(has1M bool) map[string]any {
 	}
 }
 
-// anthropicProfile embeds baseProfile and overrides WithModel to re-derive
-// contextWindow and providerOpts from the model string.
-type anthropicProfile struct {
-	baseProfile
-}
-
-func (p *anthropicProfile) WithModel(model string) ProviderProfile {
-	model = strings.TrimSpace(model)
-	if model == "" {
-		model = p.model
-	}
-	// Parse "provider/model" strings. Strip the redundant self-prefix
-	// ("anthropic/..."). Cross-provider refs (decidePrefixAction returns
-	// prefixActionSwitch) are now handled by the Session resolver; fall
-	// through with model unchanged so the caller can surface the error or
-	// handle the switch at the session level.
-	if parts := strings.SplitN(model, "/", 2); len(parts) == 2 {
-		provider := strings.ToLower(parts[0])
-		bareModel := parts[1]
-		if provider == "anthropic" {
-			model = bareModel
-		}
-		// prefixActionSwitch refs for non-anthropic providers: leave model
-		// unchanged — cross-provider switching is the Session resolver's job.
-	}
-	clone := *p
-	clone.model = model
-	has1M := strings.HasSuffix(model, anthropicSuffix1M)
-	if has1M {
-		clone.contextWindow = 1_000_000
-	} else {
-		clone.contextWindow = 200_000
-	}
-	clone.providerOpts = anthropicProviderOpts(has1M)
-	return &clone
-}
-
-// newAnthropicProfile returns a ProviderProfile for Anthropic using the given
-// model. The context window is 1,000,000 when the model carries the 1M-context
-// suffix and 200,000 otherwise.
-func newAnthropicProfile(model string) ProviderProfile {
+// newAnthropicProfile returns a *Profile for Anthropic using the given model.
+// The context window is 1,000,000 when the model carries the 1M-context suffix
+// and 200,000 otherwise. Profile.WithModel re-derives both the context window
+// and provider options for the anthropic behavior tag.
+func newAnthropicProfile(model string) *Profile {
 	model = strings.TrimSpace(model)
 	has1M := strings.HasSuffix(model, anthropicSuffix1M)
 	ctxWindow := 200_000
@@ -720,14 +638,12 @@ func newAnthropicProfile(model string) ProviderProfile {
 		providerOpts:    anthropicProviderOpts(has1M),
 		capabilities:    anthropicStyleCapabilities,
 	})
-	return &anthropicProfile{
-		baseProfile: bp,
-	}
+	return &bp
 }
 
-// newGeminiProfile returns a ProviderProfile for Google Gemini using the given
+// newGeminiProfile returns a *Profile for Google Gemini using the given
 // model.
-func newGeminiProfile(model string) ProviderProfile {
+func newGeminiProfile(model string) *Profile {
 	bp := buildBaseProfile(profileSpec{
 		id:              "google",
 		behaviorTag:     providercfg.BehaviorTag("google", ""),
@@ -761,8 +677,8 @@ func newGeminiProfile(model string) ProviderProfile {
 	return &bp
 }
 
-// newMiniMaxProfile returns a ProviderProfile for MiniMax using the given model.
-func newMiniMaxProfile(model string) ProviderProfile {
+// newMiniMaxProfile returns a *Profile for MiniMax using the given model.
+func newMiniMaxProfile(model string) *Profile {
 	bp := buildBaseProfile(profileSpec{
 		id:              "minimax",
 		behaviorTag:     providercfg.BehaviorTag("minimax", ""),
@@ -891,11 +807,11 @@ func resolveOpenRouterAnthropicCtxAndEfforts(lookup func(string) *llm.ModelInfo,
 	return ctx, efforts
 }
 
-// newOpenRouterAnthropicProfile returns a ProviderProfile for the
+// newOpenRouterAnthropicProfile returns a *Profile for the
 // openrouter-anthropic provider using the given model, resolving the context
 // window, reasoning effort levels, and web-search support from the embedded
 // model catalog.
-func newOpenRouterAnthropicProfile(model string) ProviderProfile {
+func newOpenRouterAnthropicProfile(model string) *Profile {
 	model = strings.TrimSpace(model)
 	// Resolve catalog metadata. The openrouter-anthropic profile draws
 	// from up to three places:
@@ -1018,7 +934,7 @@ func resolveOpenAICompatCatalogModel(lookup func(string) *llm.ModelInfo, behavio
 //
 // The wire model name is always the bare value; only the catalog lookup
 // is broadened.
-func newOpenAICompatProfile(id, model string, contextWindow int) ProviderProfile {
+func newOpenAICompatProfile(id, model string, contextWindow int) *Profile {
 	model = strings.TrimSpace(model)
 	var catModel *llm.ModelInfo
 	if cat := llm.EmbeddedModelCatalog(); cat != nil {

@@ -10,13 +10,13 @@ import (
 
 const liveModelMetadataTimeout = 2 * time.Second
 
-func resolveLiveModelProfileWithTimeout(client *llm.Client, profile ProviderProfile) ProviderProfile {
+func resolveLiveModelProfileWithTimeout(client *llm.Client, profile *Profile) *Profile {
 	ctx, cancel := context.WithTimeout(context.Background(), liveModelMetadataTimeout)
 	defer cancel()
 	return resolveLiveModelProfile(ctx, client, profile)
 }
 
-func resolveLiveModelProfile(ctx context.Context, client *llm.Client, profile ProviderProfile) ProviderProfile {
+func resolveLiveModelProfile(ctx context.Context, client *llm.Client, profile *Profile) *Profile {
 	if client == nil || profile == nil {
 		return profile
 	}
@@ -49,22 +49,16 @@ func liveModelInfoFor(models []llm.ModelInfo, model string) (llm.ModelInfo, bool
 	return llm.ModelInfo{}, false
 }
 
-func profileWithLiveModelInfo(profile ProviderProfile, info llm.ModelInfo) ProviderProfile {
-	switch p := profile.(type) {
-	case *baseProfile:
-		clone := *p
-		applyLiveModelInfo(&clone, info)
-		return &clone
-	case *anthropicProfile:
-		clone := *p
-		applyLiveModelInfo(&clone.baseProfile, info)
-		return &clone
-	default:
-		return profile
+func profileWithLiveModelInfo(profile *Profile, info llm.ModelInfo) *Profile {
+	if profile == nil {
+		return nil
 	}
+	clone := *profile
+	applyLiveModelInfo(&clone, info)
+	return &clone
 }
 
-func applyLiveModelInfo(profile *baseProfile, info llm.ModelInfo) {
+func applyLiveModelInfo(profile *Profile, info llm.ModelInfo) {
 	if profile == nil {
 		return
 	}

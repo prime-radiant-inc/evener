@@ -370,7 +370,7 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 	}
 }
 
-func (s *Session) maybeWarnContextUsage(profile ProviderProfile, msgs []llm.Message) bool {
+func (s *Session) maybeWarnContextUsage(profile *Profile, msgs []llm.Message) bool {
 	if s == nil || profile == nil {
 		return false
 	}
@@ -738,7 +738,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 // context management and expands history. It records the SystemPrompt, ContextMgmt,
 // and HistoryExpand phase timings into t. It never returns an error: the input
 // phases only emit warnings.
-func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.RoundTimings) (profile ProviderProfile, sys string, history []llm.Message, req llm.Request) {
+func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.RoundTimings) (profile *Profile, sys string, history []llm.Message, req llm.Request) {
 	// --- Phase: SystemPrompt ---
 	tPhaseStart := time.Now()
 
@@ -1003,7 +1003,7 @@ func (s *Session) handleNoToolCalls(noContent bool, t *retryTracker) (retry bool
 // serializes everything else; otherwise it runs them in order. On cancellation it
 // records canceled results for the outstanding calls — keeping history well-formed —
 // and returns the abort error alongside the partial results.
-func (s *Session) execToolBatch(ctx context.Context, calls []llm.ToolCallData, profile ProviderProfile) ([]tool.ExecResult, error) {
+func (s *Session) execToolBatch(ctx context.Context, calls []llm.ToolCallData, profile *Profile) ([]tool.ExecResult, error) {
 	results := make([]tool.ExecResult, len(calls))
 	if profile.SupportsParallelToolCalls() && len(calls) > 1 {
 		// Ordered-group algorithm: batch consecutive read-only calls for
@@ -1314,7 +1314,7 @@ func (s *Session) deliverIfCommunicated(ctx context.Context) (done bool, text st
 // buildModelRequest assembles the llm.Request for one round: it lays out the
 // system prompt + history into messages (honoring SystemPromptAsUser), then
 // applies tools, provider options, reasoning effort, and model metadata.
-func (s *Session) buildModelRequest(profile ProviderProfile, sys string, history []llm.Message, toolDefs []llm.ToolDefinition, reasoningEffort string) llm.Request {
+func (s *Session) buildModelRequest(profile *Profile, sys string, history []llm.Message, toolDefs []llm.ToolDefinition, reasoningEffort string) llm.Request {
 	var messages []llm.Message
 	if s.cfg.SystemPromptAsUser {
 		// Combine system prompt with the first user message into one
@@ -1359,7 +1359,7 @@ func (s *Session) buildModelRequest(profile ProviderProfile, sys string, history
 // fallback-eligible permanent error, retries each configured fallback model in
 // order. It returns the (possibly fallback-updated) request actually used so
 // downstream logging reflects the model that answered.
-func (s *Session) callModelWithFallback(ctx context.Context, profile ProviderProfile, req llm.Request, round int) (sessionModelResponse, llm.Request, error) {
+func (s *Session) callModelWithFallback(ctx context.Context, profile *Profile, req llm.Request, round int) (sessionModelResponse, llm.Request, error) {
 	policy := llm.DefaultRetryPolicy()
 	if s.cfg.LLMRetryPolicy != nil {
 		policy = *s.cfg.LLMRetryPolicy
@@ -1480,7 +1480,7 @@ type sessionModelResponse struct {
 	StreamedAssistant bool
 }
 
-func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile ProviderProfile, req llm.Request) (sessionModelResponse, error) {
+func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile *Profile, req llm.Request) (sessionModelResponse, error) {
 	if profile.SupportsStreaming() {
 		st, err := llm.Retry(ctx, policy, s.cfg.LLMSleep, nil, func() (llm.Stream, error) {
 			st, err := s.client.Stream(ctx, req)

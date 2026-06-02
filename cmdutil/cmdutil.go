@@ -44,7 +44,7 @@ func isOpenAICompatTag(behaviorTag string) bool {
 }
 
 // ResolveProfileWithLiveWindow resolves an instance ref ("instanceName/model")
-// to a ProviderProfile via agent.ResolveProfileFromConfig, then — for
+// to a *Profile via agent.ResolveProfileFromConfig, then — for
 // openai-compat providers — refines the context window with a best-effort live
 // query to the provider's /models endpoint.
 //
@@ -59,7 +59,7 @@ func isOpenAICompatTag(behaviorTag string) bool {
 // This is the default resolution path for both the initial profile
 // (buildInitialProfile) and cross-provider switches (BuildResolveProfile /
 // Session.SetModel).
-func ResolveProfileWithLiveWindow(cfg providercfg.Config, ref string) (agent.ProviderProfile, error) {
+func ResolveProfileWithLiveWindow(cfg providercfg.Config, ref string) (*agent.Profile, error) {
 	p, err := agent.ResolveProfileFromConfig(cfg, ref)
 	if err != nil {
 		return nil, err
@@ -73,7 +73,7 @@ func ResolveProfileWithLiveWindow(cfg providercfg.Config, ref string) (agent.Pro
 }
 
 // ResolveProfileForProvider resolves a bare provider/model pair to a
-// ProviderProfile WITHOUT any live network lookup. It synthesizes a
+// *Profile WITHOUT any live network lookup. It synthesizes a
 // single-instance providercfg from the provider string (reusing the same
 // type/api-style roster as the seeded no-config path) and resolves it via
 // agent.ResolveProfileFromConfig.
@@ -81,7 +81,7 @@ func ResolveProfileWithLiveWindow(cfg providercfg.Config, ref string) (agent.Pro
 // This is the network-free path used by the launch-check validation probe when
 // no providers.toml exists: it must confirm that provider/model names a known
 // provider without credentials and without issuing the live /models query.
-func ResolveProfileForProvider(provider, model string) (agent.ProviderProfile, error) {
+func ResolveProfileForProvider(provider, model string) (*agent.Profile, error) {
 	cfg := Seed([]string{provider}, provider, func(string) string { return "" })
 	return agent.ResolveProfileFromConfig(cfg, provider+"/"+model)
 }

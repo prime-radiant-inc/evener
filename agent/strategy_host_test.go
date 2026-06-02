@@ -18,7 +18,7 @@ import (
 type fakeStrategyHost struct {
 	stateDir string
 	id       string
-	profile  ProviderProfile
+	profile  *Profile
 	client   *llm.Client
 	emitted  []events.EventKind
 	sideFx   int // number of WithResponseSideEffects invocations
@@ -36,7 +36,7 @@ func (h *fakeStrategyHost) withResponseSideEffects(_ context.Context, fn func())
 
 func (h *fakeStrategyHost) StateDir() string          { return h.stateDir }
 func (h *fakeStrategyHost) ID() string                { return h.id }
-func (h *fakeStrategyHost) Profile() ProviderProfile  { return h.profile }
+func (h *fakeStrategyHost) Profile() *Profile         { return h.profile }
 func (h *fakeStrategyHost) Snapshot() SessionSnapshot { return SessionSnapshot{ID: h.id} }
 func (h *fakeStrategyHost) Client() *llm.Client       { return h.client }
 

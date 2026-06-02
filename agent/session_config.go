@@ -140,12 +140,12 @@ type SessionConfig struct {
 	SystemPromptAsUser bool `json:"system_prompt_as_user,omitempty"`
 
 	// ResolveProfile, when non-nil, maps a "provider/model" ref to the
-	// corresponding ProviderProfile. Injected by cmd/serf so that
+	// corresponding *Profile. Injected by cmd/serf so that
 	// Session.SetModel can perform cross-provider switches without
 	// importing the provider constructors directly (which would create a
 	// cycle). When nil the session falls back to profile.WithModel which
 	// only handles same-provider (or strip/keep) refs.
-	ResolveProfile func(ref string) (ProviderProfile, error) `json:"-"`
+	ResolveProfile func(ref string) (*Profile, error) `json:"-"`
 
 	// spawn holds the fields that only spawnAgent (plus the init-time
 	// role-prompt derivation) populates when creating a child session. It is

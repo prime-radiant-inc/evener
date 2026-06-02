@@ -179,7 +179,7 @@ func TestToolDefs_WebSearchExcludedForNonGemini(t *testing.T) {
 	// which Anthropic's API rejects.
 	for _, tc := range []struct {
 		name    string
-		profile ProviderProfile
+		profile *Profile
 		adapter string
 		want    bool // true = web_search should be present
 	}{
@@ -222,7 +222,7 @@ func TestToolDefs_NoDuplicateNames(t *testing.T) {
 	// allToolDefinitions, which would be rejected by APIs like Anthropic.
 	for _, tc := range []struct {
 		name    string
-		profile ProviderProfile
+		profile *Profile
 		adapter string
 	}{
 		{"anthropic", newAnthropicProfile("claude-test"), "anthropic"},

@@ -811,33 +811,6 @@ func TestSession_RetainsEncryptedReasoningAcrossToolRound(t *testing.T) {
 	t.Fatalf("second request missing encrypted reasoning in history: %#v", reqs[1].Messages)
 }
 
-type tinyProfile struct {
-	id   string
-	cw   int
-	mod  string
-	opts map[string]any
-}
-
-func (p tinyProfile) ID() string                            { return p.id }
-func (p tinyProfile) BehaviorTag() string                   { return p.id }
-func (p tinyProfile) Model() string                         { return p.mod }
-func (p tinyProfile) ToolDefinitions() []llm.ToolDefinition { return nil }
-func (p tinyProfile) SupportsParallelToolCalls() bool       { return false }
-func (p tinyProfile) ContextWindowSize() int                { return p.cw }
-func (p tinyProfile) ProjectDocFiles() []string             { return nil }
-func (p tinyProfile) CheapModel() string                    { return p.mod }
-func (p tinyProfile) WithModel(model string) ProviderProfile {
-	return tinyProfile{id: p.id, cw: p.cw, mod: model}
-}
-func (p tinyProfile) ProviderOptions() map[string]any { return p.opts }
-func (p tinyProfile) SupportsReasoning() bool         { return false }
-func (p tinyProfile) ReasoningEffortLevels() []string { return nil }
-func (p tinyProfile) SupportsStreaming() bool         { return false }
-func (p tinyProfile) SupportsWebSearch() bool         { return false }
-func (p tinyProfile) DefaultCommandTimeoutMS() int    { return 10_000 }
-func (p tinyProfile) KnowledgeCutoff() string         { return "2025-01-01" }
-func (p tinyProfile) ToolNameMap() map[string]string  { return nil }
-
 func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -851,7 +824,7 @@ func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) 
 
 	// With cw=100 and ~110 tokens of content (system prompt agents section + user input),
 	// warning should emit since usage exceeds the 80% threshold.
-	sess, err := NewSession(c, tinyProfile{id: "tiny", mod: "m", cw: 100}, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, &Profile{id: "tiny", behaviorTag: "tiny", model: "m", contextWindow: 100}, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -888,7 +861,7 @@ func TestSession_ContextWindowAwareness_DoesNotWarnUnderThreshold(t *testing.T) 
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, tinyProfile{id: "tiny", mod: "m", cw: 1_000_000}, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, &Profile{id: "tiny", behaviorTag: "tiny", model: "m", contextWindow: 1_000_000}, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -2801,8 +2774,8 @@ func TestProviderOptions_PassedToLLMRequest(t *testing.T) {
 	}
 	c.Register(f)
 
-	profile := tinyProfile{id: "tiny", mod: "m", cw: 100_000}
-	profile.opts = map[string]any{
+	profile := &Profile{id: "tiny", behaviorTag: "tiny", model: "m", contextWindow: 100_000}
+	profile.providerOpts = map[string]any{
 		"anthropic": map[string]any{"beta": "test-beta"},
 	}
 

@@ -75,7 +75,7 @@ func TestCompactStrategyManageContext_Delegation(t *testing.T) {
 	// Create a context manager with a small window so history exceeds
 	// the 80% checkpoint threshold.
 	client := llm.NewClient()
-	profile := &baseProfile{id: "openai", model: "test", contextWindow: 500}
+	profile := &Profile{id: "openai", model: "test", contextWindow: 500}
 	cm := newContextManager(profile, client)
 	cm.PreserveRecentTurns = 2
 

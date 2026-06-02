@@ -522,7 +522,7 @@ func TestCheckpoint_DoesNotFreezeStaleTaskState(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
-	profile := &baseProfile{id: "openai", model: "test", contextWindow: 100_000}
+	profile := &Profile{id: "openai", model: "test", contextWindow: 100_000}
 	env := execenv.NewLocalExecutionEnvironment(dir)
 	sess, err := NewSession(c, profile, env, SessionConfig{})
 	if err != nil {
@@ -818,7 +818,7 @@ func makeBigHistory(targetTokens int) []schema.Turn {
 
 func TestMaybeCompact_NoCompactionBelow80Percent(t *testing.T) {
 	// At 70% pressure, no compaction should fire. Compaction starts at 80% (checkpoint).
-	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
+	profile := &Profile{id: "openai", model: "test", contextWindow: 1000}
 	cm := newContextManager(profile, nil)
 	cm.PreserveRecentTurns = 2
 
@@ -871,7 +871,7 @@ func TestMaybeCompact_BelowThreshold_NoAction(t *testing.T) {
 }
 
 func TestMaybeCompact_CheckpointThreshold(t *testing.T) {
-	profile := &baseProfile{id: "openai", model: "test", contextWindow: 500}
+	profile := &Profile{id: "openai", model: "test", contextWindow: 500}
 	cm := newContextManager(profile, nil)
 	cm.PreserveRecentTurns = 2
 
@@ -912,7 +912,7 @@ func TestMaybeCompact_CheckpointThreshold(t *testing.T) {
 }
 
 func TestMaybeCompact_EmitsEvents(t *testing.T) {
-	profile := &baseProfile{id: "openai", model: "test", contextWindow: 500}
+	profile := &Profile{id: "openai", model: "test", contextWindow: 500}
 	cm := newContextManager(profile, nil)
 	cm.PreserveRecentTurns = 2
 
@@ -950,7 +950,7 @@ func TestMaybeCompact_EmitsEvents(t *testing.T) {
 }
 
 func TestMaybeCompact_RespectsSysPromptSize(t *testing.T) {
-	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
+	profile := &Profile{id: "openai", model: "test", contextWindow: 1000}
 	cm := newContextManager(profile, nil)
 	cm.PreserveRecentTurns = 2
 
@@ -1092,7 +1092,7 @@ func TestSession_ContextManager_CompactsWhenNeeded(t *testing.T) {
 	}
 
 	// Use a very small context window profile.
-	profile := &baseProfile{
+	profile := &Profile{
 		id:            "openai",
 		model:         "gpt-5.2",
 		contextWindow: 500,
@@ -1158,7 +1158,7 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	profile := &baseProfile{
+	profile := &Profile{
 		id:            "openai",
 		model:         "gpt-5.2",
 		contextWindow: 500, // Tiny window to force compaction.
@@ -1659,7 +1659,7 @@ func TestCheckpoint_IncludesWebSearchCount(t *testing.T) {
 // Token-based pressure: contextManager should use actual InputTokens from API
 // responses for pressure calculation instead of relying solely on char/4.
 func TestContextManager_UsesLastInputTokensForPressure(t *testing.T) {
-	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
+	profile := &Profile{id: "openai", model: "test", contextWindow: 1000}
 	cm := newContextManager(profile, nil)
 
 	// Record that the last API response reported 550 input tokens for a 10-turn history.
@@ -1684,7 +1684,7 @@ func TestContextManager_UsesLastInputTokensForPressure(t *testing.T) {
 }
 
 func TestContextManager_EstimateUsageReportsRemainingWindow(t *testing.T) {
-	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
+	profile := &Profile{id: "openai", model: "test", contextWindow: 1000}
 	cm := newContextManager(profile, nil)
 	cm.RecordInputTokens(550, 10)
 
@@ -1698,7 +1698,7 @@ func TestContextManager_EstimateUsageReportsRemainingWindow(t *testing.T) {
 }
 
 func TestContextManager_FallsBackToCharHeuristicWithoutMeasurement(t *testing.T) {
-	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
+	profile := &Profile{id: "openai", model: "test", contextWindow: 1000}
 	cm := newContextManager(profile, nil)
 
 	// No RecordInputTokens called — should fall back to char/4.
@@ -1715,7 +1715,7 @@ func TestContextManager_FallsBackToCharHeuristicWithoutMeasurement(t *testing.T)
 }
 
 func TestContextManager_ResetsAfterCompaction(t *testing.T) {
-	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
+	profile := &Profile{id: "openai", model: "test", contextWindow: 1000}
 	cm := newContextManager(profile, nil)
 	cm.PreserveRecentTurns = 2
 
@@ -1909,7 +1909,7 @@ func TestMaybeCompact_SummarizeThreshold(t *testing.T) {
 	// Small window. Checkpoint replaces old history with a checkpoint
 	// message, but the preserved recent turns are large enough to keep
 	// pressure above 90% after checkpoint, forcing summarize.
-	profile := &baseProfile{id: "openai", model: "test", contextWindow: 50}
+	profile := &Profile{id: "openai", model: "test", contextWindow: 50}
 	cm := newContextManager(profile, client)
 	cm.PreserveRecentTurns = 1
 
@@ -1984,7 +1984,7 @@ func startsWith(s, prefix string) bool {
 // --- Pressure (public) tests ---
 
 func TestPressure_ReturnsEstimate(t *testing.T) {
-	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
+	profile := &Profile{id: "openai", model: "test", contextWindow: 1000}
 	cm := newContextManager(profile, nil)
 
 	history := []schema.Turn{
@@ -1999,7 +1999,7 @@ func TestPressure_ReturnsEstimate(t *testing.T) {
 }
 
 func TestPressure_ZeroContextWindow(t *testing.T) {
-	profile := &baseProfile{id: "openai", model: "test", contextWindow: 0}
+	profile := &Profile{id: "openai", model: "test", contextWindow: 0}
 	cm := newContextManager(profile, nil)
 
 	p := cm.Pressure(nil, 0)
@@ -2012,7 +2012,7 @@ func TestPressure_ZeroContextWindow(t *testing.T) {
 
 func TestContextManager_SetProfile_UpdatesContextWindow(t *testing.T) {
 	// Start with a 200K profile, switch to 1M. Pressure should reflect new window.
-	smallProfile := &baseProfile{id: "anthropic", model: "claude-opus-4-6", contextWindow: 200_000}
+	smallProfile := &Profile{id: "anthropic", model: "claude-opus-4-6", contextWindow: 200_000}
 	cm := newContextManager(smallProfile, nil)
 
 	// Record 100K tokens.
@@ -2029,7 +2029,7 @@ func TestContextManager_SetProfile_UpdatesContextWindow(t *testing.T) {
 	}
 
 	// Switch to 1M profile.
-	bigProfile := &baseProfile{id: "anthropic", model: "claude-opus-4-6[1m]", contextWindow: 1_000_000}
+	bigProfile := &Profile{id: "anthropic", model: "claude-opus-4-6[1m]", contextWindow: 1_000_000}
 	cm.SetProfile(bigProfile)
 
 	// With 1M window: pressure ≈ 100K/1M = 0.10
@@ -2052,7 +2052,7 @@ func TestForceCompact_RunsAllLayers(t *testing.T) {
 	}
 	client := llm.NewClient()
 	client.Register(adapter)
-	profile := &baseProfile{id: "openai", model: "test", contextWindow: 100_000}
+	profile := &Profile{id: "openai", model: "test", contextWindow: 100_000}
 	cm := newContextManager(profile, client)
 	cm.PreserveRecentTurns = 2
 
@@ -2089,7 +2089,7 @@ func TestForceCompact_RunsAllLayers(t *testing.T) {
 
 func TestForceCompact_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 	// ForceCompact should fire OnCompactionTurn for TurnCheckpoint (L3).
-	profile := &baseProfile{id: "openai", model: "test", contextWindow: 100_000}
+	profile := &Profile{id: "openai", model: "test", contextWindow: 100_000}
 	cm := newContextManager(profile, nil) // no LLM client → L4 skipped
 	cm.PreserveRecentTurns = 2
 
@@ -2134,7 +2134,7 @@ func TestForceCompact_FiresOnCompactionTurn_Summary(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(adapter)
 
-	profile := &baseProfile{id: "openai", model: "test", contextWindow: 100_000}
+	profile := &Profile{id: "openai", model: "test", contextWindow: 100_000}
 	cm := newContextManager(profile, client)
 	cm.PreserveRecentTurns = 2
 
@@ -2175,7 +2175,7 @@ func TestForceCompact_FiresOnCompactionTurn_Summary(t *testing.T) {
 func TestForceCompact_BelowThreshold(t *testing.T) {
 	// Even with tiny history well below auto-compact thresholds,
 	// ForceCompact should still run the layers.
-	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1_000_000}
+	profile := &Profile{id: "openai", model: "test", contextWindow: 1_000_000}
 	cm := newContextManager(profile, nil) // no LLM client → summarize skipped
 	cm.PreserveRecentTurns = 2
 

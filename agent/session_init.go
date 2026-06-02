@@ -63,7 +63,7 @@ func selectStrategy(cfg SessionConfig, cm *contextManager, sess *Session) (conte
 // persistence is enabled, installs the configured context strategy, and emits
 // the initial SessionStart envelope. It returns an error if any input is nil or
 // if initialization fails.
-func NewSession(client *llm.Client, profile ProviderProfile, env execenv.ExecutionEnvironment, cfg SessionConfig) (*Session, error) {
+func NewSession(client *llm.Client, profile *Profile, env execenv.ExecutionEnvironment, cfg SessionConfig) (*Session, error) {
 	if client == nil {
 		return nil, errors.New("llm client is nil")
 	}
@@ -198,7 +198,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env execenv.Executi
 // RestoreSession creates a Session from a saved snapshot, restoring the
 // conversation history while reconstructing non-serializable parts (tools,
 // client, profile) fresh. The session retains the original snapshot ID.
-func RestoreSession(client *llm.Client, profile ProviderProfile, env execenv.ExecutionEnvironment, snap SessionSnapshot, stateDir string) (*Session, error) {
+func RestoreSession(client *llm.Client, profile *Profile, env execenv.ExecutionEnvironment, snap SessionSnapshot, stateDir string) (*Session, error) {
 	cfg := snap.Config
 	cfg.StateDir = stateDir
 	cfg.SessionStartKind = SessionStartKindResume
@@ -330,7 +330,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env execenv.Exe
 // RestoreSessionFromMeta creates a Session from a SessionMeta, recovering
 // history exclusively from the transcript JSONL. If no transcript exists,
 // the session starts with empty history (no snapshot fallback).
-func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env execenv.ExecutionEnvironment, meta SessionMeta, stateDir string) (*Session, error) {
+func RestoreSessionFromMeta(client *llm.Client, profile *Profile, env execenv.ExecutionEnvironment, meta SessionMeta, stateDir string) (*Session, error) {
 	cfg := meta.Config
 	cfg.StateDir = stateDir
 	cfg.SessionStartKind = SessionStartKindResume

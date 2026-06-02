@@ -33,7 +33,7 @@ type sessionNameResult struct {
 }
 
 // nameSession derives a short human-readable session title using a single cheap-model LLM call.
-func nameSession(ctx context.Context, client *llm.Client, profile ProviderProfile, source, text string) (sessionNameResult, error) {
+func nameSession(ctx context.Context, client *llm.Client, profile *Profile, source, text string) (sessionNameResult, error) {
 	if client == nil {
 		return sessionNameResult{}, errors.New("session namer: llm client is nil")
 	}
@@ -82,14 +82,14 @@ func nameSession(ctx context.Context, client *llm.Client, profile ProviderProfil
 	return sessionNameResult{Name: name, Source: source, Usage: res.TotalUsage}, nil
 }
 
-func sessionNamerEnabled(profile ProviderProfile) bool {
+func sessionNamerEnabled(profile *Profile) bool {
 	if profile == nil {
 		return false
 	}
 	return configuredSessionNamerModel(profile) != ""
 }
 
-func sessionNamerModel(profile ProviderProfile) string {
+func sessionNamerModel(profile *Profile) string {
 	if profile == nil {
 		return ""
 	}
@@ -99,21 +99,14 @@ func sessionNamerModel(profile ProviderProfile) string {
 	return strings.TrimSpace(profile.Model())
 }
 
-func configuredSessionNamerModel(profile ProviderProfile) string {
+func configuredSessionNamerModel(profile *Profile) string {
 	if profile == nil {
 		return ""
 	}
-	switch p := profile.(type) {
-	case *baseProfile:
-		return p.configuredCheapModel()
-	case *anthropicProfile:
-		return p.configuredCheapModel()
-	default:
-		return ""
-	}
+	return profile.configuredCheapModel()
 }
 
-func (p *baseProfile) configuredCheapModel() string {
+func (p *Profile) configuredCheapModel() string {
 	if p == nil {
 		return ""
 	}

@@ -15,16 +15,6 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// taggedProfile is a test-only ProviderProfile implementation that allows
-// the behavior tag to differ from the profile ID, simulating a renamed
-// instance or a chat-completions-style instance.
-type taggedProfile struct {
-	tinyProfile
-	behaviorTag string
-}
-
-func (p taggedProfile) BehaviorTag() string { return p.behaviorTag }
-
 // ── Site 1: applyModelRequestMetadata (prompt-cache) ──────────────────────
 
 // TestBehaviorTag_PromptCache_RenamedOpenAI verifies that a renamed OpenAI
@@ -61,10 +51,7 @@ func TestBehaviorTag_PromptCache_RenamedOpenAI(t *testing.T) {
 // TestBehaviorTag_PromptCache_OpenAICompatible verifies that a chat-completions
 // instance (tag="openai-compatible") does NOT get prompt-cache set.
 func TestBehaviorTag_PromptCache_OpenAICompatible(t *testing.T) {
-	compatProfile := taggedProfile{
-		tinyProfile: tinyProfile{id: "openai", mod: "gpt-5.5"},
-		behaviorTag: "openai-compatible",
-	}
+	compatProfile := &Profile{id: "openai", behaviorTag: "openai-compatible", model: "gpt-5.5"}
 	if compatProfile.BehaviorTag() != "openai-compatible" {
 		t.Fatalf("pre-condition: BehaviorTag() = %q, want openai-compatible", compatProfile.BehaviorTag())
 	}
@@ -236,14 +223,7 @@ func TestBehaviorTag_SectionResolver_OpenAICompatibleDoesNotLoadOpenAISection(t 
 	}}
 	c.Register(f)
 
-	compatProfile := taggedProfile{
-		tinyProfile: tinyProfile{
-			id:  "openai-compatible",
-			mod: "gpt-4o",
-			cw:  128_000,
-		},
-		behaviorTag: "openai-compatible",
-	}
+	compatProfile := &Profile{id: "openai-compatible", behaviorTag: "openai-compatible", model: "gpt-4o", contextWindow: 128_000}
 
 	sess, err := NewSession(c, compatProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,

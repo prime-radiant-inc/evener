@@ -321,7 +321,7 @@ func TestPhase1b_SetModel_Work2_PreservesOutputSchema(t *testing.T) {
 	startProfile := WithCommunicateOutputSchema(workProfile, customSchema)
 
 	// Build the resolver from the config (mirrors how cmdutil.BuildResolveProfile works).
-	resolver := func(ref string) (ProviderProfile, error) {
+	resolver := func(ref string) (*Profile, error) {
 		return ResolveProfileFromConfig(phase1bCfg, ref)
 	}
 

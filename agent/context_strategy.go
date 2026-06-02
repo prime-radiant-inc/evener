@@ -18,7 +18,7 @@ type strategyHost interface {
 	withResponseSideEffects(ctx context.Context, fn func()) error
 	StateDir() string
 	ID() string
-	Profile() ProviderProfile
+	Profile() *Profile
 	// Snapshot and Client are used by the recall tool to persist a transcript
 	// and run the search sub-agent.
 	Snapshot() SessionSnapshot

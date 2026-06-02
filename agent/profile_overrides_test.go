@@ -243,8 +243,8 @@ func TestWithCommunicateOutputSchema_Anthropic(t *testing.T) {
 	}
 	p := WithCommunicateOutputSchema(base, schema)
 
-	if _, ok := p.(*anthropicProfile); !ok {
-		t.Fatalf("expected *anthropicProfile, got %T", p)
+	if p.BehaviorTag() != "anthropic" {
+		t.Fatalf("got behavior tag %q, want anthropic", p.BehaviorTag())
 	}
 	if p.ID() != "anthropic" {
 		t.Fatalf("got ID %q, want anthropic", p.ID())
@@ -349,11 +349,11 @@ func TestWithContextWindow_NonPositiveIsNoOp(t *testing.T) {
 	}
 }
 
-func TestWithContextWindow_PreservesAnthropicProfileType(t *testing.T) {
+func TestWithContextWindow_PreservesAnthropicBehaviorTag(t *testing.T) {
 	base := newAnthropicProfile("claude-opus-4-6")
 	p := WithContextWindow(base, 500_000)
-	if _, ok := p.(*anthropicProfile); !ok {
-		t.Fatalf("WithContextWindow returned %T, want *anthropicProfile", p)
+	if p.BehaviorTag() != "anthropic" {
+		t.Fatalf("WithContextWindow changed behavior tag to %q, want anthropic", p.BehaviorTag())
 	}
 	if got := p.ContextWindowSize(); got != 500_000 {
 		t.Fatalf("ContextWindowSize() = %d, want 500000", got)

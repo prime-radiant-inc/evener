@@ -11,7 +11,7 @@ import (
 )
 
 // NewSession wires together the four things a session needs: an [llm.Client]
-// (the transport), a [agent.ProviderProfile] (selects the model and its
+// (the transport), a [agent.Profile] (selects the model and its
 // provider-specific behavior), an [execenv.ExecutionEnvironment] (where tools
 // run), and a [agent.SessionConfig].
 //

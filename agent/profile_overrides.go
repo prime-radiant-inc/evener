@@ -20,35 +20,19 @@ import (
 // so the caller-supplied schema must have (or be compatible with) a properties
 // map. Applying WithCommunicateOutputSchema twice silently replaces the prior
 // schema each time.
-func WithCommunicateOutputSchema(p ProviderProfile, outputSchema map[string]any) ProviderProfile {
+func WithCommunicateOutputSchema(p *Profile, outputSchema map[string]any) *Profile {
 	if p == nil || len(outputSchema) == 0 {
 		return p
 	}
 
-	var bp *baseProfile
-	switch v := p.(type) {
-	case *baseProfile:
-		bp = v
-	case *anthropicProfile:
-		bp = &v.baseProfile
-	default:
-		return p
-	}
-
-	clone := *bp
-	defs := append([]llm.ToolDefinition{}, bp.toolDefs...)
+	clone := *p
+	defs := append([]llm.ToolDefinition{}, p.toolDefs...)
 	for i := range defs {
 		if defs[i].Name == "communicate" {
 			defs[i] = replaceCommunicateOutputSchema(defs[i], outputSchema)
 		}
 	}
 	clone.toolDefs = defs
-
-	if ap, ok := p.(*anthropicProfile); ok {
-		apClone := *ap
-		apClone.baseProfile = clone
-		return &apClone
-	}
 	return &clone
 }
 
@@ -58,94 +42,46 @@ func WithCommunicateOutputSchema(p ProviderProfile, outputSchema map[string]any)
 //
 // This is intended for orchestration systems (like Toil) that route workflow
 // DAGs based on the agent's decision.
-func WithAllowedDecisions(p ProviderProfile, decisions []string) ProviderProfile {
+func WithAllowedDecisions(p *Profile, decisions []string) *Profile {
 	if p == nil || len(decisions) == 0 {
 		return p
 	}
 
-	var bp *baseProfile
-	switch v := p.(type) {
-	case *baseProfile:
-		bp = v
-	case *anthropicProfile:
-		bp = &v.baseProfile
-	default:
-		return p
-	}
-
-	clone := *bp
-	defs := append([]llm.ToolDefinition{}, bp.toolDefs...)
+	clone := *p
+	defs := append([]llm.ToolDefinition{}, p.toolDefs...)
 	for i := range defs {
 		if defs[i].Name == "communicate" {
 			defs[i] = addDecisionToSchema(defs[i], decisions)
 		}
 	}
 	clone.toolDefs = defs
-
-	if ap, ok := p.(*anthropicProfile); ok {
-		apClone := *ap
-		apClone.baseProfile = clone
-		return &apClone
-	}
 	return &clone
 }
 
 // WithProviderID returns a cloned profile with its id overridden to name,
 // preserving the behavior tag and all other profile state unchanged.
 // Passing an empty name returns p unchanged.
-func WithProviderID(p ProviderProfile, name string) ProviderProfile {
+func WithProviderID(p *Profile, name string) *Profile {
 	name = strings.TrimSpace(name)
 	if p == nil || name == "" {
 		return p
 	}
 
-	var bp *baseProfile
-	switch v := p.(type) {
-	case *baseProfile:
-		bp = v
-	case *anthropicProfile:
-		bp = &v.baseProfile
-	default:
-		return p
-	}
-
-	clone := *bp
+	clone := *p
 	clone.id = name
-
-	if ap, ok := p.(*anthropicProfile); ok {
-		apClone := *ap
-		apClone.baseProfile = clone
-		return &apClone
-	}
 	return &clone
 }
 
 // WithCheapModel returns a cloned profile whose CheapModel method returns the
 // supplied model. Passing an empty model returns p unchanged.
-func WithCheapModel(p ProviderProfile, model string) ProviderProfile {
+func WithCheapModel(p *Profile, model string) *Profile {
 	model = strings.TrimSpace(model)
 	if p == nil || model == "" {
 		return p
 	}
 
-	var bp *baseProfile
-	switch v := p.(type) {
-	case *baseProfile:
-		bp = v
-	case *anthropicProfile:
-		bp = &v.baseProfile
-	default:
-		return p
-	}
-
-	clone := *bp
+	clone := *p
 	clone.cheapModel = model
-
-	if ap, ok := p.(*anthropicProfile); ok {
-		apClone := *ap
-		apClone.baseProfile = clone
-		return &apClone
-	}
 	return &clone
 }
 
@@ -157,29 +93,13 @@ func WithCheapModel(p ProviderProfile, model string) ProviderProfile {
 // This is the seam the app layer uses to override an openai-compat profile's
 // catalog-derived window with a live value queried from the provider, keeping
 // that network lookup out of the agent library.
-func WithContextWindow(p ProviderProfile, n int) ProviderProfile {
+func WithContextWindow(p *Profile, n int) *Profile {
 	if p == nil || n <= 0 {
 		return p
 	}
 
-	var bp *baseProfile
-	switch v := p.(type) {
-	case *baseProfile:
-		bp = v
-	case *anthropicProfile:
-		bp = &v.baseProfile
-	default:
-		return p
-	}
-
-	clone := *bp
+	clone := *p
 	clone.contextWindow = n
-
-	if ap, ok := p.(*anthropicProfile); ok {
-		apClone := *ap
-		apClone.baseProfile = clone
-		return &apClone
-	}
 	return &clone
 }
 

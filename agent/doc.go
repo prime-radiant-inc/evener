@@ -4,7 +4,7 @@
 // A [Session] is the unit of work. It pairs three things:
 //
 //   - an [llm.Client] — the transport to one or more model providers;
-//   - a [ProviderProfile] — selects the model and its provider-specific behavior
+//   - a [Profile] — selects the model and its provider-specific behavior
 //     (construct one with, e.g., [NewOpenAIProfile]);
 //   - an [execenv.ExecutionEnvironment] — where the agent's tools run, such as the
 //     local filesystem and shell via [execenv.NewLocalExecutionEnvironment].

@@ -1295,7 +1295,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 	}
 
 	// Use a very small context window to force compaction.
-	profile := &baseProfile{
+	profile := &Profile{
 		id:            "openai",
 		model:         "gpt-5.2",
 		contextWindow: 500,
@@ -1519,7 +1519,7 @@ func TestSummarizeWithLLM_UsesTurnSummaryKind(t *testing.T) {
 
 func TestMaybeCompact_CallsOnCompactionTurn(t *testing.T) {
 	// Use a tiny context window to force checkpoint (L3).
-	profile := &baseProfile{id: "openai", model: "test", contextWindow: 500}
+	profile := &Profile{id: "openai", model: "test", contextWindow: 500}
 	cm := newContextManager(profile, nil)
 	cm.PreserveRecentTurns = 2
 
@@ -1716,7 +1716,7 @@ func TestSession_TranscriptWriteFailureEmitsWarning(t *testing.T) {
 
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	cfg := SessionConfig{StateDir: stateDir}
-	sess, err := NewSession(c, &baseProfile{
+	sess, err := NewSession(c, &Profile{
 		id:            "openai",
 		model:         "test",
 		contextWindow: 100000,

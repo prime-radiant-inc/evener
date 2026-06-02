@@ -1,7 +1,7 @@
 package agent
 
-func testOpenAIProfileWithContextWindow(contextWindow int) ProviderProfile {
-	return &baseProfile{
+func testOpenAIProfileWithContextWindow(contextWindow int) *Profile {
+	return &Profile{
 		id:            "openai",
 		model:         "test",
 		contextWindow: contextWindow,

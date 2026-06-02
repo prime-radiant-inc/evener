@@ -432,7 +432,7 @@ func TestTaskStore_UpdateWithNotes(t *testing.T) {
 func TestTaskListSchema_ReasoningEffortEnumPerProvider(t *testing.T) {
 	cases := []struct {
 		name    string
-		profile ProviderProfile
+		profile *Profile
 		want    []string
 	}{
 		{"openai", NewOpenAIProfile("test"), []string{"low", "medium", "high", "xhigh"}},
