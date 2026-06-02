@@ -251,9 +251,18 @@ func buildBaseProfile(spec profileSpec) Profile {
 	}
 }
 
-func (p *Profile) ID() string          { return p.id }
+// ID returns the profile identifier, typically "provider/model".
+func (p *Profile) ID() string { return p.id }
+
+// BehaviorTag returns the stable behavior identity for this profile.
+// It equals the provider type for all providers except openai with the
+// chat-completions style, which returns "openai-compatible". The tag
+// is preserved across WithModel and WithProviderID calls so code that
+// keys on provider-specific behavior can use the tag instead of the id.
 func (p *Profile) BehaviorTag() string { return p.behaviorTag }
-func (p *Profile) Model() string       { return p.model }
+
+// Model returns the model name this profile drives.
+func (p *Profile) Model() string { return p.model }
 
 // ToolDefinitions returns the profile's tool schemas by their canonical names.
 // Provider-specific renaming (via ToolNameMap) and the shared purpose parameter
@@ -261,6 +270,9 @@ func (p *Profile) Model() string       { return p.model }
 func (p *Profile) ToolDefinitions() []llm.ToolDefinition {
 	return append([]llm.ToolDefinition{}, p.toolDefs...)
 }
+
+// ToolNameMap returns the canonical→provider-specific tool name mapping.
+// Returns nil for providers that use canonical names (e.g. Anthropic).
 func (p *Profile) ToolNameMap() map[string]string {
 	if len(p.toolNameMap) == 0 {
 		return nil
@@ -271,20 +283,50 @@ func (p *Profile) ToolNameMap() map[string]string {
 	}
 	return m
 }
+
+// SupportsParallelToolCalls reports whether the model may emit multiple
+// tool calls in a single response.
 func (p *Profile) SupportsParallelToolCalls() bool { return p.parallel }
-func (p *Profile) ContextWindowSize() int          { return p.contextWindow }
+
+// ContextWindowSize returns the model's context window in tokens.
+func (p *Profile) ContextWindowSize() int { return p.contextWindow }
+
+// ProjectDocFiles returns the project-doc filenames this provider loads
+// from the working directory (e.g. CLAUDE.md, AGENTS.md), in priority order.
 func (p *Profile) ProjectDocFiles() []string {
 	return append([]string{}, p.docFiles...)
 }
+
+// ProviderOptions returns provider-specific request options passed through
+// to the LLM call.
 func (p *Profile) ProviderOptions() map[string]any { return p.providerOpts }
-func (p *Profile) SupportsReasoning() bool         { return p.reasoning }
+
+// SupportsReasoning reports whether the model accepts a reasoning-effort
+// control.
+func (p *Profile) SupportsReasoning() bool { return p.reasoning }
+
+// ReasoningEffortLevels returns the valid effort strings this provider
+// accepts, in ascending order. Returns an empty slice when the provider
+// does not support reasoning control.
 func (p *Profile) ReasoningEffortLevels() []string {
 	return append([]string(nil), p.effortLevels...)
 }
-func (p *Profile) SupportsStreaming() bool      { return p.streaming }
-func (p *Profile) SupportsWebSearch() bool      { return p.webSearch }
+
+// SupportsStreaming reports whether the provider supports streaming responses.
+func (p *Profile) SupportsStreaming() bool { return p.streaming }
+
+// SupportsWebSearch reports whether the provider offers a native web-search tool.
+func (p *Profile) SupportsWebSearch() bool { return p.webSearch }
+
+// DefaultCommandTimeoutMS returns the provider's preferred default shell
+// command timeout in milliseconds.
 func (p *Profile) DefaultCommandTimeoutMS() int { return p.defaultTimeout }
-func (p *Profile) KnowledgeCutoff() string      { return p.knowledgeCutoff }
+
+// KnowledgeCutoff returns the model's training knowledge-cutoff date (YYYY-MM-DD).
+func (p *Profile) KnowledgeCutoff() string { return p.knowledgeCutoff }
+
+// CheapModel returns a cheaper model from the same provider for auxiliary
+// work such as session naming and summarization.
 func (p *Profile) CheapModel() string {
 	if strings.TrimSpace(p.cheapModel) != "" {
 		return strings.TrimSpace(p.cheapModel)
@@ -500,6 +542,7 @@ func rebuildOnSameProviderChange(behaviorTag string) bool {
 	return false
 }
 
+// WithModel returns a copy of this profile that drives a different model.
 func (p *Profile) WithModel(model string) *Profile {
 	model = strings.TrimSpace(model)
 	if model == "" {
