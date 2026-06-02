@@ -15,7 +15,6 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -1295,15 +1294,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 	}
 
 	// Use a very small context window to force compaction.
-	profile := &Profile{
-		id:            "openai",
-		model:         "gpt-5.2",
-		contextWindow: 500,
-		toolDefs: []llm.ToolDefinition{
-			tool.DefReadFile(),
-			tool.DefCommunicate(),
-		},
-	}
+	profile := WithContextWindow(NewOpenAIProfile("gpt-5.2"), 500)
 
 	sess, err := NewSession(c, profile, env, SessionConfig{
 		StateDir: stateDir,
@@ -1519,7 +1510,7 @@ func TestSummarizeWithLLM_UsesTurnSummaryKind(t *testing.T) {
 
 func TestMaybeCompact_CallsOnCompactionTurn(t *testing.T) {
 	// Use a tiny context window to force checkpoint (L3).
-	profile := &Profile{id: "openai", model: "test", contextWindow: 500}
+	profile := testProfile("openai", "test", 500)
 	cm := newContextManager(profile, nil)
 	cm.PreserveRecentTurns = 2
 
@@ -1716,11 +1707,7 @@ func TestSession_TranscriptWriteFailureEmitsWarning(t *testing.T) {
 
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	cfg := SessionConfig{StateDir: stateDir}
-	sess, err := NewSession(c, &Profile{
-		id:            "openai",
-		model:         "test",
-		contextWindow: 100000,
-	}, env, cfg)
+	sess, err := NewSession(c, testProfile("openai", "test", 100000), env, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -170,7 +170,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 			return "", fmt.Errorf("model override %q: %w", model, err)
 		}
 		if crossProvider {
-			resolved = preserveBaseOverrides(resolved, sp)
+			resolved = resolved.WithCommunicateOverridesFrom(sp)
 		}
 		subProfile = resolved
 	}
@@ -181,7 +181,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 			return "", fmt.Errorf("agent model %q: %w", agent.Model, err)
 		}
 		if crossProvider {
-			resolved = preserveBaseOverrides(resolved, sp)
+			resolved = resolved.WithCommunicateOverridesFrom(sp)
 		}
 		subProfile = resolved
 	}

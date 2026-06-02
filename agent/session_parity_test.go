@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/llm"
 )
 
@@ -21,7 +22,7 @@ import (
 type providerCase struct {
 	name        string // human-readable
 	adapterName string // fakeAdapter.Name()
-	profile     func(model string) *Profile
+	profile     func(model string) *provider.Profile
 }
 
 var providerCases = []providerCase{

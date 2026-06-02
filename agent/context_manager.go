@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -24,7 +25,7 @@ type compactionMeta struct {
 // contextManager tracks cumulative token usage and applies progressive
 // compaction layers to conversation history as context fills up.
 type contextManager struct {
-	profile  *Profile
+	profile  *provider.Profile
 	client   *llm.Client
 	cumUsage llm.Usage
 	mu       sync.Mutex
@@ -61,7 +62,7 @@ type contextManager struct {
 }
 
 // newContextManager creates a contextManager with default thresholds.
-func newContextManager(profile *Profile, client *llm.Client) *contextManager {
+func newContextManager(profile *provider.Profile, client *llm.Client) *contextManager {
 	return &contextManager{
 		profile:                  profile,
 		client:                   client,
@@ -106,7 +107,7 @@ func (cm *contextManager) RecordInputTokens(tokens int, historyLen int) {
 
 // SetProfile replaces the provider profile so that ContextWindowSize() and
 // other profile-derived values stay current after a model change.
-func (cm *contextManager) SetProfile(profile *Profile) {
+func (cm *contextManager) SetProfile(profile *provider.Profile) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	cm.profile = profile
@@ -115,7 +116,7 @@ func (cm *contextManager) SetProfile(profile *Profile) {
 // currentProfile returns the active profile under cm.mu so reads do not race
 // SetProfile (called from Session.SetModel). The profile pointer is swapped
 // atomically; a caller uses the returned value for the duration of one operation.
-func (cm *contextManager) currentProfile() *Profile {
+func (cm *contextManager) currentProfile() *provider.Profile {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	return cm.profile

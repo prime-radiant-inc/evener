@@ -5,6 +5,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -18,7 +19,7 @@ type strategyHost interface {
 	withResponseSideEffects(ctx context.Context, fn func()) error
 	StateDir() string
 	ID() string
-	Profile() *Profile
+	Profile() *provider.Profile
 	// Snapshot and Client are used by the recall tool to persist a transcript
 	// and run the search sub-agent.
 	Snapshot() SessionSnapshot

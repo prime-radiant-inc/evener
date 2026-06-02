@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -14,7 +15,7 @@ import (
 // SessionLogEntry summarizing the most recent action in turns. The prompt
 // explicitly preserves failure signals so errors are not lost during
 // summarization.
-func ForkSummarize(ctx context.Context, client *llm.Client, profile *Profile, turns []schema.Turn, turnNumber int) (SessionLogEntry, error) {
+func ForkSummarize(ctx context.Context, client *llm.Client, profile *provider.Profile, turns []schema.Turn, turnNumber int) (SessionLogEntry, error) {
 	prompt := buildSummarizePrompt(turns)
 
 	req := llm.Request{

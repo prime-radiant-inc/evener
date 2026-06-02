@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -18,7 +19,7 @@ import (
 type fakeStrategyHost struct {
 	stateDir string
 	id       string
-	profile  *Profile
+	profile  *provider.Profile
 	client   *llm.Client
 	emitted  []events.EventKind
 	sideFx   int // number of WithResponseSideEffects invocations
@@ -34,11 +35,11 @@ func (h *fakeStrategyHost) withResponseSideEffects(_ context.Context, fn func())
 	return nil
 }
 
-func (h *fakeStrategyHost) StateDir() string          { return h.stateDir }
-func (h *fakeStrategyHost) ID() string                { return h.id }
-func (h *fakeStrategyHost) Profile() *Profile         { return h.profile }
-func (h *fakeStrategyHost) Snapshot() SessionSnapshot { return SessionSnapshot{ID: h.id} }
-func (h *fakeStrategyHost) Client() *llm.Client       { return h.client }
+func (h *fakeStrategyHost) StateDir() string           { return h.stateDir }
+func (h *fakeStrategyHost) ID() string                 { return h.id }
+func (h *fakeStrategyHost) Profile() *provider.Profile { return h.profile }
+func (h *fakeStrategyHost) Snapshot() SessionSnapshot  { return SessionSnapshot{ID: h.id} }
+func (h *fakeStrategyHost) Client() *llm.Client        { return h.client }
 
 func TestStrategyHost_FakeSatisfiesInterface(t *testing.T) {
 	var _ strategyHost = (*fakeStrategyHost)(nil)

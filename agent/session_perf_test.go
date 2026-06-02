@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -179,7 +180,7 @@ func TestToolDefs_WebSearchExcludedForNonGemini(t *testing.T) {
 	// which Anthropic's API rejects.
 	for _, tc := range []struct {
 		name    string
-		profile *Profile
+		profile *provider.Profile
 		adapter string
 		want    bool // true = web_search should be present
 	}{
@@ -222,7 +223,7 @@ func TestToolDefs_NoDuplicateNames(t *testing.T) {
 	// allToolDefinitions, which would be rejected by APIs like Anthropic.
 	for _, tc := range []struct {
 		name    string
-		profile *Profile
+		profile *provider.Profile
 		adapter string
 	}{
 		{"anthropic", newAnthropicProfile("claude-test"), "anthropic"},

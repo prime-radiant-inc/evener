@@ -4,11 +4,11 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/provider"
 )
 
 func TestApplyFastCheapModel_SameProviderOverridesCheapModel(t *testing.T) {
-	profile := agent.NewOpenAIProfile("gpt-5.2")
+	profile := provider.NewOpenAIProfile("gpt-5.2")
 	got, err := applyFastCheapModel(profile, "openai/gpt-4.1-mini")
 	if err != nil {
 		t.Fatalf("applyFastCheapModel: %v", err)
@@ -22,7 +22,7 @@ func TestApplyFastCheapModel_SameProviderOverridesCheapModel(t *testing.T) {
 }
 
 func TestApplyFastCheapModel_RejectsCrossProvider(t *testing.T) {
-	profile := agent.NewOpenAIProfile("gpt-5.2")
+	profile := provider.NewOpenAIProfile("gpt-5.2")
 	_, err := applyFastCheapModel(profile, "anthropic/claude-haiku-4-5-20251001")
 	if err == nil {
 		t.Fatal("expected cross-provider error")
@@ -33,7 +33,7 @@ func TestApplyFastCheapModel_RejectsCrossProvider(t *testing.T) {
 }
 
 func TestApplyFastCheapModel_BlankKeepsDefault(t *testing.T) {
-	profile := agent.NewOpenAIProfile("gpt-5.2")
+	profile := provider.NewOpenAIProfile("gpt-5.2")
 	got, err := applyFastCheapModel(profile, "")
 	if err != nil {
 		t.Fatalf("applyFastCheapModel: %v", err)

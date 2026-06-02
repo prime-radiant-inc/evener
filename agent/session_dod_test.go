@@ -824,7 +824,7 @@ func TestSession_ContextWindowAwareness_EmitsWarningOver80Percent(t *testing.T) 
 
 	// With cw=100 and ~110 tokens of content (system prompt agents section + user input),
 	// warning should emit since usage exceeds the 80% threshold.
-	sess, err := NewSession(c, &Profile{id: "tiny", behaviorTag: "tiny", model: "m", contextWindow: 100}, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, WithContextWindow(WithProviderID(NewOpenAIProfile("m"), "tiny"), 100), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -861,7 +861,7 @@ func TestSession_ContextWindowAwareness_DoesNotWarnUnderThreshold(t *testing.T) 
 	}
 	c.Register(f)
 
-	sess, err := NewSession(c, &Profile{id: "tiny", behaviorTag: "tiny", model: "m", contextWindow: 1_000_000}, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, WithContextWindow(WithProviderID(NewOpenAIProfile("m"), "tiny"), 1_000_000), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -2762,7 +2762,7 @@ func TestLoopDetection_PatternLength2(t *testing.T) {
 func TestProviderOptions_PassedToLLMRequest(t *testing.T) {
 	c := llm.NewClient()
 	f := &fakeAdapter{
-		name: "tiny",
+		name: "anthropic",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				return wrapCommunicateResponse(llm.Response{
@@ -2774,10 +2774,9 @@ func TestProviderOptions_PassedToLLMRequest(t *testing.T) {
 	}
 	c.Register(f)
 
-	profile := &Profile{id: "tiny", behaviorTag: "tiny", model: "m", contextWindow: 100_000}
-	profile.providerOpts = map[string]any{
-		"anthropic": map[string]any{"beta": "test-beta"},
-	}
+	// A real Anthropic 1M-context profile carries provider options (max_tokens
+	// plus the 1M-context beta header); verify they reach the LLM request.
+	profile := newAnthropicProfile("claude-opus-4-6[1m]")
 
 	dir := t.TempDir()
 	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
@@ -2806,8 +2805,8 @@ func TestProviderOptions_PassedToLLMRequest(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected anthropic key in ProviderOptions, got %v", reqs[0].ProviderOptions)
 	}
-	if anth["beta"] != "test-beta" {
-		t.Fatalf("expected beta=test-beta, got %v", anth["beta"])
+	if anth["beta_headers"] != "context-1m-2025-08-07" {
+		t.Fatalf("expected beta_headers=context-1m-2025-08-07, got %v", anth["beta_headers"])
 	}
 }
 

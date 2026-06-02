@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/agent/internal/mcp"
 	"primeradiant.com/serf/agent/mcpconfig"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/agent/task"
@@ -63,7 +64,7 @@ func selectStrategy(cfg SessionConfig, cm *contextManager, sess *Session) (conte
 // persistence is enabled, installs the configured context strategy, and emits
 // the initial SessionStart envelope. It returns an error if any input is nil or
 // if initialization fails.
-func NewSession(client *llm.Client, profile *Profile, env execenv.ExecutionEnvironment, cfg SessionConfig) (*Session, error) {
+func NewSession(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, cfg SessionConfig) (*Session, error) {
 	if client == nil {
 		return nil, errors.New("llm client is nil")
 	}
@@ -198,7 +199,7 @@ func NewSession(client *llm.Client, profile *Profile, env execenv.ExecutionEnvir
 // RestoreSession creates a Session from a saved snapshot, restoring the
 // conversation history while reconstructing non-serializable parts (tools,
 // client, profile) fresh. The session retains the original snapshot ID.
-func RestoreSession(client *llm.Client, profile *Profile, env execenv.ExecutionEnvironment, snap SessionSnapshot, stateDir string) (*Session, error) {
+func RestoreSession(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, snap SessionSnapshot, stateDir string) (*Session, error) {
 	cfg := snap.Config
 	cfg.StateDir = stateDir
 	cfg.SessionStartKind = SessionStartKindResume
@@ -330,7 +331,7 @@ func RestoreSession(client *llm.Client, profile *Profile, env execenv.ExecutionE
 // RestoreSessionFromMeta creates a Session from a SessionMeta, recovering
 // history exclusively from the transcript JSONL. If no transcript exists,
 // the session starts with empty history (no snapshot fallback).
-func RestoreSessionFromMeta(client *llm.Client, profile *Profile, env execenv.ExecutionEnvironment, meta SessionMeta, stateDir string) (*Session, error) {
+func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, meta SessionMeta, stateDir string) (*Session, error) {
 	cfg := meta.Config
 	cfg.StateDir = stateDir
 	cfg.SessionStartKind = SessionStartKindResume
@@ -567,15 +568,13 @@ func (s *Session) initSessionState(sessionStartKind SessionStartKind) ([]promptS
 
 func (s *Session) validateModelFallbacks() error {
 	for _, fbModel := range s.cfg.ModelFallbacks {
-		// Always check whether the ref is a cross-provider switch by inspecting
-		// decidePrefixAction, regardless of whether a resolver is present.
-		// Cross-provider fallbacks are unsupported because the prompt/tool
-		// surfaces differ between providers.
+		// Always check whether the ref is a cross-provider switch, regardless of
+		// whether a resolver is present. Cross-provider fallbacks are unsupported
+		// because the prompt/tool surfaces differ between providers.
 		if parts := strings.SplitN(fbModel, "/", 2); len(parts) == 2 {
-			provider := strings.ToLower(parts[0])
-			if decidePrefixAction(s.profile.BehaviorTag(), s.profile.ID(), provider) == prefixActionSwitch {
+			if s.profile.CrossProviderRef(fbModel) {
 				// Resolve to get the target provider name for the error message.
-				targetTag := provider // best-effort for the error message
+				targetTag := strings.ToLower(parts[0]) // best-effort for the error message
 				fbProfile, crossProvider, err := s.resolveProfileForRef(s.profile, fbModel)
 				if err != nil {
 					return fmt.Errorf("model_fallbacks entry %q: %w", fbModel, err)

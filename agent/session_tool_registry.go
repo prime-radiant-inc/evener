@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/skill"
 	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
@@ -164,7 +165,7 @@ func newToolDeps(s *Session) *toolDeps {
 // the real executors afterward. The registry is keyed by canonical tool names —
 // provider-specific renaming is applied only when advertising tools to the
 // model (see rebuildToolDefsCache).
-func newProfileToolRegistry(p *Profile) *tool.Registry {
+func newProfileToolRegistry(p *provider.Profile) *tool.Registry {
 	reg := tool.NewRegistry()
 	if p == nil {
 		return reg

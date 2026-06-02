@@ -51,7 +51,7 @@ func TestBehaviorTag_PromptCache_RenamedOpenAI(t *testing.T) {
 // TestBehaviorTag_PromptCache_OpenAICompatible verifies that a chat-completions
 // instance (tag="openai-compatible") does NOT get prompt-cache set.
 func TestBehaviorTag_PromptCache_OpenAICompatible(t *testing.T) {
-	compatProfile := &Profile{id: "openai", behaviorTag: "openai-compatible", model: "gpt-5.5"}
+	compatProfile := testOpenAICompatProfile("openai", "gpt-5.5", 0)
 	if compatProfile.BehaviorTag() != "openai-compatible" {
 		t.Fatalf("pre-condition: BehaviorTag() = %q, want openai-compatible", compatProfile.BehaviorTag())
 	}
@@ -223,7 +223,7 @@ func TestBehaviorTag_SectionResolver_OpenAICompatibleDoesNotLoadOpenAISection(t 
 	}}
 	c.Register(f)
 
-	compatProfile := &Profile{id: "openai-compatible", behaviorTag: "openai-compatible", model: "gpt-4o", contextWindow: 128_000}
+	compatProfile := testOpenAICompatProfile("openai-compatible", "gpt-4o", 128_000)
 
 	sess, err := NewSession(c, compatProfile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		NoProjectPrompts: true,

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/provider"
 	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
 )
@@ -432,7 +433,7 @@ func TestTaskStore_UpdateWithNotes(t *testing.T) {
 func TestTaskListSchema_ReasoningEffortEnumPerProvider(t *testing.T) {
 	cases := []struct {
 		name    string
-		profile *Profile
+		profile *provider.Profile
 		want    []string
 	}{
 		{"openai", NewOpenAIProfile("test"), []string{"low", "medium", "high", "xhigh"}},

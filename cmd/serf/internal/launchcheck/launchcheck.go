@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmdutil"
@@ -124,7 +124,7 @@ func validateLaunchCheckProfile(ref cmdutil.ModelRef) error {
 		return err
 	}
 	if hasConfig {
-		_, err := agent.ResolveProfileFromConfig(cfg, ref.Qualified())
+		_, err := provider.ResolveProfileFromConfig(cfg, ref.Qualified())
 		return err
 	}
 	_, err = cmdutil.ResolveProfileForProvider(ref.Provider, ref.Model)

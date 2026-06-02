@@ -8,10 +8,11 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/llm"
 )
 
-func renderPromptForTest(t *testing.T, p *Profile, data promptData) string {
+func renderPromptForTest(t *testing.T, p *provider.Profile, data promptData) string {
 	t.Helper()
 	if data.Provider == "" {
 		data.Provider = p.ID()
@@ -156,7 +157,7 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 }
 
 func TestProviderProfiles_AllIncludeUseSkill(t *testing.T) {
-	profiles := []*Profile{
+	profiles := []*provider.Profile{
 		NewOpenAIProfile("gpt-5.2"),
 		newAnthropicProfile("claude-test"),
 		newGeminiProfile("gemini-test"),
@@ -175,7 +176,7 @@ func TestProviderProfiles_AllIncludeUseSkill(t *testing.T) {
 }
 
 func TestProviderProfiles_AddPurposeToEveryToolSchema(t *testing.T) {
-	profiles := []*Profile{
+	profiles := []*provider.Profile{
 		NewOpenAIProfile("gpt-5.2"),
 		newAnthropicProfile("claude-test"),
 		newGeminiProfile("gemini-test"),
@@ -249,7 +250,7 @@ func TestProviderProfiles_BuildSystemPrompt_IncludesEnvironment(t *testing.T) {
 		KnowledgeCutoff: "2024-06-01",
 	}
 
-	for _, p := range []*Profile{
+	for _, p := range []*provider.Profile{
 		NewOpenAIProfile("gpt-5.2"),
 		newAnthropicProfile("claude-test"),
 		newGeminiProfile("gemini-test"),
@@ -313,7 +314,7 @@ func TestBuildSystemPrompt_DoesNotDuplicateMCPOrCustomToolDescriptions(t *testin
 
 func TestProviderProfile_CheapModel(t *testing.T) {
 	cases := []struct {
-		profile *Profile
+		profile *provider.Profile
 		want    string
 	}{
 		{NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano"},
@@ -428,152 +429,6 @@ func TestNewOpenAICompatProfile_OllamaTaggedModelFallsBackToBase(t *testing.T) {
 	}
 }
 
-// TestResolveOpenAICompatCatalogModel exercises the lookup precedence
-// using a fake catalog so each branch can be observed directly. The
-// embedded catalog ships every ollama/llama3* variant with the same
-// 8192 context window, so a real-data test cannot distinguish the
-// exact-tagged path from the tag-stripped fallback.
-func TestResolveOpenAICompatCatalogModel(t *testing.T) {
-	fake := func(entries map[string]int) func(string) *llm.ModelInfo {
-		return func(key string) *llm.ModelInfo {
-			if ctx, ok := entries[key]; ok {
-				return &llm.ModelInfo{ID: key, ContextWindow: ctx}
-			}
-			return nil
-		}
-	}
-
-	t.Run("prefixed key wins when both exist (openrouter overlap)", func(t *testing.T) {
-		// Real-world case: catalog has both "deepseek/deepseek-r1"
-		// (the deepseek provider's entry) and
-		// "openrouter/deepseek/deepseek-r1" (OpenRouter's entry,
-		// possibly with a different context window). Asking for
-		// openrouter/deepseek-r1 must hit the OpenRouter entry, not
-		// the deepseek one.
-		lookup := fake(map[string]int{
-			"deepseek/deepseek-r1":            65536, // wrong provider's entry
-			"openrouter/deepseek/deepseek-r1": 65336, // correct match
-		})
-		mi := resolveOpenAICompatCatalogModel(lookup, "openrouter", "deepseek/deepseek-r1")
-		if mi == nil {
-			t.Fatal("got nil, want openrouter-prefixed match")
-		}
-		if mi.ContextWindow != 65336 {
-			t.Fatalf("ContextWindow = %d, want 65336 (openrouter-prefixed); got %d means the bare lookup fired before the prefixed match",
-				mi.ContextWindow, mi.ContextWindow)
-		}
-	})
-
-	t.Run("bare key wins when prefixed misses (kimi/glm style)", func(t *testing.T) {
-		// kimi and glm catalog keys are unprefixed — the prefixed
-		// lookup misses, so the bare lookup is the actual match.
-		lookup := fake(map[string]int{"kimi-k2.5": 100})
-		mi := resolveOpenAICompatCatalogModel(lookup, "kimi", "kimi-k2.5")
-		if mi == nil || mi.ContextWindow != 100 {
-			t.Fatalf("got %+v, want bare match", mi)
-		}
-	})
-
-	t.Run("prefixed key matches when only it exists", func(t *testing.T) {
-		lookup := fake(map[string]int{"ollama/llama3.1": 200})
-		mi := resolveOpenAICompatCatalogModel(lookup, "ollama", "llama3.1")
-		if mi == nil || mi.ContextWindow != 200 {
-			t.Fatalf("got %+v, want prefixed match", mi)
-		}
-	})
-
-	t.Run("exact tagged prefixed key wins over tag-stripped fallback", func(t *testing.T) {
-		// Both keys exist with DIFFERENT context windows. The exact tagged
-		// key must be selected, NOT the tag-stripped one. If the lookup
-		// regresses and the third (stripped) branch fires before the
-		// second (exact prefixed) branch, this test catches it.
-		lookup := fake(map[string]int{
-			"ollama/llama3":    111, // tag-stripped fallback target
-			"ollama/llama3:8b": 222, // exact tagged target — should win
-		})
-		mi := resolveOpenAICompatCatalogModel(lookup, "ollama", "llama3:8b")
-		if mi == nil {
-			t.Fatal("got nil, want exact tagged match")
-		}
-		if mi.ContextWindow != 222 {
-			t.Fatalf("ContextWindow = %d, want 222 (exact tagged); got %d means the tag-stripped fallback fired before the exact prefixed match", mi.ContextWindow, mi.ContextWindow)
-		}
-	})
-
-	t.Run("tag-stripped prefixed key when exact tagged misses", func(t *testing.T) {
-		// Only the untagged base exists in the catalog. A user-supplied
-		// "llama3.1:8b" must fall back to "ollama/llama3.1".
-		lookup := fake(map[string]int{"ollama/llama3.1": 333})
-		mi := resolveOpenAICompatCatalogModel(lookup, "ollama", "llama3.1:8b")
-		if mi == nil || mi.ContextWindow != 333 {
-			t.Fatalf("got %+v, want tag-stripped fallback to ollama/llama3.1", mi)
-		}
-	})
-
-	t.Run("returns nil when nothing matches", func(t *testing.T) {
-		lookup := fake(map[string]int{"unrelated/model": 1})
-		mi := resolveOpenAICompatCatalogModel(lookup, "ollama", "nope:9999b")
-		if mi != nil {
-			t.Fatalf("got %+v, want nil", mi)
-		}
-	})
-
-	t.Run("model without colon does not attempt tag-stripped lookup", func(t *testing.T) {
-		// Sanity: an untagged miss must not fall through to a fictional
-		// stripped form. We use a bare-key catalog that would otherwise
-		// match the tag-stripped key if the third branch fired.
-		lookup := fake(map[string]int{"ollama/": 999})
-		mi := resolveOpenAICompatCatalogModel(lookup, "ollama", "nonexistent")
-		if mi != nil {
-			t.Fatalf("got %+v, want nil — there is no tag to strip", mi)
-		}
-	})
-
-	t.Run("ollama does not bare-fall-back to unrelated provider entries", func(t *testing.T) {
-		// Real-world hazard: the catalog has bare anthropic entries
-		// ("claude-3-haiku-20240307": 200000). Asking for that name
-		// under ollama must NOT pick up Anthropic's metadata — the
-		// 200K window would silently mask Ollama context truncation.
-		lookup := fake(map[string]int{
-			"claude-3-haiku-20240307": 200000, // Anthropic's bare entry
-		})
-		mi := resolveOpenAICompatCatalogModel(lookup, "ollama", "claude-3-haiku-20240307")
-		if mi != nil {
-			t.Fatalf("got %+v, want nil — bare-key fallback must be disabled for ollama", mi)
-		}
-	})
-
-	t.Run("openrouter still uses bare-key fallback for upstream models", func(t *testing.T) {
-		// OpenRouter routes to upstreams whose catalog entries are
-		// often only stored under their bare upstream key (no
-		// "openrouter/..." prefix). For example, requesting
-		// "openrouter + minimax/minimax-m2.7" must hit the bare
-		// "minimax/minimax-m2.7" entry. The prefixed-first precedence
-		// still protects against the overlap case (covered separately
-		// by the deepseek subtest above).
-		lookup := fake(map[string]int{
-			"minimax/minimax-m2.7": 204800,
-		})
-		mi := resolveOpenAICompatCatalogModel(lookup, "openrouter", "minimax/minimax-m2.7")
-		if mi == nil {
-			t.Fatal("got nil, want bare upstream match")
-		}
-		if mi.ContextWindow != 204800 {
-			t.Fatalf("ContextWindow = %d, want 204800 (upstream bare entry)", mi.ContextWindow)
-		}
-	})
-
-	t.Run("kimi still uses bare-key fallback", func(t *testing.T) {
-		// Sanity: providers whose catalog keys are unprefixed (kimi,
-		// glm) must still hit the bare lookup.
-		lookup := fake(map[string]int{"kimi-k2.5": 100})
-		mi := resolveOpenAICompatCatalogModel(lookup, "kimi", "kimi-k2.5")
-		if mi == nil || mi.ContextWindow != 100 {
-			t.Fatalf("got %+v, want kimi-k2.5 bare match", mi)
-		}
-	})
-}
-
 // TestNewOpenAICompatProfile_OllamaDoesNotPickUpAnthropicCatalog is the
 // integration-level version of the bare-key skip: the embedded catalog
 // has Anthropic models like "claude-3-haiku-20240307" with 200K windows.
@@ -604,23 +459,23 @@ func TestNewOpenAICompatProfile_OllamaDoesNotPickUpAnthropicCatalog(t *testing.T
 //     loses the OpenRouter-Anthropic routing
 func TestBaseProfile_WithModel_PreservesSlashOnMetaProviders(t *testing.T) {
 	cases := []struct {
-		startProfile func() *Profile
+		startProfile func() *provider.Profile
 		startID      string
 		input        string
 	}{
-		{func() *Profile { return newMiniMaxProfile("minimax/minimax-m2.7") }, "minimax", "minimax/minimax-m2.7"},
-		{func() *Profile { return newMiniMaxProfile("minimax/minimax-m2.7") }, "minimax", "minimax/minimax-m2.1"},
-		{func() *Profile {
+		{func() *provider.Profile { return newMiniMaxProfile("minimax/minimax-m2.7") }, "minimax", "minimax/minimax-m2.7"},
+		{func() *provider.Profile { return newMiniMaxProfile("minimax/minimax-m2.7") }, "minimax", "minimax/minimax-m2.1"},
+		{func() *provider.Profile {
 			return newOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
 		}, "openrouter", "minimax/minimax-m2.7"},
-		{func() *Profile {
+		{func() *provider.Profile {
 			return newOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
 		}, "openrouter", "anthropic/claude-3-haiku-20240307"},
-		{func() *Profile {
+		{func() *provider.Profile {
 			return newOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
 		}, "openrouter", "deepseek/deepseek-r1"},
-		{func() *Profile { return newOpenRouterAnthropicProfile("minimax/minimax-m2.7") }, "openrouter-anthropic", "minimax/minimax-m2.7"},
-		{func() *Profile { return newOpenRouterAnthropicProfile("minimax/minimax-m2.7") }, "openrouter-anthropic", "anthropic/claude-3-5-sonnet"},
+		{func() *provider.Profile { return newOpenRouterAnthropicProfile("minimax/minimax-m2.7") }, "openrouter-anthropic", "minimax/minimax-m2.7"},
+		{func() *provider.Profile { return newOpenRouterAnthropicProfile("minimax/minimax-m2.7") }, "openrouter-anthropic", "anthropic/claude-3-5-sonnet"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.startID+"_"+tc.input, func(t *testing.T) {
@@ -645,14 +500,14 @@ func TestBaseProfile_WithModel_PreservesSlashOnMetaProviders(t *testing.T) {
 // string on the wire instead of the canonical bare form.
 func TestBaseProfile_WithModel_StripsRedundantSelfPrefixOnMetaProviders(t *testing.T) {
 	cases := []struct {
-		startProfile func() *Profile
+		startProfile func() *provider.Profile
 		startID      string
 		input        string
 		wantModel    string
 	}{
-		{func() *Profile { return newOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "openrouter/anthropic/claude-3-haiku-20240307", "anthropic/claude-3-haiku-20240307"},
-		{func() *Profile { return newOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "openrouter/minimax/minimax-m2.7", "minimax/minimax-m2.7"},
-		{func() *Profile { return newOpenRouterAnthropicProfile("x") }, "openrouter-anthropic", "openrouter-anthropic/anthropic/claude-3-5-sonnet", "anthropic/claude-3-5-sonnet"},
+		{func() *provider.Profile { return newOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "openrouter/anthropic/claude-3-haiku-20240307", "anthropic/claude-3-haiku-20240307"},
+		{func() *provider.Profile { return newOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "openrouter/minimax/minimax-m2.7", "minimax/minimax-m2.7"},
+		{func() *provider.Profile { return newOpenRouterAnthropicProfile("x") }, "openrouter-anthropic", "openrouter-anthropic/anthropic/claude-3-5-sonnet", "anthropic/claude-3-5-sonnet"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.startID+"_"+tc.input, func(t *testing.T) {
@@ -733,76 +588,6 @@ func TestNewOpenRouterAnthropicProfile_PreservesWebSearchDefault(t *testing.T) {
 	}
 }
 
-// TestResolveOpenRouterAnthropicWebSearch verifies the three-step
-// resolution precedence used by newOpenRouterAnthropicProfile.
-// Step 1 (openrouter-prefixed) and step 2 (bare-direct, only when step
-// 1 misses) are authoritative; step 3 (bare-upstream-stripped) is a
-// fallback that only fills when no earlier step resolved the field.
-//
-// Particularly important: step 3 must NOT overwrite an authoritative
-// step 2 result, even if step 2's matched entry happened to omit the
-// field. Built against a fake catalog so all branches can be exercised
-// directly — the real catalog doesn't currently contain a model where
-// every relevant key exists with diverging values.
-func TestResolveOpenRouterAnthropicWebSearch(t *testing.T) {
-	tt := func(t *testing.T, name string, entries map[string]*bool, presentEntries map[string]bool, model string, wantWS bool) {
-		t.Helper()
-		t.Run(name, func(t *testing.T) {
-			lookup := func(key string) *llm.ModelInfo {
-				if _, present := presentEntries[key]; !present {
-					return nil
-				}
-				ws := entries[key]
-				return &llm.ModelInfo{ID: key, SupportsWebSearch: ws}
-			}
-			got := resolveOpenRouterAnthropicWebSearch(lookup, model, true)
-			if got != wantWS {
-				t.Fatalf("got %v, want %v", got, wantWS)
-			}
-		})
-	}
-
-	bTrue, bFalse := true, false
-
-	// Step 1 wins when the openrouter-prefixed entry has an explicit value.
-	tt(t, "step 1 explicit false wins over later steps",
-		map[string]*bool{"openrouter/anthropic/m": &bFalse, "anthropic/m": &bTrue, "m": &bTrue},
-		map[string]bool{"openrouter/anthropic/m": true, "anthropic/m": true, "m": true},
-		"anthropic/m", false)
-
-	// Step 2 wins when no openrouter-prefixed entry exists but a
-	// bare-direct entry does. Step 3 stripped upstream must NOT
-	// overwrite step 2's authoritative answer — this was the bug.
-	tt(t, "step 2 explicit false wins over step 3 explicit true",
-		map[string]*bool{"anthropic/m": &bFalse, "m": &bTrue},
-		map[string]bool{"anthropic/m": true, "m": true},
-		"anthropic/m", false)
-
-	// Step 3 fills when steps 1 and 2 are silent (no entries match).
-	tt(t, "step 3 fills when steps 1 and 2 silent",
-		map[string]*bool{"m": &bTrue},
-		map[string]bool{"m": true},
-		"anthropic/m", true)
-
-	// Step 3 fills when step 2 matched but its entry has no field —
-	// useful for picking up serf overrides on bare upstream IDs.
-	tt(t, "step 3 fills when step 2 matched but field absent",
-		map[string]*bool{"anthropic/m": nil, "m": &bFalse},
-		map[string]bool{"anthropic/m": true, "m": true},
-		"anthropic/m", false)
-
-	// Step 3 fills when step 1's prefixed entry matched but has no field.
-	tt(t, "step 3 fills when step 1 matched but field absent",
-		map[string]*bool{"openrouter/anthropic/m": nil, "m": &bFalse},
-		map[string]bool{"openrouter/anthropic/m": true, "m": true},
-		"anthropic/m", false)
-
-	// All silent → caller default wins.
-	tt(t, "default wins when nothing matches",
-		map[string]*bool{}, map[string]bool{},
-		"anthropic/m", true)
-}
-
 // TestNewOpenRouterAnthropicProfile_StripsBareUpstreamCtxFallback verifies
 // that the catalog context-window resolution falls through to the
 // bare-upstream-stripped lookup when neither the openrouter-prefixed
@@ -828,17 +613,17 @@ func TestNewOpenRouterAnthropicProfile_StripsBareUpstreamCtxFallback(t *testing.
 // stay as model namespaces and don't trigger a provider switch.
 func TestBaseProfile_WithModel_OpenRouterKeepsUpstreamNamespace(t *testing.T) {
 	cases := []struct {
-		startProfile func() *Profile
+		startProfile func() *provider.Profile
 		startID      string
 		input        string
 	}{
-		{func() *Profile { return newOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "anthropic/claude-3-haiku"},
-		{func() *Profile { return newOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "openai/gpt-5"},
-		{func() *Profile { return newOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "google/gemini-3"},
-		{func() *Profile { return newOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "minimax/minimax-m2.7"},
-		{func() *Profile { return newOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "deepseek/deepseek-r1"},
-		{func() *Profile { return newOpenRouterAnthropicProfile("x") }, "openrouter-anthropic", "anthropic/claude-3-5-sonnet"},
-		{func() *Profile { return newOpenRouterAnthropicProfile("x") }, "openrouter-anthropic", "minimax/minimax-m2.7"},
+		{func() *provider.Profile { return newOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "anthropic/claude-3-haiku"},
+		{func() *provider.Profile { return newOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "openai/gpt-5"},
+		{func() *provider.Profile { return newOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "google/gemini-3"},
+		{func() *provider.Profile { return newOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "minimax/minimax-m2.7"},
+		{func() *provider.Profile { return newOpenAICompatProfile("openrouter", "x", 0) }, "openrouter", "deepseek/deepseek-r1"},
+		{func() *provider.Profile { return newOpenRouterAnthropicProfile("x") }, "openrouter-anthropic", "anthropic/claude-3-5-sonnet"},
+		{func() *provider.Profile { return newOpenRouterAnthropicProfile("x") }, "openrouter-anthropic", "minimax/minimax-m2.7"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.startID+"_"+tc.input, func(t *testing.T) {
@@ -924,14 +709,14 @@ func TestBaseProfile_WithModel_PreservesToolDefOverridesAcrossProviderSwitch(t *
 
 	cases := []struct {
 		name     string
-		newOrig  func() *Profile
+		newOrig  func() *provider.Profile
 		newModel string
 	}{
-		{"openai-to-ollama", func() *Profile { return NewOpenAIProfile("gpt-5.4") }, "ollama/llama3.1"},
-		{"openrouter-to-ollama", func() *Profile {
+		{"openai-to-ollama", func() *provider.Profile { return NewOpenAIProfile("gpt-5.4") }, "ollama/llama3.1"},
+		{"openrouter-to-ollama", func() *provider.Profile {
 			return newOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
 		}, "ollama/llama3.1"},
-		{"openai-to-anthropic", func() *Profile { return NewOpenAIProfile("gpt-5.4") }, "anthropic/claude-3-opus"},
+		{"openai-to-anthropic", func() *provider.Profile { return NewOpenAIProfile("gpt-5.4") }, "anthropic/claude-3-opus"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -981,19 +766,19 @@ func TestBaseProfile_WithModel_PreservesToolDefOverrides(t *testing.T) {
 
 	cases := []struct {
 		name     string
-		newOrig  func() *Profile
+		newOrig  func() *provider.Profile
 		newModel string
 	}{
-		{"openrouter", func() *Profile {
+		{"openrouter", func() *provider.Profile {
 			return newOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
 		}, "anthropic/claude-3-5-sonnet"},
-		{"openrouter-anthropic", func() *Profile {
+		{"openrouter-anthropic", func() *provider.Profile {
 			return newOpenRouterAnthropicProfile("anthropic/claude-3-5-sonnet")
 		}, "anthropic/claude-3-haiku-20240307"},
-		{"kimi", func() *Profile {
+		{"kimi", func() *provider.Profile {
 			return newOpenAICompatProfile("kimi", "kimi-k2.5", 0)
 		}, "kimi-k2.6"},
-		{"ollama", func() *Profile {
+		{"ollama", func() *provider.Profile {
 			return newOpenAICompatProfile("ollama", "llama3.1", 0)
 		}, "llama3.2"},
 	}
@@ -1051,23 +836,23 @@ func TestBaseProfile_WithModel_RecomputesOpenRouterAnthropicCatalog(t *testing.T
 func TestBaseProfile_WithModel_RecomputesProviderOptsOnMetaProviders(t *testing.T) {
 	// Start without minimax/* — providerOpts should be nil.
 	orig := newOpenAICompatProfile("openrouter", "anthropic/claude-3-haiku-20240307", 0)
-	if orig.providerOpts != nil {
-		t.Fatalf("setup: orig providerOpts = %+v, want nil", orig.providerOpts)
+	if orig.ProviderOptions() != nil {
+		t.Fatalf("setup: orig providerOpts = %+v, want nil", orig.ProviderOptions())
 	}
 
 	// Switch to minimax/* — should inject the reasoning option.
 	cloned := orig.WithModel("minimax/minimax-m2.7")
-	if cloned.providerOpts == nil {
+	if cloned.ProviderOptions() == nil {
 		t.Fatal("after switch to minimax/*, providerOpts is nil — same-provider WithModel did not recompute providerOpts")
 	}
-	if _, ok := cloned.providerOpts["openai-compatible"]; !ok {
-		t.Fatalf("providerOpts = %+v, want openai-compatible.reasoning", cloned.providerOpts)
+	if _, ok := cloned.ProviderOptions()["openai-compatible"]; !ok {
+		t.Fatalf("providerOpts = %+v, want openai-compatible.reasoning", cloned.ProviderOptions())
 	}
 
 	// Switch back to non-minimax — option should be dropped.
 	dropped := cloned.WithModel("anthropic/claude-3-haiku-20240307")
-	if dropped.providerOpts != nil {
-		t.Fatalf("after switch back to non-minimax, providerOpts = %+v, want nil", dropped.providerOpts)
+	if dropped.ProviderOptions() != nil {
+		t.Fatalf("after switch back to non-minimax, providerOpts = %+v, want nil", dropped.ProviderOptions())
 	}
 }
 
@@ -1123,16 +908,16 @@ func TestNewOpenAICompatProfile_OpenRouterUpstreamBareEntry(t *testing.T) {
 // legitimately have a custom Ollama model named under that namespace.
 func TestNewOpenAICompatProfile_MinimaxOptOnlyForOpenRouter(t *testing.T) {
 	openrouter := newOpenAICompatProfile("openrouter", "minimax/minimax-m2.7", 0)
-	if openrouter.providerOpts == nil {
+	if openrouter.ProviderOptions() == nil {
 		t.Fatal("openrouter+minimax/* profile is missing the reasoning provider option")
 	}
-	if _, ok := openrouter.providerOpts["openai-compatible"]; !ok {
-		t.Fatalf("openrouter providerOpts = %+v, want openai-compatible.reasoning", openrouter.providerOpts)
+	if _, ok := openrouter.ProviderOptions()["openai-compatible"]; !ok {
+		t.Fatalf("openrouter providerOpts = %+v, want openai-compatible.reasoning", openrouter.ProviderOptions())
 	}
 
 	ollama := newOpenAICompatProfile("ollama", "minimax/whatever", 0)
-	if ollama.providerOpts != nil {
-		t.Fatalf("ollama+minimax/* profile got OpenRouter-specific providerOpts = %+v, want nil", ollama.providerOpts)
+	if ollama.ProviderOptions() != nil {
+		t.Fatalf("ollama+minimax/* profile got OpenRouter-specific providerOpts = %+v, want nil", ollama.ProviderOptions())
 	}
 }
 
@@ -1177,7 +962,7 @@ func TestNewOpenAICompatProfile_OpenRouterResolvesCatalogMetadata(t *testing.T) 
 // session_resolve_profile_test.go. Cross-provider switching is now the
 // Session resolver's responsibility.
 
-func assertHasTool(t *testing.T, p *Profile, name string) {
+func assertHasTool(t *testing.T, p *provider.Profile, name string) {
 	t.Helper()
 	for _, td := range p.ToolDefinitions() {
 		if td.Name == name {
@@ -1187,7 +972,7 @@ func assertHasTool(t *testing.T, p *Profile, name string) {
 	t.Fatalf("expected tool %q in profile %q tool defs", name, p.ID())
 }
 
-func assertMissingTool(t *testing.T, p *Profile, name string) {
+func assertMissingTool(t *testing.T, p *provider.Profile, name string) {
 	t.Helper()
 	for _, td := range p.ToolDefinitions() {
 		if td.Name == name {
@@ -1200,7 +985,7 @@ func assertMissingTool(t *testing.T, p *Profile, name string) {
 // profiles include skills guidance when skills are provided.
 // All provider profiles use the use_skill tool with directory paths.
 func TestAllProfiles_SystemPromptContainsSkillsGuidance(t *testing.T) {
-	profiles := map[string]*Profile{
+	profiles := map[string]*provider.Profile{
 		"openai":    NewOpenAIProfile("gpt-5.2"),
 		"anthropic": newAnthropicProfile("claude-test"),
 		"gemini":    newGeminiProfile("gemini-test"),
@@ -1394,7 +1179,7 @@ func TestProviderProfile_DefaultCommandTimeout(t *testing.T) {
 func TestProviderProfile_KnowledgeCutoff(t *testing.T) {
 	tests := []struct {
 		name string
-		p    *Profile
+		p    *provider.Profile
 		want string
 	}{
 		{"openai", NewOpenAIProfile("gpt-5.2"), "2025-06-01"},
@@ -1412,7 +1197,7 @@ func TestProviderProfile_KnowledgeCutoff(t *testing.T) {
 }
 
 func TestSendInput_UsesMessageParam(t *testing.T) {
-	profiles := []*Profile{
+	profiles := []*provider.Profile{
 		NewOpenAIProfile("gpt-5.2"),
 		newAnthropicProfile("claude-sonnet-4-20250514"),
 		newGeminiProfile("gemini-2.5-pro"),
@@ -1450,7 +1235,7 @@ func TestSendInput_UsesMessageParam(t *testing.T) {
 }
 
 func TestSpawnAgent_HasMaxTurns(t *testing.T) {
-	profiles := []*Profile{
+	profiles := []*provider.Profile{
 		NewOpenAIProfile("gpt-5.2"),
 		newAnthropicProfile("claude-sonnet-4-20250514"),
 		newGeminiProfile("gemini-2.5-pro"),
@@ -1477,7 +1262,7 @@ func TestSpawnAgent_HasMaxTurns(t *testing.T) {
 // WS3: Tool name mapping
 // wiredToolNames returns the set of tool names the profile advertises to the
 // model — the agent wire form (provider-specific renaming applied).
-func wiredToolNames(p *Profile) map[string]bool {
+func wiredToolNames(p *provider.Profile) map[string]bool {
 	nameMap := p.ToolNameMap()
 	names := map[string]bool{}
 	for _, td := range p.ToolDefinitions() {
@@ -1710,7 +1495,7 @@ func TestApplyPatch_DescriptionIncludesCapabilities(t *testing.T) {
 }
 
 func TestProviderProfile_NewToolRegistry_ContainsProfileTools(t *testing.T) {
-	profiles := []*Profile{
+	profiles := []*provider.Profile{
 		NewOpenAIProfile("gpt-5.2"),
 		newAnthropicProfile("claude-test"),
 		newGeminiProfile("gemini-test"),
@@ -1773,7 +1558,7 @@ func TestProviderProfile_NewToolRegistry_PlaceholderExecReturnsError(t *testing.
 	}
 }
 
-func assertToolListExact(t *testing.T, p *Profile, want []string) {
+func assertToolListExact(t *testing.T, p *provider.Profile, want []string) {
 	t.Helper()
 	got := make([]string, 0, len(p.ToolDefinitions()))
 	for _, td := range p.ToolDefinitions() {
@@ -2028,7 +1813,7 @@ func TestTaskListSchema_EffortEnum_MatchesCatalog(t *testing.T) {
 
 // extractTaskListEffortEnum finds the task_list tool and extracts the
 // reasoning_effort enum from its parameters schema.
-func extractTaskListEffortEnum(t *testing.T, p *Profile) []string {
+func extractTaskListEffortEnum(t *testing.T, p *provider.Profile) []string {
 	t.Helper()
 	var taskListTool *llm.ToolDefinition
 	for _, td := range p.ToolDefinitions() {
@@ -2082,7 +1867,7 @@ func stringSliceEqual(a, b []string) bool {
 func TestProviderProfile_BehaviorTag(t *testing.T) {
 	cases := []struct {
 		name    string
-		profile *Profile
+		profile *provider.Profile
 		want    string
 	}{
 		{"openai", NewOpenAIProfile("gpt-5.2"), "openai"},
@@ -2221,7 +2006,7 @@ func TestRenamedInstance_OpenRouterMetaNamespace(t *testing.T) {
 		t.Fatalf("Model() = %q, want minimax/minimax-m2.7 — upstream namespace must be kept", cloned.Model())
 	}
 	// The minimax/ reasoning providerOpts must be injected because behaviorTag=="openrouter".
-	openaiCompat, ok := cloned.providerOpts["openai-compatible"].(map[string]any)
+	openaiCompat, ok := cloned.ProviderOptions()["openai-compatible"].(map[string]any)
 	if !ok {
 		t.Fatalf("missing openai-compatible providerOpts — minimax reasoning gate must key on behaviorTag")
 	}

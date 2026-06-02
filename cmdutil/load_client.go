@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/internal/credentials"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
@@ -77,8 +77,8 @@ func LoadClient(opts ...llm.EnvOption) (*llm.Client, providercfg.Config, bool, e
 // providers, falling back to the catalog window when the lookup is unavailable.
 // The hasConfig parameter is retained for call-site compatibility and is
 // ignored.
-func BuildResolveProfile(cfg providercfg.Config, hasConfig bool) func(ref string) (*agent.Profile, error) {
-	return func(ref string) (*agent.Profile, error) {
+func BuildResolveProfile(cfg providercfg.Config, hasConfig bool) func(ref string) (*provider.Profile, error) {
+	return func(ref string) (*provider.Profile, error) {
 		return ResolveProfileWithLiveWindow(cfg, ref)
 	}
 }

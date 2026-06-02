@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf/internal/rvreg"
 	"primeradiant.com/serf/cmdutil"
@@ -436,7 +437,7 @@ func runServe(args []string) error {
 // providers (falling back to the embedded catalog when unavailable).
 // outputSchemaJSON and SERF_ALLOWED_DECISIONS are applied in this app layer so
 // callers see the same communicate-tool schema regardless of model.
-func buildInitialProfile(cfg providercfg.Config, modelRef cmdutil.ModelRef, outputSchemaJSON string) (*agent.Profile, error) {
+func buildInitialProfile(cfg providercfg.Config, modelRef cmdutil.ModelRef, outputSchemaJSON string) (*provider.Profile, error) {
 	raw, err := cmdutil.ResolveProfileWithLiveWindow(cfg, modelRef.Qualified())
 	if err != nil {
 		return nil, err
@@ -447,12 +448,12 @@ func buildInitialProfile(cfg providercfg.Config, modelRef cmdutil.ModelRef, outp
 			return nil, fmt.Errorf("invalid --output-schema: %w", jsonErr)
 		}
 	}
-	p := agent.WithCommunicateOutputSchema(raw, outputSchema)
+	p := provider.WithCommunicateOutputSchema(raw, outputSchema)
 	allowedDecisions := cmdutil.ParseAllowedDecisions(os.Getenv("SERF_ALLOWED_DECISIONS"))
-	return agent.WithAllowedDecisions(p, allowedDecisions), nil
+	return provider.WithAllowedDecisions(p, allowedDecisions), nil
 }
 
-func applyFastCheapModel(profile *agent.Profile, raw string) (*agent.Profile, error) {
+func applyFastCheapModel(profile *provider.Profile, raw string) (*provider.Profile, error) {
 	if profile == nil || strings.TrimSpace(raw) == "" {
 		return profile, nil
 	}
@@ -463,7 +464,7 @@ func applyFastCheapModel(profile *agent.Profile, raw string) (*agent.Profile, er
 	if ref.Provider != profile.ID() {
 		return nil, fmt.Errorf("--fast-cheap-model provider %q must match active provider %q", ref.Provider, profile.ID())
 	}
-	return agent.WithCheapModel(profile, ref.Model), nil
+	return provider.WithCheapModel(profile, ref.Model), nil
 }
 
 func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus {

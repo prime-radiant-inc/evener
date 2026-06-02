@@ -5,18 +5,19 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/llm"
 )
 
 const liveModelMetadataTimeout = 2 * time.Second
 
-func resolveLiveModelProfileWithTimeout(client *llm.Client, profile *Profile) *Profile {
+func resolveLiveModelProfileWithTimeout(client *llm.Client, profile *provider.Profile) *provider.Profile {
 	ctx, cancel := context.WithTimeout(context.Background(), liveModelMetadataTimeout)
 	defer cancel()
 	return resolveLiveModelProfile(ctx, client, profile)
 }
 
-func resolveLiveModelProfile(ctx context.Context, client *llm.Client, profile *Profile) *Profile {
+func resolveLiveModelProfile(ctx context.Context, client *llm.Client, profile *provider.Profile) *provider.Profile {
 	if client == nil || profile == nil {
 		return profile
 	}
@@ -28,7 +29,7 @@ func resolveLiveModelProfile(ctx context.Context, client *llm.Client, profile *P
 	if !ok {
 		return profile
 	}
-	return profileWithLiveModelInfo(profile, info)
+	return profile.WithLiveModelInfo(info)
 }
 
 func liveModelInfoFor(models []llm.ModelInfo, model string) (llm.ModelInfo, bool) {
@@ -47,31 +48,4 @@ func liveModelInfoFor(models []llm.ModelInfo, model string) (llm.ModelInfo, bool
 		}
 	}
 	return llm.ModelInfo{}, false
-}
-
-func profileWithLiveModelInfo(profile *Profile, info llm.ModelInfo) *Profile {
-	if profile == nil {
-		return nil
-	}
-	clone := *profile
-	applyLiveModelInfo(&clone, info)
-	return &clone
-}
-
-func applyLiveModelInfo(profile *Profile, info llm.ModelInfo) {
-	if profile == nil {
-		return
-	}
-	if info.ContextWindow > 0 {
-		profile.contextWindow = info.ContextWindow
-	}
-	if len(info.ReasoningEffortLevels) > 0 {
-		profile.effortLevels = append([]string(nil), info.ReasoningEffortLevels...)
-	}
-	if info.SupportsReasoning {
-		profile.reasoning = true
-	}
-	if info.SupportsWebSearch != nil {
-		profile.webSearch = *info.SupportsWebSearch
-	}
 }

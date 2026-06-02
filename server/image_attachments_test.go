@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/llm"
 )
@@ -87,7 +88,7 @@ func TestServerAppWireTurnDrainAsSteerThroughSessionProducesImageBearingSteer(t 
 	c := llm.NewClient()
 	adapter := &blockingServerAdapter{name: "openai", started: make(chan struct{}), done: make(chan error, 1)}
 	c.Register(adapter)
-	sess, err := agent.NewSession(c, agent.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
+	sess, err := agent.NewSession(c, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), agent.SessionConfig{})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}

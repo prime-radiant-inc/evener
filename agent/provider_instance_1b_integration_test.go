@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/auth/openai"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
@@ -321,7 +322,7 @@ func TestPhase1b_SetModel_Work2_PreservesOutputSchema(t *testing.T) {
 	startProfile := WithCommunicateOutputSchema(workProfile, customSchema)
 
 	// Build the resolver from the config (mirrors how cmdutil.BuildResolveProfile works).
-	resolver := func(ref string) (*Profile, error) {
+	resolver := func(ref string) (*provider.Profile, error) {
 		return ResolveProfileFromConfig(phase1bCfg, ref)
 	}
 

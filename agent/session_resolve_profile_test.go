@@ -9,12 +9,13 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/llm"
 )
 
 // testResolver is a trivial resolver that maps known "provider/model"
 // refs to real profiles, and returns an error for unknown providers.
-func testResolver(ref string) (*Profile, error) {
+func testResolver(ref string) (*provider.Profile, error) {
 	parts := strings.SplitN(ref, "/", 2)
 	if len(parts) != 2 {
 		return nil, nil // not a cross-provider ref
@@ -137,7 +138,7 @@ func TestSetModel_SameProvider_WithResolver_UsesWithModel(t *testing.T) {
 	c.Register(&fakeAdapter{name: "openai"})
 
 	resolverCalled := false
-	resolver := func(ref string) (*Profile, error) {
+	resolver := func(ref string) (*provider.Profile, error) {
 		resolverCalled = true
 		return testResolver(ref)
 	}
@@ -267,7 +268,7 @@ func TestValidateModelFallbacks_SameTag_Allowed(t *testing.T) {
 }
 
 // testResolverFull extends testResolver with minimax and openrouter-anthropic support.
-func testResolverFull(ref string) (*Profile, error) {
+func testResolverFull(ref string) (*provider.Profile, error) {
 	parts := strings.SplitN(ref, "/", 2)
 	if len(parts) != 2 {
 		return nil, nil

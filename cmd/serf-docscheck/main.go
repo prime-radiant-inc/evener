@@ -39,6 +39,7 @@ var libraryPackages = []string{
 	"agent/events",
 	"agent/execenv",
 	"agent/mcpconfig",
+	"agent/provider",
 	"agent/schema",
 	"agent/skill",
 	"agent/task",

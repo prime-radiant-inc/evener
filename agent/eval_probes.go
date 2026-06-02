@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -29,7 +30,7 @@ type probeResult struct {
 // runRetentionProbes injects probe questions about earlier decisions into a
 // completed session and judges the agent's answers against expected values.
 // Returns the fraction of correct answers (0.0-1.0) and per-question results.
-func runRetentionProbes(ctx context.Context, client *llm.Client, profile *Profile, probeQuestions []probeQuestion, sessionHistory []schema.Turn) (float64, []probeResult, error) {
+func runRetentionProbes(ctx context.Context, client *llm.Client, profile *provider.Profile, probeQuestions []probeQuestion, sessionHistory []schema.Turn) (float64, []probeResult, error) {
 	if len(probeQuestions) == 0 {
 		return 0.0, nil, nil
 	}
@@ -60,7 +61,7 @@ func runRetentionProbes(ctx context.Context, client *llm.Client, profile *Profil
 
 // runOneProbe sends a single probe question to the agent, then judges the
 // response against the expected answer. Returns true if the judge says correct.
-func runOneProbe(ctx context.Context, client *llm.Client, profile *Profile, history []llm.Message, pq probeQuestion) (bool, error) {
+func runOneProbe(ctx context.Context, client *llm.Client, profile *provider.Profile, history []llm.Message, pq probeQuestion) (bool, error) {
 	// Step 1: Ask the agent the probe question with the session history.
 	agentMessages := append(append([]llm.Message{}, history...), llm.User(pq.Question))
 	agentReq := llm.Request{

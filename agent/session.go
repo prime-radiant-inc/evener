@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent/internal/mcp"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/mcpconfig"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/agent/task"
@@ -28,8 +29,8 @@ type Session struct {
 	id             string
 	cfg            SessionConfig
 	client         *llm.Client
-	profile        *Profile
-	resolveProfile func(ref string) (*Profile, error) // cross-provider resolver; may be nil
+	profile        *provider.Profile
+	resolveProfile func(ref string) (*provider.Profile, error) // cross-provider resolver; may be nil
 	env            execenv.ExecutionEnvironment
 	stateDir       string
 	installID      string
@@ -216,12 +217,12 @@ var _ strategyHost = (*Session)(nil)
 func (s *Session) StateDir() string { return s.stateDir }
 
 // Profile returns the session's current provider profile.
-func (s *Session) Profile() *Profile { return s.currentProfile() }
+func (s *Session) Profile() *provider.Profile { return s.currentProfile() }
 
 // currentProfile returns the active profile under s.mu so reads never race
 // SetModel's swap (s.profile is reassigned under s.mu). Callers that already
 // hold s.mu must read s.profile directly instead of calling this.
-func (s *Session) currentProfile() *Profile {
+func (s *Session) currentProfile() *provider.Profile {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.profile
@@ -246,22 +247,18 @@ func (s *Session) SetReasoningEffort(effort string) {
 	s.maybeAutoSave()
 }
 
-// resolveProfileForRef resolves a model ref to a *Profile. When the
+// resolveProfileForRef resolves a model ref to a *provider.Profile. When the
 // ref is classified as a cross-provider switch (prefixActionSwitch) AND the
 // session has a resolver, the resolver is called. Otherwise the current
 // profile's WithModel is used (handles same-provider, strip, and keep cases).
-func (s *Session) resolveProfileForRef(base *Profile, ref string) (*Profile, bool, error) {
-	if parts := strings.SplitN(ref, "/", 2); len(parts) == 2 {
-		provider := strings.ToLower(parts[0])
-		action := decidePrefixAction(base.BehaviorTag(), base.ID(), provider)
-		if action == prefixActionSwitch && s.resolveProfile != nil {
-			resolved, err := s.resolveProfile(ref)
-			if err != nil {
-				return nil, false, err
-			}
-			if resolved != nil {
-				return resolved, true, nil
-			}
+func (s *Session) resolveProfileForRef(base *provider.Profile, ref string) (*provider.Profile, bool, error) {
+	if base.CrossProviderRef(ref) && s.resolveProfile != nil {
+		resolved, err := s.resolveProfile(ref)
+		if err != nil {
+			return nil, false, err
+		}
+		if resolved != nil {
+			return resolved, true, nil
 		}
 	}
 	return base.WithModel(ref), false, nil
@@ -307,7 +304,7 @@ func (s *Session) SetModel(model string) {
 		return
 	}
 	if crossProvider {
-		nextProfile = preserveBaseOverrides(nextProfile, s.profile)
+		nextProfile = nextProfile.WithCommunicateOverridesFrom(s.profile)
 	}
 	client := s.client
 	s.mu.Unlock()
@@ -352,7 +349,7 @@ func (s *Session) SetTimeout(timeoutMS int) {
 	s.maybeAutoSave()
 }
 
-func (s *Session) applyModelRequestMetadata(profile *Profile, req *llm.Request) {
+func (s *Session) applyModelRequestMetadata(profile *provider.Profile, req *llm.Request) {
 	if req == nil {
 		return
 	}

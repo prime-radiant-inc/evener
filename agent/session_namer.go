@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -33,7 +34,7 @@ type sessionNameResult struct {
 }
 
 // nameSession derives a short human-readable session title using a single cheap-model LLM call.
-func nameSession(ctx context.Context, client *llm.Client, profile *Profile, source, text string) (sessionNameResult, error) {
+func nameSession(ctx context.Context, client *llm.Client, profile *provider.Profile, source, text string) (sessionNameResult, error) {
 	if client == nil {
 		return sessionNameResult{}, errors.New("session namer: llm client is nil")
 	}
@@ -82,14 +83,14 @@ func nameSession(ctx context.Context, client *llm.Client, profile *Profile, sour
 	return sessionNameResult{Name: name, Source: source, Usage: res.TotalUsage}, nil
 }
 
-func sessionNamerEnabled(profile *Profile) bool {
+func sessionNamerEnabled(profile *provider.Profile) bool {
 	if profile == nil {
 		return false
 	}
 	return configuredSessionNamerModel(profile) != ""
 }
 
-func sessionNamerModel(profile *Profile) string {
+func sessionNamerModel(profile *provider.Profile) string {
 	if profile == nil {
 		return ""
 	}
@@ -99,18 +100,11 @@ func sessionNamerModel(profile *Profile) string {
 	return strings.TrimSpace(profile.Model())
 }
 
-func configuredSessionNamerModel(profile *Profile) string {
+func configuredSessionNamerModel(profile *provider.Profile) string {
 	if profile == nil {
 		return ""
 	}
-	return profile.configuredCheapModel()
-}
-
-func (p *Profile) configuredCheapModel() string {
-	if p == nil {
-		return ""
-	}
-	return strings.TrimSpace(p.cheapModel)
+	return profile.ConfiguredCheapModel()
 }
 
 const sessionNamerSystemPrompt = `You generate concise session titles for a developer assistant.

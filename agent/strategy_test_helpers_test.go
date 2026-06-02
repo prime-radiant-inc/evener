@@ -1,9 +1,7 @@
 package agent
 
-func testOpenAIProfileWithContextWindow(contextWindow int) *Profile {
-	return &Profile{
-		id:            "openai",
-		model:         "test",
-		contextWindow: contextWindow,
-	}
+import "primeradiant.com/serf/agent/provider"
+
+func testOpenAIProfileWithContextWindow(contextWindow int) *provider.Profile {
+	return testProfile("openai", "test", contextWindow)
 }

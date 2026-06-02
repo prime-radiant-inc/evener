@@ -1,4 +1,4 @@
-package agent
+package provider
 
 import (
 	"strings"
@@ -303,6 +303,42 @@ func (p *Profile) CheapModel() string {
 	}
 }
 
+// ConfiguredCheapModel returns the auxiliary model explicitly set via
+// WithCheapModel, or "" if none was configured. Unlike CheapModel it does not
+// fall back to a provider default, so callers can detect whether a cheap model
+// was configured at all (e.g. to decide whether to run session naming).
+func (p *Profile) ConfiguredCheapModel() string {
+	if p == nil {
+		return ""
+	}
+	return strings.TrimSpace(p.cheapModel)
+}
+
+// WithLiveModelInfo returns a copy of the profile updated with model metadata
+// queried live from the provider. A positive context window, a non-empty set of
+// reasoning-effort levels, reasoning support, and web-search support each
+// override the constructor-derived value when present in info; absent fields
+// leave the profile unchanged.
+func (p *Profile) WithLiveModelInfo(info llm.ModelInfo) *Profile {
+	if p == nil {
+		return nil
+	}
+	clone := *p
+	if info.ContextWindow > 0 {
+		clone.contextWindow = info.ContextWindow
+	}
+	if len(info.ReasoningEffortLevels) > 0 {
+		clone.effortLevels = append([]string(nil), info.ReasoningEffortLevels...)
+	}
+	if info.SupportsReasoning {
+		clone.reasoning = true
+	}
+	if info.SupportsWebSearch != nil {
+		clone.webSearch = *info.SupportsWebSearch
+	}
+	return &clone
+}
+
 // prefixAction is the resolution of a slash-prefixed model string
 // "X/Y" passed to WithModel. See decidePrefixAction.
 type prefixAction int
@@ -371,24 +407,36 @@ func decidePrefixAction(behaviorTag, instanceName, prefix string) prefixAction {
 	return prefixActionSwitch
 }
 
-// preserveBaseOverrides carries forward caller-applied tool-schema
-// overrides from `original` onto a freshly-rebuilt profile. The
-// constructor for the new profile/model handles model-derived state
-// (context window, effort levels, providerOpts, the new provider's
-// default toolset); this helper layers caller modifications back on
-// top so WithCommunicateOutputSchema / WithAllowedDecisions overrides
-// survive both same-provider WithModel rebuilds AND cross-provider
-// WithModel switches.
+// CrossProviderRef reports whether ref ("<prefix>/<model>") selects a provider
+// different from p's — one that WithModel cannot resolve on its own, so a
+// session-level resolver must handle it. It is false for a bare model, for a
+// redundant self-prefix, and for a meta-provider's upstream namespace (which
+// WithModel keeps verbatim).
+func (p *Profile) CrossProviderRef(ref string) bool {
+	parts := strings.SplitN(ref, "/", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	prefix := strings.ToLower(parts[0])
+	return decidePrefixAction(p.behaviorTag, p.id, prefix) == prefixActionSwitch
+}
+
+// WithCommunicateOverridesFrom carries forward caller-applied tool-schema
+// overrides from original onto p, a freshly-rebuilt profile. The constructor for
+// the new profile/model handles model-derived state (context window, effort
+// levels, providerOpts, the new provider's default toolset); this layers caller
+// modifications back on top so WithCommunicateOutputSchema / WithAllowedDecisions
+// overrides survive both same-provider WithModel rebuilds AND cross-provider
+// switches performed by a resolver.
 //
-// Only the "communicate" tool is preserved — both With* helpers
-// modify that tool exclusively. Other tools recompute from the new
-// constructor so the new provider's defaults (toolNameMap, etc.) take
-// effect.
+// Only the "communicate" tool is preserved — both With* helpers modify that tool
+// exclusively. Other tools recompute from the new constructor so the new
+// provider's defaults (toolNameMap, etc.) take effect.
 //
-// `rebuilt` is returned unchanged when either profile is nil.
-func preserveBaseOverrides(rebuilt, original *Profile) *Profile {
-	if rebuilt == nil || original == nil {
-		return rebuilt
+// p is returned unchanged when either profile is nil.
+func (p *Profile) WithCommunicateOverridesFrom(original *Profile) *Profile {
+	if p == nil || original == nil {
+		return p
 	}
 
 	var origCommunicate *llm.ToolDefinition
@@ -399,10 +447,10 @@ func preserveBaseOverrides(rebuilt, original *Profile) *Profile {
 		}
 	}
 	if origCommunicate == nil {
-		return rebuilt
+		return p
 	}
 
-	defs := append([]llm.ToolDefinition(nil), rebuilt.toolDefs...)
+	defs := append([]llm.ToolDefinition(nil), p.toolDefs...)
 	replaced := false
 	for i := range defs {
 		if defs[i].Name == "communicate" {
@@ -416,8 +464,8 @@ func preserveBaseOverrides(rebuilt, original *Profile) *Profile {
 		// for Serf profiles but possible for custom callers); append it.
 		defs = append(defs, *origCommunicate)
 	}
-	rebuilt.toolDefs = defs
-	return rebuilt
+	p.toolDefs = defs
+	return p
 }
 
 // restampInstanceIdentity sets the behaviorTag and id on a freshly rebuilt
@@ -526,7 +574,7 @@ func (p *Profile) WithModel(model string) *Profile {
 		// renamed instance (id != behaviorTag, via WithProviderID) keeps its
 		// id and correctly-derived tag across model changes.
 		rebuilt = restampInstanceIdentity(rebuilt, p.behaviorTag, p.id)
-		return preserveBaseOverrides(rebuilt, p)
+		return rebuilt.WithCommunicateOverridesFrom(p)
 	}
 	clone := *p
 	clone.model = model

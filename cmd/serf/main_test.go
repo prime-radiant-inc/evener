@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/provider"
 	authopenai "primeradiant.com/serf/auth/openai"
 	"primeradiant.com/serf/auth/openai/oaitest"
 	"primeradiant.com/serf/llm"
@@ -33,7 +34,7 @@ func TestNewSessionFromEnv(t *testing.T) {
 		t.Fatalf("NewFromEnv: %v", err)
 	}
 
-	profile := agent.NewOpenAIProfile("gpt-5.4-mini")
+	profile := provider.NewOpenAIProfile("gpt-5.4-mini")
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 
 	sess, err := agent.NewSession(client, profile, env, agent.SessionConfig{})
@@ -65,7 +66,7 @@ func TestProcessInputSimplePrompt(t *testing.T) {
 		t.Fatalf("NewFromEnv: %v", err)
 	}
 
-	profile := agent.NewOpenAIProfile("gpt-5.4-mini")
+	profile := provider.NewOpenAIProfile("gpt-5.4-mini")
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 
 	sess, err := agent.NewSession(client, profile, env, agent.SessionConfig{
@@ -101,7 +102,7 @@ func TestProcessInputWithToolUse(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	profile := agent.NewOpenAIProfile("gpt-5.4-mini")
+	profile := provider.NewOpenAIProfile("gpt-5.4-mini")
 	env := execenv.NewLocalExecutionEnvironment(tmpDir)
 
 	sess, err := agent.NewSession(client, profile, env, agent.SessionConfig{
