@@ -413,7 +413,7 @@ func (s *Server) SetListModelsFunc(fn func(context.Context) ([]ModelsResponseIte
 }
 
 // SetTasksFunc sets the function called by GET /tasks. The function should
-// return a JSON-serializable slice (typically []agent.Task).
+// return a JSON-serializable slice (typically []task.Task).
 func (s *Server) SetTasksFunc(fn func() any) {
 	s.mu.Lock()
 	s.tasksFn = fn

@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
+	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
 )
 
@@ -133,7 +134,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env execenv.Executi
 
 	// Create transcript writer if state persistence is enabled.
 	if s.stateDir != "" {
-		var agentTasks []Task
+		var agentTasks []task.Task
 		if s.taskStore != nil {
 			agentTasks = s.taskStore.View()
 		}
@@ -265,7 +266,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env execenv.Exe
 		tw, twErr := OpenTranscriptWriter(tpath)
 		if twErr != nil {
 			// Transcript might not exist (old session). Create new.
-			var agentTasks []Task
+			var agentTasks []task.Task
 			if s.taskStore != nil {
 				agentTasks = s.taskStore.View()
 			}
@@ -407,7 +408,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env exe
 		tw, twErr := OpenTranscriptWriter(tpath)
 		if twErr != nil {
 			// Transcript might not exist (new session from meta). Create new.
-			var agentTasks []Task
+			var agentTasks []task.Task
 			if s.taskStore != nil {
 				agentTasks = s.taskStore.View()
 			}

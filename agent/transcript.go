@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
 )
 
@@ -42,7 +43,7 @@ type TranscriptHeader struct {
 	// creation so the transcript is self-describing even for runs that
 	// never call task_list(action="view") or fail before all STEERING
 	// messages are emitted.
-	AgentTasks []Task `json:"agent_tasks,omitempty"`
+	AgentTasks []task.Task `json:"agent_tasks,omitempty"`
 }
 
 // TranscriptEntry is a single turn in the transcript JSONL file.

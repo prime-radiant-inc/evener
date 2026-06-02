@@ -5,15 +5,16 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
 )
 
 func TestTaskWorkflow_PopulateAndAutoStart(t *testing.T) {
 	dir := t.TempDir()
-	store := NewTaskStore(dir, "workflow-test")
+	store := taskpkg.NewTaskStore(dir, "workflow-test")
 	store.Load()
 
-	templates := []TaskTemplate{
+	templates := []taskpkg.TaskTemplate{
 		{Title: "Inventory", Prompt: "List files", ReasoningEffort: "low"},
 		{Title: "Plan", Prompt: "Analyze task", ReasoningEffort: "xhigh"},
 		{Title: "Delegate", Prompt: "Spawn implementer", ReasoningEffort: "low"},
@@ -38,17 +39,17 @@ func TestTaskWorkflow_PopulateAndAutoStart(t *testing.T) {
 
 func TestTaskWorkflow_AdvanceSequence(t *testing.T) {
 	dir := t.TempDir()
-	store := NewTaskStore(dir, "advance-test")
+	store := taskpkg.NewTaskStore(dir, "advance-test")
 	store.Load()
 
-	store.PopulateFromTemplates([]TaskTemplate{
+	store.PopulateFromTemplates([]taskpkg.TaskTemplate{
 		{Title: "Step 1", Prompt: "First", ReasoningEffort: "low"},
 		{Title: "Step 2", Prompt: "Second", ReasoningEffort: "xhigh"},
 		{Title: "Step 3", Prompt: "Third", ReasoningEffort: "low"},
 	}, nil)
 
 	// Complete step 1, check next eligible is step 2.
-	store.Update([]TaskUpdate{{ID: 1, Status: TaskDone}})
+	store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}})
 	eligible := store.NextEligible()
 	if len(eligible) == 0 || eligible[0].Description != "Step 2" {
 		t.Fatalf("expected Step 2 eligible, got %+v", eligible)
@@ -58,8 +59,8 @@ func TestTaskWorkflow_AdvanceSequence(t *testing.T) {
 	}
 
 	// Start step 2, complete it.
-	store.Update([]TaskUpdate{{ID: 2, Status: TaskInProgress}})
-	store.Update([]TaskUpdate{{ID: 2, Status: TaskDone}})
+	store.Update([]taskpkg.TaskUpdate{{ID: 2, Status: taskpkg.TaskInProgress}})
+	store.Update([]taskpkg.TaskUpdate{{ID: 2, Status: taskpkg.TaskDone}})
 	eligible = store.NextEligible()
 	if len(eligible) == 0 || eligible[0].Description != "Step 3" {
 		t.Fatalf("expected Step 3 eligible, got %+v", eligible)
@@ -68,16 +69,16 @@ func TestTaskWorkflow_AdvanceSequence(t *testing.T) {
 
 func TestTaskWorkflow_ParentTaskInsertion(t *testing.T) {
 	dir := t.TempDir()
-	store := NewTaskStore(dir, "parent-test")
+	store := taskpkg.NewTaskStore(dir, "parent-test")
 	store.Load()
 
-	templates := []TaskTemplate{
+	templates := []taskpkg.TaskTemplate{
 		{Title: "Understand", Prompt: "Read spec"},
 		{Title: "Do work", Prompt: "Implement", Insert: "parent_tasks"},
 		{Title: "Verify", Prompt: "Check"},
 		{Title: "Clean up", Prompt: "Remove scratch"},
 	}
-	parentTasks := []TaskTemplate{
+	parentTasks := []taskpkg.TaskTemplate{
 		{Title: "Fix solver", Prompt: "Use LAPACK", ReasoningEffort: "low"},
 		{Title: "Benchmark", Prompt: "Beat numpy", ReasoningEffort: "low"},
 		{Title: "Profile", Prompt: "Check perf", ReasoningEffort: "low"},
@@ -112,7 +113,7 @@ func TestTaskWorkflow_AgentDefinitionWithTasks(t *testing.T) {
 
 	// Populate a store from the parsed tasks.
 	dir := t.TempDir()
-	store := NewTaskStore(dir, "agent-def-test")
+	store := taskpkg.NewTaskStore(dir, "agent-def-test")
 	store.Load()
 
 	store.PopulateFromTemplates(agent.Tasks, nil)
@@ -127,15 +128,15 @@ func TestTaskWorkflow_AgentDefinitionWithTasks(t *testing.T) {
 
 func TestTaskWorkflow_AllTasksComplete(t *testing.T) {
 	dir := t.TempDir()
-	store := NewTaskStore(dir, "complete-test")
+	store := taskpkg.NewTaskStore(dir, "complete-test")
 	store.Load()
 
-	store.PopulateFromTemplates([]TaskTemplate{
+	store.PopulateFromTemplates([]taskpkg.TaskTemplate{
 		{Title: "Only task", Prompt: "Do it"},
 	}, nil)
 
 	// Complete the only task.
-	store.Update([]TaskUpdate{{ID: 1, Status: TaskDone}})
+	store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}})
 	eligible := store.NextEligible()
 	if len(eligible) != 0 {
 		t.Errorf("expected no eligible tasks, got %+v", eligible)
@@ -144,7 +145,7 @@ func TestTaskWorkflow_AllTasksComplete(t *testing.T) {
 	// All done.
 	tasks := store.View()
 	for _, task := range tasks {
-		if task.Status != TaskDone {
+		if task.Status != taskpkg.TaskDone {
 			t.Errorf("task %d status = %q, want done", task.ID, task.Status)
 		}
 	}
@@ -188,7 +189,7 @@ func TestTaskWorkflow_ImplementerGetsOwnTasks(t *testing.T) {
 
 	// Populate a store with implementer tasks
 	dir := t.TempDir()
-	store := NewTaskStore(dir, "impl-tasks-test")
+	store := taskpkg.NewTaskStore(dir, "impl-tasks-test")
 	store.Load()
 	store.PopulateFromTemplates(implAgent.Tasks, nil)
 	tasks := store.View()

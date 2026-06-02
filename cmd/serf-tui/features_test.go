@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
+	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/cmd/serf-tui/internal/msgrender"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 )
@@ -121,15 +121,15 @@ func TestRenderTasks_Empty(t *testing.T) {
 		t.Errorf("empty tasks = %q, want %q", out, "No tasks.")
 	}
 
-	out2 := renderTasks([]agent.Task{}, 80)
+	out2 := renderTasks([]taskpkg.Task{}, 80)
 	if out2 != "No tasks." {
 		t.Errorf("empty slice = %q, want %q", out2, "No tasks.")
 	}
 }
 
 func TestRenderTasks_SingleTask(t *testing.T) {
-	tasks := []agent.Task{
-		{ID: 1, Type: agent.TaskTypeImplement, Description: "add login handler", Status: agent.TaskDone},
+	tasks := []taskpkg.Task{
+		{ID: 1, Type: taskpkg.TaskTypeImplement, Description: "add login handler", Status: taskpkg.TaskDone},
 	}
 	out := renderTasks(tasks, 80)
 
@@ -151,11 +151,11 @@ func TestRenderTasks_SingleTask(t *testing.T) {
 }
 
 func TestRenderTasks_AllStatuses(t *testing.T) {
-	tasks := []agent.Task{
-		{ID: 1, Type: agent.TaskTypeResearch, Description: "research", Status: agent.TaskOpen},
-		{ID: 2, Type: agent.TaskTypeImplement, Description: "implement", Status: agent.TaskInProgress},
-		{ID: 3, Type: agent.TaskTypeVerify, Description: "verify", Status: agent.TaskDone},
-		{ID: 4, Type: agent.TaskTypeFix, Description: "fix", Status: agent.TaskCancelled},
+	tasks := []taskpkg.Task{
+		{ID: 1, Type: taskpkg.TaskTypeResearch, Description: "research", Status: taskpkg.TaskOpen},
+		{ID: 2, Type: taskpkg.TaskTypeImplement, Description: "implement", Status: taskpkg.TaskInProgress},
+		{ID: 3, Type: taskpkg.TaskTypeVerify, Description: "verify", Status: taskpkg.TaskDone},
+		{ID: 4, Type: taskpkg.TaskTypeFix, Description: "fix", Status: taskpkg.TaskCancelled},
 	}
 	out := renderTasks(tasks, 80)
 
@@ -174,9 +174,9 @@ func TestRenderTasks_AllStatuses(t *testing.T) {
 }
 
 func TestRenderTasks_Dependencies(t *testing.T) {
-	tasks := []agent.Task{
-		{ID: 2, Type: agent.TaskTypeImplement, Description: "step 2", Status: agent.TaskOpen, DependsOn: []int{1}},
-		{ID: 3, Type: agent.TaskTypeVerify, Description: "step 3", Status: agent.TaskOpen, DependsOn: []int{1, 2}},
+	tasks := []taskpkg.Task{
+		{ID: 2, Type: taskpkg.TaskTypeImplement, Description: "step 2", Status: taskpkg.TaskOpen, DependsOn: []int{1}},
+		{ID: 3, Type: taskpkg.TaskTypeVerify, Description: "step 3", Status: taskpkg.TaskOpen, DependsOn: []int{1, 2}},
 	}
 	out := renderTasks(tasks, 80)
 
@@ -189,8 +189,8 @@ func TestRenderTasks_Dependencies(t *testing.T) {
 }
 
 func TestRenderTasks_ReasoningEffort(t *testing.T) {
-	tasks := []agent.Task{
-		{ID: 1, Type: agent.TaskTypeResearch, Description: "hard problem", Status: agent.TaskInProgress, ReasoningEffort: "high"},
+	tasks := []taskpkg.Task{
+		{ID: 1, Type: taskpkg.TaskTypeResearch, Description: "hard problem", Status: taskpkg.TaskInProgress, ReasoningEffort: "high"},
 	}
 	out := renderTasks(tasks, 80)
 
@@ -201,7 +201,7 @@ func TestRenderTasks_ReasoningEffort(t *testing.T) {
 
 func TestRenderTasks_WidthMinimum(t *testing.T) {
 	// renderTasks should handle width <= 0 gracefully by using default
-	tasks := []agent.Task{{ID: 1, Type: agent.TaskTypeImplement, Description: "x", Status: agent.TaskOpen}}
+	tasks := []taskpkg.Task{{ID: 1, Type: taskpkg.TaskTypeImplement, Description: "x", Status: taskpkg.TaskOpen}}
 	out := renderTasks(tasks, 0)
 	if !strings.Contains(out, "Tasks (1)") {
 		t.Errorf("should not crash on width=0, got: %s", out)
@@ -399,11 +399,11 @@ func TestRenderMessage_PassesFocusedToTool(t *testing.T) {
 
 func TestTaskStatus_Constants(t *testing.T) {
 	// Verify task status constants are distinct strings
-	statuses := []agent.TaskStatus{
-		agent.TaskOpen,
-		agent.TaskInProgress,
-		agent.TaskDone,
-		agent.TaskCancelled,
+	statuses := []taskpkg.TaskStatus{
+		taskpkg.TaskOpen,
+		taskpkg.TaskInProgress,
+		taskpkg.TaskDone,
+		taskpkg.TaskCancelled,
 	}
 	seen := make(map[string]bool)
 	for _, s := range statuses {
@@ -415,11 +415,11 @@ func TestTaskStatus_Constants(t *testing.T) {
 }
 
 func TestTaskType_Constants(t *testing.T) {
-	types := []agent.TaskType{
-		agent.TaskTypeResearch,
-		agent.TaskTypeImplement,
-		agent.TaskTypeVerify,
-		agent.TaskTypeFix,
+	types := []taskpkg.TaskType{
+		taskpkg.TaskTypeResearch,
+		taskpkg.TaskTypeImplement,
+		taskpkg.TaskTypeVerify,
+		taskpkg.TaskTypeFix,
 	}
 	seen := make(map[string]bool)
 	for _, typ := range types {
@@ -475,12 +475,12 @@ func TestRenderToolCall_OutputShownWhenExpanded(t *testing.T) {
 
 // Verify task store serialization roundtrip
 func TestTask_JSON(t *testing.T) {
-	task := agent.Task{
+	task := taskpkg.Task{
 		ID:              5,
-		Type:            agent.TaskTypeImplement,
+		Type:            taskpkg.TaskTypeImplement,
 		Description:     "write tests",
 		Prompt:          "prompt text",
-		Status:          agent.TaskInProgress,
+		Status:          taskpkg.TaskInProgress,
 		DependsOn:       []int{1, 2},
 		Notes:           []string{"note1"},
 		ReasoningEffort: "medium",
@@ -489,7 +489,7 @@ func TestTask_JSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal error: %v", err)
 	}
-	var roundtrip agent.Task
+	var roundtrip taskpkg.Task
 	if err := json.Unmarshal(data, &roundtrip); err != nil {
 		t.Fatalf("unmarshal error: %v", err)
 	}

@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-tui/internal/clipboard"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
@@ -44,13 +44,13 @@ type hubSendMsg struct {
 }
 
 type hubTasksMsg struct {
-	tasks []agent.Task
+	tasks []task.Task
 	err   error
 }
 
 type hubStatusMsg struct {
 	detail  hubSessionDetail
-	tasks   []agent.Task
+	tasks   []task.Task
 	auth    appwire.AuthStatusResponse
 	taskErr error
 	authErr error
@@ -402,12 +402,12 @@ func fetchHubTasks(client *appwire.Client, ref appwire.Ref) tea.Cmd {
 	}
 }
 
-func fetchHubTasksSync(ctx context.Context, client *appwire.Client, ref appwire.Ref) ([]agent.Task, error) {
+func fetchHubTasksSync(ctx context.Context, client *appwire.Client, ref appwire.Ref) ([]task.Task, error) {
 	resp, err := client.TasksList(ctx, appwire.TaskListParams{Ref: ref.String()})
 	if err != nil {
 		return nil, err
 	}
-	var tasks []agent.Task
+	var tasks []task.Task
 	data, _ := json.Marshal(resp.Data)
 	if len(data) > 0 {
 		_ = json.Unmarshal(data, &tasks)

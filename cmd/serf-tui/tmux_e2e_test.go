@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appserver"
 )
@@ -1520,7 +1520,7 @@ func (h *tuiE2EHub) handleTasksList(context.Context, appwire.TaskListParams) (ap
 	if fail {
 		return appwire.TaskListResponse{}, errors.New("tasks failed")
 	}
-	return appwire.TaskListResponse{Data: []agent.Task{{ID: 1, Type: agent.TaskTypeImplement, Description: "wire tui e2e", Status: agent.TaskInProgress}}}, nil
+	return appwire.TaskListResponse{Data: []task.Task{{ID: 1, Type: task.TaskTypeImplement, Description: "wire tui e2e", Status: task.TaskInProgress}}}, nil
 }
 
 func (h *tuiE2EHub) handleThreadTranscriptList(_ context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {

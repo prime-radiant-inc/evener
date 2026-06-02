@@ -1,6 +1,9 @@
 package agent
 
-import "primeradiant.com/serf/llm"
+import (
+	"primeradiant.com/serf/agent/task"
+	"primeradiant.com/serf/llm"
+)
 
 // SessionConfig holds the configuration options for an agent session,
 // covering tool-round and turn limits, command timeouts, prompt composition,
@@ -193,7 +196,7 @@ type spawnConfig struct {
 
 	// sharedTaskStore, when non-nil, is used instead of creating a per-session
 	// task store. Set by spawnAgent when ShareTasksWithChildren is true.
-	sharedTaskStore *TaskStore
+	sharedTaskStore *task.TaskStore
 
 	// rolePromptOverride and the three fields below carry internal prompt and
 	// session shaping for restricted subagents and reviewer runs.

@@ -7,7 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/cmd/serf-tui/internal/inputhistory"
 	"primeradiant.com/serf/cmd/serf-tui/internal/msgrender"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
@@ -234,7 +234,7 @@ func writeWrappedList(b *strings.Builder, label string, items []string, width in
 }
 
 // renderTasks formats a list of agent tasks for display.
-func renderTasks(tasks []agent.Task, _ int) string {
+func renderTasks(tasks []task.Task, _ int) string {
 	if len(tasks) == 0 {
 		return "No tasks."
 	}
@@ -242,11 +242,11 @@ func renderTasks(tasks []agent.Task, _ int) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Tasks (%d):\n", len(tasks)))
 
-	statusIcon := map[agent.TaskStatus]string{
-		agent.TaskOpen:       "○",
-		agent.TaskInProgress: "◐",
-		agent.TaskDone:       "●",
-		agent.TaskCancelled:  "✗",
+	statusIcon := map[task.TaskStatus]string{
+		task.TaskOpen:       "○",
+		task.TaskInProgress: "◐",
+		task.TaskDone:       "●",
+		task.TaskCancelled:  "✗",
 	}
 
 	for _, t := range tasks {

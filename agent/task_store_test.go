@@ -10,16 +10,17 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
 )
 
 func TestTaskStore_AppendAndView(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	added, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Read auth code", Prompt: "Read internal/auth/*.go and summarize the token flow."},
-		{Type: TaskTypeResearch, Description: "Write tests", Prompt: "Write unit tests for JWT refresh in auth/refresh_test.go."},
+	added, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Read auth code", Prompt: "Read internal/auth/*.go and summarize the token flow."},
+		{Type: taskpkg.TaskTypeResearch, Description: "Write tests", Prompt: "Write unit tests for JWT refresh in auth/refresh_test.go."},
 	})
 	if err != nil {
 		t.Fatalf("Append: %v", err)
@@ -30,7 +31,7 @@ func TestTaskStore_AppendAndView(t *testing.T) {
 	if added[0].ID != 1 || added[1].ID != 2 {
 		t.Fatalf("IDs: got %d, %d", added[0].ID, added[1].ID)
 	}
-	if added[0].Status != TaskOpen || added[1].Status != TaskOpen {
+	if added[0].Status != taskpkg.TaskOpen || added[1].Status != taskpkg.TaskOpen {
 		t.Fatalf("statuses: got %q, %q", added[0].Status, added[1].Status)
 	}
 	if added[0].Description != "Read auth code" {
@@ -48,41 +49,41 @@ func TestTaskStore_AppendAndView(t *testing.T) {
 
 func TestTaskStore_UpdateStatus(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	if _, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Task A", Prompt: "Do A"},
-		{Type: TaskTypeResearch, Description: "Task B", Prompt: "Do B"},
+	if _, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Task A", Prompt: "Do A"},
+		{Type: taskpkg.TaskTypeResearch, Description: "Task B", Prompt: "Do B"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	err := s.Update([]TaskUpdate{
-		{ID: 1, Status: TaskDone},
-		{ID: 2, Status: TaskCancelled},
+	err := s.Update([]taskpkg.TaskUpdate{
+		{ID: 1, Status: taskpkg.TaskDone},
+		{ID: 2, Status: taskpkg.TaskCancelled},
 	})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 
 	all := s.View()
-	if all[0].Status != TaskDone {
-		t.Fatalf("task 1 status: got %q want %q", all[0].Status, TaskDone)
+	if all[0].Status != taskpkg.TaskDone {
+		t.Fatalf("task 1 status: got %q want %q", all[0].Status, taskpkg.TaskDone)
 	}
-	if all[1].Status != TaskCancelled {
-		t.Fatalf("task 2 status: got %q want %q", all[1].Status, TaskCancelled)
+	if all[1].Status != taskpkg.TaskCancelled {
+		t.Fatalf("task 2 status: got %q want %q", all[1].Status, taskpkg.TaskCancelled)
 	}
 }
 
 func TestTaskStore_UpdateRejectsUnknownID(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	if _, err := s.Append([]TaskInput{{Type: TaskTypeResearch, Description: "Task A", Prompt: "Do A"}}); err != nil {
+	if _, err := s.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeResearch, Description: "Task A", Prompt: "Do A"}}); err != nil {
 		t.Fatal(err)
 	}
 
-	err := s.Update([]TaskUpdate{{ID: 99, Status: TaskDone}})
+	err := s.Update([]taskpkg.TaskUpdate{{ID: 99, Status: taskpkg.TaskDone}})
 	if err == nil {
 		t.Fatalf("expected error for unknown ID")
 	}
@@ -90,32 +91,32 @@ func TestTaskStore_UpdateRejectsUnknownID(t *testing.T) {
 
 func TestTaskStore_UpdateInProgress(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	if _, err := s.Append([]TaskInput{{Type: TaskTypeResearch, Description: "Task A", Prompt: "Do A"}}); err != nil {
+	if _, err := s.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeResearch, Description: "Task A", Prompt: "Do A"}}); err != nil {
 		t.Fatal(err)
 	}
 
-	err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress}})
+	err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}})
 	if err != nil {
 		t.Fatalf("Update to in_progress: %v", err)
 	}
 
 	all := s.View()
-	if all[0].Status != TaskInProgress {
-		t.Fatalf("task 1 status: got %q want %q", all[0].Status, TaskInProgress)
+	if all[0].Status != taskpkg.TaskInProgress {
+		t.Fatalf("task 1 status: got %q want %q", all[0].Status, taskpkg.TaskInProgress)
 	}
 }
 
 func TestTaskStore_UpdateRejectsInvalidStatus(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	if _, err := s.Append([]TaskInput{{Type: TaskTypeResearch, Description: "Task A", Prompt: "Do A"}}); err != nil {
+	if _, err := s.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeResearch, Description: "Task A", Prompt: "Do A"}}); err != nil {
 		t.Fatal(err)
 	}
 
-	err := s.Update([]TaskUpdate{{ID: 1, Status: TaskStatus("deleted")}})
+	err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskStatus("deleted")}})
 	if err == nil {
 		t.Fatalf("expected error for invalid status")
 	}
@@ -123,18 +124,18 @@ func TestTaskStore_UpdateRejectsInvalidStatus(t *testing.T) {
 
 func TestTaskStore_UpdateRejectsMultipleInProgressInBatch(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	if _, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Task A", Prompt: "Do A"},
-		{Type: TaskTypeResearch, Description: "Task B", Prompt: "Do B"},
+	if _, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Task A", Prompt: "Do A"},
+		{Type: taskpkg.TaskTypeResearch, Description: "Task B", Prompt: "Do B"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	err := s.Update([]TaskUpdate{
-		{ID: 1, Status: TaskInProgress},
-		{ID: 2, Status: TaskInProgress},
+	err := s.Update([]taskpkg.TaskUpdate{
+		{ID: 1, Status: taskpkg.TaskInProgress},
+		{ID: 2, Status: taskpkg.TaskInProgress},
 	})
 	if err == nil {
 		t.Fatalf("expected error for setting two tasks to in_progress in one update")
@@ -146,7 +147,7 @@ func TestTaskStore_UpdateRejectsMultipleInProgressInBatch(t *testing.T) {
 	// Neither task should have been moved to in_progress (whole batch rejected).
 	all := s.View()
 	for _, task := range all {
-		if task.Status == TaskInProgress {
+		if task.Status == taskpkg.TaskInProgress {
 			t.Fatalf("no task should be in_progress after rejected batch; got %+v", task)
 		}
 	}
@@ -154,20 +155,20 @@ func TestTaskStore_UpdateRejectsMultipleInProgressInBatch(t *testing.T) {
 
 func TestTaskStore_UpdateRejectsInProgressWhenOneAlreadyExists(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	if _, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Task A", Prompt: "Do A"},
-		{Type: TaskTypeResearch, Description: "Task B", Prompt: "Do B"},
+	if _, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Task A", Prompt: "Do A"},
+		{Type: taskpkg.TaskTypeResearch, Description: "Task B", Prompt: "Do B"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress}}); err != nil {
+	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("first in_progress update: %v", err)
 	}
 
-	err := s.Update([]TaskUpdate{{ID: 2, Status: TaskInProgress}})
+	err := s.Update([]taskpkg.TaskUpdate{{ID: 2, Status: taskpkg.TaskInProgress}})
 	if err == nil {
 		t.Fatalf("expected error when setting a second task to in_progress while another is in_progress")
 	}
@@ -177,57 +178,57 @@ func TestTaskStore_UpdateRejectsInProgressWhenOneAlreadyExists(t *testing.T) {
 
 	// Existing in_progress task should still be in_progress; new one should not.
 	all := s.View()
-	if all[0].Status != TaskInProgress {
+	if all[0].Status != taskpkg.TaskInProgress {
 		t.Fatalf("task 1 should remain in_progress; got %q", all[0].Status)
 	}
-	if all[1].Status == TaskInProgress {
+	if all[1].Status == taskpkg.TaskInProgress {
 		t.Fatalf("task 2 should not be in_progress; got %q", all[1].Status)
 	}
 }
 
 func TestTaskStore_UpdateAllowsMovingInProgressToDoneThenStartingAnother(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	if _, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Task A", Prompt: "Do A"},
-		{Type: TaskTypeResearch, Description: "Task B", Prompt: "Do B"},
+	if _, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Task A", Prompt: "Do A"},
+		{Type: taskpkg.TaskTypeResearch, Description: "Task B", Prompt: "Do B"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress}}); err != nil {
+	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("first in_progress: %v", err)
 	}
 
 	// Agent completes task 1 and starts task 2 in one batch — allowed.
-	if err := s.Update([]TaskUpdate{
-		{ID: 1, Status: TaskDone},
-		{ID: 2, Status: TaskInProgress},
+	if err := s.Update([]taskpkg.TaskUpdate{
+		{ID: 1, Status: taskpkg.TaskDone},
+		{ID: 2, Status: taskpkg.TaskInProgress},
 	}); err != nil {
 		t.Fatalf("unexpected error transitioning 1→done and 2→in_progress in one batch: %v", err)
 	}
 
 	all := s.View()
-	if all[0].Status != TaskDone {
+	if all[0].Status != taskpkg.TaskDone {
 		t.Fatalf("task 1 should be done; got %q", all[0].Status)
 	}
-	if all[1].Status != TaskInProgress {
+	if all[1].Status != taskpkg.TaskInProgress {
 		t.Fatalf("task 2 should be in_progress; got %q", all[1].Status)
 	}
 }
 
 func TestTaskStore_IDsAreMonotonic(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	if _, err := s.Append([]TaskInput{{Type: TaskTypeResearch, Description: "First", Prompt: "1"}}); err != nil {
+	if _, err := s.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeResearch, Description: "First", Prompt: "1"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Append([]TaskInput{{Type: TaskTypeResearch, Description: "Second", Prompt: "2"}}); err != nil {
+	if _, err := s.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeResearch, Description: "Second", Prompt: "2"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Append([]TaskInput{{Type: TaskTypeResearch, Description: "Third", Prompt: "3"}}); err != nil {
+	if _, err := s.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeResearch, Description: "Third", Prompt: "3"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -243,18 +244,18 @@ func TestTaskStore_PersistsAcrossLoads(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create and populate store.
-	s1 := NewTaskStore(dir, "test-session")
-	if _, err := s1.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Persisted task", Prompt: "Should survive reload"},
+	s1 := taskpkg.NewTaskStore(dir, "test-session")
+	if _, err := s1.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Persisted task", Prompt: "Should survive reload"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s1.Update([]TaskUpdate{{ID: 1, Status: TaskDone}}); err != nil {
+	if err := s1.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Load fresh store from same directory.
-	s2 := NewTaskStore(dir, "test-session")
+	s2 := taskpkg.NewTaskStore(dir, "test-session")
 	if err := s2.Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -266,12 +267,12 @@ func TestTaskStore_PersistsAcrossLoads(t *testing.T) {
 	if all[0].Description != "Persisted task" {
 		t.Fatalf("description after reload: %q", all[0].Description)
 	}
-	if all[0].Status != TaskDone {
+	if all[0].Status != taskpkg.TaskDone {
 		t.Fatalf("status after reload: %q", all[0].Status)
 	}
 
 	// New appends should continue ID sequence.
-	added, _ := s2.Append([]TaskInput{{Type: TaskTypeResearch, Description: "New after reload", Prompt: "p"}})
+	added, _ := s2.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeResearch, Description: "New after reload", Prompt: "p"}})
 	if added[0].ID != 2 {
 		t.Fatalf("ID after reload: got %d want 2", added[0].ID)
 	}
@@ -279,15 +280,15 @@ func TestTaskStore_PersistsAcrossLoads(t *testing.T) {
 
 func TestTaskStore_UpdateOnlyChangesStatus(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	if _, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Original desc", Prompt: "Original prompt"},
+	if _, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Original desc", Prompt: "Original prompt"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskDone}}); err != nil {
+	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -302,7 +303,7 @@ func TestTaskStore_UpdateOnlyChangesStatus(t *testing.T) {
 
 func TestTaskStore_LoadNonexistentFile(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
 	// Load should succeed with empty store when no file exists.
 	if err := s.Load(); err != nil {
@@ -315,9 +316,9 @@ func TestTaskStore_LoadNonexistentFile(t *testing.T) {
 
 func TestTaskStore_FileExistsOnDisk(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	if _, err := s.Append([]TaskInput{{Type: TaskTypeResearch, Description: "Test", Prompt: "p"}}); err != nil {
+	if _, err := s.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeResearch, Description: "Test", Prompt: "p"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -329,23 +330,23 @@ func TestTaskStore_FileExistsOnDisk(t *testing.T) {
 
 func TestTaskStore_ViewReturnsCopy(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	if _, err := s.Append([]TaskInput{{Type: TaskTypeResearch, Description: "Original", Prompt: "p"}}); err != nil {
+	if _, err := s.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeResearch, Description: "Original", Prompt: "p"}}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Mutate the returned slice.
 	view := s.View()
 	view[0].Description = "Mutated"
-	view[0].Status = TaskDone
+	view[0].Status = taskpkg.TaskDone
 
 	// Store should be unchanged.
 	fresh := s.View()
 	if fresh[0].Description != "Original" {
 		t.Fatalf("View did not return a defensive copy: description is %q", fresh[0].Description)
 	}
-	if fresh[0].Status != TaskOpen {
+	if fresh[0].Status != taskpkg.TaskOpen {
 		t.Fatalf("View did not return a defensive copy: status is %q", fresh[0].Status)
 	}
 }
@@ -353,11 +354,11 @@ func TestTaskStore_ViewReturnsCopy(t *testing.T) {
 func TestTaskStore_ScopedBySessionID(t *testing.T) {
 	dir := t.TempDir()
 
-	s1 := NewTaskStore(dir, "session-aaa")
-	s2 := NewTaskStore(dir, "session-bbb")
+	s1 := taskpkg.NewTaskStore(dir, "session-aaa")
+	s2 := taskpkg.NewTaskStore(dir, "session-bbb")
 
 	// Add a task in session 1.
-	if _, err := s1.Append([]TaskInput{{Type: TaskTypeResearch, Description: "Task for session A", Prompt: "A"}}); err != nil {
+	if _, err := s1.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeResearch, Description: "Task for session A", Prompt: "A"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -370,12 +371,12 @@ func TestTaskStore_ScopedBySessionID(t *testing.T) {
 	}
 
 	// Add a task in session 2.
-	if _, err := s2.Append([]TaskInput{{Type: TaskTypeResearch, Description: "Task for session B", Prompt: "B"}}); err != nil {
+	if _, err := s2.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeResearch, Description: "Task for session B", Prompt: "B"}}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Reload session 1 — should still have only its task.
-	s1r := NewTaskStore(dir, "session-aaa")
+	s1r := taskpkg.NewTaskStore(dir, "session-aaa")
 	if err := s1r.Load(); err != nil {
 		t.Fatalf("s1r.Load: %v", err)
 	}
@@ -386,16 +387,16 @@ func TestTaskStore_ScopedBySessionID(t *testing.T) {
 
 func TestTaskStore_UpdateWithNotes(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	if _, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Build the project", Prompt: "Run make and fix any errors"},
+	if _, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Build the project", Prompt: "Run make and fix any errors"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	// First note.
-	err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress, Notes: "Tried make -j4, got linker error: undefined reference to libfoo"}})
+	err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, Notes: "Tried make -j4, got linker error: undefined reference to libfoo"}})
 	if err != nil {
 		t.Fatalf("Update with notes: %v", err)
 	}
@@ -408,7 +409,7 @@ func TestTaskStore_UpdateWithNotes(t *testing.T) {
 	}
 
 	// Second note appends.
-	err = s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress, Notes: "Installed libfoo-dev, retrying"}})
+	err = s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, Notes: "Installed libfoo-dev, retrying"}})
 	if err != nil {
 		t.Fatalf("Update second note: %v", err)
 	}
@@ -418,7 +419,7 @@ func TestTaskStore_UpdateWithNotes(t *testing.T) {
 	}
 
 	// Empty notes field should not append.
-	err = s.Update([]TaskUpdate{{ID: 1, Status: TaskDone}})
+	err = s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}})
 	if err != nil {
 		t.Fatalf("Update without notes: %v", err)
 	}
@@ -493,14 +494,14 @@ func TestTaskListSchema_ReasoningEffortEnumPerProvider(t *testing.T) {
 
 func TestTaskStore_CurrentInProgressReflectsReasoningEffortUpdate(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	if _, err := s.Append([]TaskInput{
-		{Type: TaskTypeImplement, Description: "Do the work", Prompt: "Build it", ReasoningEffort: "medium"},
+	if _, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeImplement, Description: "Do the work", Prompt: "Build it", ReasoningEffort: "medium"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress}}); err != nil {
+	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatal(err)
 	}
 	current, ok := s.CurrentInProgress()
@@ -509,7 +510,7 @@ func TestTaskStore_CurrentInProgressReflectsReasoningEffortUpdate(t *testing.T) 
 	}
 
 	// Escalate the in-progress task.
-	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress, ReasoningEffort: "high"}}); err != nil {
+	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, ReasoningEffort: "high"}}); err != nil {
 		t.Fatal(err)
 	}
 	current, ok = s.CurrentInProgress()
@@ -520,16 +521,16 @@ func TestTaskStore_CurrentInProgressReflectsReasoningEffortUpdate(t *testing.T) 
 
 func TestTaskStore_UpdateReasoningEffort(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	if _, err := s.Append([]TaskInput{
-		{Type: TaskTypeImplement, Description: "Do the work", Prompt: "Build it", ReasoningEffort: "medium"},
+	if _, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeImplement, Description: "Do the work", Prompt: "Build it", ReasoningEffort: "medium"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Escalate to high.
-	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress, ReasoningEffort: "high"}}); err != nil {
+	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, ReasoningEffort: "high"}}); err != nil {
 		t.Fatalf("escalate to high: %v", err)
 	}
 	if got := s.View()[0].ReasoningEffort; got != "high" {
@@ -537,7 +538,7 @@ func TestTaskStore_UpdateReasoningEffort(t *testing.T) {
 	}
 
 	// Omitting reasoning_effort leaves it unchanged.
-	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress, Notes: "still working"}}); err != nil {
+	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, Notes: "still working"}}); err != nil {
 		t.Fatalf("update without reasoning_effort: %v", err)
 	}
 	if got := s.View()[0].ReasoningEffort; got != "high" {
@@ -547,7 +548,7 @@ func TestTaskStore_UpdateReasoningEffort(t *testing.T) {
 	// Store does not validate effort strings — values are passed through to
 	// the provider, which knows what it accepts. Schema-level enum on the
 	// tool definition prevents the LLM from sending unsupported values.
-	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress, ReasoningEffort: "xhigh"}}); err != nil {
+	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, ReasoningEffort: "xhigh"}}); err != nil {
 		t.Fatalf("xhigh should be accepted by store: %v", err)
 	}
 	if got := s.View()[0].ReasoningEffort; got != "xhigh" {
@@ -557,17 +558,17 @@ func TestTaskStore_UpdateReasoningEffort(t *testing.T) {
 
 func TestTaskStore_NotesPersistAcrossLoads(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	if _, err := s.Append([]TaskInput{{Type: TaskTypeResearch, Description: "Task", Prompt: "Do stuff"}}); err != nil {
+	if _, err := s.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeResearch, Description: "Task", Prompt: "Do stuff"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress, Notes: "First approach failed"}}); err != nil {
+	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress, Notes: "First approach failed"}}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Reload from disk.
-	s2 := NewTaskStore(dir, "test-session")
+	s2 := taskpkg.NewTaskStore(dir, "test-session")
 	if err := s2.Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -579,10 +580,10 @@ func TestTaskStore_NotesPersistAcrossLoads(t *testing.T) {
 
 func TestTaskStore_PopulateFromTemplates(t *testing.T) {
 	dir := t.TempDir()
-	store := NewTaskStore(dir, "test-populate")
+	store := taskpkg.NewTaskStore(dir, "test-populate")
 	store.Load()
 
-	templates := []TaskTemplate{
+	templates := []taskpkg.TaskTemplate{
 		{Title: "Inventory", Prompt: "List files", ReasoningEffort: "low"},
 		{Title: "Do work", Prompt: "Implement", Insert: "parent_tasks", ReasoningEffort: "xhigh"},
 		{Title: "Verify", Prompt: "Check it", ReasoningEffort: "low"},
@@ -604,25 +605,25 @@ func TestTaskStore_PopulateFromTemplates(t *testing.T) {
 		t.Errorf("task 1: desc=%q insert=%q", tasks[1].Description, tasks[1].Insert)
 	}
 	// First task should be auto-started.
-	if tasks[0].Status != TaskInProgress {
+	if tasks[0].Status != taskpkg.TaskInProgress {
 		t.Errorf("task 0 status: %q, want in_progress", tasks[0].Status)
 	}
-	if tasks[1].Status != TaskOpen {
+	if tasks[1].Status != taskpkg.TaskOpen {
 		t.Errorf("task 1 status: %q, want open", tasks[1].Status)
 	}
 }
 
 func TestTaskStore_PopulateFromTemplates_WithParentTasks(t *testing.T) {
 	dir := t.TempDir()
-	store := NewTaskStore(dir, "test-parent")
+	store := taskpkg.NewTaskStore(dir, "test-parent")
 	store.Load()
 
-	templates := []TaskTemplate{
+	templates := []taskpkg.TaskTemplate{
 		{Title: "Understand", Prompt: "Read spec"},
 		{Title: "Do work", Prompt: "Implement", Insert: "parent_tasks"},
 		{Title: "Verify", Prompt: "Check it"},
 	}
-	parentTasks := []TaskTemplate{
+	parentTasks := []taskpkg.TaskTemplate{
 		{Title: "Fix eigenvalue solver", Prompt: "Use scipy LAPACK"},
 		{Title: "Benchmark sizes 2-10", Prompt: "Must beat numpy"},
 	}
@@ -659,10 +660,10 @@ func TestTaskStore_PopulateFromTemplates_WithParentTasks(t *testing.T) {
 
 func TestTaskStore_PopulateFromTemplates_Idempotent(t *testing.T) {
 	dir := t.TempDir()
-	store := NewTaskStore(dir, "test-idempotent")
+	store := taskpkg.NewTaskStore(dir, "test-idempotent")
 	store.Load()
 
-	templates := []TaskTemplate{
+	templates := []taskpkg.TaskTemplate{
 		{Title: "Step 1", Prompt: "Do it"},
 	}
 
@@ -800,8 +801,8 @@ func TestTaskListTool_AppendPreservesReasoningEffortAndType(t *testing.T) {
 	if len(tasks) != 1 {
 		t.Fatalf("expected 1 task, got %d", len(tasks))
 	}
-	if tasks[0].Type != TaskTypeFix {
-		t.Fatalf("task type: got %q want %q", tasks[0].Type, TaskTypeFix)
+	if tasks[0].Type != taskpkg.TaskTypeFix {
+		t.Fatalf("task type: got %q want %q", tasks[0].Type, taskpkg.TaskTypeFix)
 	}
 	if tasks[0].ReasoningEffort != "xhigh" {
 		t.Fatalf("reasoning_effort: got %q want %q", tasks[0].ReasoningEffort, "xhigh")
@@ -882,11 +883,11 @@ func TestTaskListTool_AppendViewUpdate(t *testing.T) {
 
 func TestTaskStore_AppendWithDependsOn(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
 	// Append a prerequisite task first.
-	added, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "First task", Prompt: "Do first"},
+	added, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "First task", Prompt: "Do first"},
 	})
 	if err != nil {
 		t.Fatalf("Append first: %v", err)
@@ -894,8 +895,8 @@ func TestTaskStore_AppendWithDependsOn(t *testing.T) {
 	firstID := added[0].ID
 
 	// Append a task that depends on the first.
-	added2, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Second task", Prompt: "Do second", DependsOn: []int{firstID}},
+	added2, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Second task", Prompt: "Do second", DependsOn: []int{firstID}},
 	})
 	if err != nil {
 		t.Fatalf("Append second: %v", err)
@@ -913,17 +914,17 @@ func TestTaskStore_AppendWithDependsOn(t *testing.T) {
 
 func TestTaskStore_DependsOnPersistsAcrossLoads(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	if _, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "First", Prompt: "Do first"},
-		{Type: TaskTypeResearch, Description: "Second", Prompt: "Do second", DependsOn: []int{1}},
+	if _, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "First", Prompt: "Do first"},
+		{Type: taskpkg.TaskTypeResearch, Description: "Second", Prompt: "Do second", DependsOn: []int{1}},
 	}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 
 	// Reload from disk.
-	s2 := NewTaskStore(dir, "test-session")
+	s2 := taskpkg.NewTaskStore(dir, "test-session")
 	if err := s2.Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -943,18 +944,18 @@ func TestTaskStore_DependsOnPersistsAcrossLoads(t *testing.T) {
 
 func TestTaskStore_UpdateDependsOn(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	if _, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "First", Prompt: "Do first"},
-		{Type: TaskTypeResearch, Description: "Second", Prompt: "Do second"},
+	if _, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "First", Prompt: "Do first"},
+		{Type: taskpkg.TaskTypeResearch, Description: "Second", Prompt: "Do second"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Set depends_on via Update.
 	deps := []int{1}
-	if err := s.Update([]TaskUpdate{{ID: 2, Status: TaskOpen, DependsOn: &deps}}); err != nil {
+	if err := s.Update([]taskpkg.TaskUpdate{{ID: 2, Status: taskpkg.TaskOpen, DependsOn: &deps}}); err != nil {
 		t.Fatalf("Update with DependsOn: %v", err)
 	}
 	all := s.View()
@@ -964,7 +965,7 @@ func TestTaskStore_UpdateDependsOn(t *testing.T) {
 
 	// Clear depends_on with empty slice.
 	empty := []int{}
-	if err := s.Update([]TaskUpdate{{ID: 2, Status: TaskOpen, DependsOn: &empty}}); err != nil {
+	if err := s.Update([]taskpkg.TaskUpdate{{ID: 2, Status: taskpkg.TaskOpen, DependsOn: &empty}}); err != nil {
 		t.Fatalf("Update clear DependsOn: %v", err)
 	}
 	all = s.View()
@@ -977,10 +978,10 @@ func TestTaskStore_UpdateDependsOn(t *testing.T) {
 
 func TestTaskStore_AppendRejectsNonexistentDependency(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	_, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Task A", Prompt: "Do A", DependsOn: []int{99}},
+	_, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Task A", Prompt: "Do A", DependsOn: []int{99}},
 	})
 	if err == nil {
 		t.Fatalf("expected error for nonexistent dependency 99, got nil")
@@ -989,16 +990,16 @@ func TestTaskStore_AppendRejectsNonexistentDependency(t *testing.T) {
 
 func TestTaskStore_UpdateRejectsNonexistentDependency(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	if _, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Task A", Prompt: "Do A"},
+	if _, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Task A", Prompt: "Do A"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	deps := []int{99}
-	err := s.Update([]TaskUpdate{{ID: 1, Status: TaskOpen, DependsOn: &deps}})
+	err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskOpen, DependsOn: &deps}})
 	if err == nil {
 		t.Fatalf("expected error for nonexistent dependency 99, got nil")
 	}
@@ -1006,19 +1007,19 @@ func TestTaskStore_UpdateRejectsNonexistentDependency(t *testing.T) {
 
 func TestTaskStore_RejectsCyclicDependency(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
 	// Append A and B with no deps first.
-	if _, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Task A", Prompt: "Do A"},
-		{Type: TaskTypeResearch, Description: "Task B", Prompt: "Do B", DependsOn: []int{1}},
+	if _, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Task A", Prompt: "Do A"},
+		{Type: taskpkg.TaskTypeResearch, Description: "Task B", Prompt: "Do B", DependsOn: []int{1}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Now try to make A depend on B — creates cycle A→B→A.
 	deps := []int{2}
-	err := s.Update([]TaskUpdate{{ID: 1, Status: TaskOpen, DependsOn: &deps}})
+	err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskOpen, DependsOn: &deps}})
 	if err == nil {
 		t.Fatalf("expected error for cyclic dependency A→B→A, got nil")
 	}
@@ -1026,20 +1027,20 @@ func TestTaskStore_RejectsCyclicDependency(t *testing.T) {
 
 func TestTaskStore_RejectsTransitiveCycle(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
 	// A, B→A, C→B  (chain A←B←C)
-	if _, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Task A", Prompt: "Do A"},
-		{Type: TaskTypeResearch, Description: "Task B", Prompt: "Do B", DependsOn: []int{1}},
-		{Type: TaskTypeResearch, Description: "Task C", Prompt: "Do C", DependsOn: []int{2}},
+	if _, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Task A", Prompt: "Do A"},
+		{Type: taskpkg.TaskTypeResearch, Description: "Task B", Prompt: "Do B", DependsOn: []int{1}},
+		{Type: taskpkg.TaskTypeResearch, Description: "Task C", Prompt: "Do C", DependsOn: []int{2}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Make A depend on C → closes the cycle A←B←C←A.
 	deps := []int{3}
-	err := s.Update([]TaskUpdate{{ID: 1, Status: TaskOpen, DependsOn: &deps}})
+	err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskOpen, DependsOn: &deps}})
 	if err == nil {
 		t.Fatalf("expected error for transitive cycle A→C→B→A, got nil")
 	}
@@ -1047,10 +1048,10 @@ func TestTaskStore_RejectsTransitiveCycle(t *testing.T) {
 
 func TestTaskStore_RejectsSelfDependency(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	_, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Task A", Prompt: "Do A", DependsOn: []int{1}},
+	_, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Task A", Prompt: "Do A", DependsOn: []int{1}},
 	})
 	if err == nil {
 		t.Fatalf("expected error for self-dependency (ID 1 depends on 1), got nil")
@@ -1059,13 +1060,13 @@ func TestTaskStore_RejectsSelfDependency(t *testing.T) {
 
 func TestTaskStore_RejectsIntraBatchCycle(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
 	// Both tasks reference each other within the same Append call.
 	// Task at nextID=1 depends on 2, task at nextID=2 depends on 1.
-	_, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Task A", Prompt: "Do A", DependsOn: []int{2}},
-		{Type: TaskTypeResearch, Description: "Task B", Prompt: "Do B", DependsOn: []int{1}},
+	_, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Task A", Prompt: "Do A", DependsOn: []int{2}},
+		{Type: taskpkg.TaskTypeResearch, Description: "Task B", Prompt: "Do B", DependsOn: []int{1}},
 	})
 	if err == nil {
 		t.Fatalf("expected error for intra-batch cycle, got nil")
@@ -1074,23 +1075,23 @@ func TestTaskStore_RejectsIntraBatchCycle(t *testing.T) {
 
 func TestTaskStore_AppendRestoresNextIDOnFailure(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
 	// First append succeeds — nextID becomes 2.
-	if _, err := s.Append([]TaskInput{{Type: TaskTypeResearch, Description: "Task A", Prompt: "Do A"}}); err != nil {
+	if _, err := s.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeResearch, Description: "Task A", Prompt: "Do A"}}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Failing append should not advance nextID.
-	_, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Task B", Prompt: "Do B", DependsOn: []int{99}},
+	_, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Task B", Prompt: "Do B", DependsOn: []int{99}},
 	})
 	if err == nil {
 		t.Fatalf("expected error for nonexistent dependency, got nil")
 	}
 
 	// Next successful append should get ID 2, not 3.
-	added, err := s.Append([]TaskInput{{Type: TaskTypeResearch, Description: "Task C", Prompt: "Do C"}})
+	added, err := s.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeResearch, Description: "Task C", Prompt: "Do C"}})
 	if err != nil {
 		t.Fatalf("Append after failed: %v", err)
 	}
@@ -1100,7 +1101,7 @@ func TestTaskStore_AppendRestoresNextIDOnFailure(t *testing.T) {
 }
 
 // ids extracts task IDs from a slice of tasks.
-func ids(tasks []Task) []int {
+func ids(tasks []taskpkg.Task) []int {
 	out := make([]int, len(tasks))
 	for i, t := range tasks {
 		out[i] = t.ID
@@ -1112,14 +1113,14 @@ func ids(tasks []Task) []int {
 
 func TestTaskStore_NextEligible(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
 	// A (no deps), B→A, C→A, D→[B,C]
-	if _, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "A", Prompt: "a"},
-		{Type: TaskTypeResearch, Description: "B", Prompt: "b", DependsOn: []int{1}},
-		{Type: TaskTypeResearch, Description: "C", Prompt: "c", DependsOn: []int{1}},
-		{Type: TaskTypeResearch, Description: "D", Prompt: "d", DependsOn: []int{2, 3}},
+	if _, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "A", Prompt: "a"},
+		{Type: taskpkg.TaskTypeResearch, Description: "B", Prompt: "b", DependsOn: []int{1}},
+		{Type: taskpkg.TaskTypeResearch, Description: "C", Prompt: "c", DependsOn: []int{1}},
+		{Type: taskpkg.TaskTypeResearch, Description: "D", Prompt: "d", DependsOn: []int{2, 3}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1131,7 +1132,7 @@ func TestTaskStore_NextEligible(t *testing.T) {
 	}
 
 	// Mark A done — B and C become eligible.
-	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskDone}}); err != nil {
+	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}}); err != nil {
 		t.Fatal(err)
 	}
 	eligible = ids(s.NextEligible())
@@ -1140,7 +1141,7 @@ func TestTaskStore_NextEligible(t *testing.T) {
 	}
 
 	// Mark B done — C still eligible, D not yet (C still open).
-	if err := s.Update([]TaskUpdate{{ID: 2, Status: TaskDone}}); err != nil {
+	if err := s.Update([]taskpkg.TaskUpdate{{ID: 2, Status: taskpkg.TaskDone}}); err != nil {
 		t.Fatal(err)
 	}
 	eligible = ids(s.NextEligible())
@@ -1149,7 +1150,7 @@ func TestTaskStore_NextEligible(t *testing.T) {
 	}
 
 	// Mark C done — D becomes eligible.
-	if err := s.Update([]TaskUpdate{{ID: 3, Status: TaskDone}}); err != nil {
+	if err := s.Update([]taskpkg.TaskUpdate{{ID: 3, Status: taskpkg.TaskDone}}); err != nil {
 		t.Fatal(err)
 	}
 	eligible = ids(s.NextEligible())
@@ -1160,17 +1161,17 @@ func TestTaskStore_NextEligible(t *testing.T) {
 
 func TestTaskStore_NextEligibleSkipsInProgress(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	if _, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "A", Prompt: "a"},
-		{Type: TaskTypeResearch, Description: "B", Prompt: "b"},
+	if _, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "A", Prompt: "a"},
+		{Type: taskpkg.TaskTypeResearch, Description: "B", Prompt: "b"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Mark A in_progress — should not appear in eligible list.
-	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress}}); err != nil {
+	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1188,17 +1189,17 @@ func TestTaskStore_NextEligibleSkipsInProgress(t *testing.T) {
 
 func TestTaskStore_NextEligibleCancelledSatisfiesDeps(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
 	// B depends on A; A gets cancelled.
-	if _, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "A", Prompt: "a"},
-		{Type: TaskTypeResearch, Description: "B", Prompt: "b", DependsOn: []int{1}},
+	if _, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "A", Prompt: "a"},
+		{Type: taskpkg.TaskTypeResearch, Description: "B", Prompt: "b", DependsOn: []int{1}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := s.Update([]TaskUpdate{{ID: 1, Status: TaskCancelled}}); err != nil {
+	if err := s.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskCancelled}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1213,12 +1214,12 @@ func TestTaskStore_NextEligibleCancelledSatisfiesDeps(t *testing.T) {
 
 func TestTaskStore_Progress(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	if _, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "A", Prompt: "a"},
-		{Type: TaskTypeResearch, Description: "B", Prompt: "b"},
-		{Type: TaskTypeResearch, Description: "C", Prompt: "c"},
+	if _, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "A", Prompt: "a"},
+		{Type: taskpkg.TaskTypeResearch, Description: "B", Prompt: "b"},
+		{Type: taskpkg.TaskTypeResearch, Description: "C", Prompt: "c"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1230,9 +1231,9 @@ func TestTaskStore_Progress(t *testing.T) {
 	}
 
 	// Mark one done, one cancelled.
-	if err := s.Update([]TaskUpdate{
-		{ID: 1, Status: TaskDone},
-		{ID: 2, Status: TaskCancelled},
+	if err := s.Update([]taskpkg.TaskUpdate{
+		{ID: 1, Status: taskpkg.TaskDone},
+		{ID: 2, Status: taskpkg.TaskCancelled},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1245,17 +1246,17 @@ func TestTaskStore_Progress(t *testing.T) {
 
 func TestTaskStore_UpdateOmittedDependsOnPreserves(t *testing.T) {
 	dir := t.TempDir()
-	s := NewTaskStore(dir, "test-session")
+	s := taskpkg.NewTaskStore(dir, "test-session")
 
-	if _, err := s.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "First", Prompt: "Do first"},
-		{Type: TaskTypeResearch, Description: "Second", Prompt: "Do second", DependsOn: []int{1}},
+	if _, err := s.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "First", Prompt: "Do first"},
+		{Type: taskpkg.TaskTypeResearch, Description: "Second", Prompt: "Do second", DependsOn: []int{1}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Update status without touching DependsOn (nil pointer = no change).
-	if err := s.Update([]TaskUpdate{{ID: 2, Status: TaskInProgress}}); err != nil {
+	if err := s.Update([]taskpkg.TaskUpdate{{ID: 2, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("Update status: %v", err)
 	}
 
@@ -1620,8 +1621,8 @@ func TestSharedTaskStore_ChildUsesParentStore(t *testing.T) {
 	defer parentSess.Close()
 
 	parentStore := parentSess.getOrCreateTaskStore()
-	parentStore.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Shared task", Prompt: "Do shared work"},
+	parentStore.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Shared task", Prompt: "Do shared work"},
 	})
 
 	// Create child session with a shared task store pointing to parent's store.
@@ -1645,8 +1646,8 @@ func TestSharedTaskStore_ChildUsesParentStore(t *testing.T) {
 	}
 
 	// Child adds a task — parent should see it too.
-	childStore.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Child task", Prompt: "Child work"},
+	childStore.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Child task", Prompt: "Child work"},
 	})
 
 	parentTasks := parentStore.View()
@@ -1671,8 +1672,8 @@ func TestSharedTaskStore_ShareTasksWithChildrenConfig(t *testing.T) {
 
 	// Populate parent task store.
 	parentStore := parentSess.getOrCreateTaskStore()
-	parentStore.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Shared via config", Prompt: "Work"},
+	parentStore.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Shared via config", Prompt: "Work"},
 	})
 
 	// Verify config propagation: subCfg should have a shared task store set.
@@ -1709,8 +1710,8 @@ func TestSharedTaskStore_IsolatedByDefault(t *testing.T) {
 	defer parentSess.Close()
 
 	parentStore := parentSess.getOrCreateTaskStore()
-	parentStore.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Parent task", Prompt: "Parent work"},
+	parentStore.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Parent task", Prompt: "Parent work"},
 	})
 
 	// Child WITHOUT SharedTaskStore — should have its own empty store.
@@ -1773,11 +1774,11 @@ func TestTaskListTool_AppendResponseIsMinimal(t *testing.T) {
 
 func TestTask_ReasoningEffort_RoundTrips(t *testing.T) {
 	dir := t.TempDir()
-	store := NewTaskStore(dir, "test-effort")
+	store := taskpkg.NewTaskStore(dir, "test-effort")
 	store.Load()
 
-	added, err := store.Append([]TaskInput{{
-		Type:            TaskTypeImplement,
+	added, err := store.Append([]taskpkg.TaskInput{{
+		Type:            taskpkg.TaskTypeImplement,
 		Description:     "plan the work",
 		Prompt:          "think carefully",
 		ReasoningEffort: "xhigh",
@@ -1790,7 +1791,7 @@ func TestTask_ReasoningEffort_RoundTrips(t *testing.T) {
 	}
 
 	// Reload from disk and verify persistence.
-	store2 := NewTaskStore(dir, "test-effort")
+	store2 := taskpkg.NewTaskStore(dir, "test-effort")
 	store2.Load()
 	tasks := store2.View()
 	if tasks[0].ReasoningEffort != "xhigh" {
@@ -1800,11 +1801,11 @@ func TestTask_ReasoningEffort_RoundTrips(t *testing.T) {
 
 func TestTask_Insert_RoundTrips(t *testing.T) {
 	dir := t.TempDir()
-	store := NewTaskStore(dir, "test-insert")
+	store := taskpkg.NewTaskStore(dir, "test-insert")
 	store.Load()
 
-	added, err := store.Append([]TaskInput{{
-		Type:        TaskTypeImplement,
+	added, err := store.Append([]taskpkg.TaskInput{{
+		Type:        taskpkg.TaskTypeImplement,
 		Description: "placeholder",
 		Prompt:      "do the work",
 		Insert:      "parent_tasks",
@@ -1819,12 +1820,12 @@ func TestTask_Insert_RoundTrips(t *testing.T) {
 
 func TestTaskStore_CurrentInProgress(t *testing.T) {
 	dir := t.TempDir()
-	store := NewTaskStore(dir, "test-current")
+	store := taskpkg.NewTaskStore(dir, "test-current")
 	store.Load()
 
-	store.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "first", Prompt: "do first", ReasoningEffort: "low"},
-		{Type: TaskTypeResearch, Description: "second", Prompt: "do second", ReasoningEffort: "xhigh"},
+	store.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "first", Prompt: "do first", ReasoningEffort: "low"},
+		{Type: taskpkg.TaskTypeResearch, Description: "second", Prompt: "do second", ReasoningEffort: "xhigh"},
 	})
 
 	// No task in progress yet.
@@ -1834,7 +1835,7 @@ func TestTaskStore_CurrentInProgress(t *testing.T) {
 	}
 
 	// Start first task.
-	store.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress}})
+	store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}})
 	task, ok := store.CurrentInProgress()
 	if !ok || task.ID != 1 {
 		t.Fatalf("expected task 1 in progress, got ok=%v task=%+v", ok, task)
@@ -1844,7 +1845,7 @@ func TestTaskStore_CurrentInProgress(t *testing.T) {
 	}
 
 	// Complete first, start second.
-	store.Update([]TaskUpdate{{ID: 1, Status: TaskDone}, {ID: 2, Status: TaskInProgress}})
+	store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}, {ID: 2, Status: taskpkg.TaskInProgress}})
 	task, ok = store.CurrentInProgress()
 	if !ok || task.ID != 2 {
 		t.Fatalf("expected task 2 in progress, got ok=%v task=%+v", ok, task)

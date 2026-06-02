@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
 )
 
@@ -54,7 +55,7 @@ func TestAvailableAgentsSection_WithAgents(t *testing.T) {
 			Description: "Reviews code for quality",
 			PluginName:  "my-plugin",
 			Tools:       []string{"read_file", "grep"},
-			Tasks: []TaskTemplate{
+			Tasks: []task.TaskTemplate{
 				{Title: "Review deliverable", Prompt: "Read the deliverable and compare it to the spec."},
 				{Title: "Report findings", Prompt: "Report the findings.", Insert: "parent_tasks"},
 			},

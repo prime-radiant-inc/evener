@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/skill"
+	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
 )
 
@@ -85,12 +86,12 @@ func (g readGuard) ReadBeforeWriteWarning(path string) string {
 // taskGuard is a thin facade over Session-owned task state. It uses the same
 // s.mu as the rest of the session — it does NOT introduce a second mutex.
 type taskGuard struct {
-	getOrCreateTaskStore func() *TaskStore
+	getOrCreateTaskStore func() *taskpkg.TaskStore
 	markUsed             func()
 	setReasoningEffort   func(effort string)
 }
 
-func (g taskGuard) Store() *TaskStore { return g.getOrCreateTaskStore() }
+func (g taskGuard) Store() *taskpkg.TaskStore { return g.getOrCreateTaskStore() }
 
 // MarkUsed records that the task_list tool was invoked this round (updates the
 // reminder counters under s.mu).
@@ -391,14 +392,14 @@ func registerSubagentTools(reg *toolRegistry, s *Session) {
 					grantTools = append(grantTools, s)
 				}
 			}
-			var parentTasks []TaskTemplate
+			var parentTasks []taskpkg.TaskTemplate
 			if rawList, ok := args["task_list"].([]any); ok {
 				for _, item := range rawList {
 					m, ok := item.(map[string]any)
 					if !ok {
 						continue
 					}
-					tt := TaskTemplate{}
+					tt := taskpkg.TaskTemplate{}
 					if v, ok := m["title"].(string); ok {
 						tt.Title = v
 					}
@@ -445,13 +446,13 @@ func registerSubagentTools(reg *toolRegistry, s *Session) {
 			agentID := fmt.Sprint(args["agent_id"])
 			// Append task_list items before sending input.
 			if rawList, ok := args["task_list"].([]any); ok && len(rawList) > 0 {
-				var items []TaskInput
+				var items []taskpkg.TaskInput
 				for _, item := range rawList {
 					m, ok := item.(map[string]any)
 					if !ok {
 						continue
 					}
-					ti := TaskInput{
+					ti := taskpkg.TaskInput{
 						Description: fmt.Sprint(m["title"]),
 						Prompt:      fmt.Sprint(m["prompt"]),
 					}
@@ -529,7 +530,7 @@ func registerTaskTools(reg *toolRegistry, deps *toolDeps) {
 				if !ok || len(raw) == 0 {
 					return nil, errors.New("append requires a non-empty 'tasks' array")
 				}
-				var items []TaskInput
+				var items []taskpkg.TaskInput
 				for _, r := range raw {
 					m, ok := r.(map[string]any)
 					if !ok {
@@ -543,15 +544,15 @@ func registerTaskTools(reg *toolRegistry, deps *toolDeps) {
 							}
 						}
 					}
-					var taskType TaskType
+					var taskType taskpkg.TaskType
 					if t, ok := m["type"].(string); ok {
-						taskType = TaskType(t)
+						taskType = taskpkg.TaskType(t)
 					}
 					reasoningEffort := ""
 					if re, ok := m["reasoning_effort"].(string); ok {
 						reasoningEffort = re
 					}
-					items = append(items, TaskInput{
+					items = append(items, taskpkg.TaskInput{
 						Type:            taskType,
 						Description:     fmt.Sprint(m["description"]),
 						Prompt:          fmt.Sprint(m["prompt"]),
@@ -578,7 +579,7 @@ func registerTaskTools(reg *toolRegistry, deps *toolDeps) {
 				if !ok || len(raw) == 0 {
 					return nil, errors.New("update requires a non-empty 'updates' array")
 				}
-				var updates []TaskUpdate
+				var updates []taskpkg.TaskUpdate
 				for _, r := range raw {
 					m, ok := r.(map[string]any)
 					if !ok {
@@ -588,9 +589,9 @@ func registerTaskTools(reg *toolRegistry, deps *toolDeps) {
 					if v, ok := m["id"].(float64); ok {
 						id = int(v)
 					}
-					u := TaskUpdate{
+					u := taskpkg.TaskUpdate{
 						ID:     id,
-						Status: TaskStatus(fmt.Sprint(m["status"])),
+						Status: taskpkg.TaskStatus(fmt.Sprint(m["status"])),
 					}
 					if n, ok := m["notes"].(string); ok {
 						u.Notes = n
@@ -620,10 +621,10 @@ func registerTaskTools(reg *toolRegistry, deps *toolDeps) {
 				var completedAny bool
 				var manuallyStartedID int
 				for _, u := range updates {
-					if u.Status == TaskDone || u.Status == TaskCancelled {
+					if u.Status == taskpkg.TaskDone || u.Status == taskpkg.TaskCancelled {
 						completedAny = true
 					}
-					if u.Status == TaskInProgress {
+					if u.Status == taskpkg.TaskInProgress {
 						manuallyStartedID = u.ID
 					}
 				}
@@ -656,7 +657,7 @@ func registerTaskTools(reg *toolRegistry, deps *toolDeps) {
 						eligible := store.NextEligible()
 						if len(eligible) > 0 {
 							next := eligible[0]
-							if err := store.Update([]TaskUpdate{{ID: next.ID, Status: TaskInProgress}}); err == nil {
+							if err := store.Update([]taskpkg.TaskUpdate{{ID: next.ID, Status: taskpkg.TaskInProgress}}); err == nil {
 								if next.ReasoningEffort != "" {
 									deps.taskGuard.SetReasoningEffort(next.ReasoningEffort)
 								}
@@ -667,7 +668,7 @@ func registerTaskTools(reg *toolRegistry, deps *toolDeps) {
 							// signal the agent that the list is exhausted.
 							allDone := true
 							for _, t := range store.View() {
-								if t.Status == TaskOpen || t.Status == TaskInProgress {
+								if t.Status == taskpkg.TaskOpen || t.Status == taskpkg.TaskInProgress {
 									allDone = false
 									break
 								}

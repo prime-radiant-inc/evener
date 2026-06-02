@@ -15,7 +15,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-tui/internal/hubstart"
 	pendingpkg "primeradiant.com/serf/cmd/serf-tui/internal/pending"
@@ -2394,7 +2394,7 @@ func TestHubModelTasksAndDetailsUseAppWire(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodSerfTasksList, func(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
 			methods = append(methods, appwire.MethodSerfTasksList)
-			return appwire.TaskListResponse{Data: []agent.Task{{ID: 1, Type: agent.TaskTypeImplement, Description: "wire actions", Status: agent.TaskDone}}}, nil
+			return appwire.TaskListResponse{Data: []task.Task{{ID: 1, Type: task.TaskTypeImplement, Description: "wire actions", Status: task.TaskDone}}}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 			methods = append(methods, appwire.MethodThreadRead)
@@ -2544,9 +2544,9 @@ func TestHubModelStatusUsesHubThreadTasksAndAuth(t *testing.T) {
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodSerfTasksList, func(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
 			methods = append(methods, appwire.MethodSerfTasksList)
-			return appwire.TaskListResponse{Data: []agent.Task{
-				{ID: 1, Type: agent.TaskTypeImplement, Description: "wire status", Status: agent.TaskDone},
-				{ID: 2, Type: agent.TaskTypeVerify, Description: "verify status", Status: agent.TaskInProgress},
+			return appwire.TaskListResponse{Data: []task.Task{
+				{ID: 1, Type: task.TaskTypeImplement, Description: "wire status", Status: task.TaskDone},
+				{ID: 2, Type: task.TaskTypeVerify, Description: "verify status", Status: task.TaskInProgress},
 			}}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodSerfAuthStatus, func(context.Context, appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {

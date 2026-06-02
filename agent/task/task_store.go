@@ -1,4 +1,4 @@
-package agent
+package task
 
 import (
 	"encoding/json"
@@ -7,6 +7,16 @@ import (
 	"path/filepath"
 	"sync"
 )
+
+// TaskTemplate defines a default task in an agent's workflow. When a session
+// starts from such an agent, its templates seed the initial task list.
+type TaskTemplate struct {
+	Title           string `json:"title"`                      // becomes the Task description
+	Prompt          string `json:"prompt"`                     // instruction for the task
+	ReasoningEffort string `json:"reasoning_effort,omitempty"` // per-task reasoning effort override
+	Type            string `json:"type,omitempty"`             // TaskType string; empty defaults to "implement"
+	Insert          string `json:"insert,omitempty"`           // expansion marker, e.g. "parent_tasks"
+}
 
 // TaskStatus represents the state of a task.
 type TaskStatus string

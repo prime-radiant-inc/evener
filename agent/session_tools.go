@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
 )
 
@@ -595,7 +596,7 @@ func (s *Session) resolveFilePath(path string) string {
 	return filepath.Join(s.env.WorkingDirectory(), p)
 }
 
-func (s *Session) getOrCreateTaskStore() *TaskStore {
+func (s *Session) getOrCreateTaskStore() *task.TaskStore {
 	s.taskStoreOnce.Do(func() {
 		if s.cfg.spawn.sharedTaskStore != nil {
 			s.taskStore = s.cfg.spawn.sharedTaskStore
@@ -605,7 +606,7 @@ func (s *Session) getOrCreateTaskStore() *TaskStore {
 		if dir == "" {
 			dir = s.env.WorkingDirectory()
 		}
-		s.taskStore = NewTaskStore(dir, s.id)
+		s.taskStore = task.NewTaskStore(dir, s.id)
 		_ = s.taskStore.Load()
 	})
 	return s.taskStore
@@ -659,6 +660,6 @@ func optionalIntArg(args map[string]any, key string) *int {
 }
 
 // Tasks returns a snapshot of the session's task list.
-func (s *Session) Tasks() []Task {
+func (s *Session) Tasks() []task.Task {
 	return s.getOrCreateTaskStore().View()
 }

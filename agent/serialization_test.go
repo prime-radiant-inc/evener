@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
 )
 
@@ -245,7 +246,7 @@ func TestSessionConfig_SpawnFieldsDropOnPersist(t *testing.T) {
 			parentToolCallID:     "call_abc",
 			subagentTask:         "do the thing",
 			depth:                3,
-			sharedTaskStore:      NewTaskStore("", "01PARENT"),
+			sharedTaskStore:      task.NewTaskStore("", "01PARENT"),
 			rolePromptOverride:   "be a reviewer",
 			activatedSkillBodies: []string{"skill-body"},
 			allowedToolNames:     []string{"read_file"},

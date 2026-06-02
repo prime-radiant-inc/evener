@@ -3,11 +3,13 @@ package agent
 import (
 	"fmt"
 	"strings"
+
+	taskpkg "primeradiant.com/serf/agent/task"
 )
 
 // formatCurrentTaskSteering wraps a Task into a SYSTEM-REMINDER block that
 // becomes the agent's next steering message. Variant: v09
-func formatCurrentTaskSteering(task Task) string {
+func formatCurrentTaskSteering(task taskpkg.Task) string {
 	var b strings.Builder
 	b.WriteString("<SYSTEM-REMINDER>\n")
 	b.WriteString(fmt.Sprintf("<CURRENT-TASK id=\"%d\">\n", task.ID))
@@ -26,7 +28,7 @@ func formatCurrentTaskSteering(task Task) string {
 // taskReminderFull generates the full task list for post-compaction injection,
 // wrapped as a SYSTEM-REMINDER so the model treats it as steering rather than
 // conversational content.
-func taskReminderFull(store *TaskStore) string {
+func taskReminderFull(store *taskpkg.TaskStore) string {
 	tasks := store.View()
 	if len(tasks) == 0 {
 		return ""
@@ -55,7 +57,7 @@ func taskReminderFull(store *TaskStore) string {
 // taskReminderForInactivity re-emits the current task's steering message when
 // the agent has gone quiet but still has work in progress. Returns empty when
 // nothing is in_progress — there is no "current step" to re-state.
-func taskReminderForInactivity(store *TaskStore) string {
+func taskReminderForInactivity(store *taskpkg.TaskStore) string {
 	current, ok := store.CurrentInProgress()
 	if !ok {
 		return ""

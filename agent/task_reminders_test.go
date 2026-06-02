@@ -5,11 +5,12 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
 )
 
 func TestFormatCurrentTaskSteering(t *testing.T) {
-	task := Task{
+	task := taskpkg.Task{
 		ID:              3,
 		Description:     "Note what must be preserved",
 		Prompt:          "Before you do anything else, identify what determines\nwhether the work is correct.",
@@ -47,7 +48,7 @@ func TestFormatCurrentTaskSteering(t *testing.T) {
 }
 
 func TestFormatCurrentTaskSteering_NoPrompt(t *testing.T) {
-	task := Task{
+	task := taskpkg.Task{
 		ID:          1,
 		Description: "Bare task",
 	}
@@ -66,12 +67,12 @@ func TestFormatCurrentTaskSteering_NoPrompt(t *testing.T) {
 
 func TestTaskReminderFull(t *testing.T) {
 	dir := t.TempDir()
-	store := NewTaskStore(dir, "test")
-	store.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "A", Prompt: "a"},
-		{Type: TaskTypeResearch, Description: "B", Prompt: "b", DependsOn: []int{1}},
+	store := taskpkg.NewTaskStore(dir, "test")
+	store.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "A", Prompt: "a"},
+		{Type: taskpkg.TaskTypeResearch, Description: "B", Prompt: "b", DependsOn: []int{1}},
 	})
-	store.Update([]TaskUpdate{{ID: 1, Status: TaskDone}})
+	store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskDone}})
 
 	msg := taskReminderFull(store)
 	if msg == "" {
@@ -93,7 +94,7 @@ func TestTaskReminderFull(t *testing.T) {
 
 func TestTaskReminderFull_Empty(t *testing.T) {
 	dir := t.TempDir()
-	store := NewTaskStore(dir, "test")
+	store := taskpkg.NewTaskStore(dir, "test")
 	msg := taskReminderFull(store)
 	if msg != "" {
 		t.Fatalf("expected empty reminder for empty store, got: %s", msg)
@@ -102,12 +103,12 @@ func TestTaskReminderFull_Empty(t *testing.T) {
 
 func TestTaskReminderForInactivity_InProgressReFiresCurrentTaskSteering(t *testing.T) {
 	dir := t.TempDir()
-	store := NewTaskStore(dir, "test")
-	store.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Task A", Prompt: "Prompt for A"},
-		{Type: TaskTypeResearch, Description: "Task B", Prompt: "Prompt for B"},
+	store := taskpkg.NewTaskStore(dir, "test")
+	store.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Task A", Prompt: "Prompt for A"},
+		{Type: taskpkg.TaskTypeResearch, Description: "Task B", Prompt: "Prompt for B"},
 	})
-	store.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress}})
+	store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}})
 
 	msg := taskReminderForInactivity(store)
 	if msg == "" {
@@ -127,9 +128,9 @@ func TestTaskReminderForInactivity_InProgressReFiresCurrentTaskSteering(t *testi
 
 func TestTaskReminderForInactivity_NoInProgressReturnsEmpty(t *testing.T) {
 	dir := t.TempDir()
-	store := NewTaskStore(dir, "test")
-	store.Append([]TaskInput{
-		{Type: TaskTypeResearch, Description: "Task A", Prompt: "a"},
+	store := taskpkg.NewTaskStore(dir, "test")
+	store.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeResearch, Description: "Task A", Prompt: "a"},
 	})
 	// No task set to in_progress — reminder skipped.
 	msg := taskReminderForInactivity(store)
@@ -140,7 +141,7 @@ func TestTaskReminderForInactivity_NoInProgressReturnsEmpty(t *testing.T) {
 
 func TestTaskReminderForInactivity_Empty(t *testing.T) {
 	dir := t.TempDir()
-	store := NewTaskStore(dir, "test")
+	store := taskpkg.NewTaskStore(dir, "test")
 	msg := taskReminderForInactivity(store)
 	if msg != "" {
 		t.Fatalf("expected empty reminder for empty store, got: %s", msg)
@@ -223,10 +224,10 @@ func TestMaybeInjectTaskReminder_InactivityAfter25Rounds(t *testing.T) {
 
 	// Create tasks via store directly (simulating prior tool use).
 	store := sess.getOrCreateTaskStore()
-	store.Append([]TaskInput{{Type: TaskTypeResearch, Description: "A", Prompt: "a"}})
+	store.Append([]taskpkg.TaskInput{{Type: taskpkg.TaskTypeResearch, Description: "A", Prompt: "a"}})
 	// An inactivity reminder only fires when there's a task in_progress — the
 	// point of the reminder is to re-state the current step.
-	if err := store.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress}}); err != nil {
+	if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
 		t.Fatalf("mark task 1 in_progress: %v", err)
 	}
 	sess.taskToolEverUsed = true

@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"strings"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/task"
 )
 
 // Client is a small typed HTTP client for the serf hub JSON API.
@@ -135,8 +135,8 @@ func (c *Client) Send(ctx context.Context, ref Ref, text string) error {
 	return c.post(ctx, "/api/sessions/"+ref.PathEscaped()+"/send", map[string]string{"text": text}, nil)
 }
 
-func (c *Client) Tasks(ctx context.Context, ref Ref) ([]agent.Task, error) {
-	var out []agent.Task
+func (c *Client) Tasks(ctx context.Context, ref Ref) ([]task.Task, error) {
+	var out []task.Task
 	err := c.get(ctx, "/api/sessions/"+ref.PathEscaped()+"/tasks", &out)
 	return out, err
 }

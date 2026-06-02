@@ -5,11 +5,11 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/agent"
+	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/appwire"
 )
 
-func renderHubSessionStatus(detail hubSessionDetail, tasks []agent.Task, auth appwire.AuthStatusResponse, taskErr, authErr error, width int) string {
+func renderHubSessionStatus(detail hubSessionDetail, tasks []taskpkg.Task, auth appwire.AuthStatusResponse, taskErr, authErr error, width int) string {
 	var b strings.Builder
 	b.WriteString("status\n")
 	if detail.SessionID != "" {
@@ -195,7 +195,7 @@ func writeWrappedStatusList(b *strings.Builder, label string, items []string, wi
 	}
 }
 
-func taskSummary(tasks []agent.Task) string {
+func taskSummary(tasks []taskpkg.Task) string {
 	if len(tasks) == 0 {
 		return "0/0 done"
 	}
@@ -203,9 +203,9 @@ func taskSummary(tasks []agent.Task) string {
 	active := 0
 	for _, task := range tasks {
 		switch task.Status {
-		case agent.TaskDone, agent.TaskCancelled:
+		case taskpkg.TaskDone, taskpkg.TaskCancelled:
 			done++
-		case agent.TaskInProgress:
+		case taskpkg.TaskInProgress:
 			active++
 		}
 	}

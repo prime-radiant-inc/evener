@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
 )
 
@@ -4098,7 +4099,7 @@ func TestSession_TaskList_AppendAndUpdate_EmitToolStateSnapshots(t *testing.T) {
 
 	type endCall struct {
 		callID string
-		state  []Task
+		state  []task.Task
 	}
 	var ends []endCall
 	for ev := range sess.Events() {
@@ -4112,7 +4113,7 @@ func TestSession_TaskList_AppendAndUpdate_EmitToolStateSnapshots(t *testing.T) {
 		if len(d.ToolState) == 0 {
 			t.Fatalf("TOOL_CALL_END for task_list missing tool_state; data=%+v", d)
 		}
-		var tasks []Task
+		var tasks []task.Task
 		if err := json.Unmarshal(d.ToolState, &tasks); err != nil {
 			t.Fatalf("tool_state not a []Task: %v; raw=%s", err, d.ToolState)
 		}
@@ -4143,7 +4144,7 @@ func TestSession_TaskList_AppendAndUpdate_EmitToolStateSnapshots(t *testing.T) {
 	if updateState.callID != "c2" {
 		t.Errorf("second task_list end: call_id %q, want c2", updateState.callID)
 	}
-	if len(updateState.state) < 1 || updateState.state[0].Status != TaskDone {
+	if len(updateState.state) < 1 || updateState.state[0].Status != task.TaskDone {
 		t.Errorf("update state[0].Status: %+v, want done", updateState.state)
 	}
 	if len(updateState.state) >= 1 && updateState.state[0].Description != "Map criteria" {

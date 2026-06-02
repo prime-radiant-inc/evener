@@ -9,30 +9,21 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/internal/frontmatter"
+	"primeradiant.com/serf/agent/task"
 )
-
-// TaskTemplate defines a default task in an agent's workflow. When a session
-// starts from such an agent, its templates seed the initial task list.
-type TaskTemplate struct {
-	Title           string `json:"title"`                      // becomes the Task description
-	Prompt          string `json:"prompt"`                     // instruction for the task
-	ReasoningEffort string `json:"reasoning_effort,omitempty"` // per-task reasoning effort override
-	Type            string `json:"type,omitempty"`             // TaskType string; empty defaults to "implement"
-	Insert          string `json:"insert,omitempty"`           // expansion marker, e.g. "parent_tasks"
-}
 
 // PluginAgent represents a subagent defined by a plugin.
 type PluginAgent struct {
-	Name         string         // agent name (unqualified)
-	Description  string         // when-to-use description shown to the model
-	Model        string         // "inherit", "sonnet", "opus", "haiku"
-	Color        string         // display color hint from frontmatter
-	AllTools     bool           // when true, the agent may use every tool (Tools is ignored)
-	Tools        []string       // serf canonical names (mapped at load time)
-	Skills       []string       // skill names to auto-inject at dispatch time
-	Tasks        []TaskTemplate // default workflow tasks from YAML
-	SystemPrompt string         // markdown body
-	PluginName   string         // owning plugin
+	Name         string              // agent name (unqualified)
+	Description  string              // when-to-use description shown to the model
+	Model        string              // "inherit", "sonnet", "opus", "haiku"
+	Color        string              // display color hint from frontmatter
+	AllTools     bool                // when true, the agent may use every tool (Tools is ignored)
+	Tools        []string            // serf canonical names (mapped at load time)
+	Skills       []string            // skill names to auto-inject at dispatch time
+	Tasks        []task.TaskTemplate // default workflow tasks from YAML
+	SystemPrompt string              // markdown body
+	PluginName   string              // owning plugin
 }
 
 // parsePluginAgent parses a markdown file with YAML frontmatter into a PluginAgent.
@@ -123,7 +114,7 @@ func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 		}
 	}
 
-	var tasks []TaskTemplate
+	var tasks []task.TaskTemplate
 	if raw, ok := doc.Meta["tasks"]; ok {
 		items, ok := raw.([]any)
 		if !ok {
@@ -134,7 +125,7 @@ func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 			if !ok {
 				return PluginAgent{}, errors.New("each task must be an object with title and prompt")
 			}
-			tt := TaskTemplate{}
+			tt := task.TaskTemplate{}
 			if v, ok := m["title"].(string); ok {
 				tt.Title = v
 			}

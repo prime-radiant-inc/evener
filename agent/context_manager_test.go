@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
 )
 
@@ -529,10 +530,10 @@ func TestCheckpoint_DoesNotFreezeStaleTaskState(t *testing.T) {
 	defer sess.Close()
 
 	store := sess.getOrCreateTaskStore()
-	if _, err := store.Append([]TaskInput{{Description: "Frobnicate the gizmo"}}); err != nil {
+	if _, err := store.Append([]task.TaskInput{{Description: "Frobnicate the gizmo"}}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-	if err := store.Update([]TaskUpdate{{ID: 1, Status: TaskInProgress}}); err != nil {
+	if err := store.Update([]task.TaskUpdate{{ID: 1, Status: task.TaskInProgress}}); err != nil {
 		t.Fatalf("Update in_progress: %v", err)
 	}
 
@@ -540,7 +541,7 @@ func TestCheckpoint_DoesNotFreezeStaleTaskState(t *testing.T) {
 	sess.contextMgr.Meta = sess.buildCompactionMeta()
 
 	// The task is completed during the same round that triggers compaction.
-	if err := store.Update([]TaskUpdate{{ID: 1, Status: TaskDone}}); err != nil {
+	if err := store.Update([]task.TaskUpdate{{ID: 1, Status: task.TaskDone}}); err != nil {
 		t.Fatalf("Update done: %v", err)
 	}
 

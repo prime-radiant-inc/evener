@@ -40,6 +40,7 @@ var libraryPackages = []string{
 	"agent/execenv",
 	"agent/schema",
 	"agent/skill",
+	"agent/task",
 	"auth/openai",
 }
 

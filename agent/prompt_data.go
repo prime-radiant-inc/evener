@@ -3,6 +3,7 @@ package agent
 import (
 	"strings"
 
+	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
 )
 
@@ -159,7 +160,7 @@ func summarizeTaskPrompt(prompt string) string {
 	return text
 }
 
-func agentTaskEntries(tasks []TaskTemplate) []agentTaskEntry {
+func agentTaskEntries(tasks []task.TaskTemplate) []agentTaskEntry {
 	entries := make([]agentTaskEntry, 0, len(tasks))
 	for _, task := range tasks {
 		entries = append(entries, agentTaskEntry{

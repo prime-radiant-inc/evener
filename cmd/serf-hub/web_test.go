@@ -17,6 +17,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
@@ -3114,9 +3115,9 @@ func TestWeb_SessionTasks_PastReturnsPersistedFile(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	tasks := []agent.Task{
-		{ID: 1, Type: agent.TaskTypeImplement, Description: "add foo", Status: agent.TaskDone},
-		{ID: 2, Type: agent.TaskTypeVerify, Description: "test foo", Status: agent.TaskOpen},
+	tasks := []task.Task{
+		{ID: 1, Type: task.TaskTypeImplement, Description: "add foo", Status: task.TaskDone},
+		{ID: 2, Type: task.TaskTypeVerify, Description: "test foo", Status: task.TaskOpen},
 	}
 	tasksDir := filepath.Join(proj, "tasks")
 	if err := os.MkdirAll(tasksDir, 0o755); err != nil {
@@ -3146,11 +3147,11 @@ func TestWeb_SessionTasks_PastReturnsPersistedFile(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
 	}
-	var got []agent.Task
+	var got []task.Task
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("invalid JSON: %v body=%q", err, rec.Body.String())
 	}
-	if len(got) != 2 || got[0].Description != "add foo" || got[1].Status != agent.TaskOpen {
+	if len(got) != 2 || got[0].Description != "add foo" || got[1].Status != task.TaskOpen {
 		t.Errorf("unexpected tasks: %+v", got)
 	}
 }
@@ -3198,7 +3199,7 @@ func TestWeb_SessionTasks_LiveProxiesDaemon(t *testing.T) {
 	dir := t.TempDir()
 	daemon := startAppwireTestDaemon(t, dir, "01LIVETASK", func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodSerfTasksList, func(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
-			return appwire.TaskListResponse{Data: []agent.Task{{ID: 1, Type: agent.TaskTypeImplement, Description: "live task", Status: agent.TaskInProgress}}}, nil
+			return appwire.TaskListResponse{Data: []task.Task{{ID: 1, Type: task.TaskTypeImplement, Description: "live task", Status: task.TaskInProgress}}}, nil
 		})
 	})
 	defer daemon.Close()

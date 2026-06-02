@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
+	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
 )
 
@@ -142,7 +143,7 @@ type Session struct {
 	cancelFunc context.CancelFunc
 
 	// task list (lazy-init)
-	taskStore     *TaskStore
+	taskStore     *task.TaskStore
 	taskStoreOnce sync.Once
 
 	// task reminder tracking

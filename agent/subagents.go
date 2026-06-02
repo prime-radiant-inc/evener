@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/skill"
+	taskpkg "primeradiant.com/serf/agent/task"
 )
 
 // minWaitTimeoutMS is the minimum timeout for the wait tool, preventing the model
@@ -136,7 +137,7 @@ func subagentNeedsCommunicateNudge(agent *PluginAgent) bool {
 	return agent.PluginName == "builtin" && agent.Name == "subagent"
 }
 
-func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string, parentTasks []TaskTemplate, grantTools []string) (any, error) {
+func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string, parentTasks []taskpkg.TaskTemplate, grantTools []string) (any, error) {
 	s.mu.Lock()
 	depth := s.depth
 	maxDepth := s.cfg.MaxSubagentDepth
