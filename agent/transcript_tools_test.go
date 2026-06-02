@@ -5,11 +5,12 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
 // Helper to create a test SessionSnapshot with known turns
-func createTestSnapshot(t *testing.T, dir string, id string, history []Turn) string {
+func createTestSnapshot(t *testing.T, dir string, id string, history []schema.Turn) string {
 	t.Helper()
 	snap := SessionSnapshot{
 		ID:        id,
@@ -32,12 +33,12 @@ func TestSearchTranscript(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create a snapshot with known turns
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("Hello world")),
-		NewTurn(TurnAssistant, llm.Assistant("Hi there! How can I help you today?")),
-		NewTurn(TurnUserInput, llm.User("Tell me about Go programming")),
-		NewTurn(TurnAssistant, llm.Assistant("Go is a statically typed, compiled programming language.")),
-		NewTurn(TurnUserInput, llm.User("What about error handling?")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("Hello world")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("Hi there! How can I help you today?")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("Tell me about Go programming")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("Go is a statically typed, compiled programming language.")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("What about error handling?")),
 	}
 	path := createTestSnapshot(t, dir, "search-test", history)
 
@@ -111,7 +112,7 @@ func TestSearchTranscript(t *testing.T) {
 
 func TestSearchTranscript_EmptyTranscript(t *testing.T) {
 	dir := t.TempDir()
-	path := createTestSnapshot(t, dir, "empty", []Turn{})
+	path := createTestSnapshot(t, dir, "empty", []schema.Turn{})
 
 	matches, err := SearchTranscript(path, "anything")
 	if err != nil {
@@ -132,12 +133,12 @@ func TestSearchTranscript_InvalidPath(t *testing.T) {
 func TestReadTurnsFromSnapshot(t *testing.T) {
 	dir := t.TempDir()
 
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("Turn 0")),
-		NewTurn(TurnAssistant, llm.Assistant("Turn 1")),
-		NewTurn(TurnUserInput, llm.User("Turn 2")),
-		NewTurn(TurnAssistant, llm.Assistant("Turn 3")),
-		NewTurn(TurnUserInput, llm.User("Turn 4")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("Turn 0")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("Turn 1")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("Turn 2")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("Turn 3")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("Turn 4")),
 	}
 	path := createTestSnapshot(t, dir, "read-test", history)
 
@@ -237,26 +238,26 @@ func TestFilterTurns(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create history with various turn kinds and tool results
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("First user message")),
-		NewTurn(TurnAssistant, llm.Assistant("First assistant response")),
-		NewTurn(TurnAssistant, llm.Message{
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("First user message")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("First assistant response")),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call1", Name: "TestTool"}},
 			},
 		}),
-		NewTurn(TurnToolResults, llm.ToolResult("call1", "success result", false)),
-		NewTurn(TurnUserInput, llm.User("Second user message with keyword")),
-		NewTurn(TurnAssistant, llm.Assistant("Another assistant response")),
-		NewTurn(TurnAssistant, llm.Message{
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResult("call1", "success result", false)),
+		schema.NewTurn(schema.TurnUserInput, llm.User("Second user message with keyword")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("Another assistant response")),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call2", Name: "FailTool"}},
 			},
 		}),
-		NewTurn(TurnToolResults, llm.ToolResult("call2", "error result", true)),
-		NewTurn(TurnSteering, llm.User("Steering message")),
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResult("call2", "error result", true)),
+		schema.NewTurn(schema.TurnSteering, llm.User("Steering message")),
 	}
 	path := createTestSnapshot(t, dir, "filter-test", history)
 

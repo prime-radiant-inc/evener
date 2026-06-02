@@ -6,6 +6,7 @@ import (
 	"errors"
 	"testing"
 
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -44,8 +45,8 @@ func TestForkSummarize_Success(t *testing.T) {
 	client.Register(adapter)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	turns := []Turn{
-		{Kind: TurnAssistant, Message: llm.Message{
+	turns := []schema.Turn{
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
@@ -55,7 +56,7 @@ func TestForkSummarize_Success(t *testing.T) {
 				}},
 			},
 		}},
-		{Kind: TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "PASS", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "PASS", false)},
 	}
 
 	got, err := ForkSummarize(context.Background(), client, profile, turns, 7)
@@ -100,8 +101,8 @@ func TestForkSummarize_Failure(t *testing.T) {
 	client.Register(adapter)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	turns := []Turn{
-		{Kind: TurnAssistant, Message: llm.Message{
+	turns := []schema.Turn{
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
@@ -111,7 +112,7 @@ func TestForkSummarize_Failure(t *testing.T) {
 				}},
 			},
 		}},
-		{Kind: TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "./main.go:42:5: undefined: foo", true)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "./main.go:42:5: undefined: foo", true)},
 	}
 
 	got, err := ForkSummarize(context.Background(), client, profile, turns, 12)
@@ -144,8 +145,8 @@ func TestForkSummarize_MalformedJSON(t *testing.T) {
 	client.Register(adapter)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	turns := []Turn{
-		{Kind: TurnAssistant, Message: llm.Assistant("I'll read the file")},
+	turns := []schema.Turn{
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("I'll read the file")},
 	}
 
 	_, err := ForkSummarize(context.Background(), client, profile, turns, 1)
@@ -172,8 +173,8 @@ func TestForkSummarize_ExtractsAction(t *testing.T) {
 	client.Register(adapter)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	turns := []Turn{
-		{Kind: TurnAssistant, Message: llm.Message{
+	turns := []schema.Turn{
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
@@ -183,7 +184,7 @@ func TestForkSummarize_ExtractsAction(t *testing.T) {
 				}},
 			},
 		}},
-		{Kind: TurnToolResults, Message: llm.ToolResultNamed("c1", "edit_file", "OK", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "edit_file", "OK", false)},
 	}
 
 	got, err := ForkSummarize(context.Background(), client, profile, turns, 3)
@@ -216,8 +217,8 @@ func TestForkSummarize_UsesCheapModel(t *testing.T) {
 	client.Register(adapter)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	turns := []Turn{
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	turns := []schema.Turn{
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	_, err := ForkSummarize(context.Background(), client, profile, turns, 1)
@@ -237,8 +238,8 @@ func TestForkSummarize_LLMError(t *testing.T) {
 	client.Register(adapter)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	turns := []Turn{
-		{Kind: TurnAssistant, Message: llm.Assistant("hello")},
+	turns := []schema.Turn{
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("hello")},
 	}
 
 	_, err := ForkSummarize(context.Background(), client, profile, turns, 1)

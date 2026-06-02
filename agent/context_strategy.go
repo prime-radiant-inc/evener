@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -27,10 +28,10 @@ type strategyHost interface {
 type contextStrategy interface {
 	// ManageContext is called before each LLM request. It may modify history
 	// in place to reduce context pressure.
-	ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error
+	ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error
 
 	// AfterAction is called after each completed tool round.
-	AfterAction(ctx context.Context, history []Turn, client *llm.Client) error
+	AfterAction(ctx context.Context, history []schema.Turn, client *llm.Client) error
 
 	// Tools returns additional tool definitions this strategy wants registered.
 	Tools() []registeredTool
@@ -56,13 +57,13 @@ func (s *compactStrategy) Name() string { return "compact" }
 func (s *compactStrategy) Tools() []registeredTool { return nil }
 
 // AfterAction does nothing for this strategy and always returns nil.
-func (s *compactStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
+func (s *compactStrategy) AfterAction(ctx context.Context, history []schema.Turn, client *llm.Client) error {
 	return nil
 }
 
 // ManageContext delegates to the contextManager's MaybeCompact to reduce context
 // pressure before an LLM request and returns nil.
-func (s *compactStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
+func (s *compactStrategy) ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
 	s.cm.MaybeCompact(ctx, history, sysPromptChars, emitFn)
 	return nil
 }

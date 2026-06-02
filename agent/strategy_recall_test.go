@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -77,9 +78,9 @@ func TestRecallStrategy_ManageContext_DelegatesToCompact(t *testing.T) {
 	rs := newRecallStrategy(cm, nil)
 
 	// Simple history that won't trigger compaction.
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("hello")),
-		NewTurn(TurnAssistant, llm.Assistant("hi")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("hello")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi")),
 	}
 
 	emitted := false
@@ -105,11 +106,11 @@ func TestRecallStrategy_RecallTool_SearchesTranscript(t *testing.T) {
 	dir := t.TempDir()
 
 	// Create a snapshot with known history for the recall sub-agent to search.
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("The secret code is ALPHA-7")),
-		NewTurn(TurnAssistant, llm.Assistant("Got it, I've noted the secret code ALPHA-7.")),
-		NewTurn(TurnUserInput, llm.User("Now do something else")),
-		NewTurn(TurnAssistant, llm.Assistant("Sure, working on it.")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("The secret code is ALPHA-7")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("Got it, I've noted the secret code ALPHA-7.")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("Now do something else")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("Sure, working on it.")),
 	}
 	snapPath := createTestSnapshot(t, dir, "recall-test", history)
 
@@ -295,8 +296,8 @@ func TestRecallStrategy_Integration_ViaTool(t *testing.T) {
 func TestRecallStrategy_TranscriptTools(t *testing.T) {
 	// Verify that the transcript tools built for the sub-agent have the right names.
 	dir := t.TempDir()
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("test message")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("test message")),
 	}
 	snapPath := createTestSnapshot(t, dir, "tools-test", history)
 
@@ -317,9 +318,9 @@ func TestRecallStrategy_TranscriptTools(t *testing.T) {
 
 func TestRecallStrategy_TranscriptTools_SearchExecutes(t *testing.T) {
 	dir := t.TempDir()
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("the quick brown fox")),
-		NewTurn(TurnAssistant, llm.Assistant("jumps over the lazy dog")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("the quick brown fox")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("jumps over the lazy dog")),
 	}
 	snapPath := createTestSnapshot(t, dir, "exec-test", history)
 

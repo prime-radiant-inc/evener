@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -30,11 +31,11 @@ func buildParentSession(t *testing.T) (stateDir, parentID string) {
 		t.Fatalf("NewTranscriptWriter: %v", err)
 	}
 
-	turns := []Turn{
-		NewTurn(TurnUserInput, llm.User("first task")),
-		NewTurn(TurnAssistant, llm.Assistant("first reply")),
-		NewTurn(TurnUserInput, llm.User("second task")),
-		NewTurn(TurnAssistant, llm.Assistant("second reply")),
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first task")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("first reply")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("second task")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("second reply")),
 	}
 	for _, turn := range turns {
 		if err := tw.Append(turn); err != nil {
@@ -133,19 +134,19 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 	}
 
 	// First two entries are the prefix (turn 1 user + turn 1 assistant from parent).
-	if entries[0].Turn.Kind != TurnUserInput {
-		t.Errorf("entries[0].Kind: got %q, want %q", entries[0].Turn.Kind, TurnUserInput)
+	if entries[0].Turn.Kind != schema.TurnUserInput {
+		t.Errorf("entries[0].Kind: got %q, want %q", entries[0].Turn.Kind, schema.TurnUserInput)
 	}
 	if entries[0].Turn.Message.Text() != "first task" {
 		t.Errorf("entries[0] text: got %q, want %q", entries[0].Turn.Message.Text(), "first task")
 	}
-	if entries[1].Turn.Kind != TurnAssistant {
-		t.Errorf("entries[1].Kind: got %q, want %q", entries[1].Turn.Kind, TurnAssistant)
+	if entries[1].Turn.Kind != schema.TurnAssistant {
+		t.Errorf("entries[1].Kind: got %q, want %q", entries[1].Turn.Kind, schema.TurnAssistant)
 	}
 
 	// Third entry is the edited turn.
-	if entries[2].Turn.Kind != TurnUserInput {
-		t.Errorf("entries[2].Kind: got %q, want %q", entries[2].Turn.Kind, TurnUserInput)
+	if entries[2].Turn.Kind != schema.TurnUserInput {
+		t.Errorf("entries[2].Kind: got %q, want %q", entries[2].Turn.Kind, schema.TurnUserInput)
 	}
 	if entries[2].Turn.Message.Text() != "second task, table-driven" {
 		t.Errorf("entries[2] text: got %q, want %q", entries[2].Turn.Message.Text(), "second task, table-driven")

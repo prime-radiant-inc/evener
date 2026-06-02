@@ -1,5 +1,7 @@
 package agent
 
+import "primeradiant.com/serf/agent/schema"
+
 // ContextMetrics describes the estimated current context size, all in tokens.
 type ContextMetrics struct {
 	Used      int // estimated tokens currently consumed by the conversation
@@ -13,13 +15,13 @@ func (s *Session) ContextMetrics() ContextMetrics {
 		return ContextMetrics{}
 	}
 	s.mu.Lock()
-	hist := append([]Turn{}, s.history...)
+	hist := append([]schema.Turn{}, s.history...)
 	s.mu.Unlock()
 	return s.contextMgr.EstimateUsage(hist, 0)
 }
 
 // EstimateUsage returns the estimated used, total, and remaining context tokens.
-func (cm *contextManager) EstimateUsage(history []Turn, sysPromptChars int) ContextMetrics {
+func (cm *contextManager) EstimateUsage(history []schema.Turn, sysPromptChars int) ContextMetrics {
 	cw := cm.currentProfile().ContextWindowSize()
 	if cw <= 0 {
 		return ContextMetrics{}

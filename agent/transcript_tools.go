@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -49,7 +50,7 @@ func SearchTranscript(path string, query string) ([]TranscriptMatch, error) {
 // ReadTurnsFromSnapshot loads a snapshot and returns turns in the [start, end) range.
 // Bounds are clamped to valid indices. If start >= end or both are out of bounds,
 // returns an empty slice.
-func ReadTurnsFromSnapshot(path string, start, end int) ([]Turn, error) {
+func ReadTurnsFromSnapshot(path string, start, end int) ([]schema.Turn, error) {
 	snap, err := loadSnapshotFromPath(path)
 	if err != nil {
 		return nil, err
@@ -65,7 +66,7 @@ func ReadTurnsFromSnapshot(path string, start, end int) ([]Turn, error) {
 		end = historyLen
 	}
 	if start >= end {
-		return []Turn{}, nil
+		return []schema.Turn{}, nil
 	}
 
 	return snap.History[start:end], nil
@@ -135,7 +136,7 @@ func loadSnapshotFromPath(path string) (SessionSnapshot, error) {
 }
 
 // turnText extracts readable text from a Turn, handling different content types.
-func turnText(t Turn) string {
+func turnText(t schema.Turn) string {
 	var parts []string
 
 	for _, p := range t.Message.Content {
@@ -164,7 +165,7 @@ func turnText(t Turn) string {
 }
 
 // turnHasError returns true if the turn contains any tool result with IsError=true.
-func turnHasError(t Turn) bool {
+func turnHasError(t schema.Turn) bool {
 	for _, p := range t.Message.Content {
 		if p.Kind == llm.ContentToolResult && p.ToolResult != nil && p.ToolResult.IsError {
 			return true

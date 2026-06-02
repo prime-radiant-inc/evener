@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -440,12 +441,12 @@ func (s *Session) appendCanceledToolResults(calls []llm.ToolCallData, results []
 			},
 		})
 	}
-	s.appendTurn(TurnToolResults, llm.Message{Role: llm.RoleTool, Content: parts})
+	s.appendTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: parts})
 }
 
 func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallData, results []toolExecResult, parts []llm.ContentPart) error {
 	if abortErr := s.withResponseSideEffects(ctx, func() {
-		s.appendTurn(TurnToolResults, llm.Message{Role: llm.RoleTool, Content: parts})
+		s.appendTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: parts})
 		// Persist the completed tool round so resumed sessions always include
 		// tool_result turns for any prior assistant tool calls.
 		s.maybeAutoSave()

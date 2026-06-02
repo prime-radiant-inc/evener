@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 )
 
@@ -481,7 +481,7 @@ func TestAppEventProjectorProjectsCompactionTurn(t *testing.T) {
 		Kind:      events.EventCompactionTurn,
 		SessionID: "th_1",
 		Data: events.CompactionTurnData{
-			Kind: string(agent.TurnSummary),
+			Kind: string(schema.TurnSummary),
 			Text: "[CONTEXT SUMMARY]\nkept the useful state",
 		},
 	})
@@ -508,7 +508,7 @@ func TestAppEventProjectorProjectsCompactionTurnInActiveTurn(t *testing.T) {
 		Kind:      events.EventCompactionTurn,
 		SessionID: "th_1",
 		Data: events.CompactionTurnData{
-			Kind: string(agent.TurnCheckpoint),
+			Kind: string(schema.TurnCheckpoint),
 			Text: "[CONTEXT CHECKPOINT]\nkept raw context",
 		},
 	})

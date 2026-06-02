@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -52,7 +53,7 @@ type contextManager struct {
 
 	// OnCompactionTurn is called for each compaction turn created (CHECKPOINT or SUMMARY).
 	// Set by the session before ManageContext to record compaction turns in the transcript.
-	OnCompactionTurn func(Turn)
+	OnCompactionTurn func(schema.Turn)
 
 	// Meta holds session-level metadata for enriching compaction summaries.
 	// Set by the session before each ManageContext call.
@@ -128,13 +129,13 @@ func (cm *contextManager) LastInputTokens() int {
 }
 
 // Pressure returns the current context pressure as a fraction (0.0–1.0).
-func (cm *contextManager) Pressure(history []Turn, sysPromptChars int) float64 {
+func (cm *contextManager) Pressure(history []schema.Turn, sysPromptChars int) float64 {
 	return cm.estimatePressure(history, sysPromptChars)
 }
 
 // estimatePressure calculates what fraction of the context window is in use.
 // Uses actual API-reported token counts when available, falling back to char/4.
-func (cm *contextManager) estimatePressure(history []Turn, sysPromptChars int) float64 {
+func (cm *contextManager) estimatePressure(history []schema.Turn, sysPromptChars int) float64 {
 	cw := cm.currentProfile().ContextWindowSize()
 	if cw <= 0 {
 		return 0
@@ -159,12 +160,12 @@ func (cm *contextManager) estimatePressure(history []Turn, sysPromptChars int) f
 }
 
 // EstimatePressure returns the estimated fraction of context window in use.
-func (cm *contextManager) EstimatePressure(history []Turn, sysPromptChars int) float64 {
+func (cm *contextManager) EstimatePressure(history []schema.Turn, sysPromptChars int) float64 {
 	return cm.estimatePressure(history, sysPromptChars)
 }
 
 // estimateTokens estimates token count for turns using the char/4 heuristic.
-func estimateTokens(turns []Turn) int {
+func estimateTokens(turns []schema.Turn) int {
 	chars := 0
 	for _, t := range turns {
 		chars += messageCharCount(t.Message)
@@ -179,7 +180,7 @@ func estimateTokens(turns []Turn) int {
 // Called before each LLM request.
 func (cm *contextManager) MaybeCompact(
 	ctx context.Context,
-	history *[]Turn,
+	history *[]schema.Turn,
 	sysPromptChars int,
 	emitFn func(events.EventKind, events.EventData),
 ) {
@@ -219,7 +220,7 @@ func (cm *contextManager) MaybeCompact(
 			EstTokensBefore: before,
 			EstTokensAfter:  after,
 		})
-		if cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == TurnCheckpoint {
+		if cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == schema.TurnCheckpoint {
 			cm.OnCompactionTurn((*history)[0])
 		}
 		compacted = true
@@ -246,7 +247,7 @@ func (cm *contextManager) MaybeCompact(
 				EstTokensBefore: before,
 				EstTokensAfter:  after,
 			})
-			if cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == TurnSummary {
+			if cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == schema.TurnSummary {
 				cm.OnCompactionTurn((*history)[0])
 			}
 			compacted = true
@@ -266,7 +267,7 @@ func (cm *contextManager) MaybeCompact(
 // Used for user-initiated compaction (e.g. /compact command).
 func (cm *contextManager) ForceCompact(
 	ctx context.Context,
-	history *[]Turn,
+	history *[]schema.Turn,
 	emitFn func(events.EventKind, events.EventData),
 ) {
 	// Reset token measurement so inter-layer estimates use char/4.
@@ -287,7 +288,7 @@ func (cm *contextManager) ForceCompact(
 		EstTokensBefore: before,
 		EstTokensAfter:  after,
 	})
-	if cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == TurnCheckpoint {
+	if cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == schema.TurnCheckpoint {
 		cm.OnCompactionTurn((*history)[0])
 	}
 
@@ -310,7 +311,7 @@ func (cm *contextManager) ForceCompact(
 				EstTokensBefore: before,
 				EstTokensAfter:  after,
 			})
-			if cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == TurnSummary {
+			if cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == schema.TurnSummary {
 				cm.OnCompactionTurn((*history)[0])
 			}
 		}
@@ -328,7 +329,7 @@ func (cm *contextManager) ForceCompact(
 // maskObservations replaces tool result content in old turns with one-line summaries.
 // Preserves: error results, communicate tool results, already-masked results,
 // recent turns, and results where the summary would be longer than the original.
-func maskObservations(history []Turn, preserveRecent int, resultToolName string) {
+func maskObservations(history []schema.Turn, preserveRecent int, resultToolName string) {
 	if len(history) == 0 {
 		return
 	}
@@ -339,7 +340,7 @@ func maskObservations(history []Turn, preserveRecent int, resultToolName string)
 	}
 	for i := 0; i < cutoff; i++ {
 		t := &history[i]
-		if t.Kind != TurnTool && t.Kind != TurnToolResults {
+		if t.Kind != schema.TurnTool && t.Kind != schema.TurnToolResults {
 			continue
 		}
 		for j := range t.Message.Content {
@@ -382,10 +383,10 @@ func maskObservations(history []Turn, preserveRecent int, resultToolName string)
 
 // findToolCallArgs looks backward from the tool result to find the matching
 // assistant tool call and return its arguments.
-func findToolCallArgs(history []Turn, toolCallID string) json.RawMessage {
+func findToolCallArgs(history []schema.Turn, toolCallID string) json.RawMessage {
 	for i := len(history) - 1; i >= 0; i-- {
 		t := history[i]
-		if t.Kind != TurnAssistant {
+		if t.Kind != schema.TurnAssistant {
 			continue
 		}
 		for _, p := range t.Message.Content {
@@ -418,7 +419,7 @@ func parseCommunicateArgs(args json.RawMessage) (awaitReply bool, message string
 	return *payload.AwaitReply, message
 }
 
-func communicateArgsFromHistory(history []Turn, toolCallID string) (awaitReply bool, message string) {
+func communicateArgsFromHistory(history []schema.Turn, toolCallID string) (awaitReply bool, message string) {
 	return parseCommunicateArgs(findToolCallArgs(history, toolCallID))
 }
 
@@ -509,7 +510,7 @@ func summarizeToolResult(toolName string, content any, args json.RawMessage) str
 
 // clearThinking removes thinking text from old assistant turns, replacing it
 // with a placeholder. Redacted thinking blocks are left untouched.
-func clearThinking(history []Turn, preserveRecent int) {
+func clearThinking(history []schema.Turn, preserveRecent int) {
 	if len(history) == 0 {
 		return
 	}
@@ -521,7 +522,7 @@ func clearThinking(history []Turn, preserveRecent int) {
 
 	for i := 0; i < cutoff; i++ {
 		t := &history[i]
-		if t.Kind != TurnAssistant {
+		if t.Kind != schema.TurnAssistant {
 			continue
 		}
 		for j := range t.Message.Content {
@@ -555,7 +556,7 @@ func clearThinking(history []Turn, preserveRecent int) {
 // messages verbatim, agent responses, file/tool metadata, task list, and skills.
 // User messages and agent responses are stored as an interleaved Markdown
 // conversation for readable round-tripping across repeated compactions.
-func checkpoint(history []Turn, preserveRecent int, meta *compactionMeta, resultToolName string) []Turn {
+func checkpoint(history []schema.Turn, preserveRecent int, meta *compactionMeta, resultToolName string) []schema.Turn {
 	if len(history) <= preserveRecent {
 		return history
 	}
@@ -574,9 +575,9 @@ func checkpoint(history []Turn, preserveRecent int, meta *compactionMeta, result
 	const maxCheckpointChars = 60_000
 
 	data := collectCheckpointData(history, cutoff, resultToolName)
-	checkpointTurn := NewTurn(TurnCheckpoint, llm.User(formatCheckpoint(data, meta, maxCheckpointChars)))
+	checkpointTurn := schema.NewTurn(schema.TurnCheckpoint, llm.User(formatCheckpoint(data, meta, maxCheckpointChars)))
 
-	result := make([]Turn, 0, 1+preserveRecent)
+	result := make([]schema.Turn, 0, 1+preserveRecent)
 	result = append(result, checkpointTurn)
 	result = append(result, history[cutoff:]...)
 	return result
@@ -598,7 +599,7 @@ type checkpointData struct {
 // collectCheckpointData walks history[:cutoff] and distills it into a
 // checkpointData: modified files, tool counts, shell results, user messages,
 // final agent responses, working notes, and activated skills.
-func collectCheckpointData(history []Turn, cutoff int, resultToolName string) checkpointData {
+func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName string) checkpointData {
 	data := checkpointData{
 		modifiedFiles:   map[string]bool{},
 		activatedSkills: map[string]bool{},
@@ -608,13 +609,13 @@ func collectCheckpointData(history []Turn, cutoff int, resultToolName string) ch
 	for i := 0; i < cutoff; i++ {
 		t := history[i]
 		switch t.Kind {
-		case TurnCheckpoint, TurnSummary:
+		case schema.TurnCheckpoint, schema.TurnSummary:
 			// Extract user messages and working notes from previous compaction turns
 			// so they survive across repeated compactions.
 			data.conversation = append(data.conversation, extractCheckpointConversation(t.Message.Text())...)
 			data.workingNotes = append(data.workingNotes, extractCheckpointWorkingNotes(t.Message.Text())...)
 
-		case TurnUserInput:
+		case schema.TurnUserInput:
 			text := t.Message.Text()
 			if text == "" {
 				continue
@@ -627,7 +628,7 @@ func collectCheckpointData(history []Turn, cutoff int, resultToolName string) ch
 			}
 			data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
 
-		case TurnTool, TurnToolResults:
+		case schema.TurnTool, schema.TurnToolResults:
 			// Extract non-await communicate results (agent responses to the user).
 			for _, p := range t.Message.Content {
 				if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
@@ -642,7 +643,7 @@ func collectCheckpointData(history []Turn, cutoff int, resultToolName string) ch
 				}
 			}
 
-		case TurnAssistant:
+		case schema.TurnAssistant:
 			// Capture assistant analytical text as working notes.
 			if text := t.Message.Text(); len(text) > 50 {
 				note := text
@@ -691,7 +692,7 @@ func collectCheckpointData(history []Turn, cutoff int, resultToolName string) ch
 						}
 						exitCode := "?"
 						for j := i + 1; j < cutoff; j++ {
-							if history[j].Kind != TurnTool && history[j].Kind != TurnToolResults {
+							if history[j].Kind != schema.TurnTool && history[j].Kind != schema.TurnToolResults {
 								continue
 							}
 							content := findToolResultByCallID(history[j], p.ToolCall.ID)
@@ -837,7 +838,7 @@ func formatCheckpoint(data checkpointData, meta *compactionMeta, maxChars int) s
 
 // findToolResultByCallID finds a tool result in a TurnTool by its ToolCallID
 // and returns the string content, or "" if not found.
-func findToolResultByCallID(t Turn, toolCallID string) string {
+func findToolResultByCallID(t schema.Turn, toolCallID string) string {
 	for _, p := range t.Message.Content {
 		if p.Kind == llm.ContentToolResult && p.ToolResult != nil && p.ToolResult.ToolCallID == toolCallID {
 			if s, ok := p.ToolResult.Content.(string); ok {
@@ -861,7 +862,7 @@ func sumCounts(m map[string]int) int {
 // summarizeWithLLM calls the cheap model to generate a narrative summary of
 // old history. Replaces old history with a single user message containing the
 // summary, preserving the most recent turns.
-func (cm *contextManager) summarizeWithLLM(ctx context.Context, history []Turn, preserveRecent int) ([]Turn, error) {
+func (cm *contextManager) summarizeWithLLM(ctx context.Context, history []schema.Turn, preserveRecent int) ([]schema.Turn, error) {
 	if len(history) <= preserveRecent {
 		return history, nil
 	}
@@ -885,7 +886,7 @@ func (cm *contextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 	for i := 0; i < cutoff; i++ {
 		t := history[i]
 		switch t.Kind {
-		case TurnUserInput:
+		case schema.TurnUserInput:
 			// Preserve user messages verbatim. Cap at 5k to protect the cheap
 			// model's context — normal messages are well under this.
 			text := t.Message.Text()
@@ -893,9 +894,9 @@ func (cm *contextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 				text = text[:5000] + "..."
 			}
 			b.WriteString("User: " + text + "\n")
-		case TurnCheckpoint, TurnSummary:
+		case schema.TurnCheckpoint, schema.TurnSummary:
 			b.WriteString("Previous compaction: " + truncText(t.Message.Text(), 1000) + "\n")
-		case TurnAssistant:
+		case schema.TurnAssistant:
 			// Extract communicate calls so the summarizer sees how the agent
 			// talked to the user, while still distinguishing questions from
 			// non-await replies.
@@ -917,7 +918,7 @@ func (cm *contextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 					}
 				}
 			}
-		case TurnTool, TurnToolResults:
+		case schema.TurnTool, schema.TurnToolResults:
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					content := fmt.Sprint(p.ToolResult.Content)
@@ -927,7 +928,7 @@ func (cm *contextManager) summarizeWithLLM(ctx context.Context, history []Turn, 
 					b.WriteString(fmt.Sprintf("Tool(%s): %s\n", p.ToolResult.Name, content))
 				}
 			}
-		case TurnSteering:
+		case schema.TurnSteering:
 			b.WriteString("System: " + t.Message.Text() + "\n")
 		}
 		if b.Len() > maxHistoryChars {
@@ -993,9 +994,9 @@ Be thorough and structured. Err on the side of including too much rather than to
 	}
 
 	summaryText := "[CONTEXT SUMMARY]\n" + resp.Text() + "\n[END SUMMARY]"
-	summaryTurn := NewTurn(TurnSummary, llm.User(summaryText))
+	summaryTurn := schema.NewTurn(schema.TurnSummary, llm.User(summaryText))
 
-	result := make([]Turn, 0, 1+preserveRecent)
+	result := make([]schema.Turn, 0, 1+preserveRecent)
 	result = append(result, summaryTurn)
 	result = append(result, history[cutoff:]...)
 	return result, nil
@@ -1007,10 +1008,10 @@ Be thorough and structured. Err on the side of including too much rather than to
 // after a checkpoint/summary (both user-role) produces consecutive user messages
 // that some APIs reject.
 // Returns -1 if no safe position exists; callers should skip compaction.
-func safeCutoff(history []Turn, cutoff int) int {
+func safeCutoff(history []schema.Turn, cutoff int) int {
 	for cutoff > 0 && cutoff < len(history) {
 		k := history[cutoff].Kind
-		if k == TurnTool || k == TurnToolResults || k == TurnSteering {
+		if k == schema.TurnTool || k == schema.TurnToolResults || k == schema.TurnSteering {
 			cutoff--
 			continue
 		}

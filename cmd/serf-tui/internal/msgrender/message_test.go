@@ -6,16 +6,16 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuitheme"
 	"primeradiant.com/serf/llm"
 )
 
 func TestHistoryToMessages_UserAndCommunicate(t *testing.T) {
-	turns := []agent.Turn{
-		{Kind: agent.TurnUserInput, Message: llm.User("what is 2+2?")},
-		{Kind: agent.TurnAssistant, Message: llm.Message{
+	turns := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("what is 2+2?")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
@@ -25,7 +25,7 @@ func TestHistoryToMessages_UserAndCommunicate(t *testing.T) {
 				}},
 			},
 		}},
-		{Kind: agent.TurnToolResults, Message: llm.ToolResult("call_1", "ok", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResult("call_1", "ok", false)},
 	}
 
 	msgs := historyToMessages(turns)
@@ -43,9 +43,9 @@ func TestHistoryToMessages_UserAndCommunicate(t *testing.T) {
 }
 
 func TestHistoryToMessages_ToolCalls(t *testing.T) {
-	turns := []agent.Turn{
-		{Kind: agent.TurnUserInput, Message: llm.User("list files")},
-		{Kind: agent.TurnAssistant, Message: llm.Message{
+	turns := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("list files")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
@@ -55,8 +55,8 @@ func TestHistoryToMessages_ToolCalls(t *testing.T) {
 				}},
 			},
 		}},
-		{Kind: agent.TurnToolResults, Message: llm.ToolResult("call_1", "file1.go\nfile2.go", false)},
-		{Kind: agent.TurnAssistant, Message: llm.Message{
+		{Kind: schema.TurnToolResults, Message: llm.ToolResult("call_1", "file1.go\nfile2.go", false)},
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
@@ -66,7 +66,7 @@ func TestHistoryToMessages_ToolCalls(t *testing.T) {
 				}},
 			},
 		}},
-		{Kind: agent.TurnToolResults, Message: llm.ToolResult("call_2", "ok", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResult("call_2", "ok", false)},
 	}
 
 	msgs := historyToMessages(turns)
@@ -93,8 +93,8 @@ func TestHistoryToMessages_ToolCalls(t *testing.T) {
 }
 
 func TestHistoryToMessages_ThinkingText(t *testing.T) {
-	turns := []agent.Turn{
-		{Kind: agent.TurnAssistant, Message: llm.Message{
+	turns := []schema.Turn{
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentText, Text: "Let me think about this..."},

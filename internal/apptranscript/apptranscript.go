@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/llm"
@@ -102,7 +103,7 @@ func FormatTools(req llm.APILogRequest) string {
 // CompactionDescription returns the user-facing label for compaction turns.
 func CompactionDescription(kind string) string {
 	switch strings.ToUpper(strings.TrimSpace(kind)) {
-	case string(agent.TurnSummary):
+	case string(schema.TurnSummary):
 		return "Context summary"
 	default:
 		return "Context checkpoint"
@@ -186,7 +187,7 @@ func DefaultImageProjector(image llm.ImageData) appwire.InputItem {
 }
 
 // ProjectTurn maps a typed transcript turn into AppWire transcript items.
-func ProjectTurn(turnID string, turnIndex int, turn agent.Turn, toolNames map[string]string, imageProjector ImageProjector) []appwire.ThreadItem {
+func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[string]string, imageProjector ImageProjector) []appwire.ThreadItem {
 	if imageProjector == nil {
 		imageProjector = DefaultImageProjector
 	}
@@ -194,7 +195,7 @@ func ProjectTurn(turnID string, turnIndex int, turn agent.Turn, toolNames map[st
 		toolNames = map[string]string{}
 	}
 	switch turn.Kind {
-	case agent.TurnCheckpoint, agent.TurnSummary:
+	case schema.TurnCheckpoint, schema.TurnSummary:
 		text := strings.TrimSpace(turn.Message.Text())
 		if text == "" {
 			return nil
@@ -208,7 +209,7 @@ func ProjectTurn(turnID string, turnIndex int, turn agent.Turn, toolNames map[st
 			Text:                 text,
 			Status:               appwire.TurnStatusCompleted,
 		}}
-	case agent.TurnUserInput:
+	case schema.TurnUserInput:
 		images := ImagesFromContent(turn.Message.Content, imageProjector)
 		return []appwire.ThreadItem{{
 			Type:                 "userMessage",
@@ -219,7 +220,7 @@ func ProjectTurn(turnID string, turnIndex int, turn agent.Turn, toolNames map[st
 			Images:               images,
 			Status:               appwire.TurnStatusCompleted,
 		}}
-	case agent.TurnSteering:
+	case schema.TurnSteering:
 		images := ImagesFromContent(turn.Message.Content, imageProjector)
 		text := turn.Message.Text()
 		if text == "" && len(images) > 0 {
@@ -233,7 +234,7 @@ func ProjectTurn(turnID string, turnIndex int, turn agent.Turn, toolNames map[st
 			Images: images,
 			Status: appwire.TurnStatusCompleted,
 		}}
-	case agent.TurnAssistant:
+	case schema.TurnAssistant:
 		var items []appwire.ThreadItem
 		for i, part := range turn.Message.Content {
 			switch part.Kind {
@@ -277,7 +278,7 @@ func ProjectTurn(turnID string, turnIndex int, turn agent.Turn, toolNames map[st
 			}
 		}
 		return items
-	case agent.TurnTool, agent.TurnToolResults:
+	case schema.TurnTool, schema.TurnToolResults:
 		var items []appwire.ThreadItem
 		for i, part := range turn.Message.Content {
 			if part.Kind != llm.ContentToolResult || part.ToolResult == nil {

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -26,8 +27,8 @@ func TestConvertToATIF_SimpleConversation(t *testing.T) {
 		{
 			Kind: "entry",
 			Seq:  0,
-			Turn: Turn{
-				Kind:      TurnUserInput,
+			Turn: schema.Turn{
+				Kind:      schema.TurnUserInput,
 				Message:   llm.User("Hello, world!"),
 				Timestamp: ts,
 			},
@@ -35,8 +36,8 @@ func TestConvertToATIF_SimpleConversation(t *testing.T) {
 		{
 			Kind: "entry",
 			Seq:  1,
-			Turn: Turn{
-				Kind:      TurnAssistant,
+			Turn: schema.Turn{
+				Kind:      schema.TurnAssistant,
 				Message:   llm.Assistant("Hi there! How can I help?"),
 				Timestamp: ts.Add(2 * time.Second),
 				Usage: llm.Usage{
@@ -176,8 +177,8 @@ func TestConvertToATIF_ToolUse(t *testing.T) {
 		{
 			Kind: "entry",
 			Seq:  0,
-			Turn: Turn{
-				Kind:      TurnUserInput,
+			Turn: schema.Turn{
+				Kind:      schema.TurnUserInput,
 				Message:   llm.User("List files in /app"),
 				Timestamp: ts,
 			},
@@ -185,8 +186,8 @@ func TestConvertToATIF_ToolUse(t *testing.T) {
 		{
 			Kind: "entry",
 			Seq:  1,
-			Turn: Turn{
-				Kind: TurnAssistant,
+			Turn: schema.Turn{
+				Kind: schema.TurnAssistant,
 				Message: llm.Message{
 					Role: llm.RoleAssistant,
 					Content: []llm.ContentPart{
@@ -216,8 +217,8 @@ func TestConvertToATIF_ToolUse(t *testing.T) {
 		{
 			Kind: "entry",
 			Seq:  2,
-			Turn: Turn{
-				Kind: TurnToolResults,
+			Turn: schema.Turn{
+				Kind: schema.TurnToolResults,
 				Message: llm.Message{
 					Role: llm.RoleTool,
 					Content: []llm.ContentPart{
@@ -367,8 +368,8 @@ func TestConvertToATIF_ToolError(t *testing.T) {
 		{
 			Kind: "entry",
 			Seq:  0,
-			Turn: Turn{
-				Kind:      TurnUserInput,
+			Turn: schema.Turn{
+				Kind:      schema.TurnUserInput,
 				Message:   llm.User("Delete the file"),
 				Timestamp: ts,
 			},
@@ -376,8 +377,8 @@ func TestConvertToATIF_ToolError(t *testing.T) {
 		{
 			Kind: "entry",
 			Seq:  1,
-			Turn: Turn{
-				Kind: TurnAssistant,
+			Turn: schema.Turn{
+				Kind: schema.TurnAssistant,
 				Message: llm.Message{
 					Role: llm.RoleAssistant,
 					Content: []llm.ContentPart{
@@ -406,8 +407,8 @@ func TestConvertToATIF_ToolError(t *testing.T) {
 		{
 			Kind: "entry",
 			Seq:  2,
-			Turn: Turn{
-				Kind: TurnToolResults,
+			Turn: schema.Turn{
+				Kind: schema.TurnToolResults,
 				Message: llm.Message{
 					Role: llm.RoleTool,
 					Content: []llm.ContentPart{
@@ -502,8 +503,8 @@ func TestConvertToATIF_ThinkingContent(t *testing.T) {
 		{
 			Kind: "entry",
 			Seq:  0,
-			Turn: Turn{
-				Kind:      TurnUserInput,
+			Turn: schema.Turn{
+				Kind:      schema.TurnUserInput,
 				Message:   llm.User("Explain recursion"),
 				Timestamp: ts,
 			},
@@ -511,8 +512,8 @@ func TestConvertToATIF_ThinkingContent(t *testing.T) {
 		{
 			Kind: "entry",
 			Seq:  1,
-			Turn: Turn{
-				Kind: TurnAssistant,
+			Turn: schema.Turn{
+				Kind: schema.TurnAssistant,
 				Message: llm.Message{
 					Role: llm.RoleAssistant,
 					Content: []llm.ContentPart{
@@ -599,8 +600,8 @@ func TestConvertToATIF_CheckpointAndSummary(t *testing.T) {
 		{
 			Kind: "entry",
 			Seq:  0,
-			Turn: Turn{
-				Kind:      TurnCheckpoint,
+			Turn: schema.Turn{
+				Kind:      schema.TurnCheckpoint,
 				Message:   llm.User("Checkpoint: 5 tool calls executed, 3 files modified."),
 				Timestamp: ts,
 			},
@@ -608,8 +609,8 @@ func TestConvertToATIF_CheckpointAndSummary(t *testing.T) {
 		{
 			Kind: "entry",
 			Seq:  1,
-			Turn: Turn{
-				Kind:      TurnSummary,
+			Turn: schema.Turn{
+				Kind:      schema.TurnSummary,
 				Message:   llm.User("Summary: The agent refactored the auth module."),
 				Timestamp: ts.Add(1 * time.Second),
 			},
@@ -729,8 +730,8 @@ func TestConvertToATIF_SteeringTurn(t *testing.T) {
 		{
 			Kind: "entry",
 			Seq:  0,
-			Turn: Turn{
-				Kind:      TurnSteering,
+			Turn: schema.Turn{
+				Kind:      schema.TurnSteering,
 				Message:   llm.User("You are now in verification mode."),
 				Timestamp: ts,
 			},
@@ -774,8 +775,8 @@ func TestConvertToATIF_OrphanedToolResults(t *testing.T) {
 		{
 			Kind: "entry",
 			Seq:  0,
-			Turn: Turn{
-				Kind: TurnToolResults,
+			Turn: schema.Turn{
+				Kind: schema.TurnToolResults,
 				Message: llm.Message{
 					Role: llm.RoleTool,
 					Content: []llm.ContentPart{
@@ -844,8 +845,8 @@ func TestConvertToATIF_WebSearch(t *testing.T) {
 		{
 			Kind: "entry",
 			Seq:  0,
-			Turn: Turn{
-				Kind:      TurnUserInput,
+			Turn: schema.Turn{
+				Kind:      schema.TurnUserInput,
 				Message:   llm.User("Search for Go testing best practices"),
 				Timestamp: ts,
 			},
@@ -853,8 +854,8 @@ func TestConvertToATIF_WebSearch(t *testing.T) {
 		{
 			Kind: "entry",
 			Seq:  1,
-			Turn: Turn{
-				Kind: TurnAssistant,
+			Turn: schema.Turn{
+				Kind: schema.TurnAssistant,
 				Message: llm.Message{
 					Role: llm.RoleAssistant,
 					Content: []llm.ContentPart{
@@ -918,8 +919,8 @@ func TestConvertToATIF_MultiRound(t *testing.T) {
 		{
 			Kind: "entry",
 			Seq:  0,
-			Turn: Turn{
-				Kind:      TurnUserInput,
+			Turn: schema.Turn{
+				Kind:      schema.TurnUserInput,
 				Message:   llm.User("List files"),
 				Timestamp: ts,
 			},
@@ -928,8 +929,8 @@ func TestConvertToATIF_MultiRound(t *testing.T) {
 		{
 			Kind: "entry",
 			Seq:  1,
-			Turn: Turn{
-				Kind: TurnAssistant,
+			Turn: schema.Turn{
+				Kind: schema.TurnAssistant,
 				Message: llm.Message{
 					Role: llm.RoleAssistant,
 					Content: []llm.ContentPart{
@@ -956,8 +957,8 @@ func TestConvertToATIF_MultiRound(t *testing.T) {
 		{
 			Kind: "entry",
 			Seq:  2,
-			Turn: Turn{
-				Kind: TurnToolResults,
+			Turn: schema.Turn{
+				Kind: schema.TurnToolResults,
 				Message: llm.Message{
 					Role: llm.RoleTool,
 					Content: []llm.ContentPart{
@@ -978,8 +979,8 @@ func TestConvertToATIF_MultiRound(t *testing.T) {
 		{
 			Kind: "entry",
 			Seq:  3,
-			Turn: Turn{
-				Kind: TurnAssistant,
+			Turn: schema.Turn{
+				Kind: schema.TurnAssistant,
 				Message: llm.Message{
 					Role: llm.RoleAssistant,
 					Content: []llm.ContentPart{
@@ -1082,8 +1083,8 @@ func TestExportATIF_WritesFile(t *testing.T) {
 		t.Fatalf("NewTranscriptWriter: %v", err)
 	}
 
-	err = tw.Append(Turn{
-		Kind:      TurnUserInput,
+	err = tw.Append(schema.Turn{
+		Kind:      schema.TurnUserInput,
 		Message:   llm.User("Hello!"),
 		Timestamp: ts,
 	})
@@ -1129,8 +1130,8 @@ func TestExportATIF_WritesFile(t *testing.T) {
 func TestConvertToATIF_RawUsage(t *testing.T) {
 	header := TranscriptHeader{SessionID: "sess-raw", Model: "gpt-5.3-codex"}
 	entries := []TranscriptEntry{
-		{Kind: "entry", Seq: 0, Turn: Turn{
-			Kind: TurnAssistant,
+		{Kind: "entry", Seq: 0, Turn: schema.Turn{
+			Kind: schema.TurnAssistant,
 			Message: llm.Message{
 				Role:    llm.RoleAssistant,
 				Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "hello"}},
@@ -1170,8 +1171,8 @@ func TestConvertToATIF_RawUsage(t *testing.T) {
 func TestConvertToATIF_WebSearchRaw(t *testing.T) {
 	header := TranscriptHeader{SessionID: "sess-ws-raw", Model: "gpt-5.3-codex"}
 	entries := []TranscriptEntry{
-		{Kind: "entry", Seq: 0, Turn: Turn{
-			Kind: TurnAssistant,
+		{Kind: "entry", Seq: 0, Turn: schema.Turn{
+			Kind: schema.TurnAssistant,
 			Message: llm.Message{
 				Role: llm.RoleAssistant,
 				Content: []llm.ContentPart{
@@ -1213,8 +1214,8 @@ func TestConvertToATIF_WebSearchRaw(t *testing.T) {
 func TestConvertToATIF_TurnSystem(t *testing.T) {
 	header := TranscriptHeader{SessionID: "sess-sys", Model: "gpt-5.3-codex"}
 	entries := []TranscriptEntry{
-		{Kind: "entry", Seq: 0, Turn: Turn{
-			Kind:      TurnSystem,
+		{Kind: "entry", Seq: 0, Turn: schema.Turn{
+			Kind:      schema.TurnSystem,
 			Message:   llm.User("System message content"),
 			Timestamp: time.Date(2026, 3, 2, 12, 0, 0, 0, time.UTC),
 		}},

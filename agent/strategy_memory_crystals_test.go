@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -33,9 +34,9 @@ func TestMemoryCrystalsStrategy_AfterAction_SkipsNonThirdTurn(t *testing.T) {
 	s := newMemoryCrystalsStrategy(cm)
 
 	// 2 turns — not a multiple of 3, so no crystallization.
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("hello")),
-		NewTurn(TurnAssistant, llm.Assistant("hi")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("hello")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi")),
 	}
 
 	err := s.AfterAction(context.Background(), history, client)
@@ -68,10 +69,10 @@ func TestMemoryCrystalsStrategy_AfterAction_CrystallizesEveryThird(t *testing.T)
 	s := newMemoryCrystalsStrategy(cm)
 
 	// 3 turns — multiple of 3, should trigger crystallization.
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("fix the bug")),
-		NewTurn(TurnAssistant, llm.Assistant("fixing")),
-		{Kind: TurnToolResults, Message: llm.Message{
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("fix the bug")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("fixing")),
+		{Kind: schema.TurnToolResults, Message: llm.Message{
 			Role: llm.RoleUser,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
@@ -105,9 +106,9 @@ func TestMemoryCrystalsStrategy_InjectCrystals(t *testing.T) {
 		{Turn: 6, Action: "edit_file", Facts: "Fixed nil check at line 42"},
 	}
 
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("task")),
-		NewTurn(TurnAssistant, llm.Assistant("working")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("task")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
 	}
 
 	s.injectCrystals(&history)
@@ -119,7 +120,7 @@ func TestMemoryCrystalsStrategy_InjectCrystals(t *testing.T) {
 
 	// Crystal should be the last turn.
 	last := history[2]
-	if last.Kind != TurnSteering {
+	if last.Kind != schema.TurnSteering {
 		t.Errorf("expected TurnSteering, got %v", last.Kind)
 	}
 	text := last.Message.Text()
@@ -141,10 +142,10 @@ func TestMemoryCrystalsStrategy_InjectCrystals_RemovesOld(t *testing.T) {
 		{Turn: 3, Action: "test", Facts: "new crystal"},
 	}
 
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("task")),
-		NewTurn(TurnSteering, llm.User("[MEMORY CRYSTALS]\nold crystal\n[END CRYSTALS]")),
-		NewTurn(TurnAssistant, llm.Assistant("working")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("task")),
+		schema.NewTurn(schema.TurnSteering, llm.User("[MEMORY CRYSTALS]\nold crystal\n[END CRYSTALS]")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
 	}
 
 	s.injectCrystals(&history)
@@ -152,7 +153,7 @@ func TestMemoryCrystalsStrategy_InjectCrystals_RemovesOld(t *testing.T) {
 	// Old crystal should be removed, new one appended.
 	crystalCount := 0
 	for _, t := range history {
-		if t.Kind == TurnSteering && strings.Contains(t.Message.Text(), "[MEMORY CRYSTALS]") {
+		if t.Kind == schema.TurnSteering && strings.Contains(t.Message.Text(), "[MEMORY CRYSTALS]") {
 			crystalCount++
 		}
 	}

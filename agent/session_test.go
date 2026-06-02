@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -89,7 +90,7 @@ func (s compactionEventStrategy) Name() string { return "compaction-event-test" 
 
 func (s compactionEventStrategy) Tools() []registeredTool { return nil }
 
-func (s compactionEventStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
+func (s compactionEventStrategy) ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
 	_ = ctx
 	_ = history
 	_ = sysPromptChars
@@ -99,7 +100,7 @@ func (s compactionEventStrategy) ManageContext(ctx context.Context, history *[]T
 	return nil
 }
 
-func (s compactionEventStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
+func (s compactionEventStrategy) AfterAction(ctx context.Context, history []schema.Turn, client *llm.Client) error {
 	_ = ctx
 	_ = history
 	_ = client
@@ -1485,10 +1486,10 @@ func TestSession_CompactEmitsCompactionTurnEvent(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	sess.contextMgr.PreserveRecentTurns = 1
-	sess.history = []Turn{
-		NewTurn(TurnUserInput, llm.User("first task")),
-		NewTurn(TurnAssistant, llm.Assistant("I will inspect the project and report back with enough detail to become a working note.")),
-		NewTurn(TurnUserInput, llm.User("second task")),
+	sess.history = []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first task")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("I will inspect the project and report back with enough detail to become a working note.")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("second task")),
 	}
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
@@ -1513,7 +1514,7 @@ func TestSession_CompactEmitsCompactionTurnEvent(t *testing.T) {
 	if len(got) == 0 {
 		t.Fatalf("missing %s event in %+v", events.EventCompactionTurn, *eventsPtr)
 	}
-	if got[0].Kind != string(TurnCheckpoint) || !strings.Contains(got[0].Text, "[CONTEXT CHECKPOINT]") {
+	if got[0].Kind != string(schema.TurnCheckpoint) || !strings.Contains(got[0].Text, "[CONTEXT CHECKPOINT]") {
 		t.Fatalf("first compaction event=%+v", got[0])
 	}
 }
@@ -2111,11 +2112,11 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 
 	// Spec: loop detection warning is recorded as a SteeringTurn in history.
 	sess.mu.Lock()
-	turns := append([]Turn{}, sess.history...)
+	turns := append([]schema.Turn{}, sess.history...)
 	sess.mu.Unlock()
 	foundSteering := false
 	for _, tr := range turns {
-		if tr.Kind == TurnSteering && tr.Message.Role == llm.RoleUser && strings.Contains(tr.Message.Text(), "stuck") {
+		if tr.Kind == schema.TurnSteering && tr.Message.Role == llm.RoleUser && strings.Contains(tr.Message.Text(), "stuck") {
 			foundSteering = true
 		}
 	}
@@ -2558,9 +2559,9 @@ func TestSession_CloseCannotBeReopenedByLateTurnCompletion(t *testing.T) {
 		t.Fatalf("late ProcessInput completion reopened session: got %s want %s", got, SessionClosed)
 	}
 	sess.mu.Lock()
-	history := append([]Turn(nil), sess.history...)
+	history := append([]schema.Turn(nil), sess.history...)
 	sess.mu.Unlock()
-	if len(history) != 1 || history[0].Kind != TurnUserInput {
+	if len(history) != 1 || history[0].Kind != schema.TurnUserInput {
 		t.Fatalf("late model response was processed into history: %+v", history)
 	}
 }
@@ -2745,9 +2746,9 @@ func TestSession_AppendCanceledToolResultsPreservesCompletedStatus(t *testing.T)
 	sess.appendCanceledToolResults(calls, results, context.Canceled)
 
 	sess.mu.Lock()
-	history := append([]Turn(nil), sess.history...)
+	history := append([]schema.Turn(nil), sess.history...)
 	sess.mu.Unlock()
-	if len(history) != 1 || history[0].Kind != TurnToolResults {
+	if len(history) != 1 || history[0].Kind != schema.TurnToolResults {
 		t.Fatalf("history=%+v, want one tool-results turn", history)
 	}
 	parts := history[0].Message.Content
@@ -2803,9 +2804,9 @@ func TestSession_AppendToolResultsSynthesizesCanceledResultsOnCancel(t *testing.
 	}
 
 	sess.mu.Lock()
-	history := append([]Turn(nil), sess.history...)
+	history := append([]schema.Turn(nil), sess.history...)
 	sess.mu.Unlock()
-	if len(history) != 1 || history[0].Kind != TurnToolResults {
+	if len(history) != 1 || history[0].Kind != schema.TurnToolResults {
 		t.Fatalf("history=%+v, want one fallback tool-results turn", history)
 	}
 	gotParts := history[0].Message.Content
@@ -4107,9 +4108,9 @@ func TestSession_ProcessInput_WithImage_BuildsMultiPartUserMessage(t *testing.T)
 
 	// Check the transcript: the user-input turn should carry both a text part
 	// and an image part.
-	var userTurn *Turn
+	var userTurn *schema.Turn
 	for i := range sess.history {
-		if sess.history[i].Kind == TurnUserInput {
+		if sess.history[i].Kind == schema.TurnUserInput {
 			userTurn = &sess.history[i]
 			break
 		}
@@ -4176,9 +4177,9 @@ func TestSession_ProcessInput_ImageOnly_OmitsEmptyTextPart(t *testing.T) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 
-	var userTurn *Turn
+	var userTurn *schema.Turn
 	for i := range sess.history {
-		if sess.history[i].Kind == TurnUserInput {
+		if sess.history[i].Kind == schema.TurnUserInput {
 			userTurn = &sess.history[i]
 			break
 		}
@@ -4245,11 +4246,11 @@ func TestSession_Enqueue_DrainsAfterTurnCompletes(t *testing.T) {
 	// Two user-input turns must appear in history: the original and the
 	// queued one, in that order.
 	sess.mu.Lock()
-	turns := append([]Turn{}, sess.history...)
+	turns := append([]schema.Turn{}, sess.history...)
 	sess.mu.Unlock()
 	var userTexts []string
 	for _, tr := range turns {
-		if tr.Kind == TurnUserInput {
+		if tr.Kind == schema.TurnUserInput {
 			userTexts = append(userTexts, tr.Message.Text())
 		}
 	}

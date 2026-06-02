@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -54,7 +55,7 @@ func sessionLogRecallToolDef(strategy *sessionLogStrategy) registeredTool {
 //   - Layer 2: thinking clearing
 //   - Layer 3 (replaced): session-log checkpoint instead of deterministic checkpoint
 //   - Layer 4: LLM summarization fallback
-func (s *sessionLogStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
+func (s *sessionLogStrategy) ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
 	if s.cm == nil {
 		return nil
 	}
@@ -124,7 +125,7 @@ func (s *sessionLogStrategy) ManageContext(ctx context.Context, history *[]Turn,
 			EstTokensBefore: before,
 			EstTokensAfter:  after,
 		})
-		if s.cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == TurnCheckpoint {
+		if s.cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == schema.TurnCheckpoint {
 			s.cm.OnCompactionTurn((*history)[0])
 		}
 		compacted = true
@@ -150,7 +151,7 @@ func (s *sessionLogStrategy) ManageContext(ctx context.Context, history *[]Turn,
 				EstTokensBefore: before,
 				EstTokensAfter:  after,
 			})
-			if s.cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == TurnSummary {
+			if s.cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == schema.TurnSummary {
 				s.cm.OnCompactionTurn((*history)[0])
 			}
 			compacted = true
@@ -170,7 +171,7 @@ func (s *sessionLogStrategy) ManageContext(ctx context.Context, history *[]Turn,
 
 // sessionLogCheckpoint replaces old history with a checkpoint built from the
 // session log. Returns a new history slice: [checkpoint_turn, ...preserved_recent].
-func (s *sessionLogStrategy) sessionLogCheckpoint(history []Turn, preserveRecent int) []Turn {
+func (s *sessionLogStrategy) sessionLogCheckpoint(history []schema.Turn, preserveRecent int) []schema.Turn {
 	if len(history) <= preserveRecent {
 		return history
 	}
@@ -199,8 +200,8 @@ func (s *sessionLogStrategy) sessionLogCheckpoint(history []Turn, preserveRecent
 	}
 	b.WriteString("\n[END CHECKPOINT]\n")
 
-	checkpointTurn := NewTurn(TurnCheckpoint, llm.User(b.String()))
-	result := make([]Turn, 0, 1+preserveRecent)
+	checkpointTurn := schema.NewTurn(schema.TurnCheckpoint, llm.User(b.String()))
+	result := make([]schema.Turn, 0, 1+preserveRecent)
 	result = append(result, checkpointTurn)
 	result = append(result, history[cutoff:]...)
 	return result
@@ -208,9 +209,9 @@ func (s *sessionLogStrategy) sessionLogCheckpoint(history []Turn, preserveRecent
 
 // extractOriginalPrompt finds the original user prompt from history, handling
 // previous checkpoints and summaries.
-func extractOriginalPrompt(history []Turn) string {
+func extractOriginalPrompt(history []schema.Turn) string {
 	for _, t := range history {
-		if t.Kind != TurnUserInput {
+		if t.Kind != schema.TurnUserInput {
 			continue
 		}
 		text := t.Message.Text()
@@ -245,7 +246,7 @@ func extractOriginalPromptLine(text, prefix string) string {
 
 // AfterAction forks a summarization of the recent turns and appends the
 // result to the session log. Errors from the LLM are non-fatal.
-func (s *sessionLogStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
+func (s *sessionLogStrategy) AfterAction(ctx context.Context, history []schema.Turn, client *llm.Client) error {
 	if s.session == nil || s.session.Profile() == nil {
 		return nil
 	}

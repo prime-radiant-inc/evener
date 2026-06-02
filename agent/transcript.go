@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -46,9 +47,9 @@ type TranscriptHeader struct {
 
 // TranscriptEntry is a single turn in the transcript JSONL file.
 type TranscriptEntry struct {
-	Kind string `json:"kind"` // Always "entry"
-	Seq  int    `json:"seq"`  // monotonically increasing line sequence number
-	Turn Turn   `json:"turn"` // the recorded conversation turn
+	Kind string      `json:"kind"` // Always "entry"
+	Seq  int         `json:"seq"`  // monotonically increasing line sequence number
+	Turn schema.Turn `json:"turn"` // the recorded conversation turn
 }
 
 // TranscriptAPICall records an LLM API call in the transcript JSONL file.
@@ -124,7 +125,7 @@ func NewTranscriptWriter(path string, header TranscriptHeader) (*TranscriptWrite
 
 // Append writes a turn as a TranscriptEntry to the JSONL file.
 // Safe for concurrent use. No-op if the receiver is nil.
-func (w *TranscriptWriter) Append(turn Turn) error {
+func (w *TranscriptWriter) Append(turn schema.Turn) error {
 	if w == nil || w.closed.Load() {
 		return nil
 	}
@@ -438,12 +439,12 @@ func readTranscriptFull(path string) (transcriptData, error) {
 // ResumeHistory extracts the history needed for session resume from transcript entries.
 // If a compaction turn (CHECKPOINT or SUMMARY) exists, returns [last compaction turn, ...subsequent turns].
 // Otherwise returns all turns.
-func ResumeHistory(entries []TranscriptEntry) []Turn {
+func ResumeHistory(entries []TranscriptEntry) []schema.Turn {
 	// Scan backward for the last compaction turn.
 	compactionIdx := -1
 	for i := len(entries) - 1; i >= 0; i-- {
 		kind := entries[i].Turn.Kind
-		if kind == TurnCheckpoint || kind == TurnSummary {
+		if kind == schema.TurnCheckpoint || kind == schema.TurnSummary {
 			compactionIdx = i
 			break
 		}
@@ -451,7 +452,7 @@ func ResumeHistory(entries []TranscriptEntry) []Turn {
 
 	if compactionIdx < 0 {
 		// No compaction: return all turns.
-		turns := make([]Turn, len(entries))
+		turns := make([]schema.Turn, len(entries))
 		for i, e := range entries {
 			turns[i] = e.Turn
 		}
@@ -460,7 +461,7 @@ func ResumeHistory(entries []TranscriptEntry) []Turn {
 	}
 
 	// Return compaction turn + everything after it.
-	result := make([]Turn, 0, len(entries)-compactionIdx)
+	result := make([]schema.Turn, 0, len(entries)-compactionIdx)
 	for i := compactionIdx; i < len(entries); i++ {
 		result = append(result, entries[i].Turn)
 	}

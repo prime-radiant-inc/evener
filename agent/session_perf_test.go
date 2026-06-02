@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -357,7 +358,7 @@ func TestAfterAction_ReceivesCurrentHistory(t *testing.T) {
 	}
 	comm := communicateCall("c1", "done")
 
-	var afterActionHistory []Turn
+	var afterActionHistory []schema.Turn
 	spy := &spyStrategy{
 		toolsDefs: nil,
 	}
@@ -365,8 +366,8 @@ func TestAfterAction_ReceivesCurrentHistory(t *testing.T) {
 	// Override AfterAction to capture what it sees.
 	capturer := &afterActionCapture{
 		spyStrategy: spy,
-		onAfterAction: func(history []Turn) {
-			afterActionHistory = append([]Turn{}, history...)
+		onAfterAction: func(history []schema.Turn) {
+			afterActionHistory = append([]schema.Turn{}, history...)
 		},
 	}
 
@@ -405,7 +406,7 @@ func TestAfterAction_ReceivesCurrentHistory(t *testing.T) {
 	// The history should contain at least: user input, assistant (tool call), tool results.
 	hasToolResults := false
 	for _, turn := range afterActionHistory {
-		if turn.Kind == TurnToolResults {
+		if turn.Kind == schema.TurnToolResults {
 			hasToolResults = true
 			break
 		}
@@ -418,10 +419,10 @@ func TestAfterAction_ReceivesCurrentHistory(t *testing.T) {
 // afterActionCapture wraps a spyStrategy and captures the history passed to AfterAction.
 type afterActionCapture struct {
 	*spyStrategy
-	onAfterAction func(history []Turn)
+	onAfterAction func(history []schema.Turn)
 }
 
-func (a *afterActionCapture) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
+func (a *afterActionCapture) AfterAction(ctx context.Context, history []schema.Turn, client *llm.Client) error {
 	if a.onAfterAction != nil {
 		a.onAfterAction(history)
 	}
@@ -985,10 +986,10 @@ func TestRestoreSession_FromMetaAndTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTranscriptWriter: %v", err)
 	}
-	if err := tw.Append(NewTurn(TurnUserInput, llm.User("transcript-msg"))); err != nil {
+	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("transcript-msg"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-	if err := tw.Append(NewTurn(TurnAssistant, llm.Assistant("transcript-reply"))); err != nil {
+	if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("transcript-reply"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	tw.Close()
@@ -1101,11 +1102,11 @@ func TestRestoreSessionFromMeta_TranscriptWithCompaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTranscriptWriter: %v", err)
 	}
-	tw.Append(NewTurn(TurnUserInput, llm.User("old-msg")))
-	tw.Append(NewTurn(TurnAssistant, llm.Assistant("old-reply")))
-	tw.Append(NewTurn(TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT] Summary")))
-	tw.Append(NewTurn(TurnUserInput, llm.User("post-compact-msg")))
-	tw.Append(NewTurn(TurnAssistant, llm.Assistant("post-compact-reply")))
+	tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("old-msg")))
+	tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("old-reply")))
+	tw.Append(schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT] Summary")))
+	tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("post-compact-msg")))
+	tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("post-compact-reply")))
 	tw.Close()
 
 	c := llm.NewClient()

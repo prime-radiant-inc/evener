@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -34,7 +35,7 @@ func (s *obsMaskStrategy) Name() string { return "obs-mask" }
 func (s *obsMaskStrategy) Tools() []registeredTool { return nil }
 
 // AfterAction is a no-op; this strategy performs no work after each action.
-func (s *obsMaskStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
+func (s *obsMaskStrategy) AfterAction(ctx context.Context, history []schema.Turn, client *llm.Client) error {
 	return nil
 }
 
@@ -46,7 +47,7 @@ func (s *obsMaskStrategy) AfterAction(ctx context.Context, history []Turn, clien
 // event via emitFn, and any compaction resets the manager's cached token
 // measurements. It is a no-op when no contextManager is set or the context
 // window size is non-positive.
-func (s *obsMaskStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
+func (s *obsMaskStrategy) ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
 	if s.cm == nil {
 		return nil
 	}
@@ -100,7 +101,7 @@ func (s *obsMaskStrategy) ManageContext(ctx context.Context, history *[]Turn, sy
 			EstTokensBefore: before,
 			EstTokensAfter:  after,
 		})
-		if s.cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == TurnCheckpoint {
+		if s.cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == schema.TurnCheckpoint {
 			s.cm.OnCompactionTurn((*history)[0])
 		}
 		compacted = true
@@ -119,7 +120,7 @@ func (s *obsMaskStrategy) ManageContext(ctx context.Context, history *[]Turn, sy
 // aggressiveMaskObservations replaces ALL tool result content with minimal
 // "[tool: OK]" markers. Unlike maskObservations which generates readable
 // one-line summaries, this drops content entirely. Error results are preserved.
-func aggressiveMaskObservations(history []Turn, preserveRecent int) {
+func aggressiveMaskObservations(history []schema.Turn, preserveRecent int) {
 	if len(history) == 0 {
 		return
 	}
@@ -131,7 +132,7 @@ func aggressiveMaskObservations(history []Turn, preserveRecent int) {
 
 	for i := 0; i < cutoff; i++ {
 		t := &history[i]
-		if t.Kind != TurnTool && t.Kind != TurnToolResults {
+		if t.Kind != schema.TurnTool && t.Kind != schema.TurnToolResults {
 			continue
 		}
 		for j := range t.Message.Content {

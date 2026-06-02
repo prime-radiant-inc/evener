@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -41,9 +42,9 @@ func TestObsMaskStrategy_ManageContext_NoCompactionBelowThreshold(t *testing.T) 
 	cm := newContextManager(profile, client)
 	s := newObsMaskStrategy(cm)
 
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("hello")),
-		NewTurn(TurnAssistant, llm.Assistant("hi")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("hello")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi")),
 	}
 
 	emitted := false
@@ -62,10 +63,10 @@ func TestObsMaskStrategy_ManageContext_NoCompactionBelowThreshold(t *testing.T) 
 }
 
 func TestAggressiveMaskObservations_MasksToolOutput(t *testing.T) {
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("read the file")),
-		NewTurn(TurnAssistant, llm.Assistant("I'll read it")),
-		{Kind: TurnToolResults, Message: llm.Message{
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("read the file")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("I'll read it")),
+		{Kind: schema.TurnToolResults, Message: llm.Message{
 			Role: llm.RoleUser,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
@@ -74,10 +75,10 @@ func TestAggressiveMaskObservations_MasksToolOutput(t *testing.T) {
 				}},
 			},
 		}},
-		NewTurn(TurnAssistant, llm.Assistant("I see the content")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("I see the content")),
 		// These last 2 turns are "recent" and should be preserved.
-		NewTurn(TurnUserInput, llm.User("now edit it")),
-		NewTurn(TurnAssistant, llm.Assistant("editing now")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("now edit it")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("editing now")),
 	}
 
 	aggressiveMaskObservations(history, 2) // preserve last 2
@@ -94,9 +95,9 @@ func TestAggressiveMaskObservations_MasksToolOutput(t *testing.T) {
 }
 
 func TestAggressiveMaskObservations_PreservesErrors(t *testing.T) {
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("do something")),
-		{Kind: TurnToolResults, Message: llm.Message{
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("do something")),
+		{Kind: schema.TurnToolResults, Message: llm.Message{
 			Role: llm.RoleUser,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
@@ -106,8 +107,8 @@ func TestAggressiveMaskObservations_PreservesErrors(t *testing.T) {
 				}},
 			},
 		}},
-		NewTurn(TurnAssistant, llm.Assistant("handling error")),
-		NewTurn(TurnUserInput, llm.User("next")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("handling error")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("next")),
 	}
 
 	aggressiveMaskObservations(history, 1)
@@ -124,9 +125,9 @@ func TestAggressiveMaskObservations_PreservesErrors(t *testing.T) {
 }
 
 func TestAggressiveMaskObservations_SkipsAlreadyMasked(t *testing.T) {
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("do something")),
-		{Kind: TurnToolResults, Message: llm.Message{
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("do something")),
+		{Kind: schema.TurnToolResults, Message: llm.Message{
 			Role: llm.RoleUser,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
@@ -135,8 +136,8 @@ func TestAggressiveMaskObservations_SkipsAlreadyMasked(t *testing.T) {
 				}},
 			},
 		}},
-		NewTurn(TurnAssistant, llm.Assistant("done")),
-		NewTurn(TurnUserInput, llm.User("next")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("done")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("next")),
 	}
 
 	aggressiveMaskObservations(history, 1)
@@ -157,20 +158,20 @@ func TestObsMaskStrategy_ManageContext_FiresOnCompactionTurn_Checkpoint(t *testi
 	cm.CheckpointThreshold = 0.0001
 	cm.PreserveRecentTurns = 2
 
-	var callbackTurns []Turn
-	cm.OnCompactionTurn = func(t Turn) {
+	var callbackTurns []schema.Turn
+	cm.OnCompactionTurn = func(t schema.Turn) {
 		callbackTurns = append(callbackTurns, t)
 	}
 
 	s := newObsMaskStrategy(cm)
 
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("fix the bug in auth.go")),
-		NewTurn(TurnAssistant, llm.Assistant("I'll fix it")),
-		NewTurn(TurnUserInput, llm.User("also fix tests")),
-		NewTurn(TurnAssistant, llm.Assistant("fixing tests")),
-		NewTurn(TurnUserInput, llm.User("what's the status")),
-		NewTurn(TurnAssistant, llm.Assistant("almost done")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("fix the bug in auth.go")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("I'll fix it")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("also fix tests")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("fixing tests")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("what's the status")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("almost done")),
 	}
 
 	emitFn := func(kind events.EventKind, data events.EventData) {}
@@ -184,7 +185,7 @@ func TestObsMaskStrategy_ManageContext_FiresOnCompactionTurn_Checkpoint(t *testi
 	if len(callbackTurns) != 1 {
 		t.Fatalf("expected 1 callback turn, got %d", len(callbackTurns))
 	}
-	if callbackTurns[0].Kind != TurnCheckpoint {
+	if callbackTurns[0].Kind != schema.TurnCheckpoint {
 		t.Errorf("expected TurnCheckpoint, got %s", callbackTurns[0].Kind)
 	}
 	if !strings.Contains(callbackTurns[0].Message.Text(), "[CONTEXT CHECKPOINT]") {

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -33,9 +34,9 @@ func TestRecursiveDistillStrategy_AfterAction_NoMicroBelowThreshold(t *testing.T
 	s := newRecursiveDistillStrategy(cm)
 
 	// 5 turns — not enough for micro-summary (needs 10).
-	history := make([]Turn, 5)
+	history := make([]schema.Turn, 5)
 	for i := range history {
-		history[i] = NewTurn(TurnAssistant, llm.Assistant("turn"))
+		history[i] = schema.NewTurn(schema.TurnAssistant, llm.Assistant("turn"))
 	}
 
 	err := s.AfterAction(context.Background(), history, client)
@@ -68,9 +69,9 @@ func TestRecursiveDistillStrategy_AfterAction_MicroAt10Turns(t *testing.T) {
 	s := newRecursiveDistillStrategy(cm)
 
 	// 10 turns — should trigger micro-summary.
-	history := make([]Turn, 10)
+	history := make([]schema.Turn, 10)
 	for i := range history {
-		history[i] = NewTurn(TurnAssistant, llm.Assistant("working on step"))
+		history[i] = schema.NewTurn(schema.TurnAssistant, llm.Assistant("working on step"))
 	}
 
 	err := s.AfterAction(context.Background(), history, client)
@@ -130,9 +131,9 @@ func TestRecursiveDistillStrategy_AfterAction_MacroAt50Turns(t *testing.T) {
 	s.lastMicroAt = 40
 
 	// 50 turns — should trigger both micro (5th one) AND macro.
-	history := make([]Turn, 50)
+	history := make([]schema.Turn, 50)
 	for i := range history {
-		history[i] = NewTurn(TurnAssistant, llm.Assistant("working"))
+		history[i] = schema.NewTurn(schema.TurnAssistant, llm.Assistant("working"))
 	}
 
 	err := s.AfterAction(context.Background(), history, client)
@@ -162,9 +163,9 @@ func TestRecursiveDistillStrategy_InjectDistilledContext(t *testing.T) {
 	s.macroSummaries = []string{"Phase 1: investigated and found root cause."}
 	s.microSummaries = []string{"Applied fix to auth.go.", "Running tests."}
 
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("task")),
-		NewTurn(TurnAssistant, llm.Assistant("working")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("task")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
 	}
 
 	s.injectDistilledContext(&history)
@@ -174,7 +175,7 @@ func TestRecursiveDistillStrategy_InjectDistilledContext(t *testing.T) {
 	}
 
 	last := history[2]
-	if last.Kind != TurnSteering {
+	if last.Kind != schema.TurnSteering {
 		t.Errorf("expected TurnSteering, got %v", last.Kind)
 	}
 	text := last.Message.Text()
@@ -197,17 +198,17 @@ func TestRecursiveDistillStrategy_InjectDistilledContext_RemovesOld(t *testing.T
 	s := newRecursiveDistillStrategy(cm)
 	s.microSummaries = []string{"new summary"}
 
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("task")),
-		NewTurn(TurnSteering, llm.User("[DISTILLED MEMORY]\nold stuff\n[END DISTILLED MEMORY]")),
-		NewTurn(TurnAssistant, llm.Assistant("working")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("task")),
+		schema.NewTurn(schema.TurnSteering, llm.User("[DISTILLED MEMORY]\nold stuff\n[END DISTILLED MEMORY]")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
 	}
 
 	s.injectDistilledContext(&history)
 
 	distillCount := 0
 	for _, t := range history {
-		if t.Kind == TurnSteering && strings.Contains(t.Message.Text(), "[DISTILLED MEMORY]") {
+		if t.Kind == schema.TurnSteering && strings.Contains(t.Message.Text(), "[DISTILLED MEMORY]") {
 			distillCount++
 		}
 	}

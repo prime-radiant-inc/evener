@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -24,14 +25,14 @@ func (s *spyStrategy) Name() string { return "spy" }
 
 func (s *spyStrategy) Tools() []registeredTool { return s.toolsDefs }
 
-func (s *spyStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
+func (s *spyStrategy) ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.manageContextCalls++
 	return nil
 }
 
-func (s *spyStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
+func (s *spyStrategy) AfterAction(ctx context.Context, history []schema.Turn, client *llm.Client) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.afterActionCalls++
@@ -80,11 +81,11 @@ func TestCompactStrategyManageContext_Delegation(t *testing.T) {
 	cs := newCompactStrategy(cm)
 
 	// ~425 tokens (85% of 500) to exceed checkpoint threshold.
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("read some files")},
-		{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("analysis ", 200))},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("read some files")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("analysis ", 200))},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent1")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
 	}
 
 	// Track emitted events.
@@ -107,7 +108,7 @@ func TestCompactStrategyManageContext_Delegation(t *testing.T) {
 	}
 
 	// Verify checkpoint replaced old history.
-	if history[0].Kind != TurnCheckpoint {
+	if history[0].Kind != schema.TurnCheckpoint {
 		t.Fatalf("expected checkpoint turn, got %v", history[0].Kind)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -64,9 +65,9 @@ func TestOODAStrategy_ManageContext_NoOrientMessageWhenLogEmpty(t *testing.T) {
 		},
 	}
 
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("hello")},
-		{Kind: TurnAssistant, Message: llm.Assistant("world")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("hello")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("world")},
 	}
 
 	err := ooda.ManageContext(context.Background(), &history, 0, func(events.EventKind, events.EventData) {})
@@ -118,9 +119,9 @@ func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *tes
 		},
 	}
 
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("hello")},
-		{Kind: TurnAssistant, Message: llm.Assistant("world")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("hello")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("world")},
 	}
 
 	err := ooda.ManageContext(context.Background(), &history, 0, func(events.EventKind, events.EventData) {})
@@ -135,7 +136,7 @@ func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *tes
 
 	// Last turn should be the orient message.
 	orientTurn := history[len(history)-1]
-	if orientTurn.Kind != TurnSteering {
+	if orientTurn.Kind != schema.TurnSteering {
 		t.Errorf("expected last turn to be TurnSteering, got %v", orientTurn.Kind)
 	}
 
@@ -186,9 +187,9 @@ func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 		},
 	}
 
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("hello")},
-		{Kind: TurnAssistant, Message: llm.Assistant("world")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("hello")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("world")},
 	}
 
 	err := ooda.ManageContext(context.Background(), &history, 0, func(events.EventKind, events.EventData) {})
@@ -240,9 +241,9 @@ func TestOODAStrategy_ManageContext_AppliesCompactionLayers(t *testing.T) {
 	// Build a history with large content to trigger compaction.
 	largeContent := strings.Repeat("x", 30000)
 
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("read some files")},
-		{Kind: TurnAssistant, Message: llm.Message{
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("read some files")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
@@ -252,12 +253,12 @@ func TestOODAStrategy_ManageContext_AppliesCompactionLayers(t *testing.T) {
 				}},
 			},
 		}},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("call1", "read_file", largeContent, false)},
-		{Kind: TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("call1", "read_file", largeContent, false)},
+		{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 			{Kind: llm.ContentText, Text: "Done reading"},
 		}}},
-		{Kind: TurnUserInput, Message: llm.User("another task")},
-		{Kind: TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: schema.TurnUserInput, Message: llm.User("another task")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 			{Kind: llm.ContentText, Text: "working on it"},
 		}}},
 	}
@@ -286,7 +287,7 @@ func TestOODAStrategy_ManageContext_AppliesCompactionLayers(t *testing.T) {
 
 	// Should also have injected orient message at the end.
 	lastTurn := history[len(history)-1]
-	if lastTurn.Kind != TurnSteering {
+	if lastTurn.Kind != schema.TurnSteering {
 		t.Errorf("expected last turn to be TurnSteering, got %v", lastTurn.Kind)
 	}
 	if !strings.Contains(lastTurn.Message.Text(), "[SESSION ORIENTATION]") {
@@ -325,8 +326,8 @@ func TestOODAStrategy_AfterAction_InheritsFromSessionLogStrategy(t *testing.T) {
 		},
 	}
 
-	turns := []Turn{
-		{Kind: TurnAssistant, Message: llm.Message{
+	turns := []schema.Turn{
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
@@ -336,7 +337,7 @@ func TestOODAStrategy_AfterAction_InheritsFromSessionLogStrategy(t *testing.T) {
 				}},
 			},
 		}},
-		{Kind: TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "PASS", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "PASS", false)},
 	}
 
 	err := ooda.AfterAction(context.Background(), turns, client)

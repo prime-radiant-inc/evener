@@ -11,11 +11,12 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
 // toolResultContent extracts string content from a TurnTool.
-func toolResultContent(t Turn) string {
+func toolResultContent(t schema.Turn) string {
 	for _, p := range t.Message.Content {
 		if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 			if s, ok := p.ToolResult.Content.(string); ok {
@@ -33,7 +34,7 @@ func TestEstimateTokens_EmptyHistory(t *testing.T) {
 	if got != 0 {
 		t.Fatalf("EstimateTokens(nil) = %d, want 0", got)
 	}
-	got = estimateTokens([]Turn{})
+	got = estimateTokens([]schema.Turn{})
 	if got != 0 {
 		t.Fatalf("EstimateTokens([]) = %d, want 0", got)
 	}
@@ -41,7 +42,7 @@ func TestEstimateTokens_EmptyHistory(t *testing.T) {
 
 func TestEstimateTokens_SingleUserTurn(t *testing.T) {
 	text := "Hello, world! This is a test message."
-	turns := []Turn{{Kind: TurnUserInput, Message: llm.User(text)}}
+	turns := []schema.Turn{{Kind: schema.TurnUserInput, Message: llm.User(text)}}
 	got := estimateTokens(turns)
 	want := len(text) / 4
 	if got != want {
@@ -51,9 +52,9 @@ func TestEstimateTokens_SingleUserTurn(t *testing.T) {
 
 func TestEstimateTokens_WithToolResults(t *testing.T) {
 	content := "file contents here with lots of text"
-	turns := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("read a file")},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", content, false)},
+	turns := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("read a file")},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", content, false)},
 	}
 	got := estimateTokens(turns)
 	// messageCharCount counts: message.ToolCallID + part.ToolCallID + part.Name + content
@@ -67,8 +68,8 @@ func TestEstimateTokens_WithToolResults(t *testing.T) {
 }
 
 func TestEstimateTokens_WithThinking(t *testing.T) {
-	turns := []Turn{
-		{Kind: TurnAssistant, Message: llm.Message{
+	turns := []schema.Turn{
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "let me think about this carefully"}},
@@ -252,13 +253,13 @@ func TestSummarizeToolResult_UnknownTool(t *testing.T) {
 func TestMaskObservations_PreservesRecentTurns(t *testing.T) {
 	// 4 turns: 2 old tool results + 2 recent. With preserveRecent=2, only the first 2 should be masked.
 	bigContent := strings.Repeat("x", 200)
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", bigContent, false)},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c2", "read_file", `{"file_path":"b.go"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "read_file", bigContent, false)},
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", bigContent, false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2", "read_file", `{"file_path":"b.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "read_file", bigContent, false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	maskObservations(history, 2, "communicate")
@@ -277,10 +278,10 @@ func TestMaskObservations_PreservesRecentTurns(t *testing.T) {
 }
 
 func TestMaskObservations_SkipsAlreadyMasked(t *testing.T) {
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "[read_file: a.go, 10 lines]", false)},
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "[read_file: a.go, 10 lines]", false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	maskObservations(history, 0, "communicate")
@@ -291,10 +292,10 @@ func TestMaskObservations_SkipsAlreadyMasked(t *testing.T) {
 }
 
 func TestMaskObservations_SkipsErrorResults(t *testing.T) {
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "shell", "command not found\nexit_code=127 duration_ms=1 timed_out=false\n", true)},
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "shell", "command not found\nexit_code=127 duration_ms=1 timed_out=false\n", true)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	maskObservations(history, 0, "communicate")
@@ -305,10 +306,10 @@ func TestMaskObservations_SkipsErrorResults(t *testing.T) {
 }
 
 func TestMaskObservations_PreservesCommunicate(t *testing.T) {
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "communicate", `{"delivered":true,"inbox":[]}`, false)},
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "communicate", `{"delivered":true,"inbox":[]}`, false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	maskObservations(history, 0, "communicate")
@@ -320,15 +321,15 @@ func TestMaskObservations_PreservesCommunicate(t *testing.T) {
 
 func TestMaskObservations_EmptyHistory(t *testing.T) {
 	maskObservations(nil, 6, "communicate")
-	maskObservations([]Turn{}, 6, "communicate")
+	maskObservations([]schema.Turn{}, 6, "communicate")
 }
 
 func TestMaskObservations_PreservesAssistantTurns(t *testing.T) {
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: llm.Assistant("thinking about it")},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "1 | content\n", false)},
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("thinking about it")},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "1 | content\n", false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	maskObservations(history, 0, "communicate")
@@ -341,16 +342,16 @@ func TestMaskObservations_PreservesAssistantTurns(t *testing.T) {
 // --- Phase 3: Thinking clearing ---
 
 func TestClearThinking_RemovesOldThinkingText(t *testing.T) {
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: llm.Message{
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "long reasoning about the problem"}},
 				{Kind: llm.ContentText, Text: "my answer"},
 			},
 		}},
-		{Kind: TurnAssistant, Message: llm.Assistant("final answer")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("final answer")},
 	}
 
 	clearThinking(history, 1)
@@ -374,9 +375,9 @@ func TestClearThinking_RemovesOldThinkingText(t *testing.T) {
 }
 
 func TestClearThinking_PreservesRecentThinking(t *testing.T) {
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: llm.Message{
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "recent thinking"}},
@@ -400,9 +401,9 @@ func TestClearThinking_PreservesRecentThinking(t *testing.T) {
 }
 
 func TestClearThinking_PreservesRedactedThinking(t *testing.T) {
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: llm.Message{
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentRedThinking, Thinking: &llm.ThinkingData{
@@ -412,7 +413,7 @@ func TestClearThinking_PreservesRedactedThinking(t *testing.T) {
 				{Kind: llm.ContentText, Text: "answer"},
 			},
 		}},
-		{Kind: TurnAssistant, Message: llm.Assistant("final")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("final")},
 	}
 
 	clearThinking(history, 0)
@@ -428,18 +429,18 @@ func TestClearThinking_PreservesRedactedThinking(t *testing.T) {
 }
 
 func TestClearThinking_NoThinkingBlocks(t *testing.T) {
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: llm.Assistant("answer")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("answer")},
 	}
 
 	clearThinking(history, 0)
 }
 
 func TestClearThinking_MixedContent(t *testing.T) {
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: llm.Message{
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "thought one"}},
@@ -447,8 +448,8 @@ func TestClearThinking_MixedContent(t *testing.T) {
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"a.go"}`)}},
 			},
 		}},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	clearThinking(history, 1)
@@ -479,13 +480,13 @@ func TestClearThinking_MixedContent(t *testing.T) {
 // --- Phase 4: Deterministic checkpoint ---
 
 func TestCheckpoint_CreatesValidMessage(t *testing.T) {
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("Fix the auth bug in login.go")},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"login.go"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "1 | package main\n", false)},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c2", "edit_file", `{"file_path":"login.go","old_string":"old","new_string":"new"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "edit_file", "OK", false)},
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("Fix the auth bug in login.go")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"login.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "1 | package main\n", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2", "edit_file", `{"file_path":"login.go","old_string":"old","new_string":"new"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "edit_file", "OK", false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	result := checkpoint(history, 2, nil, "communicate")
@@ -497,7 +498,7 @@ func TestCheckpoint_CreatesValidMessage(t *testing.T) {
 		t.Fatalf("expected at least 3 turns, got %d", len(result))
 	}
 	// First turn should be the checkpoint.
-	if result[0].Kind != TurnCheckpoint {
+	if result[0].Kind != schema.TurnCheckpoint {
 		t.Fatalf("checkpoint should be TurnCheckpoint, got %s", result[0].Kind)
 	}
 	text := result[0].Message.Text()
@@ -543,11 +544,11 @@ func TestCheckpoint_DoesNotFreezeStaleTaskState(t *testing.T) {
 		t.Fatalf("Update done: %v", err)
 	}
 
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("do the work")},
-		{Kind: TurnAssistant, Message: llm.Assistant("working")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("do the work")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("working")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent1")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
 	}
 	result := checkpoint(history, 2, &sess.contextMgr.Meta, "communicate")
 	text := result[0].Message.Text()
@@ -557,10 +558,10 @@ func TestCheckpoint_DoesNotFreezeStaleTaskState(t *testing.T) {
 }
 
 func TestCheckpoint_IncludesOriginalPrompt(t *testing.T) {
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("Fix the auth bug in login.go")},
-		{Kind: TurnAssistant, Message: llm.Assistant("on it")},
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("Fix the auth bug in login.go")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("on it")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	result := checkpoint(history, 1, nil, "communicate")
@@ -571,15 +572,15 @@ func TestCheckpoint_IncludesOriginalPrompt(t *testing.T) {
 }
 
 func TestCheckpoint_TracksModifiedFiles(t *testing.T) {
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("prompt")},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "edit_file", `{"file_path":"auth.go"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "edit_file", "OK", false)},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c2", "write_file", `{"file_path":"user.go"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "write_file", "OK", false)},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c3", "apply_patch", `{"patch":"*** Begin Patch\n*** Update File: test.go\n*** End Patch"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c3", "apply_patch", "OK", false)},
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("prompt")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "edit_file", `{"file_path":"auth.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "edit_file", "OK", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2", "write_file", `{"file_path":"user.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "write_file", "OK", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c3", "apply_patch", `{"patch":"*** Begin Patch\n*** Update File: test.go\n*** End Patch"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c3", "apply_patch", "OK", false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	result := checkpoint(history, 1, nil, "communicate")
@@ -595,15 +596,15 @@ func TestCheckpoint_TracksModifiedFiles(t *testing.T) {
 }
 
 func TestCheckpoint_SummarizesActions(t *testing.T) {
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c2", "read_file", `{"file_path":"b.go"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "read_file", "content", false)},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c3", "shell", `{"command":"go test"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c3", "shell", "ok\nexit_code=0 duration_ms=1 timed_out=false\n", false)},
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2", "read_file", `{"file_path":"b.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "read_file", "content", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c3", "shell", `{"command":"go test"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c3", "shell", "ok\nexit_code=0 duration_ms=1 timed_out=false\n", false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	result := checkpoint(history, 1, nil, "communicate")
@@ -620,11 +621,11 @@ func TestCheckpoint_SummarizesActions(t *testing.T) {
 }
 
 func TestCheckpoint_PreservesRecentTurns(t *testing.T) {
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: llm.Assistant("old answer")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("old answer")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent1")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
 	}
 
 	result := checkpoint(history, 2, nil, "communicate")
@@ -641,9 +642,9 @@ func TestCheckpoint_PreservesRecentTurns(t *testing.T) {
 }
 
 func TestCheckpoint_NoHistoryToCheckpoint(t *testing.T) {
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: llm.Assistant("answer")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("answer")},
 	}
 
 	result := checkpoint(history, 6, nil, "communicate")
@@ -683,11 +684,11 @@ func TestSummarizeWithLLM_CallsCheapModel(t *testing.T) {
 
 	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), client)
 
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("Fix the auth bug")},
-		{Kind: TurnAssistant, Message: llm.Assistant("I'll fix it")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("Fix the auth bug")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("I'll fix it")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent1")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
 	}
 
 	ctx := context.Background()
@@ -716,11 +717,11 @@ func TestSummarizeWithLLM_ReplacesOldHistory(t *testing.T) {
 
 	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), client)
 
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: llm.Assistant("step 1")},
-		{Kind: TurnAssistant, Message: llm.Assistant("step 2")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("step 1")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("step 2")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
 	ctx := context.Background()
@@ -754,11 +755,11 @@ func TestSummarizeWithLLM_PreservesRecentTurns(t *testing.T) {
 
 	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), client)
 
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: llm.Assistant("old")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("old")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent1")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
 	}
 
 	ctx := context.Background()
@@ -783,10 +784,10 @@ func TestSummarizeWithLLM_ErrorFallsBackGracefully(t *testing.T) {
 
 	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), client)
 
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: llm.Assistant("step 1")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("step 1")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
 	result, err := cm.summarizeWithLLM(context.Background(), history, 1)
@@ -801,13 +802,13 @@ func TestSummarizeWithLLM_ErrorFallsBackGracefully(t *testing.T) {
 // --- Phase 6: MaybeCompact orchestrator ---
 
 // makeBigHistory creates a history where EstimateTokens returns approximately targetTokens.
-func makeBigHistory(targetTokens int) []Turn {
-	turns := []Turn{{Kind: TurnUserInput, Message: llm.User("Fix the auth bug")}}
+func makeBigHistory(targetTokens int) []schema.Turn {
+	turns := []schema.Turn{{Kind: schema.TurnUserInput, Message: llm.User("Fix the auth bug")}}
 	for estimateTokens(turns) < targetTokens {
 		id := fmt.Sprintf("c%d", len(turns))
 		turns = append(turns,
-			Turn{Kind: TurnAssistant, Message: assistantWithToolCall(id, "read_file", `{"file_path":"file.go"}`)},
-			Turn{Kind: TurnTool, Message: llm.ToolResultNamed(id, "read_file", strings.Repeat("x", 400), false)},
+			schema.Turn{Kind: schema.TurnAssistant, Message: assistantWithToolCall(id, "read_file", `{"file_path":"file.go"}`)},
+			schema.Turn{Kind: schema.TurnTool, Message: llm.ToolResultNamed(id, "read_file", strings.Repeat("x", 400), false)},
 		)
 	}
 	return turns
@@ -822,8 +823,8 @@ func TestMaybeCompact_NoCompactionBelow80Percent(t *testing.T) {
 	// Create history filling ~70% of 1000 tokens = 700 tokens via tool results.
 	history := makeBigHistory(700)
 	history = append(history,
-		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
-		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+		schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("recent1")},
+		schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
 	)
 
 	var evs []events.SessionEvent
@@ -844,9 +845,9 @@ func TestMaybeCompact_BelowThreshold_NoAction(t *testing.T) {
 	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), nil)
 
 	// Small history, well below any threshold.
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: llm.Assistant("ok")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("ok")},
 	}
 
 	var evs []events.SessionEvent
@@ -873,15 +874,15 @@ func TestMaybeCompact_CheckpointThreshold(t *testing.T) {
 	cm.PreserveRecentTurns = 2
 
 	// Each assistant turn ~400 chars = 100 tokens. Need 85% of 500 = 425 tokens.
-	history := []Turn{{Kind: TurnUserInput, Message: llm.User("Fix the auth bug")}}
+	history := []schema.Turn{{Kind: schema.TurnUserInput, Message: llm.User("Fix the auth bug")}}
 	for estimateTokens(history) < 425 {
 		history = append(history,
-			Turn{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("analysis ", 50))},
+			schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("analysis ", 50))},
 		)
 	}
 	history = append(history,
-		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
-		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+		schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("recent1")},
+		schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
 	)
 
 	var evs []events.SessionEvent
@@ -916,8 +917,8 @@ func TestMaybeCompact_EmitsEvents(t *testing.T) {
 	// Fill ~85% = 425 tokens (above 80% checkpoint threshold).
 	history := makeBigHistory(425)
 	history = append(history,
-		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
-		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+		schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("recent1")},
+		schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
 	)
 
 	var evs []events.SessionEvent
@@ -952,12 +953,12 @@ func TestMaybeCompact_RespectsSysPromptSize(t *testing.T) {
 	cm.PreserveRecentTurns = 2
 
 	// Small history, but giant system prompt.
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", strings.Repeat("x", 400), false)},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", strings.Repeat("x", 400), false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent1")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
 	}
 
 	var evs []events.SessionEvent
@@ -1207,13 +1208,13 @@ func TestSession_ContextManager_EmitsEvents(t *testing.T) {
 // If preserveRecent falls mid-pair (e.g., starts on a TurnTool), the cutoff must
 // be adjusted backward to include the preceding assistant turn.
 func TestCheckpoint_AdjustsCutoffToAvoidOrphanedToolTurn(t *testing.T) {
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("fix the bug")},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c2", "edit_file", `{"file_path":"b.go"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "edit_file", "OK", false)},
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("fix the bug")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2", "edit_file", `{"file_path":"b.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "edit_file", "OK", false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	// preserveRecent=3 → cutoff=3, preserved turns start at index 3 (TurnAssistant) — OK.
@@ -1224,10 +1225,10 @@ func TestCheckpoint_AdjustsCutoffToAvoidOrphanedToolTurn(t *testing.T) {
 	if len(result) < 2 {
 		t.Fatalf("expected at least 2 turns, got %d", len(result))
 	}
-	if result[0].Kind != TurnCheckpoint {
+	if result[0].Kind != schema.TurnCheckpoint {
 		t.Fatalf("first turn should be checkpoint (TurnCheckpoint), got %s", result[0].Kind)
 	}
-	if result[1].Kind == TurnTool {
+	if result[1].Kind == schema.TurnTool {
 		t.Fatalf("second turn must not be TurnTool — invalid message ordering for LLM APIs")
 	}
 }
@@ -1245,13 +1246,13 @@ func TestSummarizeWithLLM_AdjustsCutoffToAvoidOrphanedToolTurn(t *testing.T) {
 	client.Register(adapter)
 	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), client)
 
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c2", "shell", `{"command":"go test"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "shell", "ok\nexit_code=0\n", false)},
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2", "shell", `{"command":"go test"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "shell", "ok\nexit_code=0\n", false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	// preserveRecent=2 → cutoff=4, preserved starts at TurnTool — BAD.
@@ -1263,7 +1264,7 @@ func TestSummarizeWithLLM_AdjustsCutoffToAvoidOrphanedToolTurn(t *testing.T) {
 	if len(result) < 2 {
 		t.Fatalf("expected at least 2 turns, got %d", len(result))
 	}
-	if result[1].Kind == TurnTool {
+	if result[1].Kind == schema.TurnTool {
 		t.Fatalf("second turn must not be TurnTool — invalid message ordering for LLM APIs")
 	}
 }
@@ -1289,9 +1290,9 @@ func TestParseExitCode_MaskedFormat(t *testing.T) {
 func TestCheckpoint_ShellResultMatchesByToolCallID(t *testing.T) {
 	// Assistant calls read_file + shell in same turn. Tool results follow.
 	// Checkpoint should pair shell command with the shell result, not the read_file result.
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: llm.Message{
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
@@ -1303,10 +1304,10 @@ func TestCheckpoint_ShellResultMatchesByToolCallID(t *testing.T) {
 			},
 		}},
 		// read_file result comes first
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "package main\n", false)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "package main\n", false)},
 		// shell result comes second
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "shell", "PASS\nexit_code=0 duration_ms=100 timed_out=false\n", false)},
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "shell", "PASS\nexit_code=0 duration_ms=100 timed_out=false\n", false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	result := checkpoint(history, 1, nil, "communicate")
@@ -1340,10 +1341,10 @@ func TestSummarizeWithLLM_TruncatesPromptForCheapModel(t *testing.T) {
 	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), client)
 
 	// Build history with enormous user messages — many times larger than any cheap model can handle.
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User(strings.Repeat("x", 100_000))},
-		{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("y", 100_000))},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User(strings.Repeat("x", 100_000))},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("y", 100_000))},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
 	_, err := cm.summarizeWithLLM(context.Background(), history, 1)
@@ -1377,11 +1378,11 @@ func TestSummarizeWithLLM_RequestsInterleavedConversationTimeline(t *testing.T) 
 	client.Register(adapter)
 	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), client)
 
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("first request")},
-		{Kind: TurnAssistant, Message: llm.Assistant("first reply")},
-		{Kind: TurnUserInput, Message: llm.User("second request")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("first request")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("first reply")},
+		{Kind: schema.TurnUserInput, Message: llm.User("second request")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
 	if _, err := cm.summarizeWithLLM(context.Background(), history, 1); err != nil {
@@ -1402,10 +1403,10 @@ func TestSummarizeWithLLM_AdapterError_ReturnsError(t *testing.T) {
 	client.Register(adapter)
 	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), client)
 
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: llm.Assistant("step 1")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("step 1")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
 	result, err := cm.summarizeWithLLM(context.Background(), history, 1)
@@ -1420,15 +1421,15 @@ func TestSummarizeWithLLM_AdapterError_ReturnsError(t *testing.T) {
 // M1: Repeated checkpoint should still find the real original prompt, not the checkpoint message.
 func TestCheckpoint_RepeatedCheckpoint_PreservesOriginalPrompt(t *testing.T) {
 	// Simulate first checkpoint output (legacy format with "Original task:").
-	firstCheckpoint := Turn{
-		Kind:    TurnUserInput,
+	firstCheckpoint := schema.Turn{
+		Kind:    schema.TurnUserInput,
 		Message: llm.User("[CONTEXT CHECKPOINT]\nOriginal task: Fix the auth bug\nFiles modified: auth.go\n[END CHECKPOINT]\n"),
 	}
-	history := []Turn{
+	history := []schema.Turn{
 		firstCheckpoint,
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c3", "read_file", `{"file_path":"auth.go"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c3", "read_file", "content", false)},
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c3", "read_file", `{"file_path":"auth.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c3", "read_file", "content", false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	result := checkpoint(history, 1, nil, "communicate")
@@ -1446,13 +1447,13 @@ func TestCheckpoint_RepeatedCheckpoint_PreservesOriginalPrompt(t *testing.T) {
 func TestCheckpoint_UserMessages_MarkdownRoundTrip(t *testing.T) {
 	// First compaction: two user messages, one with embedded newline.
 	fencedMessage := "include this fence:\n```\nhello\n```"
-	h1 := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("hi! ls the cwd please")},
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
-		{Kind: TurnUserInput, Message: llm.User("now fix the bug\nwith newlines")},
-		{Kind: TurnAssistant, Message: llm.Assistant("ok")},
-		{Kind: TurnUserInput, Message: llm.User(fencedMessage)},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	h1 := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("hi! ls the cwd please")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
+		{Kind: schema.TurnUserInput, Message: llm.User("now fix the bug\nwith newlines")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("ok")},
+		{Kind: schema.TurnUserInput, Message: llm.User(fencedMessage)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 	r1 := checkpoint(h1, 1, nil, "communicate")
 	text1 := r1[0].Message.Text()
@@ -1475,10 +1476,10 @@ func TestCheckpoint_UserMessages_MarkdownRoundTrip(t *testing.T) {
 	}
 
 	// Second compaction: feed checkpoint back in + new user message.
-	h2 := []Turn{
+	h2 := []schema.Turn{
 		r1[0], // the checkpoint turn
-		{Kind: TurnUserInput, Message: llm.User("also add tests")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+		{Kind: schema.TurnUserInput, Message: llm.User("also add tests")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
 	}
 	r2 := checkpoint(h2, 1, nil, "communicate")
 	text2 := r2[0].Message.Text()
@@ -1506,14 +1507,14 @@ func TestCheckpoint_UserMessages_MarkdownRoundTrip(t *testing.T) {
 func TestCheckpoint_ConversationInterleavesUserMessagesAndAgentResponses(t *testing.T) {
 	reply1 := communicateCall("c1", "first reply")
 	reply2 := communicateCall("c2", "second reply")
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("first request")},
-		{Kind: TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &reply1}}}},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "communicate", `{"delivered":true}`, false)},
-		{Kind: TurnUserInput, Message: llm.User("second request")},
-		{Kind: TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &reply2}}}},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "communicate", `{"delivered":true}`, false)},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("first request")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &reply1}}}},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "communicate", `{"delivered":true}`, false)},
+		{Kind: schema.TurnUserInput, Message: llm.User("second request")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &reply2}}}},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "communicate", `{"delivered":true}`, false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
 	result := checkpoint(history, 1, nil, "communicate")
@@ -1547,10 +1548,10 @@ func TestCheckpoint_ConversationReadsLegacyBundledCompaction(t *testing.T) {
 <user_messages>["first request","second request"]</user_messages>
 <agent_responses>["first reply","second reply"]</agent_responses>
 [END CHECKPOINT]`
-	history := []Turn{
-		{Kind: TurnCheckpoint, Message: llm.User(oldCheckpoint)},
-		{Kind: TurnUserInput, Message: llm.User("third request")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	history := []schema.Turn{
+		{Kind: schema.TurnCheckpoint, Message: llm.User(oldCheckpoint)},
+		{Kind: schema.TurnUserInput, Message: llm.User("third request")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
 	result := checkpoint(history, 1, nil, "communicate")
@@ -1577,21 +1578,21 @@ func TestCheckpoint_ConversationReadsLegacyBundledCompaction(t *testing.T) {
 
 // M2: Checkpoint tool counts must be deterministic (sorted).
 func TestCheckpoint_ToolCountsAreDeterministic(t *testing.T) {
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c2", "shell", `{"command":"go test"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "shell", "ok\nexit_code=0\n", false)},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c3", "edit_file", `{"file_path":"a.go"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c3", "edit_file", "OK", false)},
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2", "shell", `{"command":"go test"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "shell", "ok\nexit_code=0\n", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c3", "edit_file", `{"file_path":"a.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c3", "edit_file", "OK", false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	// Run checkpoint 20 times and verify output is identical each time.
 	var first string
 	for i := 0; i < 20; i++ {
-		cp := make([]Turn, len(history))
+		cp := make([]schema.Turn, len(history))
 		copy(cp, history)
 		result := checkpoint(cp, 1, nil, "communicate")
 		text := result[0].Message.Text()
@@ -1605,11 +1606,11 @@ func TestCheckpoint_ToolCountsAreDeterministic(t *testing.T) {
 
 // M5: Checkpoint should include files from apply_patch.
 func TestCheckpoint_TracksFilesFromApplyPatch(t *testing.T) {
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "apply_patch", `{"patch":"*** Begin Patch\n*** Update File: test.go\n*** End Patch"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "apply_patch", "OK", false)},
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "apply_patch", `{"patch":"*** Begin Patch\n*** Update File: test.go\n*** End Patch"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "apply_patch", "OK", false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	result := checkpoint(history, 1, nil, "communicate")
@@ -1620,9 +1621,9 @@ func TestCheckpoint_TracksFilesFromApplyPatch(t *testing.T) {
 }
 
 func TestCheckpoint_IncludesWebSearchCount(t *testing.T) {
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("search for docs")},
-		{Kind: TurnAssistant, Message: llm.Message{
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("search for docs")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Query: "Go docs"}},
@@ -1630,10 +1631,10 @@ func TestCheckpoint_IncludesWebSearchCount(t *testing.T) {
 				{Kind: llm.ContentText, Text: "Found the docs."},
 			},
 		}},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "file contents", false)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "file contents", false)},
 		// Preserved recent turns:
-		{Kind: TurnUserInput, Message: llm.User("next question")},
-		{Kind: TurnAssistant, Message: llm.Message{
+		{Kind: schema.TurnUserInput, Message: llm.User("next question")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role:    llm.RoleAssistant,
 			Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "answer"}},
 		}},
@@ -1663,12 +1664,12 @@ func TestContextManager_UsesLastInputTokensForPressure(t *testing.T) {
 	cm.RecordInputTokens(550, 10)
 
 	// Add 2 new turns since the measurement (~20 chars = ~5 tokens).
-	history := make([]Turn, 12)
+	history := make([]schema.Turn, 12)
 	for i := 0; i < 10; i++ {
-		history[i] = Turn{Kind: TurnAssistant, Message: llm.Assistant("x")}
+		history[i] = schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("x")}
 	}
-	history[10] = Turn{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("y", 20))}
-	history[11] = Turn{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("z", 20))}
+	history[10] = schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("y", 20))}
+	history[11] = schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("z", 20))}
 
 	// Pressure should be based on: 550 (known) + ~10 (new turns) = ~560 tokens
 	// Not char/4 of entire history which would be much less.
@@ -1685,8 +1686,8 @@ func TestContextManager_EstimateUsageReportsRemainingWindow(t *testing.T) {
 	cm := newContextManager(profile, nil)
 	cm.RecordInputTokens(550, 10)
 
-	history := make([]Turn, 11)
-	history[10] = Turn{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("y", 40))}
+	history := make([]schema.Turn, 11)
+	history[10] = schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("y", 40))}
 
 	got := cm.EstimateUsage(history, 0)
 	if got.Used != 560 || got.Window != 1000 || got.Remaining != 440 {
@@ -1699,8 +1700,8 @@ func TestContextManager_FallsBackToCharHeuristicWithoutMeasurement(t *testing.T)
 	cm := newContextManager(profile, nil)
 
 	// No RecordInputTokens called — should fall back to char/4.
-	history := []Turn{
-		{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("x", 400))},
+	history := []schema.Turn{
+		{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("x", 400))},
 	}
 
 	pressure := cm.estimatePressure(history, 0)
@@ -1723,8 +1724,8 @@ func TestContextManager_ResetsAfterCompaction(t *testing.T) {
 	// Build a history that's big enough to trigger observation masking.
 	history := makeBigHistory(650)
 	history = append(history,
-		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
-		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+		schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("recent1")},
+		schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
 	)
 
 	var evs []events.SessionEvent
@@ -1746,10 +1747,10 @@ func TestContextManager_ResetsAfterCompaction(t *testing.T) {
 // --- Fix: safeCutoff robustness (H1 + H2) ---
 
 func TestSafeCutoff_NoAdjustmentNeeded(t *testing.T) {
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: llm.Assistant("answer")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("answer")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 	got := safeCutoff(history, 2)
 	if got != 2 {
@@ -1760,10 +1761,10 @@ func TestSafeCutoff_NoAdjustmentNeeded(t *testing.T) {
 func TestSafeCutoff_WalksToZero_ReturnsNegative(t *testing.T) {
 	// All turns after index 0 are TurnTool — walking back from any cutoff
 	// should reach 0, which is not a safe position.
-	history := []Turn{
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "read_file", "content", false)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c3", "read_file", "content", false)},
+	history := []schema.Turn{
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "read_file", "content", false)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c3", "read_file", "content", false)},
 	}
 	got := safeCutoff(history, 2)
 	if got != -1 {
@@ -1775,11 +1776,11 @@ func TestSafeCutoff_SkipsSteering(t *testing.T) {
 	// TurnSteering at the cutoff position should be walked back, just like TurnTool.
 	// Otherwise, preserved turns would start with a steering message that becomes
 	// a consecutive user-role message after the checkpoint's user-role message.
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: llm.Assistant("answer")},
-		{Kind: TurnSteering, Message: llm.User("you should do X")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("answer")},
+		{Kind: schema.TurnSteering, Message: llm.User("you should do X")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 	// preserveRecent=1 → cutoff = len(history)-1 = 3.
 	// history[3] is TurnAssistant (OK), so normally no adjustment.
@@ -1795,11 +1796,11 @@ func TestCheckpoint_SafeCutoffNegative_ReturnsUnchanged(t *testing.T) {
 	// When safeCutoff returns -1, checkpoint should return history unchanged.
 	// Use preserveRecent=3 with 4 turns so cutoff=1, and history[1] is TurnTool
 	// which walks back to 0 → return -1.
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
-		{Kind: TurnAssistant, Message: llm.Assistant("answer")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("answer")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 	// preserveRecent=3 → cutoff=1 → TurnTool → walk to 0 → return -1
 	result := checkpoint(history, 3, nil, "communicate")
@@ -1823,11 +1824,11 @@ func TestSummarizeWithLLM_SafeCutoffNegative_ReturnsUnchanged(t *testing.T) {
 	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), client)
 
 	// Same scenario as checkpoint test: cutoff walks to 0 → return -1.
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
-		{Kind: TurnAssistant, Message: llm.Assistant("answer")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("answer")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 	result, err := cm.summarizeWithLLM(context.Background(), history, 3)
 	if err != nil {
@@ -1844,11 +1845,11 @@ func TestMaskObservations_SkipsShortResults(t *testing.T) {
 	// For short tool results like "OK", the summary "[edit_file: auth.go → OK]"
 	// is longer than the original content. Masking should be skipped to avoid
 	// increasing pressure.
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "edit_file", `{"file_path":"auth.go"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "edit_file", "OK", false)},
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "edit_file", `{"file_path":"auth.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "edit_file", "OK", false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	maskObservations(history, 0, "communicate")
@@ -1868,14 +1869,14 @@ func TestCheckpoint_OriginalPromptNotOverriddenByFollowup(t *testing.T) {
 	// "Also update the tests" appears in the preserved recent turns.
 	// The second checkpoint should preserve "Fix the auth bug" from the first
 	// checkpoint AND include the follow-up in user messages.
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("[CONTEXT CHECKPOINT]\nOriginal task: Fix the auth bug\nFiles modified: auth.go\n[END CHECKPOINT]\n")},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"auth.go"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
-		{Kind: TurnAssistant, Message: llm.Assistant("I've analyzed the code")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("[CONTEXT CHECKPOINT]\nOriginal task: Fix the auth bug\nFiles modified: auth.go\n[END CHECKPOINT]\n")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"auth.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("I've analyzed the code")},
 		// Follow-up user message in preserved region:
-		{Kind: TurnUserInput, Message: llm.User("Also update the tests")},
-		{Kind: TurnAssistant, Message: llm.Assistant("Will do")},
+		{Kind: schema.TurnUserInput, Message: llm.User("Also update the tests")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("Will do")},
 	}
 
 	// preserveRecent=2 → cutoff=4 → history[:4] is compacted.
@@ -1912,10 +1913,10 @@ func TestMaybeCompact_SummarizeThreshold(t *testing.T) {
 
 	// After checkpoint, result = [checkpoint_msg, recent_turn].
 	// The recent turn alone needs to be ~90% of 50 tokens = 45 tokens = ~180 chars.
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User(strings.Repeat("task ", 50))},
-		{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("work ", 30))},
-		{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("recent content ", 15))},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User(strings.Repeat("task ", 50))},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("work ", 30))},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("recent content ", 15))},
 	}
 
 	var layers []string
@@ -1984,8 +1985,8 @@ func TestPressure_ReturnsEstimate(t *testing.T) {
 	profile := &baseProfile{id: "openai", model: "test", contextWindow: 1000}
 	cm := newContextManager(profile, nil)
 
-	history := []Turn{
-		{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("x", 400))},
+	history := []schema.Turn{
+		{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("x", 400))},
 	}
 
 	p := cm.Pressure(history, 0)
@@ -2014,9 +2015,9 @@ func TestContextManager_SetProfile_UpdatesContextWindow(t *testing.T) {
 
 	// Record 100K tokens.
 	cm.RecordInputTokens(100_000, 5)
-	history := make([]Turn, 5)
+	history := make([]schema.Turn, 5)
 	for i := range history {
-		history[i] = Turn{Kind: TurnAssistant, Message: llm.Assistant("x")}
+		history[i] = schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("x")}
 	}
 
 	// With 200K window: pressure ≈ 100K/200K = 0.50
@@ -2053,12 +2054,12 @@ func TestForceCompact_RunsAllLayers(t *testing.T) {
 	cm := newContextManager(profile, client)
 	cm.PreserveRecentTurns = 2
 
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("first question")),
-		NewTurn(TurnAssistant, llm.Assistant("working on it")),
-		NewTurn(TurnUserInput, llm.User("second question")),
-		NewTurn(TurnAssistant, llm.Assistant("recent1")),
-		NewTurn(TurnAssistant, llm.Assistant("recent2")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first question")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working on it")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("second question")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
 	}
 
 	var layers []string
@@ -2090,17 +2091,17 @@ func TestForceCompact_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 	cm := newContextManager(profile, nil) // no LLM client → L4 skipped
 	cm.PreserveRecentTurns = 2
 
-	var callbackTurns []TurnKind
-	cm.OnCompactionTurn = func(t Turn) {
+	var callbackTurns []schema.TurnKind
+	cm.OnCompactionTurn = func(t schema.Turn) {
 		callbackTurns = append(callbackTurns, t.Kind)
 	}
 
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("fix the bug")),
-		NewTurn(TurnAssistant, llm.Assistant("I'll fix it")),
-		NewTurn(TurnAssistant, llm.Assistant("analysis done")),
-		NewTurn(TurnAssistant, llm.Assistant("recent1")),
-		NewTurn(TurnAssistant, llm.Assistant("recent2")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("fix the bug")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("I'll fix it")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("analysis done")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
 	}
 
 	emitFn := func(kind events.EventKind, data events.EventData) {}
@@ -2109,7 +2110,7 @@ func TestForceCompact_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 	// L3 creates a checkpoint turn. OnCompactionTurn should have been called.
 	found := false
 	for _, k := range callbackTurns {
-		if k == TurnCheckpoint {
+		if k == schema.TurnCheckpoint {
 			found = true
 		}
 	}
@@ -2135,17 +2136,17 @@ func TestForceCompact_FiresOnCompactionTurn_Summary(t *testing.T) {
 	cm := newContextManager(profile, client)
 	cm.PreserveRecentTurns = 2
 
-	var callbackTurns []TurnKind
-	cm.OnCompactionTurn = func(t Turn) {
+	var callbackTurns []schema.TurnKind
+	cm.OnCompactionTurn = func(t schema.Turn) {
 		callbackTurns = append(callbackTurns, t.Kind)
 	}
 
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("fix the bug")),
-		NewTurn(TurnAssistant, llm.Assistant("I'll fix it")),
-		NewTurn(TurnAssistant, llm.Assistant("analysis done")),
-		NewTurn(TurnAssistant, llm.Assistant("recent1")),
-		NewTurn(TurnAssistant, llm.Assistant("recent2")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("fix the bug")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("I'll fix it")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("analysis done")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
 	}
 
 	emitFn := func(kind events.EventKind, data events.EventData) {}
@@ -2154,10 +2155,10 @@ func TestForceCompact_FiresOnCompactionTurn_Summary(t *testing.T) {
 	// Both L3 (checkpoint) and L4 (summary) should fire callbacks.
 	foundCheckpoint, foundSummary := false, false
 	for _, k := range callbackTurns {
-		if k == TurnCheckpoint {
+		if k == schema.TurnCheckpoint {
 			foundCheckpoint = true
 		}
-		if k == TurnSummary {
+		if k == schema.TurnSummary {
 			foundSummary = true
 		}
 	}
@@ -2176,11 +2177,11 @@ func TestForceCompact_BelowThreshold(t *testing.T) {
 	cm := newContextManager(profile, nil) // no LLM client → summarize skipped
 	cm.PreserveRecentTurns = 2
 
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("hi")),
-		NewTurn(TurnAssistant, llm.Assistant("working on it")),
-		NewTurn(TurnAssistant, llm.Assistant("recent1")),
-		NewTurn(TurnAssistant, llm.Assistant("recent2")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("hi")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working on it")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent1")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent2")),
 	}
 
 	var layers []string
@@ -2206,11 +2207,11 @@ func TestCheckpoint_ExtractsWorkingNotes(t *testing.T) {
 	// Assistant turns with text > 50 chars should be captured as working notes.
 	longAnalysis := "After analyzing the codebase, I found that the auth module uses JWT tokens with RS256 signing"
 	shortText := "ok"
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("fix the auth bug")},
-		{Kind: TurnAssistant, Message: llm.Assistant(longAnalysis)},
-		{Kind: TurnAssistant, Message: llm.Assistant(shortText)},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("fix the auth bug")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant(longAnalysis)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant(shortText)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
 	result := checkpoint(history, 1, nil, "communicate")
@@ -2237,10 +2238,10 @@ func TestCheckpoint_ExtractsWorkingNotes(t *testing.T) {
 func TestCheckpoint_WorkingNotes_CappedAt500Chars(t *testing.T) {
 	// A very long assistant text should be truncated to 500 chars in working notes.
 	longText := strings.Repeat("analysis ", 100) // 900 chars
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("task")},
-		{Kind: TurnAssistant, Message: llm.Assistant(longText)},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant(longText)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
 	result := checkpoint(history, 1, nil, "communicate")
@@ -2267,10 +2268,10 @@ Files modified: auth.go
 <working_notes>["JWT tokens use RS256 signing and the key rotation is broken"]</working_notes>
 [END CHECKPOINT]`
 
-	history := []Turn{
-		{Kind: TurnCheckpoint, Message: llm.User(firstCheckpoint)},
-		{Kind: TurnAssistant, Message: llm.Assistant("I found the root cause in key_manager.go — the rotation interval is set to 0")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent")},
+	history := []schema.Turn{
+		{Kind: schema.TurnCheckpoint, Message: llm.User(firstCheckpoint)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("I found the root cause in key_manager.go — the rotation interval is set to 0")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
 	result := checkpoint(history, 1, nil, "communicate")
@@ -2289,15 +2290,15 @@ func TestCheckpoint_WorkingNotes_ShedOldestFirst(t *testing.T) {
 	// When over budget, oldest notes should be shed before user messages.
 	// Build a history with many long assistant notes to exceed the 60k budget.
 	// Each note ≈ 503 chars (capped at 500+...), need >120 to exceed 60k.
-	var history []Turn
-	history = append(history, Turn{Kind: TurnUserInput, Message: llm.User("important task description")})
+	var history []schema.Turn
+	history = append(history, schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("important task description")})
 	for i := 0; i < 150; i++ {
-		history = append(history, Turn{
-			Kind:    TurnAssistant,
+		history = append(history, schema.Turn{
+			Kind:    schema.TurnAssistant,
 			Message: llm.Assistant(fmt.Sprintf("Note %03d: %s", i, strings.Repeat("detailed analysis ", 40))),
 		})
 	}
-	history = append(history, Turn{Kind: TurnAssistant, Message: llm.Assistant("recent")})
+	history = append(history, schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")})
 
 	result := checkpoint(history, 1, nil, "communicate")
 	text := result[0].Message.Text()

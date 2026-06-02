@@ -11,6 +11,7 @@ import (
 
 	"github.com/oklog/ulid/v2"
 
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -105,7 +106,7 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 
 	// The entry at the divergence position must be a USER_INPUT turn.
 	divergenceEntry := allEntries[divergenceTurn-1]
-	if divergenceEntry.Turn.Kind != TurnUserInput {
+	if divergenceEntry.Turn.Kind != schema.TurnUserInput {
 		return "", fmt.Errorf("entry at divergenceTurn %d is not a USER_INPUT turn (got %s)", divergenceTurn, divergenceEntry.Turn.Kind)
 	}
 
@@ -153,13 +154,13 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 		if err := tw.Append(entry.Turn); err != nil {
 			return "", fmt.Errorf("append prefix turn to child transcript: %w", err)
 		}
-		if entry.Turn.Kind == TurnAssistant {
+		if entry.Turn.Kind == schema.TurnAssistant {
 			modelResponses++
 		}
 	}
 
 	// Append the edited turn as a new USER_INPUT turn.
-	editedTurn := NewTurn(TurnUserInput, llm.User(editedMessage))
+	editedTurn := schema.NewTurn(schema.TurnUserInput, llm.User(editedMessage))
 	if err := tw.Append(editedTurn); err != nil {
 		return "", fmt.Errorf("append edited turn to child transcript: %w", err)
 	}

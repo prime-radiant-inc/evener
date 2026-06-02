@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -120,8 +121,8 @@ func TestTranscriptWriter_AppendWritesEntries(t *testing.T) {
 	}
 	defer w.Close()
 
-	turn1 := NewTurn(TurnUserInput, llm.User("Hello"))
-	turn2 := NewTurn(TurnAssistant, llm.Assistant("Hi there"))
+	turn1 := schema.NewTurn(schema.TurnUserInput, llm.User("Hello"))
+	turn2 := schema.NewTurn(schema.TurnAssistant, llm.Assistant("Hi there"))
 
 	if err := w.Append(turn1); err != nil {
 		t.Fatalf("Append turn1: %v", err)
@@ -146,8 +147,8 @@ func TestTranscriptWriter_AppendWritesEntries(t *testing.T) {
 	if entry0.Seq != 0 {
 		t.Errorf("entry0 seq = %d, want 0", entry0.Seq)
 	}
-	if entry0.Turn.Kind != TurnUserInput {
-		t.Errorf("entry0 turn kind = %q, want %q", entry0.Turn.Kind, TurnUserInput)
+	if entry0.Turn.Kind != schema.TurnUserInput {
+		t.Errorf("entry0 turn kind = %q, want %q", entry0.Turn.Kind, schema.TurnUserInput)
 	}
 	if entry0.Turn.Message.Text() != "Hello" {
 		t.Errorf("entry0 turn text = %q, want %q", entry0.Turn.Message.Text(), "Hello")
@@ -164,8 +165,8 @@ func TestTranscriptWriter_AppendWritesEntries(t *testing.T) {
 	if entry1.Seq != 1 {
 		t.Errorf("entry1 seq = %d, want 1", entry1.Seq)
 	}
-	if entry1.Turn.Kind != TurnAssistant {
-		t.Errorf("entry1 turn kind = %q, want %q", entry1.Turn.Kind, TurnAssistant)
+	if entry1.Turn.Kind != schema.TurnAssistant {
+		t.Errorf("entry1 turn kind = %q, want %q", entry1.Turn.Kind, schema.TurnAssistant)
 	}
 	if entry1.Turn.Message.Text() != "Hi there" {
 		t.Errorf("entry1 turn text = %q, want %q", entry1.Turn.Message.Text(), "Hi there")
@@ -188,7 +189,7 @@ func TestTranscriptWriter_SeqMonotonicallyIncreasing(t *testing.T) {
 	defer w.Close()
 
 	for i := 0; i < 10; i++ {
-		turn := NewTurn(TurnAssistant, llm.Assistant("msg"))
+		turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant("msg"))
 		if err := w.Append(turn); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
@@ -225,7 +226,7 @@ func TestTranscriptWriter_CloseClosesFile(t *testing.T) {
 		t.Fatalf("NewTranscriptWriter: %v", err)
 	}
 
-	if err := w.Append(NewTurn(TurnAssistant, llm.Assistant("before close"))); err != nil {
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("before close"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 
@@ -250,7 +251,7 @@ func TestTranscriptWriter_NilWriterSafe(t *testing.T) {
 	var w *TranscriptWriter
 
 	// Append on nil should not panic and should return nil.
-	if err := w.Append(NewTurn(TurnAssistant, llm.Assistant("test"))); err != nil {
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("test"))); err != nil {
 		t.Errorf("nil Append returned error: %v", err)
 	}
 
@@ -285,7 +286,7 @@ func TestTranscriptWriter_ConcurrentAppend(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for j := 0; j < turnsPerGoroutine; j++ {
-				turn := NewTurn(TurnAssistant, llm.Assistant("concurrent"))
+				turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant("concurrent"))
 				if err := w.Append(turn); err != nil {
 					t.Errorf("goroutine %d append %d: %v", id, j, err)
 				}
@@ -342,10 +343,10 @@ func TestTranscriptWriter_ValidJSONL(t *testing.T) {
 	defer w.Close()
 
 	// Text content
-	w.Append(NewTurn(TurnUserInput, llm.User("Hello world")))
+	w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("Hello world")))
 
 	// Tool call content
-	w.Append(NewTurn(TurnAssistant, llm.Message{
+	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Message{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentPart{
 			{Kind: llm.ContentText, Text: "Let me check that."},
@@ -358,7 +359,7 @@ func TestTranscriptWriter_ValidJSONL(t *testing.T) {
 	}))
 
 	// Tool result content
-	w.Append(NewTurn(TurnToolResults, llm.Message{
+	w.Append(schema.NewTurn(schema.TurnToolResults, llm.Message{
 		Role: llm.RoleUser,
 		Content: []llm.ContentPart{
 			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
@@ -370,7 +371,7 @@ func TestTranscriptWriter_ValidJSONL(t *testing.T) {
 	}))
 
 	// Thinking content
-	w.Append(NewTurn(TurnAssistant, llm.Message{
+	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Message{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentPart{
 			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
@@ -439,7 +440,7 @@ func TestTranscriptWriter_LargeEntry(t *testing.T) {
 			},
 		}},
 	}
-	turn := NewTurn(TurnToolResults, msg)
+	turn := schema.NewTurn(schema.TurnToolResults, msg)
 
 	if err := tw.Append(turn); err != nil {
 		t.Fatal(err)
@@ -483,12 +484,12 @@ func TestReadTranscript_ReturnsHeaderAndEntries(t *testing.T) {
 		t.Fatalf("NewTranscriptWriter: %v", err)
 	}
 
-	turns := []Turn{
-		NewTurn(TurnUserInput, llm.User("Hello")),
-		NewTurn(TurnAssistant, llm.Assistant("Hi there")),
-		NewTurn(TurnToolResults, llm.ToolResult("call-1", "result", false)),
-		NewTurn(TurnAssistant, llm.Assistant("Done")),
-		NewTurn(TurnUserInput, llm.User("Thanks")),
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("Hello")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("Hi there")),
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResult("call-1", "result", false)),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("Done")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("Thanks")),
 	}
 	for _, turn := range turns {
 		if err := w.Append(turn); err != nil {
@@ -543,7 +544,7 @@ func TestReadTranscript_PartialLastLine(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
-		if err := w.Append(NewTurn(TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
+		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
 	}
@@ -641,7 +642,7 @@ func TestOpenTranscriptWriter_AppendsToExisting(t *testing.T) {
 		t.Fatalf("NewTranscriptWriter: %v", err)
 	}
 	for i := 0; i < 5; i++ {
-		if err := w.Append(NewTurn(TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
+		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
 	}
@@ -656,7 +657,7 @@ func TestOpenTranscriptWriter_AppendsToExisting(t *testing.T) {
 
 	// Append 3 more turns.
 	for i := 0; i < 3; i++ {
-		if err := w2.Append(NewTurn(TurnUserInput, llm.User(fmt.Sprintf("input %d", i)))); err != nil {
+		if err := w2.Append(schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("input %d", i)))); err != nil {
 			t.Fatalf("Append (resumed) %d: %v", i, err)
 		}
 	}
@@ -695,7 +696,7 @@ func TestOpenTranscriptWriter_TruncatesPartialLine(t *testing.T) {
 		t.Fatalf("NewTranscriptWriter: %v", err)
 	}
 	for i := 0; i < 3; i++ {
-		if err := w.Append(NewTurn(TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
+		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
 	}
@@ -717,7 +718,7 @@ func TestOpenTranscriptWriter_TruncatesPartialLine(t *testing.T) {
 	defer w2.Close()
 
 	// Append 1 more turn.
-	if err := w2.Append(NewTurn(TurnUserInput, llm.User("after crash"))); err != nil {
+	if err := w2.Append(schema.NewTurn(schema.TurnUserInput, llm.User("after crash"))); err != nil {
 		t.Fatalf("Append (after crash): %v", err)
 	}
 
@@ -764,7 +765,7 @@ func TestOpenTranscriptWriter_HeaderOnlyFile(t *testing.T) {
 	defer w2.Close()
 
 	// Append one turn.
-	if err := w2.Append(NewTurn(TurnUserInput, llm.User("first after header"))); err != nil {
+	if err := w2.Append(schema.NewTurn(schema.TurnUserInput, llm.User("first after header"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 
@@ -790,11 +791,11 @@ func TestOpenTranscriptWriter_HeaderOnlyFile(t *testing.T) {
 
 func TestResumeHistoryFromTranscript_NoCompaction(t *testing.T) {
 	entries := []TranscriptEntry{
-		{Kind: "entry", Seq: 0, Turn: NewTurn(TurnUserInput, llm.User("Hello"))},
-		{Kind: "entry", Seq: 1, Turn: NewTurn(TurnAssistant, llm.Assistant("Hi"))},
-		{Kind: "entry", Seq: 2, Turn: NewTurn(TurnToolResults, llm.ToolResult("call-1", "ok", false))},
-		{Kind: "entry", Seq: 3, Turn: NewTurn(TurnAssistant, llm.Assistant("Done"))},
-		{Kind: "entry", Seq: 4, Turn: NewTurn(TurnUserInput, llm.User("Thanks"))},
+		{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("Hello"))},
+		{Kind: "entry", Seq: 1, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("Hi"))},
+		{Kind: "entry", Seq: 2, Turn: schema.NewTurn(schema.TurnToolResults, llm.ToolResult("call-1", "ok", false))},
+		{Kind: "entry", Seq: 3, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("Done"))},
+		{Kind: "entry", Seq: 4, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("Thanks"))},
 	}
 
 	history := ResumeHistory(entries)
@@ -803,7 +804,7 @@ func TestResumeHistoryFromTranscript_NoCompaction(t *testing.T) {
 		t.Fatalf("expected 5 turns, got %d", len(history))
 	}
 
-	expectedKinds := []TurnKind{TurnUserInput, TurnAssistant, TurnToolResults, TurnAssistant, TurnUserInput}
+	expectedKinds := []schema.TurnKind{schema.TurnUserInput, schema.TurnAssistant, schema.TurnToolResults, schema.TurnAssistant, schema.TurnUserInput}
 	for i, turn := range history {
 		if turn.Kind != expectedKinds[i] {
 			t.Errorf("turn %d kind = %q, want %q", i, turn.Kind, expectedKinds[i])
@@ -814,20 +815,20 @@ func TestResumeHistoryFromTranscript_NoCompaction(t *testing.T) {
 func TestResumeHistoryFromTranscript_WithCheckpoint(t *testing.T) {
 	entries := make([]TranscriptEntry, 10)
 	for i := 0; i < 10; i++ {
-		kind := TurnAssistant
+		kind := schema.TurnAssistant
 		msg := llm.Assistant(fmt.Sprintf("msg %d", i))
 		switch i {
 		case 0, 4, 9:
-			kind = TurnUserInput
+			kind = schema.TurnUserInput
 			msg = llm.User(fmt.Sprintf("input %d", i))
 		case 2, 5, 8:
-			kind = TurnToolResults
+			kind = schema.TurnToolResults
 			msg = llm.ToolResult(fmt.Sprintf("call-%d", i), "ok", false)
 		case 6:
-			kind = TurnCheckpoint
+			kind = schema.TurnCheckpoint
 			msg = llm.User("checkpoint summary")
 		}
-		entries[i] = TranscriptEntry{Kind: "entry", Seq: i, Turn: NewTurn(kind, msg)}
+		entries[i] = TranscriptEntry{Kind: "entry", Seq: i, Turn: schema.NewTurn(kind, msg)}
 	}
 
 	history := ResumeHistory(entries)
@@ -837,15 +838,15 @@ func TestResumeHistoryFromTranscript_WithCheckpoint(t *testing.T) {
 		t.Fatalf("expected 4 turns (checkpoint + 3 after), got %d", len(history))
 	}
 
-	if history[0].Kind != TurnCheckpoint {
-		t.Errorf("first turn kind = %q, want %q", history[0].Kind, TurnCheckpoint)
+	if history[0].Kind != schema.TurnCheckpoint {
+		t.Errorf("first turn kind = %q, want %q", history[0].Kind, schema.TurnCheckpoint)
 	}
 	if history[0].Message.Text() != "checkpoint summary" {
 		t.Errorf("first turn text = %q, want %q", history[0].Message.Text(), "checkpoint summary")
 	}
 
 	// Entries 7, 8, 9 follow the checkpoint
-	expectedAfter := []TurnKind{TurnAssistant, TurnToolResults, TurnUserInput}
+	expectedAfter := []schema.TurnKind{schema.TurnAssistant, schema.TurnToolResults, schema.TurnUserInput}
 	for i, want := range expectedAfter {
 		if history[i+1].Kind != want {
 			t.Errorf("turn %d kind = %q, want %q", i+1, history[i+1].Kind, want)
@@ -856,20 +857,20 @@ func TestResumeHistoryFromTranscript_WithCheckpoint(t *testing.T) {
 func TestResumeHistoryFromTranscript_WithSummary(t *testing.T) {
 	entries := make([]TranscriptEntry, 10)
 	for i := 0; i < 10; i++ {
-		kind := TurnAssistant
+		kind := schema.TurnAssistant
 		msg := llm.Assistant(fmt.Sprintf("msg %d", i))
 		switch i {
 		case 0, 4, 9:
-			kind = TurnUserInput
+			kind = schema.TurnUserInput
 			msg = llm.User(fmt.Sprintf("input %d", i))
 		case 2, 5, 8:
-			kind = TurnToolResults
+			kind = schema.TurnToolResults
 			msg = llm.ToolResult(fmt.Sprintf("call-%d", i), "ok", false)
 		case 6:
-			kind = TurnSummary
+			kind = schema.TurnSummary
 			msg = llm.User("LLM summary of conversation")
 		}
-		entries[i] = TranscriptEntry{Kind: "entry", Seq: i, Turn: NewTurn(kind, msg)}
+		entries[i] = TranscriptEntry{Kind: "entry", Seq: i, Turn: schema.NewTurn(kind, msg)}
 	}
 
 	history := ResumeHistory(entries)
@@ -879,15 +880,15 @@ func TestResumeHistoryFromTranscript_WithSummary(t *testing.T) {
 		t.Fatalf("expected 4 turns (summary + 3 after), got %d", len(history))
 	}
 
-	if history[0].Kind != TurnSummary {
-		t.Errorf("first turn kind = %q, want %q", history[0].Kind, TurnSummary)
+	if history[0].Kind != schema.TurnSummary {
+		t.Errorf("first turn kind = %q, want %q", history[0].Kind, schema.TurnSummary)
 	}
 	if history[0].Message.Text() != "LLM summary of conversation" {
 		t.Errorf("first turn text = %q, want %q", history[0].Message.Text(), "LLM summary of conversation")
 	}
 
 	// Entries 7, 8, 9 follow the summary
-	expectedAfter := []TurnKind{TurnAssistant, TurnToolResults, TurnUserInput}
+	expectedAfter := []schema.TurnKind{schema.TurnAssistant, schema.TurnToolResults, schema.TurnUserInput}
 	for i, want := range expectedAfter {
 		if history[i+1].Kind != want {
 			t.Errorf("turn %d kind = %q, want %q", i+1, history[i+1].Kind, want)
@@ -1012,16 +1013,16 @@ func TestSession_TranscriptRecordsTurns(t *testing.T) {
 	}
 
 	// First entry should be user input.
-	if entries[0].Turn.Kind != TurnUserInput {
-		t.Errorf("first entry kind: got %q want %q", entries[0].Turn.Kind, TurnUserInput)
+	if entries[0].Turn.Kind != schema.TurnUserInput {
+		t.Errorf("first entry kind: got %q want %q", entries[0].Turn.Kind, schema.TurnUserInput)
 	}
 	if entries[0].Turn.Message.Text() != "hello" {
 		t.Errorf("first entry text: got %q want %q", entries[0].Turn.Message.Text(), "hello")
 	}
 
 	// Second entry should be the assistant's communicate tool call.
-	if entries[1].Turn.Kind != TurnAssistant {
-		t.Errorf("second entry kind: got %q want %q", entries[1].Turn.Kind, TurnAssistant)
+	if entries[1].Turn.Kind != schema.TurnAssistant {
+		t.Errorf("second entry kind: got %q want %q", entries[1].Turn.Kind, schema.TurnAssistant)
 	}
 	var communicateCalls int
 	for _, part := range entries[1].Turn.Message.Content {
@@ -1392,24 +1393,24 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 	}
 
 	// --- Collect turn kinds ---
-	kinds := map[TurnKind]int{}
+	kinds := map[schema.TurnKind]int{}
 	for _, e := range entries {
 		kinds[e.Turn.Kind]++
 	}
 
 	// Must have user input, assistant, and tool results turns.
-	if kinds[TurnUserInput] == 0 {
+	if kinds[schema.TurnUserInput] == 0 {
 		t.Error("no USER_INPUT turns in transcript")
 	}
-	if kinds[TurnAssistant] == 0 {
+	if kinds[schema.TurnAssistant] == 0 {
 		t.Error("no ASSISTANT turns in transcript")
 	}
-	if kinds[TurnToolResults] == 0 {
+	if kinds[schema.TurnToolResults] == 0 {
 		t.Error("no TOOL_RESULTS turns in transcript")
 	}
 
 	// Must have at least one compaction turn (checkpoint or summary).
-	if kinds[TurnCheckpoint]+kinds[TurnSummary] == 0 {
+	if kinds[schema.TurnCheckpoint]+kinds[schema.TurnSummary] == 0 {
 		t.Errorf("no compaction turns (CHECKPOINT or SUMMARY) in transcript; kinds: %v", kinds)
 	}
 
@@ -1417,7 +1418,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 	// The compaction turn should appear after the turns that preceded it, not at the very start.
 	var firstCompactionSeq = -1
 	for _, e := range entries {
-		if e.Turn.Kind == TurnCheckpoint || e.Turn.Kind == TurnSummary {
+		if e.Turn.Kind == schema.TurnCheckpoint || e.Turn.Kind == schema.TurnSummary {
 			firstCompactionSeq = e.Seq
 			break
 		}
@@ -1430,7 +1431,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 	// Observation masking is ephemeral (modifies in-memory history); the transcript
 	// should contain the full original content from before masking.
 	for _, e := range entries {
-		if e.Turn.Kind == TurnToolResults {
+		if e.Turn.Kind == schema.TurnToolResults {
 			text := toolResultContent(e.Turn)
 			// The original tool output should contain the actual file content,
 			// not a masked summary like "[read_file: big.txt, N lines]".
@@ -1452,13 +1453,13 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 // --- Compaction turns flow through transcript ---
 
 func TestCheckpoint_UsesTurnCheckpointKind(t *testing.T) {
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("Fix the auth bug in login.go")},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"login.go"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "1 | package main\n", false)},
-		{Kind: TurnAssistant, Message: assistantWithToolCall("c2", "edit_file", `{"file_path":"login.go","old_string":"old","new_string":"new"}`)},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("c2", "edit_file", "OK", false)},
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("Fix the auth bug in login.go")},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"login.go"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "1 | package main\n", false)},
+		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2", "edit_file", `{"file_path":"login.go","old_string":"old","new_string":"new"}`)},
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "edit_file", "OK", false)},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	result := checkpoint(history, 2, nil, "communicate")
@@ -1466,8 +1467,8 @@ func TestCheckpoint_UsesTurnCheckpointKind(t *testing.T) {
 	if len(result) < 2 {
 		t.Fatalf("expected at least 2 turns, got %d", len(result))
 	}
-	if result[0].Kind != TurnCheckpoint {
-		t.Fatalf("checkpoint turn kind = %q, want %q", result[0].Kind, TurnCheckpoint)
+	if result[0].Kind != schema.TurnCheckpoint {
+		t.Fatalf("checkpoint turn kind = %q, want %q", result[0].Kind, schema.TurnCheckpoint)
 	}
 	// The text content should still have [CONTEXT CHECKPOINT] header.
 	text := result[0].Message.Text()
@@ -1490,11 +1491,11 @@ func TestSummarizeWithLLM_UsesTurnSummaryKind(t *testing.T) {
 
 	cm := newContextManager(NewOpenAIProfile("gpt-5.2"), client)
 
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("Fix the auth bug")},
-		{Kind: TurnAssistant, Message: llm.Assistant("I'll fix it")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
-		{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("Fix the auth bug")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("I'll fix it")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent1")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
 	}
 
 	result, err := cm.summarizeWithLLM(context.Background(), history, 2)
@@ -1505,8 +1506,8 @@ func TestSummarizeWithLLM_UsesTurnSummaryKind(t *testing.T) {
 	if len(result) < 1 {
 		t.Fatalf("expected at least 1 turn, got %d", len(result))
 	}
-	if result[0].Kind != TurnSummary {
-		t.Fatalf("summary turn kind = %q, want %q", result[0].Kind, TurnSummary)
+	if result[0].Kind != schema.TurnSummary {
+		t.Fatalf("summary turn kind = %q, want %q", result[0].Kind, schema.TurnSummary)
 	}
 	// The text content should still have [CONTEXT SUMMARY] header.
 	text := result[0].Message.Text()
@@ -1523,19 +1524,19 @@ func TestMaybeCompact_CallsOnCompactionTurn(t *testing.T) {
 
 	// Use assistant text (not tool results) so observation masking can't reduce pressure.
 	// Need >80% of 500 = 400 tokens.
-	history := []Turn{{Kind: TurnUserInput, Message: llm.User("Fix the auth bug")}}
+	history := []schema.Turn{{Kind: schema.TurnUserInput, Message: llm.User("Fix the auth bug")}}
 	for estimateTokens(history) < 425 {
 		history = append(history,
-			Turn{Kind: TurnAssistant, Message: llm.Assistant(strings.Repeat("analysis ", 50))},
+			schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("analysis ", 50))},
 		)
 	}
 	history = append(history,
-		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent1")},
-		Turn{Kind: TurnAssistant, Message: llm.Assistant("recent2")},
+		schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("recent1")},
+		schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
 	)
 
-	var callbackTurns []Turn
-	cm.OnCompactionTurn = func(turn Turn) {
+	var callbackTurns []schema.Turn
+	cm.OnCompactionTurn = func(turn schema.Turn) {
 		callbackTurns = append(callbackTurns, turn)
 	}
 
@@ -1546,8 +1547,8 @@ func TestMaybeCompact_CallsOnCompactionTurn(t *testing.T) {
 	if len(callbackTurns) == 0 {
 		t.Fatal("expected OnCompactionTurn callback to be called")
 	}
-	if callbackTurns[0].Kind != TurnCheckpoint {
-		t.Fatalf("callback turn kind = %q, want %q", callbackTurns[0].Kind, TurnCheckpoint)
+	if callbackTurns[0].Kind != schema.TurnCheckpoint {
+		t.Fatalf("callback turn kind = %q, want %q", callbackTurns[0].Kind, schema.TurnCheckpoint)
 	}
 	if !strings.Contains(callbackTurns[0].Message.Text(), "[CONTEXT CHECKPOINT]") {
 		t.Fatalf("callback turn missing checkpoint text: %q", callbackTurns[0].Message.Text())
@@ -1687,8 +1688,8 @@ func TestSubagent_TranscriptPersistsAfterCloseAgent(t *testing.T) {
 	if len(subEntries) < 2 {
 		t.Fatalf("expected at least 2 sub-agent transcript entries, got %d", len(subEntries))
 	}
-	if subEntries[0].Turn.Kind != TurnUserInput {
-		t.Errorf("sub-agent entry 0 kind = %q, want %q", subEntries[0].Turn.Kind, TurnUserInput)
+	if subEntries[0].Turn.Kind != schema.TurnUserInput {
+		t.Errorf("sub-agent entry 0 kind = %q, want %q", subEntries[0].Turn.Kind, schema.TurnUserInput)
 	}
 	// The sub-agent's first input should be the task.
 	if subEntries[0].Turn.Message.Text() != "implement auth middleware" {
@@ -1785,7 +1786,7 @@ func TestTranscriptWriter_SeqNotIncrementedOnWriteFailure(t *testing.T) {
 	defer w.Close()
 
 	// Write one successful entry (seq 0).
-	if err := w.Append(NewTurn(TurnAssistant, llm.Assistant("first"))); err != nil {
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("first"))); err != nil {
 		t.Fatalf("Append 0: %v", err)
 	}
 
@@ -1795,7 +1796,7 @@ func TestTranscriptWriter_SeqNotIncrementedOnWriteFailure(t *testing.T) {
 	w.mu.Unlock()
 
 	// This Append should fail (file is closed).
-	err = w.Append(NewTurn(TurnAssistant, llm.Assistant("should fail")))
+	err = w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("should fail")))
 	if err == nil {
 		t.Fatal("expected error from Append on closed file")
 	}
@@ -1811,7 +1812,7 @@ func TestTranscriptWriter_SeqNotIncrementedOnWriteFailure(t *testing.T) {
 
 	// The next successful write should use seq 1 (not seq 2, which would
 	// indicate the failed write incremented seq).
-	if err := w.Append(NewTurn(TurnAssistant, llm.Assistant("after failure"))); err != nil {
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after failure"))); err != nil {
 		t.Fatalf("Append after reopen: %v", err)
 	}
 
@@ -1851,7 +1852,7 @@ func TestReadTranscript_ReturnsCorruptLineCount(t *testing.T) {
 		t.Fatalf("NewTranscriptWriter: %v", err)
 	}
 	for i := 0; i < 3; i++ {
-		w.Append(NewTurn(TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i))))
+		w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i))))
 	}
 	w.Close()
 
@@ -1899,7 +1900,7 @@ func TestReadTranscript_ZeroCorruptLinesOnCleanFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTranscriptWriter: %v", err)
 	}
-	w.Append(NewTurn(TurnAssistant, llm.Assistant("msg")))
+	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("msg")))
 	w.Close()
 
 	_, entries, skipped, err := readTranscript(path)
@@ -1936,8 +1937,8 @@ func TestOpenTranscriptWriter_SingleFileHandle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTranscriptWriter: %v", err)
 	}
-	w.Append(NewTurn(TurnAssistant, llm.Assistant("msg 0")))
-	w.Append(NewTurn(TurnAssistant, llm.Assistant("msg 1")))
+	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("msg 0")))
+	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("msg 1")))
 	w.Close()
 
 	// Append a partial line to simulate a crash.
@@ -1950,7 +1951,7 @@ func TestOpenTranscriptWriter_SingleFileHandle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenTranscriptWriter: %v", err)
 	}
-	if err := w2.Append(NewTurn(TurnAssistant, llm.Assistant("msg 2"))); err != nil {
+	if err := w2.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("msg 2"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	w2.Close()
@@ -2034,7 +2035,7 @@ func TestTranscriptWriter_PeriodicSync_SkipsSyncWithinInterval(t *testing.T) {
 
 	// Write several entries rapidly.
 	for i := 0; i < 5; i++ {
-		if err := w.Append(NewTurn(TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
+		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
 	}
@@ -2079,7 +2080,7 @@ func TestTranscriptWriter_PeriodicSync_SyncsAfterIntervalExpires(t *testing.T) {
 	w.SyncInterval = 1 * time.Millisecond
 
 	// Write first entry.
-	if err := w.Append(NewTurn(TurnAssistant, llm.Assistant("first"))); err != nil {
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("first"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 
@@ -2087,7 +2088,7 @@ func TestTranscriptWriter_PeriodicSync_SyncsAfterIntervalExpires(t *testing.T) {
 	time.Sleep(5 * time.Millisecond)
 
 	// Next write should trigger a sync because the interval has elapsed.
-	if err := w.Append(NewTurn(TurnAssistant, llm.Assistant("second"))); err != nil {
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("second"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 
@@ -2119,7 +2120,7 @@ func TestTranscriptWriter_PeriodicSync_ZeroIntervalSyncsEveryWrite(t *testing.T)
 	w.SyncInterval = 0
 
 	for i := 0; i < 3; i++ {
-		if err := w.Append(NewTurn(TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
+		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
 		// After each write with zero interval, dirty should be false.
@@ -2151,7 +2152,7 @@ func TestTranscriptWriter_PeriodicSync_CloseFlushesDirtyWrites(t *testing.T) {
 
 	// Write entries without syncing.
 	for i := 0; i < 10; i++ {
-		if err := w.Append(NewTurn(TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
+		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
 	}
@@ -2203,7 +2204,7 @@ func TestTranscriptWriter_PeriodicSync_ConcurrentAppendWithInterval(t *testing.T
 		go func(id int) {
 			defer wg.Done()
 			for j := 0; j < turnsPerGoroutine; j++ {
-				turn := NewTurn(TurnAssistant, llm.Assistant("concurrent"))
+				turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant("concurrent"))
 				if err := w.Append(turn); err != nil {
 					t.Errorf("goroutine %d append %d: %v", id, j, err)
 				}
@@ -2248,7 +2249,7 @@ func TestOpenTranscriptWriter_SetsLastSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTranscriptWriter: %v", err)
 	}
-	w.Append(NewTurn(TurnAssistant, llm.Assistant("msg 0")))
+	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("msg 0")))
 	w.Close()
 
 	// Reopen for resume.
@@ -2425,19 +2426,19 @@ func TestTranscriptWriter_InterleavedSeqNumbers(t *testing.T) {
 	defer w.Close()
 
 	// Interleave: entry, api_call, entry, api_call, entry
-	if err := w.Append(NewTurn(TurnUserInput, llm.User("hello"))); err != nil {
+	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
 		t.Fatalf("Append 0: %v", err)
 	}
 	if err := w.AppendAPICall(TranscriptAPICall{Round: 1, Request: llm.APILogRequest{Model: "m"}}); err != nil {
 		t.Fatalf("AppendAPICall 0: %v", err)
 	}
-	if err := w.Append(NewTurn(TurnAssistant, llm.Assistant("hi"))); err != nil {
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi"))); err != nil {
 		t.Fatalf("Append 1: %v", err)
 	}
 	if err := w.AppendAPICall(TranscriptAPICall{Round: 2, Request: llm.APILogRequest{Model: "m"}}); err != nil {
 		t.Fatalf("AppendAPICall 1: %v", err)
 	}
-	if err := w.Append(NewTurn(TurnAssistant, llm.Assistant("done"))); err != nil {
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("done"))); err != nil {
 		t.Fatalf("Append 2: %v", err)
 	}
 
@@ -2491,7 +2492,7 @@ func TestReadTranscriptFull_ParsesAllLineTypes(t *testing.T) {
 	}
 
 	// Write interleaved entries and api_calls.
-	w.Append(NewTurn(TurnUserInput, llm.User("hello")))
+	w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello")))
 	w.AppendAPICall(TranscriptAPICall{
 		Round:     1,
 		Timestamp: "2026-03-25T12:00:01Z",
@@ -2499,7 +2500,7 @@ func TestReadTranscriptFull_ParsesAllLineTypes(t *testing.T) {
 		Request:   llm.APILogRequest{Model: "gpt-5.2", Provider: "openai"},
 		Response:  &llm.APILogResponse{Model: "gpt-5.2", FinishReason: "stop"},
 	})
-	w.Append(NewTurn(TurnAssistant, llm.Assistant("hi")))
+	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi")))
 	w.AppendAPICall(TranscriptAPICall{
 		Round:     2,
 		Timestamp: "2026-03-25T12:00:02Z",
@@ -2507,7 +2508,7 @@ func TestReadTranscriptFull_ParsesAllLineTypes(t *testing.T) {
 		Request:   llm.APILogRequest{Model: "gpt-5.2", Provider: "openai"},
 		Error:     "rate limit",
 	})
-	w.Append(NewTurn(TurnAssistant, llm.Assistant("done")))
+	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("done")))
 	w.Close()
 
 	data, err := readTranscriptFull(path)
@@ -2524,11 +2525,11 @@ func TestReadTranscriptFull_ParsesAllLineTypes(t *testing.T) {
 	if len(data.Entries) != 3 {
 		t.Fatalf("expected 3 entries, got %d", len(data.Entries))
 	}
-	if data.Entries[0].Turn.Kind != TurnUserInput {
-		t.Errorf("entry 0 turn kind = %q, want %q", data.Entries[0].Turn.Kind, TurnUserInput)
+	if data.Entries[0].Turn.Kind != schema.TurnUserInput {
+		t.Errorf("entry 0 turn kind = %q, want %q", data.Entries[0].Turn.Kind, schema.TurnUserInput)
 	}
-	if data.Entries[1].Turn.Kind != TurnAssistant {
-		t.Errorf("entry 1 turn kind = %q, want %q", data.Entries[1].Turn.Kind, TurnAssistant)
+	if data.Entries[1].Turn.Kind != schema.TurnAssistant {
+		t.Errorf("entry 1 turn kind = %q, want %q", data.Entries[1].Turn.Kind, schema.TurnAssistant)
 	}
 
 	// API Calls
@@ -2583,7 +2584,7 @@ func TestReadTranscriptFull_SkipsCorruptLines(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTranscriptWriter: %v", err)
 	}
-	w.Append(NewTurn(TurnUserInput, llm.User("hello")))
+	w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello")))
 	w.Close()
 
 	// Append a corrupt line.
@@ -2621,9 +2622,9 @@ func TestReadTranscript_SkipsAPICallLines(t *testing.T) {
 	}
 
 	// Interleave entries and api_calls.
-	w.Append(NewTurn(TurnUserInput, llm.User("hello")))
+	w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello")))
 	w.AppendAPICall(TranscriptAPICall{Round: 1, Request: llm.APILogRequest{Model: "m"}})
-	w.Append(NewTurn(TurnAssistant, llm.Assistant("hi")))
+	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi")))
 	w.Close()
 
 	// readTranscript should only return entries, silently skipping api_call lines.
@@ -2637,11 +2638,11 @@ func TestReadTranscript_SkipsAPICallLines(t *testing.T) {
 	if skipped != 0 {
 		t.Errorf("expected 0 skipped (api_call lines should not count as corrupt), got %d", skipped)
 	}
-	if entries[0].Turn.Kind != TurnUserInput {
-		t.Errorf("entry 0 kind = %q, want %q", entries[0].Turn.Kind, TurnUserInput)
+	if entries[0].Turn.Kind != schema.TurnUserInput {
+		t.Errorf("entry 0 kind = %q, want %q", entries[0].Turn.Kind, schema.TurnUserInput)
 	}
-	if entries[1].Turn.Kind != TurnAssistant {
-		t.Errorf("entry 1 kind = %q, want %q", entries[1].Turn.Kind, TurnAssistant)
+	if entries[1].Turn.Kind != schema.TurnAssistant {
+		t.Errorf("entry 1 kind = %q, want %q", entries[1].Turn.Kind, schema.TurnAssistant)
 	}
 }
 
@@ -2660,9 +2661,9 @@ func TestOpenTranscriptWriter_ResumesWithAPICallSeq(t *testing.T) {
 	}
 
 	// Write entry (seq 0), api_call (seq 1), entry (seq 2).
-	w.Append(NewTurn(TurnUserInput, llm.User("hello")))
+	w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello")))
 	w.AppendAPICall(TranscriptAPICall{Round: 1, Request: llm.APILogRequest{Model: "m"}})
-	w.Append(NewTurn(TurnAssistant, llm.Assistant("hi")))
+	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi")))
 	w.Close()
 
 	// Reopen and append more.
@@ -2673,7 +2674,7 @@ func TestOpenTranscriptWriter_ResumesWithAPICallSeq(t *testing.T) {
 	defer w2.Close()
 
 	// Next seq should be 3 (one past the api_call and entries).
-	w2.Append(NewTurn(TurnUserInput, llm.User("more")))
+	w2.Append(schema.NewTurn(schema.TurnUserInput, llm.User("more")))
 
 	data, err := readTranscriptFull(path)
 	if err != nil {

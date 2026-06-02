@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/installid"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -66,7 +67,7 @@ type Session struct {
 	closing               bool
 	turns                 int // user input count (for MaxTurns enforcement)
 	modelResponses        int // LLM round-trip count (for meta.json turn_count)
-	history               []Turn
+	history               []schema.Turn
 
 	fork forkInfo
 
@@ -403,15 +404,15 @@ func (s *Session) extractOriginalPrompt() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.history {
-		if t.Kind == TurnUserInput {
+		if t.Kind == schema.TurnUserInput {
 			return t.Message.Text()
 		}
 	}
 	return s.cfg.spawn.subagentTask
 }
 
-func (s *Session) appendTurn(kind TurnKind, m llm.Message) {
-	t := NewTurn(kind, m)
+func (s *Session) appendTurn(kind schema.TurnKind, m llm.Message) {
+	t := schema.NewTurn(kind, m)
 	s.mu.Lock()
 	s.history = append(s.history, t)
 	s.mu.Unlock()
@@ -423,8 +424,8 @@ func (s *Session) appendTurn(kind TurnKind, m llm.Message) {
 // appendAssistantTurn appends an assistant turn that carries the full response
 // metadata (usage stats and response ID) alongside the message content.
 func (s *Session) appendAssistantTurn(resp llm.Response) {
-	t := Turn{
-		Kind:       TurnAssistant,
+	t := schema.Turn{
+		Kind:       schema.TurnAssistant,
 		Message:    resp.Message,
 		Timestamp:  time.Now().UTC(),
 		Usage:      resp.Usage,

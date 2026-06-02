@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -34,12 +35,12 @@ func (s *recallStrategy) Name() string { return "recall" }
 
 // ManageContext delegates to the underlying compactStrategy to manage the
 // conversation history.
-func (s *recallStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
+func (s *recallStrategy) ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
 	return s.compact.ManageContext(ctx, history, sysPromptChars, emitFn)
 }
 
 // AfterAction is a no-op for recallStrategy.
-func (s *recallStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
+func (s *recallStrategy) AfterAction(ctx context.Context, history []schema.Turn, client *llm.Client) error {
 	return nil
 }
 

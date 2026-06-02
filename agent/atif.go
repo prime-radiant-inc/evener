@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -106,7 +107,7 @@ func convertToATIF(header TranscriptHeader, entries []TranscriptEntry) atifTraje
 		turn := entry.Turn
 
 		switch turn.Kind {
-		case TurnUserInput:
+		case schema.TurnUserInput:
 			step := atifStep{
 				StepID:    stepID,
 				Source:    "user",
@@ -117,11 +118,11 @@ func convertToATIF(header TranscriptHeader, entries []TranscriptEntry) atifTraje
 			steps = append(steps, step)
 			stepID++
 
-		case TurnAssistant:
+		case schema.TurnAssistant:
 			step := convertAssistantTurn(turn, stepID)
 
 			// Look ahead: if the next entry is TOOL_RESULTS, merge it as observation.
-			if i+1 < len(entries) && entries[i+1].Turn.Kind == TurnToolResults {
+			if i+1 < len(entries) && entries[i+1].Turn.Kind == schema.TurnToolResults {
 				i++
 				obs, errMap, durMap := convertToolResults(entries[i].Turn)
 				step.Observation = obs
@@ -142,7 +143,7 @@ func convertToATIF(header TranscriptHeader, entries []TranscriptEntry) atifTraje
 			steps = append(steps, step)
 			stepID++
 
-		case TurnSteering, TurnSystem:
+		case schema.TurnSteering, schema.TurnSystem:
 			step := atifStep{
 				StepID:    stepID,
 				Source:    "system",
@@ -153,7 +154,7 @@ func convertToATIF(header TranscriptHeader, entries []TranscriptEntry) atifTraje
 			steps = append(steps, step)
 			stepID++
 
-		case TurnCheckpoint:
+		case schema.TurnCheckpoint:
 			step := atifStep{
 				StepID:    stepID,
 				Source:    "system",
@@ -164,7 +165,7 @@ func convertToATIF(header TranscriptHeader, entries []TranscriptEntry) atifTraje
 			steps = append(steps, step)
 			stepID++
 
-		case TurnSummary:
+		case schema.TurnSummary:
 			step := atifStep{
 				StepID:    stepID,
 				Source:    "system",
@@ -175,7 +176,7 @@ func convertToATIF(header TranscriptHeader, entries []TranscriptEntry) atifTraje
 			steps = append(steps, step)
 			stepID++
 
-		case TurnToolResults:
+		case schema.TurnToolResults:
 			// Orphaned TOOL_RESULTS (not preceded by ASSISTANT). Preserve as system step.
 			obs, errMap, durMap := convertToolResults(turn)
 			extra := map[string]any{"serf_kind": "orphaned_tool_results"}
@@ -229,7 +230,7 @@ func exportATIF(transcriptPath, outPath string) error {
 }
 
 // convertAssistantTurn extracts text, tool calls, thinking, and metadata from an assistant turn.
-func convertAssistantTurn(turn Turn, stepID int) atifStep {
+func convertAssistantTurn(turn schema.Turn, stepID int) atifStep {
 	step := atifStep{
 		StepID:    stepID,
 		Source:    "agent",
@@ -348,7 +349,7 @@ func convertAssistantTurn(turn Turn, stepID int) atifStep {
 }
 
 // convertToolResults extracts observation results, error flags, and durations from a tool results turn.
-func convertToolResults(turn Turn) (*atifObservation, map[string]bool, map[string]int64) {
+func convertToolResults(turn schema.Turn) (*atifObservation, map[string]bool, map[string]int64) {
 	var results []atifObservationResult
 	errMap := map[string]bool{}
 	durMap := map[string]int64{}
@@ -377,7 +378,7 @@ func convertToolResults(turn Turn) (*atifObservation, map[string]bool, map[strin
 }
 
 // formatTimestamp formats a turn's timestamp as ISO 8601 UTC.
-func formatTimestamp(turn Turn) string {
+func formatTimestamp(turn schema.Turn) string {
 	if turn.Timestamp.IsZero() {
 		return ""
 	}

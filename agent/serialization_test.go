@@ -8,12 +8,13 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
 func TestTurn_JSONRoundTrip(t *testing.T) {
-	orig := Turn{
-		Kind:    TurnAssistant,
+	orig := schema.Turn{
+		Kind:    schema.TurnAssistant,
 		Message: llm.Assistant("hello world"),
 	}
 	data, err := json.Marshal(orig)
@@ -32,7 +33,7 @@ func TestTurn_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("expected 'message' key in JSON, got keys: %v", raw)
 	}
 
-	var got Turn
+	var got schema.Turn
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -48,20 +49,20 @@ func TestTurn_JSONRoundTrip(t *testing.T) {
 }
 
 func TestTurn_JSONRoundTrip_ToolResult(t *testing.T) {
-	orig := Turn{
-		Kind:    TurnTool,
+	orig := schema.Turn{
+		Kind:    schema.TurnTool,
 		Message: llm.ToolResultNamed("call-123", "read_file", "file contents here", false),
 	}
 	data, err := json.Marshal(orig)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	var got Turn
+	var got schema.Turn
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got.Kind != TurnTool {
-		t.Fatalf("kind: got %q want %q", got.Kind, TurnTool)
+	if got.Kind != schema.TurnTool {
+		t.Fatalf("kind: got %q want %q", got.Kind, schema.TurnTool)
 	}
 	if got.Message.ToolCallID != "call-123" {
 		t.Fatalf("tool_call_id: got %q want %q", got.Message.ToolCallID, "call-123")
@@ -69,8 +70,8 @@ func TestTurn_JSONRoundTrip_ToolResult(t *testing.T) {
 }
 
 func TestTurn_JSONRoundTrip_ToolResults(t *testing.T) {
-	orig := Turn{
-		Kind: TurnToolResults,
+	orig := schema.Turn{
+		Kind: schema.TurnToolResults,
 		Message: llm.Message{
 			Role: llm.RoleTool,
 			Content: []llm.ContentPart{
@@ -83,12 +84,12 @@ func TestTurn_JSONRoundTrip_ToolResults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	var got Turn
+	var got schema.Turn
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got.Kind != TurnToolResults {
-		t.Fatalf("kind: got %q want %q", got.Kind, TurnToolResults)
+	if got.Kind != schema.TurnToolResults {
+		t.Fatalf("kind: got %q want %q", got.Kind, schema.TurnToolResults)
 	}
 	if len(got.Message.Content) != 2 {
 		t.Fatalf("content parts: got %d want 2", len(got.Message.Content))

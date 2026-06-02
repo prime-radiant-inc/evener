@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -231,7 +232,7 @@ func (s *Session) clearPromptNamePendingAfterAttempt(err error) {
 	}
 }
 
-func (s *Session) launchCompactionNamer(ctx context.Context, turn Turn) {
+func (s *Session) launchCompactionNamer(ctx context.Context, turn schema.Turn) {
 	if s.stateDir == "" {
 		return
 	}
@@ -261,7 +262,7 @@ func (s *Session) launchCompactionNamer(ctx context.Context, turn Turn) {
 	}()
 }
 
-func (s *Session) nameSessionFromCompactionTurn(ctx context.Context, turn Turn) error {
+func (s *Session) nameSessionFromCompactionTurn(ctx context.Context, turn schema.Turn) error {
 	if !isSessionNameCompactionTurn(turn) {
 		return nil
 	}
@@ -275,11 +276,11 @@ func (s *Session) nameSessionFromCompactionTurn(ctx context.Context, turn Turn) 
 	return s.nameSessionFromText(ctx, sessionNameSourceCompaction, text)
 }
 
-func isSessionNameCompactionTurn(turn Turn) bool {
-	return turn.Kind == TurnSummary || turn.Kind == TurnCheckpoint
+func isSessionNameCompactionTurn(turn schema.Turn) bool {
+	return turn.Kind == schema.TurnSummary || turn.Kind == schema.TurnCheckpoint
 }
 
-func (s *Session) handleCompactionTurn(t Turn) {
+func (s *Session) handleCompactionTurn(t schema.Turn) {
 	if s.transcript != nil {
 		if err := s.transcript.Append(t); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript compaction write: %v", err)})

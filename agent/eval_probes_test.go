@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -49,9 +50,9 @@ func TestRunRetentionProbes_SingleQuestion_Correct(t *testing.T) {
 	client.Register(adapter)
 
 	profile := NewOpenAIProfile("gpt-5.2")
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("Fix the bug in django")},
-		{Kind: TurnAssistant, Message: llm.Assistant("I'll fix it.")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("Fix the bug in django")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("I'll fix it.")},
 	}
 
 	probes := []probeQuestion{
@@ -93,7 +94,7 @@ func TestRunRetentionProbes_SingleQuestion_Incorrect(t *testing.T) {
 	}
 
 	score, results, err := runRetentionProbes(context.Background(), client, profile, probes,
-		[]Turn{{Kind: TurnUserInput, Message: llm.User("task")}},
+		[]schema.Turn{{Kind: schema.TurnUserInput, Message: llm.User("task")}},
 	)
 	if err != nil {
 		t.Fatalf("RunRetentionProbes: %v", err)
@@ -129,7 +130,7 @@ func TestRunRetentionProbes_MultipleQuestions(t *testing.T) {
 	}
 
 	score, results, err := runRetentionProbes(context.Background(), client, profile, probes,
-		[]Turn{{Kind: TurnUserInput, Message: llm.User("task")}},
+		[]schema.Turn{{Kind: schema.TurnUserInput, Message: llm.User("task")}},
 	)
 	if err != nil {
 		t.Fatalf("RunRetentionProbes: %v", err)
@@ -159,7 +160,7 @@ func TestRunRetentionProbes_NoQuestions(t *testing.T) {
 
 	score, results, err := runRetentionProbes(context.Background(), client, profile,
 		[]probeQuestion{},
-		[]Turn{{Kind: TurnUserInput, Message: llm.User("task")}},
+		[]schema.Turn{{Kind: schema.TurnUserInput, Message: llm.User("task")}},
 	)
 	if err != nil {
 		t.Fatalf("RunRetentionProbes: %v", err)
@@ -183,7 +184,7 @@ func TestRunRetentionProbes_AgentCallFails(t *testing.T) {
 	profile := NewOpenAIProfile("gpt-5.2")
 	_, _, err := runRetentionProbes(context.Background(), client, profile,
 		[]probeQuestion{{Question: "q", Expected: "a", Difficulty: "easy", Type: "factual"}},
-		[]Turn{{Kind: TurnUserInput, Message: llm.User("task")}},
+		[]schema.Turn{{Kind: schema.TurnUserInput, Message: llm.User("task")}},
 	)
 	if err == nil {
 		t.Fatal("expected error when agent call fails")
@@ -204,7 +205,7 @@ func TestRunRetentionProbes_JudgeCallFails(t *testing.T) {
 	profile := NewOpenAIProfile("gpt-5.2")
 	_, _, err := runRetentionProbes(context.Background(), client, profile,
 		[]probeQuestion{{Question: "q", Expected: "a", Difficulty: "easy", Type: "factual"}},
-		[]Turn{{Kind: TurnUserInput, Message: llm.User("task")}},
+		[]schema.Turn{{Kind: schema.TurnUserInput, Message: llm.User("task")}},
 	)
 	if err == nil {
 		t.Fatal("expected error when judge call fails")
@@ -278,7 +279,7 @@ func TestRunRetentionProbes_DistractorScoring(t *testing.T) {
 	}
 
 	score, results, err := runRetentionProbes(context.Background(), client, profile, probes,
-		[]Turn{{Kind: TurnUserInput, Message: llm.User("task")}},
+		[]schema.Turn{{Kind: schema.TurnUserInput, Message: llm.User("task")}},
 	)
 	if err != nil {
 		t.Fatalf("RunRetentionProbes: %v", err)

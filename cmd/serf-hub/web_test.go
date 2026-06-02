@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
@@ -1212,7 +1213,7 @@ func TestWeb_SessionImage_ServesShaReferencedInputImage(t *testing.T) {
 		{Kind: llm.ContentText, Text: "what color?"},
 		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: imgBytes, MediaType: "image/png"}},
 	}}
-	if err := tw.Append(agent.NewTurn(agent.TurnUserInput, userMsg)); err != nil {
+	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, userMsg)); err != nil {
 		t.Fatal(err)
 	}
 	if err := tw.Close(); err != nil {
@@ -1280,7 +1281,7 @@ func TestWeb_SessionImage_UnknownSha(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tw.Append(agent.NewTurn(agent.TurnUserInput, llm.User("text only"))); err != nil {
+	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("text only"))); err != nil {
 		t.Fatal(err)
 	}
 	if err := tw.Close(); err != nil {
@@ -2387,13 +2388,13 @@ func TestWeb_Fork_CallsForkSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tw.Append(agent.NewTurn(agent.TurnUserInput, llm.User("first task"))); err != nil {
+	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("first task"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := tw.Append(agent.NewTurn(agent.TurnAssistant, llm.Assistant("first reply"))); err != nil {
+	if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("first reply"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := tw.Append(agent.NewTurn(agent.TurnUserInput, llm.User("second task"))); err != nil {
+	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("second task"))); err != nil {
 		t.Fatal(err)
 	}
 	if err := tw.Close(); err != nil {

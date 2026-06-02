@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/installid"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -91,7 +92,7 @@ func NewSession(client *llm.Client, profile ProviderProfile, env execenv.Executi
 		installID:      installid.LoadOrCreateInstallationID(cfg.StateDir),
 		state:          SessionIdle,
 		events:         make(chan events.SessionEvent, 256),
-		history:        []Turn{},
+		history:        []schema.Turn{},
 		readFiles:      map[string]bool{},
 		sessionCtx:     sessCtx,
 		cancelFunc:     sessCancel,
@@ -214,7 +215,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env execenv.Exe
 	profile = resolveLiveModelProfileWithTimeout(client, profile)
 
 	// Try transcript-based resume first, fall back to snapshot history.
-	var resumeHistory []Turn
+	var resumeHistory []schema.Turn
 	if stateDir != "" {
 		tpath := filepath.Join(stateDir, sessionsSubdir, snap.ID+".transcript.jsonl")
 		_, entries, _, readErr := readTranscript(tpath)
@@ -223,7 +224,7 @@ func RestoreSession(client *llm.Client, profile ProviderProfile, env execenv.Exe
 		}
 	}
 	if resumeHistory == nil {
-		resumeHistory = append([]Turn{}, snap.History...)
+		resumeHistory = append([]schema.Turn{}, snap.History...)
 	}
 
 	sessCtx, sessCancel := context.WithCancel(context.Background())
@@ -346,7 +347,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env exe
 	profile = resolveLiveModelProfileWithTimeout(client, profile)
 
 	// Recover history from transcript JSONL. No snapshot fallback.
-	var resumeHistory []Turn
+	var resumeHistory []schema.Turn
 	if stateDir != "" {
 		tpath := filepath.Join(stateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
 		_, entries, _, readErr := readTranscript(tpath)
@@ -355,7 +356,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile ProviderProfile, env exe
 		}
 	}
 	if resumeHistory == nil {
-		resumeHistory = []Turn{}
+		resumeHistory = []schema.Turn{}
 	}
 
 	sessCtx, sessCancel := context.WithCancel(context.Background())

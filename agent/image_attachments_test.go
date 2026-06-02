@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -167,11 +168,11 @@ func TestSession_Enqueue_DrainCarriesImagesIntoUserTurn(t *testing.T) {
 	// and the queued one, in order. The queued turn must carry the image as
 	// a ContentImage part.
 	sess.mu.Lock()
-	history := append([]Turn{}, sess.history...)
+	history := append([]schema.Turn{}, sess.history...)
 	sess.mu.Unlock()
-	var userTurns []Turn
+	var userTurns []schema.Turn
 	for _, tr := range history {
-		if tr.Kind == TurnUserInput {
+		if tr.Kind == schema.TurnUserInput {
 			userTurns = append(userTurns, tr)
 		}
 	}

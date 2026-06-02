@@ -6,6 +6,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -67,7 +68,7 @@ func ExampleSession_Events() {
 
 // The transcript schema types are plain structs that describe the on-disk
 // JSONL transcript. A [agent.TranscriptHeader] is the first line of the file,
-// and each subsequent [agent.Turn] is a typed history item. [agent.NewTurn]
+// and each subsequent [schema.Turn] is a typed history item. [schema.NewTurn]
 // stamps the current time.
 func ExampleNewTurn() {
 	header := agent.TranscriptHeader{
@@ -76,7 +77,7 @@ func ExampleNewTurn() {
 		Model:     "gpt-5.2",
 	}
 
-	turn := agent.NewTurn(agent.TurnUserInput, llm.User("Summarize main.go."))
+	turn := schema.NewTurn(schema.TurnUserInput, llm.User("Summarize main.go."))
 
 	fmt.Println(header.SessionID, turn.Kind)
 	// Output: sess-123 USER_INPUT

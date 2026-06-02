@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -29,9 +30,9 @@ func testSnapshot() SessionSnapshot {
 			IsGitRepo:  true,
 			GitBranch:  "main",
 		},
-		History: []Turn{
-			{Kind: TurnUserInput, Message: llm.User("hello")},
-			{Kind: TurnAssistant, Message: llm.Assistant("hi there")},
+		History: []schema.Turn{
+			{Kind: schema.TurnUserInput, Message: llm.User("hello")},
+			{Kind: schema.TurnAssistant, Message: llm.Assistant("hi there")},
 		},
 		CreatedAt: time.Date(2025, 1, 15, 10, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2025, 1, 15, 10, 5, 0, 0, time.UTC),
@@ -61,8 +62,8 @@ func TestSessionSnapshot_JSONRoundTrip(t *testing.T) {
 	if len(got.History) != len(orig.History) {
 		t.Fatalf("history length: got %d want %d", len(got.History), len(orig.History))
 	}
-	if got.History[0].Kind != TurnUserInput {
-		t.Fatalf("history[0].kind: got %q want %q", got.History[0].Kind, TurnUserInput)
+	if got.History[0].Kind != schema.TurnUserInput {
+		t.Fatalf("history[0].kind: got %q want %q", got.History[0].Kind, schema.TurnUserInput)
 	}
 	if got.History[1].Message.Text() != "hi there" {
 		t.Fatalf("history[1].text: got %q want %q", got.History[1].Message.Text(), "hi there")
@@ -367,11 +368,11 @@ func TestSession_AutoSave_WritesMetaAfterProcessInput(t *testing.T) {
 	if len(entries) < 2 {
 		t.Fatalf("expected at least 2 transcript entries, got %d", len(entries))
 	}
-	if entries[0].Turn.Kind != TurnUserInput {
-		t.Fatalf("entry[0].kind: got %q want %q", entries[0].Turn.Kind, TurnUserInput)
+	if entries[0].Turn.Kind != schema.TurnUserInput {
+		t.Fatalf("entry[0].kind: got %q want %q", entries[0].Turn.Kind, schema.TurnUserInput)
 	}
-	if entries[1].Turn.Kind != TurnAssistant {
-		t.Fatalf("entry[1].kind: got %q want %q", entries[1].Turn.Kind, TurnAssistant)
+	if entries[1].Turn.Kind != schema.TurnAssistant {
+		t.Fatalf("entry[1].kind: got %q want %q", entries[1].Turn.Kind, schema.TurnAssistant)
 	}
 }
 
@@ -656,7 +657,7 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 	// Verify the transcript has both original and new user inputs.
 	var userTexts []string
 	for _, entry := range entries2 {
-		if entry.Turn.Kind == TurnUserInput {
+		if entry.Turn.Kind == schema.TurnUserInput {
 			userTexts = append(userTexts, entry.Turn.Message.Text())
 		}
 	}
@@ -680,7 +681,7 @@ func TestRestoreSession_CanProcessInput(t *testing.T) {
 		Model:     "gpt-5.2",
 		Config:    SessionConfig{MaxToolRoundsPerInput: 200},
 		EnvInfo:   EnvironmentInfo{WorkingDir: dir},
-		History:   []Turn{},
+		History:   []schema.Turn{},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	}
@@ -717,9 +718,9 @@ func TestRestoreSession_UsesTranscriptOverSnapshot(t *testing.T) {
 		Model:     "gpt-5.2",
 		Config:    SessionConfig{MaxToolRoundsPerInput: 200},
 		EnvInfo:   EnvironmentInfo{WorkingDir: dir},
-		History: []Turn{
-			NewTurn(TurnUserInput, llm.User("snapshot-old-message")),
-			NewTurn(TurnAssistant, llm.Assistant("snapshot-old-reply")),
+		History: []schema.Turn{
+			schema.NewTurn(schema.TurnUserInput, llm.User("snapshot-old-message")),
+			schema.NewTurn(schema.TurnAssistant, llm.Assistant("snapshot-old-reply")),
 		},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -737,10 +738,10 @@ func TestRestoreSession_UsesTranscriptOverSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTranscriptWriter: %v", err)
 	}
-	if err := tw.Append(NewTurn(TurnUserInput, llm.User("transcript-message"))); err != nil {
+	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("transcript-message"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-	if err := tw.Append(NewTurn(TurnAssistant, llm.Assistant("transcript-reply"))); err != nil {
+	if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("transcript-reply"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	tw.Close()
@@ -805,9 +806,9 @@ func TestRestoreSession_FallsBackToSnapshotWithoutTranscript(t *testing.T) {
 		Model:     "gpt-5.2",
 		Config:    SessionConfig{MaxToolRoundsPerInput: 200},
 		EnvInfo:   EnvironmentInfo{WorkingDir: dir},
-		History: []Turn{
-			NewTurn(TurnUserInput, llm.User("snapshot-fallback")),
-			NewTurn(TurnAssistant, llm.Assistant("snapshot-reply")),
+		History: []schema.Turn{
+			schema.NewTurn(schema.TurnUserInput, llm.User("snapshot-fallback")),
+			schema.NewTurn(schema.TurnAssistant, llm.Assistant("snapshot-reply")),
 		},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -864,8 +865,8 @@ func TestRestoreSession_TranscriptWithCompaction(t *testing.T) {
 		Model:     "gpt-5.2",
 		Config:    SessionConfig{MaxToolRoundsPerInput: 200},
 		EnvInfo:   EnvironmentInfo{WorkingDir: dir},
-		History: []Turn{
-			NewTurn(TurnUserInput, llm.User("snapshot-should-not-appear")),
+		History: []schema.Turn{
+			schema.NewTurn(schema.TurnUserInput, llm.User("snapshot-should-not-appear")),
 		},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -884,15 +885,15 @@ func TestRestoreSession_TranscriptWithCompaction(t *testing.T) {
 		t.Fatalf("NewTranscriptWriter: %v", err)
 	}
 	// Pre-compaction turns (should be discarded by ResumeHistory).
-	tw.Append(NewTurn(TurnUserInput, llm.User("old-message-1")))
-	tw.Append(NewTurn(TurnAssistant, llm.Assistant("old-reply-1")))
-	tw.Append(NewTurn(TurnUserInput, llm.User("old-message-2")))
-	tw.Append(NewTurn(TurnAssistant, llm.Assistant("old-reply-2")))
+	tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("old-message-1")))
+	tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("old-reply-1")))
+	tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("old-message-2")))
+	tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("old-reply-2")))
 	// Checkpoint turn.
-	tw.Append(NewTurn(TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT] Summary of prior work")))
+	tw.Append(schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT] Summary of prior work")))
 	// Post-compaction turns (should be kept).
-	tw.Append(NewTurn(TurnUserInput, llm.User("post-compact-message")))
-	tw.Append(NewTurn(TurnAssistant, llm.Assistant("post-compact-reply")))
+	tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("post-compact-message")))
+	tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("post-compact-reply")))
 	tw.Close()
 
 	c := llm.NewClient()

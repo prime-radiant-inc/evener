@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
@@ -703,7 +704,7 @@ func TestHubRPCThreadReadIncludesTranscriptPrelude(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.Append(agent.NewTurn(agent.TurnUserInput, llm.User("hello"))); err != nil {
+	if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
 		t.Fatal(err)
 	}
 	strict := true
@@ -4885,10 +4886,10 @@ func buildRPCParentSession(t *testing.T, stateDir string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, turn := range []agent.Turn{
-		agent.NewTurn(agent.TurnUserInput, llm.User("first task")),
-		agent.NewTurn(agent.TurnAssistant, llm.Assistant("first reply")),
-		agent.NewTurn(agent.TurnUserInput, llm.User("second task")),
+	for _, turn := range []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first task")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("first reply")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("second task")),
 	} {
 		if err := writer.Append(turn); err != nil {
 			t.Fatal(err)
@@ -4928,7 +4929,7 @@ func buildRPCFailedSession(t *testing.T, stateDir string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.Append(agent.NewTurn(agent.TurnUserInput, llm.User("hello"))); err != nil {
+	if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.AppendAPICall(agent.TranscriptAPICall{
@@ -4977,7 +4978,7 @@ func buildRPCStructuredFailedSession(t *testing.T, stateDir string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.Append(agent.NewTurn(agent.TurnUserInput, llm.User("hello"))); err != nil {
+	if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
 		t.Fatal(err)
 	}
 	if err := writer.Close(); err != nil {

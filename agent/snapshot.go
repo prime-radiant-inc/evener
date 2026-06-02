@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"primeradiant.com/serf/agent/schema"
 )
 
 // SessionSnapshot holds the serializable state of a Session for persistence and resume.
@@ -21,7 +23,7 @@ type SessionSnapshot struct {
 	Model     string          `json:"model"`      // model name the session is driving
 	Config    SessionConfig   `json:"config"`     // the session's configuration
 	EnvInfo   EnvironmentInfo `json:"env_info"`   // captured environment description
-	History   []Turn          `json:"history"`    // full conversation transcript
+	History   []schema.Turn   `json:"history"`    // full conversation transcript
 	CreatedAt time.Time       `json:"created_at"` // when the session was first created
 	UpdatedAt time.Time       `json:"updated_at"` // last time the snapshot was written
 	TurnCount int             `json:"turn_count"` // number of user-input turns processed

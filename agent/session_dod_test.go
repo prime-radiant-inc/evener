@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/installid"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -337,7 +338,7 @@ func TestSession_EventSystem_UserInputCarriesTurnIndex(t *testing.T) {
 	}
 	var transcriptTurns []int
 	for i, e := range entries {
-		if e.Turn.Kind == TurnUserInput {
+		if e.Turn.Kind == schema.TurnUserInput {
 			transcriptTurns = append(transcriptTurns, i+1)
 		}
 	}
@@ -573,11 +574,11 @@ func TestSession_Steer_IsInjectedAfterCurrentToolRound(t *testing.T) {
 
 	// Spec: steering messages appear as SteeringTurn in history (converted to user-role messages for the LLM).
 	sess.mu.Lock()
-	turns := append([]Turn{}, sess.history...)
+	turns := append([]schema.Turn{}, sess.history...)
 	sess.mu.Unlock()
 	foundSteering := false
 	for _, tr := range turns {
-		if tr.Kind == TurnSteering && tr.Message.Role == llm.RoleUser && strings.Contains(tr.Message.Text(), "steer: do X") {
+		if tr.Kind == schema.TurnSteering && tr.Message.Role == llm.RoleUser && strings.Contains(tr.Message.Text(), "steer: do X") {
 			foundSteering = true
 		}
 	}
@@ -2951,7 +2952,7 @@ func TestAssistantTurn_CapturesUsageAndResponseID(t *testing.T) {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	for _, turn := range sess.history {
-		if turn.Kind == TurnAssistant {
+		if turn.Kind == schema.TurnAssistant {
 			if turn.ResponseID == "" {
 				t.Fatal("expected non-empty ResponseID on assistant turn")
 			}
@@ -3102,10 +3103,10 @@ func TestSession_ToolResults_AggregatedIntoSingleTurn(t *testing.T) {
 	var toolResultTurns int
 	var toolResultsTurns int
 	for _, turn := range sess.history {
-		if turn.Kind == TurnTool {
+		if turn.Kind == schema.TurnTool {
 			toolResultTurns++
 		}
-		if turn.Kind == TurnToolResults {
+		if turn.Kind == schema.TurnToolResults {
 			hasNonCommunicate := false
 			for _, p := range turn.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil && p.ToolResult.Name != "communicate" {
@@ -3168,7 +3169,7 @@ func TestSession_ToolResults_ContainsAllCallIDs(t *testing.T) {
 	sess.mu.Lock()
 	var callIDs []string
 	for _, turn := range sess.history {
-		if turn.Kind == TurnToolResults {
+		if turn.Kind == schema.TurnToolResults {
 			for _, p := range turn.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					if p.ToolResult.Name == "communicate" {
@@ -3237,10 +3238,10 @@ func TestSession_ToolResults_SingleCallAlsoAggregated(t *testing.T) {
 	sess.mu.Lock()
 	var foundToolResults bool
 	for _, turn := range sess.history {
-		if turn.Kind == TurnToolResults {
+		if turn.Kind == schema.TurnToolResults {
 			foundToolResults = true
 		}
-		if turn.Kind == TurnTool {
+		if turn.Kind == schema.TurnTool {
 			t.Fatalf("found individual TurnTool; expected TurnToolResults")
 		}
 	}

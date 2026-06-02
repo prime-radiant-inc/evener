@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -32,7 +33,7 @@ func (s *checkpointPredStrategy) Name() string { return "checkpoint-pred" }
 func (s *checkpointPredStrategy) Tools() []registeredTool { return nil }
 
 // AfterAction is a no-op for this strategy and always returns nil.
-func (s *checkpointPredStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
+func (s *checkpointPredStrategy) AfterAction(ctx context.Context, history []schema.Turn, client *llm.Client) error {
 	return nil
 }
 
@@ -44,7 +45,7 @@ func (s *checkpointPredStrategy) AfterAction(ctx context.Context, history []Turn
 // event, except the summarization layer, which emits one only on success and
 // an EventWarning on failure. It is a no-op when no contextManager or context
 // window is configured.
-func (s *checkpointPredStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
+func (s *checkpointPredStrategy) ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
 	if s.cm == nil {
 		return nil
 	}
@@ -121,7 +122,7 @@ func (s *checkpointPredStrategy) ManageContext(ctx context.Context, history *[]T
 			EstTokensBefore: before,
 			EstTokensAfter:  after,
 		})
-		if s.cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == TurnCheckpoint {
+		if s.cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == schema.TurnCheckpoint {
 			s.cm.OnCompactionTurn((*history)[0])
 		}
 		compacted = true
@@ -147,7 +148,7 @@ func (s *checkpointPredStrategy) ManageContext(ctx context.Context, history *[]T
 				EstTokensBefore: before,
 				EstTokensAfter:  after,
 			})
-			if s.cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == TurnSummary {
+			if s.cm.OnCompactionTurn != nil && len(*history) > 0 && (*history)[0].Kind == schema.TurnSummary {
 				s.cm.OnCompactionTurn((*history)[0])
 			}
 			compacted = true
@@ -166,7 +167,7 @@ func (s *checkpointPredStrategy) ManageContext(ctx context.Context, history *[]T
 
 // predictiveCheckpoint asks a cheap model to predict what information the agent
 // will need going forward, then creates a targeted checkpoint preserving that.
-func (s *checkpointPredStrategy) predictiveCheckpoint(ctx context.Context, history []Turn, preserveRecent int) ([]Turn, error) {
+func (s *checkpointPredStrategy) predictiveCheckpoint(ctx context.Context, history []schema.Turn, preserveRecent int) ([]schema.Turn, error) {
 	if len(history) <= preserveRecent {
 		return history, nil
 	}
@@ -181,11 +182,11 @@ func (s *checkpointPredStrategy) predictiveCheckpoint(ctx context.Context, histo
 	for i := 0; i < cutoff; i++ {
 		t := history[i]
 		switch t.Kind {
-		case TurnUserInput:
+		case schema.TurnUserInput:
 			b.WriteString("User: " + truncate(t.Message.Text(), 300) + "\n")
-		case TurnAssistant:
+		case schema.TurnAssistant:
 			b.WriteString("Assistant: " + truncate(t.Message.Text(), 300) + "\n")
-		case TurnTool, TurnToolResults:
+		case schema.TurnTool, schema.TurnToolResults:
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					content := fmt.Sprint(p.ToolResult.Content)
@@ -226,9 +227,9 @@ Write ONLY the checkpoint content. Be specific and concise (under 500 words). Fo
 	}
 
 	checkpointText := "[CONTEXT CHECKPOINT - PREDICTIVE]\n" + resp.Text() + "\n[END CHECKPOINT]"
-	checkpointTurn := NewTurn(TurnCheckpoint, llm.User(checkpointText))
+	checkpointTurn := schema.NewTurn(schema.TurnCheckpoint, llm.User(checkpointText))
 
-	result := make([]Turn, 0, 1+preserveRecent)
+	result := make([]schema.Turn, 0, 1+preserveRecent)
 	result = append(result, checkpointTurn)
 	result = append(result, history[cutoff:]...)
 	return result, nil

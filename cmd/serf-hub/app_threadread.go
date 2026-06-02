@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/internal/apptranscript"
@@ -194,7 +195,7 @@ func appItemsFromReplayTurn(turnID string, turnIndex int, turn hubcore.ReplayTur
 	})
 }
 
-func replayTurnToAgentTurn(turn hubcore.ReplayTurn) (agent.Turn, map[string]string) {
+func replayTurnToAgentTurn(turn hubcore.ReplayTurn) (schema.Turn, map[string]string) {
 	imageNames := map[string]string{}
 	content := make([]llm.ContentPart, 0, len(turn.Message.Content))
 	for _, part := range turn.Message.Content {
@@ -240,8 +241,8 @@ func replayTurnToAgentTurn(turn hubcore.ReplayTurn) (agent.Turn, map[string]stri
 			})
 		}
 	}
-	return agent.Turn{
-		Kind: agent.TurnKind(turn.Kind),
+	return schema.Turn{
+		Kind: schema.TurnKind(turn.Kind),
 		Message: llm.Message{
 			Role:    llm.Role(turn.Message.Role),
 			Content: content,

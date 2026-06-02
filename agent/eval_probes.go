@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -28,7 +29,7 @@ type probeResult struct {
 // runRetentionProbes injects probe questions about earlier decisions into a
 // completed session and judges the agent's answers against expected values.
 // Returns the fraction of correct answers (0.0-1.0) and per-question results.
-func runRetentionProbes(ctx context.Context, client *llm.Client, profile ProviderProfile, probeQuestions []probeQuestion, sessionHistory []Turn) (float64, []probeResult, error) {
+func runRetentionProbes(ctx context.Context, client *llm.Client, profile ProviderProfile, probeQuestions []probeQuestion, sessionHistory []schema.Turn) (float64, []probeResult, error) {
 	if len(probeQuestions) == 0 {
 		return 0.0, nil, nil
 	}
@@ -115,13 +116,13 @@ func parseBinaryJudge(raw string) bool {
 
 // turnsToMessages converts session Turn history into llm.Message slice
 // suitable for sending to the LLM.
-func turnsToMessages(turns []Turn) []llm.Message {
+func turnsToMessages(turns []schema.Turn) []llm.Message {
 	msgs := make([]llm.Message, 0, len(turns))
 	for _, t := range turns {
 		switch t.Kind {
-		case TurnSteering:
+		case schema.TurnSteering:
 			msgs = append(msgs, llm.User(t.Message.Text()))
-		case TurnToolResults:
+		case schema.TurnToolResults:
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					msgs = append(msgs, llm.ToolResultNamed(

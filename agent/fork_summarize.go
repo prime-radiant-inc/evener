@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -13,7 +14,7 @@ import (
 // SessionLogEntry summarizing the most recent action in turns. The prompt
 // explicitly preserves failure signals so errors are not lost during
 // summarization.
-func ForkSummarize(ctx context.Context, client *llm.Client, profile ProviderProfile, turns []Turn, turnNumber int) (SessionLogEntry, error) {
+func ForkSummarize(ctx context.Context, client *llm.Client, profile ProviderProfile, turns []schema.Turn, turnNumber int) (SessionLogEntry, error) {
 	prompt := buildSummarizePrompt(turns)
 
 	req := llm.Request{
@@ -42,23 +43,23 @@ func ForkSummarize(ctx context.Context, client *llm.Client, profile ProviderProf
 
 // buildSummarizePrompt renders the recent turns and the summarization
 // instruction into a single prompt string for the cheap model.
-func buildSummarizePrompt(turns []Turn) string {
+func buildSummarizePrompt(turns []schema.Turn) string {
 	var b strings.Builder
 	b.WriteString("Summarize the most recent action in this coding agent session.\n\n")
 	b.WriteString("Recent conversation:\n")
 
 	for _, t := range turns {
 		switch t.Kind {
-		case TurnUserInput:
+		case schema.TurnUserInput:
 			b.WriteString("User: " + truncate(t.Message.Text(), 500) + "\n")
-		case TurnAssistant:
+		case schema.TurnAssistant:
 			b.WriteString("Assistant: " + truncate(t.Message.Text(), 500) + "\n")
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolCall && p.ToolCall != nil {
 					b.WriteString(fmt.Sprintf("  [tool_call: %s(%s)]\n", p.ToolCall.Name, truncate(string(p.ToolCall.Arguments), 200)))
 				}
 			}
-		case TurnTool, TurnToolResults:
+		case schema.TurnTool, schema.TurnToolResults:
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					content := fmt.Sprint(p.ToolResult.Content)
@@ -69,7 +70,7 @@ func buildSummarizePrompt(turns []Turn) string {
 					b.WriteString(fmt.Sprintf("Tool(%s)%s: %s\n", p.ToolResult.Name, errTag, truncate(content, 300)))
 				}
 			}
-		case TurnSteering:
+		case schema.TurnSteering:
 			b.WriteString("System: " + truncate(t.Message.Text(), 200) + "\n")
 		}
 	}

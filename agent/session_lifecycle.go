@@ -15,6 +15,7 @@ import (
 	"unicode/utf16"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -75,7 +76,7 @@ func (s *Session) Compact(ctx context.Context) error {
 	s.contextMgr.Meta = s.buildCompactionMeta()
 
 	s.mu.Lock()
-	histCopy := append([]Turn{}, s.history...)
+	histCopy := append([]schema.Turn{}, s.history...)
 	s.mu.Unlock()
 
 	emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &histCopy)
@@ -91,11 +92,11 @@ func (s *Session) Compact(ctx context.Context) error {
 }
 
 type steeringTurnRecord struct {
-	turn Turn
+	turn schema.Turn
 	text string
 }
 
-func (s *Session) compactionEmitFunc(ctx context.Context, history *[]Turn) (func(events.EventKind, events.EventData), func()) {
+func (s *Session) compactionEmitFunc(ctx context.Context, history *[]schema.Turn) (func(events.EventKind, events.EventData), func()) {
 	preCompactRan := false
 	var pendingSteering []steeringTurnRecord
 	emitFn := func(kind events.EventKind, data events.EventData) {
@@ -111,7 +112,7 @@ func (s *Session) compactionEmitFunc(ctx context.Context, history *[]Turn) (func
 	return emitFn, flush
 }
 
-func (s *Session) runPreCompactHook(ctx context.Context, history *[]Turn) []steeringTurnRecord {
+func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn) []steeringTurnRecord {
 	if s.hookRunner == nil || history == nil {
 		return nil
 	}
@@ -119,13 +120,13 @@ func (s *Session) runPreCompactHook(ctx context.Context, history *[]Turn) []stee
 	return appendSteeringMessagesToHistory(history, result.SystemMessages)
 }
 
-func appendSteeringMessagesToHistory(history *[]Turn, messages []string) []steeringTurnRecord {
+func appendSteeringMessagesToHistory(history *[]schema.Turn, messages []string) []steeringTurnRecord {
 	var records []steeringTurnRecord
 	for _, msg := range messages {
 		if strings.TrimSpace(msg) == "" {
 			continue
 		}
-		turn := NewTurn(TurnSteering, llm.User(msg))
+		turn := schema.NewTurn(schema.TurnSteering, llm.User(msg))
 		*history = append(*history, turn)
 		records = append(records, steeringTurnRecord{turn: turn, text: msg})
 	}
@@ -306,7 +307,7 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 					// This is the user-visible "interrupted here" marker
 					// in the transcript that consumers (TUI / hub) render.
 					interruptMsg := "<SYSTEM-REMINDER>The user interrupted the previous turn before it completed. Any partial tool output above is incomplete. Wait for the user's next message before continuing.</SYSTEM-REMINDER>"
-					s.appendTurn(TurnSteering, llm.User(interruptMsg))
+					s.appendTurn(schema.TurnSteering, llm.User(interruptMsg))
 					s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: interruptMsg})
 				}
 				if emitEnd {
@@ -690,7 +691,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 		Images: userInputImagesFromAttachments(images),
 		Turn:   userInputTurn,
 	})
-	s.appendTurn(TurnUserInput, buildUserInputMessage(input, images))
+	s.appendTurn(schema.TurnUserInput, buildUserInputMessage(input, images))
 	s.launchInitialPromptNamer(s.sessionCtx, input)
 
 	// UserPromptSubmit hooks
@@ -723,7 +724,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	for _, msg := range s.drainSteering() {
-		s.appendTurn(TurnSteering, steeringMessageToLLM(msg))
+		s.appendTurn(schema.TurnSteering, steeringMessageToLLM(msg))
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	}
 	return true
@@ -763,7 +764,7 @@ func (s *Session) prepareModelRequest(ctx context.Context, round int, t *events.
 
 	// Copy history once for both context management and message expansion.
 	s.mu.Lock()
-	historyTurns := append([]Turn{}, s.history...)
+	historyTurns := append([]schema.Turn{}, s.history...)
 	s.mu.Unlock()
 	if repaired, repairs := repairOrphanedToolResults(historyTurns); repairs > 0 {
 		historyTurns = repaired
@@ -825,7 +826,7 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 		*contentFilterRetried = true
 		s.emit(events.EventWarning, warningDataFromError("Content filter hit — compacting context and retrying", err))
 		s.mu.Lock()
-		histCopy := append([]Turn{}, s.history...)
+		histCopy := append([]schema.Turn{}, s.history...)
 		s.mu.Unlock()
 		emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &histCopy)
 		s.contextMgr.ForceCompact(ctx, &histCopy, emitFn)
@@ -958,7 +959,7 @@ func (s *Session) handleNoToolCalls(noContent bool, t *retryTracker) (retry bool
 					"working, or call " + s.resultToolName() + " with your best effort so far. Take a breath — you've " +
 					"got this. Try a completely different approach."
 			}
-			s.appendTurn(TurnSteering, llm.User(steering))
+			s.appendTurn(schema.TurnSteering, llm.User(steering))
 			s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: steering})
 			return true, nil
 		}
@@ -980,7 +981,7 @@ func (s *Session) handleNoToolCalls(noContent bool, t *retryTracker) (retry bool
 			"All user-facing messages MUST use " + s.resultToolName() + ". " +
 			"If that bare text was meant for the user, call " + s.resultToolName() + " now with that text in message, set await_reply=true only if you need user input, and include the output envelope. " +
 			"Otherwise call your next tool and keep working."
-		s.appendTurn(TurnSteering, llm.User(steering))
+		s.appendTurn(schema.TurnSteering, llm.User(steering))
 		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: steering})
 		return true, nil
 	}
@@ -1202,7 +1203,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 			warning := s.stuckEscalation(count)
 			if abortErr := s.withResponseSideEffects(ctx, func() {
 				s.emit(events.EventLoopDetection, events.LoopDetectionData{Message: warning})
-				s.appendTurn(TurnSteering, llm.User(warning))
+				s.appendTurn(schema.TurnSteering, llm.User(warning))
 				s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: warning})
 			}); abortErr != nil {
 				return abortErr
@@ -1228,7 +1229,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 	case 5:
 		nudge := "<SYSTEM-REMINDER>You have spent several turns reading without writing or running anything. Review your current task. If you have enough context to make progress, write code or run a command now. A first attempt you can test and fix is more valuable than more reading.</SYSTEM-REMINDER>"
 		if abortErr := s.withResponseSideEffects(ctx, func() {
-			s.appendTurn(TurnSteering, llm.User(nudge))
+			s.appendTurn(schema.TurnSteering, llm.User(nudge))
 			s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: nudge})
 		}); abortErr != nil {
 			return abortErr
@@ -1236,7 +1237,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 	case 10:
 		nudge := "<SYSTEM-REMINDER>You have been reading for 10 turns without acting. Stop reading. Write the deliverable file now, even if incomplete. You can iterate after you have something to test.</SYSTEM-REMINDER>"
 		if abortErr := s.withResponseSideEffects(ctx, func() {
-			s.appendTurn(TurnSteering, llm.User(nudge))
+			s.appendTurn(schema.TurnSteering, llm.User(nudge))
 			s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: nudge})
 		}); abortErr != nil {
 			return abortErr
@@ -1246,7 +1247,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 	// Inject any queued steering messages before the next model call.
 	if abortErr := s.withResponseSideEffects(ctx, func() {
 		for _, msg := range s.drainSteering() {
-			s.appendTurn(TurnSteering, steeringMessageToLLM(msg))
+			s.appendTurn(schema.TurnSteering, steeringMessageToLLM(msg))
 			s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 		}
 	}); abortErr != nil {
@@ -1256,7 +1257,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 	// Task reminder injection.
 	if abortErr := s.withResponseSideEffects(ctx, func() {
 		if reminder := s.maybeInjectTaskReminder(); reminder != "" {
-			s.appendTurn(TurnSteering, llm.User(reminder))
+			s.appendTurn(schema.TurnSteering, llm.User(reminder))
 			s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder})
 		}
 	}); abortErr != nil {
@@ -1442,14 +1443,14 @@ func (s *Session) logAPICall(round int, roundStart time.Time, llmLatency time.Du
 // expandHistory flattens conversation turns into the per-message slice sent to
 // the model: steering/checkpoint/summary turns pass through as-is, and
 // aggregated tool-result turns are expanded into individual tool-result messages.
-func expandHistory(historyTurns []Turn) []llm.Message {
+func expandHistory(historyTurns []schema.Turn) []llm.Message {
 	history := make([]llm.Message, 0, len(historyTurns))
 	for _, t := range historyTurns {
-		if t.Kind == TurnSteering {
+		if t.Kind == schema.TurnSteering {
 			history = append(history, t.Message)
 			continue
 		}
-		if t.Kind == TurnToolResults {
+		if t.Kind == schema.TurnToolResults {
 			// Expand aggregated tool results into individual messages.
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
@@ -1463,7 +1464,7 @@ func expandHistory(historyTurns []Turn) []llm.Message {
 			}
 			continue
 		}
-		if t.Kind == TurnCheckpoint || t.Kind == TurnSummary {
+		if t.Kind == schema.TurnCheckpoint || t.Kind == schema.TurnSummary {
 			// Compaction turns carry user-role messages; include as-is.
 			history = append(history, t.Message)
 			continue

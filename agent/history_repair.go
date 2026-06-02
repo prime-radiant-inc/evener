@@ -5,15 +5,16 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
-func repairOrphanedToolResults(history []Turn) ([]Turn, int) {
+func repairOrphanedToolResults(history []schema.Turn) ([]schema.Turn, int) {
 	if len(history) == 0 {
 		return history, 0
 	}
 
-	out := make([]Turn, 0, len(history))
+	out := make([]schema.Turn, 0, len(history))
 	var pending []llm.ToolCallData
 	repairs := 0
 
@@ -41,11 +42,11 @@ func repairOrphanedToolResults(history []Turn) ([]Turn, int) {
 
 	for _, turn := range history {
 		switch turn.Kind {
-		case TurnAssistant:
+		case schema.TurnAssistant:
 			flushPending()
 			out = append(out, turn)
 			pending = assistantToolCalls(turn.Message)
-		case TurnTool, TurnToolResults:
+		case schema.TurnTool, schema.TurnToolResults:
 			out = append(out, turn)
 			for _, part := range turn.Message.Content {
 				if part.Kind == llm.ContentToolResult && part.ToolResult != nil {
@@ -75,7 +76,7 @@ func assistantToolCalls(msg llm.Message) []llm.ToolCallData {
 	return calls
 }
 
-func syntheticToolResultsTurn(calls []llm.ToolCallData) Turn {
+func syntheticToolResultsTurn(calls []llm.ToolCallData) schema.Turn {
 	parts := make([]llm.ContentPart, 0, len(calls))
 	for _, call := range calls {
 		content := fmt.Sprintf(
@@ -93,8 +94,8 @@ func syntheticToolResultsTurn(calls []llm.ToolCallData) Turn {
 			},
 		})
 	}
-	return Turn{
-		Kind:      TurnToolResults,
+	return schema.Turn{
+		Kind:      schema.TurnToolResults,
 		Message:   llm.Message{Role: llm.RoleTool, Content: parts},
 		Timestamp: time.Now().UTC(),
 	}

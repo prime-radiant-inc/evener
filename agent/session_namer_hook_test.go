@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -246,7 +247,7 @@ func TestSessionNameFromCompactionTurn_RefreshesPromptName(t *testing.T) {
 		return nil
 	}
 
-	turn := NewTurn(TurnSummary, llm.User("[CONTEXT SUMMARY]\nImplemented parser fixes and regression tests."))
+	turn := schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\nImplemented parser fixes and regression tests."))
 	if err := sess.nameSessionFromCompactionTurn(context.Background(), turn); err != nil {
 		t.Fatalf("nameSessionFromCompactionTurn: %v", err)
 	}
@@ -280,7 +281,7 @@ func TestSessionNameFromCompactionTurn_SkipsNonCompactionAndManualName(t *testin
 		return nil
 	}
 
-	if err := sess.nameSessionFromCompactionTurn(context.Background(), NewTurn(TurnAssistant, llm.Assistant("not compaction"))); err != nil {
+	if err := sess.nameSessionFromCompactionTurn(context.Background(), schema.NewTurn(schema.TurnAssistant, llm.Assistant("not compaction"))); err != nil {
 		t.Fatalf("non-compaction turn error: %v", err)
 	}
 	if calls != 0 {
@@ -292,7 +293,7 @@ func TestSessionNameFromCompactionTurn_SkipsNonCompactionAndManualName(t *testin
 	sess.naming.source = "manual"
 	sess.naming.updated = time.Now().UTC()
 	sess.mu.Unlock()
-	if err := sess.nameSessionFromCompactionTurn(context.Background(), NewTurn(TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]\nRelease work"))); err != nil {
+	if err := sess.nameSessionFromCompactionTurn(context.Background(), schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]\nRelease work"))); err != nil {
 		t.Fatalf("manual-name compaction turn error: %v", err)
 	}
 	if calls != 0 {
@@ -328,7 +329,7 @@ func TestSessionLaunchesCompactionNamerAsynchronously(t *testing.T) {
 		return nil
 	}
 
-	sess.launchCompactionNamer(context.Background(), NewTurn(TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]\nrouter cleanup")))
+	sess.launchCompactionNamer(context.Background(), schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]\nrouter cleanup")))
 	select {
 	case <-started:
 	case <-time.After(2 * time.Second):
@@ -361,7 +362,7 @@ func TestRestoreSessionFromMeta_PreservesManualNameAgainstCompaction(t *testing.
 		calls++
 		return nil
 	}
-	if err := sess.nameSessionFromCompactionTurn(context.Background(), NewTurn(TurnSummary, llm.User("[CONTEXT SUMMARY]\nrelease work"))); err != nil {
+	if err := sess.nameSessionFromCompactionTurn(context.Background(), schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\nrelease work"))); err != nil {
 		t.Fatalf("nameSessionFromCompactionTurn: %v", err)
 	}
 	if calls != 0 {

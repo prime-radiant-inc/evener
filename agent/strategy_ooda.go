@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -32,7 +33,7 @@ func (s *oodaStrategy) Name() string { return "ooda" }
 
 // ManageContext applies normal compaction layers from sessionLogStrategy,
 // then injects the session log as an orientation message at the end of history.
-func (s *oodaStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
+func (s *oodaStrategy) ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
 	// Apply normal compaction layers.
 	if err := s.sessionLogStrategy.ManageContext(ctx, history, sysPromptChars, emitFn); err != nil {
 		return err
@@ -59,7 +60,7 @@ func (s *oodaStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPr
 	// across repeated ManageContext calls.
 	filtered := (*history)[:0]
 	for _, t := range *history {
-		if t.Kind == TurnSteering && strings.Contains(t.Message.Text(), "[SESSION ORIENTATION]") {
+		if t.Kind == schema.TurnSteering && strings.Contains(t.Message.Text(), "[SESSION ORIENTATION]") {
 			continue
 		}
 		filtered = append(filtered, t)
@@ -68,7 +69,7 @@ func (s *oodaStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPr
 
 	// Append the orient message to the end of history.
 	// The model will see it just before generating its next response.
-	orientTurn := NewTurn(TurnSteering, llm.User(orient))
+	orientTurn := schema.NewTurn(schema.TurnSteering, llm.User(orient))
 	*history = append(*history, orientTurn)
 
 	return nil

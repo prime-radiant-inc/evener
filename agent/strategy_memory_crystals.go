@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -46,7 +47,7 @@ func (s *memoryCrystalsStrategy) Tools() []registeredTool { return nil }
 // ManageContext runs standard compact compaction and then, if any crystals
 // have been collected, injects the crystal bank into history as a steering
 // message.
-func (s *memoryCrystalsStrategy) ManageContext(ctx context.Context, history *[]Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
+func (s *memoryCrystalsStrategy) ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
 	// Run standard compact compaction.
 	s.cm.MaybeCompact(ctx, history, sysPromptChars, emitFn)
 
@@ -60,7 +61,7 @@ func (s *memoryCrystalsStrategy) ManageContext(ctx context.Context, history *[]T
 
 // injectCrystals ensures the crystal bank is present in history as a steering
 // message at the end. Removes any previous crystal turn first.
-func (s *memoryCrystalsStrategy) injectCrystals(history *[]Turn) {
+func (s *memoryCrystalsStrategy) injectCrystals(history *[]schema.Turn) {
 	var b strings.Builder
 	b.WriteString("[MEMORY CRYSTALS]\nKey facts preserved from this session:\n\n")
 	for _, c := range s.crystals {
@@ -71,7 +72,7 @@ func (s *memoryCrystalsStrategy) injectCrystals(history *[]Turn) {
 	// Remove any existing crystal turn.
 	filtered := (*history)[:0]
 	for _, t := range *history {
-		if t.Kind == TurnSteering && strings.Contains(t.Message.Text(), "[MEMORY CRYSTALS]") {
+		if t.Kind == schema.TurnSteering && strings.Contains(t.Message.Text(), "[MEMORY CRYSTALS]") {
 			continue
 		}
 		filtered = append(filtered, t)
@@ -79,14 +80,14 @@ func (s *memoryCrystalsStrategy) injectCrystals(history *[]Turn) {
 	*history = filtered
 
 	// Append crystal turn at the end (within preserved window for next compaction).
-	crystalTurn := NewTurn(TurnSteering, llm.User(b.String()))
+	crystalTurn := schema.NewTurn(schema.TurnSteering, llm.User(b.String()))
 	*history = append(*history, crystalTurn)
 }
 
 // AfterAction crystallizes key facts from the recent action every 3rd turn.
 // Calling every turn would trigger the compaction cascade; every 3rd is a
 // good balance between coverage and overhead.
-func (s *memoryCrystalsStrategy) AfterAction(ctx context.Context, history []Turn, client *llm.Client) error {
+func (s *memoryCrystalsStrategy) AfterAction(ctx context.Context, history []schema.Turn, client *llm.Client) error {
 	if client == nil || s.cm == nil {
 		return nil
 	}
@@ -115,13 +116,13 @@ func (s *memoryCrystalsStrategy) AfterAction(ctx context.Context, history []Turn
 }
 
 // crystallize calls the cheap model to extract key facts from recent turns.
-func (s *memoryCrystalsStrategy) crystallize(ctx context.Context, client *llm.Client, recent []Turn, turnNumber int) (MemoryCrystal, error) {
+func (s *memoryCrystalsStrategy) crystallize(ctx context.Context, client *llm.Client, recent []schema.Turn, turnNumber int) (MemoryCrystal, error) {
 	var b strings.Builder
 	for _, t := range recent {
 		switch t.Kind {
-		case TurnAssistant:
+		case schema.TurnAssistant:
 			b.WriteString("Assistant: " + truncate(t.Message.Text(), 200) + "\n")
-		case TurnTool, TurnToolResults:
+		case schema.TurnTool, schema.TurnToolResults:
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					content := fmt.Sprint(p.ToolResult.Content)
@@ -156,7 +157,7 @@ Key facts (one line):`, b.String())
 	// Determine action name from recent turns.
 	action := "unknown"
 	for i := len(recent) - 1; i >= 0; i-- {
-		if recent[i].Kind == TurnTool || recent[i].Kind == TurnToolResults {
+		if recent[i].Kind == schema.TurnTool || recent[i].Kind == schema.TurnToolResults {
 			for _, p := range recent[i].Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					action = p.ToolResult.Name

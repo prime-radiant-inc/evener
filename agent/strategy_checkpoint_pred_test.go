@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -41,9 +42,9 @@ func TestCheckpointPredStrategy_ManageContext_NoCompactionBelowThreshold(t *test
 	cm := newContextManager(profile, client)
 	s := newCheckpointPredStrategy(cm)
 
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("hello")),
-		NewTurn(TurnAssistant, llm.Assistant("hi")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("hello")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi")),
 	}
 
 	emitted := false
@@ -74,13 +75,13 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_FallbackOnError(t *testing.
 	// No adapter registered = LLM calls will fail.
 	s := newCheckpointPredStrategy(cm)
 
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("fix the bug in auth.go")),
-		NewTurn(TurnAssistant, llm.Assistant("I'll fix it")),
-		NewTurn(TurnUserInput, llm.User("also fix tests")),
-		NewTurn(TurnAssistant, llm.Assistant("fixing tests")),
-		NewTurn(TurnUserInput, llm.User("what's the status")),
-		NewTurn(TurnAssistant, llm.Assistant("almost done")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("fix the bug in auth.go")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("I'll fix it")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("also fix tests")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("fixing tests")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("what's the status")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("almost done")),
 	}
 
 	var layers []string
@@ -147,13 +148,13 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_WithLLM(t *testing.T) {
 
 	s := newCheckpointPredStrategy(cm)
 
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("fix the bug in auth.go")),
-		NewTurn(TurnAssistant, llm.Assistant("I'll fix it")),
-		NewTurn(TurnUserInput, llm.User("also fix tests")),
-		NewTurn(TurnAssistant, llm.Assistant("fixing tests")),
-		NewTurn(TurnUserInput, llm.User("what's the status")),
-		NewTurn(TurnAssistant, llm.Assistant("almost done")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("fix the bug in auth.go")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("I'll fix it")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("also fix tests")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("fixing tests")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("what's the status")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("almost done")),
 	}
 
 	emitFn := func(kind events.EventKind, data events.EventData) {}
@@ -200,13 +201,13 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_TurnKind(t *testing.T) {
 
 	s := newCheckpointPredStrategy(cm)
 
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("fix the bug")),
-		NewTurn(TurnAssistant, llm.Assistant("I'll fix it")),
-		NewTurn(TurnUserInput, llm.User("also fix tests")),
-		NewTurn(TurnAssistant, llm.Assistant("fixing tests")),
-		NewTurn(TurnUserInput, llm.User("status")),
-		NewTurn(TurnAssistant, llm.Assistant("almost done")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("fix the bug")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("I'll fix it")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("also fix tests")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("fixing tests")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("status")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("almost done")),
 	}
 
 	emitFn := func(kind events.EventKind, data events.EventData) {}
@@ -217,7 +218,7 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_TurnKind(t *testing.T) {
 	}
 
 	// First turn should be TurnCheckpoint, not TurnUserInput.
-	if history[0].Kind != TurnCheckpoint {
+	if history[0].Kind != schema.TurnCheckpoint {
 		t.Errorf("expected TurnCheckpoint for predictive checkpoint, got %s", history[0].Kind)
 	}
 }
@@ -234,21 +235,21 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_FallbackCheckpoint(t *test
 	cm.SummarizeThreshold = 2.0
 	cm.PreserveRecentTurns = 2
 
-	var callbackTurns []Turn
-	cm.OnCompactionTurn = func(t Turn) {
+	var callbackTurns []schema.Turn
+	cm.OnCompactionTurn = func(t schema.Turn) {
 		callbackTurns = append(callbackTurns, t)
 	}
 
 	// No adapter registered = LLM calls fail → fallback to deterministic checkpoint.
 	s := newCheckpointPredStrategy(cm)
 
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("fix the bug")),
-		NewTurn(TurnAssistant, llm.Assistant("I'll fix it")),
-		NewTurn(TurnUserInput, llm.User("also fix tests")),
-		NewTurn(TurnAssistant, llm.Assistant("fixing tests")),
-		NewTurn(TurnUserInput, llm.User("status")),
-		NewTurn(TurnAssistant, llm.Assistant("almost done")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("fix the bug")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("I'll fix it")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("also fix tests")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("fixing tests")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("status")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("almost done")),
 	}
 
 	emitFn := func(kind events.EventKind, data events.EventData) {}
@@ -262,7 +263,7 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_FallbackCheckpoint(t *test
 	if len(callbackTurns) != 1 {
 		t.Fatalf("expected 1 callback turn for fallback checkpoint, got %d", len(callbackTurns))
 	}
-	if callbackTurns[0].Kind != TurnCheckpoint {
+	if callbackTurns[0].Kind != schema.TurnCheckpoint {
 		t.Errorf("expected TurnCheckpoint, got %s", callbackTurns[0].Kind)
 	}
 }
@@ -292,20 +293,20 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_PredictiveCheckpoint(t *te
 	cm.SummarizeThreshold = 2.0
 	cm.PreserveRecentTurns = 2
 
-	var callbackTurns []Turn
-	cm.OnCompactionTurn = func(t Turn) {
+	var callbackTurns []schema.Turn
+	cm.OnCompactionTurn = func(t schema.Turn) {
 		callbackTurns = append(callbackTurns, t)
 	}
 
 	s := newCheckpointPredStrategy(cm)
 
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("fix the bug")),
-		NewTurn(TurnAssistant, llm.Assistant("I'll fix it")),
-		NewTurn(TurnUserInput, llm.User("also fix tests")),
-		NewTurn(TurnAssistant, llm.Assistant("fixing tests")),
-		NewTurn(TurnUserInput, llm.User("status")),
-		NewTurn(TurnAssistant, llm.Assistant("almost done")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("fix the bug")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("I'll fix it")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("also fix tests")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("fixing tests")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("status")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("almost done")),
 	}
 
 	emitFn := func(kind events.EventKind, data events.EventData) {}
@@ -319,7 +320,7 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_PredictiveCheckpoint(t *te
 	if len(callbackTurns) != 1 {
 		t.Fatalf("expected 1 callback turn for predictive checkpoint, got %d", len(callbackTurns))
 	}
-	if callbackTurns[0].Kind != TurnCheckpoint {
+	if callbackTurns[0].Kind != schema.TurnCheckpoint {
 		t.Errorf("expected TurnCheckpoint, got %s", callbackTurns[0].Kind)
 	}
 	if !strings.Contains(callbackTurns[0].Message.Text(), "[CONTEXT CHECKPOINT - PREDICTIVE]") {
@@ -365,20 +366,20 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 	cm.SummarizeThreshold = 0.0001
 	cm.PreserveRecentTurns = 2
 
-	var callbackTurns []Turn
-	cm.OnCompactionTurn = func(t Turn) {
+	var callbackTurns []schema.Turn
+	cm.OnCompactionTurn = func(t schema.Turn) {
 		callbackTurns = append(callbackTurns, t)
 	}
 
 	s := newCheckpointPredStrategy(cm)
 
-	history := []Turn{
-		NewTurn(TurnUserInput, llm.User("fix the bug")),
-		NewTurn(TurnAssistant, llm.Assistant("I'll fix it")),
-		NewTurn(TurnUserInput, llm.User("also fix tests")),
-		NewTurn(TurnAssistant, llm.Assistant("fixing tests")),
-		NewTurn(TurnUserInput, llm.User("status")),
-		NewTurn(TurnAssistant, llm.Assistant("almost done")),
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("fix the bug")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("I'll fix it")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("also fix tests")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("fixing tests")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("status")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("almost done")),
 	}
 
 	emitFn := func(kind events.EventKind, data events.EventData) {}
@@ -392,10 +393,10 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 	if len(callbackTurns) != 2 {
 		t.Fatalf("expected 2 callback turns (checkpoint+summary), got %d", len(callbackTurns))
 	}
-	if callbackTurns[0].Kind != TurnCheckpoint {
+	if callbackTurns[0].Kind != schema.TurnCheckpoint {
 		t.Errorf("expected first callback to be TurnCheckpoint, got %s", callbackTurns[0].Kind)
 	}
-	if callbackTurns[1].Kind != TurnSummary {
+	if callbackTurns[1].Kind != schema.TurnSummary {
 		t.Errorf("expected second callback to be TurnSummary, got %s", callbackTurns[1].Kind)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -68,9 +69,9 @@ func TestSessionLogStrategy_ManageContext_ObservationMaskAtHighPressure(t *testi
 	// Build a history with a large tool result that will exceed 5% threshold.
 	largeContent := strings.Repeat("x", 30000)
 
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("read some files")},
-		{Kind: TurnAssistant, Message: llm.Message{
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("read some files")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
@@ -80,12 +81,12 @@ func TestSessionLogStrategy_ManageContext_ObservationMaskAtHighPressure(t *testi
 				}},
 			},
 		}},
-		{Kind: TurnTool, Message: llm.ToolResultNamed("call1", "read_file", largeContent, false)},
-		{Kind: TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("call1", "read_file", largeContent, false)},
+		{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 			{Kind: llm.ContentText, Text: "Done reading"},
 		}}},
-		{Kind: TurnUserInput, Message: llm.User("another task")},
-		{Kind: TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: schema.TurnUserInput, Message: llm.User("another task")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 			{Kind: llm.ContentText, Text: "working on it"},
 		}}},
 	}
@@ -160,24 +161,24 @@ func TestSessionLogStrategy_ManageContext_SessionLogCheckpointAtHighPressure(t *
 	}
 
 	// Build history with enough content to trigger checkpoint.
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("fix the login bug")},
-		{Kind: TurnAssistant, Message: llm.Message{
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("fix the login bug")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentText, Text: strings.Repeat("thinking about it... ", 500)},
 			},
 		}},
-		{Kind: TurnUserInput, Message: llm.User("keep going")},
-		{Kind: TurnAssistant, Message: llm.Message{
+		{Kind: schema.TurnUserInput, Message: llm.User("keep going")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentText, Text: "still working"},
 			},
 		}},
 		// These are the "recent" turns that should be preserved.
-		{Kind: TurnUserInput, Message: llm.User("recent question")},
-		{Kind: TurnAssistant, Message: llm.Message{
+		{Kind: schema.TurnUserInput, Message: llm.User("recent question")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentText, Text: "recent answer"},
@@ -263,8 +264,8 @@ func TestSessionLogStrategy_AfterAction_CallsForkSummarizeAndAppendsToLog(t *tes
 		session: &Session{profile: profile},
 	}
 
-	turns := []Turn{
-		{Kind: TurnAssistant, Message: llm.Message{
+	turns := []schema.Turn{
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
@@ -274,7 +275,7 @@ func TestSessionLogStrategy_AfterAction_CallsForkSummarizeAndAppendsToLog(t *tes
 				}},
 			},
 		}},
-		{Kind: TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "PASS", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "PASS", false)},
 	}
 
 	err := sls.AfterAction(context.Background(), turns, client)
@@ -320,8 +321,8 @@ func TestSessionLogStrategy_AfterAction_LLMErrorIsNonFatal(t *testing.T) {
 		session: &Session{profile: profile},
 	}
 
-	turns := []Turn{
-		{Kind: TurnAssistant, Message: llm.Assistant("hello")},
+	turns := []schema.Turn{
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("hello")},
 	}
 
 	// Should not return an error even though LLM call fails.
@@ -344,11 +345,11 @@ func TestSessionLogStrategy_SessionLogCheckpoint_EmptyLog(t *testing.T) {
 		log: mustNewSessionLog(t, logPath),
 	}
 
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("do something")},
-		{Kind: TurnAssistant, Message: llm.Assistant("working")},
-		{Kind: TurnUserInput, Message: llm.User("recent")},
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("do something")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("working")},
+		{Kind: schema.TurnUserInput, Message: llm.User("recent")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	result := sls.sessionLogCheckpoint(history, 2)
@@ -376,7 +377,7 @@ func TestSessionLogStrategy_ExtractOriginalPromptReadsCurrentAndLegacyCheckpoint
 		{name: "legacy", text: "[CONTEXT CHECKPOINT - SESSION LOG]\nOriginal task: fix the auth bug\n\n[END CHECKPOINT]\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := extractOriginalPrompt([]Turn{{Kind: TurnUserInput, Message: llm.User(tc.text)}})
+			got := extractOriginalPrompt([]schema.Turn{{Kind: schema.TurnUserInput, Message: llm.User(tc.text)}})
 			if got == "" {
 				t.Fatalf("expected prompt extracted from checkpoint")
 			}
@@ -392,11 +393,11 @@ func TestSessionLogStrategy_SessionLogCheckpoint_PreservesRecentTurns(t *testing
 		log: mustNewSessionLog(t, logPath),
 	}
 
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("original prompt")},
-		{Kind: TurnAssistant, Message: llm.Assistant("old response")},
-		{Kind: TurnUserInput, Message: llm.User("keep this")},
-		{Kind: TurnAssistant, Message: llm.Assistant("and this")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("original prompt")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("old response")},
+		{Kind: schema.TurnUserInput, Message: llm.User("keep this")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("and this")},
 	}
 
 	result := sls.sessionLogCheckpoint(history, 2)
@@ -423,9 +424,9 @@ func TestSessionLogStrategy_SessionLogCheckpoint_TooFewTurns(t *testing.T) {
 		log: mustNewSessionLog(t, logPath),
 	}
 
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("only one")},
-		{Kind: TurnAssistant, Message: llm.Assistant("response")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("only one")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("response")},
 	}
 
 	// With preserveRecent=2 and only 2 turns, no checkpoint should happen.
@@ -444,11 +445,11 @@ func TestSessionLogStrategy_SessionLogCheckpoint_TurnKind(t *testing.T) {
 		log: mustNewSessionLog(t, logPath),
 	}
 
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("do something")},
-		{Kind: TurnAssistant, Message: llm.Assistant("working")},
-		{Kind: TurnUserInput, Message: llm.User("recent")},
-		{Kind: TurnAssistant, Message: llm.Assistant("done")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("do something")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("working")},
+		{Kind: schema.TurnUserInput, Message: llm.User("recent")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	result := sls.sessionLogCheckpoint(history, 2)
@@ -456,7 +457,7 @@ func TestSessionLogStrategy_SessionLogCheckpoint_TurnKind(t *testing.T) {
 	if len(result) < 1 {
 		t.Fatal("expected at least 1 turn in result")
 	}
-	if result[0].Kind != TurnCheckpoint {
+	if result[0].Kind != schema.TurnCheckpoint {
 		t.Errorf("expected TurnCheckpoint for session log checkpoint, got %s", result[0].Kind)
 	}
 }
@@ -471,8 +472,8 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 	cm.SummarizeThreshold = 2.0 // Disable layer 4.
 	cm.PreserveRecentTurns = 2
 
-	var callbackTurns []Turn
-	cm.OnCompactionTurn = func(t Turn) {
+	var callbackTurns []schema.Turn
+	cm.OnCompactionTurn = func(t schema.Turn) {
 		callbackTurns = append(callbackTurns, t)
 	}
 
@@ -483,13 +484,13 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 		log: mustNewSessionLog(t, logPath),
 	}
 
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("fix the bug")},
-		{Kind: TurnAssistant, Message: llm.Assistant("I'll fix it")},
-		{Kind: TurnUserInput, Message: llm.User("also fix tests")},
-		{Kind: TurnAssistant, Message: llm.Assistant("fixing tests")},
-		{Kind: TurnUserInput, Message: llm.User("status")},
-		{Kind: TurnAssistant, Message: llm.Assistant("almost done")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("fix the bug")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("I'll fix it")},
+		{Kind: schema.TurnUserInput, Message: llm.User("also fix tests")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("fixing tests")},
+		{Kind: schema.TurnUserInput, Message: llm.User("status")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("almost done")},
 	}
 
 	emitFn := func(kind events.EventKind, data events.EventData) {}
@@ -503,7 +504,7 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 	if len(callbackTurns) != 1 {
 		t.Fatalf("expected 1 callback turn, got %d", len(callbackTurns))
 	}
-	if callbackTurns[0].Kind != TurnCheckpoint {
+	if callbackTurns[0].Kind != schema.TurnCheckpoint {
 		t.Errorf("expected TurnCheckpoint, got %s", callbackTurns[0].Kind)
 	}
 	if !strings.Contains(callbackTurns[0].Message.Text(), "[CONTEXT CHECKPOINT - SESSION LOG]") {
@@ -534,8 +535,8 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 	cm.SummarizeThreshold = 0.0001
 	cm.PreserveRecentTurns = 2
 
-	var callbackTurns []Turn
-	cm.OnCompactionTurn = func(t Turn) {
+	var callbackTurns []schema.Turn
+	cm.OnCompactionTurn = func(t schema.Turn) {
 		callbackTurns = append(callbackTurns, t)
 	}
 
@@ -546,13 +547,13 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 		log: mustNewSessionLog(t, logPath),
 	}
 
-	history := []Turn{
-		{Kind: TurnUserInput, Message: llm.User("fix the bug")},
-		{Kind: TurnAssistant, Message: llm.Assistant("I'll fix it")},
-		{Kind: TurnUserInput, Message: llm.User("also fix tests")},
-		{Kind: TurnAssistant, Message: llm.Assistant("fixing tests")},
-		{Kind: TurnUserInput, Message: llm.User("status")},
-		{Kind: TurnAssistant, Message: llm.Assistant("almost done")},
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("fix the bug")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("I'll fix it")},
+		{Kind: schema.TurnUserInput, Message: llm.User("also fix tests")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("fixing tests")},
+		{Kind: schema.TurnUserInput, Message: llm.User("status")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("almost done")},
 	}
 
 	emitFn := func(kind events.EventKind, data events.EventData) {}
@@ -566,10 +567,10 @@ func TestSessionLogStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 	if len(callbackTurns) != 2 {
 		t.Fatalf("expected 2 callback turns (checkpoint+summary), got %d", len(callbackTurns))
 	}
-	if callbackTurns[0].Kind != TurnCheckpoint {
+	if callbackTurns[0].Kind != schema.TurnCheckpoint {
 		t.Errorf("expected first callback to be TurnCheckpoint, got %s", callbackTurns[0].Kind)
 	}
-	if callbackTurns[1].Kind != TurnSummary {
+	if callbackTurns[1].Kind != schema.TurnSummary {
 		t.Errorf("expected second callback to be TurnSummary, got %s", callbackTurns[1].Kind)
 	}
 }

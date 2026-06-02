@@ -14,6 +14,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/llm"
@@ -776,7 +777,7 @@ func TestAppTurnsFromTranscriptFilePreservesToolCallArguments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTranscriptWriter: %v", err)
 	}
-	if err := w.Append(agent.NewTurn(agent.TurnAssistant, llm.Message{
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Message{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
@@ -789,7 +790,7 @@ func TestAppTurnsFromTranscriptFilePreservesToolCallArguments(t *testing.T) {
 	})); err != nil {
 		t.Fatalf("append tool call: %v", err)
 	}
-	if err := w.Append(agent.NewTurn(agent.TurnToolResults, llm.ToolResultNamed("call_read", "read_file", "line 1\nline 2\n", false))); err != nil {
+	if err := w.Append(schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_read", "read_file", "line 1\nline 2\n", false))); err != nil {
 		t.Fatalf("append tool result: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -819,7 +820,7 @@ func TestAppTurnsFromTranscriptFileIncludesPrelude(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTranscriptWriter: %v", err)
 	}
-	if err := w.Append(agent.NewTurn(agent.TurnUserInput, llm.User("hello"))); err != nil {
+	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
 		t.Fatalf("append user: %v", err)
 	}
 	strict := true
@@ -878,10 +879,10 @@ func TestAppTurnsFromTranscriptFileIncludesCompactionTurns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewTranscriptWriter: %v", err)
 	}
-	if err := w.Append(agent.NewTurn(agent.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]\nfirst compacted state"))); err != nil {
+	if err := w.Append(schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]\nfirst compacted state"))); err != nil {
 		t.Fatalf("append checkpoint: %v", err)
 	}
-	if err := w.Append(agent.NewTurn(agent.TurnSummary, llm.User("[CONTEXT SUMMARY]\nsecond compacted state"))); err != nil {
+	if err := w.Append(schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY]\nsecond compacted state"))); err != nil {
 		t.Fatalf("append summary: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -906,10 +907,10 @@ func TestServerAppWireThreadReadUsesTranscriptWhenReplayBufferDroppedPrefix(t *t
 	if err != nil {
 		t.Fatalf("NewTranscriptWriter: %v", err)
 	}
-	if err := w.Append(agent.NewTurn(agent.TurnUserInput, llm.User("first"))); err != nil {
+	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("first"))); err != nil {
 		t.Fatalf("append first: %v", err)
 	}
-	if err := w.Append(agent.NewTurn(agent.TurnAssistant, llm.Assistant("second"))); err != nil {
+	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("second"))); err != nil {
 		t.Fatalf("append second: %v", err)
 	}
 	if err := w.Close(); err != nil {

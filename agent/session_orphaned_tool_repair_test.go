@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -48,16 +49,16 @@ func TestSession_ProcessInputRepairsOrphanedAssistantToolCallsBeforeModelRequest
 		t.Fatalf("register dangerous tool: %v", err)
 	}
 
-	sess.history = []Turn{
-		NewTurn(TurnUserInput, llm.User("start")),
-		NewTurn(TurnAssistant, llm.Message{
+	sess.history = []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("start")),
+		schema.NewTurn(schema.TurnAssistant, llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_ok", Name: "shell", Arguments: json.RawMessage(`{"command":"true"}`), Type: "function"}},
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_missing", Name: "dangerous", Arguments: json.RawMessage(`{}`), Type: "function"}},
 			},
 		}),
-		NewTurn(TurnToolResults, llm.ToolResultNamed("call_ok", "shell", "already done", false)),
+		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_ok", "shell", "already done", false)),
 	}
 
 	out, err := sess.ProcessInput(context.Background(), "please continue", nil)
@@ -91,7 +92,7 @@ func TestSession_ProcessInputRepairsOrphanedAssistantToolCallsBeforeModelRequest
 		}
 	}
 
-	userIdx := lastTurnIndex(sess.history, TurnUserInput)
+	userIdx := lastTurnIndex(sess.history, schema.TurnUserInput)
 	repairIdx := turnIndexWithToolResult(sess.history, "call_missing")
 	if repairIdx < 0 || userIdx < 0 || repairIdx >= userIdx {
 		t.Fatalf("repair turn must be persisted before the new user input; repairIdx=%d userIdx=%d history=%s", repairIdx, userIdx, turnKinds(sess.history))
@@ -100,26 +101,26 @@ func TestSession_ProcessInputRepairsOrphanedAssistantToolCallsBeforeModelRequest
 
 func TestResumeHistoryRepairsOrphanedAssistantToolCallsBeforeLaterUserInput(t *testing.T) {
 	entries := []TranscriptEntry{
-		{Kind: "entry", Seq: 0, Turn: NewTurn(TurnUserInput, llm.User("start"))},
-		{Kind: "entry", Seq: 1, Turn: NewTurn(TurnAssistant, llm.Message{
+		{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("start"))},
+		{Kind: "entry", Seq: 1, Turn: schema.NewTurn(schema.TurnAssistant, llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_done", Name: "shell", Arguments: json.RawMessage(`{"command":"true"}`), Type: "function"}},
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_lost", Name: "apply_patch", Arguments: json.RawMessage(`{"patch":"*** Begin Patch\n*** End Patch"}`), Type: "function"}},
 			},
 		})},
-		{Kind: "entry", Seq: 2, Turn: NewTurn(TurnToolResults, llm.ToolResultNamed("call_done", "shell", "ok", false))},
-		{Kind: "entry", Seq: 3, Turn: NewTurn(TurnUserInput, llm.User("commit it"))},
+		{Kind: "entry", Seq: 2, Turn: schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_done", "shell", "ok", false))},
+		{Kind: "entry", Seq: 3, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("commit it"))},
 	}
 
 	history := ResumeHistory(entries)
 	if got, want := len(history), 5; got != want {
 		t.Fatalf("len(history) = %d, want %d; history=%s", got, want, turnKinds(history))
 	}
-	if history[3].Kind != TurnToolResults {
+	if history[3].Kind != schema.TurnToolResults {
 		t.Fatalf("history[3].Kind = %s, want TOOL_RESULTS before later user input; history=%s", history[3].Kind, turnKinds(history))
 	}
-	if history[4].Kind != TurnUserInput || history[4].Message.Text() != "commit it" {
+	if history[4].Kind != schema.TurnUserInput || history[4].Message.Text() != "commit it" {
 		t.Fatalf("history[4] = %+v, want original later user input preserved after repair", history[4])
 	}
 	lost, ok := findToolResultInHistory(history, "call_lost")
@@ -172,7 +173,7 @@ func validateRecoveredToolCallHistory(messages []llm.Message) error {
 	return nil
 }
 
-func countToolResultsInHistory(history []Turn, callID string) int {
+func countToolResultsInHistory(history []schema.Turn, callID string) int {
 	var count int
 	for _, turn := range history {
 		for _, part := range turn.Message.Content {
@@ -184,7 +185,7 @@ func countToolResultsInHistory(history []Turn, callID string) int {
 	return count
 }
 
-func findToolResultInHistory(history []Turn, callID string) (*llm.ToolResultData, bool) {
+func findToolResultInHistory(history []schema.Turn, callID string) (*llm.ToolResultData, bool) {
 	for i := range history {
 		for j := range history[i].Message.Content {
 			part := history[i].Message.Content[j]
@@ -196,7 +197,7 @@ func findToolResultInHistory(history []Turn, callID string) (*llm.ToolResultData
 	return nil, false
 }
 
-func turnIndexWithToolResult(history []Turn, callID string) int {
+func turnIndexWithToolResult(history []schema.Turn, callID string) int {
 	for i := range history {
 		for _, part := range history[i].Message.Content {
 			if part.Kind == llm.ContentToolResult && part.ToolResult != nil && part.ToolResult.ToolCallID == callID {
@@ -207,7 +208,7 @@ func turnIndexWithToolResult(history []Turn, callID string) int {
 	return -1
 }
 
-func lastTurnIndex(history []Turn, kind TurnKind) int {
+func lastTurnIndex(history []schema.Turn, kind schema.TurnKind) int {
 	for i := len(history) - 1; i >= 0; i-- {
 		if history[i].Kind == kind {
 			return i
@@ -216,7 +217,7 @@ func lastTurnIndex(history []Turn, kind TurnKind) int {
 	return -1
 }
 
-func turnKinds(history []Turn) string {
+func turnKinds(history []schema.Turn) string {
 	kinds := make([]string, len(history))
 	for i, turn := range history {
 		kinds[i] = string(turn.Kind)

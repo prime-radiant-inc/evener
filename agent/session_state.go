@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 )
 
 // SessionState represents the current lifecycle state of a session.
@@ -39,7 +40,7 @@ func (s *Session) Snapshot() SessionSnapshot {
 		Model:           s.profile.Model(),
 		Config:          s.cfg,
 		EnvInfo:         s.envInfo,
-		History:         append([]Turn{}, s.history...),
+		History:         append([]schema.Turn{}, s.history...),
 		CreatedAt:       now,
 		UpdatedAt:       now,
 		TurnCount:       s.modelResponses,
@@ -90,7 +91,7 @@ func (s *Session) ContextPressure() float64 {
 		return 0
 	}
 	s.mu.Lock()
-	hist := append([]Turn{}, s.history...)
+	hist := append([]schema.Turn{}, s.history...)
 	s.mu.Unlock()
 	return s.contextMgr.Pressure(hist, 0)
 }

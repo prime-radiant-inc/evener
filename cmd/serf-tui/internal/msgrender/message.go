@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/glamour/ansi"
 	"github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/cmd/serf-tui/internal/toolsummary"
 	"primeradiant.com/serf/cmd/serf-tui/internal/transcript"
 	"primeradiant.com/serf/cmd/serf-tui/internal/tuiprim"
@@ -385,11 +385,11 @@ func wrapText(text string, firstBudget, contBudget int) []string {
 
 // historyToMessages converts session history turns into TUI chat messages
 // for display when resuming a session.
-func historyToMessages(turns []agent.Turn) []transcript.ChatMessage {
+func historyToMessages(turns []schema.Turn) []transcript.ChatMessage {
 	// Collect tool results keyed by call ID for matching with tool calls.
 	toolResults := make(map[string]llm.ToolResultData)
 	for _, t := range turns {
-		if t.Kind != agent.TurnToolResults && t.Kind != agent.TurnTool {
+		if t.Kind != schema.TurnToolResults && t.Kind != schema.TurnTool {
 			continue
 		}
 		for _, p := range t.Message.Content {
@@ -402,13 +402,13 @@ func historyToMessages(turns []agent.Turn) []transcript.ChatMessage {
 	var msgs []transcript.ChatMessage
 	for _, t := range turns {
 		switch t.Kind {
-		case agent.TurnUserInput:
+		case schema.TurnUserInput:
 			text := t.Message.Text()
 			if strings.TrimSpace(text) != "" {
 				msgs = append(msgs, transcript.ChatMessage{Kind: transcript.MsgUser, Text: text})
 			}
 
-		case agent.TurnAssistant:
+		case schema.TurnAssistant:
 			for _, p := range t.Message.Content {
 				switch p.Kind {
 				case llm.ContentText:

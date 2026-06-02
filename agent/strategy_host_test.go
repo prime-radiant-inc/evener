@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -80,8 +81,8 @@ func TestSessionLogStrategy_OperatesWithFakeHost(t *testing.T) {
 		t.Fatalf("newSessionLogStrategy with fake host: %v", err)
 	}
 
-	turns := []Turn{
-		{Kind: TurnAssistant, Message: llm.Message{
+	turns := []schema.Turn{
+		{Kind: schema.TurnAssistant, Message: llm.Message{
 			Role: llm.RoleAssistant,
 			Content: []llm.ContentPart{
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
@@ -91,7 +92,7 @@ func TestSessionLogStrategy_OperatesWithFakeHost(t *testing.T) {
 				}},
 			},
 		}},
-		{Kind: TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "PASS", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "PASS", false)},
 	}
 
 	if err := sls.AfterAction(context.Background(), turns, client); err != nil {

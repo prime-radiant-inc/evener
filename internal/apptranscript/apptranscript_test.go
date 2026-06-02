@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/llm"
 )
@@ -119,8 +120,8 @@ func TestSharedTranscriptHelpers(t *testing.T) {
 
 func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {
 	toolNames := map[string]string{}
-	start := ProjectTurn("turn_1", 1, agent.Turn{
-		Kind: agent.TurnAssistant,
+	start := ProjectTurn("turn_1", 1, schema.Turn{
+		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
 			ToolCall: &llm.ToolCallData{
@@ -134,8 +135,8 @@ func TestProjectTurnMapsToolCallsAndResults(t *testing.T) {
 	if len(start) != 1 || start[0].Type != "commandExecution" || start[0].Description != "inspect docs" {
 		t.Fatalf("tool start=%+v", start)
 	}
-	done := ProjectTurn("turn_2", 2, agent.Turn{
-		Kind: agent.TurnToolResults,
+	done := ProjectTurn("turn_2", 2, schema.Turn{
+		Kind: schema.TurnToolResults,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
 			ToolResult: &llm.ToolResultData{

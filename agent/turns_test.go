@@ -4,13 +4,13 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
 func TestTurn_HasTimestamp(t *testing.T) {
 	before := time.Now().UTC()
-	turn := agent.NewTurn(agent.TurnUserInput, llm.User("hello"))
+	turn := schema.NewTurn(schema.TurnUserInput, llm.User("hello"))
 	after := time.Now().UTC()
 
 	if turn.Timestamp.IsZero() {
@@ -22,10 +22,10 @@ func TestTurn_HasTimestamp(t *testing.T) {
 }
 
 func TestTurnKind_CheckpointAndSummary(t *testing.T) {
-	if agent.TurnCheckpoint != "CHECKPOINT" {
-		t.Fatalf("TurnCheckpoint = %q, want CHECKPOINT", agent.TurnCheckpoint)
+	if schema.TurnCheckpoint != "CHECKPOINT" {
+		t.Fatalf("TurnCheckpoint = %q, want CHECKPOINT", schema.TurnCheckpoint)
 	}
-	if agent.TurnSummary != "SUMMARY" {
-		t.Fatalf("TurnSummary = %q, want SUMMARY", agent.TurnSummary)
+	if schema.TurnSummary != "SUMMARY" {
+		t.Fatalf("TurnSummary = %q, want SUMMARY", schema.TurnSummary)
 	}
 }
