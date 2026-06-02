@@ -16,6 +16,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/mcp"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/openai"
@@ -283,9 +284,9 @@ func TestLive_MCP_StdioServer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	mgr, err := newMCPManager(ctx, lp.MCPConfigs, nil)
+	mgr, err := mcp.NewManager(ctx, lp.MCPConfigs, nil)
 	if err != nil {
-		t.Fatalf("newMCPManager: %v", err)
+		t.Fatalf("mcp.NewManager: %v", err)
 	}
 	defer mgr.Close()
 

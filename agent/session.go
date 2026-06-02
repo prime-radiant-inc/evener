@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/installid"
+	"primeradiant.com/serf/agent/internal/mcp"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/mcpconfig"
 	"primeradiant.com/serf/agent/schema"
@@ -109,7 +110,7 @@ type Session struct {
 	embeddedSkillsDir string // temp dir for extracted embedded skills; cleaned up in Close
 
 	// MCP server connections
-	mcpMgr   *mcpManager
+	mcpMgr   *mcp.Manager
 	mcpTools []llm.ToolDefinition
 
 	// Plugin-provided components

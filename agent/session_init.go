@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/installid"
+	"primeradiant.com/serf/agent/internal/mcp"
 	"primeradiant.com/serf/agent/mcpconfig"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
@@ -699,7 +700,7 @@ func (s *Session) initMCP() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	mgr, err := newMCPManager(ctx, configs, nil)
+	mgr, err := mcp.NewManager(ctx, configs, nil)
 	if err != nil {
 		return err
 	}

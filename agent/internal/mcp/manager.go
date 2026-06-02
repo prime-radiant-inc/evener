@@ -1,4 +1,4 @@
-package agent
+package mcp
 
 import (
 	"context"
@@ -10,7 +10,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
@@ -18,35 +18,35 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// mcpManager manages connections to external MCP servers.
-type mcpManager struct {
-	conns []mcpConn
+// Manager manages connections to external MCP servers.
+type Manager struct {
+	conns []conn
 }
 
-type mcpConn struct {
+type conn struct {
 	name      string
-	session   *mcp.ClientSession
+	session   *mcpsdk.ClientSession
 	tools     []llm.ToolDefinition // namespaced: servername__toolname
 	origNames map[string]string    // sanitized namespaced name → original MCP tool name
 }
 
-// newMCPManager connects to all configured MCP servers, discovers their tools,
+// NewManager connects to all configured MCP servers, discovers their tools,
 // and namespaces them. The transports parameter is optional: when nil, transports
 // are created from configs. When provided (for testing), each transport[i]
 // corresponds to configs[i].
-func newMCPManager(ctx context.Context, configs []mcpconfig.ServerConfig, transports []mcp.Transport) (*mcpManager, error) {
+func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, transports []mcpsdk.Transport) (*Manager, error) {
 	if len(configs) == 0 {
 		return nil, nil
 	}
 
-	client := mcp.NewClient(&mcp.Implementation{
+	client := mcpsdk.NewClient(&mcpsdk.Implementation{
 		Name:    "serf",
 		Version: "v1",
 	}, nil)
 
-	mgr := &mcpManager{}
+	mgr := &Manager{}
 	for i, cfg := range configs {
-		var transport mcp.Transport
+		var transport mcpsdk.Transport
 		if transports != nil && i < len(transports) {
 			transport = transports[i]
 		} else {
@@ -85,7 +85,7 @@ func newMCPManager(ctx context.Context, configs []mcpconfig.ServerConfig, transp
 			})
 		}
 
-		mgr.conns = append(mgr.conns, mcpConn{
+		mgr.conns = append(mgr.conns, conn{
 			name:      cfg.Name,
 			session:   session,
 			tools:     tools,
@@ -97,7 +97,7 @@ func newMCPManager(ctx context.Context, configs []mcpconfig.ServerConfig, transp
 }
 
 // ToolDefinitions returns all namespaced tool definitions from all MCP servers.
-func (m *mcpManager) ToolDefinitions() []llm.ToolDefinition {
+func (m *Manager) ToolDefinitions() []llm.ToolDefinition {
 	if m == nil {
 		return nil
 	}
@@ -109,9 +109,9 @@ func (m *mcpManager) ToolDefinitions() []llm.ToolDefinition {
 }
 
 // RegisterTools registers execution closures for all MCP tools into the
-// given toolRegistry. Returns an error if any namespaced tool name collides
+// given tool.Registry. Returns an error if any namespaced tool name collides
 // with an existing registration or fails validation.
-func (m *mcpManager) RegisterTools(reg *tool.Registry) error {
+func (m *Manager) RegisterTools(reg *tool.Registry) error {
 	if m == nil {
 		return nil
 	}
@@ -136,7 +136,7 @@ func (m *mcpManager) RegisterTools(reg *tool.Registry) error {
 			if err := reg.Register(tool.RegisteredTool{
 				Tool: llm.Tool{Definition: td},
 				Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-					result, err := sess.CallTool(ctx, &mcp.CallToolParams{
+					result, err := sess.CallTool(ctx, &mcpsdk.CallToolParams{
 						Name:      origName,
 						Arguments: args,
 					})
@@ -154,7 +154,7 @@ func (m *mcpManager) RegisterTools(reg *tool.Registry) error {
 }
 
 // Servers returns per-server info including name and namespaced tool names.
-func (m *mcpManager) Servers() []mcpconfig.ServerInfo {
+func (m *Manager) Servers() []mcpconfig.ServerInfo {
 	if m == nil {
 		return nil
 	}
@@ -170,7 +170,7 @@ func (m *mcpManager) Servers() []mcpconfig.ServerInfo {
 }
 
 // Close shuts down all MCP server connections.
-func (m *mcpManager) Close() {
+func (m *Manager) Close() {
 	if m == nil {
 		return
 	}
@@ -215,7 +215,7 @@ func mcpSchemaToParams(schema any) map[string]any {
 
 // mcpResultToString converts an MCP CallToolResult to a string suitable
 // for returning as a tool result.
-func mcpResultToString(result *mcp.CallToolResult) string {
+func mcpResultToString(result *mcpsdk.CallToolResult) string {
 	if result == nil {
 		return ""
 	}
@@ -223,7 +223,7 @@ func mcpResultToString(result *mcp.CallToolResult) string {
 	var parts []string
 	for _, c := range result.Content {
 		switch ct := c.(type) {
-		case *mcp.TextContent:
+		case *mcpsdk.TextContent:
 			parts = append(parts, ct.Text)
 		default:
 			// For non-text content, marshal to JSON as best-effort.
@@ -243,7 +243,7 @@ func mcpResultToString(result *mcp.CallToolResult) string {
 }
 
 // transportForConfig creates the appropriate MCP transport for a config.
-func transportForConfig(cfg mcpconfig.ServerConfig) (mcp.Transport, error) {
+func transportForConfig(cfg mcpconfig.ServerConfig) (mcpsdk.Transport, error) {
 	switch cfg.Type {
 	case "stdio", "":
 		if cfg.Command == "" {
@@ -254,13 +254,13 @@ func transportForConfig(cfg mcpconfig.ServerConfig) (mcp.Transport, error) {
 		if len(cfg.Env) > 0 {
 			cmd.Env = mergeEnv(cfg.Env)
 		}
-		return &mcp.CommandTransport{Command: cmd}, nil
+		return &mcpsdk.CommandTransport{Command: cmd}, nil
 
 	case "sse":
 		if cfg.URL == "" {
 			return nil, errors.New("sse transport requires a url")
 		}
-		t := &mcp.SSEClientTransport{Endpoint: cfg.URL}
+		t := &mcpsdk.SSEClientTransport{Endpoint: cfg.URL}
 		if len(cfg.Headers) > 0 {
 			t.HTTPClient = httpClientWithHeaders(cfg.Headers)
 		}
@@ -270,7 +270,7 @@ func transportForConfig(cfg mcpconfig.ServerConfig) (mcp.Transport, error) {
 		if cfg.URL == "" {
 			return nil, errors.New("http transport requires a url")
 		}
-		t := &mcp.StreamableClientTransport{Endpoint: cfg.URL}
+		t := &mcpsdk.StreamableClientTransport{Endpoint: cfg.URL}
 		if len(cfg.Headers) > 0 {
 			t.HTTPClient = httpClientWithHeaders(cfg.Headers)
 		}

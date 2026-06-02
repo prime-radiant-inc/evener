@@ -1,4 +1,4 @@
-package agent
+package mcp
 
 import (
 	"context"
@@ -21,7 +21,7 @@ func requireNpx(t *testing.T) {
 	}
 }
 
-func newEverythingManager(t *testing.T) *mcpManager {
+func newEverythingManager(t *testing.T) *Manager {
 	t.Helper()
 	requireNpx(t)
 	// 60s instead of 30s: npx startup is fork+exec heavy and load-sensitive.
@@ -30,14 +30,14 @@ func newEverythingManager(t *testing.T) *mcpManager {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
 
-	mgr, err := newMCPManager(ctx, []mcpconfig.ServerConfig{{
+	mgr, err := NewManager(ctx, []mcpconfig.ServerConfig{{
 		Name:    "everything",
 		Type:    "stdio",
 		Command: "npx",
 		Args:    []string{"-y", "@modelcontextprotocol/server-everything"},
 	}}, nil)
 	if err != nil {
-		t.Fatalf("newMCPManager: %v", err)
+		t.Fatalf("NewManager: %v", err)
 	}
 	t.Cleanup(mgr.Close)
 	return mgr
@@ -167,7 +167,7 @@ func TestRealMCP_EnvPassing(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
 
-	mgr, err := newMCPManager(ctx, []mcpconfig.ServerConfig{{
+	mgr, err := NewManager(ctx, []mcpconfig.ServerConfig{{
 		Name:    "everything",
 		Type:    "stdio",
 		Command: "npx",
@@ -175,7 +175,7 @@ func TestRealMCP_EnvPassing(t *testing.T) {
 		Env:     map[string]string{"MCP_TEST_MARKER": "serf_integration_12345"},
 	}}, nil)
 	if err != nil {
-		t.Fatalf("newMCPManager: %v", err)
+		t.Fatalf("NewManager: %v", err)
 	}
 	t.Cleanup(mgr.Close)
 

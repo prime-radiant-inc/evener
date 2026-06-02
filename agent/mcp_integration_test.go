@@ -7,23 +7,24 @@ import (
 	"testing"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/mcp"
 	"primeradiant.com/serf/agent/mcpconfig"
 	"primeradiant.com/serf/llm"
 )
 
 // TestMCPIntegration_ToolCallThroughSession verifies the full flow:
-// in-process MCP server -> mcpManager -> Session tool registry -> fakeAdapter
+// in-process MCP server -> mcp.Manager -> Session tool registry -> fakeAdapter
 // calls the MCP tool -> result flows back through the session.
 func TestMCPIntegration_ToolCallThroughSession(t *testing.T) {
 	// Create a minimal MCP server with a "greet" tool.
-	server := mcp.NewServer(&mcp.Implementation{
+	server := mcpsdk.NewServer(&mcpsdk.Implementation{
 		Name:    "test-server",
 		Version: "v0.0.1",
 	}, nil)
-	server.AddTool(&mcp.Tool{
+	server.AddTool(&mcpsdk.Tool{
 		Name:        "greet",
 		Description: "Greets someone by name",
 		InputSchema: map[string]any{
@@ -36,31 +37,31 @@ func TestMCPIntegration_ToolCallThroughSession(t *testing.T) {
 			},
 			"required": []string{"name"},
 		},
-	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		var args map[string]any
 		if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 			return nil, err
 		}
 		name := args["name"].(string)
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: "Hello, " + name + "!"}},
+		return &mcpsdk.CallToolResult{
+			Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "Hello, " + name + "!"}},
 		}, nil
 	})
 
 	// Set up in-memory transport.
-	st, ct := mcp.NewInMemoryTransports()
+	st, ct := mcpsdk.NewInMemoryTransports()
 	ctx := context.Background()
 	_, err := server.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatalf("server connect: %v", err)
 	}
 
-	// Create mcpManager directly with the transport (bypassing config discovery).
-	mgr, err := newMCPManager(ctx, []mcpconfig.ServerConfig{
+	// Create the mcp.Manager directly with the transport (bypassing config discovery).
+	mgr, err := mcp.NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "ext", Type: "stdio"},
-	}, []mcp.Transport{ct})
+	}, []mcpsdk.Transport{ct})
 	if err != nil {
-		t.Fatalf("newMCPManager: %v", err)
+		t.Fatalf("mcp.NewManager: %v", err)
 	}
 
 	// Create a fakeAdapter that calls the ext__greet tool, then returns a final text response.
@@ -126,7 +127,7 @@ func TestMCPIntegration_ToolCallThroughSession(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 
-	// Manually inject the mcpManager into the session (since we don't go through config discovery).
+	// Manually inject the mcp.Manager into the session (since we don't go through config discovery).
 	if err := mgr.RegisterTools(sess.reg); err != nil {
 		t.Fatal(err)
 	}

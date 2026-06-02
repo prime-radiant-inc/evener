@@ -1,4 +1,4 @@
-package agent
+package mcp
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/agenttest"
@@ -21,11 +21,11 @@ func TestMCPManager_InMemory(t *testing.T) {
 	ctx := context.Background()
 
 	// Create a minimal MCP server with an "echo" tool.
-	server := mcp.NewServer(&mcp.Implementation{
+	server := mcpsdk.NewServer(&mcpsdk.Implementation{
 		Name:    "test-server",
 		Version: "v0.0.1",
 	}, nil)
-	server.AddTool(&mcp.Tool{
+	server.AddTool(&mcpsdk.Tool{
 		Name:        "echo",
 		Description: "Echoes the input message",
 		InputSchema: map[string]any{
@@ -38,29 +38,29 @@ func TestMCPManager_InMemory(t *testing.T) {
 			},
 			"required": []string{"message"},
 		},
-	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 		var args map[string]any
 		if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 			return nil, err
 		}
 		msg := args["message"].(string)
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: "echo: " + msg}},
+		return &mcpsdk.CallToolResult{
+			Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "echo: " + msg}},
 		}, nil
 	})
 
 	// Connect via InMemoryTransport.
-	st, ct := mcp.NewInMemoryTransports()
+	st, ct := mcpsdk.NewInMemoryTransports()
 	_, err := server.Connect(ctx, st, nil)
 	if err != nil {
 		t.Fatalf("server connect: %v", err)
 	}
 
-	mgr, err := newMCPManager(ctx, []mcpconfig.ServerConfig{
+	mgr, err := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "testserver", Type: "stdio"},
-	}, []mcp.Transport{ct})
+	}, []mcpsdk.Transport{ct})
 	if err != nil {
-		t.Fatalf("newMCPManager: %v", err)
+		t.Fatalf("NewManager: %v", err)
 	}
 	defer mgr.Close()
 
@@ -102,37 +102,37 @@ func TestMCPManager_MultipleServers(t *testing.T) {
 	ctx := context.Background()
 
 	// Server 1 has "greet" tool.
-	server1 := mcp.NewServer(&mcp.Implementation{Name: "s1", Version: "v1"}, nil)
-	server1.AddTool(&mcp.Tool{
+	server1 := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "s1", Version: "v1"}, nil)
+	server1.AddTool(&mcpsdk.Tool{
 		Name:        "greet",
 		Description: "Greets someone",
 		InputSchema: map[string]any{
 			"type":       "object",
 			"properties": map[string]any{},
 		},
-	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: "hello from s1"}},
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		return &mcpsdk.CallToolResult{
+			Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "hello from s1"}},
 		}, nil
 	})
 
 	// Server 2 also has "greet" tool.
-	server2 := mcp.NewServer(&mcp.Implementation{Name: "s2", Version: "v1"}, nil)
-	server2.AddTool(&mcp.Tool{
+	server2 := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "s2", Version: "v1"}, nil)
+	server2.AddTool(&mcpsdk.Tool{
 		Name:        "greet",
 		Description: "Greets someone (s2)",
 		InputSchema: map[string]any{
 			"type":       "object",
 			"properties": map[string]any{},
 		},
-	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: "hello from s2"}},
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		return &mcpsdk.CallToolResult{
+			Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "hello from s2"}},
 		}, nil
 	})
 
-	st1, ct1 := mcp.NewInMemoryTransports()
-	st2, ct2 := mcp.NewInMemoryTransports()
+	st1, ct1 := mcpsdk.NewInMemoryTransports()
+	st2, ct2 := mcpsdk.NewInMemoryTransports()
 	if _, err := server1.Connect(ctx, st1, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -140,12 +140,12 @@ func TestMCPManager_MultipleServers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mgr, err := newMCPManager(ctx, []mcpconfig.ServerConfig{
+	mgr, err := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "alpha", Type: "stdio"},
 		{Name: "beta", Type: "stdio"},
-	}, []mcp.Transport{ct1, ct2})
+	}, []mcpsdk.Transport{ct1, ct2})
 	if err != nil {
-		t.Fatalf("newMCPManager: %v", err)
+		t.Fatalf("NewManager: %v", err)
 	}
 	defer mgr.Close()
 
@@ -191,30 +191,30 @@ func TestMCPManager_MultipleServers(t *testing.T) {
 func TestMCPManager_BuiltinCollision(t *testing.T) {
 	ctx := context.Background()
 
-	server := mcp.NewServer(&mcp.Implementation{Name: "s", Version: "v1"}, nil)
-	server.AddTool(&mcp.Tool{
+	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "s", Version: "v1"}, nil)
+	server.AddTool(&mcpsdk.Tool{
 		Name:        "echo",
 		Description: "An echo tool",
 		InputSchema: map[string]any{
 			"type":       "object",
 			"properties": map[string]any{},
 		},
-	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: "ok"}},
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		return &mcpsdk.CallToolResult{
+			Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "ok"}},
 		}, nil
 	})
 
-	st, ct := mcp.NewInMemoryTransports()
+	st, ct := mcpsdk.NewInMemoryTransports()
 	if _, err := server.Connect(ctx, st, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	mgr, err := newMCPManager(ctx, []mcpconfig.ServerConfig{
+	mgr, err := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "s", Type: "stdio"},
-	}, []mcp.Transport{ct})
+	}, []mcpsdk.Transport{ct})
 	if err != nil {
-		t.Fatalf("newMCPManager: %v", err)
+		t.Fatalf("NewManager: %v", err)
 	}
 	defer mgr.Close()
 
@@ -240,30 +240,30 @@ func TestMCPManager_BuiltinCollision(t *testing.T) {
 func TestMCPManager_ToolNameTooLong(t *testing.T) {
 	ctx := context.Background()
 
-	server := mcp.NewServer(&mcp.Implementation{Name: "s", Version: "v1"}, nil)
+	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "s", Version: "v1"}, nil)
 	longName := "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghij" // 60 chars
-	server.AddTool(&mcp.Tool{
+	server.AddTool(&mcpsdk.Tool{
 		Name:        longName,
 		Description: "Too long",
 		InputSchema: map[string]any{
 			"type":       "object",
 			"properties": map[string]any{},
 		},
-	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return &mcp.CallToolResult{}, nil
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		return &mcpsdk.CallToolResult{}, nil
 	})
 
-	st, ct := mcp.NewInMemoryTransports()
+	st, ct := mcpsdk.NewInMemoryTransports()
 	if _, err := server.Connect(ctx, st, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	// "longservername__" (16) + 60 = 76 chars > 64 limit
-	mgr, err := newMCPManager(ctx, []mcpconfig.ServerConfig{
+	mgr, err := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "longservername", Type: "stdio"},
-	}, []mcp.Transport{ct})
+	}, []mcpsdk.Transport{ct})
 	if err != nil {
-		t.Fatalf("newMCPManager: %v", err)
+		t.Fatalf("NewManager: %v", err)
 	}
 	defer mgr.Close()
 
@@ -277,7 +277,7 @@ func TestMCPManager_ToolNameTooLong(t *testing.T) {
 // TestMCPManager_Empty verifies that an empty config list returns nil manager.
 func TestMCPManager_Empty(t *testing.T) {
 	ctx := context.Background()
-	mgr, err := newMCPManager(ctx, nil, nil)
+	mgr, err := NewManager(ctx, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -344,33 +344,33 @@ func TestSanitizeToolName(t *testing.T) {
 func TestMCPManager_Servers(t *testing.T) {
 	ctx := context.Background()
 
-	server1 := mcp.NewServer(&mcp.Implementation{Name: "s1", Version: "v1"}, nil)
-	server1.AddTool(&mcp.Tool{
+	server1 := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "s1", Version: "v1"}, nil)
+	server1.AddTool(&mcpsdk.Tool{
 		Name:        "greet",
 		Description: "Greets",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
-	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return &mcp.CallToolResult{}, nil
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		return &mcpsdk.CallToolResult{}, nil
 	})
-	server1.AddTool(&mcp.Tool{
+	server1.AddTool(&mcpsdk.Tool{
 		Name:        "farewell",
 		Description: "Says bye",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
-	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return &mcp.CallToolResult{}, nil
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		return &mcpsdk.CallToolResult{}, nil
 	})
 
-	server2 := mcp.NewServer(&mcp.Implementation{Name: "s2", Version: "v1"}, nil)
-	server2.AddTool(&mcp.Tool{
+	server2 := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "s2", Version: "v1"}, nil)
+	server2.AddTool(&mcpsdk.Tool{
 		Name:        "search",
 		Description: "Search",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
-	}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return &mcp.CallToolResult{}, nil
+	}, func(ctx context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		return &mcpsdk.CallToolResult{}, nil
 	})
 
-	st1, ct1 := mcp.NewInMemoryTransports()
-	st2, ct2 := mcp.NewInMemoryTransports()
+	st1, ct1 := mcpsdk.NewInMemoryTransports()
+	st2, ct2 := mcpsdk.NewInMemoryTransports()
 	if _, err := server1.Connect(ctx, st1, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -378,12 +378,12 @@ func TestMCPManager_Servers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mgr, err := newMCPManager(ctx, []mcpconfig.ServerConfig{
+	mgr, err := NewManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "alpha", Type: "stdio"},
 		{Name: "beta", Type: "stdio"},
-	}, []mcp.Transport{ct1, ct2})
+	}, []mcpsdk.Transport{ct1, ct2})
 	if err != nil {
-		t.Fatalf("newMCPManager: %v", err)
+		t.Fatalf("NewManager: %v", err)
 	}
 	defer mgr.Close()
 
@@ -420,7 +420,7 @@ func TestMCPManager_Servers(t *testing.T) {
 
 // TestMCPManager_Servers_Nil verifies Servers() on nil manager returns nil.
 func TestMCPManager_Servers_Nil(t *testing.T) {
-	var mgr *mcpManager
+	var mgr *Manager
 	servers := mgr.Servers()
 	if servers != nil {
 		t.Errorf("expected nil, got %v", servers)
