@@ -12,8 +12,8 @@ import (
 // breaks the context⇄session back-cycle: the strategy_*.go files no longer
 // reference the concrete *Session type. *Session satisfies strategyHost.
 type strategyHost interface {
-	Emit(kind events.EventKind, data events.EventData)
-	WithResponseSideEffects(ctx context.Context, fn func()) error
+	emit(kind events.EventKind, data events.EventData)
+	withResponseSideEffects(ctx context.Context, fn func()) error
 	StateDir() string
 	ID() string
 	Profile() ProviderProfile

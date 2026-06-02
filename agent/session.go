@@ -198,24 +198,12 @@ type forkInfo struct {
 // ID returns the session's identifier.
 func (s *Session) ID() string { return s.id }
 
-// strategyHost forwarders. Each is a one-line forwarder to existing state or
-// methods so context strategies can depend on the strategyHost interface
-// instead of the concrete *Session type. Emit and WithResponseSideEffects
-// forward to the existing emit/withResponseSideEffects so lock and
-// side-effect semantics are unchanged.
+// *Session satisfies the (unexported) strategyHost seam directly: ID, StateDir,
+// Profile, Snapshot, and Client are public methods, and emit /
+// withResponseSideEffects are the internal methods strategyHost names — so the
+// strategy_*.go files depend on the interface, not the concrete type, with no
+// exported forwarders polluting the public Session surface.
 var _ strategyHost = (*Session)(nil)
-
-// Emit forwards to the session's internal emit, sending a session event with
-// the given payload. The kind argument satisfies the strategyHost interface
-// contract; the emitted event's Kind is derived from the payload.
-func (s *Session) Emit(kind events.EventKind, data events.EventData) { s.emit(kind, data) }
-
-// WithResponseSideEffects forwards to the session's internal
-// withResponseSideEffects, running fn with the response side-effect semantics
-// unchanged.
-func (s *Session) WithResponseSideEffects(ctx context.Context, fn func()) error {
-	return s.withResponseSideEffects(ctx, fn)
-}
 
 // StateDir returns the session's configured state directory.
 func (s *Session) StateDir() string { return s.stateDir }

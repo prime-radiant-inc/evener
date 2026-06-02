@@ -259,10 +259,10 @@ func (s *sessionLogStrategy) AfterAction(ctx context.Context, history []Turn, cl
 	if err != nil {
 		return nil //nolint:nilerr // fork summarization is best-effort; failure must not fail the session
 	}
-	return s.session.WithResponseSideEffects(ctx, func() {
-		s.session.Emit(events.EventForkSummary, events.ForkSummaryData{Turn: entry.Turn})
+	return s.session.withResponseSideEffects(ctx, func() {
+		s.session.emit(events.EventForkSummary, events.ForkSummaryData{Turn: entry.Turn})
 		if err := s.log.Append(entry); err != nil {
-			s.session.Emit(events.EventWarning, events.WarningData{Message: "session log append failed: " + err.Error()})
+			s.session.emit(events.EventWarning, events.WarningData{Message: "session log append failed: " + err.Error()})
 		}
 	})
 }

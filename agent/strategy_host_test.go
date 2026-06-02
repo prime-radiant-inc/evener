@@ -23,11 +23,11 @@ type fakeStrategyHost struct {
 	sideFx   int // number of WithResponseSideEffects invocations
 }
 
-func (h *fakeStrategyHost) Emit(kind events.EventKind, _ events.EventData) {
+func (h *fakeStrategyHost) emit(kind events.EventKind, _ events.EventData) {
 	h.emitted = append(h.emitted, kind)
 }
 
-func (h *fakeStrategyHost) WithResponseSideEffects(_ context.Context, fn func()) error {
+func (h *fakeStrategyHost) withResponseSideEffects(_ context.Context, fn func()) error {
 	h.sideFx++
 	fn()
 	return nil
