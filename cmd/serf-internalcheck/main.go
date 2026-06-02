@@ -34,6 +34,8 @@ import (
 // must not name serf-internal types.
 var libraryPackages = []string{
 	"primeradiant.com/serf/agent",
+	"primeradiant.com/serf/agent/execenv",
+	"primeradiant.com/serf/agent/schema",
 	"primeradiant.com/serf/llm",
 	"primeradiant.com/serf/llm/providercfg",
 }
