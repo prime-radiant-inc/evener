@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/agent/mcpconfig"
 )
 
 func TestValidatePluginName(t *testing.T) {
@@ -575,7 +577,7 @@ func TestDiscoverPluginMCPConfigs_FilePlusInline(t *testing.T) {
 	if len(configs) != 2 {
 		t.Fatalf("got %d configs, want 2", len(configs))
 	}
-	byName := map[string]MCPServerConfig{}
+	byName := map[string]mcpconfig.ServerConfig{}
 	for _, c := range configs {
 		byName[c.Name] = c
 	}

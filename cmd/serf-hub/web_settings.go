@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/mcpconfig"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmd/serf-hub/internal/editorurl"
@@ -474,7 +475,7 @@ func (s *WebServer) discoverMCPsForSettings(path string) ([]mcpDisplay, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, nil //nolint:nilerr // a missing MCP config file is the empty state, not an error
 	}
-	configs, err := agent.LoadMCPConfigFile(path)
+	configs, err := mcpconfig.LoadFile(path)
 	if err != nil {
 		return nil, err
 	}

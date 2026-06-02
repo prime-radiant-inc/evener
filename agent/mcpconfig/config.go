@@ -1,4 +1,4 @@
-package agent
+package mcpconfig
 
 import (
 	"encoding/json"
@@ -11,8 +11,8 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 )
 
-// MCPServerConfig describes a single MCP server connection.
-type MCPServerConfig struct {
+// ServerConfig describes a single MCP server connection.
+type ServerConfig struct {
 	Name    string            // from the map key
 	Type    string            // "stdio" (default), "sse", "http"
 	Command string            // stdio: executable
@@ -20,6 +20,12 @@ type MCPServerConfig struct {
 	Env     map[string]string // extra env vars (merged with process env)
 	URL     string            // sse/http: server URL
 	Headers map[string]string // sse/http: extra headers
+}
+
+// ServerInfo describes a connected MCP server and its tools.
+type ServerInfo struct {
+	Name  string   `json:"name"`  // server name as configured
+	Tools []string `json:"tools"` // namespaced tool names
 }
 
 // mcpConfigFile is the JSON structure of an mcp.json file.
@@ -37,9 +43,9 @@ type mcpServerJSON struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
-// LoadMCPConfigFile parses one .mcp.json file and returns server configs
+// LoadFile parses one .mcp.json file and returns server configs
 // with env vars expanded.
-func LoadMCPConfigFile(path string) ([]MCPServerConfig, error) {
+func LoadFile(path string) ([]ServerConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading MCP config %s: %w", path, err)
@@ -50,23 +56,30 @@ func LoadMCPConfigFile(path string) ([]MCPServerConfig, error) {
 		return nil, fmt.Errorf("parsing MCP config %s: %w", path, err)
 	}
 
-	var configs []MCPServerConfig
-	for name, raw := range cf.MCPServers {
+	return ParseServerMap(cf.MCPServers, path)
+}
+
+// ParseServerMap converts a map of server names to raw JSON server entries into
+// ServerConfigs, expanding ${VAR} references in each entry. The source string
+// is used only for error context (e.g. the file path or "inline").
+func ParseServerMap(servers map[string]json.RawMessage, source string) ([]ServerConfig, error) {
+	var configs []ServerConfig
+	for name, raw := range servers {
 		var sj mcpServerJSON
 		if err := json.Unmarshal(raw, &sj); err != nil {
-			return nil, fmt.Errorf("parsing MCP server %q in %s: %w", name, path, err)
+			return nil, fmt.Errorf("parsing MCP server %q in %s: %w", name, source, err)
 		}
 
 		cfg, err := serverJSONToConfig(name, sj)
 		if err != nil {
-			return nil, fmt.Errorf("MCP server %q in %s: %w", name, path, err)
+			return nil, fmt.Errorf("MCP server %q in %s: %w", name, source, err)
 		}
 		configs = append(configs, cfg)
 	}
 	return configs, nil
 }
 
-func serverJSONToConfig(name string, sj mcpServerJSON) (MCPServerConfig, error) {
+func serverJSONToConfig(name string, sj mcpServerJSON) (ServerConfig, error) {
 	typ := strings.TrimSpace(sj.Type)
 	if typ == "" {
 		typ = "stdio"
@@ -74,14 +87,14 @@ func serverJSONToConfig(name string, sj mcpServerJSON) (MCPServerConfig, error) 
 
 	command, err := expandEnvVars(sj.Command)
 	if err != nil {
-		return MCPServerConfig{}, fmt.Errorf("expanding command: %w", err)
+		return ServerConfig{}, fmt.Errorf("expanding command: %w", err)
 	}
 
 	args := make([]string, len(sj.Args))
 	for i, a := range sj.Args {
 		args[i], err = expandEnvVars(a)
 		if err != nil {
-			return MCPServerConfig{}, fmt.Errorf("expanding arg[%d]: %w", i, err)
+			return ServerConfig{}, fmt.Errorf("expanding arg[%d]: %w", i, err)
 		}
 	}
 	if len(sj.Args) == 0 {
@@ -92,7 +105,7 @@ func serverJSONToConfig(name string, sj mcpServerJSON) (MCPServerConfig, error) 
 	for k, v := range sj.Env {
 		env[k], err = expandEnvVars(v)
 		if err != nil {
-			return MCPServerConfig{}, fmt.Errorf("expanding env %q: %w", k, err)
+			return ServerConfig{}, fmt.Errorf("expanding env %q: %w", k, err)
 		}
 	}
 	if len(sj.Env) == 0 {
@@ -101,21 +114,21 @@ func serverJSONToConfig(name string, sj mcpServerJSON) (MCPServerConfig, error) 
 
 	url, err := expandEnvVars(sj.URL)
 	if err != nil {
-		return MCPServerConfig{}, fmt.Errorf("expanding url: %w", err)
+		return ServerConfig{}, fmt.Errorf("expanding url: %w", err)
 	}
 
 	headers := make(map[string]string, len(sj.Headers))
 	for k, v := range sj.Headers {
 		headers[k], err = expandEnvVars(v)
 		if err != nil {
-			return MCPServerConfig{}, fmt.Errorf("expanding header %q: %w", k, err)
+			return ServerConfig{}, fmt.Errorf("expanding header %q: %w", k, err)
 		}
 	}
 	if len(sj.Headers) == 0 {
 		headers = nil
 	}
 
-	return MCPServerConfig{
+	return ServerConfig{
 		Name:    name,
 		Type:    typ,
 		Command: command,
@@ -173,25 +186,25 @@ func expandEnvVars(s string) (string, error) {
 	return b.String(), nil
 }
 
-// ParseMCPInline parses a "name:command args..." inline spec into an MCPServerConfig.
-func ParseMCPInline(spec string) (MCPServerConfig, error) {
+// ParseInline parses a "name:command args..." inline spec into an ServerConfig.
+func ParseInline(spec string) (ServerConfig, error) {
 	spec = strings.TrimSpace(spec)
 	if spec == "" {
-		return MCPServerConfig{}, errors.New("empty MCP inline spec")
+		return ServerConfig{}, errors.New("empty MCP inline spec")
 	}
 
 	colon := strings.Index(spec, ":")
 	if colon < 0 {
-		return MCPServerConfig{}, fmt.Errorf("MCP inline spec missing colon: %q (format: name:command args...)", spec)
+		return ServerConfig{}, fmt.Errorf("MCP inline spec missing colon: %q (format: name:command args...)", spec)
 	}
 
 	name := strings.TrimSpace(spec[:colon])
 	rest := strings.TrimSpace(spec[colon+1:])
 	if name == "" {
-		return MCPServerConfig{}, fmt.Errorf("MCP inline spec has empty name: %q", spec)
+		return ServerConfig{}, fmt.Errorf("MCP inline spec has empty name: %q", spec)
 	}
 	if rest == "" {
-		return MCPServerConfig{}, fmt.Errorf("MCP inline spec has empty command: %q", spec)
+		return ServerConfig{}, fmt.Errorf("MCP inline spec has empty command: %q", spec)
 	}
 
 	parts := strings.Fields(rest)
@@ -200,7 +213,7 @@ func ParseMCPInline(spec string) (MCPServerConfig, error) {
 		args = parts[1:]
 	}
 
-	return MCPServerConfig{
+	return ServerConfig{
 		Name:    name,
 		Type:    "stdio",
 		Command: parts[0],
@@ -208,11 +221,11 @@ func ParseMCPInline(spec string) (MCPServerConfig, error) {
 	}, nil
 }
 
-// MergeMCPConfigs merges multiple layers of configs. Later layers shadow
+// Merge merges multiple layers of configs. Later layers shadow
 // earlier layers by server name.
-func MergeMCPConfigs(layers ...[]MCPServerConfig) []MCPServerConfig {
+func Merge(layers ...[]ServerConfig) []ServerConfig {
 	seen := map[string]int{} // name -> index in result
-	var result []MCPServerConfig
+	var result []ServerConfig
 
 	for _, layer := range layers {
 		for _, cfg := range layer {
@@ -227,16 +240,16 @@ func MergeMCPConfigs(layers ...[]MCPServerConfig) []MCPServerConfig {
 	return result
 }
 
-// DiscoverMCPConfigs loads MCP configs from all sources:
+// Discover loads MCP configs from all sources:
 // global (~/.config/serf/mcp.json) -> project (.serf/mcp.json at git root)
 // -> CLI files -> CLI inline specs. Later sources shadow earlier by name.
-func DiscoverMCPConfigs(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string) ([]MCPServerConfig, error) {
-	var layers [][]MCPServerConfig
+func Discover(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string) ([]ServerConfig, error) {
+	var layers [][]ServerConfig
 
 	// Layer 1: Global config.
 	globalPath := globalMCPConfigPath()
 	if globalPath != "" {
-		if configs, err := LoadMCPConfigFile(globalPath); err == nil {
+		if configs, err := LoadFile(globalPath); err == nil {
 			layers = append(layers, configs)
 		}
 		// Missing global file is not an error.
@@ -248,7 +261,7 @@ func DiscoverMCPConfigs(env execenv.ExecutionEnvironment, extraFiles, inlineSpec
 		root := execenv.GitRootOrEmpty(env, cwd)
 		if root != "" {
 			projPath := filepath.Join(root, ".serf", "mcp.json")
-			if configs, err := LoadMCPConfigFile(projPath); err == nil {
+			if configs, err := LoadFile(projPath); err == nil {
 				layers = append(layers, configs)
 			}
 		}
@@ -256,7 +269,7 @@ func DiscoverMCPConfigs(env execenv.ExecutionEnvironment, extraFiles, inlineSpec
 
 	// Layer 3: CLI config files.
 	for _, path := range extraFiles {
-		configs, err := LoadMCPConfigFile(path)
+		configs, err := LoadFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("--mcp-config %s: %w", path, err)
 		}
@@ -265,14 +278,14 @@ func DiscoverMCPConfigs(env execenv.ExecutionEnvironment, extraFiles, inlineSpec
 
 	// Layer 4: CLI inline specs.
 	for _, spec := range inlineSpecs {
-		cfg, err := ParseMCPInline(spec)
+		cfg, err := ParseInline(spec)
 		if err != nil {
 			return nil, fmt.Errorf("--mcp %q: %w", spec, err)
 		}
-		layers = append(layers, []MCPServerConfig{cfg})
+		layers = append(layers, []ServerConfig{cfg})
 	}
 
-	return MergeMCPConfigs(layers...), nil
+	return Merge(layers...), nil
 }
 
 // globalMCPConfigPath returns the path to the global MCP config file.

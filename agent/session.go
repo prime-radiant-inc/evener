@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/mcpconfig"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/agent/task"
@@ -116,7 +117,7 @@ type Session struct {
 	pendingPluginEvents []events.PluginLoadedData
 	hookRunner          *hookRunner
 	pluginAgents        map[string]PluginAgent
-	pluginMCPConfigs    []MCPServerConfig
+	pluginMCPConfigs    []mcpconfig.ServerConfig
 
 	// Tool names registered during session initialization (not custom).
 	coreToolNames map[string]bool

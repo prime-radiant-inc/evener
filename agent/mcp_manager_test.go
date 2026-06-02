@@ -9,7 +9,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/mcpconfig"
 	"primeradiant.com/serf/llm"
 )
 
@@ -54,7 +56,7 @@ func TestMCPManager_InMemory(t *testing.T) {
 		t.Fatalf("server connect: %v", err)
 	}
 
-	mgr, err := newMCPManager(ctx, []MCPServerConfig{
+	mgr, err := newMCPManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "testserver", Type: "stdio"},
 	}, []mcp.Transport{ct})
 	if err != nil {
@@ -80,7 +82,7 @@ func TestMCPManager_InMemory(t *testing.T) {
 		t.Fatalf("RegisterTools: %v", err)
 	}
 
-	env := &fakeEnvForMCP{workDir: t.TempDir()}
+	env := &agenttest.FakeEnv{WorkDir: t.TempDir()}
 	result := reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID:        "call_test",
 		Name:      "testserver__echo",
@@ -138,7 +140,7 @@ func TestMCPManager_MultipleServers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mgr, err := newMCPManager(ctx, []MCPServerConfig{
+	mgr, err := newMCPManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "alpha", Type: "stdio"},
 		{Name: "beta", Type: "stdio"},
 	}, []mcp.Transport{ct1, ct2})
@@ -168,7 +170,7 @@ func TestMCPManager_MultipleServers(t *testing.T) {
 	if err := mgr.RegisterTools(reg); err != nil {
 		t.Fatal(err)
 	}
-	env := &fakeEnvForMCP{workDir: t.TempDir()}
+	env := &agenttest.FakeEnv{WorkDir: t.TempDir()}
 
 	r1 := reg.ExecuteCall(ctx, env, llm.ToolCallData{
 		ID: "c1", Name: "alpha__greet", Arguments: json.RawMessage(`{}`),
@@ -208,7 +210,7 @@ func TestMCPManager_BuiltinCollision(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mgr, err := newMCPManager(ctx, []MCPServerConfig{
+	mgr, err := newMCPManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "s", Type: "stdio"},
 	}, []mcp.Transport{ct})
 	if err != nil {
@@ -257,7 +259,7 @@ func TestMCPManager_ToolNameTooLong(t *testing.T) {
 	}
 
 	// "longservername__" (16) + 60 = 76 chars > 64 limit
-	mgr, err := newMCPManager(ctx, []MCPServerConfig{
+	mgr, err := newMCPManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "longservername", Type: "stdio"},
 	}, []mcp.Transport{ct})
 	if err != nil {
@@ -287,17 +289,17 @@ func TestMCPManager_Empty(t *testing.T) {
 func TestTransportForConfig_Types(t *testing.T) {
 	tests := []struct {
 		name    string
-		cfg     MCPServerConfig
+		cfg     mcpconfig.ServerConfig
 		wantErr bool
 	}{
-		{"stdio valid", MCPServerConfig{Type: "stdio", Command: "cmd"}, false},
-		{"stdio empty command", MCPServerConfig{Type: "stdio"}, true},
-		{"sse valid", MCPServerConfig{Type: "sse", URL: "http://localhost:8080"}, false},
-		{"sse empty url", MCPServerConfig{Type: "sse"}, true},
-		{"http valid", MCPServerConfig{Type: "http", URL: "http://localhost:8080"}, false},
-		{"http empty url", MCPServerConfig{Type: "http"}, true},
-		{"unknown type", MCPServerConfig{Type: "websocket"}, true},
-		{"default (empty type) with command", MCPServerConfig{Command: "cmd"}, false},
+		{"stdio valid", mcpconfig.ServerConfig{Type: "stdio", Command: "cmd"}, false},
+		{"stdio empty command", mcpconfig.ServerConfig{Type: "stdio"}, true},
+		{"sse valid", mcpconfig.ServerConfig{Type: "sse", URL: "http://localhost:8080"}, false},
+		{"sse empty url", mcpconfig.ServerConfig{Type: "sse"}, true},
+		{"http valid", mcpconfig.ServerConfig{Type: "http", URL: "http://localhost:8080"}, false},
+		{"http empty url", mcpconfig.ServerConfig{Type: "http"}, true},
+		{"unknown type", mcpconfig.ServerConfig{Type: "websocket"}, true},
+		{"default (empty type) with command", mcpconfig.ServerConfig{Command: "cmd"}, false},
 	}
 
 	for _, tt := range tests {
@@ -376,7 +378,7 @@ func TestMCPManager_Servers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mgr, err := newMCPManager(ctx, []MCPServerConfig{
+	mgr, err := newMCPManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "alpha", Type: "stdio"},
 		{Name: "beta", Type: "stdio"},
 	}, []mcp.Transport{ct1, ct2})
@@ -391,7 +393,7 @@ func TestMCPManager_Servers(t *testing.T) {
 	}
 
 	// Find alpha and beta.
-	byName := map[string]MCPServerInfo{}
+	byName := map[string]mcpconfig.ServerInfo{}
 	for _, s := range servers {
 		byName[s.Name] = s
 	}

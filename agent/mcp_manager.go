@@ -14,6 +14,7 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/mcpconfig"
 	"primeradiant.com/serf/llm"
 )
 
@@ -33,7 +34,7 @@ type mcpConn struct {
 // and namespaces them. The transports parameter is optional: when nil, transports
 // are created from configs. When provided (for testing), each transport[i]
 // corresponds to configs[i].
-func newMCPManager(ctx context.Context, configs []MCPServerConfig, transports []mcp.Transport) (*mcpManager, error) {
+func newMCPManager(ctx context.Context, configs []mcpconfig.ServerConfig, transports []mcp.Transport) (*mcpManager, error) {
 	if len(configs) == 0 {
 		return nil, nil
 	}
@@ -153,17 +154,17 @@ func (m *mcpManager) RegisterTools(reg *tool.Registry) error {
 }
 
 // Servers returns per-server info including name and namespaced tool names.
-func (m *mcpManager) Servers() []MCPServerInfo {
+func (m *mcpManager) Servers() []mcpconfig.ServerInfo {
 	if m == nil {
 		return nil
 	}
-	out := make([]MCPServerInfo, len(m.conns))
+	out := make([]mcpconfig.ServerInfo, len(m.conns))
 	for i, c := range m.conns {
 		tools := make([]string, len(c.tools))
 		for j, td := range c.tools {
 			tools[j] = td.Name
 		}
-		out[i] = MCPServerInfo{Name: c.name, Tools: tools}
+		out[i] = mcpconfig.ServerInfo{Name: c.name, Tools: tools}
 	}
 	return out
 }
@@ -242,7 +243,7 @@ func mcpResultToString(result *mcp.CallToolResult) string {
 }
 
 // transportForConfig creates the appropriate MCP transport for a config.
-func transportForConfig(cfg MCPServerConfig) (mcp.Transport, error) {
+func transportForConfig(cfg mcpconfig.ServerConfig) (mcp.Transport, error) {
 	switch cfg.Type {
 	case "stdio", "":
 		if cfg.Command == "" {

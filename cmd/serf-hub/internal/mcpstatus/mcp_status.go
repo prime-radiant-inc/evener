@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/mcpconfig"
 )
 
 const mcpProbeTimeout = 750 * time.Millisecond
@@ -26,7 +26,7 @@ const mcpProbeTimeout = 750 * time.Millisecond
 //   - "missing"   — stdio command not found on PATH
 //   - "unreachable" — HTTP/SSE URL does not respond within the probe budget
 //   - "unknown"   — config is malformed or type is unrecognized
-func ProbeMCPStatus(c agent.MCPServerConfig) string {
+func ProbeMCPStatus(c mcpconfig.ServerConfig) string {
 	t := strings.ToLower(strings.TrimSpace(c.Type))
 	if t == "" {
 		t = "stdio"

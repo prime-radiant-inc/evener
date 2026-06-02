@@ -1,13 +1,11 @@
-package agent
+package mcpconfig
 
 import (
-	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/agenttest"
 )
 
 func TestLoadMCPConfigFile_Basic(t *testing.T) {
@@ -30,7 +28,7 @@ func TestLoadMCPConfigFile_Basic(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	configs, err := LoadMCPConfigFile(path)
+	configs, err := LoadFile(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -38,7 +36,7 @@ func TestLoadMCPConfigFile_Basic(t *testing.T) {
 		t.Fatalf("expected 2 configs, got %d", len(configs))
 	}
 
-	byName := map[string]MCPServerConfig{}
+	byName := map[string]ServerConfig{}
 	for _, c := range configs {
 		byName[c.Name] = c
 	}
@@ -83,7 +81,7 @@ func TestLoadMCPConfigFile_HTTPTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	configs, err := LoadMCPConfigFile(path)
+	configs, err := LoadFile(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -99,7 +97,7 @@ func TestLoadMCPConfigFile_HTTPTransport(t *testing.T) {
 }
 
 func TestLoadMCPConfigFile_MissingFile(t *testing.T) {
-	_, err := LoadMCPConfigFile("/nonexistent/mcp.json")
+	_, err := LoadFile("/nonexistent/mcp.json")
 	if err == nil {
 		t.Fatal("expected error for missing file")
 	}
@@ -112,7 +110,7 @@ func TestLoadMCPConfigFile_InvalidJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := LoadMCPConfigFile(path)
+	_, err := LoadFile(path)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -125,7 +123,7 @@ func TestLoadMCPConfigFile_EmptyServers(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	configs, err := LoadMCPConfigFile(path)
+	configs, err := LoadFile(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -188,44 +186,44 @@ func TestParseMCPInline(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		cfg, err := ParseMCPInline(tt.spec)
+		cfg, err := ParseInline(tt.spec)
 		if tt.wantErr {
 			if err == nil {
-				t.Errorf("ParseMCPInline(%q): expected error", tt.spec)
+				t.Errorf("ParseInline(%q): expected error", tt.spec)
 			}
 			continue
 		}
 		if err != nil {
-			t.Errorf("ParseMCPInline(%q): unexpected error: %v", tt.spec, err)
+			t.Errorf("ParseInline(%q): unexpected error: %v", tt.spec, err)
 			continue
 		}
 		if cfg.Name != tt.name {
-			t.Errorf("ParseMCPInline(%q).Name = %q, want %q", tt.spec, cfg.Name, tt.name)
+			t.Errorf("ParseInline(%q).Name = %q, want %q", tt.spec, cfg.Name, tt.name)
 		}
 		if cfg.Command != tt.command {
-			t.Errorf("ParseMCPInline(%q).Command = %q, want %q", tt.spec, cfg.Command, tt.command)
+			t.Errorf("ParseInline(%q).Command = %q, want %q", tt.spec, cfg.Command, tt.command)
 		}
 		if len(cfg.Args) != len(tt.args) {
-			t.Errorf("ParseMCPInline(%q).Args = %v, want %v", tt.spec, cfg.Args, tt.args)
+			t.Errorf("ParseInline(%q).Args = %v, want %v", tt.spec, cfg.Args, tt.args)
 		}
 		if cfg.Type != "stdio" {
-			t.Errorf("ParseMCPInline(%q).Type = %q, want stdio", tt.spec, cfg.Type)
+			t.Errorf("ParseInline(%q).Type = %q, want stdio", tt.spec, cfg.Type)
 		}
 	}
 }
 
 func TestMergeMCPConfigs(t *testing.T) {
-	layer1 := []MCPServerConfig{
+	layer1 := []ServerConfig{
 		{Name: "a", Command: "cmd1"},
 		{Name: "b", Command: "cmd2"},
 	}
-	layer2 := []MCPServerConfig{
+	layer2 := []ServerConfig{
 		{Name: "b", Command: "cmd2-override"},
 		{Name: "c", Command: "cmd3"},
 	}
 
-	merged := MergeMCPConfigs(layer1, layer2)
-	byName := map[string]MCPServerConfig{}
+	merged := Merge(layer1, layer2)
+	byName := map[string]ServerConfig{}
 	for _, c := range merged {
 		byName[c.Name] = c
 	}
@@ -245,7 +243,7 @@ func TestMergeMCPConfigs(t *testing.T) {
 }
 
 func TestMergeMCPConfigs_Empty(t *testing.T) {
-	merged := MergeMCPConfigs()
+	merged := Merge()
 	if len(merged) != 0 {
 		t.Errorf("expected 0 configs from empty merge, got %d", len(merged))
 	}
@@ -283,14 +281,14 @@ func TestDiscoverMCPConfigs_GlobalAndProject(t *testing.T) {
 	}
 
 	// Use a fake env that returns projDir as git root.
-	env := &fakeEnvForMCP{workDir: projDir, gitRoot: projDir}
+	env := &agenttest.FakeEnv{WorkDir: projDir, GitRoot: projDir}
 
-	configs, err := DiscoverMCPConfigs(env, nil, nil)
+	configs, err := Discover(env, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	byName := map[string]MCPServerConfig{}
+	byName := map[string]ServerConfig{}
 	for _, c := range configs {
 		byName[c.Name] = c
 	}
@@ -320,14 +318,14 @@ func TestDiscoverMCPConfigs_CLIOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := &fakeEnvForMCP{workDir: dir, gitRoot: ""}
+	env := &agenttest.FakeEnv{WorkDir: dir, GitRoot: ""}
 
-	configs, err := DiscoverMCPConfigs(env, []string{cliFile}, []string{"inline-tool:itool --flag"})
+	configs, err := Discover(env, []string{cliFile}, []string{"inline-tool:itool --flag"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	byName := map[string]MCPServerConfig{}
+	byName := map[string]ServerConfig{}
 	for _, c := range configs {
 		byName[c.Name] = c
 	}
@@ -362,7 +360,7 @@ func TestExpandEnvVars_InConfigLoading(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	configs, err := LoadMCPConfigFile(path)
+	configs, err := LoadFile(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -384,38 +382,12 @@ func TestExpandEnvVars_MissingVarInConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := LoadMCPConfigFile(path)
+	_, err := LoadFile(path)
 	if err == nil {
 		t.Fatal("expected error for missing env var without default")
 	}
 }
 
-// fakeEnvForMCP is a minimal execenv.ExecutionEnvironment for testing MCP config discovery.
-type fakeEnvForMCP struct {
-	workDir string
-	gitRoot string
-}
-
-func (f *fakeEnvForMCP) Initialize() error { return nil }
-func (f *fakeEnvForMCP) Cleanup()          {}
-
-func (f *fakeEnvForMCP) WorkingDirectory() string { return f.workDir }
-func (f *fakeEnvForMCP) Platform() string         { return "test" }
-func (f *fakeEnvForMCP) OSVersion() string        { return "test" }
-
-func (f *fakeEnvForMCP) ExecCommand(_ context.Context, command string, _ int, _ string, _ map[string]string) (execenv.ExecResult, error) {
-	if f.gitRoot != "" && strings.Contains(command, "git rev-parse --show-toplevel") {
-		return execenv.ExecResult{Stdout: f.gitRoot, ExitCode: 0}, nil
-	}
-	return execenv.ExecResult{ExitCode: 1}, nil
-}
-
-func (f *fakeEnvForMCP) ReadFile(string, *int, *int) (string, error)           { return "", nil }
-func (f *fakeEnvForMCP) WriteFile(string, string) (string, error)              { return "", nil }
-func (f *fakeEnvForMCP) EditFile(string, string, string, bool) (string, error) { return "", nil }
-func (f *fakeEnvForMCP) FileExists(string) bool                                { return false }
-func (f *fakeEnvForMCP) Glob(string, string) ([]string, error)                 { return nil, nil }
-func (f *fakeEnvForMCP) Grep(string, string, string, bool, int, string) (string, error) {
-	return "", nil
-}
-func (f *fakeEnvForMCP) ListDirectory(string, int) ([]execenv.DirEntry, error) { return nil, nil }
+// agenttest.FakeEnv is a minimal execenv.ExecutionEnvironment for testing MCP config discovery.
+// agenttest.FakeEnv now lives in agent/internal/agenttest as FakeEnv (shared with
+// the agent and internal/mcp test suites).

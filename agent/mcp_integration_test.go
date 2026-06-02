@@ -10,6 +10,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/mcpconfig"
 	"primeradiant.com/serf/llm"
 )
 
@@ -55,7 +56,7 @@ func TestMCPIntegration_ToolCallThroughSession(t *testing.T) {
 	}
 
 	// Create mcpManager directly with the transport (bypassing config discovery).
-	mgr, err := newMCPManager(ctx, []MCPServerConfig{
+	mgr, err := newMCPManager(ctx, []mcpconfig.ServerConfig{
 		{Name: "ext", Type: "stdio"},
 	}, []mcp.Transport{ct})
 	if err != nil {

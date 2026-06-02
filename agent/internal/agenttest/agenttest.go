@@ -1,12 +1,13 @@
-// Package agenttest provides shared test scaffolding — scripted fake adapters
-// and request/response builders — for black-box (package agent_test) tests of
-// the agent package.
+// Package agenttest provides shared test scaffolding — scripted fake adapters,
+// request/response builders, and a fake execution environment — for tests of
+// the agent package and its subpackages.
 //
-// Everything here depends only on the public llm API and the standard library,
-// never on package agent itself. That constraint is load-bearing: a package
-// agent test file that imports a helper package which in turn imported agent
-// would form a test import cycle. Keeping agenttest agent-free means both
-// black-box (agent_test) and white-box (agent) test files can use it.
+// Everything here depends only on the public llm and execenv APIs and the
+// standard library, never on package agent itself. That constraint is
+// load-bearing: a package agent test file that imports a helper package which
+// in turn imported agent would form a test import cycle. Keeping agenttest
+// agent-free means black-box (agent_test), white-box (agent), and subpackage
+// (e.g. mcpconfig, internal/mcp) test files can all use it.
 package agenttest
 
 import (

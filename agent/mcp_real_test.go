@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/internal/agenttest"
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/mcpconfig"
 	"primeradiant.com/serf/llm"
 )
 
@@ -28,7 +30,7 @@ func newEverythingManager(t *testing.T) *mcpManager {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
 
-	mgr, err := newMCPManager(ctx, []MCPServerConfig{{
+	mgr, err := newMCPManager(ctx, []mcpconfig.ServerConfig{{
 		Name:    "everything",
 		Type:    "stdio",
 		Command: "npx",
@@ -90,7 +92,7 @@ func TestRealMCP_Echo(t *testing.T) {
 		t.Fatalf("RegisterTools: %v", err)
 	}
 
-	env := &fakeEnvForMCP{workDir: t.TempDir()}
+	env := &agenttest.FakeEnv{WorkDir: t.TempDir()}
 	result := reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
 		ID:        "call_echo",
 		Name:      "everything__echo",
@@ -112,7 +114,7 @@ func TestRealMCP_GetSum(t *testing.T) {
 		t.Fatalf("RegisterTools: %v", err)
 	}
 
-	env := &fakeEnvForMCP{workDir: t.TempDir()}
+	env := &agenttest.FakeEnv{WorkDir: t.TempDir()}
 	result := reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
 		ID:        "call_sum",
 		Name:      "everything__get_sum",
@@ -134,7 +136,7 @@ func TestRealMCP_ImageContent(t *testing.T) {
 		t.Fatalf("RegisterTools: %v", err)
 	}
 
-	env := &fakeEnvForMCP{workDir: t.TempDir()}
+	env := &agenttest.FakeEnv{WorkDir: t.TempDir()}
 	result := reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
 		ID:        "call_image",
 		Name:      "everything__get_tiny_image",
@@ -165,7 +167,7 @@ func TestRealMCP_EnvPassing(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
 
-	mgr, err := newMCPManager(ctx, []MCPServerConfig{{
+	mgr, err := newMCPManager(ctx, []mcpconfig.ServerConfig{{
 		Name:    "everything",
 		Type:    "stdio",
 		Command: "npx",
@@ -182,7 +184,7 @@ func TestRealMCP_EnvPassing(t *testing.T) {
 		t.Fatalf("RegisterTools: %v", err)
 	}
 
-	env := &fakeEnvForMCP{workDir: t.TempDir()}
+	env := &agenttest.FakeEnv{WorkDir: t.TempDir()}
 	result := reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
 		ID:        "call_env",
 		Name:      "everything__get_env",
@@ -207,7 +209,7 @@ func TestRealMCP_AnnotatedMessage(t *testing.T) {
 		t.Fatalf("RegisterTools: %v", err)
 	}
 
-	env := &fakeEnvForMCP{workDir: t.TempDir()}
+	env := &agenttest.FakeEnv{WorkDir: t.TempDir()}
 	result := reg.ExecuteCall(context.Background(), env, llm.ToolCallData{
 		ID:        "call_annotated",
 		Name:      "everything__get_annotated_message",

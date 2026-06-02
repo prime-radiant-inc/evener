@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/installid"
+	"primeradiant.com/serf/agent/mcpconfig"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/agent/task"
@@ -683,13 +684,13 @@ func (s *Session) initPlugins(sessionStartKind SessionStartKind) error {
 // initMCP discovers and connects to MCP servers if configured.
 // Uses a 30-second timeout since NewSession doesn't take a context.
 func (s *Session) initMCP() error {
-	configs, err := DiscoverMCPConfigs(s.env, s.cfg.MCPConfigFiles, s.cfg.MCPInline)
+	configs, err := mcpconfig.Discover(s.env, s.cfg.MCPConfigFiles, s.cfg.MCPInline)
 	if err != nil {
 		return err
 	}
 	// Merge plugin MCP configs as a base layer (global/project/CLI can shadow them).
 	if len(s.pluginMCPConfigs) > 0 {
-		configs = MergeMCPConfigs(s.pluginMCPConfigs, configs)
+		configs = mcpconfig.Merge(s.pluginMCPConfigs, configs)
 	}
 	if len(configs) == 0 {
 		return nil

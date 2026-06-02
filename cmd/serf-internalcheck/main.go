@@ -35,6 +35,7 @@ import (
 var libraryPackages = []string{
 	"primeradiant.com/serf/agent",
 	"primeradiant.com/serf/agent/execenv",
+	"primeradiant.com/serf/agent/mcpconfig",
 	"primeradiant.com/serf/agent/schema",
 	"primeradiant.com/serf/agent/skill",
 	"primeradiant.com/serf/agent/task",

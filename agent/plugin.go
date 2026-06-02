@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 
+	"primeradiant.com/serf/agent/mcpconfig"
 	"primeradiant.com/serf/agent/skill"
 )
 
@@ -72,7 +73,7 @@ type LoadedPlugin struct {
 	Skills     map[string]skill.SkillMeta     // namespaced as "plugin-name:skill-name"
 	Agents     map[string]PluginAgent         // namespaced as "plugin-name:agent-name"
 	Hooks      map[HookEvent][]RegisteredHook // keyed by event type
-	MCPConfigs []MCPServerConfig              // namespaced as "plugin_<name>_<server>"
+	MCPConfigs []mcpconfig.ServerConfig       // namespaced as "plugin_<name>_<server>"
 }
 
 // discoverPluginSkills scans a plugin's skills directories and returns
@@ -93,8 +94,8 @@ func discoverPluginSkills(pluginDir, pluginName string) map[string]skill.SkillMe
 // discoverPluginMCPConfigs reads MCP server configs from a plugin's .mcp.json
 // file and/or inline manifest mcpServers field. Server names are prefixed with
 // "plugin_<pluginName>_" and ${CLAUDE_PLUGIN_ROOT} is expanded to pluginDir.
-func discoverPluginMCPConfigs(pluginDir string, manifestMCPServers json.RawMessage, pluginName string) ([]MCPServerConfig, error) {
-	var layers [][]MCPServerConfig
+func discoverPluginMCPConfigs(pluginDir string, manifestMCPServers json.RawMessage, pluginName string) ([]mcpconfig.ServerConfig, error) {
+	var layers [][]mcpconfig.ServerConfig
 
 	// Layer 1: .mcp.json file in the plugin directory.
 	mcpPath := filepath.Join(pluginDir, ".mcp.json")
@@ -108,7 +109,7 @@ func discoverPluginMCPConfigs(pluginDir string, manifestMCPServers json.RawMessa
 		expanded := expandPluginRoot(string(manifestMCPServers), pluginDir)
 		var servers map[string]json.RawMessage
 		if err := json.Unmarshal([]byte(expanded), &servers); err == nil && len(servers) > 0 {
-			inlineConfigs, err := parseMCPServerMap(servers, "inline")
+			inlineConfigs, err := mcpconfig.ParseServerMap(servers, "inline")
 			if err != nil {
 				return nil, err
 			}
@@ -116,7 +117,7 @@ func discoverPluginMCPConfigs(pluginDir string, manifestMCPServers json.RawMessa
 		}
 	}
 
-	merged := MergeMCPConfigs(layers...)
+	merged := mcpconfig.Merge(layers...)
 	if len(merged) == 0 {
 		return nil, nil
 	}
@@ -131,7 +132,7 @@ func discoverPluginMCPConfigs(pluginDir string, manifestMCPServers json.RawMessa
 
 // loadPluginMCPFile reads a plugin's .mcp.json file, expands
 // ${CLAUDE_PLUGIN_ROOT} in the raw JSON, then parses server configs.
-func loadPluginMCPFile(path, pluginDir string) ([]MCPServerConfig, error) {
+func loadPluginMCPFile(path, pluginDir string) ([]mcpconfig.ServerConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -148,25 +149,7 @@ func loadPluginMCPFile(path, pluginDir string) ([]MCPServerConfig, error) {
 		return nil, fmt.Errorf("parsing MCP config %s: %w", path, err)
 	}
 
-	return parseMCPServerMap(cf.MCPServers, path)
-}
-
-// parseMCPServerMap converts a map of server names to raw JSON into
-// MCPServerConfig slices. The source string is used for error context.
-func parseMCPServerMap(servers map[string]json.RawMessage, source string) ([]MCPServerConfig, error) {
-	var configs []MCPServerConfig
-	for name, raw := range servers {
-		var sj mcpServerJSON
-		if err := json.Unmarshal(raw, &sj); err != nil {
-			return nil, fmt.Errorf("parsing MCP server %q in %s: %w", name, source, err)
-		}
-		cfg, err := serverJSONToConfig(name, sj)
-		if err != nil {
-			return nil, fmt.Errorf("MCP server %q in %s: %w", name, source, err)
-		}
-		configs = append(configs, cfg)
-	}
-	return configs, nil
+	return mcpconfig.ParseServerMap(cf.MCPServers, path)
 }
 
 // LoadPlugin reads a plugin manifest from <dir>/.codex-plugin/plugin.json
