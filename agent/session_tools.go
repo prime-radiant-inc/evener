@@ -504,36 +504,51 @@ func (s *Session) availableAgentEntries() []agentEntry {
 	return entries
 }
 
+// wireToolDef renders a canonical tool definition in its provider-visible wire
+// form: it renames the tool to the provider-specific name (nameMap is
+// canonical→provider) and adds the shared "purpose" parameter. This is the form
+// advertised to the model; the executor registry stays keyed by canonical names.
+func wireToolDef(td llm.ToolDefinition, nameMap map[string]string) llm.ToolDefinition {
+	if mapped, ok := nameMap[td.Name]; ok {
+		td.Name = mapped
+	}
+	return tool.WithPurposeParameter(td)
+}
+
+// profileWireToolDefs returns all of the profile's tool definitions in their
+// provider-visible wire form (see wireToolDef), unfiltered by the registry.
+func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
+	nameMap := s.profile.ToolNameMap()
+	defs := s.profile.ToolDefinitions()
+	for i := range defs {
+		defs[i] = wireToolDef(defs[i], nameMap)
+	}
+	return defs
+}
+
 // rebuildToolDefsCache builds the cached tool definition lists from the
 // current profile, MCP tools, and registry state. Called once at session init
 // and again if tools are added at runtime (e.g. MCP or custom tools).
 func (s *Session) rebuildToolDefsCache() {
 	registered := s.reg.RegisteredNames()
 
-	// Profile tool definitions use provider-specific names (e.g. "exec_command"
-	// for OpenAI). Build a reverse map from provider name → canonical name so
-	// we can filter against the registry which uses canonical names.
+	// Profile tool definitions are canonical (e.g. "shell"); the registry is also
+	// keyed by canonical names. Each registered profile tool is advertised in its
+	// provider-visible wire form (provider-specific rename + purpose param).
 	nameMap := s.profile.ToolNameMap() // canonical → provider, may be nil
-	reverseMap := make(map[string]string, len(nameMap))
-	for canonical, provider := range nameMap {
-		reverseMap[provider] = canonical
-	}
 
 	var defs []llm.ToolDefinition
 	included := make(map[string]bool)
 	for _, td := range s.profile.ToolDefinitions() {
-		canonical := td.Name
-		if c, ok := reverseMap[td.Name]; ok {
-			canonical = c
-		}
-		if registered[canonical] {
-			defs = append(defs, td)
-			included[canonical] = true
+		if registered[td.Name] {
+			wire := wireToolDef(td, nameMap)
+			defs = append(defs, wire)
+			included[td.Name] = true // canonical
 			// Also track the provider-mapped name so loop 3 (registry tools)
 			// won't add a registry tool whose canonical name matches the
 			// provider name (e.g. OpenAI maps glob→list_dir; the registry
 			// also has a separate list_dir tool that must be excluded).
-			included[td.Name] = true
+			included[wire.Name] = true
 		}
 	}
 	for _, td := range s.mcpTools {

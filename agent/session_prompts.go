@@ -76,8 +76,8 @@ func (s *Session) buildPromptData() promptData {
 		})
 	}
 
-	// Profile tools
-	profileDefs := s.profile.ToolDefinitions()
+	// Profile tools (provider-visible wire form, matching what the API receives)
+	profileDefs := s.profileWireToolDefs()
 	data.ProfileTools = toolEntriesFromDefinitions(profileDefs)
 	// Use the same provider-visible tool definitions that are sent to the model.
 	// Prompting with canonical names while the API receives mapped names such as

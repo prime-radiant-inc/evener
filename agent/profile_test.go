@@ -83,20 +83,23 @@ func TestProviderProfiles_ToolsetsAndDocSelection(t *testing.T) {
 		t.Fatalf("gemini should support parallel tool calls")
 	}
 	assertHasTool(t, gemini, "edit_file")
-	assertHasTool(t, gemini, "list_directory")
+	assertHasTool(t, gemini, "list_dir")
 	assertMissingTool(t, gemini, "apply_patch")
 }
 
 func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 	t.Run("openai", func(t *testing.T) {
 		p := NewOpenAIProfile("gpt-5.2")
+		// ToolDefinitions returns canonical names; provider-specific renaming
+		// (shell→exec_command, grep→grep_files, glob→list_dir) is applied at the
+		// agent wire edge, verified by TestToolNameMapping_OpenAI.
 		assertToolListExact(t, p, []string{
 			"read_file",
 			"apply_patch",
 			"write_file",
-			"exec_command",
-			"grep_files",
-			"list_dir",
+			"shell",
+			"grep",
+			"glob",
 			"spawn_agent",
 			"resume_agent",
 			"wait",
@@ -128,14 +131,17 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 	})
 	t.Run("gemini", func(t *testing.T) {
 		p := newGeminiProfile("gemini-test")
+		// Canonical names; Gemini renames shell→run_shell_command,
+		// grep→grep_search, list_dir→list_directory at the agent wire edge
+		// (see TestToolNameMapping_Gemini).
 		assertToolListExact(t, p, []string{
 			"read_file",
 			"write_file",
 			"edit_file",
-			"run_shell_command",
-			"grep_search",
+			"shell",
+			"grep",
 			"glob",
-			"list_directory",
+			"list_dir",
 			"spawn_agent",
 			"resume_agent",
 			"wait",
@@ -176,7 +182,9 @@ func TestProviderProfiles_AddPurposeToEveryToolSchema(t *testing.T) {
 		newOpenAICompatProfile("openrouter", "openai/gpt-test", 0),
 	}
 	for _, p := range profiles {
+		nameMap := p.ToolNameMap()
 		for _, td := range p.ToolDefinitions() {
+			td = wireToolDef(td, nameMap)
 			props, _ := td.Parameters["properties"].(map[string]any)
 			if props == nil {
 				t.Fatalf("%s/%s has no properties schema", p.ID(), td.Name)
@@ -1467,48 +1475,51 @@ func TestSpawnAgent_HasMaxTurns(t *testing.T) {
 }
 
 // WS3: Tool name mapping
-func TestToolNameMapping_OpenAI(t *testing.T) {
-	p := NewOpenAIProfile("gpt-5.2")
-	toolNames := map[string]bool{}
+// wiredToolNames returns the set of tool names the profile advertises to the
+// model — the agent wire form (provider-specific renaming applied).
+func wiredToolNames(p *Profile) map[string]bool {
+	nameMap := p.ToolNameMap()
+	names := map[string]bool{}
 	for _, td := range p.ToolDefinitions() {
-		toolNames[td.Name] = true
+		names[wireToolDef(td, nameMap).Name] = true
 	}
-	// OpenAI should use provider-specific names.
+	return names
+}
+
+func TestToolNameMapping_OpenAI(t *testing.T) {
+	toolNames := wiredToolNames(NewOpenAIProfile("gpt-5.2"))
+	// OpenAI advertises provider-specific names to the model.
 	if !toolNames["exec_command"] {
-		t.Fatal("OpenAI ToolDefinitions should contain exec_command (mapped from shell)")
+		t.Fatal("OpenAI wire defs should contain exec_command (mapped from shell)")
 	}
 	if !toolNames["grep_files"] {
-		t.Fatal("OpenAI ToolDefinitions should contain grep_files (mapped from grep)")
+		t.Fatal("OpenAI wire defs should contain grep_files (mapped from grep)")
 	}
 	if !toolNames["list_dir"] {
-		t.Fatal("OpenAI ToolDefinitions should contain list_dir (mapped from glob)")
+		t.Fatal("OpenAI wire defs should contain list_dir (mapped from glob)")
 	}
 	// Should NOT contain canonical names for mapped tools.
 	if toolNames["shell"] {
-		t.Fatal("OpenAI ToolDefinitions should not contain canonical 'shell'")
+		t.Fatal("OpenAI wire defs should not contain canonical 'shell'")
 	}
 	if toolNames["grep"] {
-		t.Fatal("OpenAI ToolDefinitions should not contain canonical 'grep'")
+		t.Fatal("OpenAI wire defs should not contain canonical 'grep'")
 	}
 	if toolNames["glob"] {
-		t.Fatal("OpenAI ToolDefinitions should not contain canonical 'glob'")
+		t.Fatal("OpenAI wire defs should not contain canonical 'glob'")
 	}
 }
 
 func TestToolNameMapping_Gemini(t *testing.T) {
-	p := newGeminiProfile("gemini-test")
-	toolNames := map[string]bool{}
-	for _, td := range p.ToolDefinitions() {
-		toolNames[td.Name] = true
-	}
+	toolNames := wiredToolNames(newGeminiProfile("gemini-test"))
 	if !toolNames["run_shell_command"] {
-		t.Fatal("Gemini ToolDefinitions should contain run_shell_command (mapped from shell)")
+		t.Fatal("Gemini wire defs should contain run_shell_command (mapped from shell)")
 	}
 	if !toolNames["grep_search"] {
-		t.Fatal("Gemini ToolDefinitions should contain grep_search (mapped from grep)")
+		t.Fatal("Gemini wire defs should contain grep_search (mapped from grep)")
 	}
 	if !toolNames["list_directory"] {
-		t.Fatal("Gemini ToolDefinitions should contain list_directory (mapped from list_dir)")
+		t.Fatal("Gemini wire defs should contain list_directory (mapped from list_dir)")
 	}
 }
 

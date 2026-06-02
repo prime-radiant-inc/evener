@@ -159,6 +159,27 @@ func newToolDeps(s *Session) *toolDeps {
 	}
 }
 
+// newProfileToolRegistry builds a tool registry seeded with the profile's
+// canonical tool definitions and placeholder executors; registerCoreTools wires
+// the real executors afterward. The registry is keyed by canonical tool names —
+// provider-specific renaming is applied only when advertising tools to the
+// model (see rebuildToolDefsCache).
+func newProfileToolRegistry(p *Profile) *tool.Registry {
+	reg := tool.NewRegistry()
+	if p == nil {
+		return reg
+	}
+	for _, td := range p.ToolDefinitions() {
+		_ = reg.Register(tool.RegisteredTool{
+			Tool: llm.Tool{Definition: td},
+			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+				return nil, errors.New("tool executor not wired")
+			},
+		})
+	}
+	return reg
+}
+
 func registerCoreTools(reg *tool.Registry, s *Session) error {
 	deps := newToolDeps(s)
 	if err := registerFileTools(reg, deps); err != nil {

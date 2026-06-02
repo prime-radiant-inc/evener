@@ -1,11 +1,8 @@
 package agent
 
 import (
-	"context"
-	"errors"
 	"strings"
 
-	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
@@ -257,15 +254,12 @@ func buildBaseProfile(spec profileSpec) Profile {
 func (p *Profile) ID() string          { return p.id }
 func (p *Profile) BehaviorTag() string { return p.behaviorTag }
 func (p *Profile) Model() string       { return p.model }
+
+// ToolDefinitions returns the profile's tool schemas by their canonical names.
+// Provider-specific renaming (via ToolNameMap) and the shared purpose parameter
+// are applied by the agent when advertising tools to the model, not here.
 func (p *Profile) ToolDefinitions() []llm.ToolDefinition {
-	defs := append([]llm.ToolDefinition{}, p.toolDefs...)
-	for i, d := range defs {
-		if mapped, ok := p.toolNameMap[d.Name]; ok {
-			defs[i].Name = mapped
-		}
-		defs[i] = tool.WithPurposeParameter(defs[i])
-	}
-	return defs
+	return append([]llm.ToolDefinition{}, p.toolDefs...)
 }
 func (p *Profile) ToolNameMap() map[string]string {
 	if len(p.toolNameMap) == 0 {
@@ -276,30 +270,6 @@ func (p *Profile) ToolNameMap() map[string]string {
 		m[k] = v
 	}
 	return m
-}
-
-// toolRegistry returns a *tool.Registry pre-populated with the profile's tool
-// definitions (canonical names) and placeholder executors; the Session wires
-// real executors after construction.
-func (p *Profile) toolRegistry() *tool.Registry {
-	reg := tool.NewRegistry()
-	for _, td := range p.toolDefs {
-		_ = reg.Register(tool.RegisteredTool{
-			Tool: llm.Tool{Definition: td},
-			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-				return nil, errors.New("tool executor not wired")
-			},
-		})
-	}
-	return reg
-}
-
-// newProfileToolRegistry builds the placeholder tool registry for a profile.
-func newProfileToolRegistry(p *Profile) *tool.Registry {
-	if p == nil {
-		return tool.NewRegistry()
-	}
-	return p.toolRegistry()
 }
 func (p *Profile) SupportsParallelToolCalls() bool { return p.parallel }
 func (p *Profile) ContextWindowSize() int          { return p.contextWindow }
