@@ -203,7 +203,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 // conversation history while reconstructing non-serializable parts (tools,
 // client, profile) fresh. The session retains the original snapshot ID.
 func RestoreSession(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, snap SessionSnapshot, stateDir string) (*Session, error) {
-	cfg := snap.Config
+	cfg := configFromSnapshot(snap.Config)
 	cfg.StateDir = stateDir
 	cfg.SessionStartKind = plugin.SessionStartKindResume
 	cfg.applyDefaults()
@@ -335,7 +335,7 @@ func RestoreSession(client *llm.Client, profile *provider.Profile, env execenv.E
 // history exclusively from the transcript JSONL. If no transcript exists,
 // the session starts with empty history (no snapshot fallback).
 func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, meta SessionMeta, stateDir string) (*Session, error) {
-	cfg := meta.Config
+	cfg := configFromSnapshot(meta.Config)
 	cfg.StateDir = stateDir
 	cfg.SessionStartKind = plugin.SessionStartKindResume
 	cfg.applyDefaults()

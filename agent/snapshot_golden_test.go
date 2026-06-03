@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 	"time"
@@ -8,45 +9,56 @@ import (
 	"primeradiant.com/serf/agent/schema"
 )
 
+// fullSessionConfig builds a SessionConfig with every persisted wire field set
+// to a non-zero value, plus one engine-only field (StateDir) to prove engine
+// fields are excluded from the persisted form. It is the shared fixture for the
+// golden meta.json characterization and the SessionConfig<->ConfigSnapshot
+// converter-fidelity test below.
+func fullSessionConfig() SessionConfig {
+	disableLoop := false
+	return SessionConfig{
+		MaxToolRoundsPerInput:   150,
+		MaxTurns:                20,
+		DefaultCommandTimeoutMS: 5000,
+		MaxCommandTimeoutMS:     300000,
+		MaxSubagentDepth:        2,
+		ToolOutputLimits: map[string]schema.ToolOutputLimit{
+			"shell": {MaxChars: 1000, MaxLines: 50, Strategy: schema.TruncHeadTail},
+		},
+		UserInstructionOverride: "be concise",
+		AgentName:               "reviewer",
+		ReasoningEffort:         "high",
+		SkillsDirs:              []string{"/a/skills"},
+		MCPConfigFiles:          []string{"/a/mcp.json"},
+		MCPInline:               []string{"srv:cmd --flag"},
+		PluginDirs:              []string{"/a/plugins"},
+		SystemPromptFile:        "/a/prompt.txt",
+		SystemPromptAppend:      []string{"/a/append.txt"},
+		NoProjectPrompts:        true,
+		NonInteractive:          true,
+		ContextStrategy:         "compact",
+		ShareTasksWithChildren:  true,
+		ResultToolName:          "respond",
+		EnableLoopDetection:     &disableLoop,
+		LoopDetectionWindow:     15,
+		SystemPromptAsUser:      true,
+		ModelFallbacks:          []string{"openai/gpt-5", "anthropic/claude"},
+		StateDir:                "/engine/state", // engine-only: must NOT reach the persisted form
+	}
+}
+
 // goldenMeta builds a SessionMeta with every serializable field set to a
 // non-zero value, so marshaling it exercises the complete meta.json wire format
-// — all 24 SessionConfig wire fields, the full EnvironmentInfo (including the
-// nested WorkspaceInfo), and every SessionMeta field. It is the fixture for the
-// persistence-carve characterization tests below.
+// — all 24 SessionConfig wire fields (projected through ConfigSnapshot), the
+// full EnvironmentInfo (including the nested WorkspaceInfo), and every
+// SessionMeta field. It is the fixture for the persistence-carve
+// characterization tests below.
 func goldenMeta() SessionMeta {
-	disableLoop := false
 	return SessionMeta{
 		ID:        "01JTESTGOLDEN0000000000001",
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		Config: SessionConfig{
-			MaxToolRoundsPerInput:   150,
-			MaxTurns:                20,
-			DefaultCommandTimeoutMS: 5000,
-			MaxCommandTimeoutMS:     300000,
-			MaxSubagentDepth:        2,
-			ToolOutputLimits: map[string]schema.ToolOutputLimit{
-				"shell": {MaxChars: 1000, MaxLines: 50, Strategy: schema.TruncHeadTail},
-			},
-			UserInstructionOverride: "be concise",
-			AgentName:               "reviewer",
-			ReasoningEffort:         "high",
-			SkillsDirs:              []string{"/a/skills"},
-			MCPConfigFiles:          []string{"/a/mcp.json"},
-			MCPInline:               []string{"srv:cmd --flag"},
-			PluginDirs:              []string{"/a/plugins"},
-			SystemPromptFile:        "/a/prompt.txt",
-			SystemPromptAppend:      []string{"/a/append.txt"},
-			NoProjectPrompts:        true,
-			NonInteractive:          true,
-			ContextStrategy:         "compact",
-			ShareTasksWithChildren:  true,
-			ResultToolName:          "respond",
-			EnableLoopDetection:     &disableLoop,
-			LoopDetectionWindow:     15,
-			SystemPromptAsUser:      true,
-			ModelFallbacks:          []string{"openai/gpt-5", "anthropic/claude"},
-		},
+		Config:    fullSessionConfig().toSnapshot(),
 		EnvInfo: schema.EnvironmentInfo{
 			WorkingDir:            "/work",
 			Platform:              "darwin",
@@ -106,5 +118,34 @@ func TestSessionMeta_GoldenRoundTrip(t *testing.T) {
 	}
 	if string(data) != goldenMetaJSON {
 		t.Fatalf("round-trip drift:\n got: %s\nwant: %s", data, goldenMetaJSON)
+	}
+}
+
+// TestConfigSnapshot_ConverterFidelity proves the SessionConfig<->ConfigSnapshot
+// converters carry every persisted wire field with no drops or swaps. Because the
+// two structs share identical json tags, a faithful conversion marshals to
+// identical bytes; a dropped or misrouted field surfaces as a byte difference.
+// Engine-only json:"-" fields (e.g. StateDir) are excluded from both sides.
+func TestConfigSnapshot_ConverterFidelity(t *testing.T) {
+	cfg := fullSessionConfig()
+
+	cfgJSON, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal cfg: %v", err)
+	}
+	snapJSON, err := json.Marshal(cfg.toSnapshot())
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	if !bytes.Equal(cfgJSON, snapJSON) {
+		t.Fatalf("toSnapshot dropped or misrouted a field:\n cfg:  %s\n snap: %s", cfgJSON, snapJSON)
+	}
+
+	backJSON, err := json.Marshal(configFromSnapshot(cfg.toSnapshot()))
+	if err != nil {
+		t.Fatalf("marshal round-trip: %v", err)
+	}
+	if !bytes.Equal(backJSON, cfgJSON) {
+		t.Fatalf("configFromSnapshot dropped or misrouted a field:\n want: %s\n got:  %s", cfgJSON, backJSON)
 	}
 }

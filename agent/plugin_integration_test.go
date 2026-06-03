@@ -116,7 +116,7 @@ func TestRestoreSessionFromMeta_DoesNotMatchStartupSessionStartHooks(t *testing.
 		ID:        "resume-session",
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		Config:    cfg,
+		Config:    cfg.toSnapshot(),
 	}
 	restored, err := RestoreSessionFromMeta(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), meta, stateDir)
 	if err != nil {

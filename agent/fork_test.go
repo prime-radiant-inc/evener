@@ -51,7 +51,7 @@ func buildParentSession(t *testing.T) (stateDir, parentID string) {
 		ID:        parentID,
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		Config:    SessionConfig{MaxToolRoundsPerInput: 50},
+		Config:    schema.ConfigSnapshot{MaxToolRoundsPerInput: 50},
 		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/tmp/test"},
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),

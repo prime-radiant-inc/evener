@@ -16,7 +16,7 @@ func createTestSnapshot(t *testing.T, dir string, id string, history []schema.Tu
 		ID:        id,
 		ProfileID: "test-profile",
 		Model:     "test-model",
-		Config:    SessionConfig{},
+		Config:    schema.ConfigSnapshot{},
 		EnvInfo:   schema.EnvironmentInfo{},
 		History:   history,
 		CreatedAt: time.Now().UTC(),

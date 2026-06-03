@@ -21,7 +21,7 @@ type SessionSnapshot struct {
 	ID        string                 `json:"id"`         // session identifier
 	ProfileID string                 `json:"profile_id"` // ID of the provider profile in use
 	Model     string                 `json:"model"`      // model name the session is driving
-	Config    SessionConfig          `json:"config"`     // the session's configuration
+	Config    schema.ConfigSnapshot  `json:"config"`     // the session's configuration
 	EnvInfo   schema.EnvironmentInfo `json:"env_info"`   // captured environment description
 	History   []schema.Turn          `json:"history"`    // full conversation transcript
 	CreatedAt time.Time              `json:"created_at"` // when the session was first created
@@ -38,7 +38,7 @@ type SessionMeta struct {
 	ID        string                 `json:"id"`         // session identifier
 	ProfileID string                 `json:"profile_id"` // ID of the provider profile in use
 	Model     string                 `json:"model"`      // model name the session is driving
-	Config    SessionConfig          `json:"config"`     // the session's configuration
+	Config    schema.ConfigSnapshot  `json:"config"`     // the session's configuration
 	EnvInfo   schema.EnvironmentInfo `json:"env_info"`   // captured environment description
 	CreatedAt time.Time              `json:"created_at"` // when the session was first created
 	UpdatedAt time.Time              `json:"updated_at"` // last time the meta was written

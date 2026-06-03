@@ -21,7 +21,7 @@ func testSnapshot() SessionSnapshot {
 		ID:        "01JTEST000000000000000001",
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		Config: SessionConfig{
+		Config: schema.ConfigSnapshot{
 			MaxToolRoundsPerInput: 200,
 			ReasoningEffort:       "high",
 		},
@@ -680,7 +680,7 @@ func TestRestoreSession_CanProcessInput(t *testing.T) {
 		ID:        "01JTEST000000000000000099",
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		Config:    SessionConfig{MaxToolRoundsPerInput: 200},
+		Config:    schema.ConfigSnapshot{MaxToolRoundsPerInput: 200},
 		EnvInfo:   schema.EnvironmentInfo{WorkingDir: dir},
 		History:   []schema.Turn{},
 		CreatedAt: time.Now(),
@@ -717,7 +717,7 @@ func TestRestoreSession_UsesTranscriptOverSnapshot(t *testing.T) {
 		ID:        "01JTEST_TRANSCRIPT_001",
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		Config:    SessionConfig{MaxToolRoundsPerInput: 200},
+		Config:    schema.ConfigSnapshot{MaxToolRoundsPerInput: 200},
 		EnvInfo:   schema.EnvironmentInfo{WorkingDir: dir},
 		History: []schema.Turn{
 			schema.NewTurn(schema.TurnUserInput, llm.User("snapshot-old-message")),
@@ -805,7 +805,7 @@ func TestRestoreSession_FallsBackToSnapshotWithoutTranscript(t *testing.T) {
 		ID:        "01JTEST_FALLBACK_001",
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		Config:    SessionConfig{MaxToolRoundsPerInput: 200},
+		Config:    schema.ConfigSnapshot{MaxToolRoundsPerInput: 200},
 		EnvInfo:   schema.EnvironmentInfo{WorkingDir: dir},
 		History: []schema.Turn{
 			schema.NewTurn(schema.TurnUserInput, llm.User("snapshot-fallback")),
@@ -864,7 +864,7 @@ func TestRestoreSession_TranscriptWithCompaction(t *testing.T) {
 		ID:        "01JTEST_COMPACT_001",
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		Config:    SessionConfig{MaxToolRoundsPerInput: 200},
+		Config:    schema.ConfigSnapshot{MaxToolRoundsPerInput: 200},
 		EnvInfo:   schema.EnvironmentInfo{WorkingDir: dir},
 		History: []schema.Turn{
 			schema.NewTurn(schema.TurnUserInput, llm.User("snapshot-should-not-appear")),
