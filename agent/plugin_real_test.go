@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/internal/toolname"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/skill"
@@ -205,7 +206,7 @@ func TestRealPlugin_Superpowers_HookExecution(t *testing.T) {
 	})
 
 	// Execute SessionStart hook - it reads using-superpowers SKILL.md and outputs JSON
-	input := hookInput{
+	input := hooks.Input{
 		SessionID:     "test-session",
 		CWD:           dir,
 		HookEventName: "SessionStart",
@@ -326,15 +327,15 @@ func TestRealPlugin_SecurityGuidance_HookMatching(t *testing.T) {
 	// The matcher "Edit|Write|MultiEdit" should match these Claude Code tool names.
 	// Our runAll maps serf names → Claude names for matching, so we test with serf names.
 	// edit_file → Edit (matches), write_file → Write (matches), shell → Bash (no match)
-	editMatched := runner.matchHooks(plugin.HookPreToolUse, "Edit")
+	editMatched := runner.MatchHooks(plugin.HookPreToolUse, "Edit")
 	if len(editMatched) == 0 {
 		t.Error("Edit should match PreToolUse hooks")
 	}
-	writeMatched := runner.matchHooks(plugin.HookPreToolUse, "Write")
+	writeMatched := runner.MatchHooks(plugin.HookPreToolUse, "Write")
 	if len(writeMatched) == 0 {
 		t.Error("Write should match PreToolUse hooks")
 	}
-	bashMatched := runner.matchHooks(plugin.HookPreToolUse, "Bash")
+	bashMatched := runner.MatchHooks(plugin.HookPreToolUse, "Bash")
 	if len(bashMatched) != 0 {
 		t.Error("Bash should NOT match Edit|Write|MultiEdit")
 	}
@@ -360,7 +361,7 @@ func TestRealPlugin_SecurityGuidance_HookExecution(t *testing.T) {
 
 	// Execute PreToolUse for a Write to a GitHub Actions workflow file.
 	// The hook outputs to stderr with exit code 2 (block).
-	input := hookInput{
+	input := hooks.Input{
 		SessionID:     sessionID,
 		CWD:           dir,
 		HookEventName: "PreToolUse",
@@ -620,11 +621,11 @@ func TestRealPlugin_AggregateHooks(t *testing.T) {
 
 	// Both SessionStart (superpowers) and PreToolUse (security-guidance) should exist.
 	// SessionStart matcher target is "startup" (matching Claude Code convention).
-	startHooks := runner.matchHooks(plugin.HookSessionStart, "startup")
+	startHooks := runner.MatchHooks(plugin.HookSessionStart, "startup")
 	if len(startHooks) == 0 {
 		t.Error("expected SessionStart hooks from superpowers")
 	}
-	preToolHooks := runner.matchHooks(plugin.HookPreToolUse, "Edit")
+	preToolHooks := runner.MatchHooks(plugin.HookPreToolUse, "Edit")
 	if len(preToolHooks) == 0 {
 		t.Error("expected PreToolUse hooks from security-guidance for Edit")
 	}
@@ -754,18 +755,18 @@ func TestRealPlugin_Settings_WithFile(t *testing.T) {
 
 // ---------- Helpers ----------
 
-// newHookRunnerFromPlugin creates a hookRunner populated with a single plugin's hooks.
-func newHookRunnerFromPlugin(p plugin.Instance) *hookRunner {
-	runner := newHookRunner(nil, "")
+// newHookRunnerFromPlugin creates a hooks.Runner populated with a single plugin's hooks.
+func newHookRunnerFromPlugin(p plugin.Instance) *hooks.Runner {
+	runner := hooks.NewRunner(nil, "")
 	for event, eventHooks := range p.Hooks {
 		runner.Add(event, eventHooks...)
 	}
 	return runner
 }
 
-// newHookRunnerFromPlugins creates a hookRunner populated with hooks from multiple plugins.
-func newHookRunnerFromPlugins(plugins []plugin.Instance) *hookRunner {
-	runner := newHookRunner(nil, "")
+// newHookRunnerFromPlugins creates a hooks.Runner populated with hooks from multiple plugins.
+func newHookRunnerFromPlugins(plugins []plugin.Instance) *hooks.Runner {
+	runner := hooks.NewRunner(nil, "")
 	for _, p := range plugins {
 		for event, eventHooks := range p.Hooks {
 			runner.Add(event, eventHooks...)

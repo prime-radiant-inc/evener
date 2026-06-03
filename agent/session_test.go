@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/schema"
@@ -1364,7 +1365,7 @@ func TestSession_PreToolUseUpdatedInputRewritesToolCall(t *testing.T) {
 	}
 	defer sess.Close()
 
-	runner := newHookRunner(nil, "")
+	runner := hooks.NewRunner(nil, "")
 	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
 		Matcher: "Write",
 		Type:    "command",
@@ -1406,7 +1407,7 @@ func TestSession_PreCompactHookOnlyRunsWhenCompactionEmits(t *testing.T) {
 	}
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
-	runner := newHookRunner(nil, "")
+	runner := hooks.NewRunner(nil, "")
 	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
 		sess.emit(kind, data)
 	})
@@ -1448,7 +1449,7 @@ func TestSession_PreCompactHookRunsAtCompactionBoundary(t *testing.T) {
 	}
 	eventsPtr, mu, doneCh := collectEvents(sess)
 
-	runner := newHookRunner(nil, "")
+	runner := hooks.NewRunner(nil, "")
 	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
 		sess.emit(kind, data)
 	})
@@ -1534,7 +1535,7 @@ func TestSession_NotificationHookRunsOnWarning(t *testing.T) {
 	defer sess.Close()
 
 	marker := filepath.Join(dir, "notification-hook")
-	runner := newHookRunner(nil, "")
+	runner := hooks.NewRunner(nil, "")
 	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
 		Matcher: "*",
 		Type:    "command",

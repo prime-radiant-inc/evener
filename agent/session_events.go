@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/plugin"
 )
 
@@ -78,9 +79,9 @@ func (s *Session) runNotificationHook(ctx context.Context, message string) {
 	}
 }
 
-// hookInput creates a hookInput with the session's ID and working directory pre-filled.
-func (s *Session) hookInput(event plugin.HookEvent) hookInput {
-	return hookInput{
+// hookInput creates a hooks.Input with the session's ID and working directory pre-filled.
+func (s *Session) hookInput(event plugin.HookEvent) hooks.Input {
+	return hooks.Input{
 		SessionID:     s.id,
 		CWD:           s.env.WorkingDirectory(),
 		HookEventName: string(event),

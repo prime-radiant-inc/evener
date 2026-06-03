@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/internal/toolname"
 	"primeradiant.com/serf/agent/plugin"
 )
@@ -204,7 +205,7 @@ func TestPlugin_EndToEnd_HookExecution(t *testing.T) {
 		t.Fatalf("plugin.Load: %v", err)
 	}
 
-	runner := newHookRunner(nil, "") // no prompt client needed for command hooks
+	runner := hooks.NewRunner(nil, "") // no prompt client needed for command hooks
 	for event, eventHooks := range lp.Hooks {
 		runner.Add(event, eventHooks...)
 	}
@@ -216,7 +217,7 @@ func TestPlugin_EndToEnd_HookExecution(t *testing.T) {
 	})
 
 	// Fire SessionStart
-	input := hookInput{
+	input := hooks.Input{
 		SessionID:     "test-session",
 		CWD:           pluginDir,
 		HookEventName: "SessionStart",

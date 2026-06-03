@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/agent/internal/mcp"
 	"primeradiant.com/serf/agent/internal/tool"
@@ -119,7 +120,7 @@ type Session struct {
 	// Plugin-provided components
 	plugins             []plugin.Instance
 	pendingPluginEvents []events.PluginLoadedData
-	hookRunner          *hookRunner
+	hookRunner          *hooks.Runner
 	pluginAgents        map[string]plugin.Agent
 	pluginMCPConfigs    []mcpconfig.ServerConfig
 

@@ -16,6 +16,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/internal/mcp"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/plugin"
@@ -362,7 +363,7 @@ func TestLive_Hooks_CommandExecution(t *testing.T) {
 	})
 
 	// --- SessionStart ---
-	startResult := runner.RunSessionStart(context.Background(), hookInput{
+	startResult := runner.RunSessionStart(context.Background(), hooks.Input{
 		SessionID:     "live-test",
 		CWD:           dir,
 		HookEventName: "SessionStart",
@@ -382,7 +383,7 @@ func TestLive_Hooks_CommandExecution(t *testing.T) {
 	}
 
 	// --- PreToolUse (safe path) ---
-	safeResult := runner.RunPreToolUse(context.Background(), hookInput{
+	safeResult := runner.RunPreToolUse(context.Background(), hooks.Input{
 		SessionID:     "live-test",
 		CWD:           dir,
 		HookEventName: "PreToolUse",
@@ -394,7 +395,7 @@ func TestLive_Hooks_CommandExecution(t *testing.T) {
 	}
 
 	// --- PreToolUse (dangerous path — should be blocked via exit 2) ---
-	dangerousResult := runner.RunPreToolUse(context.Background(), hookInput{
+	dangerousResult := runner.RunPreToolUse(context.Background(), hooks.Input{
 		SessionID:     "live-test",
 		CWD:           dir,
 		HookEventName: "PreToolUse",
@@ -413,7 +414,7 @@ func TestLive_Hooks_CommandExecution(t *testing.T) {
 	}
 
 	// --- Stop hook (should approve) ---
-	stopResult := runner.RunStop(context.Background(), hookInput{
+	stopResult := runner.RunStop(context.Background(), hooks.Input{
 		SessionID:     "live-test",
 		CWD:           dir,
 		HookEventName: "Stop",
@@ -480,7 +481,7 @@ func TestLive_Hooks_PromptWithRealLLM(t *testing.T) {
 		t.Fatalf("NewFromEnv: %v", err)
 	}
 
-	runner := newHookRunner(clientAdapter{client}, integrationTestModel)
+	runner := hooks.NewRunner(client, integrationTestModel)
 	for event, hooks := range lp.Hooks {
 		runner.Add(event, hooks...)
 	}
@@ -488,7 +489,7 @@ func TestLive_Hooks_PromptWithRealLLM(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	result := runner.RunPreToolUse(ctx, hookInput{
+	result := runner.RunPreToolUse(ctx, hooks.Input{
 		SessionID:     "prompt-test",
 		CWD:           dir,
 		HookEventName: "PreToolUse",
@@ -577,7 +578,7 @@ func TestLive_Session_WithPlugin(t *testing.T) {
 
 	// Verify hook runner is set up
 	if sess.hookRunner == nil {
-		t.Fatal("hookRunner should not be nil")
+		t.Fatal("hooks.Runner should not be nil")
 	}
 
 	// Verify settings loadable from this workDir

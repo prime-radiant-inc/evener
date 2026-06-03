@@ -1,4 +1,4 @@
-package agent
+package hooks
 
 import (
 	"bytes"
@@ -19,8 +19,8 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// hookInput is the JSON payload piped to command hooks via stdin.
-type hookInput struct {
+// Input is the JSON payload piped to command hooks via stdin.
+type Input struct {
 	SessionID     string         `json:"session_id"`
 	CWD           string         `json:"cwd"`
 	HookEventName string         `json:"hook_event_name"`
@@ -42,7 +42,7 @@ type hookResult struct {
 // executeCommandHook runs a command hook with the given input piped as JSON to stdin.
 // Non-zero exit codes are captured in hookResult.ExitCode, not returned as Go errors.
 // Only returns an error for infrastructure failures (timeout, process start failure).
-func executeCommandHook(ctx context.Context, hook plugin.RegisteredHook, input hookInput) (hookResult, error) {
+func executeCommandHook(ctx context.Context, hook plugin.RegisteredHook, input Input) (hookResult, error) {
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
 		return hookResult{}, fmt.Errorf("marshaling hook input: %w", err)
@@ -103,7 +103,7 @@ func (a clientAdapter) Generate(ctx context.Context, req llm.Request) (llm.Respo
 
 // substituteHookVariables replaces $TOOL_INPUT, $TOOL_RESULT, $USER_PROMPT,
 // and $TOOL_NAME placeholders in a prompt string with values from the input.
-func substituteHookVariables(prompt string, input hookInput) string {
+func substituteHookVariables(prompt string, input Input) string {
 	// $TOOL_INPUT -> JSON-encoded ToolInput or "null"
 	toolInputStr := "null"
 	if input.ToolInput != nil {
@@ -135,7 +135,7 @@ func substituteHookVariables(prompt string, input hookInput) string {
 }
 
 // executePromptHook runs a prompt hook by calling the LLM with the substituted prompt.
-func executePromptHook(ctx context.Context, client promptHookClient, model string, hook plugin.RegisteredHook, input hookInput) (hookResult, error) {
+func executePromptHook(ctx context.Context, client promptHookClient, model string, hook plugin.RegisteredHook, input Input) (hookResult, error) {
 	prompt := substituteHookVariables(hook.Prompt, input)
 
 	reqModel := model
@@ -159,8 +159,8 @@ func executePromptHook(ctx context.Context, client promptHookClient, model strin
 	return hookResult{Stdout: text, ExitCode: 0}, nil
 }
 
-// hookRunner orchestrates hook matching and parallel dispatch.
-type hookRunner struct {
+// Runner orchestrates hook matching and parallel dispatch.
+type Runner struct {
 	hooks   map[plugin.HookEvent][]plugin.RegisteredHook
 	client  promptHookClient
 	model   string
@@ -169,14 +169,25 @@ type hookRunner struct {
 
 // SetEventCallback sets an optional callback that is invoked for hook
 // lifecycle events (HookStart, HookEnd).
-func (r *hookRunner) SetEventCallback(fn func(events.EventKind, events.EventData)) {
+func (r *Runner) SetEventCallback(fn func(events.EventKind, events.EventData)) {
 	r.onEvent = fn
 }
 
-// newHookRunner creates a hookRunner with the given LLM client and default model
-// for prompt hooks.
-func newHookRunner(client promptHookClient, model string) *hookRunner {
-	return &hookRunner{
+// NewRunner creates a Runner that dispatches plugin hooks. Prompt hooks call
+// client with the given default model; pass a nil client to disable prompt
+// hooks (command hooks still run).
+func NewRunner(client *llm.Client, model string) *Runner {
+	var c promptHookClient
+	if client != nil {
+		c = clientAdapter{client}
+	}
+	return newRunner(c, model)
+}
+
+// newRunner creates a Runner with the given prompt-hook client and default
+// model for prompt hooks.
+func newRunner(client promptHookClient, model string) *Runner {
+	return &Runner{
 		hooks:  make(map[plugin.HookEvent][]plugin.RegisteredHook),
 		client: client,
 		model:  model,
@@ -185,7 +196,7 @@ func newHookRunner(client promptHookClient, model string) *hookRunner {
 
 // Summary returns the number of registered hooks per event.
 // Events with zero hooks are omitted.
-func (r *hookRunner) Summary() map[plugin.HookEvent]int {
+func (r *Runner) Summary() map[plugin.HookEvent]int {
 	out := make(map[plugin.HookEvent]int)
 	for event, hooks := range r.hooks {
 		if len(hooks) > 0 {
@@ -196,13 +207,13 @@ func (r *hookRunner) Summary() map[plugin.HookEvent]int {
 }
 
 // Add registers hooks for an event.
-func (r *hookRunner) Add(event plugin.HookEvent, hooks ...plugin.RegisteredHook) {
+func (r *Runner) Add(event plugin.HookEvent, hooks ...plugin.RegisteredHook) {
 	r.hooks[event] = append(r.hooks[event], hooks...)
 }
 
-// matchHooks returns hooks registered for the event whose Matcher matches toolName.
+// MatchHooks returns hooks registered for the event whose Matcher matches toolName.
 // "*" matches everything; other matchers are compiled as regex.
-func (r *hookRunner) matchHooks(event plugin.HookEvent, toolName string) []plugin.RegisteredHook {
+func (r *Runner) MatchHooks(event plugin.HookEvent, toolName string) []plugin.RegisteredHook {
 	var matched []plugin.RegisteredHook
 	for _, hook := range r.hooks[event] {
 		if hook.Matcher == "*" {
@@ -220,21 +231,21 @@ func (r *hookRunner) matchHooks(event plugin.HookEvent, toolName string) []plugi
 	return matched
 }
 
-// hookRunResult contains the aggregated output from running hooks.
-type hookRunResult struct {
+// RunResult contains the aggregated output from running hooks.
+type RunResult struct {
 	SystemMessages []string
 }
 
-// preToolUseResult contains aggregated output from PreToolUse hooks.
-type preToolUseResult struct {
+// PreToolUseResult contains aggregated output from PreToolUse hooks.
+type PreToolUseResult struct {
 	Denied         bool
 	DenyMessage    string
 	SystemMessages []string
 	UpdatedInput   map[string]any
 }
 
-// stopResult contains aggregated output from Stop/SubagentStop hooks.
-type stopResult struct {
+// StopResult contains aggregated output from Stop/SubagentStop hooks.
+type StopResult struct {
 	Blocked        bool
 	BlockReason    string
 	SystemMessages []string
@@ -322,7 +333,7 @@ func parseHookOutput(stdout string, exitCode int) parsedHookOutput {
 }
 
 // runHook executes a single hook (command or prompt) and returns the parsed output.
-func (r *hookRunner) runHook(ctx context.Context, hook plugin.RegisteredHook, input hookInput) parsedHookOutput {
+func (r *Runner) runHook(ctx context.Context, hook plugin.RegisteredHook, input Input) parsedHookOutput {
 	var hr hookResult
 	var err error
 
@@ -351,9 +362,9 @@ func (r *hookRunner) runHook(ctx context.Context, hook plugin.RegisteredHook, in
 }
 
 // runAll executes all matched hooks in parallel and returns their parsed outputs.
-func (r *hookRunner) runAll(ctx context.Context, event plugin.HookEvent, toolName string, input hookInput) []parsedHookOutput {
+func (r *Runner) runAll(ctx context.Context, event plugin.HookEvent, toolName string, input Input) []parsedHookOutput {
 	claudeName := toolname.SerfToClaude(toolName)
-	matched := r.matchHooks(event, claudeName)
+	matched := r.MatchHooks(event, claudeName)
 	if len(matched) == 0 {
 		return nil
 	}
@@ -395,9 +406,9 @@ func (r *hookRunner) runAll(ctx context.Context, event plugin.HookEvent, toolNam
 
 // RunPreToolUse dispatches PreToolUse hooks and aggregates results.
 // Any deny from any hook means denied.
-func (r *hookRunner) RunPreToolUse(ctx context.Context, input hookInput) preToolUseResult {
+func (r *Runner) RunPreToolUse(ctx context.Context, input Input) PreToolUseResult {
 	outputs := r.runAll(ctx, plugin.HookPreToolUse, input.ToolName, input)
-	var result preToolUseResult
+	var result PreToolUseResult
 	for _, o := range outputs {
 		if o.SystemMessage != "" {
 			result.SystemMessages = append(result.SystemMessages, o.SystemMessage)
@@ -429,25 +440,25 @@ func mergeHookInputMaps(dst map[string]any, src map[string]any) map[string]any {
 }
 
 // RunPostToolUse dispatches PostToolUse hooks and aggregates system messages.
-func (r *hookRunner) RunPostToolUse(ctx context.Context, input hookInput) hookRunResult {
+func (r *Runner) RunPostToolUse(ctx context.Context, input Input) RunResult {
 	outputs := r.runAll(ctx, plugin.HookPostToolUse, input.ToolName, input)
 	return collectSystemMessages(outputs)
 }
 
 // RunStop dispatches Stop hooks and aggregates results.
 // Any block from any hook means blocked.
-func (r *hookRunner) RunStop(ctx context.Context, input hookInput) stopResult {
+func (r *Runner) RunStop(ctx context.Context, input Input) StopResult {
 	return r.runStopEvent(ctx, plugin.HookStop, input)
 }
 
 // RunSubagentStop dispatches SubagentStop hooks and aggregates results.
-func (r *hookRunner) RunSubagentStop(ctx context.Context, input hookInput) stopResult {
+func (r *Runner) RunSubagentStop(ctx context.Context, input Input) StopResult {
 	return r.runStopEvent(ctx, plugin.HookSubagentStop, input)
 }
 
-func (r *hookRunner) runStopEvent(ctx context.Context, event plugin.HookEvent, input hookInput) stopResult {
+func (r *Runner) runStopEvent(ctx context.Context, event plugin.HookEvent, input Input) StopResult {
 	outputs := r.runAll(ctx, event, input.ToolName, input)
-	var result stopResult
+	var result StopResult
 	for _, o := range outputs {
 		if o.SystemMessage != "" {
 			result.SystemMessages = append(result.SystemMessages, o.SystemMessage)
@@ -463,18 +474,18 @@ func (r *hookRunner) runStopEvent(ctx context.Context, event plugin.HookEvent, i
 }
 
 // RunUserPromptSubmit dispatches UserPromptSubmit hooks.
-func (r *hookRunner) RunUserPromptSubmit(ctx context.Context, input hookInput) hookRunResult {
+func (r *Runner) RunUserPromptSubmit(ctx context.Context, input Input) RunResult {
 	outputs := r.runAll(ctx, plugin.HookUserPromptSubmit, "", input)
 	return collectSystemMessages(outputs)
 }
 
 // RunSessionStart dispatches startup SessionStart hooks.
-func (r *hookRunner) RunSessionStart(ctx context.Context, input hookInput) hookRunResult {
+func (r *Runner) RunSessionStart(ctx context.Context, input Input) RunResult {
 	return r.RunSessionStartFor(ctx, input, plugin.SessionStartKindStartup)
 }
 
 // RunSessionStartFor dispatches SessionStart hooks for a specific startup kind.
-func (r *hookRunner) RunSessionStartFor(ctx context.Context, input hookInput, kind plugin.SessionStartKind) hookRunResult {
+func (r *Runner) RunSessionStartFor(ctx context.Context, input Input, kind plugin.SessionStartKind) RunResult {
 	target := strings.TrimSpace(string(kind))
 	if target == "" {
 		target = string(plugin.SessionStartKindStartup)
@@ -484,25 +495,25 @@ func (r *hookRunner) RunSessionStartFor(ctx context.Context, input hookInput, ki
 }
 
 // RunSessionEnd dispatches SessionEnd hooks. No return value needed.
-func (r *hookRunner) RunSessionEnd(ctx context.Context, input hookInput) {
+func (r *Runner) RunSessionEnd(ctx context.Context, input Input) {
 	r.runAll(ctx, plugin.HookSessionEnd, "", input)
 }
 
 // RunPreCompact dispatches PreCompact hooks.
-func (r *hookRunner) RunPreCompact(ctx context.Context, input hookInput) hookRunResult {
+func (r *Runner) RunPreCompact(ctx context.Context, input Input) RunResult {
 	outputs := r.runAll(ctx, plugin.HookPreCompact, "", input)
 	return collectSystemMessages(outputs)
 }
 
 // RunNotification dispatches Notification hooks.
-func (r *hookRunner) RunNotification(ctx context.Context, input hookInput) hookRunResult {
+func (r *Runner) RunNotification(ctx context.Context, input Input) RunResult {
 	outputs := r.runAll(ctx, plugin.HookNotification, "", input)
 	return collectSystemMessages(outputs)
 }
 
 // collectSystemMessages aggregates system messages from parsed outputs.
-func collectSystemMessages(outputs []parsedHookOutput) hookRunResult {
-	var result hookRunResult
+func collectSystemMessages(outputs []parsedHookOutput) RunResult {
+	var result RunResult
 	for _, o := range outputs {
 		if o.SystemMessage != "" {
 			result.SystemMessages = append(result.SystemMessages, o.SystemMessage)

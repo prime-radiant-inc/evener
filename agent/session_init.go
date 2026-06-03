@@ -12,6 +12,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/agent/internal/mcp"
 	"primeradiant.com/serf/agent/mcpconfig"
@@ -640,7 +641,7 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind) error {
 
 	s.plugins = plugins
 
-	runner := newHookRunner(clientAdapter{s.client}, s.profile.Model())
+	runner := hooks.NewRunner(s.client, s.profile.Model())
 	allAgents := map[string]plugin.Agent{}
 
 	for _, p := range plugins {
