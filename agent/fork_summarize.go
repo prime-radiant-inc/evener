@@ -6,16 +6,17 @@ import (
 	"fmt"
 	"strings"
 
+	"primeradiant.com/serf/agent/internal/sessionlog"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
-// ForkSummarize makes a side LLM call using a cheap model to produce a
-// SessionLogEntry summarizing the most recent action in turns. The prompt
-// explicitly preserves failure signals so errors are not lost during
+// forkSummarize makes a side LLM call using a cheap model to produce a
+// sessionlog.SessionLogEntry summarizing the most recent action in turns. The
+// prompt explicitly preserves failure signals so errors are not lost during
 // summarization.
-func ForkSummarize(ctx context.Context, client *llm.Client, profile *provider.Profile, turns []schema.Turn, turnNumber int) (SessionLogEntry, error) {
+func forkSummarize(ctx context.Context, client *llm.Client, profile *provider.Profile, turns []schema.Turn, turnNumber int) (sessionlog.SessionLogEntry, error) {
 	prompt := buildSummarizePrompt(turns)
 
 	req := llm.Request{
@@ -26,16 +27,16 @@ func ForkSummarize(ctx context.Context, client *llm.Client, profile *provider.Pr
 
 	resp, err := client.Complete(ctx, req)
 	if err != nil {
-		return SessionLogEntry{}, fmt.Errorf("fork summarize: %w", err)
+		return sessionlog.SessionLogEntry{}, fmt.Errorf("fork summarize: %w", err)
 	}
 
 	text := strings.TrimSpace(resp.Text())
 	// Strip markdown code fences if the model wraps JSON in them.
 	text = stripCodeFence(text)
 
-	var entry SessionLogEntry
+	var entry sessionlog.SessionLogEntry
 	if err := json.Unmarshal([]byte(text), &entry); err != nil {
-		return SessionLogEntry{}, fmt.Errorf("fork summarize: failed to parse JSON: %w (raw: %s)", err, text)
+		return sessionlog.SessionLogEntry{}, fmt.Errorf("fork summarize: failed to parse JSON: %w (raw: %s)", err, text)
 	}
 
 	entry.Turn = turnNumber

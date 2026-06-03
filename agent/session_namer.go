@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/sessionlog"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -310,7 +311,7 @@ func (s *Session) nameSessionFromText(ctx context.Context, source, text string) 
 
 	result, err := nameSession(ctx, s.client, s.currentProfile(), source, text)
 	if err != nil {
-		s.appendSessionNamerLog(SessionLogEntry{
+		s.appendSessionNamerLog(sessionlog.SessionLogEntry{
 			Kind:     "advisory",
 			Action:   "session_namer",
 			Summary:  fmt.Sprintf("Failed to generate %s-derived session name", sessionNameSourceLabel(source)),
@@ -335,7 +336,7 @@ func (s *Session) nameSessionFromText(ctx context.Context, source, text string) 
 	s.naming.set = true
 	s.mu.Unlock()
 
-	s.appendSessionNamerLog(SessionLogEntry{
+	s.appendSessionNamerLog(sessionlog.SessionLogEntry{
 		Kind:    "advisory",
 		Action:  "session_namer",
 		Summary: fmt.Sprintf("Suggested %s-derived session name: %s", sessionNameSourceLabel(result.Source), result.Name),
@@ -367,14 +368,14 @@ func (s *Session) shouldApplySessionNameLocked(source string) bool {
 	}
 }
 
-func (s *Session) appendSessionNamerLog(entry SessionLogEntry) {
+func (s *Session) appendSessionNamerLog(entry sessionlog.SessionLogEntry) {
 	if s.stateDir == "" {
 		return
 	}
 	entry.Kind = "advisory"
 	entry.Action = "session_namer"
 	logPath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".log.jsonl")
-	log, err := NewSessionLog(logPath)
+	log, err := sessionlog.NewSessionLog(logPath)
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("session namer log open failed: %v", err)})
 		return

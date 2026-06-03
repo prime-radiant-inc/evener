@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/sessionlog"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -98,13 +99,13 @@ func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *tes
 	sessionLog := mustNewSessionLog(t, logPath)
 
 	// Pre-populate the session log with entries.
-	_ = sessionLog.Append(SessionLogEntry{
+	_ = sessionLog.Append(sessionlog.SessionLogEntry{
 		Turn:    1,
 		Action:  "shell",
 		Summary: "Ran git status to check repo state",
 		Outcome: "success",
 	})
-	_ = sessionLog.Append(SessionLogEntry{
+	_ = sessionLog.Append(sessionlog.SessionLogEntry{
 		Turn:         2,
 		Action:       "edit_file",
 		Summary:      "Modified auth.go to fix login bug",
@@ -173,7 +174,7 @@ func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 
 	// Create a large log entry that exceeds 80k chars.
 	largeSummary := strings.Repeat("x", 85000)
-	_ = sessionLog.Append(SessionLogEntry{
+	_ = sessionLog.Append(sessionlog.SessionLogEntry{
 		Turn:    1,
 		Action:  "shell",
 		Summary: largeSummary,
@@ -224,7 +225,7 @@ func TestOODAStrategy_ManageContext_AppliesCompactionLayers(t *testing.T) {
 	logPath := filepath.Join(dir, "test.log.jsonl")
 	sessionLog := mustNewSessionLog(t, logPath)
 
-	_ = sessionLog.Append(SessionLogEntry{
+	_ = sessionLog.Append(sessionlog.SessionLogEntry{
 		Turn:    1,
 		Action:  "shell",
 		Summary: "Did something",
@@ -296,7 +297,7 @@ func TestOODAStrategy_ManageContext_AppliesCompactionLayers(t *testing.T) {
 }
 
 func TestOODAStrategy_AfterAction_InheritsFromSessionLogStrategy(t *testing.T) {
-	entry := SessionLogEntry{
+	entry := sessionlog.SessionLogEntry{
 		Action:       "shell",
 		Summary:      "Ran go test and all tests passed.",
 		Outcome:      "success",

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/sessionlog"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -19,7 +20,7 @@ import (
 type sessionLogStrategy struct {
 	cm      *contextManager
 	session strategyHost
-	log     *SessionLog
+	log     *sessionlog.SessionLog
 }
 
 // newSessionLogStrategy creates a sessionLogStrategy backed by the given
@@ -27,7 +28,7 @@ type sessionLogStrategy struct {
 // session snapshot.
 func newSessionLogStrategy(cm *contextManager, host strategyHost) (*sessionLogStrategy, error) {
 	logPath := filepath.Join(host.StateDir(), "sessions", host.ID()+".log.jsonl")
-	log, err := NewSessionLog(logPath)
+	log, err := sessionlog.NewSessionLog(logPath)
 	if err != nil {
 		return nil, fmt.Errorf("session log strategy: %w", err)
 	}
@@ -257,7 +258,7 @@ func (s *sessionLogStrategy) AfterAction(ctx context.Context, history []schema.T
 	if len(recent) > 10 {
 		recent = recent[len(recent)-10:]
 	}
-	entry, err := ForkSummarize(ctx, client, s.session.Profile(), recent, len(history))
+	entry, err := forkSummarize(ctx, client, s.session.Profile(), recent, len(history))
 	if err != nil {
 		return nil //nolint:nilerr // fork summarization is best-effort; failure must not fail the session
 	}

@@ -1,4 +1,9 @@
-package agent
+// Package sessionlog provides a structured, append-only log of session actions.
+// It is the shared substrate beneath the session-namer (which records advisory
+// entries) and the session-log family of context strategies (which build
+// compaction checkpoints from logged actions). It depends only on the standard
+// library so both consumers can share it without a package cycle.
+package sessionlog
 
 import (
 	"bufio"

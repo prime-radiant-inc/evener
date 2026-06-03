@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/sessionlog"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -50,7 +51,7 @@ func TestStrategyHost_FakeSatisfiesInterface(t *testing.T) {
 // path is built from the host's StateDir/ID, and AfterAction routes its
 // summary side-effects through the host's WithResponseSideEffects + Emit.
 func TestSessionLogStrategy_OperatesWithFakeHost(t *testing.T) {
-	entry := SessionLogEntry{
+	entry := sessionlog.SessionLogEntry{
 		Action:  "shell",
 		Summary: "Ran the tests; all passed.",
 		Outcome: "success",

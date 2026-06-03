@@ -1,4 +1,4 @@
-package agent
+package sessionlog
 
 import (
 	"path/filepath"

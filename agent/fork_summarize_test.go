@@ -6,6 +6,7 @@ import (
 	"errors"
 	"testing"
 
+	"primeradiant.com/serf/agent/internal/sessionlog"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -27,7 +28,7 @@ func (a *stubSummarizeAdapter) Stream(_ context.Context, _ llm.Request) (llm.Str
 }
 
 func TestForkSummarize_Success(t *testing.T) {
-	entry := SessionLogEntry{
+	entry := sessionlog.SessionLogEntry{
 		Action:       "shell",
 		Summary:      "Ran go test ./... and all tests passed.",
 		Outcome:      "success",
@@ -59,9 +60,9 @@ func TestForkSummarize_Success(t *testing.T) {
 		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "PASS", false)},
 	}
 
-	got, err := ForkSummarize(context.Background(), client, profile, turns, 7)
+	got, err := forkSummarize(context.Background(), client, profile, turns, 7)
 	if err != nil {
-		t.Fatalf("ForkSummarize: %v", err)
+		t.Fatalf("forkSummarize: %v", err)
 	}
 
 	if got.Turn != 7 {
@@ -82,7 +83,7 @@ func TestForkSummarize_Success(t *testing.T) {
 }
 
 func TestForkSummarize_Failure(t *testing.T) {
-	entry := SessionLogEntry{
+	entry := sessionlog.SessionLogEntry{
 		Action:       "shell",
 		Summary:      "Ran tests but compilation failed.",
 		Outcome:      "failure",
@@ -115,9 +116,9 @@ func TestForkSummarize_Failure(t *testing.T) {
 		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "./main.go:42:5: undefined: foo", true)},
 	}
 
-	got, err := ForkSummarize(context.Background(), client, profile, turns, 12)
+	got, err := forkSummarize(context.Background(), client, profile, turns, 12)
 	if err != nil {
-		t.Fatalf("ForkSummarize: %v", err)
+		t.Fatalf("forkSummarize: %v", err)
 	}
 
 	if got.Outcome != "failure" {
@@ -149,7 +150,7 @@ func TestForkSummarize_MalformedJSON(t *testing.T) {
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("I'll read the file")},
 	}
 
-	_, err := ForkSummarize(context.Background(), client, profile, turns, 1)
+	_, err := forkSummarize(context.Background(), client, profile, turns, 1)
 	if err == nil {
 		t.Fatal("expected error for malformed JSON response, got nil")
 	}
@@ -160,7 +161,7 @@ func TestForkSummarize_ExtractsAction(t *testing.T) {
 	adapter := &stubSummarizeAdapter{
 		name: "openai",
 		respFn: func(req llm.Request) (llm.Response, error) {
-			entry := SessionLogEntry{
+			entry := sessionlog.SessionLogEntry{
 				Action:  "edit_file",
 				Summary: "Edited main.go to fix typo.",
 				Outcome: "success",
@@ -187,9 +188,9 @@ func TestForkSummarize_ExtractsAction(t *testing.T) {
 		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "edit_file", "OK", false)},
 	}
 
-	got, err := ForkSummarize(context.Background(), client, profile, turns, 3)
+	got, err := forkSummarize(context.Background(), client, profile, turns, 3)
 	if err != nil {
-		t.Fatalf("ForkSummarize: %v", err)
+		t.Fatalf("forkSummarize: %v", err)
 	}
 
 	if got.Action != "edit_file" {
@@ -204,7 +205,7 @@ func TestForkSummarize_UsesCheapModel(t *testing.T) {
 			if req.Model != "gpt-4.1-nano" {
 				t.Errorf("expected cheap model gpt-4.1-nano, got %q", req.Model)
 			}
-			entry := SessionLogEntry{
+			entry := sessionlog.SessionLogEntry{
 				Action:  "shell",
 				Summary: "test",
 				Outcome: "success",
@@ -221,9 +222,9 @@ func TestForkSummarize_UsesCheapModel(t *testing.T) {
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	_, err := ForkSummarize(context.Background(), client, profile, turns, 1)
+	_, err := forkSummarize(context.Background(), client, profile, turns, 1)
 	if err != nil {
-		t.Fatalf("ForkSummarize: %v", err)
+		t.Fatalf("forkSummarize: %v", err)
 	}
 }
 
@@ -242,7 +243,7 @@ func TestForkSummarize_LLMError(t *testing.T) {
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("hello")},
 	}
 
-	_, err := ForkSummarize(context.Background(), client, profile, turns, 1)
+	_, err := forkSummarize(context.Background(), client, profile, turns, 1)
 	if err == nil {
 		t.Fatal("expected error when LLM returns error, got nil")
 	}

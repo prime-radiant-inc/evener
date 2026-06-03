@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/sessionlog"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -141,13 +142,13 @@ func TestSessionLogStrategy_ManageContext_SessionLogCheckpointAtHighPressure(t *
 	sessionLog := mustNewSessionLog(t, logPath)
 
 	// Pre-populate the session log with entries.
-	_ = sessionLog.Append(SessionLogEntry{
+	_ = sessionLog.Append(sessionlog.SessionLogEntry{
 		Turn:    1,
 		Action:  "shell",
 		Summary: "Ran git status to check repo state",
 		Outcome: "success",
 	})
-	_ = sessionLog.Append(SessionLogEntry{
+	_ = sessionLog.Append(sessionlog.SessionLogEntry{
 		Turn:         2,
 		Action:       "edit_file",
 		Summary:      "Modified auth.go to fix login bug",
@@ -236,7 +237,7 @@ func TestSessionLogStrategy_ManageContext_SessionLogCheckpointAtHighPressure(t *
 }
 
 func TestSessionLogStrategy_AfterAction_CallsForkSummarizeAndAppendsToLog(t *testing.T) {
-	entry := SessionLogEntry{
+	entry := sessionlog.SessionLogEntry{
 		Action:       "shell",
 		Summary:      "Ran go test and all tests passed.",
 		Outcome:      "success",
