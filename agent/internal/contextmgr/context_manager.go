@@ -1,4 +1,10 @@
-package agent
+// Package contextmgr manages a session's context pressure: it tracks cumulative
+// token usage, applies progressive compaction layers (observation masking,
+// thinking clearing, deterministic checkpoint, LLM summarization) to the
+// conversation history, and hosts the pluggable context strategies. Strategies
+// reach back to their owning session only through the narrow Host interface,
+// which breaks the context⇄session cycle.
+package contextmgr
 
 import (
 	"context"
@@ -14,17 +20,17 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// compactionMeta holds session-level metadata injected into compaction summaries.
+// CompactionMeta holds session-level metadata injected into compaction summaries.
 // The session populates this before each ManageContext call so that checkpoint
 // and summarize have access to data outside the turn history.
-type compactionMeta struct {
+type CompactionMeta struct {
 	TranscriptPath  string   // path to the full session transcript JSONL
 	ActivatedSkills []string // skill names activated during this session
 }
 
-// contextManager tracks cumulative token usage and applies progressive
-// compaction layers to conversation history as context fills up.
-type contextManager struct {
+// Manager tracks cumulative token usage and applies progressive compaction
+// layers to conversation history as context fills up.
+type Manager struct {
 	profile  *provider.Profile
 	client   *llm.Client
 	cumUsage llm.Usage
@@ -43,7 +49,7 @@ type contextManager struct {
 	// ObservationMaskThreshold and ThinkingClearThreshold are not used by the
 	// default compaction path (MaybeCompact/ForceCompact) because in-place
 	// modifications bust the prompt cache for all providers. They remain here
-	// for experimental contextStrategy implementations that call
+	// for experimental Strategy implementations that call
 	// maskObservations/clearThinking directly.
 	ObservationMaskThreshold float64
 	ThinkingClearThreshold   float64
@@ -58,12 +64,12 @@ type contextManager struct {
 
 	// Meta holds session-level metadata for enriching compaction summaries.
 	// Set by the session before each ManageContext call.
-	Meta compactionMeta
+	Meta CompactionMeta
 }
 
-// newContextManager creates a contextManager with default thresholds.
-func newContextManager(profile *provider.Profile, client *llm.Client) *contextManager {
-	return &contextManager{
+// NewManager creates a Manager with default thresholds.
+func NewManager(profile *provider.Profile, client *llm.Client) *Manager {
+	return &Manager{
 		profile:                  profile,
 		client:                   client,
 		ObservationMaskThreshold: 0.60,
@@ -74,7 +80,7 @@ func newContextManager(profile *provider.Profile, client *llm.Client) *contextMa
 	}
 }
 
-func (cm *contextManager) resultToolName() string {
+func (cm *Manager) resultToolName() string {
 	if cm.ResultToolName != "" {
 		return cm.ResultToolName
 	}
@@ -82,14 +88,14 @@ func (cm *contextManager) resultToolName() string {
 }
 
 // AddUsage records token usage from a completed LLM call.
-func (cm *contextManager) AddUsage(u llm.Usage) {
+func (cm *Manager) AddUsage(u llm.Usage) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	cm.cumUsage = cm.cumUsage.Add(u)
 }
 
 // CumulativeUsage returns accumulated session totals.
-func (cm *contextManager) CumulativeUsage() llm.Usage {
+func (cm *Manager) CumulativeUsage() llm.Usage {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	return cm.cumUsage
@@ -98,7 +104,7 @@ func (cm *contextManager) CumulativeUsage() llm.Usage {
 // RecordInputTokens stores the exact input token count from an API response,
 // along with the history length at that point. This enables accurate pressure
 // calculation for subsequent turns without relying on the char/4 heuristic.
-func (cm *contextManager) RecordInputTokens(tokens int, historyLen int) {
+func (cm *Manager) RecordInputTokens(tokens int, historyLen int) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	cm.lastInputTokens = tokens
@@ -107,7 +113,7 @@ func (cm *contextManager) RecordInputTokens(tokens int, historyLen int) {
 
 // SetProfile replaces the provider profile so that ContextWindowSize() and
 // other profile-derived values stay current after a model change.
-func (cm *contextManager) SetProfile(profile *provider.Profile) {
+func (cm *Manager) SetProfile(profile *provider.Profile) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	cm.profile = profile
@@ -116,27 +122,27 @@ func (cm *contextManager) SetProfile(profile *provider.Profile) {
 // currentProfile returns the active profile under cm.mu so reads do not race
 // SetProfile (called from Session.SetModel). The profile pointer is swapped
 // atomically; a caller uses the returned value for the duration of one operation.
-func (cm *contextManager) currentProfile() *provider.Profile {
+func (cm *Manager) currentProfile() *provider.Profile {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	return cm.profile
 }
 
 // LastInputTokens returns the most recently recorded input token count.
-func (cm *contextManager) LastInputTokens() int {
+func (cm *Manager) LastInputTokens() int {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	return cm.lastInputTokens
 }
 
 // Pressure returns the current context pressure as a fraction (0.0–1.0).
-func (cm *contextManager) Pressure(history []schema.Turn, sysPromptChars int) float64 {
+func (cm *Manager) Pressure(history []schema.Turn, sysPromptChars int) float64 {
 	return cm.estimatePressure(history, sysPromptChars)
 }
 
 // estimatePressure calculates what fraction of the context window is in use.
 // Uses actual API-reported token counts when available, falling back to char/4.
-func (cm *contextManager) estimatePressure(history []schema.Turn, sysPromptChars int) float64 {
+func (cm *Manager) estimatePressure(history []schema.Turn, sysPromptChars int) float64 {
 	cw := cm.currentProfile().ContextWindowSize()
 	if cw <= 0 {
 		return 0
@@ -161,8 +167,53 @@ func (cm *contextManager) estimatePressure(history []schema.Turn, sysPromptChars
 }
 
 // EstimatePressure returns the estimated fraction of context window in use.
-func (cm *contextManager) EstimatePressure(history []schema.Turn, sysPromptChars int) float64 {
+func (cm *Manager) EstimatePressure(history []schema.Turn, sysPromptChars int) float64 {
 	return cm.estimatePressure(history, sysPromptChars)
+}
+
+// EstimateUsage returns the estimated used, total, and remaining context tokens.
+func (cm *Manager) EstimateUsage(history []schema.Turn, sysPromptChars int) schema.ContextMetrics {
+	cw := cm.currentProfile().ContextWindowSize()
+	if cw <= 0 {
+		return schema.ContextMetrics{}
+	}
+
+	cm.mu.Lock()
+	lastTokens := cm.lastInputTokens
+	measuredLen := cm.historyLenAtMeasure
+	cm.mu.Unlock()
+
+	var used int
+	if lastTokens > 0 && measuredLen <= len(history) {
+		used = lastTokens + estimateTokens(history[measuredLen:])
+	} else {
+		used = estimateTokens(history) + sysPromptChars/4
+	}
+	remaining := cw - used
+	if remaining < 0 {
+		remaining = 0
+	}
+	return schema.ContextMetrics{Used: used, Window: cw, Remaining: remaining}
+}
+
+// ApplyThresholdScale scales all compaction thresholds on cm by the given
+// factor. A factor of 0 or 1 leaves defaults unchanged.
+//
+// Thresholds are clamped to a minimum of 0.20 so that aggressive scaling
+// doesn't collapse all layers into a narrow band.
+func ApplyThresholdScale(cm *Manager, scale float64) {
+	if scale > 0 && scale != 1.0 {
+		clamp := func(v float64) float64 {
+			if v < 0.20 {
+				return 0.20
+			}
+			return v
+		}
+		cm.ObservationMaskThreshold = clamp(cm.ObservationMaskThreshold * scale)
+		cm.ThinkingClearThreshold = clamp(cm.ThinkingClearThreshold * scale)
+		cm.CheckpointThreshold = clamp(cm.CheckpointThreshold * scale)
+		cm.SummarizeThreshold = clamp(cm.SummarizeThreshold * scale)
+	}
 }
 
 // estimateTokens estimates token count for turns using the char/4 heuristic.
@@ -174,12 +225,59 @@ func estimateTokens(turns []schema.Turn) int {
 	return chars / 4
 }
 
+// messageCharCount returns the total character count of a message's text,
+// tool-call, tool-result, and thinking content. It is the basis of the char/4
+// token estimate. Package agent keeps its own copy for the symmetric estimate
+// it makes on the session side; duplicating a small pure helper is preferable
+// to cross-importing it.
+func messageCharCount(m llm.Message) int {
+	n := 0
+	n += len(m.Name)
+	n += len(m.ToolCallID)
+	for _, p := range m.Content {
+		switch p.Kind {
+		case llm.ContentText:
+			n += len(p.Text)
+		case llm.ContentToolCall:
+			if p.ToolCall != nil {
+				n += len(p.ToolCall.ID)
+				n += len(p.ToolCall.Name)
+				n += len(p.ToolCall.Arguments)
+			}
+		case llm.ContentToolResult:
+			if p.ToolResult != nil {
+				n += len(p.ToolResult.ToolCallID)
+				n += len(p.ToolResult.Name)
+				switch x := p.ToolResult.Content.(type) {
+				case string:
+					n += len(x)
+				case []byte:
+					n += len(x)
+				default:
+					b, _ := json.Marshal(x)
+					n += len(b)
+				}
+			}
+		case llm.ContentThinking, llm.ContentRedThinking:
+			if p.Thinking != nil {
+				n += len(p.Thinking.Text)
+				n += len(p.Thinking.Signature)
+			}
+		default:
+			// Fallback to a best-effort JSON encoding.
+			b, _ := json.Marshal(p)
+			n += len(b)
+		}
+	}
+	return n
+}
+
 // --- MaybeCompact orchestrator ---
 
 // MaybeCompact checks context pressure and applies compaction layers progressively.
 // It modifies history in place and emits events for each layer applied.
 // Called before each LLM request.
-func (cm *contextManager) MaybeCompact(
+func (cm *Manager) MaybeCompact(
 	ctx context.Context,
 	history *[]schema.Turn,
 	sysPromptChars int,
@@ -266,7 +364,7 @@ func (cm *contextManager) MaybeCompact(
 
 // ForceCompact runs all compaction layers unconditionally, regardless of context pressure.
 // Used for user-initiated compaction (e.g. /compact command).
-func (cm *contextManager) ForceCompact(
+func (cm *Manager) ForceCompact(
 	ctx context.Context,
 	history *[]schema.Turn,
 	emitFn func(events.EventKind, events.EventData),
@@ -557,7 +655,7 @@ func clearThinking(history []schema.Turn, preserveRecent int) {
 // messages verbatim, agent responses, file/tool metadata, task list, and skills.
 // User messages and agent responses are stored as an interleaved Markdown
 // conversation for readable round-tripping across repeated compactions.
-func checkpoint(history []schema.Turn, preserveRecent int, meta *compactionMeta, resultToolName string) []schema.Turn {
+func checkpoint(history []schema.Turn, preserveRecent int, meta *CompactionMeta, resultToolName string) []schema.Turn {
 	if len(history) <= preserveRecent {
 		return history
 	}
@@ -721,7 +819,7 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 // modified files, tool counts, recent shell results, activated skills), then the
 // conversation and working notes fit into maxChars by shedding the oldest working
 // notes first and then the oldest conversation entries.
-func formatCheckpoint(data checkpointData, meta *compactionMeta, maxChars int) string {
+func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) string {
 	// Build the fixed-size sections first (metadata), then fill remaining
 	// budget with user messages and agent responses.
 	var fixed strings.Builder
@@ -863,7 +961,7 @@ func sumCounts(m map[string]int) int {
 // summarizeWithLLM calls the cheap model to generate a narrative summary of
 // old history. Replaces old history with a single user message containing the
 // summary, preserving the most recent turns.
-func (cm *contextManager) summarizeWithLLM(ctx context.Context, history []schema.Turn, preserveRecent int) ([]schema.Turn, error) {
+func (cm *Manager) summarizeWithLLM(ctx context.Context, history []schema.Turn, preserveRecent int) ([]schema.Turn, error) {
 	if len(history) <= preserveRecent {
 		return history, nil
 	}

@@ -1,31 +1,29 @@
-package agent
+package contextmgr
 
 import (
 	"context"
 	"encoding/json"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
 func TestRecallStrategy_SatisfiesInterface(t *testing.T) {
-	var _ contextStrategy = (*recallStrategy)(nil)
+	var _ Strategy = (*RecallStrategy)(nil)
 }
 
 func TestRecallStrategy_Name(t *testing.T) {
-	rs := &recallStrategy{}
+	rs := &RecallStrategy{}
 	if rs.Name() != "recall" {
 		t.Errorf("expected name %q, got %q", "recall", rs.Name())
 	}
 }
 
 func TestRecallStrategy_Tools_RegistersRecall(t *testing.T) {
-	rs := &recallStrategy{}
+	rs := &RecallStrategy{}
 	tools := rs.Tools()
 	if len(tools) != 1 {
 		t.Fatalf("expected 1 tool, got %d", len(tools))
@@ -63,7 +61,7 @@ func TestRecallStrategy_Tools_RegistersRecall(t *testing.T) {
 }
 
 func TestRecallStrategy_AfterAction_Noop(t *testing.T) {
-	rs := &recallStrategy{}
+	rs := &RecallStrategy{}
 	err := rs.AfterAction(context.Background(), nil, nil)
 	if err != nil {
 		t.Errorf("AfterAction should be no-op, got error: %v", err)
@@ -73,9 +71,9 @@ func TestRecallStrategy_AfterAction_Noop(t *testing.T) {
 func TestRecallStrategy_ManageContext_DelegatesToCompact(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := newContextManager(profile, client)
+	cm := NewManager(profile, client)
 
-	rs := newRecallStrategy(cm, nil)
+	rs := NewRecallStrategy(cm, nil)
 
 	// Simple history that won't trigger compaction.
 	history := []schema.Turn{
@@ -141,16 +139,19 @@ func TestRecallStrategy_RecallTool_SearchesTranscript(t *testing.T) {
 					},
 				}
 			},
-			// Step 2: After getting search results, the sub-agent returns a text answer.
+			// Step 2: After getting search results, the sub-agent returns a text
+			// answer. The recall sub-agent runs a plain llm.Generate tool loop with
+			// only the transcript tools, so a FinishReasonStop text response ends it
+			// (no communicate tool is involved here).
 			func(req llm.Request) llm.Response {
 				callCount++
-				return wrapCommunicateResponse(llm.Response{
+				return llm.Response{
 					Model: "gpt-5.2",
 					Finish: llm.FinishReason{
 						Reason: llm.FinishReasonStop,
 					},
 					Message: llm.Assistant("The secret code mentioned earlier was ALPHA-7."),
-				})
+				}
 			},
 		},
 	}
@@ -158,8 +159,8 @@ func TestRecallStrategy_RecallTool_SearchesTranscript(t *testing.T) {
 
 	// Build the recallStrategy with a mock session-like setup.
 	// We need the session to provide: client, profile model/provider, stateDir, id.
-	rs := &recallStrategy{
-		compact: &compactStrategy{},
+	rs := &RecallStrategy{
+		compact: &CompactStrategy{},
 	}
 
 	// Get the recall tool and test its executor directly.
@@ -198,98 +199,6 @@ func TestRecallStrategy_RecallTool_NoTranscript(t *testing.T) {
 	_, err := recallExecute(context.Background(), c, "openai", "gpt-5.2", "/nonexistent/path.json", "test question")
 	if err == nil {
 		t.Error("expected error for nonexistent transcript path")
-	}
-}
-
-func TestRecallStrategy_Integration_ViaTool(t *testing.T) {
-	// Test the full flow: Session creates recallStrategy, the recall tool
-	// saves the session and runs the sub-agent.
-	dir := t.TempDir()
-
-	c := llm.NewClient()
-	llmCallIndex := 0
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			// Main agent round 1: model calls the recall tool.
-			func(req llm.Request) llm.Response {
-				llmCallIndex++
-				return llm.Response{
-					Model: "gpt-5.2",
-					Finish: llm.FinishReason{
-						Reason: llm.FinishReasonToolCalls,
-					},
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-								ID:        "call_recall",
-								Name:      "recall",
-								Arguments: []byte(`{"question": "What was discussed earlier?"}`),
-							}},
-						},
-					},
-				}
-			},
-			// Sub-agent round 1: returns a direct text answer (no tool calls).
-			func(req llm.Request) llm.Response {
-				llmCallIndex++
-				// Verify this is the sub-agent by checking the system prompt.
-				sysMsg := req.Messages[0].Text()
-				if !containsHelper(sysMsg, "transcript search") {
-					t.Errorf("expected sub-agent system prompt to mention transcript search, got: %s", sysMsg[:min(100, len(sysMsg))])
-				}
-				return wrapCommunicateResponse(llm.Response{
-					Model: "gpt-5.2",
-					Finish: llm.FinishReason{
-						Reason: llm.FinishReasonStop,
-					},
-					Message: llm.Assistant("Earlier, the user said hello."),
-				})
-			},
-			// Main agent round 2: after getting recall result, return final answer.
-			func(req llm.Request) llm.Response {
-				llmCallIndex++
-				return wrapCommunicateResponse(llm.Response{
-					Model:   "gpt-5.2",
-					Finish:  llm.FinishReason{Reason: llm.FinishReasonStop},
-					Message: llm.Assistant("Based on my recall, the user said hello earlier."),
-				})
-			},
-		},
-	}
-	c.Register(f)
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		ContextStrategy: "recall",
-		StateDir:        dir,
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	defer sess.Close()
-
-	// Verify the recall tool is registered.
-	recallDef := sess.reg.Get("recall")
-	if recallDef == nil {
-		t.Fatal("expected recall tool to be registered")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	out, err := sess.ProcessInput(ctx, "What was said earlier?", nil)
-	if err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-
-	if out == "" {
-		t.Fatal("expected non-empty output")
-	}
-
-	// Should have used 3 LLM calls: main->recall tool, sub-agent, main->final
-	if llmCallIndex != 3 {
-		t.Errorf("expected 3 LLM calls, got %d", llmCallIndex)
 	}
 }
 

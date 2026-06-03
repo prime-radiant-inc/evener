@@ -1,4 +1,4 @@
-package agent
+package contextmgr
 
 import (
 	"context"
@@ -11,25 +11,25 @@ import (
 )
 
 func TestCheckpointPredStrategy_SatisfiesInterface(t *testing.T) {
-	var _ contextStrategy = (*checkpointPredStrategy)(nil)
+	var _ Strategy = (*CheckpointPredStrategy)(nil)
 }
 
 func TestCheckpointPredStrategy_Name(t *testing.T) {
-	s := &checkpointPredStrategy{}
+	s := &CheckpointPredStrategy{}
 	if s.Name() != "checkpoint-pred" {
 		t.Errorf("expected name %q, got %q", "checkpoint-pred", s.Name())
 	}
 }
 
 func TestCheckpointPredStrategy_Tools_ReturnsNil(t *testing.T) {
-	s := &checkpointPredStrategy{}
+	s := &CheckpointPredStrategy{}
 	if tools := s.Tools(); tools != nil {
 		t.Errorf("expected nil tools, got %v", tools)
 	}
 }
 
 func TestCheckpointPredStrategy_AfterAction_Noop(t *testing.T) {
-	s := &checkpointPredStrategy{}
+	s := &CheckpointPredStrategy{}
 	err := s.AfterAction(context.Background(), nil, nil)
 	if err != nil {
 		t.Errorf("AfterAction should be no-op, got error: %v", err)
@@ -39,8 +39,8 @@ func TestCheckpointPredStrategy_AfterAction_Noop(t *testing.T) {
 func TestCheckpointPredStrategy_ManageContext_NoCompactionBelowThreshold(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := newContextManager(profile, client)
-	s := newCheckpointPredStrategy(cm)
+	cm := NewManager(profile, client)
+	s := NewCheckpointPredStrategy(cm)
 
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("hello")),
@@ -64,7 +64,7 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_FallbackOnError(t *testing.
 	// to deterministic checkpoint.
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := newContextManager(profile, client)
+	cm := NewManager(profile, client)
 	// Set very low thresholds so compaction fires.
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001
@@ -73,7 +73,7 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_FallbackOnError(t *testing.
 	cm.PreserveRecentTurns = 2
 
 	// No adapter registered = LLM calls will fail.
-	s := newCheckpointPredStrategy(cm)
+	s := NewCheckpointPredStrategy(cm)
 
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("fix the bug in auth.go")),
@@ -139,14 +139,14 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_WithLLM(t *testing.T) {
 	client.Register(f)
 
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := newContextManager(profile, client)
+	cm := NewManager(profile, client)
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001
 	cm.CheckpointThreshold = 0.0001
 	cm.SummarizeThreshold = 2.0
 	cm.PreserveRecentTurns = 2
 
-	s := newCheckpointPredStrategy(cm)
+	s := NewCheckpointPredStrategy(cm)
 
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("fix the bug in auth.go")),
@@ -192,14 +192,14 @@ func TestCheckpointPredStrategy_PredictiveCheckpoint_TurnKind(t *testing.T) {
 	client.Register(f)
 
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := newContextManager(profile, client)
+	cm := NewManager(profile, client)
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001
 	cm.CheckpointThreshold = 0.0001
 	cm.SummarizeThreshold = 2.0
 	cm.PreserveRecentTurns = 2
 
-	s := newCheckpointPredStrategy(cm)
+	s := NewCheckpointPredStrategy(cm)
 
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("fix the bug")),
@@ -228,7 +228,7 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_FallbackCheckpoint(t *test
 	// the callback should fire with the checkpoint turn.
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := newContextManager(profile, client)
+	cm := NewManager(profile, client)
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001
 	cm.CheckpointThreshold = 0.0001
@@ -241,7 +241,7 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_FallbackCheckpoint(t *test
 	}
 
 	// No adapter registered = LLM calls fail → fallback to deterministic checkpoint.
-	s := newCheckpointPredStrategy(cm)
+	s := NewCheckpointPredStrategy(cm)
 
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("fix the bug")),
@@ -286,7 +286,7 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_PredictiveCheckpoint(t *te
 	client.Register(f)
 
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := newContextManager(profile, client)
+	cm := NewManager(profile, client)
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001
 	cm.CheckpointThreshold = 0.0001
@@ -298,7 +298,7 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_PredictiveCheckpoint(t *te
 		callbackTurns = append(callbackTurns, t)
 	}
 
-	s := newCheckpointPredStrategy(cm)
+	s := NewCheckpointPredStrategy(cm)
 
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("fix the bug")),
@@ -358,7 +358,7 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 	client.Register(f)
 
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := newContextManager(profile, client)
+	cm := NewManager(profile, client)
 	// All thresholds very low so all layers fire.
 	cm.ObservationMaskThreshold = 0.0001
 	cm.ThinkingClearThreshold = 0.0001
@@ -371,7 +371,7 @@ func TestCheckpointPredStrategy_FiresOnCompactionTurn_Summarize(t *testing.T) {
 		callbackTurns = append(callbackTurns, t)
 	}
 
-	s := newCheckpointPredStrategy(cm)
+	s := NewCheckpointPredStrategy(cm)
 
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("fix the bug")),

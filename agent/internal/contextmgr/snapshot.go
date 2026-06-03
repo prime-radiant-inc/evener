@@ -1,4 +1,4 @@
-package agent
+package contextmgr
 
 import (
 	"encoding/json"
@@ -10,11 +10,17 @@ import (
 	"primeradiant.com/serf/agent/schema"
 )
 
-// sessionSnapshot is the full single-file serialization of a Session, including
-// its conversation history. It is written and read only by the recall context
+// sessionsSubdir is the directory, under a session's state dir, where its
+// per-session files live. Package agent (and package schema) keep their own
+// copies of this name; duplicating a one-word constant is preferable to
+// cross-importing for it.
+const sessionsSubdir = "sessions"
+
+// Snapshot is the full single-file serialization of a session, including its
+// conversation history. It is written and read only by the recall context
 // strategy, whose search tools need the complete history available in one file.
 // Ordinary session persistence uses schema.SessionMeta plus the transcript JSONL.
-type sessionSnapshot struct {
+type Snapshot struct {
 	ID        string                 `json:"id"`         // session identifier
 	ProfileID string                 `json:"profile_id"` // ID of the provider profile in use
 	Model     string                 `json:"model"`      // model name the session is driving
@@ -29,10 +35,10 @@ type sessionSnapshot struct {
 	LastInputTokens int `json:"last_input_tokens,omitempty"`
 }
 
-// saveSession writes a full session snapshot to <dir>/sessions/<id>.json using
-// atomic rename. Used by the recall strategy to persist history for its search
-// tools; see sessionSnapshot.
-func saveSession(dir string, snap sessionSnapshot) error {
+// Save writes a full session snapshot to <dir>/sessions/<id>.json using atomic
+// rename. Used by the recall strategy to persist history for its search tools;
+// see Snapshot.
+func Save(dir string, snap Snapshot) error {
 	sessDir := filepath.Join(dir, sessionsSubdir)
 	if err := os.MkdirAll(sessDir, 0o755); err != nil {
 		return fmt.Errorf("create sessions dir: %w", err)

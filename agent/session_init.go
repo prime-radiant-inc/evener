@@ -12,6 +12,7 @@ import (
 	"github.com/oklog/ulid/v2"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/contextmgr"
 	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/agent/internal/mcp"
@@ -32,28 +33,29 @@ import (
 // for every session in a run — mirroring openai.ClientVersion in the llm module.
 var BuildVersion = "dev"
 
-// selectStrategy creates the appropriate contextStrategy from config.
-func selectStrategy(cfg SessionConfig, cm *contextManager, sess *Session) (contextStrategy, error) {
+// selectStrategy creates the appropriate contextmgr.Strategy from config.
+func selectStrategy(cfg SessionConfig, cm *contextmgr.Manager, sess *Session) (contextmgr.Strategy, error) {
 	if cfg.testOnly.contextStrategyOverride != nil {
 		return cfg.testOnly.contextStrategyOverride, nil
 	}
+	host := &ctxHost{sess}
 	switch cfg.ContextStrategy {
 	case "", "compact":
-		return newCompactStrategy(cm), nil
+		return contextmgr.NewCompactStrategy(cm), nil
 	case "recall":
-		return newRecallStrategy(cm, sess), nil
+		return contextmgr.NewRecallStrategy(cm, host), nil
 	case "session-log":
-		return newSessionLogStrategy(cm, sess)
+		return contextmgr.NewSessionLogStrategy(cm, host)
 	case "ooda":
-		return newOODAStrategy(cm, sess)
+		return contextmgr.NewOODAStrategy(cm, host)
 	case "obs-mask":
-		return newObsMaskStrategy(cm), nil
+		return contextmgr.NewObsMaskStrategy(cm), nil
 	case "checkpoint-pred":
-		return newCheckpointPredStrategy(cm), nil
+		return contextmgr.NewCheckpointPredStrategy(cm), nil
 	case "memory-crystals":
-		return newMemoryCrystalsStrategy(cm), nil
+		return contextmgr.NewMemoryCrystalsStrategy(cm), nil
 	case "recursive-distill":
-		return newRecursiveDistillStrategy(cm), nil
+		return contextmgr.NewRecursiveDistillStrategy(cm), nil
 	default:
 		return nil, fmt.Errorf("unknown context strategy: %q", cfg.ContextStrategy)
 	}
@@ -169,7 +171,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		s.transcript = tw
 	}
 
-	applyThresholdScale(s.contextMgr, cfg.testOnly.compactionThresholdScale)
+	contextmgr.ApplyThresholdScale(s.contextMgr, cfg.testOnly.compactionThresholdScale)
 	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
 
 	// Create context strategy.
@@ -311,7 +313,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env e
 		s.transcript = tw
 	}
 
-	applyThresholdScale(s.contextMgr, cfg.testOnly.compactionThresholdScale)
+	contextmgr.ApplyThresholdScale(s.contextMgr, cfg.testOnly.compactionThresholdScale)
 	s.contextMgr.OnCompactionTurn = s.handleCompactionTurn
 
 	// Create context strategy.
@@ -396,7 +398,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind) ([]
 		return nil, err
 	}
 
-	s.contextMgr = newContextManager(s.profile, s.client)
+	s.contextMgr = contextmgr.NewManager(s.profile, s.client)
 	s.contextMgr.ResultToolName = s.resultToolName()
 
 	reg := newProfileToolRegistry(s.profile)

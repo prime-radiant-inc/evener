@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -116,7 +117,7 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(child transcript): %v", err)
 	}
-	if !contains(string(data), "second task, table-driven") {
+	if !strings.Contains(string(data), "second task, table-driven") {
 		t.Error("child transcript does not contain the edited message text")
 	}
 

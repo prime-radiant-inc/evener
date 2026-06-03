@@ -1,4 +1,4 @@
-package agent
+package contextmgr
 
 import (
 	"path/filepath"
@@ -12,7 +12,7 @@ import (
 // Helper to create a test sessionSnapshot with known turns
 func createTestSnapshot(t *testing.T, dir string, id string, history []schema.Turn) string {
 	t.Helper()
-	snap := sessionSnapshot{
+	snap := Snapshot{
 		ID:        id,
 		ProfileID: "test-profile",
 		Model:     "test-model",
@@ -23,7 +23,7 @@ func createTestSnapshot(t *testing.T, dir string, id string, history []schema.Tu
 		UpdatedAt: time.Now().UTC(),
 		TurnCount: len(history),
 	}
-	if err := saveSession(dir, snap); err != nil {
+	if err := Save(dir, snap); err != nil {
 		t.Fatalf("failed to save test snapshot: %v", err)
 	}
 	return filepath.Join(dir, "sessions", id+".json")

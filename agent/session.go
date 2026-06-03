@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/contextmgr"
 	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/agent/internal/mcp"
@@ -50,7 +51,7 @@ type Session struct {
 	// Steer/Enqueue/DrainAsSteer, Snapshot/State/DetailedStatus, and Close —
 	// run on other goroutines and race it, so the primitives below guard the
 	// shared fields. Several collaborators carry their OWN locks and are NOT
-	// covered by mu: contextMgr (contextManager.mu), reg (tool.Registry.mu),
+	// covered by mu: contextMgr (contextmgr.Manager.mu), reg (tool.Registry.mu),
 	// subagents (subagentManager.mu / per-child sub.mu), taskStore
 	// (TaskStore.mu — note it may be SHARED with child sessions when
 	// ShareTasksWithChildren is set), and transcript (transcript.Writer.mu).
@@ -106,8 +107,8 @@ type Session struct {
 	subagents *subagentManager
 
 	// context management
-	contextMgr *contextManager
-	strategy   contextStrategy
+	contextMgr *contextmgr.Manager
+	strategy   contextmgr.Strategy
 
 	// skills discovered at session startup
 	skills            map[string]skill.SkillMeta
@@ -209,12 +210,10 @@ type forkInfo struct {
 // ID returns the session's identifier.
 func (s *Session) ID() string { return s.id }
 
-// *Session satisfies the (unexported) strategyHost seam directly: ID, StateDir,
-// Profile, Snapshot, and Client are public methods, and emit /
-// withResponseSideEffects are the internal methods strategyHost names — so the
-// strategy_*.go files depend on the interface, not the concrete type, with no
-// exported forwarders polluting the public Session surface.
-var _ strategyHost = (*Session)(nil)
+// The contextmgr.Host seam is satisfied by the ctxHost adapter (context_host.go),
+// not by *Session directly: contextmgr.Host requires exported Emit / Snapshot /
+// WithResponseSideEffects methods, and we do not want those on the public Session
+// surface, so the adapter forwards them to the Session's internal methods.
 
 // StateDir returns the session's configured state directory.
 func (s *Session) StateDir() string { return s.stateDir }
@@ -456,26 +455,6 @@ func (s *Session) maybeAutoSave() {
 		s.emit(events.EventWarning, events.WarningData{
 			Message: fmt.Sprintf("auto-save failed: %v", err),
 		})
-	}
-}
-
-// applyThresholdScale scales all compaction thresholds on cm by the given
-// factor. A factor of 0 or 1 leaves defaults unchanged.
-//
-// Thresholds are clamped to a minimum of 0.20 so that aggressive scaling
-// doesn't collapse all layers into a narrow band.
-func applyThresholdScale(cm *contextManager, scale float64) {
-	if scale > 0 && scale != 1.0 {
-		clamp := func(v float64) float64 {
-			if v < 0.20 {
-				return 0.20
-			}
-			return v
-		}
-		cm.ObservationMaskThreshold = clamp(cm.ObservationMaskThreshold * scale)
-		cm.ThinkingClearThreshold = clamp(cm.ThinkingClearThreshold * scale)
-		cm.CheckpointThreshold = clamp(cm.CheckpointThreshold * scale)
-		cm.SummarizeThreshold = clamp(cm.SummarizeThreshold * scale)
 	}
 }
 

@@ -1,4 +1,4 @@
-package agent
+package contextmgr
 
 import (
 	"context"
@@ -11,25 +11,25 @@ import (
 )
 
 func TestObsMaskStrategy_SatisfiesInterface(t *testing.T) {
-	var _ contextStrategy = (*obsMaskStrategy)(nil)
+	var _ Strategy = (*ObsMaskStrategy)(nil)
 }
 
 func TestObsMaskStrategy_Name(t *testing.T) {
-	s := &obsMaskStrategy{}
+	s := &ObsMaskStrategy{}
 	if s.Name() != "obs-mask" {
 		t.Errorf("expected name %q, got %q", "obs-mask", s.Name())
 	}
 }
 
 func TestObsMaskStrategy_Tools_ReturnsNil(t *testing.T) {
-	s := &obsMaskStrategy{}
+	s := &ObsMaskStrategy{}
 	if tools := s.Tools(); tools != nil {
 		t.Errorf("expected nil tools, got %v", tools)
 	}
 }
 
 func TestObsMaskStrategy_AfterAction_Noop(t *testing.T) {
-	s := &obsMaskStrategy{}
+	s := &ObsMaskStrategy{}
 	err := s.AfterAction(context.Background(), nil, nil)
 	if err != nil {
 		t.Errorf("AfterAction should be no-op, got error: %v", err)
@@ -39,8 +39,8 @@ func TestObsMaskStrategy_AfterAction_Noop(t *testing.T) {
 func TestObsMaskStrategy_ManageContext_NoCompactionBelowThreshold(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := newContextManager(profile, client)
-	s := newObsMaskStrategy(cm)
+	cm := NewManager(profile, client)
+	s := NewObsMaskStrategy(cm)
 
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("hello")),
@@ -152,7 +152,7 @@ func TestAggressiveMaskObservations_SkipsAlreadyMasked(t *testing.T) {
 func TestObsMaskStrategy_ManageContext_FiresOnCompactionTurn_Checkpoint(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
-	cm := newContextManager(profile, client)
+	cm := NewManager(profile, client)
 	// Set thresholds so both layers fire.
 	cm.ObservationMaskThreshold = 0.0001
 	cm.CheckpointThreshold = 0.0001
@@ -163,7 +163,7 @@ func TestObsMaskStrategy_ManageContext_FiresOnCompactionTurn_Checkpoint(t *testi
 		callbackTurns = append(callbackTurns, t)
 	}
 
-	s := newObsMaskStrategy(cm)
+	s := NewObsMaskStrategy(cm)
 
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("fix the bug in auth.go")),

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"primeradiant.com/serf/agent/internal/contextmgr"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
@@ -167,7 +168,7 @@ type SessionConfig struct {
 type testConfig struct {
 	// contextStrategyOverride, when non-nil, is used instead of creating a
 	// strategy from the ContextStrategy string.
-	contextStrategyOverride contextStrategy
+	contextStrategyOverride contextmgr.Strategy
 
 	// compactionThresholdScale multiplies all compaction thresholds by this
 	// factor. 1.0 = defaults, 0.1 = trigger at 10% of normal pressure. 0 means

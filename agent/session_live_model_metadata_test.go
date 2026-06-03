@@ -44,8 +44,8 @@ func TestNewSessionAppliesLiveOpenAIModelContextWindow(t *testing.T) {
 	if got := sess.profile.ContextWindowSize(); got != 1_000_000 {
 		t.Fatalf("profile ContextWindowSize() = %d, want live 1000000", got)
 	}
-	if got := sess.contextMgr.profile.ContextWindowSize(); got != 1_000_000 {
-		t.Fatalf("context manager ContextWindowSize() = %d, want live 1000000", got)
+	if got := sess.ContextMetrics().Window; got != 1_000_000 {
+		t.Fatalf("context manager window via ContextMetrics = %d, want live 1000000", got)
 	}
 }
 
@@ -73,7 +73,7 @@ func TestSessionSetModelAppliesLiveOpenAIModelContextWindow(t *testing.T) {
 	if got := sess.profile.ContextWindowSize(); got != 1_000_000 {
 		t.Fatalf("profile ContextWindowSize() = %d, want live 1000000", got)
 	}
-	if got := sess.contextMgr.profile.ContextWindowSize(); got != 1_000_000 {
-		t.Fatalf("context manager ContextWindowSize() = %d, want live 1000000", got)
+	if got := sess.ContextMetrics().Window; got != 1_000_000 {
+		t.Fatalf("context manager window via ContextMetrics = %d, want live 1000000", got)
 	}
 }

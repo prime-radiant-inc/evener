@@ -1,4 +1,4 @@
-package agent
+package contextmgr
 
 import (
 	"context"
@@ -11,21 +11,8 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// stubSummarizeAdapter is a minimal ProviderAdapter stub for fork summarize tests.
-type stubSummarizeAdapter struct {
-	name    string
-	respFn  func(req llm.Request) (llm.Response, error)
-	lastReq llm.Request
-}
-
-func (a *stubSummarizeAdapter) Name() string { return a.name }
-func (a *stubSummarizeAdapter) Complete(_ context.Context, req llm.Request) (llm.Response, error) {
-	a.lastReq = req
-	return a.respFn(req)
-}
-func (a *stubSummarizeAdapter) Stream(_ context.Context, _ llm.Request) (llm.Stream, error) {
-	return nil, llm.ErrStreamUnsupported
-}
+// stubSummarizeAdapter (the minimal llm provider stub) lives in
+// testhelpers_test.go, shared with the strategy tests.
 
 func TestForkSummarize_Success(t *testing.T) {
 	entry := sessionlog.SessionLogEntry{

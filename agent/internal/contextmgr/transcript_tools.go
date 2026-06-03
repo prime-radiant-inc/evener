@@ -1,4 +1,4 @@
-package agent
+package contextmgr
 
 import (
 	"encoding/json"
@@ -122,15 +122,15 @@ func filterTurns(path string, kind string, contains string, errorsOnly bool) ([]
 	return matches, nil
 }
 
-// loadSnapshotFromPath reads and unmarshals a sessionSnapshot from a JSON file.
-func loadSnapshotFromPath(path string) (sessionSnapshot, error) {
+// loadSnapshotFromPath reads and unmarshals a Snapshot from a JSON file.
+func loadSnapshotFromPath(path string) (Snapshot, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return sessionSnapshot{}, fmt.Errorf("read snapshot: %w", err)
+		return Snapshot{}, fmt.Errorf("read snapshot: %w", err)
 	}
-	var snap sessionSnapshot
+	var snap Snapshot
 	if err := json.Unmarshal(data, &snap); err != nil {
-		return sessionSnapshot{}, fmt.Errorf("unmarshal snapshot: %w", err)
+		return Snapshot{}, fmt.Errorf("unmarshal snapshot: %w", err)
 	}
 	return snap, nil
 }

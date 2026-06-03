@@ -1,4 +1,4 @@
-package agent
+package contextmgr
 
 import (
 	"context"
@@ -13,26 +13,26 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// sessionLogStrategy combines compact layers 1+2 (observation masking and
+// SessionLogStrategy combines compact layers 1+2 (observation masking and
 // thinking clearing) with a session-log-based checkpoint (replacing the
 // deterministic layer 3), LLM summarization fallback (layer 4), a recall
 // tool, and forked summarization in AfterAction.
-type sessionLogStrategy struct {
-	cm      *contextManager
-	session strategyHost
+type SessionLogStrategy struct {
+	cm      *Manager
+	session Host
 	log     *sessionlog.SessionLog
 }
 
-// newSessionLogStrategy creates a sessionLogStrategy backed by the given
-// contextManager and host. The session log is persisted alongside the
+// NewSessionLogStrategy creates a SessionLogStrategy backed by the given
+// Manager and host. The session log is persisted alongside the
 // session snapshot.
-func newSessionLogStrategy(cm *contextManager, host strategyHost) (*sessionLogStrategy, error) {
+func NewSessionLogStrategy(cm *Manager, host Host) (*SessionLogStrategy, error) {
 	logPath := filepath.Join(host.StateDir(), "sessions", host.ID()+".log.jsonl")
 	log, err := sessionlog.NewSessionLog(logPath)
 	if err != nil {
 		return nil, fmt.Errorf("session log strategy: %w", err)
 	}
-	return &sessionLogStrategy{
+	return &SessionLogStrategy{
 		cm:      cm,
 		session: host,
 		log:     log,
@@ -40,16 +40,16 @@ func newSessionLogStrategy(cm *contextManager, host strategyHost) (*sessionLogSt
 }
 
 // Name returns the strategy's identifier, "session-log".
-func (s *sessionLogStrategy) Name() string { return "session-log" }
+func (s *SessionLogStrategy) Name() string { return "session-log" }
 
 // Tools returns the tools provided by this strategy, namely the recall tool.
-func (s *sessionLogStrategy) Tools() []tool.RegisteredTool {
+func (s *SessionLogStrategy) Tools() []tool.RegisteredTool {
 	return []tool.RegisteredTool{sessionLogRecallToolDef(s)}
 }
 
 // sessionLogRecallToolDef builds the recall tool.RegisteredTool for this strategy.
-func sessionLogRecallToolDef(strategy *sessionLogStrategy) tool.RegisteredTool {
-	return buildRecallTool(func() strategyHost { return strategy.session })
+func sessionLogRecallToolDef(strategy *SessionLogStrategy) tool.RegisteredTool {
+	return buildRecallTool(func() Host { return strategy.session })
 }
 
 // ManageContext applies compaction layers selectively:
@@ -57,7 +57,7 @@ func sessionLogRecallToolDef(strategy *sessionLogStrategy) tool.RegisteredTool {
 //   - Layer 2: thinking clearing
 //   - Layer 3 (replaced): session-log checkpoint instead of deterministic checkpoint
 //   - Layer 4: LLM summarization fallback
-func (s *sessionLogStrategy) ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
+func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
 	if s.cm == nil {
 		return nil
 	}
@@ -173,7 +173,7 @@ func (s *sessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 
 // sessionLogCheckpoint replaces old history with a checkpoint built from the
 // session log. Returns a new history slice: [checkpoint_turn, ...preserved_recent].
-func (s *sessionLogStrategy) sessionLogCheckpoint(history []schema.Turn, preserveRecent int) []schema.Turn {
+func (s *SessionLogStrategy) sessionLogCheckpoint(history []schema.Turn, preserveRecent int) []schema.Turn {
 	if len(history) <= preserveRecent {
 		return history
 	}
@@ -248,7 +248,7 @@ func extractOriginalPromptLine(text, prefix string) string {
 
 // AfterAction forks a summarization of the recent turns and appends the
 // result to the session log. Errors from the LLM are non-fatal.
-func (s *sessionLogStrategy) AfterAction(ctx context.Context, history []schema.Turn, client *llm.Client) error {
+func (s *SessionLogStrategy) AfterAction(ctx context.Context, history []schema.Turn, client *llm.Client) error {
 	if s.session == nil || s.session.Profile() == nil {
 		return nil
 	}
@@ -262,10 +262,11 @@ func (s *sessionLogStrategy) AfterAction(ctx context.Context, history []schema.T
 	if err != nil {
 		return nil //nolint:nilerr // fork summarization is best-effort; failure must not fail the session
 	}
-	return s.session.withResponseSideEffects(ctx, func() {
-		s.session.emit(events.EventForkSummary, events.ForkSummaryData{Turn: entry.Turn})
+	return s.session.WithResponseSideEffects(ctx, func() {
+		s.session.Emit(events.EventForkSummary, events.ForkSummaryData{Turn: entry.Turn})
 		if err := s.log.Append(entry); err != nil {
-			s.session.emit(events.EventWarning, events.WarningData{Message: "session log append failed: " + err.Error()})
+			s.session.Emit(events.EventWarning, events.WarningData{Message: "session log append failed: " + err.Error()})
 		}
 	})
+
 }

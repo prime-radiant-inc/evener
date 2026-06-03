@@ -15,6 +15,7 @@ import (
 	"unicode/utf16"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/contextmgr"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provider"
@@ -149,8 +150,8 @@ func (s *Session) flushSteeringTurnRecords(records []steeringTurnRecord) {
 }
 
 // buildCompactionMeta gathers session-level metadata for enriching compaction summaries.
-func (s *Session) buildCompactionMeta() compactionMeta {
-	meta := compactionMeta{}
+func (s *Session) buildCompactionMeta() contextmgr.CompactionMeta {
+	meta := contextmgr.CompactionMeta{}
 
 	// Transcript path.
 	if s.stateDir != "" {

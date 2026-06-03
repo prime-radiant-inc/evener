@@ -24,10 +24,10 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 }
 
 // emit sends data on the session's event stream. The kind argument is retained
-// for the contextStrategy/strategyHost interface contract (strategies call
-// emit/Emit with an explicit kind), but the event's Kind is authoritative from
-// the payload: events.New derives it via data.eventKind(), so Kind and payload
-// can never disagree even if a caller passes a mismatched kind.
+// for the contextmgr.Host interface contract (strategies call Emit with an
+// explicit kind via the ctxHost adapter), but the event's Kind is authoritative
+// from the payload: events.New derives it via data.eventKind(), so Kind and
+// payload can never disagree even if a caller passes a mismatched kind.
 func (s *Session) emit(kind events.EventKind, data events.EventData) {
 	if s == nil || s.events == nil {
 		return

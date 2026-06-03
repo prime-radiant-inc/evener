@@ -1,4 +1,4 @@
-package agent
+package contextmgr
 
 import (
 	"context"
@@ -10,32 +10,32 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// oodaStrategy extends sessionLogStrategy by injecting the session log as a
+// OODAStrategy extends SessionLogStrategy by injecting the session log as a
 // steering message before each LLM call (the Orient phase of the OODA loop).
-type oodaStrategy struct {
-	*sessionLogStrategy // embed for ManageContext layers, AfterAction, Tools
+type OODAStrategy struct {
+	*SessionLogStrategy // embed for ManageContext layers, AfterAction, Tools
 }
 
-// newOODAStrategy creates an oodaStrategy backed by the given contextManager
+// NewOODAStrategy creates an OODAStrategy backed by the given Manager
 // and host.
-func newOODAStrategy(cm *contextManager, host strategyHost) (*oodaStrategy, error) {
-	sls, err := newSessionLogStrategy(cm, host)
+func NewOODAStrategy(cm *Manager, host Host) (*OODAStrategy, error) {
+	sls, err := NewSessionLogStrategy(cm, host)
 	if err != nil {
 		return nil, err
 	}
-	return &oodaStrategy{
-		sessionLogStrategy: sls,
+	return &OODAStrategy{
+		SessionLogStrategy: sls,
 	}, nil
 }
 
 // Name returns the strategy's identifier, "ooda".
-func (s *oodaStrategy) Name() string { return "ooda" }
+func (s *OODAStrategy) Name() string { return "ooda" }
 
-// ManageContext applies normal compaction layers from sessionLogStrategy,
+// ManageContext applies normal compaction layers from SessionLogStrategy,
 // then injects the session log as an orientation message at the end of history.
-func (s *oodaStrategy) ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
+func (s *OODAStrategy) ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
 	// Apply normal compaction layers.
-	if err := s.sessionLogStrategy.ManageContext(ctx, history, sysPromptChars, emitFn); err != nil {
+	if err := s.SessionLogStrategy.ManageContext(ctx, history, sysPromptChars, emitFn); err != nil {
 		return err
 	}
 

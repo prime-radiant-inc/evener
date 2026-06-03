@@ -1,4 +1,4 @@
-package agent
+package contextmgr
 
 import (
 	"context"
@@ -14,9 +14,9 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// fakeStrategyHost is a minimal strategyHost implementation that returns canned
-// values and records Emit calls. It proves that context strategies operate
-// through the strategyHost seam without a real Session.
+// fakeStrategyHost is a minimal Host implementation that returns canned values
+// and records Emit calls. It proves that context strategies operate through the
+// Host seam without a real Session.
 type fakeStrategyHost struct {
 	stateDir string
 	id       string
@@ -26,11 +26,11 @@ type fakeStrategyHost struct {
 	sideFx   int // number of WithResponseSideEffects invocations
 }
 
-func (h *fakeStrategyHost) emit(kind events.EventKind, _ events.EventData) {
+func (h *fakeStrategyHost) Emit(kind events.EventKind, _ events.EventData) {
 	h.emitted = append(h.emitted, kind)
 }
 
-func (h *fakeStrategyHost) withResponseSideEffects(_ context.Context, fn func()) error {
+func (h *fakeStrategyHost) WithResponseSideEffects(_ context.Context, fn func()) error {
 	h.sideFx++
 	fn()
 	return nil
@@ -39,11 +39,11 @@ func (h *fakeStrategyHost) withResponseSideEffects(_ context.Context, fn func())
 func (h *fakeStrategyHost) StateDir() string           { return h.stateDir }
 func (h *fakeStrategyHost) ID() string                 { return h.id }
 func (h *fakeStrategyHost) Profile() *provider.Profile { return h.profile }
-func (h *fakeStrategyHost) snapshot() sessionSnapshot  { return sessionSnapshot{ID: h.id} }
+func (h *fakeStrategyHost) Snapshot() Snapshot         { return Snapshot{ID: h.id} }
 func (h *fakeStrategyHost) Client() *llm.Client        { return h.client }
 
 func TestStrategyHost_FakeSatisfiesInterface(t *testing.T) {
-	var _ strategyHost = (*fakeStrategyHost)(nil)
+	var _ Host = (*fakeStrategyHost)(nil)
 }
 
 // TestSessionLogStrategy_OperatesWithFakeHost proves a strategy can be
@@ -78,7 +78,7 @@ func TestSessionLogStrategy_OperatesWithFakeHost(t *testing.T) {
 
 	// Constructor accepts the fake host (not a real Session) and uses
 	// StateDir/ID to build the log path.
-	sls, err := newSessionLogStrategy(newContextManager(profile, client), host)
+	sls, err := NewSessionLogStrategy(NewManager(profile, client), host)
 	if err != nil {
 		t.Fatalf("newSessionLogStrategy with fake host: %v", err)
 	}

@@ -1,4 +1,4 @@
-package agent
+package contextmgr
 
 import (
 	"encoding/json"
