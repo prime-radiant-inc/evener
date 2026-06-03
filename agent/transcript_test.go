@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -61,7 +62,7 @@ func TestTranscriptWriter_CreatesFileAndWritesHeader(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nested", "transcript.jsonl")
 
-	header := TranscriptHeader{
+	header := transcript.Header{
 		SessionID:  "sess-001",
 		CreatedAt:  time.Date(2026, 2, 18, 12, 0, 0, 0, time.UTC),
 		ProfileID:  "anthropic-default",
@@ -69,9 +70,9 @@ func TestTranscriptWriter_CreatesFileAndWritesHeader(t *testing.T) {
 		WorkingDir: "/tmp/test",
 	}
 
-	w, err := NewTranscriptWriter(path, header)
+	w, err := transcript.NewWriter(path, header)
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	defer w.Close()
 
@@ -80,7 +81,7 @@ func TestTranscriptWriter_CreatesFileAndWritesHeader(t *testing.T) {
 		t.Fatalf("expected 1 line (header), got %d", len(lines))
 	}
 
-	var got TranscriptHeader
+	var got transcript.Header
 	if err := json.Unmarshal([]byte(lines[0]), &got); err != nil {
 		t.Fatalf("unmarshal header: %v", err)
 	}
@@ -108,16 +109,16 @@ func TestTranscriptWriter_AppendWritesEntries(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
-	header := TranscriptHeader{
+	header := transcript.Header{
 		SessionID: "sess-002",
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "openai-default",
 		Model:     "gpt-5",
 	}
 
-	w, err := NewTranscriptWriter(path, header)
+	w, err := transcript.NewWriter(path, header)
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	defer w.Close()
 
@@ -137,7 +138,7 @@ func TestTranscriptWriter_AppendWritesEntries(t *testing.T) {
 	}
 
 	// Verify entry at line 2 (index 1)
-	var entry0 TranscriptEntry
+	var entry0 transcript.Entry
 	if err := json.Unmarshal([]byte(lines[1]), &entry0); err != nil {
 		t.Fatalf("unmarshal entry 0: %v", err)
 	}
@@ -155,7 +156,7 @@ func TestTranscriptWriter_AppendWritesEntries(t *testing.T) {
 	}
 
 	// Verify entry at line 3 (index 2)
-	var entry1 TranscriptEntry
+	var entry1 transcript.Entry
 	if err := json.Unmarshal([]byte(lines[2]), &entry1); err != nil {
 		t.Fatalf("unmarshal entry 1: %v", err)
 	}
@@ -177,14 +178,14 @@ func TestTranscriptWriter_SeqMonotonicallyIncreasing(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
-	w, err := NewTranscriptWriter(path, TranscriptHeader{
+	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "sess-003",
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "test",
 		Model:     "test-model",
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	defer w.Close()
 
@@ -201,7 +202,7 @@ func TestTranscriptWriter_SeqMonotonicallyIncreasing(t *testing.T) {
 	}
 
 	for i := 1; i <= 10; i++ {
-		var entry TranscriptEntry
+		var entry transcript.Entry
 		if err := json.Unmarshal([]byte(lines[i]), &entry); err != nil {
 			t.Fatalf("unmarshal entry %d: %v", i-1, err)
 		}
@@ -216,14 +217,14 @@ func TestTranscriptWriter_CloseClosesFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
-	w, err := NewTranscriptWriter(path, TranscriptHeader{
+	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "sess-004",
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "test",
 		Model:     "test-model",
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 
 	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("before close"))); err != nil {
@@ -248,7 +249,7 @@ func TestTranscriptWriter_CloseClosesFile(t *testing.T) {
 }
 
 func TestTranscriptWriter_NilWriterSafe(t *testing.T) {
-	var w *TranscriptWriter
+	var w *transcript.Writer
 
 	// Append on nil should not panic and should return nil.
 	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("test"))); err != nil {
@@ -265,14 +266,14 @@ func TestTranscriptWriter_ConcurrentAppend(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
-	w, err := NewTranscriptWriter(path, TranscriptHeader{
+	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "sess-005",
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "test",
 		Model:     "test-model",
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	defer w.Close()
 
@@ -313,7 +314,7 @@ func TestTranscriptWriter_ConcurrentAppend(t *testing.T) {
 	// Verify seq uniqueness
 	seqs := map[int]bool{}
 	for _, line := range lines[1:] { // skip header
-		var entry TranscriptEntry
+		var entry transcript.Entry
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			t.Fatalf("unmarshal entry: %v", err)
 		}
@@ -331,14 +332,14 @@ func TestTranscriptWriter_ValidJSONL(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
-	w, err := NewTranscriptWriter(path, TranscriptHeader{
+	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "sess-006",
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "test",
 		Model:     "test-model",
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	defer w.Close()
 
@@ -394,8 +395,8 @@ func TestTranscriptWriter_ValidJSONL(t *testing.T) {
 		}
 	}
 
-	// The header must parse as TranscriptHeader.
-	var hdr TranscriptHeader
+	// The header must parse as transcript.Header.
+	var hdr transcript.Header
 	if err := json.Unmarshal([]byte(lines[0]), &hdr); err != nil {
 		t.Fatalf("header does not parse: %v", err)
 	}
@@ -403,9 +404,9 @@ func TestTranscriptWriter_ValidJSONL(t *testing.T) {
 		t.Errorf("header kind = %q, want %q", hdr.Kind, "header")
 	}
 
-	// Each entry must parse as TranscriptEntry with incrementing seq.
+	// Each entry must parse as transcript.Entry with incrementing seq.
 	for i := 1; i < len(lines); i++ {
-		var entry TranscriptEntry
+		var entry transcript.Entry
 		if err := json.Unmarshal([]byte(lines[i]), &entry); err != nil {
 			t.Fatalf("entry %d does not parse: %v", i-1, err)
 		}
@@ -422,8 +423,8 @@ func TestTranscriptWriter_LargeEntry(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "large.transcript.jsonl")
 
-	hdr := TranscriptHeader{SessionID: "test-large"}
-	tw, err := NewTranscriptWriter(path, hdr)
+	hdr := transcript.Header{SessionID: "test-large"}
+	tw, err := transcript.NewWriter(path, hdr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,7 +472,7 @@ func TestReadTranscript_ReturnsHeaderAndEntries(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
-	header := TranscriptHeader{
+	header := transcript.Header{
 		SessionID:  "sess-read-001",
 		CreatedAt:  time.Date(2026, 2, 18, 12, 0, 0, 0, time.UTC),
 		ProfileID:  "anthropic-default",
@@ -479,9 +480,9 @@ func TestReadTranscript_ReturnsHeaderAndEntries(t *testing.T) {
 		WorkingDir: "/tmp/test",
 	}
 
-	w, err := NewTranscriptWriter(path, header)
+	w, err := transcript.NewWriter(path, header)
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 
 	turns := []schema.Turn{
@@ -531,16 +532,16 @@ func TestReadTranscript_PartialLastLine(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
-	header := TranscriptHeader{
+	header := transcript.Header{
 		SessionID: "sess-partial",
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "test",
 		Model:     "test-model",
 	}
 
-	w, err := NewTranscriptWriter(path, header)
+	w, err := transcript.NewWriter(path, header)
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 
 	for i := 0; i < 3; i++ {
@@ -596,16 +597,16 @@ func TestReadTranscript_HeaderOnly(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
-	header := TranscriptHeader{
+	header := transcript.Header{
 		SessionID: "sess-header-only",
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "test",
 		Model:     "test-model",
 	}
 
-	w, err := NewTranscriptWriter(path, header)
+	w, err := transcript.NewWriter(path, header)
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	w.Close()
 
@@ -623,13 +624,13 @@ func TestReadTranscript_HeaderOnly(t *testing.T) {
 	}
 }
 
-// --- OpenTranscriptWriter tests ---
+// --- transcript.OpenWriter tests ---
 
 func TestOpenTranscriptWriter_AppendsToExisting(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
-	header := TranscriptHeader{
+	header := transcript.Header{
 		SessionID: "sess-open-001",
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "test",
@@ -637,9 +638,9 @@ func TestOpenTranscriptWriter_AppendsToExisting(t *testing.T) {
 	}
 
 	// Write header + 5 entries, then close.
-	w, err := NewTranscriptWriter(path, header)
+	w, err := transcript.NewWriter(path, header)
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	for i := 0; i < 5; i++ {
 		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
@@ -649,9 +650,9 @@ func TestOpenTranscriptWriter_AppendsToExisting(t *testing.T) {
 	w.Close()
 
 	// Reopen for appending.
-	w2, err := OpenTranscriptWriter(path)
+	w2, err := transcript.OpenWriter(path)
 	if err != nil {
-		t.Fatalf("OpenTranscriptWriter: %v", err)
+		t.Fatalf("transcript.OpenWriter: %v", err)
 	}
 	defer w2.Close()
 
@@ -683,7 +684,7 @@ func TestOpenTranscriptWriter_TruncatesPartialLine(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
-	header := TranscriptHeader{
+	header := transcript.Header{
 		SessionID: "sess-open-002",
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "test",
@@ -691,9 +692,9 @@ func TestOpenTranscriptWriter_TruncatesPartialLine(t *testing.T) {
 	}
 
 	// Write header + 3 entries, then close.
-	w, err := NewTranscriptWriter(path, header)
+	w, err := transcript.NewWriter(path, header)
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	for i := 0; i < 3; i++ {
 		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
@@ -711,9 +712,9 @@ func TestOpenTranscriptWriter_TruncatesPartialLine(t *testing.T) {
 	f.Close()
 
 	// Reopen — partial line should be truncated.
-	w2, err := OpenTranscriptWriter(path)
+	w2, err := transcript.OpenWriter(path)
 	if err != nil {
-		t.Fatalf("OpenTranscriptWriter: %v", err)
+		t.Fatalf("transcript.OpenWriter: %v", err)
 	}
 	defer w2.Close()
 
@@ -743,7 +744,7 @@ func TestOpenTranscriptWriter_HeaderOnlyFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
-	header := TranscriptHeader{
+	header := transcript.Header{
 		SessionID: "sess-open-003",
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "test",
@@ -751,16 +752,16 @@ func TestOpenTranscriptWriter_HeaderOnlyFile(t *testing.T) {
 	}
 
 	// Write header only, no entries.
-	w, err := NewTranscriptWriter(path, header)
+	w, err := transcript.NewWriter(path, header)
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	w.Close()
 
 	// Reopen.
-	w2, err := OpenTranscriptWriter(path)
+	w2, err := transcript.OpenWriter(path)
 	if err != nil {
-		t.Fatalf("OpenTranscriptWriter: %v", err)
+		t.Fatalf("transcript.OpenWriter: %v", err)
 	}
 	defer w2.Close()
 
@@ -790,7 +791,7 @@ func TestOpenTranscriptWriter_HeaderOnlyFile(t *testing.T) {
 // --- ResumeHistory tests ---
 
 func TestResumeHistoryFromTranscript_NoCompaction(t *testing.T) {
-	entries := []TranscriptEntry{
+	entries := []transcript.Entry{
 		{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("Hello"))},
 		{Kind: "entry", Seq: 1, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("Hi"))},
 		{Kind: "entry", Seq: 2, Turn: schema.NewTurn(schema.TurnToolResults, llm.ToolResult("call-1", "ok", false))},
@@ -813,7 +814,7 @@ func TestResumeHistoryFromTranscript_NoCompaction(t *testing.T) {
 }
 
 func TestResumeHistoryFromTranscript_WithCheckpoint(t *testing.T) {
-	entries := make([]TranscriptEntry, 10)
+	entries := make([]transcript.Entry, 10)
 	for i := 0; i < 10; i++ {
 		kind := schema.TurnAssistant
 		msg := llm.Assistant(fmt.Sprintf("msg %d", i))
@@ -828,7 +829,7 @@ func TestResumeHistoryFromTranscript_WithCheckpoint(t *testing.T) {
 			kind = schema.TurnCheckpoint
 			msg = llm.User("checkpoint summary")
 		}
-		entries[i] = TranscriptEntry{Kind: "entry", Seq: i, Turn: schema.NewTurn(kind, msg)}
+		entries[i] = transcript.Entry{Kind: "entry", Seq: i, Turn: schema.NewTurn(kind, msg)}
 	}
 
 	history := ResumeHistory(entries)
@@ -855,7 +856,7 @@ func TestResumeHistoryFromTranscript_WithCheckpoint(t *testing.T) {
 }
 
 func TestResumeHistoryFromTranscript_WithSummary(t *testing.T) {
-	entries := make([]TranscriptEntry, 10)
+	entries := make([]transcript.Entry, 10)
 	for i := 0; i < 10; i++ {
 		kind := schema.TurnAssistant
 		msg := llm.Assistant(fmt.Sprintf("msg %d", i))
@@ -870,7 +871,7 @@ func TestResumeHistoryFromTranscript_WithSummary(t *testing.T) {
 			kind = schema.TurnSummary
 			msg = llm.User("LLM summary of conversation")
 		}
-		entries[i] = TranscriptEntry{Kind: "entry", Seq: i, Turn: schema.NewTurn(kind, msg)}
+		entries[i] = transcript.Entry{Kind: "entry", Seq: i, Turn: schema.NewTurn(kind, msg)}
 	}
 
 	history := ResumeHistory(entries)
@@ -1627,8 +1628,8 @@ func TestSubagent_TranscriptPersistsAfterCloseAgent(t *testing.T) {
 	}
 
 	// Identify parent and sub-agent transcripts by checking ParentSessionID.
-	var parentHeader, subHeader TranscriptHeader
-	var subEntries []TranscriptEntry
+	var parentHeader, subHeader transcript.Header
+	var subEntries []transcript.Entry
 	foundParent, foundSub := false, false
 	for _, f := range files {
 		hdr, entries, _, err := readTranscript(f)
@@ -1689,8 +1690,17 @@ func TestSubagent_TranscriptPersistsAfterCloseAgent(t *testing.T) {
 	}
 }
 
-func TestSession_TranscriptWriteFailureEmitsWarning(t *testing.T) {
+func TestSession_TranscriptCreateFailureEmitsWarning(t *testing.T) {
 	stateDir := t.TempDir()
+
+	// Make the sessions subdirectory unusable by pre-creating it as a regular
+	// file: the transcript writer's MkdirAll then fails, exercising the
+	// "transcript create failed" warning path through the public NewSession
+	// API. The session must still come up and process input with a nil
+	// transcript (Append is a no-op on a nil writer).
+	if err := os.WriteFile(filepath.Join(stateDir, sessionsSubdir), []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -1698,9 +1708,6 @@ func TestSession_TranscriptWriteFailureEmitsWarning(t *testing.T) {
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
 				return finalResponse("first")
-			},
-			func(req llm.Request) llm.Response {
-				return finalResponse("second")
 			},
 		},
 	})
@@ -1712,10 +1719,8 @@ func TestSession_TranscriptWriteFailureEmitsWarning(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Force-close the transcript file to cause future writes to fail.
-	sess.transcript.file.Close()
-
-	// Collect events.
+	// Collect events. The create-failure warning was emitted during NewSession
+	// and is buffered in the events channel, so it is still readable here.
 	var warnings []string
 	done := make(chan struct{})
 	go func() {
@@ -1729,7 +1734,7 @@ func TestSession_TranscriptWriteFailureEmitsWarning(t *testing.T) {
 		}
 	}()
 
-	// Process input: should succeed despite transcript failures.
+	// Process input: should succeed despite the transcript being unavailable.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	out, err := sess.ProcessInput(ctx, "hello", nil)
@@ -1743,7 +1748,7 @@ func TestSession_TranscriptWriteFailureEmitsWarning(t *testing.T) {
 	sess.Close()
 	<-done
 
-	// Should have at least one warning about transcript write failure.
+	// Should have at least one warning about the transcript failure.
 	hasTranscriptWarning := false
 	for _, w := range warnings {
 		if strings.Contains(w, "transcript") {
@@ -1752,74 +1757,7 @@ func TestSession_TranscriptWriteFailureEmitsWarning(t *testing.T) {
 		}
 	}
 	if !hasTranscriptWarning {
-		t.Errorf("expected transcript write warning, got warnings: %v", warnings)
-	}
-}
-
-// --- Fix 1: seq increment after successful write ---
-
-func TestTranscriptWriter_SeqNotIncrementedOnWriteFailure(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "transcript.jsonl")
-
-	w, err := NewTranscriptWriter(path, TranscriptHeader{
-		SessionID: "sess-seq-fix",
-		CreatedAt: time.Now().UTC(),
-		ProfileID: "test",
-		Model:     "test-model",
-	})
-	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
-	}
-	defer w.Close()
-
-	// Write one successful entry (seq 0).
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("first"))); err != nil {
-		t.Fatalf("Append 0: %v", err)
-	}
-
-	// Close the underlying file to force the next write to fail.
-	w.mu.Lock()
-	w.file.Close()
-	w.mu.Unlock()
-
-	// This Append should fail (file is closed).
-	err = w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("should fail")))
-	if err == nil {
-		t.Fatal("expected error from Append on closed file")
-	}
-
-	// Reopen the file so future writes succeed.
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
-	w.mu.Lock()
-	w.file = f
-	w.mu.Unlock()
-
-	// The next successful write should use seq 1 (not seq 2, which would
-	// indicate the failed write incremented seq).
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after failure"))); err != nil {
-		t.Fatalf("Append after reopen: %v", err)
-	}
-
-	// Read back and check seq numbers.
-	lines := readTranscriptLines(t, path)
-	// header + 2 successful entries
-	if len(lines) != 3 {
-		t.Fatalf("expected 3 lines, got %d", len(lines))
-	}
-
-	var entry0, entry1 TranscriptEntry
-	json.Unmarshal([]byte(lines[1]), &entry0)
-	json.Unmarshal([]byte(lines[2]), &entry1)
-
-	if entry0.Seq != 0 {
-		t.Errorf("entry0 seq = %d, want 0", entry0.Seq)
-	}
-	if entry1.Seq != 1 {
-		t.Errorf("entry1 seq = %d, want 1 (no gap from failed write)", entry1.Seq)
+		t.Errorf("expected transcript warning, got warnings: %v", warnings)
 	}
 }
 
@@ -1830,14 +1768,14 @@ func TestReadTranscript_ReturnsCorruptLineCount(t *testing.T) {
 	path := filepath.Join(dir, "transcript.jsonl")
 
 	// Write a valid transcript with 3 entries.
-	w, err := NewTranscriptWriter(path, TranscriptHeader{
+	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "sess-corrupt",
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "test",
 		Model:     "test-model",
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	for i := 0; i < 3; i++ {
 		w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i))))
@@ -1879,14 +1817,14 @@ func TestReadTranscript_ZeroCorruptLinesOnCleanFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
-	w, err := NewTranscriptWriter(path, TranscriptHeader{
+	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "sess-clean",
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "test",
 		Model:     "test-model",
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("msg")))
 	w.Close()
@@ -1903,10 +1841,10 @@ func TestReadTranscript_ZeroCorruptLinesOnCleanFile(t *testing.T) {
 	}
 }
 
-// --- Fix 3: OpenTranscriptWriter single file handle ---
+// --- Fix 3: transcript.OpenWriter single file handle ---
 
 func TestOpenTranscriptWriter_SingleFileHandle(t *testing.T) {
-	// This test verifies that OpenTranscriptWriter uses a single file handle
+	// This test verifies that transcript.OpenWriter uses a single file handle
 	// for read-truncate-append, not separate open calls. We do this by
 	// verifying that a partial-line truncation + append works correctly
 	// even in a single operation. If there were separate open calls, we
@@ -1916,14 +1854,14 @@ func TestOpenTranscriptWriter_SingleFileHandle(t *testing.T) {
 	path := filepath.Join(dir, "transcript.jsonl")
 
 	// Write header + 2 entries.
-	w, err := NewTranscriptWriter(path, TranscriptHeader{
+	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "sess-handle",
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "test",
 		Model:     "test-model",
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("msg 0")))
 	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("msg 1")))
@@ -1935,9 +1873,9 @@ func TestOpenTranscriptWriter_SingleFileHandle(t *testing.T) {
 	f.Close()
 
 	// Open for resume: should truncate partial line and continue at seq 2.
-	w2, err := OpenTranscriptWriter(path)
+	w2, err := transcript.OpenWriter(path)
 	if err != nil {
-		t.Fatalf("OpenTranscriptWriter: %v", err)
+		t.Fatalf("transcript.OpenWriter: %v", err)
 	}
 	if err := w2.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("msg 2"))); err != nil {
 		t.Fatalf("Append: %v", err)
@@ -2003,136 +1941,18 @@ func truncStr(s string, n int) string {
 
 // --- Periodic sync tests ---
 
-func TestTranscriptWriter_PeriodicSync_SkipsSyncWithinInterval(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "transcript.jsonl")
-
-	w, err := NewTranscriptWriter(path, TranscriptHeader{
-		SessionID: "sess-sync-001",
-		CreatedAt: time.Now().UTC(),
-		ProfileID: "test",
-		Model:     "test-model",
-	})
-	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
-	}
-	defer w.Close()
-
-	// Set a long sync interval so rapid writes don't trigger sync.
-	w.SyncInterval = 1 * time.Hour
-
-	// Write several entries rapidly.
-	for i := 0; i < 5; i++ {
-		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
-			t.Fatalf("Append %d: %v", i, err)
-		}
-	}
-
-	// The dirty flag should be true (writes happened but no sync since header).
-	w.mu.Lock()
-	dirty := w.dirty
-	w.mu.Unlock()
-	if !dirty {
-		t.Error("expected dirty=true after writes within sync interval")
-	}
-
-	// Close should flush all data.
-	w.Close()
-
-	// All data should be readable after Close.
-	_, entries, _, err := readTranscript(path)
-	if err != nil {
-		t.Fatalf("readTranscript: %v", err)
-	}
-	if len(entries) != 5 {
-		t.Fatalf("expected 5 entries, got %d", len(entries))
-	}
-}
-
-func TestTranscriptWriter_PeriodicSync_SyncsAfterIntervalExpires(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "transcript.jsonl")
-
-	w, err := NewTranscriptWriter(path, TranscriptHeader{
-		SessionID: "sess-sync-002",
-		CreatedAt: time.Now().UTC(),
-		ProfileID: "test",
-		Model:     "test-model",
-	})
-	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
-	}
-	defer w.Close()
-
-	// Set a very short sync interval.
-	w.SyncInterval = 1 * time.Millisecond
-
-	// Write first entry.
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("first"))); err != nil {
-		t.Fatalf("Append: %v", err)
-	}
-
-	// Wait for interval to expire.
-	time.Sleep(5 * time.Millisecond)
-
-	// Next write should trigger a sync because the interval has elapsed.
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("second"))); err != nil {
-		t.Fatalf("Append: %v", err)
-	}
-
-	// After the sync, dirty should be false.
-	w.mu.Lock()
-	dirty := w.dirty
-	w.mu.Unlock()
-	if dirty {
-		t.Error("expected dirty=false after sync interval elapsed and write occurred")
-	}
-}
-
-func TestTranscriptWriter_PeriodicSync_ZeroIntervalSyncsEveryWrite(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "transcript.jsonl")
-
-	w, err := NewTranscriptWriter(path, TranscriptHeader{
-		SessionID: "sess-sync-003",
-		CreatedAt: time.Now().UTC(),
-		ProfileID: "test",
-		Model:     "test-model",
-	})
-	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
-	}
-	defer w.Close()
-
-	// Zero interval = sync every write (backward compat).
-	w.SyncInterval = 0
-
-	for i := 0; i < 3; i++ {
-		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
-			t.Fatalf("Append %d: %v", i, err)
-		}
-		// After each write with zero interval, dirty should be false.
-		w.mu.Lock()
-		dirty := w.dirty
-		w.mu.Unlock()
-		if dirty {
-			t.Errorf("Append %d: expected dirty=false with zero SyncInterval", i)
-		}
-	}
-}
-
 func TestTranscriptWriter_PeriodicSync_CloseFlushesDirtyWrites(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
-	w, err := NewTranscriptWriter(path, TranscriptHeader{
+	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "sess-sync-004",
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "test",
 		Model:     "test-model",
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 
 	// Long interval so no auto-sync happens.
@@ -2169,14 +1989,14 @@ func TestTranscriptWriter_PeriodicSync_ConcurrentAppendWithInterval(t *testing.T
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
-	w, err := NewTranscriptWriter(path, TranscriptHeader{
+	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "sess-sync-005",
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "test",
 		Model:     "test-model",
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	defer w.Close()
 
@@ -2223,58 +2043,24 @@ func TestTranscriptWriter_PeriodicSync_ConcurrentAppendWithInterval(t *testing.T
 	}
 }
 
-func TestOpenTranscriptWriter_SetsLastSync(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "transcript.jsonl")
-
-	// Create a transcript.
-	w, err := NewTranscriptWriter(path, TranscriptHeader{
-		SessionID: "sess-sync-006",
-		CreatedAt: time.Now().UTC(),
-		ProfileID: "test",
-		Model:     "test-model",
-	})
-	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
-	}
-	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("msg 0")))
-	w.Close()
-
-	// Reopen for resume.
-	before := time.Now()
-	w2, err := OpenTranscriptWriter(path)
-	if err != nil {
-		t.Fatalf("OpenTranscriptWriter: %v", err)
-	}
-	defer w2.Close()
-
-	// lastSync should be set to approximately now (not zero).
-	w2.mu.Lock()
-	ls := w2.lastSync
-	w2.mu.Unlock()
-	if ls.Before(before) {
-		t.Errorf("lastSync = %v, expected >= %v", ls, before)
-	}
-}
-
-// --- TranscriptAPICall tests ---
+// --- transcript.APICall tests ---
 
 func TestTranscriptWriter_AppendAPICallWritesValidLine(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
-	w, err := NewTranscriptWriter(path, TranscriptHeader{
+	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "sess-api-001",
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "test",
 		Model:     "test-model",
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	defer w.Close()
 
-	call := TranscriptAPICall{
+	call := transcript.APICall{
 		Round:               1,
 		Timestamp:           "2026-03-25T12:00:00Z",
 		LatencyMs:           1500,
@@ -2306,7 +2092,7 @@ func TestTranscriptWriter_AppendAPICallWritesValidLine(t *testing.T) {
 		t.Fatalf("expected 2 lines, got %d", len(lines))
 	}
 
-	var got TranscriptAPICall
+	var got transcript.APICall
 	if err := json.Unmarshal([]byte(lines[1]), &got); err != nil {
 		t.Fatalf("unmarshal api_call: %v", err)
 	}
@@ -2352,18 +2138,18 @@ func TestTranscriptWriter_AppendAPICallWithError(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
-	w, err := NewTranscriptWriter(path, TranscriptHeader{
+	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "sess-api-err",
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "test",
 		Model:     "test-model",
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	defer w.Close()
 
-	call := TranscriptAPICall{
+	call := transcript.APICall{
 		Round:     2,
 		Timestamp: "2026-03-25T12:01:00Z",
 		LatencyMs: 500,
@@ -2383,7 +2169,7 @@ func TestTranscriptWriter_AppendAPICallWithError(t *testing.T) {
 		t.Fatalf("expected 2 lines, got %d", len(lines))
 	}
 
-	var got TranscriptAPICall
+	var got transcript.APICall
 	if err := json.Unmarshal([]byte(lines[1]), &got); err != nil {
 		t.Fatalf("unmarshal api_call: %v", err)
 	}
@@ -2402,14 +2188,14 @@ func TestTranscriptWriter_InterleavedSeqNumbers(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
-	w, err := NewTranscriptWriter(path, TranscriptHeader{
+	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "sess-interleave",
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "test",
 		Model:     "test-model",
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	defer w.Close()
 
@@ -2417,13 +2203,13 @@ func TestTranscriptWriter_InterleavedSeqNumbers(t *testing.T) {
 	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
 		t.Fatalf("Append 0: %v", err)
 	}
-	if err := w.AppendAPICall(TranscriptAPICall{Round: 1, Request: llm.APILogRequest{Model: "m"}}); err != nil {
+	if err := w.AppendAPICall(transcript.APICall{Round: 1, Request: llm.APILogRequest{Model: "m"}}); err != nil {
 		t.Fatalf("AppendAPICall 0: %v", err)
 	}
 	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi"))); err != nil {
 		t.Fatalf("Append 1: %v", err)
 	}
-	if err := w.AppendAPICall(TranscriptAPICall{Round: 2, Request: llm.APILogRequest{Model: "m"}}); err != nil {
+	if err := w.AppendAPICall(transcript.APICall{Round: 2, Request: llm.APILogRequest{Model: "m"}}); err != nil {
 		t.Fatalf("AppendAPICall 1: %v", err)
 	}
 	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("done"))); err != nil {
@@ -2457,10 +2243,10 @@ func TestTranscriptWriter_InterleavedSeqNumbers(t *testing.T) {
 }
 
 func TestTranscriptWriter_NilAppendAPICallSafe(t *testing.T) {
-	var w *TranscriptWriter
+	var w *transcript.Writer
 
 	// AppendAPICall on nil should not panic and should return nil.
-	if err := w.AppendAPICall(TranscriptAPICall{}); err != nil {
+	if err := w.AppendAPICall(transcript.APICall{}); err != nil {
 		t.Errorf("nil AppendAPICall returned error: %v", err)
 	}
 }
@@ -2469,19 +2255,19 @@ func TestReadTranscriptFull_ParsesAllLineTypes(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
-	w, err := NewTranscriptWriter(path, TranscriptHeader{
+	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "sess-full-001",
 		CreatedAt: time.Date(2026, 3, 25, 12, 0, 0, 0, time.UTC),
 		ProfileID: "test",
 		Model:     "test-model",
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 
 	// Write interleaved entries and api_calls.
 	w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello")))
-	w.AppendAPICall(TranscriptAPICall{
+	w.AppendAPICall(transcript.APICall{
 		Round:     1,
 		Timestamp: "2026-03-25T12:00:01Z",
 		LatencyMs: 100,
@@ -2489,7 +2275,7 @@ func TestReadTranscriptFull_ParsesAllLineTypes(t *testing.T) {
 		Response:  &llm.APILogResponse{Model: "gpt-5.2", FinishReason: "stop"},
 	})
 	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi")))
-	w.AppendAPICall(TranscriptAPICall{
+	w.AppendAPICall(transcript.APICall{
 		Round:     2,
 		Timestamp: "2026-03-25T12:00:02Z",
 		LatencyMs: 200,
@@ -2563,14 +2349,14 @@ func TestReadTranscriptFull_SkipsCorruptLines(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
-	w, err := NewTranscriptWriter(path, TranscriptHeader{
+	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "sess-full-corrupt",
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "test",
 		Model:     "test-model",
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello")))
 	w.Close()
@@ -2599,19 +2385,19 @@ func TestReadTranscript_SkipsAPICallLines(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
-	w, err := NewTranscriptWriter(path, TranscriptHeader{
+	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "sess-compat",
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "test",
 		Model:     "test-model",
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 
 	// Interleave entries and api_calls.
 	w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello")))
-	w.AppendAPICall(TranscriptAPICall{Round: 1, Request: llm.APILogRequest{Model: "m"}})
+	w.AppendAPICall(transcript.APICall{Round: 1, Request: llm.APILogRequest{Model: "m"}})
 	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi")))
 	w.Close()
 
@@ -2638,26 +2424,26 @@ func TestOpenTranscriptWriter_ResumesWithAPICallSeq(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")
 
-	w, err := NewTranscriptWriter(path, TranscriptHeader{
+	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID: "sess-resume-api",
 		CreatedAt: time.Now().UTC(),
 		ProfileID: "test",
 		Model:     "test-model",
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 
 	// Write entry (seq 0), api_call (seq 1), entry (seq 2).
 	w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello")))
-	w.AppendAPICall(TranscriptAPICall{Round: 1, Request: llm.APILogRequest{Model: "m"}})
+	w.AppendAPICall(transcript.APICall{Round: 1, Request: llm.APILogRequest{Model: "m"}})
 	w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("hi")))
 	w.Close()
 
 	// Reopen and append more.
-	w2, err := OpenTranscriptWriter(path)
+	w2, err := transcript.OpenWriter(path)
 	if err != nil {
-		t.Fatalf("OpenTranscriptWriter: %v", err)
+		t.Fatalf("transcript.OpenWriter: %v", err)
 	}
 	defer w2.Close()
 

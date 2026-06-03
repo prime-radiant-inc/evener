@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -979,14 +980,14 @@ func TestRestoreSession_FromMetaAndTranscript(t *testing.T) {
 
 	// Write a transcript file with history.
 	tpath := filepath.Join(stateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
-	tw, err := NewTranscriptWriter(tpath, TranscriptHeader{
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
 		SessionID: meta.ID,
 		CreatedAt: meta.CreatedAt,
 		ProfileID: meta.ProfileID,
 		Model:     meta.Model,
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("transcript-msg"))); err != nil {
 		t.Fatalf("Append: %v", err)
@@ -1095,14 +1096,14 @@ func TestRestoreSessionFromMeta_TranscriptWithCompaction(t *testing.T) {
 
 	// Write a transcript with compaction.
 	tpath := filepath.Join(stateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
-	tw, err := NewTranscriptWriter(tpath, TranscriptHeader{
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
 		SessionID: meta.ID,
 		CreatedAt: meta.CreatedAt,
 		ProfileID: meta.ProfileID,
 		Model:     meta.Model,
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("old-msg")))
 	tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("old-reply")))

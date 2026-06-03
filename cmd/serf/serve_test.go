@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
@@ -260,7 +260,7 @@ func TestRunServeNonInteractiveFlagControlsPromptAddendum(t *testing.T) {
 			if err != nil {
 				t.Fatalf("open transcript: %v", err)
 			}
-			var header agent.TranscriptHeader
+			var header transcript.Header
 			derr := json.NewDecoder(f).Decode(&header)
 			f.Close()
 			if derr != nil {

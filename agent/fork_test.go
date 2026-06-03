@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -20,7 +21,7 @@ func buildParentSession(t *testing.T) (stateDir, parentID string) {
 	parentID = "01PARENT00000000000000001"
 
 	tpath := filepath.Join(stateDir, sessionsSubdir, parentID+".transcript.jsonl")
-	tw, err := NewTranscriptWriter(tpath, TranscriptHeader{
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
 		SessionID:  parentID,
 		CreatedAt:  time.Now().UTC(),
 		ProfileID:  "openai",
@@ -28,7 +29,7 @@ func buildParentSession(t *testing.T) (stateDir, parentID string) {
 		WorkingDir: "/tmp/test",
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 
 	turns := []schema.Turn{

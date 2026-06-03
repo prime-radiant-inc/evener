@@ -43,6 +43,7 @@ var libraryPackages = []string{
 	"agent/schema",
 	"agent/skill",
 	"agent/task",
+	"agent/transcript",
 	"auth/openai",
 }
 

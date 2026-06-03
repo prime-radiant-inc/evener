@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -101,7 +102,7 @@ func TestSession_ProcessInputRepairsOrphanedAssistantToolCallsBeforeModelRequest
 }
 
 func TestResumeHistoryRepairsOrphanedAssistantToolCallsBeforeLaterUserInput(t *testing.T) {
-	entries := []TranscriptEntry{
+	entries := []transcript.Entry{
 		{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("start"))},
 		{Kind: "entry", Seq: 1, Turn: schema.NewTurn(schema.TurnAssistant, llm.Message{
 			Role: llm.RoleAssistant,

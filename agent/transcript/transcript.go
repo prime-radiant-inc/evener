@@ -1,4 +1,8 @@
-package agent
+// Package transcript defines the on-disk JSONL transcript format and the
+// append-only writer that records an agent session's turns and API calls.
+// Readers live with their consumers; this package owns the write side and the
+// shared line schema (Header, Entry, APICall).
+package transcript
 
 import (
 	"bufio"
@@ -20,8 +24,8 @@ import (
 
 const transcriptJSONLMaxLineBytes = 128 << 20
 
-// TranscriptHeader is the first line of a transcript JSONL file.
-type TranscriptHeader struct {
+// Header is the first line of a transcript JSONL file.
+type Header struct {
 	Kind          string `json:"kind"`           // Always "header"
 	FormatVersion int    `json:"format_version"` // Currently 1
 	SessionID     string `json:"session_id"`     // ID of the session this transcript records
@@ -46,15 +50,15 @@ type TranscriptHeader struct {
 	AgentTasks []task.Task `json:"agent_tasks,omitempty"`
 }
 
-// TranscriptEntry is a single turn in the transcript JSONL file.
-type TranscriptEntry struct {
+// Entry is a single turn in the transcript JSONL file.
+type Entry struct {
 	Kind string      `json:"kind"` // Always "entry"
 	Seq  int         `json:"seq"`  // monotonically increasing line sequence number
 	Turn schema.Turn `json:"turn"` // the recorded conversation turn
 }
 
-// TranscriptAPICall records an LLM API call in the transcript JSONL file.
-type TranscriptAPICall struct {
+// APICall records an LLM API call in the transcript JSONL file.
+type APICall struct {
 	Kind                string              `json:"kind"`                            // Always "api_call"
 	Seq                 int                 `json:"seq"`                             // line sequence number in the transcript
 	Round               int                 `json:"round"`                           // tool-call round within the turn
@@ -73,8 +77,8 @@ type TranscriptAPICall struct {
 	Hint   string `json:"hint,omitempty"`
 }
 
-// TranscriptWriter appends turns to an immutable JSONL transcript file.
-type TranscriptWriter struct {
+// Writer appends turns to an immutable JSONL transcript file.
+type Writer struct {
 	file      *os.File
 	mu        sync.Mutex
 	seq       int
@@ -90,9 +94,9 @@ type TranscriptWriter struct {
 	lastSync time.Time
 }
 
-// NewTranscriptWriter creates a transcript file at path, writes the header as the first line,
+// NewWriter creates a transcript file at path, writes the header as the first line,
 // and returns a writer that keeps the file handle open for subsequent Append calls.
-func NewTranscriptWriter(path string, header TranscriptHeader) (*TranscriptWriter, error) {
+func NewWriter(path string, header Header) (*Writer, error) {
 	header.Kind = "header"
 	header.FormatVersion = 1
 
@@ -121,12 +125,12 @@ func NewTranscriptWriter(path string, header TranscriptHeader) (*TranscriptWrite
 		return nil, fmt.Errorf("sync transcript header: %w", err)
 	}
 
-	return &TranscriptWriter{file: f, lastSync: time.Now()}, nil
+	return &Writer{file: f, lastSync: time.Now()}, nil
 }
 
-// Append writes a turn as a TranscriptEntry to the JSONL file.
+// Append writes a turn as an Entry to the JSONL file.
 // Safe for concurrent use. No-op if the receiver is nil.
-func (w *TranscriptWriter) Append(turn schema.Turn) error {
+func (w *Writer) Append(turn schema.Turn) error {
 	if w == nil || w.closed.Load() {
 		return nil
 	}
@@ -140,7 +144,7 @@ func (w *TranscriptWriter) Append(turn schema.Turn) error {
 		return nil
 	}
 
-	entry := TranscriptEntry{
+	entry := Entry{
 		Kind: "entry",
 		Seq:  w.seq,
 		Turn: turn,
@@ -171,7 +175,7 @@ func (w *TranscriptWriter) Append(turn schema.Turn) error {
 // AppendAPICall writes an API call record to the JSONL file.
 // Safe for concurrent use. No-op if the receiver is nil.
 // Shares the seq counter with Append so entries and api_calls are interleaved in order.
-func (w *TranscriptWriter) AppendAPICall(call TranscriptAPICall) error {
+func (w *Writer) AppendAPICall(call APICall) error {
 	if w == nil || w.closed.Load() {
 		return nil
 	}
@@ -212,7 +216,7 @@ func (w *TranscriptWriter) AppendAPICall(call TranscriptAPICall) error {
 
 // Close syncs and closes the underlying file. Idempotent: safe to call multiple times.
 // No-op if the receiver is nil.
-func (w *TranscriptWriter) Close() error {
+func (w *Writer) Close() error {
 	if w == nil || w.file == nil {
 		return nil
 	}
@@ -238,11 +242,11 @@ func (w *TranscriptWriter) Close() error {
 	return closeErr
 }
 
-// OpenTranscriptWriter opens an existing transcript file for appending.
+// OpenWriter opens an existing transcript file for appending.
 // Reads the file once to count valid entries and determine the next seq number.
 // Truncates any partial last line for crash recovery. Uses a single file handle
 // for the entire read-truncate-append sequence to avoid TOCTOU races.
-func OpenTranscriptWriter(path string) (*TranscriptWriter, error) {
+func OpenWriter(path string) (*Writer, error) {
 	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("open transcript for resume: %w", err)
@@ -280,7 +284,7 @@ func OpenTranscriptWriter(path string) (*TranscriptWriter, error) {
 			first = false
 			continue // skip header
 		}
-		var entry TranscriptEntry
+		var entry Entry
 		if json.Unmarshal(scanner.Bytes(), &entry) == nil && (entry.Kind == "entry" || entry.Kind == "api_call") {
 			if entry.Seq > maxSeq {
 				maxSeq = entry.Seq
@@ -306,166 +310,5 @@ func OpenTranscriptWriter(path string) (*TranscriptWriter, error) {
 		return nil, fmt.Errorf("seek to end of transcript: %w", err)
 	}
 
-	return &TranscriptWriter{file: f, seq: nextSeq, lastSync: time.Now()}, nil
-}
-
-// readTranscript reads a transcript JSONL file, returning the header, all valid entries,
-// and the count of skipped (corrupt/partial) lines. Callers can use the skipped count
-// to decide whether to warn about data loss from crash recovery.
-func readTranscript(path string) (TranscriptHeader, []TranscriptEntry, int, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return TranscriptHeader{}, nil, 0, fmt.Errorf("open transcript: %w", err)
-	}
-	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
-
-	// First line must be the header.
-	if !scanner.Scan() {
-		if err := scanner.Err(); err != nil {
-			return TranscriptHeader{}, nil, 0, fmt.Errorf("reading transcript header: %w", err)
-		}
-		return TranscriptHeader{}, nil, 0, errors.New("transcript file is empty: no header")
-	}
-
-	var header TranscriptHeader
-	if err := json.Unmarshal(scanner.Bytes(), &header); err != nil {
-		return TranscriptHeader{}, nil, 0, fmt.Errorf("parsing transcript header: %w", err)
-	}
-
-	// Remaining lines are entries. Skip non-entry lines (e.g. api_call) and
-	// any that fail to parse.
-	var entries []TranscriptEntry
-	skipped := 0
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		var entry TranscriptEntry
-		if err := json.Unmarshal(line, &entry); err != nil {
-			// Skip corrupt/partial lines (crash recovery).
-			skipped++
-			continue
-		}
-		if entry.Kind != "entry" {
-			continue // skip non-entry lines (e.g. api_call)
-		}
-		entries = append(entries, entry)
-	}
-	if err := scanner.Err(); err != nil {
-		return TranscriptHeader{}, nil, 0, fmt.Errorf("reading transcript: %w", err)
-	}
-
-	return header, entries, skipped, nil
-}
-
-// transcriptData holds all parsed content from a transcript JSONL file.
-type transcriptData struct {
-	Header   TranscriptHeader
-	Entries  []TranscriptEntry
-	APICalls []TranscriptAPICall
-	Skipped  int
-}
-
-// readTranscriptFull reads a transcript JSONL file, returning all line types:
-// header, entries, and API calls. Corrupt/partial lines are counted in Skipped.
-func readTranscriptFull(path string) (transcriptData, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return transcriptData{}, fmt.Errorf("open transcript: %w", err)
-	}
-	defer func() { _ = f.Close() }() // read-only handle; close error is immaterial
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), transcriptJSONLMaxLineBytes)
-
-	// First line must be the header.
-	if !scanner.Scan() {
-		if err := scanner.Err(); err != nil {
-			return transcriptData{}, fmt.Errorf("reading transcript header: %w", err)
-		}
-		return transcriptData{}, errors.New("transcript file is empty: no header")
-	}
-
-	var data transcriptData
-	if err := json.Unmarshal(scanner.Bytes(), &data.Header); err != nil {
-		return transcriptData{}, fmt.Errorf("parsing transcript header: %w", err)
-	}
-
-	// Remaining lines are entries or api_calls. Dispatch by "kind" field.
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-
-		// Peek at the kind field to decide which struct to unmarshal into.
-		var peek struct {
-			Kind string `json:"kind"`
-		}
-		if err := json.Unmarshal(line, &peek); err != nil {
-			data.Skipped++
-			continue
-		}
-
-		switch peek.Kind {
-		case "entry":
-			var entry TranscriptEntry
-			if err := json.Unmarshal(line, &entry); err != nil {
-				data.Skipped++
-				continue
-			}
-			data.Entries = append(data.Entries, entry)
-		case "api_call":
-			var call TranscriptAPICall
-			if err := json.Unmarshal(line, &call); err != nil {
-				data.Skipped++
-				continue
-			}
-			data.APICalls = append(data.APICalls, call)
-		default:
-			data.Skipped++
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return transcriptData{}, fmt.Errorf("reading transcript: %w", err)
-	}
-
-	return data, nil
-}
-
-// ResumeHistory extracts the history needed for session resume from transcript entries.
-// If a compaction turn (CHECKPOINT or SUMMARY) exists, returns [last compaction turn, ...subsequent turns].
-// Otherwise returns all turns.
-func ResumeHistory(entries []TranscriptEntry) []schema.Turn {
-	// Scan backward for the last compaction turn.
-	compactionIdx := -1
-	for i := len(entries) - 1; i >= 0; i-- {
-		kind := entries[i].Turn.Kind
-		if kind == schema.TurnCheckpoint || kind == schema.TurnSummary {
-			compactionIdx = i
-			break
-		}
-	}
-
-	if compactionIdx < 0 {
-		// No compaction: return all turns.
-		turns := make([]schema.Turn, len(entries))
-		for i, e := range entries {
-			turns[i] = e.Turn
-		}
-		repaired, _ := repairOrphanedToolResults(turns)
-		return repaired
-	}
-
-	// Return compaction turn + everything after it.
-	result := make([]schema.Turn, 0, len(entries)-compactionIdx)
-	for i := compactionIdx; i < len(entries); i++ {
-		result = append(result, entries[i].Turn)
-	}
-	repaired, _ := repairOrphanedToolResults(result)
-	return repaired
+	return &Writer{file: f, seq: nextSeq, lastSync: time.Now()}, nil
 }

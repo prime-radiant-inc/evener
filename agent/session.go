@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/agent/task"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -50,7 +51,7 @@ type Session struct {
 	// covered by mu: contextMgr (contextManager.mu), reg (tool.Registry.mu),
 	// subagents (subagentManager.mu / per-child sub.mu), taskStore
 	// (TaskStore.mu — note it may be SHARED with child sessions when
-	// ShareTasksWithChildren is set), and transcript (TranscriptWriter.mu).
+	// ShareTasksWithChildren is set), and transcript (transcript.Writer.mu).
 	//
 	// mu guards: history, state, closing, turns, modelResponses, totalRounds,
 	//   sessionEndEmitted, profile (swapped here; read via currentProfile()),
@@ -161,7 +162,7 @@ type Session struct {
 	readOnlyStreak     int // consecutive rounds with only read-only tool calls
 
 	// transcript writer (nil when StateDir is empty)
-	transcript *TranscriptWriter
+	transcript *transcript.Writer
 
 	// Cached tool definitions.
 	cachedToolDefs []llm.ToolDefinition

@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/agent/task"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -141,7 +142,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		if s.taskStore != nil {
 			agentTasks = s.taskStore.View()
 		}
-		hdr := TranscriptHeader{
+		hdr := transcript.Header{
 			SessionID:        s.id,
 			ParentSessionID:  cfg.spawn.parentSessionID,
 			ParentToolCallID: cfg.spawn.parentToolCallID,
@@ -156,7 +157,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			AgentTasks:       agentTasks,
 		}
 		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
-		tw, twErr := NewTranscriptWriter(tpath, hdr)
+		tw, twErr := transcript.NewWriter(tpath, hdr)
 		if twErr != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript create failed: %v", twErr)})
 		}
@@ -266,14 +267,14 @@ func RestoreSession(client *llm.Client, profile *provider.Profile, env execenv.E
 	// Open or create transcript for appending.
 	if s.stateDir != "" {
 		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
-		tw, twErr := OpenTranscriptWriter(tpath)
+		tw, twErr := transcript.OpenWriter(tpath)
 		if twErr != nil {
 			// Transcript might not exist (old session). Create new.
 			var agentTasks []task.Task
 			if s.taskStore != nil {
 				agentTasks = s.taskStore.View()
 			}
-			hdr := TranscriptHeader{
+			hdr := transcript.Header{
 				SessionID:        s.id,
 				ParentSessionID:  cfg.spawn.parentSessionID,
 				ParentToolCallID: cfg.spawn.parentToolCallID,
@@ -287,7 +288,7 @@ func RestoreSession(client *llm.Client, profile *provider.Profile, env execenv.E
 				SystemPrompt:     s.cachedSystemPrompt,
 				AgentTasks:       agentTasks,
 			}
-			tw, twErr = NewTranscriptWriter(tpath, hdr)
+			tw, twErr = transcript.NewWriter(tpath, hdr)
 			if twErr != nil {
 				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript open failed: %v", twErr)})
 			}
@@ -408,14 +409,14 @@ func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env e
 	// Open or create transcript for appending.
 	if s.stateDir != "" {
 		tpath := filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
-		tw, twErr := OpenTranscriptWriter(tpath)
+		tw, twErr := transcript.OpenWriter(tpath)
 		if twErr != nil {
 			// Transcript might not exist (new session from meta). Create new.
 			var agentTasks []task.Task
 			if s.taskStore != nil {
 				agentTasks = s.taskStore.View()
 			}
-			hdr := TranscriptHeader{
+			hdr := transcript.Header{
 				SessionID:        s.id,
 				ParentSessionID:  cfg.spawn.parentSessionID,
 				ParentToolCallID: cfg.spawn.parentToolCallID,
@@ -429,7 +430,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env e
 				SystemPrompt:     s.cachedSystemPrompt,
 				AgentTasks:       agentTasks,
 			}
-			tw, twErr = NewTranscriptWriter(tpath, hdr)
+			tw, twErr = transcript.NewWriter(tpath, hdr)
 			if twErr != nil {
 				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript open failed: %v", twErr)})
 			}

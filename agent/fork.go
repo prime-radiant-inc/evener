@@ -12,6 +12,7 @@ import (
 	"github.com/oklog/ulid/v2"
 
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -53,7 +54,7 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 		return "", errors.New("parent transcript is empty")
 	}
 
-	var parentHeader TranscriptHeader
+	var parentHeader transcript.Header
 	if err := json.Unmarshal(scanner.Bytes(), &parentHeader); err != nil {
 		return "", fmt.Errorf("parsing parent transcript header: %w", err)
 	}
@@ -67,7 +68,7 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 	// Example with transcript [U1, A1, U2, A2] and divergenceTurn=3:
 	//   entries[2] (1-based: turn 3) = U2. Prefix = [U1, A1].
 	//   Child = [U1, A1, edited-U2].
-	var allEntries []TranscriptEntry
+	var allEntries []transcript.Entry
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -87,7 +88,7 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 			continue // skip api_call lines and anything else
 		}
 
-		var entry TranscriptEntry
+		var entry transcript.Entry
 		if err := json.Unmarshal(line, &entry); err != nil {
 			continue // skip corrupt entry lines
 		}
@@ -124,7 +125,7 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 
 	// Build the child transcript header from the parent's fields.
 	now := time.Now().UTC()
-	childHeader := TranscriptHeader{
+	childHeader := transcript.Header{
 		SessionID:        childID,
 		ParentSessionID:  parentID,
 		CreatedAt:        now,
@@ -140,7 +141,7 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 	}
 
 	childTranscriptPath := filepath.Join(stateDir, sessionsSubdir, childID+".transcript.jsonl")
-	tw, err := NewTranscriptWriter(childTranscriptPath, childHeader)
+	tw, err := transcript.NewWriter(childTranscriptPath, childHeader)
 	if err != nil {
 		return "", fmt.Errorf("create child transcript: %w", err)
 	}

@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/llm"
@@ -21,16 +21,16 @@ type EntryProjector func(raw json.RawMessage, turnID string, turnIndex int) []ap
 type ImageProjector func(image llm.ImageData) appwire.InputItem
 
 // ScanPrelude reads the transcript header and first API call, if present.
-func ScanPrelude(path string, maxLineBytes int) (agent.TranscriptHeader, *agent.TranscriptAPICall) {
+func ScanPrelude(path string, maxLineBytes int) (transcript.Header, *transcript.APICall) {
 	f, err := os.Open(path)
 	if err != nil {
-		return agent.TranscriptHeader{}, nil
+		return transcript.Header{}, nil
 	}
 	defer f.Close() //nolint:errcheck // read-only file; close error is not actionable
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), maxLineBytes)
-	var header agent.TranscriptHeader
+	var header transcript.Header
 	for scanner.Scan() {
 		raw := scanner.Bytes()
 		var head struct {
@@ -43,7 +43,7 @@ func ScanPrelude(path string, maxLineBytes int) (agent.TranscriptHeader, *agent.
 		case "header":
 			_ = json.Unmarshal(raw, &header)
 		case "api_call":
-			var call agent.TranscriptAPICall
+			var call transcript.APICall
 			if err := json.Unmarshal(raw, &call); err == nil {
 				return header, &call
 			}
@@ -54,7 +54,7 @@ func ScanPrelude(path string, maxLineBytes int) (agent.TranscriptHeader, *agent.
 
 // PreludeTurn projects transcript header/API-call context into the synthetic
 // system turn shown before conversation entries.
-func PreludeTurn(header agent.TranscriptHeader, firstCall *agent.TranscriptAPICall) *appwire.Turn {
+func PreludeTurn(header transcript.Header, firstCall *transcript.APICall) *appwire.Turn {
 	var items []appwire.ThreadItem
 	systemPrompt := strings.TrimSpace(header.SystemPrompt)
 	if systemPrompt == "" && firstCall != nil {
@@ -363,7 +363,7 @@ func TurnsFromFile(path string, maxLineBytes int, project EntryProjector) []appw
 		case "header":
 			continue
 		case "api_call":
-			var call agent.TranscriptAPICall
+			var call transcript.APICall
 			if err := json.Unmarshal(raw, &call); err == nil && strings.TrimSpace(call.Error) != "" {
 				emitPrelude()
 				info := diagnostic.FromFields(call.Source, call.Title, call.Hint, call.Error)

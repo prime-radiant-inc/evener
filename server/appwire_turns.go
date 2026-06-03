@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/appserver"
 	"primeradiant.com/serf/internal/apptranscript"
@@ -26,7 +26,7 @@ func useTranscriptTurns(transcriptTurns, notificationTurns []appwire.Turn) bool 
 func appTurnsFromTranscriptFile(path string) []appwire.Turn {
 	toolNames := map[string]string{}
 	return apptranscript.TurnsFromFile(path, 128<<20, func(raw json.RawMessage, turnID string, entryIndex int) []appwire.ThreadItem {
-		var entry agent.TranscriptEntry
+		var entry transcript.Entry
 		if err := json.Unmarshal(raw, &entry); err != nil {
 			return nil
 		}

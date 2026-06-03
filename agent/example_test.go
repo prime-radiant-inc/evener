@@ -7,6 +7,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -67,11 +68,11 @@ func ExampleSession_Events() {
 }
 
 // The transcript schema types are plain structs that describe the on-disk
-// JSONL transcript. A [agent.TranscriptHeader] is the first line of the file,
+// JSONL transcript. A [transcript.Header] is the first line of the file,
 // and each subsequent [schema.Turn] is a typed history item. [schema.NewTurn]
 // stamps the current time.
 func ExampleNewTurn() {
-	header := agent.TranscriptHeader{
+	header := transcript.Header{
 		SessionID: "sess-123",
 		ProfileID: "openai/gpt-5.2",
 		Model:     "gpt-5.2",

@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -1406,7 +1407,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 // logAPICall records one round's request/response (or error) to the transcript.
 func (s *Session) logAPICall(round int, roundStart time.Time, llmLatency time.Duration, sys string, historyLen int, req llm.Request, resp llm.Response, err error) {
 	if s.transcript != nil {
-		apiCall := TranscriptAPICall{
+		apiCall := transcript.APICall{
 			Round:               round,
 			Timestamp:           roundStart.UTC().Format(time.RFC3339),
 			LatencyMs:           llmLatency.Milliseconds(),

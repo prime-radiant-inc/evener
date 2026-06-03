@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/internal/diagnostic"
 	"primeradiant.com/serf/llm"
@@ -773,9 +773,9 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 
 func TestAppTurnsFromTranscriptFilePreservesToolCallArguments(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
-	w, err := agent.NewTranscriptWriter(path, agent.TranscriptHeader{SessionID: "th_1"})
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1"})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("NewWriter: %v", err)
 	}
 	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Message{
 		Role: llm.RoleAssistant,
@@ -813,18 +813,18 @@ func TestAppTurnsFromTranscriptFilePreservesToolCallArguments(t *testing.T) {
 
 func TestAppTurnsFromTranscriptFileIncludesPrelude(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
-	w, err := agent.NewTranscriptWriter(path, agent.TranscriptHeader{
+	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID:    "th_1",
 		SystemPrompt: "You are Serf.",
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("NewWriter: %v", err)
 	}
 	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
 		t.Fatalf("append user: %v", err)
 	}
 	strict := true
-	if err := w.AppendAPICall(agent.TranscriptAPICall{
+	if err := w.AppendAPICall(transcript.APICall{
 		Round: 1,
 		Request: llm.APILogRequest{
 			Provider:  "openai",
@@ -875,9 +875,9 @@ func TestAppTurnsFromTranscriptFileIncludesPrelude(t *testing.T) {
 
 func TestAppTurnsFromTranscriptFileIncludesCompactionTurns(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
-	w, err := agent.NewTranscriptWriter(path, agent.TranscriptHeader{SessionID: "th_1"})
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1"})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("NewWriter: %v", err)
 	}
 	if err := w.Append(schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]\nfirst compacted state"))); err != nil {
 		t.Fatalf("append checkpoint: %v", err)
@@ -903,9 +903,9 @@ func TestAppTurnsFromTranscriptFileIncludesCompactionTurns(t *testing.T) {
 
 func TestServerAppWireThreadReadUsesTranscriptWhenReplayBufferDroppedPrefix(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
-	w, err := agent.NewTranscriptWriter(path, agent.TranscriptHeader{SessionID: "th_1"})
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_1"})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("NewWriter: %v", err)
 	}
 	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("first"))); err != nil {
 		t.Fatalf("append first: %v", err)

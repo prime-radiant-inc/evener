@@ -5,15 +5,15 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/llm"
 )
 
 func TestPreludeTurnRendersFullToolsOnly(t *testing.T) {
 	strict := true
-	turn := PreludeTurn(agent.TranscriptHeader{SystemPrompt: "You are Serf."}, &agent.TranscriptAPICall{
+	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Serf."}, &transcript.APICall{
 		Request: llm.APILogRequest{
 			ToolCount: 1,
 			ToolNames: []string{"read_file"},
@@ -50,7 +50,7 @@ func TestPreludeTurnRendersFullToolsOnly(t *testing.T) {
 }
 
 func TestPreludeTurnDoesNotRenderToolNamesWithoutDefinitions(t *testing.T) {
-	turn := PreludeTurn(agent.TranscriptHeader{SystemPrompt: "You are Serf."}, &agent.TranscriptAPICall{
+	turn := PreludeTurn(transcript.Header{SystemPrompt: "You are Serf."}, &transcript.APICall{
 		Request: llm.APILogRequest{
 			ToolCount: 2,
 			ToolNames: []string{"read_file", "apply_patch"},
@@ -67,14 +67,14 @@ func TestPreludeTurnDoesNotRenderToolNamesWithoutDefinitions(t *testing.T) {
 
 func TestTurnsFromFileProjectsPreludeAndAPICallError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
-	w, err := agent.NewTranscriptWriter(path, agent.TranscriptHeader{
+	w, err := transcript.NewWriter(path, transcript.Header{
 		SessionID:    "th_1",
 		SystemPrompt: "You are Serf.",
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := w.AppendAPICall(agent.TranscriptAPICall{
+	if err := w.AppendAPICall(transcript.APICall{
 		Request: llm.APILogRequest{
 			Tools: []llm.ToolDefinition{{Name: "read_file", Description: "Read a file."}},
 		},

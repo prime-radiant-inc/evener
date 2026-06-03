@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -729,14 +730,14 @@ func TestRestoreSession_UsesTranscriptOverSnapshot(t *testing.T) {
 
 	// Write a transcript file with different history.
 	tpath := filepath.Join(stateDir, sessionsSubdir, snap.ID+".transcript.jsonl")
-	tw, err := NewTranscriptWriter(tpath, TranscriptHeader{
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
 		SessionID: snap.ID,
 		CreatedAt: snap.CreatedAt,
 		ProfileID: snap.ProfileID,
 		Model:     snap.Model,
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("transcript-message"))); err != nil {
 		t.Fatalf("Append: %v", err)
@@ -875,14 +876,14 @@ func TestRestoreSession_TranscriptWithCompaction(t *testing.T) {
 
 	// Write a transcript with a checkpoint in the middle.
 	tpath := filepath.Join(stateDir, sessionsSubdir, snap.ID+".transcript.jsonl")
-	tw, err := NewTranscriptWriter(tpath, TranscriptHeader{
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
 		SessionID: snap.ID,
 		CreatedAt: snap.CreatedAt,
 		ProfileID: snap.ProfileID,
 		Model:     snap.Model,
 	})
 	if err != nil {
-		t.Fatalf("NewTranscriptWriter: %v", err)
+		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	// Pre-compaction turns (should be discarded by ResumeHistory).
 	tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("old-message-1")))

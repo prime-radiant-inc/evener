@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/task"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
@@ -1204,7 +1205,7 @@ func TestWeb_SessionImage_ServesShaReferencedInputImage(t *testing.T) {
 	wantSha := imageSha(imgBytes)
 
 	tpath := filepath.Join(proj, "sessions", "01IMG.transcript.jsonl")
-	tw, err := agent.NewTranscriptWriter(tpath, agent.TranscriptHeader{
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
 		SessionID: "01IMG", ProfileID: "openai", Model: "gpt-5",
 	})
 	if err != nil {
@@ -1276,7 +1277,7 @@ func TestWeb_SessionImage_UnknownSha(t *testing.T) {
 		t.Fatal(err)
 	}
 	tpath := filepath.Join(proj, "sessions", "01NOIMG.transcript.jsonl")
-	tw, err := agent.NewTranscriptWriter(tpath, agent.TranscriptHeader{
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
 		SessionID: "01NOIMG", ProfileID: "openai", Model: "gpt-5",
 	})
 	if err != nil {
@@ -2383,7 +2384,7 @@ func TestWeb_Fork_CallsForkSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	tpath := filepath.Join(sessionsDir, parentID+".transcript.jsonl")
-	tw, err := agent.NewTranscriptWriter(tpath, agent.TranscriptHeader{
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
 		SessionID: parentID, ProfileID: "openai", Model: "gpt-5",
 	})
 	if err != nil {

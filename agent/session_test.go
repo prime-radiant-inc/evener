@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -4643,7 +4644,7 @@ func TestSession_ProviderErrorStillRecordsTranscriptEntry(t *testing.T) {
 		t.Fatalf("readTranscriptFull: %v", rerr)
 	}
 	// Find the api_call entry that recorded the provider failure.
-	var found *TranscriptAPICall
+	var found *transcript.APICall
 	for i := range data.APICalls {
 		if data.APICalls[i].Error != "" {
 			found = &data.APICalls[i]
@@ -4829,7 +4830,7 @@ func TestProviderErrorTranscriptEntryStillRecorded(t *testing.T) {
 	if rerr != nil {
 		t.Fatalf("readTranscriptFull: %v", rerr)
 	}
-	var found *TranscriptAPICall
+	var found *transcript.APICall
 	for i := range data.APICalls {
 		if data.APICalls[i].Error != "" {
 			found = &data.APICalls[i]

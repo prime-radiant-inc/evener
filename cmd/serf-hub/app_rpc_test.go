@@ -18,6 +18,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/appsource"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
@@ -693,7 +694,7 @@ func TestHubRPCThreadReadIncludesTranscriptPrelude(t *testing.T) {
 	stateDir := filepath.Join(root, "projects", "prelude")
 	sessionID := "01PRELUDE00000000000001"
 	transcriptPath := filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl")
-	writer, err := agent.NewTranscriptWriter(transcriptPath, agent.TranscriptHeader{
+	writer, err := transcript.NewWriter(transcriptPath, transcript.Header{
 		SessionID:    sessionID,
 		CreatedAt:    time.Now().UTC(),
 		ProfileID:    "openai",
@@ -708,7 +709,7 @@ func TestHubRPCThreadReadIncludesTranscriptPrelude(t *testing.T) {
 		t.Fatal(err)
 	}
 	strict := true
-	if err := writer.AppendAPICall(agent.TranscriptAPICall{
+	if err := writer.AppendAPICall(transcript.APICall{
 		Round: 1,
 		Request: llm.APILogRequest{
 			Provider:  "openai",
@@ -4876,7 +4877,7 @@ func buildRPCParentSession(t *testing.T, stateDir string) string {
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writer, err := agent.NewTranscriptWriter(filepath.Join(stateDir, "sessions", parentID+".transcript.jsonl"), agent.TranscriptHeader{
+	writer, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", parentID+".transcript.jsonl"), transcript.Header{
 		SessionID:  parentID,
 		CreatedAt:  time.Now().UTC(),
 		ProfileID:  "openai",
@@ -4919,7 +4920,7 @@ func buildRPCFailedSession(t *testing.T, stateDir string) string {
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	writer, err := agent.NewTranscriptWriter(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"), agent.TranscriptHeader{
+	writer, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"), transcript.Header{
 		SessionID:  sessionID,
 		CreatedAt:  time.Now().UTC(),
 		ProfileID:  "openai",
@@ -4932,7 +4933,7 @@ func buildRPCFailedSession(t *testing.T, stateDir string) string {
 	if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.AppendAPICall(agent.TranscriptAPICall{
+	if err := writer.AppendAPICall(transcript.APICall{
 		Round: 1,
 		Request: llm.APILogRequest{
 			Provider: "openai",
@@ -4968,7 +4969,7 @@ func buildRPCStructuredFailedSession(t *testing.T, stateDir string) string {
 		t.Fatal(err)
 	}
 	transcriptPath := filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl")
-	writer, err := agent.NewTranscriptWriter(transcriptPath, agent.TranscriptHeader{
+	writer, err := transcript.NewWriter(transcriptPath, transcript.Header{
 		SessionID:  sessionID,
 		CreatedAt:  time.Now().UTC(),
 		ProfileID:  "openai",

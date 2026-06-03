@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/task"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -1587,7 +1588,7 @@ func TestSession_LLMError_WritesStructuredAPICallDiagnostic(t *testing.T) {
 	}
 
 	lines := readTranscriptLines(t, sess.TranscriptPath())
-	var got TranscriptAPICall
+	var got transcript.APICall
 	for _, line := range lines {
 		if strings.Contains(line, `"kind":"api_call"`) {
 			if err := json.Unmarshal([]byte(line), &got); err != nil {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -80,7 +81,7 @@ type atifFinalMetrics struct {
 }
 
 // convertToATIF converts a serf transcript (header + entries) into an ATIF v1.6 trajectory.
-func convertToATIF(header TranscriptHeader, entries []TranscriptEntry) atifTrajectory {
+func convertToATIF(header transcript.Header, entries []transcript.Entry) atifTrajectory {
 	version := header.BuildVersion
 	if version == "" {
 		version = "unknown"
@@ -386,7 +387,7 @@ func formatTimestamp(turn schema.Turn) string {
 }
 
 // buildRootExtra populates the trajectory-level extra map from the header.
-func buildRootExtra(header TranscriptHeader) map[string]any {
+func buildRootExtra(header transcript.Header) map[string]any {
 	extra := map[string]any{}
 	if header.WorkingDir != "" {
 		extra["working_dir"] = header.WorkingDir

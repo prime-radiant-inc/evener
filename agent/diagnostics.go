@@ -6,6 +6,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/diagnostic"
+	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
 )
 
@@ -100,7 +101,7 @@ func providerCauseFromError(err error, model string) *events.ErrorCause {
 	}
 }
 
-func setAPICallDiagnostic(call *TranscriptAPICall, err error) {
+func setAPICallDiagnostic(call *transcript.APICall, err error) {
 	if call == nil {
 		return
 	}
