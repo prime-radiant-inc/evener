@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/internal/toolname"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/llm"
 )
 
@@ -270,7 +271,7 @@ func TestSession_PluginAgentOverridesBuiltin(t *testing.T) {
 	defer sess.Close()
 
 	// Simulate a plugin agent overriding the built-in explorer.
-	sess.pluginAgents["explorer"] = PluginAgent{
+	sess.pluginAgents["explorer"] = plugin.Agent{
 		Name:         "explorer",
 		Description:  "Custom explorer from plugin",
 		Model:        "inherit",
@@ -287,7 +288,7 @@ func TestSession_PluginAgentOverridesBuiltin(t *testing.T) {
 // --- available-agents section tag ---
 
 func TestAvailableAgentsSection_UsesAvailableAgentsTag(t *testing.T) {
-	agents := map[string]PluginAgent{
+	agents := map[string]plugin.Agent{
 		"explorer": {Name: "explorer", Description: "Explores code"},
 	}
 	result := renderAvailableAgentsSectionForTest(t, agents)

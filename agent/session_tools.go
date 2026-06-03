@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/internal/toolname"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
@@ -213,7 +214,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 	}
 	// PreToolUse hooks
 	if s.hookRunner != nil {
-		hi := s.hookInput(HookPreToolUse)
+		hi := s.hookInput(plugin.HookPreToolUse)
 		hi.ToolName = toolname.SerfToClaude(call.Name)
 		if len(call.Arguments) > 0 {
 			_ = json.Unmarshal(call.Arguments, &hi.ToolInput)
@@ -361,7 +362,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 
 	// PostToolUse hooks
 	if s.hookRunner != nil {
-		hi := s.hookInput(HookPostToolUse)
+		hi := s.hookInput(plugin.HookPostToolUse)
 		hi.ToolName = toolname.SerfToClaude(call.Name)
 		hi.ToolResult = res.FullOutput
 		postResult := s.hookRunner.RunPostToolUse(ctx, hi)
@@ -468,7 +469,7 @@ func (s *Session) allToolDefinitions(_ int) []llm.ToolDefinition {
 	return s.cachedToolDefs
 }
 
-func (s *Session) defaultToolSummaryForAgent(agent PluginAgent) string {
+func (s *Session) defaultToolSummaryForAgent(agent plugin.Agent) string {
 	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(&agent)
 	var canonical []string
 	switch {

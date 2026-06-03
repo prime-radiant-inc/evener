@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/skill"
 	taskpkg "primeradiant.com/serf/agent/task"
 )
@@ -108,7 +109,7 @@ func removeRootOnlyAgentManagementTools(items []string) []string {
 	return removeStrings(items, rootOnlyAgentManagementTools)
 }
 
-func agentUsesRootOnlyManagementTools(agent PluginAgent) bool {
+func agentUsesRootOnlyManagementTools(agent plugin.Agent) bool {
 	for _, tool := range agent.Tools {
 		if isRootOnlyAgentManagementTool(tool) {
 			return true
@@ -117,7 +118,7 @@ func agentUsesRootOnlyManagementTools(agent PluginAgent) bool {
 	return false
 }
 
-func baseSubagentToolPolicy(agent *PluginAgent) (allTools bool, allowed []string, denied []string) {
+func baseSubagentToolPolicy(agent *plugin.Agent) (allTools bool, allowed []string, denied []string) {
 	switch {
 	case agent != nil && agent.AllTools:
 		return true, nil, nil
@@ -130,7 +131,7 @@ func baseSubagentToolPolicy(agent *PluginAgent) (allTools bool, allowed []string
 	}
 }
 
-func subagentNeedsCommunicateNudge(agent *PluginAgent) bool {
+func subagentNeedsCommunicateNudge(agent *plugin.Agent) bool {
 	if agent == nil {
 		return true
 	}
@@ -150,7 +151,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	}
 
 	// Look up plugin agent configuration when agent_type is specified.
-	var agent *PluginAgent
+	var agent *plugin.Agent
 	if agentType = strings.TrimSpace(agentType); agentType != "" {
 		a, ok := s.pluginAgents[agentType]
 		if !ok {
@@ -550,7 +551,7 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	if a.sess == nil || a.sess.hookRunner == nil {
 		return res, err
 	}
-	input := a.sess.hookInput(HookSubagentStop)
+	input := a.sess.hookInput(plugin.HookSubagentStop)
 	if err != nil {
 		input.Reason = err.Error()
 	} else {

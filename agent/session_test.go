@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/llm"
@@ -109,7 +110,7 @@ func (s compactionEventStrategy) AfterAction(ctx context.Context, history []sche
 	return nil
 }
 
-func countHookStarts(evs []events.SessionEvent, event HookEvent) int {
+func countHookStarts(evs []events.SessionEvent, event plugin.HookEvent) int {
 	count := 0
 	for _, ev := range evs {
 		if ev.Kind != events.EventHookStart {
@@ -1364,7 +1365,7 @@ func TestSession_PreToolUseUpdatedInputRewritesToolCall(t *testing.T) {
 	defer sess.Close()
 
 	runner := newHookRunner(nil, "")
-	runner.Add(HookPreToolUse, RegisteredHook{
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
 		Matcher: "Write",
 		Type:    "command",
 		Command: `echo '{"hookSpecificOutput":{"updatedInput":{"content":"rewritten by hook"}}}'`,
@@ -1409,7 +1410,7 @@ func TestSession_PreCompactHookOnlyRunsWhenCompactionEmits(t *testing.T) {
 	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
 		sess.emit(kind, data)
 	})
-	runner.Add(HookPreCompact, RegisteredHook{
+	runner.Add(plugin.HookPreCompact, plugin.RegisteredHook{
 		Matcher: "*",
 		Type:    "command",
 		Command: `echo precompact`,
@@ -1427,7 +1428,7 @@ func TestSession_PreCompactHookOnlyRunsWhenCompactionEmits(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if got := countHookStarts(*eventsPtr, HookPreCompact); got != 0 {
+	if got := countHookStarts(*eventsPtr, plugin.HookPreCompact); got != 0 {
 		t.Fatalf("PreCompact hook starts = %d, want 0 without compaction", got)
 	}
 }
@@ -1451,7 +1452,7 @@ func TestSession_PreCompactHookRunsAtCompactionBoundary(t *testing.T) {
 	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
 		sess.emit(kind, data)
 	})
-	runner.Add(HookPreCompact, RegisteredHook{
+	runner.Add(plugin.HookPreCompact, plugin.RegisteredHook{
 		Matcher: "*",
 		Type:    "command",
 		Command: `echo precompact`,
@@ -1469,7 +1470,7 @@ func TestSession_PreCompactHookRunsAtCompactionBoundary(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if got := countHookStarts(*eventsPtr, HookPreCompact); got != 1 {
+	if got := countHookStarts(*eventsPtr, plugin.HookPreCompact); got != 1 {
 		t.Fatalf("PreCompact hook starts = %d, want 1", got)
 	}
 }
@@ -1534,7 +1535,7 @@ func TestSession_NotificationHookRunsOnWarning(t *testing.T) {
 
 	marker := filepath.Join(dir, "notification-hook")
 	runner := newHookRunner(nil, "")
-	runner.Add(HookNotification, RegisteredHook{
+	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
 		Matcher: "*",
 		Type:    "command",
 		Command: "touch " + shellQuote(marker),

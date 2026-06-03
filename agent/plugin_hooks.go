@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -16,202 +15,9 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/toolname"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/llm"
 )
-
-// HookEvent identifies when a hook fires.
-type HookEvent string
-
-const (
-	// HookPreToolUse fires before a tool is used.
-	HookPreToolUse HookEvent = "PreToolUse"
-	// HookPostToolUse fires after a tool is used.
-	HookPostToolUse HookEvent = "PostToolUse"
-	// HookStop fires when the session stops.
-	HookStop HookEvent = "Stop"
-	// HookSubagentStop fires when a subagent stops.
-	HookSubagentStop HookEvent = "SubagentStop"
-	// HookUserPromptSubmit fires when a user prompt is submitted.
-	HookUserPromptSubmit HookEvent = "UserPromptSubmit"
-	// HookSessionStart fires when a session starts.
-	HookSessionStart HookEvent = "SessionStart"
-	// HookSessionEnd fires when a session ends.
-	HookSessionEnd HookEvent = "SessionEnd"
-	// HookPreCompact fires before compaction.
-	HookPreCompact HookEvent = "PreCompact"
-	// HookNotification fires on a notification.
-	HookNotification HookEvent = "Notification"
-)
-
-// SessionStartKind is the matcher target used for SessionStart hooks.
-// Claude Code-style hooks distinguish ordinary startup from resume, clear,
-// and compaction lifecycle boundaries.
-type SessionStartKind string
-
-const (
-	// SessionStartKindStartup targets ordinary session startup.
-	SessionStartKindStartup SessionStartKind = "startup"
-	// SessionStartKindResume targets session resume.
-	SessionStartKindResume SessionStartKind = "resume"
-	// SessionStartKindClear targets session clear.
-	SessionStartKindClear SessionStartKind = "clear"
-	// SessionStartKindCompact targets the compaction lifecycle boundary.
-	SessionStartKindCompact SessionStartKind = "compact"
-)
-
-// validHookEvents is the set of recognized event names.
-var validHookEvents = map[HookEvent]bool{
-	HookPreToolUse:       true,
-	HookPostToolUse:      true,
-	HookStop:             true,
-	HookSubagentStop:     true,
-	HookUserPromptSubmit: true,
-	HookSessionStart:     true,
-	HookSessionEnd:       true,
-	HookPreCompact:       true,
-	HookNotification:     true,
-}
-
-// RegisteredHook describes a single hook action within a matcher group.
-type RegisteredHook struct {
-	Matcher    string // regex pattern, "*" = match all
-	Type       string // "command" or "prompt"
-	Command    string // for command hooks
-	Prompt     string // for prompt hooks
-	Timeout    int    // seconds (default: 60 for command, 30 for prompt)
-	Model      string // for prompt hooks (optional)
-	PluginName string // name of the plugin that registered this hook
-	PluginDir  string // CLAUDE_PLUGIN_ROOT
-}
-
-// hookMatcherGroup is the JSON shape of a matcher group within an event.
-type hookMatcherGroup struct {
-	Matcher string     `json:"matcher"`
-	Hooks   []hookSpec `json:"hooks"`
-}
-
-// hookSpec is the JSON shape of an individual hook action.
-type hookSpec struct {
-	Type    string `json:"type"`
-	Command string `json:"command,omitempty"`
-	Prompt  string `json:"prompt,omitempty"`
-	Timeout int    `json:"timeout,omitempty"`
-	Model   string `json:"model,omitempty"`
-}
-
-// parsePluginHooks parses hook configuration from JSON data.
-// Accepts wrapper format ({"hooks": {...}}) or direct format (events at top level).
-// Expands plugin-root placeholders in Command and Prompt fields.
-func parsePluginHooks(data []byte, pluginDir, pluginName string) (map[HookEvent][]RegisteredHook, error) {
-	// Try wrapper format first: {"hooks": {...}} or {"description": "...", "hooks": {...}}
-	var wrapper struct {
-		Hooks json.RawMessage `json:"hooks"`
-	}
-	if err := json.Unmarshal(data, &wrapper); err != nil {
-		return nil, fmt.Errorf("parsing hooks JSON: %w", err)
-	}
-
-	var eventsRaw map[string]json.RawMessage
-	if wrapper.Hooks != nil {
-		if err := json.Unmarshal(wrapper.Hooks, &eventsRaw); err != nil {
-			return nil, fmt.Errorf("parsing hooks wrapper: %w", err)
-		}
-	} else {
-		// Direct format: events at top level
-		if err := json.Unmarshal(data, &eventsRaw); err != nil {
-			return nil, fmt.Errorf("parsing hooks direct format: %w", err)
-		}
-		// Remove non-event keys (like "description")
-		for k := range eventsRaw {
-			if !validHookEvents[HookEvent(k)] {
-				delete(eventsRaw, k)
-			}
-		}
-	}
-
-	result := make(map[HookEvent][]RegisteredHook)
-
-	for eventName, raw := range eventsRaw {
-		event := HookEvent(eventName)
-		if !validHookEvents[event] {
-			continue
-		}
-
-		var groups []hookMatcherGroup
-		if err := json.Unmarshal(raw, &groups); err != nil {
-			return nil, fmt.Errorf("parsing hooks for event %q: %w", eventName, err)
-		}
-
-		for _, g := range groups {
-			for _, spec := range g.Hooks {
-				timeout := spec.Timeout
-				if timeout == 0 {
-					switch spec.Type {
-					case "command":
-						timeout = 60
-					case "prompt":
-						timeout = 30
-					}
-				}
-
-				rh := RegisteredHook{
-					Matcher:    g.Matcher,
-					Type:       spec.Type,
-					Command:    expandPluginRoot(spec.Command, pluginDir),
-					Prompt:     expandPluginRoot(spec.Prompt, pluginDir),
-					Timeout:    timeout,
-					Model:      spec.Model,
-					PluginName: pluginName,
-					PluginDir:  pluginDir,
-				}
-				result[event] = append(result[event], rh)
-			}
-		}
-	}
-
-	return result, nil
-}
-
-// discoverPluginHooks finds and parses hook configuration for a plugin.
-// If manifestHooks is a JSON string, it is treated as a path to a hooks file.
-// If manifestHooks is a JSON object, it is parsed inline.
-// Otherwise, reads <pluginDir>/hooks/hooks.json if it exists.
-func discoverPluginHooks(pluginDir string, manifestHooks json.RawMessage, pluginName string) (map[HookEvent][]RegisteredHook, error) {
-	if len(manifestHooks) > 0 {
-		trimmed := bytes.TrimLeft(manifestHooks, " \t\n\r")
-		if len(trimmed) > 0 && trimmed[0] == '"' {
-			// String value: path to hooks file
-			var path string
-			if err := json.Unmarshal(manifestHooks, &path); err != nil {
-				return nil, fmt.Errorf("parsing hooks path: %w", err)
-			}
-			path = expandPluginRoot(path, pluginDir)
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(pluginDir, path)
-			}
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return nil, fmt.Errorf("reading hooks file %q: %w", path, err)
-			}
-			return parsePluginHooks(data, pluginDir, pluginName)
-		}
-		if len(trimmed) > 0 && trimmed[0] == '{' {
-			// Object value: inline hooks config
-			return parsePluginHooks(manifestHooks, pluginDir, pluginName)
-		}
-	}
-
-	// Default: read <pluginDir>/hooks/hooks.json
-	defaultPath := filepath.Join(pluginDir, "hooks", "hooks.json")
-	data, err := os.ReadFile(defaultPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return map[HookEvent][]RegisteredHook{}, nil
-		}
-		return nil, fmt.Errorf("reading hooks file %q: %w", defaultPath, err)
-	}
-	return parsePluginHooks(data, pluginDir, pluginName)
-}
 
 // hookInput is the JSON payload piped to command hooks via stdin.
 type hookInput struct {
@@ -236,7 +42,7 @@ type hookResult struct {
 // executeCommandHook runs a command hook with the given input piped as JSON to stdin.
 // Non-zero exit codes are captured in hookResult.ExitCode, not returned as Go errors.
 // Only returns an error for infrastructure failures (timeout, process start failure).
-func executeCommandHook(ctx context.Context, hook RegisteredHook, input hookInput) (hookResult, error) {
+func executeCommandHook(ctx context.Context, hook plugin.RegisteredHook, input hookInput) (hookResult, error) {
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
 		return hookResult{}, fmt.Errorf("marshaling hook input: %w", err)
@@ -329,7 +135,7 @@ func substituteHookVariables(prompt string, input hookInput) string {
 }
 
 // executePromptHook runs a prompt hook by calling the LLM with the substituted prompt.
-func executePromptHook(ctx context.Context, client promptHookClient, model string, hook RegisteredHook, input hookInput) (hookResult, error) {
+func executePromptHook(ctx context.Context, client promptHookClient, model string, hook plugin.RegisteredHook, input hookInput) (hookResult, error) {
 	prompt := substituteHookVariables(hook.Prompt, input)
 
 	reqModel := model
@@ -355,7 +161,7 @@ func executePromptHook(ctx context.Context, client promptHookClient, model strin
 
 // hookRunner orchestrates hook matching and parallel dispatch.
 type hookRunner struct {
-	hooks   map[HookEvent][]RegisteredHook
+	hooks   map[plugin.HookEvent][]plugin.RegisteredHook
 	client  promptHookClient
 	model   string
 	onEvent func(events.EventKind, events.EventData) // optional event callback
@@ -371,7 +177,7 @@ func (r *hookRunner) SetEventCallback(fn func(events.EventKind, events.EventData
 // for prompt hooks.
 func newHookRunner(client promptHookClient, model string) *hookRunner {
 	return &hookRunner{
-		hooks:  make(map[HookEvent][]RegisteredHook),
+		hooks:  make(map[plugin.HookEvent][]plugin.RegisteredHook),
 		client: client,
 		model:  model,
 	}
@@ -379,8 +185,8 @@ func newHookRunner(client promptHookClient, model string) *hookRunner {
 
 // Summary returns the number of registered hooks per event.
 // Events with zero hooks are omitted.
-func (r *hookRunner) Summary() map[HookEvent]int {
-	out := make(map[HookEvent]int)
+func (r *hookRunner) Summary() map[plugin.HookEvent]int {
+	out := make(map[plugin.HookEvent]int)
 	for event, hooks := range r.hooks {
 		if len(hooks) > 0 {
 			out[event] = len(hooks)
@@ -390,14 +196,14 @@ func (r *hookRunner) Summary() map[HookEvent]int {
 }
 
 // Add registers hooks for an event.
-func (r *hookRunner) Add(event HookEvent, hooks ...RegisteredHook) {
+func (r *hookRunner) Add(event plugin.HookEvent, hooks ...plugin.RegisteredHook) {
 	r.hooks[event] = append(r.hooks[event], hooks...)
 }
 
 // matchHooks returns hooks registered for the event whose Matcher matches toolName.
 // "*" matches everything; other matchers are compiled as regex.
-func (r *hookRunner) matchHooks(event HookEvent, toolName string) []RegisteredHook {
-	var matched []RegisteredHook
+func (r *hookRunner) matchHooks(event plugin.HookEvent, toolName string) []plugin.RegisteredHook {
+	var matched []plugin.RegisteredHook
 	for _, hook := range r.hooks[event] {
 		if hook.Matcher == "*" {
 			matched = append(matched, hook)
@@ -516,7 +322,7 @@ func parseHookOutput(stdout string, exitCode int) parsedHookOutput {
 }
 
 // runHook executes a single hook (command or prompt) and returns the parsed output.
-func (r *hookRunner) runHook(ctx context.Context, hook RegisteredHook, input hookInput) parsedHookOutput {
+func (r *hookRunner) runHook(ctx context.Context, hook plugin.RegisteredHook, input hookInput) parsedHookOutput {
 	var hr hookResult
 	var err error
 
@@ -545,7 +351,7 @@ func (r *hookRunner) runHook(ctx context.Context, hook RegisteredHook, input hoo
 }
 
 // runAll executes all matched hooks in parallel and returns their parsed outputs.
-func (r *hookRunner) runAll(ctx context.Context, event HookEvent, toolName string, input hookInput) []parsedHookOutput {
+func (r *hookRunner) runAll(ctx context.Context, event plugin.HookEvent, toolName string, input hookInput) []parsedHookOutput {
 	claudeName := toolname.SerfToClaude(toolName)
 	matched := r.matchHooks(event, claudeName)
 	if len(matched) == 0 {
@@ -557,7 +363,7 @@ func (r *hookRunner) runAll(ctx context.Context, event HookEvent, toolName strin
 	wg.Add(len(matched))
 
 	for i, hook := range matched {
-		go func(idx int, h RegisteredHook) {
+		go func(idx int, h plugin.RegisteredHook) {
 			defer wg.Done()
 			if r.onEvent != nil {
 				r.onEvent(events.EventHookStart, events.HookStartData{
@@ -590,7 +396,7 @@ func (r *hookRunner) runAll(ctx context.Context, event HookEvent, toolName strin
 // RunPreToolUse dispatches PreToolUse hooks and aggregates results.
 // Any deny from any hook means denied.
 func (r *hookRunner) RunPreToolUse(ctx context.Context, input hookInput) preToolUseResult {
-	outputs := r.runAll(ctx, HookPreToolUse, input.ToolName, input)
+	outputs := r.runAll(ctx, plugin.HookPreToolUse, input.ToolName, input)
 	var result preToolUseResult
 	for _, o := range outputs {
 		if o.SystemMessage != "" {
@@ -624,22 +430,22 @@ func mergeHookInputMaps(dst map[string]any, src map[string]any) map[string]any {
 
 // RunPostToolUse dispatches PostToolUse hooks and aggregates system messages.
 func (r *hookRunner) RunPostToolUse(ctx context.Context, input hookInput) hookRunResult {
-	outputs := r.runAll(ctx, HookPostToolUse, input.ToolName, input)
+	outputs := r.runAll(ctx, plugin.HookPostToolUse, input.ToolName, input)
 	return collectSystemMessages(outputs)
 }
 
 // RunStop dispatches Stop hooks and aggregates results.
 // Any block from any hook means blocked.
 func (r *hookRunner) RunStop(ctx context.Context, input hookInput) stopResult {
-	return r.runStopEvent(ctx, HookStop, input)
+	return r.runStopEvent(ctx, plugin.HookStop, input)
 }
 
 // RunSubagentStop dispatches SubagentStop hooks and aggregates results.
 func (r *hookRunner) RunSubagentStop(ctx context.Context, input hookInput) stopResult {
-	return r.runStopEvent(ctx, HookSubagentStop, input)
+	return r.runStopEvent(ctx, plugin.HookSubagentStop, input)
 }
 
-func (r *hookRunner) runStopEvent(ctx context.Context, event HookEvent, input hookInput) stopResult {
+func (r *hookRunner) runStopEvent(ctx context.Context, event plugin.HookEvent, input hookInput) stopResult {
 	outputs := r.runAll(ctx, event, input.ToolName, input)
 	var result stopResult
 	for _, o := range outputs {
@@ -658,39 +464,39 @@ func (r *hookRunner) runStopEvent(ctx context.Context, event HookEvent, input ho
 
 // RunUserPromptSubmit dispatches UserPromptSubmit hooks.
 func (r *hookRunner) RunUserPromptSubmit(ctx context.Context, input hookInput) hookRunResult {
-	outputs := r.runAll(ctx, HookUserPromptSubmit, "", input)
+	outputs := r.runAll(ctx, plugin.HookUserPromptSubmit, "", input)
 	return collectSystemMessages(outputs)
 }
 
 // RunSessionStart dispatches startup SessionStart hooks.
 func (r *hookRunner) RunSessionStart(ctx context.Context, input hookInput) hookRunResult {
-	return r.RunSessionStartFor(ctx, input, SessionStartKindStartup)
+	return r.RunSessionStartFor(ctx, input, plugin.SessionStartKindStartup)
 }
 
 // RunSessionStartFor dispatches SessionStart hooks for a specific startup kind.
-func (r *hookRunner) RunSessionStartFor(ctx context.Context, input hookInput, kind SessionStartKind) hookRunResult {
+func (r *hookRunner) RunSessionStartFor(ctx context.Context, input hookInput, kind plugin.SessionStartKind) hookRunResult {
 	target := strings.TrimSpace(string(kind))
 	if target == "" {
-		target = string(SessionStartKindStartup)
+		target = string(plugin.SessionStartKindStartup)
 	}
-	outputs := r.runAll(ctx, HookSessionStart, target, input)
+	outputs := r.runAll(ctx, plugin.HookSessionStart, target, input)
 	return collectSystemMessages(outputs)
 }
 
 // RunSessionEnd dispatches SessionEnd hooks. No return value needed.
 func (r *hookRunner) RunSessionEnd(ctx context.Context, input hookInput) {
-	r.runAll(ctx, HookSessionEnd, "", input)
+	r.runAll(ctx, plugin.HookSessionEnd, "", input)
 }
 
 // RunPreCompact dispatches PreCompact hooks.
 func (r *hookRunner) RunPreCompact(ctx context.Context, input hookInput) hookRunResult {
-	outputs := r.runAll(ctx, HookPreCompact, "", input)
+	outputs := r.runAll(ctx, plugin.HookPreCompact, "", input)
 	return collectSystemMessages(outputs)
 }
 
 // RunNotification dispatches Notification hooks.
 func (r *hookRunner) RunNotification(ctx context.Context, input hookInput) hookRunResult {
-	outputs := r.runAll(ctx, HookNotification, "", input)
+	outputs := r.runAll(ctx, plugin.HookNotification, "", input)
 	return collectSystemMessages(outputs)
 }
 

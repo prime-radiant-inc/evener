@@ -5,11 +5,12 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
 )
 
-func renderAvailableAgentsSectionForTest(t *testing.T, agents map[string]PluginAgent) string {
+func renderAvailableAgentsSectionForTest(t *testing.T, agents map[string]plugin.Agent) string {
 	t.Helper()
 
 	client := llm.NewClient()
@@ -21,7 +22,7 @@ func renderAvailableAgentsSectionForTest(t *testing.T, agents map[string]PluginA
 	}
 	defer sess.Close()
 
-	sess.pluginAgents = make(map[string]PluginAgent, len(agents))
+	sess.pluginAgents = make(map[string]plugin.Agent, len(agents))
 	for name, agent := range agents {
 		sess.pluginAgents[name] = agent
 	}
@@ -42,14 +43,14 @@ func TestAvailableAgentsSection_NoAgents(t *testing.T) {
 	if result != "" {
 		t.Errorf("expected empty string for nil, got %q", result)
 	}
-	result = renderAvailableAgentsSectionForTest(t, map[string]PluginAgent{})
+	result = renderAvailableAgentsSectionForTest(t, map[string]plugin.Agent{})
 	if result != "" {
 		t.Errorf("expected empty string for empty map, got %q", result)
 	}
 }
 
 func TestAvailableAgentsSection_WithAgents(t *testing.T) {
-	agents := map[string]PluginAgent{
+	agents := map[string]plugin.Agent{
 		"my-plugin:reviewer": {
 			Name:        "reviewer",
 			Description: "Reviews code for quality",
@@ -90,7 +91,7 @@ func TestAvailableAgentsSection_WithAgents(t *testing.T) {
 }
 
 func TestAvailableAgentsSection_Sorted(t *testing.T) {
-	agents := map[string]PluginAgent{
+	agents := map[string]plugin.Agent{
 		"z-plugin:agent": {Name: "agent", Description: "Z agent", PluginName: "z-plugin"},
 		"a-plugin:agent": {Name: "agent", Description: "A agent", PluginName: "a-plugin"},
 	}
@@ -106,7 +107,7 @@ func TestAvailableAgentsSection_Sorted(t *testing.T) {
 }
 
 func TestAvailableAgentsSection_OmitsTopLevelOnlyAgents(t *testing.T) {
-	agents := map[string]PluginAgent{
+	agents := map[string]plugin.Agent{
 		"coordinator": {Name: "coordinator", Description: "Delegates to agents", Tools: []string{"read_file", "spawn_agent"}},
 		"reviewer":    {Name: "reviewer", Description: "Reviews work", Tools: []string{"read_file"}},
 	}

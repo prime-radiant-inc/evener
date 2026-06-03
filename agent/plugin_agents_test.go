@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/serf/agent/plugin"
 )
 
 func TestParsePluginAgent(t *testing.T) {
@@ -23,9 +25,9 @@ You are a code review specialist.
 2. Analyze for issues
 3. Report findings`
 
-	agent, err := parsePluginAgent([]byte(content), "my-plugin")
+	agent, err := plugin.ParseAgent([]byte(content), "my-plugin")
 	if err != nil {
-		t.Fatalf("parsePluginAgent: %v", err)
+		t.Fatalf("plugin.ParseAgent: %v", err)
 	}
 	if agent.Name != "code-reviewer" {
 		t.Errorf("Name = %q", agent.Name)
@@ -67,7 +69,7 @@ func TestParsePluginAgent_MissingRequired(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parsePluginAgent([]byte(tc.content), "p")
+			_, err := plugin.ParseAgent([]byte(tc.content), "p")
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -78,7 +80,7 @@ func TestParsePluginAgent_MissingRequired(t *testing.T) {
 func TestParsePluginAgent_OptionalModelAndColor(t *testing.T) {
 	// Model and color are optional — default to "inherit" and "blue".
 	content := "---\nname: test\ndescription: does things\n---\nbody"
-	agent, err := parsePluginAgent([]byte(content), "p")
+	agent, err := plugin.ParseAgent([]byte(content), "p")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -92,7 +94,7 @@ func TestParsePluginAgent_OptionalModelAndColor(t *testing.T) {
 
 func TestParsePluginAgent_NoTools(t *testing.T) {
 	content := "---\nname: test\ndescription: desc\nmodel: inherit\ncolor: green\n---\nbody"
-	agent, err := parsePluginAgent([]byte(content), "p")
+	agent, err := plugin.ParseAgent([]byte(content), "p")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -103,7 +105,7 @@ func TestParsePluginAgent_NoTools(t *testing.T) {
 
 func TestParsePluginAgent_AllToolsScalar(t *testing.T) {
 	content := "---\nname: test\ndescription: desc\ntools: all\n---\nbody"
-	agent, err := parsePluginAgent([]byte(content), "p")
+	agent, err := plugin.ParseAgent([]byte(content), "p")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -123,7 +125,7 @@ func TestParsePluginAgent_AllToolsListFormsRejected(t *testing.T) {
 		"---\nname: test\ndescription: desc\ntools: [all, shell]\n---\nbody",
 	}
 	for _, content := range cases {
-		_, err := parsePluginAgent([]byte(content), "p")
+		_, err := plugin.ParseAgent([]byte(content), "p")
 		if err == nil {
 			t.Fatal("expected error")
 		}
@@ -135,9 +137,9 @@ func TestParsePluginAgent_AllToolsListFormsRejected(t *testing.T) {
 
 func TestParsePluginAgent_Skills(t *testing.T) {
 	data := []byte("---\nname: test-eng\ndescription: test engineer\nskills: [test-engineering, debugging]\n---\nYou write tests.\n")
-	agent, err := parsePluginAgent(data, "builtin")
+	agent, err := plugin.ParseAgent(data, "builtin")
 	if err != nil {
-		t.Fatalf("parsePluginAgent: %v", err)
+		t.Fatalf("plugin.ParseAgent: %v", err)
 	}
 	if len(agent.Skills) != 2 {
 		t.Fatalf("Skills = %v, want 2 items", agent.Skills)
@@ -149,9 +151,9 @@ func TestParsePluginAgent_Skills(t *testing.T) {
 
 func TestParsePluginAgent_NoSkills(t *testing.T) {
 	data := []byte("---\nname: explorer\ndescription: explore\n---\nRead-only.\n")
-	agent, err := parsePluginAgent(data, "builtin")
+	agent, err := plugin.ParseAgent(data, "builtin")
 	if err != nil {
-		t.Fatalf("parsePluginAgent: %v", err)
+		t.Fatalf("plugin.ParseAgent: %v", err)
 	}
 	if len(agent.Skills) != 0 {
 		t.Errorf("Skills = %v, want empty", agent.Skills)
@@ -166,7 +168,7 @@ func TestDiscoverPluginAgents(t *testing.T) {
 		[]byte("---\nname: reviewer\ndescription: reviews code\nmodel: inherit\ncolor: blue\n---\nYou review."),
 		0644)
 
-	plugin, err := LoadPlugin(dir)
+	plugin, err := plugin.Load(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +183,7 @@ func TestDiscoverPluginAgents(t *testing.T) {
 
 func TestDiscoverPluginAgents_NoAgentsDir(t *testing.T) {
 	dir := makePluginDir(t, "no-agents")
-	plugin, err := LoadPlugin(dir)
+	plugin, err := plugin.Load(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +202,7 @@ func TestDiscoverPluginAgents_SkipsNonMd(t *testing.T) {
 	os.WriteFile(filepath.Join(agentsDir, "notes.txt"),
 		[]byte("not an agent"), 0644)
 
-	plugin, err := LoadPlugin(dir)
+	plugin, err := plugin.Load(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +213,7 @@ func TestDiscoverPluginAgents_SkipsNonMd(t *testing.T) {
 
 func TestParsePluginAgent_WithTasks(t *testing.T) {
 	input := []byte("---\nname: test-agent\ndescription: \"Test agent\"\nmodel: inherit\ntasks:\n  - title: First step\n    prompt: \"Do the first thing\"\n    reasoning_effort: low\n  - title: Do work\n    insert: parent_tasks\n    prompt: \"Implement it\"\n    reasoning_effort: xhigh\n  - title: Verify\n    prompt: \"Check it\"\n---\n\nYou are a test agent.\n")
-	agent, err := parsePluginAgent(input, "test-plugin")
+	agent, err := plugin.ParseAgent(input, "test-plugin")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +236,7 @@ func TestParsePluginAgent_WithTasks(t *testing.T) {
 
 func TestParsePluginAgent_NoTasks(t *testing.T) {
 	input := []byte("---\nname: simple\ndescription: \"No tasks\"\n---\n\nJust a prompt.\n")
-	agent, err := parsePluginAgent(input, "builtin")
+	agent, err := plugin.ParseAgent(input, "builtin")
 	if err != nil {
 		t.Fatal(err)
 	}

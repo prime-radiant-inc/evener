@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/llm"
 )
@@ -124,7 +125,7 @@ func TestSpawnAgent_PluginAgentType_SystemPrompt(t *testing.T) {
 	defer sess.Close()
 
 	// Register a plugin agent
-	sess.pluginAgents = map[string]PluginAgent{
+	sess.pluginAgents = map[string]plugin.Agent{
 		"my-plugin:reviewer": {
 			Name:         "reviewer",
 			Description:  "Code reviewer",
@@ -185,7 +186,7 @@ func TestSpawnAgent_PluginAgentType_ModelOverride(t *testing.T) {
 	}
 	defer sess.Close()
 
-	sess.pluginAgents = map[string]PluginAgent{
+	sess.pluginAgents = map[string]plugin.Agent{
 		"my-plugin:fast-agent": {
 			Name:         "fast-agent",
 			Description:  "Fast agent",
@@ -238,7 +239,7 @@ func TestSpawnAgent_PluginAgentType_InheritModel(t *testing.T) {
 	}
 	defer sess.Close()
 
-	sess.pluginAgents = map[string]PluginAgent{
+	sess.pluginAgents = map[string]plugin.Agent{
 		"my-plugin:helper": {
 			Name:         "helper",
 			Description:  "Helper agent",
@@ -293,7 +294,7 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 	}
 	defer sess.Close()
 
-	sess.pluginAgents = map[string]PluginAgent{
+	sess.pluginAgents = map[string]plugin.Agent{
 		"my-plugin:reader": {
 			Name:         "reader",
 			Description:  "Read-only agent",
@@ -358,7 +359,7 @@ func TestSpawnAgent_PluginAgentType_RejectsTopLevelOnlyAgent(t *testing.T) {
 	}
 	defer sess.Close()
 
-	sess.pluginAgents = map[string]PluginAgent{
+	sess.pluginAgents = map[string]plugin.Agent{
 		"my-plugin:coordinator": {
 			Name:         "coordinator",
 			Description:  "Delegates to agents",
@@ -404,7 +405,7 @@ func TestSpawnAgent_PluginAgentType_GrantTools_AddsProviderVisibleTool(t *testin
 	}
 	defer sess.Close()
 
-	sess.pluginAgents = map[string]PluginAgent{
+	sess.pluginAgents = map[string]plugin.Agent{
 		"my-plugin:reader": {
 			Name:         "reader",
 			Description:  "Read-only agent",
@@ -463,7 +464,7 @@ func TestSpawnAgent_GrantTools_RejectsUnavailableParentTool(t *testing.T) {
 	}
 	defer sess.Close()
 
-	sess.pluginAgents = map[string]PluginAgent{
+	sess.pluginAgents = map[string]plugin.Agent{
 		"my-plugin:reader": {
 			Name:         "reader",
 			Description:  "Read-only agent",
@@ -525,7 +526,7 @@ func TestSpawnAgent_PluginAgentType_InjectsSkillContent(t *testing.T) {
 	}
 
 	// Register a plugin agent that references this skill
-	sess.pluginAgents = map[string]PluginAgent{
+	sess.pluginAgents = map[string]plugin.Agent{
 		"my-plugin:test-eng": {
 			Name:         "test-eng",
 			Description:  "Test engineer",

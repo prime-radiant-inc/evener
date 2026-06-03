@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent/internal/mcp"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/mcpconfig"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
@@ -116,10 +117,10 @@ type Session struct {
 	mcpTools []llm.ToolDefinition
 
 	// Plugin-provided components
-	plugins             []LoadedPlugin
+	plugins             []plugin.Instance
 	pendingPluginEvents []events.PluginLoadedData
 	hookRunner          *hookRunner
-	pluginAgents        map[string]PluginAgent
+	pluginAgents        map[string]plugin.Agent
 	pluginMCPConfigs    []mcpconfig.ServerConfig
 
 	// Tool names registered during session initialization (not custom).

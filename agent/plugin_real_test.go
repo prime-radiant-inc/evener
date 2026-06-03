@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/toolname"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/skill"
 )
 
@@ -31,9 +32,9 @@ func realPluginDir(t *testing.T, subpath string) string {
 func TestRealPlugin_Superpowers_Load(t *testing.T) {
 	dir := realPluginDir(t, "superpowers/4.3.0")
 
-	lp, err := LoadPlugin(dir)
+	lp, err := plugin.Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin(superpowers): %v", err)
+		t.Fatalf("plugin.Load(superpowers): %v", err)
 	}
 
 	// Manifest metadata
@@ -57,9 +58,9 @@ func TestRealPlugin_Superpowers_Load(t *testing.T) {
 func TestRealPlugin_Superpowers_Skills(t *testing.T) {
 	dir := realPluginDir(t, "superpowers/4.3.0")
 
-	lp, err := LoadPlugin(dir)
+	lp, err := plugin.Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("plugin.Load: %v", err)
 	}
 
 	// Superpowers has 14 skills - verify namespacing and key skills exist.
@@ -117,9 +118,9 @@ func TestRealPlugin_Superpowers_Skills(t *testing.T) {
 func TestRealPlugin_Superpowers_Agents(t *testing.T) {
 	dir := realPluginDir(t, "superpowers/4.3.0")
 
-	lp, err := LoadPlugin(dir)
+	lp, err := plugin.Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("plugin.Load: %v", err)
 	}
 
 	// Superpowers has 1 agent: code-reviewer
@@ -148,13 +149,13 @@ func TestRealPlugin_Superpowers_Agents(t *testing.T) {
 func TestRealPlugin_Superpowers_Hooks(t *testing.T) {
 	dir := realPluginDir(t, "superpowers/4.3.0")
 
-	lp, err := LoadPlugin(dir)
+	lp, err := plugin.Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("plugin.Load: %v", err)
 	}
 
 	// Superpowers has SessionStart hooks
-	startHooks, ok := lp.Hooks[HookSessionStart]
+	startHooks, ok := lp.Hooks[plugin.HookSessionStart]
 	if !ok || len(startHooks) == 0 {
 		t.Fatal("SessionStart hooks not found")
 	}
@@ -190,9 +191,9 @@ func TestRealPlugin_Superpowers_Hooks(t *testing.T) {
 func TestRealPlugin_Superpowers_HookExecution(t *testing.T) {
 	dir := realPluginDir(t, "superpowers/4.3.0")
 
-	lp, err := LoadPlugin(dir)
+	lp, err := plugin.Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("plugin.Load: %v", err)
 	}
 
 	runner := newHookRunnerFromPlugin(lp)
@@ -233,9 +234,9 @@ func TestRealPlugin_Superpowers_HookExecution(t *testing.T) {
 func TestRealPlugin_Superpowers_PromptFormatting(t *testing.T) {
 	dir := realPluginDir(t, "superpowers/4.3.0")
 
-	lp, err := LoadPlugin(dir)
+	lp, err := plugin.Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("plugin.Load: %v", err)
 	}
 
 	prompt := renderAvailableAgentsSectionForTest(t, lp.Agents)
@@ -252,9 +253,9 @@ func TestRealPlugin_Superpowers_PromptFormatting(t *testing.T) {
 func TestRealPlugin_SecurityGuidance_Load(t *testing.T) {
 	dir := realPluginDir(t, "security-guidance/2cd88e7947b7")
 
-	lp, err := LoadPlugin(dir)
+	lp, err := plugin.Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin(security-guidance): %v", err)
+		t.Fatalf("plugin.Load(security-guidance): %v", err)
 	}
 
 	if lp.Manifest.Name != "security-guidance" {
@@ -276,13 +277,13 @@ func TestRealPlugin_SecurityGuidance_Load(t *testing.T) {
 func TestRealPlugin_SecurityGuidance_Hooks(t *testing.T) {
 	dir := realPluginDir(t, "security-guidance/2cd88e7947b7")
 
-	lp, err := LoadPlugin(dir)
+	lp, err := plugin.Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("plugin.Load: %v", err)
 	}
 
 	// security-guidance has PreToolUse hooks
-	preHooks, ok := lp.Hooks[HookPreToolUse]
+	preHooks, ok := lp.Hooks[plugin.HookPreToolUse]
 	if !ok || len(preHooks) == 0 {
 		t.Fatal("PreToolUse hooks not found")
 	}
@@ -315,9 +316,9 @@ func TestRealPlugin_SecurityGuidance_Hooks(t *testing.T) {
 func TestRealPlugin_SecurityGuidance_HookMatching(t *testing.T) {
 	dir := realPluginDir(t, "security-guidance/2cd88e7947b7")
 
-	lp, err := LoadPlugin(dir)
+	lp, err := plugin.Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("plugin.Load: %v", err)
 	}
 
 	runner := newHookRunnerFromPlugin(lp)
@@ -325,15 +326,15 @@ func TestRealPlugin_SecurityGuidance_HookMatching(t *testing.T) {
 	// The matcher "Edit|Write|MultiEdit" should match these Claude Code tool names.
 	// Our runAll maps serf names → Claude names for matching, so we test with serf names.
 	// edit_file → Edit (matches), write_file → Write (matches), shell → Bash (no match)
-	editMatched := runner.matchHooks(HookPreToolUse, "Edit")
+	editMatched := runner.matchHooks(plugin.HookPreToolUse, "Edit")
 	if len(editMatched) == 0 {
 		t.Error("Edit should match PreToolUse hooks")
 	}
-	writeMatched := runner.matchHooks(HookPreToolUse, "Write")
+	writeMatched := runner.matchHooks(plugin.HookPreToolUse, "Write")
 	if len(writeMatched) == 0 {
 		t.Error("Write should match PreToolUse hooks")
 	}
-	bashMatched := runner.matchHooks(HookPreToolUse, "Bash")
+	bashMatched := runner.matchHooks(plugin.HookPreToolUse, "Bash")
 	if len(bashMatched) != 0 {
 		t.Error("Bash should NOT match Edit|Write|MultiEdit")
 	}
@@ -342,9 +343,9 @@ func TestRealPlugin_SecurityGuidance_HookMatching(t *testing.T) {
 func TestRealPlugin_SecurityGuidance_HookExecution(t *testing.T) {
 	dir := realPluginDir(t, "security-guidance/2cd88e7947b7")
 
-	lp, err := LoadPlugin(dir)
+	lp, err := plugin.Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("plugin.Load: %v", err)
 	}
 
 	runner := newHookRunnerFromPlugin(lp)
@@ -392,9 +393,9 @@ func TestRealPlugin_SecurityGuidance_HookExecution(t *testing.T) {
 func TestRealPlugin_CodeSimplifier_Load(t *testing.T) {
 	dir := realPluginDir(t, "code-simplifier/1.0.0")
 
-	lp, err := LoadPlugin(dir)
+	lp, err := plugin.Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin(code-simplifier): %v", err)
+		t.Fatalf("plugin.Load(code-simplifier): %v", err)
 	}
 
 	if lp.Manifest.Name != "code-simplifier" {
@@ -431,9 +432,9 @@ func TestRealPlugin_CodeSimplifier_Load(t *testing.T) {
 func TestRealPlugin_CodeSimplifier_NoHooks(t *testing.T) {
 	dir := realPluginDir(t, "code-simplifier/1.0.0")
 
-	lp, err := LoadPlugin(dir)
+	lp, err := plugin.Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("plugin.Load: %v", err)
 	}
 
 	// code-simplifier has no hooks
@@ -451,9 +452,9 @@ func TestRealPlugin_CodeSimplifier_NoHooks(t *testing.T) {
 func TestRealPlugin_AgentSDKDev_Load(t *testing.T) {
 	dir := realPluginDir(t, "agent-sdk-dev/2cd88e7947b7")
 
-	lp, err := LoadPlugin(dir)
+	lp, err := plugin.Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin(agent-sdk-dev): %v", err)
+		t.Fatalf("plugin.Load(agent-sdk-dev): %v", err)
 	}
 
 	if lp.Manifest.Name != "agent-sdk-dev" {
@@ -475,9 +476,9 @@ func TestRealPlugin_AgentSDKDev_Load(t *testing.T) {
 func TestRealPlugin_AgentSDKDev_Agents(t *testing.T) {
 	dir := realPluginDir(t, "agent-sdk-dev/2cd88e7947b7")
 
-	lp, err := LoadPlugin(dir)
+	lp, err := plugin.Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("plugin.Load: %v", err)
 	}
 
 	// agent-sdk-dev has 2 agents: agent-sdk-verifier-py and agent-sdk-verifier-ts
@@ -512,14 +513,14 @@ func TestRealPlugin_AgentSDKDev_Agents(t *testing.T) {
 
 // ---------- 5. plugin-dev ----------
 // Note: plugin-dev has NO .claude-plugin/plugin.json manifest.
-// This tests that LoadPlugin returns an appropriate error.
+// This tests that plugin.Load returns an appropriate error.
 
 func TestRealPlugin_PluginDev_NoManifest(t *testing.T) {
 	dir := realPluginDir(t, "plugin-dev/2cd88e7947b7")
 
-	_, err := LoadPlugin(dir)
+	_, err := plugin.Load(dir)
 	if err == nil {
-		t.Fatal("LoadPlugin should fail for plugin without manifest")
+		t.Fatal("plugin.Load should fail for plugin without manifest")
 	}
 	if !strings.Contains(err.Error(), "reading plugin manifest") {
 		t.Errorf("expected 'reading plugin manifest' error, got: %v", err)
@@ -537,9 +538,9 @@ func TestRealPlugin_LoadMultiple(t *testing.T) {
 		realPluginDir(t, "agent-sdk-dev/2cd88e7947b7"),
 	}
 
-	plugins, err := LoadPlugins(dirs)
+	plugins, err := plugin.LoadAll(dirs)
 	if err != nil {
-		t.Fatalf("LoadPlugins: %v", err)
+		t.Fatalf("plugin.LoadAll: %v", err)
 	}
 	if len(plugins) != 4 {
 		t.Fatalf("expected 4 plugins, got %d", len(plugins))
@@ -565,13 +566,13 @@ func TestRealPlugin_AggregateAgents(t *testing.T) {
 		realPluginDir(t, "agent-sdk-dev/2cd88e7947b7"),
 	}
 
-	plugins, err := LoadPlugins(dirs)
+	plugins, err := plugin.LoadAll(dirs)
 	if err != nil {
-		t.Fatalf("LoadPlugins: %v", err)
+		t.Fatalf("plugin.LoadAll: %v", err)
 	}
 
 	// Merge all agents from all plugins
-	allAgents := map[string]PluginAgent{}
+	allAgents := map[string]plugin.Agent{}
 	for _, p := range plugins {
 		for k, v := range p.Agents {
 			allAgents[k] = v
@@ -609,9 +610,9 @@ func TestRealPlugin_AggregateHooks(t *testing.T) {
 		realPluginDir(t, "security-guidance/2cd88e7947b7"),
 	}
 
-	plugins, err := LoadPlugins(dirs)
+	plugins, err := plugin.LoadAll(dirs)
 	if err != nil {
-		t.Fatalf("LoadPlugins: %v", err)
+		t.Fatalf("plugin.LoadAll: %v", err)
 	}
 
 	// Build a runner with hooks from both plugins
@@ -619,11 +620,11 @@ func TestRealPlugin_AggregateHooks(t *testing.T) {
 
 	// Both SessionStart (superpowers) and PreToolUse (security-guidance) should exist.
 	// SessionStart matcher target is "startup" (matching Claude Code convention).
-	startHooks := runner.matchHooks(HookSessionStart, "startup")
+	startHooks := runner.matchHooks(plugin.HookSessionStart, "startup")
 	if len(startHooks) == 0 {
 		t.Error("expected SessionStart hooks from superpowers")
 	}
-	preToolHooks := runner.matchHooks(HookPreToolUse, "Edit")
+	preToolHooks := runner.matchHooks(plugin.HookPreToolUse, "Edit")
 	if len(preToolHooks) == 0 {
 		t.Error("expected PreToolUse hooks from security-guidance for Edit")
 	}
@@ -635,9 +636,9 @@ func TestRealPlugin_AggregateSkills(t *testing.T) {
 		realPluginDir(t, "security-guidance/2cd88e7947b7"),
 	}
 
-	plugins, err := LoadPlugins(dirs)
+	plugins, err := plugin.LoadAll(dirs)
 	if err != nil {
-		t.Fatalf("LoadPlugins: %v", err)
+		t.Fatalf("plugin.LoadAll: %v", err)
 	}
 
 	allSkills := map[string]skill.SkillMeta{}
@@ -663,9 +664,9 @@ func TestRealPlugin_AggregateSkills(t *testing.T) {
 func TestRealPlugin_ToolNameMapping_AgentTools(t *testing.T) {
 	dir := realPluginDir(t, "superpowers/4.3.0")
 
-	lp, err := LoadPlugin(dir)
+	lp, err := plugin.Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("plugin.Load: %v", err)
 	}
 
 	// code-reviewer agent doesn't specify tools, so it should have empty list.
@@ -712,9 +713,9 @@ func TestRealPlugin_Settings_NotPresent(t *testing.T) {
 	workDir := t.TempDir()
 
 	// No settings file exists for any plugin
-	settings, err := LoadPluginSettings(workDir, "superpowers")
+	settings, err := plugin.LoadSettings(workDir, "superpowers")
 	if err != nil {
-		t.Fatalf("LoadPluginSettings: %v", err)
+		t.Fatalf("plugin.LoadSettings: %v", err)
 	}
 	if settings != nil {
 		t.Error("settings should be nil when no file exists")
@@ -733,9 +734,9 @@ func TestRealPlugin_Settings_WithFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	settings, err := LoadPluginSettings(workDir, "superpowers")
+	settings, err := plugin.LoadSettings(workDir, "superpowers")
 	if err != nil {
-		t.Fatalf("LoadPluginSettings: %v", err)
+		t.Fatalf("plugin.LoadSettings: %v", err)
 	}
 	if settings == nil {
 		t.Fatal("settings should not be nil")
@@ -754,7 +755,7 @@ func TestRealPlugin_Settings_WithFile(t *testing.T) {
 // ---------- Helpers ----------
 
 // newHookRunnerFromPlugin creates a hookRunner populated with a single plugin's hooks.
-func newHookRunnerFromPlugin(p LoadedPlugin) *hookRunner {
+func newHookRunnerFromPlugin(p plugin.Instance) *hookRunner {
 	runner := newHookRunner(nil, "")
 	for event, eventHooks := range p.Hooks {
 		runner.Add(event, eventHooks...)
@@ -763,7 +764,7 @@ func newHookRunnerFromPlugin(p LoadedPlugin) *hookRunner {
 }
 
 // newHookRunnerFromPlugins creates a hookRunner populated with hooks from multiple plugins.
-func newHookRunnerFromPlugins(plugins []LoadedPlugin) *hookRunner {
+func newHookRunnerFromPlugins(plugins []plugin.Instance) *hookRunner {
 	runner := newHookRunner(nil, "")
 	for _, p := range plugins {
 		for event, eventHooks := range p.Hooks {
@@ -781,7 +782,7 @@ func skillNames(m map[string]skill.SkillMeta) []string {
 	return names
 }
 
-func agentNames(m map[string]PluginAgent) []string {
+func agentNames(m map[string]plugin.Agent) []string {
 	names := make([]string, 0, len(m))
 	for k := range m {
 		names = append(names, k)

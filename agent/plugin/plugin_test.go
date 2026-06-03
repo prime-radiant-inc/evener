@@ -1,4 +1,4 @@
-package agent
+package plugin
 
 import (
 	"encoding/json"
@@ -44,7 +44,7 @@ func TestValidatePluginName(t *testing.T) {
 
 func TestParsePluginManifest_Minimal(t *testing.T) {
 	data := []byte(`{"name": "my-plugin"}`)
-	m, err := ParsePluginManifest(data)
+	m, err := ParseManifest(data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestParsePluginManifest_FullMetadata(t *testing.T) {
 		"hooks": {"on-start": "echo hi"},
 		"mcpServers": {"srv": {"command": "run-it"}}
 	}`)
-	m, err := ParsePluginManifest(data)
+	m, err := ParseManifest(data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestParsePluginManifest_FullMetadata(t *testing.T) {
 
 func TestParsePluginManifest_AuthorString(t *testing.T) {
 	data := []byte(`{"name": "a", "author": "Jesse"}`)
-	m, err := ParsePluginManifest(data)
+	m, err := ParseManifest(data)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestParsePluginManifest_AuthorString(t *testing.T) {
 
 func TestParsePluginManifest_MissingName(t *testing.T) {
 	data := []byte(`{"version": "1.0.0"}`)
-	_, err := ParsePluginManifest(data)
+	_, err := ParseManifest(data)
 	if err == nil {
 		t.Fatal("expected error for missing name")
 	}
@@ -142,15 +142,15 @@ func TestParsePluginManifest_InvalidNames(t *testing.T) {
 	}
 	for _, name := range names {
 		data := []byte(`{"name": "` + name + `"}`)
-		_, err := ParsePluginManifest(data)
+		_, err := ParseManifest(data)
 		if err == nil {
-			t.Errorf("ParsePluginManifest with name %q: expected error, got nil", name)
+			t.Errorf("ParseManifest with name %q: expected error, got nil", name)
 		}
 	}
 }
 
 func TestParsePluginManifest_InvalidJSON(t *testing.T) {
-	_, err := ParsePluginManifest([]byte(`{invalid`))
+	_, err := ParseManifest([]byte(`{invalid`))
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -218,9 +218,9 @@ func makePluginDir(t *testing.T, name string) string {
 
 func TestLoadPlugin_Valid(t *testing.T) {
 	dir := makePluginDir(t, "test-plugin")
-	lp, err := LoadPlugin(dir)
+	lp, err := Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("Load: %v", err)
 	}
 	if lp.Manifest.Name != "test-plugin" {
 		t.Errorf("Name = %q, want %q", lp.Manifest.Name, "test-plugin")
@@ -251,9 +251,9 @@ func TestLoadPlugin_PrefersCodexManifest(t *testing.T) {
 		t.Fatalf("write codex hooks: %v", err)
 	}
 
-	lp, err := LoadPlugin(dir)
+	lp, err := Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("Load: %v", err)
 	}
 	if lp.Manifest.Name != "codex-plugin" {
 		t.Fatalf("manifest name = %q, want codex-plugin", lp.Manifest.Name)
@@ -270,14 +270,14 @@ func TestLoadPlugin_PrefersCodexManifest(t *testing.T) {
 
 func TestLoadPlugin_MissingManifest(t *testing.T) {
 	dir := t.TempDir()
-	_, err := LoadPlugin(dir)
+	_, err := Load(dir)
 	if err == nil {
 		t.Fatal("expected error for missing manifest")
 	}
 }
 
 func TestLoadPlugin_NonExistentDir(t *testing.T) {
-	_, err := LoadPlugin("/nonexistent/path/that/does/not/exist")
+	_, err := Load("/nonexistent/path/that/does/not/exist")
 	if err == nil {
 		t.Fatal("expected error for non-existent dir")
 	}
@@ -287,9 +287,9 @@ func TestLoadPlugins_Multiple(t *testing.T) {
 	dir1 := makePluginDir(t, "plugin-a")
 	dir2 := makePluginDir(t, "plugin-b")
 
-	plugins, err := LoadPlugins([]string{dir1, dir2})
+	plugins, err := LoadAll([]string{dir1, dir2})
 	if err != nil {
-		t.Fatalf("LoadPlugins: %v", err)
+		t.Fatalf("LoadAll: %v", err)
 	}
 	if len(plugins) != 2 {
 		t.Fatalf("got %d plugins, want 2", len(plugins))
@@ -306,7 +306,7 @@ func TestLoadPlugins_DuplicateName(t *testing.T) {
 	dir1 := makePluginDir(t, "same-name")
 	dir2 := makePluginDir(t, "same-name")
 
-	_, err := LoadPlugins([]string{dir1, dir2})
+	_, err := LoadAll([]string{dir1, dir2})
 	if err == nil {
 		t.Fatal("expected error for duplicate plugin name")
 	}
@@ -316,9 +316,9 @@ func TestLoadPlugins_DuplicateName(t *testing.T) {
 }
 
 func TestLoadPlugins_Empty(t *testing.T) {
-	plugins, err := LoadPlugins(nil)
+	plugins, err := LoadAll(nil)
 	if err != nil {
-		t.Fatalf("LoadPlugins(nil): %v", err)
+		t.Fatalf("LoadAll(nil): %v", err)
 	}
 	if len(plugins) != 0 {
 		t.Errorf("got %d plugins, want 0", len(plugins))
@@ -422,9 +422,9 @@ func TestDiscoverPluginSkills(t *testing.T) {
 	os.WriteFile(filepath.Join(skillDir, "SKILL.md"),
 		[]byte("---\nname: my-skill\ndescription: A test skill\n---\nSkill body"), 0644)
 
-	plugin, err := LoadPlugin(dir)
+	plugin, err := Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("Load: %v", err)
 	}
 
 	// Skills should be namespaced
@@ -440,9 +440,9 @@ func TestDiscoverPluginSkills(t *testing.T) {
 
 func TestDiscoverPluginSkills_NoSkillsDir(t *testing.T) {
 	dir := makePluginDir(t, "empty-plugin")
-	plugin, err := LoadPlugin(dir)
+	plugin, err := Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("Load: %v", err)
 	}
 	if len(plugin.Skills) != 0 {
 		t.Errorf("expected 0 skills, got %d", len(plugin.Skills))
@@ -458,9 +458,9 @@ func TestDiscoverPluginSkills_MultipleSkills(t *testing.T) {
 			[]byte("---\nname: "+name+"\ndescription: desc-"+name+"\n---\nbody"), 0644)
 	}
 
-	plugin, err := LoadPlugin(dir)
+	plugin, err := Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("Load: %v", err)
 	}
 	if len(plugin.Skills) != 2 {
 		t.Fatalf("expected 2 skills, got %d: %v", len(plugin.Skills), keys(plugin.Skills))
@@ -614,9 +614,9 @@ func TestLoadPlugin_WithMCPConfigs(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, ".mcp.json"),
 		[]byte(`{"mcpServers": {"my-mcp": {"command": "mcp-server"}}}`), 0644)
 
-	plugin, err := LoadPlugin(dir)
+	plugin, err := Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("Load: %v", err)
 	}
 	if len(plugin.MCPConfigs) != 1 {
 		t.Fatalf("got %d MCP configs, want 1", len(plugin.MCPConfigs))
@@ -636,9 +636,9 @@ func TestLoadPlugin_WithInlineMCPServers(t *testing.T) {
 	manifest := `{"name": "inline-mcp", "mcpServers": {"isrv": {"command": "inline-server"}}}`
 	os.WriteFile(filepath.Join(metaDir, "plugin.json"), []byte(manifest), 0644)
 
-	plugin, err := LoadPlugin(dir)
+	plugin, err := Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("Load: %v", err)
 	}
 	if len(plugin.MCPConfigs) != 1 {
 		t.Fatalf("got %d MCP configs, want 1", len(plugin.MCPConfigs))

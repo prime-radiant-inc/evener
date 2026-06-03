@@ -1,4 +1,4 @@
-package agent
+package plugin
 
 import (
 	"encoding/json"
@@ -13,8 +13,8 @@ import (
 	"primeradiant.com/serf/agent/task"
 )
 
-// PluginAgent represents a subagent defined by a plugin.
-type PluginAgent struct {
+// Agent represents a subagent defined by a plugin.
+type Agent struct {
 	Name         string              // agent name (unqualified)
 	Description  string              // when-to-use description shown to the model
 	Model        string              // "inherit", "sonnet", "opus", "haiku"
@@ -27,13 +27,13 @@ type PluginAgent struct {
 	PluginName   string              // owning plugin
 }
 
-// parsePluginAgent parses a markdown file with YAML frontmatter into a PluginAgent.
+// ParseAgent parses a markdown file with YAML frontmatter into an Agent.
 // Required frontmatter fields: name, description.
 // Optional: model, color, tools (mapped to serf canonical names, or the scalar string "all"), skills (plain strings).
-func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
+func ParseAgent(data []byte, pluginName string) (Agent, error) {
 	doc, err := frontmatter.Parse(string(data))
 	if err != nil {
-		return PluginAgent{}, fmt.Errorf("parsing agent frontmatter: %w", err)
+		return Agent{}, fmt.Errorf("parsing agent frontmatter: %w", err)
 	}
 
 	getString := func(key string) (string, error) {
@@ -50,11 +50,11 @@ func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 
 	name, err := getString("name")
 	if err != nil {
-		return PluginAgent{}, err
+		return Agent{}, err
 	}
 	description, err := getString("description")
 	if err != nil {
-		return PluginAgent{}, err
+		return Agent{}, err
 	}
 
 	// Model and color are optional; default to "inherit" and "blue".
@@ -78,25 +78,25 @@ func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 			case "all":
 				allTools = true
 			case "*":
-				return PluginAgent{}, errors.New("agent field \"tools\" uses the scalar form \"all\" for unrestricted access; use `tools: all`")
+				return Agent{}, errors.New("agent field \"tools\" uses the scalar form \"all\" for unrestricted access; use `tools: all`")
 			default:
-				return PluginAgent{}, errors.New("agent field \"tools\" must be a list of strings or the string \"all\"")
+				return Agent{}, errors.New("agent field \"tools\" must be a list of strings or the string \"all\"")
 			}
 		case []any:
 			for _, item := range v {
 				s, ok := item.(string)
 				if !ok {
-					return PluginAgent{}, fmt.Errorf("agent tool name must be a string, got %T", item)
+					return Agent{}, fmt.Errorf("agent tool name must be a string, got %T", item)
 				}
 				switch strings.TrimSpace(strings.ToLower(s)) {
 				case "all", "*":
-					return PluginAgent{}, errors.New("agent field \"tools\" uses the scalar form \"all\" for unrestricted access; use `tools: all`")
+					return Agent{}, errors.New("agent field \"tools\" uses the scalar form \"all\" for unrestricted access; use `tools: all`")
 				default:
 					tools = append(tools, toolname.ClaudeToSerf(s))
 				}
 			}
 		default:
-			return PluginAgent{}, errors.New("agent field \"tools\" must be a list of strings or the string \"all\"")
+			return Agent{}, errors.New("agent field \"tools\" must be a list of strings or the string \"all\"")
 		}
 	}
 
@@ -104,12 +104,12 @@ func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 	if raw, ok := doc.Meta["skills"]; ok {
 		items, ok := raw.([]any)
 		if !ok {
-			return PluginAgent{}, errors.New("agent field \"skills\" must be a list of strings")
+			return Agent{}, errors.New("agent field \"skills\" must be a list of strings")
 		}
 		for _, item := range items {
 			s, ok := item.(string)
 			if !ok {
-				return PluginAgent{}, fmt.Errorf("agent skill name must be a string, got %T", item)
+				return Agent{}, fmt.Errorf("agent skill name must be a string, got %T", item)
 			}
 			skills = append(skills, s)
 		}
@@ -119,12 +119,12 @@ func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 	if raw, ok := doc.Meta["tasks"]; ok {
 		items, ok := raw.([]any)
 		if !ok {
-			return PluginAgent{}, errors.New("agent field \"tasks\" must be a list")
+			return Agent{}, errors.New("agent field \"tasks\" must be a list")
 		}
 		for _, item := range items {
 			m, ok := item.(map[string]any)
 			if !ok {
-				return PluginAgent{}, errors.New("each task must be an object with title and prompt")
+				return Agent{}, errors.New("each task must be an object with title and prompt")
 			}
 			tt := task.TaskTemplate{}
 			if v, ok := m["title"].(string); ok {
@@ -146,7 +146,7 @@ func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 		}
 	}
 
-	return PluginAgent{
+	return Agent{
 		Name:         name,
 		Description:  description,
 		Model:        model,
@@ -162,7 +162,7 @@ func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 
 // discoverPluginAgents scans a plugin's agents directories for .md files
 // and returns agents namespaced as "pluginName:agentName".
-func discoverPluginAgents(pluginDir string, agentsOverride json.RawMessage, pluginName string) (map[string]PluginAgent, error) {
+func discoverPluginAgents(pluginDir string, agentsOverride json.RawMessage, pluginName string) (map[string]Agent, error) {
 	var override any
 	if len(agentsOverride) > 0 {
 		if err := json.Unmarshal(agentsOverride, &override); err != nil {
@@ -171,7 +171,7 @@ func discoverPluginAgents(pluginDir string, agentsOverride json.RawMessage, plug
 	}
 
 	dirs := resolveComponentDirs(pluginDir, "agents", override)
-	agents := map[string]PluginAgent{}
+	agents := map[string]Agent{}
 
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
@@ -189,7 +189,7 @@ func discoverPluginAgents(pluginDir string, agentsOverride json.RawMessage, plug
 			if err != nil {
 				return nil, fmt.Errorf("reading agent file %q: %w", entry.Name(), err)
 			}
-			agent, err := parsePluginAgent(data, pluginName)
+			agent, err := ParseAgent(data, pluginName)
 			if err != nil {
 				return nil, fmt.Errorf("parsing agent file %q: %w", entry.Name(), err)
 			}

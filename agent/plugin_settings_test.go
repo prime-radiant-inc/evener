@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"primeradiant.com/serf/agent/plugin"
 )
 
 func TestLoadPluginSettings_Valid(t *testing.T) {
@@ -17,12 +19,12 @@ func TestLoadPluginSettings_Valid(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ps, err := LoadPluginSettings(dir, "my-plugin")
+	ps, err := plugin.LoadSettings(dir, "my-plugin")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if ps == nil {
-		t.Fatal("expected non-nil PluginSettings")
+		t.Fatal("expected non-nil plugin.Settings")
 	}
 	if ps.Frontmatter["api_key_env"] != "MY_KEY" {
 		t.Errorf("api_key_env = %v, want %q", ps.Frontmatter["api_key_env"], "MY_KEY")
@@ -38,7 +40,7 @@ func TestLoadPluginSettings_Valid(t *testing.T) {
 func TestLoadPluginSettings_MissingFile(t *testing.T) {
 	dir := t.TempDir()
 
-	ps, err := LoadPluginSettings(dir, "nonexistent")
+	ps, err := plugin.LoadSettings(dir, "nonexistent")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -58,12 +60,12 @@ func TestLoadPluginSettings_FrontmatterOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ps, err := LoadPluginSettings(dir, "my-plugin")
+	ps, err := plugin.LoadSettings(dir, "my-plugin")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if ps == nil {
-		t.Fatal("expected non-nil PluginSettings")
+		t.Fatal("expected non-nil plugin.Settings")
 	}
 	if ps.Frontmatter["enabled"] != true {
 		t.Errorf("enabled = %v, want true", ps.Frontmatter["enabled"])
@@ -84,12 +86,12 @@ func TestLoadPluginSettings_BodyOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ps, err := LoadPluginSettings(dir, "my-plugin")
+	ps, err := plugin.LoadSettings(dir, "my-plugin")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if ps == nil {
-		t.Fatal("expected non-nil PluginSettings")
+		t.Fatal("expected non-nil plugin.Settings")
 	}
 	if ps.Frontmatter != nil {
 		t.Errorf("Frontmatter = %v, want nil", ps.Frontmatter)
@@ -110,7 +112,7 @@ func TestLoadPluginSettings_InvalidYAML(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := LoadPluginSettings(dir, "my-plugin")
+	_, err := plugin.LoadSettings(dir, "my-plugin")
 	if err == nil {
 		t.Fatal("expected error for invalid YAML")
 	}

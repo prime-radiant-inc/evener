@@ -1,4 +1,7 @@
-package agent
+// Package plugin loads Claude Code-style plugins from disk — their manifest,
+// skills, subagents, hooks, and MCP server configs — into typed values the
+// agent engine consumes. It also parses per-project plugin settings.
+package plugin
 
 import (
 	"encoding/json"
@@ -13,10 +16,10 @@ import (
 	"primeradiant.com/serf/agent/skill"
 )
 
-// PluginManifest represents a parsed plugin.json file.
+// Manifest represents a parsed plugin.json file.
 // Fields like Author, Commands, Agents, Hooks, and MCPServers use
 // json.RawMessage because their shapes vary (string, array, or object).
-type PluginManifest struct {
+type Manifest struct {
 	Name        string          `json:"name"`
 	Version     string          `json:"version,omitempty"`
 	Description string          `json:"description,omitempty"`
@@ -47,15 +50,15 @@ func validatePluginName(name string) error {
 	return nil
 }
 
-// ParsePluginManifest unmarshals JSON plugin manifest data and validates
+// ParseManifest unmarshals JSON plugin manifest data and validates
 // the required name field.
-func ParsePluginManifest(data []byte) (PluginManifest, error) {
-	var m PluginManifest
+func ParseManifest(data []byte) (Manifest, error) {
+	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
-		return PluginManifest{}, fmt.Errorf("parsing plugin manifest: %w", err)
+		return Manifest{}, fmt.Errorf("parsing plugin manifest: %w", err)
 	}
 	if err := validatePluginName(m.Name); err != nil {
-		return PluginManifest{}, fmt.Errorf("invalid plugin manifest: %w", err)
+		return Manifest{}, fmt.Errorf("invalid plugin manifest: %w", err)
 	}
 	return m, nil
 }
@@ -66,12 +69,12 @@ func expandPluginRoot(s string, pluginDir string) string {
 	return strings.ReplaceAll(s, "${PLUGIN_ROOT}", pluginDir)
 }
 
-// LoadedPlugin represents a plugin that has been loaded from disk.
-type LoadedPlugin struct {
-	Manifest   PluginManifest                 // parsed plugin.json
+// Instance represents a plugin that has been loaded from disk.
+type Instance struct {
+	Manifest   Manifest                       // parsed plugin.json
 	Dir        string                         // absolute path = CLAUDE_PLUGIN_ROOT
 	Skills     map[string]skill.SkillMeta     // namespaced as "plugin-name:skill-name"
-	Agents     map[string]PluginAgent         // namespaced as "plugin-name:agent-name"
+	Agents     map[string]Agent               // namespaced as "plugin-name:agent-name"
 	Hooks      map[HookEvent][]RegisteredHook // keyed by event type
 	MCPConfigs []mcpconfig.ServerConfig       // namespaced as "plugin_<name>_<server>"
 }
@@ -152,68 +155,68 @@ func loadPluginMCPFile(path, pluginDir string) ([]mcpconfig.ServerConfig, error)
 	return mcpconfig.ParseServerMap(cf.MCPServers, path)
 }
 
-// LoadPlugin reads a plugin manifest from <dir>/.codex-plugin/plugin.json
-// or <dir>/.claude-plugin/plugin.json, parses it, and returns a LoadedPlugin
+// Load reads a plugin manifest from <dir>/.codex-plugin/plugin.json
+// or <dir>/.claude-plugin/plugin.json, parses it, and returns an Instance
 // with Dir set to the resolved absolute path.
-func LoadPlugin(dir string) (LoadedPlugin, error) {
+func Load(dir string) (Instance, error) {
 	resolved, err := filepath.EvalSymlinks(dir)
 	if err != nil {
-		return LoadedPlugin{}, fmt.Errorf("resolving plugin dir %q: %w", dir, err)
+		return Instance{}, fmt.Errorf("resolving plugin dir %q: %w", dir, err)
 	}
 	resolved, err = filepath.Abs(resolved)
 	if err != nil {
-		return LoadedPlugin{}, fmt.Errorf("resolving plugin dir %q: %w", dir, err)
+		return Instance{}, fmt.Errorf("resolving plugin dir %q: %w", dir, err)
 	}
 
 	manifestPath := filepath.Join(resolved, ".codex-plugin", "plugin.json")
 	if _, err := os.Stat(manifestPath); err != nil {
 		if !os.IsNotExist(err) {
-			return LoadedPlugin{}, fmt.Errorf("reading plugin manifest %q: %w", manifestPath, err)
+			return Instance{}, fmt.Errorf("reading plugin manifest %q: %w", manifestPath, err)
 		}
 		manifestPath = filepath.Join(resolved, ".claude-plugin", "plugin.json")
 	}
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
-		return LoadedPlugin{}, fmt.Errorf("reading plugin manifest %q: %w", manifestPath, err)
+		return Instance{}, fmt.Errorf("reading plugin manifest %q: %w", manifestPath, err)
 	}
 
-	manifest, err := ParsePluginManifest(data)
+	manifest, err := ParseManifest(data)
 	if err != nil {
-		return LoadedPlugin{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
+		return Instance{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
 	}
 
-	lp := LoadedPlugin{Manifest: manifest, Dir: resolved}
+	lp := Instance{Manifest: manifest, Dir: resolved}
 	lp.Skills = discoverPluginSkills(resolved, manifest.Name)
 
 	agents, err := discoverPluginAgents(resolved, manifest.Agents, manifest.Name)
 	if err != nil {
-		return LoadedPlugin{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
+		return Instance{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
 	}
 	lp.Agents = agents
 
 	hooks, err := discoverPluginHooks(resolved, manifest.Hooks, manifest.Name)
 	if err != nil {
-		return LoadedPlugin{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
+		return Instance{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
 	}
 	lp.Hooks = hooks
 
 	mcpConfigs, err := discoverPluginMCPConfigs(resolved, manifest.MCPServers, manifest.Name)
 	if err != nil {
-		return LoadedPlugin{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
+		return Instance{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
 	}
 	lp.MCPConfigs = mcpConfigs
 
 	return lp, nil
 }
 
-// LoadPlugins loads plugins from multiple directories and checks for
+// LoadAll loads plugins from multiple directories and checks for
 // duplicate plugin names.
-func LoadPlugins(dirs []string) ([]LoadedPlugin, error) {
-	plugins := make([]LoadedPlugin, 0, len(dirs))
+func LoadAll(dirs []string) ([]Instance, error) {
+	plugins := make([]Instance, 0, len(dirs))
 	seen := make(map[string]string) // name -> dir
 
 	for _, dir := range dirs {
-		lp, err := LoadPlugin(dir)
+		lp, err := Load(dir)
 		if err != nil {
 			return nil, err
 		}

@@ -1,4 +1,4 @@
-package agent
+package plugin
 
 import (
 	"os"
@@ -7,17 +7,17 @@ import (
 	"primeradiant.com/serf/agent/internal/frontmatter"
 )
 
-// PluginSettings holds per-project settings for a plugin, loaded from
+// Settings holds per-project settings for a plugin, loaded from
 // .claude/<plugin-name>.local.md. YAML frontmatter becomes key-value
 // settings and the markdown body is available as content.
-type PluginSettings struct {
+type Settings struct {
 	Frontmatter map[string]any // parsed YAML frontmatter (nil if none)
 	Body        string         // markdown body after frontmatter
 }
 
-// LoadPluginSettings reads .claude/<pluginName>.local.md from workDir.
+// LoadSettings reads .claude/<pluginName>.local.md from workDir.
 // Returns nil, nil if the file does not exist.
-func LoadPluginSettings(workDir, pluginName string) (*PluginSettings, error) {
+func LoadSettings(workDir, pluginName string) (*Settings, error) {
 	path := filepath.Join(workDir, ".claude", pluginName+".local.md")
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -32,7 +32,7 @@ func LoadPluginSettings(workDir, pluginName string) (*PluginSettings, error) {
 		return nil, err
 	}
 
-	return &PluginSettings{
+	return &Settings{
 		Frontmatter: doc.Meta,
 		Body:        doc.Body,
 	}, nil

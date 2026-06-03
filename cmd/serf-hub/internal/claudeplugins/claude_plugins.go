@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/cmd/serf-hub/internal/launchconfig"
 )
 
@@ -161,9 +161,9 @@ func pluginManifestExists(dir string) bool {
 }
 
 func pluginHasSessionStartHook(dir string) bool {
-	plugin, err := agent.LoadPlugin(dir)
+	lp, err := plugin.Load(dir)
 	if err != nil {
 		return false
 	}
-	return len(plugin.Hooks[agent.HookSessionStart]) > 0
+	return len(lp.Hooks[plugin.HookSessionStart]) > 0
 }

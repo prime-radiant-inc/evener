@@ -16,6 +16,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
@@ -119,7 +120,7 @@ func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn)
 	if s.hookRunner == nil || history == nil {
 		return nil
 	}
-	result := s.hookRunner.RunPreCompact(ctx, s.hookInput(HookPreCompact))
+	result := s.hookRunner.RunPreCompact(ctx, s.hookInput(plugin.HookPreCompact))
 	return appendSteeringMessagesToHistory(history, result.SystemMessages)
 }
 
@@ -196,7 +197,7 @@ func (s *Session) Close() {
 		// SessionEnd hooks (best-effort, bounded timeout)
 		if s.hookRunner != nil {
 			hookCtx, hookCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			s.hookRunner.RunSessionEnd(hookCtx, s.hookInput(HookSessionEnd))
+			s.hookRunner.RunSessionEnd(hookCtx, s.hookInput(plugin.HookSessionEnd))
 			hookCancel()
 		}
 
@@ -699,7 +700,7 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 
 	// UserPromptSubmit hooks
 	if s.hookRunner != nil {
-		hi := s.hookInput(HookUserPromptSubmit)
+		hi := s.hookInput(plugin.HookUserPromptSubmit)
 		hi.UserPrompt = input
 		result := s.hookRunner.RunUserPromptSubmit(ctx, hi)
 		for _, msg := range result.SystemMessages {
@@ -1286,7 +1287,7 @@ func (s *Session) deliverIfCommunicated(ctx context.Context) (done bool, text st
 	}
 	// Stop hooks
 	if s.hookRunner != nil {
-		hi := s.hookInput(HookStop)
+		hi := s.hookInput(plugin.HookStop)
 		if awaitReply {
 			hi.Reason = "communicate.await_reply"
 		} else {

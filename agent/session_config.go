@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/task"
@@ -65,7 +66,7 @@ type SessionConfig struct {
 
 	// SessionStartKind controls the matcher target for plugin SessionStart hooks.
 	// Empty means startup for new sessions. Restore paths force resume.
-	SessionStartKind SessionStartKind `json:"-"`
+	SessionStartKind plugin.SessionStartKind `json:"-"`
 
 	// SystemPromptFile replaces the built-in base instruction prelude for the
 	// top-level session only, while keeping the dynamic sections (tools,

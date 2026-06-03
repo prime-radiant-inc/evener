@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/plugin"
 	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
 )
@@ -103,7 +104,7 @@ func TestTaskWorkflow_AgentDefinitionWithTasks(t *testing.T) {
 	// Parse a coordinator-like agent definition.
 	input := []byte("---\nname: test-coord\ndescription: \"Test coordinator\"\nmodel: inherit\ntools: [read_file, spawn_agent]\ntasks:\n  - title: Inventory\n    prompt: \"List files\"\n    reasoning_effort: low\n  - title: Plan\n    prompt: \"Analyze task\"\n    reasoning_effort: xhigh\n  - title: Delegate\n    prompt: \"Spawn agent\"\n    reasoning_effort: low\n---\n\nYou coordinate.\n")
 
-	agent, err := parsePluginAgent(input, "test")
+	agent, err := plugin.ParseAgent(input, "test")
 	if err != nil {
 		t.Fatal(err)
 	}

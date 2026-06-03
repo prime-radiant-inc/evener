@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/plugin"
 )
 
 // Events returns the session's receive-only channel of SessionEvent values.
@@ -68,7 +69,7 @@ func (s *Session) runNotificationHook(ctx context.Context, message string) {
 	if s.hookRunner == nil {
 		return
 	}
-	input := s.hookInput(HookNotification)
+	input := s.hookInput(plugin.HookNotification)
 	input.Message = message
 	input.Reason = message
 	result := s.hookRunner.RunNotification(ctx, input)
@@ -78,7 +79,7 @@ func (s *Session) runNotificationHook(ctx context.Context, message string) {
 }
 
 // hookInput creates a hookInput with the session's ID and working directory pre-filled.
-func (s *Session) hookInput(event HookEvent) hookInput {
+func (s *Session) hookInput(event plugin.HookEvent) hookInput {
 	return hookInput{
 		SessionID:     s.id,
 		CWD:           s.env.WorkingDirectory(),

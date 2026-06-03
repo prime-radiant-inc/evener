@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf/internal/rvreg"
@@ -307,7 +308,7 @@ func runServe(args []string) error {
 	srv.SetClearFunc(func(ctx context.Context) error {
 		oldSess := getSession()
 		clearCfg := sessionCfg
-		clearCfg.SessionStartKind = agent.SessionStartKindClear
+		clearCfg.SessionStartKind = plugin.SessionStartKindClear
 		newSess, err := agent.NewSession(client, profile, env, clearCfg)
 		if err != nil {
 			return fmt.Errorf("new session: %w", err)

@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/toolname"
+	"primeradiant.com/serf/agent/plugin"
 )
 
 // setupFullTestPlugin creates a temp directory with a complete plugin containing
@@ -86,9 +87,9 @@ func TestPlugin_EndToEnd(t *testing.T) {
 	}
 
 	// Load the plugin
-	lp, err := LoadPlugin(pluginDir)
+	lp, err := plugin.Load(pluginDir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("plugin.Load: %v", err)
 	}
 
 	// 1. Plugin metadata
@@ -148,14 +149,14 @@ func TestPlugin_EndToEnd(t *testing.T) {
 	}
 
 	// 5. Hooks discovered
-	if sessionStartHooks, ok := lp.Hooks[HookSessionStart]; !ok || len(sessionStartHooks) == 0 {
+	if sessionStartHooks, ok := lp.Hooks[plugin.HookSessionStart]; !ok || len(sessionStartHooks) == 0 {
 		t.Error("SessionStart hook not found")
 	}
 
 	// 6. Settings loadable
-	settings, err := LoadPluginSettings(workDir, "e2e-plugin")
+	settings, err := plugin.LoadSettings(workDir, "e2e-plugin")
 	if err != nil {
-		t.Fatalf("LoadPluginSettings: %v", err)
+		t.Fatalf("plugin.LoadSettings: %v", err)
 	}
 	if settings == nil {
 		t.Fatal("settings should not be nil")
@@ -186,9 +187,9 @@ func TestPlugin_EndToEnd(t *testing.T) {
 
 	// 9. Multiple plugins with unique names work
 	dir2 := makePluginDir(t, "second-plugin")
-	plugins, err := LoadPlugins([]string{pluginDir, dir2})
+	plugins, err := plugin.LoadAll([]string{pluginDir, dir2})
 	if err != nil {
-		t.Fatalf("LoadPlugins: %v", err)
+		t.Fatalf("plugin.LoadAll: %v", err)
 	}
 	if len(plugins) != 2 {
 		t.Errorf("got %d plugins, want 2", len(plugins))
@@ -198,9 +199,9 @@ func TestPlugin_EndToEnd(t *testing.T) {
 func TestPlugin_EndToEnd_HookExecution(t *testing.T) {
 	pluginDir := setupFullTestPlugin(t)
 
-	lp, err := LoadPlugin(pluginDir)
+	lp, err := plugin.Load(pluginDir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("plugin.Load: %v", err)
 	}
 
 	runner := newHookRunner(nil, "") // no prompt client needed for command hooks

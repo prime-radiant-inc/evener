@@ -3,260 +3,19 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/llm"
 )
-
-func TestParsePluginHooks_WrapperFormat(t *testing.T) {
-	data := []byte(`{
-		"description": "My hooks",
-		"hooks": {
-			"PreToolUse": [
-				{
-					"matcher": "Write|Edit",
-					"hooks": [
-						{"type": "command", "command": "echo check", "timeout": 30}
-					]
-				}
-			]
-		}
-	}`)
-
-	hooks, err := parsePluginHooks(data, "/plugins/test", "test-plugin")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	pre, ok := hooks[HookPreToolUse]
-	if !ok {
-		t.Fatal("expected PreToolUse hooks")
-	}
-	if len(pre) != 1 {
-		t.Fatalf("got %d hooks, want 1", len(pre))
-	}
-	if pre[0].Matcher != "Write|Edit" {
-		t.Errorf("Matcher = %q, want %q", pre[0].Matcher, "Write|Edit")
-	}
-	if pre[0].Type != "command" {
-		t.Errorf("Type = %q, want %q", pre[0].Type, "command")
-	}
-	if pre[0].Command != "echo check" {
-		t.Errorf("Command = %q, want %q", pre[0].Command, "echo check")
-	}
-	if pre[0].Timeout != 30 {
-		t.Errorf("Timeout = %d, want 30", pre[0].Timeout)
-	}
-	if pre[0].PluginName != "test-plugin" {
-		t.Errorf("PluginName = %q, want %q", pre[0].PluginName, "test-plugin")
-	}
-	if pre[0].PluginDir != "/plugins/test" {
-		t.Errorf("PluginDir = %q, want %q", pre[0].PluginDir, "/plugins/test")
-	}
-}
-
-func TestParsePluginHooks_DirectFormat(t *testing.T) {
-	data := []byte(`{
-		"PreToolUse": [
-			{
-				"matcher": "*",
-				"hooks": [
-					{"type": "command", "command": "echo direct"}
-				]
-			}
-		]
-	}`)
-
-	hooks, err := parsePluginHooks(data, "/plugins/test", "test-plugin")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	pre, ok := hooks[HookPreToolUse]
-	if !ok {
-		t.Fatal("expected PreToolUse hooks")
-	}
-	if len(pre) != 1 {
-		t.Fatalf("got %d hooks, want 1", len(pre))
-	}
-	if pre[0].Matcher != "*" {
-		t.Errorf("Matcher = %q, want %q", pre[0].Matcher, "*")
-	}
-	if pre[0].Command != "echo direct" {
-		t.Errorf("Command = %q, want %q", pre[0].Command, "echo direct")
-	}
-}
-
-func TestParsePluginHooks_ExpandsPluginRoot(t *testing.T) {
-	data := []byte(`{
-		"PreToolUse": [
-			{
-				"matcher": "*",
-				"hooks": [
-					{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/bin/check"}
-				]
-			}
-		]
-	}`)
-
-	hooks, err := parsePluginHooks(data, "/my/plugin", "test-plugin")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	pre := hooks[HookPreToolUse]
-	if len(pre) != 1 {
-		t.Fatalf("got %d hooks, want 1", len(pre))
-	}
-	if pre[0].Command != "/my/plugin/bin/check" {
-		t.Errorf("Command = %q, want %q", pre[0].Command, "/my/plugin/bin/check")
-	}
-}
-
-func TestParsePluginHooks_PromptType(t *testing.T) {
-	data := []byte(`{
-		"PostToolUse": [
-			{
-				"matcher": "*",
-				"hooks": [
-					{"type": "prompt", "prompt": "Review $TOOL_RESULT for issues"}
-				]
-			}
-		]
-	}`)
-
-	hooks, err := parsePluginHooks(data, "/plugins/test", "test-plugin")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	post := hooks[HookPostToolUse]
-	if len(post) != 1 {
-		t.Fatalf("got %d hooks, want 1", len(post))
-	}
-	if post[0].Type != "prompt" {
-		t.Errorf("Type = %q, want %q", post[0].Type, "prompt")
-	}
-	if post[0].Prompt != "Review $TOOL_RESULT for issues" {
-		t.Errorf("Prompt = %q", post[0].Prompt)
-	}
-}
-
-func TestParsePluginHooks_DefaultTimeouts(t *testing.T) {
-	data := []byte(`{
-		"PreToolUse": [
-			{
-				"matcher": "*",
-				"hooks": [
-					{"type": "command", "command": "echo cmd"},
-					{"type": "prompt", "prompt": "check this"}
-				]
-			}
-		]
-	}`)
-
-	hooks, err := parsePluginHooks(data, "/plugins/test", "test-plugin")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	pre := hooks[HookPreToolUse]
-	if len(pre) != 2 {
-		t.Fatalf("got %d hooks, want 2", len(pre))
-	}
-	// Command default: 60s
-	if pre[0].Timeout != 60 {
-		t.Errorf("command timeout = %d, want 60", pre[0].Timeout)
-	}
-	// Prompt default: 30s
-	if pre[1].Timeout != 30 {
-		t.Errorf("prompt timeout = %d, want 30", pre[1].Timeout)
-	}
-}
-
-func TestParsePluginHooks_AllEvents(t *testing.T) {
-	evs := []HookEvent{
-		HookPreToolUse, HookPostToolUse, HookStop, HookSubagentStop,
-		HookUserPromptSubmit, HookSessionStart, HookSessionEnd,
-		HookPreCompact, HookNotification,
-	}
-
-	// Build JSON with all event types
-	inner := ""
-	var innerSb186 strings.Builder
-	for i, e := range evs {
-		if i > 0 {
-			innerSb186.WriteString(",")
-		}
-		innerSb186.WriteString(`"` + string(e) + `": [{"matcher": "*", "hooks": [{"type": "command", "command": "echo ` + string(e) + `"}]}]`)
-	}
-	inner += innerSb186.String()
-	data := []byte(`{` + inner + `}`)
-
-	hooks, err := parsePluginHooks(data, "/plugins/test", "test-plugin")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	for _, e := range evs {
-		if _, ok := hooks[e]; !ok {
-			t.Errorf("missing event %q", e)
-		}
-	}
-}
-
-func TestDiscoverPluginHooks_FromFile(t *testing.T) {
-	dir := t.TempDir()
-	dir, _ = filepath.EvalSymlinks(dir)
-	hooksDir := filepath.Join(dir, "hooks")
-	if err := os.MkdirAll(hooksDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	hooksJSON := []byte(`{
-		"PreToolUse": [
-			{
-				"matcher": "*",
-				"hooks": [{"type": "command", "command": "echo from-file"}]
-			}
-		]
-	}`)
-	if err := os.WriteFile(filepath.Join(hooksDir, "hooks.json"), hooksJSON, 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	hooks, err := discoverPluginHooks(dir, nil, "test-plugin")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	pre, ok := hooks[HookPreToolUse]
-	if !ok {
-		t.Fatal("expected PreToolUse hooks")
-	}
-	if len(pre) != 1 {
-		t.Fatalf("got %d hooks, want 1", len(pre))
-	}
-	if pre[0].Command != "echo from-file" {
-		t.Errorf("Command = %q, want %q", pre[0].Command, "echo from-file")
-	}
-}
-
-func TestDiscoverPluginHooks_NoFile(t *testing.T) {
-	dir := t.TempDir()
-	dir, _ = filepath.EvalSymlinks(dir)
-
-	hooks, err := discoverPluginHooks(dir, nil, "test-plugin")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(hooks) != 0 {
-		t.Errorf("expected empty map, got %d entries", len(hooks))
-	}
-}
 
 // --- Task 8: Command Hook Execution ---
 
 func TestExecuteCommandHook(t *testing.T) {
-	hook := RegisteredHook{
+	hook := plugin.RegisteredHook{
 		Type:      "command",
 		Command:   "cat",
 		Timeout:   5,
@@ -286,7 +45,7 @@ func TestExecuteCommandHook(t *testing.T) {
 }
 
 func TestExecuteCommandHook_Timeout(t *testing.T) {
-	hook := RegisteredHook{
+	hook := plugin.RegisteredHook{
 		Type:      "command",
 		Command:   "sleep 60",
 		Timeout:   1,
@@ -307,7 +66,7 @@ func TestExecuteCommandHook_Timeout(t *testing.T) {
 }
 
 func TestExecuteCommandHook_ExitCode2(t *testing.T) {
-	hook := RegisteredHook{
+	hook := plugin.RegisteredHook{
 		Type:      "command",
 		Command:   "exit 2",
 		Timeout:   5,
@@ -329,7 +88,7 @@ func TestExecuteCommandHook_ExitCode2(t *testing.T) {
 }
 
 func TestExecuteCommandHook_Environment(t *testing.T) {
-	hook := RegisteredHook{
+	hook := plugin.RegisteredHook{
 		Type:      "command",
 		Command:   "echo CLAUDE_PLUGIN=$CLAUDE_PLUGIN_ROOT PLUGIN=$PLUGIN_ROOT PROJECT=$CLAUDE_PROJECT_DIR",
 		Timeout:   5,
@@ -423,7 +182,7 @@ func TestSubstituteHookVariables_EmptyValues(t *testing.T) {
 
 func TestExecutePromptHook(t *testing.T) {
 	client := &mockPromptHookClient{response: "approve"}
-	hook := RegisteredHook{
+	hook := plugin.RegisteredHook{
 		Type:    "prompt",
 		Prompt:  "Check $TOOL_NAME usage",
 		Timeout: 30,
@@ -447,7 +206,7 @@ func TestExecutePromptHook(t *testing.T) {
 
 func TestExecutePromptHook_UsesHookModel(t *testing.T) {
 	client := &mockPromptHookClient{response: "ok"}
-	hook := RegisteredHook{
+	hook := plugin.RegisteredHook{
 		Type:   "prompt",
 		Prompt: "check",
 		Model:  "custom-model-v2",
@@ -467,24 +226,24 @@ func TestExecutePromptHook_UsesHookModel(t *testing.T) {
 
 func TestHookRunner_MatcherRegex(t *testing.T) {
 	runner := newHookRunner(nil, "")
-	runner.Add(HookPreToolUse, RegisteredHook{
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
 		Matcher: "Write|Edit",
 		Type:    "command",
 		Command: "echo matched",
 		Timeout: 5,
 	})
 
-	matched := runner.matchHooks(HookPreToolUse, "Write")
+	matched := runner.matchHooks(plugin.HookPreToolUse, "Write")
 	if len(matched) != 1 {
 		t.Fatalf("expected 1 match for Write, got %d", len(matched))
 	}
 
-	matched = runner.matchHooks(HookPreToolUse, "Edit")
+	matched = runner.matchHooks(plugin.HookPreToolUse, "Edit")
 	if len(matched) != 1 {
 		t.Fatalf("expected 1 match for Edit, got %d", len(matched))
 	}
 
-	matched = runner.matchHooks(HookPreToolUse, "Bash")
+	matched = runner.matchHooks(plugin.HookPreToolUse, "Bash")
 	if len(matched) != 0 {
 		t.Fatalf("expected 0 matches for Bash, got %d", len(matched))
 	}
@@ -492,7 +251,7 @@ func TestHookRunner_MatcherRegex(t *testing.T) {
 
 func TestHookRunner_WildcardMatcher(t *testing.T) {
 	runner := newHookRunner(nil, "")
-	runner.Add(HookPreToolUse, RegisteredHook{
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
 		Matcher: "*",
 		Type:    "command",
 		Command: "echo wildcard",
@@ -500,7 +259,7 @@ func TestHookRunner_WildcardMatcher(t *testing.T) {
 	})
 
 	for _, tool := range []string{"Write", "Read", "Bash", "anything"} {
-		matched := runner.matchHooks(HookPreToolUse, tool)
+		matched := runner.matchHooks(plugin.HookPreToolUse, tool)
 		if len(matched) != 1 {
 			t.Errorf("expected 1 match for %q with wildcard, got %d", tool, len(matched))
 		}
@@ -510,14 +269,14 @@ func TestHookRunner_WildcardMatcher(t *testing.T) {
 func TestHookRunner_ParallelExecution(t *testing.T) {
 	runner := newHookRunner(nil, "")
 	// Two hooks that each sleep 100ms
-	runner.Add(HookSessionStart,
-		RegisteredHook{
+	runner.Add(plugin.HookSessionStart,
+		plugin.RegisteredHook{
 			Matcher: "*",
 			Type:    "command",
 			Command: "sleep 0.1 && echo hook1",
 			Timeout: 5,
 		},
-		RegisteredHook{
+		plugin.RegisteredHook{
 			Matcher: "*",
 			Type:    "command",
 			Command: "sleep 0.1 && echo hook2",
@@ -544,7 +303,7 @@ func TestHookRunner_ParallelExecution(t *testing.T) {
 
 func TestHookRunner_SessionStartUsesExplicitKind(t *testing.T) {
 	runner := newHookRunner(nil, "")
-	runner.Add(HookSessionStart, RegisteredHook{
+	runner.Add(plugin.HookSessionStart, plugin.RegisteredHook{
 		Matcher: "startup|clear|compact",
 		Type:    "command",
 		Command: "echo lifecycle-bootstrap",
@@ -556,13 +315,13 @@ func TestHookRunner_SessionStartUsesExplicitKind(t *testing.T) {
 		HookEventName: "SessionStart",
 	}
 
-	if got := runner.RunSessionStartFor(context.Background(), input, SessionStartKindResume); len(got.SystemMessages) != 0 {
+	if got := runner.RunSessionStartFor(context.Background(), input, plugin.SessionStartKindResume); len(got.SystemMessages) != 0 {
 		t.Fatalf("resume SessionStart matched startup-only hook: %+v", got.SystemMessages)
 	}
-	if got := runner.RunSessionStartFor(context.Background(), input, SessionStartKindStartup); len(got.SystemMessages) != 1 {
+	if got := runner.RunSessionStartFor(context.Background(), input, plugin.SessionStartKindStartup); len(got.SystemMessages) != 1 {
 		t.Fatalf("startup SessionStart messages = %d, want 1", len(got.SystemMessages))
 	}
-	if got := runner.RunSessionStartFor(context.Background(), input, SessionStartKindClear); len(got.SystemMessages) != 1 {
+	if got := runner.RunSessionStartFor(context.Background(), input, plugin.SessionStartKindClear); len(got.SystemMessages) != 1 {
 		t.Fatalf("clear SessionStart messages = %d, want 1", len(got.SystemMessages))
 	}
 }
@@ -570,7 +329,7 @@ func TestHookRunner_SessionStartUsesExplicitKind(t *testing.T) {
 func TestHookRunner_PreToolUse_Deny(t *testing.T) {
 	runner := newHookRunner(nil, "")
 	// A command hook that outputs a deny JSON
-	runner.Add(HookPreToolUse, RegisteredHook{
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
 		Matcher: "*",
 		Type:    "command",
 		Command: `echo '{"hookSpecificOutput":{"permissionDecision":"deny","reason":"not allowed"}}'`,
@@ -591,7 +350,7 @@ func TestHookRunner_PreToolUse_Deny(t *testing.T) {
 
 func TestHookRunner_PreToolUse_ExitCode2Denies(t *testing.T) {
 	runner := newHookRunner(nil, "")
-	runner.Add(HookPreToolUse, RegisteredHook{
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
 		Matcher: "*",
 		Type:    "command",
 		Command: `echo "blocked by hook" >&2; exit 2`,
@@ -641,7 +400,7 @@ func TestHookRunner_NoHooks(t *testing.T) {
 func TestHookRunner_ToolNameMapping(t *testing.T) {
 	runner := newHookRunner(nil, "")
 	// Register a hook that matches Claude name "Write"
-	runner.Add(HookPreToolUse, RegisteredHook{
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
 		Matcher: "Write",
 		Type:    "command",
 		Command: "echo matched",
@@ -649,7 +408,7 @@ func TestHookRunner_ToolNameMapping(t *testing.T) {
 	})
 
 	// Pass serf tool name "write_file" — should match after conversion to "Write"
-	matched := runner.matchHooks(HookPreToolUse, "Write")
+	matched := runner.matchHooks(plugin.HookPreToolUse, "Write")
 	if len(matched) != 1 {
 		t.Fatalf("expected 1 match for Claude name Write, got %d", len(matched))
 	}
@@ -792,7 +551,7 @@ func TestHookInput_JSON(t *testing.T) {
 
 func TestHookRunner_EmitsHookEvents(t *testing.T) {
 	runner := newHookRunner(nil, "")
-	runner.Add(HookSessionStart, RegisteredHook{
+	runner.Add(plugin.HookSessionStart, plugin.RegisteredHook{
 		Matcher:    "*",
 		Type:       "command",
 		Command:    "echo hello",
@@ -863,7 +622,7 @@ func TestHookRunner_EmitsHookEvents(t *testing.T) {
 
 func TestHookRunner_NoCallbackNoEvents(t *testing.T) {
 	runner := newHookRunner(nil, "")
-	runner.Add(HookSessionStart, RegisteredHook{
+	runner.Add(plugin.HookSessionStart, plugin.RegisteredHook{
 		Matcher: "*",
 		Type:    "command",
 		Command: "echo hello",
@@ -880,24 +639,24 @@ func TestHookRunner_NoCallbackNoEvents(t *testing.T) {
 
 func TestHookRunner_Summary(t *testing.T) {
 	runner := newHookRunner(nil, "")
-	runner.Add(HookPreToolUse, RegisteredHook{Matcher: "*", Type: "command", Command: "echo a"})
-	runner.Add(HookPreToolUse, RegisteredHook{Matcher: "Write", Type: "command", Command: "echo b"})
-	runner.Add(HookPostToolUse, RegisteredHook{Matcher: "*", Type: "prompt", Prompt: "check"})
-	runner.Add(HookSessionStart, RegisteredHook{Matcher: "*", Type: "command", Command: "echo start"})
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: "*", Type: "command", Command: "echo a"})
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: "Write", Type: "command", Command: "echo b"})
+	runner.Add(plugin.HookPostToolUse, plugin.RegisteredHook{Matcher: "*", Type: "prompt", Prompt: "check"})
+	runner.Add(plugin.HookSessionStart, plugin.RegisteredHook{Matcher: "*", Type: "command", Command: "echo start"})
 
 	summary := runner.Summary()
 
-	if summary[HookPreToolUse] != 2 {
-		t.Errorf("PreToolUse count = %d, want 2", summary[HookPreToolUse])
+	if summary[plugin.HookPreToolUse] != 2 {
+		t.Errorf("PreToolUse count = %d, want 2", summary[plugin.HookPreToolUse])
 	}
-	if summary[HookPostToolUse] != 1 {
-		t.Errorf("PostToolUse count = %d, want 1", summary[HookPostToolUse])
+	if summary[plugin.HookPostToolUse] != 1 {
+		t.Errorf("PostToolUse count = %d, want 1", summary[plugin.HookPostToolUse])
 	}
-	if summary[HookSessionStart] != 1 {
-		t.Errorf("SessionStart count = %d, want 1", summary[HookSessionStart])
+	if summary[plugin.HookSessionStart] != 1 {
+		t.Errorf("SessionStart count = %d, want 1", summary[plugin.HookSessionStart])
 	}
 	// Events with no hooks should not appear.
-	if _, ok := summary[HookStop]; ok {
+	if _, ok := summary[plugin.HookStop]; ok {
 		t.Error("Stop should not be in summary when no hooks registered")
 	}
 }

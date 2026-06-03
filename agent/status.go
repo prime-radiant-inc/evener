@@ -4,6 +4,7 @@ import (
 	"sort"
 
 	"primeradiant.com/serf/agent/mcpconfig"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/skill"
 )
 
@@ -37,9 +38,9 @@ type DetailedStatus struct {
 	Skills  []skill.SkillMeta      `json:"skills,omitempty"`  // discovered skills, sorted by name
 	Plugins []PluginInfo           `json:"plugins,omitempty"` // loaded plugins
 	// Hooks maps each hook event to the number of registered hooks for it.
-	Hooks     map[HookEvent]int `json:"hooks,omitempty"`
-	Subagents []SubagentInfo    `json:"subagents,omitempty"` // active sub-agents
-	Agents    []string          `json:"agents,omitempty"`    // public agent names
+	Hooks     map[plugin.HookEvent]int `json:"hooks,omitempty"`
+	Subagents []SubagentInfo           `json:"subagents,omitempty"` // active sub-agents
+	Agents    []string                 `json:"agents,omitempty"`    // public agent names
 }
 
 // DetailedStatus builds a snapshot of the session's loaded tools, MCP servers,

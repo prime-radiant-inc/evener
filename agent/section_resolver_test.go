@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"text/template"
+
+	"primeradiant.com/serf/agent/plugin"
 )
 
 func TestDiskSource_ReadFile(t *testing.T) {
@@ -85,7 +87,7 @@ func newTestResolver(t *testing.T, dir, provider, agent string) *sectionResolver
 	}
 }
 
-func mustWorkflowAgent(t *testing.T, name string) PluginAgent {
+func mustWorkflowAgent(t *testing.T, name string) plugin.Agent {
 	t.Helper()
 	return coordinatorWorkflowAgentForTest(t, name)
 }

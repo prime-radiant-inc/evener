@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/mcpconfig"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/buildinfo"
 	"primeradiant.com/serf/cmd/serf-hub/internal/editorurl"
@@ -359,7 +359,7 @@ func (s *WebServer) discoverPluginsForSettings() ([]pluginDisplay, error) {
 	if len(dirs) == 0 {
 		return nil, nil
 	}
-	loaded, err := agent.LoadPlugins(dirs)
+	loaded, err := plugin.LoadAll(dirs)
 	if err != nil {
 		return nil, err
 	}
@@ -383,7 +383,7 @@ func (s *WebServer) discoverPluginsForSettings() ([]pluginDisplay, error) {
 }
 
 // countHooks sums all RegisteredHook entries across hook events.
-func countHooks(h map[agent.HookEvent][]agent.RegisteredHook) int {
+func countHooks(h map[plugin.HookEvent][]plugin.RegisteredHook) int {
 	n := 0
 	for _, hs := range h {
 		n += len(hs)

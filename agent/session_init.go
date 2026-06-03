@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/agent/internal/mcp"
 	"primeradiant.com/serf/agent/mcpconfig"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
@@ -203,7 +204,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 func RestoreSession(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, snap SessionSnapshot, stateDir string) (*Session, error) {
 	cfg := snap.Config
 	cfg.StateDir = stateDir
-	cfg.SessionStartKind = SessionStartKindResume
+	cfg.SessionStartKind = plugin.SessionStartKindResume
 	cfg.applyDefaults()
 
 	if client == nil {
@@ -335,7 +336,7 @@ func RestoreSession(client *llm.Client, profile *provider.Profile, env execenv.E
 func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, meta SessionMeta, stateDir string) (*Session, error) {
 	cfg := meta.Config
 	cfg.StateDir = stateDir
-	cfg.SessionStartKind = SessionStartKindResume
+	cfg.SessionStartKind = plugin.SessionStartKindResume
 	cfg.applyDefaults()
 
 	if client == nil {
@@ -475,7 +476,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env e
 // resolution, skills discovery, tool registry setup, and MCP connection.
 // The Session struct fields (client, profile, env, cfg) must already be set.
 // Returns the prompt sources so the caller can emit events after SessionStart.
-func (s *Session) initSessionState(sessionStartKind SessionStartKind) ([]promptSource, error) {
+func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind) ([]promptSource, error) {
 	ei := envInfoFromEnv(s.env)
 	ei.KnowledgeCutoff = s.profile.KnowledgeCutoff()
 	if inRepo, branch, mod, untracked, commits := snapshotGit(s.env, ei.WorkingDir); inRepo {
@@ -627,12 +628,12 @@ func (s *Session) applyAgentRolePromptOverride() {
 
 // initPlugins loads configured plugin directories, merging their skills,
 // agents, and hooks into the session. Fires SessionStart hooks after setup.
-func (s *Session) initPlugins(sessionStartKind SessionStartKind) error {
+func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind) error {
 	if len(s.cfg.PluginDirs) == 0 {
 		return nil
 	}
 
-	plugins, err := LoadPlugins(s.cfg.PluginDirs)
+	plugins, err := plugin.LoadAll(s.cfg.PluginDirs)
 	if err != nil {
 		return err
 	}
@@ -640,7 +641,7 @@ func (s *Session) initPlugins(sessionStartKind SessionStartKind) error {
 	s.plugins = plugins
 
 	runner := newHookRunner(clientAdapter{s.client}, s.profile.Model())
-	allAgents := map[string]PluginAgent{}
+	allAgents := map[string]plugin.Agent{}
 
 	for _, p := range plugins {
 		for name, meta := range p.Skills {
@@ -674,7 +675,7 @@ func (s *Session) initPlugins(sessionStartKind SessionStartKind) error {
 	}
 
 	// Fire SessionStart hooks
-	result := s.hookRunner.RunSessionStartFor(context.Background(), s.hookInput(HookSessionStart), sessionStartKind)
+	result := s.hookRunner.RunSessionStartFor(context.Background(), s.hookInput(plugin.HookSessionStart), sessionStartKind)
 	for _, msg := range result.SystemMessages {
 		s.Steer(msg)
 	}

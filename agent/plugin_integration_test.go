@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/llm"
 )
@@ -32,8 +33,8 @@ func TestInitPlugins_MergesSkills(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Verify LoadPlugin populates Skills with namespaced key
-	plugin, err := LoadPlugin(dir)
+	// Verify plugin.Load populates Skills with namespaced key
+	plugin, err := plugin.Load(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +63,7 @@ func TestInitPlugins_BuildsHookRunner(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plugins, err := LoadPlugins([]string{dir})
+	plugins, err := plugin.LoadAll([]string{dir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +76,7 @@ func TestInitPlugins_BuildsHookRunner(t *testing.T) {
 		}
 	}
 
-	matched := runner.matchHooks(HookPreToolUse, "Write")
+	matched := runner.matchHooks(plugin.HookPreToolUse, "Write")
 	if len(matched) != 1 {
 		t.Errorf("expected 1 matched hook, got %d", len(matched))
 	}
@@ -145,7 +146,7 @@ func TestInitPlugins_MergesAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plugin, err := LoadPlugin(dir)
+	plugin, err := plugin.Load(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +157,7 @@ func TestInitPlugins_MergesAgents(t *testing.T) {
 
 func TestInitPlugins_NoPlugins(t *testing.T) {
 	// Simulates initPlugins with empty PluginDirs — should be a no-op
-	plugins, err := LoadPlugins(nil)
+	plugins, err := plugin.LoadAll(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +181,7 @@ func TestInitPlugins_CombinesMultiplePlugins(t *testing.T) {
 	os.WriteFile(filepath.Join(hooksDir, "hooks.json"),
 		[]byte(`{"hooks":{"PostToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"echo post"}]}]}}`), 0644)
 
-	plugins, err := LoadPlugins([]string{dirA, dirB})
+	plugins, err := plugin.LoadAll([]string{dirA, dirB})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +189,7 @@ func TestInitPlugins_CombinesMultiplePlugins(t *testing.T) {
 	// Simulate initPlugins: merge skills from all plugins
 	allSkills := map[string]skill.SkillMeta{}
 	runner := newHookRunner(nil, "test-model")
-	allAgents := map[string]PluginAgent{}
+	allAgents := map[string]plugin.Agent{}
 
 	for _, p := range plugins {
 		for name, meta := range p.Skills {
@@ -208,7 +209,7 @@ func TestInitPlugins_CombinesMultiplePlugins(t *testing.T) {
 	}
 
 	// Plugin B's hook should be in the runner
-	matched := runner.matchHooks(HookPostToolUse, "Write")
+	matched := runner.matchHooks(plugin.HookPostToolUse, "Write")
 	if len(matched) != 1 {
 		t.Errorf("expected 1 matched PostToolUse hook, got %d", len(matched))
 	}

@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/mcp"
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/openai"
 )
@@ -178,9 +179,9 @@ func writeFile(t *testing.T, base, path, content string) {
 func TestLive_PluginLoad_AllComponents(t *testing.T) {
 	dir := buildLiveTestPlugin(t)
 
-	lp, err := LoadPlugin(dir)
+	lp, err := plugin.Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("plugin.Load: %v", err)
 	}
 
 	// Manifest
@@ -255,13 +256,13 @@ func TestLive_PluginLoad_AllComponents(t *testing.T) {
 	if len(lp.Hooks) != 3 {
 		t.Errorf("Hook events = %d, want 3 (SessionStart, PreToolUse, Stop)", len(lp.Hooks))
 	}
-	if _, ok := lp.Hooks[HookSessionStart]; !ok {
+	if _, ok := lp.Hooks[plugin.HookSessionStart]; !ok {
 		t.Error("missing SessionStart hooks")
 	}
-	if _, ok := lp.Hooks[HookPreToolUse]; !ok {
+	if _, ok := lp.Hooks[plugin.HookPreToolUse]; !ok {
 		t.Error("missing PreToolUse hooks")
 	}
-	if _, ok := lp.Hooks[HookStop]; !ok {
+	if _, ok := lp.Hooks[plugin.HookStop]; !ok {
 		t.Error("missing Stop hooks")
 	}
 }
@@ -271,9 +272,9 @@ func TestLive_PluginLoad_AllComponents(t *testing.T) {
 func TestLive_MCP_StdioServer(t *testing.T) {
 	dir := buildLiveTestPlugin(t)
 
-	lp, err := LoadPlugin(dir)
+	lp, err := plugin.Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("plugin.Load: %v", err)
 	}
 
 	if len(lp.MCPConfigs) == 0 {
@@ -344,9 +345,9 @@ func TestLive_MCP_StdioServer(t *testing.T) {
 func TestLive_Hooks_CommandExecution(t *testing.T) {
 	dir := buildLiveTestPlugin(t)
 
-	lp, err := LoadPlugin(dir)
+	lp, err := plugin.Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("plugin.Load: %v", err)
 	}
 
 	runner := newHookRunnerFromPlugin(lp)
@@ -468,9 +469,9 @@ func TestLive_Hooks_PromptWithRealLLM(t *testing.T) {
 		}
 	}`)
 
-	lp, err := LoadPlugin(dir)
+	lp, err := plugin.Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("plugin.Load: %v", err)
 	}
 
 	// Create a real LLM client for the prompt hook.
@@ -580,9 +581,9 @@ func TestLive_Session_WithPlugin(t *testing.T) {
 	}
 
 	// Verify settings loadable from this workDir
-	settings, err := LoadPluginSettings(workDir, "live-test")
+	settings, err := plugin.LoadSettings(workDir, "live-test")
 	if err != nil {
-		t.Fatalf("LoadPluginSettings: %v", err)
+		t.Fatalf("plugin.LoadSettings: %v", err)
 	}
 	if settings == nil || settings.Frontmatter["strict"] != true {
 		t.Error("settings not loaded correctly")
@@ -761,9 +762,9 @@ func TestLive_Session_PluginAgentsInSystemPrompt(t *testing.T) {
 func TestLive_ToolRestriction_PluginAgent(t *testing.T) {
 	dir := buildLiveTestPlugin(t)
 
-	lp, err := LoadPlugin(dir)
+	lp, err := plugin.Load(dir)
 	if err != nil {
-		t.Fatalf("LoadPlugin: %v", err)
+		t.Fatalf("plugin.Load: %v", err)
 	}
 
 	// Build a full tool registry
