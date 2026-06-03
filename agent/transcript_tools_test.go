@@ -9,10 +9,10 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// Helper to create a test SessionSnapshot with known turns
+// Helper to create a test sessionSnapshot with known turns
 func createTestSnapshot(t *testing.T, dir string, id string, history []schema.Turn) string {
 	t.Helper()
-	snap := SessionSnapshot{
+	snap := sessionSnapshot{
 		ID:        id,
 		ProfileID: "test-profile",
 		Model:     "test-model",
@@ -23,7 +23,7 @@ func createTestSnapshot(t *testing.T, dir string, id string, history []schema.Tu
 		UpdatedAt: time.Now().UTC(),
 		TurnCount: len(history),
 	}
-	if err := SaveSession(dir, snap); err != nil {
+	if err := saveSession(dir, snap); err != nil {
 		t.Fatalf("failed to save test snapshot: %v", err)
 	}
 	return filepath.Join(dir, "sessions", id+".json")
@@ -86,9 +86,9 @@ func TestSearchTranscript(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			matches, err := SearchTranscript(path, tt.query)
+			matches, err := searchTranscript(path, tt.query)
 			if err != nil {
-				t.Fatalf("SearchTranscript failed: %v", err)
+				t.Fatalf("searchTranscript failed: %v", err)
 			}
 			if len(matches) != tt.wantCount {
 				t.Errorf("got %d matches, want %d", len(matches), tt.wantCount)
@@ -114,9 +114,9 @@ func TestSearchTranscript_EmptyTranscript(t *testing.T) {
 	dir := t.TempDir()
 	path := createTestSnapshot(t, dir, "empty", []schema.Turn{})
 
-	matches, err := SearchTranscript(path, "anything")
+	matches, err := searchTranscript(path, "anything")
 	if err != nil {
-		t.Fatalf("SearchTranscript failed: %v", err)
+		t.Fatalf("searchTranscript failed: %v", err)
 	}
 	if len(matches) != 0 {
 		t.Errorf("got %d matches, want 0 for empty transcript", len(matches))
@@ -124,7 +124,7 @@ func TestSearchTranscript_EmptyTranscript(t *testing.T) {
 }
 
 func TestSearchTranscript_InvalidPath(t *testing.T) {
-	_, err := SearchTranscript("/nonexistent/path.json", "query")
+	_, err := searchTranscript("/nonexistent/path.json", "query")
 	if err == nil {
 		t.Error("expected error for invalid path, got nil")
 	}
@@ -206,9 +206,9 @@ func TestReadTurnsFromSnapshot(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			turns, err := ReadTurnsFromSnapshot(path, tt.start, tt.end)
+			turns, err := readTurnsFromSnapshot(path, tt.start, tt.end)
 			if err != nil {
-				t.Fatalf("ReadTurnsFromSnapshot failed: %v", err)
+				t.Fatalf("readTurnsFromSnapshot failed: %v", err)
 			}
 			if len(turns) != tt.wantCount {
 				t.Errorf("got %d turns, want %d", len(turns), tt.wantCount)
@@ -228,7 +228,7 @@ func TestReadTurnsFromSnapshot(t *testing.T) {
 }
 
 func TestReadTurnsFromSnapshot_InvalidPath(t *testing.T) {
-	_, err := ReadTurnsFromSnapshot("/nonexistent/path.json", 0, 10)
+	_, err := readTurnsFromSnapshot("/nonexistent/path.json", 0, 10)
 	if err == nil {
 		t.Error("expected error for invalid path, got nil")
 	}
@@ -339,9 +339,9 @@ func TestFilterTurns(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			matches, err := FilterTurns(path, tt.kind, tt.contains, tt.errorsOnly)
+			matches, err := filterTurns(path, tt.kind, tt.contains, tt.errorsOnly)
 			if err != nil {
-				t.Fatalf("FilterTurns failed: %v", err)
+				t.Fatalf("filterTurns failed: %v", err)
 			}
 			if len(matches) != tt.wantCount {
 				t.Errorf("got %d matches, want %d", len(matches), tt.wantCount)
@@ -362,7 +362,7 @@ func TestFilterTurns(t *testing.T) {
 }
 
 func TestFilterTurns_InvalidPath(t *testing.T) {
-	_, err := FilterTurns("/nonexistent/path.json", "", "", false)
+	_, err := filterTurns("/nonexistent/path.json", "", "", false)
 	if err == nil {
 		t.Error("expected error for invalid path, got nil")
 	}

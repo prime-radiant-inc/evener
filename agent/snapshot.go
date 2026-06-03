@@ -10,12 +10,11 @@ import (
 	"primeradiant.com/serf/agent/schema"
 )
 
-// SessionSnapshot holds the serializable state of a Session for persistence and resume.
-//
-// Deprecated: Use schema.SessionMeta + transcript JSONL for persistence.
-// SessionSnapshot is retained for backward compatibility with external tools
-// (transcript_tools.go, serfeval) that read snapshot files directly.
-type SessionSnapshot struct {
+// sessionSnapshot is the full single-file serialization of a Session, including
+// its conversation history. It is written and read only by the recall context
+// strategy, whose search tools need the complete history available in one file.
+// Ordinary session persistence uses schema.SessionMeta plus the transcript JSONL.
+type sessionSnapshot struct {
 	ID        string                 `json:"id"`         // session identifier
 	ProfileID string                 `json:"profile_id"` // ID of the provider profile in use
 	Model     string                 `json:"model"`      // model name the session is driving
@@ -30,11 +29,10 @@ type SessionSnapshot struct {
 	LastInputTokens int `json:"last_input_tokens,omitempty"`
 }
 
-// SaveSession writes a snapshot to <dir>/sessions/<id>.json using atomic rename.
-//
-// Deprecated: Use schema.SaveSessionMeta for lightweight persistence. SaveSession
-// is retained for backward compatibility with external tools.
-func SaveSession(dir string, snap SessionSnapshot) error {
+// saveSession writes a full session snapshot to <dir>/sessions/<id>.json using
+// atomic rename. Used by the recall strategy to persist history for its search
+// tools; see sessionSnapshot.
+func saveSession(dir string, snap sessionSnapshot) error {
 	sessDir := filepath.Join(dir, sessionsSubdir)
 	if err := os.MkdirAll(sessDir, 0o755); err != nil {
 		return fmt.Errorf("create sessions dir: %w", err)

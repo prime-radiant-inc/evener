@@ -38,7 +38,7 @@ func (h *fakeStrategyHost) withResponseSideEffects(_ context.Context, fn func())
 func (h *fakeStrategyHost) StateDir() string           { return h.stateDir }
 func (h *fakeStrategyHost) ID() string                 { return h.id }
 func (h *fakeStrategyHost) Profile() *provider.Profile { return h.profile }
-func (h *fakeStrategyHost) Snapshot() SessionSnapshot  { return SessionSnapshot{ID: h.id} }
+func (h *fakeStrategyHost) snapshot() sessionSnapshot  { return sessionSnapshot{ID: h.id} }
 func (h *fakeStrategyHost) Client() *llm.Client        { return h.client }
 
 func TestStrategyHost_FakeSatisfiesInterface(t *testing.T) {

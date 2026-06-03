@@ -15,8 +15,8 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-func testSnapshot() SessionSnapshot {
-	return SessionSnapshot{
+func testSnapshot() sessionSnapshot {
+	return sessionSnapshot{
 		ID:        "01JTEST000000000000000001",
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
@@ -46,7 +46,7 @@ func TestSessionSnapshot_JSONRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	var got SessionSnapshot
+	var got sessionSnapshot
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -80,8 +80,8 @@ func TestSaveSession_CreatesFileAtomically(t *testing.T) {
 	dir := t.TempDir()
 	snap := testSnapshot()
 
-	if err := SaveSession(dir, snap); err != nil {
-		t.Fatalf("SaveSession: %v", err)
+	if err := saveSession(dir, snap); err != nil {
+		t.Fatalf("saveSession: %v", err)
 	}
 
 	// File should exist at sessions/<id>.json
@@ -90,7 +90,7 @@ func TestSaveSession_CreatesFileAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	var got SessionSnapshot
+	var got sessionSnapshot
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal saved file: %v", err)
 	}
@@ -111,15 +111,15 @@ func TestSaveSession_OverwritesExisting(t *testing.T) {
 	dir := t.TempDir()
 	snap := testSnapshot()
 
-	if err := SaveSession(dir, snap); err != nil {
-		t.Fatalf("SaveSession first: %v", err)
+	if err := saveSession(dir, snap); err != nil {
+		t.Fatalf("saveSession first: %v", err)
 	}
 
 	// Update and save again.
 	snap.TurnCount = 10
 	snap.UpdatedAt = time.Date(2025, 1, 15, 11, 0, 0, 0, time.UTC)
-	if err := SaveSession(dir, snap); err != nil {
-		t.Fatalf("SaveSession second: %v", err)
+	if err := saveSession(dir, snap); err != nil {
+		t.Fatalf("saveSession second: %v", err)
 	}
 
 	path := filepath.Join(dir, "sessions", snap.ID+".json")
@@ -127,7 +127,7 @@ func TestSaveSession_OverwritesExisting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	var loaded SessionSnapshot
+	var loaded sessionSnapshot
 	if err := json.Unmarshal(data, &loaded); err != nil {
 		t.Fatalf("unmarshal saved file: %v", err)
 	}

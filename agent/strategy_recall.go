@@ -94,8 +94,8 @@ func buildRecallTool(getHost func() strategyHost) tool.RegisteredTool {
 
 			// Save a full snapshot (with history) for the transcript search tools.
 			// maybeAutoSave only writes lightweight meta now, so we need the full snapshot here.
-			snap := host.Snapshot()
-			if err := SaveSession(host.StateDir(), snap); err != nil {
+			snap := host.snapshot()
+			if err := saveSession(host.StateDir(), snap); err != nil {
 				return nil, fmt.Errorf("recall: save snapshot for search: %w", err)
 			}
 
@@ -169,7 +169,7 @@ func recallTranscriptTools(snapPath string) []llm.Tool {
 					return nil, errors.New("expected map args")
 				}
 				query, _ := m["query"].(string)
-				matches, err := SearchTranscript(snapPath, query)
+				matches, err := searchTranscript(snapPath, query)
 				if err != nil {
 					return nil, err
 				}
@@ -206,7 +206,7 @@ func recallTranscriptTools(snapPath string) []llm.Tool {
 				}
 				start := int(m["start"].(float64))
 				end := int(m["end"].(float64))
-				turns, err := ReadTurnsFromSnapshot(snapPath, start, end)
+				turns, err := readTurnsFromSnapshot(snapPath, start, end)
 				if err != nil {
 					return nil, err
 				}
@@ -247,7 +247,7 @@ func recallTranscriptTools(snapPath string) []llm.Tool {
 				kind, _ := m["kind"].(string)
 				contains, _ := m["contains"].(string)
 				errorsOnly, _ := m["errors_only"].(bool)
-				matches, err := FilterTurns(snapPath, kind, contains, errorsOnly)
+				matches, err := filterTurns(snapPath, kind, contains, errorsOnly)
 				if err != nil {
 					return nil, err
 				}

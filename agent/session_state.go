@@ -29,12 +29,12 @@ func (s *Session) State() SessionState {
 	return s.state
 }
 
-// Snapshot captures the current session state as a SessionSnapshot.
-func (s *Session) Snapshot() SessionSnapshot {
+// snapshot captures the current session state as a sessionSnapshot.
+func (s *Session) snapshot() sessionSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now().UTC()
-	return SessionSnapshot{
+	return sessionSnapshot{
 		ID:              s.id,
 		ProfileID:       s.profile.ID(),
 		Model:           s.profile.Model(),

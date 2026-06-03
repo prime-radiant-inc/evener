@@ -348,7 +348,7 @@ func TestRecallStrategy_TranscriptTools_SearchExecutes(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected string result, got %T", result)
 	}
-	var matches []TranscriptMatch
+	var matches []transcriptMatch
 	if err := json.Unmarshal([]byte(resultStr), &matches); err != nil {
 		t.Fatalf("failed to unmarshal result: %v (result: %s)", err, resultStr)
 	}
