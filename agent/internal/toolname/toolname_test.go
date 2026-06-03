@@ -1,8 +1,8 @@
-package agent
+package toolname
 
 import "testing"
 
-func TestMapClaudeToolName(t *testing.T) {
+func TestClaudeToSerf(t *testing.T) {
 	tests := map[string]string{
 		"Read": "read_file", "Write": "write_file", "Edit": "edit_file",
 		"Bash": "shell", "Grep": "grep", "Glob": "glob",
@@ -12,13 +12,13 @@ func TestMapClaudeToolName(t *testing.T) {
 		"mcp__server__tool": "mcp__server__tool",
 	}
 	for input, want := range tests {
-		if got := mapClaudeToolName(input); got != want {
-			t.Errorf("MapClaudeToolName(%q) = %q, want %q", input, got, want)
+		if got := ClaudeToSerf(input); got != want {
+			t.Errorf("ClaudeToSerf(%q) = %q, want %q", input, got, want)
 		}
 	}
 }
 
-func TestMapSerfToolNameToClaude(t *testing.T) {
+func TestSerfToClaude(t *testing.T) {
 	tests := map[string]string{
 		"read_file": "Read", "write_file": "Write", "edit_file": "Edit",
 		"shell": "Bash", "grep": "Grep", "glob": "Glob",
@@ -27,8 +27,8 @@ func TestMapSerfToolNameToClaude(t *testing.T) {
 		"unknown":       "unknown",
 	}
 	for input, want := range tests {
-		if got := mapSerfToolNameToClaude(input); got != want {
-			t.Errorf("MapSerfToolNameToClaude(%q) = %q, want %q", input, got, want)
+		if got := SerfToClaude(input); got != want {
+			t.Errorf("SerfToClaude(%q) = %q, want %q", input, got, want)
 		}
 	}
 }

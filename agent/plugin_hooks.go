@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/toolname"
 	"primeradiant.com/serf/llm"
 )
 
@@ -545,7 +546,7 @@ func (r *hookRunner) runHook(ctx context.Context, hook RegisteredHook, input hoo
 
 // runAll executes all matched hooks in parallel and returns their parsed outputs.
 func (r *hookRunner) runAll(ctx context.Context, event HookEvent, toolName string, input hookInput) []parsedHookOutput {
-	claudeName := mapSerfToolNameToClaude(toolName)
+	claudeName := toolname.SerfToClaude(toolName)
 	matched := r.matchHooks(event, claudeName)
 	if len(matched) == 0 {
 		return nil

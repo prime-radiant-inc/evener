@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/toolname"
 )
 
 // setupFullTestPlugin creates a temp directory with a complete plugin containing
@@ -167,11 +168,11 @@ func TestPlugin_EndToEnd(t *testing.T) {
 	}
 
 	// 7. Tool name mapping bidirectional
-	if mapClaudeToolName("Read") != "read_file" {
-		t.Errorf("MapClaudeToolName(Read) = %q, want read_file", mapClaudeToolName("Read"))
+	if toolname.ClaudeToSerf("Read") != "read_file" {
+		t.Errorf("ClaudeToSerf(Read) = %q, want read_file", toolname.ClaudeToSerf("Read"))
 	}
-	if mapSerfToolNameToClaude("read_file") != "Read" {
-		t.Errorf("MapSerfToolNameToClaude(read_file) = %q, want Read", mapSerfToolNameToClaude("read_file"))
+	if toolname.SerfToClaude("read_file") != "Read" {
+		t.Errorf("SerfToClaude(read_file) = %q, want Read", toolname.SerfToClaude("read_file"))
 	}
 
 	// 8. Plugin agent prompt formatting

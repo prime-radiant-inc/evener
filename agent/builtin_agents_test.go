@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/internal/toolname"
 	"primeradiant.com/serf/llm"
 )
 
@@ -148,7 +149,7 @@ func TestBuiltinAgents_ExplorerTools(t *testing.T) {
 	explorer := agents["explorer"]
 
 	// Explorer tools should be serf canonical names only.
-	// The frontmatter uses serf names which pass through mapClaudeToolName unchanged.
+	// The frontmatter uses serf names which pass through toolname.ClaudeToSerf unchanged.
 	wantTools := map[string]bool{
 		"glob":      true,
 		"grep":      true,
@@ -191,7 +192,7 @@ func TestBuiltinAgents_ToolNamesAreCanonical(t *testing.T) {
 	for name, agent := range agents {
 		for _, tool := range agent.Tools {
 			// If a tool name maps to something different, it was a Claude Code name.
-			mapped := mapClaudeToolName(tool)
+			mapped := toolname.ClaudeToSerf(tool)
 			if mapped != tool {
 				t.Errorf("agent %q tool %q is a Claude Code name (maps to %q), should use serf canonical name", name, tool, mapped)
 			}

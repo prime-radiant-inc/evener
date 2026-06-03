@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/toolname"
 	"primeradiant.com/serf/agent/skill"
 )
 
@@ -690,19 +691,19 @@ func TestRealPlugin_ToolNameMapping_BidirectionalComplete(t *testing.T) {
 	}
 
 	for claude, serf := range mappings {
-		if mapClaudeToolName(claude) != serf {
-			t.Errorf("MapClaudeToolName(%q) = %q, want %q", claude, mapClaudeToolName(claude), serf)
+		if toolname.ClaudeToSerf(claude) != serf {
+			t.Errorf("ClaudeToSerf(%q) = %q, want %q", claude, toolname.ClaudeToSerf(claude), serf)
 		}
-		if mapSerfToolNameToClaude(serf) != claude {
-			t.Errorf("MapSerfToolNameToClaude(%q) = %q, want %q", serf, mapSerfToolNameToClaude(serf), claude)
+		if toolname.SerfToClaude(serf) != claude {
+			t.Errorf("SerfToClaude(%q) = %q, want %q", serf, toolname.SerfToClaude(serf), claude)
 		}
 	}
 
 	// Unknown names pass through
-	if mapClaudeToolName("custom_tool") != "custom_tool" {
+	if toolname.ClaudeToSerf("custom_tool") != "custom_tool" {
 		t.Error("unknown Claude name should pass through")
 	}
-	if mapSerfToolNameToClaude("custom_tool") != "custom_tool" {
+	if toolname.SerfToClaude("custom_tool") != "custom_tool" {
 		t.Error("unknown serf name should pass through")
 	}
 }

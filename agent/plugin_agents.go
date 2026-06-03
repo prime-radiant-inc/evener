@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/internal/frontmatter"
+	"primeradiant.com/serf/agent/internal/toolname"
 	"primeradiant.com/serf/agent/task"
 )
 
@@ -91,7 +92,7 @@ func parsePluginAgent(data []byte, pluginName string) (PluginAgent, error) {
 				case "all", "*":
 					return PluginAgent{}, errors.New("agent field \"tools\" uses the scalar form \"all\" for unrestricted access; use `tools: all`")
 				default:
-					tools = append(tools, mapClaudeToolName(s))
+					tools = append(tools, toolname.ClaudeToSerf(s))
 				}
 			}
 		default:
