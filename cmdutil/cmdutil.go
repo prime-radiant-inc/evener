@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -189,27 +188,6 @@ func MaxRoundsToConfig(cliValue int) int {
 	default:
 		return 0
 	}
-}
-
-// ResolveSnapshot loads a session snapshot by ID or finds the most recent one.
-//
-// Deprecated: Use ResolveSessionMeta for the new meta-based flow.
-func ResolveSnapshot(stateDir, sessionID string, resumeLast bool) (agent.SessionSnapshot, error) {
-	if resumeLast {
-		list, err := agent.ListSessions(stateDir)
-		if err != nil {
-			return agent.SessionSnapshot{}, fmt.Errorf("list sessions: %w", err)
-		}
-		if len(list) == 0 {
-			return agent.SessionSnapshot{}, fmt.Errorf("no saved sessions in %s", stateDir)
-		}
-		return list[0], nil
-	}
-	snap, err := agent.LoadSession(stateDir, sessionID)
-	if err != nil {
-		return agent.SessionSnapshot{}, fmt.Errorf("load session %s: %w", sessionID, err)
-	}
-	return snap, nil
 }
 
 // ResolveSessionMeta loads a session meta by ID or finds the most recent one.

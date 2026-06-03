@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 	"time"
 
 	"primeradiant.com/serf/agent/schema"
@@ -58,50 +56,4 @@ func SaveSession(dir string, snap SessionSnapshot) error {
 		return fmt.Errorf("rename temp to target: %w", err)
 	}
 	return nil
-}
-
-// LoadSession reads a snapshot from <dir>/sessions/<id>.json.
-func LoadSession(dir, id string) (SessionSnapshot, error) {
-	path := filepath.Join(dir, sessionsSubdir, id+".json")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return SessionSnapshot{}, fmt.Errorf("read session %s: %w", id, err)
-	}
-	var snap SessionSnapshot
-	if err := json.Unmarshal(data, &snap); err != nil {
-		return SessionSnapshot{}, fmt.Errorf("unmarshal session %s: %w", id, err)
-	}
-	return snap, nil
-}
-
-// ListSessions returns all valid snapshots sorted by UpdatedAt descending (most recent first).
-// Corrupt files are silently skipped.
-func ListSessions(dir string) ([]SessionSnapshot, error) {
-	sessDir := filepath.Join(dir, sessionsSubdir)
-	entries, err := os.ReadDir(sessDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read sessions dir: %w", err)
-	}
-
-	var snaps []SessionSnapshot
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		id := strings.TrimSuffix(e.Name(), ".json")
-		snap, err := LoadSession(dir, id)
-		if err != nil {
-			continue // skip corrupt files
-		}
-		snaps = append(snaps, snap)
-	}
-
-	sort.Slice(snaps, func(i, j int) bool {
-		return snaps[i].UpdatedAt.After(snaps[j].UpdatedAt)
-	})
-
-	return snaps, nil
 }
