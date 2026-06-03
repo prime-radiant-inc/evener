@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
@@ -128,7 +128,7 @@ func liveTitle(id string, le hubcore.LiveEntry, past *hubcore.PastIndex) string 
 }
 
 func pastTitle(pe hubcore.PastEntry) string {
-	if title := agent.SessionDisplayName(pe.Meta); title != "" {
+	if title := schema.SessionDisplayName(pe.Meta); title != "" {
 		return title
 	}
 	return hubcore.ShortID(pe.Meta.ID)

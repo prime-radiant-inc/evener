@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/transcript"
 	"primeradiant.com/serf/appwire"
@@ -497,13 +496,13 @@ func TestHubThreadListOrdersPastSearchByUpdatedCreatedTitleAndID(t *testing.T) {
 		t.Fatal(err)
 	}
 	updated := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
-	for _, meta := range []agent.SessionMeta{
+	for _, meta := range []schema.SessionMeta{
 		{ID: "02OLD", CreatedAt: updated.Add(-2 * time.Hour), UpdatedAt: updated, OriginalPrompt: "beta task"},
 		{ID: "01NEW", CreatedAt: updated.Add(-time.Hour), UpdatedAt: updated, OriginalPrompt: "alpha task"},
 		{ID: "04TITLEB", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalPrompt: "bravo task"},
 		{ID: "03TITLEA", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalPrompt: "alpha task"},
 	} {
-		if err := agent.SaveSessionMeta(stateDir, meta); err != nil {
+		if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -567,7 +566,7 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 	pastUpdated := base.Add(-time.Hour)
 	liveStarted := base.Add(-24 * time.Hour)
 
-	if err := agent.SaveSessionMeta(stateDir, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
 		ID:             "01LIVE",
 		CreatedAt:      base.Add(-2 * time.Hour),
 		UpdatedAt:      liveUpdated,
@@ -575,7 +574,7 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.SaveSessionMeta(stateDir, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
 		ID:             "02PAST",
 		CreatedAt:      base.Add(-3 * time.Hour),
 		UpdatedAt:      pastUpdated,
@@ -739,7 +738,7 @@ func TestHubRPCThreadReadIncludesTranscriptPrelude(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	if err := agent.SaveSessionMeta(stateDir, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
 		ID:             sessionID,
 		ProfileID:      "openai",
 		Model:          "gpt-5",
@@ -3476,7 +3475,7 @@ func TestHubRPCTurnStartEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
 func makeResumeSession(t *testing.T, root, sessionID, profileID, model string) (string, *hubcore.PastIndex) {
 	t.Helper()
 	stateDir := filepath.Join(root, "projects", sessionID)
-	if err := agent.SaveSessionMeta(stateDir, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
 		ID:        sessionID,
 		ProfileID: profileID,
 		Model:     model,
@@ -4805,7 +4804,7 @@ func TestHubRPCThreadForkCreatesForkedThread(t *testing.T) {
 	if resp.Thread.ID == "" || resp.Thread.ID == parentID || resp.Thread.Serf.Ref != "local:"+resp.Thread.ID {
 		t.Fatalf("thread=%+v", resp.Thread)
 	}
-	childMeta, err := agent.LoadSessionMeta(stateDir, resp.Thread.ID)
+	childMeta, err := schema.LoadSessionMeta(stateDir, resp.Thread.ID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta(child): %v", err)
 	}
@@ -4899,7 +4898,7 @@ func buildRPCParentSession(t *testing.T, stateDir string) string {
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.SaveSessionMeta(stateDir, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
 		ID:             parentID,
 		ProfileID:      "openai",
 		Model:          "gpt-5",
@@ -4947,7 +4946,7 @@ func buildRPCFailedSession(t *testing.T, stateDir string) string {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	if err := agent.SaveSessionMeta(stateDir, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
 		ID:             sessionID,
 		ProfileID:      "openai",
 		Model:          "gpt-5",
@@ -4997,7 +4996,7 @@ func buildRPCStructuredFailedSession(t *testing.T, stateDir string) string {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	if err := agent.SaveSessionMeta(stateDir, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
 		ID:             sessionID,
 		ProfileID:      "openai",
 		Model:          "gpt-5",

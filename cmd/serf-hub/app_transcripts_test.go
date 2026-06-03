@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
@@ -21,7 +20,7 @@ func TestHubRPCTranscriptTargetsUseSerfParentRefs(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.SaveSessionMeta(stateDir, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
 		ID:              subID,
 		ProfileID:       "openai",
 		Model:           "gpt-5",

@@ -115,7 +115,7 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 	prefixEntries := allEntries[:divergenceTurn-1]
 
 	// Load parent meta — required for copying fields to the child.
-	parentMeta, err := LoadSessionMeta(stateDir, parentID)
+	parentMeta, err := schema.LoadSessionMeta(stateDir, parentID)
 	if err != nil {
 		return "", fmt.Errorf("load parent session meta: %w", err)
 	}
@@ -171,7 +171,7 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 	}
 
 	// Build and save the child meta.
-	childMeta := SessionMeta{
+	childMeta := schema.SessionMeta{
 		ID:              childID,
 		ProfileID:       parentMeta.ProfileID,
 		Model:           parentMeta.Model,
@@ -186,14 +186,14 @@ func ForkSession(stateDir, parentID string, divergenceTurn int, editedMessage, p
 		ForkLabel:       "", // child carries no fork label; parent gets it
 	}
 
-	if err := SaveSessionMeta(stateDir, childMeta); err != nil {
+	if err := schema.SaveSessionMeta(stateDir, childMeta); err != nil {
 		return "", fmt.Errorf("save child session meta: %w", err)
 	}
 
 	// Update the parent meta with the fork label if provided.
 	if parentForkLabel != "" {
 		parentMeta.ForkLabel = parentForkLabel
-		if err := SaveSessionMeta(stateDir, parentMeta); err != nil {
+		if err := schema.SaveSessionMeta(stateDir, parentMeta); err != nil {
 			return "", fmt.Errorf("update parent session meta with fork label: %w", err)
 		}
 	}

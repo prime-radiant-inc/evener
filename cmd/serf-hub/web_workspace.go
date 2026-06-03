@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/hubapi"
@@ -130,7 +130,7 @@ func (s *WebServer) renderDetailsPanel(w http.ResponseWriter, r *http.Request, i
 		detailsRow{"session id", id},
 	)
 
-	addMeta := func(m agent.SessionMeta) {
+	addMeta := func(m schema.SessionMeta) {
 		if m.OriginalPrompt != "" {
 			rows = append(rows, detailsRow{"prompt", m.OriginalPrompt})
 		}
@@ -351,7 +351,7 @@ func (s *WebServer) liveWorkspaceSnapshot(id string, fallback hubapi.SessionCapa
 // equals this session's ID. ForkOfTitle is best-effort — if the new branch
 // isn't in the past index, we leave it empty and the template falls back to
 // "fork at turn N".
-func (s *WebServer) fillForkLineage(data *WorkspaceData, m agent.SessionMeta) {
+func (s *WebServer) fillForkLineage(data *WorkspaceData, m schema.SessionMeta) {
 	if m.ForkLabel == "" {
 		return
 	}
@@ -362,7 +362,7 @@ func (s *WebServer) fillForkLineage(data *WorkspaceData, m agent.SessionMeta) {
 	}
 	for _, candidate := range s.cfg.Past.AllMetas() {
 		if candidate.ParentSessionID == m.ID && !candidate.IsSubagent && candidate.ForkLabel == "" {
-			data.ForkOfTitle = agent.SessionDisplayName(candidate)
+			data.ForkOfTitle = schema.SessionDisplayName(candidate)
 			if data.ForkOfTitle == "" {
 				data.ForkOfTitle = hubcore.ShortID(candidate.ID)
 			}

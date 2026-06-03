@@ -11,6 +11,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/auth/openai/oaitest"
 	"primeradiant.com/serf/llm"
 )
@@ -190,7 +191,7 @@ func TestRunMissingModel(t *testing.T) {
 func TestListSessions_PrintsFormattedList(t *testing.T) {
 	dir := t.TempDir()
 
-	meta1 := agent.SessionMeta{
+	meta1 := schema.SessionMeta{
 		ID:        "01JTEST000000000000000001",
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
@@ -198,7 +199,7 @@ func TestListSessions_PrintsFormattedList(t *testing.T) {
 		UpdatedAt: time.Date(2025, 1, 15, 10, 5, 0, 0, time.UTC),
 		TurnCount: 2,
 	}
-	meta2 := agent.SessionMeta{
+	meta2 := schema.SessionMeta{
 		ID:        "01JTEST000000000000000002",
 		ProfileID: "anthropic",
 		Model:     "claude-opus-4-6",
@@ -206,8 +207,8 @@ func TestListSessions_PrintsFormattedList(t *testing.T) {
 		UpdatedAt: time.Date(2025, 1, 15, 12, 0, 0, 0, time.UTC),
 		TurnCount: 1,
 	}
-	for _, m := range []agent.SessionMeta{meta1, meta2} {
-		if err := agent.SaveSessionMeta(dir, m); err != nil {
+	for _, m := range []schema.SessionMeta{meta1, meta2} {
+		if err := schema.SaveSessionMeta(dir, m); err != nil {
 			t.Fatalf("SaveSessionMeta: %v", err)
 		}
 	}

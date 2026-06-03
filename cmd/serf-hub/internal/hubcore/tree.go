@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 )
 
@@ -103,7 +103,7 @@ func AgeString(t time.Time) string {
 }
 
 // projectName returns the sidebar project label for a session meta.
-func projectName(m agent.SessionMeta) string {
+func projectName(m schema.SessionMeta) string {
 	if m.EnvInfo.WorkingDir == "" {
 		return "(no project)"
 	}
@@ -115,8 +115,8 @@ func projectName(m agent.SessionMeta) string {
 // Older sessions persisted before OriginalPrompt was captured fall back to a
 // short, human-friendlier rendering of the session ID rather than the full
 // 26-character ULID, which clutters the sidebar.
-func nodeTitle(m agent.SessionMeta, kind string) string {
-	base := agent.SessionDisplayName(m)
+func nodeTitle(m schema.SessionMeta, kind string) string {
+	base := schema.SessionDisplayName(m)
 	if base == "" {
 		base = ShortID(m.ID)
 	}
@@ -163,7 +163,7 @@ func NormalizeState(s string) string {
 // was preserved when the user edited a prior message. It carries the
 // user-supplied ForkLabel.  The newer (active) branch carries
 // ParentSessionID but no ForkLabel and renders as a normal session.
-func nodeKind(m agent.SessionMeta) string {
+func nodeKind(m schema.SessionMeta) string {
 	if m.IsSubagent {
 		return "subagent"
 	}
@@ -175,8 +175,8 @@ func nodeKind(m agent.SessionMeta) string {
 
 // BuildTree assembles the sidebar Tree from all session metas and the
 // currently-live set.
-func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
-	metas = append([]agent.SessionMeta(nil), metas...)
+func BuildTree(metas []schema.SessionMeta, live []LiveEntry) Tree {
+	metas = append([]schema.SessionMeta(nil), metas...)
 	sort.SliceStable(metas, func(i, j int) bool {
 		return sessionMetaLess(metas[i], metas[j])
 	})
@@ -188,7 +188,7 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 			liveMap[le.SessionID] = le
 		}
 	}
-	metaMap := make(map[string]agent.SessionMeta, len(metas))
+	metaMap := make(map[string]schema.SessionMeta, len(metas))
 	for _, m := range metas {
 		if m.ID != "" {
 			metaMap[m.ID] = m
@@ -205,9 +205,9 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 
 	// Group metas by project name.
 	type projectAccum struct {
-		topLevel   []agent.SessionMeta
-		children   map[string][]agent.SessionMeta // parentID -> children
-		workingDir string                         // first non-empty WorkingDir seen in this project
+		topLevel   []schema.SessionMeta
+		children   map[string][]schema.SessionMeta // parentID -> children
+		workingDir string                          // first non-empty WorkingDir seen in this project
 	}
 	projects := make(map[string]*projectAccum)
 	projectOrder := []string{} // insertion order for stable output
@@ -228,7 +228,7 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 		pname := projectName(m)
 		if _, ok := projects[pname]; !ok {
 			projects[pname] = &projectAccum{
-				children: make(map[string][]agent.SessionMeta),
+				children: make(map[string][]schema.SessionMeta),
 			}
 			projectOrder = append(projectOrder, pname)
 		}
@@ -284,7 +284,7 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 
 			// Build children: subagents first, then forks, each sorted by UpdatedAt desc.
 			childMetas := acc.children[m.ID]
-			var subagents, forks []agent.SessionMeta
+			var subagents, forks []schema.SessionMeta
 			for _, c := range childMetas {
 				if c.IsSubagent {
 					subagents = append(subagents, c)
@@ -336,7 +336,7 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 		for _, le := range live {
 			// Check if this live entry belongs to this project.
 			// We need to find the meta for this session.
-			var meta *agent.SessionMeta
+			var meta *schema.SessionMeta
 			for i := range metas {
 				if metas[i].ID == le.SessionID && projectName(metas[i]) == pname {
 					meta = &metas[i]
@@ -368,7 +368,7 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 			continue
 		}
 		// Find the meta for this live entry.
-		var meta *agent.SessionMeta
+		var meta *schema.SessionMeta
 		for i := range metas {
 			if metas[i].ID == le.SessionID {
 				meta = &metas[i]
@@ -411,7 +411,7 @@ func BuildTree(metas []agent.SessionMeta, live []LiveEntry) Tree {
 	}
 }
 
-func treeNodeLess(a, b TreeNode, metaMap map[string]agent.SessionMeta, liveMap map[string]LiveEntry) bool {
+func treeNodeLess(a, b TreeNode, metaMap map[string]schema.SessionMeta, liveMap map[string]LiveEntry) bool {
 	ma, aHasMeta := metaMap[a.ID]
 	mb, bHasMeta := metaMap[b.ID]
 	if aHasMeta && bHasMeta {

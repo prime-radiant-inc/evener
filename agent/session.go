@@ -452,7 +452,7 @@ func (s *Session) maybeAutoSave() {
 		return
 	}
 	meta := s.Meta()
-	if err := SaveSessionMeta(s.stateDir, meta); err != nil {
+	if err := schema.SaveSessionMeta(s.stateDir, meta); err != nil {
 		s.emit(events.EventWarning, events.WarningData{
 			Message: fmt.Sprintf("auto-save failed: %v", err),
 		})
@@ -478,6 +478,12 @@ func applyThresholdScale(cm *contextManager, scale float64) {
 		cm.SummarizeThreshold = clamp(cm.SummarizeThreshold * scale)
 	}
 }
+
+// sessionsSubdir is the directory, under a session's StateDir, where its
+// per-session files live: the transcript and log JSONL written by package
+// agent, alongside the meta.json/snapshot written by package schema (which
+// keeps its own private copy of this name).
+const sessionsSubdir = "sessions"
 
 // TranscriptPath returns the path to this session's transcript JSONL file,
 // or empty string if state persistence is not enabled.

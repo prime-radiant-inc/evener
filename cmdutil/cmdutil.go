@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
 	"primeradiant.com/serf/server"
@@ -212,20 +213,20 @@ func ResolveSnapshot(stateDir, sessionID string, resumeLast bool) (agent.Session
 }
 
 // ResolveSessionMeta loads a session meta by ID or finds the most recent one.
-func ResolveSessionMeta(stateDir, sessionID string, resumeLast bool) (agent.SessionMeta, error) {
+func ResolveSessionMeta(stateDir, sessionID string, resumeLast bool) (schema.SessionMeta, error) {
 	if resumeLast {
-		list, err := agent.ListSessionMetas(stateDir)
+		list, err := schema.ListSessionMetas(stateDir)
 		if err != nil {
-			return agent.SessionMeta{}, fmt.Errorf("list sessions: %w", err)
+			return schema.SessionMeta{}, fmt.Errorf("list sessions: %w", err)
 		}
 		if len(list) == 0 {
-			return agent.SessionMeta{}, fmt.Errorf("no saved sessions in %s", stateDir)
+			return schema.SessionMeta{}, fmt.Errorf("no saved sessions in %s", stateDir)
 		}
 		return list[0], nil
 	}
-	meta, err := agent.LoadSessionMeta(stateDir, sessionID)
+	meta, err := schema.LoadSessionMeta(stateDir, sessionID)
 	if err != nil {
-		return agent.SessionMeta{}, fmt.Errorf("load session %s: %w", sessionID, err)
+		return schema.SessionMeta{}, fmt.Errorf("load session %s: %w", sessionID, err)
 	}
 	return meta, nil
 }

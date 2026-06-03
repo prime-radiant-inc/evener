@@ -9,15 +9,14 @@ import (
 	"sync"
 	"unicode"
 
-	"primeradiant.com/serf/agent"
-
 	_ "modernc.org/sqlite" // registers the "sqlite" driver for database/sql
+	"primeradiant.com/serf/agent/schema"
 )
 
 // PastEntry is one indexed past session.
 type PastEntry struct {
 	ID       string
-	Meta     agent.SessionMeta
+	Meta     schema.SessionMeta
 	StateDir string // the project's state-dir root (parent of `sessions/`)
 }
 
@@ -73,7 +72,7 @@ func (i *PastIndex) Rebuild() error {
 	var all []PastEntry
 	byID := make(map[string]PastEntry)
 	for _, project := range matches {
-		metas, err := agent.ListSessionMetas(project)
+		metas, err := schema.ListSessionMetas(project)
 		if err != nil {
 			continue
 		}
@@ -322,10 +321,10 @@ func matches(e PastEntry, lowerQ string) bool {
 }
 
 // AllMetas returns the full snapshot of indexed metas. Caller must not mutate.
-func (i *PastIndex) AllMetas() []agent.SessionMeta {
+func (i *PastIndex) AllMetas() []schema.SessionMeta {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-	out := make([]agent.SessionMeta, 0, len(i.all))
+	out := make([]schema.SessionMeta, 0, len(i.all))
 	for _, e := range i.all {
 		out = append(out, e.Meta)
 	}

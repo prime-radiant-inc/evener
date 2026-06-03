@@ -52,7 +52,7 @@ func TestSessionNameFromPrompt_UpdatesMetaAndAdvisoryLog(t *testing.T) {
 		t.Fatal("NameUpdatedAt is zero")
 	}
 
-	persisted, err := LoadSessionMeta(dir, sess.ID())
+	persisted, err := schema.LoadSessionMeta(dir, sess.ID())
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -342,7 +342,7 @@ func TestRestoreSessionFromMeta_PreservesManualNameAgainstCompaction(t *testing.
 	dir := t.TempDir()
 	client := llm.NewClient()
 	client.Register(&fakeAdapter{name: "openai"})
-	meta := SessionMeta{
+	meta := schema.SessionMeta{
 		ID:            "01TESTSESSIONMANUALNAME000000",
 		ProfileID:     "openai",
 		Model:         "gpt-5.2",

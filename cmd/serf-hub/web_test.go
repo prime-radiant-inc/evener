@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/agent/transcript"
@@ -808,7 +807,7 @@ func TestWeb_Sidebar_RendersTreeWithLiveAndProjects(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01PAST", UpdatedAt: time.Now(), OriginalPrompt: "fix bug",
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
 	}); err != nil {
@@ -855,7 +854,7 @@ func TestWeb_Sidebar_ProjectLinksEscapeWorkingDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	workingDir := "/projects/a&b?c#d"
-	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01ESCAPED", UpdatedAt: time.Now(), OriginalPrompt: "escaped project",
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: workingDir},
 	}); err != nil {
@@ -902,7 +901,7 @@ func TestWeb_ProjectSettingsListEscapesWorkingDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	workingDir := "/projects/a&b?c#d"
-	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01PSET", UpdatedAt: time.Now(), OriginalPrompt: "project settings",
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: workingDir},
 	}); err != nil {
@@ -1195,7 +1194,7 @@ func TestWeb_SessionImage_ServesShaReferencedInputImage(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01IMG", UpdatedAt: time.Now(), OriginalPrompt: "image demo",
 	}); err != nil {
 		t.Fatal(err)
@@ -1271,7 +1270,7 @@ func TestWeb_SessionImage_UnknownSha(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01NOIMG", UpdatedAt: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
@@ -1983,7 +1982,7 @@ func TestWeb_WorkspacePartial_PastSession_RendersTitleAndState(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
-	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
+	_ = schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01PAST001", UpdatedAt: time.Now(), OriginalPrompt: "fix the widget", TurnCount: 7,
 	})
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
@@ -2021,7 +2020,7 @@ func TestWeb_WorkspacePartial_RendersBottomStripAffordances(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
-	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
+	_ = schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01BOTTOM01", UpdatedAt: time.Now(), OriginalPrompt: "render bottom strip",
 	})
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
@@ -2066,7 +2065,7 @@ func TestWeb_WorkspacePartial_RendersWorkingDirInStatusRow(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
-	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
+	_ = schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01CWD00001", UpdatedAt: time.Now(), OriginalPrompt: "cwd test",
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/foo", GitBranch: "feature/bar"},
 	})
@@ -2113,7 +2112,7 @@ func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
-	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
+	_ = schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01STATE001", UpdatedAt: time.Now(),
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/wd", GitBranch: "main"},
 	})
@@ -2402,7 +2401,7 @@ func TestWeb_Fork_CallsForkSession(t *testing.T) {
 	if err := tw.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: parentID, UpdatedAt: time.Now(), OriginalPrompt: "test fork",
 		ProfileID: "openai", Model: "gpt-5",
 	}); err != nil {
@@ -2443,11 +2442,11 @@ func TestWeb_ApiSearch_FiltersPast(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
-	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
+	_ = schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01MATCH", UpdatedAt: time.Now(), OriginalPrompt: "fix the frobnitz",
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"},
 	})
-	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
+	_ = schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01OTHER", UpdatedAt: time.Now(), OriginalPrompt: "unrelated work",
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/beta"},
 	})
@@ -2491,7 +2490,7 @@ func TestWeb_ApiSearch_PastUsesGeneratedNameTitle(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
-	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
+	_ = schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID:             "01MATCH",
 		UpdatedAt:      time.Now(),
 		Name:           "Generated Frobnitz Title",
@@ -3111,7 +3110,7 @@ func TestWeb_SessionTasks_PastReturnsPersistedFile(t *testing.T) {
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01PASTTASK", UpdatedAt: time.Now(), OriginalPrompt: "demo",
 	}); err != nil {
 		t.Fatal(err)
@@ -3165,7 +3164,7 @@ func TestWeb_SessionTasks_PastNoTasksFile(t *testing.T) {
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01NOTASKS", UpdatedAt: time.Now(),
 	}); err != nil {
 		t.Fatal(err)
@@ -3538,7 +3537,7 @@ func TestWeb_Sidebar_ProjectHeader_HasChevronAndName(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01PROJHDR", UpdatedAt: time.Now(), OriginalPrompt: "x",
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/widgets"},
 	}); err != nil {
@@ -3578,7 +3577,7 @@ func TestWeb_WorkspacePartial_RosterEndedSessionKeepsResumeSendEnabled(t *testin
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01ENDED001", UpdatedAt: time.Now(), OriginalPrompt: "resume this", TurnCount: 2,
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"},
 	}); err != nil {
@@ -3627,7 +3626,7 @@ func TestWeb_Workspace_ForkOriginalBanner(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Original (preserved) branch — carries ForkLabel.
-	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01ORIGINAL", UpdatedAt: time.Now().Add(-time.Hour),
 		OriginalPrompt: "the original prompt",
 		ForkLabel:      "before TDD",
@@ -3636,7 +3635,7 @@ func TestWeb_Workspace_ForkOriginalBanner(t *testing.T) {
 		t.Fatal(err)
 	}
 	// New branch — its ParentSessionID points back at the original.
-	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01NEWBRANCH", UpdatedAt: time.Now(),
 		OriginalPrompt:  "the new branch title",
 		ParentSessionID: "01ORIGINAL",
@@ -3981,13 +3980,13 @@ func TestWeb_Sidebar_RollupState_AwaitingHasPriority(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01AWAIT", UpdatedAt: time.Now(), OriginalPrompt: "needs reply",
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01IDLE", UpdatedAt: time.Now(), OriginalPrompt: "ticking over",
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
 	}); err != nil {
@@ -4036,7 +4035,7 @@ func TestWeb_Sidebar_RollupState_NoLiveChildrenHides(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(proj, "sessions"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01PAST", UpdatedAt: time.Now(), OriginalPrompt: "done long ago",
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
 	}); err != nil {
@@ -4352,7 +4351,7 @@ func TestWeb_APITreeReturnsRefsAndNormalizesAwaitingInput(t *testing.T) {
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01TREE", UpdatedAt: time.Now(), OriginalPrompt: "tree task",
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"},
 	}); err != nil {
@@ -4483,7 +4482,7 @@ func TestWeb_APISessionDetailsLiveAndPast(t *testing.T) {
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01DETAIL", UpdatedAt: time.Now(), OriginalPrompt: "details task", Model: "gpt-5", ProfileID: "openai", TurnCount: 3,
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf", GitBranch: "serf-hub"},
 	}); err != nil {
@@ -4527,7 +4526,7 @@ func TestWeb_APISessionDetailsLiveWithoutAppWireDoesNotAdvertiseActions(t *testi
 	if err := os.MkdirAll(proj, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
 		ID: "01DETAIL", UpdatedAt: time.Now(), OriginalPrompt: "details task", Model: "gpt-5", ProfileID: "openai", TurnCount: 3,
 		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf", GitBranch: "serf-hub"},
 	}); err != nil {

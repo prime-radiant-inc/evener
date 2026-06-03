@@ -345,7 +345,7 @@ func TestSession_AutoSave_WritesMetaAfterProcessInput(t *testing.T) {
 	sess.Close()
 
 	// A meta file should exist (not a full snapshot).
-	list, err := ListSessionMetas(dir)
+	list, err := schema.ListSessionMetas(dir)
 	if err != nil {
 		t.Fatalf("ListSessionMetas: %v", err)
 	}
@@ -416,7 +416,7 @@ func TestSession_AutoSave_PersistsToolResults(t *testing.T) {
 	sess.Close()
 
 	// Meta file should exist.
-	list, err := ListSessionMetas(dir)
+	list, err := schema.ListSessionMetas(dir)
 	if err != nil {
 		t.Fatalf("ListSessionMetas: %v", err)
 	}
@@ -523,7 +523,7 @@ func TestSession_AutoSave_DoesNotPersistMidToolRound(t *testing.T) {
 
 	// NewSession writes the initial meta so the hub can discover the session
 	// before any turn completes. No additional saves should happen mid-tool-round.
-	list, err := ListSessionMetas(dir)
+	list, err := schema.ListSessionMetas(dir)
 	if err != nil {
 		t.Fatalf("ListSessionMetas: %v", err)
 	}
@@ -537,7 +537,7 @@ func TestSession_AutoSave_DoesNotPersistMidToolRound(t *testing.T) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 
-	list2, err := ListSessionMetas(dir)
+	list2, err := schema.ListSessionMetas(dir)
 	if err != nil {
 		t.Fatalf("ListSessionMetas after completion: %v", err)
 	}
@@ -598,7 +598,7 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 	sess.Close()
 
 	// Verify initial meta was saved.
-	list, err := ListSessionMetas(dir)
+	list, err := schema.ListSessionMetas(dir)
 	if err != nil {
 		t.Fatalf("ListSessionMetas after phase 1: %v", err)
 	}
@@ -635,7 +635,7 @@ func TestRestoreSession_AutoSaveContinues(t *testing.T) {
 	sess2.Close()
 
 	// Verify the meta was updated with new turns.
-	list2, err := ListSessionMetas(dir)
+	list2, err := schema.ListSessionMetas(dir)
 	if err != nil {
 		t.Fatalf("ListSessionMetas after phase 2: %v", err)
 	}
@@ -1049,7 +1049,7 @@ func TestMetaTurnCount_CountsModelResponses(t *testing.T) {
 
 	// The meta.json turn_count should reflect all 3 model responses,
 	// not just 1 (the number of user inputs).
-	metas, err := ListSessionMetas(dir)
+	metas, err := schema.ListSessionMetas(dir)
 	if err != nil {
 		t.Fatalf("ListSessionMetas: %v", err)
 	}
@@ -1062,7 +1062,7 @@ func TestMetaTurnCount_CountsModelResponses(t *testing.T) {
 }
 
 func TestSessionMeta_OriginalPrompt_RoundTrip(t *testing.T) {
-	original := SessionMeta{
+	original := schema.SessionMeta{
 		ID:             "01TEST0001",
 		ProfileID:      "openai-gpt-5",
 		Model:          "gpt-5.2",
@@ -1079,7 +1079,7 @@ func TestSessionMeta_OriginalPrompt_RoundTrip(t *testing.T) {
 	if got := string(data); !strings.Contains(got, "original_prompt") || strings.Contains(got, "original_task") {
 		t.Fatalf("expected current original_prompt JSON only, got: %s", got)
 	}
-	var got SessionMeta
+	var got schema.SessionMeta
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -1090,7 +1090,7 @@ func TestSessionMeta_OriginalPrompt_RoundTrip(t *testing.T) {
 
 func TestSessionMeta_NameFields_RoundTrip(t *testing.T) {
 	updatedAt := time.Date(2026, 5, 20, 14, 32, 11, 0, time.UTC)
-	original := SessionMeta{
+	original := schema.SessionMeta{
 		ID:            "01TEST0001",
 		Name:          "Fix Handler Bug",
 		NameSource:    "prompt",
@@ -1106,7 +1106,7 @@ func TestSessionMeta_NameFields_RoundTrip(t *testing.T) {
 			t.Fatalf("expected %q in JSON, got: %s", want, gotJSON)
 		}
 	}
-	var got SessionMeta
+	var got schema.SessionMeta
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -1122,7 +1122,7 @@ func TestSessionMeta_NameFields_RoundTrip(t *testing.T) {
 }
 
 func TestSessionMeta_NameFields_OmitEmpty(t *testing.T) {
-	meta := SessionMeta{ID: "01TEST0001"}
+	meta := schema.SessionMeta{ID: "01TEST0001"}
 	data, err := json.Marshal(meta)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -1138,38 +1138,38 @@ func TestSessionMeta_NameFields_OmitEmpty(t *testing.T) {
 func TestSessionDisplayName(t *testing.T) {
 	tests := []struct {
 		name string
-		meta SessionMeta
+		meta schema.SessionMeta
 		want string
 	}{
 		{
 			name: "name wins over original prompt",
-			meta: SessionMeta{ID: "01TEST0001", Name: "Generated Name", OriginalPrompt: "original prompt"},
+			meta: schema.SessionMeta{ID: "01TEST0001", Name: "Generated Name", OriginalPrompt: "original prompt"},
 			want: "Generated Name",
 		},
 		{
 			name: "original prompt wins over ID",
-			meta: SessionMeta{ID: "01TEST0001", OriginalPrompt: "original prompt"},
+			meta: schema.SessionMeta{ID: "01TEST0001", OriginalPrompt: "original prompt"},
 			want: "original prompt",
 		},
 		{
 			name: "ID used when both are blank",
-			meta: SessionMeta{ID: "01TEST0001"},
+			meta: schema.SessionMeta{ID: "01TEST0001"},
 			want: "01TEST0001",
 		},
 		{
 			name: "whitespace is trimmed",
-			meta: SessionMeta{ID: "  01TEST0001  ", Name: "  Generated Name  ", OriginalPrompt: "  original prompt  "},
+			meta: schema.SessionMeta{ID: "  01TEST0001  ", Name: "  Generated Name  ", OriginalPrompt: "  original prompt  "},
 			want: "Generated Name",
 		},
 		{
 			name: "blank name falls back after trimming",
-			meta: SessionMeta{ID: "01TEST0001", Name: "  ", OriginalPrompt: "  original prompt  "},
+			meta: schema.SessionMeta{ID: "01TEST0001", Name: "  ", OriginalPrompt: "  original prompt  "},
 			want: "original prompt",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := SessionDisplayName(tt.meta); got != tt.want {
+			if got := schema.SessionDisplayName(tt.meta); got != tt.want {
 				t.Fatalf("SessionDisplayName() = %q, want %q", got, tt.want)
 			}
 		})
@@ -1178,7 +1178,7 @@ func TestSessionDisplayName(t *testing.T) {
 
 func TestSessionMeta_OriginalPrompt_ReadsLegacyOriginalTask(t *testing.T) {
 	data := []byte(`{"id":"01TEST0001","original_task":"fix the bug in handler"}`)
-	var got SessionMeta
+	var got schema.SessionMeta
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -1188,7 +1188,7 @@ func TestSessionMeta_OriginalPrompt_ReadsLegacyOriginalTask(t *testing.T) {
 }
 
 func TestSessionMeta_OriginalPrompt_OmitEmpty(t *testing.T) {
-	meta := SessionMeta{ID: "01TEST0001"}
+	meta := schema.SessionMeta{ID: "01TEST0001"}
 	data, err := json.Marshal(meta)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -1200,17 +1200,17 @@ func TestSessionMeta_OriginalPrompt_OmitEmpty(t *testing.T) {
 
 func TestSessionMeta_ForkFieldsRoundTrip(t *testing.T) {
 	dir := t.TempDir()
-	meta := SessionMeta{
+	meta := schema.SessionMeta{
 		ID:              "01CHILD",
 		ParentSessionID: "01PARENT",
 		DivergenceTurn:  7,
 		ForkLabel:       "before TDD",
 		UpdatedAt:       time.Now(),
 	}
-	if err := SaveSessionMeta(dir, meta); err != nil {
+	if err := schema.SaveSessionMeta(dir, meta); err != nil {
 		t.Fatal(err)
 	}
-	got, err := LoadSessionMeta(dir, "01CHILD")
+	got, err := schema.LoadSessionMeta(dir, "01CHILD")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
@@ -91,12 +90,12 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	writeAPIJSON(w, http.StatusOK, resp)
 }
 
-func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]agent.SessionMeta, []hubcore.LiveEntry) {
+func (s *WebServer) navigationTreeInputs(ctx context.Context) ([]schema.SessionMeta, []hubcore.LiveEntry) {
 	var live []hubcore.LiveEntry
 	if s.cfg.Roster != nil {
 		live = s.cfg.Roster.List()
 	}
-	var metas []agent.SessionMeta
+	var metas []schema.SessionMeta
 	if s.cfg.Past != nil {
 		metas = s.cfg.Past.AllMetas()
 	}
@@ -146,16 +145,16 @@ func (s *WebServer) ensureManagedCodexSources(ctx context.Context) {
 	_ = ensureManagedCodexSources(ctx, s.cfg, s.sources, appwire.ThreadListParams{})
 }
 
-func appThreadTreeEntries(thread appwire.Thread) (agent.SessionMeta, hubcore.LiveEntry, bool) {
+func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.LiveEntry, bool) {
 	ref, ok := appThreadTreeRef(thread)
 	if !ok {
-		return agent.SessionMeta{}, hubcore.LiveEntry{}, false
+		return schema.SessionMeta{}, hubcore.LiveEntry{}, false
 	}
 	refText := ref.String()
 	title := strutil.FirstNonEmpty(thread.Name, thread.Preview, thread.SessionID, thread.ID, refText)
 	createdAt := hubcore.UnixTime(thread.CreatedAt)
 	updatedAt := hubcore.UnixTime(thread.UpdatedAt)
-	meta := agent.SessionMeta{
+	meta := schema.SessionMeta{
 		ID:             refText,
 		ProfileID:      ref.SourceID,
 		Model:          thread.ModelProvider,

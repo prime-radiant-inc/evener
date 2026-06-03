@@ -47,7 +47,7 @@ func buildParentSession(t *testing.T) (stateDir, parentID string) {
 		t.Fatalf("Close transcript: %v", err)
 	}
 
-	meta := SessionMeta{
+	meta := schema.SessionMeta{
 		ID:        parentID,
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
@@ -57,7 +57,7 @@ func buildParentSession(t *testing.T) (stateDir, parentID string) {
 		UpdatedAt: time.Now().UTC(),
 		TurnCount: 2,
 	}
-	if err := SaveSessionMeta(stateDir, meta); err != nil {
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
 		t.Fatalf("SaveSessionMeta: %v", err)
 	}
 
@@ -84,7 +84,7 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 	}
 
 	// Child meta assertions.
-	childMeta, err := LoadSessionMeta(stateDir, childID)
+	childMeta, err := schema.LoadSessionMeta(stateDir, childID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta(child): %v", err)
 	}
@@ -102,7 +102,7 @@ func TestForkSession_CopiesPrefixAndAppliesEdit(t *testing.T) {
 	}
 
 	// Parent meta should have been updated with the fork label.
-	parentMeta, err := LoadSessionMeta(stateDir, parentID)
+	parentMeta, err := schema.LoadSessionMeta(stateDir, parentID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta(parent): %v", err)
 	}
@@ -160,7 +160,7 @@ func TestForkSession_ChildLineagePreservedAcrossMetaRewrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ForkSession: %v", err)
 	}
-	childMeta, err := LoadSessionMeta(stateDir, childID)
+	childMeta, err := schema.LoadSessionMeta(stateDir, childID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta(child): %v", err)
 	}
@@ -189,7 +189,7 @@ func TestForkSession_ParentForkLabelPreservedAcrossMetaRewrite(t *testing.T) {
 	if _, err := ForkSession(stateDir, parentID, 3, "second task, table-driven", "before TDD"); err != nil {
 		t.Fatalf("ForkSession: %v", err)
 	}
-	parentMeta, err := LoadSessionMeta(stateDir, parentID)
+	parentMeta, err := schema.LoadSessionMeta(stateDir, parentID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta(parent): %v", err)
 	}

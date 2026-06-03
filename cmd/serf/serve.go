@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf/internal/rvreg"
 	"primeradiant.com/serf/cmdutil"
@@ -141,7 +142,7 @@ func runServe(args []string) error {
 	}
 
 	resuming := *resume != "" || *resumeLast
-	var resumedMeta agent.SessionMeta
+	var resumedMeta schema.SessionMeta
 	if resuming {
 		var metaErr error
 		resumedMeta, metaErr = cmdutil.ResolveSessionMeta(sd, *resume, *resumeLast)

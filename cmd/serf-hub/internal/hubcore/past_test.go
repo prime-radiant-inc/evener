@@ -7,13 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/schema"
 )
 
-func writeMeta(t *testing.T, dir string, meta agent.SessionMeta) {
+func writeMeta(t *testing.T, dir string, meta schema.SessionMeta) {
 	t.Helper()
-	if err := agent.SaveSessionMeta(dir, meta); err != nil {
+	if err := schema.SaveSessionMeta(dir, meta); err != nil {
 		t.Fatalf("SaveSessionMeta: %v", err)
 	}
 }
@@ -29,7 +28,7 @@ func TestPastIndex_RebuildLoadsAllMetas(t *testing.T) {
 	}
 
 	now := time.Now().UTC()
-	writeMeta(t, projA, agent.SessionMeta{
+	writeMeta(t, projA, schema.SessionMeta{
 		ID:             "01A",
 		Model:          "gpt-5.2",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/a"},
@@ -37,7 +36,7 @@ func TestPastIndex_RebuildLoadsAllMetas(t *testing.T) {
 		UpdatedAt:      now.Add(-1 * time.Hour),
 		OriginalPrompt: "fix the bug",
 	})
-	writeMeta(t, projB, agent.SessionMeta{
+	writeMeta(t, projB, schema.SessionMeta{
 		ID:             "01B",
 		Model:          "claude-opus-4-7",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/b"},
@@ -68,25 +67,25 @@ func TestPastIndex_RebuildOrdersByUpdatedCreatedTitleAndID(t *testing.T) {
 	}
 
 	updated := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
-	writeMeta(t, proj, agent.SessionMeta{
+	writeMeta(t, proj, schema.SessionMeta{
 		ID:             "02OLD",
 		CreatedAt:      updated.Add(-2 * time.Hour),
 		UpdatedAt:      updated,
 		OriginalPrompt: "beta task",
 	})
-	writeMeta(t, proj, agent.SessionMeta{
+	writeMeta(t, proj, schema.SessionMeta{
 		ID:             "01NEW",
 		CreatedAt:      updated.Add(-time.Hour),
 		UpdatedAt:      updated,
 		OriginalPrompt: "alpha task",
 	})
-	writeMeta(t, proj, agent.SessionMeta{
+	writeMeta(t, proj, schema.SessionMeta{
 		ID:             "03TITLEB",
 		CreatedAt:      updated.Add(-3 * time.Hour),
 		UpdatedAt:      updated.Add(-time.Hour),
 		OriginalPrompt: "bravo task",
 	})
-	writeMeta(t, proj, agent.SessionMeta{
+	writeMeta(t, proj, schema.SessionMeta{
 		ID:             "04TITLEA",
 		CreatedAt:      updated.Add(-3 * time.Hour),
 		UpdatedAt:      updated.Add(-time.Hour),
@@ -113,13 +112,13 @@ func TestPastIndex_Search(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
-	writeMeta(t, proj, agent.SessionMeta{
+	writeMeta(t, proj, schema.SessionMeta{
 		ID:             "01A",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/a"},
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "fix the bug in handler",
 	})
-	writeMeta(t, proj, agent.SessionMeta{
+	writeMeta(t, proj, schema.SessionMeta{
 		ID:             "01B",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/b"},
 		UpdatedAt:      time.Now(),
@@ -151,7 +150,7 @@ func TestPastIndex_SearchMatchesGeneratedName(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
-	writeMeta(t, proj, agent.SessionMeta{
+	writeMeta(t, proj, schema.SessionMeta{
 		ID:             "01NAMED",
 		Name:           "Launch Config Cheap Model",
 		OriginalPrompt: "unrelated original prompt",
@@ -172,7 +171,7 @@ func TestPastIndex_SearchSQLiteFTSMatchesGeneratedName(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
-	writeMeta(t, proj, agent.SessionMeta{
+	writeMeta(t, proj, schema.SessionMeta{
 		ID:             "01NAMED",
 		Name:           "Launch Config Cheap Model",
 		OriginalPrompt: "unrelated original prompt",
@@ -193,13 +192,13 @@ func TestPastIndex_SearchUsesSQLiteFTSWhenConfigured(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
-	writeMeta(t, proj, agent.SessionMeta{
+	writeMeta(t, proj, schema.SessionMeta{
 		ID:             "01AUTH",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/auth-service"},
 		UpdatedAt:      time.Now().Add(time.Hour),
 		OriginalPrompt: "repair login token refresh",
 	})
-	writeMeta(t, proj, agent.SessionMeta{
+	writeMeta(t, proj, schema.SessionMeta{
 		ID:             "01BILLING",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/invoices"},
 		UpdatedAt:      time.Now(),
@@ -237,13 +236,13 @@ func TestPastIndex_SearchWithSQLitePreservesSubstringMatches(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
-	writeMeta(t, proj, agent.SessionMeta{
+	writeMeta(t, proj, schema.SessionMeta{
 		ID:             "01PREFIX",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/prefix"},
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "auth token cleanup",
 	})
-	writeMeta(t, proj, agent.SessionMeta{
+	writeMeta(t, proj, schema.SessionMeta{
 		ID:             "02SUBSTR",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/substr"},
 		UpdatedAt:      time.Now().Add(-time.Minute),
@@ -269,13 +268,13 @@ func TestPastIndex_SearchWithSQLiteMergesFTSAndSubstringMatches(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
-	writeMeta(t, proj, agent.SessionMeta{
+	writeMeta(t, proj, schema.SessionMeta{
 		ID:             "01FTS",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/fts"},
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "auth token cleanup",
 	})
-	writeMeta(t, proj, agent.SessionMeta{
+	writeMeta(t, proj, schema.SessionMeta{
 		ID:             "02SUBSTR",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/substr"},
 		UpdatedAt:      time.Now().Add(-time.Minute),
@@ -301,7 +300,7 @@ func TestPastIndex_SQLiteIndexUsesPrivateFilePermissions(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
-	writeMeta(t, proj, agent.SessionMeta{
+	writeMeta(t, proj, schema.SessionMeta{
 		ID:             "01PRIVATE",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/private"},
 		UpdatedAt:      time.Now(),
@@ -339,7 +338,7 @@ func TestPastIndex_SearchFallsBackWhenSQLiteUnavailable(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
-	writeMeta(t, proj, agent.SessionMeta{
+	writeMeta(t, proj, schema.SessionMeta{
 		ID:             "01A",
 		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/a"},
 		UpdatedAt:      time.Now(),
@@ -361,7 +360,7 @@ func TestPastIndex_Pagination(t *testing.T) {
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
 	for i := 0; i < 5; i++ {
-		writeMeta(t, proj, agent.SessionMeta{
+		writeMeta(t, proj, schema.SessionMeta{
 			ID:        string(rune('A' + i)),
 			UpdatedAt: time.Now().Add(time.Duration(i) * time.Minute),
 		})
@@ -382,7 +381,7 @@ func TestPastIndex_Find(t *testing.T) {
 	root := t.TempDir()
 	proj := filepath.Join(root, "projects", "x")
 	_ = os.MkdirAll(proj, 0o755)
-	writeMeta(t, proj, agent.SessionMeta{
+	writeMeta(t, proj, schema.SessionMeta{
 		ID:        "01A",
 		UpdatedAt: time.Now(),
 	})
@@ -415,7 +414,7 @@ func TestPastIndex_FindRefreshesNewSessionOnMiss(t *testing.T) {
 		t.Fatal("session should not be indexed before meta exists")
 	}
 
-	writeMeta(t, proj, agent.SessionMeta{
+	writeMeta(t, proj, schema.SessionMeta{
 		ID:             "01NEW",
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "created after hub start",

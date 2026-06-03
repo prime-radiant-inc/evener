@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 
-	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
@@ -119,7 +118,7 @@ func mergePastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 }
 
 func pastEntryThread(entry hubcore.PastEntry, includeTurns bool) appwire.Thread {
-	title := agent.SessionDisplayName(entry.Meta)
+	title := schema.SessionDisplayName(entry.Meta)
 	if title == "" {
 		title = entry.Meta.ID
 	}

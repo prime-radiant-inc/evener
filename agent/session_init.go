@@ -334,7 +334,7 @@ func RestoreSession(client *llm.Client, profile *provider.Profile, env execenv.E
 // RestoreSessionFromMeta creates a Session from a SessionMeta, recovering
 // history exclusively from the transcript JSONL. If no transcript exists,
 // the session starts with empty history (no snapshot fallback).
-func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, meta SessionMeta, stateDir string) (*Session, error) {
+func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, meta schema.SessionMeta, stateDir string) (*Session, error) {
 	cfg := configFromSnapshot(meta.Config)
 	cfg.StateDir = stateDir
 	cfg.SessionStartKind = plugin.SessionStartKindResume

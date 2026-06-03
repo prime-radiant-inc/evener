@@ -49,7 +49,7 @@ func (s *Session) Snapshot() SessionSnapshot {
 }
 
 // Meta returns the current session metadata without the conversation history.
-func (s *Session) Meta() SessionMeta {
+func (s *Session) Meta() schema.SessionMeta {
 	originalPrompt := s.extractOriginalPrompt()
 
 	s.mu.Lock()
@@ -63,7 +63,7 @@ func (s *Session) Meta() SessionMeta {
 		divergence = s.fork.divergence
 		isSubagent = false
 	}
-	return SessionMeta{
+	return schema.SessionMeta{
 		ID:              s.id,
 		ProfileID:       s.profile.ID(),
 		Model:           s.profile.Model(),

@@ -727,8 +727,8 @@ func TestSession_CachedProjectDocsUsedInSystemPrompt(t *testing.T) {
 // Issue 2: SessionMeta — lightweight save instead of full snapshot
 // ---------------------------------------------------------------------------
 
-func testSessionMeta() SessionMeta {
-	return SessionMeta{
+func testSessionMeta() schema.SessionMeta {
+	return schema.SessionMeta{
 		ID:        "01JTEST_META_00000000001",
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
@@ -754,7 +754,7 @@ func TestSessionMeta_JSONRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	var got SessionMeta
+	var got schema.SessionMeta
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
@@ -779,7 +779,7 @@ func TestSaveSessionMeta_CreatesMetaFile(t *testing.T) {
 	dir := t.TempDir()
 	meta := testSessionMeta()
 
-	if err := SaveSessionMeta(dir, meta); err != nil {
+	if err := schema.SaveSessionMeta(dir, meta); err != nil {
 		t.Fatalf("SaveSessionMeta: %v", err)
 	}
 
@@ -795,7 +795,7 @@ func TestSaveSessionMeta_CreatesMetaFile(t *testing.T) {
 		t.Fatal("meta.json should use compact JSON (no indentation)")
 	}
 
-	var got SessionMeta
+	var got schema.SessionMeta
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal saved file: %v", err)
 	}
@@ -808,11 +808,11 @@ func TestLoadSessionMeta(t *testing.T) {
 	dir := t.TempDir()
 	meta := testSessionMeta()
 
-	if err := SaveSessionMeta(dir, meta); err != nil {
+	if err := schema.SaveSessionMeta(dir, meta); err != nil {
 		t.Fatalf("SaveSessionMeta: %v", err)
 	}
 
-	got, err := LoadSessionMeta(dir, meta.ID)
+	got, err := schema.LoadSessionMeta(dir, meta.ID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -826,7 +826,7 @@ func TestLoadSessionMeta(t *testing.T) {
 
 func TestLoadSessionMeta_NotFound(t *testing.T) {
 	dir := t.TempDir()
-	_, err := LoadSessionMeta(dir, "NONEXISTENT")
+	_, err := schema.LoadSessionMeta(dir, "NONEXISTENT")
 	if err == nil {
 		t.Fatal("expected error for nonexistent meta")
 	}
@@ -847,13 +847,13 @@ func TestListSessionMetas_SortedByUpdatedAt(t *testing.T) {
 	meta3.ID = "01JTEST_META_00000000003"
 	meta3.UpdatedAt = time.Date(2025, 1, 15, 11, 0, 0, 0, time.UTC)
 
-	for _, m := range []SessionMeta{meta1, meta2, meta3} {
-		if err := SaveSessionMeta(dir, m); err != nil {
+	for _, m := range []schema.SessionMeta{meta1, meta2, meta3} {
+		if err := schema.SaveSessionMeta(dir, m); err != nil {
 			t.Fatalf("SaveSessionMeta %s: %v", m.ID, err)
 		}
 	}
 
-	list, err := ListSessionMetas(dir)
+	list, err := schema.ListSessionMetas(dir)
 	if err != nil {
 		t.Fatalf("ListSessionMetas: %v", err)
 	}
@@ -874,7 +874,7 @@ func TestListSessionMetas_SortedByUpdatedAt(t *testing.T) {
 
 func TestListSessionMetas_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
-	list, err := ListSessionMetas(dir)
+	list, err := schema.ListSessionMetas(dir)
 	if err != nil {
 		t.Fatalf("ListSessionMetas: %v", err)
 	}
@@ -967,7 +967,7 @@ func TestRestoreSession_FromMetaAndTranscript(t *testing.T) {
 	dir := t.TempDir()
 	stateDir := t.TempDir()
 
-	meta := SessionMeta{
+	meta := schema.SessionMeta{
 		ID:        "01JTEST_META_RESTORE_001",
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
@@ -1045,7 +1045,7 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 	dir := t.TempDir()
 	stateDir := t.TempDir()
 
-	meta := SessionMeta{
+	meta := schema.SessionMeta{
 		ID:        "01JTEST_META_CLEAN_001",
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
@@ -1083,7 +1083,7 @@ func TestRestoreSessionFromMeta_TranscriptWithCompaction(t *testing.T) {
 	dir := t.TempDir()
 	stateDir := t.TempDir()
 
-	meta := SessionMeta{
+	meta := schema.SessionMeta{
 		ID:        "01JTEST_META_COMPACT_001",
 		ProfileID: "openai",
 		Model:     "gpt-5.2",

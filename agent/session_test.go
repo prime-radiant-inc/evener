@@ -321,7 +321,7 @@ func TestSession_StreamErrorFlushesMetaJSON_AfterPauseTurnGap(t *testing.T) {
 	sessID := sess.ID()
 	sess.Close()
 
-	meta, err := LoadSessionMeta(dir, sessID)
+	meta, err := schema.LoadSessionMeta(dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestSession_StreamErrorFlushesMetaJSON_FirstTurn(t *testing.T) {
 	sessID := sess.ID()
 	sess.Close()
 
-	meta, err := LoadSessionMeta(dir, sessID)
+	meta, err := schema.LoadSessionMeta(dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -449,7 +449,7 @@ func TestSession_StreamErrorFlushesMetaJSON_AfterHappyTurn(t *testing.T) {
 		t.Fatalf("turn 1 ProcessInput: %v", err)
 	}
 	sessID := sess.ID()
-	meta, err := LoadSessionMeta(dir, sessID)
+	meta, err := schema.LoadSessionMeta(dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta after turn 1: %v", err)
 	}
@@ -464,7 +464,7 @@ func TestSession_StreamErrorFlushesMetaJSON_AfterHappyTurn(t *testing.T) {
 	}
 	sess.Close()
 
-	meta, err = LoadSessionMeta(dir, sessID)
+	meta, err = schema.LoadSessionMeta(dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta after error turn: %v", err)
 	}
@@ -517,7 +517,7 @@ func TestSession_EmptyResponseExhaustedFlushesMeta(t *testing.T) {
 	sessID := sess.ID()
 	sess.Close()
 
-	meta, err := LoadSessionMeta(dir, sessID)
+	meta, err := schema.LoadSessionMeta(dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -565,7 +565,7 @@ func TestSession_BareTextWithoutResultToolFlushesMeta(t *testing.T) {
 	sessID := sess.ID()
 	sess.Close()
 
-	meta, err := LoadSessionMeta(dir, sessID)
+	meta, err := schema.LoadSessionMeta(dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -630,7 +630,7 @@ func TestSession_MaxToolRoundsExitFlushesMeta(t *testing.T) {
 	sessID := sess.ID()
 	sess.Close()
 
-	meta, err := LoadSessionMeta(dir, sessID)
+	meta, err := schema.LoadSessionMeta(dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -698,7 +698,7 @@ func TestSession_CtxCancellationFlushesMeta(t *testing.T) {
 	if _, err := os.Stat(metaPath); err != nil {
 		t.Fatalf("meta.json missing after ctx cancellation: %v", err)
 	}
-	meta, err := LoadSessionMeta(dir, sessID)
+	meta, err := schema.LoadSessionMeta(dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -782,7 +782,7 @@ func TestSession_PanicFlushesMeta(t *testing.T) {
 	if _, err := os.Stat(metaPath); err != nil {
 		t.Fatalf("meta.json missing after panic: %v", err)
 	}
-	meta, err := LoadSessionMeta(dir, sessID)
+	meta, err := schema.LoadSessionMeta(dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -860,7 +860,7 @@ func TestSession_SetReasoningEffort_FlushesMeta(t *testing.T) {
 	sessID := sess.ID()
 	sess.SetReasoningEffort("high")
 
-	meta, err := LoadSessionMeta(dir, sessID)
+	meta, err := schema.LoadSessionMeta(dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -892,7 +892,7 @@ func TestSession_SetModel_FlushesMeta(t *testing.T) {
 	sessID := sess.ID()
 	sess.SetModel("gpt-5.3")
 
-	meta, err := LoadSessionMeta(dir, sessID)
+	meta, err := schema.LoadSessionMeta(dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -924,7 +924,7 @@ func TestSession_SetTimeout_FlushesMeta(t *testing.T) {
 	sessID := sess.ID()
 	sess.SetTimeout(45_000)
 
-	meta, err := LoadSessionMeta(dir, sessID)
+	meta, err := schema.LoadSessionMeta(dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}
@@ -952,7 +952,7 @@ func TestSession_SetModelAndTimeout_NoOpAfterClose(t *testing.T) {
 	sessID := sess.ID()
 	sess.Close()
 
-	before, err := LoadSessionMeta(dir, sessID)
+	before, err := schema.LoadSessionMeta(dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta before setters: %v", err)
 	}
@@ -960,7 +960,7 @@ func TestSession_SetModelAndTimeout_NoOpAfterClose(t *testing.T) {
 	sess.SetModel("gpt-5.3")
 	sess.SetTimeout(45_000)
 
-	after, err := LoadSessionMeta(dir, sessID)
+	after, err := schema.LoadSessionMeta(dir, sessID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta after setters: %v", err)
 	}

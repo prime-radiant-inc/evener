@@ -53,8 +53,8 @@ func fullSessionConfig() SessionConfig {
 // full EnvironmentInfo (including the nested WorkspaceInfo), and every
 // SessionMeta field. It is the fixture for the persistence-carve
 // characterization tests below.
-func goldenMeta() SessionMeta {
-	return SessionMeta{
+func goldenMeta() schema.SessionMeta {
+	return schema.SessionMeta{
 		ID:        "01JTESTGOLDEN0000000000001",
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
@@ -108,7 +108,7 @@ func TestSessionMeta_GoldenWireFormat(t *testing.T) {
 // TestSessionMeta_GoldenRoundTrip verifies the golden meta.json unmarshals and
 // re-marshals to identical bytes: every persisted field survives a load/save cycle.
 func TestSessionMeta_GoldenRoundTrip(t *testing.T) {
-	var meta SessionMeta
+	var meta schema.SessionMeta
 	if err := json.Unmarshal([]byte(goldenMetaJSON), &meta); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

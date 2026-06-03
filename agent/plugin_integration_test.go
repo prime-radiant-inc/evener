@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
 	"primeradiant.com/serf/llm"
 )
@@ -112,7 +113,7 @@ func TestRestoreSessionFromMeta_DoesNotMatchStartupSessionStartHooks(t *testing.
 		t.Fatalf("fresh session bootstrap steering = %+v, want startup-bootstrap", got)
 	}
 
-	meta := SessionMeta{
+	meta := schema.SessionMeta{
 		ID:        "resume-session",
 		ProfileID: "openai",
 		Model:     "gpt-5.2",

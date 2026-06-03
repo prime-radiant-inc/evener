@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
 )
@@ -67,7 +67,7 @@ func compareOrderText(a, b string) int {
 	return 0
 }
 
-func sessionMetaOrderKey(m agent.SessionMeta) sessionOrderKey {
+func sessionMetaOrderKey(m schema.SessionMeta) sessionOrderKey {
 	return sessionOrderKey{
 		updated: m.UpdatedAt,
 		created: m.CreatedAt,
@@ -76,11 +76,11 @@ func sessionMetaOrderKey(m agent.SessionMeta) sessionOrderKey {
 	}
 }
 
-func sessionMetaOrderTitle(m agent.SessionMeta) string {
+func sessionMetaOrderTitle(m schema.SessionMeta) string {
 	return nodeTitle(m, nodeKind(m))
 }
 
-func sessionMetaLess(a, b agent.SessionMeta) bool {
+func sessionMetaLess(a, b schema.SessionMeta) bool {
 	return sessionOrderLess(sessionMetaOrderKey(a), sessionMetaOrderKey(b))
 }
 

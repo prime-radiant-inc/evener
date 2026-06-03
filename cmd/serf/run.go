@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/cmdutil"
 	"primeradiant.com/serf/llm"
 	_ "primeradiant.com/serf/llm/providers/anthropic"
@@ -92,7 +93,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 
 	// Resolve resume target.
-	var meta *agent.SessionMeta
+	var meta *schema.SessionMeta
 	if cfg.resume != "" || cfg.resumeWith != "" || cfg.resumeLast {
 		m, err := resolveSessionMeta(cfg, stateDir)
 		if err != nil {
@@ -309,7 +310,7 @@ func drainEventsHuman(eventCh <-chan events.SessionEvent, w io.Writer) <-chan st
 }
 
 // resolveSessionMeta loads the session meta for the given resume configuration.
-func resolveSessionMeta(cfg runConfig, stateDir string) (agent.SessionMeta, error) {
+func resolveSessionMeta(cfg runConfig, stateDir string) (schema.SessionMeta, error) {
 	id := cfg.resume
 	if id == "" {
 		id = cfg.resumeWith
@@ -319,7 +320,7 @@ func resolveSessionMeta(cfg runConfig, stateDir string) (agent.SessionMeta, erro
 
 // listSessions prints all saved sessions and returns.
 func listSessions(cfg runConfig, stateDir string) error {
-	list, err := agent.ListSessionMetas(stateDir)
+	list, err := schema.ListSessionMetas(stateDir)
 	if err != nil {
 		return fmt.Errorf("list sessions: %w", err)
 	}

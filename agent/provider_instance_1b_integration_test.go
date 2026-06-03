@@ -35,6 +35,7 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/auth/openai"
 	"primeradiant.com/serf/llm"
 	"primeradiant.com/serf/llm/providercfg"
@@ -410,10 +411,10 @@ func TestPhase1b_Resume_ProfileIDPreserved(t *testing.T) {
 	}
 
 	// SaveSessionMeta / LoadSessionMeta must round-trip ProfileID.
-	if err := SaveSessionMeta(dir, meta); err != nil {
+	if err := schema.SaveSessionMeta(dir, meta); err != nil {
 		t.Fatalf("SaveSessionMeta: %v", err)
 	}
-	loaded, err := LoadSessionMeta(dir, meta.ID)
+	loaded, err := schema.LoadSessionMeta(dir, meta.ID)
 	if err != nil {
 		t.Fatalf("LoadSessionMeta: %v", err)
 	}

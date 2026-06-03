@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/serf/agent"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/rendezvous"
@@ -13,7 +12,7 @@ import (
 
 func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 	now := time.Now()
-	metas := []agent.SessionMeta{
+	metas := []schema.SessionMeta{
 		// Active branch — newer, holds the original session's name. Top-level.
 		{ID: "01ACTIVE", UpdatedAt: now, OriginalPrompt: "fix replay bug",
 			EnvInfo:         schema.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
@@ -92,7 +91,7 @@ func TestBuildTree_GroupsByProjectWithSubagentsAndForks(t *testing.T) {
 }
 
 func TestBuildTree_UsesGeneratedNameForSessionTitle(t *testing.T) {
-	tree := BuildTree([]agent.SessionMeta{{
+	tree := BuildTree([]schema.SessionMeta{{
 		ID:             "01NAMED",
 		Name:           "Launch Config Cheap Model",
 		OriginalPrompt: "unrelated original prompt",
@@ -107,7 +106,7 @@ func TestBuildTree_UsesGeneratedNameForSessionTitle(t *testing.T) {
 }
 
 func TestBuildTree_UsesGeneratedNameForForkBaseTitle(t *testing.T) {
-	tree := BuildTree([]agent.SessionMeta{{
+	tree := BuildTree([]schema.SessionMeta{{
 		ID:             "01FORK",
 		Name:           "Generated Base",
 		OriginalPrompt: "original base",
@@ -126,7 +125,7 @@ func TestBuildTree_AttentionSortsLive(t *testing.T) {
 	// Three live sessions: idle, awaiting, processing.
 	// Live should sort: awaiting, processing, idle.
 	now := time.Now()
-	metas := []agent.SessionMeta{
+	metas := []schema.SessionMeta{
 		{ID: "01IDLE", UpdatedAt: now.Add(-3 * time.Minute), OriginalPrompt: "idle task",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
 		{ID: "01AWAIT", UpdatedAt: now.Add(-2 * time.Minute), OriginalPrompt: "awaiting task",
@@ -165,7 +164,7 @@ func TestBuildTree_AttentionSortsLive(t *testing.T) {
 
 func TestBuildTree_OrdersProjectSessionsByUpdatedCreatedTitleAndID(t *testing.T) {
 	updated := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
-	metas := []agent.SessionMeta{
+	metas := []schema.SessionMeta{
 		{ID: "02OLD", CreatedAt: updated.Add(-2 * time.Hour), UpdatedAt: updated, OriginalPrompt: "beta task",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"}},
 		{ID: "01NEW", CreatedAt: updated.Add(-time.Hour), UpdatedAt: updated, OriginalPrompt: "alpha task",
@@ -212,7 +211,7 @@ func TestBuildTree_OrdersLiveRowsWithoutMetasByStartedAtAndID(t *testing.T) {
 
 func TestBuildTree_OrdersMixedLiveRowsByMergedMetadata(t *testing.T) {
 	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
-	metas := []agent.SessionMeta{{
+	metas := []schema.SessionMeta{{
 		ID:             "01META",
 		UpdatedAt:      base.Add(time.Hour),
 		CreatedAt:      base.Add(-time.Hour),
@@ -237,7 +236,7 @@ func TestBuildTree_OrdersMixedLiveRowsByMergedMetadata(t *testing.T) {
 func TestBuildTree_NoProjectFallback(t *testing.T) {
 	// A meta with empty WorkingDir — project name "(no project)".
 	now := time.Now()
-	metas := []agent.SessionMeta{
+	metas := []schema.SessionMeta{
 		{ID: "01NOPROJ", UpdatedAt: now, OriginalPrompt: "orphan task",
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: ""}},
 	}
