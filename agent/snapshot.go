@@ -18,15 +18,15 @@ import (
 // is retained for backward compatibility with external tools (transcript_tools.go,
 // serfeval) that read snapshot files directly.
 type SessionSnapshot struct {
-	ID        string          `json:"id"`         // session identifier
-	ProfileID string          `json:"profile_id"` // ID of the provider profile in use
-	Model     string          `json:"model"`      // model name the session is driving
-	Config    SessionConfig   `json:"config"`     // the session's configuration
-	EnvInfo   EnvironmentInfo `json:"env_info"`   // captured environment description
-	History   []schema.Turn   `json:"history"`    // full conversation transcript
-	CreatedAt time.Time       `json:"created_at"` // when the session was first created
-	UpdatedAt time.Time       `json:"updated_at"` // last time the snapshot was written
-	TurnCount int             `json:"turn_count"` // number of user-input turns processed
+	ID        string                 `json:"id"`         // session identifier
+	ProfileID string                 `json:"profile_id"` // ID of the provider profile in use
+	Model     string                 `json:"model"`      // model name the session is driving
+	Config    SessionConfig          `json:"config"`     // the session's configuration
+	EnvInfo   schema.EnvironmentInfo `json:"env_info"`   // captured environment description
+	History   []schema.Turn          `json:"history"`    // full conversation transcript
+	CreatedAt time.Time              `json:"created_at"` // when the session was first created
+	UpdatedAt time.Time              `json:"updated_at"` // last time the snapshot was written
+	TurnCount int                    `json:"turn_count"` // number of user-input turns processed
 	// LastInputTokens is the prompt-token count reported by the provider on the
 	// most recent LLM call; used to display context-window pressure on resume.
 	LastInputTokens int `json:"last_input_tokens,omitempty"`
@@ -35,14 +35,14 @@ type SessionSnapshot struct {
 // SessionMeta holds session metadata without the full conversation history.
 // The history is always recovered from the transcript JSONL file.
 type SessionMeta struct {
-	ID        string          `json:"id"`         // session identifier
-	ProfileID string          `json:"profile_id"` // ID of the provider profile in use
-	Model     string          `json:"model"`      // model name the session is driving
-	Config    SessionConfig   `json:"config"`     // the session's configuration
-	EnvInfo   EnvironmentInfo `json:"env_info"`   // captured environment description
-	CreatedAt time.Time       `json:"created_at"` // when the session was first created
-	UpdatedAt time.Time       `json:"updated_at"` // last time the meta was written
-	TurnCount int             `json:"turn_count"` // number of user-input turns processed
+	ID        string                 `json:"id"`         // session identifier
+	ProfileID string                 `json:"profile_id"` // ID of the provider profile in use
+	Model     string                 `json:"model"`      // model name the session is driving
+	Config    SessionConfig          `json:"config"`     // the session's configuration
+	EnvInfo   schema.EnvironmentInfo `json:"env_info"`   // captured environment description
+	CreatedAt time.Time              `json:"created_at"` // when the session was first created
+	UpdatedAt time.Time              `json:"updated_at"` // last time the meta was written
+	TurnCount int                    `json:"turn_count"` // number of user-input turns processed
 	// LastInputTokens is the prompt-token count from the most recent LLM call,
 	// used to display context-window pressure on resume.
 	LastInputTokens int `json:"last_input_tokens,omitempty"`

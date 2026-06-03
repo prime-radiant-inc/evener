@@ -47,7 +47,7 @@ func goldenMeta() SessionMeta {
 			SystemPromptAsUser:      true,
 			ModelFallbacks:          []string{"openai/gpt-5", "anthropic/claude"},
 		},
-		EnvInfo: EnvironmentInfo{
+		EnvInfo: schema.EnvironmentInfo{
 			WorkingDir:            "/work",
 			Platform:              "darwin",
 			OSVersion:             "Darwin 25.5.0",
@@ -59,7 +59,7 @@ func goldenMeta() SessionMeta {
 			GitModifiedFiles:      3,
 			GitUntrackedFiles:     1,
 			GitRecentCommitTitles: []string{"fix a", "feat b"},
-			Workspace:             WorkspaceInfo{Tree: "root/\n  a.go", BuildInfo: "Go module"},
+			Workspace:             schema.WorkspaceInfo{Tree: "root/\n  a.go", BuildInfo: "Go module"},
 		},
 		CreatedAt:       time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC),
 		UpdatedAt:       time.Date(2026, 1, 15, 10, 5, 0, 0, time.UTC),

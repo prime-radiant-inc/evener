@@ -7,15 +7,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-)
 
-// WorkspaceInfo captures the directory structure and key files in the
-// working directory. Injected into the system prompt so the model starts
-// with awareness of what's available — no discovery round needed.
-type WorkspaceInfo struct {
-	Tree      string `json:"tree,omitempty"`       // indented directory listing
-	BuildInfo string `json:"build_info,omitempty"` // build system summary
-}
+	"primeradiant.com/serf/agent/schema"
+)
 
 const (
 	maxDirDepth  = 3   // how deep to show directories
@@ -42,8 +36,8 @@ var excludedDirs = map[string]bool{
 
 // ScanWorkspace walks the working directory and returns structured context
 // about its contents: a directory tree and build system information.
-func ScanWorkspace(root string) WorkspaceInfo {
-	var ws WorkspaceInfo
+func ScanWorkspace(root string) schema.WorkspaceInfo {
+	var ws schema.WorkspaceInfo
 
 	entries, truncated := walkTree(root)
 	ws.Tree = formatTree(root, entries, truncated)

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/schema"
 )
 
 func writeMeta(t *testing.T, dir string, meta agent.SessionMeta) {
@@ -31,7 +32,7 @@ func TestPastIndex_RebuildLoadsAllMetas(t *testing.T) {
 	writeMeta(t, projA, agent.SessionMeta{
 		ID:             "01A",
 		Model:          "gpt-5.2",
-		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/a"},
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/a"},
 		CreatedAt:      now.Add(-2 * time.Hour),
 		UpdatedAt:      now.Add(-1 * time.Hour),
 		OriginalPrompt: "fix the bug",
@@ -39,7 +40,7 @@ func TestPastIndex_RebuildLoadsAllMetas(t *testing.T) {
 	writeMeta(t, projB, agent.SessionMeta{
 		ID:             "01B",
 		Model:          "claude-opus-4-7",
-		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/b"},
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/b"},
 		CreatedAt:      now.Add(-30 * time.Minute),
 		UpdatedAt:      now,
 		OriginalPrompt: "refactor auth",
@@ -114,13 +115,13 @@ func TestPastIndex_Search(t *testing.T) {
 	_ = os.MkdirAll(proj, 0o755)
 	writeMeta(t, proj, agent.SessionMeta{
 		ID:             "01A",
-		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/a"},
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/a"},
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "fix the bug in handler",
 	})
 	writeMeta(t, proj, agent.SessionMeta{
 		ID:             "01B",
-		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/b"},
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/b"},
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "refactor auth flow",
 	})
@@ -194,13 +195,13 @@ func TestPastIndex_SearchUsesSQLiteFTSWhenConfigured(t *testing.T) {
 	_ = os.MkdirAll(proj, 0o755)
 	writeMeta(t, proj, agent.SessionMeta{
 		ID:             "01AUTH",
-		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/auth-service"},
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/auth-service"},
 		UpdatedAt:      time.Now().Add(time.Hour),
 		OriginalPrompt: "repair login token refresh",
 	})
 	writeMeta(t, proj, agent.SessionMeta{
 		ID:             "01BILLING",
-		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/invoices"},
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/invoices"},
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "invoice cleanup",
 	})
@@ -238,13 +239,13 @@ func TestPastIndex_SearchWithSQLitePreservesSubstringMatches(t *testing.T) {
 	_ = os.MkdirAll(proj, 0o755)
 	writeMeta(t, proj, agent.SessionMeta{
 		ID:             "01PREFIX",
-		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/prefix"},
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/prefix"},
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "auth token cleanup",
 	})
 	writeMeta(t, proj, agent.SessionMeta{
 		ID:             "02SUBSTR",
-		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/substr"},
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/substr"},
 		UpdatedAt:      time.Now().Add(-time.Minute),
 		OriginalPrompt: "preauth redirect cleanup",
 	})
@@ -270,13 +271,13 @@ func TestPastIndex_SearchWithSQLiteMergesFTSAndSubstringMatches(t *testing.T) {
 	_ = os.MkdirAll(proj, 0o755)
 	writeMeta(t, proj, agent.SessionMeta{
 		ID:             "01FTS",
-		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/fts"},
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/fts"},
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "auth token cleanup",
 	})
 	writeMeta(t, proj, agent.SessionMeta{
 		ID:             "02SUBSTR",
-		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/substr"},
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/substr"},
 		UpdatedAt:      time.Now().Add(-time.Minute),
 		OriginalPrompt: "preauth cleanup",
 	})
@@ -302,7 +303,7 @@ func TestPastIndex_SQLiteIndexUsesPrivateFilePermissions(t *testing.T) {
 	_ = os.MkdirAll(proj, 0o755)
 	writeMeta(t, proj, agent.SessionMeta{
 		ID:             "01PRIVATE",
-		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/private"},
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/private"},
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "sensitive prompt",
 	})
@@ -340,7 +341,7 @@ func TestPastIndex_SearchFallsBackWhenSQLiteUnavailable(t *testing.T) {
 	_ = os.MkdirAll(proj, 0o755)
 	writeMeta(t, proj, agent.SessionMeta{
 		ID:             "01A",
-		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/work/a"},
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/work/a"},
 		UpdatedAt:      time.Now(),
 		OriginalPrompt: "fix auth",
 	})

@@ -810,7 +810,7 @@ func TestWeb_Sidebar_RendersTreeWithLiveAndProjects(t *testing.T) {
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
 		ID: "01PAST", UpdatedAt: time.Now(), OriginalPrompt: "fix bug",
-		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -857,7 +857,7 @@ func TestWeb_Sidebar_ProjectLinksEscapeWorkingDir(t *testing.T) {
 	workingDir := "/projects/a&b?c#d"
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
 		ID: "01ESCAPED", UpdatedAt: time.Now(), OriginalPrompt: "escaped project",
-		EnvInfo: agent.EnvironmentInfo{WorkingDir: workingDir},
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: workingDir},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -904,7 +904,7 @@ func TestWeb_ProjectSettingsListEscapesWorkingDir(t *testing.T) {
 	workingDir := "/projects/a&b?c#d"
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
 		ID: "01PSET", UpdatedAt: time.Now(), OriginalPrompt: "project settings",
-		EnvInfo: agent.EnvironmentInfo{WorkingDir: workingDir},
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: workingDir},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -2068,7 +2068,7 @@ func TestWeb_WorkspacePartial_RendersWorkingDirInStatusRow(t *testing.T) {
 	_ = os.MkdirAll(proj, 0o755)
 	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
 		ID: "01CWD00001", UpdatedAt: time.Now(), OriginalPrompt: "cwd test",
-		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/tmp/foo", GitBranch: "feature/bar"},
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/foo", GitBranch: "feature/bar"},
 	})
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
@@ -2115,7 +2115,7 @@ func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
 	_ = os.MkdirAll(proj, 0o755)
 	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
 		ID: "01STATE001", UpdatedAt: time.Now(),
-		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/tmp/wd", GitBranch: "main"},
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/tmp/wd", GitBranch: "main"},
 	})
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
@@ -2445,11 +2445,11 @@ func TestWeb_ApiSearch_FiltersPast(t *testing.T) {
 	_ = os.MkdirAll(proj, 0o755)
 	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
 		ID: "01MATCH", UpdatedAt: time.Now(), OriginalPrompt: "fix the frobnitz",
-		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/alpha"},
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/alpha"},
 	})
 	_ = agent.SaveSessionMeta(proj, agent.SessionMeta{
 		ID: "01OTHER", UpdatedAt: time.Now(), OriginalPrompt: "unrelated work",
-		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/beta"},
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/beta"},
 	})
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
@@ -2496,7 +2496,7 @@ func TestWeb_ApiSearch_PastUsesGeneratedNameTitle(t *testing.T) {
 		UpdatedAt:      time.Now(),
 		Name:           "Generated Frobnitz Title",
 		OriginalPrompt: "unrelated original prompt",
-		EnvInfo:        agent.EnvironmentInfo{WorkingDir: "/projects/alpha"},
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/projects/alpha"},
 	})
 	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if err := idx.Rebuild(); err != nil {
@@ -3540,7 +3540,7 @@ func TestWeb_Sidebar_ProjectHeader_HasChevronAndName(t *testing.T) {
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
 		ID: "01PROJHDR", UpdatedAt: time.Now(), OriginalPrompt: "x",
-		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/widgets"},
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/widgets"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -3580,7 +3580,7 @@ func TestWeb_WorkspacePartial_RosterEndedSessionKeepsResumeSendEnabled(t *testin
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
 		ID: "01ENDED001", UpdatedAt: time.Now(), OriginalPrompt: "resume this", TurnCount: 2,
-		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf"},
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -3983,13 +3983,13 @@ func TestWeb_Sidebar_RollupState_AwaitingHasPriority(t *testing.T) {
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
 		ID: "01AWAIT", UpdatedAt: time.Now(), OriginalPrompt: "needs reply",
-		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
 		ID: "01IDLE", UpdatedAt: time.Now(), OriginalPrompt: "ticking over",
-		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -4038,7 +4038,7 @@ func TestWeb_Sidebar_RollupState_NoLiveChildrenHides(t *testing.T) {
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
 		ID: "01PAST", UpdatedAt: time.Now(), OriginalPrompt: "done long ago",
-		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf-hub"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -4354,7 +4354,7 @@ func TestWeb_APITreeReturnsRefsAndNormalizesAwaitingInput(t *testing.T) {
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
 		ID: "01TREE", UpdatedAt: time.Now(), OriginalPrompt: "tree task",
-		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf"},
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -4485,7 +4485,7 @@ func TestWeb_APISessionDetailsLiveAndPast(t *testing.T) {
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
 		ID: "01DETAIL", UpdatedAt: time.Now(), OriginalPrompt: "details task", Model: "gpt-5", ProfileID: "openai", TurnCount: 3,
-		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf", GitBranch: "serf-hub"},
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf", GitBranch: "serf-hub"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -4529,7 +4529,7 @@ func TestWeb_APISessionDetailsLiveWithoutAppWireDoesNotAdvertiseActions(t *testi
 	}
 	if err := agent.SaveSessionMeta(proj, agent.SessionMeta{
 		ID: "01DETAIL", UpdatedAt: time.Now(), OriginalPrompt: "details task", Model: "gpt-5", ProfileID: "openai", TurnCount: 3,
-		EnvInfo: agent.EnvironmentInfo{WorkingDir: "/projects/serf", GitBranch: "serf-hub"},
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/serf", GitBranch: "serf-hub"},
 	}); err != nil {
 		t.Fatal(err)
 	}

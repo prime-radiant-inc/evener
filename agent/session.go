@@ -41,7 +41,7 @@ type Session struct {
 	events       chan events.SessionEvent
 	eventsMu     sync.RWMutex // guards send-vs-close on events; all sends go through emit()
 	eventsClosed bool         // set under eventsMu.Lock immediately before close(events)
-	envInfo      EnvironmentInfo
+	envInfo      schema.EnvironmentInfo
 
 	// --- Synchronization / lock discipline ---
 	//

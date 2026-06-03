@@ -25,7 +25,7 @@ func testSnapshot() SessionSnapshot {
 			MaxToolRoundsPerInput: 200,
 			ReasoningEffort:       "high",
 		},
-		EnvInfo: EnvironmentInfo{
+		EnvInfo: schema.EnvironmentInfo{
 			WorkingDir: "/tmp/test",
 			Platform:   "linux",
 			IsGitRepo:  true,
@@ -681,7 +681,7 @@ func TestRestoreSession_CanProcessInput(t *testing.T) {
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
 		Config:    SessionConfig{MaxToolRoundsPerInput: 200},
-		EnvInfo:   EnvironmentInfo{WorkingDir: dir},
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: dir},
 		History:   []schema.Turn{},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -718,7 +718,7 @@ func TestRestoreSession_UsesTranscriptOverSnapshot(t *testing.T) {
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
 		Config:    SessionConfig{MaxToolRoundsPerInput: 200},
-		EnvInfo:   EnvironmentInfo{WorkingDir: dir},
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: dir},
 		History: []schema.Turn{
 			schema.NewTurn(schema.TurnUserInput, llm.User("snapshot-old-message")),
 			schema.NewTurn(schema.TurnAssistant, llm.Assistant("snapshot-old-reply")),
@@ -806,7 +806,7 @@ func TestRestoreSession_FallsBackToSnapshotWithoutTranscript(t *testing.T) {
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
 		Config:    SessionConfig{MaxToolRoundsPerInput: 200},
-		EnvInfo:   EnvironmentInfo{WorkingDir: dir},
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: dir},
 		History: []schema.Turn{
 			schema.NewTurn(schema.TurnUserInput, llm.User("snapshot-fallback")),
 			schema.NewTurn(schema.TurnAssistant, llm.Assistant("snapshot-reply")),
@@ -865,7 +865,7 @@ func TestRestoreSession_TranscriptWithCompaction(t *testing.T) {
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
 		Config:    SessionConfig{MaxToolRoundsPerInput: 200},
-		EnvInfo:   EnvironmentInfo{WorkingDir: dir},
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: dir},
 		History: []schema.Turn{
 			schema.NewTurn(schema.TurnUserInput, llm.User("snapshot-should-not-appear")),
 		},
@@ -1066,7 +1066,7 @@ func TestSessionMeta_OriginalPrompt_RoundTrip(t *testing.T) {
 		ID:             "01TEST0001",
 		ProfileID:      "openai-gpt-5",
 		Model:          "gpt-5.2",
-		EnvInfo:        EnvironmentInfo{WorkingDir: "/tmp/x"},
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/tmp/x"},
 		CreatedAt:      time.Date(2026, 5, 7, 14, 32, 11, 0, time.UTC),
 		UpdatedAt:      time.Date(2026, 5, 7, 14, 32, 11, 0, time.UTC),
 		TurnCount:      3,

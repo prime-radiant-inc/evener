@@ -138,7 +138,7 @@ func TestToolOutputLimit_JSONRoundTrip(t *testing.T) {
 }
 
 func TestEnvironmentInfo_JSONRoundTrip(t *testing.T) {
-	orig := EnvironmentInfo{
+	orig := schema.EnvironmentInfo{
 		WorkingDir:            "/home/user/project",
 		Platform:              "linux",
 		OSVersion:             "Ubuntu 22.04",
@@ -165,7 +165,7 @@ func TestEnvironmentInfo_JSONRoundTrip(t *testing.T) {
 		}
 	}
 
-	var got EnvironmentInfo
+	var got schema.EnvironmentInfo
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

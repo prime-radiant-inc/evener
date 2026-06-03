@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -1590,7 +1591,7 @@ func TestBuildSystemPrompt_WorkspaceSection(t *testing.T) {
 		}
 	}
 
-	env := EnvironmentInfo{
+	env := schema.EnvironmentInfo{
 		WorkingDir: dir,
 		Platform:   "linux",
 		Today:      "2026-03-01",
@@ -1645,7 +1646,7 @@ func TestBuildSystemPrompt_WorkspaceSection(t *testing.T) {
 }
 
 func TestBuildSystemPrompt_EmptyWorkspace(t *testing.T) {
-	env := EnvironmentInfo{
+	env := schema.EnvironmentInfo{
 		WorkingDir: "/tmp",
 		Platform:   "linux",
 		Today:      "2026-03-01",
@@ -1669,7 +1670,7 @@ func TestBuildSystemPrompt_WorkspaceAnnotation(t *testing.T) {
 	dir := t.TempDir()
 	touchFile(t, filepath.Join(dir, "main.py"), "print('hello')\n")
 
-	env := EnvironmentInfo{
+	env := schema.EnvironmentInfo{
 		WorkingDir: dir,
 		Platform:   "linux",
 		Today:      "2026-03-01",

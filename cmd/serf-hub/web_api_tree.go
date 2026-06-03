@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 	"primeradiant.com/serf/cmd/serf-hub/internal/strutil"
@@ -161,7 +162,7 @@ func appThreadTreeEntries(thread appwire.Thread) (agent.SessionMeta, hubcore.Liv
 		CreatedAt:      createdAt,
 		UpdatedAt:      updatedAt,
 		OriginalPrompt: title,
-		EnvInfo: agent.EnvironmentInfo{
+		EnvInfo: schema.EnvironmentInfo{
 			WorkingDir: thread.CWD,
 		},
 	}

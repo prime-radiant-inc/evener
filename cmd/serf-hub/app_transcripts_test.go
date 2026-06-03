@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
 )
@@ -24,7 +25,7 @@ func TestHubRPCTranscriptTargetsUseSerfParentRefs(t *testing.T) {
 		ID:              subID,
 		ProfileID:       "openai",
 		Model:           "gpt-5",
-		EnvInfo:         agent.EnvironmentInfo{WorkingDir: "/tmp/project"},
+		EnvInfo:         schema.EnvironmentInfo{WorkingDir: "/tmp/project"},
 		CreatedAt:       time.Now().UTC(),
 		UpdatedAt:       time.Now().UTC(),
 		TurnCount:       1,
