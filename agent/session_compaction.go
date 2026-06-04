@@ -1,0 +1,106 @@
+package agent
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"strings"
+
+	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/contextmgr"
+	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/llm"
+)
+
+// Compact forces context compaction regardless of current pressure.
+// Runs all compaction layers (observation masking, thinking clearing,
+// checkpoint, and LLM summarization). Safe to call while idle.
+func (s *Session) Compact(ctx context.Context) error {
+	if s.contextMgr == nil {
+		return errors.New("context manager not initialized")
+	}
+
+	s.contextMgr.Meta = s.buildCompactionMeta()
+
+	s.mu.Lock()
+	histCopy := append([]schema.Turn{}, s.history...)
+	s.mu.Unlock()
+
+	emitFn, flushCompactionHooks := s.compactionEmitFunc(ctx, &histCopy)
+	s.contextMgr.ForceCompact(ctx, &histCopy, emitFn)
+	flushCompactionHooks()
+
+	s.mu.Lock()
+	s.history = histCopy
+	s.mu.Unlock()
+
+	s.maybeAutoSave()
+	return nil
+}
+
+type steeringTurnRecord struct {
+	turn schema.Turn
+	text string
+}
+
+func (s *Session) compactionEmitFunc(ctx context.Context, history *[]schema.Turn) (func(events.EventKind, events.EventData), func()) {
+	preCompactRan := false
+	var pendingSteering []steeringTurnRecord
+	emitFn := func(kind events.EventKind, data events.EventData) {
+		if kind == events.EventContextCompaction && !preCompactRan {
+			preCompactRan = true
+			pendingSteering = append(pendingSteering, s.runPreCompactHook(ctx, history)...)
+		}
+		s.emit(kind, data)
+	}
+	flush := func() {
+		s.flushSteeringTurnRecords(pendingSteering)
+	}
+	return emitFn, flush
+}
+
+func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn) []steeringTurnRecord {
+	if s.hookRunner == nil || history == nil {
+		return nil
+	}
+	result := s.hookRunner.RunPreCompact(ctx, s.hookInput(plugin.HookPreCompact))
+	return appendSteeringMessagesToHistory(history, result.SystemMessages)
+}
+
+func appendSteeringMessagesToHistory(history *[]schema.Turn, messages []string) []steeringTurnRecord {
+	var records []steeringTurnRecord
+	for _, msg := range messages {
+		if strings.TrimSpace(msg) == "" {
+			continue
+		}
+		turn := schema.NewTurn(schema.TurnSteering, llm.User(msg))
+		*history = append(*history, turn)
+		records = append(records, steeringTurnRecord{turn: turn, text: msg})
+	}
+	return records
+}
+
+func (s *Session) flushSteeringTurnRecords(records []steeringTurnRecord) {
+	for _, record := range records {
+		if s.transcript != nil {
+			if err := s.transcript.Append(record.turn); err != nil {
+				s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+			}
+		}
+		s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: record.text})
+	}
+}
+
+// buildCompactionMeta gathers session-level metadata for enriching compaction summaries.
+func (s *Session) buildCompactionMeta() contextmgr.CompactionMeta {
+	meta := contextmgr.CompactionMeta{}
+
+	// Transcript path.
+	if s.stateDir != "" {
+		meta.TranscriptPath = filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
+	}
+
+	return meta
+}
