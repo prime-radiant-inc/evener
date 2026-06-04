@@ -4,9 +4,44 @@ How serf manages conversation history as it grows toward the context window limi
 
 ## Overview
 
-The `ContextManager` (in `agent/context_manager.go`) tracks token usage and applies
-compaction to conversation history when context pressure gets too high. It runs
-before each LLM request via a pluggable `ContextStrategy` interface.
+The context manager (`contextmgr.Manager`, in `agent/internal/contextmgr`) tracks token
+usage and applies compaction to conversation history when context pressure gets too
+high. It runs before each LLM request via a pluggable `contextmgr.Strategy`.
+
+## Where it lives — the Session seam
+
+The subsystem lives in `agent/internal/contextmgr` (the `Manager` plus the strategies
+and recall), with the shared session-action log in `agent/internal/sessionlog`.
+`Session` selects and drives a `contextmgr.Strategy`; the strategy calls *back* into the
+session — to emit events, read the profile/client, persist a snapshot for the recall
+tool — through the narrow `contextmgr.Host` interface, which an unexported `ctxHost`
+adapter inside `package agent` satisfies. That keeps the engine in a sub-package without
+adding any exported forwarding methods to `Session`. The session namer (also in `package
+agent`) appends to that same `SessionLog`, which is why the log is its own shared
+substrate rather than living inside `contextmgr`.
+
+```mermaid
+flowchart LR
+    subgraph agentpkg["package agent"]
+      Session["Session"]
+      ctxHost["ctxHost adapter<br/>(unexported)"]
+      namer["session namer"]
+      Session --> ctxHost
+    end
+    subgraph cm["agent/internal/contextmgr"]
+      Strategy["Strategy<br/>compact · recall · session-log · ooda"]
+      Manager["Manager<br/>pressure + compaction"]
+      Host["Host — seam interface"]
+      Strategy -->|builds on| Manager
+    end
+    sessionlog["agent/internal/sessionlog<br/>shared SessionLog"]
+
+    Session -->|selects + drives| Strategy
+    Strategy -.->|calls back via| Host
+    ctxHost -->|implements| Host
+    Strategy --> sessionlog
+    namer --> sessionlog
+```
 
 ## Pressure Estimation
 
@@ -126,7 +161,7 @@ must not leave a `TurnTool` or `TurnSteering` as the first preserved turn:
 
 ## Context Strategy Interface
 
-The `ContextStrategy` interface wraps `MaybeCompact` with additional behaviors:
+The `contextmgr.Strategy` interface wraps `MaybeCompact` with additional behaviors:
 
 - `compact` (default): Calls `MaybeCompact` directly
 - `recall`, `session-log`, `ooda`, etc.: Experimental strategies with additional hooks
@@ -136,7 +171,7 @@ Strategies can register custom tools (e.g., memory management) and respond to
 
 ## Profile Synchronization
 
-`ContextManager` holds a `ProviderProfile` reference for `ContextWindowSize()`. When
+The `Manager` holds a `*provider.Profile` reference for `ContextWindowSize()`. When
 `Session.SetModel` changes the model (e.g., from 200K to 1M context), it must also
 call `cm.SetProfile()` to update the context manager's profile. Without this, pressure
 estimation uses the stale window size.

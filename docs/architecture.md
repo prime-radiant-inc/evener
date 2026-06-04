@@ -98,6 +98,93 @@ migration's original "zero top-level `internal/`" target is the **decided end-st
 per-binary duplication would be strictly worse, and the real goal — no library/app code
 mixing — is already met by the module carve.
 
+## Inside the `agent` module
+
+`agent` is decomposed from a flat package into **layered sub-packages** — for
+legibility, not to shrink the public API (which is unchanged: `Session`, `NewSession`,
+and the `schema` persisted types). Dependencies point **down** the layers only; no
+lower layer imports a higher one.
+
+- **Foundation (Layer 0)** — `schema` (the canonical `Turn` plus the persisted types
+  `SessionMeta` / `ConfigSnapshot` / `EnvironmentInfo`), `events`, `execenv`. No
+  intra-`agent` dependencies.
+- **Subsystems** — `internal/tool` (tool registry + builtins), `provider` (model
+  profiles), `transcript` (JSONL writer/reader), `mcpconfig`, `skill`, `task`.
+- **Engine internals** (`agent/internal/…`, off the public surface) — `contextmgr`
+  (context-pressure management: compaction + the pluggable strategies + recall),
+  `sessionlog` (the shared session-action-log substrate), `hooks` (the plugin/hook
+  runner), `mcp` (MCP client manager), `atif` (trajectory export).
+- **Facade** — `package agent` itself: `Session` composes all of the above and is the
+  only public entry point. Engine sub-packages call *back* into the session through
+  narrow **seam interfaces** (e.g. `contextmgr.Host`) satisfied by small **unexported
+  adapters**, so the engine can live in sub-packages without widening `Session`'s
+  public method set.
+
+```mermaid
+flowchart TD
+    Session["package agent — Session facade<br/>NewSession · ProcessInput · public API"]
+
+    subgraph internals["engine internals · agent/internal/"]
+      contextmgr["contextmgr"]
+      hooks["hooks"]
+      mcp["mcp"]
+      atif["atif"]
+      tool["tool"]
+      sessionlog["sessionlog"]
+    end
+    subgraph mid["subsystems"]
+      provider["provider"]
+      transcript["transcript"]
+      plugin["plugin"]
+      mcpconfig["mcpconfig"]
+      skill["skill"]
+    end
+    subgraph base["foundation · Layer 0"]
+      schema["schema — Turn + persisted types"]
+      events["events"]
+      execenv["execenv"]
+      task["task"]
+    end
+
+    Session --> contextmgr & hooks & mcp & atif & provider & transcript & plugin
+    contextmgr --> sessionlog & tool & provider & schema & events
+    atif --> transcript & schema
+    mcp --> tool & mcpconfig
+    hooks --> plugin
+    plugin --> skill & task & mcpconfig
+    provider --> tool
+    transcript --> schema & task
+    tool --> schema & execenv
+```
+
+### How a turn flows
+
+`Session.ProcessInput` drives one user input through up to `MaxToolRoundsPerInput`
+model/tool rounds, until the model delivers a result (via the communicate tool) or the
+round budget runs out. Each round (simplified):
+
+```mermaid
+flowchart TD
+    PI["Session.ProcessInput"] --> AUI["acceptUserInput<br/>intake + drain queued steering"]
+    AUI --> R{{"round loop<br/>round &lt; MaxToolRoundsPerInput"}}
+    R --> PR["prepareModelRequest<br/>(runs strategy.ManageContext = compaction)"]
+    PR --> MC["callModelWithFallback → consumeModelStream<br/>session_model_call.go · session_stream.go"]
+    MC --> RU["recordResponseUsage + emitAssistantResponse"]
+    RU --> TC{"tool calls?"}
+    TC -->|no| HN["handleNoToolCalls<br/>nudge/retry, else finish"]
+    HN --> R
+    TC -->|yes| EX["execToolBatch → persistToolResults<br/>session_tool_round.go · session_tools_*.go"]
+    EX --> AA["notifyStrategyAfterAction (strategy.AfterAction)<br/>+ injectPostToolSteering"]
+    AA --> DL{"communicate delivered?"}
+    DL -->|yes| DONE(["return final text"])
+    DL -->|no| R
+```
+
+The phase names map onto the files in `package agent` that the turn loop was split into:
+`session_model_call.go` (request build + call), `session_stream.go` (streaming decode),
+`session_tool_round.go` + `session_tools_*.go` (tool execution), and the
+`ManageContext` compaction step backed by `agent/internal/contextmgr`.
+
 ## Current status
 
 - ✅ `auth`, `llm`, `agent` all carved into their own modules; the `go.work` workspace is

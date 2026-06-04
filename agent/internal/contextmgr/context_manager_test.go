@@ -1421,7 +1421,7 @@ func TestCheckpoint_IncludesWebSearchCount(t *testing.T) {
 	}
 }
 
-// Token-based pressure: contextManager should use actual InputTokens from API
+// Token-based pressure: Manager should use actual InputTokens from API
 // responses for pressure calculation instead of relying solely on char/4.
 func TestContextManager_UsesLastInputTokensForPressure(t *testing.T) {
 	profile := testProfile("openai", "test", 1000)
