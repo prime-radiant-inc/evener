@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"primeradiant.com/serf/cmd/serf-hub/internal/claudeplugins"
 	"primeradiant.com/serf/cmd/serf-hub/internal/codexlaunch"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hostlock"
 	"primeradiant.com/serf/cmd/serf-hub/internal/hubcore"
@@ -146,7 +145,6 @@ func main() {
 		Creds:               credsStore,
 		StateRoot:           hubStateRoot,
 		ProvidersConfigPath: providersConfigPath,
-		LaunchDefaults:      claudeplugins.DefaultHubLaunchDefaults(),
 	}
 	var codexLauncher *codexlaunch.CodexLauncher
 	if len(cfg.CodexLaunches) > 0 {

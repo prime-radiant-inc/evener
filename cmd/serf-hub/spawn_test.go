@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -116,23 +117,9 @@ func hasArg(args []string, want string) bool {
 	return false
 }
 
-func TestApplyLaunchDefaultsForSpawnAddsPluginDirsWhenUnset(t *testing.T) {
-	got := applyLaunchDefaultsForSpawn(
-		launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5.2"}},
-		launchconfig.Layer{PluginDirs: []string{"/plugins/superpowers"}},
-	)
-	if len(got.Effective.PluginDirs) != 1 || got.Effective.PluginDirs[0] != "/plugins/superpowers" {
-		t.Fatalf("PluginDirs = %#v, want default plugin dir", got.Effective.PluginDirs)
-	}
-}
-
-func TestApplyLaunchDefaultsForSpawnKeepsExplicitPluginDirs(t *testing.T) {
-	got := applyLaunchDefaultsForSpawn(
-		launchconfig.Resolved{Effective: launchconfig.Layer{PluginDirs: []string{"/explicit"}}},
-		launchconfig.Layer{PluginDirs: []string{"/default"}},
-	)
-	if len(got.Effective.PluginDirs) != 1 || got.Effective.PluginDirs[0] != "/explicit" {
-		t.Fatalf("PluginDirs = %#v, want explicit plugin dir", got.Effective.PluginDirs)
+func TestHubSpawnerHasNoAmbientLaunchDefaults(t *testing.T) {
+	if _, ok := reflect.TypeOf(HubSpawner{}).FieldByName("LaunchDefaults"); ok {
+		t.Fatal("HubSpawner must not keep ambient launch defaults; plugin dirs should come only from launch config")
 	}
 }
 

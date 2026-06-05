@@ -37,9 +37,6 @@ type HubSpawner struct {
 	Creds               *credentials.Store // credentials store for provider key injection
 	StateRoot           string             // hub-level state root; used for resolving
 	ProvidersConfigPath string             // path of the providers.toml the hub loaded
-	// LaunchDefaults are ambient defaults applied to hub-spawned daemons after
-	// layered launch config resolves. Explicit launch config still wins.
-	LaunchDefaults launchconfig.Layer
 }
 
 type SerfLaunchModelLister interface {
@@ -98,7 +95,6 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 	if req.StateDir == "" {
 		req.StateDir = resolveSerfLaunchStateDir(req.WorkingDir, req.Resolved.Effective.Env)
 	}
-	req.Resolved = applyLaunchDefaultsForSpawn(req.Resolved, h.LaunchDefaults)
 	resolved, cleanup, err := prepareResolvedForSpawn(req.StateDir, req.Resolved)
 	if err != nil {
 		return rendezvous.Entry{}, err
@@ -126,13 +122,6 @@ func (h *HubSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rende
 		return rendezvous.Entry{}, err
 	}
 	return SpawnDaemon(ctx, h.SerfBinary, h.RunDir, req, timeout)
-}
-
-func applyLaunchDefaultsForSpawn(resolved launchconfig.Resolved, defaults launchconfig.Layer) launchconfig.Resolved {
-	if len(resolved.Effective.PluginDirs) == 0 && len(defaults.PluginDirs) > 0 {
-		resolved.Effective.PluginDirs = append([]string(nil), defaults.PluginDirs...)
-	}
-	return resolved
 }
 
 func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
