@@ -2605,6 +2605,27 @@ func TestWeb_Settings_Theme_Renders(t *testing.T) {
 	}
 }
 
+func TestWeb_Settings_Transcript_Renders(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{
+		HubAddr: "127.0.0.1:9180",
+		Roster:  hubcore.NewRoster(t.TempDir(), nil),
+		Past:    hubcore.NewPastIndex(""),
+	})
+	body := settingsRequest(t, web, "transcript")
+	for _, want := range []string{
+		`data-transcript-status-form`,
+		`data-transcript-status="roundTimings"`,
+		`data-transcript-status="hookExitsAll"`,
+		`data-transcript-status="hookExitsNormal"`,
+		`data-transcript-status="promptLoaded"`,
+		`Prompt Loaded`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("transcript settings body missing %q:\n%s", want, body)
+		}
+	}
+}
+
 // TestWeb_ApiModels_ReturnsListWithProviderEnv verifies the endpoint
 // shape — returns a JSON array of {provider, model, …} entries when
 // run against a live provider API. Skips when no real API key is set.
@@ -4287,7 +4308,7 @@ func TestWeb_Settings_NavPresentForAllSections(t *testing.T) {
 		Roster:  hubcore.NewRoster(t.TempDir(), nil),
 		Past:    hubcore.NewPastIndex(""),
 	})
-	for _, sec := range []string{"general", "plugins", "skills", "mcp", "theme", "hub"} {
+	for _, sec := range []string{"general", "plugins", "skills", "mcp", "theme", "transcript", "hub"} {
 		body := settingsRequest(t, web, sec)
 		if !strings.Contains(body, "settings-nav") {
 			t.Errorf("section %q: settings-nav missing from full-shell response", sec)

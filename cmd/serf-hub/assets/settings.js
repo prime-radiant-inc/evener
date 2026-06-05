@@ -4,6 +4,8 @@
 (function () {
   "use strict";
 
+  const transcriptStatusPrefsKey = "serf-hub.transcript.systemStatus";
+
   // Theme picker — radio inputs with name="theme" inside .settings-form.
   document.body.addEventListener("change", (e) => {
     const target = e.target;
@@ -28,6 +30,19 @@
       localStorage.setItem("serf-hub.sidebar.rail", String(rail));
       if (rail) document.body.dataset.sidebarRail = "";
       else delete document.body.dataset.sidebarRail;
+      return;
+    }
+
+    if (target.matches("input[type=checkbox][data-transcript-status]")) {
+      const key = target.dataset.transcriptStatus;
+      const cur = readTranscriptStatusPrefs();
+      cur[key] = target.checked;
+      writeTranscriptStatusPrefs(cur);
+      syncToggleState(target);
+      document.dispatchEvent(new CustomEvent("serf-hub:transcript-system-status-changed", {
+        detail: { key, value: target.checked },
+      }));
+      if (window.SerfToast) window.SerfToast.show("Settings saved", "success");
       return;
     }
 
@@ -102,6 +117,11 @@
       const prefs = readNotifPrefs();
       notifBoxes.forEach((b) => { b.checked = !!prefs[b.dataset.notif]; syncToggleState(b); });
     }
+    const transcriptBoxes = document.querySelectorAll("input[type=checkbox][data-transcript-status]");
+    if (transcriptBoxes.length) {
+      const prefs = readTranscriptStatusPrefs();
+      transcriptBoxes.forEach((b) => { b.checked = prefs[b.dataset.transcriptStatus] === true; syncToggleState(b); });
+    }
   }
 
   function syncToggleState(input) {
@@ -115,6 +135,13 @@
   }
   function writeNotifPrefs(prefs) {
     localStorage.setItem("serf-hub.notifications", JSON.stringify(prefs));
+  }
+  function readTranscriptStatusPrefs() {
+    try { return JSON.parse(localStorage.getItem(transcriptStatusPrefsKey) || "{}"); }
+    catch (e) { return {}; }
+  }
+  function writeTranscriptStatusPrefs(prefs) {
+    localStorage.setItem(transcriptStatusPrefsKey, JSON.stringify(prefs));
   }
 
   document.addEventListener("DOMContentLoaded", applySettingsState);

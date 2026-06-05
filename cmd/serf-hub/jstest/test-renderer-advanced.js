@@ -19,7 +19,7 @@ function newHarness() {
 	      <textarea class="message-input"></textarea>
 	      <button class="send-btn" type="submit"></button>
 	    </form>
-  </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
+  </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true, url: "https://test.local/" });
 
   const { window } = dom;
   window.marked = { parse: (t) => t };
@@ -54,12 +54,13 @@ async function scenario(name, eventSeq, expectations) {
 await scenario("system transcript blocks", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["SYSTEM_MESSAGE", { title: "System prompt", text: "You are Serf." }],
+  ["SYSTEM_MESSAGE", { title: "Prompt loaded", text: "Loaded prompt system.md (2048 B)" }],
   ["SYSTEM_MESSAGE", { title: "Tools (2)", text: "- read_file\n- apply_patch" }],
 ], ({ conv }) => {
   const blocks = Array.from(conv.querySelectorAll(".system-message"));
-  if (blocks.length !== 2) return { ok: false, detail: "expected 2 system blocks, got " + blocks.length };
-  if (!blocks[0].textContent.includes("System prompt") || !blocks[0].textContent.includes("You are Serf.")) return { ok: false, detail: "missing system prompt block" };
-  if (!blocks[1].textContent.includes("Tools (2)") || !blocks[1].textContent.includes("apply_patch")) return { ok: false, detail: "missing tools block" };
+  if (blocks.length !== 1) return { ok: false, detail: "expected 1 system block, got " + blocks.length };
+  if (blocks[0].textContent.includes("Prompt Loaded") || blocks[0].textContent.includes("You are Serf.") || blocks[0].textContent.includes("Loaded prompt")) return { ok: false, detail: "prompt loaded should default hidden" };
+  if (!blocks[0].textContent.includes("Tools (2)") || !blocks[0].textContent.includes("apply_patch")) return { ok: false, detail: "missing tools block" };
   return { ok: true };
 });
 
@@ -67,9 +68,53 @@ await scenario("slim system line", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["SYSTEM_LINE", { text: "SessionStart hook superpowers using-superpowers command exit 0" }],
 ], ({ sysLines, steerings }) => {
-  if (sysLines.length !== 1) return { ok: false, detail: "expected 1 system-line, got " + sysLines.length };
-  if (sysLines[0] !== "SessionStart hook superpowers using-superpowers command exit 0") return { ok: false, detail: "wrong system-line: " + sysLines[0] };
+  if (sysLines.length !== 0) return { ok: false, detail: "hook exit system-line should default hidden, got " + sysLines.length };
   if (steerings.length !== 0) return { ok: false, detail: "expected 0 steering blocks" };
+  return { ok: true };
+});
+
+await scenario("system status preferences reveal saved transcript statuses", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["SYSTEM_MESSAGE", { title: "System prompt", text: "You are Serf." }],
+  ["SYSTEM_MESSAGE", { title: "Prompt loaded", text: "Loaded prompt system.md (2048 B)" }],
+  ["SYSTEM_MESSAGE", { title: "Round timings", text: "model=12ms tools=3ms" }],
+  ["SYSTEM_LINE", { text: "SessionStart hook superpowers using-superpowers command exit 0" }],
+  ["SYSTEM_LINE", { text: "PreToolUse hook guard command exit 2" }],
+], ({ conv, sysLines, window }) => {
+  const initialBlocks = Array.from(conv.querySelectorAll(".system-message"));
+  if (initialBlocks.length !== 0) return { ok: false, detail: "prompt and round timings should default hidden, got " + initialBlocks.length };
+  if (sysLines.length !== 0) return { ok: false, detail: "hook exits should default hidden" };
+
+  window.localStorage.setItem("serf-hub.transcript.systemStatus", JSON.stringify({
+    promptLoaded: true,
+    roundTimings: true,
+    hookExitsNormal: true,
+    hookExitsAll: false,
+  }));
+  conv.innerHTML = "";
+  for (const [type, data] of [
+    ["SESSION_START", { session_id: "01TEST" }],
+    ["SYSTEM_MESSAGE", { title: "System prompt", text: "You are Serf." }],
+    ["SYSTEM_MESSAGE", { title: "Prompt loaded", text: "Loaded prompt system.md (2048 B)" }],
+    ["SYSTEM_MESSAGE", { title: "Round timings", text: "model=12ms tools=3ms" }],
+    ["SYSTEM_LINE", { text: "SessionStart hook superpowers using-superpowers command exit 0" }],
+    ["SYSTEM_LINE", { text: "PreToolUse hook guard command exit 2" }],
+  ]) window.SerfRenderer.handleData(type, data);
+
+  const blocks = Array.from(conv.querySelectorAll(".system-message"));
+  const lines = Array.from(conv.querySelectorAll(".system-line")).map(e => e.textContent);
+  if (blocks.length !== 3) return { ok: false, detail: "expected prompt + prompt-loaded + timings blocks, got " + blocks.length };
+  if (!blocks[0].querySelector("summary").textContent.includes("Prompt Loaded")) return { ok: false, detail: "prompt disclosure label missing: " + blocks[0].textContent };
+  if (!blocks[0].querySelector(".steering-body").textContent.includes("You are Serf.")) return { ok: false, detail: "full prompt body missing" };
+  if (!blocks[1].querySelector("summary").textContent.includes("Prompt Loaded") || !blocks[1].textContent.includes("Loaded prompt system.md")) return { ok: false, detail: "prompt loaded status missing" };
+  if (!blocks[2].textContent.includes("Round timings")) return { ok: false, detail: "round timings block missing" };
+  if (lines.length !== 1 || !lines[0].includes("exit 0") || lines[0].includes("exit 2")) return { ok: false, detail: "normal-only hook preference wrong: " + lines.join(" | ") };
+
+  window.localStorage.setItem("serf-hub.transcript.systemStatus", JSON.stringify({ hookExitsAll: true }));
+  conv.innerHTML = "";
+  window.SerfRenderer.handleData("SYSTEM_LINE", { text: "PreToolUse hook guard command exit 2" });
+  const allHookLines = Array.from(conv.querySelectorAll(".system-line")).map(e => e.textContent);
+  if (allHookLines.length !== 1 || !allHookLines[0].includes("exit 2")) return { ok: false, detail: "all hook exits preference wrong: " + allHookLines.join(" | ") };
   return { ok: true };
 });
 

@@ -7,7 +7,7 @@ const { JSDOM } = require("jsdom");
 
 const appwireSrc = fs.readFileSync(path.resolve(__dirname, "../assets/appwire.js"), "utf8");
 const rendererSrc = fs.readFileSync(path.resolve(__dirname, "../assets/renderer.js"), "utf8");
-const threadFixture = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../../../internal/appwire/testdata/tool-groups-thread.json"), "utf8"));
+const threadFixture = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../../../appwire/testdata/tool-groups-thread.json"), "utf8"));
 
 const dom = new JSDOM(`<!DOCTYPE html><html><body>
   <div class="workspace-actions">

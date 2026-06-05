@@ -578,6 +578,49 @@ async function testStaleCapabilityRefreshErrorDoesNotUpdateNewSession() {
   assert(newConversation.dataset.state === "idle", "stale failed capability refresh updated the new session state");
 }
 
+async function testTranscriptStatusPreferenceChangeRerendersThread() {
+  let readThreadCalls = 0;
+  const window = createWindow({
+    onNotification: () => () => {},
+    onConnectionLost: () => () => {},
+    eventsFromThread: () => [
+      ["SESSION_START", { session_id: "sess-live", ref: "local:sess-live" }],
+      ["SYSTEM_MESSAGE", { title: "System prompt", text: "You are Serf." }],
+      ["SYSTEM_LINE", { text: "SessionStart hook superpowers using-superpowers command exit 0" }],
+    ],
+    readThread: () => {
+      readThreadCalls++;
+      return Promise.resolve({
+        thread: {
+          id: "sess-live",
+          sessionId: "sess-live",
+          serf: { ref: "local:sess-live" },
+          turns: [],
+        },
+      });
+    },
+  });
+
+  await wait(30);
+  assert(window.document.querySelectorAll(".system-message").length === 0, "prompt should be hidden before preference change");
+  assert(window.document.querySelectorAll(".system-line").length === 0, "hook exit should be hidden before preference change");
+
+  window.localStorage.setItem("serf-hub.transcript.systemStatus", JSON.stringify({
+    promptLoaded: true,
+    hookExitsNormal: true,
+  }));
+  window.document.dispatchEvent(new window.CustomEvent("serf-hub:transcript-system-status-changed"));
+  await wait(30);
+
+  const prompt = window.document.querySelector(".system-message");
+  const hookLines = Array.from(window.document.querySelectorAll(".system-line")).map((el) => el.textContent);
+  assert(readThreadCalls >= 2, "preference change should re-read the current thread");
+  assert(prompt, "preference change should rerender prompt disclosure");
+  assert(prompt.querySelector("summary").textContent.includes("Prompt Loaded"), "prompt disclosure should use Prompt Loaded label");
+  assert(prompt.querySelector(".steering-body").textContent.includes("You are Serf."), "prompt disclosure should include full prompt");
+  assert(hookLines.length === 1 && hookLines[0].includes("exit 0"), "preference change should rerender normal hook exit");
+}
+
 (async () => {
 	await testConnectionLossClearsAndReconnects();
 	await testReadFailureClearsSentinel();
@@ -590,6 +633,7 @@ async function testStaleCapabilityRefreshErrorDoesNotUpdateNewSession() {
 	await testBufferedTurnCompletedKeepsCompletionButSkipsHydratedItems();
 	await testBufferedTurnCompletedReplaysInProgressHydratedItems();
 	await testStaleCapabilityRefreshErrorDoesNotUpdateNewSession();
+	await testTranscriptStatusPreferenceChangeRerendersThread();
 	console.log("PASS: appwire renderer stream recovery");
 	process.exit(0);
 })().catch((err) => {

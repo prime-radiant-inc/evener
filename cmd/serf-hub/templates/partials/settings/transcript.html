@@ -1,0 +1,46 @@
+{{define "settings-content"}}
+<h2 class="settings-h2">Transcript</h2>
+<p class="settings-help">System status items default off. Saved per-browser.</p>
+<dl class="settings-table" data-transcript-status-form>
+  <div class="row editable">
+    <dt id="lbl-transcript-round-timings">Round timings</dt>
+    <dd>
+      <label class="val-toggle">
+        <input type="checkbox" data-transcript-status="roundTimings" aria-labelledby="lbl-transcript-round-timings">
+        <span class="state" aria-hidden="true">OFF</span>
+      </label>
+    </dd>
+    <p class="help">Show per-round timing summaries in the transcript.</p>
+  </div>
+  <div class="row editable">
+    <dt id="lbl-transcript-hook-all">Hook exits (all)</dt>
+    <dd>
+      <label class="val-toggle">
+        <input type="checkbox" data-transcript-status="hookExitsAll" aria-labelledby="lbl-transcript-hook-all">
+        <span class="state" aria-hidden="true">OFF</span>
+      </label>
+    </dd>
+    <p class="help">Show every hook exit line, including non-zero exits.</p>
+  </div>
+  <div class="row editable">
+    <dt id="lbl-transcript-hook-normal">Hook exits (normal only)</dt>
+    <dd>
+      <label class="val-toggle">
+        <input type="checkbox" data-transcript-status="hookExitsNormal" aria-labelledby="lbl-transcript-hook-normal">
+        <span class="state" aria-hidden="true">OFF</span>
+      </label>
+    </dd>
+    <p class="help">Show only hook exit lines with exit code 0. The all-hooks setting includes these too.</p>
+  </div>
+  <div class="row editable">
+    <dt id="lbl-transcript-prompt-loaded">Prompt Loaded</dt>
+    <dd>
+      <label class="val-toggle">
+        <input type="checkbox" data-transcript-status="promptLoaded" aria-labelledby="lbl-transcript-prompt-loaded">
+        <span class="state" aria-hidden="true">OFF</span>
+      </label>
+    </dd>
+    <p class="help">Show an expandable disclosure containing the full system prompt.</p>
+  </div>
+</dl>
+{{end}}

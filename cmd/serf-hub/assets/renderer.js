@@ -37,6 +37,71 @@
     return "";
   }
 
+  const transcriptStatusPrefsKey = "serf-hub.transcript.systemStatus";
+  const transcriptStatusDefaults = {
+    roundTimings: false,
+    hookExitsAll: false,
+    hookExitsNormal: false,
+    promptLoaded: false,
+  };
+
+  function readTranscriptStatusPrefs() {
+    let raw = "";
+    try { raw = window.localStorage && window.localStorage.getItem(transcriptStatusPrefsKey); } catch (e) {}
+    let parsed = {};
+    if (raw) {
+      try { parsed = JSON.parse(raw) || {}; } catch (e) { parsed = {}; }
+    }
+    parsed = Object.assign({}, transcriptStatusDefaults, parsed);
+    return {
+      roundTimings: parsed.roundTimings === true,
+      hookExitsAll: parsed.hookExitsAll === true,
+      hookExitsNormal: parsed.hookExitsNormal === true,
+      promptLoaded: parsed.promptLoaded === true,
+    };
+  }
+
+  function canonicalSystemTitle(title) {
+    return String(title || "").trim().toLowerCase();
+  }
+
+  function systemMessagePreferenceKey(data) {
+    const title = canonicalSystemTitle(data && data.title);
+    const text = String((data && data.text) || "");
+    if (title === "system prompt" || title === "prompt loaded") return "promptLoaded";
+    if (title.indexOf("round timing") >= 0 || /\bround[_ ]timings?\b/i.test(text)) return "roundTimings";
+    return "";
+  }
+
+  function systemMessageDisplayTitle(title) {
+    const canonical = canonicalSystemTitle(title);
+    return canonical === "system prompt" || canonical === "prompt loaded" ? "Prompt Loaded" : String(title || "System");
+  }
+
+  function hookExitCode(text) {
+    const s = String(text || "");
+    const match = /\bhook\b.*\bexit\s+(-?\d+)\b/i.exec(s) || /\bexit\s+(-?\d+)\b.*\bhook\b/i.exec(s);
+    if (!match) return null;
+    const code = Number(match[1]);
+    return Number.isFinite(code) ? code : null;
+  }
+
+  function shouldRenderSystemMessage(data) {
+    const key = systemMessagePreferenceKey(data);
+    if (!key) return true;
+    return readTranscriptStatusPrefs()[key] === true;
+  }
+
+  function shouldRenderSystemLine(text) {
+    if (/\bround[_ ]timings?\b/i.test(String(text || ""))) {
+      return readTranscriptStatusPrefs().roundTimings === true;
+    }
+    const code = hookExitCode(text);
+    if (code === null) return true;
+    const prefs = readTranscriptStatusPrefs();
+    return prefs.hookExitsAll === true || (code === 0 && prefs.hookExitsNormal === true);
+  }
+
   function partialFetch(path, options) {
     options = options || {};
     const headers = new Headers(options.headers || {});
@@ -612,6 +677,32 @@
       this.cheapToolCluster = null;
     },
 
+    refreshTranscriptStatusVisibility() {
+      if (!this.conversation || !this.sessionId) return false;
+      if (!window.SerfAppwire || typeof window.SerfAppwire.readThread !== "function" || typeof window.SerfAppwire.eventsFromThread !== "function") {
+        return false;
+      }
+      const sessionId = this.sessionId;
+      const conversation = this.conversation;
+      window.SerfAppwire.readThread(sessionId, true, false, false)
+        .then((resp) => {
+          if (this.sessionId !== sessionId || this.conversation !== conversation) return;
+          const thread = (resp && resp.thread) || {};
+          this.resetTranscriptReplay();
+          this.appwireThreadId = thread.id || this.appwireThreadId;
+          this.appwireRef = (thread.serf && thread.serf.ref) || (this.appwireThreadId ? window.SerfAppwire.refForSession(this.appwireThreadId) : null);
+          if (typeof window.SerfAppwire.activeTurnIDFromThread === "function") {
+            this.setActiveTurnId(window.SerfAppwire.activeTurnIDFromThread(thread));
+          }
+          for (const [kind, data] of window.SerfAppwire.eventsFromThread(thread)) {
+            this.handleData(kind, data);
+          }
+          this.appwireHydrated = true;
+        })
+        .catch(() => {});
+      return true;
+    },
+
     handleData(kind, data) {
       this.handle(kind, { data: JSON.stringify(data || {}) });
     },
@@ -772,9 +863,11 @@
           this.appendBanner("error", data.error || data.message || "", data);
           break;
         case "SYSTEM_MESSAGE":
+          if (!shouldRenderSystemMessage(data)) break;
           this.appendSystemMessage(data);
           break;
         case "SYSTEM_LINE":
+          if (!shouldRenderSystemLine(data.text || data.message || "")) break;
           this.appendSystemLine(data.text || data.message || "");
           break;
         case "STEERING_INJECTED":
@@ -808,7 +901,7 @@
       data = data || {};
       const text = String(data.text || "");
       if (!text.trim()) return;
-      const title = String(data.title || "System");
+      const title = systemMessageDisplayTitle(data.title || "System");
       const el = document.createElement("details");
       el.className = "steering system-message";
 
@@ -3310,6 +3403,9 @@
   }
   document.addEventListener("DOMContentLoaded", autoInit);
   document.body && document.body.addEventListener("htmx:afterSwap", autoInit);
+  document.addEventListener("serf-hub:transcript-system-status-changed", () => {
+    SerfRenderer.refreshTranscriptStatusVisibility();
+  });
 
   // Drive [data-pulse] on status dots after every htmx swap.
   document.addEventListener("htmx:afterSwap", () => {

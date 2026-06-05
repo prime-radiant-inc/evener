@@ -58,7 +58,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	projectSettingsTmpl := template.Must(template.ParseFS(templatesFS,
 		"templates/partials/settings/project.html",
 	))
-	settingsSections := []string{"general", "theme", "notifications", "providers", "agents", "launch-serf", "launch-codex", "inrepo", "plugins", "skills", "mcp", "hub", "storage"}
+	settingsSections := []string{"general", "theme", "transcript", "notifications", "providers", "agents", "launch-serf", "launch-codex", "inrepo", "plugins", "skills", "mcp", "hub", "storage"}
 	settingsTmpls := make(map[string]*template.Template, len(settingsSections))
 	for _, sec := range settingsSections {
 		settingsTmpls[sec] = template.Must(template.ParseFS(templatesFS,
