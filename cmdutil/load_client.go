@@ -74,7 +74,7 @@ func LoadClient(opts ...llm.EnvOption) (*llm.Client, providercfg.Config, bool, e
 	if err != nil {
 		return nil, providercfg.Config{}, false, err
 	}
-	client, err := llm.NewFromProviders(cfg, opts...)
+	client, _, err := llm.NewFromAvailableProviders(cfg, opts...)
 	if err != nil {
 		return nil, providercfg.Config{}, false, fmt.Errorf("LLM client from config: %w", err)
 	}

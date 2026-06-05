@@ -259,6 +259,16 @@ func TestLaunchCheckModelListUnavailableClassifiesTransientFailures(t *testing.T
 			want: true,
 		},
 		{
+			name: "dns lookup failure",
+			err:  errors.New(`Get "https://example.test/v1/models": dial tcp: lookup example.test: no such host`),
+			want: true,
+		},
+		{
+			name: "connection refused",
+			err:  errors.New(`Get "http://localhost:11434/v1/models": dial tcp [::1]:11434: connect: connection refused`),
+			want: true,
+		},
+		{
 			name: "net timeout",
 			err:  launchCheckTimeoutError{},
 			want: true,

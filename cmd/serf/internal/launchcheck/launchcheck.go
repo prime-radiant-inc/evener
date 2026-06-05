@@ -266,7 +266,10 @@ func launchCheckModelListUnavailable(err error) bool {
 		strings.Contains(msg, "context deadline exceeded") ||
 		strings.Contains(msg, "i/o timeout") ||
 		strings.Contains(msg, "client.timeout exceeded") ||
-		strings.Contains(msg, "timeout awaiting response headers")
+		strings.Contains(msg, "timeout awaiting response headers") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "network is unreachable")
 }
 
 // launchCheckModelVisible reports whether modelID should appear in the launch

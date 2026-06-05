@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 
@@ -43,6 +44,19 @@ func RegisterInstanceAdapterFactory(typ, apiStyle string, factory InstanceAdapte
 // particular WithStateDir — to control the StateHome used for OAuth-backed
 // adapters.
 func NewFromProviders(cfg providercfg.Config, opts ...EnvOption) (*Client, error) {
+	c, _, err := newFromProviders(cfg, false, opts...)
+	return c, err
+}
+
+// NewFromAvailableProviders constructs a Client from every provider instance
+// that can initialize. Unknown type/apiStyle wiring still fails hard; adapter
+// factory errors are returned as initialization errors while the healthy
+// instances remain registered.
+func NewFromAvailableProviders(cfg providercfg.Config, opts ...EnvOption) (*Client, []error, error) {
+	return newFromProviders(cfg, true, opts...)
+}
+
+func newFromProviders(cfg providercfg.Config, allowPartial bool, opts ...EnvOption) (*Client, []error, error) {
 	envCfg := EnvConfig{}
 	for _, opt := range opts {
 		if opt != nil {
@@ -58,6 +72,7 @@ func NewFromProviders(cfg providercfg.Config, opts ...EnvOption) (*Client, error
 	instanceFactoriesMu.Unlock()
 
 	c := NewClient()
+	var initErrs []error
 
 	for _, inst := range cfg.Instances {
 		key := instanceFactoryKey{
@@ -73,20 +88,28 @@ func NewFromProviders(cfg providercfg.Config, opts ...EnvOption) (*Client, error
 			}
 		}
 		if !ok {
-			return nil, fmt.Errorf("provider %q: unknown type/apiStyle combination (%q, %q)", inst.Name, inst.Type, inst.APIStyle)
+			return nil, nil, fmt.Errorf("provider %q: unknown type/apiStyle combination (%q, %q)", inst.Name, inst.Type, inst.APIStyle)
 		}
 		adapter, err := factory(inst, envCfg.StateHome)
 		if err != nil {
-			return nil, fmt.Errorf("provider %q: %w", inst.Name, err)
+			wrapped := fmt.Errorf("provider %q: %w", inst.Name, err)
+			if allowPartial {
+				initErrs = append(initErrs, wrapped)
+				continue
+			}
+			return nil, nil, wrapped
 		}
 		c.Register(adapter)
 	}
 
+	if allowPartial && len(c.ProviderNames()) == 0 && len(initErrs) > 0 {
+		return nil, initErrs, fmt.Errorf("no providers initialized: %w", errors.Join(initErrs...))
+	}
 	if cfg.Default != "" {
 		c.SetDefaultProvider(cfg.Default)
 	}
 
 	c.SetNameToTag(providercfg.NameToTag(cfg))
 
-	return c, nil
+	return c, initErrs, nil
 }

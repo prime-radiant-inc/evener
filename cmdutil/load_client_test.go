@@ -66,6 +66,43 @@ func TestLoadClient_WithValidConfig(t *testing.T) {
 	}
 }
 
+func TestLoadClient_SkipsUninitializedUnusedProvider(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "providers.toml")
+	if err := os.WriteFile(path, []byte(`
+schema = 1
+default = "openai"
+
+[instances.anthropic]
+type = "anthropic"
+
+[instances.openai]
+type = "openai"
+api_style = "responses"
+api_key = "sk-openai-test"
+`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv("SERF_PROVIDERS_CONFIG", path)
+	t.Setenv("ANTHROPIC_API_KEY", "")
+
+	client, cfg, hasConfig, err := LoadClient()
+	if err != nil {
+		t.Fatalf("LoadClient: %v", err)
+	}
+	if !hasConfig {
+		t.Fatal("expected hasConfig=true with a valid config file")
+	}
+	if len(cfg.Instances) != 2 {
+		t.Fatalf("cfg.Instances len=%d, want 2", len(cfg.Instances))
+	}
+	names := client.ProviderNames()
+	sort.Strings(names)
+	if len(names) != 1 || names[0] != "openai" {
+		t.Fatalf("ProviderNames=%v, want [openai]", names)
+	}
+}
+
 func TestLoadClient_NoFile_SeedsInMemory(t *testing.T) {
 	// When providers.toml is absent, LoadClient seeds the config in memory from
 	// the environment and returns hasConfig=true (always-config contract) WITHOUT
