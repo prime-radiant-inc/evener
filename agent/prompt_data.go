@@ -69,9 +69,17 @@ type promptData struct {
 // skillEntry is a skill for template rendering.
 type skillEntry struct {
 	Name        string
+	CatalogName string // name shown in the system prompt skill catalog
 	Description string
 	Dir         string // directory path (for use_skill profiles)
 	SkillFile   string // SKILL.md path (for read_file profiles)
+}
+
+func (s skillEntry) CatalogNameOrName() string {
+	if strings.TrimSpace(s.CatalogName) != "" {
+		return s.CatalogName
+	}
+	return s.Name
 }
 
 // toolEntry is a tool for template rendering.

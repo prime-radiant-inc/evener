@@ -247,6 +247,53 @@ func TestOpenAI_SkillsSectionUsesUseSkill(t *testing.T) {
 	}
 }
 
+func TestOpenAI_PluginSkillCatalogUsesNamespacedName(t *testing.T) {
+	root := t.TempDir()
+	initGitRepo(t, root)
+
+	pluginDir := makePluginDir(t, "skill-plugin")
+	skillDir := filepath.Join(pluginDir, "skills", "my-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: my-skill\ndescription: \"Plugin skill\"\n---\nBody.\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	c := llm.NewClient()
+	comm := communicateCall("c1", "done")
+
+	var capturedSystem string
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
+					capturedSystem = req.Messages[0].Text()
+				}
+				return toolCallResponse(comm)
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{PluginDirs: []string{pluginDir}})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = sess.ProcessInput(ctx, "hi", nil)
+	sess.Close()
+
+	if !strings.Contains(capturedSystem, "- skill-plugin:my-skill: Plugin skill [") {
+		t.Fatalf("system prompt missing namespaced plugin skill entry:\n%s", capturedSystem)
+	}
+	if strings.Contains(capturedSystem, "- my-skill: Plugin skill [") {
+		t.Fatalf("system prompt advertised bare plugin skill name:\n%s", capturedSystem)
+	}
+}
+
 func TestOpenAI_IncludesUseSkillTool(t *testing.T) {
 	p := NewOpenAIProfile("gpt-5.2")
 	for _, td := range p.ToolDefinitions() {

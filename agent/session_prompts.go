@@ -69,9 +69,9 @@ func (s *Session) buildPromptData() promptData {
 		}
 	}
 	data.HasUseSkill = hasUseSkill
-	for _, sm := range s.skills {
+	for skillName, sm := range s.skills {
 		data.Skills = append(data.Skills, skillEntry{
-			Name: sm.Name, Description: sm.Description,
+			Name: sm.Name, CatalogName: skillName, Description: sm.Description,
 			Dir: sm.Dir, SkillFile: sm.SkillFile,
 		})
 	}
