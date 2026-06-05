@@ -27,6 +27,12 @@ import (
 // cmdutil.LoadClient; tests may replace this to inject a stub client or config.
 var launchCheckLoadClient = cmdutil.LoadClient
 
+// launchCheckLoadProviderConfig is the injectable hook for model enumeration.
+// Production code uses the same config and credential loading path as
+// cmdutil.LoadClient, but launchCheckModels constructs each provider separately
+// so one broken instance does not hide all other launchable models.
+var launchCheckLoadProviderConfig = cmdutil.LoadProviderConfig
+
 // launchCheckLoadConfig resolves the providers config path (same logic as
 // LoadClient) and parses it. Returns (cfg, true, nil) when the file exists and
 // is valid, (cfg{}, false, nil) when absent, or (cfg{}, _, err) on parse error.
@@ -135,18 +141,28 @@ func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, err
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 
-	client, _, _, err := launchCheckLoadClient()
+	cfg, _, err := launchCheckLoadProviderConfig()
 	if err != nil {
 		return nil, nil, err
 	}
 	cat := llm.EmbeddedModelCatalog()
-	providers := client.ProviderNames()
-	sort.Strings(providers)
 	out := []launchCheckModel{}
 	diagnostics := []appwire.ModelListDiagnostic{}
-	for _, provider := range providers {
-		tag := client.BehaviorTagOf(provider)
+	for _, inst := range cfg.Instances {
+		provider := strings.TrimSpace(inst.Name)
+		if provider == "" {
+			continue
+		}
+		tag := providercfg.BehaviorTag(string(inst.Type), string(inst.APIStyle))
 		if tag == "openrouter-anthropic" {
+			continue
+		}
+		client, err := llm.NewFromProviders(providercfg.Config{
+			Default:   provider,
+			Instances: []providercfg.InstanceConfig{inst},
+		})
+		if err != nil {
+			diagnostics = append(diagnostics, launchCheckModelDiagnostic(provider, err))
 			continue
 		}
 		models, err := client.ListModels(ctx, provider)

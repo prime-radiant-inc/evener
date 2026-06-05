@@ -11,7 +11,8 @@ import (
 	"primeradiant.com/serf/llm/providercfg"
 )
 
-// LoadClient constructs an LLM client that is always config-driven.
+// LoadProviderConfig resolves the providers config using the same path and
+// credential injection rules as LoadClient, but does not construct adapters.
 //
 // Path resolution: if SERF_PROVIDERS_CONFIG is set, that path is used;
 // otherwise filepath.Join(DefaultStateRoot(), "providers.toml").
@@ -27,8 +28,8 @@ import (
 // credentials.toml in the same directory (missing file = empty store, not an
 // error) and injected into the in-memory config only — never written to disk.
 //
-// Always returns (client, cfg, true, nil) on success.
-func LoadClient(opts ...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+// Always returns (cfg, true, nil) on success.
+func LoadProviderConfig(opts ...llm.EnvOption) (providercfg.Config, bool, error) {
 	path := os.Getenv("SERF_PROVIDERS_CONFIG")
 	if path == "" {
 		path = filepath.Join(DefaultStateRoot(), "providers.toml")
@@ -36,7 +37,7 @@ func LoadClient(opts ...llm.EnvOption) (*llm.Client, providercfg.Config, bool, e
 
 	cfg, exists, err := providercfg.LoadFile(path)
 	if err != nil {
-		return nil, providercfg.Config{}, false, fmt.Errorf("providers config: %w", err)
+		return providercfg.Config{}, false, fmt.Errorf("providers config: %w", err)
 	}
 
 	if !exists {
@@ -46,13 +47,13 @@ func LoadClient(opts ...llm.EnvOption) (*llm.Client, providercfg.Config, bool, e
 		// has a write side effect.
 		cfg, err = seedConfigFromEnv(opts...)
 		if err != nil {
-			return nil, providercfg.Config{}, false, fmt.Errorf("seed providers config: %w", err)
+			return providercfg.Config{}, false, fmt.Errorf("seed providers config: %w", err)
 		}
 	}
 
 	store, err := credentials.LoadStore(filepath.Join(filepath.Dir(path), "credentials.toml"))
 	if err != nil {
-		return nil, providercfg.Config{}, false, fmt.Errorf("credentials store: %w", err)
+		return providercfg.Config{}, false, fmt.Errorf("credentials store: %w", err)
 	}
 
 	for i := range cfg.Instances {
@@ -63,11 +64,21 @@ func LoadClient(opts ...llm.EnvOption) (*llm.Client, providercfg.Config, bool, e
 		}
 	}
 
+	return cfg, true, nil
+}
+
+// LoadClient constructs an LLM client that is always config-driven.
+// Always returns (client, cfg, true, nil) on success.
+func LoadClient(opts ...llm.EnvOption) (*llm.Client, providercfg.Config, bool, error) {
+	cfg, hasConfig, err := LoadProviderConfig(opts...)
+	if err != nil {
+		return nil, providercfg.Config{}, false, err
+	}
 	client, err := llm.NewFromProviders(cfg, opts...)
 	if err != nil {
 		return nil, providercfg.Config{}, false, fmt.Errorf("LLM client from config: %w", err)
 	}
-	return client, cfg, true, nil
+	return client, cfg, hasConfig, nil
 }
 
 // BuildResolveProfile returns the SessionConfig.ResolveProfile closure.

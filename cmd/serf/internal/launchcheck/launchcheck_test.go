@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/appwire"
 	"primeradiant.com/serf/auth/openai/oaitest"
 	"primeradiant.com/serf/llm"
+	_ "primeradiant.com/serf/llm/providers/anthropic"
 	_ "primeradiant.com/serf/llm/providers/openai"
 	_ "primeradiant.com/serf/llm/providers/openrouter"
 )
@@ -105,6 +106,83 @@ func TestLaunchCheckReportsModelEnumerationDiagnostics(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("diagnostics missing openai entry: %+v", out.Diagnostics)
+	}
+}
+
+func TestLaunchCheckListsModelsWhenOneConfiguredProviderCannotInitialize(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("ANTHROPIC_API_KEY", "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-live"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "providers.toml")
+	if err := os.WriteFile(cfgPath, []byte(`schema = 1
+default = "openai"
+
+[instances.anthropic]
+type = "anthropic"
+
+[instances.openai]
+type = "openai"
+base_url = "`+srv.URL+`"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "credentials.toml"), []byte(`schema = 1
+[providers.openai]
+api_key = "test-key"
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SERF_PROVIDERS_CONFIG", cfgPath)
+
+	var stdout, stderr bytes.Buffer
+	err := RunLaunchCheck([]string{
+		"--protocol", appwire.ProtocolVersion,
+		"--models",
+		"--json",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
+	}
+
+	var out struct {
+		Models []struct {
+			Provider string `json:"provider"`
+			Model    string `json:"model"`
+		} `json:"models"`
+		Diagnostics []struct {
+			Provider string `json:"provider"`
+			Message  string `json:"message"`
+		} `json:"diagnostics"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
+	}
+	if len(out.Models) != 1 || out.Models[0].Provider != "openai" || out.Models[0].Model != "gpt-live" {
+		t.Fatalf("models=%+v", out.Models)
+	}
+	var foundAnthropic bool
+	for _, diag := range out.Diagnostics {
+		if diag.Provider == "anthropic" {
+			foundAnthropic = true
+			if diag.Message == "" {
+				t.Fatalf("anthropic diagnostic has empty message: %+v", diag)
+			}
+		}
+	}
+	if !foundAnthropic {
+		t.Fatalf("diagnostics missing anthropic entry: %+v", out.Diagnostics)
 	}
 }
 
