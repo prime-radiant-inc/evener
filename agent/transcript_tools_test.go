@@ -773,6 +773,223 @@ func min(a, b int) int {
 	return b
 }
 
+// --- TestRead_Outline* ---
+
+// writeSpawnWaitSession writes a synthetic session that has a "wait" lifecycle
+// tool call with a subagentResult result body, so the outline bracket path can
+// be exercised. Layout:
+//
+//	Turn 0: User
+//	Turn 1: Assistant (wait call + result)
+//	Turn 2: TOOL_RESULTS (folds under turn 1, no outline line)
+func writeSpawnWaitSession(t *testing.T, bucketDir string, spec findMetaSpec, childRef string) {
+	t.Helper()
+	tpath := transcriptPath(bucketDir, spec.id)
+	sessDir := filepath.Dir(tpath)
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatalf("writeSpawnWaitSession mkdir: %v", err)
+	}
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
+		SessionID: spec.id,
+		CreatedAt: spec.updated,
+		Model:     spec.model,
+	})
+	if err != nil {
+		t.Fatalf("write spawn-wait transcript: %v", err)
+	}
+	callID := "call-wait-001"
+	// Turn 0: user
+	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("spawn something"))); err != nil {
+		t.Fatalf("append user turn: %v", err)
+	}
+	// Turn 1: assistant with wait call
+	assistantMsg := llm.Message{
+		Role: llm.RoleAssistant,
+		Content: []llm.ContentPart{
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+				ID:        callID,
+				Name:      "wait",
+				Arguments: json.RawMessage(`{"agent_id":"child-1"}`),
+			}},
+		},
+	}
+	if err := tw.Append(schema.NewTurn(schema.TurnAssistant, assistantMsg)); err != nil {
+		t.Fatalf("append assistant turn: %v", err)
+	}
+	// Turn 2: tool result carrying a subagentResult body
+	resultBody := fmt.Sprintf(`{"status":"completed","output":"done","success":true,"turns_used":3,"transcript_ref":%q}`, childRef)
+	resultMsg := llm.Message{
+		Role: llm.RoleTool,
+		Content: []llm.ContentPart{
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+				ToolCallID: callID,
+				Name:       "wait",
+				Content:    resultBody,
+			}},
+		},
+	}
+	if err := tw.Append(schema.NewTurn(schema.TurnToolResults, resultMsg)); err != nil {
+		t.Fatalf("append tool-result turn: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close spawn-wait transcript: %v", err)
+	}
+	saveFindMeta(t, bucketDir, spec)
+}
+
+// TestRead_OutlineBasic verifies that format:"outline" returns:
+//   - format: "outline"
+//   - turns_total matching the session's entry count
+//   - content with one line per non-TOOL_RESULTS turn
+//   - each line's leading number matches its absolute turn index
+//   - hint is present and non-empty
+func TestRead_OutlineBasic(t *testing.T) {
+	dir := newBucket(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	const sessionID = "OUTLINE1"
+	const nTurns = 6
+
+	writeMultiTurnSession(t, dir, findMetaSpec{
+		id:      sessionID,
+		name:    "outline basic",
+		updated: now,
+	}, nTurns)
+
+	deps := &toolDeps{stateDir: dir, sessionID: "OTHER000"}
+	b := marshalRead(t, deps, map[string]any{
+		"transcript_ref": "local:" + sessionID,
+		"format":         "outline",
+	})
+	env := decodeReadEnvelope(t, b)
+
+	// Top-level format field must be "outline".
+	if env["format"] != "outline" {
+		t.Errorf("format = %v, want outline", env["format"])
+	}
+
+	// turns_total must be present at the top level (no nested meta for outline).
+	turnsTotal, ok := env["turns_total"].(float64)
+	if !ok || turnsTotal == 0 {
+		t.Fatalf("turns_total missing or zero: %v", env["turns_total"])
+	}
+	if int(turnsTotal) != nTurns {
+		t.Errorf("turns_total = %v, want %d", turnsTotal, nTurns)
+	}
+
+	// hint must be present and non-empty.
+	hint, ok := env["hint"].(string)
+	if !ok || hint == "" {
+		t.Errorf("hint missing or empty: %v", env["hint"])
+	}
+
+	// content must be a non-empty string.
+	content, ok := env["content"].(string)
+	if !ok || content == "" {
+		t.Fatal("content missing or empty")
+	}
+
+	// Each line must start with its absolute turn number. writeMultiTurnSession
+	// alternates user/assistant, so all 6 turns get outline lines (no TOOL_RESULTS).
+	lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+	if len(lines) != nTurns {
+		t.Fatalf("expected %d outline lines, got %d:\n%s", nTurns, len(lines), content)
+	}
+	for i, line := range lines {
+		wantPrefix := fmt.Sprintf("%d ", i)
+		if !strings.HasPrefix(line, wantPrefix) {
+			t.Errorf("line[%d] does not start with %q: %q", i, wantPrefix, line)
+		}
+	}
+}
+
+// TestRead_OutlineRange verifies that range:"last:5" on a 12-turn session:
+//   - returns only 5 outline lines
+//   - the leading numbers are the ABSOLUTE turns 7..11 (not 0..4)
+//   - turns_total is still 12 (the full session)
+func TestRead_OutlineRange(t *testing.T) {
+	dir := newBucket(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	const sessionID = "OUTRANGE"
+	const nTurns = 12
+
+	writeMultiTurnSession(t, dir, findMetaSpec{
+		id:      sessionID,
+		name:    "outline range",
+		updated: now,
+	}, nTurns)
+
+	deps := &toolDeps{stateDir: dir, sessionID: "OTHER000"}
+	b := marshalRead(t, deps, map[string]any{
+		"transcript_ref": "local:" + sessionID,
+		"format":         "outline",
+		"range":          "last:5",
+	})
+	env := decodeReadEnvelope(t, b)
+
+	turnsTotal, ok := env["turns_total"].(float64)
+	if !ok {
+		t.Fatalf("turns_total missing: %v", env["turns_total"])
+	}
+	if int(turnsTotal) != nTurns {
+		t.Errorf("turns_total = %v, want %d (full count regardless of range)", turnsTotal, nTurns)
+	}
+
+	content, ok := env["content"].(string)
+	if !ok || content == "" {
+		t.Fatal("content missing or empty")
+	}
+
+	// Only 5 lines (last 5 of 12 = turns 7..11).
+	lines := nonEmptyLines(content)
+	if len(lines) != 5 {
+		t.Fatalf("expected 5 outline lines for last:5, got %d:\n%s", len(lines), content)
+	}
+
+	// Each line's leading number must be the absolute turn index (7, 8, 9, 10, 11).
+	for i, line := range lines {
+		wantTurn := 7 + i
+		wantPrefix := fmt.Sprintf("%d ", wantTurn)
+		if !strings.HasPrefix(line, wantPrefix) {
+			t.Errorf("line[%d] must start with absolute turn %d, got: %q", i, wantTurn, line)
+		}
+	}
+}
+
+// TestRead_OutlineLifecycleBracket verifies that a session with a subagent
+// lifecycle "wait" call shows the audit-pivot bracket (child=...) in the outline.
+func TestRead_OutlineLifecycleBracket(t *testing.T) {
+	dir := newBucket(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	const sessionID = "OUTLBRKТ"
+	const childRef = "local:CHILD999"
+
+	writeSpawnWaitSession(t, dir, findMetaSpec{
+		id:      sessionID,
+		name:    "outline bracket",
+		updated: now,
+	}, childRef)
+
+	deps := &toolDeps{stateDir: dir, sessionID: "OTHER000"}
+	b := marshalRead(t, deps, map[string]any{
+		"transcript_ref": "local:" + sessionID,
+		"format":         "outline",
+	})
+	env := decodeReadEnvelope(t, b)
+
+	content, ok := env["content"].(string)
+	if !ok || content == "" {
+		t.Fatal("content missing or empty")
+	}
+
+	// The assistant turn (turn 1) should show the wait bracket with child= ref.
+	if !strings.Contains(content, "child="+childRef) {
+		t.Errorf("outline must contain child ref bracket; got:\n%s", content)
+	}
+	if !strings.Contains(content, "wait[") {
+		t.Errorf("outline must contain wait[ bracket; got:\n%s", content)
+	}
+}
+
 // --- TestFind_ChildrenOf_ProjBucket ---
 
 // TestFind_ChildrenOf_ProjBucket verifies children_of for a parent in a sibling

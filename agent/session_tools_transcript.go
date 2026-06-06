@@ -86,7 +86,7 @@ func execReadSessionTranscript(deps *toolDeps, args map[string]any) (any, error)
 	case "markdown":
 		return readMarkdown(path, ref, meta, rangeArg, expandTurn)
 	case "outline":
-		return nil, fmt.Errorf("format \"outline\" not yet implemented")
+		return readOutline(path, ref, rangeArg)
 	case "jsonl":
 		return nil, fmt.Errorf("format \"jsonl\" not yet implemented")
 	default:
@@ -153,6 +153,42 @@ func readMarkdown(path, ref string, meta schema.SessionMeta, rangeArg string, ex
 			SkippedCorruptLines: data.Skipped,
 			RangeWarning:        rangeWarning,
 		},
+	}, nil
+}
+
+const formatOutline = "outline"
+
+// readOutline builds the outline envelope for the resolved transcript. When
+// rangeArg is non-empty and malformed, it falls back to the full session (no
+// range applied) so the model is never silently wrong. Valid ranges produce the
+// filtered outline with absolute turn numbers.
+func readOutline(path, ref, rangeArg string) (any, error) {
+	data, err := readTranscriptFull(path)
+	if err != nil {
+		return nil, err
+	}
+
+	n := len(data.Entries)
+	start, end := 0, n-1
+
+	if rangeArg != "" {
+		if s, e, err := parseRangeErr(rangeArg, n); err == nil {
+			start, end = s, e
+		}
+		// Malformed range: silently fall back to the full session (start=0, end=n-1).
+		// The outline is always bounded by boundOutline so no runaway output.
+	}
+
+	content, truncated, elidedTurns := renderOutline(data.Entries, start, end)
+
+	return readOutlineEnvelope{
+		TranscriptRef: ref,
+		Format:        formatOutline,
+		TurnsTotal:    n,
+		Content:       content,
+		Truncated:     truncated,
+		ElidedTurns:   elidedTurns,
+		Hint:          outlineHint,
 	}, nil
 }
 

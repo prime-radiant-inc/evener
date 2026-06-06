@@ -11,26 +11,24 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-// findOutlineEnvelope is the per-session outline response (mode "outline"),
-// returned by find when a ref is set with no query. The outline is a compact,
-// scannable, one-line-per-turn index of the transcript; content is text (far more
-// compact and scannable than JSON-per-turn). turn_count is the authoritative
-// entry count (the same index read's range and within-transcript pointers use).
+// readOutlineEnvelope is the wire shape returned for an outline read.
+// turns_total is the authoritative entry count (the same number range accepts).
 // truncated/elided_turns report the budget elision honestly.
-type findOutlineEnvelope struct {
-	Mode          string `json:"mode"`
+// This is a flat envelope (no nested meta) per spec §"format: outline".
+type readOutlineEnvelope struct {
 	TranscriptRef string `json:"transcript_ref"`
-	TurnCount     int    `json:"turn_count"`
+	Format        string `json:"format"`
+	TurnsTotal    int    `json:"turns_total"`
 	Content       string `json:"content"`
 	Truncated     bool   `json:"truncated"`
 	ElidedTurns   int    `json:"elided_turns"`
 	Hint          string `json:"hint"`
 }
 
-// outlineHint is the single top-level next-call hint on an outline response. It is
-// not repeated per line: the model reads the shape, then range-reads or
-// full_result_for-expands the turns it cares about.
-const outlineHint = "read a turn range with read_session_transcript(transcript_ref, range), e.g. range \"12-40\", or full_result_for a turn seq to expand its results"
+// outlineHint is the single top-level next-call hint on an outline response.
+// Turn numbers shown in the outline are the same numbers range and expand_turn
+// accept — no translation step.
+const outlineHint = "turn numbers here are what range and expand_turn accept: range=\"7-20\" or range=\"last:40\" to zoom in; expand_turn=N (markdown only) to expand a single turn's results"
 
 // subagentRefInfo is the audit-pivot extract of a subagent lifecycle tool result:
 // the child's success/status and its transcript_ref, so the parent can pivot to
@@ -88,17 +86,24 @@ func extractSubagentResult(body string) (subagentRefInfo, bool) {
 }
 
 // renderOutline builds the per-session outline content and its honest elision
-// counts. seq is the derived entry-list index (entries[i] → seq i), matching
-// read's range and within-transcript pointers. TOOL_RESULTS turns fold under
-// their owning ASSISTANT turn (no standalone line), exactly as the markdown
-// renderer does. The result is bounded by convBudgetChars: when the full outline
-// exceeds it, head + tail lines are kept and the middle is dropped with an honest
-// "… N turns elided …" marker, so the output is never an unbounded wall.
-func renderOutline(entries []transcript.Entry) (content string, truncated bool, elidedTurns int) {
+// counts. start and end are inclusive bounds over the entry-list index
+// (entries[i] → absolute turn number i), matching the numbers range accepts.
+// Pass start=0, end=len(entries)-1 for the whole session.
+//
+// The result index is built over ALL entries so call→result pairing works for
+// lifecycle brackets even when the result turn is outside [start, end].
+// TOOL_RESULTS turns fold under their owning ASSISTANT turn (no standalone line),
+// exactly as the markdown renderer does. The result is bounded by convBudgetChars:
+// when the filtered lines exceed it, head + tail are kept and the middle is dropped
+// with an honest "… N turns elided …" marker, so the output is never an unbounded wall.
+func renderOutline(entries []transcript.Entry, start, end int) (content string, truncated bool, elidedTurns int) {
 	idx := buildResultIndex(entries, 0)
 
 	var lines []string
 	for i := range entries {
+		if i < start || i > end {
+			continue // outside requested range
+		}
 		line, ok := outlineLine(entries, i, &idx)
 		if !ok {
 			continue // TOOL_RESULTS folds under its owning assistant turn
