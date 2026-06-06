@@ -162,3 +162,35 @@ func stateHomeFor(stateDir string) string {
 func transcriptPath(bucketDir, sessionID string) string {
 	return filepath.Join(bucketDir, sessionsSubdir, sessionID+".transcript.jsonl")
 }
+
+// parentBucketAndID resolves a ref (or bare ID) to the bucket directory and
+// session ID of the parent session, without requiring the parent's transcript
+// to exist. This is used by execFindChildren: the parent's bucket and ID are
+// extracted from the ref alone so children can be found even when the parent
+// transcript has not yet been written (e.g. the current live session).
+//
+// Returns the resolved bucket dir, the parent session ID, the scope that
+// applies (current_project or all_projects), and any parse error.
+func parentBucketAndID(selector, currentStateDir, currentSessionID string) (bucketDir, parentID, scopeApplied string, err error) {
+	if selector == "" || selector == "current" {
+		return currentStateDir, currentSessionID, scopeCurrentProject, nil
+	}
+	if strings.HasPrefix(selector, "local:") || strings.HasPrefix(selector, "proj:") {
+		hash, id, decErr := decodeRef(selector)
+		if decErr != nil {
+			return "", "", "", decErr
+		}
+		if hash == "" {
+			return currentStateDir, id, scopeCurrentProject, nil
+		}
+		sh := stateHomeFor(currentStateDir)
+		if sh == "" {
+			return "", "", "", fmt.Errorf("transcript ref %q: no project root (flat state dir)", selector)
+		}
+		return filepath.Join(sh, "serf", "projects", hash), id, scopeAllProjects, nil
+	}
+	if err := validIDToken(selector); err != nil {
+		return "", "", "", fmt.Errorf("invalid session selector: %w", err)
+	}
+	return currentStateDir, selector, scopeCurrentProject, nil
+}

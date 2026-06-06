@@ -664,6 +664,14 @@ func (s *Session) maybeInjectTaskReminder() string {
 	return ""
 }
 
+// stringArg returns args[key] as a string, or "" when absent or not a string.
+func stringArg(args map[string]any, key string) string {
+	if v, ok := args[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
 // optionalIntArg extracts an optional integer pointer from tool arguments.
 func optionalIntArg(args map[string]any, key string) *int {
 	v, ok := args[key]
