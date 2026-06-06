@@ -1867,6 +1867,43 @@ func TestRenderTranscript_FrontAnchoredKeepsFront(t *testing.T) {
 	}
 }
 
+// TestRenderTranscript_PinnedResultPastRangeEnd covers the budgetedEnd edge where a
+// front-anchored range ends exactly on the pinned ASSISTANT turn whose tool result
+// lands one turn later (out of range). The budget must still trim the window, AND the
+// pinned result must be recovered via the out-of-range pin append — never lost.
+func TestRenderTranscript_PinnedResultPastRangeEnd(t *testing.T) {
+	const big = 5000
+	// Turns 0..5: big text, forcing the [0,6] window well over the 24k budget.
+	entries := textTurns(6, func(i int) string {
+		return fmt.Sprintf("T%d:", i) + strings.Repeat("q", big)
+	})
+	// Turn 6: assistant tool call; turn 7: its big result with a deep middle line
+	// that head+tail truncation would elide unless the result renders in full.
+	bigResult := makeNumberedLines(200)
+	midLine := fmt.Sprintf("line%03d", 100)
+	entries = append(entries,
+		toolCallEntry(call("pin", "shell", `{"command":"dump"}`)),
+		toolResultEntry(result("pin", "shell", bigResult, false)),
+	)
+
+	pin := 6 // the assistant turn; its result is at seq 7, outside range "0-6"
+	content, m := renderTranscript(transcript.Header{}, entries, "0-6", renderOpts{fullResultFor: &pin})
+
+	// Budget enforced: the front-anchored window was trimmed (not all of 0-6 kept).
+	// Without the lastSeq<=end guard, pinFloor=7 would suppress all trimming.
+	if m.TurnsRendered >= 7 {
+		t.Errorf("budget should have trimmed the [0,6] window; TurnsRendered=%d, want <7", m.TurnsRendered)
+	}
+	// The pinned result is recovered as a labeled out-of-range section, not lost.
+	wantMarker := fmt.Sprintf("_… pinned turn %d (full result, outside range) …_", pin)
+	if !strings.Contains(content, wantMarker) {
+		t.Errorf("pinned result past range end must be appended as a section; missing %q", wantMarker)
+	}
+	if !strings.Contains(content, midLine) {
+		t.Errorf("pinned result must render in full; deep line %q was lost", midLine)
+	}
+}
+
 // TestRenderMarkdown_LongResultLineClamped verifies that a result with one very
 // wide line (5000 runes) is clamped to ≤ resultLineMaxRunes in the condensed
 // view (an ellipsis is present), but rendered verbatim under a full result

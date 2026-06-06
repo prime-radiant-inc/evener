@@ -588,14 +588,18 @@ func isFrontAnchored(spec string) bool {
 	return ok
 }
 
-// budgetedEnd drops the newest turns from the tail to fit the budget, never
-// below start nor below an IN-WINDOW pinned turn's result span (so expand_turn's
-// result is never cut off). The in-window guard (as>=start && as<=end) is
-// essential: an out-of-window pin must NOT suppress trimming.
+// budgetedEnd drops the newest turns from the tail to fit the budget, never below
+// start nor below a pinned turn's result span when that WHOLE span fits the window
+// (so expand_turn's result is never cut off). The guard requires lastSeq <= end, not
+// just as <= end: when the pin's result spills past end (e.g. range "0-5" pinning
+// turn 5 whose result lands at seq 6), pinning the floor would both suppress trimming
+// AND lose the result (it sits outside the window and renderOutOfRangePin would treat
+// the in-window pin as already shown). Leaving pinFloor unset lets trimming proceed,
+// and renderOutOfRangePin then appends the pin's full span as a labeled section.
 func budgetedEnd(header transcript.Header, entries []transcript.Entry, start, end int, opt renderOpts) int {
 	pinFloor := -1
 	if opt.fullResultFor != nil {
-		if as, lastSeq, ok := resolvePinnedSpan(entries, *opt.fullResultFor); ok && as >= start && as <= end {
+		if as, lastSeq, ok := resolvePinnedSpan(entries, *opt.fullResultFor); ok && as >= start && lastSeq <= end {
 			pinFloor = lastSeq
 		}
 	}
