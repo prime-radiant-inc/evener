@@ -137,6 +137,47 @@ assistant references the image content.
   `response.endpoint_url` (typed) + `response.raw.endpoint_url`
   (legacy) across all adapters (katas `v5pm`, `dyph`).
 
+### Session-transcript tools (`find_session_transcripts` / `read_session_transcript`)
+
+Live end-to-end coverage for the two read-only agent tools defined in
+`docs/tools/transcripts.md`. Each spawns a real `./serf` CLI run against
+a real model (`oai-work/gpt-5.5`), shares a per-project state-dir bucket
+across runs (same `--dir` ⇒ same bucket — the precondition for
+cross-session discovery), and asserts the tool's documented response
+shape (refs, snippets, scan stats, window headers, Turn numbering).
+
+- `transcript-find-catalog-read-markdown.md` — `find({})` returns the
+  metadata-only catalog (no snippets/scan); a second run picks the
+  earlier session by title/`approx_turns` and reads it in markdown,
+  confirming the default last-40 window header self-announces.
+- `transcript-find-by-query-content-search.md` — `find({query})` turns
+  on the bounded content scan: matches carry `snippets`, response carries
+  `scanned`/`scan_truncated`; decoy sessions are excluded (agent-tool
+  complement to the `⌘K` overlay in
+  `search-finds-content-across-sessions.md`).
+- `transcript-read-outline-range-expand-turn.md` — the read ladder:
+  outline maps the shape, a `range` taken from the outline reads a span,
+  `expand_turn` opens one truncated result whole; asserts the outline's
+  Turn numbers are exactly what `range`/`expand_turn` accept (one
+  numbering, no translation).
+- `transcript-multi-session-create-find-read.md` — THE headline:
+  Session B discovers Session A by content (`find({query})`), gets A's
+  `transcript_ref`, and reads it to reconstruct A's work — B is never
+  handed A's ref. Makes the bucket-sharing precondition explicit.
+- `transcript-subagent-audit-children-of.md` — a parent spawns a
+  subagent; `find({children_of:"<parent ref>"})` enumerates the child
+  (kind `subagent`, `parent_ref` set, no transcript opened), then an
+  outline + range read judges whether the child actually ran the
+  commands it claims (the delegation trust-but-verify loop).
+- `transcript-read-jsonl-debug-hatch.md` — `format:"jsonl"` returns raw
+  NDJSON (header + system prompt + api_call lines) with a hint to
+  re-read as markdown; asserts the agent picks markdown, not jsonl, when
+  the goal is comprehension.
+- `transcript-find-scope-all-projects.md` — `scope:"all_projects"`
+  (with a shared `--state-dir`, distinct `--dir`s) finds a session in a
+  different project bucket; default scope misses it, the cross-bucket
+  hit comes back as a `proj:<bucketHash>:<id>` ref, and that ref reads.
+
 ## Regression sweep (older surfaces)
 
 - `credentials-page-displays-sources.md` — `/credentials` shows
