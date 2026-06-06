@@ -88,7 +88,7 @@ func execReadSessionTranscript(deps *toolDeps, args map[string]any) (any, error)
 	case "outline":
 		return readOutline(path, ref, rangeArg)
 	case "jsonl":
-		return nil, fmt.Errorf("format \"jsonl\" not yet implemented")
+		return readRaw(path, ref, rangeArg)
 	default:
 		return nil, fmt.Errorf("unknown format %q: use markdown, outline, or jsonl", format)
 	}
@@ -189,6 +189,65 @@ func readOutline(path, ref, rangeArg string) (any, error) {
 		Truncated:     truncated,
 		ElidedTurns:   elidedTurns,
 		Hint:          outlineHint,
+	}, nil
+}
+
+const formatJSONL = "jsonl"
+
+// readRawEnvelope is the wire shape for a jsonl read: the verbatim NDJSON bytes for
+// the range. It is the debug/replay escape hatch — noisy (system prompt + api_call
+// records) and steered against for comprehension.
+type readRawEnvelope struct {
+	TranscriptRef string      `json:"transcript_ref"`
+	Format        string      `json:"format"`
+	ContentType   string      `json:"content_type"`
+	Content       string      `json:"content"`
+	Meta          readRawMeta `json:"meta"`
+}
+
+type readRawMeta struct {
+	LinesReturned       int    `json:"lines_returned"`
+	Truncated           bool   `json:"truncated"`
+	SkippedCorruptLines int    `json:"skipped_corrupt_lines"`
+	Hint                string `json:"hint,omitempty"`
+	RangeWarning        string `json:"range_warning,omitempty"`
+}
+
+// readRaw returns the verbatim JSONL lines for the range (header + interleaved
+// api_call lines), bounded only by the 200k hard cap (head-only, valid NDJSON). A
+// malformed range falls back to the default and records range_warning; expand_turn
+// does not apply to raw output.
+func readRaw(path, ref, rangeArg string) (any, error) {
+	_, entries, _, err := readTranscript(path)
+	if err != nil {
+		return nil, err
+	}
+
+	effectiveRange := rangeArg
+	var rangeWarning string
+	if _, _, err := parseRangeErr(rangeArg, len(entries)); err != nil {
+		rangeWarning = fmt.Sprintf("invalid range %q; rendered the default instead. Accepted: %s", rangeArg, rangeAcceptedGrammar)
+		effectiveRange = ""
+	}
+
+	start, end := parseRange(effectiveRange, len(entries))
+	content, lines, skipped, truncated, err := rawLinesForRange(path, start, end)
+	if err != nil {
+		return nil, err
+	}
+
+	return readRawEnvelope{
+		TranscriptRef: ref,
+		Format:        formatJSONL,
+		ContentType:   "application/x-ndjson",
+		Content:       content,
+		Meta: readRawMeta{
+			LinesReturned:       lines,
+			Truncated:           truncated,
+			SkippedCorruptLines: skipped,
+			Hint:                "raw NDJSON; for comprehension, re-read with format=markdown.",
+			RangeWarning:        rangeWarning,
+		},
 	}, nil
 }
 

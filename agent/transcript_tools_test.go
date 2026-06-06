@@ -765,6 +765,47 @@ func TestRead_MetaTrimmed(t *testing.T) {
 	}
 }
 
+// TestRead_JSONL verifies the jsonl debug hatch: raw NDJSON content, the NDJSON
+// content type, and a meta hint that steers back to markdown for comprehension.
+func TestRead_JSONL(t *testing.T) {
+	dir := newBucket(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	const sessionID = "JSONL001"
+	writeMultiTurnSession(t, dir, findMetaSpec{id: sessionID, name: "jsonl session", updated: now}, 5)
+
+	deps := &toolDeps{stateDir: dir, sessionID: "OTHER000"}
+	b := marshalRead(t, deps, map[string]any{
+		"transcript_ref": "local:" + sessionID,
+		"format":         "jsonl",
+	})
+	env := decodeReadEnvelope(t, b)
+
+	if env["format"] != "jsonl" {
+		t.Errorf("format = %v, want jsonl", env["format"])
+	}
+	if env["content_type"] != "application/x-ndjson" {
+		t.Errorf("content_type = %v, want application/x-ndjson", env["content_type"])
+	}
+	content, _ := env["content"].(string)
+	if !strings.HasPrefix(strings.TrimSpace(content), "{") {
+		t.Errorf("jsonl content should be raw NDJSON starting with a JSON object, got: %q", firstLineOf(content))
+	}
+	meta := readMetaMap(t, env)
+	if hint, _ := meta["hint"].(string); !strings.Contains(hint, "markdown") {
+		t.Errorf("jsonl meta.hint should steer to markdown, got %q", hint)
+	}
+	if lr, _ := meta["lines_returned"].(float64); lr < 1 {
+		t.Errorf("lines_returned should be >= 1, got %v", lr)
+	}
+}
+
+func firstLineOf(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
+}
+
 // min returns the smaller of a and b.
 func min(a, b int) int {
 	if a < b {
