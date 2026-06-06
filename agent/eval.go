@@ -19,7 +19,6 @@ type evalMetrics struct {
 	TotalTokens       int      `json:"total_tokens"`
 	CacheReadTokens   int      `json:"cache_read_tokens"`
 	CacheWriteTokens  int      `json:"cache_write_tokens"`
-	RecallCalls       int      `json:"recall_calls"`
 	ForkSummaryCalls  int      `json:"fork_summary_calls"`
 	CompactionEvents  int      `json:"compaction_events"`
 	CompactionLayers  []string `json:"compaction_layers"`
@@ -81,11 +80,6 @@ func (c *evalCollector) ProcessEvent(ev events.SessionEvent) {
 		c.metrics.CompactionEvents++
 		if d, ok := ev.Data.(events.ContextCompactionData); ok && d.Layer != "" {
 			c.metrics.CompactionLayers = append(c.metrics.CompactionLayers, d.Layer)
-		}
-
-	case events.EventToolCallStart:
-		if d, ok := ev.Data.(events.ToolCallStartData); ok && d.ToolName == "recall" {
-			c.metrics.RecallCalls++
 		}
 
 	case events.EventForkSummary:

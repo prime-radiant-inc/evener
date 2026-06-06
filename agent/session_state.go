@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/events"
-	"primeradiant.com/serf/agent/internal/contextmgr"
 	"primeradiant.com/serf/agent/schema"
 )
 
@@ -28,25 +27,6 @@ func (s *Session) State() SessionState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.state
-}
-
-// snapshot captures the current session state as a contextmgr.Snapshot.
-func (s *Session) snapshot() contextmgr.Snapshot {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := time.Now().UTC()
-	return contextmgr.Snapshot{
-		ID:              s.id,
-		ProfileID:       s.profile.ID(),
-		Model:           s.profile.Model(),
-		Config:          s.cfg.toSnapshot(),
-		EnvInfo:         s.envInfo,
-		History:         append([]schema.Turn{}, s.history...),
-		CreatedAt:       now,
-		UpdatedAt:       now,
-		TurnCount:       s.modelResponses,
-		LastInputTokens: s.contextMgr.LastInputTokens(),
-	}
 }
 
 // Meta returns the current session metadata without the conversation history.

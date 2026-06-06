@@ -48,13 +48,13 @@ func (s *OODAStrategy) ManageContext(ctx context.Context, history *[]schema.Turn
 	logText := s.log.String()
 
 	// Don't inject if the log is too large (> ~20k tokens ≈ 80k chars).
-	// In that case, the agent can use the recall tool.
+	// In that case, the agent can use read_session_transcript for details.
 	const maxLogChars = 80_000
 	if len(logText) > maxLogChars {
-		logText = logText[:maxLogChars] + "\n... [session log truncated, use recall tool for details]"
+		logText = logText[:maxLogChars] + "\n... [session log truncated; the full detail is in this session's transcript — use read_session_transcript]"
 	}
 
-	orient := fmt.Sprintf("[SESSION ORIENTATION]\nHere is a log of your session actions so far. Use the recall tool if you need details about any entry.\n\n%s\n[END ORIENTATION]", logText)
+	orient := fmt.Sprintf("[SESSION ORIENTATION]\nHere is a log of your session actions so far. Use read_session_transcript or find_session_transcripts if you need details about any entry.\n\n%s\n[END ORIENTATION]", logText)
 
 	// Remove any previous orient turns so they don't accumulate
 	// across repeated ManageContext calls.

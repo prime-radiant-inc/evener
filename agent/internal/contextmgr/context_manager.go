@@ -24,7 +24,7 @@ import (
 // The session populates this before each ManageContext call so that checkpoint
 // and summarize have access to data outside the turn history.
 type CompactionMeta struct {
-	TranscriptPath  string   // path to the full session transcript JSONL
+	SessionID       string   // session id; non-empty only when the session is persistent (has a stateDir)
 	ActivatedSkills []string // skill names activated during this session
 }
 
@@ -824,9 +824,9 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	// budget with user messages and agent responses.
 	var fixed strings.Builder
 
-	// Transcript pointer — tells the model how to access full history.
-	if meta != nil && meta.TranscriptPath != "" {
-		fixed.WriteString(fmt.Sprintf("Full transcript: %s (use read_file to review earlier context if needed)\n", meta.TranscriptPath))
+	// Transcript pointer — tells the model how to access full history via transcript tools.
+	if meta != nil && meta.SessionID != "" {
+		fixed.WriteString(fmt.Sprintf("Earlier history was compacted. This session's id is %s. Use read_session_transcript to recover earlier detail, or find_session_transcripts to search it.\n", meta.SessionID))
 	}
 
 	// Files modified.

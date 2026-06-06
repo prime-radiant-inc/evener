@@ -187,3 +187,27 @@ func TestSession_ContextStrategy_DefaultIsCompact(t *testing.T) {
 		t.Errorf("expected default strategy name %q, got %q", "compact", sess.strategy.Name())
 	}
 }
+
+func TestSession_ContextStrategy_RecallAliasesCompact(t *testing.T) {
+	// "recall" is a legacy alias for "compact"; verify it selects the compact
+	// strategy so that existing configs naming "recall" keep working after the
+	// recall tool was removed.
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		ContextStrategy: "recall",
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	if sess.strategy == nil {
+		t.Fatal("expected strategy to be set")
+	}
+	if sess.strategy.Name() != "compact" {
+		t.Errorf("recall alias: expected strategy name %q, got %q", "compact", sess.strategy.Name())
+	}
+}

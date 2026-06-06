@@ -25,26 +25,10 @@ func TestSessionLogStrategy_Name(t *testing.T) {
 	}
 }
 
-func TestSessionLogStrategy_Tools_RegistersRecall(t *testing.T) {
+func TestSessionLogStrategy_Tools_Empty(t *testing.T) {
 	s := &SessionLogStrategy{}
-	tools := s.Tools()
-	if len(tools) != 1 {
-		t.Fatalf("expected 1 tool, got %d", len(tools))
-	}
-	if tools[0].Definition.Name != "recall" {
-		t.Errorf("expected tool name %q, got %q", "recall", tools[0].Definition.Name)
-	}
-	if tools[0].Definition.Description == "" {
-		t.Error("expected non-empty description")
-	}
-	// Check that the tool has a "question" parameter.
-	params := tools[0].Definition.Parameters
-	props, ok := params["properties"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected properties map, got %T", params["properties"])
-	}
-	if _, ok := props["question"]; !ok {
-		t.Error("expected 'question' parameter in tool definition")
+	if tools := s.Tools(); len(tools) != 0 {
+		t.Fatalf("expected no tools, got %d", len(tools))
 	}
 }
 
@@ -434,6 +418,37 @@ func TestSessionLogStrategy_SessionLogCheckpoint_TooFewTurns(t *testing.T) {
 	result := sls.sessionLogCheckpoint(history, 2)
 	if len(result) != 2 {
 		t.Fatalf("expected original 2 turns when too few for checkpoint, got %d", len(result))
+	}
+}
+
+func TestSessionLogStrategy_SessionLogCheckpoint_ContainsTranscriptRecoveryPointer(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test.log.jsonl")
+
+	const sessionID = "sess-abc-123"
+	sls := &SessionLogStrategy{
+		log:     mustNewSessionLog(t, logPath),
+		session: &fakeStrategyHost{id: sessionID},
+	}
+
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("do something")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("working")},
+		{Kind: schema.TurnUserInput, Message: llm.User("recent")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
+	}
+
+	result := sls.sessionLogCheckpoint(history, 2)
+
+	if len(result) < 1 {
+		t.Fatal("expected at least 1 turn in result")
+	}
+	checkpointText := result[0].Message.Text()
+	if !strings.Contains(checkpointText, sessionID) {
+		t.Errorf("expected session id %q in checkpoint, got: %s", sessionID, checkpointText)
+	}
+	if !strings.Contains(checkpointText, "read_session_transcript") {
+		t.Errorf("expected read_session_transcript in checkpoint, got: %s", checkpointText)
 	}
 }
 

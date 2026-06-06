@@ -552,6 +552,39 @@ func TestSubagentTemplate_StructuralRegression(t *testing.T) {
 	}
 }
 
+// TestTranscriptsSection_TeachesToolsNotRawRead verifies that the transcripts
+// guidance section instructs agents to use the transcript tools and does not
+// tell them to read raw transcript files with read_file.
+func TestTranscriptsSection_TeachesToolsNotRawRead(t *testing.T) {
+	resolver := &sectionResolver{
+		provider: "openai",
+		agent:    "coordinator",
+		agentFS:  embeddedAgents,
+		sources:  []sectionSource{embedSource{fs: embeddedPrompts, prefix: "prompts/sections/"}},
+	}
+	data := promptData{Provider: "openai", Agent: "coordinator"}
+	section := resolver.Section("transcripts", data)
+
+	// Must name both tools.
+	for _, want := range []string{"read_session_transcript", "find_session_transcripts"} {
+		if !strings.Contains(section, want) {
+			t.Errorf("transcripts section missing tool name %q", want)
+		}
+	}
+
+	// Must contain the explicit prohibition against raw file access.
+	if !strings.Contains(section, "Do not access raw transcript files directly") {
+		t.Errorf("transcripts section missing prohibition guidance; got:\n%s", section)
+	}
+
+	// Must not instruct raw file reading via read_file.
+	for _, bad := range []string{"read_file", "transcript path"} {
+		if strings.Contains(section, bad) {
+			t.Errorf("transcripts section should not mention %q (instructs raw file reading)", bad)
+		}
+	}
+}
+
 func TestReviewerTemplate_UsesCommunicateDecisionContract(t *testing.T) {
 	resolver := &sectionResolver{
 		provider: "openai",

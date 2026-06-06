@@ -143,31 +143,6 @@ func TestEvalCollector_CountsCompactionEvents(t *testing.T) {
 	}
 }
 
-func TestEvalCollector_CountsRecallCalls(t *testing.T) {
-	c := newEvalCollector("recall", "gpt-4", "task")
-
-	// recall via ToolCallStart
-	c.ProcessEvent(events.SessionEvent{
-		Kind: events.EventToolCallStart,
-		Data: events.ToolCallStartData{ToolName: "recall", CallID: "c1"},
-	})
-	// non-recall tool should not increment
-	c.ProcessEvent(events.SessionEvent{
-		Kind: events.EventToolCallStart,
-		Data: events.ToolCallStartData{ToolName: "shell", CallID: "c2"},
-	})
-	// another recall
-	c.ProcessEvent(events.SessionEvent{
-		Kind: events.EventToolCallStart,
-		Data: events.ToolCallStartData{ToolName: "recall", CallID: "c3"},
-	})
-
-	m := c.Metrics()
-	if m.RecallCalls != 2 {
-		t.Errorf("expected 2 recall calls, got %d", m.RecallCalls)
-	}
-}
-
 func TestEvalCollector_IgnoresUnrelatedEvents(t *testing.T) {
 	c := newEvalCollector("compact", "gpt-4", "task")
 
@@ -182,9 +157,6 @@ func TestEvalCollector_IgnoresUnrelatedEvents(t *testing.T) {
 	}
 	if m.CompactionEvents != 0 {
 		t.Errorf("expected 0 compaction events, got %d", m.CompactionEvents)
-	}
-	if m.RecallCalls != 0 {
-		t.Errorf("expected 0 recall calls, got %d", m.RecallCalls)
 	}
 }
 

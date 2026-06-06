@@ -239,12 +239,50 @@ func TestBuildCompactionMeta_ExcludesTaskState(t *testing.T) {
 	}
 
 	meta := sess.buildCompactionMeta()
-	if strings.Contains(meta.TranscriptPath, "Frobnicate") {
-		t.Fatalf("task description leaked into TranscriptPath: %q", meta.TranscriptPath)
+	if strings.Contains(meta.SessionID, "Frobnicate") {
+		t.Fatalf("task description leaked into SessionID: %q", meta.SessionID)
 	}
 	for _, s := range meta.ActivatedSkills {
 		if strings.Contains(s, "Frobnicate") {
 			t.Fatalf("task description leaked into ActivatedSkills: %v", meta.ActivatedSkills)
 		}
 	}
+}
+
+// TestBuildCompactionMeta_SessionID verifies that buildCompactionMeta sets
+// SessionID when the session has a stateDir, and leaves it empty otherwise.
+func TestBuildCompactionMeta_SessionID(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	t.Run("with stateDir", func(t *testing.T) {
+		dir := t.TempDir()
+		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+		if err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		defer sess.Close()
+
+		meta := sess.buildCompactionMeta()
+		if meta.SessionID == "" {
+			t.Fatal("expected SessionID to be set when stateDir is configured")
+		}
+		if meta.SessionID != sess.id {
+			t.Fatalf("expected SessionID %q, got %q", sess.id, meta.SessionID)
+		}
+	})
+
+	t.Run("without stateDir", func(t *testing.T) {
+		dir := t.TempDir()
+		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+		if err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		defer sess.Close()
+
+		meta := sess.buildCompactionMeta()
+		if meta.SessionID != "" {
+			t.Fatalf("expected SessionID to be empty without stateDir, got %q", meta.SessionID)
+		}
+	})
 }

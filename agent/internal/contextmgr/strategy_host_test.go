@@ -21,7 +21,6 @@ type fakeStrategyHost struct {
 	stateDir string
 	id       string
 	profile  *provider.Profile
-	client   *llm.Client
 	emitted  []events.EventKind
 	sideFx   int // number of WithResponseSideEffects invocations
 }
@@ -39,8 +38,6 @@ func (h *fakeStrategyHost) WithResponseSideEffects(_ context.Context, fn func())
 func (h *fakeStrategyHost) StateDir() string           { return h.stateDir }
 func (h *fakeStrategyHost) ID() string                 { return h.id }
 func (h *fakeStrategyHost) Profile() *provider.Profile { return h.profile }
-func (h *fakeStrategyHost) Snapshot() Snapshot         { return Snapshot{ID: h.id} }
-func (h *fakeStrategyHost) Client() *llm.Client        { return h.client }
 
 func TestStrategyHost_FakeSatisfiesInterface(t *testing.T) {
 	var _ Host = (*fakeStrategyHost)(nil)
@@ -73,7 +70,6 @@ func TestSessionLogStrategy_OperatesWithFakeHost(t *testing.T) {
 		stateDir: dir,
 		id:       "FAKE-1",
 		profile:  profile,
-		client:   client,
 	}
 
 	// Constructor accepts the fake host (not a real Session) and uses

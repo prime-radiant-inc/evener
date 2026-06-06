@@ -87,7 +87,8 @@ type SessionConfig struct {
 	// autonomously. Appends guidance to the system prompt adapting skill behavior.
 	NonInteractive bool `json:"non_interactive,omitempty"`
 
-	// ContextStrategy selects the context management strategy: compact|recall|session-log|ooda.
+	// ContextStrategy selects the context management strategy: compact|session-log|ooda.
+	// The value "recall" is accepted as a compatibility alias for compact.
 	ContextStrategy string `json:"context_strategy,omitempty"`
 
 	// ShareTasksWithChildren, when true, passes the parent's task store to

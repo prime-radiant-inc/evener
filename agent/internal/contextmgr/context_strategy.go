@@ -22,10 +22,6 @@ type Host interface {
 	StateDir() string
 	ID() string
 	Profile() *provider.Profile
-	// Snapshot and Client are used by the recall tool to persist a transcript
-	// and run the search sub-agent.
-	Snapshot() Snapshot
-	Client() *llm.Client
 }
 
 // Strategy defines how a session manages context pressure.

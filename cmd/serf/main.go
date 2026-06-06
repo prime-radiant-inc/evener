@@ -170,7 +170,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	flags.resultToolName = fs.String("result-tool-name", "", "override the result tool `name` (default: communicate)")
 	flags.reasoningEffort = fs.String("reasoning-effort", "", "reasoning effort `level`: low|medium|high|xhigh|none")
 	flags.exportATIF = fs.String("export-atif", "", "export ATIF v1.6 trajectory to this `path` on session close")
-	flags.contextStrategy = fs.String("context-strategy", "", "context management `strategy`: compact|recall|session-log|ooda (default: compact)")
+	flags.contextStrategy = fs.String("context-strategy", "", "context management `strategy`: compact|session-log|ooda (default: compact)")
 	flags.outputSchema = fs.String("output-schema", "", "inline JSON Schema `document` applied to the communicate tool's output field (replaces the default schema)")
 	flags.verbose = fs.Bool("verbose", false, "emit NDJSON events to stderr")
 	flags.noProjectPrompts = fs.Bool("no-project-prompts", false, "suppress .serf/prompts/ loading (match container behavior)")

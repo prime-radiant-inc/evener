@@ -15,8 +15,8 @@ import (
 
 // SessionLogStrategy combines compact layers 1+2 (observation masking and
 // thinking clearing) with a session-log-based checkpoint (replacing the
-// deterministic layer 3), LLM summarization fallback (layer 4), a recall
-// tool, and forked summarization in AfterAction.
+// deterministic layer 3), LLM summarization fallback (layer 4), and forked
+// summarization in AfterAction.
 type SessionLogStrategy struct {
 	cm      *Manager
 	session Host
@@ -42,15 +42,8 @@ func NewSessionLogStrategy(cm *Manager, host Host) (*SessionLogStrategy, error) 
 // Name returns the strategy's identifier, "session-log".
 func (s *SessionLogStrategy) Name() string { return "session-log" }
 
-// Tools returns the tools provided by this strategy, namely the recall tool.
-func (s *SessionLogStrategy) Tools() []tool.RegisteredTool {
-	return []tool.RegisteredTool{sessionLogRecallToolDef(s)}
-}
-
-// sessionLogRecallToolDef builds the recall tool.RegisteredTool for this strategy.
-func sessionLogRecallToolDef(strategy *SessionLogStrategy) tool.RegisteredTool {
-	return buildRecallTool(func() Host { return strategy.session })
-}
+// Tools returns no additional tool definitions for this strategy.
+func (s *SessionLogStrategy) Tools() []tool.RegisteredTool { return nil }
 
 // ManageContext applies compaction layers selectively:
 //   - Layer 1: observation masking
@@ -191,7 +184,11 @@ func (s *SessionLogStrategy) sessionLogCheckpoint(history []schema.Turn, preserv
 
 	var b strings.Builder
 	b.WriteString("[CONTEXT CHECKPOINT - SESSION LOG]\n")
-	b.WriteString(fmt.Sprintf("Original prompt: %s\n\n", originalPrompt))
+	b.WriteString(fmt.Sprintf("Original prompt: %s\n", originalPrompt))
+	if s.session != nil {
+		b.WriteString(fmt.Sprintf("This session's id is %s. Use read_session_transcript to recover earlier detail, or find_session_transcripts to search it.\n", s.session.ID()))
+	}
+	b.WriteString("\n")
 
 	b.WriteString("Session log:\n")
 	logStr := s.log.String()

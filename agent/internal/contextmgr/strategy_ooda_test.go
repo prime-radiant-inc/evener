@@ -34,12 +34,8 @@ func TestOODAStrategy_Tools_InheritsFromSessionLogStrategy(t *testing.T) {
 		SessionLogStrategy: sls,
 	}
 
-	tools := ooda.Tools()
-	if len(tools) != 1 {
-		t.Fatalf("expected 1 tool, got %d", len(tools))
-	}
-	if tools[0].Definition.Name != "recall" {
-		t.Errorf("expected tool name %q, got %q", "recall", tools[0].Definition.Name)
+	if tools := ooda.Tools(); len(tools) != 0 {
+		t.Fatalf("expected no tools, got %d", len(tools))
 	}
 }
 
@@ -156,6 +152,57 @@ func TestOODAStrategy_ManageContext_InjectsOrientMessageWhenLogHasEntries(t *tes
 	}
 }
 
+func TestOODAStrategy_ManageContext_OrientTextUsesTranscriptTools(t *testing.T) {
+	client := llm.NewClient()
+	profile := testOpenAIProfileWithContextWindow(1000)
+	cm := NewManager(profile, client)
+
+	cm.ObservationMaskThreshold = 0.99
+	cm.ThinkingClearThreshold = 0.99
+	cm.CheckpointThreshold = 0.99
+	cm.SummarizeThreshold = 0.99
+	cm.PreserveRecentTurns = 2
+
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test.log.jsonl")
+	sessionLog := mustNewSessionLog(t, logPath)
+
+	_ = sessionLog.Append(sessionlog.SessionLogEntry{
+		Turn:    1,
+		Action:  "shell",
+		Summary: "Ran go test",
+		Outcome: "success",
+	})
+
+	ooda := &OODAStrategy{
+		SessionLogStrategy: &SessionLogStrategy{
+			cm:  cm,
+			log: sessionLog,
+		},
+	}
+
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("hello")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("world")},
+	}
+
+	err := ooda.ManageContext(context.Background(), &history, 0, func(events.EventKind, events.EventData) {})
+	if err != nil {
+		t.Fatalf("ManageContext returned error: %v", err)
+	}
+
+	if len(history) < 3 {
+		t.Fatalf("expected orient turn to be appended, got %d turns", len(history))
+	}
+	orientText := history[len(history)-1].Message.Text()
+	if !strings.Contains(orientText, "read_session_transcript") {
+		t.Errorf("expected read_session_transcript in orient text, got: %s", orientText)
+	}
+	if strings.Contains(orientText, "recall") {
+		t.Errorf("expected no 'recall' reference in orient text, got: %s", orientText)
+	}
+}
+
 func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 	client := llm.NewClient()
 	profile := testOpenAIProfileWithContextWindow(1000)
@@ -204,8 +251,14 @@ func TestOODAStrategy_ManageContext_TruncatesVeryLargeLog(t *testing.T) {
 	}
 
 	orientText := history[len(history)-1].Message.Text()
-	if !strings.Contains(orientText, "[session log truncated, use recall tool for details]") {
+	if !strings.Contains(orientText, "session log truncated") {
 		t.Errorf("expected truncation notice in orient message, got: %s", orientText[:min(500, len(orientText))])
+	}
+	if !strings.Contains(orientText, "read_session_transcript") {
+		t.Errorf("expected read_session_transcript in truncation notice, got: %s", orientText[:min(500, len(orientText))])
+	}
+	if strings.Contains(orientText, "recall") {
+		t.Errorf("expected no 'recall' reference in truncation notice, got: %s", orientText[:min(500, len(orientText))])
 	}
 }
 

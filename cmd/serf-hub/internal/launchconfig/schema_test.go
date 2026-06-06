@@ -55,6 +55,31 @@ func TestLaunchOptionSchema_ExclusionsAreExplicit(t *testing.T) {
 	}
 }
 
+func TestContextChoices_NoRecall(t *testing.T) {
+	choices := contextChoices()
+	wantValues := map[string]bool{"": true, "compact": true, "session-log": true, "ooda": true}
+	for _, c := range choices {
+		if c.Value == "recall" {
+			t.Errorf("contextChoices() must not contain recall (it is a compat alias, not an advertised strategy)")
+		}
+		if !wantValues[c.Value] {
+			t.Errorf("contextChoices() has unexpected value %q", c.Value)
+		}
+	}
+	for want := range wantValues {
+		found := false
+		for _, c := range choices {
+			if c.Value == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("contextChoices() missing expected value %q", want)
+		}
+	}
+}
+
 func indexOption(opts []LaunchOption, field string) int {
 	for i, opt := range opts {
 		if opt.Field == field {

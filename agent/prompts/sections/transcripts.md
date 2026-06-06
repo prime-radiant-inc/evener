@@ -1,28 +1,21 @@
-## Transcript format
+## Session transcripts
 
-Serf agents and subagents write session transcripts as JSONL files.
-When a subagent finishes, its result includes the `transcript` path.
-Each line is a JSON object.
+Two read-only tools inspect prior session transcripts (your own and other sessions on
+this machine). Do not access raw transcript files directly — always use these tools.
 
-Line 1 is the header:
+- **`find_session_transcripts`** — find sessions. No arguments lists recent sessions
+  newest-first; `query` searches their content; `children_of:"<transcript_ref>"` lists
+  the sessions a ref spawned (its subagents/forks); `scope:"all_projects"` widens beyond
+  this project. It returns `transcript_ref`s and never reads a session.
+- **`read_session_transcript`** — view one session by `transcript_ref` (omit for the
+  current session). `format:"outline"` is a one-line-per-turn map; `format:"markdown"`
+  (default) is the condensed conversation; `format:"jsonl"` is raw bytes for
+  replay/debugging only. `range` (e.g. `"18-31"`, `"last:40"`, `"start:40"`) selects a
+  turn window; `expand_turn:<N>` renders one turn's tool results in full.
 
-```json
-{"kind":"header", "session_id":"01KNZ2TCT3...", "task":"Verify the implementer's work against the full task spec..."}
-```
+The Turn numbers shown in the outline and in markdown are exactly what `range` and
+`expand_turn` accept. To audit a subagent, pass its `transcript_ref` to
+`read_session_transcript`; to follow what it did from the start, read its outline first.
 
-Remaining lines are entries. An agent tool call:
-
-```json
-{"kind":"entry", "turn":{"kind":"ASSISTANT", "message":{"content":[{"kind":"tool_call", "tool_call":{"name":"list_dir", "arguments":{"path":"/app","pattern":"*"}}}]}}}
-```
-
-The tool's response:
-
-```json
-{"kind":"entry", "turn":{"kind":"TOOL_RESULTS", "message":{"content":[{"kind":"tool_result", "tool_result":{"name":"glob", "content":"/app/apply_macros.vim\n/app/input.csv\n/app/expected.csv"}}]}}}
-```
-
-Other turn kinds: `USER_INPUT`, `STEERING` (task-list messages).
-
-To understand what an agent did: read its `ASSISTANT` turns' tool calls.
-To understand what it observed: read the `TOOL_RESULTS` content.
+After compaction the checkpoint records this session's id; read it back with
+`read_session_transcript` to recover turns compaction removed. There is no `recall` tool.

@@ -677,6 +677,17 @@ func optionalIntArg(args map[string]any, key string) *int {
 	return nil
 }
 
+// optionalPositiveIntArg is like optionalIntArg but returns nil when the value
+// is absent OR <= 0. Use this for parameters where zero or negative means "no
+// selection" rather than "select item 0".
+func optionalPositiveIntArg(args map[string]any, key string) *int {
+	n := optionalIntArg(args, key)
+	if n == nil || *n <= 0 {
+		return nil
+	}
+	return n
+}
+
 // Tasks returns a snapshot of the session's task list.
 func (s *Session) Tasks() []task.Task {
 	return s.getOrCreateTaskStore().View()

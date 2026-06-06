@@ -34,11 +34,11 @@ const (
 
 // subagentResult is the structured output from a completed sub-agent.
 type subagentResult struct {
-	Status     SubagentStatus `json:"status"`
-	Output     string         `json:"output"`
-	Success    bool           `json:"success"`
-	TurnsUsed  int            `json:"turns_used"`
-	Transcript string         `json:"transcript,omitempty"`
+	Status        SubagentStatus `json:"status"`
+	Output        string         `json:"output"`
+	Success       bool           `json:"success"`
+	TurnsUsed     int            `json:"turns_used"`
+	TranscriptRef string         `json:"transcript_ref,omitempty"`
 }
 
 // defaultSubagentInstructions is the role-specific prompt for default subagents
@@ -577,10 +577,10 @@ func (a *subagent) resultSnapshotLocked() subagentResult {
 		output = a.err.Error()
 	}
 	return subagentResult{
-		Status:     a.status,
-		Output:     output,
-		Success:    a.err == nil,
-		TurnsUsed:  a.turnsUsed,
-		Transcript: a.sess.TranscriptPath(),
+		Status:        a.status,
+		Output:        output,
+		Success:       a.err == nil,
+		TurnsUsed:     a.turnsUsed,
+		TranscriptRef: encodeRef("", a.sess.ID()),
 	}
 }

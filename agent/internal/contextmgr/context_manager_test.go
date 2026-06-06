@@ -519,13 +519,13 @@ func TestCheckpoint_CreatesValidMessage(t *testing.T) {
 // TestCheckpoint_RendersOnlyFromMetaAndHistory proves checkpoint draws its
 // content solely from the CompactionMeta it is handed and the turn history. The
 // session deliberately captures task-free compaction meta at turn start
-// (buildCompactionMeta records only the transcript path — see the agent-side
+// (buildCompactionMeta records only the session id — see the agent-side
 // TestBuildCompactionMeta_ExcludesTaskState), so state that lives outside meta
 // and history — e.g. a task description sitting in the session's task store —
 // must never surface in the checkpoint.
 func TestCheckpoint_RendersOnlyFromMetaAndHistory(t *testing.T) {
-	// Meta as the session freezes it at turn start: a transcript path, no tasks.
-	meta := CompactionMeta{TranscriptPath: "/state/sessions/X.transcript.jsonl"}
+	// Meta as the session freezes it at turn start: a session id, no tasks.
+	meta := CompactionMeta{SessionID: "XSESS"}
 
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("do the work")},
@@ -2050,6 +2050,51 @@ Files modified: auth.go
 	}
 	if !strings.Contains(text, "root cause in key_manager.go") {
 		t.Fatalf("new working note should be included:\n%s", text)
+	}
+}
+
+// --- Transcript-tool pointer in checkpoint ---
+
+func TestCheckpoint_TranscriptPointer_WithSessionID(t *testing.T) {
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("do the work")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
+	}
+	meta := &CompactionMeta{SessionID: "01ABC"}
+	result := checkpoint(history, 1, meta, "communicate")
+	text := result[0].Message.Text()
+
+	if !strings.Contains(text, "01ABC") {
+		t.Errorf("checkpoint missing session id: %q", text)
+	}
+	if !strings.Contains(text, "read_session_transcript") {
+		t.Errorf("checkpoint missing read_session_transcript tool reference: %q", text)
+	}
+	if !strings.Contains(text, "find_session_transcripts") {
+		t.Errorf("checkpoint missing find_session_transcripts tool reference: %q", text)
+	}
+	if strings.Contains(text, "read_file") {
+		t.Errorf("checkpoint should not reference read_file: %q", text)
+	}
+}
+
+func TestCheckpoint_TranscriptPointer_EmptySessionID(t *testing.T) {
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("do the work")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
+	}
+	meta := &CompactionMeta{SessionID: ""}
+	result := checkpoint(history, 1, meta, "communicate")
+	text := result[0].Message.Text()
+
+	if strings.Contains(text, "read_session_transcript") {
+		t.Errorf("non-persistent checkpoint should not reference read_session_transcript: %q", text)
+	}
+	if strings.Contains(text, "read_file") {
+		t.Errorf("non-persistent checkpoint should not reference read_file: %q", text)
+	}
+	if strings.Contains(text, "Full transcript:") {
+		t.Errorf("non-persistent checkpoint should not have transcript pointer line: %q", text)
 	}
 }
 

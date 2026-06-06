@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"primeradiant.com/serf/agent/events"
@@ -97,9 +96,9 @@ func (s *Session) flushSteeringTurnRecords(records []steeringTurnRecord) {
 func (s *Session) buildCompactionMeta() contextmgr.CompactionMeta {
 	meta := contextmgr.CompactionMeta{}
 
-	// Transcript path.
+	// Session id — only populated for persistent sessions (stateDir set), where transcript tools are available.
 	if s.stateDir != "" {
-		meta.TranscriptPath = filepath.Join(s.stateDir, sessionsSubdir, s.id+".transcript.jsonl")
+		meta.SessionID = s.id
 	}
 
 	return meta
