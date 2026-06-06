@@ -289,54 +289,97 @@ func TestFind_ChildrenOf(t *testing.T) {
 	dir := newBucket(t)
 	now := time.Now().UTC().Truncate(time.Second)
 
-	// Parent: meta only, no transcript (proves parent transcript not required).
+	// Parent: meta only, no transcript — proves the parent's transcript is never
+	// opened to resolve its children.
 	saveFindMeta(t, dir, findMetaSpec{
 		id:      "PARENT01",
 		name:    "the parent",
-		updated: now.Add(-3 * time.Hour),
+		updated: now.Add(-4 * time.Hour),
 	})
 
-	// Child 1: meta only, no transcript.
-	saveFindMeta(t, dir, findMetaSpec{
+	// Two real children, each with a transcript so each is a read-able ref.
+	writeFindSession(t, dir, findMetaSpec{
 		id:              "CHILD001",
 		name:            "first child",
 		parentSessionID: "PARENT01",
-		updated:         now.Add(-2 * time.Hour),
-	})
-
-	// Child 2: meta only, no transcript.
-	saveFindMeta(t, dir, findMetaSpec{
+		updated:         now.Add(-3 * time.Hour),
+	}, "first child work")
+	writeFindSession(t, dir, findMetaSpec{
 		id:              "CHILD002",
 		name:            "second child",
+		parentSessionID: "PARENT01",
+		updated:         now.Add(-2 * time.Hour),
+	}, "second child work")
+
+	// A child by metadata whose transcript was never flushed: not read-able, so
+	// children_of must exclude it (the readable-only invariant applies to every mode).
+	saveFindMeta(t, dir, findMetaSpec{
+		id:              "CHILD003",
+		name:            "unflushed child",
 		parentSessionID: "PARENT01",
 		updated:         now.Add(-1 * time.Hour),
 	})
 
-	// Unrelated: different parent.
-	saveFindMeta(t, dir, findMetaSpec{
+	// Unrelated session (no parent).
+	writeFindSession(t, dir, findMetaSpec{
 		id:      "UNRELAT0",
 		name:    "unrelated",
 		updated: now,
-	})
+	}, "unrelated work")
 
 	deps := &toolDeps{stateDir: dir, sessionID: "LIVE0000"}
 	b := marshalFind(t, deps, map[string]any{"children_of": "local:PARENT01"})
 	env := decodeEnvelope(t, b)
 
 	matches := matchesFromEnvelope(t, env)
-	if len(matches) != 2 {
-		t.Fatalf("expected 2 children, got %d: %v", len(matches), matches)
-	}
-
 	ids := map[string]bool{}
 	for _, m := range matches {
 		ref, _ := m["transcript_ref"].(string)
 		ids[ref] = true
 	}
-	if !ids["local:CHILD001"] {
-		t.Errorf("CHILD001 not in matches: %v", ids)
+	if !ids["local:CHILD001"] || !ids["local:CHILD002"] {
+		t.Errorf("expected both readable children, got %v", ids)
 	}
-	if !ids["local:CHILD002"] {
-		t.Errorf("CHILD002 not in matches: %v", ids)
+	if ids["local:CHILD003"] {
+		t.Errorf("CHILD003 has no transcript and must be excluded (readable-only): %v", ids)
+	}
+	if ids["local:UNRELAT0"] {
+		t.Errorf("unrelated session must not appear: %v", ids)
+	}
+	if len(matches) != 2 {
+		t.Fatalf("expected exactly 2 children, got %d: %v", len(matches), ids)
+	}
+}
+
+// TestFind_ChildrenOf_ProjBucket verifies children_of for a parent in a sibling
+// project (proj: ref): the parent's bucket is resolved from the ref with no stat, and
+// the child comes back with a proj: ref into that bucket.
+func TestFind_ChildrenOf_ProjBucket(t *testing.T) {
+	stateHome := newStateHome(t)
+	currentBucket := newBucketUnder(t, stateHome)
+	siblingBucket := newBucketUnder(t, stateHome)
+	hash := filepath.Base(siblingBucket)
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// Parent (meta only) + one readable child, both in the SIBLING bucket.
+	saveFindMeta(t, siblingBucket, findMetaSpec{id: "PARENTB0", name: "sibling parent", updated: now.Add(-time.Hour)})
+	writeFindSession(t, siblingBucket, findMetaSpec{
+		id:              "CHILDB01",
+		name:            "sibling child",
+		parentSessionID: "PARENTB0",
+		updated:         now,
+	}, "sibling child work")
+
+	deps := &toolDeps{stateDir: currentBucket, sessionID: "LIVE0000"}
+	b := marshalFind(t, deps, map[string]any{"children_of": "proj:" + hash + ":PARENTB0"})
+	env := decodeEnvelope(t, b)
+
+	matches := matchesFromEnvelope(t, env)
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 sibling-project child, got %d", len(matches))
+	}
+	wantRef := "proj:" + hash + ":CHILDB01"
+	if ref, _ := matches[0]["transcript_ref"].(string); ref != wantRef {
+		t.Errorf("child ref = %q, want %q", ref, wantRef)
 	}
 }

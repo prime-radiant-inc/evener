@@ -267,16 +267,11 @@ func execFindChildren(deps *toolDeps, ref string, limit int) (any, error) {
 
 	sortCandidatesNewestFirst(children, currentID)
 
-	// Children are metadata-only: include them even without a transcript file.
-	// spec: "children_of … metadata-only … if it needs the parent's transcript,
-	// parentBucketAndID is wrong." So we skip the transcriptExists gate here.
-	var records []sessionRecord
-	for _, c := range children {
-		if len(records) >= limit {
-			break
-		}
-		records = append(records, buildSessionRecord(c, nil, currentID))
-	}
+	// Resolving the parent opens no transcript (parentBucketAndID is stat-free), but
+	// every returned child must still be a read-able ref, so children are gated on
+	// the same transcriptExists (os.Stat, not a body open) as the catalog: a spawned
+	// child whose transcript was never flushed is not auditable and is excluded.
+	records := recordsUpTo(children, func(findCandidate) []snippet { return nil }, currentID, limit)
 
 	return findSessionsEnvelope{
 		Matches:      records,
@@ -479,35 +474,6 @@ func turnRoleLabel(kind schema.TurnKind) string {
 	default:
 		return strings.ToLower(string(kind))
 	}
-}
-
-// turnSearchText concatenates the searchable text of a turn as rendered:
-// assistant text, thinking, tool-call input summaries, tool-result bodies, and
-// plain text. Used by within-transcript search.
-func turnSearchText(t schema.Turn) string {
-	var parts []string
-	for i := range t.Message.Content {
-		p := &t.Message.Content[i]
-		switch p.Kind {
-		case llm.ContentText:
-			if p.Text != "" {
-				parts = append(parts, p.Text)
-			}
-		case llm.ContentThinking:
-			if p.Thinking != nil && p.Thinking.Text != "" {
-				parts = append(parts, p.Thinking.Text)
-			}
-		case llm.ContentToolCall:
-			if p.ToolCall != nil {
-				parts = append(parts, p.ToolCall.Name, toolInputSummary(p.ToolCall.Name, p.ToolCall.Arguments))
-			}
-		case llm.ContentToolResult:
-			if p.ToolResult != nil {
-				parts = append(parts, fmt.Sprint(p.ToolResult.Content))
-			}
-		}
-	}
-	return strings.Join(parts, "\n")
 }
 
 // rawEntryText concatenates the FULL, un-summarized searchable text of a turn:
