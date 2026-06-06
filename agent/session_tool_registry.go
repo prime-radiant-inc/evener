@@ -8,6 +8,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/agent/skill"
 	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
@@ -66,6 +67,18 @@ type toolDeps struct {
 	// webSearchEnabled is the resolved decision (BehaviorTag == "google") for
 	// whether the function-tool web_search should be registered.
 	webSearchEnabled bool
+
+	// stateDir and sessionID locate the current session's transcript bucket and
+	// transcript file. They are the inputs the transcript tools pass to
+	// resolveTranscript; an empty stateDir means state persistence is off, in
+	// which case the transcript tools are not advertised.
+	stateDir  string
+	sessionID string
+
+	// currentMeta returns the live SessionMeta of the current session, used as
+	// the render metadata when a transcript read resolves to the current session
+	// (a non-current session's meta is loaded from its meta.json instead).
+	currentMeta func() schema.SessionMeta
 }
 
 // readGuard wraps the read-before-write guardrail. It forwards to the
@@ -154,6 +167,9 @@ func newToolDeps(s *Session) *toolDeps {
 		},
 		reasoningEffortLevels: s.profile.ReasoningEffortLevels(),
 		webSearchEnabled:      s.profile.BehaviorTag() == "google",
+		stateDir:              s.stateDir,
+		sessionID:             s.id,
+		currentMeta:           s.Meta,
 	}
 }
 
@@ -191,5 +207,15 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	registerWebTools(reg, deps)
 	registerCommunicateTool(reg, deps)
 	registerSkillTool(reg, deps)
+	// Transcript tools are advertised only when state persistence is enabled:
+	// without a state dir there is no transcript file to read and no bucket to
+	// resolve refs against.
+	if deps.stateDir != "" {
+		for _, rt := range transcriptTools(deps) {
+			if err := reg.Register(rt); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
