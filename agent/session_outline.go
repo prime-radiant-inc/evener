@@ -279,10 +279,10 @@ func resultSizeNote(calls []*llm.ToolCallData, idx *resultIndex) string {
 	return note
 }
 
-// anyLineWiderThan reports whether any non-empty line of s exceeds max runes.
-func anyLineWiderThan(s string, max int) bool {
+// anyLineWiderThan reports whether any non-empty line of s exceeds limit runes.
+func anyLineWiderThan(s string, limit int) bool {
 	for _, line := range nonEmptyLines(s) {
-		if len([]rune(line)) > max {
+		if len([]rune(line)) > limit {
 			return true
 		}
 	}

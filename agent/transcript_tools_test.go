@@ -806,14 +806,6 @@ func firstLineOf(s string) string {
 	return s
 }
 
-// min returns the smaller of a and b.
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // --- TestRead_Outline* ---
 
 // writeSpawnWaitSession writes a synthetic session that has a "wait" lifecycle
