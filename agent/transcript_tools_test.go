@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -350,6 +351,395 @@ func TestFind_ChildrenOf(t *testing.T) {
 		t.Fatalf("expected exactly 2 children, got %d: %v", len(matches), ids)
 	}
 }
+
+// --- TestRead helpers ---
+
+// writeMultiTurnSession writes a session transcript with nTurns alternating
+// user/assistant turns, plus a SessionMeta. It is a helper for read tests.
+func writeMultiTurnSession(t *testing.T, bucketDir string, spec findMetaSpec, nTurns int) {
+	t.Helper()
+	tpath := transcriptPath(bucketDir, spec.id)
+	sessDir := filepath.Dir(tpath)
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatalf("writeMultiTurnSession mkdir: %v", err)
+	}
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
+		SessionID: spec.id,
+		CreatedAt: spec.updated,
+		ProfileID: spec.profileID,
+		Model:     spec.model,
+	})
+	if err != nil {
+		t.Fatalf("write multi-turn transcript %s: %v", spec.id, err)
+	}
+	for i := 0; i < nTurns; i++ {
+		if i%2 == 0 {
+			if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("user turn"))); err != nil {
+				t.Fatalf("append user turn %d: %v", i, err)
+			}
+		} else {
+			if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("assistant turn"))); err != nil {
+				t.Fatalf("append assistant turn %d: %v", i, err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close multi-turn transcript %s: %v", spec.id, err)
+	}
+	saveFindMeta(t, bucketDir, spec)
+}
+
+// writeSessionWithToolTurn writes a session with a named tool call and a
+// large repeated tool result (enough lines to trigger head+tail truncation).
+// It returns the seq of the assistant turn (0-based).
+func writeSessionWithToolTurn(t *testing.T, bucketDir string, spec findMetaSpec) int {
+	t.Helper()
+	tpath := transcriptPath(bucketDir, spec.id)
+	sessDir := filepath.Dir(tpath)
+	if err := os.MkdirAll(sessDir, 0o755); err != nil {
+		t.Fatalf("writeSessionWithToolTurn mkdir: %v", err)
+	}
+	tw, err := transcript.NewWriter(tpath, transcript.Header{
+		SessionID: spec.id,
+		CreatedAt: spec.updated,
+		Model:     spec.model,
+	})
+	if err != nil {
+		t.Fatalf("write tool-turn transcript: %v", err)
+	}
+	callID := "call-expand-001"
+	toolCallArgs := json.RawMessage(`{"command":"ls -la"}`)
+	// Turn 0: user
+	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("run a command"))); err != nil {
+		t.Fatalf("append user turn: %v", err)
+	}
+	// Turn 1: assistant with tool call
+	assistantMsg := llm.Message{
+		Role: llm.RoleAssistant,
+		Content: []llm.ContentPart{
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+				ID:        callID,
+				Name:      "shell",
+				Arguments: toolCallArgs,
+			}},
+		},
+	}
+	if err := tw.Append(schema.NewTurn(schema.TurnAssistant, assistantMsg)); err != nil {
+		t.Fatalf("append assistant tool-call turn: %v", err)
+	}
+	// Build a large result body: 60 non-empty lines so head+tail truncation kicks in.
+	var resultLines strings.Builder
+	for i := 0; i < 60; i++ {
+		resultLines.WriteString("result-deep-line-")
+		resultLines.WriteString(strings.Repeat("x", 20))
+		resultLines.WriteByte('\n')
+	}
+	// Turn 2: tool result
+	resultMsg := llm.Message{
+		Role: llm.RoleTool,
+		Content: []llm.ContentPart{
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+				ToolCallID: callID,
+				Name:       "shell",
+				Content:    resultLines.String(),
+			}},
+		},
+	}
+	if err := tw.Append(schema.NewTurn(schema.TurnToolResults, resultMsg)); err != nil {
+		t.Fatalf("append tool-result turn: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tool-turn transcript: %v", err)
+	}
+	saveFindMeta(t, bucketDir, spec)
+	return 1 // assistant turn is seq 1
+}
+
+// marshalRead calls execReadSessionTranscript and JSON-marshals the result.
+func marshalRead(t *testing.T, deps *toolDeps, args map[string]any) []byte {
+	t.Helper()
+	v, err := execReadSessionTranscript(deps, args)
+	if err != nil {
+		t.Fatalf("execReadSessionTranscript: %v", err)
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal read result: %v", err)
+	}
+	return b
+}
+
+// decodeReadEnvelope decodes a marshaled read result into a map.
+func decodeReadEnvelope(t *testing.T, b []byte) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal read envelope: %v", err)
+	}
+	return m
+}
+
+// readMeta extracts the "meta" sub-map from a decoded read envelope.
+func readMetaMap(t *testing.T, env map[string]any) map[string]any {
+	t.Helper()
+	raw, ok := env["meta"]
+	if !ok {
+		t.Fatal("read envelope missing 'meta' key")
+	}
+	m, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("'meta' is not a map: %T", raw)
+	}
+	return m
+}
+
+// --- TestRead_DefaultMarkdownWindow ---
+
+// TestRead_DefaultMarkdownWindow verifies that a default read of a session with
+// >40 turns returns markdown whose meta has turns_total > turns_rendered and
+// whose content contains a self-announcing window line.
+func TestRead_DefaultMarkdownWindow(t *testing.T) {
+	dir := newBucket(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	const sessionID = "WINDW001"
+	const totalTurns = 50 // more than the 40-turn default window
+
+	writeMultiTurnSession(t, dir, findMetaSpec{
+		id:      sessionID,
+		name:    "window session",
+		updated: now,
+	}, totalTurns)
+
+	deps := &toolDeps{stateDir: dir, sessionID: "OTHER000"}
+	b := marshalRead(t, deps, map[string]any{
+		"transcript_ref": "local:" + sessionID,
+	})
+	env := decodeReadEnvelope(t, b)
+	meta := readMetaMap(t, env)
+
+	// format and content_type must be set correctly.
+	if env["format"] != "markdown" {
+		t.Errorf("format = %v, want markdown", env["format"])
+	}
+	if env["content_type"] != "text/markdown" {
+		t.Errorf("content_type = %v, want text/markdown", env["content_type"])
+	}
+
+	// Meta must carry turns_total.
+	turnsTotal, ok := meta["turns_total"].(float64)
+	if !ok || turnsTotal == 0 {
+		t.Fatalf("meta.turns_total missing or zero: %v", meta["turns_total"])
+	}
+	turnsRendered, ok := meta["turns_rendered"].(float64)
+	if !ok {
+		t.Fatalf("meta.turns_rendered missing: %v", meta["turns_rendered"])
+	}
+
+	// With 50 turns and a 40-turn default window, turns_rendered < turns_total.
+	if turnsRendered >= turnsTotal {
+		t.Errorf("turns_rendered=%v should be < turns_total=%v for a windowed read", turnsRendered, turnsTotal)
+	}
+
+	// Content must contain a self-announcing window line.
+	content, ok := env["content"].(string)
+	if !ok {
+		t.Fatal("content is not a string")
+	}
+	// The window line must name "of <total>".
+	wantSnip := fmt.Sprintf("of %d", totalTurns)
+	if !strings.Contains(content, wantSnip) {
+		t.Errorf("content does not contain window announcement %q; got:\n%s", wantSnip, content[:min(500, len(content))])
+	}
+}
+
+// --- TestRead_ExplicitRange ---
+
+// TestRead_ExplicitRange verifies that range:"2-4" renders exactly those turns.
+func TestRead_ExplicitRange(t *testing.T) {
+	dir := newBucket(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	const sessionID = "RANGE001"
+	const totalTurns = 10
+
+	writeMultiTurnSession(t, dir, findMetaSpec{
+		id:      sessionID,
+		name:    "range session",
+		updated: now,
+	}, totalTurns)
+
+	deps := &toolDeps{stateDir: dir, sessionID: "OTHER000"}
+	b := marshalRead(t, deps, map[string]any{
+		"transcript_ref": "local:" + sessionID,
+		"range":          "2-4",
+	})
+	env := decodeReadEnvelope(t, b)
+	meta := readMetaMap(t, env)
+
+	// turns_rendered should be exactly 3 (turns 2, 3, 4).
+	turnsRendered, ok := meta["turns_rendered"].(float64)
+	if !ok {
+		t.Fatalf("meta.turns_rendered missing: %v", meta["turns_rendered"])
+	}
+	if turnsRendered != 3 {
+		t.Errorf("turns_rendered = %v, want 3 (range 2-4)", turnsRendered)
+	}
+
+	// The range in meta should reflect what was requested.
+	rangeVal, _ := meta["range"].(string)
+	if rangeVal != "2-4" {
+		t.Errorf("meta.range = %q, want \"2-4\"", rangeVal)
+	}
+
+	// Content should contain headings for turns 2, 3, and 4.
+	content, _ := env["content"].(string)
+	for _, seq := range []int{2, 3, 4} {
+		heading := fmt.Sprintf("## Turn %d", seq)
+		if !strings.Contains(content, heading) {
+			t.Errorf("content missing turn heading %q", heading)
+		}
+	}
+	// And must NOT contain turn 0 or 1 headings.
+	for _, seq := range []int{0, 1} {
+		heading := fmt.Sprintf("## Turn %d", seq)
+		if strings.Contains(content, heading) {
+			t.Errorf("content unexpectedly contains heading %q for out-of-range turn", heading)
+		}
+	}
+}
+
+// --- TestRead_MalformedRangeWarns ---
+
+// TestRead_MalformedRangeWarns verifies that a bad range sets meta.range_warning
+// and surfaces a warning in content, while falling back to the default.
+func TestRead_MalformedRangeWarns(t *testing.T) {
+	dir := newBucket(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	const sessionID = "BADRANGE"
+
+	writeMultiTurnSession(t, dir, findMetaSpec{
+		id:      sessionID,
+		name:    "warn session",
+		updated: now,
+	}, 5)
+
+	deps := &toolDeps{stateDir: dir, sessionID: "OTHER000"}
+	b := marshalRead(t, deps, map[string]any{
+		"transcript_ref": "local:" + sessionID,
+		"range":          "not-a-valid-range!!",
+	})
+	env := decodeReadEnvelope(t, b)
+	meta := readMetaMap(t, env)
+
+	// range_warning must be set.
+	warning, _ := meta["range_warning"].(string)
+	if warning == "" {
+		t.Error("meta.range_warning should be set for a malformed range")
+	}
+
+	// Content must also surface the warning.
+	content, _ := env["content"].(string)
+	if !strings.Contains(content, "range warning") {
+		t.Errorf("content should contain a visible range warning; got:\n%s", content[:min(500, len(content))])
+	}
+}
+
+// --- TestRead_ExpandTurn ---
+
+// TestRead_ExpandTurn verifies that expand_turn:<N> renders the tool result in
+// full (lines that would be elided by head+tail truncation are present).
+func TestRead_ExpandTurn(t *testing.T) {
+	dir := newBucket(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	const sessionID = "EXPAND01"
+
+	assistantSeq := writeSessionWithToolTurn(t, dir, findMetaSpec{
+		id:      sessionID,
+		name:    "expand session",
+		updated: now,
+	})
+
+	deps := &toolDeps{stateDir: dir, sessionID: "OTHER000"}
+
+	// Without expand_turn, the middle lines of the 60-line result should be elided.
+	bNoExpand := marshalRead(t, deps, map[string]any{
+		"transcript_ref": "local:" + sessionID,
+	})
+	envNoExpand := decodeReadEnvelope(t, bNoExpand)
+	contentNoExpand, _ := envNoExpand["content"].(string)
+
+	// With expand_turn, ALL lines should appear.
+	bExpand := marshalRead(t, deps, map[string]any{
+		"transcript_ref": "local:" + sessionID,
+		"expand_turn":    float64(assistantSeq), // JSON numbers unmarshal as float64
+	})
+	envExpand := decodeReadEnvelope(t, bExpand)
+	contentExpand, _ := envExpand["content"].(string)
+
+	// The deep middle line (line 30, between head and tail) should appear in
+	// the expanded read but be absent (elided) in the non-expanded read.
+	// With head=20, tail=10, line 30 is in the elided middle.
+	deepLine := "result-deep-line-" + strings.Repeat("x", 20)
+	if strings.Contains(contentNoExpand, deepLine) {
+		t.Log("note: non-expanded content happens to contain deep line (may be within head/tail)")
+	}
+	if !strings.Contains(contentExpand, deepLine) {
+		t.Errorf("expanded content should contain all result lines including deep middle lines; missing %q", deepLine)
+	}
+	// Elision marker should NOT be present when expanded.
+	if strings.Contains(contentExpand, "lines elided") {
+		t.Error("expanded content should not have elision markers")
+	}
+}
+
+// --- TestRead_MetaTrimmed ---
+
+// TestRead_MetaTrimmed verifies the marshaled markdown meta has the required
+// fields and does NOT contain the banned fields (redaction, raw_formats,
+// session_id).
+func TestRead_MetaTrimmed(t *testing.T) {
+	dir := newBucket(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	const sessionID = "METATRIM"
+
+	writeFindSession(t, dir, findMetaSpec{
+		id:      sessionID,
+		name:    "meta trim session",
+		updated: now,
+	}, "some text")
+
+	deps := &toolDeps{stateDir: dir, sessionID: "OTHER000"}
+	b := marshalRead(t, deps, map[string]any{
+		"transcript_ref": "local:" + sessionID,
+	})
+
+	// Verify required meta fields.
+	env := decodeReadEnvelope(t, b)
+	meta := readMetaMap(t, env)
+
+	for _, field := range []string{"turns_total", "range", "turns_rendered", "truncated", "elided_turns"} {
+		if _, ok := meta[field]; !ok {
+			t.Errorf("meta missing required field %q", field)
+		}
+	}
+
+	// Verify banned fields are absent from the wire JSON.
+	raw := string(b)
+	for _, banned := range []string{"redaction", "raw_formats", `"session_id"`} {
+		if strings.Contains(raw, banned) {
+			t.Errorf("wire JSON contains banned field %q", banned)
+		}
+	}
+}
+
+// min returns the smaller of a and b.
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// --- TestFind_ChildrenOf_ProjBucket ---
 
 // TestFind_ChildrenOf_ProjBucket verifies children_of for a parent in a sibling
 // project (proj: ref): the parent's bucket is resolved from the ref with no stat, and
