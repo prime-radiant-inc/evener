@@ -61,7 +61,8 @@ type resultIndex struct {
 // adjacency.
 //
 // Two classes of result are discarded here — they are indexed nowhere and so
-// render nowhere (not even as orphans under Unpaired Tool Results): a result
+// render nowhere (not even as "call not shown" under Tool results without a shown
+// call): a result
 // with an empty ToolCallID, and the second (and later) result sharing a
 // ToolCallID already seen (first one wins). Neither occurs in production
 // transcripts — every persisted result carries a unique, non-empty call ID — so
@@ -102,9 +103,9 @@ func renderMarkdown(header transcript.Header, entries []transcript.Entry, startS
 
 // writeEntriesBody renders the conversation body for entries[0:] (each at
 // startSeq+i) without the document header: the per-entry markdown plus any
-// trailing Unpaired Tool Results section. Pairing is built over exactly this
-// slice. Splitting this out of renderMarkdown lets the pinned-turn append
-// (renderOutOfRangePin) reuse the same rendering without a second header.
+// trailing "Tool results without a shown call" section. Pairing is built over
+// exactly this slice. Splitting this out of renderMarkdown lets the pinned-turn
+// append (renderOutOfRangePin) reuse the same rendering without a second header.
 func writeEntriesBody(b *strings.Builder, entries []transcript.Entry, startSeq int, opt renderOpts) {
 	resultTool := effectiveResultToolName(opt)
 	idx := buildResultIndex(entries, startSeq)
@@ -382,18 +383,19 @@ func rawLinesForRange(path string, startSeq, endSeq int) (content string, lines 
 // layer owns only range selection and the budget. Spec §"Size Budgets" + the
 // Default Response Shape meta block.
 //
-// Budget algorithm: render entries[start:end+1]; while the body exceeds
-// convBudgetChars, drop the oldest turn from the front (increment the effective
-// start) and re-render, stopping when it fits, when one turn remains, or when the
-// front turn is pinned by opt.fullResultFor (which is never dropped and whose
-// full body is exempt from the conversation budget). A single top marker is
-// prepended when any front turns were elided.
+// Budget algorithm: the drop direction follows the range anchor.
+//   - Tail-anchored (default, last:N): drop the oldest turns from the front
+//     until the content fits the budget or one turn remains. A top marker notes
+//     the dropped span. The pinned turn (opt.fullResultFor) is never dropped.
+//   - Front-anchored (start:N, N-M): drop the newest turns from the tail until
+//     the content fits the budget. A bottom continue-pointer gives the exact next
+//     range call when any tail turns are dropped.
 //
 // full_result_for also forces an OUT-OF-RANGE pinned turn into the render: when
-// the resolved pin seq falls outside the in-range window [firstRendered, end],
-// the pinned turn (with its tool results in full) is appended as a supplemental
-// labeled section after the in-range content. That section is exempt from the
-// conversation budget but, like the rest, subject to the hardCapChars cap.
+// the resolved pin seq falls outside the rendered window, the pinned turn (with
+// its tool results in full) is appended as a supplemental labeled section after
+// the in-range content. That section is exempt from the conversation budget but,
+// like the rest, subject to the hardCapChars cap.
 //
 // As a final safety net, the combined content over hardCapChars is truncated
 // rune-safe with an honest note.
@@ -401,29 +403,32 @@ func renderTranscript(header transcript.Header, entries []transcript.Entry, rang
 	total := len(entries)
 	start, end := parseRange(rangeSpec, total)
 
-	firstRendered := budgetedStart(header, entries, start, end, opt)
-
-	var content string
-	if end < firstRendered {
-		// Empty selection (e.g. empty transcript, or an N-M with N > M).
-		content = renderMarkdown(header, nil, firstRendered, opt)
+	renderedStart, renderedEnd := start, end
+	frontAnchored := isFrontAnchored(rangeSpec)
+	if frontAnchored {
+		renderedEnd = budgetedEnd(header, entries, start, end, opt)
 	} else {
-		content = renderRangeWithMarker(header, entries, firstRendered, end, opt)
+		renderedStart = budgetedStart(header, entries, start, end, opt)
 	}
 
-	content += renderOutOfRangePin(entries, firstRendered, end, opt)
+	var content string
+	switch {
+	case renderedEnd < renderedStart:
+		content = renderMarkdown(header, nil, renderedStart, opt)
+	case frontAnchored:
+		content = renderRangeWithTailMarker(header, entries, renderedStart, renderedEnd, end, opt)
+	default:
+		content = renderRangeWithMarker(header, entries, renderedStart, renderedEnd, opt)
+	}
 
+	content += renderOutOfRangePin(entries, renderedStart, renderedEnd, opt)
 	truncated, content := applyHardCap(content)
 
-	// Meta describes only the IN-RANGE window [firstRendered, end]; the appended
-	// pinned section is supplemental and intentionally NOT counted in
-	// TurnsRendered, so the invariant TurnsRendered + ElidedTurns == TurnsTotal
-	// keeps describing the contiguous window honestly.
 	rendered := 0
-	firstShown, lastShown := 0, -1 // empty span by default
-	if end >= firstRendered {
-		rendered = end - firstRendered + 1
-		firstShown, lastShown = firstRendered, end
+	firstShown, lastShown := 0, -1
+	if renderedEnd >= renderedStart {
+		rendered = renderedEnd - renderedStart + 1
+		firstShown, lastShown = renderedStart, renderedEnd
 	}
 	elided := total - rendered
 	meta := readMeta{
@@ -439,17 +444,17 @@ func renderTranscript(header transcript.Header, entries []transcript.Entry, rang
 }
 
 // renderOutOfRangePin returns the supplemental pinned-turn section, or "" when no
-// pin is set or the pin already falls within the rendered window [firstRendered,
-// end]. The pin seq may name the owning ASSISTANT turn or its TOOL_RESULTS turn;
-// either way the section renders the ASSISTANT turn with its tool results in full
-// (fullResultFor set to that turn's seq), under a labeled marker that names the
-// real seq so indices stay honest.
-func renderOutOfRangePin(entries []transcript.Entry, firstRendered, end int, opt renderOpts) string {
+// pin is set or the pin already falls within the rendered window
+// [renderedStart, renderedEnd]. The pin seq may name the owning ASSISTANT turn or
+// its TOOL_RESULTS turn; either way the section renders the ASSISTANT turn with
+// its tool results in full (fullResultFor set to that turn's seq), under a
+// labeled marker that names the real seq so indices stay honest.
+func renderOutOfRangePin(entries []transcript.Entry, renderedStart, renderedEnd int, opt renderOpts) string {
 	if opt.fullResultFor == nil {
 		return ""
 	}
 	pin := *opt.fullResultFor
-	if pin >= firstRendered && pin <= end {
+	if pin >= renderedStart && pin <= renderedEnd {
 		return "" // already in the rendered window; the in-range path expanded it
 	}
 
@@ -568,6 +573,58 @@ func callOwnerSeq(entries []transcript.Entry, id string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// isFrontAnchored reports whether a range keeps its front (start:N or N-M) vs
+// its tail ("" default / last:N).
+func isFrontAnchored(spec string) bool {
+	if strings.HasPrefix(spec, "start:") {
+		return true
+	}
+	if spec == "" || strings.HasPrefix(spec, "last:") {
+		return false
+	}
+	_, _, ok := parseDashRange(spec)
+	return ok
+}
+
+// budgetedEnd drops the newest turns from the tail to fit the budget, never
+// below start nor below an IN-WINDOW pinned turn's result span (so expand_turn's
+// result is never cut off). The in-window guard (as>=start && as<=end) is
+// essential: an out-of-window pin must NOT suppress trimming.
+func budgetedEnd(header transcript.Header, entries []transcript.Entry, start, end int, opt renderOpts) int {
+	pinFloor := -1
+	if opt.fullResultFor != nil {
+		if as, lastSeq, ok := resolvePinnedSpan(entries, *opt.fullResultFor); ok && as >= start && as <= end {
+			pinFloor = lastSeq
+		}
+	}
+	last := end
+	for last > start {
+		body := renderMarkdown(header, entries[start:last+1], start, opt)
+		if len(body) <= convBudgetChars {
+			break
+		}
+		if last <= pinFloor {
+			break
+		}
+		last--
+	}
+	return last
+}
+
+// renderRangeWithTailMarker renders [renderedStart, renderedEnd] and, when the
+// tail was trimmed (renderedEnd < requestedEnd), appends a bottom
+// continue-pointer.
+func renderRangeWithTailMarker(header transcript.Header, entries []transcript.Entry, renderedStart, renderedEnd, requestedEnd int, opt renderOpts) string {
+	body := renderMarkdown(header, entries[renderedStart:renderedEnd+1], renderedStart, opt)
+	if renderedEnd >= requestedEnd {
+		return body
+	}
+	dropped := requestedEnd - renderedEnd
+	marker := fmt.Sprintf("\n_… showing turns %d–%d of your requested %d–%d; %d later turns elided. Continue with read_session_transcript(transcript_ref, range=\"%d-%d\"). …_\n",
+		renderedStart, renderedEnd, renderedStart, requestedEnd, dropped, renderedEnd+1, requestedEnd)
+	return body + marker
 }
 
 // budgetedStart returns the effective first-rendered index after dropping the
@@ -824,8 +881,8 @@ func wantFullResult(opt renderOpts, callOwnerSeq, resultOwnerSeq int) bool {
 }
 
 // writeUnpairedResults appends any tool results that no rendered call claimed,
-// under an "Unpaired Tool Results" subsection, each as an [orphaned] card. Spec
-// §Tool Call Condensation.
+// under a "Tool results without a shown call" subsection, each as a
+// [call not shown] card. Spec §Tool Call Condensation.
 func writeUnpairedResults(b *strings.Builder, idx *resultIndex) {
 	ids := make([]string, 0, len(idx.byCallID))
 	for id := range idx.byCallID {
@@ -845,10 +902,11 @@ func writeUnpairedResults(b *strings.Builder, idx *resultIndex) {
 		return ids[i] < ids[j]
 	})
 
-	b.WriteString("\n## Unpaired Tool Results\n")
+	b.WriteString("\n## Tool results without a shown call\n")
+	b.WriteString("_The originating tool call is outside the rendered range, or not present in the transcript (e.g. after a repair) — not an error._\n")
 	for _, id := range ids {
 		pr := idx.byCallID[id]
-		fmt.Fprintf(b, "- [orphaned] `%s`\n", pr.result.Name)
+		fmt.Fprintf(b, "- [call not shown] `%s`\n", pr.result.Name)
 		writeResultBody(b, pr.result.Content, false)
 	}
 }
@@ -879,6 +937,11 @@ const (
 	// used when a result is truncated. Spec: ≈ first 20 / last 10.
 	resultHeadLines = 20
 	resultTailLines = 10
+	// resultLineMaxRunes bounds the width of a single rendered result line in the
+	// condensed view, so one pathological line (a base64 payload, a one-line log dump, a
+	// read_file of another transcript) can't dominate a card or blow the budget. full
+	// renders (expand_turn) are exempt.
+	resultLineMaxRunes = 300
 )
 
 // writeToolResultBody renders a tool result body, choosing the most legible form
@@ -1001,8 +1064,8 @@ func prettyJSON(raw string) (string, bool) {
 }
 
 // writeResultBody renders a tool result body verbatim inside a fenced code block,
-// with the standard head+tail truncation. It is the plain path used for orphaned
-// results; writeToolResultBody adds the legible JSON/subagent forms on top.
+// with the standard head+tail truncation. It is the plain path used for "call not
+// shown" results; writeToolResultBody adds the legible JSON/subagent forms on top.
 func writeResultBody(b *strings.Builder, content any, full bool) {
 	writeFencedBody(b, fmt.Sprint(content), full)
 }
@@ -1058,27 +1121,40 @@ func longestBacktickRun(s string) int {
 
 // truncateBody returns the indented body text for a result code block. Empty
 // lines are dropped (the truncation unit is the non-empty line, so head/tail
-// selection and the elided count stay self-consistent). When full is false and
-// there are more than resultBodyWholeMax non-empty lines, the middle is elided
-// with an exact "... [N lines elided] ..." marker (N = total − shown). Each
-// emitted line is indented two spaces to sit under the "- [status]" card line.
+// selection and the elided count stay self-consistent). When full is false,
+// every line is width-clamped to resultLineMaxRunes before head+tail selection.
+// When there are more than resultBodyWholeMax non-empty lines (after clamping),
+// the middle is elided with an exact "... [N lines elided] ..." marker
+// (N = total − shown). Each emitted line is indented two spaces to sit under
+// the "- [status]" card line. Full renders are verbatim (no clamping, no elision).
 func truncateBody(body string, full bool) string {
 	lines := nonEmptyLines(body)
 	total := len(lines)
-
-	if full || total <= resultBodyWholeMax {
+	if full {
 		return indentLines(lines)
 	}
-
+	lines = clampLineWidths(lines)
+	if total <= resultBodyWholeMax {
+		return indentLines(lines)
+	}
 	head := lines[:resultHeadLines]
 	tail := lines[total-resultTailLines:]
 	elided := total - resultHeadLines - resultTailLines
-
 	var b strings.Builder
 	b.WriteString(indentLines(head))
 	fmt.Fprintf(&b, "  ... [%d lines elided] ...\n", elided)
 	b.WriteString(indentLines(tail))
 	return b.String()
+}
+
+// clampLineWidths returns a copy of lines where each line is truncated to at
+// most resultLineMaxRunes runes. Lines that fit are passed through unchanged.
+func clampLineWidths(lines []string) []string {
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		out[i] = truncRunes(line, resultLineMaxRunes)
+	}
+	return out
 }
 
 // nonEmptyLines splits s into its non-empty (after trimming) lines.

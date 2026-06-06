@@ -249,8 +249,9 @@ func callStatus(calls []*llm.ToolCallData, idx *resultIndex) string {
 
 // resultSizeNote summarizes the size of a turn's tool results as "<N> lines"
 // (summed non-empty result lines across the round), with a trailing "[truncated]"
-// when any result would be head+tail truncated by the markdown renderer (more than
-// resultBodyWholeMax non-empty lines). Returns "" when no results are paired yet.
+// when any result would be head+tail truncated or width-clamped by the markdown
+// renderer (more than resultBodyWholeMax non-empty lines, or any line wider than
+// resultLineMaxRunes). Returns "" when no results are paired yet.
 func resultSizeNote(calls []*llm.ToolCallData, idx *resultIndex) string {
 	total := 0
 	anyTruncated := false
@@ -261,9 +262,10 @@ func resultSizeNote(calls []*llm.ToolCallData, idx *resultIndex) string {
 			continue
 		}
 		anyResult = true
-		n := len(nonEmptyLines(fmt.Sprint(paired.result.Content)))
+		content := fmt.Sprint(paired.result.Content)
+		n := len(nonEmptyLines(content))
 		total += n
-		if n > resultBodyWholeMax {
+		if n > resultBodyWholeMax || anyLineWiderThan(content, resultLineMaxRunes) {
 			anyTruncated = true
 		}
 	}
@@ -275,6 +277,16 @@ func resultSizeNote(calls []*llm.ToolCallData, idx *resultIndex) string {
 		note += " [truncated]"
 	}
 	return note
+}
+
+// anyLineWiderThan reports whether any non-empty line of s exceeds max runes.
+func anyLineWiderThan(s string, max int) bool {
+	for _, line := range nonEmptyLines(s) {
+		if len([]rune(line)) > max {
+			return true
+		}
+	}
+	return false
 }
 
 // outlineRoleLabel maps a turn kind to its capitalized outline role label,

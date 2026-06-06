@@ -825,9 +825,9 @@ func TestRenderMarkdown_ToolCallPairingByID(t *testing.T) {
 		t.Errorf("expected paired result body under the call, got:\n%s", out)
 	}
 	// The result must render under the ASSISTANT (seq 0) heading, not as its own
-	// standalone heading, and must NOT be reported as orphaned.
-	if strings.Contains(out, "Unpaired Tool Results") {
-		t.Errorf("result paired by ID must not appear as unpaired, got:\n%s", out)
+	// standalone heading, and must NOT appear as a call-not-shown result.
+	if strings.Contains(out, "Tool results without a shown call") {
+		t.Errorf("result paired by ID must not appear as a call-not-shown result, got:\n%s", out)
 	}
 	// The card body must appear in the seq-0 assistant section, before seq 1's text.
 	cardIdx := strings.Index(out, "[ok] `shell`")
@@ -879,21 +879,21 @@ func TestRenderMarkdown_PendingToolCall(t *testing.T) {
 }
 
 // TestRenderMarkdown_OrphanedToolResult verifies a result with no matching call
-// renders under an Unpaired Tool Results subsection as [orphaned].
+// renders under a "Tool results without a shown call" subsection as [call not shown].
 func TestRenderMarkdown_OrphanedToolResult(t *testing.T) {
 	entries := []transcript.Entry{
 		makeEntry(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("some text")}),
 		toolResultEntry(result("ghost", "shell", "result with no call", false)),
 	}
 	out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
-	if !strings.Contains(out, "Unpaired Tool Results") {
-		t.Errorf("expected Unpaired Tool Results subsection, got:\n%s", out)
+	if !strings.Contains(out, "Tool results without a shown call") {
+		t.Errorf("expected 'Tool results without a shown call' subsection, got:\n%s", out)
 	}
-	if !strings.Contains(out, "[orphaned] `shell`") {
-		t.Errorf("expected [orphaned] status for unmatched result, got:\n%s", out)
+	if !strings.Contains(out, "[call not shown] `shell`") {
+		t.Errorf("expected [call not shown] status for unmatched result, got:\n%s", out)
 	}
 	if !strings.Contains(out, "result with no call") {
-		t.Errorf("expected orphaned result body, got:\n%s", out)
+		t.Errorf("expected unmatched result body, got:\n%s", out)
 	}
 }
 
@@ -1012,8 +1012,8 @@ func TestRenderMarkdown_FullResultFor(t *testing.T) {
 
 // TestRenderMarkdown_ResultToolResultNotOrphaned verifies that the result tool's
 // own tool result (the mechanical {"accepted":true} ack persisted by the runtime)
-// is consumed by the text-rendered result-tool call and never surfaces as an
-// orphaned tool result.
+// is consumed by the text-rendered result-tool call and never surfaces as a
+// call-not-shown result.
 func TestRenderMarkdown_ResultToolResultNotOrphaned(t *testing.T) {
 	entries := []transcript.Entry{
 		// Result-tool call (rendered as assistant text).
@@ -1026,11 +1026,11 @@ func TestRenderMarkdown_ResultToolResultNotOrphaned(t *testing.T) {
 	if !strings.Contains(out, "All done.") {
 		t.Errorf("expected communicate message as assistant text, got:\n%s", out)
 	}
-	if strings.Contains(out, "Unpaired Tool Results") {
-		t.Errorf("result-tool's own result must not appear as orphaned, got:\n%s", out)
+	if strings.Contains(out, "Tool results without a shown call") {
+		t.Errorf("result-tool's own result must not appear as a call-not-shown result, got:\n%s", out)
 	}
-	if strings.Contains(out, "[orphaned]") {
-		t.Errorf("result-tool's own result must not render as [orphaned], got:\n%s", out)
+	if strings.Contains(out, "[call not shown]") {
+		t.Errorf("result-tool's own result must not render as [call not shown], got:\n%s", out)
 	}
 	// The mechanical ack body must not be dumped as a card.
 	if strings.Contains(out, `"accepted":true`) {
@@ -1465,10 +1465,11 @@ func TestRenderTranscript_NoMarkerWhenAllShown(t *testing.T) {
 	}
 }
 
-// TestRenderTranscript_BudgetDropsFrontTurns verifies that an oversize render is
-// trimmed oldest-first to fit the conversation budget: firstRendered increases
-// beyond what the range alone would elide, the marker count matches firstRendered
-// exactly, and the body fits within the budget (plus header+marker overhead).
+// TestRenderTranscript_BudgetDropsFrontTurns verifies that a tail-anchored
+// oversize render is trimmed oldest-first to fit the conversation budget:
+// firstRendered increases beyond what the range alone would elide, the marker
+// count matches firstRendered exactly, and the body fits within the budget (plus
+// header+marker overhead).
 func TestRenderTranscript_BudgetDropsFrontTurns(t *testing.T) {
 	// 40 turns each ~2,000 chars → ~80k of body, well over the 24k budget, forcing
 	// the front to be dropped until the tail fits.
@@ -1477,8 +1478,8 @@ func TestRenderTranscript_BudgetDropsFrontTurns(t *testing.T) {
 		return fmt.Sprintf("T%02d:", i) + strings.Repeat("x", big)
 	})
 
-	// Range covers all 40; budget must drop the oldest ones.
-	content, m := renderTranscript(transcript.Header{}, entries, "0-39", renderOpts{})
+	// Tail-anchored range: budget must drop the oldest ones.
+	content, m := renderTranscript(transcript.Header{}, entries, "last:40", renderOpts{})
 
 	if m.TurnsTotal != 40 {
 		t.Fatalf("TurnsTotal = %d, want 40", m.TurnsTotal)
@@ -1521,15 +1522,15 @@ func TestRenderTranscript_BudgetDropsFrontTurns(t *testing.T) {
 }
 
 // TestRenderTranscript_BudgetKeepsAtLeastOneTurn verifies that when even a single
-// turn exceeds the conversation budget, the render keeps that one turn (does not
-// drop everything) and stays within the hard cap.
+// turn exceeds the conversation budget, a tail-anchored render keeps that one
+// turn (does not drop everything) and stays within the hard cap.
 func TestRenderTranscript_BudgetKeepsAtLeastOneTurn(t *testing.T) {
 	// Each turn alone exceeds the 24k budget.
 	const huge = convBudgetChars + 5000
 	entries := textTurns(3, func(i int) string {
 		return fmt.Sprintf("T%d:", i) + strings.Repeat("y", huge)
 	})
-	content, m := renderTranscript(transcript.Header{}, entries, "0-2", renderOpts{})
+	content, m := renderTranscript(transcript.Header{}, entries, "last:3", renderOpts{})
 
 	if m.TurnsRendered != 1 {
 		t.Errorf("expected exactly one turn to survive, got %d", m.TurnsRendered)
@@ -1816,6 +1817,101 @@ func TestRenderMarkdown_HeaderClamped(t *testing.T) {
 			t.Errorf("Task: line is %d runes (too long): %q", len([]rune(line)), line)
 		}
 	}
+}
+
+// TestRenderTranscript_FrontAnchoredKeepsFront verifies that a front-anchored
+// (N-M) range keeps the front and drops from the tail when the budget is exceeded,
+// and appends a bottom continue-pointer naming the exact next range call.
+func TestRenderTranscript_FrontAnchoredKeepsFront(t *testing.T) {
+	// 40 turns each ~2000 chars → ~80k, well over the 24k budget.
+	const big = 2000
+	entries := textTurns(40, func(i int) string {
+		return fmt.Sprintf("T%02d:", i) + strings.Repeat("z", big)
+	})
+
+	// Front-anchored range "0-39": front must survive; tail is dropped.
+	content, m := renderTranscript(transcript.Header{}, entries, "0-39", renderOpts{})
+
+	if m.TurnsTotal != 40 {
+		t.Fatalf("TurnsTotal = %d, want 40", m.TurnsTotal)
+	}
+	// Budget dropped some tail turns.
+	if m.ElidedTurns == 0 {
+		t.Errorf("expected budget to drop tail turns, but ElidedTurns == 0")
+	}
+	if !m.Truncated {
+		t.Errorf("Truncated must be true when budget drops turns")
+	}
+	if m.TurnsRendered+m.ElidedTurns != m.TurnsTotal {
+		t.Errorf("count invariant violated: %d+%d != %d", m.TurnsRendered, m.ElidedTurns, m.TurnsTotal)
+	}
+
+	// Turn 0 must be present (front kept).
+	if !strings.Contains(content, "## Turn 0 — Assistant") {
+		t.Errorf("Turn 0 (front) must be present in front-anchored render, got:\n%s", firstLines(content, 12))
+	}
+
+	// The renderedEnd is renderedStart + TurnsRendered - 1 = TurnsRendered - 1.
+	renderedEnd := m.TurnsRendered - 1
+	// A bottom continue-pointer must be present naming the next range.
+	nextRangeStart := renderedEnd + 1
+	wantPointer := fmt.Sprintf(`range="%d-39"`, nextRangeStart)
+	if !strings.Contains(content, wantPointer) {
+		t.Errorf("expected bottom continue-pointer with %q, got:\n%s", wantPointer, content)
+	}
+
+	// The pointer names the rendered span in the "showing turns A–B of A–M" format.
+	wantShowing := fmt.Sprintf("showing turns 0–%d of your requested 0–39", renderedEnd)
+	if !strings.Contains(content, wantShowing) {
+		t.Errorf("expected continue-pointer showing-span %q, got:\n%s", wantShowing, content)
+	}
+}
+
+// TestRenderMarkdown_LongResultLineClamped verifies that a result with one very
+// wide line (5000 runes) is clamped to ≤ resultLineMaxRunes in the condensed
+// view (an ellipsis is present), but rendered verbatim under a full result
+// (renderOpts{fullResultFor}).
+func TestRenderMarkdown_LongResultLineClamped(t *testing.T) {
+	// One line of 5000 'A' runes — well over resultLineMaxRunes (300).
+	wideLine := strings.Repeat("A", 5000)
+	entries := []transcript.Entry{
+		// seq 0: assistant turn with one shell call.
+		toolCallEntry(call("wide1", "shell", `{"command":"dump"}`)),
+		// seq 1: the wide result.
+		toolResultEntry(result("wide1", "shell", wideLine, false)),
+	}
+
+	t.Run("condensed view clamps wide line", func(t *testing.T) {
+		out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
+		// No line in the output (after stripping indentation) should exceed
+		// resultLineMaxRunes runes by more than a small fence overhead.
+		for _, line := range strings.Split(out, "\n") {
+			stripped := strings.TrimPrefix(line, "  ")
+			runeLen := len([]rune(stripped))
+			// Allow fence lines (all backticks) to be any length.
+			isFenceLine := strings.TrimLeft(stripped, "`") == ""
+			if !isFenceLine && runeLen > resultLineMaxRunes+10 {
+				t.Errorf("condensed line is %d runes (exceeds clamp %d): %q", runeLen, resultLineMaxRunes, stripped)
+			}
+		}
+		// An ellipsis must appear (truncRunes appends "…" when it clips).
+		if !strings.Contains(out, "…") {
+			t.Errorf("expected ellipsis in clamped condensed output, got:\n%s", out)
+		}
+		// The original 5000-A string must not appear verbatim.
+		if strings.Contains(out, wideLine) {
+			t.Errorf("full 5000-rune line must not appear in condensed view, got an unclipped line")
+		}
+	})
+
+	t.Run("full result (expand_turn) renders verbatim", func(t *testing.T) {
+		seq := 0 // pin the owning ASSISTANT turn
+		out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{fullResultFor: &seq})
+		// The original 5000-A string must appear verbatim (no clamping in full mode).
+		if !strings.Contains(out, wideLine) {
+			t.Errorf("full result must render the wide line verbatim, got:\n%s", firstLines(out, 10))
+		}
+	})
 }
 
 // firstLines returns the first n lines of s, for compact error output.
