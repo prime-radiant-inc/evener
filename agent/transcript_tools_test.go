@@ -427,12 +427,12 @@ func writeSessionWithToolTurn(t *testing.T, bucketDir string, spec findMetaSpec)
 	if err := tw.Append(schema.NewTurn(schema.TurnAssistant, assistantMsg)); err != nil {
 		t.Fatalf("append assistant tool-call turn: %v", err)
 	}
-	// Build a large result body: 60 non-empty lines so head+tail truncation kicks in.
+	// Build a large result body: 60 UNIQUE non-empty lines so head+tail truncation
+	// elides the middle. With head=20 / tail=10, line 30 lands in the elided middle —
+	// the only honest probe for whether expand_turn actually un-truncates.
 	var resultLines strings.Builder
 	for i := 0; i < 60; i++ {
-		resultLines.WriteString("result-deep-line-")
-		resultLines.WriteString(strings.Repeat("x", 20))
-		resultLines.WriteByte('\n')
+		fmt.Fprintf(&resultLines, "result-line-%02d-marker\n", i)
 	}
 	// Turn 2: tool result
 	resultMsg := llm.Message{
@@ -549,6 +549,35 @@ func TestRead_DefaultMarkdownWindow(t *testing.T) {
 	wantSnip := fmt.Sprintf("of %d", totalTurns)
 	if !strings.Contains(content, wantSnip) {
 		t.Errorf("content does not contain window announcement %q; got:\n%s", wantSnip, content[:min(500, len(content))])
+	}
+}
+
+// TestRead_WindowHonest verifies the self-announcing window names the turns ACTUALLY
+// rendered, never the literal request — including an out-of-range N-M, the bug class
+// where "50-100" on a 10-turn session announced a fabricated, reversed "turns 50–9".
+func TestRead_WindowHonest(t *testing.T) {
+	dir := newBucket(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	const sessionID = "WINHON01"
+	const totalTurns = 10
+
+	writeMultiTurnSession(t, dir, findMetaSpec{id: sessionID, name: "honest window", updated: now}, totalTurns)
+
+	deps := &toolDeps{stateDir: dir, sessionID: "OTHER000"}
+	b := marshalRead(t, deps, map[string]any{
+		"transcript_ref": "local:" + sessionID,
+		"range":          "50-100", // entirely out of bounds; clamps to the last turn
+	})
+	env := decodeReadEnvelope(t, b)
+	content, _ := env["content"].(string)
+
+	// The window line must name the real, in-bounds span (turn 9 of 10) — never the
+	// requested 50/100.
+	if !strings.Contains(content, "Showing turns 9–9 of 10") {
+		t.Errorf("window line must name the real rendered span; got:\n%s", content[:min(600, len(content))])
+	}
+	if strings.Contains(content, "turns 50") || strings.Contains(content, "–100") {
+		t.Errorf("window line must not echo out-of-range request numbers; got:\n%s", content[:min(600, len(content))])
 	}
 }
 
@@ -675,17 +704,22 @@ func TestRead_ExpandTurn(t *testing.T) {
 	envExpand := decodeReadEnvelope(t, bExpand)
 	contentExpand, _ := envExpand["content"].(string)
 
-	// The deep middle line (line 30, between head and tail) should appear in
-	// the expanded read but be absent (elided) in the non-expanded read.
-	// With head=20, tail=10, line 30 is in the elided middle.
-	deepLine := "result-deep-line-" + strings.Repeat("x", 20)
-	if strings.Contains(contentNoExpand, deepLine) {
-		t.Log("note: non-expanded content happens to contain deep line (may be within head/tail)")
+	// Line 30 is in the elided middle (head=20 / tail=10): it MUST be absent without
+	// expand_turn and present with it. This is the assertion that actually proves
+	// expand un-truncates — a probe in the head/tail would pass even if expand did
+	// nothing.
+	middleLine := "result-line-30-marker"
+	if strings.Contains(contentNoExpand, middleLine) {
+		t.Errorf("default read should elide the middle; %q must NOT appear without expand_turn", middleLine)
 	}
-	if !strings.Contains(contentExpand, deepLine) {
-		t.Errorf("expanded content should contain all result lines including deep middle lines; missing %q", deepLine)
+	if !strings.Contains(contentExpand, middleLine) {
+		t.Errorf("expand_turn must un-truncate the result; %q missing from the expanded read", middleLine)
 	}
-	// Elision marker should NOT be present when expanded.
+	// A head line and a tail line appear in both (sanity that the result rendered).
+	if !strings.Contains(contentNoExpand, "result-line-00-marker") || !strings.Contains(contentNoExpand, "result-line-59-marker") {
+		t.Errorf("default read should still show head + tail lines")
+	}
+	// No elision marker when fully expanded.
 	if strings.Contains(contentExpand, "lines elided") {
 		t.Error("expanded content should not have elision markers")
 	}

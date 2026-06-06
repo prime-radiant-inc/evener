@@ -135,12 +135,19 @@ const (
 
 // readMeta carries the honest, exact provenance counts for a budgeted render.
 // The invariant TurnsRendered + ElidedTurns == TurnsTotal always holds.
+//
+// FirstRendered and LastRendered are the ACTUAL turn-number span on screen after
+// range selection AND budget trimming — the single source of truth for any
+// "showing turns A–B" announcement, so it can never drift from what was rendered.
+// They are 0 and -1 (an empty span) when nothing was rendered.
 type readMeta struct {
 	TurnsTotal    int
 	TurnsRendered int
 	Range         string
 	Truncated     bool
 	ElidedTurns   int
+	FirstRendered int
+	LastRendered  int
 }
 
 // errBadRange is the sentinel wrapped by parseRangeErr for malformed range specs.
@@ -413,8 +420,10 @@ func renderTranscript(header transcript.Header, entries []transcript.Entry, rang
 	// TurnsRendered, so the invariant TurnsRendered + ElidedTurns == TurnsTotal
 	// keeps describing the contiguous window honestly.
 	rendered := 0
+	firstShown, lastShown := 0, -1 // empty span by default
 	if end >= firstRendered {
 		rendered = end - firstRendered + 1
+		firstShown, lastShown = firstRendered, end
 	}
 	elided := total - rendered
 	meta := readMeta{
@@ -423,6 +432,8 @@ func renderTranscript(header transcript.Header, entries []transcript.Entry, rang
 		Range:         normalizeRange(rangeSpec),
 		ElidedTurns:   elided,
 		Truncated:     truncated || rendered < total,
+		FirstRendered: firstShown,
+		LastRendered:  lastShown,
 	}
 	return content, meta
 }

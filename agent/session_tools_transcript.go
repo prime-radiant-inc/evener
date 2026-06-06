@@ -157,70 +157,20 @@ func readMarkdown(path, ref string, meta schema.SessionMeta, rangeArg string, ex
 }
 
 // spliceWindowLine splices a self-announcing window line after the document header.
-// The line names the first/last rendered turn and the total, e.g.:
-//
-//	Showing turns 84–123 of 124 (the last 40). For the whole shape use
-//	format=outline; for other turns set range.
-//
-// This is emitted whenever turns_rendered < turns_total so a windowed read
-// never silently poses as the whole session.
+// It names the ACTUAL rendered turn span — readMeta.FirstRendered/LastRendered, which
+// the engine computes after range selection AND budget trimming — so the line can
+// never announce turns that are not on screen, regardless of range anchor or how much
+// the conversation budget trimmed. Emitted only for a non-empty render; the caller
+// invokes it only when the render is a partial window (turns_rendered < turns_total).
 func spliceWindowLine(content string, rm readMeta) string {
-	// Derive the first and last rendered turn numbers from the range spec.
-	// normalizeRange already stores the canonical form in rm.Range.
-	first, last := windowBounds(rm)
-
-	var windowDesc string
-	switch {
-	case strings.HasPrefix(rm.Range, "last:"):
-		n := rm.TurnsRendered
-		windowDesc = fmt.Sprintf("the last %d", n)
-	case strings.HasPrefix(rm.Range, "start:"):
-		windowDesc = fmt.Sprintf("the first %d", rm.TurnsRendered)
-	default:
-		windowDesc = fmt.Sprintf("range %s", rm.Range)
+	if rm.TurnsRendered <= 0 || rm.LastRendered < rm.FirstRendered {
+		return content
 	}
-
 	line := fmt.Sprintf(
-		"\n_Showing turns %d–%d of %d (%s). For the whole shape use format=outline; for other turns set range._\n",
-		first, last, rm.TurnsTotal, windowDesc,
+		"\n_Showing turns %d–%d of %d. For the whole shape use format=outline; for other turns set range._\n",
+		rm.FirstRendered, rm.LastRendered, rm.TurnsTotal,
 	)
 	return spliceAfterHeader(content, line)
-}
-
-// windowBounds returns the first and last turn numbers of the rendered window
-// from the readMeta. It derives them from TurnsTotal, TurnsRendered, and Range.
-func windowBounds(rm readMeta) (first, last int) {
-	if rm.TurnsTotal == 0 || rm.TurnsRendered == 0 {
-		return 0, 0
-	}
-	switch {
-	case strings.HasPrefix(rm.Range, "start:"):
-		return 0, rm.TurnsRendered - 1
-	case strings.HasPrefix(rm.Range, "last:"), rm.Range == "":
-		// Tail-anchored: the window is the last TurnsRendered turns.
-		last = rm.TurnsTotal - 1
-		first = last - rm.TurnsRendered + 1
-		if first < 0 {
-			first = 0
-		}
-		return first, last
-	default:
-		// N-M range: parse lo from the range string.
-		if lo, hi, ok := parseDashRange(rm.Range); ok {
-			// Clamp to actual content.
-			if hi >= rm.TurnsTotal {
-				hi = rm.TurnsTotal - 1
-			}
-			return lo, hi
-		}
-		// Fallback: treat as tail-anchored.
-		last = rm.TurnsTotal - 1
-		first = last - rm.TurnsRendered + 1
-		if first < 0 {
-			first = 0
-		}
-		return first, last
-	}
 }
 
 // spliceRangeWarning inserts a one-line range warning after the document header block.
