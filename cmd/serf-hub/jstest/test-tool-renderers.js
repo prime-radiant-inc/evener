@@ -152,7 +152,7 @@ await scenario("bottom task status shows progress and current task text", [
   if (!badge || badge.textContent !== "1/3") return { ok: false, detail: "missing task badge" };
   if (!/\.task-status-row\s*\{[^}]*font-family:\s*var\(--font-mono\)/.test(styleSrc)) return { ok: false, detail: "task status row should use compact mono styling" };
   if (!/\.tasks-status\s*\{[^}]*display:\s*inline-flex/.test(styleSrc)) return { ok: false, detail: "task status trigger should align key/value inline" };
-  if (!/\.tasks-status \.panel-toggle-badge\s*\{[^}]*display:\s*none/.test(styleSrc)) return { ok: false, detail: "task status should hide redundant progress badge" };
+  if (/\.tasks-status \.panel-toggle-badge\s*\{[^}]*display:\s*none/.test(styleSrc)) return { ok: false, detail: "task status should keep the progress badge visible" };
   return { ok: true };
 });
 

@@ -845,7 +845,6 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   vertical-align: bottom;
   white-space: nowrap;
 }
-.tasks-status .panel-toggle-badge { display: none; }
 
 /* Composer attachment rail — paste, drag-drop, and file-picker chips all
    render here through SerfComposerAttachments. Hides itself when empty. */
