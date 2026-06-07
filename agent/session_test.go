@@ -1523,6 +1523,49 @@ func TestSession_CompactEmitsCompactionTurnEvent(t *testing.T) {
 	}
 }
 
+func TestSession_CompactionReminderUsesTranscriptTool(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	sess.handleCompactionTurn(schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]\nsummary")))
+
+	sess.mu.Lock()
+	queue := append([]steeringMessage(nil), sess.steeringQueue...)
+	sess.mu.Unlock()
+
+	if len(queue) == 0 {
+		t.Fatal("expected compaction transcript steering reminder")
+	}
+	got := queue[len(queue)-1].Text
+	wantCall := `read_session_transcript({"transcript_ref": "local:` + sess.ID() + `", "format": "markdown"})`
+	wantOutlineCall := `read_session_transcript({"transcript_ref": "local:` + sess.ID() + `", "format": "outline"})`
+	wantRangeCall := `read_session_transcript({"transcript_ref": "local:` + sess.ID() + `", "range": "A-B"})`
+	for _, want := range []string{
+		"<SYSTEM-REMINDER>",
+		"If you need the exact transcript of this session before compaction",
+		"use the transcript tool instead of reading raw transcript files directly",
+		wantCall,
+		"For long sessions, first get a turn map",
+		wantOutlineCall,
+		wantRangeCall,
+		"</SYSTEM-REMINDER>",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("compaction transcript reminder missing %q; got:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, ".transcript.jsonl") || strings.Contains(got, dir) {
+		t.Fatalf("compaction transcript reminder should not expose raw transcript path; got:\n%s", got)
+	}
+}
+
 func TestSession_NotificationHookRunsOnWarning(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
