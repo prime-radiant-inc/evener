@@ -120,9 +120,9 @@ func sourceLabelFromRefText(refText string) string {
 	return ref.SourceID
 }
 
-// liveTitle prefers a friendly title for a running session: pull
-// OriginalPrompt from the past index if it's been written there, otherwise
-// fall back to a short session ID.
+// liveTitle prefers the generated short session name from metadata, but avoids
+// using the full initial prompt as the workspace title. If the past index does
+// not have the session yet, fall back to a compact session ID.
 func liveTitle(id string, le hubcore.LiveEntry, past *hubcore.PastIndex) string {
 	if past != nil {
 		if pe, ok := past.Find(id); ok {
@@ -133,10 +133,36 @@ func liveTitle(id string, le hubcore.LiveEntry, past *hubcore.PastIndex) string 
 }
 
 func pastTitle(pe hubcore.PastEntry) string {
-	if title := schema.SessionDisplayName(pe.Meta); title != "" {
+	meta := pe.Meta
+	if fresh, err := schema.LoadSessionMeta(pe.StateDir, pe.Meta.ID); err == nil {
+		meta = fresh
+	}
+	return sessionTitleFromMeta(meta)
+}
+
+func sessionTitleFromMeta(meta schema.SessionMeta) string {
+	if title := strings.TrimSpace(meta.Name); title != "" {
 		return title
 	}
-	return hubcore.ShortID(pe.Meta.ID)
+	if prompt := compactSessionPromptTitle(meta.OriginalPrompt); prompt != "" {
+		return prompt
+	}
+	return hubcore.ShortID(meta.ID)
+}
+
+func compactSessionPromptTitle(prompt string) string {
+	prompt = strings.TrimSpace(strings.ReplaceAll(prompt, "\r", ""))
+	if prompt == "" {
+		return ""
+	}
+	if idx := strings.IndexByte(prompt, '\n'); idx >= 0 {
+		prompt = strings.TrimSpace(prompt[:idx])
+	}
+	const max = 80
+	if len(prompt) <= max {
+		return prompt
+	}
+	return strings.TrimSpace(prompt[:max-1]) + "…"
 }
 
 func searchPastTitle(pe hubcore.PastEntry) string {

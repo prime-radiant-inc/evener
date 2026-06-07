@@ -354,7 +354,7 @@
         }
       }
       const done = tasks.filter(t => t.status === "done").length;
-      updateTasksBadge(done, tasks.length);
+      updateTasksBadge(done, tasks.length, currentTaskSummary(tasks));
     },
 
     // Periodically pull /tasks to keep the workspace tasks-button badge
@@ -1389,9 +1389,10 @@
           result = "~";
         }
       }
-      // Middle-truncate if still long.
-      if (result.length > 40) {
-        result = result.slice(0, 14) + "…" + result.slice(-24);
+      // Middle-truncate only very long paths/commands. The tool row has room to
+      // wrap, so keep substantially more context than the old 40-char cap.
+      if (result.length > 96) {
+        result = result.slice(0, 36) + "…" + result.slice(-52);
       }
       return result;
     },
@@ -3276,20 +3277,35 @@
     panel.innerHTML = parts.join("");
   }
 
-  function updateTasksBadge(done, total) {
-    const btn = document.querySelector("[data-tasks-trigger]");
-    if (!btn) return;
-    let badge = btn.querySelector(".panel-toggle-badge");
-    if (total === 0) {
-      if (badge) badge.remove();
-      return;
+  function currentTaskSummary(tasks) {
+    if (!Array.isArray(tasks) || tasks.length === 0) return "";
+    const current = tasks.find(t => t && t.status === "in_progress") || tasks.find(t => t && t.status === "open") || null;
+    if (!current) return "all tasks complete";
+    const desc = String(current.description || "task " + (current.id || "")).trim();
+    return desc ? clip(desc, 120) : "task " + (current.id || "");
+  }
+
+  function updateTasksBadge(done, total, currentText) {
+    const triggers = Array.from(document.querySelectorAll("[data-tasks-trigger]"));
+    if (!triggers.length) return;
+    for (const btn of triggers) {
+      let badge = btn.querySelector(".panel-toggle-badge");
+      if (total === 0) {
+        if (badge) badge.remove();
+      } else {
+        if (!badge) {
+          badge = document.createElement("span");
+          badge.className = "panel-toggle-badge";
+          btn.appendChild(badge);
+        }
+        badge.textContent = done + "/" + total;
+      }
+      const textEl = btn.querySelector("[data-task-status-text]");
+      if (textEl) {
+        if (total === 0) textEl.textContent = "no tasks";
+        else textEl.textContent = done + "/" + total + (currentText ? " · " + currentText : "");
+      }
     }
-    if (!badge) {
-      badge = document.createElement("span");
-      badge.className = "panel-toggle-badge";
-      btn.appendChild(badge);
-    }
-    badge.textContent = done + "/" + total;
   }
 
   function taskStatusIcon(status) {

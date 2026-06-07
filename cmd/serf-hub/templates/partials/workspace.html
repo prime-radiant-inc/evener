@@ -6,13 +6,10 @@
   <div class="workspace-title-row">
     <button type="button" class="header-hamburger" data-sidebar-toggle title="open sidebar" aria-label="open sidebar">☰</button>
     <div class="workspace-title">
-      <span class="title">{{.Title}}</span>
+      <span id="workspace-session-title" class="title">{{.Title}}</span>
       <button class="btn btn-icon title-action" type="button" data-copy-id="{{.ID}}" title="copy session ID">⧉</button>
     </div>
     <div class="workspace-actions">
-      <button type="button" class="btn btn-ghost panel-toggle" data-tasks-trigger title="task list">
-        <span class="panel-toggle-icon">☑</span><span class="panel-toggle-label">tasks</span>
-      </button>
       <button type="button" class="btn btn-ghost panel-toggle" data-details-trigger title="session details">
         <span class="panel-toggle-icon">ⓘ</span><span class="panel-toggle-label">details</span>
       </button>
@@ -25,7 +22,7 @@
     <span class="skeleton skeleton-meta-pill"></span>
     <span class="skeleton skeleton-meta-pill skeleton-meta-pill-short"></span>
     <span class="skeleton skeleton-meta-pill skeleton-meta-pill-long"></span>
-    {{template "workspace_meta" .}}
+    {{template "workspace_meta_content" .}}
   </div>
 </header>
 
@@ -61,6 +58,11 @@
               title="Queued messages process after the current turn. Press ⇧↵ or click &quot;send as steer&quot; to drain them as a steering message.">?</button>
     </div>
     <ul class="queue-preview-list" data-queue-list></ul>
+  </div>
+  <div class="task-status-row">
+    <button type="button" class="status-item tasks-status" data-tasks-trigger title="task list">
+      <span class="status-key">tasks</span> <span class="status-value" data-task-status-text>tasks</span>
+    </button>
   </div>
   <div class="input-card" data-drop-zone>
     <textarea class="message-input" placeholder="message the agent…" autofocus rows="1"></textarea>
@@ -101,4 +103,6 @@
 </form>
 {{end}}
 
-{{define "workspace_meta"}}{{if .SourceLabel}}<span class="meta-key">src</span><span class="source-label" data-source-label="{{.SourceLabel}}">{{.SourceLabel}}</span>{{end}}{{if .Branch}}<span class="meta-key">branch</span><span class="branch">{{.Branch}}</span>{{end}}<span class="status-badge" data-state="{{.State}}"><span class="status-dot" data-state="{{.State}}"></span>{{.StateLabel}}</span><span class="turn-count">{{.TurnCount}} turn{{if ne .TurnCount 1}}s{{end}}</span>{{end}}
+{{define "workspace_meta_content"}}{{if .SourceLabel}}<span class="meta-key">src</span><span class="source-label" data-source-label="{{.SourceLabel}}">{{.SourceLabel}}</span>{{end}}<span class="status-badge" data-state="{{.State}}"><span class="status-dot" data-state="{{.State}}"></span>{{.StateLabel}}</span><span class="turn-count">{{.TurnCount}} turn{{if ne .TurnCount 1}}s{{end}}</span>{{end}}
+
+{{define "workspace_meta"}}<span id="workspace-session-title" class="title" hx-swap-oob="true">{{.Title}}</span>{{template "workspace_meta_content" .}}{{end}}

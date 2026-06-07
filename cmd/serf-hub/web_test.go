@@ -2153,6 +2153,15 @@ func TestWeb_WorkspacePartial_RendersWorkingDirInStatusRow(t *testing.T) {
 	if !strings.Contains(body, `class="status-value"`) {
 		t.Errorf("status row missing status-value span: %q", body)
 	}
+	if strings.Contains(body, `class="branch">feature/bar</span>`) {
+		t.Errorf("workspace header should not duplicate branch metadata: %q", body)
+	}
+	if !strings.Contains(body, `class="task-status-row"`) {
+		t.Errorf("workspace partial missing bottom task status row: %q", body)
+	}
+	if !strings.Contains(body, `data-task-status-text`) {
+		t.Errorf("workspace partial missing bottom task status text target: %q", body)
+	}
 }
 
 // TestWeb_State_RendersInputStatusPartial verifies the polled /state endpoint
@@ -2190,6 +2199,86 @@ func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
 	}
 	if !strings.Contains(body, "main") {
 		t.Errorf("state partial missing Branch 'main': %q", body)
+	}
+	if strings.Contains(body, `data-tasks-trigger`) {
+		t.Errorf("state partial should not duplicate task trigger; task status row lives above input: %q", body)
+	}
+}
+
+func TestWeb_MetaPartialRefreshesGeneratedSessionTitle(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const sessionID = "01TITLE001"
+	longPrompt := "please investigate the session titling feature because the web ui is showing this entire initial prompt instead of a compact generated title"
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{ID: sessionID, UpdatedAt: time.Now(), OriginalPrompt: longPrompt}); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate the async title generator updating the meta file after the past
+	// index was built. The polled meta partial should pick up this fresh Name.
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{ID: sessionID, UpdatedAt: time.Now(), OriginalPrompt: longPrompt, Name: "Fix web session title"}); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: idx})
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+sessionID+"/meta", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="workspace-session-title"`) || !strings.Contains(body, `hx-swap-oob="true"`) {
+		t.Fatalf("meta partial should include an out-of-band title swap: %q", body)
+	}
+	if !strings.Contains(body, "Fix web session title") {
+		t.Fatalf("meta partial should use fresh generated title: %q", body)
+	}
+	if strings.Contains(body, longPrompt) {
+		t.Fatalf("meta partial should not render full original prompt as title: %q", body)
+	}
+}
+
+func TestWeb_WorkspaceInitialMetaDoesNotDuplicateTitleOOB(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "x")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const sessionID = "01TITLE002"
+	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{ID: sessionID, UpdatedAt: time.Now(), Name: "Compact title"}); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: idx})
+	req := httptest.NewRequest(http.MethodGet, "/_partials/s/"+sessionID+"/workspace", nil)
+	req.Host = "127.0.0.1:9180"
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if count := strings.Count(body, `id="workspace-session-title"`); count != 1 {
+		t.Fatalf("workspace should render exactly one title element, got %d: %q", count, body)
+	}
+	if strings.Contains(body, `hx-swap-oob="true"`) {
+		t.Fatalf("initial workspace render should not include OOB title swap inside metadata: %q", body)
 	}
 }
 
