@@ -818,9 +818,14 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   display: flex;
   align-items: center;
   margin: 0 0 var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
 }
 .tasks-status {
   appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
   border: 0;
   background: transparent;
   color: var(--text-muted);
@@ -831,6 +836,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   padding: 0;
 }
 .tasks-status:hover .status-value { color: var(--text); }
+.tasks-status .status-key { color: var(--text-dim); }
 .tasks-status .status-value {
   display: inline-block;
   max-width: min(760px, calc(100vw - 220px));
@@ -839,6 +845,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   vertical-align: bottom;
   white-space: nowrap;
 }
+.tasks-status .panel-toggle-badge { display: none; }
 
 /* Composer attachment rail — paste, drag-drop, and file-picker chips all
    render here through SerfComposerAttachments. Hides itself when empty. */

@@ -18,7 +18,7 @@ function newHarness() {
     <div id="conversation" data-session-id="01TEST" data-state="ended"></div>
     <form data-input-form data-session-id="01TEST">
       <div class="task-status-row">
-        <button type="button" class="status-item tasks-status" data-tasks-trigger title="task list"><span class="status-key">tasks</span> <span class="status-value" data-task-status-text>tasks</span></button>
+        <button type="button" class="status-item tasks-status" data-tasks-trigger title="task list"><span class="status-key">tasks</span><span class="status-value" data-task-status-text>loading…</span></button>
       </div>
       <textarea class="message-input"></textarea>
     </form>
@@ -150,7 +150,9 @@ await scenario("bottom task status shows progress and current task text", [
   if (text.textContent !== "1/3 · Implement the footer task status") return { ok: false, detail: "wrong task status text: " + text.textContent };
   const badge = trigger.querySelector(".panel-toggle-badge");
   if (!badge || badge.textContent !== "1/3") return { ok: false, detail: "missing task badge" };
-  if (!/\.task-status-row\s*\{/.test(styleSrc)) return { ok: false, detail: "missing task-status-row CSS" };
+  if (!/\.task-status-row\s*\{[^}]*font-family:\s*var\(--font-mono\)/.test(styleSrc)) return { ok: false, detail: "task status row should use compact mono styling" };
+  if (!/\.tasks-status\s*\{[^}]*display:\s*inline-flex/.test(styleSrc)) return { ok: false, detail: "task status trigger should align key/value inline" };
+  if (!/\.tasks-status \.panel-toggle-badge\s*\{[^}]*display:\s*none/.test(styleSrc)) return { ok: false, detail: "task status should hide redundant progress badge" };
   return { ok: true };
 });
 
