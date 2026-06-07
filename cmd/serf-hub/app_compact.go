@@ -87,6 +87,8 @@ func threadActionAvailable(caps appwire.ThreadCapabilities, action string) bool 
 		return caps.ChangeModel
 	case "queue":
 		return caps.Queue
+	case "goal":
+		return caps.Goal
 	default:
 		return false
 	}

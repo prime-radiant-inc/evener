@@ -45,6 +45,9 @@ func (f fakeSource) ShutdownThread(context.Context, appwire.ThreadShutdownParams
 func (f fakeSource) SetThreadModel(context.Context, appwire.ThreadModelSetParams) error {
 	return nil
 }
+func (f fakeSource) GoalSet(context.Context, appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
+	return appwire.GoalSetResponse{}, nil
+}
 func (f fakeSource) ClearThread(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 	return appwire.ThreadClearResponse{}, nil
 }

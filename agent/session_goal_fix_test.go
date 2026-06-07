@@ -19,7 +19,7 @@ func TestGoalTerminalReportEmittedOnce(t *testing.T) {
 	store.SetTerminal(goal.StatusComplete, "", time.Now()) // as update_goal("complete") would
 
 	for i := 0; i < 3; i++ {
-		if _, ok := sess.armGoalContinuation(false); ok {
+		if _, ok := sess.armGoalContinuation(false, true); ok {
 			t.Fatalf("turn %d: a terminal goal must not continue", i)
 		}
 	}

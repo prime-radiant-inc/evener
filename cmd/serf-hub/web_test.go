@@ -79,6 +79,51 @@ func TestHubDetailFromAppThreadTreatsClosedAsNotLive(t *testing.T) {
 	}
 }
 
+// TestHubDetailFromAppThreadCarriesGoal asserts the thread's Serf.Goal status
+// and turn count flow into SessionDetail's flattened goal fields, which feed
+// the live input-strip goal pill.
+func TestHubDetailFromAppThreadCarriesGoal(t *testing.T) {
+	detail := hubDetailFromAppThread(appwire.Thread{
+		ID:        "th_goal",
+		SessionID: "th_goal",
+		Status:    appwire.ThreadStatus{Type: "idle"},
+		Source:    "local",
+		Serf: appwire.SerfThread{
+			Ref:  "local:th_goal",
+			Goal: &appwire.GoalState{Status: "active", Iterations: 2},
+		},
+	})
+	if detail.GoalStatus != "active" || detail.GoalIterations != 2 {
+		t.Fatalf("goal not carried through: status=%q iterations=%d", detail.GoalStatus, detail.GoalIterations)
+	}
+
+	noGoal := hubDetailFromAppThread(appwire.Thread{
+		ID:        "th_nogoal",
+		SessionID: "th_nogoal",
+		Status:    appwire.ThreadStatus{Type: "idle"},
+		Source:    "local",
+		Serf:      appwire.SerfThread{Ref: "local:th_nogoal"},
+	})
+	if noGoal.GoalStatus != "" || noGoal.GoalIterations != 0 {
+		t.Fatalf("expected empty goal when none set: status=%q iterations=%d", noGoal.GoalStatus, noGoal.GoalIterations)
+	}
+
+	// The workspace partial passes a WorkspaceData (not the /state data map) to
+	// the input_status template, so it must carry the goal too.
+	wd := workspaceDataFromAppThread(appwire.Thread{
+		ID:     "th_goal",
+		Source: "local",
+		Status: appwire.ThreadStatus{Type: "idle"},
+		Serf: appwire.SerfThread{
+			Ref:  "local:th_goal",
+			Goal: &appwire.GoalState{Status: "active", Iterations: 2},
+		},
+	})
+	if wd.GoalStatus != "active" || wd.GoalIterations != 2 {
+		t.Fatalf("workspace data dropped goal: status=%q iterations=%d", wd.GoalStatus, wd.GoalIterations)
+	}
+}
+
 func TestWeb_CodexSessionRouteReadsConfiguredSource(t *testing.T) {
 	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex"})
 	appserver.HandleTyped(codex.Router(), appwire.MethodThreadRead, func(_ context.Context, params map[string]any) (map[string]any, error) {
@@ -1366,6 +1411,10 @@ func (s *scriptedAppSource) ShutdownThread(context.Context, appwire.ThreadShutdo
 
 func (s *scriptedAppSource) SetThreadModel(context.Context, appwire.ThreadModelSetParams) error {
 	return appwire.Unavailable("scripted source does not set models")
+}
+
+func (s *scriptedAppSource) GoalSet(context.Context, appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
+	return appwire.GoalSetResponse{}, appwire.Unavailable("scripted source does not set goals")
 }
 
 func (s *scriptedAppSource) ClearThread(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {

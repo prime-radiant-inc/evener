@@ -21,6 +21,7 @@ type Source interface {
 	CompactThread(context.Context, appwire.ThreadCompactStartParams) error
 	ShutdownThread(context.Context, appwire.ThreadShutdownParams) error
 	SetThreadModel(context.Context, appwire.ThreadModelSetParams) error
+	GoalSet(context.Context, appwire.GoalSetParams) (appwire.GoalSetResponse, error)
 	ClearThread(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error)
 	ListModels(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error)
 	ListTasks(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error)

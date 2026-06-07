@@ -302,7 +302,7 @@ func runServe(args []string) error {
 		}
 		return getSession().SetGoal(ctx, objective)
 	})
-	srv.SetGoalStatusFunc(func() (string, int, int, bool) { return getSession().GoalStatus() })
+	srv.SetGoalStatusFunc(func() (string, int, bool) { return getSession().GoalStatus() })
 	srv.SetDrainAsSteerFunc(func() error { return getSession().DrainAsSteer(ctx) })
 	srv.SetDrainAsSteerWithInputFunc(func(text string, images []server.ImageAttachment) error {
 		return getSession().DrainAsSteerWithInput(ctx, text, images)

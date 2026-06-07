@@ -453,6 +453,19 @@ func registerThreadHandlers(
 		}
 		return appwire.EmptyResponse{}, source.SetThreadModel(ctx, params)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodGoalSet, func(ctx context.Context, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+		if err != nil {
+			return appwire.GoalSetResponse{}, err
+		}
+		// Gate like every sibling thread action so goal/set is rejected uniformly
+		// on sources without the engine (e.g. codex) rather than only self-guarding
+		// inside the source after a managed launch (/par A6).
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "goal"); err != nil {
+			return appwire.GoalSetResponse{}, err
+		}
+		return source.GoalSet(ctx, params)
+	})
 }
 
 // registerAuthHandlers registers the serf/auth/* RPC handlers, routed to the

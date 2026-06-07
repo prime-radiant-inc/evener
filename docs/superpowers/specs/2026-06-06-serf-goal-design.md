@@ -2,6 +2,33 @@
 
 **Status:** Reviewed — revision 4, post adversarial round 3 (Phase 1 complete) · **Date:** 2026-06-06 · **Branch:** `goal-objective-engine`
 
+> **Amendments (v1.1 + post-implementation hardening) — these supersede the body where they conflict.**
+> The body below describes the original v1 design. Implementation and two follow-on review
+> passes changed the safety and surface model:
+> - **No iteration cap.** `DefaultMaxIterations` was removed (pure-Codex: Codex has no cap).
+>   The no-progress breaker is the *sole* automatic stop. Every inline reference to
+>   `DefaultMaxIterations` / "iteration cap" below is obsolete.
+> - **Two-tier no-progress breaker.** A goal that has worked then stalled stops after
+>   `NoProgressLimit` (3) consecutive no-progress turns; a goal that has *never* made a
+>   mutating tool call gets more leading-investigation room (`NeverProgressedLimit`, 6) but is
+>   still bounded — so a read-only goal cannot run forever. (Hardening: closed a hole where a
+>   never-progressing goal accrued no streak at all.)
+> - **Compaction re-injects the objective** via the existing `runPreCompactHook` seam, so the
+>   directive is not eroded by summarization.
+> - **Cross-resume persistence.** Goal state is persisted to `meta.json` (`SessionMeta.Goal`).
+>   Terminal transitions (no-progress block, error block) are persisted even though they occur
+>   after the per-turn auto-save; a root/daemon-shutdown cancellation is discriminated so the
+>   goal is left **active** to resume on restart rather than blocked. On load, **only an active
+>   goal is restored** ("loaded but idle" — it resumes on the next turn, no auto-kick); a
+>   finished goal is not reloaded.
+> - **Continuation marker, not prompt.** The per-turn continuation event surfaces a compact
+>   marker ("Continuing toward: <objective>") to the UI; the full ~2.5KB prompt goes only to
+>   the model as a steering turn.
+> - **Capability-gated surface.** `goal/set` is gated by a `Goal` thread capability like every
+>   sibling action (rejected uniformly on sources without the engine, e.g. codex). Full
+>   surface: status chip on serf-tui (header) and serf-hub web (pill); web can set/clear via
+>   the ⌘K palette.
+
 ## Summary
 
 Add a `/goal` feature to serf: the user states an objective, and the agent keeps working
@@ -147,7 +174,7 @@ investigation at the start (debugging before the first edit) is never penalized;
 started, reaching `NoProgressLimit` flips the goal to `blocked` (`StopReason="no progress"`).
 This catches the common runaway (model believes it's done and keeps talking / plan-spamming)
 without false-blocking front-loaded investigation. Accepted v1 residual: a model writing
-trivial junk each turn still games it — bounded by the iteration cap.
+trivial junk each turn still games it — but a goal that never makes a *mutating* call is bounded by the breaker's never-progressed tier (`NeverProgressedLimit`); see Amendments.
 
 **Termination paths (every one ends with a terminal report, §5):**
 - **Model-declared** — `update_goal("complete"|"blocked")` sets a terminal status; the gate

@@ -62,6 +62,28 @@ func (s *Session) Meta() schema.SessionMeta {
 		DivergenceTurn:  divergence,
 		ForkLabel:       s.fork.label,
 		IsSubagent:      isSubagent,
+		Goal:            s.goalSnapshotForMeta(),
+	}
+}
+
+// goalSnapshotForMeta calls PersistSnapshot on the goal store and maps the
+// resulting primitives to a *schema.GoalSnapshot. Returns nil when no goal is
+// set (PersistSnapshot ok==false). Called from Meta() which holds s.mu; the
+// goal store has its own independent mutex, so there is no lock-order issue.
+func (s *Session) goalSnapshotForMeta() *schema.GoalSnapshot {
+	obj, status, stopReason, iters, streak, madeProgress, created, updated, ok := s.getOrCreateGoalStore().PersistSnapshot()
+	if !ok {
+		return nil
+	}
+	return &schema.GoalSnapshot{
+		Objective:        obj,
+		Status:           status,
+		Iterations:       iters,
+		NoProgressStreak: streak,
+		MadeProgressOnce: madeProgress,
+		StopReason:       stopReason,
+		CreatedAt:        created,
+		UpdatedAt:        updated,
 	}
 }
 

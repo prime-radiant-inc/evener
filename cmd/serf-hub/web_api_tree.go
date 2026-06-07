@@ -297,6 +297,10 @@ func hubDetailFromAppThread(thread appwire.Thread) hubapi.SessionDetail {
 	if detail.SessionID == "" {
 		detail.SessionID = thread.ID
 	}
+	if goal := thread.Serf.Goal; goal != nil {
+		detail.GoalStatus = goal.Status
+		detail.GoalIterations = goal.Iterations
+	}
 	return detail
 }
 

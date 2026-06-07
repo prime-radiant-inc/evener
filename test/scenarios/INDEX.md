@@ -99,6 +99,17 @@ the area they exercise.
 - `tui-steer-success-reconciles.md` — TUI counterpart of the success
   reconcile; spinner prefix replaced by authoritative steering.
 
+## Goal engine (`/goal`)
+
+- `web-goal-set-and-complete.md` — set a `/goal` from the ⌘K palette
+  and watch it drive to completion: appwire `goal/set` accepted (A6
+  capability gate), status pill `goal <status> · <N> turns`, the
+  compact continuation marker rendered as a "Goal" systemMessage (B6,
+  not the full prompt), and the terminal report.
+- `tui-goal-set-and-complete.md` — TUI counterpart: `/goal <objective>`,
+  the `goal <status> <iter>` header chip, `/goal status`, the B6
+  continuation marker, and completion.
+
 ## Image attachments
 
 End-to-end coverage for the composer image-attachment surfaces (kata

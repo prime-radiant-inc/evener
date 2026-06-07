@@ -60,12 +60,23 @@ func (s *Session) compactionEmitFunc(ctx context.Context, history *[]schema.Turn
 	return emitFn, flush
 }
 
+// runPreCompactHook gathers the steering messages re-injected once per
+// compaction and appends them to history as TurnSteering turns. The order is
+// plugin PreCompact output first, then the active goal objective last: appending
+// the objective at the strongest recency position (the trailing steering turn
+// that safeCutoff protects) is what lets it survive the same compaction. The
+// goal path runs even with no plugins loaded; only the plugin part is guarded by
+// a non-nil hookRunner.
 func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn) []steeringTurnRecord {
-	if s.hookRunner == nil || history == nil {
+	if history == nil {
 		return nil
 	}
-	result := s.hookRunner.RunPreCompact(ctx, s.hookInput(plugin.HookPreCompact))
-	return appendSteeringMessagesToHistory(history, result.SystemMessages)
+	var messages []string
+	if s.hookRunner != nil {
+		messages = append(messages, s.hookRunner.RunPreCompact(ctx, s.hookInput(plugin.HookPreCompact)).SystemMessages...)
+	}
+	messages = append(messages, s.goalCompactionSteering()...)
+	return appendSteeringMessagesToHistory(history, messages)
 }
 
 func appendSteeringMessagesToHistory(history *[]schema.Turn, messages []string) []steeringTurnRecord {

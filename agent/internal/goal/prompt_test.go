@@ -20,7 +20,7 @@ func TestRenderPrompt(t *testing.T) {
 	}{
 		{"do not redefine success", "Continuation behavior"},
 		{"merely-compatible", "Fidelity"},
-		{"bounded number of turns", "How this loop ends"},
+		{"the loop ends on", "How this loop ends"},
 		{"do not count as progress", "How this loop ends"},
 		{`status "blocked"`, "When to call update_goal(blocked)"},
 		{"Completion audit:", "Completion audit"},

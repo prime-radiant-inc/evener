@@ -233,8 +233,10 @@ type PromptLoadedData struct {
 	Size  int    `json:"size"`
 }
 
-// GoalContinuationData is the payload for an EventGoalContinuation event. Text
-// is the rendered continuation prompt injected as a steering turn.
+// GoalContinuationData is the payload for an EventGoalContinuation event. Text is
+// a compact human-facing marker for the continuation (e.g. "Continuing toward:
+// <objective>"), NOT the full rendered continuation prompt — that scaffolding goes
+// to the model via the steering turn and is kept out of the UI projection.
 type GoalContinuationData struct {
 	Text string `json:"text"`
 }

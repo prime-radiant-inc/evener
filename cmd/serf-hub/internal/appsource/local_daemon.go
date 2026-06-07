@@ -208,6 +208,20 @@ func (s *LocalDaemonSource) SetThreadModel(ctx context.Context, params appwire.T
 	})
 }
 
+func (s *LocalDaemonSource) GoalSet(ctx context.Context, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
+	entry, err := s.entryForRef(params.Ref, "")
+	if err != nil {
+		return appwire.GoalSetResponse{}, err
+	}
+	var out appwire.GoalSetResponse
+	err = s.withClient(ctx, entry, func(client *appwire.Client) error {
+		var callErr error
+		out, callErr = client.GoalSet(ctx, params)
+		return callErr
+	})
+	return out, err
+}
+
 func (s *LocalDaemonSource) ClearThread(ctx context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 	entry, err := s.entryForRef(params.Ref, "")
 	if err != nil {
@@ -511,6 +525,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 				Shutdown:     true,
 				ChangeModel:  true,
 				Queue:        status == appwire.ThreadStatusActive,
+				Goal:         true,
 			},
 		},
 		Status: appwire.ThreadStatus{Type: status},
