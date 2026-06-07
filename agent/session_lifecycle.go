@@ -201,7 +201,7 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 	nextKind := kind
 	processCtx := ctx
 	for {
-		out, err := s.processOneInput(processCtx, next, nextImages, nextKind)
+		out, progressed, err := s.processOneInput(processCtx, next, nextImages, nextKind)
 		// Follow-up turns (after the first) carry no attachments and are
 		// user-driven, not continuations.
 		nextImages = nil
@@ -263,6 +263,11 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 					}
 				}
 			}
+			// The drain-loop gate below is unreachable on an error return, so a
+			// goal that is still active when the turn fails must be terminated
+			// here (spec §2/C11). terminateGoalOnError no-ops on a genuine user
+			// interrupt, leaving the goal active to resume after the next turn.
+			s.terminateGoalOnError(processCtx, err)
 			return strings.Join(outputs, "\n"), err
 		}
 		fu := s.popFollowUp()
@@ -279,6 +284,15 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 		if queued := s.popQueueHead(); strings.TrimSpace(queued.Text) != "" || len(queued.Images) > 0 {
 			next = queued.Text
 			nextImages = queued.Images
+			continue
+		}
+		// Goal continuation gate (priority 3, strictly below user input): if a
+		// goal is active and the engine says continue, run the next turn as a
+		// system-framed continuation. On a terminal/stop decision the gate emits
+		// the terminal report and we fall through to EventSessionEnd (idle).
+		if cont, ok := s.armGoalContinuation(progressed); ok {
+			next = cont
+			nextKind = EntryContinuation
 			continue
 		}
 		s.mu.Lock()
@@ -299,7 +313,7 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 	}
 }
 
-func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
+func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (out string, progressed bool, err error) {
 	// Flush meta.json on every exit from this function — normal return, error
 	// return, ctx cancellation, retry-budget exhaustion, or panic. Without
 	// this, in-memory modelResponses bumps that happen between happy-path
@@ -327,7 +341,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return "", errors.New("session is closed")
+		return "", false, errors.New("session is closed")
 	}
 	s.setStateIfOpenLocked(SessionProcessing)
 	s.comm = communicateResult{}
@@ -341,14 +355,14 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			s.state = SessionIdle
 		}
 		s.mu.Unlock()
-		return "", ctx.Err()
+		return "", false, ctx.Err()
 	default:
 	}
 
 	if kind == EntryContinuation {
 		s.acceptContinuationInput(ctx, input)
 	} else if !s.acceptUserInput(ctx, input, images) {
-		return "", nil
+		return "", false, nil
 	}
 
 	var toolSigs []string
@@ -357,7 +371,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	contentFilterRetried := false // track whether we've already tried recovering from a content filter error
 	var tracker retryTracker
 
-	for round := 0; s.cfg.MaxToolRoundsPerInput < 0 || round < s.cfg.MaxToolRoundsPerInput; round++ {
+	// Continuation (goal) turns clamp the per-input round cap to GoalTurnMaxRounds
+	// (spec §2b/C13); a config of <0 is "unbounded", so a bare min would be wrong.
+	roundCap := goalRoundCap(s.cfg.MaxToolRoundsPerInput, kind)
+
+	for round := 0; roundCap < 0 || round < roundCap; round++ {
 		roundStart := time.Now()
 		var timings events.RoundTimings
 		timings.Round = round
@@ -374,7 +392,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				s.state = SessionIdle
 			}
 			s.mu.Unlock()
-			return "", ctx.Err()
+			return "", progressed, ctx.Err()
 		default:
 		}
 
@@ -390,7 +408,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		if err == nil {
 			if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
-				return "", abortErr
+				return "", progressed, abortErr
 			}
 		}
 
@@ -401,11 +419,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			if retry {
 				continue
 			}
-			return "", ferr
+			return "", progressed, ferr
 		}
 
 		if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
-			return "", abortErr
+			return "", progressed, abortErr
 		}
 
 		// Accumulate usage and record exact input token count for pressure calculation.
@@ -419,7 +437,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 
 		if abortErr := s.abortResponseProcessing(ctx); abortErr != nil {
-			return "", abortErr
+			return "", progressed, abortErr
 		}
 
 		txt := resp.Text()
@@ -443,7 +461,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		skipHistory := noContent && !hasPhase
 
 		if abortErr := s.emitAssistantResponse(ctx, resp, modelResp, txt, skipHistory); abortErr != nil {
-			return "", abortErr
+			return "", progressed, abortErr
 		}
 		// pause_turn: model needs another turn (e.g. server-side web search still running).
 		if resp.Finish.Reason == llm.FinishReasonPauseTurn {
@@ -459,10 +477,16 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			calls[i].Name = s.canonicalToolName(calls[i].Name)
 		}
 
+		// Progress signal for the goal engine: a turn "progressed" iff it made a
+		// real mutating tool call — !ReadOnly AND not the result/communicate tool
+		// AND not task_list (plan-spam and "I'm done" messages must not count).
+		// Accumulated as a turn-level OR across the turn's rounds (spec §2).
+		progressed = progressed || s.callsMadeProgress(calls)
+
 		if len(calls) == 0 {
 			retry, ferr := s.handleNoToolCalls(noContent, &tracker)
 			if !retry {
-				return "", ferr
+				return "", progressed, ferr
 			}
 			round-- // Don't count empty/bare-text retries as tool rounds.
 			timings.TotalRound = time.Since(roundStart)
@@ -479,7 +503,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			if ctx.Err() != nil && !s.isClosingOrClosed() {
 				s.appendCanceledToolResults(calls, nil, abortErr)
 			}
-			return "", abortErr
+			return "", progressed, abortErr
 		}
 
 		// --- Phase: ToolExec ---
@@ -488,7 +512,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// Execute tool calls (possibly in parallel) and send results back.
 		results, execErr := s.execToolBatch(ctx, calls, profile)
 		if execErr != nil {
-			return "", execErr
+			return "", progressed, execErr
 		}
 
 		timings.ToolExec = time.Since(tPhaseStart)
@@ -497,7 +521,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		tPhaseStart = time.Now()
 
 		if persistErr := s.persistToolResults(ctx, calls, results); persistErr != nil {
-			return "", persistErr
+			return "", progressed, persistErr
 		}
 
 		timings.Persistence = time.Since(tPhaseStart)
@@ -507,13 +531,13 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		// Notify the context strategy that a tool round completed.
 		if afterErr := s.notifyStrategyAfterAction(ctx); afterErr != nil {
-			return "", afterErr
+			return "", progressed, afterErr
 		}
 
 		timings.AfterAction = time.Since(tPhaseStart)
 
 		if steerErr := s.injectPostToolSteering(ctx, calls, &toolSigs); steerErr != nil {
-			return "", steerErr
+			return "", progressed, steerErr
 		}
 
 		// Emit round timings before checking result delivery.
@@ -523,7 +547,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		// communicate sets the flag; exit the loop with the communicated message.
 		if done, text := s.deliverIfCommunicated(ctx); done {
-			return text, nil
+			return text, progressed, nil
 		}
 	}
 
@@ -531,7 +555,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	s.mu.Lock()
 	s.setStateIfOpenLocked(SessionIdle)
 	s.mu.Unlock()
-	return lastText, nil
+	return lastText, progressed, nil
 }
 
 // acceptUserInput records a new user input at the start of an input turn: it
