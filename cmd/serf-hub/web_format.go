@@ -158,11 +158,11 @@ func compactSessionPromptTitle(prompt string) string {
 	if idx := strings.IndexByte(prompt, '\n'); idx >= 0 {
 		prompt = strings.TrimSpace(prompt[:idx])
 	}
-	const max = 80
-	if len(prompt) <= max {
+	const maxLen = 80
+	if len(prompt) <= maxLen {
 		return prompt
 	}
-	return strings.TrimSpace(prompt[:max-1]) + "…"
+	return strings.TrimSpace(prompt[:maxLen-1]) + "…"
 }
 
 func searchPastTitle(pe hubcore.PastEntry) string {
