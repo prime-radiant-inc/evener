@@ -1,4 +1,7 @@
 {{define "input_status"}}
+{{if .SourceLabel}}<span class="status-item source"><span class="status-key">src</span> <span class="status-value source-label">{{.SourceLabel}}</span></span>{{end}}
+<span class="status-badge" data-state="{{.State}}"><span class="status-dot" data-state="{{.State}}"></span>{{.StateLabel}}</span>
+<span class="status-item turns"><span class="status-value turn-count">{{.TurnCount}} turn{{if ne .TurnCount 1}}s{{end}}</span></span>
 {{if or (eq .State "active") (eq .State "awaiting")}}<span class="running-indicator" data-running-indicator><span class="running-dot"></span>running{{if .RunningFor}} · {{.RunningFor}}{{end}}</span>{{end}}
 {{if .WorkingDir}}<span class="status-item cwd" title="{{.WorkingDir}}"><span class="status-key">cwd</span> <span class="status-value">{{.WorkingDir}}</span></span>{{end}}
 {{if .Branch}}<span class="status-item branch"><span class="status-key">branch</span> <span class="status-value">{{.Branch}}</span></span>{{end}}

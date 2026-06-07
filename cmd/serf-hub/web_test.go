@@ -2153,14 +2153,17 @@ func TestWeb_WorkspacePartial_RendersWorkingDirInStatusRow(t *testing.T) {
 	if !strings.Contains(body, `class="status-value"`) {
 		t.Errorf("status row missing status-value span: %q", body)
 	}
-	if strings.Contains(body, `class="branch">feature/bar</span>`) {
-		t.Errorf("workspace header should not duplicate branch metadata: %q", body)
+	if strings.Contains(body, `class="workspace-meta workspace-meta-poll"`) && strings.Contains(body, `>serf</span><span class="status-badge"`) {
+		t.Errorf("workspace header should not render source/status metadata: %q", body)
 	}
 	if !strings.Contains(body, `class="task-status-row"`) {
 		t.Errorf("workspace partial missing bottom task status row: %q", body)
 	}
-	if !strings.Contains(body, `data-task-status-text`) {
-		t.Errorf("workspace partial missing bottom task status text target: %q", body)
+	if !strings.Contains(body, `data-task-status-text>loading…</span>`) {
+		t.Errorf("workspace partial missing bottom task loading placeholder: %q", body)
+	}
+	if strings.Contains(body, `data-task-status-text>tasks</span>`) {
+		t.Errorf("workspace partial should not render duplicated tasks label: %q", body)
 	}
 }
 
@@ -2199,6 +2202,15 @@ func TestWeb_State_RendersInputStatusPartial(t *testing.T) {
 	}
 	if !strings.Contains(body, "main") {
 		t.Errorf("state partial missing Branch 'main': %q", body)
+	}
+	if !strings.Contains(body, `class="status-item source"`) || !strings.Contains(body, `>serf</span>`) {
+		t.Errorf("state partial missing bottom source label: %q", body)
+	}
+	if !strings.Contains(body, `class="status-badge" data-state="ended"`) || !strings.Contains(body, `>ended</span>`) {
+		t.Errorf("state partial missing bottom state badge: %q", body)
+	}
+	if !strings.Contains(body, `class="status-item turns"`) || !strings.Contains(body, `0 turns`) {
+		t.Errorf("state partial missing bottom turn count: %q", body)
 	}
 	if strings.Contains(body, `data-tasks-trigger`) {
 		t.Errorf("state partial should not duplicate task trigger; task status row lives above input: %q", body)

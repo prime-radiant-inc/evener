@@ -377,6 +377,7 @@ func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id 
 	// the daemon is reachable.
 	wd := s.workspaceData(id)
 	data := map[string]any{
+		"SourceLabel":    wd.SourceLabel,
 		"Model":          wd.Model,
 		"WorkingDir":     wd.WorkingDir,
 		"Branch":         wd.Branch,
@@ -385,6 +386,8 @@ func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id 
 		"ContextNumbers": "",
 		"Cost":           wd.Cost,
 		"State":          wd.State,
+		"StateLabel":     wd.StateLabel,
+		"TurnCount":      wd.TurnCount,
 		"RunningFor":     wd.RunningFor,
 		"GoalStatus":     "",
 		"GoalIterations": 0,
@@ -397,6 +400,8 @@ func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id 
 			data["Model"] = detail.Model
 		}
 		data["State"] = detail.State
+		data["StateLabel"] = stateLabel(detail.State)
+		data["TurnCount"] = detail.TurnCount
 		data["ContextPercent"] = int(detail.ContextPressure * 100)
 		data["ContextWindow"] = detail.ContextWindow
 		data["ContextNumbers"] = formatContextNumbers(detail.ContextUsed, detail.ContextWindow, detail.ContextRemaining)

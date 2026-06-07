@@ -3207,9 +3207,9 @@
     const open = tasks.filter(t => t.status === "open").length;
     const cancelled = tasks.filter(t => t.status === "cancelled").length;
 
-    // Update the tasks-button progress badge (e.g., "☑ tasks 3/7") as a
-    // side-effect — visible without opening the panel.
-    updateTasksBadge(done, total);
+    // Update the tasks-button progress/status text as a side-effect — visible
+    // without opening the panel.
+    updateTasksBadge(done, total, currentTaskSummary(tasks));
 
     const parts = [];
     parts.push("<header class='details-panel-header'>");
