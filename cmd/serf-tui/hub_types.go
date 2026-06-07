@@ -79,6 +79,9 @@ type hubSessionDetail struct {
 	// sessionQueue when entering/refreshing a session so the composer
 	// preview lines up with the daemon truth without local mirroring.
 	Queue appwire.QueueState
+	// Goal mirrors thread.Serf.Goal so `/goal status` can read the cached
+	// snapshot without a fresh round-trip. Nil when no goal is set.
+	Goal *appwire.GoalState
 }
 
 type hubRefResponse struct {
@@ -230,6 +233,7 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		Live:             node.Live,
 		Capabilities:     capabilities,
 		Queue:            thread.Serf.Queue,
+		Goal:             thread.Serf.Goal,
 	}
 }
 

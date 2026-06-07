@@ -18,10 +18,12 @@ import (
 type ImageAttachment = agent.ImageAttachment
 
 // InputMessage is delivered on InputCh() carrying user text plus any
-// attached images.
+// attached images. Kind classifies the turn (user input vs. a goal-engine
+// continuation); its zero value is agent.EntryUserInput.
 type InputMessage struct {
 	Text   string
 	Images []ImageAttachment
+	Kind   agent.EntryKind
 }
 
 // ToolInfo describes a registered tool and its source.
@@ -132,6 +134,8 @@ type Server struct {
 	steerWithImagesFunc func(string, []ImageAttachment)
 	queueFunc           func(string) error
 	queueWithImagesFunc func(string, []ImageAttachment) error
+	goalFunc            func(objective string) (bool, error)
+	goalStatusFn        func() (status string, iterations, maxIter int, ok bool)
 	drainSteerFunc      func() error
 	drainSteerInputFunc func(string, []ImageAttachment) error
 	queueDepthFn        func() int
@@ -290,6 +294,24 @@ func (s *Server) SetQueueFunc(fn func(string) error) {
 	s.mu.Unlock()
 }
 
+// SetGoalFunc sets the function called by the appwire goal/set method. The
+// callback sets (or, for an empty objective, clears) the session's /goal and
+// returns whether the goal loop started immediately.
+func (s *Server) SetGoalFunc(fn func(objective string) (bool, error)) {
+	s.mu.Lock()
+	s.goalFunc = fn
+	s.mu.Unlock()
+}
+
+// SetGoalStatusFunc sets the callback that reports the session's current /goal
+// state for the thread-read projection (the SerfThread.Goal field). ok is false
+// when no goal is set.
+func (s *Server) SetGoalStatusFunc(fn func() (status string, iterations, maxIter int, ok bool)) {
+	s.mu.Lock()
+	s.goalStatusFn = fn
+	s.mu.Unlock()
+}
+
 // SetQueueWithImagesFunc sets the function called when the appwire
 // turn/queue request carries image attachments (kata t5j6). The callback
 // should append a queued entry that pairs the text with the attached
@@ -439,4 +461,18 @@ func (s *Server) SetProcessing(processing bool) {
 // InputCh returns the channel that receives user input messages.
 func (s *Server) InputCh() <-chan InputMessage {
 	return s.inputCh
+}
+
+// SubmitContinuation feeds a goal continuation prompt into the input channel as
+// an EntryContinuation-kind message. The send is non-blocking: if the 1-slot
+// buffer is full a turn is already pending, whose drain-loop gate is the
+// reliable backstop for the goal, so dropping the kick is safe (spec §7). It is
+// the send-side counterpart to InputCh, used by the idle-kick callback wired
+// from serve.go (the agent module must not import server, so the kick is a
+// callback that lands here).
+func (s *Server) SubmitContinuation(prompt string) {
+	select {
+	case s.inputCh <- InputMessage{Kind: agent.EntryContinuation, Text: prompt}:
+	default:
+	}
 }

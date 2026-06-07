@@ -348,7 +348,7 @@ func (s *Server) handleInput(w http.ResponseWriter, r *http.Request) {
 	}
 
 	select {
-	case s.inputCh <- InputMessage(req):
+	case s.inputCh <- InputMessage{Text: req.Text, Images: req.Images}:
 		w.WriteHeader(http.StatusAccepted)
 	default:
 		http.Error(w, "input buffer full", http.StatusConflict)

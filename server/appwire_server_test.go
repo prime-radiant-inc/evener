@@ -46,6 +46,78 @@ func TestServerAppWireTurnStartQueuesInput(t *testing.T) {
 	}
 }
 
+func TestServerAppWireGoalSetInvokesGoalFunc(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	var got []string
+	srv.SetGoalFunc(func(objective string) (bool, error) {
+		got = append(got, objective)
+		return true, nil
+	})
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodGoalSet, appwire.GoalSetParams{
+		Ref:       "local:th_1",
+		Objective: "improve coverage",
+	}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v error=%+v", resp.Kind(), resp.Error)
+	}
+	out, ok := resp.Response.Result.(appwire.GoalSetResponse)
+	if !ok {
+		t.Fatalf("response result=%T", resp.Response.Result)
+	}
+	if !out.Started {
+		t.Fatalf("started=%v, want true", out.Started)
+	}
+	if len(got) != 1 || got[0] != "improve coverage" {
+		t.Fatalf("goalFunc objectives=%v", got)
+	}
+}
+
+func TestServerAppWireGoalSetEmptyObjectiveRoutesThroughGoalFunc(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	var got []string
+	srv.SetGoalFunc(func(objective string) (bool, error) {
+		got = append(got, objective)
+		return false, nil
+	})
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodGoalSet, appwire.GoalSetParams{
+		Ref:       "local:th_1",
+		Objective: "",
+	}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v error=%+v", resp.Kind(), resp.Error)
+	}
+	out := resp.Response.Result.(appwire.GoalSetResponse)
+	if out.Started {
+		t.Fatalf("started=%v, want false for clear", out.Started)
+	}
+	if len(got) != 1 || got[0] != "" {
+		t.Fatalf("goalFunc objectives=%v, want one empty-objective clear", got)
+	}
+}
+
+func TestServerAppWireGoalSetWithoutGoalFuncIsUnavailable(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodGoalSet, appwire.GoalSetParams{
+		Ref:       "local:th_1",
+		Objective: "x",
+	}))
+	if resp.Kind() != appwire.MessageError {
+		t.Fatalf("resp=%v, want error when goalFunc unwired", resp.Kind())
+	}
+}
+
 func TestServerAppWireTurnStartAcceptsCodexInput(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")

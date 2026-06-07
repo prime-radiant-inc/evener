@@ -6,6 +6,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/goal"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
@@ -50,6 +51,9 @@ type toolDeps struct {
 	// taskGuard exposes task-store access and the task reminder bookkeeping,
 	// all guarded by the session's own mutex.
 	taskGuard taskGuard
+
+	// goalGuard exposes goal-store access. The goal store has its own mutex.
+	goalGuard goalGuard
 
 	// web exposes the web tools with the profile and client hidden behind them.
 	web webDeps
@@ -111,6 +115,15 @@ func (g taskGuard) MarkUsed() { g.markUsed() }
 
 func (g taskGuard) SetReasoningEffort(effort string) { g.setReasoningEffort(effort) }
 
+// goalGuard is a thin lazy-accessor facade over the session's goal store.
+// The goal store carries its own mutex (unlike taskGuard which uses s.mu).
+type goalGuard struct {
+	getOrCreateGoalStore func() *goal.Store
+}
+
+// Store returns the session's goal store, initializing it if needed.
+func (g goalGuard) Store() *goal.Store { return g.getOrCreateGoalStore() }
+
 // webDeps holds the bound web tool functions. The profile and client stay
 // hidden inside the closures captured here.
 type webDeps struct {
@@ -145,6 +158,9 @@ func newToolDeps(s *Session) *toolDeps {
 				s.mu.Unlock()
 			},
 			setReasoningEffort: s.SetReasoningEffort,
+		},
+		goalGuard: goalGuard{
+			getOrCreateGoalStore: s.getOrCreateGoalStore,
 		},
 		web: webDeps{
 			fetch:  s.webFetch,
@@ -204,6 +220,7 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	}
 	registerSubagentTools(reg, s)
 	registerTaskTools(reg, deps)
+	registerGoalTools(reg, deps)
 	registerWebTools(reg, deps)
 	registerCommunicateTool(reg, deps)
 	registerSkillTool(reg, deps)

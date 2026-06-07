@@ -276,6 +276,15 @@ func (c *Client) TurnQueue(ctx context.Context, params TurnQueueParams) error {
 	return c.request(ctx, MethodTurnQueue, params, nil)
 }
 
+// GoalSet calls goal/set to set (or, with an empty objective, clear) the
+// session's /goal. The daemon returns immediately; GoalSetResponse.Started
+// reports whether the goal loop began right away or after the current turn.
+func (c *Client) GoalSet(ctx context.Context, params GoalSetParams) (GoalSetResponse, error) {
+	var out GoalSetResponse
+	err := c.request(ctx, MethodGoalSet, params, &out)
+	return out, err
+}
+
 // TurnDrainAsSteer calls turn/drainAsSteer (kata 0bq1) to drain every queued
 // message into a single STEERING message for the in-flight turn.
 func (c *Client) TurnDrainAsSteer(ctx context.Context, params TurnDrainAsSteerParams) error {

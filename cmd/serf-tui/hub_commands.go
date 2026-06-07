@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -65,6 +66,15 @@ type hubActionMsg struct {
 type hubClearMsg struct {
 	resp hubRefResponse
 	err  error
+}
+
+// hubGoalMsg reports the result of a goal/set call. cleared distinguishes the
+// clear path (empty objective) from setting an objective; started reports
+// whether the goal loop began immediately versus after the current turn.
+type hubGoalMsg struct {
+	cleared bool
+	started bool
+	err     error
 }
 
 type hubForkMsg struct {
@@ -451,6 +461,45 @@ func sendHubClear(client *appwire.Client, ref appwire.Ref) tea.Cmd {
 		resp, err := client.ThreadClear(context.Background(), appwire.ThreadClearParams{Ref: ref.String()})
 		return hubClearMsg{resp: hubRefResponse{Ref: resp.Ref}, err: err}
 	}
+}
+
+// sendHubGoal issues goal/set to set (empty objective ⇒ clear) the session's
+// /goal. It mirrors sendHubQueue: a thin async command that reports its result
+// so the update loop can surface a system message.
+func sendHubGoal(client *appwire.Client, ref appwire.Ref, objective string) tea.Cmd {
+	cleared := strings.TrimSpace(objective) == ""
+	return func() tea.Msg {
+		resp, err := client.GoalSet(context.Background(), appwire.GoalSetParams{Ref: ref.String(), Objective: objective})
+		return hubGoalMsg{cleared: cleared, started: resp.Started, err: err}
+	}
+}
+
+// runHubGoal dispatches the /goal command: `clear` clears the goal, `status`
+// reports the cached goal snapshot, and anything else sets it as the objective.
+func (m *hubModel) runHubGoal(args string) tea.Cmd {
+	arg := strings.TrimSpace(args)
+	if strings.EqualFold(arg, "status") {
+		m.addSessionSystem(hubGoalStatusText(m.detail.Goal))
+		return nil
+	}
+	ref, ok := m.currentRef()
+	if !ok {
+		m.addSessionSystem("Session ref is invalid.")
+		return nil
+	}
+	if strings.EqualFold(arg, "clear") {
+		return sendHubGoal(m.client, ref, "")
+	}
+	return sendHubGoal(m.client, ref, arg)
+}
+
+// hubGoalStatusText renders the `/goal status` line from the cached goal
+// snapshot. With no goal set it prints a minimal usage hint.
+func hubGoalStatusText(goal *appwire.GoalState) string {
+	if goal == nil {
+		return "No goal set. Use /goal <objective> to set one."
+	}
+	return fmt.Sprintf("Goal: %s (%d/%d)", goal.Status, goal.Iterations, goal.Max)
 }
 
 func sendHubFork(client *appwire.Client, ref appwire.Ref, req hubForkRequest) tea.Cmd {

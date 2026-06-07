@@ -127,6 +127,96 @@ func TestAppEventProjectorCompletesActiveTurnBeforeQueuedUserInput(t *testing.T)
 	}
 }
 
+func TestAppEventProjectorGoalContinuationOpensNonUserTurn(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	out := projector.Project(events.SessionEvent{Kind: events.EventGoalContinuation, SessionID: "th_1", Data: events.GoalContinuationData{Text: "continue toward the goal"}})
+
+	started := notificationTurn(t, out, appwire.NotifyTurnStarted)
+	if started.ID == "" || started.Status != appwire.TurnStatusInProgress {
+		t.Fatalf("turn/started=%+v, want a fresh in-progress turn", started)
+	}
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if item.Type == "userMessage" {
+		t.Fatalf("goal continuation rendered a userMessage; continuations must not look like the user spoke (item=%+v)", item)
+	}
+	if item.Type != "systemMessage" {
+		t.Fatalf("goal continuation item type=%q, want systemMessage", item.Type)
+	}
+	if item.TurnID != started.ID || item.Text != "continue toward the goal" {
+		t.Fatalf("goal continuation item=%+v, want turn=%q text=%q", item, started.ID, "continue toward the goal")
+	}
+}
+
+func TestAppEventProjectorGoalContinuationCompletesActivePriorTurn(t *testing.T) {
+	projector := NewAppEventProjector("th_1", "local:th_1")
+	first := projector.Project(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "do the thing"}})
+	firstTurnID := notificationTurnID(t, first, appwire.NotifyTurnStarted)
+
+	out := projector.Project(events.SessionEvent{Kind: events.EventGoalContinuation, SessionID: "th_1", Data: events.GoalContinuationData{Text: "keep going"}})
+	if len(out) < 2 || out[0].Method != appwire.NotifyTurnCompleted {
+		t.Fatalf("first notification=%+v, want turn/completed to close the prior turn", out)
+	}
+	completed := notificationTurn(t, out, appwire.NotifyTurnCompleted)
+	if completed.ID != firstTurnID || completed.Status != appwire.TurnStatusCompleted {
+		t.Fatalf("completed turn=%+v, want id=%q completed", completed, firstTurnID)
+	}
+	started := notificationTurn(t, out, appwire.NotifyTurnStarted)
+	if started.ID == "" || started.ID == firstTurnID {
+		t.Fatalf("goal continuation did not start a fresh turn: %+v", started)
+	}
+}
+
+func TestAppEventProjectorGoalEndedRendersSystemAnnouncement(t *testing.T) {
+	tests := []struct {
+		name     string
+		data     events.GoalEndedData
+		contains string
+	}{
+		{
+			name:     "achieved",
+			data:     events.GoalEndedData{Status: "complete", Iterations: 4},
+			contains: "✓ Goal achieved",
+		},
+		{
+			name:     "blocked with reason",
+			data:     events.GoalEndedData{Status: "blocked", Reason: "no progress", Iterations: 3},
+			contains: "⊘ Goal blocked: no progress",
+		},
+		{
+			name:     "blocked without reason",
+			data:     events.GoalEndedData{Status: "blocked", Iterations: 2},
+			contains: "⊘ Goal blocked",
+		},
+		{
+			name:     "other terminal status stopped",
+			data:     events.GoalEndedData{Status: "weird", Iterations: 1},
+			contains: "⊘ Goal stopped",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			projector := NewAppEventProjector("th_1", "local:th_1")
+			out := projector.Project(events.SessionEvent{Kind: events.EventGoalEnded, SessionID: "th_1", Data: tt.data})
+
+			if len(out) != 1 || out[0].Method != appwire.NotifyTurnCompleted {
+				t.Fatalf("notifications=%+v, want a single systemAnnouncement turn", out)
+			}
+			turn := notificationTurn(t, out, appwire.NotifyTurnCompleted)
+			if turn.Status != appwire.TurnStatusCompleted || turn.ItemsView != "full" || len(turn.Items) != 1 {
+				t.Fatalf("turn=%+v", turn)
+			}
+			item := turn.Items[0]
+			if item.Type != "systemMessage" || item.Description != "Goal" || item.Status != appwire.TurnStatusCompleted {
+				t.Fatalf("item=%+v", item)
+			}
+			if !strings.Contains(item.Text, tt.contains) {
+				t.Fatalf("item text %q does not contain %q", item.Text, tt.contains)
+			}
+		})
+	}
+}
+
 func TestAppEventProjectorProjectsThreadLifecycle(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	started := projector.Project(events.SessionEvent{

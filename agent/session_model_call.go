@@ -206,6 +206,10 @@ func (s *Session) handleModelError(ctx context.Context, err error, req llm.Reque
 	// Spec: non-retryable/unrecoverable errors transition the session to closed.
 	var le llm.Error
 	if errors.As(err, &le) && !le.Retryable() {
+		// Emit the goal's terminal report BEFORE Close() shuts the events
+		// channel — a later emit after Close is a silent no-op, so the
+		// "told why it stopped" promise would be lost otherwise (spec §2/C11).
+		s.terminateGoalOnError(ctx, err)
 		s.Close()
 	}
 	// Recoverable LLM errors (retry policy exhausted, stream-ended, timeouts,

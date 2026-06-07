@@ -312,6 +312,21 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, fetchHubSession(m.client, ref)
+	case hubGoalMsg:
+		if msg.err != nil {
+			m.recordSessionError("Goal failed: " + msg.err.Error())
+			return m, nil
+		}
+		m.clearSessionError()
+		switch {
+		case msg.cleared:
+			m.addSessionSystem("Goal cleared.")
+		case msg.started:
+			m.addSessionSystem("Goal set; pursuing now.")
+		default:
+			m.addSessionSystem("Goal set; starts after the current turn.")
+		}
+		return m, nil
 	case hubForkMsg:
 		if msg.err != nil {
 			if m.forkDraft != nil {

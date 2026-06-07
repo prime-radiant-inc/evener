@@ -103,6 +103,62 @@ func TestClientRoutesResponsesAndNotifications(t *testing.T) {
 	}
 }
 
+func TestClientGoalSetRoundTrip(t *testing.T) {
+	transport := newMemoryTransport()
+	client := NewClient(transport)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	client.Start(ctx)
+
+	done := make(chan struct {
+		resp GoalSetResponse
+		err  error
+	}, 1)
+	go func() {
+		resp, err := client.GoalSet(ctx, GoalSetParams{Ref: "local:th_1", Objective: "improve coverage"})
+		done <- struct {
+			resp GoalSetResponse
+			err  error
+		}{resp: resp, err: err}
+	}()
+
+	var written Message
+	select {
+	case written = <-transport.writes:
+	case <-time.After(time.Second):
+		t.Fatal("request was not written")
+	}
+	if written.Request.Method != MethodGoalSet {
+		t.Fatalf("method=%q", written.Request.Method)
+	}
+	var params GoalSetParams
+	if err := json.Unmarshal(written.Request.Params, &params); err != nil {
+		t.Fatalf("params decode: %v", err)
+	}
+	if params.Ref != "local:th_1" || params.Objective != "improve coverage" {
+		t.Fatalf("params=%+v", params)
+	}
+
+	transport.reads <- ResponseMessage(written.Request.ID, GoalSetResponse{Started: true})
+
+	var result struct {
+		resp GoalSetResponse
+		err  error
+	}
+	select {
+	case result = <-done:
+	case <-time.After(time.Second):
+		t.Fatal("response was not routed")
+	}
+	if result.err != nil {
+		t.Fatalf("GoalSet: %v", result.err)
+	}
+	if !result.resp.Started {
+		t.Fatalf("started=%v, want true", result.resp.Started)
+	}
+}
+
 func TestClientFailsPendingWhenNotificationsOverflow(t *testing.T) {
 	transport := &memoryTransport{
 		writes: make(chan Message, 1),
