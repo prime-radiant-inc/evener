@@ -62,28 +62,34 @@ type TreeNode struct {
 
 // SessionDetail is returned by GET /api/sessions/{ref}.
 type SessionDetail struct {
-	Ref              string              `json:"ref"`
-	HostID           string              `json:"host_id"`
-	SessionID        string              `json:"session_id"`
-	Title            string              `json:"title"`
-	State            string              `json:"state"`
-	Live             bool                `json:"live"`
-	Project          string              `json:"project"`
-	WorkingDir       string              `json:"working_dir,omitempty"`
-	Branch           string              `json:"branch,omitempty"`
-	Model            string              `json:"model,omitempty"`
-	Profile          string              `json:"profile,omitempty"`
-	TurnCount        int                 `json:"turn_count"`
-	ActiveTurnID     string              `json:"active_turn_id,omitempty"`
-	ContextPressure  float64             `json:"context_pressure"`
-	ContextUsed      int                 `json:"context_used,omitempty"`
-	ContextWindow    int                 `json:"context_window,omitempty"`
-	ContextRemaining int                 `json:"context_remaining,omitempty"`
-	ParentSessionID  string              `json:"parent_session_id,omitempty"`
-	DivergenceTurn   int                 `json:"divergence_turn,omitempty"`
-	ForkLabel        string              `json:"fork_label,omitempty"`
-	IsSubagent       bool                `json:"is_subagent"`
-	Capabilities     SessionCapabilities `json:"capabilities"`
+	Ref              string  `json:"ref"`
+	HostID           string  `json:"host_id"`
+	SessionID        string  `json:"session_id"`
+	Title            string  `json:"title"`
+	State            string  `json:"state"`
+	Live             bool    `json:"live"`
+	Project          string  `json:"project"`
+	WorkingDir       string  `json:"working_dir,omitempty"`
+	Branch           string  `json:"branch,omitempty"`
+	Model            string  `json:"model,omitempty"`
+	Profile          string  `json:"profile,omitempty"`
+	TurnCount        int     `json:"turn_count"`
+	ActiveTurnID     string  `json:"active_turn_id,omitempty"`
+	ContextPressure  float64 `json:"context_pressure"`
+	ContextUsed      int     `json:"context_used,omitempty"`
+	ContextWindow    int     `json:"context_window,omitempty"`
+	ContextRemaining int     `json:"context_remaining,omitempty"`
+	ParentSessionID  string  `json:"parent_session_id,omitempty"`
+	DivergenceTurn   int     `json:"divergence_turn,omitempty"`
+	ForkLabel        string  `json:"fork_label,omitempty"`
+	IsSubagent       bool    `json:"is_subagent"`
+	// GoalStatus/GoalIterations mirror appwire.GoalState (status + continuation
+	// turn count) when a /goal is set on a live session, else empty/zero. Kept
+	// flattened so hubapi need not depend on appwire. There is no iteration cap,
+	// so only the status and turn count are surfaced.
+	GoalStatus     string              `json:"goal_status,omitempty"`
+	GoalIterations int                 `json:"goal_iterations,omitempty"`
+	Capabilities   SessionCapabilities `json:"capabilities"`
 }
 
 type SessionCapabilities struct {

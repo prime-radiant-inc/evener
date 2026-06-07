@@ -57,6 +57,9 @@ func (m hubModel) sessionHeaderLines() []string {
 	if ctx := formatContextFragment(m.detail); ctx != "" {
 		addPart("ctx", ctx)
 	}
+	if m.detail.Goal != nil {
+		addPart("goal", fmt.Sprintf("%s %d", m.detail.Goal.Status, m.detail.Goal.Iterations))
+	}
 	sep := lipgloss.NewStyle().Foreground(th.RuleSoft).Render(" · ")
 	meta := "  " + strings.Join(parts, sep)
 	// Truncate meta line to header width to prevent overflow

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/appwire"
@@ -79,7 +80,41 @@ func TestHubGoalStatusText(t *testing.T) {
 		t.Fatalf("nil goal status=%q", got)
 	}
 	got := hubGoalStatusText(&appwire.GoalState{Status: "active", Iterations: 2})
-	if got != "Goal: active (2)" {
-		t.Fatalf("status=%q, want Goal: active (2)", got)
+	if got != "Goal: active 2" {
+		t.Fatalf("status=%q, want Goal: active 2", got)
+	}
+}
+
+// TestSessionHeaderShowsGoalChip asserts the in-session header meta strip
+// renders a goal part (status + turn count, no Max) when m.detail.Goal is set,
+// and omits it when no goal is present.
+func TestSessionHeaderShowsGoalChip(t *testing.T) {
+	withGoal := hubModel{
+		detail: hubSessionDetail{
+			Title:       "Goal session",
+			SourceLabel: "serf",
+			Model:       "openai/gpt-5",
+			TurnCount:   3,
+			Goal:        &appwire.GoalState{Status: "active", Iterations: 2},
+		},
+		width: 200,
+	}
+	got := strings.Join(withGoal.sessionHeaderLines(), "\n")
+	if !strings.Contains(got, "goal active 2") {
+		t.Errorf("goal chip missing from meta strip:\n%s", got)
+	}
+
+	noGoal := hubModel{
+		detail: hubSessionDetail{
+			Title:       "Plain session",
+			SourceLabel: "serf",
+			Model:       "openai/gpt-5",
+			TurnCount:   3,
+		},
+		width: 200,
+	}
+	got = strings.Join(noGoal.sessionHeaderLines(), "\n")
+	if strings.Contains(got, "goal active") {
+		t.Errorf("goal chip should be absent when no goal is set:\n%s", got)
 	}
 }

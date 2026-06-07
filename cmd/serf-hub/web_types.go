@@ -175,6 +175,11 @@ type WorkspaceData struct {
 	Cost           string
 	ActiveTurnID   string
 	RunningFor     string
+	// GoalStatus/GoalIterations mirror appwire.GoalState for the live goal
+	// status pill in the input strip. Empty/zero when no goal is set (e.g. past
+	// sessions). There is no iteration cap, so only status and turn count show.
+	GoalStatus     string
+	GoalIterations int
 	Capabilities   hubapi.SessionCapabilities
 	// Fork lineage for the preserved-original side of a fork. Non-empty
 	// only when this session's meta carries ForkLabel — i.e., it's the

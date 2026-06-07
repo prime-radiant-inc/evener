@@ -499,7 +499,7 @@ func hubGoalStatusText(goal *appwire.GoalState) string {
 	if goal == nil {
 		return "No goal set. Use /goal <objective> to set one."
 	}
-	return fmt.Sprintf("Goal: %s (%d)", goal.Status, goal.Iterations)
+	return fmt.Sprintf("Goal: %s %d", goal.Status, goal.Iterations)
 }
 
 func sendHubFork(client *appwire.Client, ref appwire.Ref, req hubForkRequest) tea.Cmd {

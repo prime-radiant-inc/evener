@@ -40,7 +40,7 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 	if state == "" {
 		state = "idle"
 	}
-	return WorkspaceData{
+	data := WorkspaceData{
 		ID:           ref,
 		SourceLabel:  sourceLabelFromRefText(ref),
 		Title:        title,
@@ -53,6 +53,11 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 		WorkingDir:   thread.CWD,
 		Capabilities: hubCapabilitiesFromAppwire(thread.Serf.Capabilities),
 	}
+	if goal := thread.Serf.Goal; goal != nil {
+		data.GoalStatus = goal.Status
+		data.GoalIterations = goal.Iterations
+	}
+	return data
 }
 
 func activeTurnRunningFor(thread appwire.Thread) string {

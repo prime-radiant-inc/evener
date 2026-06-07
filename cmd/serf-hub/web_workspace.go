@@ -386,6 +386,8 @@ func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id 
 		"Cost":           wd.Cost,
 		"State":          wd.State,
 		"RunningFor":     wd.RunningFor,
+		"GoalStatus":     "",
+		"GoalIterations": 0,
 	}
 	if data["Model"] == "" {
 		data["Model"] = "—"
@@ -401,6 +403,8 @@ func (s *WebServer) renderInputStrip(w http.ResponseWriter, r *http.Request, id 
 		if detail.WorkingDir != "" {
 			data["WorkingDir"] = detail.WorkingDir
 		}
+		data["GoalStatus"] = detail.GoalStatus
+		data["GoalIterations"] = detail.GoalIterations
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := s.inputStripTmpl.ExecuteTemplate(w, "input_status", data); err != nil {
