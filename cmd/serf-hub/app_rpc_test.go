@@ -1880,6 +1880,10 @@ func (s *relayLifecycleSource) SetThreadModel(context.Context, appwire.ThreadMod
 	return appwire.Unavailable("relay lifecycle source does not set models")
 }
 
+func (s *relayLifecycleSource) GoalSet(context.Context, appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
+	return appwire.GoalSetResponse{}, appwire.Unavailable("relay lifecycle source does not set goals")
+}
+
 func (s *relayLifecycleSource) ClearThread(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 	return appwire.ThreadClearResponse{}, appwire.Unavailable("relay lifecycle source does not clear threads")
 }
@@ -2118,6 +2122,7 @@ func TestHubRPCThreadActionsRouteToDaemon(t *testing.T) {
 	compactCalled := false
 	shutdownCalled := false
 	modelCalled := ""
+	goalObjective := ""
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		if params.Ref != "local:th_1" {
 			t.Fatalf("read ref=%q", params.Ref)
@@ -2161,6 +2166,13 @@ func TestHubRPCThreadActionsRouteToDaemon(t *testing.T) {
 		shutdownCalled = true
 		return appwire.EmptyResponse{}, nil
 	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodGoalSet, func(_ context.Context, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
+		if params.Ref != "local:th_1" {
+			t.Fatalf("goal ref=%q", params.Ref)
+		}
+		goalObjective = params.Objective
+		return appwire.GoalSetResponse{Started: true}, nil
+	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	defer daemonHTTP.Close()
 
@@ -2199,6 +2211,19 @@ func TestHubRPCThreadActionsRouteToDaemon(t *testing.T) {
 	}
 	if modelCalled != "openai/gpt-5" {
 		t.Fatalf("modelCalled=%q", modelCalled)
+	}
+	goalResp, err := client.GoalSet(context.Background(), appwire.GoalSetParams{
+		Ref:       "local:th_1",
+		Objective: "improve coverage",
+	})
+	if err != nil {
+		t.Fatalf("GoalSet: %v", err)
+	}
+	if goalObjective != "improve coverage" {
+		t.Fatalf("goalObjective=%q", goalObjective)
+	}
+	if !goalResp.Started {
+		t.Fatal("GoalSet response Started not propagated")
 	}
 	if err := client.ThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: "local:th_1"}); err != nil {
 		t.Fatalf("ThreadShutdown: %v", err)

@@ -314,6 +314,10 @@ func (s *CodexSource) SetThreadModel(context.Context, appwire.ThreadModelSetPara
 	return appwire.Unavailable("codex source does not support thread/model/set")
 }
 
+func (s *CodexSource) GoalSet(context.Context, appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
+	return appwire.GoalSetResponse{}, appwire.Unavailable("codex source does not support goal/set")
+}
+
 func (s *CodexSource) ClearThread(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 	return appwire.ThreadClearResponse{}, appwire.Unavailable("codex source does not support thread/clear")
 }

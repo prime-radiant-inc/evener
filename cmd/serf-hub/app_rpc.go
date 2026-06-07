@@ -453,6 +453,13 @@ func registerThreadHandlers(
 		}
 		return appwire.EmptyResponse{}, source.SetThreadModel(ctx, params)
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodGoalSet, func(ctx context.Context, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
+		source, err := sourceForThreadWithManagedLaunch(ctx, cfg, sources, params.Ref, "")
+		if err != nil {
+			return appwire.GoalSetResponse{}, err
+		}
+		return source.GoalSet(ctx, params)
+	})
 }
 
 // registerAuthHandlers registers the serf/auth/* RPC handlers, routed to the

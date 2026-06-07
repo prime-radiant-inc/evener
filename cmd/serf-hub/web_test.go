@@ -1413,6 +1413,10 @@ func (s *scriptedAppSource) SetThreadModel(context.Context, appwire.ThreadModelS
 	return appwire.Unavailable("scripted source does not set models")
 }
 
+func (s *scriptedAppSource) GoalSet(context.Context, appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
+	return appwire.GoalSetResponse{}, appwire.Unavailable("scripted source does not set goals")
+}
+
 func (s *scriptedAppSource) ClearThread(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
 	return appwire.ThreadClearResponse{}, appwire.Unavailable("scripted source does not clear threads")
 }

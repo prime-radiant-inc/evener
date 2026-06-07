@@ -359,6 +359,12 @@
             // renderer's queueState — no local mirroring needed (kata r80p).
             return Promise.resolve(promise);
           } } },
+      // goal — set (or clear, with empty text) the session's /goal; the agent
+      // pursues the objective until done. Mirrors the TUI /goal command.
+      { id: "goal", title: "Set session goal", hint: "agent pursues until done", keywords: ["objective", "pursue"], scope: "session",
+        args: { kind: "free", placeholder: "objective… (empty to clear)",
+          run: (ctx, text) => window.SerfAppwire.request("goal/set",
+            { ref: window.SerfAppwire.refForSession(ctx.sessionId), objective: (text || "").trim() }) } },
       // drain-as-steer (kata 0bq1) — collapse every queued message into a
       // single STEERING injection on the active turn. Argless.
       { id: "drain-as-steer", title: "Drain queue as steering", hint: "force-steer combined action", keywords: ["force-steer", "drain"], scope: "session",
