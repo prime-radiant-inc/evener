@@ -150,6 +150,39 @@ func (s *Store) RecordContinuation(progressed bool, now time.Time) (Snapshot, bo
 	return s.snapLocked(), g.Status == StatusActive
 }
 
+// PersistSnapshot returns a full-fidelity read of the current goal including
+// madeProgressOnce and timestamps — the fields omitted from the public Snapshot
+// type — so the session can persist them to meta.json. ok is false when no goal
+// is set. "reported" is intentionally not returned; it is runtime-only state.
+func (s *Store) PersistSnapshot() (objective, status, stopReason string, iterations, noProgressStreak int, madeProgressOnce bool, created, updated time.Time, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.goal == nil {
+		return "", "", "", 0, 0, false, time.Time{}, time.Time{}, false
+	}
+	g := s.goal
+	return g.Objective, string(g.Status), g.StopReason, g.Iterations, g.NoProgressStreak, g.madeProgressOnce, g.CreatedAt, g.UpdatedAt, true
+}
+
+// Restore installs a fully-reconstructed goal from persisted primitives, replacing
+// any current goal. The "reported" flag is left false (runtime-only state always
+// starts fresh on load). It is called by the session restore path to bring the
+// goal store back to the state captured in meta.json.
+func (s *Store) Restore(objective, status, stopReason string, iterations, noProgressStreak int, madeProgressOnce bool, created, updated time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.goal = &Goal{
+		Objective:        objective,
+		Status:           Status(status),
+		Iterations:       iterations,
+		NoProgressStreak: noProgressStreak,
+		madeProgressOnce: madeProgressOnce,
+		StopReason:       stopReason,
+		CreatedAt:        created,
+		UpdatedAt:        updated,
+	}
+}
+
 // snapLocked returns a Snapshot of s.goal. Caller must hold s.mu.
 func (s *Store) snapLocked() Snapshot {
 	g := s.goal

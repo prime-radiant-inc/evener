@@ -85,6 +85,16 @@ func goldenMeta() schema.SessionMeta {
 		DivergenceTurn:  4,
 		ForkLabel:       "before TDD",
 		IsSubagent:      true,
+		Goal: &schema.GoalSnapshot{
+			Objective:        "write all the tests",
+			Status:           "active",
+			Iterations:       3,
+			NoProgressStreak: 1,
+			MadeProgressOnce: true,
+			StopReason:       "no progress",
+			CreatedAt:        time.Date(2026, 1, 15, 10, 0, 0, 0, time.UTC),
+			UpdatedAt:        time.Date(2026, 1, 15, 10, 3, 0, 0, time.UTC),
+		},
 	}
 }
 
@@ -93,7 +103,7 @@ func goldenMeta() schema.SessionMeta {
 // schema and splitting SessionConfig's wire fields into schema.ConfigSnapshot)
 // MUST preserve this byte-for-byte. A changed, dropped, or reordered field here
 // means an older binary's meta.json no longer round-trips — a corrupt resume.
-const goldenMetaJSON = `{"id":"01JTESTGOLDEN0000000000001","profile_id":"openai","model":"gpt-5.2","config":{"max_tool_rounds_per_input":150,"max_turns":20,"default_command_timeout_ms":5000,"max_command_timeout_ms":300000,"max_subagent_depth":2,"tool_output_limits":{"shell":{"max_chars":1000,"max_lines":50,"strategy":"head_tail"}},"user_instruction_override":"be concise","agent_name":"reviewer","reasoning_effort":"high","skills_dirs":["/a/skills"],"mcp_config_files":["/a/mcp.json"],"mcp_inline":["srv:cmd --flag"],"plugin_dirs":["/a/plugins"],"system_prompt_file":"/a/prompt.txt","system_prompt_append":["/a/append.txt"],"no_project_prompts":true,"non_interactive":true,"context_strategy":"compact","share_tasks_with_children":true,"result_tool_name":"respond","enable_loop_detection":false,"loop_detection_window":15,"model_fallbacks":["openai/gpt-5","anthropic/claude"],"system_prompt_as_user":true},"env_info":{"working_dir":"/work","platform":"darwin","os_version":"Darwin 25.5.0","today":"2026-06-02","knowledge_cutoff":"2026-01-01","is_git_repo":true,"git_branch":"main","git_origin_url":"git@github.com:x/y.git","git_modified_files":3,"git_untracked_files":1,"git_recent_commit_titles":["fix a","feat b"],"workspace":{"tree":"root/\n  a.go","build_info":"Go module"}},"created_at":"2026-01-15T10:00:00Z","updated_at":"2026-01-15T10:05:00Z","turn_count":7,"last_input_tokens":12345,"name":"Golden Session","name_source":"prompt","name_updated_at":"2026-01-15T10:04:00Z","original_prompt":"do the thing","parent_session_id":"01PARENT","divergence_turn":4,"fork_label":"before TDD","is_subagent":true}`
+const goldenMetaJSON = `{"id":"01JTESTGOLDEN0000000000001","profile_id":"openai","model":"gpt-5.2","config":{"max_tool_rounds_per_input":150,"max_turns":20,"default_command_timeout_ms":5000,"max_command_timeout_ms":300000,"max_subagent_depth":2,"tool_output_limits":{"shell":{"max_chars":1000,"max_lines":50,"strategy":"head_tail"}},"user_instruction_override":"be concise","agent_name":"reviewer","reasoning_effort":"high","skills_dirs":["/a/skills"],"mcp_config_files":["/a/mcp.json"],"mcp_inline":["srv:cmd --flag"],"plugin_dirs":["/a/plugins"],"system_prompt_file":"/a/prompt.txt","system_prompt_append":["/a/append.txt"],"no_project_prompts":true,"non_interactive":true,"context_strategy":"compact","share_tasks_with_children":true,"result_tool_name":"respond","enable_loop_detection":false,"loop_detection_window":15,"model_fallbacks":["openai/gpt-5","anthropic/claude"],"system_prompt_as_user":true},"env_info":{"working_dir":"/work","platform":"darwin","os_version":"Darwin 25.5.0","today":"2026-06-02","knowledge_cutoff":"2026-01-01","is_git_repo":true,"git_branch":"main","git_origin_url":"git@github.com:x/y.git","git_modified_files":3,"git_untracked_files":1,"git_recent_commit_titles":["fix a","feat b"],"workspace":{"tree":"root/\n  a.go","build_info":"Go module"}},"created_at":"2026-01-15T10:00:00Z","updated_at":"2026-01-15T10:05:00Z","turn_count":7,"last_input_tokens":12345,"name":"Golden Session","name_source":"prompt","name_updated_at":"2026-01-15T10:04:00Z","original_prompt":"do the thing","parent_session_id":"01PARENT","divergence_turn":4,"fork_label":"before TDD","is_subagent":true,"goal":{"objective":"write all the tests","status":"active","iterations":3,"no_progress_streak":1,"made_progress_once":true,"stop_reason":"no progress","created_at":"2026-01-15T10:00:00Z","updated_at":"2026-01-15T10:03:00Z"}}`
 
 func TestSessionMeta_GoldenWireFormat(t *testing.T) {
 	data, err := json.Marshal(goldenMeta())

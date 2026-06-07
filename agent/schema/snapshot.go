@@ -47,6 +47,24 @@ type SessionMeta struct {
 	// IsSubagent is true on sessions spawned as a subagent (i.e. the session
 	// has a parent spawn). Written by the spawn path at session initialisation.
 	IsSubagent bool `json:"is_subagent,omitempty"`
+	// Goal holds the persisted goal state so the objective survives daemon
+	// restart and serf resume. It is nil when no goal is active or has been set.
+	Goal *GoalSnapshot `json:"goal,omitempty"`
+}
+
+// GoalSnapshot is the wire form of a goal.Goal persisted inside SessionMeta.
+// It captures full fidelity (including madeProgressOnce and timestamps) so a
+// restored session can continue exactly where it left off. The "reported" flag
+// is intentionally omitted — it is runtime-only and always starts false on load.
+type GoalSnapshot struct {
+	Objective        string    `json:"objective"`
+	Status           string    `json:"status"`
+	Iterations       int       `json:"iterations,omitempty"`
+	NoProgressStreak int       `json:"no_progress_streak,omitempty"`
+	MadeProgressOnce bool      `json:"made_progress_once,omitempty"`
+	StopReason       string    `json:"stop_reason,omitempty"`
+	CreatedAt        time.Time `json:"created_at,omitzero"`
+	UpdatedAt        time.Time `json:"updated_at,omitzero"`
 }
 
 // UnmarshalJSON decodes a SessionMeta from JSON, falling back to the legacy

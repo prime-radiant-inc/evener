@@ -271,6 +271,14 @@ func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env e
 	}
 	s.subagents = newSubagentManager(s.emit)
 
+	// Restore persisted goal state before initSessionState so the goal store is
+	// populated before any turn runs. No kick is wired yet ("loaded but idle"):
+	// the goal resumes on the user's next turn via the normal gate path.
+	if meta.Goal != nil {
+		g := meta.Goal
+		s.getOrCreateGoalStore().Restore(g.Objective, g.Status, g.StopReason, g.Iterations, g.NoProgressStreak, g.MadeProgressOnce, g.CreatedAt, g.UpdatedAt)
+	}
+
 	promptSources, err := s.initSessionState(cfg.SessionStartKind)
 	if err != nil {
 		return nil, err
