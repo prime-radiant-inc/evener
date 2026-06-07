@@ -12,12 +12,16 @@ const styleSrc = fs.readFileSync(STYLE_PATH, "utf8");
 function newHarness() {
   const dom = new JSDOM(`<!DOCTYPE html><html><body>
     <div class="workspace-actions">
-      <button data-tasks-trigger><span class="panel-toggle-label">tasks</span></button>
       <button data-details-trigger><span class="panel-toggle-label">details</span></button>
     </div>
     <header class="workspace-header" data-session-id="01TEST"></header>
     <div id="conversation" data-session-id="01TEST" data-state="ended"></div>
-    <form data-input-form data-session-id="01TEST"><textarea class="message-input"></textarea></form>
+    <form data-input-form data-session-id="01TEST">
+      <div class="task-status-row">
+        <button type="button" class="status-item tasks-status" data-tasks-trigger title="task list"><span class="status-key">tasks</span> <span class="status-value" data-task-status-text>tasks</span></button>
+      </div>
+      <textarea class="message-input"></textarea>
+    </form>
   </body></html>`, { runScripts: "outside-only", pretendToBeVisual: true });
   const { window } = dom;
   window.marked = { parse: t => String(t || "").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>") };
@@ -123,7 +127,30 @@ await scenario("tool intent renders below header and above results", [
   if (children.indexOf(intent) < 0 || children.indexOf(body) < 0 || children.indexOf(intent) > children.indexOf(body)) {
     return { ok: false, detail: "intent should be before tool results/body" };
   }
+  if (!/\.tool-call \.tool-intent\s*\{[^}]*font-family:\s*var\(--font-sans\)/.test(styleSrc)) return { ok: false, detail: "intent stylesheet should use variable-width sans font" };
   if (!/\.tool-call \.tool-intent\s*\{[^}]*font-style:\s*italic/.test(styleSrc)) return { ok: false, detail: "intent stylesheet should set italic font style" };
+  return { ok: true };
+});
+
+
+await scenario("bottom task status shows progress and current task text", [
+  ["SESSION_START", { session_id: "01TEST" }],
+], ({ window }) => {
+  window.SerfRenderer.applyTasks([
+    { id: 1, description: "done task", status: "done" },
+    { id: 2, description: "Implement the footer task status", status: "in_progress" },
+    { id: 3, description: "later task", status: "open" },
+  ]);
+  const headerTasks = window.document.querySelector(".workspace-actions [data-tasks-trigger]");
+  if (headerTasks) return { ok: false, detail: "tasks trigger should not be in header actions" };
+  const trigger = window.document.querySelector(".task-status-row [data-tasks-trigger]");
+  if (!trigger) return { ok: false, detail: "missing bottom task trigger" };
+  const text = trigger.querySelector("[data-task-status-text]");
+  if (!text) return { ok: false, detail: "missing task status text element" };
+  if (text.textContent !== "1/3 · Implement the footer task status") return { ok: false, detail: "wrong task status text: " + text.textContent };
+  const badge = trigger.querySelector(".panel-toggle-badge");
+  if (!badge || badge.textContent !== "1/3") return { ok: false, detail: "missing task badge" };
+  if (!/\.task-status-row\s*\{/.test(styleSrc)) return { ok: false, detail: "missing task-status-row CSS" };
   return { ok: true };
 });
 
@@ -421,10 +448,12 @@ await (async function () {
   check("home prefix becomes ~", hpath.startsWith("~/"), true);
   check("home path value", hpath, "~/.config/app/settings.json");
 
-  // Path outside both cwd and home, length > 40: middle truncate.
-  const longPath = "/var/log/some/deeply/nested/application/service/output.log";
+  // Path outside both cwd and home, length > 96: middle truncate, but keep more
+  // context than the old 40-character cap.
+  const longPath = "/var/log/some/deeply/nested/application/service/output/with/a/very/long/component/name/output.log";
   const truncated = R.relativizePath(longPath);
-  check("long path truncated length <= 40", truncated.length <= 40, true);
+  check("moderately long path is not truncated", R.relativizePath("/var/log/some/deeply/nested/application/service/output.log"), "/var/log/some/deeply/nested/application/service/output.log");
+  check("long path truncated length <= 96", truncated.length <= 96, true);
   check("long path has ellipsis", truncated.includes("…"), true);
   check("long path ends with basename", truncated.endsWith("output.log"), true);
 

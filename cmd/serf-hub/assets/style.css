@@ -814,6 +814,31 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   --tool-indent: 36px;
 }
 .workspace-input { padding: var(--space-4) var(--space-6) var(--space-4); border-top: 1px solid var(--rule); }
+.task-status-row {
+  display: flex;
+  align-items: center;
+  margin: 0 0 var(--space-3);
+}
+.tasks-status {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0;
+}
+.tasks-status:hover .status-value { color: var(--text); }
+.tasks-status .status-value {
+  display: inline-block;
+  max-width: min(760px, calc(100vw - 220px));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
 
 /* Composer attachment rail — paste, drag-drop, and file-picker chips all
    render here through SerfComposerAttachments. Hides itself when empty. */
@@ -1031,7 +1056,13 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
 .tool-call .tool-status-good { color: var(--text-muted); }
 .tool-call .tool-status-bad { color: var(--state-awaiting); }
 .tool-call .verb { color: var(--text-muted); font-family: var(--font-mono); }
-.tool-call .target { color: var(--text); font-family: var(--font-mono); word-break: break-all; }
+.tool-call .target {
+  color: var(--text);
+  font-family: var(--font-mono);
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
 .tool-call .result-detail { color: var(--text-muted); }
 .tool-call .tool-meta { margin-left: auto; color: var(--text-dim); font-family: var(--font-mono); font-size: var(--text-xs); white-space: nowrap; }
 .tool-call .tool-intent {
@@ -1039,7 +1070,7 @@ body.app[data-sidebar-rail] .sb-row .dot-col { padding-top: 0; }
   width: calc(100% - 12px - var(--space-3));
   margin: 0 0 0 calc(12px + var(--space-3));
   color: var(--text-muted);
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: var(--text-sm);
   font-style: italic;
   line-height: var(--leading-snug);
