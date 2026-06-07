@@ -2,12 +2,65 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"time"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/goal"
 	"primeradiant.com/serf/llm"
 )
+
+// SetKickFunc registers the callback an idle SetGoal uses to start the goal loop
+// immediately by feeding the first continuation prompt back into the serve loop's
+// input channel. The agent module must not import server, so serve.go wires this.
+func (s *Session) SetKickFunc(f func(prompt string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.kickFunc = f
+}
+
+// SetGoal sets the session's objective and starts (or arms) the goal loop. It
+// rejects an empty objective. The new goal is stored active, then under s.mu the
+// in-turn flag decides the start path: if a turn is already running (goalInTurn),
+// its drain-loop gate will pick the goal up after the current turn, so SetGoal
+// returns started=false; if the session is idle and a kick callback is wired,
+// SetGoal renders the first continuation prompt and kicks (outside the lock),
+// returning started=true. Holding s.mu across the goalInTurn read makes this
+// mutually exclusive with the gate's "clear flag + go idle" step (spec §7), so a
+// goal set as a turn ends can neither be dropped nor double-started.
+func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, err error) {
+	_ = ctx
+	objective = strings.TrimSpace(objective)
+	if objective == "" {
+		return false, errors.New("goal objective must not be empty")
+	}
+	store := s.getOrCreateGoalStore()
+	store.Set(objective, time.Now())
+
+	s.mu.Lock()
+	inTurn := s.goalInTurn
+	kick := s.kickFunc
+	s.mu.Unlock()
+
+	if inTurn || kick == nil {
+		// A turn is running (its gate backs the goal) or there is no way to kick
+		// an idle session; either way the caller cannot rely on an immediate start.
+		return false, nil
+	}
+	kick(goal.Render(objective))
+	return true, nil
+}
+
+// ClearGoal removes the session's goal. It takes the same s.mu coordination as
+// SetGoal so a clear landing exactly as the drain-loop gate arms cannot leak one
+// extra unwanted continuation: the gate's terminal "clear flag + go idle" step
+// and this clear are mutually exclusive on s.mu (spec §7).
+func (s *Session) ClearGoal() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.getOrCreateGoalStore().Clear()
+}
 
 // goalRoundCap selects the per-input tool-round cap. User-input turns use the
 // configured cap verbatim. Continuation turns (the goal engine) clamp an

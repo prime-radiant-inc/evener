@@ -193,7 +193,18 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 		return "", errors.New("session is closed")
 	}
 	s.sessionEndEmitted = false
+	// Mark the session as in-turn for the duration of this input. SetGoal/ClearGoal
+	// read this under s.mu to coordinate the idle kick against the drain-loop gate
+	// (spec §7): while it is set, an idle kick is suppressed (the gate backs the
+	// goal); it is cleared as the last act of this call (the deferred clear below),
+	// mutually exclusive on s.mu with "set goal + read flag" and "clear goal".
+	s.goalInTurn = true
 	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.goalInTurn = false
+		s.mu.Unlock()
+	}()
 
 	outputs := []string{}
 	next := input

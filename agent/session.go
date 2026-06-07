@@ -62,8 +62,9 @@ type Session struct {
 	//   the mutable cfg knobs (ReasoningEffort, command timeouts,
 	//   MaxToolRoundsPerInput), cachedSystemPrompt, cachedToolDefs, the
 	//   comm communicate-result, steeringQueue, followups, inputQueue,
-	//   loopDetectionCount, the task* reminder counters, depth, and the
-	//   naming name-state. It does NOT guard reg — the tool.Registry self-synchronizes.
+	//   loopDetectionCount, the task* reminder counters, depth, the goalInTurn
+	//   flag and kickFunc callback, and the naming name-state. It does NOT guard
+	//   reg — the tool.Registry self-synchronizes.
 	//   (readOnlyStreak is mutated only by the loop and is intentionally
 	//   lock-free / loop-private; loopDetectionCount is taken under mu.)
 	mu sync.Mutex
@@ -158,6 +159,19 @@ type Session struct {
 	// goal store (lazy-init)
 	goalStore     *goal.Store
 	goalStoreOnce sync.Once
+
+	// goalInTurn is true while ProcessInputKind is running an input through to
+	// completion. It is guarded by s.mu and exists to close the §7 idle-kick
+	// race: SetGoal/ClearGoal read it under s.mu to decide between kicking an
+	// idle session and deferring to the running drain-loop gate. ProcessInputKind
+	// sets it at entry and clears it as its last act before going idle, so
+	// "set goal + read flag" and "clear flag + go idle" are mutually exclusive.
+	goalInTurn bool
+	// kickFunc, when set via SetKickFunc, lets an idle SetGoal start the goal
+	// loop immediately by feeding the first continuation prompt back into the
+	// serve loop's input channel. It is a callback because the agent module must
+	// not import server; serve.go wires it. Guarded by s.mu.
+	kickFunc func(prompt string)
 
 	// task reminder tracking
 	taskToolLastRound int  // totalRounds value at last task_list tool call
