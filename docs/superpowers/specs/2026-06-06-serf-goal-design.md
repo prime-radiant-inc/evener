@@ -1,168 +1,228 @@
 # Serf `/goal` — an objective engine (design)
 
-**Status:** Draft for review · **Date:** 2026-06-06 · **Branch:** `goal-objective-engine`
+**Status:** Draft for review (revision 2, post adversarial round 1) · **Date:** 2026-06-06 · **Branch:** `goal-objective-engine`
 
 ## Summary
 
 Add a `/goal` feature to serf: the user states an objective, and the agent keeps
-working across clean, result-delivering turns until it has genuinely achieved the
-objective (verified against current state), declares itself blocked, or hits a safety
-cap — then stops. "Set it, step away, come back to a finished task."
+working across clean, system-framed continuation turns until it has **proven** it achieved
+the objective (`update_goal("complete")`), is genuinely stuck (`blocked`), or hits a
+safety stop — then it stops, and the user is told *why*. "Set it, step away, come back to
+a finished task — or a clear report of why it stopped."
 
-The design takes **Claude Code's cheap mechanism** (no new runtime — ride the existing
+The design takes **Claude Code's cheap mechanism** (no new runtime — ride serf's existing
 turn loop) and **Codex's robust semantics** (model self-declares completion behind a
 rigorous evidence audit). Serf already has every primitive this needs; the net-new
-surface is small and concentrated.
+surface is small. This revision hardens the design against an adversarial review that
+found real concurrency, control-flow, runaway, and observability defects in revision 1
+(see "Revision history").
 
-This is a deliberately lean v1. The "Non-goals / deferred" section records what was cut
-and why; every cut is a clean later-add against a stable core.
+This is still a deliberately lean v1. The "Non-goals / deferred" section records what was
+cut and why; every cut is a clean later-add against a stable core.
 
 ## Motivation
 
 Two reference harnesses solve "keep the agent working toward an objective" in opposite
-ways (see `inspo/loop-and-goal-spec.md` for the full cross-harness study):
+ways (full study: `inspo/loop-and-goal-spec.md`):
 
-- **Claude Code `/goal`** registers a session-scoped *Stop hook* whose condition is
-  judged by a separate LLM call; it blocks the turn from ending until the condition
-  holds. Cheap, but re-judges on every stop and the objective lives only in the hook.
-- **Codex `/goal`** is a persistent goal runtime: on idle it injects a continuation
-  prompt and starts a fresh turn, with token budgets, a 6-state machine, and an
-  evidence-audit prompt that makes the *model's own* completion claim trustworthy.
+- **Claude Code `/goal`** registers a session-scoped *Stop hook* whose condition an LLM
+  judges; it blocks the turn from ending until the condition holds. Cheap, but it re-judges
+  on every stop and the objective lives only in the hook.
+- **Codex `/goal`** is a persistent goal runtime: on idle it injects a continuation prompt
+  and starts a fresh turn, with token budgets, a six-state machine, and an evidence-audit
+  prompt that makes the *model's own* completion claim trustworthy.
 
-Serf is unusually well-positioned to take the best of both:
+Serf is well-positioned to take the best of both — it already has the turn-loop seam, the
+injection primitives, the tool/store pattern, the appwire transport, and a slash-command
+surface (verified file:line in "Serf integration points").
 
-| Need | serf already has |
-|---|---|
-| Start a fresh continuation turn with no user input | `ProcessInput`'s between-turn drain loop (`popFollowUp`/`popQueueHead` → `continue`) |
-| Block / steer the agent | `Steer`, `FollowUp`, `Enqueue` injection primitives |
-| Model-callable tool + per-session store | the `task` tools (`TaskStore` via the `toolDeps` facade) |
-| Typed UI⇄agent transport | the appwire RPC protocol (`turn/start`, notifications) |
-| Slash command surface | `cmd/serf-tui/hub_command_registry.go` |
+### Why a gate, not serf's existing Stop hook
 
-Crucially, the continuation rides serf's **existing** drain loop, so there is **no
-driver inversion** (the XL rework the agent-session-actor-core review rejected).
+Serf *does* already have a `Stop` hook with block-and-steer (`agent/session_tool_round.go`
+`deliverIfCommunicated` → `RunStop`; `if stopResult.Blocked { return false }`), and
+prompt-type (LLM-judged) hooks. We deliberately do **not** build `/goal` on it, for three
+concrete reasons:
+
+1. **Wrong loop level.** The Stop hook blocks *within one `processOneInput` round-loop* —
+   it declines to finish the current turn, producing one ever-growing turn. We want
+   discrete continuation turns with clean transcript boundaries. Getting turn boundaries
+   from the hook means returning and re-entering — i.e. the `ProcessInput` tail the gate
+   already targets. The gate is the natural level.
+2. **No programmatic registration.** Serf's hooks are loaded from plugin JSON
+   (`RegisteredHook{Type, Command, Prompt}`); there is no API to register a session-scoped
+   Stop hook from a slash command. Building one is *more* code than a pure decision
+   function.
+3. **It would reintroduce the LLM-judge** we deliberately reject in favor of
+   model-self-declares-via-tool.
+
+The gate is also pure and trivially unit-testable; the hook path forces an LLM call or a
+mock of one.
 
 ## Goals (v1)
 
 1. `/goal <objective>` makes the agent autonomously work toward the objective across
    multiple clean turns.
-2. The agent stops when it has **proven** completion (not merely plausible completion),
-   declares itself **blocked** with a reason, or hits a **safety cap**.
-3. `/goal clear` and `/goal status` work. The objective is honored as data, not as
-   instructions that can override system/developer guidance.
-4. Works server-side so it is UI-agnostic; the serf-tui surfaces it first.
+2. The agent stops when it has **proven** completion, declares itself **blocked** with a
+   reason, or hits a safety stop (iteration cap or no-progress breaker) — and **never**
+   leaves a goal silently `active` after it has effectively stopped.
+3. The user can always see goal state (`/goal status`) and is **told when and why** the
+   loop ended.
+4. `/goal clear` works. The objective is honored as data, not as instructions that can
+   override system/developer guidance.
+5. Logic lives server-side (UI-agnostic); serf-tui surfaces it first.
 
 ## Non-goals / deferred (explicit YAGNI cuts)
 
 Each is a clean later-add; none requires reworking the v1 core (store + gate + prompt +
-one tool + one appwire method).
+`update_goal` tool + `goal/set` + minimal read/terminal surfacing).
 
-- **Token budgets** — the iteration cap already prevents runaway. A second cost cap is a
-  refinement; add when someone wants a hard token ceiling. (Removes `budget_limited`
-  state, usage snapshots, and the budget wrap-up prompt.)
-- **LLM-judge backstop** — the evidence-audit prompt makes self-declared completion
-  trustworthy. If completion proves flaky in practice, add a cheap `GenerateObject`
-  `{met, reason}` re-check then. Not built, not flagged.
-- **`get_goal` / `create_goal` tools** — the continuation prompt already injects the
-  objective + status every goal turn (so no fetch tool), and the user-driven set is the
-  only creation path v1 needs.
+- **Token budgets** — the iteration cap + no-progress breaker bound runaway. A token
+  ceiling is a refinement; add when asked. (Removes `budget_limited` state, usage
+  snapshots, wrap-up prompt.)
+- **LLM-judge backstop** — the evidence-audit prompt + the result-tool gate make
+  self-declared completion trustworthy enough for v1. Add a `GenerateObject {met, reason}`
+  re-check if completion proves flaky.
+- **`get_goal` / `create_goal` tools** — the continuation prompt injects objective +
+  status every goal turn (no fetch tool); the user-driven set is the only creation path
+  v1 needs.
 - **`pause`/`resume` + `paused` state** — `/goal clear` + re-set covers it; `/interrupt`
-  handles "hold on a second."
-- **Cross-resume persistence** — v1 keeps the goal in memory. The "step away, come back"
-  value is realized within a live session; surviving a daemon restart is secondary and
-  is a one-field add to `SessionMeta` later.
-- **Dedicated `goal/get` + `goal/clear` appwire methods and a typed goal notification** —
-  collapse to one `goal/set` method (empty objective = clear); reuse the existing event
-  stream for display.
-- **Status-bar indicator, web-UI affordance, recurring `/loop` scheduler** — polish /
-  later surfaces / out of scope (serf has no scheduler; the objective engine covers the
-  autonomous use case).
+  handles "hold on."
+- **Cross-resume persistence** — v1 keeps the goal in memory. The value is realized in a
+  live session; surviving a daemon restart is a one-field `SessionMeta` add later.
+- **Full status-bar indicator and a rich typed notification / web affordance** — v1 ships
+  the *minimal* observability the feature requires (goal state in the existing
+  `thread/read` projection + one terminal event); the always-on footer widget and web UI
+  are later.
+- **Recurring `/loop` scheduler** — serf has no scheduler; out of scope.
 
 ## Design
 
-### 1. Goal state (in-memory, per session)
+### 1. Goal state (in-memory, per session, own mutex)
 
-A small store mirroring `TaskStore`, reached through the `toolDeps` facade so it inherits
-the existing `Session.mu` lock discipline.
+A small store mirroring `TaskStore` — which guards its state with **its own** `sync.Mutex`
+(not `Session.mu`). The goal store does the same, because `goal/set` mutates it from the
+appwire goroutine while the gate and `update_goal` read/mutate it from the `ProcessInput`
+goroutine (see §7).
 
 ```go
 // agent/internal/goal
 type Status string // "active" | "complete" | "blocked"
 
 type Goal struct {
-    Objective     string
-    Status        Status
-    Iterations    int       // goal-driven continuation turns taken
-    MaxIterations int       // safety cap; 0 → DefaultMaxIterations
-    CreatedAt     time.Time
-    UpdatedAt     time.Time
+    Objective        string
+    Status           Status
+    Iterations       int    // goal-driven continuation turns taken
+    NoProgressStreak int    // consecutive goal turns with no productive tool call
+    StopReason       string // why the loop ended (for the terminal report)
+    CreatedAt, UpdatedAt time.Time
 }
 ```
 
-One goal per session. `DefaultMaxIterations` is a constant (proposed: **25**) — high
-enough for real multi-step work, low enough to bound a misbehaving loop.
+One goal per session. Caps are package constants, not per-goal fields or wire params:
+`DefaultMaxIterations = 10`, `NoProgressLimit = 2`. (Rationale for the numbers: a goal turn
+is a full `processOneInput`, which can run up to `MaxToolRoundsPerInput` — default **200** —
+tool rounds. The *pathological* worst case is `10 × 200` round-trips, but realistic turns
+finish in a handful of rounds, and the no-progress breaker halts a non-advancing loop in
+2 turns. The cap exists to bound the rare slowly-advancing-but-never-finishing case.)
 
-### 2. The continuation gate (the heart)
+### 2. The continuation gate
 
-The verified integration point is the tail of `Session.ProcessInput`'s loop
-(`agent/session_lifecycle.go`), which today drains follow-ups then queued user input
-before going idle:
+At the tail of `Session.ProcessInput`'s drain loop (`agent/session_lifecycle.go`, after
+`popFollowUp`/`popQueueHead`, before the `EventSessionEnd`/return), a goal-continuation
+branch runs as **priority 3** — strictly below user follow-ups and queued user input, so
+user input always wins:
 
 ```go
-fu := s.popFollowUp()
-if strings.TrimSpace(fu) != "" { next = fu; continue }              // priority 1
-if queued := s.popQueueHead(); /* non-empty */ { next = ...; continue } // priority 2
-// → goal continuation goes HERE (priority 3), before SessionEnd/return:
-if cont, ok := s.goalContinuation(); ok {
-    next = cont
-    continue
-}
+fu := s.popFollowUp();               if fu != "" { next = fu; continue }            // p1
+if q := s.popQueueHead(); q != "" {  next = q;  continue }                           // p2
+if cont, ok := s.armGoalContinuation(); ok { next = cont; nextKind = TurnContinuation; continue } // p3
 // else: emit EventSessionEnd, return (idle)
 ```
 
-`goalContinuation()` (pure decision over a snapshot of goal state) returns the rendered
-continuation prompt and `true` iff: a goal exists, `Status == active`, and
-`Iterations < MaxIterations`. It increments `Iterations`. Otherwise it returns `false`.
+The decision is split for testability and correctness:
 
-Properties this gives us for free:
-- **User input always wins** — continuation is strictly lower priority than follow-ups
-  and queued user messages, so anything the user sends is handled first.
-- **`/interrupt` cleanly halts the loop** — `ProcessInput`'s cancellation branch
-  (`isTurnCancellation`) returns *before* reaching the gate, dropping the session to
-  idle. The goal remains `active`, so the loop resumes after the next turn that runs to
-  completion (see "Interrupt × goal" below).
-- **`MaxIterations`** is the hard backstop; the model's `update_goal` is the normal exit.
-- Each continuation is a discrete turn in the transcript (clean boundaries, visible
-  progress) — the Codex model, achieved via serf's existing plumbing.
+- **`shouldContinueGoal(snapshot) bool`** — *pure*: returns true iff goal exists, `Status
+  == active`, `Iterations < DefaultMaxIterations`, `NoProgressStreak < NoProgressLimit`,
+  and **no subagent is in flight** (cheap check on the subagents map — don't continue the
+  parent while a spawned child is still running). Table-tested, no mocks.
+- **`armGoalContinuation()`** — *mutator under the goal store's lock, atomic with the
+  gate's stop decision* (see §7): evaluates `shouldContinueGoal`; if true, increments
+  `Iterations`, folds in the just-finished turn's progress signal to update
+  `NoProgressStreak` (see below), and returns the rendered continuation prompt; if false,
+  finalizes `StopReason` and lets `ProcessInput` go idle.
 
-### 3. The `update_goal` tool (the only new tool)
+**No-progress breaker.** `processOneInput` reports whether the just-finished goal turn made
+any **productive** tool call (any tool other than the result/communicate tool).
+`armGoalContinuation` increments `NoProgressStreak` on a no-productive-tool turn and resets
+it otherwise. Reaching `NoProgressLimit` flips the goal to `blocked` with
+`StopReason = "no progress"` instead of continuing. This catches the common runaway (model
+believes it is done and just keeps talking) in ~2 turns rather than burning the iteration
+cap, and does not depend on the model self-counting across compaction.
 
-Registered with `registerGoalTools(reg, deps)`, mirroring `registerTaskTools`
-(`agent/session_tools_goal.go`).
+**Error path (was missing in rev 1 — a zombie-goal bug).** A goal turn can end three ways:
+(a) **cancellation** (`/interrupt`) — `ProcessInput` returns before the gate; goal stays
+`active`; loop resumes after the next completed turn (see §6). (b) **normal completion** —
+gate runs. (c) **non-cancellation error** (provider error after retry exhaustion,
+empty-response exhaustion, bare-text-without-result) — `ProcessInput` returns the error
+*before* the gate. v1 **must** handle (c): in the `err != nil && !isTurnCancellation`
+branch, if a goal is active, transition it to `blocked` with `StopReason` = the error.
+Otherwise the goal stays `active`, the session goes idle with the error logged only to
+daemon stderr, and the loop silently **resurrects on the user's next unrelated message** —
+the single worst behavior the review found.
+
+### 2a. Continuation turn-kind (NOT a user turn)
+
+Continuations must **not** re-enter through `acceptUserInput` (which emits `EventUserInput`
+and appends `schema.TurnUserInput`) — doing so renders each continuation as a fake "user
+message" bubble in the TUI and makes the model see N near-identical *user* turns, directly
+undercutting the "objective is data, not instructions" guard. Instead, a continuation
+enters through a dedicated path that appends a **continuation/steering** turn kind
+(`schema.TurnSteering` or a new `TurnContinuation`) and emits a **distinct event** the app
+projector renders as a system/continuation item, not a `userMessage`.
+
+The **full** continuation+audit prompt (§4) is re-injected on **every** continuation turn
+(not once at set time). This is deliberate: it keeps the objective and the audit discipline
+robust to context compaction, which would otherwise summarize an injected-once setup away.
+The cost (a few hundred tokens per turn) is bounded by the iteration cap and dwarfed by the
+turn's own working context.
+
+### 3. The `update_goal` tool
+
+Registered via `registerGoalTools(reg, deps)`, mirroring `registerTaskTools`
+(`agent/session_tools_goal.go`); reached through a `goalGuard` on `toolDeps` exactly like
+`taskGuard`.
 
 ```
 name: update_goal
-description: Update the active session goal. Use ONLY to mark it achieved or genuinely
-             blocked. Set status "complete" only when the objective has actually been
-             achieved and verified and no required work remains. Set status "blocked"
-             only when the same blocking condition has repeated for at least three
-             consecutive goal turns and you cannot progress without user input or an
-             external-state change.
+description: Mark the active session goal complete or blocked. Call "complete" only when
+             the objective is genuinely achieved and verified per the goal guidance.
+             Call "blocked" only when truly stuck per the goal guidance. (The detailed
+             completion/blocked criteria are in the goal continuation guidance; not
+             repeated here.)
 parameters: { "status": enum["complete","blocked"] }   // required
 ```
 
-Handler: validates a goal exists and is `active`; sets `Status`; returns
-`tool.StateResult{Output, State}` so a goal-state snapshot rides the existing event
-stream. A terminal status makes `goalContinuation()` return `false`, so the loop stops
-naturally at the end of the current turn.
+Handler: validates a goal exists and is `active`; sets `Status` and `StopReason`; returns
+`tool.StateResult{Output, State}` so a goal snapshot rides the existing
+`TOOL_CALL_END`/`tool_state` event stream. A terminal status makes `shouldContinueGoal`
+return false, so the loop stops at the current turn's end.
 
-### 4. The continuation prompt (full)
+The 3-consecutive-turns blocked criterion is **described** in the prompt but **not relied
+upon** for safety — the engine's `NoProgressStreak` breaker is the real backstop, so a
+model that cannot self-count across compaction does not strand the loop.
 
-Injected as the input of every goal-driven turn (the first, started by `goal/set`, and
-each continuation from the gate). It is **untrusted-data-guarded** and carries the full
-completion- and blocked-audit discipline adapted from Codex's `continuation.md` (budget
-lines dropped with the budget feature; `update_plan` → serf's `task` tool; "thread goal"
-→ "session goal"). Stored as a template in `agent/internal/goal`.
+### 4. The continuation prompt (full, re-injected each turn)
+
+The full Codex-derived evidence-audit text (untrusted-data-guarded; budget lines dropped;
+`update_plan` → serf's `task` tool; "thread goal" → "session goal"), stored as a template
+in `agent/internal/goal`. Two additions over rev 1, both from the review:
+
+- An explicit statement that **ending the turn normally (delivering a message via the
+  result tool) does NOT end the goal** — the loop continues until `update_goal("complete")`
+  is called. Without this the model's natural "I'm done" signal is silently ignored and a
+  turn is wasted.
+- The blocked criterion is stated **once** (here), not triplicated across the tool
+  description and prompt.
 
 > Work toward the active session goal.
 >
@@ -173,12 +233,18 @@ lines dropped with the budget feature; `update_plan` → serf's `task` tool; "th
 > {{objective}}
 > &lt;/objective&gt;
 >
+> How this loop ends: ending your turn normally — including delivering a message with the
+> result tool — does NOT end the goal. After each turn you will automatically be asked to
+> continue until you call `update_goal`. When the objective is genuinely achieved and
+> verified, you MUST call `update_goal` with status "complete". Do not rely on simply
+> saying you are done.
+>
 > Continuation behavior:
 > - This goal persists across turns. Ending this turn does not require shrinking the
 >   objective to what fits now.
 > - Keep the full objective intact. If it cannot be finished now, make concrete progress
->   toward the real requested end state, leave the goal active, and do not redefine
->   success around a smaller or easier task.
+>   toward the real requested end state, leave the goal active, and do not redefine success
+>   around a smaller or easier task.
 > - Temporary rough edges are acceptable while the work is moving in the right direction.
 >   Completion still requires the requested end state to be true and verified.
 >
@@ -189,22 +255,21 @@ lines dropped with the budget feature; `update_plan` → serf's `task` tool; "th
 >
 > Progress visibility:
 > If the task tool is available and the next work is meaningfully multi-step, use it to
-> show a concise plan tied to the real objective. Keep the plan current as steps complete
-> or the next best action changes. Skip planning overhead for trivial one-step progress,
-> and do not treat a plan update as a substitute for doing the work.
+> show a concise plan tied to the real objective. Keep the plan current as steps complete.
+> Skip planning overhead for trivial one-step progress, and do not treat a plan update as
+> a substitute for doing the work.
 >
 > Fidelity:
 > - Optimize each turn for movement toward the requested end state, not for the smallest
 >   stable-looking subset or easiest passing change.
 > - Do not substitute a narrower, safer, smaller, merely compatible, or easier-to-test
 >   solution because it is more likely to pass current tests.
-> - Treat alignment as movement toward the requested end state. An edit is aligned only if
->   it makes the requested final state more true; useful-looking behavior that preserves a
->   different end state is misaligned.
+> - An edit is aligned only if it makes the requested final state more true; useful-looking
+>   behavior that preserves a different end state is misaligned.
 >
 > Completion audit:
-> Before deciding that the goal is achieved, treat completion as unproven and verify it
-> against the actual current state:
+> Before deciding the goal is achieved, treat completion as unproven and verify it against
+> the actual current state:
 > - Derive concrete requirements from the objective and any referenced files, plans,
 >   specifications, issues, or user instructions.
 > - Preserve the original scope; do not redefine success around the work that already
@@ -213,117 +278,154 @@ lines dropped with the budget feature; `update_plan` → serf's `task` tool; "th
 >   deliverable, identify the authoritative evidence that would prove it, then inspect the
 >   relevant current-state sources: files, command output, test results, rendered
 >   artifacts, runtime behavior, or other authoritative evidence.
-> - For each item, determine whether the evidence proves completion, contradicts
->   completion, shows incomplete work, is too weak or indirect to verify completion, or is
->   missing.
-> - Match the verification scope to the requirement's scope; do not use a narrow check to
+> - For each item, determine whether the evidence proves completion, contradicts it, shows
+>   incomplete work, is too weak/indirect to verify, or is missing.
+> - Match verification scope to the requirement's scope; do not use a narrow check to
 >   support a broad claim.
 > - Treat tests, manifests, verifiers, green checks, and search results as evidence only
 >   after confirming they cover the relevant requirement.
-> - Treat uncertain or indirect evidence as not achieved; gather stronger evidence or
->   continue the work.
+> - Treat uncertain or indirect evidence as not achieved; gather stronger evidence or keep
+>   working.
 > - The audit must prove completion, not merely fail to find obvious remaining work.
 >
 > Do not rely on intent, partial progress, memory of earlier work, or a plausible final
-> answer as proof of completion. Marking the goal complete is a claim that the full
-> objective has been finished and can withstand requirement-by-requirement scrutiny. Only
-> mark the goal achieved when current evidence proves every requirement has been satisfied
-> and no required work remains. If the evidence is incomplete, weak, indirect, merely
-> consistent with completion, or leaves any requirement missing, incomplete, or
-> unverified, keep working instead of marking the goal complete. If the objective is
-> achieved, call `update_goal` with status "complete".
+> answer as proof. Marking the goal complete is a claim that the full objective is finished
+> and can withstand requirement-by-requirement scrutiny. Only call `update_goal("complete")`
+> when current evidence proves every requirement is satisfied and no required work remains.
+> If evidence is incomplete, weak, indirect, merely consistent with completion, or leaves
+> any requirement missing or unverified, keep working instead.
 >
-> Blocked audit:
-> - Do not call `update_goal` with status "blocked" the first time a blocker appears.
-> - Only use status "blocked" when the same blocking condition has repeated for at least
->   three consecutive goal turns, counting the original/user-triggered turn and any
->   automatic goal continuations.
-> - Use status "blocked" only when you are truly at an impasse and cannot make meaningful
->   progress without user input or an external-state change.
-> - Once the blocked threshold is satisfied, do not keep working the same dead end while
->   leaving the goal active; call `update_goal` with status "blocked".
-> - Never use status "blocked" merely because the work is hard, slow, uncertain,
->   incomplete, or would benefit from clarification.
->
-> Do not call `update_goal` unless the goal is complete or the strict blocked audit above
-> is satisfied.
->
-> (Goal continuation turn {{iterations}} of at most {{max_iterations}}.)
+> When to call `update_goal("blocked")`:
+> Only when you are truly at an impasse and cannot make meaningful progress without user
+> input or an external-state change, and the same blocking condition has persisted across
+> multiple goal turns. Never use "blocked" merely because the work is hard, slow, uncertain,
+> or incomplete.
 
-### 5. Setting / clearing — one appwire method + the TUI command
+### 5. Surfacing — set, clear, status, and the terminal report
 
-- **`goal/set { objective, maxIterations? }`** (appwire, `appwire/types.go` +
-  `server/appwire_runtime.go`): sets the goal `active`. Empty `objective` = clear.
-  If the session is **idle**, it starts the first goal turn by feeding the continuation
-  prompt into the input channel (the same idle-guard path `turn/start` uses); if the
-  session is **busy**, it only sets state and the gate picks it up at the current turn's
-  end.
-- **`/goal [<objective>|clear|status]`** (serf-tui, `hub_command_registry.go`): a thin
-  command that calls `goal/set` (set / clear) or reads current goal state for `status`.
-  Reuses the existing session-detail/event stream for display — no dedicated notification.
+Logic is server-side, so all UIs can adopt it; serf-tui surfaces it first.
 
-Because the logic is server-side, the web UI and CLI can adopt the same `goal/set` method
-later without touching the engine.
+**Setting / clearing.** `goal/set { objective }` (empty `objective` = clear) is a **thin
+appwire forwarder to a `Session` method** (`Session.SetGoal`), exactly like serf's existing
+`SetSteerFunc`/`SetQueueFunc` callbacks (`cmd/serf/serve.go`). `Session.SetGoal`, under the
+goal store's lock and coordinated with the gate (§7), sets the goal `active`. If the session
+is **idle**, it requests a best-effort kick (feed the first continuation into `inputCh` via
+the server, same path `turn/start` uses); if **busy**, the running gate picks the goal up at
+turn end. Because `inputCh` is single-slot and may refuse a kick (`Conflict`), `goal/set`
+reports accurate status to the user — "goal set; starting now" vs. "goal set; will start
+after the current turn" — and the gate is the reliable backstop in the busy case.
 
-### 6. Interrupt × goal behavior (decision to confirm)
+**Status (`/goal status`).** serf-tui is a separate process with no in-process session
+state, so status must arrive over the wire. Rather than a new `goal/get` method, fold goal
+state into the **existing** `thread/read` projection: add a small `Goal` field (or a
+`goal:active (3/10)` entry in `ThreadStatus.ActiveFlags`) in `appwire/types.go`. `/goal
+status` then reads the already-fetched thread snapshot. This same field powers a future
+status-bar indicator with no new transport.
 
-After `/interrupt`, `ProcessInput` returns before the gate, so the loop pauses and the
-session goes idle with the goal still `active`. The loop **resumes after the next turn
-that runs to completion** (e.g. the user's next message). Rationale: interrupt means
-"let me interject," not "abandon the goal"; to truly stop, the user runs `/goal clear`.
-This is a natural consequence of the drain-loop design and matches a "take the wheel
-briefly, hand back" model. *(Flagged for review — the alternative is "interrupt also
-clears the goal," which is a simpler mental model but conflates two actions.)*
+**Terminal report (the payoff).** When the loop ends, the user must learn *why* — otherwise
+"come back to a finished task" is indistinguishable from "session merely idled," since
+`EventSessionEnd` carries the same `input_complete` reason for goal-end and normal-idle. On
+goal termination (complete / blocked / iteration-cap / no-progress), emit **one** terminal
+goal event carrying `{status, stopReason, iterations}`; the TUI renders a single line:
+"✓ Goal achieved", "⊘ Goal blocked: &lt;reason&gt;", or "⊘ Goal stopped: hit limit (N turns)".
+This is the minimal observability the feature requires — not the full Codex footer state
+machine, just enough that the human knows the outcome.
 
-### 7. Concurrency
+**`/goal` TUI command** (`cmd/serf-tui/hub_command_registry.go`): `/goal [<objective>|clear|
+status]`, a thin command calling the transport below.
 
-The gate runs inside the `ProcessInput` turn-loop goroutine, which already owns mutable
-session state under `Session.mu`, so reading/incrementing goal state there is safe. The
-`update_goal` tool and the `goal/set` handler mutate goal state under the same lock
-discipline as the `task` store. No new locks; no new goroutines.
+### 6. Interrupt × goal
 
-## File / module layout (touch points)
+After `/interrupt`, `ProcessInput`'s cancellation branch returns before the gate; the loop
+pauses, the session goes idle, and the goal stays `active`. The loop resumes after the next
+turn that completes normally. Rationale: interrupt means "let me interject," not "abandon
+the goal"; to truly stop, run `/goal clear`. (Contrast the **error** path in §2, which does
+*not* leave the goal active.) *Decision to confirm: resume-after-next-turn vs.
+interrupt-also-clears.*
 
-| Area | File(s) | Change |
-|---|---|---|
-| Goal store + prompt template | `agent/internal/goal/{goal.go, prompt.go}` (new) | `Goal`, `Status`, store, `Render(objective, iter, max)` |
-| Tool | `agent/session_tools_goal.go` (new) | `registerGoalTools` + `update_goal` |
-| Tool facade | `agent/session_tool_registry.go` | add a `goalGuard` accessor to `toolDeps` (mirrors `taskGuard`) |
-| Continuation gate | `agent/session_lifecycle.go` | priority-3 branch in the `ProcessInput` drain loop |
-| Session wiring | `agent/session.go` | lazy `goalStore` field; register goal tools |
-| Transport | `appwire/types.go`, `server/appwire_runtime.go` | `goal/set` method + idle-kick |
-| TUI | `cmd/serf-tui/hub_command_registry.go` | `/goal` command |
+### 7. Concurrency (corrected from rev 1)
+
+Rev 1 wrongly claimed the store "inherits `Session.mu`." It does not — like `TaskStore`,
+the goal store carries **its own mutex**. The load-bearing race is the idle-kick handoff:
+goal state lives in the agent `Session`; the `processing`/`inputCh` machinery lives in the
+server under `Server.mu`; the gate's "go idle" decision and the server's
+`SetProcessing(false)` are not atomic with any goal re-check. A naive design lets a
+`goal/set` that lands as a turn ends leave the goal `active`-but-un-kicked.
+
+Resolution: keep the *busy/idle* authority inside the `Session`. The gate's terminal
+"stop and go idle" step and `Session.SetGoal`'s "set and decide whether to self-kick" step
+are made **mutually exclusive on the same lock**, with an in-turn flag the gate clears as
+its last act. Then either `SetGoal` observes "in turn" (the gate will see the goal) or the
+gate has already observed "no goal" and cleared the flag (so `SetGoal` sees idle and issues
+the kick). No gap. The server `processing` flag is a downstream mirror, never the authority
+for the branch. No new goroutines.
+
+## Serf integration points (verified)
+
+- `agent/session_lifecycle.go` — `ProcessInput` drain loop (gate, priority 3) and the
+  `err != nil && !isTurnCancellation` branch (error→blocked); a continuation entry path
+  parallel to `acceptUserInput` that appends a continuation/steering turn.
+- `agent/internal/goal/{goal.go, prompt.go}` (new) — store (own mutex), `Status`,
+  `shouldContinueGoal`/`armGoalContinuation`, prompt template.
+- `agent/session_tools_goal.go` (new) + `agent/session_tool_registry.go` — `update_goal`
+  tool + `goalGuard` on `toolDeps` (mirror `taskGuard`/`getOrCreateTaskStore` sync.Once).
+- `agent/session.go` / `agent/session_queue.go` — `Session.SetGoal`/`ClearGoal` methods;
+  in-turn flag; goal snapshot for the read projection.
+- Transport (the full wiring chain, per the established pattern): `appwire/types.go`
+  (`MethodGoalSet` + params/response + `Goal` on `ThreadStatus`/`SerfThread`); a typed
+  client helper `sendHubGoal` mirroring `sendHubQueue` (there is no generic RPC escape
+  hatch); `server/server.go` (`goalFunc` field + `SetGoalFunc`); `server/appwire_runtime.go`
+  (handler registration in `registerAppWireHandlers`); `cmd/serf/serve.go`
+  (`srv.SetGoalFunc(func(...){ getSession().SetGoal(...) })`); the terminal goal event in
+  the event→appwire bridge.
+- `cmd/serf-tui/hub_command_registry.go` — `/goal` command.
 
 ## Testing strategy (TDD)
 
-- **Unit — the gate decision function** (no mocks; it's pure): table over
-  `{status × iterations × userInputPending}` → `{continue | stop}`; assert `active &&
-  iters<max && !userPending → continue`, terminal/`iters==max`/`userPending → stop`, and
-  `Iterations` increments exactly once per continuation.
-- **Unit — store + tool**: `update_goal` validates state, flips status, emits a state
-  snapshot; clear empties the store.
-- **Unit — prompt render**: objective is interpolated and XML-escaped; iteration counter
-  renders.
-- **End-to-end (real cheap model)**: set a goal whose completion is cheaply verifiable
-  (e.g. "create file X with contents Y"); assert the agent runs ≥1 continuation turn,
-  calls `update_goal("complete")`, and the loop stops; a second e2e drives the
-  `MaxIterations` backstop; a third drives `blocked`. No mocked-behavior tests — the loop
-  is exercised against a real model, the decision logic against pure inputs.
+- **Pure unit — `shouldContinueGoal(snapshot)`** (no mocks): table over
+  `{status × iterations × noProgressStreak × subagentInFlight}` → continue/stop.
+- **Unit — `armGoalContinuation`**: increments `Iterations`; updates `NoProgressStreak`
+  from the progress signal; flips to `blocked` at `NoProgressLimit`; finalizes `StopReason`.
+- **Unit — error→blocked**: a simulated non-cancellation `ProcessInput` error with an
+  active goal leaves the goal `blocked`, not `active`.
+- **Unit — store + tool**: `update_goal` validates state and flips status with a snapshot;
+  clear empties the store.
+- **Unit — turn kind**: a continuation appends a continuation/steering turn and emits the
+  continuation event, *not* `EventUserInput`/`TurnUserInput`.
+- **Unit — prompt render**: objective interpolated and XML-escaped; result-tool clause and
+  blocked criterion present exactly once.
+- **Concurrency — race test** (like `session_sync_race_test.go`): hammer `SetGoal` (appwire
+  goroutine) against the gate (turn goroutine); assert no `active`-but-idle stall and `-race`
+  clean.
+- **End-to-end (real cheap model, no mocks)**: (1) a cheaply-verifiable objective ("create
+  file X with contents Y") → ≥1 continuation turn, `update_goal("complete")`, loop stops,
+  terminal event observed; (2) an impossible objective → no-progress breaker auto-blocks
+  within `NoProgressLimit`+1 turns with a terminal "blocked" report; (3) `/interrupt`
+  mid-loop → idle, goal still active, resumes next turn.
 
-## Open questions (for spec review)
+## Open questions (for review)
 
-1. **Interrupt semantics** (§6): resume-after-next-turn (proposed) vs. interrupt-clears.
-2. **`DefaultMaxIterations`** value (proposed 25) and whether `/goal` should accept an
-   inline override (`maxIterations`).
-3. **Goal-turn transcript kind**: should goal-driven turns be labeled as steering/system
-   rather than user turns? (Implementation detail; affects how the TUI renders them.)
-4. **First-turn kick race**: `goal/set`'s idle-guard reuses `turn/start`'s; confirm the
-   busy/idle handoff to the gate has no gap (pin in the implementation plan).
+1. Interrupt semantics (§6): resume-after-next-turn (proposed) vs. interrupt-clears.
+2. `DefaultMaxIterations = 10`, `NoProgressLimit = 2` — confirm values against acceptable
+   worst-case spend.
+3. Continuation turn kind: reuse `schema.TurnSteering` vs. add `schema.TurnContinuation`
+   (affects projector/TUI rendering).
+
+## Revision history
+
+- **rev 2 (this doc):** post adversarial round 1. Fixed: cross-lock idle-kick TOCTOU
+  (§7, `SetGoal` as a Session method, single-lock coordination); continuations no longer
+  synthetic *user* turns (§2a); non-cancellation error → `blocked` instead of zombie goal
+  (§2); engine `NoProgressStreak` breaker + honest worst-case spend (§1–2); result-tool vs
+  `update_goal` made explicit in the prompt (§4); minimal terminal report + `thread/read`
+  status projection restored (§5); split pure/mutator gate functions (§2); `MaxIterations`
+  as a constant (§1); full `goal/set` wiring chain enumerated; gate-over-hook rationale
+  stated (Motivation). De-duplicated the blocked criterion (§3/§4).
+- **rev 1:** initial lean design.
 
 ## Future extensions (the deferred cuts, as seams)
 
-Token budget (add `Budget`/usage snapshot to `Goal` + a `budget_limited` status + a
-wrap-up prompt branch in the gate) · LLM-judge backstop (a `GenerateObject` check before
-honoring `update_goal("complete")`) · pause/resume · cross-resume persistence (`Goal
-*GoalSnapshot` on `SessionMeta`) · status-bar indicator + web affordance (a typed
-notification). None alters the core store/gate/prompt/tool contract.
+Token budget · LLM-judge backstop before honoring `update_goal("complete")` · pause/resume ·
+cross-resume persistence (`Goal *GoalSnapshot` on `SessionMeta`) · full status-bar indicator
++ web affordance · per-goal-turn round cap (a tighter spend bound than the no-progress
+breaker). None alters the core store/gate/prompt/tool contract.
