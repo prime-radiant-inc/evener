@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/goal"
 	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/internal/toolname"
 	"primeradiant.com/serf/agent/plugin"
@@ -628,6 +629,15 @@ func (s *Session) getOrCreateTaskStore() *task.TaskStore {
 		_ = s.taskStore.Load()
 	})
 	return s.taskStore
+}
+
+// getOrCreateGoalStore returns the session's goal store, initializing it lazily
+// on first call. The store has its own mutex and is goroutine-safe.
+func (s *Session) getOrCreateGoalStore() *goal.Store {
+	s.goalStoreOnce.Do(func() {
+		s.goalStore = goal.NewStore()
+	})
+	return s.goalStore
 }
 
 // maybeInjectTaskReminder checks whether a task-related steering message

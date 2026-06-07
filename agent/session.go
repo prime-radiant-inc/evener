@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/contextmgr"
+	"primeradiant.com/serf/agent/internal/goal"
 	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/agent/internal/mcp"
@@ -153,6 +154,10 @@ type Session struct {
 	// task list (lazy-init)
 	taskStore     *task.TaskStore
 	taskStoreOnce sync.Once
+
+	// goal store (lazy-init)
+	goalStore     *goal.Store
+	goalStoreOnce sync.Once
 
 	// task reminder tracking
 	taskToolLastRound int  // totalRounds value at last task_list tool call
