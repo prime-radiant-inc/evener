@@ -1,6 +1,6 @@
 # Serf `/goal` — an objective engine (design)
 
-**Status:** Draft for review (revision 3, post adversarial round 2) · **Date:** 2026-06-06 · **Branch:** `goal-objective-engine`
+**Status:** Reviewed — revision 4, post adversarial round 3 (Phase 1 complete) · **Date:** 2026-06-06 · **Branch:** `goal-objective-engine`
 
 ## Summary
 
@@ -134,16 +134,20 @@ Split for testability and the §7 concurrency contract:
   false sets the terminal status/`StopReason` and emits the terminal report (§5), letting
   `ProcessInput` go idle.
 
-**No-progress signal (reuses serf's `ReadOnly` flag).** Every registered tool carries a
-`ReadOnly` flag, and serf already computes per-round `allReadOnly` and a `readOnlyStreak`
-(`session_tool_round.go:298–311`, `session.go:165`). `processOneInput` returns a third value
-`progressed` = "this goal turn made at least one **mutating** tool call" (a tool with
-`ReadOnly==false`, i.e. a write/exec — **excluding** reads, the result/communicate tool, and
-`task`/plan updates, consistent with §4's "a plan update is not a substitute for work").
-`armGoalContinuation` resets `NoProgressStreak` on a progressed turn and increments it
-otherwise; reaching `NoProgressLimit` flips the goal to `blocked` (`StopReason="no progress"`)
-instead of continuing. This catches the common runaway (model believes it's done and keeps
-talking / plan-spamming) in 3 turns, independent of the model self-counting across compaction.
+**No-progress signal.** `processOneInput` returns a third value `progressed`. Serf marks read
+tools with a `ReadOnly` flag (exactly 6: `read_file`, `grep`, `glob`, `list_dir`, the two
+transcript readers), but **the `ReadOnly` flag alone is insufficient** — `task_list` and the
+result/communicate tool register `ReadOnly==false`, yet plan-spam and "I'm done" messages must
+NOT count as progress. So `progressed` is true iff the turn made a call that is **`!ReadOnly`
+AND not the result tool (`deps.resultToolName()`) AND not the `task` tool** — a real
+file/command mutation (a turn-level OR across the turn's rounds). `armGoalContinuation` resets
+`NoProgressStreak` on a progressed turn and increments it otherwise. **Grace period:** the
+streak accrues only *after* the goal's first progressed turn, so a legitimate read-heavy
+investigation at the start (debugging before the first edit) is never penalized; once work has
+started, reaching `NoProgressLimit` flips the goal to `blocked` (`StopReason="no progress"`).
+This catches the common runaway (model believes it's done and keeps talking / plan-spamming)
+without false-blocking front-loaded investigation. Accepted v1 residual: a model writing
+trivial junk each turn still games it — bounded by the iteration cap.
 
 **Termination paths (every one ends with a terminal report, §5):**
 - **Model-declared** — `update_goal("complete"|"blocked")` sets a terminal status; the gate
@@ -153,15 +157,23 @@ talking / plan-spamming) in 3 turns, independent of the model self-counting acro
   goal **stays active** and resumes after the next completed turn (§6). This is the *only*
   case that leaves a goal active.
 - **System cancellation or error** — a non-user-interrupt termination (provider error after
-  retry exhaustion, empty-response/bare-text exhaustion, `context.DeadlineExceeded`, or a
-  child-originated abort) must transition the goal to `blocked` with `StopReason` = the
-  cause. **Critically, "cancellation" is not a safe proxy for "user interrupt":**
-  `isTurnCancellation` (`session_stream.go:49`) returns true for deadlines and aborts too, so
-  the error path must check the *user-interrupt* signal
-  (`WithQueuedInputDrainOnInterrupt`) specifically — only a genuine user interrupt keeps the
-  goal active; deadline/abort/error → `blocked`. The terminal report must be emitted **before
-  any `s.Close()`** (a non-retryable `llm.Error` closes the events channel in
-  `handleModelError`, which would silently drop a later emit).
+  retry exhaustion, empty-response/bare-text exhaustion) must transition the goal to `blocked`.
+  Two corrections from round 3:
+  - **The discriminator is the `queuedInputDrainContext(ctx, err)` bool** (`session_queue.go:300–328`,
+    already used at `ProcessInput:228`) — *not* the `WithQueuedInputDrainOnInterrupt` marker,
+    which is installed on every turn ctx and so discriminates nothing. `ok==true` (a genuine
+    user `/interrupt`) keeps the goal active; `DeadlineExceeded` (excluded at `:314`) and a
+    non-retryable `llm.Error` route to `blocked`. (A child-originated abort never reaches here —
+    subagents run detached on `context.Background()`.)
+  - **The gate is unreachable on error returns** (every `err != nil` path returns *before* the
+    drain-loop gate), so goal-error-termination lives in a `Session.terminateGoalOnError(ctx, err)`
+    helper called at **two** sites: the `ProcessInput` error-return (handles the exhaustion
+    **zombie** — session stays idle+alive and would otherwise resurrect the goal on the user's
+    next message), **and inside `handleModelError` before its `s.Close()`** (`session_model_call.go:209`)
+    for a fatal provider error, because `Close` shuts the events channel and a later `emit` is a
+    silent no-op. (On fatal close the in-memory goal dies with the session, so there is no zombie
+    even if a report were missed; emitting before `Close` is just the clean way to keep the
+    "told why" promise.)
 
 ### 2a. The continuation mechanism — a non-user turn (four explicit sites)
 
@@ -176,9 +188,10 @@ request — but `processOneInput` *unconditionally* calls `acceptUserInput`
 non-user continuation turns therefore requires coordinated changes at **four** sites (rev 2
 specified only the intent):
 
-1. **Turn-kind on the entry path.** Add a `TurnKind` (`UserInput` | `Continuation`) parameter
-   threaded through `ProcessInput` → `processOneInput` → the accept step. The gate's
-   `armGoalContinuation` sets `Continuation`; the idle kick (§5) carries it too (see site 3).
+1. **An entry-kind on the entry path.** Add an `entryKind` (`UserInput` | `Continuation`)
+   parameter threaded through `ProcessInput` → `processOneInput` → the accept step. Name it
+   `entryKind`, **not** `TurnKind` — `schema.TurnKind` already exists (`agent/schema/turn.go`)
+   and would shadow. The gate sets `Continuation`; the idle kick (§5) carries it too (see site 3).
 2. **A continuation accept path.** Add `acceptContinuationInput` (sibling to
    `acceptUserInput`) that appends `schema.TurnSteering` with the rendered prompt, emits a new
    `EventGoalContinuation` event, and **skips** the namer, `EventUserInput`, and the
@@ -209,12 +222,16 @@ that would touch ≥8 `switch t.Kind` sites for no behavioral gain). The *event*
 goal turn lets *intra-turn* compaction fold the injected objective+audit `TurnSteering` into a
 summary (`summarizeWithLLM` renders it as a one-line `"System: …"`), eroding the very
 objective §2a re-injects each turn. Re-injection protects *between* turns; the cap protects
-*within* a turn. Continuation turns therefore run with `min(cfg.MaxToolRoundsPerInput,
-GoalTurnMaxRounds=30)` rounds — small enough that compaction rarely fires inside one, and a
-twofold spend bound. Hitting the cap is a **normal** continuation boundary (the gate
-re-injects the full objective next turn), not a stuck signal. (Future hardening, deferred:
-mark the objective turn so summarization preserves it verbatim, like the `[DISTILLED MEMORY]`
-special-case — unnecessary given the cap.)
+*within* a turn. **Honest framing (round 3):** compaction is *pressure*-driven (fires at
+~80%/90% of the window, independent of round count), so a low round cap **reduces the
+likelihood** of intra-turn erosion — it does **not** *bound* the trigger; a heavy turn, or one
+starting near the threshold, can still compact. The real guarantee that the objective is never
+lost is **re-injection on the next turn** (§2a); the cap is a likelihood-reducer plus a twofold
+spend bound. Compute it as `if entryKind==Continuation && (cfg<0 || cfg>30) { cap =
+GoalTurnMaxRounds }` — a bare `min(cfg, 30)` is wrong because `cfg<0` means *unbounded*. Hitting
+the cap is a **normal** continuation boundary, not a stuck signal. The true fix for in-turn
+erosion (deferred, only if it proves real in practice) is to mark the objective turn so
+summarization preserves it verbatim, like the `[DISTILLED MEMORY]` special-case.
 
 ### 3. The `update_goal` tool
 
@@ -257,7 +274,8 @@ unconditional promise). Full text:
 > result tool — does NOT end the goal. After each turn you will automatically be asked to
 > continue, for a bounded number of turns, until you call `update_goal`. When the objective
 > is genuinely achieved and verified, you MUST call `update_goal` with status "complete". Do
-> not rely on simply saying you are done.
+> not rely on simply saying you are done. Reading and planning alone do not count as progress —
+> make a concrete change each turn, or the loop may stop on a no-progress check.
 >
 > Continuation behavior: This goal persists across turns. Keep the full objective intact; if
 > it cannot be finished now, make concrete progress toward the real requested end state and
@@ -325,9 +343,10 @@ back to a finished task" is indistinguishable from "session idled" (`EventSessio
 the same `input_complete` for both). Reuse the existing `systemAnnouncement` channel
 (`internal/appprojector/appwire_projection.go:422`, already used by `turn_limit`,
 `loop_detection`, `compaction`, etc.): emit one `EventGoalEnded {status, stopReason,
-iterations}` from the single goal-termination site (so it fires on **every** stop path:
-complete, blocked, no-progress, iteration-cap, error/system-cancel→blocked), and add a
-one-line projector `case` → `systemAnnouncement("goal", "Goal", goalEndText(...))`. Renders as
+iterations}` from **both** termination points — the drain-loop gate (normal stops: complete,
+blocked, no-progress, iteration-cap) and `Session.terminateGoalOnError` (§2: error/system-cancel
+→ blocked, including the pre-`Close` emit inside `handleModelError`) — so it fires on **every**
+stop path, and add a one-line projector `case` → `systemAnnouncement("goal", "Goal", goalEndText(...))`. Renders as
 a `systemMessage` in both UIs ("✓ Goal achieved", "⊘ Goal blocked: &lt;reason&gt;", "⊘ Goal
 stopped: hit limit (N turns)") — no new ThreadItem type, no footer state machine, no bespoke
 TUI rendering.
@@ -370,19 +389,22 @@ direction, not a stall).
 
 - `agent/internal/goal/{goal.go, prompt.go}` (new) — store (own mutex), `Status`,
   `shouldContinueGoal`(pure)/`armGoalContinuation`(mutator), prompt template.
-- `agent/session_lifecycle.go` — gate (priority 3); `TurnKind` param on `ProcessInput`/
+- `agent/session_lifecycle.go` — gate (priority 3); `entryKind` param on `ProcessInput`/
   `processOneInput`; new `acceptContinuationInput` (append `TurnSteering`, emit
-  `EventGoalContinuation`, skip namer/`EventUserInput`/`MaxTurns`); the
-  user-interrupt-vs-system-cancel branch (error→blocked, emit terminal report before any
-  `Close`); `progressed` third return from `processOneInput` (via the `ReadOnly` tool flag).
+  `EventGoalContinuation`, skip namer/`EventUserInput`/`MaxTurns`/`s.turns++` — verified safe,
+  `SESSION_END.Turns` uses the separate `modelResponses` counter); `Session.terminateGoalOnError`
+  on the error-return path; `progressed` third return from `processOneInput`
+  (`!ReadOnly && not result && not task`).
+- `agent/session_model_call.go` — call `terminateGoalOnError` inside `handleModelError`
+  **before** its `s.Close()` so the terminal report survives a fatal provider error.
 - `agent/session_tools_goal.go` (new) + `agent/session_tool_registry.go` — `update_goal` +
   `goalGuard` on `toolDeps` (mirror `taskGuard`/`getOrCreateTaskStore`).
 - `agent/session.go` / `agent/session_queue.go` — `Session.SetGoal`/`ClearGoal`; in-turn flag;
   goal snapshot for the read field; the goal-round-cap (`GoalTurnMaxRounds`) applied for
   `Continuation` turns.
-- `agent/internal/appprojector/appwire_projection.go` — **two new cases**:
-  `EventGoalContinuation` (close prior turn + `startTurn()` + continuation/system item) and
-  `EventGoalEnded` (→ `systemAnnouncement`).
+- `internal/appprojector/appwire_projection.go` (top-level module, not under `agent/`) —
+  **two new cases**: `EventGoalContinuation` (close prior turn + `startTurn()` + continuation/
+  system item) and `EventGoalEnded` (→ `systemAnnouncement`).
 - `server/server.go` (`InputMessage` kind; `goalFunc` + `SetGoalFunc`),
   `server/appwire_runtime.go` (handler registration; carry kind on the idle kick),
   `appwire/types.go` (`MethodGoalSet` + params/response; typed `Goal *GoalStatus` on
@@ -427,7 +449,21 @@ direction, not a stall).
 
 ## Revision history
 
-- **rev 3 (this doc):** post round 2. The continuation mechanism is now four explicit sites
+- **rev 4 (this doc):** post round 3 (reviewer B converged; A & C agreed on one [Major] +
+  precision fixes). The terminal-error report now fires from a `Session.terminateGoalOnError`
+  helper at **two** sites (the `ProcessInput` error-return *and* inside `handleModelError` before
+  `s.Close()`), closing the exhaustion **zombie** and the dropped-report-on-fatal-error. The
+  cancellation discriminator is corrected to the **`queuedInputDrainContext` bool** (the
+  `WithQueuedInputDrainOnInterrupt` marker is on every turn ctx, so it discriminates nothing).
+  The no-progress signal is corrected to `!ReadOnly && not result && not task` (the `ReadOnly`
+  flag alone counts plan-spam/`communicate` as progress) plus a grace period before the first
+  mutating turn. §2b is reframed honestly (the round cap *reduces the likelihood* of
+  pressure-driven intra-turn compaction; re-injection next turn is the real guarantee) and the
+  round-cap formula is fixed for the `cfg<0`=unbounded edge. Renamed the entry-kind param
+  (`schema.TurnKind` already exists); fixed the `internal/appprojector` path; confirmed skipping
+  `s.turns++` is safe (`SESSION_END.Turns` uses `modelResponses`). **Phase-1 spec review complete
+  (3 adversarial iterations).**
+- **rev 3:** post round 2. The continuation mechanism is now four explicit sites
   (turn-kind on the entry path + idle kick, `acceptContinuationInput` appending `TurnSteering`,
   a projector `EventGoalContinuation` turn-boundary case) — resolving the rev-2 §2a↔§7 idle-kick
   contradiction and the "discrete turns" rendering gap. Added the per-goal-turn round cap
