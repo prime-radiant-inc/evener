@@ -9,6 +9,7 @@ package contextmgr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -958,6 +959,48 @@ func sumCounts(m map[string]int) int {
 
 // --- LLM summarization (Layer 4) ---
 
+func summarizationModels(profile *provider.Profile) []string {
+	if profile == nil {
+		return nil
+	}
+	active := strings.TrimSpace(profile.Model())
+	configured := strings.TrimSpace(profile.ConfiguredCheapModel())
+	if configured == "" || configured == active {
+		if active == "" {
+			return nil
+		}
+		return []string{active}
+	}
+	if active == "" {
+		return []string{configured}
+	}
+	return []string{configured, active}
+}
+
+func shouldFallbackSummarizationModel(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if llm.Classify(err) == llm.ErrorClassFallback {
+		return true
+	}
+	if llm.Classify(err) != llm.ErrorClassPermanent {
+		return false
+	}
+	switch llm.Kind(err) {
+	case llm.KindInvalidRequest, llm.KindNotFound, llm.KindAccessDenied:
+		return true
+	default:
+		return false
+	}
+}
+
 // summarizeWithLLM calls the cheap model to generate a narrative summary of
 // old history. Replaces old history with a single user message containing the
 // summary, preserving the most recent turns.
@@ -1081,15 +1124,28 @@ Be thorough and structured. Err on the side of including too much rather than to
 	prompt := prefix + b.String()
 
 	sumProfile := cm.currentProfile()
-	req := llm.Request{
-		Model:    sumProfile.CheapModel(),
-		Provider: sumProfile.ID(),
-		Messages: []llm.Message{llm.User(prompt)},
+	models := summarizationModels(sumProfile)
+	if len(models) == 0 {
+		return nil, fmt.Errorf("summarization model is empty")
 	}
-
-	resp, err := cm.client.Complete(ctx, req)
-	if err != nil {
-		return nil, err
+	var resp llm.Response
+	var lastErr error
+	for _, model := range models {
+		req := llm.Request{
+			Model:    model,
+			Provider: sumProfile.ID(),
+			Messages: []llm.Message{llm.User(prompt)},
+		}
+		resp, lastErr = cm.client.Complete(ctx, req)
+		if lastErr == nil {
+			break
+		}
+		if model != models[len(models)-1] && !shouldFallbackSummarizationModel(ctx, lastErr) {
+			break
+		}
+	}
+	if lastErr != nil {
+		return nil, lastErr
 	}
 
 	summaryText := "[CONTEXT SUMMARY]\n" + resp.Text() + "\n[END SUMMARY]"

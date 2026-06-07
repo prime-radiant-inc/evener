@@ -87,6 +87,85 @@ func TestBuildSpawnArgs_FromResolved(t *testing.T) {
 	}
 }
 
+func TestBuildResumeArgsOmitAmbientModelKnobs(t *testing.T) {
+	maxRounds := 50
+	req := hubcore.ResumeRequest{
+		SessionID:  "01JRESUME",
+		WorkingDir: "/wd",
+		StateDir:   "/st",
+		RunDir:     "/rn",
+		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
+			Model:           "openai/gpt-env",
+			FastCheapModel:  "openai/gpt-4.1-nano",
+			ModelFallbacks:  []string{"openai/gpt-fallback"},
+			Agent:           "default",
+			ReasoningEffort: "medium",
+			MaxRounds:       &maxRounds,
+		}},
+	}
+	args := buildResumeArgs(req)
+	for _, forbidden := range []string{"--model", "--fast-cheap-model", "--model-fallback"} {
+		if hasArg(args, forbidden) {
+			t.Fatalf("resume args must not include ambient %s: %v", forbidden, args)
+		}
+	}
+	for _, required := range []string{"serve", "--resume", "01JRESUME", "--agent", "default", "--reasoning-effort", "medium", "--max-rounds", "50"} {
+		if !hasArg(args, required) {
+			t.Fatalf("resume args missing %q: %v", required, args)
+		}
+	}
+}
+
+func TestHubSpawnerResumeLaunchCheckOmitsAmbientModel(t *testing.T) {
+	dir := t.TempDir()
+	runDir := filepath.Join(dir, "run")
+	argsOut := filepath.Join(dir, "launch-check-args.txt")
+	t.Setenv("ARGS_OUT", argsOut)
+	bin := filepath.Join(dir, "fake-serf")
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+  printf '%s\n' "$@" > "$ARGS_OUT"
+  printf '{"protocol":"serf-appwire-v1"}\n'
+  exit 0
+fi
+if [ "$1" = "serve" ]; then
+  mkdir -p "$SERF_RUN_DIR"
+  cat > "$SERF_RUN_DIR/$$.json" <<EOF
+{"pid":$$,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}
+EOF
+  sleep 1
+  exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.SpawnTimeout = 2 * time.Second
+	spawner := HubSpawner{Cfg: cfg, SerfBinary: bin, RunDir: runDir, HubToken: "generated-token"}
+	_, err := spawner.Resume(context.Background(), hubcore.ResumeRequest{
+		SessionID: "01JRESUME",
+		Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{
+			Model:          "openrouter/stale-model",
+			FastCheapModel: "openrouter/stale-cheap",
+		}},
+		WorkingDir: dir,
+	})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	data, err := os.ReadFile(argsOut)
+	if err != nil {
+		t.Fatalf("read launch-check args: %v", err)
+	}
+	args := strings.Fields(string(data))
+	if hasArg(args, "--model") {
+		t.Fatalf("resume launch-check must not pass ambient --model: %v", args)
+	}
+}
+
 func TestBuildSpawnArgsNonInteractiveOnlyWhenRequested(t *testing.T) {
 	interactive := buildSpawnArgs(hubcore.SpawnRequest{Resolved: launchconfig.Resolved{Effective: launchconfig.Layer{Model: "openai/gpt-5"}}})
 	if hasArg(interactive, "--non-interactive") {

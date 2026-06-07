@@ -123,7 +123,12 @@ func run(ctx context.Context, cfg runConfig) error {
 		resumeProvider = meta.ProfileID
 		resumeModel = meta.Model
 	}
-	modelRef, err := cmdutil.ResolveModelRef(cfg.model, os.Getenv("SERF_MODEL"), resumeProvider, resumeModel)
+	var modelRef cmdutil.ModelRef
+	if meta != nil {
+		modelRef, err = cmdutil.ResolveResumeModelRef(cfg.model, os.Getenv("SERF_MODEL"), resumeProvider, resumeModel)
+	} else {
+		modelRef, err = cmdutil.ResolveModelRef(cfg.model, os.Getenv("SERF_MODEL"), "", "")
+	}
 	if err != nil {
 		return err
 	}
@@ -146,42 +151,49 @@ func run(ctx context.Context, cfg runConfig) error {
 	env := execenv.NewLocalExecutionEnvironment(cfg.workDir)
 
 	var sess *agent.Session
+	baseSessionCfg := agent.SessionConfig{
+		MaxToolRoundsPerInput:  cmdutil.MaxRoundsToConfig(cfg.maxRounds),
+		ShareTasksWithChildren: cfg.shareTaskStore,
+		ResultToolName:         cfg.resultToolName,
+		StateDir:               stateDir,
+		SystemPromptFile:       cfg.systemPrompt,
+		SystemPromptAppend:     cfg.systemPromptAppend,
+		NoProjectPrompts:       cfg.noProjectPrompts,
+		AgentName:              cfg.agentName,
+		SkillsDirs:             cfg.skillsDirs,
+		MCPConfigFiles:         cfg.mcpConfigs,
+		MCPInline:              cfg.mcpServers,
+		PluginDirs:             cfg.pluginDirs,
+		ContextStrategy:        cfg.contextStrategy,
+		ExportATIFPath:         cfg.exportATIF,
+		NonInteractive:         true,
+		SystemPromptAsUser:     cfg.systemPromptAsUser,
+		ResolveProfile:         cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
+	}
+	if cfg.maxSubagentDepth >= 0 {
+		baseSessionCfg.MaxSubagentDepth = cfg.maxSubagentDepth
+	}
+	if effort.Set {
+		baseSessionCfg.ReasoningEffort = effort.Value
+	}
 	if meta != nil {
-		sess, err = agent.RestoreSessionFromMeta(client, profile, env, *meta, stateDir)
+		sess, err = agent.RestoreSessionFromMetaWithConfig(client, profile, env, *meta, agent.RestoreSessionConfig{
+			StateDir:       stateDir,
+			ResolveProfile: baseSessionCfg.ResolveProfile,
+		})
 		if err != nil {
 			return fmt.Errorf("restore session: %w", err)
 		}
 		if effort.Set {
 			sess.SetReasoningEffort(effort.Value)
 		}
-		fmt.Fprintf(cfg.stderr, "[resumed] session %s (%d turns)\n", meta.ID, meta.TurnCount) //nolint:errcheck
+		if strings.TrimSpace(cfg.model) != "" {
+			fmt.Fprintf(cfg.stderr, "[resumed] session %s with model override %s (was %s/%s)\n", meta.ID, modelRef.Qualified(), resumeProvider, resumeModel) //nolint:errcheck
+		} else {
+			fmt.Fprintf(cfg.stderr, "[resumed] session %s (%d turns)\n", meta.ID, meta.TurnCount) //nolint:errcheck
+		}
 	} else {
-		sessionCfg := agent.SessionConfig{
-			MaxToolRoundsPerInput:  cmdutil.MaxRoundsToConfig(cfg.maxRounds),
-			ShareTasksWithChildren: cfg.shareTaskStore,
-			ResultToolName:         cfg.resultToolName,
-			StateDir:               stateDir,
-			SystemPromptFile:       cfg.systemPrompt,
-			SystemPromptAppend:     cfg.systemPromptAppend,
-			NoProjectPrompts:       cfg.noProjectPrompts,
-			AgentName:              cfg.agentName,
-			SkillsDirs:             cfg.skillsDirs,
-			MCPConfigFiles:         cfg.mcpConfigs,
-			MCPInline:              cfg.mcpServers,
-			PluginDirs:             cfg.pluginDirs,
-			ContextStrategy:        cfg.contextStrategy,
-			ExportATIFPath:         cfg.exportATIF,
-			NonInteractive:         true,
-			SystemPromptAsUser:     cfg.systemPromptAsUser,
-			ResolveProfile:         cmdutil.BuildResolveProfile(provCfg, hasProvConfig),
-		}
-		if cfg.maxSubagentDepth >= 0 {
-			sessionCfg.MaxSubagentDepth = cfg.maxSubagentDepth
-		}
-		if effort.Set {
-			sessionCfg.ReasoningEffort = effort.Value
-		}
-		sess, err = agent.NewSession(client, profile, env, sessionCfg)
+		sess, err = agent.NewSession(client, profile, env, baseSessionCfg)
 		if err != nil {
 			return fmt.Errorf("session creation: %w", err)
 		}

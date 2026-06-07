@@ -205,12 +205,35 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	return s, nil
 }
 
+// RestoreSessionConfig carries runtime-only settings needed when restoring a
+// persisted session. Persisted fields still come from SessionMeta.Config; this
+// struct layers non-serialized values such as StateDir and ResolveProfile.
+type RestoreSessionConfig struct {
+	StateDir       string
+	ResolveProfile func(ref string) (*provider.Profile, error)
+	ModelFallbacks []string
+	LLMRetryPolicy *llm.RetryPolicy
+	LLMSleep       llm.SleepFunc
+}
+
 // RestoreSessionFromMeta creates a Session from a SessionMeta, recovering
 // history exclusively from the transcript JSONL. If no transcript exists,
 // the session starts with empty history (no snapshot fallback).
 func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, meta schema.SessionMeta, stateDir string) (*Session, error) {
+	return RestoreSessionFromMetaWithConfig(client, profile, env, meta, RestoreSessionConfig{StateDir: stateDir})
+}
+
+// RestoreSessionFromMetaWithConfig is RestoreSessionFromMeta with explicit
+// runtime-only restore configuration.
+func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Profile, env execenv.ExecutionEnvironment, meta schema.SessionMeta, restoreCfg RestoreSessionConfig) (*Session, error) {
 	cfg := configFromSnapshot(meta.Config)
-	cfg.StateDir = stateDir
+	cfg.StateDir = restoreCfg.StateDir
+	cfg.ResolveProfile = restoreCfg.ResolveProfile
+	if restoreCfg.ModelFallbacks != nil {
+		cfg.ModelFallbacks = append([]string(nil), restoreCfg.ModelFallbacks...)
+	}
+	cfg.LLMRetryPolicy = restoreCfg.LLMRetryPolicy
+	cfg.LLMSleep = restoreCfg.LLMSleep
 	cfg.SessionStartKind = plugin.SessionStartKindResume
 	cfg.applyDefaults()
 
@@ -230,8 +253,8 @@ func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env e
 
 	// Recover history from transcript JSONL. No snapshot fallback.
 	var resumeHistory []schema.Turn
-	if stateDir != "" {
-		tpath := filepath.Join(stateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
+	if cfg.StateDir != "" {
+		tpath := filepath.Join(cfg.StateDir, sessionsSubdir, meta.ID+".transcript.jsonl")
 		_, entries, _, readErr := readTranscript(tpath)
 		if readErr == nil && len(entries) > 0 {
 			resumeHistory = ResumeHistory(entries)
@@ -247,6 +270,7 @@ func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env e
 		cfg:            cfg,
 		client:         client,
 		profile:        profile,
+		resolveProfile: cfg.ResolveProfile,
 		depth:          cfg.spawn.depth,
 		env:            env,
 		stateDir:       cfg.StateDir,

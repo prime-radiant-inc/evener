@@ -156,7 +156,13 @@ func runServe(args []string) error {
 		resumeProvider = resumedMeta.ProfileID
 		resumeModel = resumedMeta.Model
 	}
-	modelRef, err := cmdutil.ResolveModelRef(*model, os.Getenv("SERF_MODEL"), resumeProvider, resumeModel)
+	var modelRef cmdutil.ModelRef
+	var err error
+	if resuming {
+		modelRef, err = cmdutil.ResolveResumeModelRef(*model, os.Getenv("SERF_MODEL"), resumeProvider, resumeModel)
+	} else {
+		modelRef, err = cmdutil.ResolveModelRef(*model, os.Getenv("SERF_MODEL"), "", "")
+	}
 	if err != nil {
 		return err
 	}
@@ -210,14 +216,22 @@ func runServe(args []string) error {
 
 	var sess *agent.Session
 	if resuming {
-		sess, err = agent.RestoreSessionFromMeta(client, profile, env, resumedMeta, sd)
+		sess, err = agent.RestoreSessionFromMetaWithConfig(client, profile, env, resumedMeta, agent.RestoreSessionConfig{
+			StateDir:       sd,
+			ResolveProfile: sessionCfg.ResolveProfile,
+			ModelFallbacks: sessionCfg.ModelFallbacks,
+		})
 		if err != nil {
 			return fmt.Errorf("restore session: %w", err)
 		}
 		if effort.Set {
 			sess.SetReasoningEffort(effort.Value)
 		}
-		fmt.Fprintf(os.Stderr, "[serve] resumed session %s (%d turns)\n", resumedMeta.ID, resumedMeta.TurnCount)
+		if strings.TrimSpace(*model) != "" {
+			fmt.Fprintf(os.Stderr, "[serve] resumed session %s with model override %s (was %s/%s)\n", resumedMeta.ID, modelRef.Qualified(), resumeProvider, resumeModel)
+		} else {
+			fmt.Fprintf(os.Stderr, "[serve] resumed session %s (%d turns)\n", resumedMeta.ID, resumedMeta.TurnCount)
+		}
 	} else {
 		sess, err = agent.NewSession(client, profile, env, sessionCfg)
 		if err != nil {

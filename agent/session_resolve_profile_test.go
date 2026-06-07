@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -126,6 +127,78 @@ func TestSetModel_CrossProvider_WithoutResolver_NoSwap(t *testing.T) {
 	sess.SetModel("openai/gpt-4.1-mini") // self-prefix strip — fine
 	if got := sess.profile.ID(); got != "openai" {
 		t.Fatalf("after same-provider SetModel, profile ID = %q, want openai", got)
+	}
+}
+
+func TestRestoreSessionFromMetaWithConfig_InstallsResolveProfile(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	c.Register(&fakeAdapter{name: "anthropic"})
+
+	resolverCalled := false
+	resolver := func(ref string) (*provider.Profile, error) {
+		resolverCalled = true
+		if ref != "anthropic/claude-opus-4-6" {
+			t.Fatalf("resolver ref = %q, want anthropic/claude-opus-4-6", ref)
+		}
+		return provider.WithContextWindow(newAnthropicProfile("claude-opus-4-6"), 987654), nil
+	}
+
+	meta := schema.SessionMeta{
+		ID:        "01JRESTORERESOLVER0000000001",
+		ProfileID: "openai",
+		Model:     "gpt-5.4",
+		Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+	}
+	sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
+		StateDir:       dir,
+		ResolveProfile: resolver,
+	})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer sess.Close()
+
+	sess.SetModel("anthropic/claude-opus-4-6")
+
+	if !resolverCalled {
+		t.Fatal("expected restored session SetModel to call injected resolver")
+	}
+	if got := sess.Profile().ID(); got != "anthropic" {
+		t.Fatalf("profile ID = %q, want anthropic", got)
+	}
+	if got := sess.ContextMetrics().Window; got != 987654 {
+		t.Fatalf("ContextMetrics().Window = %d, want 987654", got)
+	}
+}
+
+func TestRestoreSessionFromMetaWithConfig_LayersModelFallbacks(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	meta := schema.SessionMeta{
+		ID:        "01JRESTOREFALLBACKS000000001",
+		ProfileID: "openai",
+		Model:     "gpt-5.4",
+		Config: (SessionConfig{
+			NoProjectPrompts: true,
+			ModelFallbacks:   []string{"openai/persisted-fallback"},
+		}).toSnapshot(),
+	}
+	sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
+		StateDir:       dir,
+		ModelFallbacks: []string{"openai/runtime-fallback"},
+	})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer sess.Close()
+
+	got := sess.Meta().Config.ModelFallbacks
+	if len(got) != 1 || got[0] != "openai/runtime-fallback" {
+		t.Fatalf("restored model fallbacks = %v, want [openai/runtime-fallback]", got)
 	}
 }
 

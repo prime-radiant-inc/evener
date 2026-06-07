@@ -110,6 +110,36 @@ func TestResolveModelRef_ResumeMetaSuppliesBareModelProvider(t *testing.T) {
 	}
 }
 
+func TestResolveResumeModelRef_PersistedMetaBeatsEnv(t *testing.T) {
+	got, err := ResolveResumeModelRef("", "openai/gpt-env", "anthropic", "claude-opus-4-6")
+	if err != nil {
+		t.Fatalf("ResolveResumeModelRef: %v", err)
+	}
+	if got.Provider != "anthropic" || got.Model != "claude-opus-4-6" {
+		t.Fatalf("got provider=%q model=%q, want anthropic/claude-opus-4-6", got.Provider, got.Model)
+	}
+}
+
+func TestResolveResumeModelRef_CLIOverridesPersistedMeta(t *testing.T) {
+	got, err := ResolveResumeModelRef("openai/gpt-cli", "openai/gpt-env", "anthropic", "claude-opus-4-6")
+	if err != nil {
+		t.Fatalf("ResolveResumeModelRef: %v", err)
+	}
+	if got.Provider != "openai" || got.Model != "gpt-cli" {
+		t.Fatalf("got provider=%q model=%q, want openai/gpt-cli", got.Provider, got.Model)
+	}
+}
+
+func TestResolveResumeModelRef_UsesEnvWhenMetaMissing(t *testing.T) {
+	got, err := ResolveResumeModelRef("", "openai/gpt-env", "", "")
+	if err != nil {
+		t.Fatalf("ResolveResumeModelRef: %v", err)
+	}
+	if got.Provider != "openai" || got.Model != "gpt-env" {
+		t.Fatalf("got provider=%q model=%q, want openai/gpt-env", got.Provider, got.Model)
+	}
+}
+
 func TestParseAllowedDecisions_CommaSeparated(t *testing.T) {
 	got := parseAllowedDecisions("approved,changes_requested")
 	if len(got) != 2 || got[0] != "approved" || got[1] != "changes_requested" {

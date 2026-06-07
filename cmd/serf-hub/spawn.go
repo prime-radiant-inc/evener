@@ -157,7 +157,11 @@ func (h *HubSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (ren
 			return rendezvous.Entry{}, err
 		}
 	}
-	if err := validateSerfLaunchContract(ctx, h.SerfBinary, req.Resolved.Effective.Model, req.Env); err != nil {
+	// Resume must validate only the daemon/app-wire contract. The resumed
+	// session's persisted metadata, not ambient launch config, selects the model;
+	// passing req.Resolved.Effective.Model here can reject an otherwise-valid
+	// resume because of a stale launch-config model.
+	if err := validateSerfLaunchContract(ctx, h.SerfBinary, "", req.Env); err != nil {
 		return rendezvous.Entry{}, err
 	}
 	return ResumeDaemon(ctx, h.SerfBinary, h.RunDir, req, timeout)
@@ -232,6 +236,29 @@ func buildSpawnArgs(req hubcore.SpawnRequest) []string {
 		args = append(args, "--app-replay-size", strconv.Itoa(req.AppReplaySize))
 	}
 	args = append(args, launchconfig.ToArgs(req.Resolved)...)
+	return args
+}
+
+func buildResumeArgs(req hubcore.ResumeRequest) []string {
+	args := []string{"serve", "--addr", "127.0.0.1:0", "--resume", req.SessionID}
+	if req.WorkingDir != "" {
+		args = append(args, "--dir", req.WorkingDir)
+	}
+	if req.StateDir != "" {
+		args = append(args, "--state-dir", req.StateDir)
+	}
+	if req.RunDir != "" {
+		args = append(args, "--run-dir", req.RunDir)
+	}
+	if req.AppReplaySize > 0 {
+		args = append(args, "--app-replay-size", strconv.Itoa(req.AppReplaySize))
+	}
+	resumeResolved := req.Resolved
+	resumeResolved.Effective.Model = ""
+	resumeResolved.Effective.FastCheapModel = ""
+	resumeResolved.Effective.ModelFallbacks = nil
+	resumeResolved.Effective.ModelFallbacksSet = false
+	args = append(args, launchconfig.ToArgs(resumeResolved)...)
 	return args
 }
 
@@ -327,20 +354,7 @@ func ResumeDaemon(ctx context.Context, serfBinary, runDir string, req hubcore.Re
 	if serfBinary == "" {
 		serfBinary = "serf"
 	}
-	args := []string{"serve", "--addr", "127.0.0.1:0", "--resume", req.SessionID}
-	if req.WorkingDir != "" {
-		args = append(args, "--dir", req.WorkingDir)
-	}
-	if req.StateDir != "" {
-		args = append(args, "--state-dir", req.StateDir)
-	}
-	if req.RunDir != "" {
-		args = append(args, "--run-dir", req.RunDir)
-	}
-	if req.AppReplaySize > 0 {
-		args = append(args, "--app-replay-size", strconv.Itoa(req.AppReplaySize))
-	}
-	args = append(args, launchconfig.ToArgs(req.Resolved)...)
+	args := buildResumeArgs(req)
 	// NOT CommandContext: the resumed daemon must outlive this call's ctx (it
 	// runs independently until killed or sent /shutdown). ctx scopes only the
 	// rendezvous wait below; on timeout we kill the process explicitly.

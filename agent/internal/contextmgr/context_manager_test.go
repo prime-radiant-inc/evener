@@ -640,14 +640,16 @@ func TestCheckpoint_NoHistoryToCheckpoint(t *testing.T) {
 
 // --- Phase 5: LLM summarization ---
 
-func TestSummarizeWithLLM_CallsCheapModel(t *testing.T) {
+func TestSummarizeWithLLM_DefaultsToActiveModel(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				// Verify the model is the cheap model.
-				if req.Model != "gpt-4.1-nano" {
-					t.Errorf("expected cheap model gpt-4.1-nano, got %q", req.Model)
+				// Without an explicitly configured compaction model, summarize on
+				// the active session model. This avoids provider-default auxiliary
+				// models that may be unavailable for the account type.
+				if req.Model != "gpt-5.2" {
+					t.Errorf("expected active model gpt-5.2, got %q", req.Model)
 				}
 				// Verify the prompt asks for compaction/summarization.
 				found := false
@@ -686,6 +688,134 @@ func TestSummarizeWithLLM_CallsCheapModel(t *testing.T) {
 	if len(result) != 3 {
 		t.Fatalf("expected 3 turns, got %d", len(result))
 	}
+}
+
+func TestSummarizeWithLLM_UsesConfiguredCompactionModel(t *testing.T) {
+	adapter := &fakeAdapter{name: "openai"}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	profile := provider.WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-5-mini")
+	cm := NewManager(profile, client)
+
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("old")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
+	}
+
+	if _, err := cm.summarizeWithLLM(context.Background(), history, 1); err != nil {
+		t.Fatalf("summarizeWithLLM: %v", err)
+	}
+	reqs := adapter.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("requests = %d, want 1", len(reqs))
+	}
+	if reqs[0].Model != "gpt-5-mini" {
+		t.Fatalf("summary model = %q, want gpt-5-mini", reqs[0].Model)
+	}
+}
+
+func TestSummarizeWithLLM_FallsBackToActiveModelWhenConfiguredModelFails(t *testing.T) {
+	adapter := &fallbackSummaryAdapter{name: "openai", t: t}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	profile := provider.WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-5-mini")
+	cm := NewManager(profile, client)
+
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("old")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
+	}
+
+	result, err := cm.summarizeWithLLM(context.Background(), history, 1)
+	if err != nil {
+		t.Fatalf("summarizeWithLLM: %v", err)
+	}
+	if !strings.Contains(result[0].Message.Text(), "fallback summary") {
+		t.Fatalf("summary did not come from fallback response: %q", result[0].Message.Text())
+	}
+	if len(adapter.requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(adapter.requests))
+	}
+}
+
+type fallbackSummaryAdapter struct {
+	name     string
+	t        *testing.T
+	requests []llm.Request
+}
+
+func (a *fallbackSummaryAdapter) Name() string { return a.name }
+
+func (a *fallbackSummaryAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	_ = ctx
+	a.requests = append(a.requests, req)
+	switch len(a.requests) {
+	case 1:
+		if req.Model != "gpt-5-mini" {
+			a.t.Fatalf("first summary model = %q, want gpt-5-mini", req.Model)
+		}
+		return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 400, "configured compaction model unavailable", nil, nil)
+	case 2:
+		if req.Model != "gpt-5.2" {
+			a.t.Fatalf("fallback summary model = %q, want gpt-5.2", req.Model)
+		}
+		return llm.Response{Message: llm.Assistant("fallback summary")}, nil
+	default:
+		a.t.Fatalf("unexpected request %d", len(a.requests))
+		return llm.Response{}, errors.New("unexpected request")
+	}
+}
+
+func TestSummarizeWithLLM_DoesNotFallbackOnCancellation(t *testing.T) {
+	adapter := &cancelingSummaryAdapter{name: "openai"}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	profile := provider.WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-5-mini")
+	cm := NewManager(profile, client)
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("task")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("old")},
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := cm.summarizeWithLLM(ctx, history, 1)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if len(adapter.requests) != 1 {
+		t.Fatalf("requests = %d, want 1 (no active-model fallback after cancellation)", len(adapter.requests))
+	}
+}
+
+type cancelingSummaryAdapter struct {
+	name     string
+	requests []llm.Request
+}
+
+func (a *cancelingSummaryAdapter) Name() string { return a.name }
+
+func (a *cancelingSummaryAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	a.requests = append(a.requests, req)
+	return llm.Response{}, ctx.Err()
+}
+
+func (a *cancelingSummaryAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	_ = ctx
+	_ = req
+	return nil, llm.ErrStreamUnsupported
+}
+
+func (a *fallbackSummaryAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	_ = ctx
+	_ = req
+	return nil, llm.ErrStreamUnsupported
 }
 
 func TestSummarizeWithLLM_ReplacesOldHistory(t *testing.T) {

@@ -134,6 +134,25 @@ func ResolveModelRef(modelValue, envModel, resumeProvider, resumeModel string) (
 	return ModelRef{}, errors.New("no model: use --model provider/model or set SERF_MODEL=provider/model")
 }
 
+// ResolveResumeModelRef resolves the model for an explicit session resume.
+// Unlike fresh startup, persisted resume metadata wins over SERF_MODEL so an
+// inherited environment variable cannot silently change the resumed session's
+// model. An explicit CLI --model still overrides the persisted model.
+func ResolveResumeModelRef(modelValue, envModel, resumeProvider, resumeModel string) (ModelRef, error) {
+	if strings.TrimSpace(modelValue) != "" {
+		return ParseModelRef(modelValue)
+	}
+	resumeProvider = strings.ToLower(strings.TrimSpace(resumeProvider))
+	resumeModel = strings.TrimSpace(resumeModel)
+	if resumeProvider != "" && resumeModel != "" {
+		return ModelRef{Provider: resumeProvider, Model: resumeModel}, nil
+	}
+	if strings.TrimSpace(envModel) != "" {
+		return ParseModelRef(envModel)
+	}
+	return ModelRef{}, errors.New("no model: use --model provider/model or set SERF_MODEL=provider/model")
+}
+
 // StringSliceFlag implements flag.Value for a repeatable string flag.
 type StringSliceFlag []string
 
