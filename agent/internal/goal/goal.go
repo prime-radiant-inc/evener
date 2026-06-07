@@ -31,6 +31,7 @@ type Goal struct {
 	NoProgressStreak int    // consecutive goal turns with no mutating tool call
 	madeProgressOnce bool   // grace: NoProgressStreak accrues only after the first progressed turn
 	StopReason       string // set on blocked or error termination
+	reported         bool   // terminal report (EventGoalEnded) already emitted once
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
@@ -101,6 +102,21 @@ func (s *Store) SetTerminal(status Status, reason string, now time.Time) bool {
 	s.goal.StopReason = reason
 	s.goal.UpdatedAt = now
 	return true
+}
+
+// TakeTerminalReport returns (snapshot, true) exactly once for a terminal goal —
+// the first time it is called after the goal stops — and (zero, false) thereafter
+// (or when there is no goal, or the goal is still active). This makes the
+// EventGoalEnded terminal report fire exactly once even though a terminated goal
+// lingers in the store until /goal clear and the gate runs at every turn tail.
+func (s *Store) TakeTerminalReport() (Snapshot, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.goal == nil || s.goal.Status == StatusActive || s.goal.reported {
+		return Snapshot{}, false
+	}
+	s.goal.reported = true
+	return s.snapLocked(), true
 }
 
 // RecordContinuation folds one finished goal turn's progress signal into the streak

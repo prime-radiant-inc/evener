@@ -306,6 +306,10 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 			nextKind = EntryContinuation
 			continue
 		}
+		// Idle transition: clear the in-turn flag and kick a goal that was set in the
+		// turn-tail window (after the gate's store read) so it is not stranded until
+		// the next user message (spec §7). No-op when no fresh goal is pending.
+		s.settleGoalOnIdle()
 		s.mu.Lock()
 		if !s.sessionEndEmitted {
 			s.sessionEndEmitted = true

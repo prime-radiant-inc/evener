@@ -36,9 +36,13 @@ func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, 
 		return false, errors.New("goal objective must not be empty")
 	}
 	store := s.getOrCreateGoalStore()
-	store.Set(objective, time.Now())
 
+	// Set the goal and read the in-turn flag under s.mu so the write is mutually
+	// exclusive with the gate's "clear flag + settle" step (settleGoalOnIdle): a
+	// first goal set as a turn ends is then either kicked here (idle) or picked up
+	// by the settle re-check (turn-tail window) — never stranded (spec §7).
 	s.mu.Lock()
+	store.Set(objective, time.Now())
 	inTurn := s.goalInTurn
 	kick := s.kickFunc
 	s.mu.Unlock()
@@ -120,23 +124,63 @@ func (s *Session) callsMadeProgress(calls []llm.ToolCallData) bool {
 // is told why the loop stopped. With no goal set it is a no-op returning ("", false).
 func (s *Session) armGoalContinuation(progressed bool) (string, bool) {
 	store := s.getOrCreateGoalStore()
-	if _, ok := store.Snapshot(); !ok {
+	snap, ok := store.Snapshot()
+	if !ok {
 		return "", false // no goal
+	}
+	if snap.Status != goal.StatusActive {
+		// Already terminal: update_goal complete/blocked set it this turn, or it
+		// finished on an earlier turn (a terminated goal lingers in the store until
+		// /goal clear, and the gate runs at every turn tail). reportGoalEnded emits
+		// exactly once via the store's once-gate, so the terminal report does not
+		// repeat on every subsequent turn.
+		s.reportGoalEnded()
+		return "", false
 	}
 	snap, stillActive := store.RecordContinuation(progressed, time.Now())
 	if !stillActive {
-		// Terminal: update_goal complete/blocked, or the no-progress breaker fired.
-		s.emitGoalEnded(snap)
+		// Just transitioned to terminal this turn (the no-progress breaker fired).
+		s.reportGoalEnded()
 		return "", false
 	}
 	if !goal.ShouldContinue(snap) {
-		// Still "active" but the iteration cap is reached: the gate stops the loop.
+		// Still active but the iteration cap is reached: the gate stops the loop.
 		store.SetTerminal(goal.StatusBlocked, "hit iteration limit", time.Now())
-		s2, _ := store.Snapshot()
-		s.emitGoalEnded(s2)
+		s.reportGoalEnded()
 		return "", false
 	}
 	return goal.Render(snap.Objective), true
+}
+
+// reportGoalEnded emits the terminal EventGoalEnded report exactly once, via the
+// store's once-gate (TakeTerminalReport). It is safe to call on every gate stop
+// path and on repeated turns after the goal has already finished.
+func (s *Session) reportGoalEnded() {
+	if snap, ok := s.getOrCreateGoalStore().TakeTerminalReport(); ok {
+		s.emitGoalEnded(snap)
+	}
+}
+
+// settleGoalOnIdle runs at the drain loop's idle transition. Under s.mu it clears
+// the in-turn flag and, if an active goal was set in the turn-tail window (after
+// the gate's store read but before the flag clear), captures the first continuation
+// prompt so the goal is kicked rather than stranded active-but-idle until the next
+// user message (spec §7). The kick is issued outside the lock. Mutually exclusive
+// on s.mu with SetGoal's "set goal + read flag", so the goal is kicked exactly once.
+func (s *Session) settleGoalOnIdle() {
+	s.mu.Lock()
+	s.goalInTurn = false
+	kick := s.kickFunc
+	var prompt string
+	if kick != nil {
+		if snap, ok := s.getOrCreateGoalStore().Snapshot(); ok && snap.Status == goal.StatusActive {
+			prompt = goal.Render(snap.Objective)
+		}
+	}
+	s.mu.Unlock()
+	if prompt != "" {
+		kick(prompt)
+	}
 }
 
 // terminateGoalOnError transitions an active goal to blocked and emits its
@@ -156,8 +200,7 @@ func (s *Session) terminateGoalOnError(ctx context.Context, err error) {
 		return // genuine user interrupt: leave the goal active
 	}
 	if store.SetTerminal(goal.StatusBlocked, err.Error(), time.Now()) {
-		s2, _ := store.Snapshot()
-		s.emitGoalEnded(s2)
+		s.reportGoalEnded()
 	}
 }
 
