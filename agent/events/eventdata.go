@@ -60,6 +60,8 @@ func (HookEndData) eventKind() EventKind             { return EventHookEnd }
 func (ForkSummaryData) eventKind() EventKind         { return EventForkSummary }
 func (PromptLoadedData) eventKind() EventKind        { return EventPromptLoaded }
 func (RoundTimings) eventKind() EventKind            { return EventRoundTimings }
+func (GoalContinuationData) eventKind() EventKind    { return EventGoalContinuation }
+func (GoalEndedData) eventKind() EventKind           { return EventGoalEnded }
 
 // Compile-time assertions that every payload satisfies EventData. A new payload
 // added without a marker fails to build here.
@@ -91,4 +93,6 @@ var (
 	_ EventData = ForkSummaryData{}
 	_ EventData = PromptLoadedData{}
 	_ EventData = RoundTimings{}
+	_ EventData = GoalContinuationData{}
+	_ EventData = GoalEndedData{}
 )

@@ -70,6 +70,12 @@ const (
 	EventPromptLoaded EventKind = "PROMPT_LOADED"
 	// EventRoundTimings carries round timing information.
 	EventRoundTimings EventKind = "ROUND_TIMINGS"
+	// EventGoalContinuation marks a system-framed continuation turn injected by
+	// the goal engine.
+	EventGoalContinuation EventKind = "GOAL_CONTINUATION"
+	// EventGoalEnded reports that the goal engine stopped, carrying the terminal
+	// status and reason.
+	EventGoalEnded EventKind = "GOAL_ENDED"
 )
 
 // SessionEvent is a single timestamped event on a session's event stream,

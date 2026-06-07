@@ -367,7 +367,7 @@ func runServe(args []string) error {
 				srv.SetCancelFunc(cancelTurn)
 				srv.SetProcessing(true)
 				srv.SetState(string(agent.SessionProcessing))
-				result, processErr := sess.ProcessInput(turnCtx, msg.Text, msg.Images)
+				result, processErr := sess.ProcessInputKind(turnCtx, msg.Text, msg.Images, msg.Kind)
 				srv.SetProcessing(false)
 				srv.SetState(string(sess.State()))
 				srv.SetCancelFunc(nil)

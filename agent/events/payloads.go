@@ -232,3 +232,18 @@ type PromptLoadedData struct {
 	Label string `json:"label"`
 	Size  int    `json:"size"`
 }
+
+// GoalContinuationData is the payload for an EventGoalContinuation event. Text
+// is the rendered continuation prompt injected as a steering turn.
+type GoalContinuationData struct {
+	Text string `json:"text"`
+}
+
+// GoalEndedData is the payload for an EventGoalEnded event. It reports the
+// terminal goal status, the reason the loop stopped, and how many continuation
+// turns were taken.
+type GoalEndedData struct {
+	Status     string `json:"status"`
+	Reason     string `json:"reason,omitempty"`
+	Iterations int    `json:"iterations"`
+}

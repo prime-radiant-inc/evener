@@ -18,10 +18,12 @@ import (
 type ImageAttachment = agent.ImageAttachment
 
 // InputMessage is delivered on InputCh() carrying user text plus any
-// attached images.
+// attached images. Kind classifies the turn (user input vs. a goal-engine
+// continuation); its zero value is agent.EntryUserInput.
 type InputMessage struct {
 	Text   string
 	Images []ImageAttachment
+	Kind   agent.EntryKind
 }
 
 // ToolInfo describes a registered tool and its source.

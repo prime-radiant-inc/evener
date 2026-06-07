@@ -155,15 +155,37 @@ func (s *Session) Close() {
 	})
 }
 
+// EntryKind classifies how an input enters the drain loop: a user-typed turn
+// (EntryUserInput) or a system-framed continuation injected by the goal engine
+// (EntryContinuation). It is exported because it crosses the go.work module
+// boundary into the root module (server/cmd) on the InputMessage carried by the
+// serve loop.
+type EntryKind int
+
+const (
+	// EntryUserInput is a turn carrying input typed by the user. It is the zero
+	// value so an unset Kind defaults to user input.
+	EntryUserInput EntryKind = iota
+	// EntryContinuation is a system-framed goal continuation turn.
+	EntryContinuation
+)
+
 // ProcessInput processes a single user input (with optional image attachments)
-// through to completion and returns the accumulated assistant output. It runs
-// the input, then loops to drain per-turn follow-ups and queued user messages,
-// running each as a further turn. On a cancelled turn it applies interrupt
-// semantics — flipping the session back to idle (unless closed), appending a
-// system-reminder interrupt marker, and optionally draining the queue head —
-// then returns the partial output with the error. It emits EventSessionEnd for
-// the input and returns an error when the session is closed or a turn fails.
+// through to completion and returns the accumulated assistant output. It is a
+// thin delegate to ProcessInputKind with kind EntryUserInput.
 func (s *Session) ProcessInput(ctx context.Context, input string, images []ImageAttachment) (string, error) {
+	return s.ProcessInputKind(ctx, input, images, EntryUserInput)
+}
+
+// ProcessInputKind processes a single input of the given EntryKind through to
+// completion and returns the accumulated assistant output. It runs the input,
+// then loops to drain per-turn follow-ups and queued user messages, running
+// each as a further turn. On a cancelled turn it applies interrupt semantics —
+// flipping the session back to idle (unless closed), appending a system-reminder
+// interrupt marker, and optionally draining the queue head — then returns the
+// partial output with the error. It emits EventSessionEnd for the input and
+// returns an error when the session is closed or a turn fails.
+func (s *Session) ProcessInputKind(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
 	// Reset so SESSION_END can fire at the end of this input's processing.
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
@@ -176,11 +198,14 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 	outputs := []string{}
 	next := input
 	nextImages := images
+	nextKind := kind
 	processCtx := ctx
 	for {
-		out, err := s.processOneInput(processCtx, next, nextImages)
-		// Follow-up turns (after the first) carry no attachments.
+		out, err := s.processOneInput(processCtx, next, nextImages, nextKind)
+		// Follow-up turns (after the first) carry no attachments and are
+		// user-driven, not continuations.
 		nextImages = nil
+		nextKind = EntryUserInput
 		if strings.TrimSpace(out) != "" {
 			outputs = append(outputs, out)
 		}
@@ -274,7 +299,7 @@ func (s *Session) ProcessInput(ctx context.Context, input string, images []Image
 	}
 }
 
-func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment) (string, error) {
+func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment, kind EntryKind) (string, error) {
 	// Flush meta.json on every exit from this function — normal return, error
 	// return, ctx cancellation, retry-budget exhaustion, or panic. Without
 	// this, in-memory modelResponses bumps that happen between happy-path
@@ -320,7 +345,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	default:
 	}
 
-	if !s.acceptUserInput(ctx, input, images) {
+	if kind == EntryContinuation {
+		s.acceptContinuationInput(ctx, input)
+	} else if !s.acceptUserInput(ctx, input, images) {
 		return "", nil
 	}
 
@@ -561,4 +588,26 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	}
 	return true
+}
+
+// acceptContinuationInput records a goal-engine continuation at the start of an
+// input turn. It mirrors acceptUserInput's history-repair and steering-drain
+// behavior, but frames the input as a system/steering turn rather than the user
+// speaking: it appends schema.TurnSteering (so expandHistory delivers it to the
+// model as a user-role message without rendering a user bubble), emits
+// EventGoalContinuation rather than EventUserInput, and skips the namer, the
+// MaxTurns check, and the s.turns++ accounting (goal turns are bounded by the
+// engine's iteration cap, not the session's user-input ceiling; SESSION_END.Turns
+// reads the separate modelResponses counter, so skipping s.turns++ is safe).
+func (s *Session) acceptContinuationInput(ctx context.Context, input string) {
+	s.repairOrphanedToolResults("before accepting goal continuation")
+
+	s.emit(events.EventGoalContinuation, events.GoalContinuationData{Text: input})
+	s.appendTurn(schema.TurnSteering, llm.User(input))
+
+	// Drain any pending steering messages before the first LLM call (spec 2.5).
+	for _, msg := range s.drainSteering() {
+		s.appendTurn(schema.TurnSteering, steeringMessageToLLM(msg))
+		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+	}
 }
