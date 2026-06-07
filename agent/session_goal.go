@@ -67,7 +67,7 @@ func (s *Session) ClearGoal() {
 // set. max is the iteration cap (goal.DefaultMaxIterations). It returns
 // primitives rather than the internal goal.Snapshot so callers outside the agent
 // module (which cannot import agent/internal/goal) can consume it.
-func (s *Session) GoalStatus() (status string, iterations, max int, ok bool) {
+func (s *Session) GoalStatus() (status string, iterations, maxIter int, ok bool) {
 	snap, ok := s.getOrCreateGoalStore().Snapshot()
 	if !ok {
 		return "", 0, 0, false
