@@ -78,8 +78,8 @@ func TestHubGoalStatusText(t *testing.T) {
 	if got := hubGoalStatusText(nil); got != "No goal set. Use /goal <objective> to set one." {
 		t.Fatalf("nil goal status=%q", got)
 	}
-	got := hubGoalStatusText(&appwire.GoalState{Status: "active", Iterations: 2, Max: 10})
-	if got != "Goal: active (2/10)" {
-		t.Fatalf("status=%q, want Goal: active (2/10)", got)
+	got := hubGoalStatusText(&appwire.GoalState{Status: "active", Iterations: 2})
+	if got != "Goal: active (2)" {
+		t.Fatalf("status=%q, want Goal: active (2)", got)
 	}
 }

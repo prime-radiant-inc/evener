@@ -15,7 +15,7 @@ func TestShouldContinue(t *testing.T) {
 		want bool
 	}{
 		{
-			"active under caps",
+			"active under no-progress limit",
 			Snapshot{Status: StatusActive, Iterations: 0, NoProgressStreak: 0},
 			true,
 		},
@@ -30,9 +30,9 @@ func TestShouldContinue(t *testing.T) {
 			false,
 		},
 		{
-			"iteration cap stops",
-			Snapshot{Status: StatusActive, Iterations: DefaultMaxIterations},
-			false,
+			"high iteration count alone does not stop",
+			Snapshot{Status: StatusActive, Iterations: 1000, NoProgressStreak: 0},
+			true,
 		},
 		{
 			"no-progress cap stops",
@@ -40,22 +40,13 @@ func TestShouldContinue(t *testing.T) {
 			false,
 		},
 		{
-			"one below both caps continues",
+			"one below no-progress limit continues",
 			Snapshot{
 				Status:           StatusActive,
-				Iterations:       DefaultMaxIterations - 1,
+				Iterations:       1000,
 				NoProgressStreak: NoProgressLimit - 1,
 			},
 			true,
-		},
-		{
-			"both caps tripped simultaneously stops",
-			Snapshot{
-				Status:           StatusActive,
-				Iterations:       DefaultMaxIterations,
-				NoProgressStreak: NoProgressLimit,
-			},
-			false,
 		},
 		{
 			"noProgressStreak greater than limit stops",

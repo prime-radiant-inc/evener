@@ -161,8 +161,8 @@ func TestServeGoalLive_TUIPathEndToEnd(t *testing.T) {
 	}
 
 	if goalState.Status != "complete" {
-		t.Fatalf("goal terminal status = %q, want %q (iterations=%d, max=%d)",
-			goalState.Status, "complete", goalState.Iterations, goalState.Max)
+		t.Fatalf("goal terminal status = %q, want %q (iterations=%d)",
+			goalState.Status, "complete", goalState.Iterations)
 	}
 	// Iterations counts continuation turns, which increment only inside
 	// armGoalContinuation after a continuation fed back through
@@ -201,8 +201,8 @@ func TestServeGoalLive_TUIPathEndToEnd(t *testing.T) {
 		t.Fatalf("transcript %s not written: %v", transcriptPath, err)
 	}
 
-	t.Logf("LIVE PROOF (TUI path): GoalSet.Started=%v; SerfThread.Goal{Status:%q Iterations:%d Max:%d}; a.txt=%q b.txt=%q",
-		resp.Started, goalState.Status, goalState.Iterations, goalState.Max, string(aData), string(bData))
+	t.Logf("LIVE PROOF (TUI path): GoalSet.Started=%v; SerfThread.Goal{Status:%q Iterations:%d}; a.txt=%q b.txt=%q",
+		resp.Started, goalState.Status, goalState.Iterations, string(aData), string(bData))
 
 	// Shut the daemon down and assert a clean exit.
 	httpResp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)

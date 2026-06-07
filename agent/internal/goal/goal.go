@@ -15,12 +15,12 @@ const (
 	StatusBlocked  Status = "blocked"
 )
 
-// Caps. See spec §1. NoProgressLimit is the primary stuck-detector;
-// DefaultMaxIterations is the backstop; GoalTurnMaxRounds bounds per-turn rounds.
+// Caps. See spec §1. NoProgressLimit is the sole automatic stop (the
+// no-progress breaker); there is no iteration cap. GoalTurnMaxRounds bounds the
+// tool rounds within a single goal turn.
 const (
-	DefaultMaxIterations = 10
-	NoProgressLimit      = 3
-	GoalTurnMaxRounds    = 30
+	NoProgressLimit   = 3
+	GoalTurnMaxRounds = 30
 )
 
 // Goal is the per-session objective. Guarded by Store.mu.
@@ -45,11 +45,11 @@ type Snapshot struct {
 	StopReason       string
 }
 
-// ShouldContinue is pure: the gate continues iff the goal is active and under both caps.
+// ShouldContinue is pure: the gate continues iff the goal is active and under
+// the no-progress limit. There is no iteration cap — long legitimate work runs
+// until it completes or the no-progress breaker fires (the sole automatic stop).
 func ShouldContinue(s Snapshot) bool {
-	return s.Status == StatusActive &&
-		s.Iterations < DefaultMaxIterations &&
-		s.NoProgressStreak < NoProgressLimit
+	return s.Status == StatusActive && s.NoProgressStreak < NoProgressLimit
 }
 
 // Store holds one goal per session behind its own mutex (mirrors agent TaskStore).

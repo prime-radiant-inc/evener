@@ -144,49 +144,37 @@ func TestArmGoalContinuationNoProgressBlocks(t *testing.T) {
 	}
 }
 
-// TestArmGoalContinuationIterationCap: a goal that keeps making progress but
-// never self-declares complete is stopped by the iteration cap. The gate sets
-// status blocked with reason "hit iteration limit" and emits EventGoalEnded.
-func TestArmGoalContinuationIterationCap(t *testing.T) {
+// TestArmGoalContinuationNoIterationCap: a goal that keeps making progress runs
+// well past the old iteration limit (10) without any iteration-based stop. The
+// no-progress breaker is the sole automatic stop, so a progressing goal never
+// terminates on its own. Iterations keep incrementing for display/persistence.
+func TestArmGoalContinuationNoIterationCap(t *testing.T) {
 	sess, stop := newGateSession(t)
+	defer stop()
 
 	store := sess.getOrCreateGoalStore()
 	store.Set("never-ending work", time.Now())
 
-	var stopped bool
-	var iters int
-	// The cap is a backstop: drive enough progressed continuations that the
-	// iteration cap is the only thing that can stop the loop.
-	for i := 0; i < goal.DefaultMaxIterations+2; i++ {
-		_, ok := sess.armGoalContinuation(true)
-		iters++
+	const continuations = 50 // far past the old DefaultMaxIterations of 10
+	for i := 0; i < continuations; i++ {
+		prompt, ok := sess.armGoalContinuation(true)
 		if !ok {
-			stopped = true
-			break
+			t.Fatalf("a progressing goal stopped at continuation %d; want no iteration cap", i+1)
 		}
-	}
-	if !stopped {
-		t.Fatalf("iteration cap never tripped after %d continuations", iters)
+		if prompt == "" {
+			t.Fatalf("continuation %d returned an empty prompt", i+1)
+		}
 	}
 
 	snap, ok := store.Snapshot()
 	if !ok {
 		t.Fatal("goal snapshot missing")
 	}
-	if snap.Status != goal.StatusBlocked {
-		t.Fatalf("status = %q, want blocked", snap.Status)
+	if snap.Status != goal.StatusActive {
+		t.Fatalf("status = %q, want active (a progressing goal must not auto-stop)", snap.Status)
 	}
-	if snap.StopReason != "hit iteration limit" {
-		t.Fatalf("StopReason = %q, want %q", snap.StopReason, "hit iteration limit")
-	}
-
-	evs := stop()
-	if got := countGoalEnded(evs); got != 1 {
-		t.Fatalf("EventGoalEnded count = %d, want 1", got)
-	}
-	d := lastGoalEnded(t, evs)
-	if d.Status != "blocked" || d.Reason != "hit iteration limit" {
-		t.Fatalf("EventGoalEnded = {Status:%q Reason:%q}, want {blocked, hit iteration limit}", d.Status, d.Reason)
+	if snap.Iterations != continuations {
+		t.Fatalf("Iterations = %d, want %d (must keep incrementing for display)", snap.Iterations, continuations)
 	}
 }
 

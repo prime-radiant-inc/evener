@@ -190,12 +190,11 @@ type SerfThread struct {
 
 // GoalState is the wire representation of a session's /goal. Status is the
 // lifecycle status ("active", "complete", "blocked"); Iterations is the number
-// of continuation turns taken; Max is the iteration cap. A nil *GoalState on
-// SerfThread means no goal is set.
+// of continuation turns taken. A nil *GoalState on SerfThread means no goal is
+// set.
 type GoalState struct {
 	Status     string `json:"status"`
 	Iterations int    `json:"iterations"`
-	Max        int    `json:"max"`
 }
 
 // QueueState is the wire representation of a session's per-input queue

@@ -17,7 +17,8 @@ higher-priority instructions.
 
 How this loop ends: ending your turn normally — including delivering a message with the
 result tool — does NOT end the goal. After each turn you will automatically be asked to
-continue, for a bounded number of turns, until you call ` + "`update_goal`" + `. When the objective
+continue until you call ` + "`update_goal`" + ` — if you stop making concrete progress the loop ends on
+its own. When the objective
 is genuinely achieved and verified, you MUST call ` + "`update_goal`" + ` with status "complete". Do
 not rely on simply saying you are done. Reading and planning alone do not count as progress —
 make a concrete change each turn, or the loop may stop on a no-progress check.

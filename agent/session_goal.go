@@ -68,15 +68,29 @@ func (s *Session) ClearGoal() {
 
 // GoalStatus reports the session's current /goal state for status surfaces (the
 // appwire SerfThread.Goal field, `/goal status`). ok is false when no goal is
-// set. max is the iteration cap (goal.DefaultMaxIterations). It returns
-// primitives rather than the internal goal.Snapshot so callers outside the agent
-// module (which cannot import agent/internal/goal) can consume it.
-func (s *Session) GoalStatus() (status string, iterations, maxIter int, ok bool) {
+// set. It returns primitives rather than the internal goal.Snapshot so callers
+// outside the agent module (which cannot import agent/internal/goal) can consume
+// it.
+func (s *Session) GoalStatus() (status string, iterations int, ok bool) {
 	snap, ok := s.getOrCreateGoalStore().Snapshot()
 	if !ok {
-		return "", 0, 0, false
+		return "", 0, false
 	}
-	return string(snap.Status), snap.Iterations, goal.DefaultMaxIterations, true
+	return string(snap.Status), snap.Iterations, true
+}
+
+// goalCompactionSteering returns the active goal's rendered objective as a
+// single steering message, or nil when no goal is set or the goal is not
+// active. It is appended after any plugin PreCompact output on every compaction
+// path so the objective survives mid-turn compaction (spec §2b): re-injecting it
+// as the trailing TurnSteering turn restores it at the strongest recency
+// position, which safeCutoff then protects from the same compaction.
+func (s *Session) goalCompactionSteering() []string {
+	snap, ok := s.getOrCreateGoalStore().Snapshot()
+	if !ok || snap.Status != goal.StatusActive {
+		return nil
+	}
+	return []string{goal.Render(snap.Objective)}
 }
 
 // goalRoundCap selects the per-input tool-round cap. User-input turns use the
@@ -118,10 +132,12 @@ func (s *Session) callsMadeProgress(calls []llm.ToolCallData) bool {
 // turn made a mutating tool call. It folds that signal into the goal under the
 // goal lock and decides whether to issue another continuation.
 //
-// It returns (renderedPrompt, true) to continue, or ("", false) to stop. On every
-// stop path that the gate owns — model-declared terminal status, the no-progress
-// breaker, and the iteration cap — it emits exactly one EventGoalEnded so the user
-// is told why the loop stopped. With no goal set it is a no-op returning ("", false).
+// It returns (renderedPrompt, true) to continue, or ("", false) to stop. The gate
+// owns two stop paths — a model-declared terminal status and the no-progress
+// breaker — and emits exactly one EventGoalEnded on each so the user is told why
+// the loop stopped. There is no iteration cap: a goal that keeps making progress
+// runs until it is completed or the no-progress breaker fires. With no goal set
+// it is a no-op returning ("", false).
 func (s *Session) armGoalContinuation(progressed bool) (string, bool) {
 	store := s.getOrCreateGoalStore()
 	snap, ok := store.Snapshot()
@@ -140,12 +156,6 @@ func (s *Session) armGoalContinuation(progressed bool) (string, bool) {
 	snap, stillActive := store.RecordContinuation(progressed, time.Now())
 	if !stillActive {
 		// Just transitioned to terminal this turn (the no-progress breaker fired).
-		s.reportGoalEnded()
-		return "", false
-	}
-	if !goal.ShouldContinue(snap) {
-		// Still active but the iteration cap is reached: the gate stops the loop.
-		store.SetTerminal(goal.StatusBlocked, "hit iteration limit", time.Now())
 		s.reportGoalEnded()
 		return "", false
 	}

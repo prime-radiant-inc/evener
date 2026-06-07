@@ -440,8 +440,8 @@ func (s *Server) appThread() appwire.Thread {
 	}
 	var goalState *appwire.GoalState
 	if gsfn != nil {
-		if status, iterations, maxIter, ok := gsfn(); ok {
-			goalState = &appwire.GoalState{Status: status, Iterations: iterations, Max: maxIter}
+		if status, iterations, ok := gsfn(); ok {
+			goalState = &appwire.GoalState{Status: status, Iterations: iterations}
 		}
 	}
 	return appwire.Thread{

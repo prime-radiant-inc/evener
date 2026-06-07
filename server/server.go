@@ -135,7 +135,7 @@ type Server struct {
 	queueFunc           func(string) error
 	queueWithImagesFunc func(string, []ImageAttachment) error
 	goalFunc            func(objective string) (bool, error)
-	goalStatusFn        func() (status string, iterations, maxIter int, ok bool)
+	goalStatusFn        func() (status string, iterations int, ok bool)
 	drainSteerFunc      func() error
 	drainSteerInputFunc func(string, []ImageAttachment) error
 	queueDepthFn        func() int
@@ -306,7 +306,7 @@ func (s *Server) SetGoalFunc(fn func(objective string) (bool, error)) {
 // SetGoalStatusFunc sets the callback that reports the session's current /goal
 // state for the thread-read projection (the SerfThread.Goal field). ok is false
 // when no goal is set.
-func (s *Server) SetGoalStatusFunc(fn func() (status string, iterations, maxIter int, ok bool)) {
+func (s *Server) SetGoalStatusFunc(fn func() (status string, iterations int, ok bool)) {
 	s.mu.Lock()
 	s.goalStatusFn = fn
 	s.mu.Unlock()

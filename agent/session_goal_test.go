@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -150,6 +151,132 @@ func TestClearGoalRemovesGoal(t *testing.T) {
 	sess.ClearGoal()
 	if _, ok := sess.getOrCreateGoalStore().Snapshot(); ok {
 		t.Fatal("ClearGoal should remove the goal")
+	}
+}
+
+// lastSteeringText returns the text of the final TurnSteering turn in the
+// session history, or "" with ok=false when the last turn is not steering.
+func lastSteeringText(sess *Session) (string, bool) {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if len(sess.history) == 0 {
+		return "", false
+	}
+	last := sess.history[len(sess.history)-1]
+	if last.Kind != schema.TurnSteering {
+		return "", false
+	}
+	return last.Message.Text(), true
+}
+
+// compactSession builds a session with enough history to force a real
+// compaction and returns it. The model is scripted to answer the LLM
+// summarization call. PreserveRecentTurns is 1 so the trailing turns survive.
+func compactSession(t *testing.T) *Session {
+	t.Helper()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return finalResponse("forced summary") },
+	}})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	sess.contextMgr.PreserveRecentTurns = 1
+	sess.history = []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first task")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("I will inspect the project and report back with enough detail to become a working note.")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("second task")),
+	}
+	return sess
+}
+
+// TestCompactionReInjectsActiveGoalObjective: with an active goal set, forcing a
+// compaction must append a trailing TurnSteering turn carrying the rendered
+// objective so the goal survives mid-turn compaction erosion.
+func TestCompactionReInjectsActiveGoalObjective(t *testing.T) {
+	const objective = "REINJECTMARKER ship the payments refactor end to end"
+	sess := compactSession(t)
+	defer sess.Close()
+
+	sess.getOrCreateGoalStore().Set(objective, time.Now())
+
+	if err := sess.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	text, ok := lastSteeringText(sess)
+	if !ok {
+		t.Fatalf("post-compaction history must end with a TurnSteering turn; kinds=%s", turnKinds(sess.history))
+	}
+	if !strings.Contains(text, "REINJECTMARKER") {
+		t.Fatalf("trailing steering turn must contain the objective marker; got %q", text)
+	}
+	// It must be the full rendered continuation prompt, not a bare objective.
+	if text != goal.Render(objective) {
+		t.Fatalf("trailing steering text is not the rendered continuation prompt")
+	}
+}
+
+// TestCompactionNoSteeringWithoutActiveGoal: with no goal set, forcing a
+// compaction must NOT append a goal steering turn.
+func TestCompactionNoSteeringWithoutActiveGoal(t *testing.T) {
+	sess := compactSession(t)
+	defer sess.Close()
+
+	if err := sess.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	if _, ok := lastSteeringText(sess); ok {
+		t.Fatalf("compaction with no active goal must not append a steering turn; kinds=%s", turnKinds(sess.history))
+	}
+}
+
+// TestCompactionNoSteeringForTerminalGoal: a terminal (complete/blocked) goal
+// must NOT be re-injected on compaction — only an active goal is.
+func TestCompactionNoSteeringForTerminalGoal(t *testing.T) {
+	sess := compactSession(t)
+	defer sess.Close()
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("COMPLETEDMARKER done work", time.Now())
+	if !store.SetTerminal(goal.StatusComplete, "", time.Now()) {
+		t.Fatal("precondition: SetTerminal(complete) should succeed")
+	}
+
+	if err := sess.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	if _, ok := lastSteeringText(sess); ok {
+		t.Fatalf("compaction with a terminal goal must not append a steering turn; kinds=%s", turnKinds(sess.history))
+	}
+}
+
+// TestGoalCompactionSteering covers the helper directly: it returns the rendered
+// objective for an active goal, and nil for no-goal and terminal-goal states.
+func TestGoalCompactionSteering(t *testing.T) {
+	sess := newGoalMethodSession(t)
+	defer sess.Close()
+
+	if msgs := sess.goalCompactionSteering(); msgs != nil {
+		t.Fatalf("no goal: want nil, got %v", msgs)
+	}
+
+	store := sess.getOrCreateGoalStore()
+	store.Set("STEERMARKER objective", time.Now())
+	msgs := sess.goalCompactionSteering()
+	if len(msgs) != 1 || msgs[0] != goal.Render("STEERMARKER objective") {
+		t.Fatalf("active goal: want one rendered-objective message, got %v", msgs)
+	}
+
+	if !store.SetTerminal(goal.StatusBlocked, "stuck", time.Now()) {
+		t.Fatal("precondition: SetTerminal(blocked) should succeed")
+	}
+	if msgs := sess.goalCompactionSteering(); msgs != nil {
+		t.Fatalf("terminal goal: want nil, got %v", msgs)
 	}
 }
 
