@@ -52,6 +52,9 @@ func TestStore_PermissionsEnforced(t *testing.T) {
 	if err := os.WriteFile(path, []byte("schema = 1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := LoadStore(path); err == nil {
 		t.Errorf("LoadStore should reject 0644-mode file")
 	}
