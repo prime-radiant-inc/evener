@@ -277,6 +277,12 @@ func runServe(args []string) error {
 	}
 
 	bridgeSession := func(s *agent.Session) {
+		// The idle kick is set on the Session, so it must be re-established
+		// whenever the session is replaced (e.g. on /clear). It feeds the
+		// first continuation prompt back into the serve loop's input channel
+		// as an EntryContinuation-kind message (the agent module must not
+		// import server, so this is a callback into the server, spec §C4/§7).
+		s.SetKickFunc(func(prompt string) { srv.SubmitContinuation(prompt) })
 		go server.BridgeWithObserver(srv, s.Events(), eventObserver)
 	}
 
@@ -289,6 +295,14 @@ func runServe(args []string) error {
 	srv.SetQueueWithImagesFunc(func(text string, images []server.ImageAttachment) error {
 		return getSession().EnqueueWithImages(ctx, text, images)
 	})
+	srv.SetGoalFunc(func(objective string) (bool, error) {
+		if strings.TrimSpace(objective) == "" {
+			getSession().ClearGoal()
+			return false, nil
+		}
+		return getSession().SetGoal(ctx, objective)
+	})
+	srv.SetGoalStatusFunc(func() (string, int, int, bool) { return getSession().GoalStatus() })
 	srv.SetDrainAsSteerFunc(func() error { return getSession().DrainAsSteer(ctx) })
 	srv.SetDrainAsSteerWithInputFunc(func(text string, images []server.ImageAttachment) error {
 		return getSession().DrainAsSteerWithInput(ctx, text, images)

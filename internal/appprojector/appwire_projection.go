@@ -110,6 +110,50 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.threadStatus(appwire.ThreadStatusActive),
 		)
 		return out
+	case events.EventGoalContinuation:
+		// A goal continuation opens a fresh turn just like a user input
+		// (close the prior turn, start a new one), but renders its prompt as
+		// a systemMessage rather than a userMessage so continuations don't
+		// look like the user spoke.
+		out := []AppNotification{}
+		if p.activeTurnID != "" {
+			turnID := p.activeTurnID
+			p.activeTurnID = ""
+			p.assistantItem = ""
+			p.assistantText = ""
+			p.toolItemsByKey = map[string]string{}
+			p.suppressedTools = map[string]struct{}{}
+			out = append(out, p.notification(appwire.NotifyTurnCompleted, map[string]any{
+				"threadId": p.threadID,
+				"ref":      p.ref,
+				"turn":     appwire.Turn{ID: turnID, Status: appwire.TurnStatusCompleted},
+			}))
+		}
+		turnID := p.startTurn()
+		data := eventData[events.GoalContinuationData](event.Data)
+		item := appwire.ThreadItem{
+			Type:        "systemMessage",
+			ID:          p.nextItemID("goal_continuation"),
+			TurnID:      turnID,
+			Description: "Goal",
+			Text:        data.Text,
+			Status:      appwire.TurnStatusCompleted,
+		}
+		out = append(out,
+			p.notification(appwire.NotifyTurnStarted, map[string]any{
+				"threadId": p.threadID,
+				"ref":      p.ref,
+				"turn":     appwire.Turn{ID: turnID, Status: appwire.TurnStatusInProgress},
+			}),
+			p.notification(appwire.NotifyItemCompleted, map[string]any{
+				"threadId": p.threadID,
+				"ref":      p.ref,
+				"turnId":   turnID,
+				"item":     item,
+			}),
+			p.threadStatus(appwire.ThreadStatusActive),
+		)
+		return out
 	case events.EventAssistantTextStart:
 		p.ensureTurn()
 		p.assistantItem = p.nextItemID("assistant")
@@ -330,6 +374,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventLoopDetection:
 		data := eventData[events.LoopDetectionData](event.Data)
 		return p.systemAnnouncement("loop_detection", "Loop detection", data.Message)
+	case events.EventGoalEnded:
+		data := eventData[events.GoalEndedData](event.Data)
+		return p.systemAnnouncement("goal", "Goal", goalEndText(data))
 	case events.EventSkillActivated:
 		data := eventData[events.SkillActivatedData](event.Data)
 		return p.systemAnnouncement("skill", "Skill activated", "Activated skill: "+data.Name)
@@ -483,6 +530,24 @@ func projectUserInputImages(images []events.UserInputImage) []appwire.InputItem 
 		})
 	}
 	return out
+}
+
+// goalEndText renders the terminal /goal report line from a GoalEnded payload.
+// A completed goal reads "✓ Goal achieved"; a blocked goal "⊘ Goal blocked"
+// (with the reason appended when present); any other terminal status falls back
+// to "⊘ Goal stopped".
+func goalEndText(data events.GoalEndedData) string {
+	switch data.Status {
+	case "complete":
+		return "✓ Goal achieved"
+	case "blocked":
+		if reason := strings.TrimSpace(data.Reason); reason != "" {
+			return "⊘ Goal blocked: " + reason
+		}
+		return "⊘ Goal blocked"
+	default:
+		return "⊘ Goal stopped"
+	}
 }
 
 func turnLimitAnnouncement(data events.TurnLimitData) string {

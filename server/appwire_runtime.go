@@ -85,6 +85,7 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodTurnInterrupt, s.handleAppTurnInterrupt)
 	appserver.HandleTyped(router, appwire.MethodTurnQueue, s.handleAppTurnQueue)
 	appserver.HandleTyped(router, appwire.MethodTurnDrainAsSteer, s.handleAppTurnDrainAsSteer)
+	appserver.HandleTyped(router, appwire.MethodGoalSet, s.handleAppGoalSet)
 	appserver.HandleTyped(router, appwire.MethodThreadCompactStart, s.handleAppThreadCompactStart)
 	appserver.HandleTyped(router, appwire.MethodThreadShutdown, s.handleAppThreadShutdown)
 	appserver.HandleTyped(router, appwire.MethodThreadClear, s.handleAppThreadClear)
@@ -281,6 +282,25 @@ func (s *Server) handleAppTurnDrainAsSteer(_ context.Context, params appwire.Tur
 	return appwire.EmptyResponse{}, nil
 }
 
+// handleAppGoalSet handles goal/set. An empty objective clears the goal; both
+// set and clear route through the single goalFunc callback (the callback maps an
+// empty objective to ClearGoal). Started reports whether the goal loop began
+// immediately (idle session) versus after the current turn (a turn is running,
+// whose gate is the backstop).
+func (s *Server) handleAppGoalSet(_ context.Context, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
+	s.mu.RLock()
+	fn := s.goalFunc
+	s.mu.RUnlock()
+	if fn == nil {
+		return appwire.GoalSetResponse{}, appwire.Unavailable("goal not available")
+	}
+	started, err := fn(params.Objective)
+	if err != nil {
+		return appwire.GoalSetResponse{}, err
+	}
+	return appwire.GoalSetResponse{Started: started}, nil
+}
+
 func (s *Server) handleAppThreadCompactStart(ctx context.Context, _ appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
 	s.mu.RLock()
 	fn := s.compactFunc
@@ -378,6 +398,7 @@ func (s *Server) appThread() appwire.Thread {
 	dfn := s.detailedStatusFn
 	qpfn := s.queuePreviewFn
 	qdfn := s.queueDepthFn
+	gsfn := s.goalStatusFn
 	s.mu.RUnlock()
 
 	if sourceID == "" {
@@ -417,6 +438,12 @@ func (s *Server) appThread() appwire.Thread {
 	if queue.Depth == 0 && qdfn != nil {
 		queue.Depth = qdfn()
 	}
+	var goalState *appwire.GoalState
+	if gsfn != nil {
+		if status, iterations, maxIter, ok := gsfn(); ok {
+			goalState = &appwire.GoalState{Status: status, Iterations: iterations, Max: maxIter}
+		}
+	}
 	return appwire.Thread{
 		ID:            threadID,
 		SessionID:     status.SessionID,
@@ -436,6 +463,7 @@ func (s *Server) appThread() appwire.Thread {
 			Capabilities:     s.appCapabilities(status.State, processing),
 			Diagnostics:      diagnostics,
 			Queue:            queue,
+			Goal:             goalState,
 		},
 	}
 }

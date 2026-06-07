@@ -156,6 +156,16 @@ var hubCommandRegistry = []hubCommandDefinition{
 		},
 	},
 	{
+		Name:          "goal",
+		Summary:       "Set, clear, or check the session's goal",
+		PaletteLabel:  "/goal",
+		PaletteDetail: "set/clear/status the session goal",
+		Scopes:        hubCommandSession,
+		Run: func(m *hubModel, args string) tea.Cmd {
+			return m.runHubGoal(args)
+		},
+	},
+	{
 		Name:          "status",
 		Summary:       "Show session info and context pressure",
 		PaletteLabel:  "/status",

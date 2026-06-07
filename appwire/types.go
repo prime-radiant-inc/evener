@@ -23,6 +23,7 @@ const (
 	MethodTurnInterrupt             = "turn/interrupt"
 	MethodTurnQueue                 = "turn/queue"
 	MethodTurnDrainAsSteer          = "turn/drainAsSteer"
+	MethodGoalSet                   = "goal/set"
 	MethodSerfTasksList             = "serf/tasks/list"
 	MethodSerfThreadTranscriptsList = "serf/thread/transcripts/list"
 	MethodSerfDirsComplete          = "serf/dirs/complete"
@@ -180,6 +181,21 @@ type SerfThread struct {
 	// fixes multi-client incoherence and post-reload state. The empty zero
 	// value (Depth==0, Preview==nil) means "no queued messages".
 	Queue QueueState `json:"queue"`
+	// Goal carries the session's /goal state when a goal is set, else nil.
+	// It powers `/goal status` and a future status-bar indicator without a
+	// bespoke transport — like Queue, it is structured per-session state read
+	// from the already-fetched thread snapshot.
+	Goal *GoalState `json:"goal,omitempty"`
+}
+
+// GoalState is the wire representation of a session's /goal. Status is the
+// lifecycle status ("active", "complete", "blocked"); Iterations is the number
+// of continuation turns taken; Max is the iteration cap. A nil *GoalState on
+// SerfThread means no goal is set.
+type GoalState struct {
+	Status     string `json:"status"`
+	Iterations int    `json:"iterations"`
+	Max        int    `json:"max"`
 }
 
 // QueueState is the wire representation of a session's per-input queue
@@ -469,6 +485,23 @@ type TurnInterruptParams struct {
 type TurnQueueParams struct {
 	Ref   string      `json:"ref"`
 	Input []InputItem `json:"input,omitempty"`
+}
+
+// GoalSetParams sets (or clears) the session's /goal objective. An empty
+// Objective clears the goal. The daemon forwards it to Session.SetGoal /
+// ClearGoal and returns immediately; the goal loop runs asynchronously.
+type GoalSetParams struct {
+	Ref       string `json:"ref"`
+	Objective string `json:"objective,omitempty"`
+}
+
+// GoalSetResponse reports whether the goal loop started immediately. Started is
+// false when the objective was cleared, when a turn is already running (its gate
+// picks the goal up after the current turn), or when no immediate start was
+// possible — in those cases the goal is still set; it just begins after the
+// current turn rather than right away.
+type GoalSetResponse struct {
+	Started bool `json:"started"`
 }
 
 // TurnDrainAsSteerParams is the wire shape for turn/drainAsSteer (kata

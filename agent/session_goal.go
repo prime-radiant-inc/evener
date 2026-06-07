@@ -62,6 +62,19 @@ func (s *Session) ClearGoal() {
 	s.getOrCreateGoalStore().Clear()
 }
 
+// GoalStatus reports the session's current /goal state for status surfaces (the
+// appwire SerfThread.Goal field, `/goal status`). ok is false when no goal is
+// set. max is the iteration cap (goal.DefaultMaxIterations). It returns
+// primitives rather than the internal goal.Snapshot so callers outside the agent
+// module (which cannot import agent/internal/goal) can consume it.
+func (s *Session) GoalStatus() (status string, iterations, max int, ok bool) {
+	snap, ok := s.getOrCreateGoalStore().Snapshot()
+	if !ok {
+		return "", 0, 0, false
+	}
+	return string(snap.Status), snap.Iterations, goal.DefaultMaxIterations, true
+}
+
 // goalRoundCap selects the per-input tool-round cap. User-input turns use the
 // configured cap verbatim. Continuation turns (the goal engine) clamp an
 // unbounded (cfg<0) or larger-than-GoalTurnMaxRounds config down to
