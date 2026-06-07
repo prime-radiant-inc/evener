@@ -79,6 +79,18 @@ func TestHubDetailFromAppThreadTreatsClosedAsNotLive(t *testing.T) {
 	}
 }
 
+func TestActiveTurnIDFromAppwireThreadPrefersSerfActiveTurn(t *testing.T) {
+	got := activeTurnIDFromAppwireThread(appwire.Thread{
+		Serf: appwire.SerfThread{ActiveTurnID: "turn_live"},
+		Turns: []appwire.Turn{
+			{ID: "turn_transcript", Status: appwire.TurnStatusCompleted},
+		},
+	})
+	if got != "turn_live" {
+		t.Fatalf("active turn id=%q, want turn_live", got)
+	}
+}
+
 // TestHubDetailFromAppThreadCarriesGoal asserts the thread's Serf.Goal status
 // and turn count flow into SessionDetail's flattened goal fields, which feed
 // the live input-strip goal pill.

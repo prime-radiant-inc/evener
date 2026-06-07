@@ -674,6 +674,7 @@
   }
 
   function activeTurnIDFromThread(thread) {
+    if (thread && thread.serf && thread.serf.activeTurnId) return thread.serf.activeTurnId;
     for (const turn of (thread && thread.turns) || []) {
       if (turn && canonicalTurnStatus(turn.status) === "inProgress") return turn.id || "";
     }

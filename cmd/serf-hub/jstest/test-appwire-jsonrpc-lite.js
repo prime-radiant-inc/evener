@@ -144,6 +144,11 @@ vm.runInContext(SRC, context);
   });
   assert(replayEvents[0][1].session_id === "codex:th_codex", "browser appwire replay should keep source-qualified session identity");
   assert(replayEvents[0][1].ref === "codex:th_codex", "browser appwire replay should preserve canonical ref separately");
+  const activeTurn = context.window.SerfAppwire.activeTurnIDFromThread({
+    serf: { activeTurnId: "turn_live" },
+    turns: [{ id: "turn_transcript", status: "completed" }],
+  });
+  assert(activeTurn === "turn_live", "browser appwire should prefer serf.activeTurnId over transcript turns");
   await context.window.SerfAppwire.readThread("codex:th_codex", true, true, true);
   const read = sent.find((msg) => msg.method === "thread/read");
   assert(read && read.params.ref === "codex:th_codex", "browser appwire read should pass canonical ref");

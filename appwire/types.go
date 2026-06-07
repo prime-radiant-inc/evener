@@ -169,6 +169,7 @@ type SerfThread struct {
 	ParentRef        string             `json:"parentRef,omitempty"`
 	Kind             string             `json:"kind,omitempty"`
 	Profile          string             `json:"profile,omitempty"`
+	ActiveTurnID     string             `json:"activeTurnId,omitempty"`
 	ContextPressure  float64            `json:"contextPressure,omitempty"`
 	ContextUsed      int                `json:"contextUsed,omitempty"`
 	ContextWindow    int                `json:"contextWindow,omitempty"`

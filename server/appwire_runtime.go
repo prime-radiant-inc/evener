@@ -399,6 +399,7 @@ func (s *Server) appThread() appwire.Thread {
 	qpfn := s.queuePreviewFn
 	qdfn := s.queueDepthFn
 	gsfn := s.goalStatusFn
+	activeTurnID := s.appActiveTurnID
 	s.mu.RUnlock()
 
 	if sourceID == "" {
@@ -456,6 +457,7 @@ func (s *Server) appThread() appwire.Thread {
 		Serf: appwire.SerfThread{
 			Ref:              ref,
 			Profile:          status.Profile,
+			ActiveTurnID:     activeTurnID,
 			ContextPressure:  pressure,
 			ContextUsed:      metrics.Used,
 			ContextWindow:    metrics.Window,

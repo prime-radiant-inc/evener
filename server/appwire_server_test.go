@@ -46,6 +46,68 @@ func TestServerAppWireTurnStartQueuesInput(t *testing.T) {
 	}
 }
 
+func TestServerAppWireThreadReadExposesActiveTurnIDWhenTranscriptWins(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	tw, err := transcript.NewWriter(path, transcript.Header{
+		SessionID: "th_1",
+		CreatedAt: time.Now(),
+		ProfileID: "openai",
+		Model:     "gpt-5.5",
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("old input"))); err != nil {
+		t.Fatalf("Append user: %v", err)
+	}
+	if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("old output"))); err != nil {
+		t.Fatalf("Append assistant: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("Close transcript: %v", err)
+	}
+
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetTranscriptPathFunc(func() string { return path })
+	srv.SetSteerFunc(func(string) {})
+	srv.SetCancelFunc(func() {})
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{}))
+	start := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodTurnStart, appwire.TurnStartParams{
+		Ref:   "local:th_1",
+		Input: []appwire.InputItem{{Type: "text", Text: "new input"}},
+	}))
+	startResp, ok := start.Response.Result.(appwire.TurnStartResponse)
+	if !ok {
+		t.Fatalf("start response=%T", start.Response.Result)
+	}
+
+	read := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(3), appwire.MethodThreadRead, appwire.ThreadReadParams{
+		Ref:          "local:th_1",
+		IncludeTurns: true,
+	}))
+	if read.Kind() != appwire.MessageResponse {
+		t.Fatalf("read=%+v", read)
+	}
+	out, ok := read.Response.Result.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("read response=%T", read.Response.Result)
+	}
+	if len(out.Thread.Turns) < 2 {
+		t.Fatalf("thread turns=%d, want transcript turns", len(out.Thread.Turns))
+	}
+	for _, turn := range out.Thread.Turns {
+		if turn.Status == appwire.TurnStatusInProgress {
+			t.Fatalf("transcript turn unexpectedly in progress: %+v", turn)
+		}
+	}
+	if out.Thread.Serf.ActiveTurnID != startResp.Turn.ID {
+		t.Fatalf("active turn id=%q, want %q", out.Thread.Serf.ActiveTurnID, startResp.Turn.ID)
+	}
+}
+
 func TestServerAppWireGoalSetInvokesGoalFunc(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")

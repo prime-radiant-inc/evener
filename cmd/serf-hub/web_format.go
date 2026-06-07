@@ -88,6 +88,9 @@ func compactDuration(d time.Duration) string {
 }
 
 func activeTurnIDFromAppwireThread(thread appwire.Thread) string {
+	if thread.Serf.ActiveTurnID != "" {
+		return thread.Serf.ActiveTurnID
+	}
 	for _, turn := range thread.Turns {
 		if turn.Status == appwire.TurnStatusInProgress {
 			return turn.ID
