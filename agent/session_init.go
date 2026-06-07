@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/contextmgr"
+	"primeradiant.com/serf/agent/internal/goal"
 	"primeradiant.com/serf/agent/internal/hooks"
 	"primeradiant.com/serf/agent/internal/installid"
 	"primeradiant.com/serf/agent/internal/mcp"
@@ -274,7 +275,12 @@ func RestoreSessionFromMeta(client *llm.Client, profile *provider.Profile, env e
 	// Restore persisted goal state before initSessionState so the goal store is
 	// populated before any turn runs. No kick is wired yet ("loaded but idle"):
 	// the goal resumes on the user's next turn via the normal gate path.
-	if meta.Goal != nil {
+	//
+	// Only an ACTIVE goal is reloaded. A goal that already finished is dropped:
+	// terminal transitions are now persisted (/par A4), and re-restoring a
+	// complete/blocked goal would re-emit its terminal report on the first gate call
+	// (the once-gate resets on load) and leave a stale terminal status chip (/par #2).
+	if meta.Goal != nil && meta.Goal.Status == string(goal.StatusActive) {
 		g := meta.Goal
 		s.getOrCreateGoalStore().Restore(g.Objective, g.Status, g.StopReason, g.Iterations, g.NoProgressStreak, g.MadeProgressOnce, g.CreatedAt, g.UpdatedAt)
 	}

@@ -2141,6 +2141,7 @@ func TestHubRPCThreadActionsRouteToDaemon(t *testing.T) {
 					ForkFromTurn: true,
 					Shutdown:     true,
 					ChangeModel:  true,
+					Goal:         true,
 				},
 			},
 		}}, nil
@@ -2370,6 +2371,66 @@ func TestHubRPCUnsupportedThreadActionReturnsStructuredUnavailable(t *testing.T)
 	data, ok := wire.Data.(map[string]any)
 	if !ok || data["serfErrorInfo"] != string(appwire.ErrorActionUnavailable) {
 		t.Fatalf("wire data=%#v", wire.Data)
+	}
+}
+
+// TestHubRPCGoalSetGatedByCapability pins /par A6: goal/set is pre-flight gated
+// like every sibling thread action. A source whose ThreadRead reports caps without
+// Goal (e.g. codex) must have goal/set rejected with a structured Unavailable
+// BEFORE the call reaches the source's GoalSet.
+func TestHubRPCGoalSetGatedByCapability(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	goalReached := false
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        "th_1",
+			SessionID: "sess_1",
+			Serf: appwire.SerfThread{
+				Ref:          "local:th_1",
+				Capabilities: appwire.ThreadCapabilities{Send: true}, // no Goal
+			},
+		}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodGoalSet, func(_ context.Context, _ appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
+		goalReached = true
+		return appwire.GoalSetResponse{Started: true}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       106,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  "th_1",
+		SessionID: "sess_1",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	_, err := client.GoalSet(context.Background(), appwire.GoalSetParams{Ref: "local:th_1", Objective: "do it"})
+	if err == nil {
+		t.Fatal("GoalSet succeeded despite missing Goal capability")
+	}
+	if goalReached {
+		t.Fatal("gated goal/set still reached the source")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error %T does not preserve WireError: %v", err, err)
+	}
+	if wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("wire=%+v", wire)
 	}
 }
 

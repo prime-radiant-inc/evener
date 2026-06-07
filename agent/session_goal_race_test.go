@@ -73,7 +73,7 @@ func TestGoal_NoRaceSetClearVsGate(t *testing.T) {
 				return
 			default:
 			}
-			_, _ = sess.armGoalContinuation(true)
+			_, _ = sess.armGoalContinuation(true, true)
 		}
 	}()
 

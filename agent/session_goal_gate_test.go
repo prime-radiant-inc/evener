@@ -72,7 +72,7 @@ func TestArmGoalContinuation(t *testing.T) {
 	store := sess.getOrCreateGoalStore()
 	store.Set("ship the feature", time.Now())
 
-	prompt, ok := sess.armGoalContinuation(true)
+	prompt, ok := sess.armGoalContinuation(true, true)
 	if !ok {
 		t.Fatal("armGoalContinuation(true) on an active goal should return ok=true")
 	}
@@ -85,7 +85,7 @@ func TestArmGoalContinuation(t *testing.T) {
 		t.Fatal("SetTerminal(complete) should succeed on the active goal")
 	}
 
-	prompt, ok = sess.armGoalContinuation(false)
+	prompt, ok = sess.armGoalContinuation(false, true)
 	if ok || prompt != "" {
 		t.Fatalf("armGoalContinuation after complete = (%q, %v), want (\"\", false)", prompt, ok)
 	}
@@ -110,14 +110,14 @@ func TestArmGoalContinuationNoProgressBlocks(t *testing.T) {
 
 	// First progressed turn establishes the grace baseline (streak accrues only
 	// after the first progressed turn).
-	if _, ok := sess.armGoalContinuation(true); !ok {
+	if _, ok := sess.armGoalContinuation(true, true); !ok {
 		t.Fatal("first progressed continuation should keep the goal active")
 	}
 
 	// NoProgressLimit no-progress continuations: the last one blocks.
 	var lastOK bool
 	for i := 0; i < goal.NoProgressLimit; i++ {
-		_, lastOK = sess.armGoalContinuation(false)
+		_, lastOK = sess.armGoalContinuation(false, true)
 	}
 	if lastOK {
 		t.Fatalf("after %d no-progress continuations the goal should be blocked (ok=false)", goal.NoProgressLimit)
@@ -157,7 +157,7 @@ func TestArmGoalContinuationNoIterationCap(t *testing.T) {
 
 	const continuations = 50 // far past the old DefaultMaxIterations of 10
 	for i := 0; i < continuations; i++ {
-		prompt, ok := sess.armGoalContinuation(true)
+		prompt, ok := sess.armGoalContinuation(true, true)
 		if !ok {
 			t.Fatalf("a progressing goal stopped at continuation %d; want no iteration cap", i+1)
 		}

@@ -358,8 +358,10 @@ func TestAcceptContinuationIsSteeringNotUser(t *testing.T) {
 		case events.EventGoalContinuation:
 			sawContinuation = true
 			if d, ok := ev.Data.(events.GoalContinuationData); ok {
-				if d.Text != "CONTINUE" {
-					t.Fatalf("EventGoalContinuation text = %q, want %q", d.Text, "CONTINUE")
+				// No goal is set in this test, so the compact marker falls back to
+				// the constant rather than echoing the raw input (/par B6).
+				if d.Text != goalContinuationMarker {
+					t.Fatalf("EventGoalContinuation text = %q, want %q", d.Text, goalContinuationMarker)
 				}
 			} else {
 				t.Fatalf("EventGoalContinuation carried %T, want GoalContinuationData", ev.Data)
@@ -373,5 +375,57 @@ func TestAcceptContinuationIsSteeringNotUser(t *testing.T) {
 	}
 	if sawUserInput {
 		t.Fatal("acceptContinuationInput must NOT emit EventUserInput")
+	}
+}
+
+// TestContinuationEventOmitsFullPrompt pins /par B6: the EventGoalContinuation that
+// drives the web systemMessage projection must carry a compact marker (the
+// objective), never the full ~2.5KB rendered continuation prompt, which would flood
+// the thread every iteration. The model still gets the full prompt via the steering
+// turn (asserted by the last-history check).
+func TestContinuationEventOmitsFullPrompt(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	sess.getOrCreateGoalStore().Set("make the tests pass", time.Now())
+
+	stop := drainEvents(sess)
+
+	fullPrompt := "BEGIN " + strings.Repeat("scaffolding ", 300) + " END" // ~3.6KB
+	sess.acceptContinuationInput(context.Background(), fullPrompt)
+
+	sess.mu.Lock()
+	last := sess.history[len(sess.history)-1]
+	sess.mu.Unlock()
+	sess.Close()
+	evs := stop()
+
+	var marker string
+	var found bool
+	for _, ev := range evs {
+		if ev.Kind == events.EventGoalContinuation {
+			d, ok := ev.Data.(events.GoalContinuationData)
+			if !ok {
+				t.Fatalf("EventGoalContinuation carried %T, want GoalContinuationData", ev.Data)
+			}
+			marker, found = d.Text, true
+		}
+	}
+	if !found {
+		t.Fatal("expected an EventGoalContinuation")
+	}
+	if marker != "Continuing toward: make the tests pass" {
+		t.Fatalf("marker = %q, want the compact objective form", marker)
+	}
+	if strings.Contains(marker, "scaffolding") {
+		t.Fatalf("marker leaked the full prompt: %q", marker)
+	}
+	// The model must still receive the full prompt as the steering turn.
+	if !strings.Contains(last.Message.Text(), "scaffolding") {
+		t.Fatal("steering turn did not carry the full continuation prompt to the model")
 	}
 }

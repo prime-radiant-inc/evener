@@ -8,65 +8,6 @@ import (
 // clock returns a fixed time for deterministic tests.
 func clock() time.Time { return time.Unix(0, 0).UTC() }
 
-func TestShouldContinue(t *testing.T) {
-	cases := []struct {
-		name string
-		snap Snapshot
-		want bool
-	}{
-		{
-			"active under no-progress limit",
-			Snapshot{Status: StatusActive, Iterations: 0, NoProgressStreak: 0},
-			true,
-		},
-		{
-			"complete stops",
-			Snapshot{Status: StatusComplete, Iterations: 0},
-			false,
-		},
-		{
-			"blocked stops",
-			Snapshot{Status: StatusBlocked, Iterations: 0},
-			false,
-		},
-		{
-			"high iteration count alone does not stop",
-			Snapshot{Status: StatusActive, Iterations: 1000, NoProgressStreak: 0},
-			true,
-		},
-		{
-			"no-progress cap stops",
-			Snapshot{Status: StatusActive, NoProgressStreak: NoProgressLimit},
-			false,
-		},
-		{
-			"one below no-progress limit continues",
-			Snapshot{
-				Status:           StatusActive,
-				Iterations:       1000,
-				NoProgressStreak: NoProgressLimit - 1,
-			},
-			true,
-		},
-		{
-			"noProgressStreak greater than limit stops",
-			Snapshot{
-				Status:           StatusActive,
-				Iterations:       0,
-				NoProgressStreak: NoProgressLimit + 1,
-			},
-			false,
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := ShouldContinue(c.snap); got != c.want {
-				t.Fatalf("ShouldContinue(%+v) = %v, want %v", c.snap, got, c.want)
-			}
-		})
-	}
-}
-
 func TestStoreSetGetClear(t *testing.T) {
 	s := NewStore()
 	if _, ok := s.Snapshot(); ok {
@@ -83,26 +24,47 @@ func TestStoreSetGetClear(t *testing.T) {
 	}
 }
 
+// TestRecordContinuationNoProgressGrace: leading read-only turns accrue toward the
+// larger NeverProgressedLimit (not blocked early); a progressed turn resets the
+// streak and flips to the tighter NoProgressLimit, after which NoProgressLimit
+// consecutive no-progress turns block.
 func TestRecordContinuationNoProgressGrace(t *testing.T) {
 	s := NewStore()
 	s.Set("obj", clock())
-	// Pre-progress reads must NOT accrue the streak (grace period).
-	for i := 0; i < NoProgressLimit+2; i++ {
+	for i := 0; i < NeverProgressedLimit-1; i++ {
 		s.RecordContinuation(false /*progressed*/, clock())
 		snap, _ := s.Snapshot()
 		if snap.Status != StatusActive {
-			t.Fatalf("grace: turn %d should stay active, got %v", i, snap.Status)
+			t.Fatalf("leading turn %d should stay active, got %v", i, snap.Status)
 		}
 	}
-	// First progressed turn starts the clock; resets streak.
-	s.RecordContinuation(true, clock())
-	// Now NoProgressLimit consecutive no-progress turns must block.
+	s.RecordContinuation(true, clock()) // progress: reset + flip to NoProgressLimit
 	for i := 0; i < NoProgressLimit; i++ {
 		s.RecordContinuation(false, clock())
 	}
 	snap, _ := s.Snapshot()
 	if snap.Status != StatusBlocked || snap.StopReason != "no progress" {
 		t.Fatalf("expected blocked/no-progress, got %v/%q", snap.Status, snap.StopReason)
+	}
+}
+
+// TestNeverProgressedBlocks pins the fix for the breaker hole: a goal that never
+// makes a mutating tool call must still stop (at NeverProgressedLimit), not run
+// forever (the /par Critical B1).
+func TestNeverProgressedBlocks(t *testing.T) {
+	s := NewStore()
+	s.Set("summarize the architecture", clock())
+	for i := 0; i < NeverProgressedLimit-1; i++ {
+		if _, active := s.RecordContinuation(false, clock()); !active {
+			t.Fatalf("turn %d: never-progressed goal blocked too early", i)
+		}
+	}
+	if _, active := s.RecordContinuation(false, clock()); active {
+		t.Fatal("never-progressed goal must block at NeverProgressedLimit")
+	}
+	snap, _ := s.Snapshot()
+	if snap.Status != StatusBlocked || snap.StopReason != "no progress" {
+		t.Fatalf("want blocked/no-progress, got %v/%q", snap.Status, snap.StopReason)
 	}
 }
 
@@ -116,7 +78,7 @@ func TestSetTerminal(t *testing.T) {
 	if snap.Status != StatusComplete {
 		t.Fatalf("want complete, got %v", snap.Status)
 	}
-	// Second call on non-active goal is a no-op returning false.
+	// Second call on a non-active goal is a no-op returning false.
 	if s.SetTerminal(StatusBlocked, "x", clock()) {
 		t.Fatal("SetTerminal on non-active should be no-op")
 	}

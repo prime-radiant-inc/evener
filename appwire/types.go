@@ -235,6 +235,10 @@ type ThreadCapabilities struct {
 	// is currently in flight and the session can accept enqueued user
 	// messages for processing after the active turn completes.
 	Queue bool `json:"queue"`
+	// Goal advertises support for goal/set (the /goal objective engine). True
+	// for a serf session that can accept a goal; false for sources without the
+	// engine (e.g. codex), so goal/set is gated like every other thread action.
+	Goal bool `json:"goal"`
 }
 
 type SerfDiagnostics struct {

@@ -212,6 +212,12 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 	nextKind := kind
 	processCtx := ctx
 	for {
+		// Capture the kind actually being processed this iteration before the
+		// follow-up reset below; the goal gate needs it to know whether the turn
+		// that just ran was a goal continuation (which accrues toward the
+		// no-progress streak and iteration count) or a user/follow-up turn (which
+		// does not — /par #4).
+		ranKind := nextKind
 		out, progressed, err := s.processOneInput(processCtx, next, nextImages, nextKind)
 		// Follow-up turns (after the first) carry no attachments and are
 		// user-driven, not continuations.
@@ -301,7 +307,7 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 		// goal is active and the engine says continue, run the next turn as a
 		// system-framed continuation. On a terminal/stop decision the gate emits
 		// the terminal report and we fall through to EventSessionEnd (idle).
-		if cont, ok := s.armGoalContinuation(progressed); ok {
+		if cont, ok := s.armGoalContinuation(progressed, ranKind == EntryContinuation); ok {
 			next = cont
 			nextKind = EntryContinuation
 			continue
@@ -629,6 +635,12 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	return true
 }
 
+// goalContinuationMarker is the compact fallback text surfaced for a goal
+// continuation turn when no objective is available. The full rendered continuation
+// prompt is delivered to the model as a steering turn but is NOT surfaced to the UI
+// — it is ~2.5KB of scaffolding that would flood the thread every iteration (/par B6).
+const goalContinuationMarker = "Continuing toward the goal."
+
 // acceptContinuationInput records a goal-engine continuation at the start of an
 // input turn. It mirrors acceptUserInput's history-repair and steering-drain
 // behavior, but frames the input as a system/steering turn rather than the user
@@ -636,12 +648,20 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 // model as a user-role message without rendering a user bubble), emits
 // EventGoalContinuation rather than EventUserInput, and skips the namer, the
 // MaxTurns check, and the s.turns++ accounting (goal turns are bounded by the
-// engine's iteration cap, not the session's user-input ceiling; SESSION_END.Turns
+// no-progress breaker, not the session's user-input ceiling; SESSION_END.Turns
 // reads the separate modelResponses counter, so skipping s.turns++ is safe).
 func (s *Session) acceptContinuationInput(ctx context.Context, input string) {
 	s.repairOrphanedToolResults("before accepting goal continuation")
 
-	s.emit(events.EventGoalContinuation, events.GoalContinuationData{Text: input})
+	// Surface only a compact marker to the UI, not the full rendered continuation
+	// prompt: the appwire projection turns EventGoalContinuation into a systemMessage,
+	// so emitting the whole ~2.5KB prompt floods the thread every iteration (/par B6).
+	// The model still receives the full prompt via the steering turn below.
+	marker := goalContinuationMarker
+	if snap, ok := s.getOrCreateGoalStore().Snapshot(); ok && snap.Objective != "" {
+		marker = "Continuing toward: " + snap.Objective
+	}
+	s.emit(events.EventGoalContinuation, events.GoalContinuationData{Text: marker})
 	s.appendTurn(schema.TurnSteering, llm.User(input))
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).

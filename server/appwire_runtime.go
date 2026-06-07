@@ -519,6 +519,10 @@ func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCa
 		// Queue mirrors Steer's "active turn" gate: only meaningful while
 		// a turn is in flight or reserved by turn/start (kata 111a).
 		Queue: s.queueFunc != nil && active && !closed,
+		// Goal is available whenever the engine is wired and the session is
+		// open. It is intentionally NOT gated on !active: a goal may be set
+		// mid-turn (it arms for the next continuation), unlike Send.
+		Goal: s.goalFunc != nil && !closed,
 	}
 }
 

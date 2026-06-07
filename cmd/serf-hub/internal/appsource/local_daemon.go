@@ -525,6 +525,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 				Shutdown:     true,
 				ChangeModel:  true,
 				Queue:        status == appwire.ThreadStatusActive,
+				Goal:         true,
 			},
 		},
 		Status: appwire.ThreadStatus{Type: status},

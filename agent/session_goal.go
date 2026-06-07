@@ -138,7 +138,7 @@ func (s *Session) callsMadeProgress(calls []llm.ToolCallData) bool {
 // the loop stopped. There is no iteration cap: a goal that keeps making progress
 // runs until it is completed or the no-progress breaker fires. With no goal set
 // it is a no-op returning ("", false).
-func (s *Session) armGoalContinuation(progressed bool) (string, bool) {
+func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string, bool) {
 	store := s.getOrCreateGoalStore()
 	snap, ok := store.Snapshot()
 	if !ok {
@@ -153,10 +153,20 @@ func (s *Session) armGoalContinuation(progressed bool) (string, bool) {
 		s.reportGoalEnded()
 		return "", false
 	}
+	if !wasContinuation {
+		// A user (or other non-continuation) turn completed while a goal is active:
+		// resume the goal, but do NOT fold the user's own turn into the no-progress
+		// streak or the iteration count — only the goal's own continuation turns
+		// count toward those (/par #4).
+		return goal.Render(snap.Objective), true
+	}
 	snap, stillActive := store.RecordContinuation(progressed, time.Now())
 	if !stillActive {
-		// Just transitioned to terminal this turn (the no-progress breaker fired).
+		// The no-progress breaker fired this turn. Persist the terminal transition:
+		// it happens after processOneInput's defer-save, so without this a blocked
+		// goal would be saved as still-active and resume on restart (/par A4).
 		s.reportGoalEnded()
+		s.maybeAutoSave()
 		return "", false
 	}
 	return goal.Render(snap.Objective), true
@@ -209,9 +219,36 @@ func (s *Session) terminateGoalOnError(ctx context.Context, err error) {
 	if _, isUserInterrupt := queuedInputDrainContext(ctx, err); isUserInterrupt {
 		return // genuine user interrupt: leave the goal active
 	}
+	if goalRootShutdown(ctx, err) {
+		// The root/daemon context is shutting down (e.g. a restart or deploy), not a
+		// genuine turn failure: leave the goal active so it resumes on the next load
+		// rather than being permanently blocked. This only matters now that A4
+		// persists terminal transitions (/par B3, surfaced once blocks are saved).
+		return
+	}
 	if store.SetTerminal(goal.StatusBlocked, err.Error(), time.Now()) {
 		s.reportGoalEnded()
+		// Persist the block: terminateGoalOnError runs after processOneInput's
+		// defer-save, so without this the goal is saved as still-active and would
+		// resume on restart (/par A4).
+		s.maybeAutoSave()
 	}
+}
+
+// goalRootShutdown reports whether err is a cancellation that came from the
+// root/daemon context being torn down (vs a genuine per-turn failure). On shutdown
+// an active goal must be left active so it survives the restart; only a real error
+// blocks it. The discriminator is the same queuedInputDrainConfig the queue uses:
+// its rootCtx being Done while err is a context.Canceled is the shutdown signature.
+func goalRootShutdown(ctx context.Context, err error) bool {
+	if !errors.Is(err, context.Canceled) {
+		return false
+	}
+	cfg, ok := ctx.Value(queuedInputDrainContextKey{}).(queuedInputDrainConfig)
+	if !ok || cfg.rootCtx == nil {
+		return false
+	}
+	return cfg.rootCtx.Err() != nil
 }
 
 // emitGoalEnded emits the terminal goal report from a snapshot. Every goal stop

@@ -458,6 +458,12 @@ func registerThreadHandlers(
 		if err != nil {
 			return appwire.GoalSetResponse{}, err
 		}
+		// Gate like every sibling thread action so goal/set is rejected uniformly
+		// on sources without the engine (e.g. codex) rather than only self-guarding
+		// inside the source after a managed launch (/par A6).
+		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "goal"); err != nil {
+			return appwire.GoalSetResponse{}, err
+		}
 		return source.GoalSet(ctx, params)
 	})
 }

@@ -15,12 +15,17 @@ const (
 	StatusBlocked  Status = "blocked"
 )
 
-// Caps. See spec §1. NoProgressLimit is the sole automatic stop (the
-// no-progress breaker); there is no iteration cap. GoalTurnMaxRounds bounds the
-// tool rounds within a single goal turn.
+// Caps. See spec §1. There is no iteration cap — the no-progress breaker is the
+// sole automatic stop, and it is two-tier: a goal that has worked then stalled
+// stops after NoProgressLimit consecutive no-progress turns; a goal that has never
+// made a mutating tool call gets more leading-investigation room
+// (NeverProgressedLimit) but is still bounded, so a read-only goal that never
+// self-declares cannot run forever. GoalTurnMaxRounds bounds the tool rounds within
+// a single goal turn.
 const (
-	NoProgressLimit   = 3
-	GoalTurnMaxRounds = 30
+	NoProgressLimit      = 3
+	NeverProgressedLimit = 6
+	GoalTurnMaxRounds    = 30
 )
 
 // Goal is the per-session objective. Guarded by Store.mu.
@@ -29,27 +34,22 @@ type Goal struct {
 	Status           Status
 	Iterations       int    // goal continuation turns taken
 	NoProgressStreak int    // consecutive goal turns with no mutating tool call
-	madeProgressOnce bool   // grace: NoProgressStreak accrues only after the first progressed turn
+	madeProgressOnce bool   // false until the first mutating turn; selects which no-progress limit applies
 	StopReason       string // set on blocked or error termination
 	reported         bool   // terminal report (EventGoalEnded) already emitted once
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
 
-// Snapshot is an immutable value copy for the pure gate decision and read fields.
+// Snapshot is an immutable value copy of the goal for read surfaces (the status
+// chip, /goal status, the appwire projection). The authoritative continue/stop
+// decision lives in RecordContinuation, not a pure predicate over this.
 type Snapshot struct {
 	Objective        string
 	Status           Status
 	Iterations       int
 	NoProgressStreak int
 	StopReason       string
-}
-
-// ShouldContinue is pure: the gate continues iff the goal is active and under
-// the no-progress limit. There is no iteration cap — long legitimate work runs
-// until it completes or the no-progress breaker fires (the sole automatic stop).
-func ShouldContinue(s Snapshot) bool {
-	return s.Status == StatusActive && s.NoProgressStreak < NoProgressLimit
 }
 
 // Store holds one goal per session behind its own mutex (mirrors agent TaskStore).
@@ -123,8 +123,9 @@ func (s *Store) TakeTerminalReport() (Snapshot, bool) {
 // and increments Iterations. Returns the post-update snapshot and whether the goal is
 // still active (i.e. whether the gate should issue another continuation).
 //
-// Grace period: NoProgressStreak only accrues after the first progressed turn, so
-// read-heavy investigation at the start of a goal is never penalized.
+// Every no-progress turn accrues NoProgressStreak; a progressed turn resets it.
+// The block threshold is two-tier (NoProgressLimit once the goal has made a mutating
+// call, the larger NeverProgressedLimit while it never has).
 func (s *Store) RecordContinuation(progressed bool, now time.Time) (Snapshot, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -140,10 +141,17 @@ func (s *Store) RecordContinuation(progressed bool, now time.Time) (Snapshot, bo
 	if progressed {
 		g.madeProgressOnce = true
 		g.NoProgressStreak = 0
-	} else if g.madeProgressOnce {
+	} else {
 		g.NoProgressStreak++
 	}
-	if g.NoProgressStreak >= NoProgressLimit {
+	// Two-tier bound: stop quickly once the goal has worked then stalled
+	// (NoProgressLimit); give a never-progressing goal more leading room
+	// (NeverProgressedLimit) but still bound it so it cannot run forever.
+	limit := NoProgressLimit
+	if !g.madeProgressOnce {
+		limit = NeverProgressedLimit
+	}
+	if g.NoProgressStreak >= limit {
 		g.Status = StatusBlocked
 		g.StopReason = "no progress"
 	}
