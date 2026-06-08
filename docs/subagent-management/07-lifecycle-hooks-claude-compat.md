@@ -471,7 +471,15 @@ Never put secrets in event diagnostics. If env/header substitution fails, report
 
 ### General parsing rules and universal JSON fields
 
-The general parsing rules (exit 0 = success / plain-text context / JSON decision; exit 2 = event-specific block with JSON ignored; other non-zero = non-blocking error) and the output JSON serf acts on (`systemMessage`, `terminalSequence`, `hookSpecificOutput.{permissionDecision, updatedInput, additionalContext}`, and top-level `decision`/`reason`) are implemented; see [Hooks → What your hook returns](../hooks.md#what-your-hook-returns). `continue`/`suppressOutput` are parsed but not yet acted on, and `stopReason` is not consumed (reserved). `hookSpecificOutput.additionalContext` is split from user-visible `systemMessage` in the data model, but its distinct delivery channel to the model is reserved ([Phase B](#phase-b--core-current-claude-events-and-output-schemas-reserved-placeholder)).
+The general parsing rules (exit 0 = success / plain-text context / JSON decision; exit 2 = event-specific block with JSON ignored; other non-zero = non-blocking error) and the output JSON serf acts on (`systemMessage`, `terminalSequence`, `hookSpecificOutput.{permissionDecision, updatedInput, additionalContext}`, and top-level `decision`/`reason`) are implemented; see [Hooks → What your hook returns](../hooks.md#what-your-hook-returns).
+
+The remaining universal fields are part of the Claude output contract but not fully honored by serf yet:
+
+- `continue` (default `true`) — Claude: a value of `false` halts further processing for the event. Serf parses it but does not act on it; a hook that returns `continue: false` still runs to completion.
+- `stopReason` — Claude: the message surfaced to the user when `continue` is `false`. Serf does not parse or consume it.
+- `suppressOutput` (default `false`) — Claude: suppress normal hook-output display. Serf parses it but does not act on it.
+
+`hookSpecificOutput.additionalContext` is split from user-visible `systemMessage` in the data model, but its distinct delivery channel to the model is reserved ([Phase B](#phase-b--core-current-claude-events-and-output-schemas-reserved-placeholder)).
 
 The event-specific output schemas below are the **reserved** part of the output contract — the structured decisions serf does not yet honor in full.
 

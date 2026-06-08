@@ -406,7 +406,7 @@ The output JSON serf reads (exit 0):
   reads them for Claude compatibility, but they have no runtime effect yet (a
   deferred item); a hook that sets `continue: false` still runs to completion.
   `stopReason` and the rest of the structured output schema are reserved (see
-  [07](subagent-management/07-lifecycle-hooks-claude-compat.md#event-specific-output-fields)).
+  [07](subagent-management/07-lifecycle-hooks-claude-compat.md#hook-output-contract)).
 - `systemMessage` and `hookSpecificOutput.additionalContext` are **both delivered
   to the model in Phase 1** — they are kept distinct in the data model, but the
   separate user-visible-only delivery channel for `systemMessage` is a deferred
