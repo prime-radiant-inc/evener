@@ -314,14 +314,33 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 			s.mu.Unlock()
 			continue
 		}
-		// Goal continuation gate (priority 3, strictly below user input): if a
+		// Notification tail-drain (priority 3, ahead of the goal gate): a pending
+		// subagent-completion notification preempts the NEXT goal continuation so
+		// notifications interleave BETWEEN continuations rather than waiting for the
+		// whole chain to finish. This is a non-draining length check; the queue is
+		// consumed inside acceptNotificationInput when the EntryNotification turn
+		// runs (an empty queue there is a no-op, but the peek guards against it).
+		if s.peekNotifications() > 0 {
+			next = ""
+			nextImages = nil
+			nextKind = EntryNotification
+			continue
+		}
+		// Goal continuation gate (priority 4, strictly below user input): if a
 		// goal is active and the engine says continue, run the next turn as a
 		// system-framed continuation. On a terminal/stop decision the gate emits
 		// the terminal report and we fall through to EventSessionEnd (idle).
-		if cont, ok := s.armGoalContinuation(progressed, ranKind == EntryContinuation); ok {
-			next = cont
-			nextKind = EntryContinuation
-			continue
+		//
+		// Skipped entirely when the turn that just ran was a notification: a
+		// notification must neither advance nor terminate the goal (passing
+		// wasContinuation=false is NOT exclusion — for an active goal that branch
+		// resumes/advances it). The goal resumes afterward via settleGoalOnIdle.
+		if ranKind != EntryNotification {
+			if cont, ok := s.armGoalContinuation(progressed, ranKind == EntryContinuation); ok {
+				next = cont
+				nextKind = EntryContinuation
+				continue
+			}
 		}
 		// Idle transition: clear the in-turn flag and kick a goal that was set in the
 		// turn-tail window (after the gate's store read) so it is not stranded until

@@ -231,6 +231,16 @@ func (s *Session) drainNotifications() []subagentNotification {
 	return drained
 }
 
+// peekNotifications reports how many notifications are pending WITHOUT draining
+// them. The drain-loop tail uses it to decide whether to run a notification turn
+// next; the actual drain stays in acceptNotificationInput so the queue is consumed
+// exactly once, inside the turn that surfaces it.
+func (s *Session) peekNotifications() int {
+	s.pendingNotifsMu.Lock()
+	defer s.pendingNotifsMu.Unlock()
+	return len(s.pendingNotifs)
+}
+
 // communicateResult records whether and how the agent delivered a result via
 // the communicate/result tool during the current ProcessInput call. It is
 // transient — reset at the top of each call, then read back by Communicated,
