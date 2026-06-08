@@ -193,6 +193,7 @@ type SubagentEndData struct {
 	AgentID   string `json:"agent_id"`
 	Status    string `json:"status"`
 	TurnsUsed int    `json:"turns_used"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 // PluginLoadedData is the payload for an EventPluginLoaded event.

@@ -32,6 +32,10 @@ const (
 	SubagentFailed SubagentStatus = "failed"
 	// SubagentCancelled indicates the sub-agent's run was cancelled.
 	SubagentCancelled SubagentStatus = "cancelled"
+	// SubagentClosing indicates the sub-agent is shutting down gracefully.
+	SubagentClosing SubagentStatus = "closing"
+	// SubagentClosed indicates the sub-agent has fully shut down.
+	SubagentClosed SubagentStatus = "closed"
 )
 
 // subagentResult is the structured output from a completed sub-agent.
@@ -547,6 +551,7 @@ func (a *subagent) run(ctx context.Context, input string) {
 			AgentID:   a.id,
 			Status:    string(status),
 			TurnsUsed: turnsUsed,
+			Reason:    string(status),
 		})
 	}
 }

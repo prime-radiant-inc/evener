@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
@@ -118,5 +120,14 @@ func TestBlockingSpawn_SnapshotHasAgentID(t *testing.T) {
 	}
 	if result.TranscriptRef == "" {
 		t.Error("transcript_ref must be set")
+	}
+}
+
+// TestSubagentEndData_HasReason verifies that SUBAGENT_END carries a reason field.
+func TestSubagentEndData_HasReason(t *testing.T) {
+	d := events.SubagentEndData{AgentID: "x", Status: "completed", TurnsUsed: 2, Reason: "completed"}
+	b, _ := json.Marshal(d)
+	if !strings.Contains(string(b), `"reason":"completed"`) {
+		t.Fatalf("missing reason: %s", b)
 	}
 }
