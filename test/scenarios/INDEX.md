@@ -189,6 +189,24 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   different project bucket; default scope misses it, the cross-bucket
   hit comes back as a `proj:<bucketHash>:<id>` ref, and that ref reads.
 
+## Subagent control plane (CLI)
+
+- `subagent-cancel-runaway.md` — `cancel_agent` aborts a child mid-run
+  (child told to `sleep 30`) returning `status:"cancelled",
+  success:false`, then `resume_agent` starts a fresh run on the
+  preserved history and completes — proving cancel keeps the child
+  resumable (the child analog of Esc, vs close which destroys).
+- `subagent-list-and-output.md` — `list_agents` enumerates a live child
+  (status/reason/task/transcript_ref); `subagent_output(view:result|
+  outline)` peeks it WITHOUT consuming (a second peek still returns the
+  result) and REDACTS a planted `sk-LIVETEST123456` to `«redacted»`.
+  Scope: redaction is subagent_output-only — the token stays verbatim in
+  the spawn result and the `list_agents` task field.
+- `subagent-close-retains.md` — `close_agent` destroys the child session
+  but RETAINS a `closed` record: default `list_agents` HIDES it
+  (`count:0`), `include_closed:true` SURFACES it with `status:"closed"`
+  and the retained `reason:"completed"`.
+
 ## Regression sweep (older surfaces)
 
 - `credentials-page-displays-sources.md` — `/credentials` shows
