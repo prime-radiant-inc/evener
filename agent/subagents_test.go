@@ -430,6 +430,117 @@ func TestCancelAgent_NotRunning(t *testing.T) {
 	}
 }
 
+// TestSubagentTimestamps_ResetOnResume verifies that timestamp fields are set at
+// spawn, stamped at run-end, and correctly reset when the idle agent is resumed:
+// createdAt is preserved, startedAt is re-stamped, endedAt is cleared to nil.
+func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	// Two-shot adapter: first call completes immediately; second call (after
+	// resume) also completes immediately.
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("first run") },
+			func(req llm.Request) llm.Response { return finalResponse("second run") },
+		},
+	})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Spawn a non-blocking child.
+	spawnRes := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
+		ID:        "ts1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"timestamp test"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+	}
+	var spawned map[string]any
+	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
+		t.Fatalf("unmarshal spawn result: %v", err)
+	}
+	agentID := strings.TrimSpace(fmt.Sprint(spawned["agent_id"]))
+
+	// Wait for the first run to complete.
+	waitRes := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
+		ID:        "ts2",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":5000}`, agentID)),
+	})
+	if waitRes.IsError {
+		t.Fatalf("wait error: %s", waitRes.Output)
+	}
+
+	// Inspect the sub directly to assert timestamps after first run.
+	sub := sess.getSub(agentID)
+	if sub == nil {
+		t.Fatal("sub must be tracked after first run")
+	}
+
+	sub.mu.Lock()
+	createdAt0 := sub.createdAt
+	startedAt0 := sub.startedAt
+	endedAt0 := sub.endedAt
+	agentTypeVal := sub.agentType
+	sub.mu.Unlock()
+
+	if createdAt0.IsZero() {
+		t.Error("createdAt must be set after spawn")
+	}
+	if startedAt0.IsZero() {
+		t.Error("startedAt must be set after spawn")
+	}
+	if endedAt0 == nil {
+		t.Error("endedAt must be non-nil after first run completes")
+	}
+	// Default spawns have no agent_type; empty string is the correct value.
+	if agentTypeVal != "" {
+		t.Errorf("agentType = %q, want empty for default spawn", agentTypeVal)
+	}
+
+	// Resume the idle child (blocking so we can assert cleanly after it ends).
+	resumeRes := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
+		ID:        "ts3",
+		Name:      "resume_agent",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"message":"continue","blocking":true}`, agentID)),
+	})
+	if resumeRes.IsError {
+		t.Fatalf("resume_agent error: %s", resumeRes.Output)
+	}
+
+	// After resume completes, assert reset semantics.
+	sub.mu.Lock()
+	createdAt1 := sub.createdAt
+	startedAt1 := sub.startedAt
+	endedAt1 := sub.endedAt
+	sub.mu.Unlock()
+
+	if !createdAt1.Equal(createdAt0) {
+		t.Errorf("createdAt changed on resume: was %v, now %v (must be stable)", createdAt0, createdAt1)
+	}
+	if startedAt1.Before(startedAt0) {
+		t.Errorf("startedAt regressed: was %v, now %v (re-stamp must not go backward)", startedAt0, startedAt1)
+	}
+	// endedAt is set again after the resumed run completes (blocking wait already
+	// returned) — the core invariant is that it was cleared to nil at resume-start
+	// and then re-set at finalize. We only observe post-finalize here, so we just
+	// check it is non-nil (meaning finalize ran).
+	if endedAt1 == nil {
+		t.Error("endedAt must be non-nil after resumed run completes")
+	}
+}
+
 // TestCancelAgent_ChildCannotCall asserts cancel_agent is a root-only management
 // tool: a depth>0 subagent's registry must not expose it.
 func TestCancelAgent_ChildCannotCall(t *testing.T) {

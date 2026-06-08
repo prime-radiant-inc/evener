@@ -76,6 +76,10 @@ type subagent struct {
 	nudgeEnabled    bool               // true for default subagents that should be nudged to communicate
 	cancel          context.CancelFunc // cancels the current run's context
 	cancelRequested bool               // set by cancel_agent so finalize maps a context.Canceled run to cancelled
+	agentType       string             // plugin agent type name; empty for default subagents
+	createdAt       time.Time          // set once at spawn; never reset on resume
+	startedAt       time.Time          // set at spawn; re-stamped at each idle-resume
+	endedAt         *time.Time         // set at run finalize; cleared to nil at idle-resume
 }
 
 func hasString(items []string, want string) bool {
@@ -326,6 +330,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		}
 	}
 
+	now := time.Now()
 	sub := &subagent{
 		id:           subSess.id,
 		sess:         subSess,
@@ -334,6 +339,9 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		status:       SubagentRunning,
 		done:         make(chan struct{}),
 		nudgeEnabled: subagentNeedsCommunicateNudge(agent),
+		agentType:    agentType,
+		createdAt:    now,
+		startedAt:    now,
 	}
 
 	// Register the child and enroll its run goroutine in sendersWG under s.mu,
@@ -401,6 +409,7 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 	s.mu.Unlock()
 
 	runCtx, runCancel := context.WithCancel(context.Background())
+	resumeTime := time.Now()
 	sub.mu.Lock()
 	sub.done = make(chan struct{})
 	sub.running = true
@@ -411,6 +420,8 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 	sub.endEmitted = false
 	sub.cancel = runCancel
 	sub.cancelRequested = false
+	sub.startedAt = resumeTime
+	sub.endedAt = nil
 	sub.mu.Unlock()
 
 	s.emit(events.EventSubagentStart, events.SubagentStartData{
@@ -579,11 +590,13 @@ func (a *subagent) run(ctx context.Context, input string) {
 	turns := a.sess.turns
 	a.sess.mu.Unlock()
 
+	finalizeTime := time.Now()
 	a.mu.Lock()
 	a.result = res
 	a.err = err
 	a.running = false
 	a.turnsUsed = turns
+	a.endedAt = &finalizeTime
 	switch {
 	case a.cancelRequested && errors.Is(err, context.Canceled):
 		a.status = SubagentCancelled
