@@ -1,16 +1,22 @@
 # Phase B (hooks): PreToolUse output schema + additionalContext/systemMessage delivery split
 
+> Revised after an adversarial review (`/par`). The routing model below is the
+> corrected one: error stderr keeps its current model-delivery (so PostToolUse
+> stderr still reaches the model), only the exit-0 `systemMessage` field and
+> exit-0 plain stdout are rerouted, and user-visible delivery uses the
+> **non-recursing** `emitDiagnosticWarning` path.
+
 ## Context
 
 Serf's lifecycle-hook Phase 1 is shipped (`docs/hooks.md`): the nine fired events,
 the Claude-compatible matcher, `command`/`prompt` handlers, the input fields, and
-the event-specific exit-code table. The compatibility roadmap (`docs/subagent-management/07-lifecycle-hooks-claude-compat.md`)
-reserves the rest in honest tiers.
+the event-specific exit-code table. The roadmap
+(`docs/subagent-management/07-lifecycle-hooks-claude-compat.md`) reserves the rest
+in honest tiers.
 
 This is the first slice of **Phase B**, scoped to *"fix the events we already
 fire"* — making the **output contract** of the nine fired events match Claude,
-without adding new events. Two reserved items, both for events serf already
-fires:
+without adding new events. Two reserved items, both for events serf already fires:
 
 1. The **`PreToolUse` preferred output schema** (`permissionDecision`,
    `permissionDecisionReason`, the deprecated top-level `approve`/`block`
@@ -18,222 +24,260 @@ fires:
    and reads the reason from the wrong key (`hso.reason` instead of
    `permissionDecisionReason`).
 2. A **distinct delivery channel for `additionalContext`** vs. `systemMessage`.
-   Today both are delivered identically — every site calls `s.Steer(...)`, which
-   injects an `llm.User(text)` turn (as if the *user* spoke). There are eight
-   literal `TODO(phase-B)` anchors in the code at these sites.
+   Today both are delivered identically — every fired event calls `s.Steer(...)`,
+   which injects a bare `llm.User(text)` turn (as if the *user* spoke). There are
+   eight literal `TODO(phase-B)` anchors at these sites.
 
-Explicitly **out of scope** (stays reserved in `07`, blocked on missing serf
-primitives): new events (`PostToolUseFailure`, `SubagentStart`, `PostCompact`,
-…), `PermissionRequest`/`PermissionDenied` (no approval flow), `ConfigChange`,
-`UserPromptExpansion`, the `if` rule language, async handlers, `http`/`mcp_tool`/`agent`
-handler types, and the `ask`/`defer` *interactive* permission decisions (no
-permission prompt exists — see below).
+Explicitly **out of scope** (stays reserved in `07`): new events, the approval
+flow (`PermissionRequest`/`PermissionDenied`), `ConfigChange`,
+`UserPromptExpansion`, the `if` rule language, async/`http`/`mcp_tool`/`agent`
+handlers, the **`ask`/`defer` interactive decisions** (no permission prompt
+exists), and **reworking the exit-code error-stderr destinations** (the existing
+per-event behavior is preserved unchanged — see below).
 
-## Grounded Claude semantics (source of truth)
+## Grounded Claude semantics
 
-From <https://code.claude.com/docs/en/hooks> (verified, not assumed):
+From <https://code.claude.com/docs/en/hooks> (verified against the live doc):
 
 - `hookSpecificOutput.permissionDecision` ∈ `allow` (proceed), `deny` (block),
   `ask` (escalate to a user permission prompt), `defer` (defer to the normal
   permission flow). The reason field is **`permissionDecisionReason`**.
-- Deprecated top-level form for `PreToolUse`: `decision: "block"` + `reason` →
-  `permissionDecision: "deny"` + `permissionDecisionReason`; `decision: "approve"`
-  → `allow`; omitting `decision` / exit 0 with no JSON → allow/defer.
 - **`additionalContext` → the model:** *"Claude Code wraps the string in a system
-  reminder and inserts it into the conversation."* (This is exactly serf's
-  `<SYSTEM-REMINDER>` + `schema.TurnSteering` idiom.)
+  reminder and inserts it into the conversation."*
 - **`systemMessage` → the user only:** *"Warning message shown to the user"* — not
   sent to the model.
 - **Plain-text stdout** (exit 0, non-JSON) is added to the **model** context only
-  for `UserPromptSubmit`, `UserPromptExpansion`, and `SessionStart`; for every
-  other event it is **not** model context.
-- Claude does not document cross-hook precedence when several hooks return
-  conflicting `permissionDecision`s.
+  for `UserPromptSubmit`, `UserPromptExpansion`, and `SessionStart`; for other
+  events it is not model context.
+- **Exit-2 stderr destination is event-specific** (Claude's exit-code table,
+  mirrored in `07` §"Exit-code semantics"): `PostToolUse`/`PostToolUseFailure`
+  add stderr to the **model**; `PreToolUse`/`Stop`/`SubagentStop` use it as the
+  block reason; `Notification`/`SessionStart`/`SessionEnd` show it to the user.
+- Claude does not document cross-hook precedence among conflicting
+  `permissionDecision`s.
+
+**Not verified in the current doc (historical / deprecated):** the deprecated
+top-level `decision: "approve"|"block"` → `permissionDecision` mapping for
+`PreToolUse`. `07` already tracks it as a *deprecated compatibility mapping*
+(`07` §"PreToolUse (preferred schema reserved)"); serf chooses to keep accepting
+it for portability. It is implemented as a fallback, not cited as current-doc
+behavior.
 
 ## Goals
 
 - `PreToolUse` honors the preferred `permissionDecision` schema for the decisions
   serf can actually make (`allow`/`deny`), reads `permissionDecisionReason`, and
-  accepts the deprecated top-level `approve`/`block` mapping.
+  accepts the deprecated top-level `approve`/`block` mapping as a fallback.
 - `additionalContext` reaches the model through a channel distinct from
-  `systemMessage`, framed as hook-provided context (`<SYSTEM-REMINDER>`), not as
-  user speech.
-- `systemMessage` becomes user-visible (not model context), via serf's existing
-  user-visible warning channel.
-- `SessionStart` / `UserPromptSubmit` bootstrap hooks (plain-text stdout as
-  context) keep working.
-- `docs/hooks.md` becomes correct and unhedged about output delivery; `07` moves
-  the now-shipped items out of "reserved (Phase B)".
+  `systemMessage`, framed as hook-provided context (`<SYSTEM-REMINDER>`).
+- The exit-0 JSON `systemMessage` field becomes user-visible (not model context).
+- `SessionStart`/`UserPromptSubmit` plain-stdout-as-context keeps working;
+  `PostToolUse` exit-2 stderr keeps reaching the model (no regression).
+- `docs/hooks.md` becomes correct about delivery; `07` moves the shipped items out
+  of "reserved (Phase B)".
 
 ## Non-goals
 
-- No new events, no approval/permission-request flow, no `if` rule language, no
-  async/`http`/`mcp_tool`/`agent` handlers.
-- No interactive permission prompt — so `ask`/`defer` are **recognized but not
-  honored** (see below). Building a permission UI is a separate, larger effort.
-- No change to the exit-code table (`exitcode.go`) — exit-2 blocking is unchanged.
-- No change to matcher semantics, handler discovery, or the input contract.
+- No new events, approval flow, `if` language, or async/`http`/`mcp_tool`/`agent`.
+- No permission prompt — `ask`/`defer` are **recognized but not honored**.
+- **No change to the exit-code table or to error-stderr (exit≠0) routing.** The
+  current per-event behavior (mostly model-delivery for non-blocking events; block
+  reason for blocking events) is preserved as-is. Fixing the residual
+  `Notification`/`SessionStart` exit-2-stderr-to-model divergence is a separate
+  item.
+- No change to matcher semantics, discovery, or the input contract.
 
 ## Design
 
 ### Part 1 — PreToolUse preferred output schema
 
-`agent/internal/hooks/hooks.go`:
+`agent/internal/hooks/hooks.go` — `parseHookOutput` + `RunPreToolUse`:
 
-- `parseHookOutput` learns the full `permissionDecision` vocabulary. Add a
-  `PermissionDecision string` field (`""|allow|deny|ask|defer`) and read
-  `permissionDecisionReason` for the reason (the current code reads `hso.reason`,
-  which is neither the Claude field nor documented — that read is replaced).
-- Deprecated top-level mapping is parsed too: top-level `decision: "approve"` →
-  treated as `allow`, `decision: "block"` → `deny`, top-level `reason` → the
-  reason. The preferred `hookSpecificOutput.permissionDecision` **wins** when both
-  are present. (Top-level `decision: "block"` still also sets the existing
-  `Blocked` field used by `Stop`/`SubagentStop`; `RunPreToolUse` is what maps it
-  to a deny, so there is no cross-event conflict.)
+- Parse the full `permissionDecision` vocabulary (`allow|deny|ask|defer`) and read
+  `permissionDecisionReason` (replacing the current `hso.reason` read, which is
+  neither the Claude field nor documented).
+- Parse the deprecated top-level form: `decision: "approve"` and `decision: "block"`
+  with top-level `reason`. The existing parser already sets `Blocked` on top-level
+  `decision == "block"` (used by `Stop`/`SubagentStop`). `RunPreToolUse` must
+  **newly** treat that `Blocked` as a deny for `PreToolUse` (today it reads only
+  `Denied`/exit-2 — the mapping does not exist yet). The preferred
+  `hookSpecificOutput.permissionDecision` wins when both are present.
 - Runtime effect in `RunPreToolUse`:
-  - `deny` (or exit 2 where `BlockOnExit2`) → `Denied`, with
-    `DenyMessage = permissionDecisionReason`. Deny precedence unchanged: **any**
-    deny wins.
-  - `allow` → recognized as an explicit non-deny. Serf has no permission gate to
-    short-circuit, so `allow` does not override another hook's `deny` (documented
-    divergence; Claude does not specify cross-hook precedence). Its
-    `permissionDecisionReason`/`additionalContext` are still delivered.
+  - `deny` (or top-level `block`, or exit 2 where `BlockOnExit2`) → `Denied`. Deny
+    precedence unchanged: **any** deny wins.
+  - **`DenyMessage`** = `permissionDecisionReason` if present, else the deprecated
+    top-level `reason`, else the exit-2 stderr (`SystemMessage`) fallback. (Keeping
+    the stderr fallback preserves `TestHookRunner_PreToolUse_ExitCode2Denies`,
+    which asserts the exit-2 stderr appears in `DenyMessage`.)
+  - `allow` → recognized as an explicit non-deny; serf has no gate to short-circuit,
+    so it does **not** override another hook's `deny` (documented divergence;
+    Claude is silent on cross-hook precedence). A non-deny `permissionDecisionReason`
+    has no Claude-defined destination and is **recognized but not surfaced**;
+    `additionalContext` (if present) still routes to the model.
   - `ask` / `defer` → **recognized but not honored**: serf has no interactive
-    permission prompt (the same missing primitive that keeps `PermissionRequest`
-    reserved). The tool **proceeds** (non-blocking), and the runner adds a
-    user-visible diagnostic naming the unsupported decision. This keeps the honest
-    line rather than fabricating a gate or silently denying.
+    permission prompt (the missing primitive that keeps `PermissionRequest`
+    reserved). The tool **proceeds** (non-blocking), and a one-time user-visible
+    diagnostic names the unsupported decision.
 
-### Part 2 + 3 — model-context vs. user-visible delivery (the split)
+### Part 2 + 3 — model-context vs. user-visible delivery
 
-The root problem is that `parsedHookOutput.SystemMessage` is overloaded — it
-carries exit-0 plain stdout, the JSON `systemMessage` field, and exit≠0 error
-stderr, which have different correct destinations. Rather than re-deriving the
-routing at each of the eight call sites (not DRY), the **Runner** owns
-routing-by-event and returns two pre-routed buckets; the session owns the two
-delivery channels.
+The root issue is that `parsedHookOutput.SystemMessage` is overloaded — it carries
+(a) exit-0 plain stdout, (b) the exit-0 JSON `systemMessage` field, and (c) exit≠0
+error stderr — which have different correct destinations. We distinguish them in
+the parser and route in the **Runner** (which knows the event), so the session
+delivery sites stay uniform.
 
-**Parser** (`parseHookOutput`): tag the origin of `SystemMessage` so the runner
-can route it. Add `SystemMessageFromStdout bool` — true when `SystemMessage` came
-from exit-0 **non-JSON** stdout (context-eligible), false when it came from the
-JSON `systemMessage` field or from an error (exit≠0 stderr). `AdditionalContext`
-is already a separate field.
+**Parser** (`parseHookOutput`): add `SystemMessageIsJSONField bool`, set **true
+only** in the JSON `systemMessage`-field branch (`hooks.go:441`). It is left
+**false** in the plain-stdout branch (`hooks.go:430`) and in the exit≠0 early
+return (`hooks.go:415-419`, where `IsError` is already set). `AdditionalContext`
+is already separate.
 
-**Result structs** (`RunResult`, `PreToolUseResult`, `StopResult`) expose two
-routed buckets instead of the current `SystemMessages` + `AdditionalContext`:
+**Result structs** (`RunResult`, `PreToolUseResult`, `StopResult`): replace the
+overloaded `SystemMessages` + `AdditionalContext` with two routed buckets:
 
-- `ModelContext []string` — destined for the model (the `additionalContext`
-  field, always; plus exit-0 plain stdout on the **context events**
-  `SessionStart` / `UserPromptSubmit`).
-- `UserMessages []string` — destined for the user (the JSON `systemMessage`
-  field; exit≠0 error stderr; and plain stdout on non-context events).
+- `ModelContext []string` — delivered to the model.
+- `UserMessages []string` — shown to the user.
 
-`Denied`/`DenyMessage` (PreToolUse) and `Blocked`/`BlockReason` (Stop) are
-unchanged in role; the reason text is also surfaced as a `UserMessage`. The
-existing `TerminalSequences` field is retained unchanged — it currently has no
-consumer at any delivery site, so it is left exactly as-is (removing it is
-unrelated cleanup, out of scope).
+`Denied`/`DenyMessage`, `Blocked`/`BlockReason`, and `TerminalSequences` are kept
+(the last gains a one-line comment noting it is parsed-but-unrouted today, since it
+has no consumer at any delivery site — renaming/removing it is out of scope).
 
-**Routing rule** (applied in the per-event aggregation, which knows the event):
+**Routing** is computed where the event is known. `collectSystemMessages` (shared
+by `RunPostToolUse`/`RunUserPromptSubmit`/`RunSessionStartFor`/`RunPreCompact`/
+`RunNotification`) gains an **`event` parameter** (all five callers updated);
+`RunPreToolUse` and `runStopEvent` already know their event. The rule, per hook
+output `o`:
 
 ```
 isContextEvent := event ∈ {SessionStart, UserPromptSubmit}
-for each hook output o:
-    ModelContext += o.AdditionalContext
-    if o.SystemMessage != "":
-        if isContextEvent && o.SystemMessageFromStdout:   // exit-0 plain stdout, context event
-            ModelContext += o.SystemMessage
-        else:                                             // JSON systemMessage field, error, or non-context stdout
-            UserMessages += o.SystemMessage
+ModelContext += o.AdditionalContext                       // JSON additionalContext → model, always
+if o.IsError:
+    // exit≠0 stderr: UNCHANGED behavior.
+    //  - blocking events (PreToolUse/Stop/SubagentStop): consumed as Deny/Block reason (not here)
+    //  - non-blocking events: → ModelContext (preserves today's model delivery, incl. PostToolUse)
+    ModelContext += o.SystemMessage          // (skipped by blocking runners, which use the reason)
+else if o.SystemMessageIsJSONField:
+    UserMessages += o.SystemMessage          // exit-0 JSON systemMessage field → user
+else if o.SystemMessage != "":               // exit-0 plain stdout
+    if isContextEvent: ModelContext += o.SystemMessage    // SessionStart/UserPromptSubmit → model
+    else:              UserMessages += o.SystemMessage    // others → user
 ```
 
-**Session delivery** — two shared helpers, used uniformly at every site (DRY),
-replacing the eight `s.Steer(...)` pairs:
+For `PreToolUse`/`Stop`/`SubagentStop` the exit-2 stderr is consumed as the
+`DenyMessage`/`BlockReason` (existing behavior), so those runners do not also push
+it to `ModelContext`.
 
-- `ModelContext` → a `<SYSTEM-REMINDER>`-wrapped `schema.TurnSteering` (serf's
-  existing model-context idiom; matches Claude's "wraps the string in a system
-  reminder"). A small helper, e.g. `s.deliverHookContext(text)`.
-- `UserMessages` → an `events.EventWarning` (`WarningData{Source, Title, Message}`),
-  which already renders in CLI (`[warning] …`), TUI, and hub/web. Claude itself
-  calls `systemMessage` a "warning message shown to the user", so this is the
-  semantically correct channel and needs **no new event plumbing**. A small
-  helper, e.g. `s.deliverHookUserMessage(source, text)`.
+**Session delivery** — two shared helpers replace the eight `TODO(phase-B)` pairs:
 
-This makes the eight sites (`PreToolUse`, `PostToolUse`, `Stop`, `SubagentStop`,
-`UserPromptSubmit`, `SessionStart`, `Notification`, `PreCompact`) identical:
-deliver `ModelContext` one way, `UserMessages` the other. `PreCompact` keeps its
-existing "append to the post-compaction steering messages" path for `ModelContext`.
+- `ModelContext` → `s.deliverHookContext(text)`: wraps the text in
+  `<SYSTEM-REMINDER>…</SYSTEM-REMINDER>` and enqueues it via `Steer` (the queue,
+  so `Stop`/`SubagentStop` context survives to the next model turn). This **adds**
+  the system-reminder envelope — today's hook `Steer` text is unwrapped; the
+  wrapper is the deliberate change toward Claude's "wraps the string in a system
+  reminder."
+- `UserMessages` → `s.deliverHookUserMessage(source, text)`: emits via
+  **`emitDiagnosticWarning`** (`WarningData{Source: "hook", Title: <event>, Message: text}`),
+  the path that renders in CLI (`[warning] <Message>`), TUI, and hub/web **without**
+  firing the Notification hook. Using plain `emit` here would re-enter the
+  Notification hook and recurse (`session_events.go` documents this invariant);
+  `emitDiagnosticWarning` is the existing non-recursing escape hatch. The hook text
+  goes in `Message` (CLI renders only `Message`); `Source`/`Title` are labels.
+
+Of the eight sites, **seven** use `Steer` today (`PreToolUse`, `PostToolUse`,
+`Stop`, `SubagentStop`, `UserPromptSubmit`, `SessionStart`, `Notification`). The
+**eighth**, `PreCompact` (`session_compaction.go`), is different: it appends to a
+`messages []string` slice consumed by `appendSteeringMessagesToHistory` (direct
+history append, mid-compaction, no live turn). There, `ModelContext` flows into
+that existing slice path; `UserMessages` use `deliverHookUserMessage`
+(`emitDiagnosticWarning` is a pure stream send — safe to call during compaction).
 
 ### Behavior changes (intended, documented)
 
-- `systemMessage` (and exit≠0 stderr) no longer reaches the model for any event;
-  it is shown to the user. (Docs already warned this was coming.)
-- Plain-text stdout from non-context events (e.g. a `PostToolUse` logger) becomes
-  user-visible instead of model context. Authors who want the model to see it use
-  `additionalContext`. Serf surfaces it to the user rather than Claude's
-  debug-log-only behavior — a deliberate, more-transparent divergence so hook
-  output never silently vanishes.
-- `SessionStart` / `UserPromptSubmit` plain-stdout-as-context is unchanged (still
-  reaches the model).
+- The exit-0 JSON `systemMessage` field, and exit-0 plain stdout from non-context
+  events, become **user-visible** (not model context). Authors who want the model
+  to see context use `additionalContext`.
+- `additionalContext` is now `<SYSTEM-REMINDER>`-wrapped model context.
+- **Unchanged:** `SessionStart`/`UserPromptSubmit` plain stdout still reaches the
+  model; exit≠0 stderr keeps its current destination (so `PostToolUse` stderr still
+  reaches the model, and blocking events still use it as the reason).
 
 ## Files touched
 
-- `agent/internal/hooks/hooks.go` — parser (`permissionDecision`, reason,
-  deprecated mapping, `SystemMessageFromStdout`), result structs (`ModelContext`/
-  `UserMessages`), `RunPreToolUse`/`runStopEvent`/`collectSystemMessages` routing,
-  `ask`/`defer` diagnostic.
-- `agent/internal/hooks/*_test.go` — parser + runner tests for the above.
-- Session delivery sites + two helpers: `agent/session_tools.go`,
+- `agent/internal/hooks/hooks.go` — parser (`permissionDecision`,
+  `permissionDecisionReason`, deprecated mapping, `SystemMessageIsJSONField`),
+  result structs (`ModelContext`/`UserMessages` + kept fields), `RunPreToolUse`
+  (allow/deny/ask/defer, `Blocked`→deny, `DenyMessage` fallback, ask/defer
+  diagnostic), `runStopEvent`, `collectSystemMessages(event, outputs)`.
+- Session delivery + two helpers: `agent/session_tools.go`,
   `agent/session_tool_round.go`, `agent/subagents.go`, `agent/session_lifecycle.go`,
   `agent/session_init.go`, `agent/session_events.go`, `agent/session_compaction.go`.
-- `agent/*_test.go` — update session-level hook tests that assert the old
-  (both-to-model) behavior to the new routed behavior. **Update, not delete.**
-- `docs/hooks.md` — output section, exit-codes notes, plain-text-stdout rules, the
-  complete example, the `additionalContext`/`systemMessage` description.
-- `docs/subagent-management/07-lifecycle-hooks-claude-compat.md` — move the
-  now-shipped items out of "reserved (Phase B)"; trim the PreToolUse reserved
-  schema and the reserved universal-fields notes to reflect what shipped; leave
-  `ask`/`defer`, `PermissionRequest`, and the rest reserved with honest reasons.
+- **Tests to update (rename + semantics; update, not delete):**
+  - `agent/internal/hooks/exitcode_test.go` — PostToolUse exit-2 asserts
+    `result.SystemMessages`; becomes `result.ModelContext` (stderr → model).
+  - `agent/internal/hooks/hooks_test.go` — `.SystemMessages`/`.AdditionalContext`
+    consumers (incl. `RunSessionStartFor`, PreToolUse) → new bucket names +
+    routing; add the new parser/runner cases.
+  - `agent/plugin_integration_live_test.go`, `agent/plugin_real_test.go` —
+    `.SystemMessages`/`.AdditionalContext` consumers (live tests; must at least
+    compile, and the PreToolUse-deny / SessionStart-context assertions move to the
+    correct bucket / `DenyMessage`).
+  - Session-level hook tests asserting old both-to-model delivery.
+- `docs/hooks.md` — "What your hook returns" (systemMessage → user; additionalContext
+  → model system-reminder; plain-stdout rule), the `allow|deny` + `ask`/`defer`
+  wording (drop "full allow|ask|defer schema reserved"; state `ask`/`defer` are
+  recognized, non-blocking, diagnosed), the exit-codes notes, the complete example
+  (PostToolUse logger stdout now user-visible).
+- `docs/subagent-management/07-lifecycle-hooks-claude-compat.md` — move the shipped
+  items out of "reserved (Phase B)"; keep `ask`/`defer`, `PermissionRequest`, and
+  the rest reserved with honest reasons.
 
 `agent/internal/hooks/exitcode.go` — **unchanged.**
 
 ## Testing (red-green TDD)
 
-- Parser: `permissionDecision` allow/deny/ask/defer parsed; `permissionDecisionReason`
-  read; deprecated top-level `approve`/`block` + `reason` mapped; preferred form
-  wins over deprecated; `SystemMessageFromStdout` set correctly for plain stdout
-  vs JSON field vs error.
-- `RunPreToolUse`: deny denies (decision and exit 2); allow does not override a
-  co-occurring deny; ask/defer proceed and emit a user diagnostic;
-  `permissionDecisionReason` becomes `DenyMessage`.
+- Parser: `permissionDecision` allow/deny/ask/defer; `permissionDecisionReason`
+  read; deprecated top-level `approve`/`block` + `reason` mapped; preferred wins;
+  `SystemMessageIsJSONField` true only for the JSON field, false for plain stdout
+  and errors.
+- `RunPreToolUse`: deny denies (decision, top-level `block`, exit 2); `DenyMessage`
+  prefers `permissionDecisionReason`, falls back to top-level `reason`, then exit-2
+  stderr; `allow` does not override a co-occurring deny; ask/defer proceed and emit
+  a user diagnostic.
 - Routing: `additionalContext` → `ModelContext`; JSON `systemMessage` → `UserMessages`;
   context-event plain stdout → `ModelContext`; non-context plain stdout →
-  `UserMessages`; error stderr → `UserMessages`.
-- Session-level: `additionalContext` produces a `<SYSTEM-REMINDER>` steering turn;
-  `systemMessage` produces an `EventWarning` and **no** model turn (non-context);
+  `UserMessages`; **exit≠0 stderr → `ModelContext` for non-blocking events (e.g.
+  PostToolUse) — explicit regression guard**; blocking-event exit-2 stderr →
+  `DenyMessage`/`BlockReason`.
+- Session-level: `additionalContext` → a `<SYSTEM-REMINDER>` steering turn;
+  JSON `systemMessage` → an `emitDiagnosticWarning` and **no** model turn and
+  **no** Notification-hook re-entry (recursion guard, mirroring `recursion_test.go`);
   `SessionStart`/`UserPromptSubmit` plain stdout still reaches the model.
-- Existing live scenario card (`test/scenarios/hooks-claude-compat-matcher.md`)
-  stays green; extend or add a card only if a behavior it covers changed.
+- Existing live scenario card stays green.
 
 ## Acceptance criteria
 
 - `PreToolUse` honors `permissionDecision: allow|deny` + `permissionDecisionReason`
   and the deprecated `approve`/`block` mapping; `ask`/`defer` are recognized,
-  non-blocking, and diagnosed.
-- `additionalContext` is delivered to the model as a system-reminder, distinct
-  from `systemMessage`.
-- `systemMessage` (and error stderr) is user-visible and not sent to the model;
-  context-event stdout still reaches the model.
+  non-blocking, diagnosed; `DenyMessage` keeps its exit-2 fallback.
+- `additionalContext` is delivered to the model as a distinct system-reminder.
+- The exit-0 JSON `systemMessage` field is user-visible (via the non-recursing
+  diagnostic-warning path) and not sent to the model; `PostToolUse` exit-2 stderr
+  still reaches the model.
 - `make test` and `make lint` pass across all four modules.
-- `docs/hooks.md` describes the shipped delivery accurately with no hedging; `07`
-  no longer lists these items as reserved.
+- `docs/hooks.md` describes delivery accurately; `07` no longer lists these items
+  as reserved.
 
 ## Risks / divergences
 
-- **Behavior change** to `systemMessage`/plain-stdout delivery — mitigated by
-  updating docs and the affected tests, and by the docs' prior warning.
-- **`ask`/`defer` proceed (fail-open)** rather than deny — deliberate: serf has no
-  gate, and `defer` means "use the normal flow" (proceed) in Claude; `ask` cannot
-  be honored without a prompt. The diagnostic makes the non-support loud.
-- **Cross-hook `allow` vs `deny`** precedence is serf-defined (deny wins); Claude
-  is silent here. Documented as a caveat.
+- **Behavior change** to `systemMessage`-field / non-context plain-stdout delivery
+  — mitigated by updating docs and the affected tests.
+- **`ask`/`defer` proceed (fail-open)** — deliberate: `defer` means "use the normal
+  flow" (proceed) in Claude, and `ask` cannot be honored without a prompt; the
+  diagnostic makes the non-support loud.
+- **Cross-hook `allow` vs `deny`** precedence is serf-defined (deny wins); Claude is
+  silent. Documented caveat.
+- **Residual divergence (out of scope):** non-blocking exit-2 stderr for
+  `Notification`/`SessionStart` still reaches the model (Claude: user only). Not
+  introduced here; preserving current behavior keeps the increment focused and
+  avoids regressing `PostToolUse`.
