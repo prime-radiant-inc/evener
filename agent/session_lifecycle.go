@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -168,6 +169,10 @@ const (
 	EntryUserInput EntryKind = iota
 	// EntryContinuation is a system-framed goal continuation turn.
 	EntryContinuation
+	// EntryNotification is a system-framed turn that drains the pending
+	// subagent-completion queue and surfaces it to the model as a steering
+	// reminder. An empty queue makes it a no-op (no model request).
+	EntryNotification
 )
 
 // ProcessInput processes a single user input (with optional image attachments)
@@ -382,6 +387,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 	if kind == EntryContinuation {
 		s.acceptContinuationInput(ctx, input)
+	} else if kind == EntryNotification {
+		if !s.acceptNotificationInput(ctx) {
+			return "", false, nil
+		}
 	} else if !s.acceptUserInput(ctx, input, images) {
 		return "", false, nil
 	}
@@ -669,4 +678,56 @@ func (s *Session) acceptContinuationInput(ctx context.Context, input string) {
 		s.appendTurn(schema.TurnSteering, steeringMessageToLLM(msg))
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	}
+}
+
+// acceptNotificationInput records a subagent-completion notification turn at the
+// start of an input turn. It mirrors acceptContinuationInput's framing — the
+// drained queue is delivered to the model as a schema.TurnSteering reminder (a
+// user-role message that expandHistory passes through without rendering a user
+// bubble), so prepareModelRequest rebuilds the request from s.history and the
+// reminder reaches the model THIS turn. Unlike acceptUserInput it skips the
+// namer, the UserPromptSubmit hooks, the MaxTurns check, and the s.turns++
+// accounting (a notification is not a user turn).
+//
+// It returns proceed=false on an empty queue, having set s.sessionEndEmitted so
+// the drain loop's idle tail suppresses the phantom SESSION_END{input_complete} —
+// an empty notification turn is a true no-op that makes no model request.
+func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
+	notifs := s.drainNotifications()
+	if len(notifs) == 0 {
+		s.mu.Lock()
+		s.sessionEndEmitted = true
+		s.mu.Unlock()
+		return false
+	}
+
+	s.repairOrphanedToolResults("before accepting notification")
+
+	reminder := formatNotificationReminder(notifs)
+	s.appendTurn(schema.TurnSteering, llm.User(reminder))
+	s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder})
+
+	// Drain any pending steering messages before the first LLM call (spec 2.5).
+	for _, msg := range s.drainSteering() {
+		s.appendTurn(schema.TurnSteering, steeringMessageToLLM(msg))
+		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
+	}
+	return true
+}
+
+// formatNotificationReminder renders one <subagent-notification ...> block per
+// drained entry, joined by newlines. Each block carries the entry's metadata and
+// a human line pointing the model at wait()/subagent_output() to read the result.
+func formatNotificationReminder(notifs []subagentNotification) string {
+	blocks := make([]string, 0, len(notifs))
+	for _, n := range notifs {
+		blocks = append(blocks, fmt.Sprintf(
+			"<subagent-notification agent_id=%q status=%q reason=%q turns_used=%q transcript_ref=%q>\n"+
+				"Subagent %s finished (%s). Read its result with wait(%q) or subagent_output(%q, view=result).\n"+
+				"</subagent-notification>",
+			n.AgentID, n.Status, n.Reason, strconv.Itoa(n.TurnsUsed), n.TranscriptRef,
+			n.AgentID, n.Status, n.AgentID, n.AgentID,
+		))
+	}
+	return strings.Join(blocks, "\n")
 }
