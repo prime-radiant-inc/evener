@@ -114,6 +114,10 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 	}
 	defer sess.Close()
 
+	// Back the notification with a real tracked, unconsumed terminal child so the
+	// suppress-at-drain filter (Task 4) treats it as deliverable. Without a backing
+	// record the manager get returns nil and the entry is dropped as GC-reclaimed.
+	trackSyntheticChild(t, sess, "01CHILD", SubagentCompleted, false, time.Now(), false)
 	sess.enqueueNotification(subagentNotification{
 		AgentID:       "01CHILD",
 		Status:        "completed",
@@ -352,6 +356,10 @@ func TestNotification_InterleavesWithActiveGoal(t *testing.T) {
 	}
 
 	sess.getOrCreateGoalStore().Set("interleave objective", time.Now())
+
+	// Back the interleaved notification with a real tracked, unconsumed terminal
+	// child so the suppress-at-drain filter (Task 4) treats it as deliverable.
+	trackSyntheticChild(t, sess, "01CHILD", SubagentCompleted, false, time.Now(), false)
 
 	// Enqueue the notification as continuation #1 ends (its round-1 step, steps[3]),
 	// so after continuation #1 folds at its gate the tail interleaves a notification
@@ -731,6 +739,10 @@ func TestNotification_GoalClearedDuringInterleaveStops(t *testing.T) {
 
 	sess.getOrCreateGoalStore().Set("clear-me objective", time.Now())
 
+	// Back the interleaved notification with a real tracked, unconsumed terminal
+	// child so the suppress-at-drain filter (Task 4) treats it as deliverable.
+	trackSyntheticChild(t, sess, "01CHILD", SubagentCompleted, false, time.Now(), false)
+
 	// Arm the notification as continuation #1 ends (steps[3]) so it interleaves ahead
 	// of the gate-time deferred continuation #2.
 	base3 := adapter.steps[3]
@@ -827,6 +839,10 @@ func TestNotification_GoalRetargetedDuringInterleaveUsesNewObjective(t *testing.
 
 	sess.getOrCreateGoalStore().Set(oldObjective, time.Now())
 
+	// Back the interleaved notification with a real tracked, unconsumed terminal
+	// child so the suppress-at-drain filter (Task 4) treats it as deliverable.
+	trackSyntheticChild(t, sess, "01CHILD", SubagentCompleted, false, time.Now(), false)
+
 	// Arm the notification as continuation #1 ends (steps[3]).
 	base3 := adapter.steps[3]
 	adapter.steps[3] = func(req llm.Request) llm.Response {
@@ -890,6 +906,204 @@ func TestNotification_GoalRetargetedDuringInterleaveUsesNewObjective(t *testing.
 	}
 	if snap.Objective != newObjective {
 		t.Fatalf("goal objective = %q after run, want %q", snap.Objective, newObjective)
+	}
+}
+
+// assertNotificationSuppressed runs a single EntryNotification turn and asserts it
+// was a true no-op: the fake adapter recorded zero model requests and no
+// SESSION_END{input_complete} was emitted. This is the observable signature of a
+// notification whose every queued entry was filtered out at drain — identical to
+// the empty-queue no-op path. The session is consumed (closed) so its events can
+// be collected.
+func assertNotificationSuppressed(t *testing.T, sess *Session, adapter *fakeAdapter, collect func() []events.SessionEvent) {
+	t.Helper()
+	// Count requests made before the notification turn (a spawned child's own run
+	// records requests on the shared adapter) so the assertion is "the notification
+	// turn added zero", not "the adapter is pristine".
+	before := len(adapter.Requests())
+	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+	if added := len(adapter.Requests()) - before; added != 0 {
+		t.Fatalf("suppressed notification turn made %d model request(s), want 0 (every entry should have been filtered at drain)", added)
+	}
+	sess.Close()
+	for _, ev := range collect() {
+		if ev.Kind != events.EventSessionEnd {
+			continue
+		}
+		if d, ok := ev.Data.(events.SessionEndData); ok && d.Reason == "input_complete" {
+			t.Fatalf("suppressed notification turn emitted a phantom SESSION_END{input_complete}; want none")
+		}
+	}
+}
+
+// TestNotification_SuppressedWhenConsumed proves a notification armed at terminal
+// run end is DROPPED at drain when the child's result was already consumed by a
+// blocking wait before the notification turn runs. spawnCompletedChild spawns a
+// non-blocking child that completes (arming one notification) and then wait()s on
+// it (setting resultConsumed=true). The subsequent notification turn must find
+// nothing to render and make NO model request.
+//
+// Load-bearing: the filter keys on resultConsumed. WITHOUT it, the consumed
+// entry would still render a <subagent-notification> reminder and drive a real
+// model request — so the len(Requests())==0 assertion is what proves the
+// consumed entry was suppressed rather than delivered.
+func TestNotification_SuppressedWhenConsumed(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	// One step for the child's single run. The notification turn must make NO
+	// further request (so no extra step is needed); if the filter regressed and
+	// the turn DID call the model, the adapter falls back to its default "done"
+	// response and the len==0 assertion below fails loudly.
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("child done") },
+		},
+	}
+	c.Register(adapter)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	collect := drainEvents(sess)
+
+	// Spawn + wait: arms a notification AND consumes the result (resultConsumed=true).
+	childID := spawnCompletedChild(t, sess, "sc", "do the thing")
+
+	// Sanity: the entry was armed and its backing record is consumed, so the filter
+	// must drop it. (We do not drain here — that is the turn's job below.)
+	if got := sess.peekNotifications(); got != 1 {
+		t.Fatalf("peekNotifications after spawn+wait = %d, want 1 (the terminal run armed one)", got)
+	}
+	if sub := sess.subagents.get(childID); sub == nil {
+		t.Fatalf("child %s not tracked", childID)
+	} else {
+		sub.mu.Lock()
+		consumed := sub.resultConsumed
+		sub.mu.Unlock()
+		if !consumed {
+			t.Fatalf("child %s resultConsumed = false after wait, want true", childID)
+		}
+	}
+
+	assertNotificationSuppressed(t, sess, adapter, collect)
+}
+
+// TestNotification_SuppressedWhenClosedOrAbsent proves a notification is dropped
+// at drain when, by delivery time, the child's record is closed (close_agent ran,
+// record retained as closed) or absent (GC-reclaimed → manager get returns nil).
+// Both are modelled with synthetic tracked records / an untracked agent_id so the
+// drain filter is exercised deterministically without spawn-goroutine timing.
+func TestNotification_SuppressedWhenClosedOrAbsent(t *testing.T) {
+	t.Run("closed", func(t *testing.T) {
+		dir := t.TempDir()
+		c := llm.NewClient()
+		adapter := &fakeAdapter{
+			name: "openai",
+			steps: []func(req llm.Request) llm.Response{
+				func(req llm.Request) llm.Response { return finalResponse("should not be called") },
+			},
+		}
+		c.Register(adapter)
+		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			MaxSubagentDepth: 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		collect := drainEvents(sess)
+
+		// A retained closed record: close_agent leaves status=closed, record tracked.
+		trackSyntheticChild(t, sess, "01CLOSED", SubagentClosed, false, time.Now(), false)
+		sess.enqueueNotification(subagentNotification{
+			AgentID:       "01CLOSED",
+			Status:        "completed",
+			Reason:        "completed",
+			TurnsUsed:     3,
+			TranscriptRef: "local:01CLOSED",
+		})
+
+		assertNotificationSuppressed(t, sess, adapter, collect)
+	})
+
+	t.Run("absent", func(t *testing.T) {
+		dir := t.TempDir()
+		c := llm.NewClient()
+		adapter := &fakeAdapter{
+			name: "openai",
+			steps: []func(req llm.Request) llm.Response{
+				func(req llm.Request) llm.Response { return finalResponse("should not be called") },
+			},
+		}
+		c.Register(adapter)
+		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			MaxSubagentDepth: 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		collect := drainEvents(sess)
+
+		// No tracking: the manager get returns nil for this agent_id (GC-reclaimed).
+		sess.enqueueNotification(subagentNotification{
+			AgentID:       "01GONE",
+			Status:        "completed",
+			Reason:        "completed",
+			TurnsUsed:     5,
+			TranscriptRef: "local:01GONE",
+		})
+
+		assertNotificationSuppressed(t, sess, adapter, collect)
+	})
+}
+
+// TestNotification_DeliveredWhenUnconsumedTerminal is the POSITIVE control: the
+// filter must NOT over-suppress. A still-tracked, terminal (completed),
+// UNconsumed child's notification IS delivered — the notification turn drives a
+// real model request carrying the <subagent-notification> reminder. This proves
+// the drain filter keeps survivors rather than dropping everything.
+func TestNotification_DeliveredWhenUnconsumedTerminal(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("ack") },
+		},
+	}
+	c.Register(adapter)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	// A terminal, unconsumed, tracked child: the filter must KEEP its notification.
+	trackSyntheticChild(t, sess, "01LIVE", SubagentCompleted, false, time.Now(), false)
+	sess.enqueueNotification(subagentNotification{
+		AgentID:       "01LIVE",
+		Status:        "completed",
+		Reason:        "completed",
+		TurnsUsed:     2,
+		TranscriptRef: "local:01LIVE",
+	})
+
+	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+
+	reqs := adapter.Requests()
+	if len(reqs) == 0 {
+		t.Fatal("unconsumed-terminal notification made no model request; the filter over-suppressed a deliverable entry")
+	}
+	if !requestsContain(reqs, "<subagent-notification", "01LIVE") {
+		t.Fatal("model request history did not carry the <subagent-notification ...> block for the unconsumed terminal child")
 	}
 }
 

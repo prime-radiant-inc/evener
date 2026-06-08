@@ -755,7 +755,7 @@ func (s *Session) acceptContinuationInput(ctx context.Context, input string) {
 // the drain loop's idle tail suppresses the phantom SESSION_END{input_complete} —
 // an empty notification turn is a true no-op that makes no model request.
 func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
-	notifs := s.drainNotifications()
+	notifs := s.filterDeliverableNotifications(s.drainNotifications())
 	if len(notifs) == 0 {
 		s.mu.Lock()
 		s.sessionEndEmitted = true
@@ -775,6 +775,39 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	}
 	return true
+}
+
+// filterDeliverableNotifications drops a drained notification that should no
+// longer wake the model at delivery time: the child's record is absent (the
+// manager get returns nil — GC-reclaimed), the record is closing/closed, or its
+// result was already consumed by a blocking wait. The notification is armed
+// unconditionally at terminal run end (so arming never races a concurrent
+// wait/close); suppression happens here, at the moment the parent's turn would
+// surface it. A notification turn is a wake, not a consume — surviving entries
+// are NOT marked consumed — so suppression keys only on what wait/close already
+// did.
+//
+// Lock discipline: the queue is already drained (under pendingNotifsMu) before
+// this runs. For each entry it takes the manager mutex once (the single get) and
+// then reads status/resultConsumed under sub.mu briefly, per-entry. It never
+// holds pendingNotifsMu or the manager mutex while reading sub.mu, and never
+// nests sub.mu inside another sub's lock.
+func (s *Session) filterDeliverableNotifications(raw []subagentNotification) []subagentNotification {
+	survivors := make([]subagentNotification, 0, len(raw))
+	for _, n := range raw {
+		sub := s.subagents.get(n.AgentID)
+		if sub == nil {
+			continue
+		}
+		sub.mu.Lock()
+		drop := sub.status == SubagentClosing || sub.status == SubagentClosed || sub.resultConsumed
+		sub.mu.Unlock()
+		if drop {
+			continue
+		}
+		survivors = append(survivors, n)
+	}
+	return survivors
 }
 
 // formatNotificationReminder renders one <subagent-notification ...> block per
