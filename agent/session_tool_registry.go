@@ -218,7 +218,7 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	if err := registerShellTools(reg, deps); err != nil {
 		return err
 	}
-	registerSubagentTools(reg, s)
+	registerSubagentTools(reg, s, deps)
 	registerTaskTools(reg, deps)
 	registerGoalTools(reg, deps)
 	registerWebTools(reg, deps)

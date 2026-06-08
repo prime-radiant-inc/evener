@@ -57,7 +57,7 @@ Do NOT try to spawn further subagents.
 
 Your job is to complete the task and report your findings.`
 
-var rootOnlyAgentManagementTools = []string{"spawn_agent", "resume_agent", "wait", "close_agent", "cancel_agent", "list_agents"}
+var rootOnlyAgentManagementTools = []string{"spawn_agent", "resume_agent", "wait", "close_agent", "cancel_agent", "list_agents", "subagent_output"}
 
 type subagent struct {
 	id   string

@@ -11,7 +11,7 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-func registerSubagentTools(reg *tool.Registry, s *Session) {
+func registerSubagentTools(reg *tool.Registry, s *Session, deps *toolDeps) {
 	// Subagent tools (best-effort; synchronous completion for v1).
 	_ = reg.Register(tool.RegisteredTool{
 		Tool: llm.Tool{Definition: tool.DefSpawnAgent()},
@@ -168,6 +168,16 @@ func registerSubagentTools(reg *tool.Registry, s *Session) {
 				includeClosed = v
 			}
 			return s.listAgents(status, includeClosed)
+		},
+	})
+	// subagent_output is the root-only, non-consuming diagnostic. It closes over
+	// both s (for getSub on view=result) and deps (for the transcript read path).
+	_ = reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: tool.DefSubagentOutput(), ReadOnly: true},
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = ctx
+			_ = env
+			return execSubagentOutput(s, deps, args)
 		},
 	})
 }
