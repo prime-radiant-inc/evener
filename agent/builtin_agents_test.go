@@ -738,6 +738,44 @@ func TestWaitToolDescription_SuggestsFiveMinutes(t *testing.T) {
 	}
 }
 
+// TestToolDescriptions_TeachJobControlModel guards the model-facing job-control
+// contract: the rewritten descriptions must teach spawn-and-be-notified, advertise
+// transcript_ref (not a `transcript` field), say close retains a closed record, and
+// must not reintroduce the old poll/block or blocking-recommended anti-patterns.
+func TestToolDescriptions_TeachJobControlModel(t *testing.T) {
+	wait := tool.DefWait().Description
+	if !strings.Contains(wait, "transcript_ref") {
+		t.Error("wait must advertise transcript_ref")
+	}
+	if strings.Contains(wait, "`transcript`") || strings.Contains(wait, " transcript field") {
+		t.Error("stale transcript-field wording in wait")
+	}
+
+	closeD := tool.DefCloseAgent().Description
+	if strings.Contains(closeD, "removes the sub-agent") {
+		t.Error("close now retains a closed record, not 'removes the sub-agent'")
+	}
+
+	spawn := tool.DefSpawnAgent()
+	if strings.Contains(spawn.Description, "call wait() on each agent_id") {
+		t.Error("spawn must not teach the poll/block anti-pattern")
+	}
+	if !strings.Contains(strings.ToLower(spawn.Description), "notif") {
+		t.Error("spawn must teach the auto-notification pattern")
+	}
+	// The poll/block anti-pattern also must not survive in the blocking param doc.
+	if blocking, ok := spawn.Parameters["properties"].(map[string]any)["blocking"].(map[string]any); ok {
+		if strings.Contains(fmt.Sprint(blocking["description"]), "call wait() on each agent_id") {
+			t.Error("spawn blocking param must not teach the poll/block anti-pattern")
+		}
+	}
+
+	resume := tool.DefSendInput().Description
+	if strings.Contains(resume, "(recommended)") {
+		t.Error("resume must not recommend blocking=true")
+	}
+}
+
 // --- spawn_agent reasoning_effort parameter ---
 
 func TestSpawnAgent_ReasoningEffortParameter(t *testing.T) {
