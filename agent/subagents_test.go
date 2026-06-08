@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -120,6 +121,91 @@ func TestBlockingSpawn_SnapshotHasAgentID(t *testing.T) {
 	}
 	if result.TranscriptRef == "" {
 		t.Error("transcript_ref must be set")
+	}
+}
+
+// TestSpawn_StartEmittedBeforeRunGoroutine asserts that SUBAGENT_START for the
+// spawned agent_id appears in the event stream, and that it precedes
+// SUBAGENT_END in program order (no longer racing the run goroutine).
+func TestSpawn_StartEmittedBeforeRunGoroutine(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("child done") },
+		},
+	})
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Collect events into a slice; closed after sess.Close().
+	var evs []events.SessionEvent
+	evDone := make(chan struct{})
+	go func() {
+		defer close(evDone)
+		for ev := range sess.Events() {
+			evs = append(evs, ev)
+		}
+	}()
+
+	// Spawn a non-blocking child that completes immediately.
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"do work"}`),
+	})
+	if spawnRes.IsError {
+		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+	}
+	var spawned map[string]any
+	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
+		t.Fatalf("unmarshal spawn result: %v", err)
+	}
+	agentID := strings.TrimSpace(fmt.Sprint(spawned["agent_id"]))
+
+	// Wait for the child to finish so SUBAGENT_END is guaranteed to have been emitted.
+	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c2",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":5000}`, agentID)),
+	})
+	if waitRes.IsError {
+		t.Fatalf("wait error: %s", waitRes.Output)
+	}
+
+	sess.Close()
+	<-evDone
+
+	// Locate the positions of SUBAGENT_START and SUBAGENT_END for our agent_id.
+	startIdx := -1
+	endIdx := -1
+	for i, ev := range evs {
+		switch d := ev.Data.(type) {
+		case events.SubagentStartData:
+			if d.AgentID == agentID {
+				startIdx = i
+			}
+		case events.SubagentEndData:
+			if d.AgentID == agentID {
+				endIdx = i
+			}
+		}
+	}
+
+	if startIdx == -1 {
+		t.Fatalf("SUBAGENT_START not found for agent_id %q in events: %v", agentID, evs)
+	}
+	if endIdx == -1 {
+		t.Fatalf("SUBAGENT_END not found for agent_id %q in events: %v", agentID, evs)
+	}
+	if startIdx >= endIdx {
+		t.Fatalf("SUBAGENT_START (idx=%d) must precede SUBAGENT_END (idx=%d)", startIdx, endIdx)
 	}
 }
 

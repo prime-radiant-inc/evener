@@ -347,6 +347,11 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
 
+	s.emit(events.EventSubagentStart, events.SubagentStartData{
+		AgentID: sub.id,
+		Task:    task,
+	})
+
 	// Subagent execution must outlive the parent tool-call context.
 	// The parent may stop waiting, finish its input, or time out while the
 	// child keeps running. Child cancellation is handled by subSess.Close(),
@@ -355,11 +360,6 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		defer s.sendersWG.Done()
 		sub.run(context.Background(), task)
 	}()
-
-	s.emit(events.EventSubagentStart, events.SubagentStartData{
-		AgentID: sub.id,
-		Task:    task,
-	})
 
 	b, _ := json.Marshal(map[string]any{"agent_id": sub.id, "status": string(SubagentRunning)})
 	return string(b), nil
