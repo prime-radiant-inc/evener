@@ -231,6 +231,21 @@ func parsePluginHooksDiag(data []byte, pluginDir, pluginName string) (hooks map[
 	return parsePluginHooksDiagWithSource(data, pluginDir, pluginName, "")
 }
 
+// dropHookMetaKeys removes non-event meta keys from a decoded events map so they
+// are not misclassified as unknown event names: "description" plus any key with a
+// "$" prefix (e.g. "$schema", "$comment"). Recognized Claude/serf event names are
+// always kept, even in the unlikely event one were "$"-prefixed.
+func dropHookMetaKeys(eventsRaw map[string]json.RawMessage) {
+	for k := range eventsRaw {
+		if recognizedClaudeEvents[HookEvent(k)] {
+			continue
+		}
+		if k == "description" || strings.HasPrefix(k, "$") {
+			delete(eventsRaw, k)
+		}
+	}
+}
+
 // parsePluginHooksDiagWithSource is the full implementation used internally and
 // by discoverPluginHooks (which knows the resolved file path).
 func parsePluginHooksDiagWithSource(data []byte, pluginDir, pluginName, sourcePath string) (hooks map[HookEvent][]RegisteredHook, unsupported map[HookEvent]bool, unknown map[string]bool, err error) {
@@ -252,18 +267,13 @@ func parsePluginHooksDiagWithSource(data []byte, pluginDir, pluginName, sourcePa
 		if err = json.Unmarshal(data, &eventsRaw); err != nil {
 			return nil, nil, nil, fmt.Errorf("parsing hooks direct format: %w", err)
 		}
-		// In direct format, drop meta keys that are not event names so they are not
-		// misclassified as unknown events: "description" plus any "$"-prefixed key
-		// (e.g. the common "$schema"). Recognized event names are never dropped.
-		for k := range eventsRaw {
-			if recognizedClaudeEvents[HookEvent(k)] {
-				continue
-			}
-			if k == "description" || strings.HasPrefix(k, "$") {
-				delete(eventsRaw, k)
-			}
-		}
 	}
+	// Drop meta keys that are not event names so they are not misclassified as
+	// unknown events: "description" plus any "$"-prefixed key (e.g. the common
+	// "$schema"). This applies to both shapes — a "$schema" may sit at the top
+	// level (direct format) OR inside the wrapper's hooks object — so the skip runs
+	// after both branches populate eventsRaw. Recognized event names are never dropped.
+	dropHookMetaKeys(eventsRaw)
 
 	hooks = make(map[HookEvent][]RegisteredHook)
 	unsupported = make(map[HookEvent]bool)

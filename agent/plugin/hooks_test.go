@@ -404,6 +404,35 @@ func TestParsePluginHooks_DirectFormatIgnoresSchemaMeta(t *testing.T) {
 	}
 }
 
+// TestParsePluginHooks_WrapperFormatIgnoresSchemaMeta verifies that a wrapper-format
+// file with a "$schema" (and other meta) key INSIDE the hooks object is not
+// classified as an unknown event, while real events still parse. The meta-key skip
+// must run over the wrapper branch's event map too, not only the direct-format
+// branch (Fix 2).
+func TestParsePluginHooks_WrapperFormatIgnoresSchemaMeta(t *testing.T) {
+	data := []byte(`{
+		"hooks": {
+			"$schema": "https://example.com/hooks.schema.json",
+			"$comment": "ignore me",
+			"description": "my hooks",
+			"PreToolUse": [{"matcher":"*","hooks":[{"type":"command","command":"x"}]}]
+		}
+	}`)
+	hooks, unsupported, unknown, err := parsePluginHooksDiag(data, "/p", "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unknown) != 0 {
+		t.Fatalf("meta keys inside the hooks wrapper must not be unknown events; got unknown=%v", unknown)
+	}
+	if len(unsupported) != 0 {
+		t.Fatalf("unexpected unsupported=%v", unsupported)
+	}
+	if len(hooks[HookPreToolUse]) != 1 {
+		t.Fatalf("real event did not parse: %v", hooks)
+	}
+}
+
 func TestParsePluginHooks_RecognizedButUnsupportedEvent(t *testing.T) {
 	data := []byte(`{"PostToolUseFailure":[{"matcher":"*","hooks":[{"type":"command","command":"x"}]}],
 		"TotallyBogusEvent":[{"hooks":[{"type":"command","command":"y"}]}]}`)
