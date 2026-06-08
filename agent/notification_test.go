@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -265,45 +266,48 @@ func TestNotificationTurn_EmptyQueueIsNoOp(t *testing.T) {
 }
 
 // TestNotification_InterleavesWithActiveGoal proves that a pending notification
-// seeded mid-chain preempts the NEXT goal continuation: it runs as an
-// EntryNotification turn ahead of the next continuation, the reminder reaches the
-// model, the notification turn does NOT perturb the goal's iteration/no-progress
-// accounting, and the goal stays active and resumes (to completion) via the normal
-// settleGoalOnIdle kick path.
+// seeded mid-chain interleaves between goal continuations: it runs as an
+// EntryNotification turn AFTER the just-finished continuation folds at its own gate
+// and BEFORE the next (deferred) continuation runs inline, the reminder reaches the
+// model, and the notification turn does NOT perturb the goal's iteration/no-progress
+// accounting. With the fold-then-interleave-then-continue-inline fix the whole goal
+// completes within the single ProcessInput call (continuations run inline, no
+// kickFunc re-feed needed).
 //
 // It drives the real ProcessInputKind drain loop with a fake model scripted so:
 //   - turn 1 (user "begin"): mutate (progress) then end. The gate (ranKind != a
-//     continuation) resumes the goal and arms continuation #1 without folding the
-//     user turn into the streak — Iterations stays 0.
+//     continuation) resumes the goal and DEFERS continuation #1 without folding the
+//     user turn into the streak — Iterations stays 0. No notification pending yet,
+//     so continuation #1 runs inline.
 //   - turn 2 (continuation #1): mutate (progress) then end, AND enqueue a
-//     notification during the turn. At the tail the notification peek runs BEFORE
-//     the goal gate, so it preempts: the next iteration is an EntryNotification
-//     turn and this continuation's own fold is deferred to the resume (Iterations
-//     still 0).
+//     notification during the turn. At the tail the gate folds continuation #1
+//     FIRST (Iterations -> 1) and defers continuation #2; THEN the notification peek
+//     interleaves an EntryNotification turn ahead of continuation #2.
 //   - turn 3 (notification): drains the queue, frames the <subagent-notification>
-//     reminder, drives a real model request. Its step snapshots the goal counters;
-//     because ranKind==EntryNotification short-circuits the gate, no
-//     RecordContinuation runs and the counters are unchanged across it.
-//     settleGoalOnIdle then kicks the still-active goal (recorded here).
-//
-// Finally the recorded kick prompt is re-fed as a fresh
-// ProcessInputKind(EntryContinuation) — exactly as production's serve loop does —
-// which advances the goal (Iterations bumps) and completes it. This proves the
-// notification left the goal fully resumable.
+//     reminder, drives a real model request. Its step snapshots the goal counters
+//     (Iterations already 1, folded at continuation #1's own gate); because
+//     ranKind==EntryNotification short-circuits the gate, no RecordContinuation runs
+//     and the counters are unchanged across it. The deferred continuation #2 then
+//     runs inline.
+//   - continuation #2: mutate (progress) then end (Iterations -> 2), defer
+//     continuation #3, run it inline.
+//   - continuation #3: declare the goal complete; the gate sees the terminal status
+//     and stops, emitting EventGoalEnded{complete}.
 //
 // Load-bearing assertions: a model request carries the <subagent-notification>
 // block (the reminder interleaved into the chain); the goal's Iterations and
 // NoProgressStreak are identical at the start of the notification turn and at the
-// end of the call (the notification neither advanced nor terminated the goal);
-// exactly ONE EventGoalContinuation fired before the notification (continuation #2
-// was preempted); the goal is still active afterwards and the kick fired; the
-// re-fed continuation advances and completes the goal.
+// start of the deferred continuation that runs right after it (the notification
+// turn itself neither advanced nor terminated the goal); the goal completes once
+// (EventGoalEnded{complete}) within the single call.
 func TestNotification_InterleavesWithActiveGoal(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
 	var snapInNotif goalCounters
 	var snapCaptured bool
+	var snapAfterNotifTurn goalCounters
+	var snapAfterCaptured bool
 
 	adapter := &fakeAdapter{
 		name: "openai",
@@ -312,25 +316,25 @@ func TestNotification_InterleavesWithActiveGoal(t *testing.T) {
 			func(req llm.Request) llm.Response {
 				return toolCallResponse(writeFileCall("u1", "u.txt", "user work"))
 			},
-			// Turn 1, round 1: end. Gate resumes the goal, arms continuation #1.
+			// Turn 1, round 1: end. Gate resumes the goal, defers continuation #1.
 			func(req llm.Request) llm.Response { return finalResponse("user turn done") },
 			// Turn 2 (continuation #1), round 0: mutate (progress).
 			func(req llm.Request) llm.Response {
 				return toolCallResponse(writeFileCall("c1", "c.txt", "cont work"))
 			},
-			// Turn 2, round 1: end. (Wrapped below to enqueue a notification first,
-			// so the tail-drain peek preempts the next continuation.)
+			// Turn 2, round 1: end. (Wrapped below to enqueue a notification first, so
+			// the tail interleaves a notification turn after continuation #1's fold.)
 			func(req llm.Request) llm.Response { return finalResponse("cont 1 done") },
 			// Turn 3 (notification), round 0: the reminder reaches the model here.
 			// (Wrapped below to snapshot the goal counters.) End the turn.
 			func(req llm.Request) llm.Response { return finalResponse("ack reminder") },
-			// Resumed continuation #2, round 0: mutate (progress) — this is the
-			// deferred fold finally being recorded when the goal resumes.
+			// Deferred continuation #2, round 0: mutate (progress). (Wrapped below to
+			// snapshot the counters right after the notification turn ended.)
 			func(req llm.Request) llm.Response {
 				return toolCallResponse(writeFileCall("c2", "c2.txt", "resumed work"))
 			},
-			// Resumed continuation #2, round 1: end. The gate folds this turn
-			// (Iterations bumps) and arms continuation #3 within the same call.
+			// Continuation #2, round 1: end. The gate folds this turn (Iterations
+			// bumps) and defers continuation #3 within the same call.
 			func(req llm.Request) llm.Response { return finalResponse("resumed work done") },
 			// Continuation #3, round 0: declare the goal complete.
 			func(req llm.Request) llm.Response {
@@ -347,21 +351,11 @@ func TestNotification_InterleavesWithActiveGoal(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 
-	// Record the settleGoalOnIdle kick so the resume path is observable. Production
-	// re-feeds this prompt as a fresh ProcessInputKind(EntryContinuation); the test
-	// drives that explicitly below.
-	var kickMu sync.Mutex
-	var kicked []string
-	sess.SetKickFunc(func(prompt string) {
-		kickMu.Lock()
-		kicked = append(kicked, prompt)
-		kickMu.Unlock()
-	})
-
 	sess.getOrCreateGoalStore().Set("interleave objective", time.Now())
 
 	// Enqueue the notification as continuation #1 ends (its round-1 step, steps[3]),
-	// so the tail-drain peek sees a non-empty queue and preempts continuation #2.
+	// so after continuation #1 folds at its gate the tail interleaves a notification
+	// turn ahead of the deferred continuation #2.
 	base3 := adapter.steps[3]
 	adapter.steps[3] = func(req llm.Request) llm.Response {
 		sess.enqueueNotification(subagentNotification{
@@ -373,17 +367,25 @@ func TestNotification_InterleavesWithActiveGoal(t *testing.T) {
 		})
 		return base3(req)
 	}
-	// Snapshot the goal counters from inside the notification turn (steps[4]).
+	// Snapshot the goal counters from inside the notification turn (steps[4]):
+	// continuation #1 has already folded at its own gate, so Iterations == 1 here.
 	base4 := adapter.steps[4]
 	adapter.steps[4] = func(req llm.Request) llm.Response {
 		snapInNotif = readGoalCounters(t, sess)
 		snapCaptured = true
 		return base4(req)
 	}
+	// Snapshot the counters at the START of the deferred continuation #2 (steps[5]),
+	// i.e. right after the notification turn ended but before continuation #2 folds.
+	// The notification turn must have folded nothing, so this equals snapInNotif.
+	base5 := adapter.steps[5]
+	adapter.steps[5] = func(req llm.Request) llm.Response {
+		snapAfterNotifTurn = readGoalCounters(t, sess)
+		snapAfterCaptured = true
+		return base5(req)
+	}
 
-	// A live event tap that can be snapshotted mid-run (the post-close drainEvents
-	// collector blocks until Close, which is too late — the goal must resume first).
-	tap := newEventTap(sess)
+	collect := drainEvents(sess)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -397,95 +399,276 @@ func TestNotification_InterleavesWithActiveGoal(t *testing.T) {
 		t.Fatal("model never saw the <subagent-notification ...> block; the notification did not interleave into the chain")
 	}
 	if !snapCaptured {
-		t.Fatal("the notification turn's adapter step never ran; an EntryNotification turn did not run ahead of the next continuation")
+		t.Fatal("the notification turn's adapter step never ran; an EntryNotification turn did not interleave between continuations")
+	}
+	if !snapAfterCaptured {
+		t.Fatal("the deferred continuation #2 step never ran; the goal did not resume inline after the notification turn")
 	}
 
-	// The notification turn must NOT perturb goal accounting: the snapshot taken
-	// inside the notification turn must equal the snapshot at the end of the call.
-	// If the gate were (mis-)armed for EntryNotification, RecordContinuation would
-	// bump Iterations or NoProgressStreak here.
-	snapAfterNotif := readGoalCounters(t, sess)
-	if snapInNotif != snapAfterNotif {
-		t.Fatalf("goal accounting changed across the notification turn: during=%+v after=%+v (the notification must not advance the goal)", snapInNotif, snapAfterNotif)
+	// Fold-at-own-gate: continuation #1 folded BEFORE the notification turn, so
+	// Iterations is already 1 during the notification turn.
+	if snapInNotif.iterations != 1 {
+		t.Fatalf("Iterations during the notification turn = %d, want 1 (continuation #1 folds at its own gate before the notification interleaves)", snapInNotif.iterations)
 	}
 
-	// Exactly one EventGoalContinuation fired before the notification preempted the
-	// chain: continuation #1 started; continuation #2 was preempted by the
-	// notification. Snapshotted live (the session is still open; the goal resumes).
-	if got := countGoalContinuations(tap.snapshot()); got != 1 {
-		t.Fatalf("count(EventGoalContinuation) before resume = %d, want 1 (the notification preempted the next continuation)", got)
-	}
-
-	// The goal survived the notification and is resumable: still active, and the
-	// settleGoalOnIdle kick fired with a continuation prompt.
-	if snap, ok := sess.getOrCreateGoalStore().Snapshot(); !ok || snap.Status != goal.StatusActive {
-		t.Fatalf("goal status after notification = %v (ok=%v), want active (the notification must not terminate the goal)", snapStatus(snap, ok), ok)
-	}
-	kickMu.Lock()
-	kickPrompt, kickedOK := "", len(kicked) > 0
-	if kickedOK {
-		kickPrompt = kicked[len(kicked)-1]
-	}
-	kickMu.Unlock()
-	if !kickedOK {
-		t.Fatal("settleGoalOnIdle did not kick the active goal after the notification turn; the goal would be stranded rather than resumed")
-	}
-
-	// Re-feed the kicked continuation exactly as production's serve loop does. This
-	// resumes the goal: it advances (Iterations bumps off the deferred fold) and
-	// completes via update_goal.
-	if _, err := sess.ProcessInputKind(ctx, kickPrompt, nil, EntryContinuation); err != nil {
-		t.Fatalf("resumed continuation ProcessInputKind(EntryContinuation): %v", err)
-	}
-	if got := readGoalCounters(t, sess).iterations; got <= snapAfterNotif.iterations {
-		t.Fatalf("resumed continuation did not advance the goal: Iterations %d -> %d (want an increase)", snapAfterNotif.iterations, got)
+	// The notification turn itself must NOT perturb goal accounting: the snapshot
+	// taken inside the notification turn must equal the snapshot at the start of the
+	// deferred continuation that runs right after it. If the gate were (mis-)armed
+	// for EntryNotification, RecordContinuation would bump Iterations/streak here.
+	if snapInNotif != snapAfterNotifTurn {
+		t.Fatalf("goal accounting changed across the notification turn: during=%+v after=%+v (the notification turn must not advance the goal)", snapInNotif, snapAfterNotifTurn)
 	}
 
 	sess.Close()
-	allEvs := tap.collect()
+	allEvs := collect()
+
+	// All three continuations ran (inline): the user turn deferred #1, #1 folded and
+	// deferred #2, #2 folded and deferred #3, #3 completed the goal.
+	if got := countGoalContinuations(allEvs); got != 3 {
+		t.Fatalf("count(EventGoalContinuation) = %d, want 3 (every continuation runs inline within the single call)", got)
+	}
 	if got := countGoalEnded(allEvs); got != 1 {
-		t.Fatalf("count(EventGoalEnded) over the whole run = %d, want 1 (the goal completes once, after resuming)", got)
+		t.Fatalf("count(EventGoalEnded) over the whole run = %d, want 1 (the goal completes once)", got)
 	}
 	if d := lastGoalEnded(t, allEvs); d.Status != "complete" {
-		t.Fatalf("EventGoalEnded.Status = %q, want complete (the goal resumed and finished)", d.Status)
+		t.Fatalf("EventGoalEnded.Status = %q, want complete (the goal ran to completion within the call)", d.Status)
 	}
 }
 
-// eventTap drains a session's events into a mutex-guarded slice. Unlike
-// drainEvents, snapshot() returns the events seen so far WITHOUT waiting for the
-// channel to close, so a test can assert on the stream while the session is still
-// running (e.g. a goal that must resume after the assertion). collect() blocks
-// until the channel closes and returns the full stream.
-type eventTap struct {
-	mu   sync.Mutex
-	evs  []events.SessionEvent
-	done chan struct{}
+// sustainedNotificationAdapter models the central workload of the subagent
+// control plane: a goal whose strategy spawns a subagent every work turn. Each
+// work turn (the user's "begin" and every goal continuation) makes NO mutating
+// tool call — it just ends the turn — and arms one subagent-completion
+// notification, so a notification is pending at the tail of every continuation.
+// A notification turn (detected by the <subagent-notification ...> reminder being
+// the most recent message in the request) does NOT re-arm, so notification turns
+// do not chain into one another.
+//
+// callCeiling is a fail-loud guard: the breaker fires after a bounded number of
+// continuations (goal.NeverProgressedLimit, since no turn ever progresses), so a
+// correct loop completes in well under the ceiling. The PRE-FIX loop — where the
+// notification peek preempts the gate every round so RecordContinuation never
+// runs — loops forever; the ceiling turns that hang into a prompt error so the
+// test fails fast instead of timing out.
+type sustainedNotificationAdapter struct {
+	name string
+	sess *Session // armed lazily by the test after NewSession
+
+	mu    sync.Mutex
+	calls int
+	ceil  int
 }
 
-func newEventTap(sess *Session) *eventTap {
-	tp := &eventTap{done: make(chan struct{})}
-	go func() {
-		for ev := range sess.Events() {
-			tp.mu.Lock()
-			tp.evs = append(tp.evs, ev)
-			tp.mu.Unlock()
+var errSustainedNotificationCeiling = errors.New("sustainedNotificationAdapter: call ceiling exceeded (goal loop did not terminate)")
+
+func (a *sustainedNotificationAdapter) Name() string { return a.name }
+
+func (a *sustainedNotificationAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	_ = ctx
+	a.mu.Lock()
+	a.calls++
+	n := a.calls
+	a.mu.Unlock()
+	if a.ceil > 0 && n > a.ceil {
+		return llm.Response{}, errSustainedNotificationCeiling
+	}
+	// Re-arm a notification on every work turn (the user turn and every goal
+	// continuation), but never on a notification turn — otherwise notification
+	// turns would chain endlessly and the deferred continuation would never run.
+	if a.sess != nil && !lastMessageIsNotification(req) {
+		a.sess.enqueueNotification(subagentNotification{
+			AgentID:       "01CHILD",
+			Status:        "completed",
+			Reason:        "completed",
+			TurnsUsed:     1,
+			TranscriptRef: "local:01CHILD",
+		})
+	}
+	resp := finalResponse("work turn (no progress)")
+	resp.Provider = a.name
+	if resp.Model == "" {
+		resp.Model = req.Model
+	}
+	return resp, nil
+}
+
+func (a *sustainedNotificationAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	_ = ctx
+	_ = req
+	return nil, llm.ErrStreamUnsupported
+}
+
+// lastMessageIsNotification reports whether the last text-bearing message in the
+// request is the <subagent-notification ...> reminder — i.e. this model call is a
+// notification turn. acceptNotificationInput appends that reminder as the final
+// steering turn before the request, so it is the most recent message text.
+func lastMessageIsNotification(req llm.Request) bool {
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if t := req.Messages[i].Text(); strings.TrimSpace(t) != "" {
+			return strings.Contains(t, "<subagent-notification")
 		}
-		close(tp.done)
-	}()
-	return tp
+	}
+	return false
 }
 
-func (tp *eventTap) snapshot() []events.SessionEvent {
-	tp.mu.Lock()
-	defer tp.mu.Unlock()
-	return append([]events.SessionEvent(nil), tp.evs...)
+// TestNotification_BreakerFiresUnderSustainedNotifications is the CRITICAL
+// regression guard for the notification/goal interleave. The goal engine's
+// no-progress breaker is its ONLY automatic stop (there is no iteration cap), so
+// a continuation that is preempted by a notification before the gate runs never
+// folds its progress signal and the breaker never accrues.
+//
+// It drives an active goal where every work turn makes no progress AND arms a
+// notification before its tail (sustainedNotificationAdapter). With the fix — the
+// gate folds the just-finished continuation BEFORE the notification peek — the
+// breaker accrues one no-progress turn per continuation and FIRES at
+// goal.NeverProgressedLimit, blocking the goal with reason "no progress".
+//
+// PRE-FIX this FAILS: the notification peek preempts the gate every round,
+// RecordContinuation never runs, NoProgressStreak stays pinned at 0, the goal
+// never blocks, and the loop runs until the adapter's call ceiling trips
+// (surfaced as a prompt error / non-blocked status). This is the load-bearing
+// "goal loops forever under sustained notifications" guard.
+func TestNotification_BreakerFiresUnderSustainedNotifications(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	adapter := &sustainedNotificationAdapter{name: "openai", ceil: 60}
+	c.Register(adapter)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	adapter.sess = sess
+	collect := drainEvents(sess)
+
+	sess.getOrCreateGoalStore().Set("never-progress objective", time.Now())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	// The call may end in nil (breaker fired, idle) — the goal status is the
+	// authoritative assertion, not the call's error, so we don't fail on err here.
+	_, _ = sess.ProcessInput(ctx, "begin", nil)
+
+	snap, ok := sess.getOrCreateGoalStore().Snapshot()
+	if !ok {
+		t.Fatal("goal snapshot missing after run")
+	}
+	if snap.Status != goal.StatusBlocked {
+		t.Fatalf("goal status = %q (iterations=%d, streak=%d), want %q — the no-progress breaker did not fire; the goal looped under sustained notifications",
+			snap.Status, snap.Iterations, snap.NoProgressStreak, goal.StatusBlocked)
+	}
+	if snap.StopReason != "no progress" {
+		t.Fatalf("goal stop reason = %q, want %q (the breaker, not an error/ceiling, must terminate the goal)", snap.StopReason, "no progress")
+	}
+	// The breaker fires at NeverProgressedLimit (the goal never progresses); it must
+	// not run unbounded. Iterations counts folded continuations, one per breaker step.
+	if snap.Iterations != goal.NeverProgressedLimit {
+		t.Fatalf("goal Iterations = %d, want %d (one fold per continuation up to the breaker)", snap.Iterations, goal.NeverProgressedLimit)
+	}
+
+	sess.Close()
+	evs := collect()
+	if got := countGoalEnded(evs); got != 1 {
+		t.Fatalf("count(EventGoalEnded) = %d, want 1 (the breaker emits exactly one terminal report)", got)
+	}
+	if d := lastGoalEnded(t, evs); d.Status != string(goal.StatusBlocked) {
+		t.Fatalf("EventGoalEnded.Status = %q, want %q", d.Status, goal.StatusBlocked)
+	}
 }
 
-func (tp *eventTap) collect() []events.SessionEvent {
-	<-tp.done
-	tp.mu.Lock()
-	defer tp.mu.Unlock()
-	return append([]events.SessionEvent(nil), tp.evs...)
+// TestNotification_GoalContinuesInlineWithoutKickFunc is the IMPORTANT regression
+// guard for the kickFunc-nil stranding bug. A one-shot `serf run` (cmd/serf) never
+// wires a kickFunc, yet a restored session can carry an active goal and the model
+// can spawn a subagent (depth 1 by default). If a notification preempts the gate
+// and the design relied on settleGoalOnIdle to re-kick the goal, settleGoalOnIdle
+// is a no-op with kickFunc==nil and the goal is stranded active, its continuation
+// lost.
+//
+// With the fix the deferred continuation runs INLINE (via continue, not via the
+// idle kick), so the goal advances and completes within the single
+// ProcessInputKind call with NO kickFunc wired.
+//
+// PRE-FIX this FAILS: the notification preempts the gate, settleGoalOnIdle no-ops
+// (kickFunc==nil), the call returns with the goal still active and Iterations 0.
+func TestNotification_GoalContinuesInlineWithoutKickFunc(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// Turn 1 (user "begin"): mutate (progress), then end. The gate resumes
+			// the goal and arms continuation #1 (without folding the user turn).
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(writeFileCall("u1", "u.txt", "user work"))
+			},
+			func(req llm.Request) llm.Response { return finalResponse("user turn done") },
+			// Turn 2 (continuation #1): mutate (progress), then end — AND arm a
+			// notification (wrapped below) so it preempts at this continuation's tail.
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(writeFileCall("c1", "c.txt", "cont work"))
+			},
+			func(req llm.Request) llm.Response { return finalResponse("cont 1 done") },
+			// Turn 3 (notification): ack the reminder and end.
+			func(req llm.Request) llm.Response { return finalResponse("ack reminder") },
+			// Turn 4 (deferred continuation #2, run INLINE — no kickFunc): declare complete.
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(updateGoalCall("g1", "complete"))
+			},
+			func(req llm.Request) llm.Response { return finalResponse("goal achieved") },
+		},
+	}
+	c.Register(adapter)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	// Deliberately do NOT call SetKickFunc: kickFunc stays nil, modelling `serf run`.
+	collect := drainEvents(sess)
+
+	sess.getOrCreateGoalStore().Set("inline objective", time.Now())
+
+	// Arm the notification as continuation #1 ends (its round-1 step, steps[3]) so the
+	// tail-drain peek preempts the next continuation.
+	base3 := adapter.steps[3]
+	adapter.steps[3] = func(req llm.Request) llm.Response {
+		sess.enqueueNotification(subagentNotification{
+			AgentID:       "01CHILD",
+			Status:        "completed",
+			Reason:        "completed",
+			TurnsUsed:     2,
+			TranscriptRef: "local:01CHILD",
+		})
+		return base3(req)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "begin", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	// The goal must have ADVANCED and COMPLETED within this single call — the
+	// deferred continuation ran inline, not via a (nil) kick. PRE-FIX it is stranded
+	// active with Iterations 0.
+	snap, ok := sess.getOrCreateGoalStore().Snapshot()
+	if !ok {
+		t.Fatal("goal snapshot missing after run")
+	}
+	if snap.Status != goal.StatusComplete {
+		t.Fatalf("goal status = %q (iterations=%d), want %q — the goal was stranded; the deferred continuation did not run inline without a kickFunc",
+			snap.Status, snap.Iterations, goal.StatusComplete)
+	}
+	if snap.Iterations < 1 {
+		t.Fatalf("goal Iterations = %d, want >= 1 (the deferred continuation must have folded inline)", snap.Iterations)
+	}
+
+	sess.Close()
+	evs := collect()
+	if got := countGoalEnded(evs); got != 1 {
+		t.Fatalf("count(EventGoalEnded) = %d, want 1", got)
+	}
+	if d := lastGoalEnded(t, evs); d.Status != "complete" {
+		t.Fatalf("EventGoalEnded.Status = %q, want complete", d.Status)
+	}
 }
 
 // goalCounters is the subset of the goal snapshot whose invariance across a
@@ -502,11 +685,4 @@ func readGoalCounters(t *testing.T, sess *Session) goalCounters {
 		t.Fatal("goal snapshot missing")
 	}
 	return goalCounters{iterations: snap.Iterations, noProgressStreak: snap.NoProgressStreak}
-}
-
-func snapStatus(snap goal.Snapshot, ok bool) string {
-	if !ok {
-		return "<no goal>"
-	}
-	return string(snap.Status)
 }

@@ -216,6 +216,13 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 	nextImages := images
 	nextKind := kind
 	processCtx := ctx
+	// A goal continuation decided at the gate is deferred across an interleaved
+	// notification turn and then run INLINE (via continue), so the goal advances
+	// without depending on the idle kick (which no-ops when kickFunc==nil, e.g.
+	// one-shot `serf run`). haveDeferredCont guards both the "don't re-fold while a
+	// continuation is already pending" case and the inline run below.
+	var deferredCont string
+	var haveDeferredCont bool
 	for {
 		// Capture the kind actually being processed this iteration before the
 		// follow-up reset below; the goal gate needs it to know whether the turn
@@ -314,33 +321,47 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 			s.mu.Unlock()
 			continue
 		}
-		// Notification tail-drain (priority 3, ahead of the goal gate): a pending
-		// subagent-completion notification preempts the NEXT goal continuation so
-		// notifications interleave BETWEEN continuations rather than waiting for the
-		// whole chain to finish. This is a non-draining length check; the queue is
-		// consumed inside acceptNotificationInput when the EntryNotification turn
-		// runs (an empty queue there is a no-op, but the peek guards against it).
+		// Goal continuation gate (priority 4, strictly below user input): runs in
+		// its NORMAL tail position so the just-finished continuation folds its
+		// progress signal (armGoalContinuation → RecordContinuation → the
+		// no-progress breaker accrues) BEFORE any notification can preempt it.
+		// Folding here, not after the notification, is what keeps the breaker — the
+		// goal engine's ONLY automatic stop — accruing under sustained notifications.
+		//
+		// The decided next continuation is DEFERRED (not run yet) so a pending
+		// notification can interleave ahead of it; it is then run inline below.
+		// Skipped when the turn that just ran was a notification (a notification
+		// must neither advance nor terminate the goal — it already folded at its own
+		// gate), and while a continuation is already deferred (one fold per turn).
+		// On a terminal/stop decision the gate emits the terminal report and leaves
+		// haveDeferredCont false, so we fall through to EventSessionEnd (idle).
+		if ranKind != EntryNotification && !haveDeferredCont {
+			if cont, ok := s.armGoalContinuation(progressed, ranKind == EntryContinuation); ok {
+				deferredCont = cont
+				haveDeferredCont = true
+			}
+		}
+		// Notification interleave (priority 3): a pending subagent-completion
+		// notification runs AFTER the fold above but BEFORE the deferred
+		// continuation, so it is transparent to goal accounting (the just-finished
+		// continuation already folded). This is a non-draining length check; the
+		// queue is consumed inside acceptNotificationInput when the EntryNotification
+		// turn runs (an empty queue there is a no-op, but the peek guards against it).
 		if s.peekNotifications() > 0 {
 			next = ""
 			nextImages = nil
 			nextKind = EntryNotification
 			continue
 		}
-		// Goal continuation gate (priority 4, strictly below user input): if a
-		// goal is active and the engine says continue, run the next turn as a
-		// system-framed continuation. On a terminal/stop decision the gate emits
-		// the terminal report and we fall through to EventSessionEnd (idle).
-		//
-		// Skipped entirely when the turn that just ran was a notification: a
-		// notification must neither advance nor terminate the goal (passing
-		// wasContinuation=false is NOT exclusion — for an active goal that branch
-		// resumes/advances it). The goal resumes afterward via settleGoalOnIdle.
-		if ranKind != EntryNotification {
-			if cont, ok := s.armGoalContinuation(progressed, ranKind == EntryContinuation); ok {
-				next = cont
-				nextKind = EntryContinuation
-				continue
-			}
+		// Run the deferred continuation INLINE (via continue, not the idle kick) so
+		// the goal advances even when kickFunc==nil (e.g. one-shot `serf run` with a
+		// restored active goal whose model spawned a subagent).
+		if haveDeferredCont {
+			next = deferredCont
+			nextImages = nil
+			nextKind = EntryContinuation
+			haveDeferredCont = false
+			continue
 		}
 		// Idle transition: clear the in-turn flag and kick a goal that was set in the
 		// turn-tail window (after the gate's store read) so it is not stranded until
