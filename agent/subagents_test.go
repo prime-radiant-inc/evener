@@ -430,21 +430,68 @@ func TestCancelAgent_NotRunning(t *testing.T) {
 	}
 }
 
+// resumeBlockAdapter is a two-step adapter used by TestSubagentTimestamps_ResetOnResume.
+// Step 0 (first run): completes immediately.
+// Step 1 (resumed run): closes started to signal the test that the run is in-flight,
+// then blocks until the test closes release, allowing in-flight inspection.
+type resumeBlockAdapter struct {
+	name    string
+	started chan struct{} // closed by step 1 when in-flight
+	release chan struct{} // closed by the test to unblock step 1
+
+	mu   sync.Mutex
+	step int
+}
+
+func (a *resumeBlockAdapter) Name() string { return a.name }
+
+func (a *resumeBlockAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	a.mu.Lock()
+	step := a.step
+	a.step++
+	a.mu.Unlock()
+
+	if step == 0 {
+		resp := finalResponse("first run")
+		resp.Provider = a.name
+		resp.Model = req.Model
+		return resp, nil
+	}
+	// Step 1: signal in-flight, then block until released.
+	close(a.started)
+	select {
+	case <-a.release:
+	case <-ctx.Done():
+		return llm.Response{}, ctx.Err()
+	}
+	resp := finalResponse("second run")
+	resp.Provider = a.name
+	resp.Model = req.Model
+	return resp, nil
+}
+
+func (a *resumeBlockAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	_ = ctx
+	_ = req
+	return nil, llm.ErrStreamUnsupported
+}
+
 // TestSubagentTimestamps_ResetOnResume verifies that timestamp fields are set at
 // spawn, stamped at run-end, and correctly reset when the idle agent is resumed:
-// createdAt is preserved, startedAt is re-stamped, endedAt is cleared to nil.
+// createdAt is preserved, startedAt is re-stamped to a strictly later time, and
+// endedAt is cleared to nil. The resumed run is observed IN-FLIGHT (blocked inside
+// the adapter's second step) so the assertions see the reset state before finalize
+// re-sets the fields. This makes the test fail if either reset line is removed.
 func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
-	// Two-shot adapter: first call completes immediately; second call (after
-	// resume) also completes immediately.
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("first run") },
-			func(req llm.Request) llm.Response { return finalResponse("second run") },
-		},
-	})
+
+	adapter := &resumeBlockAdapter{
+		name:    "openai",
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	c.Register(adapter)
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 1,
@@ -457,7 +504,7 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Spawn a non-blocking child.
+	// Non-blocking spawn; the first run (adapter step 0) completes immediately.
 	spawnRes := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
 		ID:        "ts1",
 		Name:      "spawn_agent",
@@ -472,7 +519,7 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 	}
 	agentID := strings.TrimSpace(fmt.Sprint(spawned["agent_id"]))
 
-	// Wait for the first run to complete.
+	// Wait for the first run to complete so we observe a stable post-finalize state.
 	waitRes := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
 		ID:        "ts2",
 		Name:      "wait",
@@ -482,7 +529,7 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 		t.Fatalf("wait error: %s", waitRes.Output)
 	}
 
-	// Inspect the sub directly to assert timestamps after first run.
+	// Capture timestamps and agentType after first run.
 	sub := sess.getSub(agentID)
 	if sub == nil {
 		t.Fatal("sub must be tracked after first run")
@@ -509,35 +556,70 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 		t.Errorf("agentType = %q, want empty for default spawn", agentTypeVal)
 	}
 
-	// Resume the idle child (blocking so we can assert cleanly after it ends).
+	// Ensure startedAt0 is strictly before any resume timestamp. time.Now() on some
+	// platforms has coarse resolution, so we sleep a short but reliable duration.
+	time.Sleep(2 * time.Millisecond)
+
+	// Non-blocking resume: sendInput spawns the goroutine and returns "ok" immediately
+	// while adapter step 1 blocks inside Complete waiting for release.
 	resumeRes := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
 		ID:        "ts3",
 		Name:      "resume_agent",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"message":"continue","blocking":true}`, agentID)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"message":"continue","blocking":false}`, agentID)),
 	})
 	if resumeRes.IsError {
 		t.Fatalf("resume_agent error: %s", resumeRes.Output)
 	}
 
-	// After resume completes, assert reset semantics.
+	// Wait (channel receive, no sleep) until the resumed run is blocked in-flight.
+	select {
+	case <-adapter.started:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for resumed run to reach in-flight state")
+	}
+
+	// Inspect IN-FLIGHT: sendInput has already reset the fields but finalize has not
+	// yet run. These are the load-bearing assertions:
+	//   - endedAt == nil proves resume CLEARED it (catches deleted `sub.endedAt = nil`)
+	//   - startedAt.After(startedAt0) proves resume RE-STAMPED it (catches deleted
+	//     `sub.startedAt = resumeTime`)
 	sub.mu.Lock()
-	createdAt1 := sub.createdAt
-	startedAt1 := sub.startedAt
-	endedAt1 := sub.endedAt
+	createdAtInFlight := sub.createdAt
+	startedAtInFlight := sub.startedAt
+	endedAtInFlight := sub.endedAt
+	runningInFlight := sub.running
 	sub.mu.Unlock()
 
-	if !createdAt1.Equal(createdAt0) {
-		t.Errorf("createdAt changed on resume: was %v, now %v (must be stable)", createdAt0, createdAt1)
+	if endedAtInFlight != nil {
+		t.Errorf("endedAt must be nil in-flight (resume must clear it); got %v", endedAtInFlight)
 	}
-	if startedAt1.Before(startedAt0) {
-		t.Errorf("startedAt regressed: was %v, now %v (re-stamp must not go backward)", startedAt0, startedAt1)
+	if !startedAtInFlight.After(startedAt0) {
+		t.Errorf("startedAt must be strictly after startedAt0 in-flight; startedAt0=%v startedAtInFlight=%v", startedAt0, startedAtInFlight)
 	}
-	// endedAt is set again after the resumed run completes (blocking wait already
-	// returned) — the core invariant is that it was cleared to nil at resume-start
-	// and then re-set at finalize. We only observe post-finalize here, so we just
-	// check it is non-nil (meaning finalize ran).
-	if endedAt1 == nil {
-		t.Error("endedAt must be non-nil after resumed run completes")
+	if !runningInFlight {
+		t.Error("running must be true while resumed run is in-flight")
+	}
+	if !createdAtInFlight.Equal(createdAt0) {
+		t.Errorf("createdAt must be unchanged on resume; was %v now %v", createdAt0, createdAtInFlight)
+	}
+
+	// Release the adapter so the resumed run can finish; then wait for it.
+	close(adapter.release)
+	waitRes2 := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
+		ID:        "ts4",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":5000}`, agentID)),
+	})
+	if waitRes2.IsError {
+		t.Fatalf("wait (post-resume) error: %s", waitRes2.Output)
+	}
+
+	// Secondary: finalize must have re-set endedAt.
+	sub.mu.Lock()
+	endedAtFinal := sub.endedAt
+	sub.mu.Unlock()
+	if endedAtFinal == nil {
+		t.Error("endedAt must be non-nil after resumed run completes (finalize must set it)")
 	}
 }
 
