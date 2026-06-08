@@ -77,6 +77,14 @@ type Instance struct {
 	Agents     map[string]Agent               // namespaced as "plugin-name:agent-name"
 	Hooks      map[HookEvent][]RegisteredHook // keyed by event type
 	MCPConfigs []mcpconfig.ServerConfig       // namespaced as "plugin_<name>_<server>"
+
+	// UnsupportedHooks is the set of Claude-recognized events declared by this
+	// plugin that serf does not currently fire (tier: reserved-placeholder).
+	// Populated by Load; empty when no such events are declared.
+	UnsupportedHooks map[HookEvent]bool
+	// UnknownHooks is the set of event names declared by this plugin that serf
+	// does not recognize as Claude events at all.
+	UnknownHooks map[string]bool
 }
 
 // discoverPluginSkills scans a plugin's skills directories and returns
@@ -194,11 +202,13 @@ func Load(dir string) (Instance, error) {
 	}
 	lp.Agents = agents
 
-	hooks, err := discoverPluginHooks(resolved, manifest.Hooks, manifest.Name)
+	hooks, unsupportedHooks, unknownHooks, err := discoverPluginHooksDiag(resolved, manifest.Hooks, manifest.Name)
 	if err != nil {
 		return Instance{}, fmt.Errorf("in plugin at %q: %w", resolved, err)
 	}
 	lp.Hooks = hooks
+	lp.UnsupportedHooks = unsupportedHooks
+	lp.UnknownHooks = unknownHooks
 
 	mcpConfigs, err := discoverPluginMCPConfigs(resolved, manifest.MCPServers, manifest.Name)
 	if err != nil {

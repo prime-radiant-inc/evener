@@ -114,6 +114,49 @@ func TestExecuteCommandHook_Environment(t *testing.T) {
 	}
 }
 
+// TestExecuteCommandHook_OfficialEnv verifies that CLAUDE_EFFORT is set from
+// input.Effort and that the existing CLAUDE_PLUGIN_ROOT / PLUGIN_ROOT aliases
+// are still present. CLAUDE_CODE_REMOTE is intentionally not set here.
+// Tier: CLAUDE_EFFORT = claude-compatible-subset; PLUGIN_ROOT = serf-native.
+func TestExecuteCommandHook_OfficialEnv(t *testing.T) {
+	hook := plugin.RegisteredHook{
+		Type:      "command",
+		Timeout:   5,
+		PluginDir: "/pd",
+		Command:   "echo EFFORT=$CLAUDE_EFFORT PLUGIN=$PLUGIN_ROOT CR=$CLAUDE_PLUGIN_ROOT",
+	}
+	res, err := executeCommandHook(context.Background(), hook, Input{CWD: "/proj", HookEventName: "X", Effort: "high"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Stdout, "PLUGIN=/pd") || !strings.Contains(res.Stdout, "CR=/pd") {
+		t.Fatalf("plugin env missing: %q", res.Stdout)
+	}
+	if !strings.Contains(res.Stdout, "EFFORT=high") {
+		t.Fatalf("CLAUDE_EFFORT missing: %q", res.Stdout)
+	}
+}
+
+// TestExecuteCommandHook_OfficialEnv_NoEffort verifies that CLAUDE_EFFORT is
+// not set (empty) when input.Effort is empty.
+func TestExecuteCommandHook_OfficialEnv_NoEffort(t *testing.T) {
+	hook := plugin.RegisteredHook{
+		Type:      "command",
+		Timeout:   5,
+		PluginDir: "/pd",
+		Command:   "echo EFFORT=$CLAUDE_EFFORT",
+	}
+	res, err := executeCommandHook(context.Background(), hook, Input{CWD: "/proj", HookEventName: "X"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// When Effort is empty, CLAUDE_EFFORT should not be set → the shell expands
+	// $CLAUDE_EFFORT to an empty string, so we get "EFFORT=" with nothing after.
+	if strings.Contains(res.Stdout, "EFFORT=high") || strings.Contains(res.Stdout, "EFFORT=low") {
+		t.Fatalf("CLAUDE_EFFORT should be unset when Effort is empty, got: %q", res.Stdout)
+	}
+}
+
 // --- Task 9: Prompt Hook Execution ---
 
 type mockPromptHookClient struct {

@@ -576,6 +576,14 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind) error {
 			runner.Add(event, eventHooks...)
 		}
 
+		// Accumulate recognized-but-unsupported events for diagnostics.
+		for event := range p.UnsupportedHooks {
+			if s.unsupportedPluginHookEvents == nil {
+				s.unsupportedPluginHookEvents = make(map[plugin.HookEvent]bool)
+			}
+			s.unsupportedPluginHookEvents[event] = true
+		}
+
 		s.pluginMCPConfigs = append(s.pluginMCPConfigs, p.MCPConfigs...)
 
 		s.pendingPluginEvents = append(s.pendingPluginEvents, events.PluginLoadedData{

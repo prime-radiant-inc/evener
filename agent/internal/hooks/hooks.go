@@ -88,11 +88,19 @@ func executeCommandHook(ctx context.Context, hook plugin.RegisteredHook, input I
 	}
 
 	cmd.Stdin = bytes.NewReader(inputJSON)
-	cmd.Env = append(os.Environ(),
+	env := append(os.Environ(),
 		"CLAUDE_PLUGIN_ROOT="+hook.PluginDir,
 		"PLUGIN_ROOT="+hook.PluginDir,
 		"CLAUDE_PROJECT_DIR="+input.CWD,
 	)
+	// CLAUDE_EFFORT: set only when the session has a configured effort level.
+	// CLAUDE_CODE_REMOTE is intentionally not set here: serf has no remote/serve
+	// signal reachable at the hook exec site; fabricating a value is forbidden by
+	// the diagnostics spec (07 §"Common environment variables for command hooks").
+	if input.Effort != "" {
+		env = append(env, "CLAUDE_EFFORT="+input.Effort)
+	}
+	cmd.Env = env
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout

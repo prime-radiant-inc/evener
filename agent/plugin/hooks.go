@@ -181,17 +181,19 @@ type hookMatcherGroup struct {
 // Field names and json tags match Claude's documented config shape
 // (07 §"Formal config shape").
 type hookSpec struct {
-	Type          string   `json:"type"`
-	Command       string   `json:"command,omitempty"`
-	Prompt        string   `json:"prompt,omitempty"`
-	Timeout       int      `json:"timeout,omitempty"`
-	Model         string   `json:"model,omitempty"`
-	Args          []string `json:"args,omitempty"`
-	Shell         string   `json:"shell,omitempty"`
-	If            string   `json:"if,omitempty"`
-	Async         bool     `json:"async,omitempty"`
-	AsyncRewake   bool     `json:"asyncRewake,omitempty"`
-	StatusMessage string   `json:"statusMessage,omitempty"`
+	Type    string   `json:"type"`
+	Command string   `json:"command,omitempty"`
+	Prompt  string   `json:"prompt,omitempty"`
+	Timeout int      `json:"timeout,omitempty"`
+	Model   string   `json:"model,omitempty"`
+	Args    []string `json:"args,omitempty"`
+	Shell   string   `json:"shell,omitempty"`
+	If      string   `json:"if,omitempty"`
+	Async   bool     `json:"async,omitempty"`
+	// serf:naming-ignore
+	AsyncRewake bool `json:"asyncRewake,omitempty"` // Claude wire format: camelCase required
+	// serf:naming-ignore
+	StatusMessage string `json:"statusMessage,omitempty"` // Claude wire format: camelCase required
 }
 
 // knownHookSpecKeys is the set of json field names in hookSpec, used to
@@ -339,19 +341,20 @@ func captureUnknownFields(spec hookSpec) map[string]json.RawMessage {
 	return result
 }
 
-// discoverPluginHooks finds and parses hook configuration for a plugin.
-// If manifestHooks is a JSON string, it is treated as a path to a hooks file.
-// If manifestHooks is a JSON object, it is parsed inline.
+// discoverPluginHooksDiag finds and parses hook configuration for a plugin,
+// returning the supported hooks map alongside the unsupported and unknown sets
+// for diagnostics. If manifestHooks is a JSON string, it is treated as a path
+// to a hooks file. If manifestHooks is a JSON object, it is parsed inline.
 // Otherwise, reads <pluginDir>/hooks/hooks.json if it exists.
-// The resolved file path is threaded into each RegisteredHook.SourcePath for diagnostics.
-func discoverPluginHooks(pluginDir string, manifestHooks json.RawMessage, pluginName string) (map[HookEvent][]RegisteredHook, error) {
+// The resolved file path is threaded into each RegisteredHook.SourcePath.
+func discoverPluginHooksDiag(pluginDir string, manifestHooks json.RawMessage, pluginName string) (hooks map[HookEvent][]RegisteredHook, unsupported map[HookEvent]bool, unknown map[string]bool, err error) {
 	if len(manifestHooks) > 0 {
 		trimmed := bytes.TrimLeft(manifestHooks, " \t\n\r")
 		if len(trimmed) > 0 && trimmed[0] == '"' {
 			// String value: path to hooks file
 			var path string
-			if err := json.Unmarshal(manifestHooks, &path); err != nil {
-				return nil, fmt.Errorf("parsing hooks path: %w", err)
+			if err = json.Unmarshal(manifestHooks, &path); err != nil {
+				return nil, nil, nil, fmt.Errorf("parsing hooks path: %w", err)
 			}
 			path = expandPluginRoot(path, pluginDir)
 			if !filepath.IsAbs(path) {
@@ -359,14 +362,13 @@ func discoverPluginHooks(pluginDir string, manifestHooks json.RawMessage, plugin
 			}
 			data, err := os.ReadFile(path)
 			if err != nil {
-				return nil, fmt.Errorf("reading hooks file %q: %w", path, err)
+				return nil, nil, nil, fmt.Errorf("reading hooks file %q: %w", path, err)
 			}
-			hooks, _, _, err := parsePluginHooksDiagWithSource(data, pluginDir, pluginName, path)
-			return hooks, err
+			return parsePluginHooksDiagWithSource(data, pluginDir, pluginName, path)
 		}
 		if len(trimmed) > 0 && trimmed[0] == '{' {
 			// Object value: inline hooks config (no file path, SourcePath stays empty)
-			return parsePluginHooks(manifestHooks, pluginDir, pluginName)
+			return parsePluginHooksDiag(manifestHooks, pluginDir, pluginName)
 		}
 	}
 
@@ -375,10 +377,17 @@ func discoverPluginHooks(pluginDir string, manifestHooks json.RawMessage, plugin
 	data, err := os.ReadFile(defaultPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return map[HookEvent][]RegisteredHook{}, nil
+			return map[HookEvent][]RegisteredHook{}, nil, nil, nil
 		}
-		return nil, fmt.Errorf("reading hooks file %q: %w", defaultPath, err)
+		return nil, nil, nil, fmt.Errorf("reading hooks file %q: %w", defaultPath, err)
 	}
-	hooks, _, _, err := parsePluginHooksDiagWithSource(data, pluginDir, pluginName, defaultPath)
+	return parsePluginHooksDiagWithSource(data, pluginDir, pluginName, defaultPath)
+}
+
+// discoverPluginHooks finds and parses hook configuration for a plugin.
+// It is a thin wrapper over discoverPluginHooksDiag for callers that do not
+// need the unsupported/unknown diagnostic sets.
+func discoverPluginHooks(pluginDir string, manifestHooks json.RawMessage, pluginName string) (map[HookEvent][]RegisteredHook, error) {
+	hooks, _, _, err := discoverPluginHooksDiag(pluginDir, manifestHooks, pluginName)
 	return hooks, err
 }

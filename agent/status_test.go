@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/llm"
 )
 
@@ -295,5 +296,82 @@ func TestSession_DetailedStatus_ToolsSorted(t *testing.T) {
 	}
 	if !sort.StringsAreSorted(names) {
 		t.Errorf("tools not sorted: %v", names)
+	}
+}
+
+// TestDetailedStatus_HookEvents verifies that DetailedStatus.HookEvents lists
+// supported hook events with their tier and count, and lists recognized-but-
+// unsupported events with Supported=false, Count=0, Tier="reserved-placeholder".
+// The legacy Hooks map is preserved for backward compatibility.
+func TestDetailedStatus_HookEvents(t *testing.T) {
+	// Build a plugin dir with PreToolUse (supported) and "Setup" (recognized but
+	// not fired by serf — reserved-placeholder).
+	pluginDir := t.TempDir()
+	metaDir := filepath.Join(pluginDir, ".claude-plugin")
+	os.MkdirAll(metaDir, 0o755)
+	os.WriteFile(filepath.Join(metaDir, "plugin.json"),
+		[]byte(`{"name": "hook-diag-test"}`), 0o644)
+	hooksDir := filepath.Join(pluginDir, "hooks")
+	os.MkdirAll(hooksDir, 0o755)
+	os.WriteFile(filepath.Join(hooksDir, "hooks.json"), []byte(`{
+		"hooks": {
+			"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "echo ok", "timeout": 5}]}],
+			"Setup":      [{"matcher": "*", "hooks": [{"type": "command", "command": "echo setup", "timeout": 5}]}]
+		}
+	}`), 0o644)
+
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{}}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"),
+		execenv.NewLocalExecutionEnvironment(dir),
+		SessionConfig{PluginDirs: []string{pluginDir}})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ds := sess.DetailedStatus()
+
+	// Legacy Hooks map should have PreToolUse with count ≥ 1.
+	if ds.Hooks[plugin.HookPreToolUse] < 1 {
+		t.Errorf("Hooks[PreToolUse] = %d, want ≥ 1", ds.Hooks[plugin.HookPreToolUse])
+	}
+
+	// HookEvents should include PreToolUse as supported/claude-compatible-subset.
+	var foundSupported, foundUnsupported bool
+	for _, he := range ds.HookEvents {
+		switch he.Event {
+		case plugin.HookPreToolUse:
+			if !he.Supported {
+				t.Errorf("PreToolUse: Supported = false, want true")
+			}
+			if he.Tier != "claude-compatible-subset" {
+				t.Errorf("PreToolUse: Tier = %q, want claude-compatible-subset", he.Tier)
+			}
+			if he.Count < 1 {
+				t.Errorf("PreToolUse: Count = %d, want ≥ 1", he.Count)
+			}
+			foundSupported = true
+		case "Setup":
+			if he.Supported {
+				t.Errorf("Setup: Supported = true, want false")
+			}
+			if he.Tier != "reserved-placeholder" {
+				t.Errorf("Setup: Tier = %q, want reserved-placeholder", he.Tier)
+			}
+			if he.Count != 0 {
+				t.Errorf("Setup: Count = %d, want 0", he.Count)
+			}
+			foundUnsupported = true
+		}
+	}
+	if !foundSupported {
+		t.Error("HookEvents missing PreToolUse (supported)")
+	}
+	if !foundUnsupported {
+		t.Error("HookEvents missing Setup (unsupported/reserved-placeholder)")
 	}
 }
