@@ -511,6 +511,19 @@ func lastMessageIsNotification(req llm.Request) bool {
 	return false
 }
 
+// lastTextMessage returns the text of the last text-bearing message in the request
+// (the most recent message the model sees), or "" if none. The continuation prompt
+// driving a turn is appended as the final steering message, so this isolates it from
+// the historical turns that precede it.
+func lastTextMessage(req llm.Request) string {
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if t := req.Messages[i].Text(); strings.TrimSpace(t) != "" {
+			return t
+		}
+	}
+	return ""
+}
+
 // TestNotification_BreakerFiresUnderSustainedNotifications is the CRITICAL
 // regression guard for the notification/goal interleave. The goal engine's
 // no-progress breaker is its ONLY automatic stop (there is no iteration cap), so
@@ -668,6 +681,215 @@ func TestNotification_GoalContinuesInlineWithoutKickFunc(t *testing.T) {
 	}
 	if d := lastGoalEnded(t, evs); d.Status != "complete" {
 		t.Fatalf("EventGoalEnded.Status = %q, want complete", d.Status)
+	}
+}
+
+// TestNotification_GoalClearedDuringInterleaveStops proves that clearing the goal
+// DURING an interleaved notification turn drops the gate-time deferred continuation
+// rather than running it against a goal that no longer exists. The gate folds
+// continuation #1 and captures its next continuation as a string; the notification
+// then interleaves; if the user runs `/goal clear` (ClearGoal) during that
+// notification turn, the cached render is stale. The fix re-validates the goal at
+// the inline-run site: with the goal cleared, the deferred continuation is dropped
+// and the session idles.
+//
+// PRE-FIX this FAILS: the inline site runs the cached string blindly, so one stale
+// continuation runs against the cleared goal (countGoalContinuations == 2). The
+// no-notification path does not have this bug because its gate re-reads the (empty)
+// store; this test closes the gap the notification interleave opened.
+func TestNotification_GoalClearedDuringInterleaveStops(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// Turn 1 (user "begin"): mutate (progress), then end. The gate resumes
+			// the goal and defers continuation #1.
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(writeFileCall("u1", "u.txt", "user work"))
+			},
+			func(req llm.Request) llm.Response { return finalResponse("user turn done") },
+			// Turn 2 (continuation #1): mutate (progress), then end — AND arm a
+			// notification (wrapped below) so it interleaves at this continuation's tail.
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(writeFileCall("c1", "c.txt", "cont work"))
+			},
+			func(req llm.Request) llm.Response { return finalResponse("cont 1 done") },
+			// Turn 3 (notification): clear the goal (wrapped below), then ack and end.
+			func(req llm.Request) llm.Response { return finalResponse("ack reminder") },
+			// PRE-FIX ONLY: the stale continuation #2 would run here and end. Post-fix
+			// it is dropped, so this step never runs.
+			func(req llm.Request) llm.Response { return finalResponse("stale cont (should not run post-fix)") },
+		},
+	}
+	c.Register(adapter)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	collect := drainEvents(sess)
+
+	sess.getOrCreateGoalStore().Set("clear-me objective", time.Now())
+
+	// Arm the notification as continuation #1 ends (steps[3]) so it interleaves ahead
+	// of the gate-time deferred continuation #2.
+	base3 := adapter.steps[3]
+	adapter.steps[3] = func(req llm.Request) llm.Response {
+		sess.enqueueNotification(subagentNotification{
+			AgentID:       "01CHILD",
+			Status:        "completed",
+			Reason:        "completed",
+			TurnsUsed:     2,
+			TranscriptRef: "local:01CHILD",
+		})
+		return base3(req)
+	}
+	// During the notification turn (steps[4]), clear the goal — modelling `/goal clear`
+	// landing while the notification interleaves. This makes the gate-time deferred
+	// continuation string stale.
+	base4 := adapter.steps[4]
+	adapter.steps[4] = func(req llm.Request) llm.Response {
+		if lastMessageIsNotification(req) {
+			sess.ClearGoal()
+		}
+		return base4(req)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "begin", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	// The goal is gone (cleared), so no further continuation may run after the
+	// notification: only continuation #1 ran. Pre-fix the stale continuation #2 runs,
+	// giving 2.
+	sess.Close()
+	evs := collect()
+	if got := countGoalContinuations(evs); got != 1 {
+		t.Fatalf("count(EventGoalContinuation) = %d, want 1 (the cleared goal must not run a stale continuation after the notification)", got)
+	}
+	// A cleared goal has no terminal report: it was removed, not completed/blocked.
+	if got := countGoalEnded(evs); got != 0 {
+		t.Fatalf("count(EventGoalEnded) = %d, want 0 (a cleared goal emits no terminal report)", got)
+	}
+	if _, ok := sess.getOrCreateGoalStore().Snapshot(); ok {
+		t.Fatal("goal snapshot present after ClearGoal; want absent")
+	}
+}
+
+// TestNotification_GoalRetargetedDuringInterleaveUsesNewObjective proves that
+// retargeting the goal DURING an interleaved notification turn makes the continuation
+// that runs after the notification pursue the NEW objective, not the abandoned OLD
+// one. The gate captures continuation #1's next continuation as a render of the OLD
+// objective; the notification interleaves; `/goal <new>` (SetGoal) lands during the
+// notification turn. The fix re-validates at the inline site and renders the CURRENT
+// objective, so the post-notification continuation carries NEW.
+//
+// PRE-FIX this FAILS: the inline site runs the cached OLD render, so the continuation
+// after the notification pursues the abandoned OLD objective.
+func TestNotification_GoalRetargetedDuringInterleaveUsesNewObjective(t *testing.T) {
+	const (
+		oldObjective = "OLD-abandoned-objective-zzz"
+		newObjective = "NEW-retargeted-objective-qqq"
+	)
+	dir := t.TempDir()
+	c := llm.NewClient()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			// Turn 1 (user "begin"): mutate (progress), then end. Gate defers cont #1.
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(writeFileCall("u1", "u.txt", "user work"))
+			},
+			func(req llm.Request) llm.Response { return finalResponse("user turn done") },
+			// Turn 2 (continuation #1, OLD objective): mutate, then end — AND arm a
+			// notification (wrapped below).
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(writeFileCall("c1", "c.txt", "cont work"))
+			},
+			func(req llm.Request) llm.Response { return finalResponse("cont 1 done") },
+			// Turn 3 (notification): retarget to NEW (wrapped below), then ack and end.
+			func(req llm.Request) llm.Response { return finalResponse("ack reminder") },
+			// Turn 4 (continuation after the notification): its request prompt is
+			// captured below; declare the goal complete so the loop stops.
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(updateGoalCall("g1", "complete"))
+			},
+			func(req llm.Request) llm.Response { return finalResponse("goal achieved") },
+		},
+	}
+	c.Register(adapter)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	sess.getOrCreateGoalStore().Set(oldObjective, time.Now())
+
+	// Arm the notification as continuation #1 ends (steps[3]).
+	base3 := adapter.steps[3]
+	adapter.steps[3] = func(req llm.Request) llm.Response {
+		sess.enqueueNotification(subagentNotification{
+			AgentID:       "01CHILD",
+			Status:        "completed",
+			Reason:        "completed",
+			TurnsUsed:     2,
+			TranscriptRef: "local:01CHILD",
+		})
+		return base3(req)
+	}
+	// During the notification turn (steps[4]), retarget the goal to NEW — modelling
+	// `/goal <new>` landing while the notification interleaves. This makes the
+	// gate-time deferred render (of OLD) stale.
+	base4 := adapter.steps[4]
+	adapter.steps[4] = func(req llm.Request) llm.Response {
+		if lastMessageIsNotification(req) {
+			if _, err := sess.SetGoal(context.Background(), newObjective); err != nil {
+				t.Errorf("SetGoal(new) during notification turn: %v", err)
+			}
+		}
+		return base4(req)
+	}
+	// Capture the request that drives the post-notification continuation (steps[5]):
+	// its history must carry the NEW objective render, not OLD.
+	var postNotifReq llm.Request
+	var postNotifCaptured bool
+	base5 := adapter.steps[5]
+	adapter.steps[5] = func(req llm.Request) llm.Response {
+		postNotifReq = req
+		postNotifCaptured = true
+		return base5(req)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "begin", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	if !postNotifCaptured {
+		t.Fatal("the post-notification continuation step never ran; the retargeted goal did not resume")
+	}
+	// The continuation prompt DRIVING this turn is the most recent text-bearing
+	// message (acceptContinuationInput appends the render as the final steering turn).
+	// It must pursue the NEW objective, not the abandoned OLD one. We assert on the
+	// last message specifically rather than the whole history, because the OLD render
+	// from continuation #1 legitimately lingers in the transcript as a prior turn.
+	lastMsg := lastTextMessage(postNotifReq)
+	if !strings.Contains(lastMsg, newObjective) {
+		t.Fatalf("post-notification continuation prompt did not carry the NEW objective %q; the stale OLD render ran. last message:\n%s", newObjective, lastMsg)
+	}
+	if strings.Contains(lastMsg, oldObjective) {
+		t.Fatalf("post-notification continuation prompt carried the abandoned OLD objective %q; a stale continuation ran. last message:\n%s", oldObjective, lastMsg)
+	}
+
+	snap, ok := sess.getOrCreateGoalStore().Snapshot()
+	if !ok {
+		t.Fatal("goal snapshot missing after run")
+	}
+	if snap.Objective != newObjective {
+		t.Fatalf("goal objective = %q after run, want %q", snap.Objective, newObjective)
 	}
 }
 

@@ -220,8 +220,10 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 	// notification turn and then run INLINE (via continue), so the goal advances
 	// without depending on the idle kick (which no-ops when kickFunc==nil, e.g.
 	// one-shot `serf run`). haveDeferredCont guards both the "don't re-fold while a
-	// continuation is already pending" case and the inline run below.
-	var deferredCont string
+	// continuation is already pending" case and the inline run below. The gate-time
+	// render is NOT cached: the inline site re-reads the store and re-renders the
+	// current objective, so a clear/retarget during the interleaved notification turn
+	// cannot run a stale continuation.
 	var haveDeferredCont bool
 	for {
 		// Capture the kind actually being processed this iteration before the
@@ -336,8 +338,12 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 		// On a terminal/stop decision the gate emits the terminal report and leaves
 		// haveDeferredCont false, so we fall through to EventSessionEnd (idle).
 		if ranKind != EntryNotification && !haveDeferredCont {
-			if cont, ok := s.armGoalContinuation(progressed, ranKind == EntryContinuation); ok {
-				deferredCont = cont
+			// The gate's fold + terminal-report side effects (RecordContinuation, the
+			// no-progress breaker, EventGoalEnded) happen here; the rendered prompt it
+			// returns is discarded because the inline-run site below re-renders the
+			// current objective from the store (so a clear/retarget during the
+			// interleaved notification turn cannot run a stale continuation).
+			if _, ok := s.armGoalContinuation(progressed, ranKind == EntryContinuation); ok {
 				haveDeferredCont = true
 			}
 		}
@@ -357,11 +363,21 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 		// the goal advances even when kickFunc==nil (e.g. one-shot `serf run` with a
 		// restored active goal whose model spawned a subagent).
 		if haveDeferredCont {
-			next = deferredCont
-			nextImages = nil
-			nextKind = EntryContinuation
 			haveDeferredCont = false
-			continue
+			// Re-validate against the goal store before running: the user may have
+			// cleared (/goal clear) or retargeted (/goal <new>) the goal during the
+			// interleaved notification turn above, making the render the gate computed
+			// at fold time stale. currentGoalContinuation re-reads the store read-only
+			// (the fold already happened at the gate — no RecordContinuation re-runs
+			// here). If the goal is no longer active, drop the stale continuation and
+			// fall through to settle + idle; if it is active, run a FRESH render of the
+			// CURRENT objective so a retarget pursues the new goal.
+			if cont, ok := s.currentGoalContinuation(); ok {
+				next = cont
+				nextImages = nil
+				nextKind = EntryContinuation
+				continue
+			}
 		}
 		// Idle transition: clear the in-turn flag and kick a goal that was set in the
 		// turn-tail window (after the gate's store read) so it is not stranded until

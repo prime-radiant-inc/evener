@@ -93,6 +93,23 @@ func (s *Session) goalCompactionSteering() []string {
 	return []string{goal.Render(snap.Objective)}
 }
 
+// currentGoalContinuation returns a fresh render of the CURRENT active objective,
+// or ("", false) when no goal is set or the goal is not active. It is the read-only
+// re-validation used at the drain loop's inline-continuation site: a continuation
+// decided at the gate is deferred across an interleaved notification turn, during
+// which the user may clear (/goal clear) or retarget (/goal <new>) the goal, making
+// the gate-time render stale. Re-reading here drops a continuation for a goal that is
+// no longer active and runs the new objective after a retarget. It does NOT fold the
+// turn (no RecordContinuation) — the fold already happened at the gate — so it never
+// advances iteration/no-progress accounting; it only re-reads and re-renders.
+func (s *Session) currentGoalContinuation() (string, bool) {
+	snap, ok := s.getOrCreateGoalStore().Snapshot()
+	if !ok || snap.Status != goal.StatusActive {
+		return "", false
+	}
+	return goal.Render(snap.Objective), true
+}
+
 // goalRoundCap selects the per-input tool-round cap. User-input turns use the
 // configured cap verbatim. Continuation turns (the goal engine) clamp an
 // unbounded (cfg<0) or larger-than-GoalTurnMaxRounds config down to
