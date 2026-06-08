@@ -57,7 +57,7 @@ Do NOT try to spawn further subagents.
 
 Your job is to complete the task and report your findings.`
 
-var rootOnlyAgentManagementTools = []string{"spawn_agent", "resume_agent", "wait", "close_agent", "cancel_agent"}
+var rootOnlyAgentManagementTools = []string{"spawn_agent", "resume_agent", "wait", "close_agent", "cancel_agent", "list_agents"}
 
 type subagent struct {
 	id   string
@@ -549,6 +549,18 @@ func (s *Session) cancelAgent(agentID string) (any, error) {
 
 func (s *Session) getSub(agentID string) *subagent {
 	return s.subagents.get(agentID)
+}
+
+// listAgents answers the list_agents tool: a read-only snapshot of this session's
+// child agents as {"agents":[...],"count":N}. The parent session id (immutable) is
+// stamped on each record's parent_session_id.
+func (s *Session) listAgents(status string, includeClosed bool) (any, error) {
+	agents, count := s.subagents.listAgents(s.id, status, includeClosed)
+	if agents == nil {
+		agents = []SubagentInfo{}
+	}
+	b, _ := json.Marshal(map[string]any{"agents": agents, "count": count})
+	return string(b), nil
 }
 
 // communicateNudge returns the message sent to a subagent that stops without

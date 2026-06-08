@@ -154,4 +154,20 @@ func registerSubagentTools(reg *tool.Registry, s *Session) {
 			return s.cancelAgent(fmt.Sprint(args["agent_id"]))
 		},
 	})
+	_ = reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: tool.DefListAgents()},
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = ctx
+			_ = env
+			status := ""
+			if v, ok := args["status"]; ok && v != nil {
+				status = fmt.Sprint(v)
+			}
+			includeClosed := false
+			if v, ok := args["include_closed"].(bool); ok {
+				includeClosed = v
+			}
+			return s.listAgents(status, includeClosed)
+		},
+	})
 }

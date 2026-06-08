@@ -68,20 +68,107 @@ func (m *subagentManager) drainForClose() []*subagent {
 	return subs
 }
 
-// infos enumerates the tracked subagents for status display. It preserves the
-// two-level lock order: manager mutex outer, sub.mu inner.
+// runOutcomeReason maps a subagent status to the last RUN OUTCOME reported in the
+// info record's reason field: the terminal outcome (completed|failed|cancelled) or
+// empty while running. Task 7: closed/closing records must still surface the last
+// run outcome here — derive it from the retained outcome, never report "closed".
+func runOutcomeReason(status SubagentStatus) SubagentStatus {
+	switch status {
+	case SubagentCompleted, SubagentFailed, SubagentCancelled:
+		return status
+	default:
+		return ""
+	}
+}
+
+// terminalStatus reports whether a status represents a finished run (one that has
+// a result to surface). Closing/closed are not terminal run states here.
+func terminalStatus(status SubagentStatus) bool {
+	return runOutcomeReason(status) != ""
+}
+
+// infoLocked builds the snapshot record for one subagent. It is called with sub.mu
+// held (hence "Locked"); it reads sub fields plus the immutable sub.sess.cfg.spawn
+// and sub.sess.ID(). parentID is the parent session id supplied by the caller.
+// result_available is true only for a terminal run whose result has not yet been
+// consumed.
+func (a *subagent) infoLocked(parentID string) SubagentInfo {
+	info := SubagentInfo{
+		AgentID:         a.id,
+		ID:              a.id,
+		Status:          a.status,
+		Reason:          runOutcomeReason(a.status),
+		AgentType:       a.agentType,
+		ParentSessionID: parentID,
+		TurnsUsed:       a.turnsUsed,
+		ResultAvailable: terminalStatus(a.status) && !a.resultConsumed,
+		ResultConsumed:  a.resultConsumed,
+		CreatedAt:       a.createdAt,
+		StartedAt:       a.startedAt,
+		EndedAt:         a.endedAt,
+	}
+	if a.sess != nil {
+		info.Task = a.sess.cfg.spawn.subagentTask
+		info.TranscriptRef = encodeRef("", a.sess.ID())
+	}
+	return info
+}
+
+// infos enumerates the tracked subagents for /status display, hiding closed
+// records so retained-but-closed children do not accumulate (running/completed/
+// failed/cancelled stay visible). It preserves the two-level lock order: manager
+// mutex outer, sub.mu inner.
 func (m *subagentManager) infos() []SubagentInfo {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var infos []SubagentInfo
-	for id, sub := range m.subs {
+	for _, sub := range m.subs {
 		sub.mu.Lock()
-		infos = append(infos, SubagentInfo{
-			ID:        id,
-			Status:    sub.status,
-			TurnsUsed: sub.turnsUsed,
-		})
+		if sub.status != SubagentClosed {
+			infos = append(infos, sub.infoLocked(""))
+		}
 		sub.mu.Unlock()
 	}
 	return infos
+}
+
+// listAgents answers the list_agents query. With no status and includeClosed false
+// it returns all non-closed records. A status filter returns only records in that
+// status; status=closed implies includeClosed. includeClosed surfaces closed
+// records. It preserves the manager-outer/sub-inner lock order.
+func (m *subagentManager) listAgents(parentID, status string, includeClosed bool) (agents []SubagentInfo, count int) {
+	if status == string(SubagentClosed) {
+		includeClosed = true
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, sub := range m.subs {
+		sub.mu.Lock()
+		subStatus := sub.status
+		include := subagentMatchesFilter(subStatus, status, includeClosed)
+		var info SubagentInfo
+		if include {
+			info = sub.infoLocked(parentID)
+		}
+		sub.mu.Unlock()
+		if include {
+			agents = append(agents, info)
+		}
+	}
+	return agents, len(agents)
+}
+
+// subagentMatchesFilter decides whether a subagent in subStatus passes the
+// list_agents filter. status "" means all (subject to includeClosed); status "all"
+// is the same sentinel; any other status matches only that status.
+func subagentMatchesFilter(subStatus SubagentStatus, status string, includeClosed bool) bool {
+	switch status {
+	case "", "all":
+		if subStatus == SubagentClosed {
+			return includeClosed
+		}
+		return true
+	default:
+		return string(subStatus) == status
+	}
 }

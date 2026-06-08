@@ -307,6 +307,28 @@ func DefCancelAgent() llm.ToolDefinition {
 	}
 }
 
+func DefListAgents() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name:        "list_agents",
+		Description: "List the child agents you have spawned and their state. Read-only: it never waits, resumes, cancels, or closes. By default it returns every non-closed child; pass status to filter to one state, or include_closed (or status=\"closed\") to also see retained closed records. Each record carries agent_id, status, reason (the last run outcome, null while running), task, agent_type, turns_used, result_available, transcript_ref, and timestamps. Only you can call this tool; subagents never receive it.",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"status": map[string]any{
+					"type":        "string",
+					"enum":        []string{"running", "completed", "failed", "cancelled", "closing", "closed", "all"},
+					"description": "Filter. Default: all non-closed. `all` is a filter sentinel. `status=closed` implies include_closed=true.",
+				},
+				"include_closed": map[string]any{
+					"type":        "boolean",
+					"description": "Include retained closed records. Default false unless status=closed.",
+				},
+			},
+		},
+	}
+}
+
 func DefWebFetch() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "web_fetch",

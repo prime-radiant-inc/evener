@@ -2,6 +2,7 @@ package agent
 
 import (
 	"sort"
+	"time"
 
 	"primeradiant.com/serf/agent/mcpconfig"
 	"primeradiant.com/serf/agent/plugin"
@@ -24,11 +25,26 @@ type PluginInfo struct {
 	MCPCount   int    `json:"mcp_count"`
 }
 
-// SubagentInfo describes an active sub-agent.
+// SubagentInfo describes a tracked sub-agent. It is the single record returned by
+// both the /status enumeration (infos) and the list_agents query; the rich fields
+// beyond id/status/turns_used reach list_agents but are dropped by the server
+// /status DTO projector.
 type SubagentInfo struct {
-	ID        string         `json:"id"`
-	Status    SubagentStatus `json:"status"`
-	TurnsUsed int            `json:"turns_used"`
+	AgentID         string         `json:"agent_id"`
+	ID              string         `json:"id"`
+	Status          SubagentStatus `json:"status"`
+	Reason          SubagentStatus `json:"reason,omitempty"`
+	Task            string         `json:"task,omitempty"`
+	AgentType       string         `json:"agent_type,omitempty"`
+	ParentSessionID string         `json:"parent_session_id,omitempty"`
+	TurnsUsed       int            `json:"turns_used"`
+	ResultAvailable bool           `json:"result_available"`
+	ResultConsumed  bool           `json:"result_consumed"`
+	TranscriptRef   string         `json:"transcript_ref,omitempty"`
+	CreatedAt       time.Time      `json:"created_at"`
+	StartedAt       time.Time      `json:"started_at"`
+	EndedAt         *time.Time     `json:"ended_at"`
+	CloseTimedOut   bool           `json:"close_timed_out"`
 }
 
 // DetailedStatus captures the full session configuration for /status display.
