@@ -297,7 +297,7 @@ Validation rules:
 - `hooks` arrays must be arrays; malformed present hook config is an error with source path, event, matcher, and handler index.
 - Unknown event names are reported as unknown unless they are known Claude events not implemented by serf, in which case they are reported as `recognized but unsupported`. Both cases emit a loud load-time warning (see [Diagnostics and status](#diagnostics-and-status)).
 - Unknown handler fields are preserved in `UnknownFields` for diagnostics; serf does not fail on harmless future fields.
-- Unsupported handler types do not abort plugin load when they are in a future/reserved tier; they are visible in status/diagnostics as unsupported and skipped until implemented.
+- Unsupported handler types do not abort plugin load when they are in a future/reserved tier; they emit a loud load-time diagnostic warning (naming the plugin, event, and type) and are skipped at dispatch until implemented. They are not listed in `/status`, which surfaces only the recognized event landscape.
 
 ## Event contract
 
@@ -757,12 +757,12 @@ Hook diagnostics include, where available:
 
 Diagnostics must not include raw tool input/output (unless explicitly known safe), API keys/tokens, HTTP header values, env var values, provider request/response bodies, or full transcript bodies.
 
-`/status` (via `HookEventStatus`) distinguishes:
+`/status` (via `HookEventStatus`) surfaces, per event, its compatibility tier and count:
 
 - active supported hooks (with tier and count);
-- recognized Claude hooks skipped because unsupported (tier `reserved-placeholder`, count 0);
-- unknown events/handler types;
-- invalid hook config that failed plugin load.
+- recognized Claude hooks skipped because unsupported (tier `reserved-placeholder`, count 0).
+
+Everything else — unknown event names, unsupported handler types, and invalid-matcher (invalid hook config) failures — surfaces as **load-time `WARNING`s** on the session stream (the diagnostic path described above), not in `/status`. `/status` lists the recognized event landscape and its tiers; it is not a misconfiguration report.
 
 ## Roadmap (deferred phases)
 

@@ -162,6 +162,11 @@ Two traps worth calling out:
   write a regex: `"mcp__memory__.*"`.
 - **The matcher is the Claude tool name** — see [the gotcha above](#the-1-mistake-shellbash).
 
+> **Serf-native nicety:** serf trims surrounding whitespace from the matcher
+> before classifying it, so `" Bash "` is treated as the exact matcher `"Bash"`.
+> Claude treats the matcher as a literal regex and would not trim. This is a
+> minor, intentional divergence.
+
 ### Go RE2, not JavaScript regex
 
 Claude documents JavaScript regular expressions; serf matches with **Go RE2**.
@@ -286,7 +291,7 @@ Notes:
 Serf reads the command's **stdout**, **stderr**, and **exit code**.
 
 - **Exit 0, empty stdout** → success, no decision.
-- **Exit 0, plain-text stdout** → a user-visible system message (context).
+- **Exit 0, plain-text stdout** → a `systemMessage` (in Phase 1, delivered to the model).
 - **Exit 0, JSON stdout** → parsed as a structured decision (below).
 - **Exit 2** → an event-specific block/error (see the [exit-code table](#exit-codes-per-event)).
   **JSON is ignored on exit 2** — only stderr is used.
@@ -302,7 +307,7 @@ The JSON fields serf honors today:
 {
   "continue": true,
   "suppressOutput": false,
-  "systemMessage": "shown to the user",
+  "systemMessage": "surfaced to the model in Phase 1",
   "terminalSequence": "",
   "decision": "block",
   "reason": "why (with decision:block)",
@@ -314,8 +319,11 @@ The JSON fields serf honors today:
 }
 ```
 
-- `systemMessage` is **user-visible**; `hookSpecificOutput.additionalContext` is
-  **model context**, routed separately.
+- `systemMessage` and `hookSpecificOutput.additionalContext` are **both delivered
+  to the model in Phase 1** — they are kept distinct in the data model, but the
+  separate user-visible delivery channel for `systemMessage` is a deferred
+  (Phase B) item. Do not rely on `systemMessage` being shown only to the user
+  today; both reach the model.
 - `decision: "block"` blocks where the event supports it (e.g. `Stop`,
   `SubagentStop`).
 - For `PreToolUse`, `hookSpecificOutput.permissionDecision: "deny"` denies the
@@ -408,8 +416,8 @@ before they run, and (3) logs every tool result. Drop this at
 `PreToolUse` input JSON on stdin; to deny a call it prints
 `{"hookSpecificOutput":{"permissionDecision":"deny"}}` and exits 0, or simply
 exits 2. `hooks/log-result.sh` reads the `PostToolUse` input and exits 0 — its
-stdout becomes a user-visible note. Remember: the `PreToolUse` matcher is `Bash`,
-**not** `shell`.
+stdout becomes a `systemMessage` (delivered to the model in Phase 1). Remember:
+the `PreToolUse` matcher is `Bash`, **not** `shell`.
 
 ## See also
 

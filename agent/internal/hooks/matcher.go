@@ -16,6 +16,11 @@ import (
 //  3. Anything else is treated as a regular expression (Go RE2). On compile
 //     error, returns (false, err).
 //
+// Serf-native divergence: surrounding whitespace is trimmed from the matcher
+// before classification (a convenience), so " Bash " is treated as the exact
+// matcher "Bash". Claude treats the matcher as a literal regex and would not trim.
+// This is a minor, intentional serf-native nicety.
+//
 // Caveat: Claude documents JavaScript regular expressions. Go RE2 is a strict
 // subset: lookbehind assertions and backreferences are not supported. If exact
 // JS regex parity becomes required, an explicit JS regex engine must be added.
