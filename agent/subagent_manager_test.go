@@ -50,7 +50,7 @@ func (f *fakeEmit) count() int {
 
 func TestSubagentManager_TrackGetRemove(t *testing.T) {
 	fe := &fakeEmit{}
-	m := newSubagentManager(fe.emit)
+	m := newSubagentManager(fe.emit, nil)
 
 	if got := m.get("missing"); got != nil {
 		t.Fatalf("get on empty manager: got %v, want nil", got)
@@ -79,7 +79,7 @@ func TestSubagentManager_TrackGetRemove(t *testing.T) {
 
 func TestSubagentManager_DrainForCloseReturnsAllAndClears(t *testing.T) {
 	fe := &fakeEmit{}
-	m := newSubagentManager(fe.emit)
+	m := newSubagentManager(fe.emit, nil)
 
 	want := map[string]*subagent{
 		"a": {id: "a"},
@@ -121,7 +121,7 @@ func TestSubagentManager_DrainForCloseReturnsAllAndClears(t *testing.T) {
 
 func TestSubagentManager_EmitClosureIsCaptured(t *testing.T) {
 	fe := &fakeEmit{}
-	m := newSubagentManager(fe.emit)
+	m := newSubagentManager(fe.emit, nil)
 	m.emit(events.EventSubagentStart, nil)
 	m.emit(events.EventSubagentEnd, nil)
 	if got := fe.count(); got != 2 {
@@ -131,7 +131,7 @@ func TestSubagentManager_EmitClosureIsCaptured(t *testing.T) {
 
 func TestSubagentManager_InfosEnumeratesTracked(t *testing.T) {
 	fe := &fakeEmit{}
-	m := newSubagentManager(fe.emit)
+	m := newSubagentManager(fe.emit, nil)
 	m.track(&subagent{id: "a", status: SubagentRunning, turnsUsed: 3})
 	m.track(&subagent{id: "b", status: SubagentCompleted, turnsUsed: 7})
 
@@ -157,7 +157,7 @@ func TestSubagentManager_InfosEnumeratesTracked(t *testing.T) {
 // this task nothing produces one — so this exercises the filter, not the close path.
 func TestInfos_HidesClosedByDefault(t *testing.T) {
 	fe := &fakeEmit{}
-	m := newSubagentManager(fe.emit)
+	m := newSubagentManager(fe.emit, nil)
 	m.track(&subagent{id: "done", status: SubagentCompleted, turnsUsed: 2})
 	m.track(&subagent{id: "gone", status: SubagentClosed, turnsUsed: 5})
 
@@ -178,7 +178,7 @@ func TestInfos_HidesClosedByDefault(t *testing.T) {
 // that the default filter would hide.
 func TestListAgents_IncludeClosed(t *testing.T) {
 	fe := &fakeEmit{}
-	m := newSubagentManager(fe.emit)
+	m := newSubagentManager(fe.emit, nil)
 	m.track(&subagent{id: "done", status: SubagentCompleted, turnsUsed: 2})
 	m.track(&subagent{id: "gone", status: SubagentClosed, turnsUsed: 5})
 
@@ -741,7 +741,7 @@ func TestRetention_GCEvictsOldestWithinClass(t *testing.T) {
 // Load-bearing: if infoLocked dropped the field, CloseTimedOut would be false here.
 func TestInfo_SurfacesCloseTimedOut(t *testing.T) {
 	fe := &fakeEmit{}
-	m := newSubagentManager(fe.emit)
+	m := newSubagentManager(fe.emit, nil)
 	m.track(&subagent{id: "stuck", status: SubagentClosing, closeTimedOut: true, lastOutcome: SubagentCompleted})
 
 	agents, count := m.listAgents("01ROOT", "", false)

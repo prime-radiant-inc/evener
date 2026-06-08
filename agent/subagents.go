@@ -60,9 +60,10 @@ Your job is to complete the task and report your findings.`
 var rootOnlyAgentManagementTools = []string{"spawn_agent", "resume_agent", "wait", "close_agent", "cancel_agent", "list_agents", "subagent_output"}
 
 type subagent struct {
-	id   string
-	sess *Session
-	emit func(events.EventKind, events.EventData)
+	id     string
+	sess   *Session
+	emit   func(events.EventKind, events.EventData)
+	notify func(subagentNotification)
 
 	mu              sync.Mutex
 	running         bool
@@ -73,6 +74,7 @@ type subagent struct {
 	err             error
 	resultConsumed  bool // true after the first wait returns this run's result
 	endEmitted      bool
+	notifyArmed     bool               // true after this run armed its one terminal notification; reset on idle-resume
 	nudgeEnabled    bool               // true for default subagents that should be nudged to communicate
 	cancel          context.CancelFunc // cancels the current run's context
 	cancelRequested bool               // set by cancel_agent so finalize maps a context.Canceled run to cancelled
@@ -350,6 +352,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		id:           subSess.id,
 		sess:         subSess,
 		emit:         s.emit,
+		notify:       s.subagents.notify,
 		running:      true,
 		status:       SubagentRunning,
 		done:         make(chan struct{}),
@@ -433,6 +436,7 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 	sub.err = nil
 	sub.resultConsumed = false
 	sub.endEmitted = false
+	sub.notifyArmed = false
 	sub.cancel = runCancel
 	sub.cancelRequested = false
 	sub.startedAt = resumeTime
@@ -648,6 +652,21 @@ func (a *subagent) run(ctx context.Context, input string) {
 	status := a.status
 	turnsUsed := a.turnsUsed
 	emit := a.emit
+	// Arm exactly one terminal notification per run. Capture the metadata while
+	// locked, then deliver after unlocking — notify must never run under a.mu.
+	armNow := !a.notifyArmed && a.notify != nil
+	var n subagentNotification
+	if armNow {
+		a.notifyArmed = true
+		n = subagentNotification{
+			AgentID:       a.id,
+			Status:        string(a.status),
+			Reason:        string(a.reasonLocked()),
+			TranscriptRef: encodeRef("", a.sess.ID()),
+			TurnsUsed:     a.turnsUsed,
+		}
+	}
+	notify := a.notify
 	a.mu.Unlock()
 
 	if done != nil {
@@ -660,6 +679,9 @@ func (a *subagent) run(ctx context.Context, input string) {
 			TurnsUsed: turnsUsed,
 			Reason:    string(status),
 		})
+	}
+	if armNow {
+		notify(n)
 	}
 }
 

@@ -108,6 +108,17 @@ type Session struct {
 	depth     int
 	subagents *subagentManager
 
+	// pendingNotifs is the durable per-parent queue of pending child-completion
+	// notifications. It is the single source of truth, drop-safe, and drained later
+	// by a notification turn. notifyFunc, when set by the server (Task 5), kicks the
+	// drain; it stays nil here and a nil kick is a no-op.
+	//
+	// Guarded by its own mutex; never taken while holding sub.mu or the manager
+	// mutex.
+	pendingNotifsMu sync.Mutex
+	pendingNotifs   []subagentNotification
+	notifyFunc      func()
+
 	// context management
 	contextMgr *contextmgr.Manager
 	strategy   contextmgr.Strategy
@@ -192,6 +203,32 @@ type Session struct {
 	systemPromptOverride string
 	cachedSystemPrompt   string
 	promptSourceLog      []promptSource
+}
+
+// subagentNotification is the metadata-only record armed when a child's run
+// reaches a terminal state. It carries no child output: a notification turn
+// reads the transcript via TranscriptRef when it wants more.
+type subagentNotification struct {
+	AgentID, Status, Reason, TranscriptRef string
+	TurnsUsed                              int
+}
+
+// enqueueNotification appends a pending notification under pendingNotifsMu. The
+// lock is never taken while holding sub.mu or the manager mutex.
+func (s *Session) enqueueNotification(n subagentNotification) {
+	s.pendingNotifsMu.Lock()
+	defer s.pendingNotifsMu.Unlock()
+	s.pendingNotifs = append(s.pendingNotifs, n)
+}
+
+// drainNotifications swaps out the pending queue under pendingNotifsMu, returning
+// the queued notifications and resetting the queue to nil.
+func (s *Session) drainNotifications() []subagentNotification {
+	s.pendingNotifsMu.Lock()
+	defer s.pendingNotifsMu.Unlock()
+	drained := s.pendingNotifs
+	s.pendingNotifs = nil
+	return drained
 }
 
 // communicateResult records whether and how the agent delivered a result via

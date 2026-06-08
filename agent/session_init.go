@@ -111,7 +111,12 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		sessionCtx:     sessCtx,
 		cancelFunc:     sessCancel,
 	}
-	s.subagents = newSubagentManager(s.emit)
+	s.subagents = newSubagentManager(s.emit, func(n subagentNotification) {
+		s.enqueueNotification(n)
+		if s.notifyFunc != nil {
+			s.notifyFunc()
+		}
+	})
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind)
 	if err != nil {
@@ -294,7 +299,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		sessionCtx: sessCtx,
 		cancelFunc: sessCancel,
 	}
-	s.subagents = newSubagentManager(s.emit)
+	s.subagents = newSubagentManager(s.emit, func(n subagentNotification) {
+		s.enqueueNotification(n)
+		if s.notifyFunc != nil {
+			s.notifyFunc()
+		}
+	})
 
 	// Restore persisted goal state before initSessionState so the goal store is
 	// populated before any turn runs. No kick is wired yet ("loaded but idle"):
