@@ -346,22 +346,31 @@ func TestCancelAgent_RunningChildBecomesCancelledAndResumable(t *testing.T) {
 }
 
 // TestCancelAgent_GenuineFailureRacingCancelStaysFailed proves the discriminator
-// keys on error identity, not runCtx.Err(): when the run finishes with a genuine
-// non-context error while a cancel was requested, the status must be failed (the
-// real failure is surfaced), never cancelled.
+// keys on error identity: when the run finishes with a genuine non-context.Canceled
+// error while a cancel was requested, the status must be SubagentFailed (the real
+// failure is surfaced), never SubagentCancelled.
+//
+// The injected error ("provider boom 500") is a plain errors.New, which Classify
+// treats as retryable. To prevent the retry layer from masking it with a downstream
+// substitute error, we set LLMRetryPolicy.MaxRetries=0: the Retry loop executes
+// exactly one attempt and returns the injected error verbatim regardless of its
+// retryability class (the loop exits when attempt==maxRetries). No sleeps occur.
 func TestCancelAgent_GenuineFailureRacingCancelStaysFailed(t *testing.T) {
+	const wantErrMarker = "provider boom 500"
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeErrAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) (llm.Response, error){
 			func(req llm.Request) (llm.Response, error) {
-				return llm.Response{}, errors.New("provider 500")
+				return llm.Response{}, errors.New(wantErrMarker)
 			},
 		},
 	})
+	noRetry := llm.RetryPolicy{MaxRetries: 0}
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 1,
+		LLMRetryPolicy:   &noRetry,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -385,9 +394,13 @@ func TestCancelAgent_GenuineFailureRacingCancelStaysFailed(t *testing.T) {
 
 	sub.mu.Lock()
 	status := sub.status
+	runErr := sub.err
 	sub.mu.Unlock()
 	if status != SubagentFailed {
 		t.Fatalf("status = %q, want %q (genuine failure must not be masked as cancelled)", status, SubagentFailed)
+	}
+	if runErr == nil || !strings.Contains(runErr.Error(), wantErrMarker) {
+		t.Fatalf("sub.err = %v, want it to contain %q (injected non-context error must reach finalize verbatim)", runErr, wantErrMarker)
 	}
 }
 
