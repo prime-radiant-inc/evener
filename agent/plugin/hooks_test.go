@@ -334,6 +334,43 @@ func TestParsePluginHooks_NoUnknownFieldsWhenClean(t *testing.T) {
 	}
 }
 
+// TestParsePluginHooks_UnknownFieldsCaseInsensitiveKnownKeys verifies that a known
+// handler key spelled with different casing (e.g. "Command", "TYPE") is NOT recorded
+// in UnknownFields. encoding/json matches struct fields case-insensitively, so such
+// a key populates the typed spec; the known-key membership check must fold case to
+// match, or it would misreport a consumed key as unknown. A genuinely-unknown key is
+// still captured (Fix 3).
+func TestParsePluginHooks_UnknownFieldsCaseInsensitiveKnownKeys(t *testing.T) {
+	data := []byte(`{"PreToolUse":[{"matcher":"*","hooks":[
+		{"TYPE":"command","Command":"ls","futureField":1}
+	]}]}`)
+	hooks, err := parsePluginHooks(data, "/p", "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := hooks[HookPreToolUse][0]
+	// The case-variant known keys populated their typed fields...
+	if h.Type != "command" {
+		t.Errorf("Type = %q, want %q (case-insensitive json match)", h.Type, "command")
+	}
+	if h.Command != "ls" {
+		t.Errorf("Command = %q, want %q (case-insensitive json match)", h.Command, "ls")
+	}
+	// ...so they must NOT be reported as unknown; only the genuinely-unknown key is.
+	if _, ok := h.UnknownFields["TYPE"]; ok {
+		t.Errorf("known key \"TYPE\" (case variant) must not be in UnknownFields; got %v", h.UnknownFields)
+	}
+	if _, ok := h.UnknownFields["Command"]; ok {
+		t.Errorf("known key \"Command\" (case variant) must not be in UnknownFields; got %v", h.UnknownFields)
+	}
+	if _, ok := h.UnknownFields["futureField"]; !ok {
+		t.Errorf("genuinely-unknown key futureField must still be captured; got %v", h.UnknownFields)
+	}
+	if len(h.UnknownFields) != 1 {
+		t.Fatalf("UnknownFields = %v, want exactly {futureField}", h.UnknownFields)
+	}
+}
+
 // TestParsePluginHooks_UnknownFieldsCapturedFromFile verifies that the raw-bytes
 // capture path also works when hooks are loaded from a wrapper-format file (the
 // most common real-world layout), not just inline direct format (Fix 1).

@@ -350,7 +350,11 @@ func captureUnknownFields(rawHandler json.RawMessage) map[string]json.RawMessage
 	}
 	var result map[string]json.RawMessage
 	for k, v := range all {
-		if !knownHookSpecKeys[k] {
+		// encoding/json matches struct fields case-insensitively, so a known key
+		// spelled with different casing (e.g. "Command") still populates the typed
+		// spec. Fold case before the membership check so it is not misreported as
+		// unknown. knownHookSpecKeys is all lowercase.
+		if !knownHookSpecKeys[strings.ToLower(k)] {
 			if result == nil {
 				result = make(map[string]json.RawMessage)
 			}
