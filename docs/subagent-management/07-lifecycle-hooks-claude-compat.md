@@ -40,7 +40,7 @@ The design preserves existing serf behavior where it works, fixes compatibility 
 
 Tiers `serf-native` and `claude-compatible-subset` are **shipped** and documented in full in [Hooks](../hooks.md): the Claude-compatible matcher (exact/pipe-list vs Go RE2, invalid-regex skip-and-diagnose; `Bash` no longer substring-matches `BashOutput`), the `command` exec-form (`args`) and explicit `shell` selection, the serf-native `prompt` handler, the official input fields and legacy aliases, the data-model split of `additionalContext` from `systemMessage`, the event-specific exit-code table for the nine fired events, the `CLAUDE_EFFORT`/`PLUGIN_ROOT` env vars, tier-labeled `/status` diagnostics, and loud load-time warnings for unknown events, recognized-but-unsupported events, invalid-regex matchers, and unsupported handler types. The implementing packages are listed under [Source anchors](#serf-code-anchors).
 
-Every other Claude hook capability — new events, the `http`/`mcp_tool`/`agent` handler types, the `allow|deny|ask|defer` `PreToolUse` permission schema, `if` permission-rule evaluation, async execution, a distinct delivery channel for `additionalContext`, and typed SDK lifecycle hooks — is **deferred** and marked reserved/experimental below. See [Roadmap](#roadmap-deferred-phases).
+Every other Claude hook capability — new events, the `http`/`mcp_tool`/`agent` handler types, the `PreToolUse` `ask`/`defer` decisions and `updatedInput` revalidation, `if` permission-rule evaluation, async execution, and typed SDK lifecycle hooks — is **deferred** and marked reserved/experimental below. See [Roadmap](#roadmap-deferred-phases).
 
 ## Goals
 
@@ -90,7 +90,7 @@ Typed or internal behavior owned by serf: internal lifecycle events, SDK callbac
 
 ### `claude-compatible-subset`
 
-Behavior implemented and tested to match the Claude Code docs closely enough for normal plugin/config portability. A subset feature includes parser support, runtime support, diagnostics, tests, and documented caveats. The shipped `claude-compatible-subset` — wrapper/direct JSON parsing and file discovery, the nine fired events, matcher semantics, command `args` exec-form and `shell` selection, the official input fields and legacy aliases, the `additionalContext`/`systemMessage` data-model split, the fired-event exit-code table, the `CLAUDE_EFFORT` env var, and `command`/`prompt` handler execution — is documented in full in [Hooks](../hooks.md). Claude-compatible handler support remains event-specific per the [handler support table](#handler-support-by-event).
+Behavior implemented and tested to match the Claude Code docs closely enough for normal plugin/config portability. A subset feature includes parser support, runtime support, diagnostics, tests, and documented caveats. The shipped `claude-compatible-subset` — wrapper/direct JSON parsing and file discovery, the nine fired events, matcher semantics, command `args` exec-form and `shell` selection, the official input fields and legacy aliases, the `additionalContext` model-delivery channel (system reminder) and `systemMessage` user-display channel, the `PreToolUse` `allow`/`deny` decisions with `permissionDecisionReason` and the deprecated `approve`/`block` mapping, the fired-event exit-code table, the `CLAUDE_EFFORT` env var, and `command`/`prompt` handler execution — is documented in full in [Hooks](../hooks.md). Claude-compatible handler support remains event-specific per the [handler support table](#handler-support-by-event).
 
 ### `reserved-placeholder`
 
@@ -98,10 +98,9 @@ Claude-documented behavior serf recognizes as a future compatibility target but 
 
 - the events serf does not yet fire — `PostToolUseFailure`, `PostToolBatch`, `SubagentStart`, `PostCompact`, `PermissionRequest`, `PermissionDenied`, `ConfigChange`, `UserPromptExpansion`, `StopFailure`, plus `Setup`, `InstructionsLoaded`, `MessageDisplay`, `TaskCreated`, `TaskCompleted`, `TeammateIdle`, `CwdChanged`, `FileChanged`, `WorktreeCreate`, `WorktreeRemove`, `Elicitation`, `ElicitationResult`;
 - the `http` and `mcp_tool` handler types;
-- the `PreToolUse` preferred output schema (`permissionDecision`: `allow|deny|ask|defer`, `permissionDecisionReason`, `updatedInput` revalidation, deprecated `approve`/`block` mapping);
+- the `PreToolUse` `ask`/`defer` decisions (no interactive permission prompt) and `updatedInput` revalidation;
 - `if` permission-rule evaluation; `async`/`asyncRewake` execution; `once`/`statusMessage` behavior;
 - advanced `updatedPermissions`, `watchPaths`, `reloadSkills`, async re-wake;
-- a distinct `additionalContext` delivery channel to the model;
 - exact JS-regex features unsupported by Go RE2.
 
 ### `experimental`
@@ -278,7 +277,7 @@ Serf tracks the full Claude-documented event vocabulary, but only fires events t
 | `UserPromptSubmit` | implemented, compatibility-incomplete | no matcher | Runs after `USER_INPUT` emit, transcript append, and namer launch; hook messages are queued via `Steer` and drained before the model request. Blocking/erase-prompt parity still needs a placement redesign. |
 | `UserPromptExpansion` | reserved-placeholder | command name | Implement only if slash/prompt expansion has a hook boundary. |
 | `MessageDisplay` | reserved-placeholder | no matcher | Display-only; must not mutate transcript/model context. |
-| `PreToolUse` | implemented, compatibility-incomplete | tool name | Runs before registry schema validation and can rewrite input; the preferred output schema is reserved (Phase B). |
+| `PreToolUse` | implemented, compatibility-incomplete | tool name | Runs before registry schema validation and can rewrite input; `allow`/`deny` and deprecated mapping shipped; `ask`/`defer` and `updatedInput` revalidation reserved. |
 | `PermissionRequest` | reserved-placeholder | tool name | Requires a serf approval/permission-request boundary. |
 | `PostToolUse` | implemented, compatibility-incomplete | tool name | Cannot undo or block tool execution; can add context/messages. |
 | `PostToolUseFailure` | reserved-placeholder | tool name | Uses official `error`, optional `is_interrupt`, and `duration_ms` fields. |
@@ -471,15 +470,15 @@ Never put secrets in event diagnostics. If env/header substitution fails, report
 
 ### General parsing rules and universal JSON fields
 
-The general parsing rules (exit 0 = success / plain-text context / JSON decision; exit 2 = event-specific block with JSON ignored; other non-zero = non-blocking error) and the output JSON serf acts on (`systemMessage`, `terminalSequence`, `hookSpecificOutput.{permissionDecision, updatedInput, additionalContext}`, and top-level `decision`/`reason`) are implemented; see [Hooks → What your hook returns](../hooks.md#what-your-hook-returns).
+The general parsing rules (exit 0 = success / plain-text context / JSON decision; exit 2 = event-specific block with JSON ignored; other non-zero = non-blocking error) and the output JSON serf acts on (`systemMessage`, `terminalSequence`, `hookSpecificOutput.{permissionDecision, permissionDecisionReason, updatedInput, additionalContext}`, and top-level `decision`/`reason`) are implemented; see [Hooks → What your hook returns](../hooks.md#what-your-hook-returns).
+
+Delivery channels (shipped): `hookSpecificOutput.additionalContext` is delivered to the **model** wrapped in a system reminder; the top-level `systemMessage` field is shown to the **user** (diagnostic-warning channel) and is **not** sent to the model. These are distinct channels, not interchangeable.
 
 The remaining universal fields are part of the Claude output contract but not fully honored by serf yet:
 
 - `continue` (default `true`) — Claude: a value of `false` halts further processing for the event. Serf parses it but does not act on it; a hook that returns `continue: false` still runs to completion.
 - `stopReason` — Claude: the message surfaced to the user when `continue` is `false`. Serf does not parse or consume it.
 - `suppressOutput` (default `false`) — Claude: suppress normal hook-output display. Serf parses it but does not act on it.
-
-`hookSpecificOutput.additionalContext` is split from user-visible `systemMessage` in the data model, but its distinct delivery channel to the model is reserved ([Phase B](#phase-b--core-current-claude-events-and-output-schemas-reserved-placeholder)).
 
 The event-specific output schemas below are the **reserved** part of the output contract — the structured decisions serf does not yet honor in full.
 
@@ -498,7 +497,7 @@ For events where Claude allows top-level blocking:
 
 Relevant events include `UserPromptSubmit`, `UserPromptExpansion`, `PostToolUse`, `PostToolUseFailure`, `PostToolBatch`, `Stop`, `SubagentStop`, `ConfigChange`, and `PreCompact`. For `PostToolUse`/`PostToolUseFailure`, a block decision cannot retroactively undo an already-completed tool execution; it maps only to the event's supported feedback/loop behavior. Serf currently honors the top-level `decision: "block"` for `Stop`/`SubagentStop`.
 
-#### `PreToolUse` (preferred schema reserved, Phase B)
+#### `PreToolUse` (partially shipped; see [Hooks](../hooks.md#what-your-hook-returns))
 
 Preferred schema:
 
@@ -514,7 +513,9 @@ Preferred schema:
 }
 ```
 
-Deprecated compatibility mapping (reserved): top-level `decision: "approve"` → `permissionDecision: "allow"`; `decision: "block"` → `permissionDecision: "deny"`; top-level `reason` → `permissionDecisionReason`. Serf currently honors `permissionDecision: "deny"`, `updatedInput`, and `additionalContext`; the full `allow|ask|defer` schema is reserved.
+**Shipped** (`claude-compatible-subset`): `permissionDecision: "allow"` and `"deny"` are honored, with the reason read from `permissionDecisionReason`. The deprecated compatibility mapping is accepted as a fallback: top-level `decision: "approve"` → `allow`; `decision: "block"` → `deny`; top-level `reason` → `permissionDecisionReason`. The preferred `permissionDecision` wins when both are present. `updatedInput` is applied before validation. `additionalContext` is delivered to the model; see [delivery channels](#general-parsing-rules-and-universal-json-fields).
+
+**Reserved** (`reserved-placeholder`): `ask` and `defer` are recognized but not honored — serf has no interactive permission prompt, so the tool proceeds and a user-visible diagnostic names the unsupported decision. `updatedInput` revalidation (re-running schema validation after input rewrite) is also reserved. `PermissionRequest`/`PermissionDenied` are blocked on a nonexistent approval flow.
 
 #### `PermissionRequest` (reserved)
 
@@ -654,13 +655,17 @@ The full diagnostic field set spans the reserved handler types as well. Where av
 
 Phase 1 is the shipped `claude-compatible-subset`, documented in [Hooks](../hooks.md). The remaining phases are a roadmap, not a build plan; each item stays `reserved-placeholder` (parsed/diagnosed, never advertised as working) or `experimental` until it ships. The phase boundary is explicit: Phase 1 = "the hooks that already fire, made Claude-compatible in matcher / exec / IO / exit-code, with honest diagnostics for everything else."
 
-### Phase B — core current Claude events and output schemas (`reserved-placeholder`)
+### Phase B — core current Claude events and output schemas
 
+**Shipped (Phase B partial):**
+- `PreToolUse` `allow`/`deny` decisions, `permissionDecisionReason`, and the deprecated `approve`/`block` top-level mapping.
+- `hookSpecificOutput.additionalContext` model-delivery channel (system reminder); `systemMessage` user-display channel.
+
+**Remaining reserved (`reserved-placeholder`):**
 - Parser recognition and runner methods for `PostToolUseFailure`, `PostToolBatch`, `SubagentStart`, `PostCompact`, `PermissionRequest`, `PermissionDenied`, `ConfigChange`, `UserPromptExpansion`, `StopFailure` — wired only at real serf runtime boundaries.
-- The preferred `PreToolUse` output schema (`allow|deny|ask|defer`, `permissionDecisionReason`, deprecated `approve`/`block` mapping, revalidation after `updatedInput`).
+- `PreToolUse` `ask`/`defer` decisions (no interactive permission prompt) and `updatedInput` revalidation after input rewrite.
 - The `PermissionRequest` decision object and `PermissionDenied.retry`, gated on a real serf approval flow.
 - Top-level `decision: "block"` for the broader event set; `if` permission-rule evaluation.
-- A distinct model-context delivery channel for `additionalContext` (the data-model split already exists).
 
 ### Phase C — handler types beyond command/prompt (`reserved-placeholder`; `agent` is `experimental`)
 
@@ -696,7 +701,7 @@ These are the contract the implemented behavior satisfies (Phase 1 — shipped a
 - MCP tool names such as `mcp__memory__search` match regex `mcp__memory__.*` but not exact matcher `mcp__memory`.
 - Command hooks support shell form and exec-form `args` without requiring plugin authors to wrap every path in `bash -c`.
 - Hook input includes official common fields when available and preserves legacy aliases during migration.
-- `additionalContext` is routed separately from user-visible `systemMessage` (data model).
+- `additionalContext` is delivered to the model (system reminder); `systemMessage` is shown to the user only — the two fields are distinct in data model and delivery channel.
 - Exit-code 2 behavior is event-specific and table-driven; JSON output is parsed only on exit 0 for command hooks.
 - HTTP hooks, once implemented, cannot block by status code alone.
 - Unsupported Claude events/handler types are reported as unsupported/reserved, not silently treated as implemented.
@@ -737,7 +742,8 @@ The implemented subset is covered by `agent/internal/hooks/*_test.go`, `agent/pl
 - Exit 0 empty stdout = no decision; exit 0 plain text = context/message; exit 0 universal JSON fields.
 - Exit 2 ignores JSON and follows event-specific behavior.
 - Separate routing for `systemMessage`, `additionalContext`, and `terminalSequence`.
-- (Reserved phases) `PreToolUse` `allow`/`deny`/`ask`/`defer`, `updatedInput`, deprecated mapping; top-level `decision: "block"` for the broader set; `PermissionRequest`/`PermissionDenied` schemas.
+- (Shipped) `PreToolUse` `allow`/`deny`, `permissionDecisionReason`, deprecated `approve`/`block` mapping, and `updatedInput` rewrite; `additionalContext` model delivery and `systemMessage` user display.
+- (Reserved phases) `PreToolUse` `ask`/`defer` and `updatedInput` revalidation; top-level `decision: "block"` for the broader set; `PermissionRequest`/`PermissionDenied` schemas.
 
 ### Ordering and policy tests
 
