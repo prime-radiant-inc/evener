@@ -263,15 +263,16 @@ func (r *Runner) MatchHooks(event plugin.HookEvent, toolName string) []plugin.Re
 	for _, hook := range r.hooks[event] {
 		ok, err := matchTarget(hook.Matcher, toolName)
 		if err != nil {
-			// Invalid regex: skip the hook and surface a sanitized diagnostic.
+			// Invalid regex: skip the hook and surface a loud, sanitized warning.
+			// The matcher string is the only matcher-derived data exposed; the
+			// hook payload, env, and tool input are never included.
 			if r.onEvent != nil {
-				r.onEvent(events.EventHookEnd, events.HookEndData{
-					Event:      string(event),
-					HookType:   hook.Type,
-					Matcher:    hook.Matcher,
+				r.onEvent(events.EventWarning, events.WarningData{
+					Source:     "hooks",
+					Title:      "invalid hook matcher",
+					Message:    invalidMatcherWarning(hook.PluginName, string(event), hook.Matcher),
 					PluginName: hook.PluginName,
-					ExitCode:   -1,
-					// TODO(task7): surface invalid_matcher as a dedicated diagnostic category.
+					EventName:  string(event),
 				})
 			}
 			continue
@@ -281,6 +282,15 @@ func (r *Runner) MatchHooks(event plugin.HookEvent, toolName string) []plugin.Re
 		}
 	}
 	return matched
+}
+
+// invalidMatcherWarning builds the user-visible warning text for a hook skipped
+// because its matcher is not a valid Go RE2 regex. It names the plugin, event,
+// and the offending matcher only — never any hook payload or secret.
+func invalidMatcherWarning(pluginName, event, matcher string) string {
+	return fmt.Sprintf(
+		"plugin %q hook for %s has an invalid matcher %q (not a valid Go RE2 regex; lookbehind/backreferences are unsupported); this hook is skipped and will not fire",
+		pluginName, event, matcher)
 }
 
 // RunResult contains the aggregated output from running hooks.

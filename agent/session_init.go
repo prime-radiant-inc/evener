@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -576,12 +577,44 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind) error {
 			runner.Add(event, eventHooks...)
 		}
 
-		// Accumulate recognized-but-unsupported events for diagnostics.
+		// Accumulate recognized-but-unsupported events for /status diagnostics and
+		// queue a loud warning per event: a plugin author who declares a hook for a
+		// reserved event serf does not fire yet gets a visible signal, not silence.
+		unsupported := make([]string, 0, len(p.UnsupportedHooks))
 		for event := range p.UnsupportedHooks {
 			if s.unsupportedPluginHookEvents == nil {
 				s.unsupportedPluginHookEvents = make(map[plugin.HookEvent]bool)
 			}
 			s.unsupportedPluginHookEvents[event] = true
+			unsupported = append(unsupported, string(event))
+		}
+		sort.Strings(unsupported)
+		for _, event := range unsupported {
+			s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{
+				Source:     "hooks",
+				Title:      "unsupported hook event",
+				Message:    unsupportedHookEventWarning(p.Manifest.Name, event),
+				PluginName: p.Manifest.Name,
+				EventName:  event,
+			})
+		}
+
+		// Queue a loud warning per UNKNOWN event name: not a recognized Claude or
+		// serf event (likely a typo), so the hook will never fire. This is the
+		// headline diagnostic — an unknown event must never fail silently.
+		unknown := make([]string, 0, len(p.UnknownHooks))
+		for event := range p.UnknownHooks {
+			unknown = append(unknown, event)
+		}
+		sort.Strings(unknown)
+		for _, event := range unknown {
+			s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{
+				Source:     "hooks",
+				Title:      "unknown hook event",
+				Message:    unknownHookEventWarning(p.Manifest.Name, event),
+				PluginName: p.Manifest.Name,
+				EventName:  event,
+			})
 		}
 
 		s.pluginMCPConfigs = append(s.pluginMCPConfigs, p.MCPConfigs...)
@@ -616,6 +649,25 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind) error {
 	}
 
 	return nil
+}
+
+// unknownHookEventWarning builds the load-time warning text for a hook declared
+// under an event name that is neither a serf event nor a recognized Claude
+// event — almost always a typo. It names the plugin and the offending event
+// only; no hook payload or secret is included.
+func unknownHookEventWarning(pluginName, event string) string {
+	return fmt.Sprintf(
+		"plugin %q declares a hook for %q, which is not a recognized Claude or serf hook event (likely a typo); this hook will never fire",
+		pluginName, event)
+}
+
+// unsupportedHookEventWarning builds the load-time warning text for a hook
+// declared under a recognized Claude event that serf does not yet fire
+// (reserved-placeholder). It names the plugin and the reserved event only.
+func unsupportedHookEventWarning(pluginName, event string) string {
+	return fmt.Sprintf(
+		"plugin %q declares a hook for the reserved event %q, which serf does not yet fire; this hook will not run",
+		pluginName, event)
 }
 
 // initMCP discovers and connects to MCP servers if configured.

@@ -134,6 +134,7 @@ type Session struct {
 	// Plugin-provided components
 	plugins             []plugin.Instance
 	pendingPluginEvents []events.PluginLoadedData
+	pendingHookWarnings []events.WarningData
 	hookRunner          *hooks.Runner
 	pluginAgents        map[string]plugin.Agent
 	pluginMCPConfigs    []mcpconfig.ServerConfig

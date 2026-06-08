@@ -157,6 +157,14 @@ type WarningData struct {
 	ApproxTokens      int    `json:"approx_tokens,omitempty"`
 	ContextWindowSize int    `json:"context_window_size,omitempty"`
 	Percent           int    `json:"percent,omitempty"`
+	// PluginName names the plugin a hook-configuration warning is about (empty
+	// for warnings unrelated to plugin hooks). Carries only the plugin name, no
+	// hook payload or secrets.
+	PluginName string `json:"plugin_name,omitempty"`
+	// EventName is the offending hook event name (or, for an invalid matcher,
+	// the event the matcher was declared under) for a hook-configuration
+	// warning. Carries only the name, no hook payload or secrets.
+	EventName string `json:"event_name,omitempty"`
 }
 
 // ErrorData is the payload for an EventError event.

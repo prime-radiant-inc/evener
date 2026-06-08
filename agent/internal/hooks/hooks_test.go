@@ -783,6 +783,51 @@ func TestMatchHooks_NegativeMatcherCoverage(t *testing.T) {
 	}
 }
 
+// TestMatchHooks_InvalidMatcherEmitsWarning verifies that when a hook is skipped
+// because its matcher is an invalid regex, MatchHooks emits a loud WARNING event
+// (not just the silent skip) naming the plugin, event, and matcher. The matcher
+// string is the only matcher-derived data exposed; no payload is leaked.
+func TestMatchHooks_InvalidMatcherEmitsWarning(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
+		Matcher:    "(", // invalid regex
+		Type:       "command",
+		Command:    "echo should-not-run",
+		Timeout:    5,
+		PluginName: "broken-plugin",
+	})
+
+	var warnings []events.WarningData
+	r.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+		if kind == events.EventWarning {
+			if w, ok := data.(events.WarningData); ok {
+				warnings = append(warnings, w)
+			}
+		}
+	})
+
+	if got := r.MatchHooks(plugin.HookPreToolUse, "Bash"); len(got) != 0 {
+		t.Fatalf("invalid regex: hook must be skipped; got %d matches", len(got))
+	}
+
+	if len(warnings) != 1 {
+		t.Fatalf("expected exactly 1 WARNING for the invalid matcher, got %d", len(warnings))
+	}
+	w := warnings[0]
+	if w.PluginName != "broken-plugin" {
+		t.Errorf("PluginName = %q, want %q", w.PluginName, "broken-plugin")
+	}
+	if w.EventName != string(plugin.HookPreToolUse) {
+		t.Errorf("EventName = %q, want %q", w.EventName, plugin.HookPreToolUse)
+	}
+	if !strings.Contains(w.Message, "(") {
+		t.Errorf("warning message %q should name the offending matcher", w.Message)
+	}
+	if !strings.Contains(strings.ToLower(w.Message), "matcher") {
+		t.Errorf("warning message %q should explain the matcher is invalid", w.Message)
+	}
+}
+
 // TestParseHookOutput_CurrentContracts_Characterization locks two behavioral contracts:
 // exit code 2 → IsError=true with stdout as SystemMessage, and hookSpecificOutput.additionalContext
 // is routed into AdditionalContext (separate from SystemMessage).

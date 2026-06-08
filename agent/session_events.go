@@ -18,6 +18,13 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 		s.emit(events.EventPluginLoaded, data)
 	}
 	s.pendingPluginEvents = nil
+	// Loud, visible warnings for misconfigured plugin hook declarations (unknown
+	// or recognized-but-unsupported event names), emitted after SESSION_START so
+	// they ride the same stream the CLI/TUI/web render. Collected in initPlugins.
+	for _, w := range s.pendingHookWarnings {
+		s.emit(events.EventWarning, w)
+	}
+	s.pendingHookWarnings = nil
 	for _, src := range promptSources {
 		s.emit(events.EventPromptLoaded, events.PromptLoadedData{Label: src.Label, Size: src.Size})
 	}
