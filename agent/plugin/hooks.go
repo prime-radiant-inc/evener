@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // HookEvent identifies when a hook fires.
@@ -172,9 +173,12 @@ type RegisteredHook struct {
 }
 
 // hookMatcherGroup is the JSON shape of a matcher group within an event.
+// Hooks is kept as raw bytes so each handler's unrecognized keys can be
+// recovered for diagnostics (encoding/json drops them when decoding into the
+// typed hookSpec).
 type hookMatcherGroup struct {
-	Matcher string     `json:"matcher"`
-	Hooks   []hookSpec `json:"hooks"`
+	Matcher string            `json:"matcher"`
+	Hooks   []json.RawMessage `json:"hooks"`
 }
 
 // hookSpec is the JSON shape of an individual hook action.
@@ -248,10 +252,14 @@ func parsePluginHooksDiagWithSource(data []byte, pluginDir, pluginName, sourcePa
 		if err = json.Unmarshal(data, &eventsRaw); err != nil {
 			return nil, nil, nil, fmt.Errorf("parsing hooks direct format: %w", err)
 		}
-		// In direct format, remove non-event keys (like "description") so they don't
-		// appear as unknown events.
+		// In direct format, drop meta keys that are not event names so they are not
+		// misclassified as unknown events: "description" plus any "$"-prefixed key
+		// (e.g. the common "$schema"). Recognized event names are never dropped.
 		for k := range eventsRaw {
-			if !recognizedClaudeEvents[HookEvent(k)] && k == "description" {
+			if recognizedClaudeEvents[HookEvent(k)] {
+				continue
+			}
+			if k == "description" || strings.HasPrefix(k, "$") {
 				delete(eventsRaw, k)
 			}
 		}
@@ -269,8 +277,13 @@ func parsePluginHooksDiagWithSource(data []byte, pluginDir, pluginName, sourcePa
 				return nil, nil, nil, fmt.Errorf("parsing hooks for event %q: %w", eventName, err)
 			}
 
-			for gi, g := range groups {
-				for hi, spec := range g.Hooks {
+			for gi, rawHandlers := range groups {
+				for hi, rawHandler := range rawHandlers.Hooks {
+					var spec hookSpec
+					if err = json.Unmarshal(rawHandler, &spec); err != nil {
+						return nil, nil, nil, fmt.Errorf("parsing handler %d in event %q: %w", hi, eventName, err)
+					}
+
 					timeout := spec.Timeout
 					if timeout == 0 {
 						switch spec.Type {
@@ -281,10 +294,8 @@ func parsePluginHooksDiagWithSource(data []byte, pluginDir, pluginName, sourcePa
 						}
 					}
 
-					unknownFields := captureUnknownFields(g.Hooks[hi])
-
 					rh := RegisteredHook{
-						Matcher:       g.Matcher,
+						Matcher:       rawHandlers.Matcher,
 						Type:          spec.Type,
 						Command:       expandPluginRoot(spec.Command, pluginDir),
 						Prompt:        expandPluginRoot(spec.Prompt, pluginDir),
@@ -292,7 +303,7 @@ func parsePluginHooksDiagWithSource(data []byte, pluginDir, pluginName, sourcePa
 						Model:         spec.Model,
 						PluginName:    pluginName,
 						PluginDir:     pluginDir,
-						Args:          spec.Args,
+						Args:          expandPluginRootArgs(spec.Args, pluginDir),
 						Shell:         spec.Shell,
 						If:            spec.If,
 						Async:         spec.Async,
@@ -302,7 +313,7 @@ func parsePluginHooksDiagWithSource(data []byte, pluginDir, pluginName, sourcePa
 						Event:         event,
 						GroupIndex:    gi,
 						HandlerIndex:  hi,
-						UnknownFields: unknownFields,
+						UnknownFields: captureUnknownFields(rawHandler),
 					}
 					hooks[event] = append(hooks[event], rh)
 				}
@@ -317,16 +328,14 @@ func parsePluginHooksDiagWithSource(data []byte, pluginDir, pluginName, sourcePa
 	return hooks, unsupported, unknown, nil
 }
 
-// captureUnknownFields re-unmarshals a hookSpec as a raw map and returns any keys
-// not present in knownHookSpecKeys, for forward-compatible diagnostics.
-func captureUnknownFields(spec hookSpec) map[string]json.RawMessage {
-	// Marshal the spec back to JSON so we can re-unmarshal into a raw map.
-	raw, err := json.Marshal(spec)
-	if err != nil {
-		return nil
-	}
+// captureUnknownFields parses the RAW handler JSON into a key→value map and
+// returns any keys not present in knownHookSpecKeys, for forward-compatible
+// diagnostics. It must read the original bytes — encoding/json silently drops
+// unknown keys when decoding into the typed hookSpec, so a re-marshaled spec can
+// never recover them.
+func captureUnknownFields(rawHandler json.RawMessage) map[string]json.RawMessage {
 	var all map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &all); err != nil {
+	if err := json.Unmarshal(rawHandler, &all); err != nil {
 		return nil
 	}
 	var result map[string]json.RawMessage
@@ -339,6 +348,22 @@ func captureUnknownFields(spec hookSpec) map[string]json.RawMessage {
 		}
 	}
 	return result
+}
+
+// expandPluginRootArgs applies expandPluginRoot to each exec-form argument so
+// ${CLAUDE_PLUGIN_ROOT}/${PLUGIN_ROOT} are substituted the same way as in the
+// Command and Prompt strings. Exec form has no shell, so without this the
+// placeholder would reach the program literally. Returns nil for an empty list
+// to preserve the "shell form" signal (len(Args)==0).
+func expandPluginRootArgs(args []string, pluginDir string) []string {
+	if len(args) == 0 {
+		return nil
+	}
+	out := make([]string, len(args))
+	for i, a := range args {
+		out[i] = expandPluginRoot(a, pluginDir)
+	}
+	return out
 }
 
 // discoverPluginHooksDiag finds and parses hook configuration for a plugin,

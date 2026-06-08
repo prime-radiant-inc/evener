@@ -294,6 +294,116 @@ func TestParsePluginHooks_CapturesArgsShellAndMetadata(t *testing.T) {
 	}
 }
 
+// TestParsePluginHooks_UnknownFieldsCapturedFromRaw verifies that unrecognized
+// handler keys are recovered from the RAW handler JSON. encoding/json drops
+// unknown keys when decoding into hookSpec, so the capture must read the original
+// bytes, not a re-marshaled hookSpec (Fix 1).
+func TestParsePluginHooks_UnknownFieldsCapturedFromRaw(t *testing.T) {
+	data := []byte(`{"PreToolUse":[{"matcher":"*","hooks":[
+		{"type":"command","command":"x","futureField":1,"url":"http://example","headers":{"k":"v"}}
+	]}]}`)
+	hooks, err := parsePluginHooks(data, "/p", "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := hooks[HookPreToolUse][0]
+	want := map[string]bool{"futureField": true, "url": true, "headers": true}
+	if len(h.UnknownFields) != len(want) {
+		t.Fatalf("UnknownFields = %v, want exactly keys %v", h.UnknownFields, want)
+	}
+	for k := range want {
+		if _, ok := h.UnknownFields[k]; !ok {
+			t.Errorf("UnknownFields missing key %q; got %v", k, h.UnknownFields)
+		}
+	}
+}
+
+// TestParsePluginHooks_NoUnknownFieldsWhenClean verifies a handler using only
+// known fields produces an empty UnknownFields (Fix 1).
+func TestParsePluginHooks_NoUnknownFieldsWhenClean(t *testing.T) {
+	data := []byte(`{"PreToolUse":[{"matcher":"*","hooks":[
+		{"type":"command","command":"x","args":["-c","y"],"shell":"bash","timeout":10}
+	]}]}`)
+	hooks, err := parsePluginHooks(data, "/p", "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := hooks[HookPreToolUse][0]
+	if len(h.UnknownFields) != 0 {
+		t.Fatalf("clean handler UnknownFields = %v, want empty", h.UnknownFields)
+	}
+}
+
+// TestParsePluginHooks_UnknownFieldsCapturedFromFile verifies that the raw-bytes
+// capture path also works when hooks are loaded from a wrapper-format file (the
+// most common real-world layout), not just inline direct format (Fix 1).
+func TestParsePluginHooks_UnknownFieldsWrapperFormat(t *testing.T) {
+	data := []byte(`{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[
+		{"type":"command","command":"x","futureField":1}
+	]}]}}`)
+	hooks, err := parsePluginHooks(data, "/p", "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := hooks[HookPreToolUse][0]
+	if _, ok := h.UnknownFields["futureField"]; !ok {
+		t.Fatalf("wrapper-format UnknownFields missing futureField; got %v", h.UnknownFields)
+	}
+}
+
+// TestParsePluginHooks_ExpandsPluginRootInArgs verifies that ${CLAUDE_PLUGIN_ROOT}
+// and ${PLUGIN_ROOT} are expanded in each Args element, matching the Command/Prompt
+// substitution. Exec form has no shell, so without this the placeholder would reach
+// the program literally despite the docs promising expansion (Fix 2).
+func TestParsePluginHooks_ExpandsPluginRootInArgs(t *testing.T) {
+	data := []byte(`{"PreToolUse":[{"matcher":"*","hooks":[
+		{"type":"command","command":"check","args":["--data","${CLAUDE_PLUGIN_ROOT}/d","--alt","${PLUGIN_ROOT}/e"]}
+	]}]}`)
+	hooks, err := parsePluginHooks(data, "/p", "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := hooks[HookPreToolUse][0]
+	if len(h.Args) != 4 {
+		t.Fatalf("args length = %d, want 4: %v", len(h.Args), h.Args)
+	}
+	if h.Args[1] != "/p/d" {
+		t.Errorf("Args[1] = %q, want %q", h.Args[1], "/p/d")
+	}
+	if h.Args[3] != "/p/e" {
+		t.Errorf("Args[3] = %q, want %q", h.Args[3], "/p/e")
+	}
+	// Non-placeholder args pass through unchanged.
+	if h.Args[0] != "--data" || h.Args[2] != "--alt" {
+		t.Errorf("literal args mangled: %v", h.Args)
+	}
+}
+
+// TestParsePluginHooks_DirectFormatIgnoresSchemaMeta verifies that a direct-format
+// file with a "$schema" meta key (and other $-prefixed keys) is not classified as
+// an unknown event, while real events still parse (Fix 6).
+func TestParsePluginHooks_DirectFormatIgnoresSchemaMeta(t *testing.T) {
+	data := []byte(`{
+		"$schema": "https://example.com/hooks.schema.json",
+		"$comment": "ignore me",
+		"description": "my hooks",
+		"PreToolUse": [{"matcher":"*","hooks":[{"type":"command","command":"x"}]}]
+	}`)
+	hooks, unsupported, unknown, err := parsePluginHooksDiag(data, "/p", "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unknown) != 0 {
+		t.Fatalf("meta keys must not be unknown events; got unknown=%v", unknown)
+	}
+	if len(unsupported) != 0 {
+		t.Fatalf("unexpected unsupported=%v", unsupported)
+	}
+	if len(hooks[HookPreToolUse]) != 1 {
+		t.Fatalf("real event did not parse: %v", hooks)
+	}
+}
+
 func TestParsePluginHooks_RecognizedButUnsupportedEvent(t *testing.T) {
 	data := []byte(`{"PostToolUseFailure":[{"matcher":"*","hooks":[{"type":"command","command":"x"}]}],
 		"TotallyBogusEvent":[{"hooks":[{"type":"command","command":"y"}]}]}`)
