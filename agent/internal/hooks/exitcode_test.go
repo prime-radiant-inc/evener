@@ -104,22 +104,22 @@ func TestHookRunner_PostToolUse_ExitCode2_DoesNotBlock(t *testing.T) {
 		HookEventName: "PostToolUse",
 		ToolName:      "Write",
 	})
-	// PostToolUse exit 2: should produce a system message (stderr surfaced)
-	if len(result.SystemMessages) == 0 {
-		t.Fatal("PostToolUse exit 2 should surface a system message")
+	// PostToolUse exit 2: stderr routes to the model (IsError → ModelContext).
+	if len(result.ModelContext) == 0 {
+		t.Fatal("PostToolUse exit 2 should surface a model context message")
 	}
 	// PostToolUse exit 2: must NOT behave like a deny — RunResult has no Denied field,
-	// so the key assertion is that a system message appears without blocking behavior.
+	// so the key assertion is that a model context message appears without blocking behavior.
 	// The absence of a block/deny field on RunResult is the structural guarantee;
 	// confirm the message contains our stderr content.
 	found := false
-	for _, msg := range result.SystemMessages {
+	for _, msg := range result.ModelContext {
 		if msg == "post-tool-error" || len(msg) > 0 {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("PostToolUse exit 2 system messages = %v, want non-empty", result.SystemMessages)
+		t.Fatalf("PostToolUse exit 2 model context = %v, want non-empty", result.ModelContext)
 	}
 }

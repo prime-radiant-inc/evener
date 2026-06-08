@@ -57,9 +57,9 @@ func TestRunUserPromptSubmit_PipesPromptToStdin(t *testing.T) {
 		Prompt:        "hello world",
 		UserPrompt:    "hello world",
 	})
-	joined := strings.Join(out.SystemMessages, " ")
+	joined := strings.Join(out.ModelContext, " ")
 	if !strings.Contains(joined, "prompt-present") {
-		t.Fatalf("command hook did not see top-level \"prompt\" on stdin; messages = %v", out.SystemMessages)
+		t.Fatalf("command hook did not see top-level \"prompt\" on stdin; messages = %v", out.ModelContext)
 	}
 }
 
@@ -409,14 +409,14 @@ func TestHookRunner_SessionStartUsesExplicitKind(t *testing.T) {
 		HookEventName: "SessionStart",
 	}
 
-	if got := runner.RunSessionStartFor(context.Background(), input, plugin.SessionStartKindResume); len(got.SystemMessages) != 0 {
-		t.Fatalf("resume SessionStart matched startup-only hook: %+v", got.SystemMessages)
+	if got := runner.RunSessionStartFor(context.Background(), input, plugin.SessionStartKindResume); len(got.ModelContext) != 0 {
+		t.Fatalf("resume SessionStart matched startup-only hook: %+v", got.ModelContext)
 	}
-	if got := runner.RunSessionStartFor(context.Background(), input, plugin.SessionStartKindStartup); len(got.SystemMessages) != 1 {
-		t.Fatalf("startup SessionStart messages = %d, want 1", len(got.SystemMessages))
+	if got := runner.RunSessionStartFor(context.Background(), input, plugin.SessionStartKindStartup); len(got.ModelContext) != 1 {
+		t.Fatalf("startup SessionStart model context = %d, want 1", len(got.ModelContext))
 	}
-	if got := runner.RunSessionStartFor(context.Background(), input, plugin.SessionStartKindClear); len(got.SystemMessages) != 1 {
-		t.Fatalf("clear SessionStart messages = %d, want 1", len(got.SystemMessages))
+	if got := runner.RunSessionStartFor(context.Background(), input, plugin.SessionStartKindClear); len(got.ModelContext) != 1 {
+		t.Fatalf("clear SessionStart model context = %d, want 1", len(got.ModelContext))
 	}
 }
 
@@ -479,8 +479,8 @@ func TestHookRunner_NoHooks(t *testing.T) {
 	if preResult.Denied {
 		t.Error("empty runner should not deny")
 	}
-	if len(preResult.SystemMessages) != 0 {
-		t.Error("empty runner should have no system messages")
+	if len(preResult.ModelContext) != 0 || len(preResult.UserMessages) != 0 {
+		t.Error("empty runner should have no messages")
 	}
 
 	StopResult := runner.RunStop(context.Background(), input)
@@ -489,8 +489,8 @@ func TestHookRunner_NoHooks(t *testing.T) {
 	}
 
 	hookResult := runner.RunPostToolUse(context.Background(), input)
-	if len(hookResult.SystemMessages) != 0 {
-		t.Error("empty runner should have no system messages")
+	if len(hookResult.ModelContext) != 0 || len(hookResult.UserMessages) != 0 {
+		t.Error("empty runner should have no messages")
 	}
 }
 

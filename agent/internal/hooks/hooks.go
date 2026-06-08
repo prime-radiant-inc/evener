@@ -365,8 +365,6 @@ func invalidMatcherWarning(pluginName, event, matcher string) string {
 
 // RunResult contains the aggregated output from running hooks.
 type RunResult struct {
-	SystemMessages    []string
-	AdditionalContext []string
 	// TerminalSequences is parsed but currently has no delivery-site consumer.
 	TerminalSequences []string
 	// ModelContext is delivered to the model (additionalContext, context-event
@@ -379,10 +377,8 @@ type RunResult struct {
 
 // PreToolUseResult contains aggregated output from PreToolUse hooks.
 type PreToolUseResult struct {
-	Denied            bool
-	DenyMessage       string
-	SystemMessages    []string
-	AdditionalContext []string
+	Denied      bool
+	DenyMessage string
 	// TerminalSequences is parsed but currently has no delivery-site consumer.
 	TerminalSequences []string
 	UpdatedInput      map[string]any
@@ -396,10 +392,8 @@ type PreToolUseResult struct {
 
 // StopResult contains aggregated output from Stop/SubagentStop hooks.
 type StopResult struct {
-	Blocked           bool
-	BlockReason       string
-	SystemMessages    []string
-	AdditionalContext []string
+	Blocked     bool
+	BlockReason string
 	// TerminalSequences is parsed but currently has no delivery-site consumer.
 	TerminalSequences []string
 	// ModelContext is delivered to the model (additionalContext, context-event
@@ -604,12 +598,6 @@ func (r *Runner) RunPreToolUse(ctx context.Context, input Input) PreToolUseResul
 	outputs := r.runAll(ctx, plugin.HookPreToolUse, input.ToolName, input)
 	var result PreToolUseResult
 	for _, o := range outputs {
-		if o.SystemMessage != "" {
-			result.SystemMessages = append(result.SystemMessages, o.SystemMessage)
-		}
-		if o.AdditionalContext != "" {
-			result.AdditionalContext = append(result.AdditionalContext, o.AdditionalContext)
-		}
 		if o.TerminalSequence != "" {
 			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
 		}
@@ -683,12 +671,6 @@ func (r *Runner) runStopEvent(ctx context.Context, event plugin.HookEvent, input
 	outputs := r.runAll(ctx, event, input.ToolName, input)
 	var result StopResult
 	for _, o := range outputs {
-		if o.SystemMessage != "" {
-			result.SystemMessages = append(result.SystemMessages, o.SystemMessage)
-		}
-		if o.AdditionalContext != "" {
-			result.AdditionalContext = append(result.AdditionalContext, o.AdditionalContext)
-		}
 		if o.TerminalSequence != "" {
 			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
 		}
@@ -770,12 +752,6 @@ func routeOutput(event plugin.HookEvent, o parsedHookOutput, model, user *[]stri
 func collectSystemMessages(event plugin.HookEvent, outputs []parsedHookOutput) RunResult {
 	var result RunResult
 	for _, o := range outputs {
-		if o.SystemMessage != "" {
-			result.SystemMessages = append(result.SystemMessages, o.SystemMessage)
-		}
-		if o.AdditionalContext != "" {
-			result.AdditionalContext = append(result.AdditionalContext, o.AdditionalContext)
-		}
 		if o.TerminalSequence != "" {
 			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
 		}

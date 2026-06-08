@@ -214,13 +214,13 @@ func TestRealPlugin_Superpowers_HookExecution(t *testing.T) {
 	result := runner.RunSessionStart(context.Background(), input)
 
 	// The superpowers session-start.sh outputs JSON with hookSpecificOutput.additionalContext
-	// which now routes to AdditionalContext (model-context), not SystemMessages (user-visible).
-	if len(result.AdditionalContext) == 0 {
-		t.Error("SessionStart hook should produce additional context")
+	// which routes to ModelContext (model-visible), not UserMessages (user-visible).
+	if len(result.ModelContext) == 0 {
+		t.Error("SessionStart hook should produce model context")
 	}
 
 	// Verify the output contains the expected content injection
-	for _, msg := range result.AdditionalContext {
+	for _, msg := range result.ModelContext {
 		if strings.Contains(msg, "superpowers") || strings.Contains(msg, "EXTREMELY_IMPORTANT") {
 			// Good - the hook injected its context
 			break
@@ -374,19 +374,12 @@ func TestRealPlugin_SecurityGuidance_HookExecution(t *testing.T) {
 	}
 	result := runner.RunPreToolUse(context.Background(), input)
 
-	// The hook should produce a system message about GitHub Actions security.
-	if len(result.SystemMessages) == 0 {
-		t.Fatal("PreToolUse hook should produce system messages for GitHub Actions file")
+	// The hook exits 2 on GitHub Actions files → Denied=true, DenyMessage has the security warning.
+	if !result.Denied {
+		t.Fatal("PreToolUse hook should deny for GitHub Actions file")
 	}
-	foundSecurityWarning := false
-	for _, msg := range result.SystemMessages {
-		if strings.Contains(msg, "GitHub Actions") || strings.Contains(msg, "Command Injection") {
-			foundSecurityWarning = true
-			break
-		}
-	}
-	if !foundSecurityWarning {
-		t.Errorf("expected security warning about GitHub Actions, got messages: %v", result.SystemMessages)
+	if !strings.Contains(result.DenyMessage, "GitHub Actions") && !strings.Contains(result.DenyMessage, "Command Injection") {
+		t.Errorf("expected security warning in DenyMessage, got: %q", result.DenyMessage)
 	}
 }
 

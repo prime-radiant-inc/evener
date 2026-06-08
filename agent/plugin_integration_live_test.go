@@ -369,19 +369,19 @@ func TestLive_Hooks_CommandExecution(t *testing.T) {
 		HookEventName: "SessionStart",
 	})
 	// session-start.sh outputs additionalContext (model context), not systemMessage (user-visible).
-	// After Task 5, additionalContext routes to AdditionalContext, not SystemMessages.
-	if len(startResult.AdditionalContext) == 0 {
-		t.Error("SessionStart should produce additional context")
+	// additionalContext routes to ModelContext.
+	if len(startResult.ModelContext) == 0 {
+		t.Error("SessionStart should produce model context")
 	}
 	foundContext := false
-	for _, msg := range startResult.AdditionalContext {
+	for _, msg := range startResult.ModelContext {
 		if strings.Contains(msg, "Live test plugin loaded") {
 			foundContext = true
 			break
 		}
 	}
 	if !foundContext {
-		t.Errorf("SessionStart context injection missing, got: %v", startResult.AdditionalContext)
+		t.Errorf("SessionStart context injection missing, got: %v", startResult.ModelContext)
 	}
 
 	// --- PreToolUse (safe path) ---
@@ -404,15 +404,12 @@ func TestLive_Hooks_CommandExecution(t *testing.T) {
 		ToolName:      "Write",
 		ToolInput:     map[string]any{"file_path": "/tmp/dangerous-file.txt", "content": "bad"},
 	})
-	foundBlocked := false
-	for _, msg := range dangerousResult.SystemMessages {
-		if strings.Contains(msg, "dangerous") {
-			foundBlocked = true
-			break
-		}
+	// pre-tool-use.sh exits 2 on "dangerous" input → Denied=true with DenyMessage from stderr.
+	if !dangerousResult.Denied {
+		t.Errorf("dangerous path should be denied, DenyMessage: %q", dangerousResult.DenyMessage)
 	}
-	if !foundBlocked {
-		t.Errorf("dangerous path should produce blocking message, got: %v", dangerousResult.SystemMessages)
+	if !strings.Contains(dangerousResult.DenyMessage, "dangerous") {
+		t.Errorf("DenyMessage should contain 'dangerous', got: %q", dangerousResult.DenyMessage)
 	}
 
 	// --- Stop hook (should approve) ---
@@ -500,10 +497,11 @@ func TestLive_Hooks_PromptWithRealLLM(t *testing.T) {
 	})
 
 	// The LLM should respond with something (approve or deny).
-	if len(result.SystemMessages) == 0 {
-		t.Error("prompt hook should produce a system message from the LLM")
+	// A prompt hook on PreToolUse returns plain text (non-context event) → UserMessages.
+	if len(result.UserMessages) == 0 {
+		t.Error("prompt hook should produce a user message from the LLM")
 	}
-	t.Logf("Prompt hook LLM response: %v", result.SystemMessages)
+	t.Logf("Prompt hook LLM response: %v", result.UserMessages)
 }
 
 // ---------- Test: Full session with plugin (MCP + hooks + agents) ----------
