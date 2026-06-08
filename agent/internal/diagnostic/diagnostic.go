@@ -14,6 +14,7 @@ const (
 	SourceSerf     Source = "serf"
 	SourceHub      Source = "hub"
 	SourceUI       Source = "ui"
+	SourceHook     Source = "hook"
 )
 
 type Info struct {
@@ -75,6 +76,8 @@ func normalizeSource(source string) Source {
 		return SourceHub
 	case SourceUI:
 		return SourceUI
+	case SourceHook:
+		return SourceHook
 	default:
 		return ""
 	}
@@ -97,6 +100,12 @@ func defaultForSource(source Source, message string) Info {
 			return serfConfiguration()
 		}
 		return serfFailure()
+	case SourceHook:
+		return Info{
+			Source: SourceHook,
+			Title:  "Hook message",
+			Hint:   "A plugin hook returned a user-facing message.",
+		}
 	default:
 		return Classify(message)
 	}

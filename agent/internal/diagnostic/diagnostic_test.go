@@ -78,3 +78,10 @@ func TestClassifyStreamTruncationAsProvider(t *testing.T) {
 		}
 	}
 }
+
+func TestFromFields_HookSourcePreserved(t *testing.T) {
+	info := FromFields("hook", "", "", "rate limit exceeded")
+	if info.Source != SourceHook {
+		t.Fatalf("Source = %q, want hook (must not be reclassified by message content)", info.Source)
+	}
+}
