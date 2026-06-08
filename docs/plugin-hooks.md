@@ -265,6 +265,7 @@ A command hook reads a single JSON object on stdin. The fields serf populates:
   "tool_response": "…",
   "transcript_path": "/path/to/session.transcript.jsonl",
   "effort": "high",
+  "prompt": "…",
   "message": "…",
   "reason": "…",
 
@@ -340,12 +341,12 @@ subset:
 | `PreToolUse` | block the tool call |
 | `Stop` | prevent stopping |
 | `SubagentStop` | prevent the subagent stopping |
-| `UserPromptSubmit` | **no block yet** — Claude erases the prompt here, but serf does not yet enforce the block; stderr shown to the user |
-| `PreCompact` | **no block yet** — Claude blocks compaction here, but serf does not yet enforce the block; stderr shown to the user |
-| `PostToolUse` | **no block** — stderr shown as context (cannot undo the tool) |
-| `SessionStart` | **no block** — stderr shown to the user |
-| `SessionEnd` | **no block** — stderr shown to the user |
-| `Notification` | **no block** — stderr shown to the user |
+| `UserPromptSubmit` | **no block yet** — Claude erases the prompt here, but serf does not yet enforce the block; in Phase 1 the stderr is delivered to the model |
+| `PreCompact` | **no block yet** — Claude blocks compaction here, but serf does not yet enforce the block; in Phase 1 the stderr is delivered to the model |
+| `PostToolUse` | **no block** (cannot undo the tool) — in Phase 1 the stderr is delivered to the model as context |
+| `SessionStart` | **no block** — in Phase 1 the stderr is delivered to the model |
+| `SessionEnd` | **no block** — the session is ending, so the stderr is captured but not delivered (no following turn) |
+| `Notification` | **no block** — in Phase 1 the stderr is delivered to the model |
 
 (The full Claude table, including the reserved events, is in
 [07 §Exit-code semantics](subagent-management/07-lifecycle-hooks-claude-compat.md#exit-code-semantics).)
