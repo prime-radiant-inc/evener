@@ -245,6 +245,15 @@ output by running it.
   skill loads into the agent's catalog. Plugin-discovery smoke
   test; doesn't run brainstorming.
 
+## Plugin hooks (lifecycle)
+
+- `hooks-claude-compat-matcher.md` — a Claude-style
+  `hooks/hooks.json` loaded via `--plugin-dir` gates a real
+  `shell` tool call: `PreToolUse` matcher `"Bash"` fires (exact,
+  not substring) on serf's shell tool (Claude name `Bash`), runs
+  in exec-form (`args`, no shell), and exits 0 without blocking; a
+  `"Bas"` matcher does NOT fire (commits `a4685d3d`, `28bd828e`).
+
 ## Open katas surfaced while writing scenarios
 
 - `96pr` — legacy diagnostics with stored source=serf never get
