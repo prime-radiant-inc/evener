@@ -1,10 +1,30 @@
-# Lifecycle Hooks and Claude Compatibility
+# Lifecycle Hooks — Claude Compatibility & Roadmap
 
-Evergreen reference for serf's lifecycle hooks. Phase 1 (the Claude-compatible subset described below) is implemented on branch `lifecycle-hooks-claude-compat`. This document describes how hooks work **today** — the matcher, the command exec form, the input/output field contracts, the exit-code table, the environment variables, the compatibility tiers, and the three hook surfaces — and lists the deferred phases as a roadmap. It deliberately does **not** claim full Claude Code parity: Phase 1 made the events serf already fires more Claude-compatible; it did not complete any event end-to-end, nor add the events, handler types, or output schemas Claude documents but serf does not yet implement.
+The compatibility spec for serf's lifecycle hooks: the full Claude event
+vocabulary, the matcher/handler/output/exit-code **contract across both shipped
+and reserved behavior**, the compatibility tiers, the three hook surfaces, and the
+deferred phases (B–E) as a roadmap. This document's job is to define the line
+between what serf implements and what it only recognizes — so docs, tests, CLI
+output, and APIs never imply Claude parity serf has not built.
 
-For a practical, example-driven walkthrough aimed at someone authoring hooks in a plugin, see **[Authoring plugin hooks](../plugin-hooks.md)**. This document is the contract; that one is the how-to.
+**Shipped behavior lives elsewhere.** How hooks work **today** — discovery, the
+matcher, the `command`/`prompt` handlers, the input/output fields serf populates
+and honors, the env vars, the fired-event exit codes, diagnostics — plus a
+practical authoring walkthrough is in **[Hooks](../hooks.md)**. That document is
+the authoritative reference for the implemented subset; this one is the
+forward-looking contract for everything not implemented yet. Where a reference
+table below spans both (the full event set, the full exit-code table), the rows
+serf fires are detailed in [Hooks](../hooks.md) and recapped here only for the
+compatibility map.
 
-> **Honesty over completeness.** Every feature here carries exactly one compatibility tier (`serf-native`, `claude-compatible-subset`, `reserved-placeholder`, `experimental`; see `10-runtime-contracts.md` §"Contract 4"). Only behavior in the Phase-1 list is described as working. Everything else is marked reserved/roadmap and is parsed-and-diagnosed predictably rather than silently half-supported.
+Phase 1 — making the nine events serf already fires Claude-compatible in matcher,
+exec form, input/output fields, exit-code behavior, and env vars — is **shipped**
+(see [Hooks](../hooks.md)). It deliberately did **not** claim full Claude Code
+parity: it completed no event end-to-end, nor added the events, handler types, or
+output schemas Claude documents but serf does not yet implement. Those are the
+subject of this spec.
+
+> **Honesty over completeness.** Every feature here carries exactly one compatibility tier (`serf-native`, `claude-compatible-subset`, `reserved-placeholder`, `experimental`; see `10-runtime-contracts.md` §"Contract 4"). Only shipped behavior (tiers `serf-native` and `claude-compatible-subset`, detailed in [Hooks](../hooks.md)) is described as working. Everything else is marked reserved/roadmap and is parsed-and-diagnosed predictably rather than silently half-supported.
 
 ## Purpose
 
@@ -16,21 +36,11 @@ Serf runs one lifecycle hook model across three distinct surfaces without confla
 
 The design preserves existing serf behavior where it works, fixes compatibility gaps that would otherwise break real Claude hook configurations, and reserves explicit extension points for the Claude Code hook semantics documented at <https://code.claude.com/docs/en/hooks>.
 
-## What Phase 1 shipped (claude-compatible-subset)
+## Implementation status
 
-The branch `lifecycle-hooks-claude-compat` made the **nine events serf already fires** Claude-compatible in matcher, exec form, input/output fields, exit-code behavior, and env vars. Concretely, all `claude-compatible-subset` unless noted:
+Tiers `serf-native` and `claude-compatible-subset` are **shipped** and documented in full in [Hooks](../hooks.md): the Claude-compatible matcher (exact/pipe-list vs Go RE2, invalid-regex skip-and-diagnose; `Bash` no longer substring-matches `BashOutput`), the `command` exec-form (`args`) and explicit `shell` selection, the serf-native `prompt` handler, the official input fields and legacy aliases, the data-model split of `additionalContext` from `systemMessage`, the event-specific exit-code table for the nine fired events, the `CLAUDE_EFFORT`/`PLUGIN_ROOT` env vars, tier-labeled `/status` diagnostics, and loud load-time warnings for unknown events, recognized-but-unsupported events, invalid-regex matchers, and unsupported handler types. The implementing packages are listed under [Source anchors](#serf-code-anchors).
 
-- **Claude-compatible matcher** (`agent/internal/hooks/matcher.go`, `matchTarget`): empty or `*` matches all; a matcher of only `[A-Za-z0-9_|]` is exact-name / exact pipe-list matching; anything else is a Go RE2 regex; an invalid regex skips the hook (and is diagnosed) rather than panicking. This is the headline fix — `Bash` now matches only `Bash` (no longer substring-matches `BashOutput`), and `mcp__memory` no longer matches `mcp__memory__search`.
-- **Command `args` exec-form** (direct spawn, no shell) plus explicit `shell` selection (`agent/internal/hooks/hooks.go`, `executeCommandHook`): bash is the default; `powershell` and any other value produce an explicit error rather than silently running bash.
-- **Parser captures the official handler fields** (`args`, `shell`, `if`, `async`, `asyncRewake`, `statusMessage`) and source metadata, and **classifies event names** into three buckets (`agent/plugin/hooks.go`, `parsePluginHooksDiag`, `validHookEvents`, `recognizedClaudeEvents`): serf-supported (the 9 fired events), recognized-but-unsupported (real Claude events serf does not fire yet → `reserved-placeholder`), and unknown (not a Claude or serf event — likely a typo).
-- **Official input fields** on `hooks.Input` (`transcript_path`, `tool_use_id`, `tool_response`, `effort` populated; `permission_mode`, `agent_id`, `agent_type`, `CLAUDE_CODE_REMOTE` are present in the contract but omitted on the wire because serf has no real value to put there — never fabricated). Legacy serf aliases (`user_prompt`, `tool_result`) are retained during migration.
-- **`additionalContext` routed separately** from user-visible `systemMessage` in the data model (`agent/internal/hooks/hooks.go`, `parsedHookOutput`/`RunResult`). The distinct *delivery channel* to the model is deferred (Phase B).
-- **Central event-specific exit-code table** (`agent/internal/hooks/exitcode.go`, `exitBehavior`): exit 2 blocks the events serf actually enforces a block for — `PreToolUse`/`Stop`/`SubagentStop` — and does not block for `PostToolUse`/`SessionStart`/`SessionEnd`/`Notification`. In Claude's contract exit 2 also blocks `UserPromptSubmit` (erase prompt) and `PreCompact` (block compaction), but serf does not yet enforce those blocks at their dispatch sites (a deferred parity item), so the table does not claim a block nothing consumes. Command JSON is parsed only on exit 0.
-- **`CLAUDE_EFFORT` env var** (set when the session has a configured effort level); the `PLUGIN_ROOT` alias is retained (`serf-native`).
-- **Tier-labeled `/status` hook diagnostics** (`agent/status.go`, `HookEventStatus{Event, Count, Tier, Supported}`; `serf-native`): supported events show their tier and count, and recognized-but-unsupported events are surfaced with `Supported:false`, `Count:0`, tier `reserved-placeholder`.
-- **Loud load-time warnings for misconfigured hook event names** (`agent/session_init.go`): a plugin that declares a hook for an **unknown** event name (a typo such as `PreToolUze`), a **recognized-but-unsupported** event (a real Claude event serf does not fire yet), or a hook with an **invalid-regex matcher** emits a visible `WARNING` event on the session stream (rendered by the CLI/TUI/web). Misconfiguration is no longer silent.
-
-Every other Claude hook capability — new events, the `http`/`mcp_tool`/`agent` handler types, the `allow|deny|ask|defer` PreToolUse permission schema, `if` permission-rule evaluation, async execution, a distinct delivery channel for `additionalContext`, and typed SDK lifecycle hooks — is **deferred** and marked reserved/experimental. See [Roadmap](#roadmap-deferred-phases).
+Every other Claude hook capability — new events, the `http`/`mcp_tool`/`agent` handler types, the `allow|deny|ask|defer` `PreToolUse` permission schema, `if` permission-rule evaluation, async execution, a distinct delivery channel for `additionalContext`, and typed SDK lifecycle hooks — is **deferred** and marked reserved/experimental below. See [Roadmap](#roadmap-deferred-phases).
 
 ## Goals
 
@@ -80,17 +90,7 @@ Typed or internal behavior owned by serf: internal lifecycle events, SDK callbac
 
 ### `claude-compatible-subset`
 
-Behavior implemented and tested to match the Claude Code docs closely enough for normal plugin/config portability. A subset feature includes parser support, runtime support, diagnostics, tests, and documented caveats. The Phase-1 list above is the current `claude-compatible-subset`:
-
-- wrapper/direct hook JSON parsing; default plugin hook file discovery at `hooks/hooks.json`; inline manifest hooks and manifest-referenced hook paths;
-- the nine event names serf fires (`PreToolUse`, `PostToolUse`, `Stop`, `SubagentStop`, `UserPromptSubmit`, `SessionStart`, `SessionEnd`, `PreCompact`, `Notification`);
-- Claude-compatible matcher semantics (empty/star, exact/pipe-list, RE2 regex; invalid regex skips + diagnoses);
-- command `args` exec-form and explicit `shell` selection;
-- official common/tool input fields, with legacy `user_prompt`/`tool_result` aliases preserved;
-- `additionalContext`/`systemMessage` routed separately in the data model (distinct delivery channel deferred);
-- the event-specific exit-code table for the nine fired events; command JSON parsed only on exit 0;
-- the `CLAUDE_EFFORT` command env var (when known);
-- `command` and serf-native `prompt` handler execution where currently accepted (Claude-compatible handler support is event-specific per the [handler support table](#handler-support-by-event)).
+Behavior implemented and tested to match the Claude Code docs closely enough for normal plugin/config portability. A subset feature includes parser support, runtime support, diagnostics, tests, and documented caveats. The shipped `claude-compatible-subset` — wrapper/direct JSON parsing and file discovery, the nine fired events, matcher semantics, command `args` exec-form and `shell` selection, the official input fields and legacy aliases, the `additionalContext`/`systemMessage` data-model split, the fired-event exit-code table, the `CLAUDE_EFFORT` env var, and `command`/`prompt` handler execution — is documented in full in [Hooks](../hooks.md). Claude-compatible handler support remains event-specific per the [handler support table](#handler-support-by-event).
 
 ### `reserved-placeholder`
 
@@ -204,42 +204,7 @@ Serf parses the Claude hook config shape exactly enough to preserve unsupported 
 
 ### File locations and wrapper shape
 
-Plugin hooks may be supplied inline in the manifest, referenced by a manifest-specified hook path, or discovered from default `hooks/hooks.json`. File/object contents may contain an optional top-level `description` and a `hooks` object:
-
-```json
-{
-  "description": "Optional human description",
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/check.sh",
-            "timeout": 30
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Serf also accepts the direct format (events at the top level):
-
-```json
-{
-  "PreToolUse": [
-    {
-      "matcher": "Bash",
-      "hooks": [
-        {"type": "command", "command": "echo ok"}
-      ]
-    }
-  ]
-}
-```
+Plugin hooks may be supplied inline in the manifest, referenced by a manifest-specified hook path, or discovered from the default `hooks/hooks.json`. File/object contents may use the wrapper shape (an optional top-level `description` plus a `hooks` object keyed by event) or the direct shape (events at the top level). Both are implemented; see [Hooks → How serf discovers your hooks](../hooks.md#how-serf-discovers-your-hooks) for the discovery order and worked examples.
 
 ### Formal config shape
 
@@ -392,24 +357,7 @@ Matcher semantics are `claude-compatible-subset` (implemented), because they cha
 
 ### General matcher rules
 
-For all supported events except `FileChanged`:
-
-1. Omitted matcher, empty string, or `"*"` matches all.
-2. If the matcher contains only ASCII letters, digits, underscore, or pipe (`[A-Za-z0-9_|]+`), it is exact string matching or a pipe-separated exact list.
-3. Otherwise, it is a regular expression.
-4. Claude specifies JavaScript regular expressions. Serf implements this with Go RE2 and documents unsupported JS-only constructs such as lookbehind/backreferences (see [Caveats](#caveats)).
-5. Invalid regex matchers do not panic. The hook is skipped and a sanitized diagnostic (plugin name, event, matcher, source file) is emitted.
-
-Examples:
-
-| Matcher | Target | Result |
-|---|---:|---|
-| omitted / `""` / `"*"` | any | match |
-| `"Bash"` | `Bash` | match |
-| `"Bash"` | `BashOutput` | no match; exact mode |
-| `"Edit|Write|MultiEdit"` | `Write` | match exact alternative |
-| `"mcp__memory__.*"` | `mcp__memory__search` | match regex |
-| `"mcp__memory"` | `mcp__memory__search` | no match; exact mode |
+The matcher rules — empty/star matches all; a matcher of only `[A-Za-z0-9_|]+` is exact-name or pipe-list matching; anything else is a Go RE2 regex (with the documented lookbehind/backreference caveat); an invalid regex skips the hook and emits a sanitized diagnostic — are implemented and documented with worked examples in [Hooks → Matchers](../hooks.md#matchers). `FileChanged` is the documented exception (literal filename/watch-list semantics, not general matcher rules) and remains reserved.
 
 ### Event-specific matcher targets
 
@@ -451,21 +399,7 @@ Default timeouts (serf applies the `command`/`prompt` defaults today; the rest d
 
 ### `command` (implemented)
 
-Fields:
-
-- `type: "command"` required.
-- `command` required.
-- `args` optional. If present, the command is spawned directly without shell interpretation. This is the preferred path for placeholders and paths with spaces.
-- `async` optional; command-only. Parsed; execution reserved (Phase C).
-- `asyncRewake` optional; command-only and implies async. Parsed; execution reserved (Phase C).
-- `shell` optional: `bash` by default; `powershell` (and any other value) returns an explicit error; ignored when `args` is present.
-
-Serf behavior:
-
-- Preserves shell-form command execution (`bash -c <command>`).
-- Supports exec-form `args` (direct spawn, no shell).
-- Expands `${CLAUDE_PLUGIN_ROOT}` and `${PLUGIN_ROOT}` in command/args. (`${CLAUDE_PROJECT_DIR}`/`${CLAUDE_PLUGIN_DATA}` placeholder expansion in command strings is reserved; `CLAUDE_PROJECT_DIR` is available as an environment variable.)
-- Retains `PLUGIN_ROOT` as a serf compatibility env alias while preferring official env names.
+Shell-form (`bash -c`) and exec-form (`args`, direct spawn) execution, `shell` selection, and `${CLAUDE_PLUGIN_ROOT}`/`${PLUGIN_ROOT}` placeholder expansion are implemented; see [Hooks → The `command` handler](../hooks.md#the-command-handler). The command-only `async`/`asyncRewake` fields are parsed but their async execution is reserved ([Phase C](#phase-c--handler-types-beyond-commandprompt-reserved-placeholder-agent-is-experimental)); `${CLAUDE_PROJECT_DIR}`/`${CLAUDE_PLUGIN_DATA}` placeholder expansion inside command strings is also reserved (`CLAUDE_PROJECT_DIR` is available as an environment variable).
 
 ### `http` (reserved-placeholder)
 
@@ -486,10 +420,7 @@ Fields: `type: "mcp_tool"`, `server` (required), `tool` (required), optional `in
 
 ### `prompt` (implemented, serf-native sugar)
 
-Fields: `type: "prompt"`, `prompt` (required), optional `model`. Behavior:
-
-- Serf substitutes its legacy variables (`$TOOL_INPUT`, `$TOOL_RESULT`, `$USER_PROMPT`, `$MESSAGE`, `$TOOL_NAME`) and runs the prompt through the session's LLM client; the model text is parsed by the shared hook-output parser.
-- The Claude-compatible `$ARGUMENTS` substitution and the `{ok, reason}` response schema are reserved (Phase C); they must be implemented deliberately before docs or tests treat them as current behavior.
+The serf-native `prompt` handler — legacy `$TOOL_INPUT`/`$TOOL_RESULT`/`$USER_PROMPT`/`$MESSAGE`/`$TOOL_NAME` substitutions run through the session's LLM client, with model text parsed by the shared output parser — is implemented; see [Hooks → The `prompt` handler](../hooks.md#the-prompt-handler-serf-native-sugar). The Claude-compatible `$ARGUMENTS` substitution and the `{ok, reason}` response schema are reserved ([Phase C](#phase-c--handler-types-beyond-commandprompt-reserved-placeholder-agent-is-experimental)) and must be implemented deliberately before docs or tests treat them as current behavior.
 
 ### `agent` (reserved/experimental)
 
@@ -509,10 +440,7 @@ Claude documents `MessageDisplay` as a display hook with a 10-second default tim
 
 ### Command API (implemented)
 
-- Serf sends hook input JSON on stdin.
-- The command writes plain text or JSON to stdout.
-- The command writes error/block text to stderr when using exit-code semantics.
-- Serf captures stdout, stderr, exit code, timeout, and duration.
+Serf pipes the hook input JSON to the command on stdin and captures stdout, stderr, exit code, timeout, and duration; see [Hooks → The input your hook receives](../hooks.md#the-input-your-hook-receives) and [What your hook returns](../hooks.md#what-your-hook-returns).
 
 ### HTTP API (reserved)
 
@@ -528,21 +456,12 @@ Claude documents `MessageDisplay` as a display hook with a 10-second default tim
 
 ### Prompt/agent API
 
-- Serf supplies hook input JSON via legacy substitutions today; `$ARGUMENTS`/appended-JSON is reserved.
-- Prompt handlers currently return model text through the shared hook-output parser (`continue`, `systemMessage`, `hookSpecificOutput`, and top-level `decision`/`reason`). The `{ok, reason}` schema is a reserved prompt/agent compatibility target and must be implemented deliberately before docs or tests treat it as current behavior.
+- Today, `prompt` handlers receive input via serf's legacy substitutions and return model text through the shared hook-output parser (`continue`, `systemMessage`, `hookSpecificOutput`, top-level `decision`/`reason`); see [Hooks → The `prompt` handler](../hooks.md#the-prompt-handler-serf-native-sugar). The Claude-compatible `$ARGUMENTS`/appended-JSON input and the `{ok, reason}` response schema are reserved (for both `prompt` and `agent`) and must be implemented deliberately before docs or tests treat them as current behavior.
 - Prompt/agent hooks run through existing provider/client/cancellation paths, not a separate client stack.
 
 ### Common environment variables for command hooks
 
-Set when available:
-
-- `CLAUDE_PLUGIN_ROOT` — the plugin's directory.
-- `CLAUDE_PROJECT_DIR` — the session working directory.
-- `CLAUDE_EFFORT` — the session's reasoning-effort level, when configured.
-
-Retained as serf-native compatibility:
-
-- `PLUGIN_ROOT` — alias of `CLAUDE_PLUGIN_ROOT`.
+The env vars serf sets today — `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PROJECT_DIR`, `CLAUDE_EFFORT` (when configured), and the serf-native `PLUGIN_ROOT` alias — are documented in [Hooks → Command environment variables](../hooks.md#command-environment-variables).
 
 Reserved (not set today): `CLAUDE_PLUGIN_DATA`, `CLAUDE_CODE_REMOTE` (serf has no remote/serve signal reachable at the hook exec site, so it is omitted rather than fabricated), and `CLAUDE_ENV_FILE` for events that support env-file mutation (`SessionStart`, `Setup`, `CwdChanged`, `FileChanged`).
 
@@ -550,35 +469,11 @@ Never put secrets in event diagnostics. If env/header substitution fails, report
 
 ## Hook output contract
 
-### General parsing rules
+### General parsing rules and universal JSON fields
 
-- Exit 0 with no stdout means success/no decision.
-- Plain-text stdout on success is context, not a block by itself.
-- JSON stdout is parsed only on exit 0 for command hooks.
-- Exit 2 is an event-specific blocking/error signal; JSON is ignored on exit 2.
-- Other non-zero exit codes are non-blocking errors for most events.
-- Output strings are capped at 10,000 characters for compatibility.
+The general parsing rules (exit 0 = success / plain-text context / JSON decision; exit 2 = event-specific block with JSON ignored; other non-zero = non-blocking error; 10,000-character cap) and the universal JSON fields (`continue`/`stopReason`, `suppressOutput`, `systemMessage`, `terminalSequence`, `hookSpecificOutput`) are implemented; see [Hooks → What your hook returns](../hooks.md#what-your-hook-returns). `hookSpecificOutput.additionalContext` is split from user-visible `systemMessage` in the data model, but its distinct delivery channel to the model is reserved ([Phase B](#phase-b--core-current-claude-events-and-output-schemas-reserved-placeholder)).
 
-### Universal JSON fields
-
-```json
-{
-  "continue": true,
-  "stopReason": "optional reason when continue is false",
-  "suppressOutput": false,
-  "systemMessage": "message shown to user",
-  "terminalSequence": "safe OSC/BEL sequence",
-  "hookSpecificOutput": {}
-}
-```
-
-Rules:
-
-- `continue: false` stops further processing according to event semantics and should include `stopReason`.
-- `suppressOutput: true` suppresses normal hook output display where supported.
-- `systemMessage` is user-visible/system-facing display, not additional model context.
-- `terminalSequence` must be restricted to safe terminal notification sequences supported by the Claude docs.
-- `hookSpecificOutput.additionalContext` is model context and is routed separately from user-visible messages (the data-model split is implemented; the distinct delivery channel is reserved, Phase B).
+The event-specific output schemas below are the **reserved** part of the output contract — the structured decisions serf does not yet honor in full.
 
 ### Event-specific output fields
 
@@ -741,32 +636,15 @@ Serf implements a central table (`agent/internal/hooks/exitcode.go`, `exitBehavi
 
 ## Diagnostics and status
 
-Misconfigured hook declarations warn **loudly at plugin load** (`agent/session_init.go`): an unknown event name, a recognized-but-unsupported event, and a hook whose matcher is an invalid regex each emit a `WARNING` event on the session stream (rendered by the CLI as `[warning] …`, and by the TUI/web/hub clients). The warning names the plugin, the offending event/matcher, the reason, and that the hook will not fire. It carries names/reasons only — never payloads or secrets.
+The implemented diagnostics — loud load-time `WARNING`s for unknown events, recognized-but-unsupported events, invalid-regex matchers, and unsupported handler types, plus the tier-labeled `/status` view — are documented in [Hooks → Misconfiguration warnings](../hooks.md#misconfiguration-warnings-loud-not-silent). `/status` reports the recognized event landscape and its tiers; it is not a misconfiguration report.
 
-Hook diagnostics include, where available:
+The full diagnostic field set spans the reserved handler types as well. Where available, a hook diagnostic carries: plugin name, hook source path, event name, matcher, handler type, timeout, unsupported tier/reason, exit code and duration for completed runs, and a sanitized error category (`parse_error`, `unsupported_event`, `unsupported_handler`, `invalid_matcher`, `timeout`, `cancelled`, `command_error`, `http_error`, `mcp_error`, `prompt_error`, `hook_blocked`).
 
-- plugin name;
-- hook source path;
-- event name;
-- matcher;
-- handler type;
-- timeout;
-- unsupported tier/reason;
-- exit code and duration for completed runs;
-- sanitized error category: parse_error, unsupported_event, unsupported_handler, invalid_matcher, timeout, cancelled, command_error, http_error, mcp_error, prompt_error, hook_blocked.
-
-Diagnostics must not include raw tool input/output (unless explicitly known safe), API keys/tokens, HTTP header values, env var values, provider request/response bodies, or full transcript bodies.
-
-`/status` (via `HookEventStatus`) surfaces, per event, its compatibility tier and count:
-
-- active supported hooks (with tier and count);
-- recognized Claude hooks skipped because unsupported (tier `reserved-placeholder`, count 0).
-
-Everything else — unknown event names, unsupported handler types, and invalid-matcher (invalid hook config) failures — surfaces as **load-time `WARNING`s** on the session stream (the diagnostic path described above), not in `/status`. `/status` lists the recognized event landscape and its tiers; it is not a misconfiguration report.
+**Redaction contract (all tiers).** Diagnostics must never include raw tool input/output (unless explicitly known safe), API keys/tokens, HTTP header values, env var values, provider request/response bodies, or full transcript bodies. If env/header substitution fails, report the variable name, not the value.
 
 ## Roadmap (deferred phases)
 
-Phase 1 is the implemented `claude-compatible-subset` above. The remaining phases are a roadmap, not a build plan; each item stays `reserved-placeholder` (parsed/diagnosed, never advertised as working) or `experimental` until it ships. The phase boundary is explicit: Phase 1 = "the hooks that already fire, made Claude-compatible in matcher / exec / IO / exit-code, with honest diagnostics for everything else."
+Phase 1 is the shipped `claude-compatible-subset`, documented in [Hooks](../hooks.md). The remaining phases are a roadmap, not a build plan; each item stays `reserved-placeholder` (parsed/diagnosed, never advertised as working) or `experimental` until it ships. The phase boundary is explicit: Phase 1 = "the hooks that already fire, made Claude-compatible in matcher / exec / IO / exit-code, with honest diagnostics for everything else."
 
 ### Phase B — core current Claude events and output schemas (`reserved-placeholder`)
 
@@ -799,7 +677,7 @@ Phase 1 is the implemented `claude-compatible-subset` above. The remaining phase
 
 ## Acceptance criteria
 
-These describe the contract the implemented behavior satisfies (Phase 1) plus the invariants future phases must preserve.
+These are the contract the implemented behavior satisfies (Phase 1 — shipped and verified in [Hooks](../hooks.md) and the tests below) plus the invariants future phases must preserve.
 
 - Existing plugin hooks using `hooks/hooks.json` with `SessionStart`, `PreToolUse`, `PostToolUse`, `Stop`, `SubagentStop`, `UserPromptSubmit`, `SessionEnd`, `PreCompact`, or `Notification` continue to load and run.
 - Wrapper and direct hook JSON formats remain supported.
@@ -818,7 +696,7 @@ These describe the contract the implemented behavior satisfies (Phase 1) plus th
 
 ## Required tests
 
-The implemented subset is covered by `agent/internal/hooks/*_test.go`, `agent/plugin/*_test.go`, the session-level hook/warning tests in `agent/`, and the live scenario card `test/scenarios/hooks-claude-compat-matcher.md`. Future phases extend this matrix.
+The implemented subset is covered by `agent/internal/hooks/*_test.go`, `agent/plugin/*_test.go`, the session-level hook/warning tests in `agent/`, and the live scenario card `test/scenarios/hooks-claude-compat-matcher.md` (recapped in [Hooks → How this is tested](../hooks.md#how-this-is-tested)). The matrix below is the spec's full verification plan; future phases extend it.
 
 ### Parser/config tests
 
@@ -864,8 +742,7 @@ The implemented subset is covered by `agent/internal/hooks/*_test.go`, `agent/pl
 
 ## Caveats
 
-- **Go RE2 matcher is the active implementation.** The Claude-compatible matcher uses Go RE2, not JavaScript regular expressions. RE2 does not support lookbehind assertions (`(?<=...)`, `(?<!...)`) or backreferences (`\1`). A matcher containing either construct is treated as an invalid regex: the hook is skipped and a sanitized diagnostic is emitted (plugin name, event, matcher, source file). It never silently mis-matches. Plugin authors relying on JS-only regex features must rewrite their matchers with RE2-compatible alternatives. If exact JS regex parity becomes required, a JS regex engine may be introduced deliberately; see [Non-goals](#non-goals).
-- **The matcher runs against the Claude tool name.** Serf's `shell` tool is presented to hooks as `Bash` (via `agent/internal/toolname`). A matcher of `"shell"` will never fire; use `"Bash"`. This is the most common authoring mistake — see [Authoring plugin hooks](../plugin-hooks.md).
+- **Go RE2 matcher, not JavaScript regex**, and **matchers run against the Claude tool name** (`shell` → `Bash`) are the two author-facing caveats, documented with examples in [Hooks → Go RE2, not JavaScript regex](../hooks.md#go-re2-not-javascript-regex) and [Hooks → The #1 mistake](../hooks.md#the-1-mistake-shellbash). At the spec level: if exact JS regex parity ever becomes required, a JS regex engine may be introduced deliberately (see [Non-goals](#non-goals)); until then the RE2 subset is the contract.
 - Some Claude events describe products/features serf may not have. Those names remain reserved placeholders until there is a real runtime boundary.
 - Claude hook docs are updated over time. This document cites <https://code.claude.com/docs/en/hooks> as the authoritative current compatibility reference; update the tables when that page changes.
 - Serf's hook subsystem is already useful for simple plugins, but it is not full Claude Code hook parity. Status and diagnostics say so.

@@ -78,7 +78,7 @@ Examples:
 
 - answer a question over already-fetched page text in `web_fetch`;
 - generate a session title;
-- run the LLM-call transport for a prompt hook; hook-owned parsing currently uses the shared hook-output contract from `07-lifecycle-hooks-claude-compat.md` (`continue`, `systemMessage`, `hookSpecificOutput`, and top-level `decision`/`reason`), while `{ok, reason}` remains a future prompt/agent compatibility target until implemented;
+- run the LLM-call transport for a prompt hook; hook-owned parsing currently uses the shared hook-output contract documented in [`hooks.md`](../hooks.md) (`continue`, `systemMessage`, `hookSpecificOutput`, and top-level `decision`/`reason`), while `{ok, reason}` remains a future prompt/agent compatibility target (see [`07-lifecycle-hooks-claude-compat.md`](07-lifecycle-hooks-claude-compat.md)) until implemented;
 - classify a short diagnostic into a fixed label set;
 - extract a JSON object from caller-provided text;
 - summarize a bounded chunk of already-selected history.

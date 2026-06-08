@@ -1,17 +1,25 @@
-# Authoring plugin hooks
+# Hooks
 
-A practical guide to writing lifecycle hooks in a serf plugin. Hooks are the
-**primary plugin surface**: a plugin ships a `hooks.json` (or inline manifest
-hooks), serf discovers it, and the hooks fire at session/tool/compaction
-boundaries. This guide is the how-to; the exact contract — every field, the full
-event table, the exit-code semantics, and the compatibility tiers — lives in
-[`subagent-management/07-lifecycle-hooks-claude-compat.md`](subagent-management/07-lifecycle-hooks-claude-compat.md).
+How serf's lifecycle hooks work **today**, and how to author them in a plugin.
+Hooks are the **primary plugin surface**: a plugin ships a `hooks.json` (or inline
+manifest hooks), serf discovers it, and the hooks fire at session, tool, and
+compaction boundaries. This document is the authoritative reference for shipped
+hook behavior and a practical authoring guide in one.
 
-Serf's hooks are a **Claude-compatible subset**: a `hooks.json` written for
-Claude Code mostly works as-is, but only the nine events serf actually fires do
-anything, and a few semantics (notably the matcher and the tool names) have
-gotchas. Read the [tool-name gotcha](#the-1-mistake-shellbash) first — it is the
-most common authoring mistake.
+Serf's hooks are a **Claude-compatible subset**: a `hooks.json` written for Claude
+Code mostly works as-is, but only the nine events serf actually fires do anything,
+and a few semantics (notably the matcher and the tool names) have gotchas. Read
+the [tool-name gotcha](#the-1-mistake-shellbash) first — it is the most common
+authoring mistake.
+
+> **Scope.** Everything described here is implemented and tested. Claude hook
+> capabilities serf recognizes but does **not** yet run — additional events, the
+> `http`/`mcp_tool`/`agent` handler types, the full `PreToolUse`
+> `allow|deny|ask|defer` schema, async execution, typed SDK hooks — are tracked,
+> with the compatibility roadmap, in
+> [`subagent-management/07-lifecycle-hooks-claude-compat.md`](subagent-management/07-lifecycle-hooks-claude-compat.md).
+> Serf is honest about the line: a hook for something unimplemented is parsed and
+> diagnosed loudly, never silently half-run.
 
 ## How serf discovers your hooks
 
@@ -72,7 +80,8 @@ groups**; each group has a `matcher` and an array of **handlers**.
 ## Which events serf fires
 
 Serf fires **nine** events. A hook on any other event name is parsed but never
-runs (and now warns loudly at load — see [Misconfiguration warnings](#misconfiguration-warnings-loud-not-silent)).
+runs (and warns loudly at load — see [Misconfiguration
+warnings](#misconfiguration-warnings-loud-not-silent)).
 
 | Event | When it fires | Matcher target |
 |---|---|---|
@@ -96,23 +105,42 @@ their matcher target today (noted above).
 `PermissionRequest`, `SubagentStart`, `PostCompact`, `Setup`, `FileChanged`, and
 the rest of the Claude vocabulary are *recognized* (serf knows they are real
 Claude events) but **reserved** — declaring a hook for one parses cleanly and
-warns that the event is not fired yet. See the full event table and the roadmap
-in [07](subagent-management/07-lifecycle-hooks-claude-compat.md#event-contract).
+warns that the event is not fired yet. The full event vocabulary and the roadmap
+live in
+[07](subagent-management/07-lifecycle-hooks-claude-compat.md#event-contract).
 
 **Unknown names are rejected loudly.** A typo like `PreToolUze` is neither a serf
 event nor a Claude event, so serf warns that it is likely a typo and the hook
 will never fire.
 
+### When `PreToolUse` runs (input rewriting)
+
+`PreToolUse` runs **before** registry schema validation, so a hook can inspect or
+rewrite raw tool input. The order for each tool call is:
+
+1. The model emits a tool call; serf decodes the name and best-effort-parses the
+   arguments for hook input.
+2. `PreToolUse` hooks matching the Claude tool name run.
+3. Any `updatedInput` they return is merged.
+4. The final arguments are validated against the tool's schema.
+5. Final execution policy runs on the validated input.
+6. The tool executes; `PostToolUse` runs on the result.
+
+A `PreToolUse` hook can therefore rewrite arguments or deny the call, but it
+**cannot** push an invalid or disallowed shape past validation and final policy —
+those run on the post-hook input. `PostToolUse` runs after execution and cannot
+undo a tool that already ran.
+
 ## The #1 mistake: `shell` → `Bash`
 
 > **Matchers run against the _Claude_ tool name, not serf's name.** Serf's shell
-> tool is presented to hooks as **`Bash`**. A matcher of `"shell"` silently
-> never fires. Use `"Bash"`.
+> tool is presented to hooks as **`Bash`**. A matcher of `"shell"` silently never
+> fires. Use `"Bash"`.
 
 When serf loads Claude-style plugins, tool names meet two vocabularies: serf's
 engine uses canonical names (`shell`, `read_file`, `edit_file`), while Claude
-(and your hook matcher) names them `Bash`, `Read`, `Edit`. Before matching,
-serf translates the tool to its Claude name (`agent/internal/toolname`), so your
+(and your hook matcher) names them `Bash`, `Read`, `Edit`. Before matching, serf
+translates the tool to its Claude name (`agent/internal/toolname`), so your
 matcher must name the **Claude** tool:
 
 | You want to match… | serf canonical name | matcher you must write |
@@ -129,8 +157,8 @@ matcher must name the **Claude** tool:
 MCP tools keep their `mcp__<server>__<tool>` name in both vocabularies.
 
 A matcher that names a serf-canonical tool (`"shell"`, `"read_file"`) is not an
-error — it is a valid exact matcher that simply never matches the Claude name
-the hook is tested against. It will fail silently. Write `"Bash"`.
+error — it is a valid exact matcher that simply never matches the Claude name the
+hook is tested against. It will fail silently. Write `"Bash"`.
 
 ## Matchers
 
@@ -160,12 +188,28 @@ Two traps worth calling out:
 - **Exact mode does not substring-match.** `"Bash"` will not catch `BashOutput`,
   and `"mcp__memory"` will not catch `mcp__memory__search`. If you want a prefix,
   write a regex: `"mcp__memory__.*"`.
-- **The matcher is the Claude tool name** — see [the gotcha above](#the-1-mistake-shellbash).
+- **The matcher is the Claude tool name** — see [the gotcha
+  above](#the-1-mistake-shellbash).
 
 > **Serf-native nicety:** serf trims surrounding whitespace from the matcher
 > before classifying it, so `" Bash "` is treated as the exact matcher `"Bash"`.
 > Claude treats the matcher as a literal regex and would not trim. This is a
 > minor, intentional divergence.
+
+### Matcher targets by event
+
+For the events serf fires, the matcher is tested against:
+
+- **Tool events** (`PreToolUse`, `PostToolUse`): the **Claude tool name**,
+  including `mcp__<server>__<tool>` (see the [gotcha](#the-1-mistake-shellbash)).
+- **`SessionStart`**: the start kind — `startup`, `resume`, `clear`, or
+  `compact`.
+- **`UserPromptSubmit`**, **`Stop`**: no matcher target; use `"*"` or omit.
+- **`SubagentStop`**, **`SessionEnd`**, **`Notification`**, **`PreCompact`**:
+  these fire, but their matcher target is **not yet wired** — the runner matches
+  with an empty target today, so use `"*"` or omit the matcher. (The intended
+  targets — agent type, end reason, notification type, `manual`/`auto` — are a
+  reserved compatibility item.)
 
 ### Go RE2, not JavaScript regex
 
@@ -177,7 +221,30 @@ event, and matcher — it never silently mis-matches. Rewrite such matchers with
 RE2-compatible alternatives. (Almost all real-world Claude matchers are already
 RE2-compatible.)
 
-## The `command` handler
+## Handlers
+
+Each matcher group holds an array of **handlers**. Serf runs two handler types
+today: `command` (a process) and `prompt` (an LLM call, serf-native sugar). The
+`http`, `mcp_tool`, and `agent` types are **reserved** — they parse but are
+skipped with a diagnostic; see
+[07](subagent-management/07-lifecycle-hooks-claude-compat.md#handler-types).
+
+### Common handler fields
+
+Every handler shares these:
+
+| Field | Status | Meaning |
+|---|---|---|
+| `type` | **required** | `command` or `prompt` today. |
+| `timeout` | **active** | Seconds. Defaults: `command` 60s, `prompt` 30s. |
+| `if` | parsed, reserved | A permission-rule filter for tool events. Captured but not yet enforced. |
+| `statusMessage` | parsed, reserved | User-visible status text while the hook runs. Captured; surfacing reserved. |
+| `once` | parsed, reserved | Run-once semantics (skill-frontmatter scope in Claude). Reserved. |
+
+Reserved fields are preserved for diagnostics and forward-compatibility — they do
+not cause a load error — but they have no runtime effect yet.
+
+### The `command` handler
 
 The implemented (and recommended) handler type is `command`. Serf runs it, pipes
 the hook [input JSON](#the-input-your-hook-receives) to its **stdin**, and reads
@@ -187,7 +254,7 @@ its [output](#what-your-hook-returns) from stdout/stderr.
 { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/check.sh", "timeout": 30 }
 ```
 
-### Shell form vs. exec form
+#### Shell form vs. exec form
 
 - **Shell form** (`command`, no `args`): serf runs `bash -c "<command>"`. The
   shell expands variables, globs, and pipes. This is the default.
@@ -211,7 +278,10 @@ without quoting gymnastics:
 
 When `args` is present, `shell` is ignored.
 
-### Selecting the shell
+> **`async` / `asyncRewake`** are command-only fields that serf parses but does
+> not execute yet (reserved). A hook that sets them runs **synchronously** today.
+
+#### Selecting the shell
 
 `shell` selects the shell for **shell-form** commands:
 
@@ -222,7 +292,7 @@ When `args` is present, `shell` is ignored.
 Serf never silently falls back to bash for an unrecognized shell — a bad `shell`
 value fails loudly rather than running something you did not ask for.
 
-### Command environment variables
+#### Command environment variables
 
 Serf sets these in the command's environment:
 
@@ -245,8 +315,15 @@ remote/serve signal to report, so it is omitted rather than fabricated), and
 
 `type: "prompt"` runs an LLM call instead of a process, substituting
 `$TOOL_INPUT`, `$TOOL_RESULT`, `$USER_PROMPT`, `$MESSAGE`, and `$TOOL_NAME` into
-the prompt and parsing the model's reply through the same output parser. It works
-today but is serf-specific sugar; the Claude-compatible `$ARGUMENTS` /
+the prompt and parsing the model's reply through the same output parser. An
+optional `model` selects the provider/model; otherwise the session's client is
+used.
+
+```json
+{ "type": "prompt", "prompt": "Is `$TOOL_INPUT` safe to run? Reply with JSON.", "model": "openai/gpt-5.4-mini" }
+```
+
+It works today but is serf-specific sugar; the Claude-compatible `$ARGUMENTS` /
 `{ok, reason}` form is reserved. The `http`, `mcp_tool`, and `agent` handler
 types are **reserved and skipped** (with a diagnostic) — they do not run yet.
 
@@ -287,16 +364,23 @@ Notes:
   **omits** them rather than sending a fabricated value. Do not write a hook that
   depends on them.
 
+(A `prompt` handler does not receive this JSON on stdin; it gets the legacy
+`$TOOL_INPUT`/`$USER_PROMPT`/etc. substitutions described above.)
+
 ## What your hook returns
 
 Serf reads the command's **stdout**, **stderr**, and **exit code**.
 
 - **Exit 0, empty stdout** → success, no decision.
-- **Exit 0, plain-text stdout** → a `systemMessage` (in Phase 1, delivered to the model).
+- **Exit 0, plain-text stdout** → a `systemMessage` (in Phase 1, delivered to the
+  model).
 - **Exit 0, JSON stdout** → parsed as a structured decision (below).
-- **Exit 2** → an event-specific block/error (see the [exit-code table](#exit-codes-per-event)).
-  **JSON is ignored on exit 2** — only stderr is used.
+- **Exit 2** → an event-specific block/error (see the [exit-code
+  table](#exit-codes-per-event)). **JSON is ignored on exit 2** — only stderr is
+  used.
 - **Other non-zero** → a non-blocking error for the events serf fires.
+
+Output is capped at 10,000 characters for compatibility.
 
 > **JSON is parsed only on exit 0.** If your hook exits non-zero, any JSON it
 > printed is discarded; serf uses the exit code and stderr. Print your decision
@@ -307,6 +391,7 @@ The JSON fields serf honors today:
 ```json
 {
   "continue": true,
+  "stopReason": "optional reason shown when continue is false",
   "suppressOutput": false,
   "systemMessage": "surfaced to the model in Phase 1",
   "terminalSequence": "",
@@ -320,11 +405,15 @@ The JSON fields serf honors today:
 }
 ```
 
+- `continue: false` stops further processing according to the event's semantics;
+  include `stopReason` to say why.
+- `suppressOutput: true` suppresses normal hook-output display where supported.
 - `systemMessage` and `hookSpecificOutput.additionalContext` are **both delivered
   to the model in Phase 1** — they are kept distinct in the data model, but the
-  separate user-visible delivery channel for `systemMessage` is a deferred
-  (Phase B) item. Do not rely on `systemMessage` being shown only to the user
-  today; both reach the model.
+  separate user-visible-only delivery channel for `systemMessage` is a deferred
+  item. Do not rely on `systemMessage` being shown only to the user today; both
+  reach the model.
+- `terminalSequence` must be a safe terminal notification sequence.
 - `decision: "block"` blocks where the event supports it (e.g. `Stop`,
   `SubagentStop`).
 - For `PreToolUse`, `hookSpecificOutput.permissionDecision: "deny"` denies the
@@ -364,11 +453,26 @@ CLI (and a warning in the TUI / web / hub) for each of:
   yet fire; this hook will not run."
 - **An invalid-regex matcher** (e.g. one using lookbehind) — names the plugin,
   event, and matcher; the hook is skipped.
+- **An unsupported handler type** (`http`, `mcp_tool`, `agent`) — names the
+  plugin, event, and type; the handler is skipped until implemented.
 
-The warnings carry names and reasons only — never your hook's payload, env values,
-or secrets. You can also see the full picture in `/status`, which lists active
-supported hooks (with their tier and count) alongside recognized-but-unsupported
-events.
+A handler missing its required `type`, or a malformed `hooks` array, is a **load
+error** that names the source path, event, matcher, and handler index. Unknown
+handler **fields** are not errors — they are preserved for diagnostics and
+forward-compatibility.
+
+The warnings and diagnostics carry **names and reasons only** — never your hook's
+payload, env values, header values, tool input/output, or secrets. If env-var
+substitution fails, serf reports the variable name, not its value. Completed runs
+also record a sanitized error category when relevant: `parse_error`,
+`unsupported_event`, `unsupported_handler`, `invalid_matcher`, `timeout`,
+`cancelled`, `command_error`, `prompt_error`, or `hook_blocked`.
+
+You can see the full picture in `/status`, which lists active supported hooks
+(with their tier and count) alongside recognized-but-unsupported events (tier
+`reserved-placeholder`, count 0). `/status` reports the recognized event
+landscape; the load-time `[warning]` lines above are where misconfiguration shows
+up.
 
 ## A complete example
 
@@ -420,10 +524,30 @@ exits 2. `hooks/log-result.sh` reads the `PostToolUse` input and exits 0 — its
 stdout becomes a `systemMessage` (delivered to the model in Phase 1). Remember:
 the `PreToolUse` matcher is `Bash`, **not** `shell`.
 
+## Hooks cannot bypass policy
+
+However a plugin hook rewrites input or returns a decision, it cannot escape
+serf's execution guarantees. A hook cannot:
+
+- bypass effective tool policy;
+- expand a child/subagent's capability set beyond effective policy;
+- bypass provider/model feature policy;
+- bypass session cancellation or closed state;
+- push input past final execution policy — validation and policy run on the
+  post-hook (`updatedInput`) arguments, not the originals.
+
+## How this is tested
+
+The shipped behavior is covered by `agent/internal/hooks/*_test.go` (matcher,
+exec form, output parsing, exit codes), `agent/plugin/*_test.go` (config parsing
+and diagnostics), the session-level hook/warning tests in `agent/`, and the live
+scenario card `test/scenarios/hooks-claude-compat-matcher.md`, which loads a
+plugin via `--plugin-dir` and exercises the matcher and exec-form behavior.
+
 ## See also
 
 - [`subagent-management/07-lifecycle-hooks-claude-compat.md`](subagent-management/07-lifecycle-hooks-claude-compat.md)
-  — the full contract: every field, the complete event table, the exit-code
-  semantics, the compatibility tiers, and the roadmap for reserved features.
-- `test/scenarios/hooks-claude-compat-matcher.md` — a live scenario that loads a
-  plugin via `--plugin-dir` and exercises the matcher and exec-form behavior.
+  — the compatibility & roadmap spec: the full Claude event vocabulary, the
+  reserved output schemas, the `http`/`mcp_tool`/`agent` handler types, async
+  semantics, the typed SDK hook shape, the compatibility tiers, and the deferred
+  phases (B–E).
