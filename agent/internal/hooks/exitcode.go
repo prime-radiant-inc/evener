@@ -10,27 +10,34 @@ type eventExitPolicy struct {
 	BlockOnExit2 bool // exit 2 blocks the action (else stderr shown to user only)
 }
 
-// exitBehavior returns the exit-code policy for the given event. The table
-// implements the serf-fired subset of the Claude exit-code semantics table
-// (docs/subagent-management/07-lifecycle-hooks-claude-compat.md §"Exit-code semantics").
+// exitBehavior returns the exit-code policy for the given event. BlockOnExit2 is
+// set ONLY for events whose runner actually enforces the block on exit 2; the
+// table never claims a block that no runner consumes.
 //
-// Events where exit 2 blocks the action (BlockOnExit2=true):
-//   - PreToolUse: blocks the tool call
-//   - Stop: prevents stopping
-//   - SubagentStop: prevents subagent stopping
-//   - UserPromptSubmit: blocks the prompt
-//   - PreCompact: blocks compaction
+// Enforced (BlockOnExit2=true): the runner denies/blocks when a matched hook
+// exits 2:
+//   - PreToolUse: RunPreToolUse denies the tool call
+//   - Stop: runStopEvent prevents stopping
+//   - SubagentStop: runStopEvent prevents the subagent stopping
 //
-// All other events (PostToolUse, SessionStart, SessionEnd, Notification, and
-// all reserved/unimplemented events) default to non-blocking: exit 2 surfaces
-// stderr as a user-visible error message but does not block the action.
+// In the Claude contract, exit 2 also blocks UserPromptSubmit (erase the prompt)
+// and PreCompact (block compaction); see the full Claude table in 07
+// §"Exit-code semantics". Serf does NOT yet enforce those blocks: RunUserPromptSubmit
+// and RunPreCompact only aggregate output and have no block path at their dispatch
+// sites (07 marks UserPromptSubmit erase-prompt and PreCompact blocking as deferred
+// parity items). They are therefore false here rather than carrying a dead "block"
+// entry — when the dispatch sites grow a block path, flip them back and add a runner
+// that consumes the flag (TestExitBehavior_BlockEntriesAreEnforced guards this).
+//
+// All other events (PostToolUse, SessionStart, SessionEnd, Notification, and all
+// reserved/unimplemented events) are non-blocking: exit 2 surfaces stderr as a
+// user-visible error message but does not block the action.
 // Tier: claude-compatible-subset.
 func exitBehavior(e plugin.HookEvent) eventExitPolicy {
 	switch e {
-	case plugin.HookPreToolUse, plugin.HookStop, plugin.HookSubagentStop,
-		plugin.HookUserPromptSubmit, plugin.HookPreCompact:
+	case plugin.HookPreToolUse, plugin.HookStop, plugin.HookSubagentStop:
 		return eventExitPolicy{BlockOnExit2: true}
-	default: // PostToolUse, SessionStart, SessionEnd, Notification, and all reserved events
+	default: // PostToolUse, SessionStart, SessionEnd, Notification, UserPromptSubmit, PreCompact, and all reserved events
 		return eventExitPolicy{BlockOnExit2: false}
 	}
 }

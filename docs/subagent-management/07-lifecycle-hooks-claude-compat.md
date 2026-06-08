@@ -25,7 +25,7 @@ The branch `lifecycle-hooks-claude-compat` made the **nine events serf already f
 - **Parser captures the official handler fields** (`args`, `shell`, `if`, `async`, `asyncRewake`, `statusMessage`) and source metadata, and **classifies event names** into three buckets (`agent/plugin/hooks.go`, `parsePluginHooksDiag`, `validHookEvents`, `recognizedClaudeEvents`): serf-supported (the 9 fired events), recognized-but-unsupported (real Claude events serf does not fire yet → `reserved-placeholder`), and unknown (not a Claude or serf event — likely a typo).
 - **Official input fields** on `hooks.Input` (`transcript_path`, `tool_use_id`, `tool_response`, `effort` populated; `permission_mode`, `agent_id`, `agent_type`, `CLAUDE_CODE_REMOTE` are present in the contract but omitted on the wire because serf has no real value to put there — never fabricated). Legacy serf aliases (`user_prompt`, `tool_result`) are retained during migration.
 - **`additionalContext` routed separately** from user-visible `systemMessage` in the data model (`agent/internal/hooks/hooks.go`, `parsedHookOutput`/`RunResult`). The distinct *delivery channel* to the model is deferred (Phase B).
-- **Central event-specific exit-code table** (`agent/internal/hooks/exitcode.go`, `exitBehavior`): exit 2 blocks for `PreToolUse`/`Stop`/`SubagentStop`/`UserPromptSubmit`/`PreCompact`, and does not block for `PostToolUse`/`SessionStart`/`SessionEnd`/`Notification`. Command JSON is parsed only on exit 0.
+- **Central event-specific exit-code table** (`agent/internal/hooks/exitcode.go`, `exitBehavior`): exit 2 blocks the events serf actually enforces a block for — `PreToolUse`/`Stop`/`SubagentStop` — and does not block for `PostToolUse`/`SessionStart`/`SessionEnd`/`Notification`. In Claude's contract exit 2 also blocks `UserPromptSubmit` (erase prompt) and `PreCompact` (block compaction), but serf does not yet enforce those blocks at their dispatch sites (a deferred parity item), so the table does not claim a block nothing consumes. Command JSON is parsed only on exit 0.
 - **`CLAUDE_EFFORT` env var** (set when the session has a configured effort level); the `PLUGIN_ROOT` alias is retained (`serf-native`).
 - **Tier-labeled `/status` hook diagnostics** (`agent/status.go`, `HookEventStatus{Event, Count, Tier, Supported}`; `serf-native`): supported events show their tier and count, and recognized-but-unsupported events are surfaced with `Supported:false`, `Count:0`, tier `reserved-placeholder`.
 - **Loud load-time warnings for misconfigured hook event names** (`agent/session_init.go`): a plugin that declares a hook for an **unknown** event name (a typo such as `PreToolUze`), a **recognized-but-unsupported** event (a real Claude event serf does not fire yet), or a hook with an **invalid-regex matcher** emits a visible `WARNING` event on the session stream (rendered by the CLI/TUI/web). Misconfiguration is no longer silent.
@@ -695,13 +695,13 @@ The transcript and model context keep the original text.
 
 ## Exit-code semantics
 
-Serf implements a central table (`agent/internal/hooks/exitcode.go`, `exitBehavior`); it does not treat every exit-code-2 hook as generic denial. The table below is the full Claude contract; serf implements the rows for the nine events it fires (the rest are reserved and default to non-blocking so an unimplemented event never blocks).
+Serf implements a central table (`agent/internal/hooks/exitcode.go`, `exitBehavior`); it does not treat every exit-code-2 hook as generic denial. The table below is the full Claude contract. Serf **enforces** the exit-2 block only for the events whose dispatch site has a block path today — `PreToolUse`, `Stop`, and `SubagentStop`. For `UserPromptSubmit` (erase prompt) and `PreCompact` (block compaction) the Claude contract blocks, but serf's runners do not yet enforce it (deferred parity, marked ⚠ below); `exitBehavior` returns non-blocking for them so the table never claims a block nothing consumes. Every other event is reserved and defaults to non-blocking so an unimplemented event never blocks.
 
 | Event | Exit 0 | Exit 2 | Other non-zero |
 |---|---|---|---|
 | `PreToolUse` | parse output | block tool call | non-blocking error |
 | `PermissionRequest` | parse output | deny permission | non-blocking error |
-| `UserPromptSubmit` | parse output | block prompt and erase prompt | non-blocking error |
+| `UserPromptSubmit` | parse output | block prompt and erase prompt (⚠ Claude contract; serf does not yet enforce the block) | non-blocking error |
 | `UserPromptExpansion` | parse output | block expansion | non-blocking error |
 | `PostToolUse` | parse output | no undo; show/add stderr context | non-blocking error |
 | `PostToolUseFailure` | parse output | no undo; show/add stderr context | non-blocking error |
@@ -713,7 +713,7 @@ Serf implements a central table (`agent/internal/hooks/exitcode.go`, `exitBehavi
 | `TaskCreated` | parse output | roll back task creation | non-blocking error |
 | `TaskCompleted` | parse output | prevent marking complete | non-blocking error |
 | `ConfigChange` | parse output | block config change except policy settings | non-blocking error |
-| `PreCompact` | parse output | block compaction | non-blocking error |
+| `PreCompact` | parse output | block compaction (⚠ Claude contract; serf does not yet enforce the block) | non-blocking error |
 | `Elicitation` | parse output | deny elicitation | non-blocking error |
 | `ElicitationResult` | parse output | block response | non-blocking error |
 | `WorktreeCreate` | parse output | abort worktree creation | any non-zero aborts |

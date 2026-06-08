@@ -7,18 +7,62 @@ import (
 	"primeradiant.com/serf/agent/plugin"
 )
 
-// TestExitBehavior_PerEvent verifies the central exit-code table classifies
-// exit 2 as blocking or non-blocking per event (07 §Exit-code semantics).
-// Tier: claude-compatible-subset.
+// TestExitBehavior_PerEvent verifies the central exit-code table classifies exit
+// 2 as blocking only for events whose RUNNER actually enforces the block.
+// PreToolUse/Stop/SubagentStop block and are enforced. UserPromptSubmit and
+// PreCompact block in the Claude contract, but serf does not yet enforce the
+// block at their dispatch sites (a deferred parity item), so the table must not
+// claim a block nothing consumes (Fix 3).
 func TestExitBehavior_PerEvent(t *testing.T) {
-	for _, e := range []plugin.HookEvent{plugin.HookPreToolUse, plugin.HookStop, plugin.HookSubagentStop, plugin.HookUserPromptSubmit, plugin.HookPreCompact} {
+	for _, e := range []plugin.HookEvent{plugin.HookPreToolUse, plugin.HookStop, plugin.HookSubagentStop} {
 		if !exitBehavior(e).BlockOnExit2 {
-			t.Fatalf("%s should block on exit 2", e)
+			t.Fatalf("%s should block on exit 2 (and is enforced)", e)
 		}
 	}
-	for _, e := range []plugin.HookEvent{plugin.HookPostToolUse, plugin.HookSessionStart, plugin.HookSessionEnd, plugin.HookNotification} {
+	for _, e := range []plugin.HookEvent{
+		plugin.HookUserPromptSubmit, plugin.HookPreCompact,
+		plugin.HookPostToolUse, plugin.HookSessionStart, plugin.HookSessionEnd, plugin.HookNotification,
+	} {
 		if exitBehavior(e).BlockOnExit2 {
-			t.Fatalf("%s must NOT block on exit 2", e)
+			t.Fatalf("%s must NOT claim block-on-exit-2 in the table: nothing enforces it", e)
+		}
+	}
+}
+
+// TestExitBehavior_BlockEntriesAreEnforced is the anti-dead-entry guard: every
+// event the table marks BlockOnExit2 must have a runner that actually denies or
+// blocks when a matched hook exits 2. A "block" entry that no runner consumes is
+// a lie the review flagged; this test fails if one is reintroduced (Fix 3).
+func TestExitBehavior_BlockEntriesAreEnforced(t *testing.T) {
+	exit2 := func(event plugin.HookEvent) plugin.RegisteredHook {
+		return plugin.RegisteredHook{
+			Matcher: "*",
+			Type:    "command",
+			Command: `echo "blocked by hook" >&2; exit 2`,
+			Timeout: 5,
+		}
+	}
+	in := func(event plugin.HookEvent) Input {
+		return Input{CWD: "/tmp", HookEventName: string(event), ToolName: "Bash"}
+	}
+
+	for _, event := range []plugin.HookEvent{plugin.HookPreToolUse, plugin.HookStop, plugin.HookSubagentStop} {
+		if !exitBehavior(event).BlockOnExit2 {
+			continue
+		}
+		r := newRunner(nil, "")
+		r.Add(event, exit2(event))
+		blocked := false
+		switch event {
+		case plugin.HookPreToolUse:
+			blocked = r.RunPreToolUse(context.Background(), in(event)).Denied
+		case plugin.HookStop:
+			blocked = r.RunStop(context.Background(), in(event)).Blocked
+		case plugin.HookSubagentStop:
+			blocked = r.RunSubagentStop(context.Background(), in(event)).Blocked
+		}
+		if !blocked {
+			t.Fatalf("%s claims BlockOnExit2 but its runner did not block/deny on exit 2", event)
 		}
 	}
 }

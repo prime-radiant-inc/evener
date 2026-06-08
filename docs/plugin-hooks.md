@@ -330,10 +330,10 @@ subset:
 | Event | Exit 2 effect |
 |---|---|
 | `PreToolUse` | block the tool call |
-| `UserPromptSubmit` | block the prompt |
 | `Stop` | prevent stopping |
 | `SubagentStop` | prevent the subagent stopping |
-| `PreCompact` | block compaction |
+| `UserPromptSubmit` | **no block yet** — Claude erases the prompt here, but serf does not yet enforce the block; stderr shown to the user |
+| `PreCompact` | **no block yet** — Claude blocks compaction here, but serf does not yet enforce the block; stderr shown to the user |
 | `PostToolUse` | **no block** — stderr shown as context (cannot undo the tool) |
 | `SessionStart` | **no block** — stderr shown to the user |
 | `SessionEnd` | **no block** — stderr shown to the user |
