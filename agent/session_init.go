@@ -617,6 +617,14 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind) error {
 			})
 		}
 
+		// Queue a loud warning per handler whose type is reserved/unsupported
+		// (http/mcp_tool/agent/other — anything but command/prompt). The parser
+		// keeps these handlers in p.Hooks, but runHook's dispatch skips them
+		// silently; without this they would be a silent no-op. Done once at load
+		// (not per dispatch) and via the diagnostic warning path, so it never
+		// fires the Notification hook.
+		s.pendingHookWarnings = append(s.pendingHookWarnings, unsupportedHandlerTypeWarnings(p)...)
+
 		s.pluginMCPConfigs = append(s.pluginMCPConfigs, p.MCPConfigs...)
 
 		s.pendingPluginEvents = append(s.pendingPluginEvents, events.PluginLoadedData{
@@ -684,6 +692,56 @@ func unsupportedHookEventWarning(pluginName, event string) string {
 	return fmt.Sprintf(
 		"plugin %q declares a hook for the reserved event %q, which serf does not yet fire; this hook will not run",
 		pluginName, event)
+}
+
+// supportedHookHandlerTypes is the set of handler "type" values serf actually
+// executes. Everything else (http, mcp_tool, agent, …) is reserved and skipped.
+var supportedHookHandlerTypes = map[string]bool{
+	"command": true,
+	"prompt":  true,
+}
+
+// unsupportedHandlerTypeWarnings builds one diagnostic per registered hook whose
+// handler type is reserved/unsupported (not command or prompt), in deterministic
+// event/group/handler order. These handlers parse and survive in p.Hooks but are
+// skipped silently at dispatch; the warning names the plugin, event, and type so
+// the no-op is visible. It carries names/reasons only — no hook payload.
+func unsupportedHandlerTypeWarnings(p plugin.Instance) []events.WarningData {
+	eventNames := make([]string, 0, len(p.Hooks))
+	for event := range p.Hooks {
+		eventNames = append(eventNames, string(event))
+	}
+	sort.Strings(eventNames)
+
+	var out []events.WarningData
+	for _, event := range eventNames {
+		for _, h := range p.Hooks[plugin.HookEvent(event)] {
+			if supportedHookHandlerTypes[h.Type] {
+				continue
+			}
+			out = append(out, events.WarningData{
+				Source:     "hooks",
+				Title:      "unsupported hook handler type",
+				Message:    unsupportedHandlerTypeWarning(p.Manifest.Name, event, h.Type),
+				PluginName: p.Manifest.Name,
+				EventName:  event,
+			})
+		}
+	}
+	return out
+}
+
+// unsupportedHandlerTypeWarning builds the load-time warning text for a hook
+// handler whose type serf does not execute (http/mcp_tool/agent/other). It names
+// the plugin, event, and the reserved type only; no hook payload or secret.
+func unsupportedHandlerTypeWarning(pluginName, event, handlerType string) string {
+	shown := handlerType
+	if shown == "" {
+		shown = "(empty)"
+	}
+	return fmt.Sprintf(
+		"plugin %q declares a %q-type handler for %s, which is a reserved/unsupported handler type (serf runs only \"command\" and \"prompt\"); this handler will not run",
+		pluginName, shown, event)
 }
 
 // initMCP discovers and connects to MCP servers if configured.

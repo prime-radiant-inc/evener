@@ -117,6 +117,67 @@ func TestInitPlugins_UnsupportedHookEventWarns(t *testing.T) {
 	}
 }
 
+// TestInitPlugins_UnsupportedHandlerTypeWarns asserts that a plugin declaring a
+// hook whose handler "type" is reserved/unsupported (http, mcp_tool, agent, or
+// anything other than command/prompt) on a SUPPORTED event produces a visible
+// WARNING naming the plugin, event, and the unsupported type, and saying the
+// handler will not run. Today such a handler is a silent no-op at dispatch; this
+// guards the docs' claim that these are "reserved and skipped WITH A DIAGNOSTIC".
+func TestInitPlugins_UnsupportedHandlerTypeWarns(t *testing.T) {
+	dir := writePluginHooks(t, "http-plugin", `{
+		"hooks": {
+			"PreToolUse": [
+				{"matcher": "*", "hooks": [{"type": "http", "url": "http://example"}]}
+			]
+		}
+	}`)
+
+	warnings := sessionWarnings(t, dir)
+
+	var found *events.WarningData
+	for i := range warnings {
+		if warnings[i].PluginName == "http-plugin" && strings.Contains(warnings[i].Message, "http") {
+			found = &warnings[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected a WARNING naming the unsupported handler type http; got %+v", warnings)
+	}
+	if found.EventName != "PreToolUse" {
+		t.Errorf("EventName = %q, want %q", found.EventName, "PreToolUse")
+	}
+	msg := strings.ToLower(found.Message)
+	if !strings.Contains(msg, "http") {
+		t.Errorf("warning %q should name the unsupported handler type", found.Message)
+	}
+	if !strings.Contains(msg, "not run") && !strings.Contains(msg, "will not") {
+		t.Errorf("warning %q should say the handler will not run", found.Message)
+	}
+}
+
+// TestInitPlugins_SupportedHandlerTypesNoTypeWarning is the negative control:
+// command and prompt handlers must NOT trigger an unsupported-handler-type
+// warning (Fix 4 must not over-warn on the supported types).
+func TestInitPlugins_SupportedHandlerTypesNoTypeWarning(t *testing.T) {
+	dir := writePluginHooks(t, "typed-plugin", `{
+		"hooks": {
+			"PreToolUse": [
+				{"matcher": "*", "hooks": [
+					{"type": "command", "command": "echo ok"},
+					{"type": "prompt", "prompt": "check it"}
+				]}
+			]
+		}
+	}`)
+
+	for _, w := range sessionWarnings(t, dir) {
+		if w.PluginName == "typed-plugin" && strings.Contains(strings.ToLower(w.Title), "handler") {
+			t.Errorf("command/prompt handlers must not warn as unsupported type; got %+v", w)
+		}
+	}
+}
+
 // TestInitPlugins_ValidHooksProduceNoWarning is the negative control: a plugin
 // whose hooks are all well-formed and target supported events must produce no
 // hook-misconfiguration warning (this is purely additive diagnostics; it must
