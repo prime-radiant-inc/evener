@@ -113,7 +113,8 @@ lower layer imports a higher one.
 - **Engine internals** (`agent/internal/…`, off the public surface) — `contextmgr`
   (context-pressure management: compaction + the pluggable strategies + recall),
   `sessionlog` (the shared session-action-log substrate), `hooks` (the plugin/hook
-  runner), `mcp` (MCP client manager), `atif` (trajectory export).
+  runner — see [`plugin-hooks.md`](plugin-hooks.md) for authoring), `mcp` (MCP
+  client manager), `atif` (trajectory export).
 - **Facade** — `package agent` itself: `Session` composes all of the above and is the
   only public entry point. Engine sub-packages call *back* into the session through
   narrow **seam interfaces** (e.g. `contextmgr.Host`) satisfied by small **unexported
