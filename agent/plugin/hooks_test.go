@@ -246,3 +246,19 @@ func TestDiscoverPluginHooks_NoFile(t *testing.T) {
 		t.Errorf("expected empty map, got %d entries", len(hooks))
 	}
 }
+
+// --- Phase 1: Characterization tests (lock current parser behavior) ---
+
+// TestParsePluginHooks_CurrentlyDropsUnknownFields_Characterization documents that
+// unknown fields in hookSpec (e.g. "args", "shell") are silently ignored today.
+// Later tasks that add args/shell to hookSpec will update this test in the same commit.
+func TestParsePluginHooks_CurrentlyDropsUnknownFields_Characterization(t *testing.T) {
+	data := []byte(`{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"echo x","args":["a"],"shell":"bash"}]}]}`)
+	hooks, err := parsePluginHooks(data, "/p", "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hooks[HookPreToolUse][0].Command != "echo x" {
+		t.Fatalf("command parse drifted: %+v", hooks[HookPreToolUse][0])
+	}
+}

@@ -668,3 +668,49 @@ func TestHookRunner_Summary_Empty(t *testing.T) {
 		t.Errorf("expected empty summary, got %v", summary)
 	}
 }
+
+// --- Phase 1: Characterization tests (lock current behavior) ---
+
+// TestMatchHooks_CurrentRegexSubstring_Characterization documents that today the
+// Matcher field is compiled as a regex and matched with MatchString (substring
+// semantics), so "Bash" matches "BashOutput". Task 3 changes this to exact/whole-word
+// matching and updates this test in the same commit.
+func TestMatchHooks_CurrentRegexSubstring_Characterization(t *testing.T) {
+	r := newRunner(nil, "")
+	r.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: "Bash", Type: "command", Command: "echo x"})
+	// TODAY: "Bash" regex-substring-matches "BashOutput". Task 3 makes this exact-mode (no match)
+	// and updates this test in the SAME commit. Until then it pins today's bug.
+	if got := r.MatchHooks(plugin.HookPreToolUse, "BashOutput"); len(got) != 1 {
+		t.Fatalf("current behavior: Bash regex-substring-matches BashOutput; got %d", len(got))
+	}
+}
+
+// TestParseHookOutput_CurrentContracts_Characterization locks two behavioral contracts:
+// exit code 2 → IsError=true with stdout as SystemMessage, and hookSpecificOutput.additionalContext
+// folds into SystemMessage when SystemMessage is otherwise empty.
+func TestParseHookOutput_CurrentContracts_Characterization(t *testing.T) {
+	if o := parseHookOutput("boom", 2); !o.IsError || o.SystemMessage != "boom" {
+		t.Fatalf("exit2 contract drifted: %+v", o)
+	}
+	o := parseHookOutput(`{"hookSpecificOutput":{"additionalContext":"ctx"}}`, 0)
+	if o.SystemMessage != "ctx" {
+		t.Fatalf("current: additionalContext folds into SystemMessage; got %q", o.SystemMessage)
+	}
+}
+
+// TestHookInput_CurrentWireShape_Characterization locks the JSON field names present
+// today. Later tasks may ADD fields but must never remove or rename these.
+func TestHookInput_CurrentWireShape_Characterization(t *testing.T) {
+	b, _ := json.Marshal(Input{SessionID: "s", CWD: "/w", HookEventName: "PreToolUse", ToolName: "Write"})
+	for _, want := range []string{`"session_id":"s"`, `"cwd":"/w"`, `"hook_event_name":"PreToolUse"`, `"tool_name":"Write"`} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("missing %s in %s", want, b)
+		}
+	}
+	bb, _ := json.Marshal(Input{UserPrompt: "p", ToolResult: "r", HookEventName: "X"})
+	for _, want := range []string{`"user_prompt":"p"`, `"tool_result":"r"`} {
+		if !strings.Contains(string(bb), want) {
+			t.Fatalf("alias dropped: missing %s in %s", want, bb)
+		}
+	}
+}
