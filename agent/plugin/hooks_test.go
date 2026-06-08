@@ -249,16 +249,65 @@ func TestDiscoverPluginHooks_NoFile(t *testing.T) {
 
 // --- Phase 1: Characterization tests (lock current parser behavior) ---
 
-// TestParsePluginHooks_CurrentlyDropsUnknownFields_Characterization documents that
-// unknown fields in hookSpec (e.g. "args", "shell") are silently ignored today.
-// Later tasks that add args/shell to hookSpec will update this test in the same commit.
-func TestParsePluginHooks_CurrentlyDropsUnknownFields_Characterization(t *testing.T) {
+// TestParsePluginHooks_FieldsNowCaptured documents that args/shell and other Claude
+// handler fields are captured by the parser (Task 2 behavior flip from the original
+// characterization test that asserted they were dropped).
+func TestParsePluginHooks_FieldsNowCaptured(t *testing.T) {
 	data := []byte(`{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"echo x","args":["a"],"shell":"bash"}]}]}`)
 	hooks, err := parsePluginHooks(data, "/p", "n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hooks[HookPreToolUse][0].Command != "echo x" {
-		t.Fatalf("command parse drifted: %+v", hooks[HookPreToolUse][0])
+	h := hooks[HookPreToolUse][0]
+	if h.Command != "echo x" {
+		t.Fatalf("command parse drifted: %+v", h)
+	}
+	// Task 2: args and shell are now captured.
+	if len(h.Args) != 1 || h.Args[0] != "a" {
+		t.Fatalf("args not captured: %+v", h)
+	}
+	if h.Shell != "bash" {
+		t.Fatalf("shell not captured: %+v", h)
+	}
+}
+
+func TestParsePluginHooks_CapturesArgsShellAndMetadata(t *testing.T) {
+	data := []byte(`{"PreToolUse":[{"matcher":"Bash","hooks":[
+		{"type":"command","command":"x","args":["-c","y"],"shell":"bash","if":"Bash(rm *)","statusMessage":"checking","async":true,"asyncRewake":true}
+	]}]}`)
+	hooks, err := parsePluginHooks(data, "/p", "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := hooks[HookPreToolUse][0]
+	if len(h.Args) != 2 || h.Args[0] != "-c" {
+		t.Fatalf("args: %+v", h)
+	}
+	if h.Shell != "bash" || h.If != "Bash(rm *)" || h.StatusMessage != "checking" {
+		t.Fatalf("fields: %+v", h)
+	}
+	if !h.Async || !h.AsyncRewake {
+		t.Fatalf("async flags: %+v", h)
+	}
+	if h.Event != HookPreToolUse || h.GroupIndex != 0 || h.HandlerIndex != 0 {
+		t.Fatalf("metadata: %+v", h)
+	}
+}
+
+func TestParsePluginHooks_RecognizedButUnsupportedEvent(t *testing.T) {
+	data := []byte(`{"PostToolUseFailure":[{"matcher":"*","hooks":[{"type":"command","command":"x"}]}],
+		"TotallyBogusEvent":[{"hooks":[{"type":"command","command":"y"}]}]}`)
+	hooks, unsupported, unknown, err := parsePluginHooksDiag(data, "/p", "n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hooks) != 0 {
+		t.Fatalf("no supported events expected: %v", hooks)
+	}
+	if !unsupported[HookEvent("PostToolUseFailure")] {
+		t.Fatal("PostToolUseFailure should be recognized-but-unsupported")
+	}
+	if !unknown["TotallyBogusEvent"] {
+		t.Fatal("bogus event should be unknown")
 	}
 }
