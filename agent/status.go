@@ -129,12 +129,15 @@ func (s *Session) DetailedStatus() DetailedStatus {
 
 	// Hooks: populate the backward-compatible map and the richer HookEvents slice.
 	if s.hookRunner != nil {
-		summary := s.hookRunner.Summary()
-		if len(summary) > 0 {
+		// Legacy map: every registered hook per event (registered, not necessarily
+		// runnable). Retained for backward compatibility.
+		if summary := s.hookRunner.Summary(); len(summary) > 0 {
 			ds.Hooks = summary
 		}
-		// Build HookEvents: supported events (those in the runner's summary).
-		for event, count := range summary {
+		// HookEvents supported entries count only hooks that can ACTUALLY run:
+		// hooks with an unsupported handler type or an invalid matcher are
+		// dispatch-time dead and surface as load warnings, not as active hooks.
+		for event, count := range s.hookRunner.SupportedSummary() {
 			ds.HookEvents = append(ds.HookEvents, HookEventStatus{
 				Event:     event,
 				Count:     count,

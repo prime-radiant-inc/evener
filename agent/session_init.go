@@ -696,6 +696,8 @@ func unsupportedHookEventWarning(pluginName, event string) string {
 
 // supportedHookHandlerTypes is the set of handler "type" values serf actually
 // executes. Everything else (http, mcp_tool, agent, …) is reserved and skipped.
+// Must stay in sync with the dispatch-side hooks.supportedHandlerTypes / runHook
+// type switch; both list exactly "command" and "prompt".
 var supportedHookHandlerTypes = map[string]bool{
 	"command": true,
 	"prompt":  true,

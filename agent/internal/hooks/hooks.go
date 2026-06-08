@@ -251,6 +251,48 @@ func (r *Runner) Summary() map[plugin.HookEvent]int {
 	return out
 }
 
+// SupportedSummary returns, per event, the number of registered hooks that can
+// ACTUALLY run — i.e. their handler type is one runHook executes (command/prompt)
+// AND their matcher is a valid regex (MatchHooks does not skip it). Hooks with an
+// unsupported handler type or an invalid matcher are dispatch-time dead and are
+// excluded. Events with zero runnable hooks are omitted. This backs the /status
+// "active supported hooks" count; Summary (above) counts every registered hook.
+func (r *Runner) SupportedSummary() map[plugin.HookEvent]int {
+	out := make(map[plugin.HookEvent]int)
+	for event, hooks := range r.hooks {
+		n := 0
+		for _, hook := range hooks {
+			if hookCanRun(hook) {
+				n++
+			}
+		}
+		if n > 0 {
+			out[event] = n
+		}
+	}
+	return out
+}
+
+// supportedHandlerTypes is the set of handler "type" values runHook executes.
+// Anything else (http, mcp_tool, agent, …) is reserved and skipped at dispatch.
+// It is the dispatch-side companion to runHook's type switch.
+var supportedHandlerTypes = map[string]bool{
+	"command": true,
+	"prompt":  true,
+}
+
+// hookCanRun reports whether a registered hook can fire at dispatch: its handler
+// type is supported and its matcher compiles. It mirrors the two places that
+// silently skip a hook — runHook (unsupported type) and MatchHooks (invalid
+// matcher) — so /status does not advertise a hook that can never run.
+func hookCanRun(hook plugin.RegisteredHook) bool {
+	if !supportedHandlerTypes[hook.Type] {
+		return false
+	}
+	_, err := matchTarget(hook.Matcher, "")
+	return err == nil
+}
+
 // Add registers hooks for an event.
 func (r *Runner) Add(event plugin.HookEvent, hooks ...plugin.RegisteredHook) {
 	r.hooks[event] = append(r.hooks[event], hooks...)

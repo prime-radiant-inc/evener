@@ -763,6 +763,37 @@ func TestHookRunner_Summary_Empty(t *testing.T) {
 	}
 }
 
+// TestHookRunner_SupportedSummary verifies that SupportedSummary counts only hooks
+// that can actually run: a hook with an unsupported handler type (http) or an
+// invalid-regex matcher is excluded, and an event with zero runnable hooks is
+// omitted entirely (whereas Summary counts every registered hook).
+func TestHookRunner_SupportedSummary(t *testing.T) {
+	runner := newRunner(nil, "")
+	// PreToolUse: one runnable command + one dead http handler → runnable count 1.
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: "*", Type: "command", Command: "echo a"})
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: "*", Type: "http"})
+	// PostToolUse: only a command hook with an invalid matcher → runnable count 0.
+	runner.Add(plugin.HookPostToolUse, plugin.RegisteredHook{Matcher: "(", Type: "command", Command: "echo b"})
+	// SessionStart: one runnable prompt hook.
+	runner.Add(plugin.HookSessionStart, plugin.RegisteredHook{Matcher: "Write", Type: "prompt", Prompt: "check"})
+
+	sup := runner.SupportedSummary()
+
+	if sup[plugin.HookPreToolUse] != 1 {
+		t.Errorf("PreToolUse runnable count = %d, want 1 (http handler excluded)", sup[plugin.HookPreToolUse])
+	}
+	if _, ok := sup[plugin.HookPostToolUse]; ok {
+		t.Errorf("PostToolUse has only an invalid-matcher hook; it must be omitted, got %d", sup[plugin.HookPostToolUse])
+	}
+	if sup[plugin.HookSessionStart] != 1 {
+		t.Errorf("SessionStart runnable count = %d, want 1", sup[plugin.HookSessionStart])
+	}
+	// Summary, by contrast, still counts every registered hook.
+	if got := runner.Summary()[plugin.HookPreToolUse]; got != 2 {
+		t.Errorf("Summary PreToolUse = %d, want 2 (registered, including the dead http handler)", got)
+	}
+}
+
 // --- Phase 1: Characterization tests (lock current behavior) ---
 
 // TestMatchHooks_ExactModeNoSubstring verifies that a plain word matcher like

@@ -299,6 +299,57 @@ func TestSession_DetailedStatus_ToolsSorted(t *testing.T) {
 	}
 }
 
+// TestDetailedStatus_HookEvents_ExcludesDeadHooks verifies that /status's supported
+// hook count reflects only hooks that can actually run: a hook whose handler type is
+// unsupported (http) or whose matcher is an invalid regex is dispatch-time dead, so
+// it must not be counted as a supported active hook. The legacy Hooks map (registered
+// hooks per event) still counts them (Fix 4).
+func TestDetailedStatus_HookEvents_ExcludesDeadHooks(t *testing.T) {
+	pluginDir := t.TempDir()
+	metaDir := filepath.Join(pluginDir, ".claude-plugin")
+	os.MkdirAll(metaDir, 0o755)
+	os.WriteFile(filepath.Join(metaDir, "plugin.json"),
+		[]byte(`{"name": "dead-hook-test"}`), 0o644)
+	hooksDir := filepath.Join(pluginDir, "hooks")
+	os.MkdirAll(hooksDir, 0o755)
+	// PreToolUse: ONLY an http handler (never executes → dispatch-time dead).
+	// PostToolUse: a command handler with an invalid-regex matcher (skipped at dispatch).
+	os.WriteFile(filepath.Join(hooksDir, "hooks.json"), []byte(`{
+		"hooks": {
+			"PreToolUse":  [{"matcher": "*", "hooks": [{"type": "http", "url": "http://example"}]}],
+			"PostToolUse": [{"matcher": "(", "hooks": [{"type": "command", "command": "echo x", "timeout": 5}]}]
+		}
+	}`), 0o644)
+
+	dir := t.TempDir()
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{}}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"),
+		execenv.NewLocalExecutionEnvironment(dir),
+		SessionConfig{PluginDirs: []string{pluginDir}})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ds := sess.DetailedStatus()
+
+	// Neither dead hook may surface as a supported active hook.
+	for _, he := range ds.HookEvents {
+		if !he.Supported {
+			continue
+		}
+		if he.Event == plugin.HookPreToolUse {
+			t.Errorf("PreToolUse has only an http (unsupported-type) handler; it must not be a supported active hook (got Count=%d)", he.Count)
+		}
+		if he.Event == plugin.HookPostToolUse {
+			t.Errorf("PostToolUse's only handler has an invalid matcher; it must not be a supported active hook (got Count=%d)", he.Count)
+		}
+	}
+}
+
 // TestDetailedStatus_HookEvents verifies that DetailedStatus.HookEvents lists
 // supported hook events with their tier and count, and lists recognized-but-
 // unsupported events with Supported=false, Count=0, Tier="reserved-placeholder".
