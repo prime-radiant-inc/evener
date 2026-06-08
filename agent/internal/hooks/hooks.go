@@ -629,6 +629,10 @@ func (r *Runner) RunPreToolUse(ctx context.Context, input Input) PreToolUseResul
 		}
 		if !denied {
 			routeOutput(plugin.HookPreToolUse, o, &result.ModelContext, &result.UserMessages)
+		} else if o.AdditionalContext != "" {
+			// A denied call still passes its additionalContext to the model; only the
+			// deny reason (SystemMessage/PermissionReason) is withheld from the buckets.
+			result.ModelContext = append(result.ModelContext, o.AdditionalContext)
 		}
 		if o.UpdatedInput != nil {
 			result.UpdatedInput = mergeHookInputMaps(result.UpdatedInput, o.UpdatedInput)

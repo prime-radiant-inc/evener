@@ -101,7 +101,10 @@ func (s *Session) sendEvent(kind events.EventKind, data events.EventData) events
 //   - Hook-CONFIG diagnostics route through emitDiagnosticWarning, which never
 //     fires the Notification hook.
 //   - The only events RunNotification → runAll emits are HookStart/HookEnd (never
-//     EventWarning), and Steer (for systemMessage/additionalContext) emits nothing.
+//     EventWarning). The Notification hook's own output is delivered via
+//     deliverHookContext (Steer — emits nothing) and deliverHookUserMessage
+//     (emitDiagnosticWarning — sends an EventWarning but, unlike emit, does NOT
+//     fire the Notification hook), so no synchronous EventWarning re-enters here.
 //
 // A session-wide guard here would not prevent any real recursion but WOULD drop a
 // genuine, independent warning emitted concurrently from another goroutine (it

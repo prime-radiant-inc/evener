@@ -900,6 +900,53 @@ func TestRunPreToolUse_AskProceeds(t *testing.T) {
 	}
 }
 
+func TestRunPreToolUse_AllowDoesNotOverrideDeny(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookPreToolUse,
+		plugin.RegisteredHook{Matcher: "*", Type: "command", Timeout: 5,
+			Command: `echo '{"hookSpecificOutput":{"permissionDecision":"allow"}}'`},
+		plugin.RegisteredHook{Matcher: "*", Type: "command", Timeout: 5,
+			Command: `echo '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"no"}}'`},
+	)
+	r := runner.RunPreToolUse(context.Background(), Input{CWD: "/tmp", HookEventName: "PreToolUse", ToolName: "Bash"})
+	if !r.Denied {
+		t.Fatal("a deny from any hook must win over a co-occurring allow")
+	}
+}
+
+func TestRunPreToolUse_NonDenyErrorStderrToModel(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: `echo "infra" >&2; exit 1`,
+	})
+	r := runner.RunPreToolUse(context.Background(), Input{CWD: "/tmp", HookEventName: "PreToolUse", ToolName: "Bash"})
+	if r.Denied {
+		t.Fatal("exit 1 is a non-blocking error, not a deny")
+	}
+	if len(r.ModelContext) == 0 || !strings.Contains(r.ModelContext[0], "infra") {
+		t.Fatalf("non-deny PreToolUse error stderr must reach the model: ModelContext = %v", r.ModelContext)
+	}
+}
+
+func TestRunPreToolUse_DenyStillRoutesAdditionalContext(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: `echo '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"no","additionalContext":"ctx-for-model"}}'`,
+	})
+	r := runner.RunPreToolUse(context.Background(), Input{CWD: "/tmp", HookEventName: "PreToolUse", ToolName: "Bash"})
+	if !r.Denied || r.DenyMessage != "no" {
+		t.Fatalf("expected deny with reason; Denied=%v DenyMessage=%q", r.Denied, r.DenyMessage)
+	}
+	if len(r.ModelContext) != 1 || r.ModelContext[0] != "ctx-for-model" {
+		t.Fatalf("denied call must still deliver additionalContext to the model; ModelContext = %v", r.ModelContext)
+	}
+	if len(r.UserMessages) != 0 {
+		t.Fatalf("deny reason must not leak to UserMessages; got %v", r.UserMessages)
+	}
+}
+
 // TestMatchHooks_ExactModeNoSubstring verifies that a plain word matcher like
 // "Bash" uses exact-match semantics and does NOT substring-match "BashOutput".
 // This is the headline fix from Task 3 (claude-compatible-subset).
