@@ -894,6 +894,10 @@ func TestRunPreToolUse_AskProceeds(t *testing.T) {
 	if r.Denied {
 		t.Fatal("ask must not deny (serf has no permission prompt)")
 	}
+	// The unsupported decision must surface a user-visible diagnostic.
+	if len(r.UserMessages) != 1 || !strings.Contains(r.UserMessages[0], "ask") {
+		t.Fatalf("ask must add a UserMessages diagnostic naming the decision; got %v", r.UserMessages)
+	}
 }
 
 // TestMatchHooks_ExactModeNoSubstring verifies that a plain word matcher like
