@@ -637,6 +637,103 @@ func TestParentClose_DrainsAll(t *testing.T) {
 	}
 }
 
+// TestRetention_GCEvictsClosedBeforeConsumed guards the class-priority ordering in
+// the reserveSlot comparator: a SubagentClosed record must be evicted BEFORE a
+// consumed SubagentCompleted record even when the closed record has a NEWER endedAt.
+// If the comparator were sorted by endedAt alone, the newer-but-closed record would
+// survive and the older-but-consumed record would be (wrongly) evicted.
+//
+// Setup: maxRetainedTerminal = 2, two counted reclaimable records:
+//   - "cls" — SubagentClosed,    NEWER endedAt  (should be evicted: class priority)
+//   - "cns" — SubagentCompleted, consumed, OLDER endedAt  (should be retained)
+//
+// Trigger: one additional spawn drives reserveSlot to evict exactly one slot.
+// Assert: "cls" gone, "cns" still tracked — class priority dominates endedAt order.
+func TestRetention_GCEvictsClosedBeforeConsumed(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("new child") },
+		},
+	})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	sess.subagents.maxRetainedTerminal = 2
+	older := time.Now()
+	newer := older.Add(time.Minute)
+
+	// "cns": consumed completed — older endedAt, reclaimable but LOWER class priority.
+	trackSyntheticChild(t, sess, "cns", SubagentCompleted, true, older, false)
+	// "cls": closed — newer endedAt, reclaimable with HIGHER class priority.
+	trackSyntheticChild(t, sess, "cls", SubagentClosed, false, newer, false)
+
+	// counted == maxRetainedTerminal (2), so the next spawn triggers exactly one eviction.
+	newID := spawnCompletedChild(t, sess, "c1", "trigger-gc")
+
+	if got := sess.getSub("cls"); got != nil {
+		t.Errorf("closed record must be evicted before consumed record (class priority); 'cls' still tracked")
+	}
+	if got := sess.getSub("cns"); got == nil {
+		t.Errorf("consumed completed record must be retained when a closed record was available to evict; 'cns' gone")
+	}
+	if got := sess.getSub(newID); got == nil {
+		t.Errorf("newly spawned child must be tracked after eviction")
+	}
+}
+
+// TestRetention_GCEvictsOldestWithinClass guards the within-class oldest-first
+// tie-break in the reserveSlot comparator: when two consumed SubagentCompleted
+// records compete for eviction, the one with the OLDER endedAt must go first.
+//
+// Setup: maxRetainedTerminal = 2, two consumed completed records with different endedAt.
+// Trigger: one spawn drives reserveSlot to evict exactly one slot.
+// Assert: the older-endedAt record is gone; the newer-endedAt record is retained.
+func TestRetention_GCEvictsOldestWithinClass(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("new child") },
+		},
+	})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	sess.subagents.maxRetainedTerminal = 2
+	older := time.Now()
+	newer := older.Add(time.Minute)
+
+	// Both are consumed completed — same class, tie-broken by endedAt oldest-first.
+	trackSyntheticChild(t, sess, "old", SubagentCompleted, true, older, false)
+	trackSyntheticChild(t, sess, "new", SubagentCompleted, true, newer, false)
+
+	newID := spawnCompletedChild(t, sess, "c1", "trigger-gc")
+
+	if got := sess.getSub("old"); got != nil {
+		t.Errorf("oldest-endedAt record must be evicted first within same class; 'old' still tracked")
+	}
+	if got := sess.getSub("new"); got == nil {
+		t.Errorf("newer-endedAt record must be retained when older was available to evict; 'new' gone")
+	}
+	if got := sess.getSub(newID); got == nil {
+		t.Errorf("newly spawned child must be tracked after eviction")
+	}
+}
+
 // TestInfo_SurfacesCloseTimedOut proves the close_timed_out flag set on the close
 // timeout path reaches the info/list record. A closing record stays visible in the
 // default list, and its CloseTimedOut must reflect the field.
