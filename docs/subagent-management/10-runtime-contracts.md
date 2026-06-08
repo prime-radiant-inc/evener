@@ -137,7 +137,7 @@ Tool lifecycle:
 
 Current Serf emits `TOOL_CALL_START` before registry lookup, schema validation, middleware, and execution policy. Until migrated, treat that event as an attempted-call observation and test both current and target ordering during the migration.
 
-Existing Serf code currently starts the child goroutine before emitting `SUBAGENT_START` on initial spawn, emits `SUBAGENT_START` before starting the goroutine on idle resume, and closes the run's `done` channel before emitting `SUBAGENT_END`. That current behavior remains documented in `02-lifecycle-events-and-notifications.md`. The sequence below is the **target canonical order for new lifecycle/hook work**. If implementation changes the ordering to match this target, it must do so deliberately and with regression tests for waiters, event subscribers, and hook execution.
+Serf emits `SUBAGENT_START` before launching the run goroutine on both initial spawn and idle resume (so START precedes END in program order), and closes the run's `done` channel before emitting `SUBAGENT_END`. This lifecycle behavior is specified in `00-subagent-control-plane.md`. The sequence below is the **target canonical order for new lifecycle/hook work**. If implementation changes the ordering to match this target, it must do so deliberately and with regression tests for waiters, event subscribers, and hook execution.
 
 Subagent lifecycle target:
 
