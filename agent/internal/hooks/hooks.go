@@ -41,6 +41,11 @@ type hookResult struct {
 // executeCommandHook runs a command hook with the given input piped as JSON to stdin.
 // Non-zero exit codes are captured in hookResult.ExitCode, not returned as Go errors.
 // Only returns an error for infrastructure failures (timeout, process start failure).
+//
+// Exec form: when hook.Args is non-empty, the command is spawned directly without
+// shell interpretation (hook.Shell is ignored). Shell form: when hook.Args is empty,
+// the command is run via the selected shell — "" or "bash" → bash -c <command>;
+// "powershell" → reserved, returns an error; any other value → error.
 func executeCommandHook(ctx context.Context, hook plugin.RegisteredHook, input Input) (hookResult, error) {
 	inputJSON, err := json.Marshal(input)
 	if err != nil {
@@ -51,7 +56,22 @@ func executeCommandHook(ctx context.Context, hook plugin.RegisteredHook, input I
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", hook.Command)
+	var cmd *exec.Cmd
+	if len(hook.Args) > 0 {
+		// Exec form: direct spawn, no shell interpretation.
+		cmd = exec.CommandContext(ctx, hook.Command, hook.Args...)
+	} else {
+		// Shell form: select shell.
+		switch hook.Shell {
+		case "", "bash":
+			cmd = exec.CommandContext(ctx, "bash", "-c", hook.Command)
+		case "powershell":
+			return hookResult{}, errors.New("powershell shell not supported on this platform")
+		default:
+			return hookResult{}, fmt.Errorf("unsupported shell %q: only \"bash\" is supported", hook.Shell)
+		}
+	}
+
 	cmd.Stdin = bytes.NewReader(inputJSON)
 	cmd.Env = append(os.Environ(),
 		"CLAUDE_PLUGIN_ROOT="+hook.PluginDir,

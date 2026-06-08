@@ -753,6 +753,36 @@ func TestParseHookOutput_CurrentContracts_Characterization(t *testing.T) {
 	}
 }
 
+// --- Task 4: exec-form args + explicit shell selection ---
+
+func TestExecuteCommandHook_ExecFormArgs(t *testing.T) {
+	hook := plugin.RegisteredHook{Type: "command", Command: "printf", Args: []string{"%s", "a b c"}, Timeout: 5, PluginDir: "/tmp"}
+	res, err := executeCommandHook(context.Background(), hook, Input{CWD: "/tmp", HookEventName: "PreToolUse"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Stdout != "a b c" {
+		t.Fatalf("exec-form stdout=%q want %q", res.Stdout, "a b c")
+	}
+}
+
+func TestExecuteCommandHook_ExecForm_NoShellExpansion(t *testing.T) {
+	// In exec form, $HOME must NOT be expanded by a shell.
+	hook := plugin.RegisteredHook{Type: "command", Command: "printf", Args: []string{"%s", "$HOME"}, Timeout: 5, PluginDir: "/tmp"}
+	res, _ := executeCommandHook(context.Background(), hook, Input{CWD: "/tmp", HookEventName: "X"})
+	if res.Stdout != "$HOME" {
+		t.Fatalf("exec-form expanded shell var: %q", res.Stdout)
+	}
+}
+
+func TestExecuteCommandHook_UnknownShellRejected(t *testing.T) {
+	hook := plugin.RegisteredHook{Type: "command", Command: "echo x", Shell: "fish", Timeout: 5, PluginDir: "/tmp"}
+	_, err := executeCommandHook(context.Background(), hook, Input{CWD: "/tmp", HookEventName: "X"})
+	if err == nil {
+		t.Fatal("unknown shell should error")
+	}
+}
+
 // TestHookInput_CurrentWireShape_Characterization locks the JSON field names present
 // today. Later tasks may ADD fields but must never remove or rename these.
 func TestHookInput_CurrentWireShape_Characterization(t *testing.T) {
