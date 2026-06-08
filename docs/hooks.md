@@ -9,7 +9,7 @@ hook behavior and a practical authoring guide in one.
 Serf's hooks are a **Claude-compatible subset**: a `hooks.json` written for Claude
 Code mostly works as-is, but only the nine events serf actually fires do anything,
 and a few semantics (notably the matcher and the tool names) have gotchas. Read
-the [tool-name gotcha](#the-1-mistake-shellbash) first — it is the most common
+the [tool-name gotcha](#the-1-mistake-shell--bash) first — it is the most common
 authoring mistake.
 
 > **Scope.** Everything described here is implemented and tested. Claude hook
@@ -189,7 +189,7 @@ Two traps worth calling out:
   and `"mcp__memory"` will not catch `mcp__memory__search`. If you want a prefix,
   write a regex: `"mcp__memory__.*"`.
 - **The matcher is the Claude tool name** — see [the gotcha
-  above](#the-1-mistake-shellbash).
+  above](#the-1-mistake-shell--bash).
 
 > **Serf-native nicety:** serf trims surrounding whitespace from the matcher
 > before classifying it, so `" Bash "` is treated as the exact matcher `"Bash"`.
@@ -201,7 +201,7 @@ Two traps worth calling out:
 For the events serf fires, the matcher is tested against:
 
 - **Tool events** (`PreToolUse`, `PostToolUse`): the **Claude tool name**,
-  including `mcp__<server>__<tool>` (see the [gotcha](#the-1-mistake-shellbash)).
+  including `mcp__<server>__<tool>` (see the [gotcha](#the-1-mistake-shell--bash)).
 - **`SessionStart`**: the start kind — `startup`, `resume`, `clear`, or
   `compact`.
 - **`UserPromptSubmit`**, **`Stop`**: no matcher target; use `"*"` or omit.
@@ -380,18 +380,15 @@ Serf reads the command's **stdout**, **stderr**, and **exit code**.
   used.
 - **Other non-zero** → a non-blocking error for the events serf fires.
 
-Output is capped at 10,000 characters for compatibility.
-
 > **JSON is parsed only on exit 0.** If your hook exits non-zero, any JSON it
 > printed is discarded; serf uses the exit code and stderr. Print your decision
 > JSON only when you exit 0.
 
-The JSON fields serf honors today:
+The output JSON serf reads (exit 0):
 
 ```json
 {
   "continue": true,
-  "stopReason": "optional reason shown when continue is false",
   "suppressOutput": false,
   "systemMessage": "surfaced to the model in Phase 1",
   "terminalSequence": "",
@@ -405,9 +402,11 @@ The JSON fields serf honors today:
 }
 ```
 
-- `continue: false` stops further processing according to the event's semantics;
-  include `stopReason` to say why.
-- `suppressOutput: true` suppresses normal hook-output display where supported.
+- `continue` and `suppressOutput` are **parsed but not acted on today** — serf
+  reads them for Claude compatibility, but they have no runtime effect yet (a
+  deferred item); a hook that sets `continue: false` still runs to completion.
+  `stopReason` and the rest of the structured output schema are reserved (see
+  [07](subagent-management/07-lifecycle-hooks-claude-compat.md#event-specific-output-fields)).
 - `systemMessage` and `hookSpecificOutput.additionalContext` are **both delivered
   to the model in Phase 1** — they are kept distinct in the data model, but the
   separate user-visible-only delivery channel for `systemMessage` is a deferred

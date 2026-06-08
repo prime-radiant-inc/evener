@@ -471,7 +471,7 @@ Never put secrets in event diagnostics. If env/header substitution fails, report
 
 ### General parsing rules and universal JSON fields
 
-The general parsing rules (exit 0 = success / plain-text context / JSON decision; exit 2 = event-specific block with JSON ignored; other non-zero = non-blocking error; 10,000-character cap) and the universal JSON fields (`continue`/`stopReason`, `suppressOutput`, `systemMessage`, `terminalSequence`, `hookSpecificOutput`) are implemented; see [Hooks → What your hook returns](../hooks.md#what-your-hook-returns). `hookSpecificOutput.additionalContext` is split from user-visible `systemMessage` in the data model, but its distinct delivery channel to the model is reserved ([Phase B](#phase-b--core-current-claude-events-and-output-schemas-reserved-placeholder)).
+The general parsing rules (exit 0 = success / plain-text context / JSON decision; exit 2 = event-specific block with JSON ignored; other non-zero = non-blocking error) and the output JSON serf acts on (`systemMessage`, `terminalSequence`, `hookSpecificOutput.{permissionDecision, updatedInput, additionalContext}`, and top-level `decision`/`reason`) are implemented; see [Hooks → What your hook returns](../hooks.md#what-your-hook-returns). `continue`/`suppressOutput` are parsed but not yet acted on, and `stopReason` is not consumed (reserved). `hookSpecificOutput.additionalContext` is split from user-visible `systemMessage` in the data model, but its distinct delivery channel to the model is reserved ([Phase B](#phase-b--core-current-claude-events-and-output-schemas-reserved-placeholder)).
 
 The event-specific output schemas below are the **reserved** part of the output contract — the structured decisions serf does not yet honor in full.
 
@@ -742,7 +742,7 @@ The implemented subset is covered by `agent/internal/hooks/*_test.go`, `agent/pl
 
 ## Caveats
 
-- **Go RE2 matcher, not JavaScript regex**, and **matchers run against the Claude tool name** (`shell` → `Bash`) are the two author-facing caveats, documented with examples in [Hooks → Go RE2, not JavaScript regex](../hooks.md#go-re2-not-javascript-regex) and [Hooks → The #1 mistake](../hooks.md#the-1-mistake-shellbash). At the spec level: if exact JS regex parity ever becomes required, a JS regex engine may be introduced deliberately (see [Non-goals](#non-goals)); until then the RE2 subset is the contract.
+- **Go RE2 matcher, not JavaScript regex**, and **matchers run against the Claude tool name** (`shell` → `Bash`) are the two author-facing caveats, documented with examples in [Hooks → Go RE2, not JavaScript regex](../hooks.md#go-re2-not-javascript-regex) and [Hooks → The #1 mistake](../hooks.md#the-1-mistake-shell--bash). At the spec level: if exact JS regex parity ever becomes required, a JS regex engine may be introduced deliberately (see [Non-goals](#non-goals)); until then the RE2 subset is the contract.
 - Some Claude events describe products/features serf may not have. Those names remain reserved placeholders until there is a real runtime boundary.
 - Claude hook docs are updated over time. This document cites <https://code.claude.com/docs/en/hooks> as the authoritative current compatibility reference; update the tables when that page changes.
 - Serf's hook subsystem is already useful for simple plugins, but it is not full Claude Code hook parity. Status and diagnostics say so.
