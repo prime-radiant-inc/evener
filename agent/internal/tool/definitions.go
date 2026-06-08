@@ -292,6 +292,21 @@ func DefCloseAgent() llm.ToolDefinition {
 	}
 }
 
+func DefCancelAgent() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name:        "cancel_agent",
+		Description: "Stop a runaway or in-flight run of a child job, keeping the child resumable. This is the child analog of pressing Esc: it aborts the current run but preserves the session so you can resume_agent it afterward. Contrast with resume_agent on a running child (which steers without stopping) and close_agent (which destroys the session). Only you can call this tool; subagents never receive it.",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"agent_id": map[string]any{"type": "string"},
+			},
+			"required": []string{"agent_id"},
+		},
+	}
+}
+
 func DefWebFetch() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "web_fetch",

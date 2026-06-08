@@ -57,23 +57,25 @@ Do NOT try to spawn further subagents.
 
 Your job is to complete the task and report your findings.`
 
-var rootOnlyAgentManagementTools = []string{"spawn_agent", "resume_agent", "wait", "close_agent"}
+var rootOnlyAgentManagementTools = []string{"spawn_agent", "resume_agent", "wait", "close_agent", "cancel_agent"}
 
 type subagent struct {
 	id   string
 	sess *Session
 	emit func(events.EventKind, events.EventData)
 
-	mu             sync.Mutex
-	running        bool
-	status         SubagentStatus
-	turnsUsed      int
-	done           chan struct{}
-	result         string
-	err            error
-	resultConsumed bool // true after the first wait returns this run's result
-	endEmitted     bool
-	nudgeEnabled   bool // true for default subagents that should be nudged to communicate
+	mu              sync.Mutex
+	running         bool
+	status          SubagentStatus
+	turnsUsed       int
+	done            chan struct{}
+	result          string
+	err             error
+	resultConsumed  bool // true after the first wait returns this run's result
+	endEmitted      bool
+	nudgeEnabled    bool               // true for default subagents that should be nudged to communicate
+	cancel          context.CancelFunc // cancels the current run's context
+	cancelRequested bool               // set by cancel_agent so finalize maps a context.Canceled run to cancelled
 }
 
 func hasString(items []string, want string) bool {
@@ -355,10 +357,17 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	// Subagent execution must outlive the parent tool-call context.
 	// The parent may stop waiting, finish its input, or time out while the
 	// child keeps running. Child cancellation is handled by subSess.Close(),
-	// including when the parent session closes.
+	// including when the parent session closes. The per-run context lets
+	// cancel_agent interrupt this run without destroying the child session.
+	runCtx, runCancel := context.WithCancel(context.Background())
+	sub.mu.Lock()
+	sub.cancel = runCancel
+	sub.cancelRequested = false
+	sub.mu.Unlock()
 	go func() {
 		defer s.sendersWG.Done()
-		sub.run(context.Background(), task)
+		defer runCancel()
+		sub.run(runCtx, task)
 	}()
 
 	b, _ := json.Marshal(map[string]any{"agent_id": sub.id, "status": string(SubagentRunning)})
@@ -391,6 +400,7 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
 
+	runCtx, runCancel := context.WithCancel(context.Background())
 	sub.mu.Lock()
 	sub.done = make(chan struct{})
 	sub.running = true
@@ -399,6 +409,8 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 	sub.err = nil
 	sub.resultConsumed = false
 	sub.endEmitted = false
+	sub.cancel = runCancel
+	sub.cancelRequested = false
 	sub.mu.Unlock()
 
 	s.emit(events.EventSubagentStart, events.SubagentStartData{
@@ -409,7 +421,8 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 	// Resume runs should also be independent of the caller's wait context.
 	go func() {
 		defer s.sendersWG.Done()
-		sub.run(context.Background(), input)
+		defer runCancel()
+		sub.run(runCtx, input)
 	}()
 	return "ok", nil
 }
@@ -493,6 +506,36 @@ func (s *Session) closeAgent(agentID string) (any, error) {
 	return string(b), nil
 }
 
+func (s *Session) cancelAgent(agentID string) (any, error) {
+	sub := s.getSub(agentID)
+	if sub == nil {
+		return "", fmt.Errorf("unknown agent_id: %s", agentID)
+	}
+	sub.mu.Lock()
+	if !sub.running {
+		sub.mu.Unlock()
+		return "", fmt.Errorf("agent %s is not running", agentID)
+	}
+	sub.cancelRequested = true
+	cancel := sub.cancel
+	done := sub.done
+	sub.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		return "", fmt.Errorf("timed out cancelling subagent %s", agentID)
+	}
+	sub.mu.Lock()
+	result := sub.resultSnapshotLocked()
+	sub.resultConsumed = true
+	sub.mu.Unlock()
+	b, _ := json.Marshal(result)
+	return string(b), nil
+}
+
 func (s *Session) getSub(agentID string) *subagent {
 	return s.subagents.get(agentID)
 }
@@ -509,17 +552,28 @@ func communicateNudge(toolName string) string {
 func (a *subagent) run(ctx context.Context, input string) {
 	res, err := a.sess.ProcessInput(ctx, input, nil)
 
+	// A requested cancel suppresses both the communicate-nudge and the
+	// SubagentStop blocking-continuation: neither should run another turn on the
+	// already-cancelled run context. This covers the late-cancel err==nil case
+	// the status switch below still treats as completed.
+	a.mu.Lock()
+	cancelRequested := a.cancelRequested
+	a.mu.Unlock()
+
 	// Auto-nudge: if a default subagent stops without calling communicate,
 	// send one reminder and let it try again. This covers both empty stops
 	// and repeated bare-text responses that exhausted the session-level retry
 	// loop before the subagent had a chance to report back.
-	shouldNudge := a.nudgeEnabled &&
+	shouldNudge := !cancelRequested &&
+		a.nudgeEnabled &&
 		!a.sess.Communicated() &&
 		(err == nil || errors.Is(err, errBareTextWithoutResultTool) || errors.Is(err, errEmptyResponseExhausted))
 	if shouldNudge {
 		res, err = a.sess.ProcessInput(ctx, communicateNudge(a.sess.resultToolName()), nil)
 	}
-	res, err = a.runSubagentStopHook(ctx, res, err)
+	if !cancelRequested {
+		res, err = a.runSubagentStopHook(ctx, res, err)
+	}
 
 	a.sess.mu.Lock()
 	turns := a.sess.turns
@@ -530,9 +584,12 @@ func (a *subagent) run(ctx context.Context, input string) {
 	a.err = err
 	a.running = false
 	a.turnsUsed = turns
-	if err != nil {
+	switch {
+	case a.cancelRequested && errors.Is(err, context.Canceled):
+		a.status = SubagentCancelled
+	case err != nil:
 		a.status = SubagentFailed
-	} else {
+	default:
 		a.status = SubagentCompleted
 	}
 	done := a.done

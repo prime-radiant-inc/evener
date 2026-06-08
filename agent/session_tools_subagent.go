@@ -147,4 +147,11 @@ func registerSubagentTools(reg *tool.Registry, s *Session) {
 			return s.closeAgent(fmt.Sprint(args["agent_id"]))
 		},
 	})
+	_ = reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: tool.DefCancelAgent()},
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = env
+			return s.cancelAgent(fmt.Sprint(args["agent_id"]))
+		},
+	})
 }
