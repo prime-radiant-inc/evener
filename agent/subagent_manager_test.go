@@ -6,12 +6,29 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/llm"
 )
+
+// cleanupCountingEnv wraps an ExecutionEnvironment and counts Cleanup() calls. A
+// session calls env.Cleanup() exactly once when it Closes, so this lets a test prove
+// a session was Closed without holding a reference to it.
+type cleanupCountingEnv struct {
+	execenv.ExecutionEnvironment
+	cleanups int32
+}
+
+func (e *cleanupCountingEnv) Cleanup() {
+	atomic.AddInt32(&e.cleanups, 1)
+	e.ExecutionEnvironment.Cleanup()
+}
+
+func (e *cleanupCountingEnv) count() int32 { return atomic.LoadInt32(&e.cleanups) }
 
 // fakeEmit records the events forwarded through a manager's emit closure.
 type fakeEmit struct {
@@ -275,5 +292,373 @@ func TestListAgents_RunningChildAppearsImmediately(t *testing.T) {
 	}
 	if got.EndedAt != nil {
 		t.Errorf("ended_at must be nil while running; got %v", got.EndedAt)
+	}
+}
+
+// spawnCompletedChild spawns a non-blocking child that completes immediately and
+// waits for its result, returning the child's agent_id. The session's adapter must
+// supply a finalResponse step for the child's single run.
+func spawnCompletedChild(t *testing.T, sess *Session, callPrefix, task string) string {
+	t.Helper()
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        callPrefix + "-spawn",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"task":%q}`, task)),
+	})
+	if spawnRes.IsError {
+		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+	}
+	var spawned map[string]any
+	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
+		t.Fatalf("unmarshal spawn result: %v", err)
+	}
+	agentID := strings.TrimSpace(fmt.Sprint(spawned["agent_id"]))
+	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        callPrefix + "-wait",
+		Name:      "wait",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":5000}`, agentID)),
+	})
+	if waitRes.IsError {
+		t.Fatalf("wait error: %s", waitRes.Output)
+	}
+	return agentID
+}
+
+// countTracked returns how many child records the manager currently holds.
+func countTracked(m *subagentManager) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.subs)
+}
+
+// trackSyntheticChild builds and tracks a child record with a real (but never-run)
+// child Session and controllable retention fields. The real Session matters because
+// the parent's Close path drains every tracked record and calls sub.sess.Close() on
+// it — a nil sess would panic. The child shares the parent's client/profile/env.
+func trackSyntheticChild(t *testing.T, sess *Session, id string, status SubagentStatus, consumed bool, endedAt time.Time, closeTimedOut bool) {
+	t.Helper()
+	child, err := NewSession(sess.client, NewOpenAIProfile("gpt-5.2"), sess.env, SessionConfig{MaxSubagentDepth: 1})
+	if err != nil {
+		t.Fatalf("trackSyntheticChild NewSession: %v", err)
+	}
+	ended := endedAt
+	sub := &subagent{
+		id:             id,
+		sess:           child,
+		status:         status,
+		resultConsumed: consumed,
+		closeTimedOut:  closeTimedOut,
+	}
+	if !endedAt.IsZero() {
+		sub.endedAt = &ended
+	}
+	// A terminal record carries its run outcome; a closed one retains the outcome it
+	// finished with (completed here) so reasonLocked still reports it.
+	switch status {
+	case SubagentCompleted, SubagentFailed, SubagentCancelled:
+		sub.lastOutcome = status
+	case SubagentClosed:
+		sub.lastOutcome = SubagentCompleted
+	}
+	sess.subagents.track(sub)
+}
+
+// TestClose_RetainsAsClosed drives a completed child through close and asserts the
+// record is RETAINED as closed (not removed): still tracked, status closed, hidden
+// from the default enumeration but visible with include_closed, and the close
+// snapshot still reports the last run outcome (reason=completed, success=true).
+//
+// Load-bearing: if close still removed the record, getSub would be nil; if the
+// retained-outcome design were missing, reason would be "closed" and success false.
+func TestClose_RetainsAsClosed(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("child output") },
+		},
+	})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	agentID := spawnCompletedChild(t, sess, "c1", "do work")
+
+	closeRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c2-close",
+		Name:      "close_agent",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q}`, agentID)),
+	})
+	if closeRes.IsError {
+		t.Fatalf("close_agent error: %s", closeRes.Output)
+	}
+
+	var result subagentResult
+	if err := json.Unmarshal([]byte(closeRes.Output), &result); err != nil {
+		t.Fatalf("close_agent result not JSON: %q (err: %v)", closeRes.Output, err)
+	}
+	if result.Status != SubagentClosed {
+		t.Errorf("close snapshot status = %q, want %q", result.Status, SubagentClosed)
+	}
+	if result.Reason != SubagentCompleted {
+		t.Errorf("close snapshot reason = %q, want %q (last run outcome must survive close)", result.Reason, SubagentCompleted)
+	}
+	if !result.Success {
+		t.Errorf("close snapshot success = false, want true for a child that completed before close")
+	}
+	if result.Output != "child output" {
+		t.Errorf("close snapshot output = %q, want %q", result.Output, "child output")
+	}
+
+	// The record is RETAINED, not removed.
+	sub := sess.getSub(agentID)
+	if sub == nil {
+		t.Fatal("close_agent must retain the record (got nil from getSub)")
+	}
+	sub.mu.Lock()
+	status := sub.status
+	sub.mu.Unlock()
+	if status != SubagentClosed {
+		t.Errorf("retained record status = %q, want %q", status, SubagentClosed)
+	}
+
+	// Default enumeration hides the closed record; include_closed surfaces it.
+	if infos := sess.subagents.infos(); len(infos) != 0 {
+		t.Errorf("infos() must hide the closed record; got %+v", infos)
+	}
+	shown, count := sess.subagents.listAgents(sess.ID(), "", true)
+	if count != 1 || len(shown) != 1 || shown[0].ID != agentID {
+		t.Fatalf("include_closed must surface the closed record; got count=%d agents=%+v", count, shown)
+	}
+	if shown[0].Reason != SubagentCompleted {
+		t.Errorf("closed record reason = %q, want %q", shown[0].Reason, SubagentCompleted)
+	}
+	if shown[0].CloseTimedOut {
+		t.Errorf("close_timed_out must be false for a clean close")
+	}
+}
+
+// TestRetention_FailLoudAtCap fills the retention cap with UNCONSUMED terminal
+// records (none reclaimable), then asserts the next spawn fails loudly naming the
+// remedy and does NOT track a new child (no leak — the created session is Closed
+// before the error return).
+//
+// Load-bearing: if the cap were not enforced, spawn would succeed and the tracked
+// count would grow; if the error did not name the remedy, the message assertion
+// fails.
+func TestRetention_FailLoudAtCap(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	env := &cleanupCountingEnv{ExecutionEnvironment: execenv.NewLocalExecutionEnvironment(dir)}
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	sess.subagents.maxRetainedTerminal = 2
+	ended := time.Now()
+	trackSyntheticChild(t, sess, "t1", SubagentCompleted, false, ended, false)
+	trackSyntheticChild(t, sess, "t2", SubagentFailed, false, ended, false)
+
+	before := countTracked(sess.subagents)
+	cleanupsBefore := env.count()
+
+	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c1-spawn",
+		Name:      "spawn_agent",
+		Arguments: json.RawMessage(`{"task":"overflow"}`),
+	})
+	if !spawnRes.IsError {
+		t.Fatalf("spawn at cap must fail; got success: %s", spawnRes.Output)
+	}
+	msg := strings.ToLower(spawnRes.Output)
+	if !strings.Contains(msg, "close_agent") || !strings.Contains(msg, "wait") {
+		t.Errorf("cap error must name the remedy (close_agent/wait); got %q", spawnRes.Output)
+	}
+
+	// No new child was tracked: the spawn was rejected before track.
+	if after := countTracked(sess.subagents); after != before {
+		t.Errorf("failed spawn must not track a child: tracked %d → %d", before, after)
+	}
+	// No leak: the already-created child Session was Closed before the error return,
+	// which invokes the (shared) env's Cleanup exactly once during the spawn call.
+	if got := env.count() - cleanupsBefore; got != 1 {
+		t.Errorf("failed spawn must Close the created child session (env Cleanup delta = %d, want 1)", got)
+	}
+}
+
+// TestRetention_GCReclaimsConsumedFirst fills the cap with terminal records, one of
+// which is CONSUMED, and asserts the next spawn succeeds by reclaiming the consumed
+// record (it is removed) while the new child is tracked.
+//
+// Load-bearing: if GC did not reclaim the consumed record, the spawn would fail at
+// the cap; the assertions on the consumed record being gone and the new child being
+// present both break if reclamation is wrong.
+func TestRetention_GCReclaimsConsumedFirst(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("fresh child") },
+		},
+	})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	sess.subagents.maxRetainedTerminal = 2
+	older := time.Now()
+	newer := older.Add(time.Minute)
+
+	// "consumed" is the only reclaimable record; it gets its own counting env so the
+	// test can prove GC eviction CLOSES its (still-live) child Session — a consumed
+	// completed child is not closed when its run finishes, so evicting it must close
+	// it to avoid a leak. "held" is unconsumed and must stay.
+	consumedEnv := &cleanupCountingEnv{ExecutionEnvironment: execenv.NewLocalExecutionEnvironment(t.TempDir())}
+	consumedChild, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), consumedEnv, SessionConfig{MaxSubagentDepth: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumedEnded := older
+	sess.subagents.track(&subagent{id: "consumed", sess: consumedChild, status: SubagentCompleted, resultConsumed: true, lastOutcome: SubagentCompleted, endedAt: &consumedEnded})
+	trackSyntheticChild(t, sess, "held", SubagentCompleted, false, newer, false)
+
+	cleanupsBefore := consumedEnv.count()
+	newID := spawnCompletedChild(t, sess, "c1", "fresh")
+
+	if got := sess.getSub("consumed"); got != nil {
+		t.Errorf("consumed terminal record must be reclaimed; still tracked: %+v", got)
+	}
+	if got := consumedEnv.count() - cleanupsBefore; got != 1 {
+		t.Errorf("GC eviction must Close the consumed child's session (env Cleanup delta = %d, want 1)", got)
+	}
+	if got := sess.getSub("held"); got == nil {
+		t.Errorf("unconsumed terminal record must be retained")
+	}
+	if got := sess.getSub(newID); got == nil {
+		t.Errorf("newly spawned child must be tracked")
+	}
+}
+
+// TestRetention_ClosingDoesNotCountTowardCap fills the manager with records that do
+// NOT count toward the cap (closing, and close-timed-out) beyond the cap value, then
+// asserts a spawn still succeeds — closing/close_timed_out records never deadlock
+// spawns.
+//
+// Load-bearing: if closing/close_timed_out were counted, the count (3) would exceed
+// the cap (2) and the spawn would fail.
+func TestRetention_ClosingDoesNotCountTowardCap(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("ok child") },
+		},
+	})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	sess.subagents.maxRetainedTerminal = 2
+	zero := time.Time{}
+	trackSyntheticChild(t, sess, "cl1", SubagentClosing, false, zero, false)
+	trackSyntheticChild(t, sess, "cl2", SubagentClosing, false, zero, true)
+	trackSyntheticChild(t, sess, "cl3", SubagentClosing, false, zero, true)
+
+	newID := spawnCompletedChild(t, sess, "c1", "should-succeed")
+	if got := sess.getSub(newID); got == nil {
+		t.Errorf("spawn must succeed when only closing/close_timed_out records are present")
+	}
+}
+
+// TestParentClose_DrainsAll asserts the parent Session.Close path drains and closes
+// every child — including a retained closed record — clearing the map. drainForClose
+// collects under the manager mutex and the caller closes children OUTSIDE it; this
+// test verifies that path still works with retained closed records present.
+//
+// Load-bearing: if drainForClose left retained records behind, the post-close map
+// would be non-empty.
+func TestParentClose_DrainsAll(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("drained child") },
+		},
+	})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A real child closed-and-retained, plus a hand-built closed record.
+	agentID := spawnCompletedChild(t, sess, "c1", "do work")
+	closeRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID:        "c2-close",
+		Name:      "close_agent",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q}`, agentID)),
+	})
+	if closeRes.IsError {
+		t.Fatalf("close_agent error: %s", closeRes.Output)
+	}
+	if got := sess.getSub(agentID); got == nil {
+		t.Fatal("precondition: closed child must be retained before parent close")
+	}
+
+	sess.Close()
+
+	if n := countTracked(sess.subagents); n != 0 {
+		t.Errorf("parent close must drain all records (incl. retained closed); %d remain", n)
+	}
+	if got := sess.getSub(agentID); got != nil {
+		t.Errorf("retained closed record must be drained on parent close; still present: %+v", got)
+	}
+}
+
+// TestInfo_SurfacesCloseTimedOut proves the close_timed_out flag set on the close
+// timeout path reaches the info/list record. A closing record stays visible in the
+// default list, and its CloseTimedOut must reflect the field.
+//
+// Load-bearing: if infoLocked dropped the field, CloseTimedOut would be false here.
+func TestInfo_SurfacesCloseTimedOut(t *testing.T) {
+	fe := &fakeEmit{}
+	m := newSubagentManager(fe.emit)
+	m.track(&subagent{id: "stuck", status: SubagentClosing, closeTimedOut: true, lastOutcome: SubagentCompleted})
+
+	agents, count := m.listAgents("01ROOT", "", false)
+	if count != 1 || len(agents) != 1 {
+		t.Fatalf("closing record must appear in default list; got count=%d agents=%+v", count, agents)
+	}
+	if agents[0].Status != SubagentClosing {
+		t.Errorf("status = %q, want %q", agents[0].Status, SubagentClosing)
+	}
+	if !agents[0].CloseTimedOut {
+		t.Errorf("close_timed_out must surface as true on a timed-out close")
+	}
+	// The retained outcome still drives reason even while closing.
+	if agents[0].Reason != SubagentCompleted {
+		t.Errorf("reason = %q, want %q (retained outcome survives closing)", agents[0].Reason, SubagentCompleted)
 	}
 }

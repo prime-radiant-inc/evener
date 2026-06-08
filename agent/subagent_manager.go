@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"fmt"
+	"sort"
 	"sync"
+	"time"
 
 	"primeradiant.com/serf/agent/events"
 )
@@ -20,14 +23,22 @@ type subagentManager struct {
 	mu   sync.Mutex
 	subs map[string]*subagent
 	emit func(events.EventKind, events.EventData)
+	// maxRetainedTerminal bounds how many terminal records (completed|failed|
+	// cancelled|closed) the manager retains per parent. Enforced at spawn time via
+	// reserveSlot, which GCs reclaimable records before failing loudly.
+	maxRetainedTerminal int
 }
+
+// defaultMaxRetainedTerminal is the default cap on retained terminal child records.
+const defaultMaxRetainedTerminal = 128
 
 // newSubagentManager creates a manager that captures the parent session's emit
 // closure for forwarding subagent lifecycle events.
 func newSubagentManager(emit func(events.EventKind, events.EventData)) *subagentManager {
 	return &subagentManager{
-		subs: map[string]*subagent{},
-		emit: emit,
+		subs:                map[string]*subagent{},
+		emit:                emit,
+		maxRetainedTerminal: defaultMaxRetainedTerminal,
 	}
 }
 
@@ -68,10 +79,104 @@ func (m *subagentManager) drainForClose() []*subagent {
 	return subs
 }
 
+// countsTowardCap reports whether a status occupies a retention slot: only the
+// retained terminal records (completed|failed|cancelled|closed). running children
+// and closing/close-timed-out records never count, so they cannot deadlock spawns.
+func countsTowardCap(status SubagentStatus) bool {
+	switch status {
+	case SubagentCompleted, SubagentFailed, SubagentCancelled, SubagentClosed:
+		return true
+	default:
+		return false
+	}
+}
+
+// retentionState is a per-sub snapshot taken under that sub's mutex, used by the
+// cap GC so it never holds a sub.mu across the manager-level bookkeeping loop.
+type retentionState struct {
+	id          string
+	status      SubagentStatus
+	consumed    bool
+	endedAt     time.Time
+	reclaimable bool // closed, or a consumed terminal run — safe to evict
+}
+
+// reserveSlot enforces the retained-terminal cap before a new child is tracked.
+// Counting only terminal records (countsTowardCap), it GCs reclaimable records —
+// closed first, then consumed completed|failed|cancelled — oldest by endedAt, until
+// the terminal count drops below the cap. If the count is still at the cap with no
+// reclaimable record left (every counted record holds an unconsumed result), it
+// returns an error naming the remedy and reclaims nothing.
+//
+// It returns the evicted records so the CALLER can close their child Sessions
+// OUTSIDE the manager mutex (a consumed terminal child's Session is still live; an
+// already-closed one closes idempotently) — the manager mutex must never be held
+// while a child Session closes. The mutex is the outer lock; each sub.mu is taken
+// only briefly to snapshot, never held across the loop.
+func (m *subagentManager) reserveSlot() (evicted []*subagent, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	states := make([]retentionState, 0, len(m.subs))
+	counted := 0
+	for id, sub := range m.subs {
+		sub.mu.Lock()
+		status := sub.status
+		consumed := sub.resultConsumed
+		var endedAt time.Time
+		if sub.endedAt != nil {
+			endedAt = *sub.endedAt
+		}
+		sub.mu.Unlock()
+		if !countsTowardCap(status) {
+			continue
+		}
+		counted++
+		states = append(states, retentionState{
+			id:          id,
+			status:      status,
+			consumed:    consumed,
+			endedAt:     endedAt,
+			reclaimable: status == SubagentClosed || consumed,
+		})
+	}
+
+	if counted < m.maxRetainedTerminal {
+		return nil, nil
+	}
+
+	// Reclaim oldest-first, closed before consumed-terminal, until below the cap.
+	reclaimable := make([]retentionState, 0, len(states))
+	for _, st := range states {
+		if st.reclaimable {
+			reclaimable = append(reclaimable, st)
+		}
+	}
+	sort.Slice(reclaimable, func(i, j int) bool {
+		ci := reclaimable[i].status == SubagentClosed
+		cj := reclaimable[j].status == SubagentClosed
+		if ci != cj {
+			return ci // closed records evicted before consumed terminal ones
+		}
+		return reclaimable[i].endedAt.Before(reclaimable[j].endedAt)
+	})
+
+	need := counted - m.maxRetainedTerminal + 1 // free enough to leave room for the new child
+	if len(reclaimable) < need {
+		return nil, fmt.Errorf("retained subagent limit reached (%d): close_agent or wait on a finished agent to reclaim a slot before spawning", m.maxRetainedTerminal)
+	}
+	for i := 0; i < need; i++ {
+		id := reclaimable[i].id
+		evicted = append(evicted, m.subs[id])
+		delete(m.subs, id)
+	}
+	return evicted, nil
+}
+
 // runOutcomeReason maps a subagent status to the last RUN OUTCOME reported in the
 // info record's reason field: the terminal outcome (completed|failed|cancelled) or
-// empty while running. Task 7: closed/closing records must still surface the last
-// run outcome here — derive it from the retained outcome, never report "closed".
+// empty while running. It is the fallback for records without a retained outcome;
+// closing/closed records surface their retained lastOutcome via reasonLocked.
 func runOutcomeReason(status SubagentStatus) SubagentStatus {
 	switch status {
 	case SubagentCompleted, SubagentFailed, SubagentCancelled:
@@ -97,7 +202,7 @@ func (a *subagent) infoLocked(parentID string) SubagentInfo {
 		AgentID:         a.id,
 		ID:              a.id,
 		Status:          a.status,
-		Reason:          runOutcomeReason(a.status),
+		Reason:          a.reasonLocked(),
 		AgentType:       a.agentType,
 		ParentSessionID: parentID,
 		TurnsUsed:       a.turnsUsed,
@@ -106,6 +211,7 @@ func (a *subagent) infoLocked(parentID string) SubagentInfo {
 		CreatedAt:       a.createdAt,
 		StartedAt:       a.startedAt,
 		EndedAt:         a.endedAt,
+		CloseTimedOut:   a.closeTimedOut,
 	}
 	if a.sess != nil {
 		info.Task = a.sess.cfg.spawn.subagentTask

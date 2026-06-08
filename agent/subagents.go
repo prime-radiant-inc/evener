@@ -80,6 +80,8 @@ type subagent struct {
 	createdAt       time.Time          // set once at spawn; never reset on resume
 	startedAt       time.Time          // set at spawn; re-stamped at each idle-resume
 	endedAt         *time.Time         // set at run finalize; cleared to nil at idle-resume
+	lastOutcome     SubagentStatus     // most recent terminal run outcome; survives close so a closed record still reports completed|failed|cancelled
+	closeTimedOut   bool               // set when close_agent's session-close wait timed out (record kept in closing)
 }
 
 func hasString(items []string, want string) bool {
@@ -330,6 +332,19 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		}
 	}
 
+	// Enforce the retained-terminal cap before tracking. Done AFTER NewSession so
+	// the child is fully built, but a failure must not leak it: close the created
+	// session (mirroring the created-but-not-tracked cleanup above) before returning.
+	// On success, GC-evicted records are closed here, OUTSIDE the manager mutex.
+	evicted, err := s.subagents.reserveSlot()
+	if err != nil {
+		subSess.Close()
+		return "", err
+	}
+	for _, ev := range evicted {
+		ev.sess.Close()
+	}
+
 	now := time.Now()
 	sub := &subagent{
 		id:           subSess.id,
@@ -422,6 +437,8 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 	sub.cancelRequested = false
 	sub.startedAt = resumeTime
 	sub.endedAt = nil
+	sub.lastOutcome = ""
+	sub.closeTimedOut = false
 	sub.mu.Unlock()
 
 	s.emit(events.EventSubagentStart, events.SubagentStartData{
@@ -481,37 +498,44 @@ func (s *Session) waitAgent(ctx context.Context, agentID string, timeoutMS int) 
 	return string(b), nil
 }
 
+// closeAgent gracefully shuts a child down and RETAINS the record as closed rather
+// than removing it: the closed record stays queryable (hidden from the default list,
+// surfaced by include_closed/status=closed) and its snapshot still reports the last
+// run outcome via the retained lastOutcome. The transition is closing → close the
+// child Session (outside both mutexes) → closed. On a close-wait timeout the record
+// stays in closing with close_timed_out set and the timeout error is returned; it is
+// still retained so a stuck child does not silently vanish.
 func (s *Session) closeAgent(agentID string) (any, error) {
 	sub := s.getSub(agentID)
 	if sub == nil {
 		return "", fmt.Errorf("unknown agent_id: %s", agentID)
 	}
 
+	sub.mu.Lock()
+	sub.status = SubagentClosing
+	done := sub.done
+	sub.mu.Unlock()
+
+	// Close the child Session outside every mutex (it acquires its own locks).
 	sub.sess.Close()
 
-	// Wait for the goroutine to finish after cancellation.
-	done := sub.done
-	if done == nil {
-		s.subagents.remove(agentID)
-
-		sub.mu.Lock()
-		result := sub.resultSnapshotLocked()
-		sub.mu.Unlock()
-
-		b, _ := json.Marshal(result)
-		return string(b), nil
-	}
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		return "", fmt.Errorf("timed out closing subagent %s", agentID)
+	// done==nil means there is no in-flight run to await (effectively unreachable
+	// for a tracked sub, which always has a done channel); mark closed and retain.
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			sub.mu.Lock()
+			sub.closeTimedOut = true // keep status=closing; the record stays tracked
+			sub.mu.Unlock()
+			return "", fmt.Errorf("timed out closing subagent %s", agentID)
+		}
 	}
 
 	sub.mu.Lock()
+	sub.status = SubagentClosed
 	result := sub.resultSnapshotLocked()
 	sub.mu.Unlock()
-
-	s.subagents.remove(agentID)
 
 	b, _ := json.Marshal(result)
 	return string(b), nil
@@ -617,6 +641,7 @@ func (a *subagent) run(ctx context.Context, input string) {
 	default:
 		a.status = SubagentCompleted
 	}
+	a.lastOutcome = a.status // retain the run outcome so a later close still reports it
 	done := a.done
 	emitEnd := !a.endEmitted
 	a.endEmitted = true
@@ -662,17 +687,31 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	return a.sess.ProcessInput(ctx, reason, nil)
 }
 
+// reasonLocked returns the reason a snapshot/info record reports: the retained last
+// run outcome (completed|failed|cancelled) when present, so a closing/closed record
+// still surfaces the outcome of the run it last finished. It falls back to deriving
+// the reason from the current status (empty while running) — the fallback keeps
+// hand-constructed records and existing snapshot tests, which set status but not
+// lastOutcome, reporting the same reason as before. Called with sub.mu held.
+func (a *subagent) reasonLocked() SubagentStatus {
+	if a.lastOutcome != "" {
+		return a.lastOutcome
+	}
+	return runOutcomeReason(a.status)
+}
+
 func (a *subagent) resultSnapshotLocked() subagentResult {
 	output := a.result
 	if strings.TrimSpace(output) == "" && a.err != nil {
 		output = a.err.Error()
 	}
+	reason := a.reasonLocked()
 	return subagentResult{
 		AgentID:       a.id,
 		Status:        a.status,
-		Reason:        a.status,
+		Reason:        reason,
 		Output:        output,
-		Success:       a.status == SubagentCompleted,
+		Success:       reason == SubagentCompleted,
 		TurnsUsed:     a.turnsUsed,
 		TranscriptRef: encodeRef("", a.sess.ID()),
 	}
