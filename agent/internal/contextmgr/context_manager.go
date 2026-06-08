@@ -1126,7 +1126,7 @@ Be thorough and structured. Err on the side of including too much rather than to
 	sumProfile := cm.currentProfile()
 	models := summarizationModels(sumProfile)
 	if len(models) == 0 {
-		return nil, fmt.Errorf("summarization model is empty")
+		return nil, errors.New("summarization model is empty")
 	}
 	var resp llm.Response
 	var lastErr error
