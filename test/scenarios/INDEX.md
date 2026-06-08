@@ -206,6 +206,16 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   but RETAINS a `closed` record: default `list_agents` HIDES it
   (`count:0`), `include_closed:true` SURFACES it with `status:"closed"`
   and the retained `reason:"completed"`.
+- `subagent-notification-wake.md` — the proactive completion wake
+  (serve-mode ONLY, driven through the hub): a parent spawns NON-blocking
+  (`spawn_agent blocking:false`) and ENDS its turn (goes idle without
+  waiting); when the child reaches a terminal state ~15s later, serf wakes
+  the parent by appending the `<subagent-notification ... status="completed"
+  ...>` block as a `STEERING` turn that drives a fresh model turn. Proof is
+  the post-idle `STEERING` entry in the PARENT transcript; the woken model
+  then `subagent_output`s the child and surfaces `CHILD_DONE_42`. One-shot
+  `serf run` does NOT deliver (no later turn to wake). Verified live against
+  `openai/gpt-5.4-mini`, first attempt.
 
 ## Regression sweep (older surfaces)
 
