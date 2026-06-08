@@ -79,18 +79,31 @@ Currently implemented Serf hook support (not all of this is `claude-compatible-s
 
 Near-term subset targets:
 
-- Claude-compatible matcher semantics;
-- command `args` exec form;
-- official common input fields;
-- official JSON output fields for currently fired events;
-- event-specific exit-code behavior;
-- `http` handler support.
+- Claude-compatible matcher semantics; ✅ implemented (Phase 1) — `agent/internal/hooks/matcher.go`: empty/`*`=all, `[A-Za-z0-9_|]+`=exact/pipe-list, else Go RE2 regex; invalid regex skips+diagnoses, never panics.
+- command `args` exec-form + explicit `shell` selection; ✅ implemented (Phase 1) — bash default; powershell and unknown shells produce an explicit error.
+- official common input fields; ✅ implemented (Phase 1) — `transcript_path`, `permission_mode`, `tool_use_id`, `tool_response`, `agent_id`, `agent_type`, `effort` added; legacy aliases `user_prompt`/`tool_result` preserved; `permission_mode`/`agent_id`/`agent_type`/`CLAUDE_CODE_REMOTE` omitted (no reachable value in serf, never fabricated).
+- `additionalContext`/`systemMessage` routed separately in the data model; ✅ implemented (Phase 1) — distinct delivery channel deferred to Phase B.
+- event-specific exit-code behavior (central table for the 9 fired events); ✅ implemented (Phase 1) — exit-2 blocks for `PreToolUse`/`Stop`/`SubagentStop`/`UserPromptSubmit`/`PreCompact`; non-blocking for `PostToolUse`/`SessionStart`/`SessionEnd`/`Notification`; JSON parsed only on exit 0.
+- official command env vars: `CLAUDE_EFFORT` (when known); ✅ implemented (Phase 1) — `PLUGIN_ROOT` alias retained (`serf-native`).
+- tier-labeled `/status` hook diagnostics (`HookEventStatus` with Event/Count/Tier/Supported; recognized-but-unsupported surfaced); ✅ implemented (Phase 1) — `serf-native`; TUI/web rendering deferred.
+- `http` handler support; ⏳ DEFERRED — Phase C.
 
 ### `reserved-placeholder`
 
 Claude-documented behavior that Serf recognizes as a future compatibility target but does not yet execute. Reserved placeholders should parse or diagnose predictably. They must not be advertised as working.
 
 Examples: `Setup`, `InstructionsLoaded`, `MessageDisplay`, `TaskCreated`, `TaskCompleted`, `TeammateIdle`, `CwdChanged`, `FileChanged`, `WorktreeCreate`, `WorktreeRemove`, `Elicitation`, `ElicitationResult`, advanced `updatedPermissions`, `watchPaths`, `reloadSkills`, async re-wake, and exact JS regex features unsupported by Go RE2.
+
+The following items from the Phase A near-term subset list were NOT shipped in Phase 1 and remain deferred:
+
+- `http`/`mcp_tool`/`agent` handler types — DEFERRED Phase C.
+- `PreToolUse` preferred output schema (`permissionDecision`: `allow|deny|ask|defer`) — DEFERRED Phase B.
+- `if` permission-rule evaluation — DEFERRED Phase B.
+- Async command execution (`async`/`asyncRewake`) — DEFERRED Phase C.
+- Distinct `additionalContext` delivery channel to model (data-model split is Phase 1; actual delivery is) — DEFERRED Phase B.
+- SDK typed lifecycle hooks — DEFERRED Phase E.
+
+New events not yet fired by Serf (`PostToolUseFailure`, `PostToolBatch`, `SubagentStart`, `PostCompact`, `PermissionRequest`, `PermissionDenied`, `ConfigChange`, `UserPromptExpansion`, `StopFailure`, plus the lifecycle/team/worktree set) remain reserved-placeholder.
 
 ### `experimental`
 
@@ -964,6 +977,7 @@ Diagnostics must not include:
 
 ## Caveats
 
+- **Go RE2 matcher is the active implementation (Phase 1).** The Claude-compatible matcher shipped in Phase 1 uses Go RE2, not JavaScript regular expressions. RE2 does not support lookbehind assertions (`(?<=...)`, `(?<!...)`) or backreferences (`\1`). A matcher containing either construct will be treated as an invalid regex: the hook is skipped and a sanitized diagnostic is emitted (plugin name, event, matcher, source file). It will never silently mis-match. Plugin authors who currently rely on JS-only regex features must rewrite their matchers to use RE2-compatible alternatives. If exact JS regex parity becomes required, a JS regex engine may be introduced deliberately; see §Non-goals.
 - Claude docs specify JavaScript regular expressions; a Go RE2 implementation is a compatibility subset unless unsupported JS regex constructs are detected and handled explicitly.
 - Some Claude events describe products/features Serf may not have. Those names should remain reserved placeholders until there is a real runtime boundary.
 - Claude hook docs are updated over time. This evergreen spec should cite <https://code.claude.com/docs/en/hooks> as the authoritative current compatibility reference and update tables when that page changes.
