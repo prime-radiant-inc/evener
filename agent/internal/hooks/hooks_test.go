@@ -426,7 +426,7 @@ func TestHookRunner_PreToolUse_Deny(t *testing.T) {
 	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
 		Matcher: "*",
 		Type:    "command",
-		Command: `echo '{"hookSpecificOutput":{"permissionDecision":"deny","reason":"not allowed"}}'`,
+		Command: `echo '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"not allowed"}}'`,
 		Timeout: 5,
 	})
 
@@ -439,6 +439,9 @@ func TestHookRunner_PreToolUse_Deny(t *testing.T) {
 	result := runner.RunPreToolUse(context.Background(), input)
 	if !result.Denied {
 		t.Error("expected Denied=true")
+	}
+	if result.DenyMessage != "not allowed" {
+		t.Errorf("DenyMessage = %q, want \"not allowed\"", result.DenyMessage)
 	}
 }
 
@@ -554,13 +557,68 @@ func TestParseHookOutput_StructuredJSON(t *testing.T) {
 }
 
 func TestParseHookOutput_PreToolUseDeny(t *testing.T) {
-	output := `{"hookSpecificOutput":{"permissionDecision":"deny","reason":"dangerous operation"}}`
+	output := `{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"dangerous operation"}}`
 	result := parseHookOutput(output, 0)
 	if !result.Denied {
 		t.Error("expected Denied=true")
 	}
-	if result.SystemMessage != "dangerous operation" {
-		t.Errorf("SystemMessage = %q, want %q", result.SystemMessage, "dangerous operation")
+	if result.PermissionReason != "dangerous operation" {
+		t.Errorf("PermissionReason = %q, want %q", result.PermissionReason, "dangerous operation")
+	}
+}
+
+func TestParseHookOutput_PermissionDecisionAllow(t *testing.T) {
+	o := parseHookOutput(`{"hookSpecificOutput":{"permissionDecision":"allow","permissionDecisionReason":"looks fine"}}`, 0)
+	if o.PermissionDecision != "allow" {
+		t.Fatalf("PermissionDecision = %q, want allow", o.PermissionDecision)
+	}
+	if o.PermissionReason != "looks fine" {
+		t.Fatalf("PermissionReason = %q, want \"looks fine\"", o.PermissionReason)
+	}
+	if o.Denied {
+		t.Fatal("allow must not set Denied")
+	}
+}
+
+func TestParseHookOutput_PermissionDecisionReason(t *testing.T) {
+	o := parseHookOutput(`{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"dangerous"}}`, 0)
+	if o.PermissionDecision != "deny" {
+		t.Fatalf("PermissionDecision = %q, want deny", o.PermissionDecision)
+	}
+	if o.PermissionReason != "dangerous" {
+		t.Fatalf("PermissionReason = %q, want dangerous", o.PermissionReason)
+	}
+	if o.SystemMessage != "" {
+		t.Fatalf("SystemMessage = %q, want empty (reason routes to PermissionReason)", o.SystemMessage)
+	}
+}
+
+func TestParseHookOutput_DeprecatedTopLevelDecision(t *testing.T) {
+	approve := parseHookOutput(`{"decision":"approve","reason":"ok"}`, 0)
+	if approve.PermissionDecision != "allow" {
+		t.Fatalf("approve -> PermissionDecision = %q, want allow", approve.PermissionDecision)
+	}
+	if approve.PermissionReason != "ok" {
+		t.Fatalf("top-level reason -> PermissionReason = %q, want ok", approve.PermissionReason)
+	}
+	both := parseHookOutput(`{"decision":"approve","hookSpecificOutput":{"permissionDecision":"deny"}}`, 0)
+	if both.PermissionDecision != "deny" {
+		t.Fatalf("preferred should win: PermissionDecision = %q, want deny", both.PermissionDecision)
+	}
+}
+
+func TestParseHookOutput_SystemMessageIsJSONField(t *testing.T) {
+	plain := parseHookOutput("hello", 0)
+	if plain.SystemMessageIsJSONField {
+		t.Fatal("plain stdout must have SystemMessageIsJSONField=false")
+	}
+	jsonField := parseHookOutput(`{"systemMessage":"hi"}`, 0)
+	if !jsonField.SystemMessageIsJSONField {
+		t.Fatal("JSON systemMessage field must have SystemMessageIsJSONField=true")
+	}
+	errOut := parseHookOutput("boom", 2)
+	if errOut.SystemMessageIsJSONField {
+		t.Fatal("exit!=0 stderr must have SystemMessageIsJSONField=false")
 	}
 }
 
@@ -795,6 +853,48 @@ func TestHookRunner_SupportedSummary(t *testing.T) {
 }
 
 // --- Phase 1: Characterization tests (lock current behavior) ---
+
+func TestRunPreToolUse_DenyReasonFromPermissionDecisionReason(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: `echo '{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"nope"}}'`,
+	})
+	r := runner.RunPreToolUse(context.Background(), Input{CWD: "/tmp", HookEventName: "PreToolUse", ToolName: "Bash"})
+	if !r.Denied {
+		t.Fatal("expected deny")
+	}
+	if r.DenyMessage != "nope" {
+		t.Fatalf("DenyMessage = %q, want nope", r.DenyMessage)
+	}
+}
+
+func TestRunPreToolUse_DeprecatedBlockDenies(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: `echo '{"decision":"block","reason":"legacy"}'`,
+	})
+	r := runner.RunPreToolUse(context.Background(), Input{CWD: "/tmp", HookEventName: "PreToolUse", ToolName: "Bash"})
+	if !r.Denied {
+		t.Fatal("deprecated top-level block must deny PreToolUse")
+	}
+	if r.DenyMessage != "legacy" {
+		t.Fatalf("DenyMessage = %q, want legacy", r.DenyMessage)
+	}
+}
+
+func TestRunPreToolUse_AskProceeds(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: `echo '{"hookSpecificOutput":{"permissionDecision":"ask"}}'`,
+	})
+	r := runner.RunPreToolUse(context.Background(), Input{CWD: "/tmp", HookEventName: "PreToolUse", ToolName: "Bash"})
+	if r.Denied {
+		t.Fatal("ask must not deny (serf has no permission prompt)")
+	}
+}
 
 // TestMatchHooks_ExactModeNoSubstring verifies that a plain word matcher like
 // "Bash" uses exact-match semantics and does NOT substring-match "BashOutput".

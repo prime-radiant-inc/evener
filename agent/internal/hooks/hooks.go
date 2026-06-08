@@ -402,6 +402,16 @@ type parsedHookOutput struct {
 	BlockReason       string
 	IsError           bool
 	RawExitCode       int
+	// PermissionDecision is the PreToolUse hookSpecificOutput.permissionDecision
+	// ("allow"|"deny"|"ask"|"defer"), or "" if absent. RunPreToolUse interprets it.
+	PermissionDecision string
+	// PermissionReason is permissionDecisionReason (preferred) or the deprecated
+	// top-level reason. Kept out of SystemMessage so the deny reason is not also
+	// delivered as a system message.
+	PermissionReason string
+	// SystemMessageIsJSONField is true only when SystemMessage came from the JSON
+	// "systemMessage" field (user-visible), false for plain stdout or error stderr.
+	SystemMessageIsJSONField bool
 }
 
 // parseHookOutput interprets hook stdout and exit code into structured output.
@@ -440,6 +450,7 @@ func parseHookOutput(stdout string, exitCode int) parsedHookOutput {
 	}
 	if s, ok := parsed["systemMessage"].(string); ok {
 		result.SystemMessage = s
+		result.SystemMessageIsJSONField = true
 	}
 	if s, ok := parsed["terminalSequence"].(string); ok {
 		result.TerminalSequence = s
@@ -447,13 +458,14 @@ func parseHookOutput(stdout string, exitCode int) parsedHookOutput {
 
 	// Extract hookSpecificOutput
 	if hso, ok := parsed["hookSpecificOutput"].(map[string]any); ok {
-		if pd, ok := hso["permissionDecision"].(string); ok && pd == "deny" {
-			result.Denied = true
-			if reason, ok := hso["reason"].(string); ok {
-				if result.SystemMessage == "" {
-					result.SystemMessage = reason
-				}
+		if pd, ok := hso["permissionDecision"].(string); ok {
+			result.PermissionDecision = pd
+			if pd == "deny" {
+				result.Denied = true
 			}
+		}
+		if r, ok := hso["permissionDecisionReason"].(string); ok {
+			result.PermissionReason = r
 		}
 		if ui, ok := hso["updatedInput"].(map[string]any); ok {
 			result.UpdatedInput = ui
@@ -464,11 +476,24 @@ func parseHookOutput(stdout string, exitCode int) parsedHookOutput {
 		}
 	}
 
-	// Stop hooks: "block" decision prevents the session from ending.
-	if parsed["decision"] == "block" {
+	// Deprecated top-level decision form. Preferred hookSpecificOutput.permissionDecision
+	// (parsed above) wins; only fill in when it is absent. "block" also drives
+	// Stop/SubagentStop blocking via Blocked.
+	switch parsed["decision"] {
+	case "block":
 		result.Blocked = true
-		if reason, ok := parsed["reason"].(string); ok {
-			result.BlockReason = reason
+		if result.PermissionDecision == "" {
+			result.PermissionDecision = "deny"
+		}
+	case "approve":
+		if result.PermissionDecision == "" {
+			result.PermissionDecision = "allow"
+		}
+	}
+	if reason, ok := parsed["reason"].(string); ok {
+		result.BlockReason = reason
+		if result.PermissionReason == "" {
+			result.PermissionReason = reason
 		}
 	}
 
@@ -567,10 +592,27 @@ func (r *Runner) RunPreToolUse(ctx context.Context, input Input) PreToolUseResul
 		if o.TerminalSequence != "" {
 			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
 		}
-		if o.Denied || (exitBehavior(plugin.HookPreToolUse).BlockOnExit2 && o.RawExitCode == 2) {
+		denied := false
+		switch o.PermissionDecision {
+		case "deny":
+			denied = true
+		case "ask", "defer":
+			// Recognized but not honored: serf has no interactive permission prompt.
+			// The tool proceeds; the user-visible diagnostic is added in a later task
+			// (it needs the UserMessages bucket, which does not exist yet).
+		}
+		if exitBehavior(plugin.HookPreToolUse).BlockOnExit2 && o.RawExitCode == 2 {
+			denied = true
+		}
+		if denied {
 			result.Denied = true
 			if result.DenyMessage == "" {
-				result.DenyMessage = o.SystemMessage
+				switch {
+				case o.PermissionReason != "":
+					result.DenyMessage = o.PermissionReason
+				case o.IsError:
+					result.DenyMessage = o.SystemMessage
+				}
 			}
 		}
 		if o.UpdatedInput != nil {
