@@ -1092,6 +1092,78 @@ func TestParseHookOutput_AdditionalContextSeparate(t *testing.T) {
 	}
 }
 
+// --- Task 3: Routing tests ---
+
+func TestRouting_AdditionalContextToModel_SystemMessageToUser(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookPostToolUse, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: `echo '{"systemMessage":"to-user","hookSpecificOutput":{"additionalContext":"to-model"}}'`,
+	})
+	r := runner.RunPostToolUse(context.Background(), Input{CWD: "/tmp", HookEventName: "PostToolUse", ToolName: "Bash"})
+	if len(r.ModelContext) != 1 || r.ModelContext[0] != "to-model" {
+		t.Fatalf("ModelContext = %v, want [to-model]", r.ModelContext)
+	}
+	if len(r.UserMessages) != 1 || r.UserMessages[0] != "to-user" {
+		t.Fatalf("UserMessages = %v, want [to-user]", r.UserMessages)
+	}
+}
+
+func TestRouting_PostToolUseExit2StderrToModel(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookPostToolUse, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: `echo "boom" >&2; exit 2`,
+	})
+	r := runner.RunPostToolUse(context.Background(), Input{CWD: "/tmp", HookEventName: "PostToolUse", ToolName: "Bash"})
+	if len(r.ModelContext) == 0 || !strings.Contains(r.ModelContext[0], "boom") {
+		t.Fatalf("PostToolUse exit-2 stderr must reach the model: ModelContext = %v", r.ModelContext)
+	}
+	if len(r.UserMessages) != 0 {
+		t.Fatalf("PostToolUse exit-2 stderr must not go to the user: UserMessages = %v", r.UserMessages)
+	}
+}
+
+func TestRouting_StopExit2StderrToModel(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookStop, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: `echo "stay" >&2; exit 2`,
+	})
+	r := runner.RunStop(context.Background(), Input{CWD: "/tmp", HookEventName: "Stop"})
+	if !r.Blocked {
+		t.Fatal("Stop exit 2 must block")
+	}
+	if len(r.ModelContext) == 0 || !strings.Contains(r.ModelContext[0], "stay") {
+		t.Fatalf("Stop exit-2 stderr must reach the model: ModelContext = %v", r.ModelContext)
+	}
+}
+
+func TestRouting_ContextEventPlainStdoutToModel(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookSessionStart, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5, Command: `echo bootstrap`,
+	})
+	r := runner.RunSessionStart(context.Background(), Input{CWD: "/tmp", HookEventName: "SessionStart"})
+	if len(r.ModelContext) != 1 || r.ModelContext[0] != "bootstrap" {
+		t.Fatalf("SessionStart plain stdout must reach the model: ModelContext = %v", r.ModelContext)
+	}
+}
+
+func TestRouting_NonContextPlainStdoutToUser(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookPostToolUse, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5, Command: `echo logged`,
+	})
+	r := runner.RunPostToolUse(context.Background(), Input{CWD: "/tmp", HookEventName: "PostToolUse", ToolName: "Bash"})
+	if len(r.UserMessages) != 1 || r.UserMessages[0] != "logged" {
+		t.Fatalf("PostToolUse plain stdout must go to the user: UserMessages = %v", r.UserMessages)
+	}
+	if len(r.ModelContext) != 0 {
+		t.Fatalf("PostToolUse plain stdout must not reach the model: ModelContext = %v", r.ModelContext)
+	}
+}
+
 // TestHookInput_CurrentWireShape_Characterization locks the JSON field names present
 // today. Later tasks may ADD fields but must never remove or rename these.
 func TestHookInput_CurrentWireShape_Characterization(t *testing.T) {

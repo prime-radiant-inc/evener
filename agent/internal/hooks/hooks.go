@@ -367,7 +367,14 @@ func invalidMatcherWarning(pluginName, event, matcher string) string {
 type RunResult struct {
 	SystemMessages    []string
 	AdditionalContext []string
+	// TerminalSequences is parsed but currently has no delivery-site consumer.
 	TerminalSequences []string
+	// ModelContext is delivered to the model (additionalContext, context-event
+	// plain stdout, and non-deny error stderr).
+	ModelContext []string
+	// UserMessages is shown to the user (the JSON systemMessage field and
+	// non-context plain stdout).
+	UserMessages []string
 }
 
 // PreToolUseResult contains aggregated output from PreToolUse hooks.
@@ -376,8 +383,15 @@ type PreToolUseResult struct {
 	DenyMessage       string
 	SystemMessages    []string
 	AdditionalContext []string
+	// TerminalSequences is parsed but currently has no delivery-site consumer.
 	TerminalSequences []string
 	UpdatedInput      map[string]any
+	// ModelContext is delivered to the model (additionalContext, context-event
+	// plain stdout, and non-deny error stderr).
+	ModelContext []string
+	// UserMessages is shown to the user (the JSON systemMessage field and
+	// non-context plain stdout).
+	UserMessages []string
 }
 
 // StopResult contains aggregated output from Stop/SubagentStop hooks.
@@ -386,7 +400,14 @@ type StopResult struct {
 	BlockReason       string
 	SystemMessages    []string
 	AdditionalContext []string
+	// TerminalSequences is parsed but currently has no delivery-site consumer.
 	TerminalSequences []string
+	// ModelContext is delivered to the model (additionalContext, context-event
+	// plain stdout, and non-deny error stderr).
+	ModelContext []string
+	// UserMessages is shown to the user (the JSON systemMessage field and
+	// non-context plain stdout).
+	UserMessages []string
 }
 
 // parsedHookOutput is the structured interpretation of a hook's stdout and exit code.
@@ -598,8 +619,7 @@ func (r *Runner) RunPreToolUse(ctx context.Context, input Input) PreToolUseResul
 			denied = true
 		case "ask", "defer":
 			// Recognized but not honored: serf has no interactive permission prompt.
-			// The tool proceeds; the user-visible diagnostic is added in a later task
-			// (it needs the UserMessages bucket, which does not exist yet).
+			// The tool proceeds; the user-visible diagnostic is added below.
 		}
 		if exitBehavior(plugin.HookPreToolUse).BlockOnExit2 && o.RawExitCode == 2 {
 			denied = true
@@ -614,6 +634,13 @@ func (r *Runner) RunPreToolUse(ctx context.Context, input Input) PreToolUseResul
 					result.DenyMessage = o.SystemMessage
 				}
 			}
+		}
+		if o.PermissionDecision == "ask" || o.PermissionDecision == "defer" {
+			result.UserMessages = append(result.UserMessages,
+				"hook returned permissionDecision \""+o.PermissionDecision+"\" which serf does not support (no interactive permission prompt); the tool will proceed")
+		}
+		if !denied {
+			routeOutput(plugin.HookPreToolUse, o, &result.ModelContext, &result.UserMessages)
 		}
 		if o.UpdatedInput != nil {
 			result.UpdatedInput = mergeHookInputMaps(result.UpdatedInput, o.UpdatedInput)
@@ -638,7 +665,7 @@ func mergeHookInputMaps(dst map[string]any, src map[string]any) map[string]any {
 // RunPostToolUse dispatches PostToolUse hooks and aggregates system messages.
 func (r *Runner) RunPostToolUse(ctx context.Context, input Input) RunResult {
 	outputs := r.runAll(ctx, plugin.HookPostToolUse, input.ToolName, input)
-	return collectSystemMessages(outputs)
+	return collectSystemMessages(plugin.HookPostToolUse, outputs)
 }
 
 // RunStop dispatches Stop hooks and aggregates results.
@@ -671,6 +698,7 @@ func (r *Runner) runStopEvent(ctx context.Context, event plugin.HookEvent, input
 				result.BlockReason = o.BlockReason
 			}
 		}
+		routeOutput(event, o, &result.ModelContext, &result.UserMessages)
 	}
 	return result
 }
@@ -678,7 +706,7 @@ func (r *Runner) runStopEvent(ctx context.Context, event plugin.HookEvent, input
 // RunUserPromptSubmit dispatches UserPromptSubmit hooks.
 func (r *Runner) RunUserPromptSubmit(ctx context.Context, input Input) RunResult {
 	outputs := r.runAll(ctx, plugin.HookUserPromptSubmit, "", input)
-	return collectSystemMessages(outputs)
+	return collectSystemMessages(plugin.HookUserPromptSubmit, outputs)
 }
 
 // RunSessionStart dispatches startup SessionStart hooks.
@@ -693,7 +721,7 @@ func (r *Runner) RunSessionStartFor(ctx context.Context, input Input, kind plugi
 		target = string(plugin.SessionStartKindStartup)
 	}
 	outputs := r.runAll(ctx, plugin.HookSessionStart, target, input)
-	return collectSystemMessages(outputs)
+	return collectSystemMessages(plugin.HookSessionStart, outputs)
 }
 
 // RunSessionEnd dispatches SessionEnd hooks. No return value needed.
@@ -704,18 +732,42 @@ func (r *Runner) RunSessionEnd(ctx context.Context, input Input) {
 // RunPreCompact dispatches PreCompact hooks.
 func (r *Runner) RunPreCompact(ctx context.Context, input Input) RunResult {
 	outputs := r.runAll(ctx, plugin.HookPreCompact, "", input)
-	return collectSystemMessages(outputs)
+	return collectSystemMessages(plugin.HookPreCompact, outputs)
 }
 
 // RunNotification dispatches Notification hooks.
 func (r *Runner) RunNotification(ctx context.Context, input Input) RunResult {
 	outputs := r.runAll(ctx, plugin.HookNotification, "", input)
-	return collectSystemMessages(outputs)
+	return collectSystemMessages(plugin.HookNotification, outputs)
+}
+
+// routeOutput places one parsed hook output into the model/user buckets for the
+// given event (07 §"Hook output contract"; design spec §Routing). It does NOT
+// handle the PreToolUse deny reason or the Stop/SubagentStop block reason — the
+// blocking runners consume those before/instead of calling this.
+func routeOutput(event plugin.HookEvent, o parsedHookOutput, model, user *[]string) {
+	if o.AdditionalContext != "" {
+		*model = append(*model, o.AdditionalContext)
+	}
+	if o.SystemMessage == "" {
+		return
+	}
+	isContext := event == plugin.HookSessionStart || event == plugin.HookUserPromptSubmit
+	switch {
+	case o.IsError:
+		*model = append(*model, o.SystemMessage) // error stderr -> model (preserves today)
+	case o.SystemMessageIsJSONField:
+		*user = append(*user, o.SystemMessage) // JSON systemMessage field -> user
+	case isContext:
+		*model = append(*model, o.SystemMessage) // context-event plain stdout -> model
+	default:
+		*user = append(*user, o.SystemMessage) // non-context plain stdout -> user
+	}
 }
 
 // collectSystemMessages aggregates system messages, additional context, and terminal
-// sequences from parsed outputs.
-func collectSystemMessages(outputs []parsedHookOutput) RunResult {
+// sequences from parsed outputs, and routes into ModelContext/UserMessages buckets.
+func collectSystemMessages(event plugin.HookEvent, outputs []parsedHookOutput) RunResult {
 	var result RunResult
 	for _, o := range outputs {
 		if o.SystemMessage != "" {
@@ -727,6 +779,7 @@ func collectSystemMessages(outputs []parsedHookOutput) RunResult {
 		if o.TerminalSequence != "" {
 			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
 		}
+		routeOutput(event, o, &result.ModelContext, &result.UserMessages)
 	}
 	return result
 }
