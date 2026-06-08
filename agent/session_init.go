@@ -628,6 +628,22 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind) error {
 		})
 	}
 
+	// Validate every registered matcher ONCE at load time. An invalid-regex
+	// matcher gets a single loud diagnostic here; MatchHooks then skips it
+	// silently at dispatch (no per-tool-call storm, and no dispatch-time
+	// EventWarning that would recurse through the Notification hook).
+	for _, d := range runner.Validate() {
+		s.pendingHookWarnings = append(s.pendingHookWarnings, events.WarningData{
+			Source:     "hooks",
+			Title:      "invalid hook matcher",
+			Message:    d.Message,
+			PluginName: d.PluginName,
+			EventName:  d.Event,
+		})
+	}
+
+	// The runner callback carries hook lifecycle events (HookStart/HookEnd) and
+	// any genuine warnings raised during hook execution; route them through emit.
 	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
 		s.emit(kind, data)
 	})

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/serf/agent/events"
@@ -136,8 +137,13 @@ type Session struct {
 	pendingPluginEvents []events.PluginLoadedData
 	pendingHookWarnings []events.WarningData
 	hookRunner          *hooks.Runner
-	pluginAgents        map[string]plugin.Agent
-	pluginMCPConfigs    []mcpconfig.ServerConfig
+	// inNotificationHook guards against EventWarning→Notification-hook re-entrancy:
+	// a warning emitted while the Notification hook is already running must not
+	// re-trigger it. Set/cleared via CompareAndSwap around the hook body so the
+	// guard is correct under concurrent warning emits (atomic, no lock needed).
+	inNotificationHook atomic.Bool
+	pluginAgents       map[string]plugin.Agent
+	pluginMCPConfigs   []mcpconfig.ServerConfig
 	// unsupportedPluginHookEvents accumulates all Claude-recognized events
 	// declared by loaded plugins that serf does not currently fire.
 	// Populated by initPlugins; used by DetailedStatus for diagnostics.

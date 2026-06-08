@@ -253,28 +253,53 @@ func (r *Runner) Add(event plugin.HookEvent, hooks ...plugin.RegisteredHook) {
 	r.hooks[event] = append(r.hooks[event], hooks...)
 }
 
+// InvalidMatcherDiagnostic describes a registered hook whose matcher is not a
+// valid Go RE2 regex. It carries only the plugin name, event name, offending
+// matcher, and the sanitized warning text — never any hook payload or secret.
+type InvalidMatcherDiagnostic struct {
+	PluginName string
+	Event      string
+	Matcher    string
+	Message    string
+}
+
+// Validate compiles every registered hook's matcher once and returns a
+// diagnostic for each invalid one. It is meant to run at load time so the
+// invalid-matcher warning is emitted exactly once per hook; MatchHooks then
+// skips invalid matchers silently at dispatch (no per-call warning storm and,
+// critically, no dispatch-time EventWarning that could recurse through the
+// Notification hook).
+func (r *Runner) Validate() []InvalidMatcherDiagnostic {
+	var diags []InvalidMatcherDiagnostic
+	for event, hooks := range r.hooks {
+		for _, hook := range hooks {
+			if _, err := matchTarget(hook.Matcher, ""); err != nil {
+				diags = append(diags, InvalidMatcherDiagnostic{
+					PluginName: hook.PluginName,
+					Event:      string(event),
+					Matcher:    hook.Matcher,
+					Message:    invalidMatcherWarning(hook.PluginName, string(event), hook.Matcher),
+				})
+			}
+		}
+	}
+	return diags
+}
+
 // MatchHooks returns hooks registered for the event whose Matcher matches toolName.
 // Matching follows Claude-compatible semantics: empty/"*" match all; a matcher
 // of only [A-Za-z0-9_|] chars is treated as exact or pipe-list; anything else
-// is a Go RE2 regex. Invalid regex matchers are skipped without panicking and
-// a sanitized diagnostic is emitted when an event callback is registered.
+// is a Go RE2 regex. Invalid regex matchers are skipped SILENTLY here — they are
+// diagnosed once at load time via Validate. Emitting at dispatch would (a) storm
+// one warning per tool call and (b) recurse when the emitted EventWarning fires
+// the Notification hook, whose own dispatch re-enters MatchHooks.
 func (r *Runner) MatchHooks(event plugin.HookEvent, toolName string) []plugin.RegisteredHook {
 	var matched []plugin.RegisteredHook
 	for _, hook := range r.hooks[event] {
 		ok, err := matchTarget(hook.Matcher, toolName)
 		if err != nil {
-			// Invalid regex: skip the hook and surface a loud, sanitized warning.
-			// The matcher string is the only matcher-derived data exposed; the
-			// hook payload, env, and tool input are never included.
-			if r.onEvent != nil {
-				r.onEvent(events.EventWarning, events.WarningData{
-					Source:     "hooks",
-					Title:      "invalid hook matcher",
-					Message:    invalidMatcherWarning(hook.PluginName, string(event), hook.Matcher),
-					PluginName: hook.PluginName,
-					EventName:  string(event),
-				})
-			}
+			// Invalid regex: skip the hook silently. The load-time Validate pass
+			// already surfaced a sanitized diagnostic for it.
 			continue
 		}
 		if ok {

@@ -19,10 +19,12 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 	}
 	s.pendingPluginEvents = nil
 	// Loud, visible warnings for misconfigured plugin hook declarations (unknown
-	// or recognized-but-unsupported event names), emitted after SESSION_START so
-	// they ride the same stream the CLI/TUI/web render. Collected in initPlugins.
+	// or recognized-but-unsupported event names, and invalid matchers), emitted
+	// after SESSION_START so they ride the same stream the CLI/TUI/web render.
+	// Collected in initPlugins. These are CONFIG diagnostics: they go through the
+	// diagnostic path so they render but do NOT run the Notification hook.
 	for _, w := range s.pendingHookWarnings {
-		s.emit(events.EventWarning, w)
+		s.emitDiagnosticWarning(w)
 	}
 	s.pendingHookWarnings = nil
 	for _, src := range promptSources {
@@ -35,10 +37,39 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 // explicit kind via the ctxHost adapter), but the event's Kind is authoritative
 // from the payload: events.New derives it via data.eventKind(), so Kind and
 // payload can never disagree even if a caller passes a mismatched kind.
+//
+// An EventWarning emitted here is a genuine, model-facing warning (context-length,
+// content-filter, transcript-write failure, …): it runs the Notification hook so
+// the model is informed. Hook-CONFIGURATION diagnostics must NOT run the
+// Notification hook and instead go through emitDiagnosticWarning.
 func (s *Session) emit(kind events.EventKind, data events.EventData) {
 	if s == nil || s.events == nil {
 		return
 	}
+	data = s.sendEvent(kind, data)
+	if kind == events.EventWarning {
+		s.fireNotificationHook(warningHookMessage(data))
+	}
+}
+
+// emitDiagnosticWarning emits a hook-configuration/matcher diagnostic so the
+// CLI/TUI/hub render it (they inspect WarningData on the stream), but WITHOUT
+// running the Notification hook. These diagnostics are about the plugin's own
+// configuration, not notifications meant for the model; routing them through emit
+// would (a) spuriously fire the Notification command hook at session start and
+// (b) — for the invalid-matcher diagnostic — recurse, since the Notification
+// dispatch re-enters the matcher that produced the warning.
+func (s *Session) emitDiagnosticWarning(data events.WarningData) {
+	if s == nil || s.events == nil {
+		return
+	}
+	s.sendEvent(events.EventWarning, data)
+}
+
+// sendEvent enriches and delivers data on the event stream and returns the
+// enriched payload. It performs no side effects beyond the send; the Notification
+// hook decision belongs to the caller.
+func (s *Session) sendEvent(kind events.EventKind, data events.EventData) events.EventData {
 	data = enrichDiagnosticData(kind, data)
 	ev := events.New(data)
 	ev.SessionID = s.id
@@ -56,9 +87,21 @@ func (s *Session) emit(kind events.EventKind, data events.EventData) {
 		}
 	}
 	s.eventsMu.RUnlock()
-	if kind == events.EventWarning {
-		s.runNotificationHook(context.Background(), warningHookMessage(data))
+	return data
+}
+
+// fireNotificationHook runs the Notification hook for a genuine warning, guarded
+// against re-entrancy: if a warning is emitted DURING a Notification-hook run
+// (e.g. a future warning source inside that path), it must not re-trigger the
+// hook. inNotificationHook is a process-wide guard on the session; the
+// compare-and-swap makes the "am I already inside?" check atomic so concurrent
+// warning emits cannot both enter.
+func (s *Session) fireNotificationHook(message string) {
+	if !s.inNotificationHook.CompareAndSwap(false, true) {
+		return
 	}
+	defer s.inNotificationHook.Store(false)
+	s.runNotificationHook(context.Background(), message)
 }
 
 func warningHookMessage(data events.EventData) string {

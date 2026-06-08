@@ -783,10 +783,13 @@ func TestMatchHooks_NegativeMatcherCoverage(t *testing.T) {
 	}
 }
 
-// TestMatchHooks_InvalidMatcherEmitsWarning verifies that when a hook is skipped
-// because its matcher is an invalid regex, MatchHooks emits a loud WARNING event
-// (not just the silent skip) naming the plugin, event, and matcher. The matcher
-// string is the only matcher-derived data exposed; no payload is leaked.
+// TestMatchHooks_InvalidMatcherEmitsWarning verifies that an invalid-regex matcher
+// produces exactly one loud, sanitized diagnostic naming the plugin, event, and
+// matcher — now surfaced at LOAD time via Validate rather than at dispatch (the
+// dispatch-time emit was the root of the Notification-hook recursion and the
+// per-tool-call warning storm). MatchHooks itself must skip silently and emit
+// nothing. The matcher string is the only matcher-derived data exposed; no
+// payload is leaked.
 func TestMatchHooks_InvalidMatcherEmitsWarning(t *testing.T) {
 	r := newRunner(nil, "")
 	r.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
@@ -797,34 +800,35 @@ func TestMatchHooks_InvalidMatcherEmitsWarning(t *testing.T) {
 		PluginName: "broken-plugin",
 	})
 
-	var warnings []events.WarningData
+	// The dispatch path must be silent: skip the hook, emit nothing.
+	var emitted int
 	r.SetEventCallback(func(kind events.EventKind, data events.EventData) {
-		if kind == events.EventWarning {
-			if w, ok := data.(events.WarningData); ok {
-				warnings = append(warnings, w)
-			}
-		}
+		emitted++
 	})
-
 	if got := r.MatchHooks(plugin.HookPreToolUse, "Bash"); len(got) != 0 {
 		t.Fatalf("invalid regex: hook must be skipped; got %d matches", len(got))
 	}
+	if emitted != 0 {
+		t.Fatalf("MatchHooks must not emit on dispatch; got %d events", emitted)
+	}
 
-	if len(warnings) != 1 {
-		t.Fatalf("expected exactly 1 WARNING for the invalid matcher, got %d", len(warnings))
+	// The diagnostic is surfaced once at load time via Validate.
+	diags := r.Validate()
+	if len(diags) != 1 {
+		t.Fatalf("expected exactly 1 invalid-matcher diagnostic, got %d", len(diags))
 	}
-	w := warnings[0]
-	if w.PluginName != "broken-plugin" {
-		t.Errorf("PluginName = %q, want %q", w.PluginName, "broken-plugin")
+	d := diags[0]
+	if d.PluginName != "broken-plugin" {
+		t.Errorf("PluginName = %q, want %q", d.PluginName, "broken-plugin")
 	}
-	if w.EventName != string(plugin.HookPreToolUse) {
-		t.Errorf("EventName = %q, want %q", w.EventName, plugin.HookPreToolUse)
+	if d.Event != string(plugin.HookPreToolUse) {
+		t.Errorf("Event = %q, want %q", d.Event, plugin.HookPreToolUse)
 	}
-	if !strings.Contains(w.Message, "(") {
-		t.Errorf("warning message %q should name the offending matcher", w.Message)
+	if !strings.Contains(d.Message, "(") {
+		t.Errorf("diagnostic message %q should name the offending matcher", d.Message)
 	}
-	if !strings.Contains(strings.ToLower(w.Message), "matcher") {
-		t.Errorf("warning message %q should explain the matcher is invalid", w.Message)
+	if !strings.Contains(strings.ToLower(d.Message), "matcher") {
+		t.Errorf("diagnostic message %q should explain the matcher is invalid", d.Message)
 	}
 }
 
