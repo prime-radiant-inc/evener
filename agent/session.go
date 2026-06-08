@@ -214,8 +214,8 @@ type Session struct {
 // reaches a terminal state. It carries no child output: a notification turn
 // reads the transcript via TranscriptRef when it wants more.
 type subagentNotification struct {
-	AgentID, Status, Reason, TranscriptRef string
-	TurnsUsed                              int
+	AgentID, Status, TranscriptRef string
+	TurnsUsed                      int
 }
 
 // enqueueNotification appends a pending notification under pendingNotifsMu. The

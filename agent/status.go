@@ -33,7 +33,6 @@ type SubagentInfo struct {
 	AgentID         string         `json:"agent_id"`
 	ID              string         `json:"id"`
 	Status          SubagentStatus `json:"status"`
-	Reason          SubagentStatus `json:"reason,omitempty"`
 	Task            string         `json:"task,omitempty"`
 	AgentType       string         `json:"agent_type,omitempty"`
 	ParentSessionID string         `json:"parent_session_id,omitempty"`
@@ -44,6 +43,7 @@ type SubagentInfo struct {
 	CreatedAt       time.Time      `json:"created_at"`
 	StartedAt       time.Time      `json:"started_at"`
 	EndedAt         *time.Time     `json:"ended_at"`
+	Closed          bool           `json:"closed"`
 	CloseTimedOut   bool           `json:"close_timed_out"`
 }
 

@@ -44,13 +44,14 @@ func TestResultSnapshot_CurrentShape(t *testing.T) {
 	}
 }
 
-// TestResultSnapshot_CarriesAgentIDAndReason verifies that agent_id and reason are stamped on the snapshot.
-func TestResultSnapshot_CarriesAgentIDAndReason(t *testing.T) {
+// TestResultSnapshot_CarriesAgentIDAndStatus verifies that agent_id and the run
+// outcome (status) are stamped on the snapshot, and success derives from status.
+func TestResultSnapshot_CarriesAgentIDAndStatus(t *testing.T) {
 	cases := []struct {
 		name        string
 		status      SubagentStatus
 		err         error
-		wantReason  SubagentStatus
+		wantStatus  SubagentStatus
 		wantSuccess bool
 	}{
 		{"completed", SubagentCompleted, nil, SubagentCompleted, true},
@@ -61,7 +62,7 @@ func TestResultSnapshot_CarriesAgentIDAndReason(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			a := &subagent{id: "01CHILD", status: tc.status, err: tc.err, sess: newTestSession(t)}
 			snap := a.resultSnapshotLocked()
-			if snap.AgentID != "01CHILD" || snap.Reason != tc.wantReason || snap.Success != tc.wantSuccess {
+			if snap.AgentID != "01CHILD" || snap.Status != tc.wantStatus || snap.Success != tc.wantSuccess {
 				t.Fatalf("got %+v", snap)
 			}
 		})
@@ -110,9 +111,6 @@ func TestBlockingSpawn_SnapshotHasAgentID(t *testing.T) {
 	}
 	if result.Status != SubagentCompleted {
 		t.Errorf("status = %q, want %q", result.Status, SubagentCompleted)
-	}
-	if result.Reason != SubagentCompleted {
-		t.Errorf("reason = %q, want %q", result.Reason, SubagentCompleted)
 	}
 	if !result.Success {
 		t.Error("success must be true for a completed agent")
@@ -210,12 +208,17 @@ func TestSpawn_StartEmittedBeforeRunGoroutine(t *testing.T) {
 	}
 }
 
-// TestSubagentEndData_HasReason verifies that SUBAGENT_END carries a reason field.
-func TestSubagentEndData_HasReason(t *testing.T) {
-	d := events.SubagentEndData{AgentID: "x", Status: "completed", TurnsUsed: 2, Reason: "completed"}
+// TestSubagentEndData_CarriesStatusNoReason verifies SUBAGENT_END carries the run
+// outcome in status and no longer carries a separate reason field (the record and
+// the event now agree on a single outcome axis).
+func TestSubagentEndData_CarriesStatusNoReason(t *testing.T) {
+	d := events.SubagentEndData{AgentID: "x", Status: "completed", TurnsUsed: 2}
 	b, _ := json.Marshal(d)
-	if !strings.Contains(string(b), `"reason":"completed"`) {
-		t.Fatalf("missing reason: %s", b)
+	if !strings.Contains(string(b), `"status":"completed"`) {
+		t.Fatalf("missing status: %s", b)
+	}
+	if strings.Contains(string(b), `"reason"`) {
+		t.Fatalf("SUBAGENT_END must not carry a reason key: %s", b)
 	}
 }
 

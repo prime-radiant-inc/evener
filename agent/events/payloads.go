@@ -196,12 +196,12 @@ type SubagentStartData struct {
 	Task    string `json:"task"`
 }
 
-// SubagentEndData is the payload for an EventSubagentEnd event.
+// SubagentEndData is the payload for an EventSubagentEnd event. Status carries the
+// run outcome (completed|failed|cancelled).
 type SubagentEndData struct {
 	AgentID   string `json:"agent_id"`
 	Status    string `json:"status"`
 	TurnsUsed int    `json:"turns_used"`
-	Reason    string `json:"reason,omitempty"`
 }
 
 // PluginLoadedData is the payload for an EventPluginLoaded event.

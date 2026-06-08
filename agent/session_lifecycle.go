@@ -787,7 +787,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 
 // filterDeliverableNotifications drops a drained notification that should no
 // longer wake the model at delivery time: the child's record is absent (the
-// manager get returns nil — GC-reclaimed), the record is closing/closed, or its
+// manager get returns nil — GC-reclaimed), the record is closed, or its
 // result was already consumed by a blocking wait. The notification is armed
 // unconditionally at terminal run end (so arming never races a concurrent
 // wait/close); suppression happens here, at the moment the parent's turn would
@@ -808,7 +808,7 @@ func (s *Session) filterDeliverableNotifications(raw []subagentNotification) []s
 			continue
 		}
 		sub.mu.Lock()
-		drop := sub.status == SubagentClosing || sub.status == SubagentClosed || sub.resultConsumed
+		drop := sub.closed || sub.resultConsumed
 		sub.mu.Unlock()
 		if drop {
 			continue
@@ -825,10 +825,10 @@ func formatNotificationReminder(notifs []subagentNotification) string {
 	blocks := make([]string, 0, len(notifs))
 	for _, n := range notifs {
 		blocks = append(blocks, fmt.Sprintf(
-			"<subagent-notification agent_id=%q status=%q reason=%q turns_used=%q transcript_ref=%q>\n"+
+			"<subagent-notification agent_id=%q status=%q turns_used=%q transcript_ref=%q>\n"+
 				"Subagent %s finished (%s). Read its result with wait(%q) or subagent_output(%q, view=result).\n"+
 				"</subagent-notification>",
-			n.AgentID, n.Status, n.Reason, strconv.Itoa(n.TurnsUsed), n.TranscriptRef,
+			n.AgentID, n.Status, strconv.Itoa(n.TurnsUsed), n.TranscriptRef,
 			n.AgentID, n.Status, n.AgentID, n.AgentID,
 		))
 	}

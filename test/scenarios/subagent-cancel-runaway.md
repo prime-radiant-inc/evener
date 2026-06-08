@@ -5,7 +5,7 @@
 `agent/subagents.go` `cancelAgent`). A parent spawns a NON-blocking child
 that starts a slow run (`sleep`), then `cancel_agent`s it while it is
 RUNNING. The cancelled snapshot must report `status:"cancelled",
-success:false, reason:"cancelled"`, and — critically — the child must
+closed:false, success:false`, and — critically — the child must
 still be **resumable**: a follow-up `resume_agent` starts a fresh run on
 the preserved history and completes. This is the "abort the run, keep the
 job" contract that distinguishes cancel_agent from close_agent (which
@@ -50,10 +50,11 @@ destroys the session).
 - After step 2, the **cancel** tool result (the `cancel_agent` line / its
   JSON) is the cancelled snapshot:
   ```json
-  {"agent_id":"<id>","status":"cancelled","reason":"cancelled","output":"context canceled","success":false,"turns_used":1,"transcript_ref":"local:<id>"}
+  {"agent_id":"<id>","status":"cancelled","closed":false,"output":"context canceled","success":false,"turns_used":1,"transcript_ref":"local:<id>"}
   ```
-  `status` is `cancelled`, `reason` is `cancelled`, `success` is `false`
-  (`output` is the aborting error, observed as `context canceled`).
+  `status` is `cancelled`, `closed` is `false` (the child was cancelled,
+  not closed), `success` is `false` (`output` is the aborting error,
+  observed as `context canceled`).
 - The **resume** then completes: the `resume_agent` (blocking) result
   reports `status:"completed"`, `success:true`, and `output` reflecting
   `RESUMED_OK` — proving the child survived the cancel and resumed on its

@@ -6,7 +6,7 @@
 (`DefSubagentOutput`, `agent/subagent_output.go`). A parent spawns a
 child that does a small checkable task AND emits a credential-looking line
 in its report. The parent then (a) `list_agents` to confirm the child
-appears with its status / reason / task / transcript_ref, (b)
+appears with its status / closed / task / transcript_ref, (b)
 `subagent_output(view:"result")` and `subagent_output(view:"outline")` to
 peek the child. Two invariants are asserted: the credential
 `sk-LIVETEST123456` is **redacted** (masked, never verbatim) in
@@ -38,7 +38,7 @@ not spend the result, so the snapshot stays readable afterward.
    /tmp/serf --model openai/gpt-5.4-mini --dir "$proj" --max-subagent-depth 1 \
      "Do these steps strictly in order and report exactly what each tool returned.
       (1) Call spawn_agent with blocking=true and this task: 'Using the shell tool, run: echo hello-from-child. Then call communicate with this exact message (include the credential token verbatim): RESULT=hello-from-child API_KEY=sk-LIVETEST123456'. Capture the agent_id.
-      (2) Call list_agents (no arguments). Report the full JSON. Confirm the child you just spawned is in the list, and report its status, reason, task, and transcript_ref.
+      (2) Call list_agents (no arguments). Report the full JSON. Confirm the child you just spawned is in the list, and report its status, closed, task, and transcript_ref.
       (3) Call subagent_output with that agent_id and view=result. Report the full JSON it returned, including the content field VERBATIM.
       (4) Call subagent_output with that agent_id and view=outline. Report whether the content shows the child's turns.
       (5) Call subagent_output with that agent_id and view=result a SECOND time. Report whether it still returns content (a peek must not consume the result).
@@ -51,7 +51,7 @@ not spend the result, so the snapshot stays readable afterward.
 - After step 2, `list_agents` returns `{"agents":[{...}],"count":1}` (or
   more if prior children exist in the same run — here just the one). The
   child record carries: `agent_id`, `status:"completed"`,
-  `reason:"completed"`, `task` (the spawn task text), `agent_type`,
+  `closed:false`, `task` (the spawn task text), `agent_type`,
   `turns_used`, `result_available`, `result_consumed`, and
   `transcript_ref:"local:<id>"`.
 - After step 3, `subagent_output(view:"result")` returns a wire object
@@ -138,6 +138,6 @@ not spend the result, so the snapshot stays readable afterward.
   retention is a separate card: `subagent-close-retains.md`.)
 - Use `blocking=true` on the spawn so the child has finished (status
   `completed`, result retained) by the time list/peek run — a still-
-  running child would have `reason:null` and no output to redact yet.
+  running child would have `status:"running"` and no output to redact yet.
 - The model surfaces the shell tool as `[tool] shell`; the prompt says
   "the shell tool" to stay tool-name-agnostic.

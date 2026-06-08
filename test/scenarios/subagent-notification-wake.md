@@ -6,7 +6,7 @@ spawn-and-be-notified pattern. When a parent spawns a child NON-blocking
 waiting), and the child later reaches a terminal run state, serf
 PROACTIVELY wakes the parent: it drains the durable notification queue and
 delivers a `<subagent-notification agent_id="..." status="completed"
-reason="completed" turns_used="N" transcript_ref="local:...">` block as a
+turns_used="N" transcript_ref="local:...">` block as a
 `STEERING` turn that DRIVES A REAL MODEL TURN. The woken parent's model
 sees the reminder and can read the child's result with `wait` /
 `subagent_output`.
@@ -104,7 +104,7 @@ this scenario MUST be driven through the hub, not the one-shot CLI.
   whose text is the notification block. THIS IS THE WAKE — the
   load-bearing proof. The block looks exactly like (observed live):
   ```
-  <subagent-notification agent_id="01KTKBTTHMG117PR5N0KZZ7XWP" status="completed" reason="completed" turns_used="1" transcript_ref="local:01KTKBTTHMG117PR5N0KZZ7XWP">
+  <subagent-notification agent_id="01KTKBTTHMG117PR5N0KZZ7XWP" status="completed" turns_used="1" transcript_ref="local:01KTKBTTHMG117PR5N0KZZ7XWP">
   Subagent 01KTKBTTHMG117PR5N0KZZ7XWP finished (completed). Read its result with wait("01KTKBTTHMG117PR5N0KZZ7XWP") or subagent_output("01KTKBTTHMG117PR5N0KZZ7XWP", view=result).
   </subagent-notification>
   ```

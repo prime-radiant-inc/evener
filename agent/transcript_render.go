@@ -1021,7 +1021,7 @@ func subagentResultBody(raw string) (string, bool) {
 var subagentResultKnownKeys = map[string]bool{
 	"agent_id":       true,
 	"status":         true,
-	"reason":         true,
+	"closed":         true,
 	"output":         true,
 	"success":        true,
 	"turns_used":     true,

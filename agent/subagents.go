@@ -32,17 +32,13 @@ const (
 	SubagentFailed SubagentStatus = "failed"
 	// SubagentCancelled indicates the sub-agent's run was cancelled.
 	SubagentCancelled SubagentStatus = "cancelled"
-	// SubagentClosing indicates the sub-agent is shutting down gracefully.
-	SubagentClosing SubagentStatus = "closing"
-	// SubagentClosed indicates the sub-agent has fully shut down.
-	SubagentClosed SubagentStatus = "closed"
 )
 
 // subagentResult is the structured output from a completed sub-agent.
 type subagentResult struct {
 	AgentID       string         `json:"agent_id"`
 	Status        SubagentStatus `json:"status"`
-	Reason        SubagentStatus `json:"reason,omitempty"`
+	Closed        bool           `json:"closed"`
 	Output        string         `json:"output"`
 	Success       bool           `json:"success"`
 	TurnsUsed     int            `json:"turns_used"`
@@ -82,8 +78,8 @@ type subagent struct {
 	createdAt       time.Time          // set once at spawn; never reset on resume
 	startedAt       time.Time          // set at spawn; re-stamped at each idle-resume
 	endedAt         *time.Time         // set at run finalize; cleared to nil at idle-resume
-	lastOutcome     SubagentStatus     // most recent terminal run outcome; survives close so a closed record still reports completed|failed|cancelled
-	closeTimedOut   bool               // set when close_agent's session-close wait timed out (record kept in closing)
+	closed          bool               // session torn down; record retained as terminal history
+	closeTimedOut   bool               // close_agent's session-close wait exceeded its bound; close not confirmed
 }
 
 func hasString(items []string, want string) bool {
@@ -441,7 +437,7 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 	sub.cancelRequested = false
 	sub.startedAt = resumeTime
 	sub.endedAt = nil
-	sub.lastOutcome = ""
+	sub.closed = false
 	sub.closeTimedOut = false
 	sub.mu.Unlock()
 
@@ -502,13 +498,14 @@ func (s *Session) waitAgent(ctx context.Context, agentID string, timeoutMS int) 
 	return string(b), nil
 }
 
-// closeAgent gracefully shuts a child down and RETAINS the record as closed rather
-// than removing it: the closed record stays queryable (hidden from the default list,
-// surfaced by include_closed/status=closed) and its snapshot still reports the last
-// run outcome via the retained lastOutcome. The transition is closing → close the
-// child Session (outside both mutexes) → closed. On a close-wait timeout the record
-// stays in closing with close_timed_out set and the timeout error is returned; it is
-// still retained so a stuck child does not silently vanish.
+// closeAgent gracefully shuts a child down and RETAINS the record rather than
+// removing it: the record stays queryable (hidden from the default list, surfaced
+// by include_closed) with closed=true, and its snapshot still reports the run
+// outcome — close never overwrites status. It closes the child Session (outside
+// every mutex), waits up to 5s for the in-flight run to finish, then marks the
+// record closed. On a close-wait timeout it sets close_timed_out, leaves closed
+// false, returns the timeout error, and keeps the record tracked so a stuck child
+// does not silently vanish.
 func (s *Session) closeAgent(agentID string) (any, error) {
 	sub := s.getSub(agentID)
 	if sub == nil {
@@ -516,7 +513,6 @@ func (s *Session) closeAgent(agentID string) (any, error) {
 	}
 
 	sub.mu.Lock()
-	sub.status = SubagentClosing
 	done := sub.done
 	sub.mu.Unlock()
 
@@ -524,20 +520,20 @@ func (s *Session) closeAgent(agentID string) (any, error) {
 	sub.sess.Close()
 
 	// done==nil means there is no in-flight run to await (effectively unreachable
-	// for a tracked sub, which always has a done channel); mark closed and retain.
+	// for a tracked sub, which always has a done channel).
 	if done != nil {
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):
 			sub.mu.Lock()
-			sub.closeTimedOut = true // keep status=closing; the record stays tracked
+			sub.closeTimedOut = true // close not confirmed; record stays tracked
 			sub.mu.Unlock()
 			return "", fmt.Errorf("timed out closing subagent %s", agentID)
 		}
 	}
 
 	sub.mu.Lock()
-	sub.status = SubagentClosed
+	sub.closed = true
 	result := sub.resultSnapshotLocked()
 	sub.mu.Unlock()
 
@@ -645,7 +641,6 @@ func (a *subagent) run(ctx context.Context, input string) {
 	default:
 		a.status = SubagentCompleted
 	}
-	a.lastOutcome = a.status // retain the run outcome so a later close still reports it
 	done := a.done
 	emitEnd := !a.endEmitted
 	a.endEmitted = true
@@ -661,7 +656,6 @@ func (a *subagent) run(ctx context.Context, input string) {
 		n = subagentNotification{
 			AgentID:       a.id,
 			Status:        string(a.status),
-			Reason:        string(a.reasonLocked()),
 			TranscriptRef: encodeRef("", a.sess.ID()),
 			TurnsUsed:     a.turnsUsed,
 		}
@@ -677,7 +671,6 @@ func (a *subagent) run(ctx context.Context, input string) {
 			AgentID:   a.id,
 			Status:    string(status),
 			TurnsUsed: turnsUsed,
-			Reason:    string(status),
 		})
 	}
 	if armNow {
@@ -714,31 +707,17 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 	return a.sess.ProcessInput(ctx, reason, nil)
 }
 
-// reasonLocked returns the reason a snapshot/info record reports: the retained last
-// run outcome (completed|failed|cancelled) when present, so a closing/closed record
-// still surfaces the outcome of the run it last finished. It falls back to deriving
-// the reason from the current status (empty while running) — the fallback keeps
-// hand-constructed records and existing snapshot tests, which set status but not
-// lastOutcome, reporting the same reason as before. Called with sub.mu held.
-func (a *subagent) reasonLocked() SubagentStatus {
-	if a.lastOutcome != "" {
-		return a.lastOutcome
-	}
-	return runOutcomeReason(a.status)
-}
-
 func (a *subagent) resultSnapshotLocked() subagentResult {
 	output := a.result
 	if strings.TrimSpace(output) == "" && a.err != nil {
 		output = a.err.Error()
 	}
-	reason := a.reasonLocked()
 	return subagentResult{
 		AgentID:       a.id,
 		Status:        a.status,
-		Reason:        reason,
+		Closed:        a.closed,
 		Output:        output,
-		Success:       reason == SubagentCompleted,
+		Success:       a.status == SubagentCompleted,
 		TurnsUsed:     a.turnsUsed,
 		TranscriptRef: encodeRef("", a.sess.ID()),
 	}

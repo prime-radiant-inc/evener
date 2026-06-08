@@ -54,9 +54,6 @@ func TestRun_ArmsOneNotificationOnTerminal(t *testing.T) {
 	if n.Status != string(SubagentCompleted) {
 		t.Errorf("notification Status = %q, want %q", n.Status, SubagentCompleted)
 	}
-	if n.Reason != string(SubagentCompleted) {
-		t.Errorf("notification Reason = %q, want %q", n.Reason, SubagentCompleted)
-	}
 	if want := encodeRef("", childID); n.TranscriptRef != want {
 		t.Errorf("notification TranscriptRef = %q, want %q", n.TranscriptRef, want)
 	}
@@ -117,12 +114,10 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 	// Back the notification with a real tracked, unconsumed terminal child so the
 	// suppress-at-drain filter (Task 4) treats it as deliverable. Without a backing
 	// record the manager get returns nil and the entry is dropped as GC-reclaimed.
-	trackSyntheticChild(t, sess, "01CHILD", SubagentCompleted, false, time.Now(), false)
+	trackSyntheticChild(t, sess, "01CHILD", SubagentCompleted, false, false, time.Now(), false)
 	sess.enqueueNotification(subagentNotification{
-		AgentID:       "01CHILD",
-		Status:        "completed",
-		Reason:        "completed",
-		TurnsUsed:     4,
+		AgentID: "01CHILD",
+		Status:  "completed", TurnsUsed: 4,
 		TranscriptRef: "local:01CHILD",
 	})
 
@@ -359,7 +354,7 @@ func TestNotification_InterleavesWithActiveGoal(t *testing.T) {
 
 	// Back the interleaved notification with a real tracked, unconsumed terminal
 	// child so the suppress-at-drain filter (Task 4) treats it as deliverable.
-	trackSyntheticChild(t, sess, "01CHILD", SubagentCompleted, false, time.Now(), false)
+	trackSyntheticChild(t, sess, "01CHILD", SubagentCompleted, false, false, time.Now(), false)
 
 	// Enqueue the notification as continuation #1 ends (its round-1 step, steps[3]),
 	// so after continuation #1 folds at its gate the tail interleaves a notification
@@ -367,10 +362,8 @@ func TestNotification_InterleavesWithActiveGoal(t *testing.T) {
 	base3 := adapter.steps[3]
 	adapter.steps[3] = func(req llm.Request) llm.Response {
 		sess.enqueueNotification(subagentNotification{
-			AgentID:       "01CHILD",
-			Status:        "completed",
-			Reason:        "completed",
-			TurnsUsed:     2,
+			AgentID: "01CHILD",
+			Status:  "completed", TurnsUsed: 2,
 			TranscriptRef: "local:01CHILD",
 		})
 		return base3(req)
@@ -485,10 +478,8 @@ func (a *sustainedNotificationAdapter) Complete(ctx context.Context, req llm.Req
 	// turns would chain endlessly and the deferred continuation would never run.
 	if a.sess != nil && !lastMessageIsNotification(req) {
 		a.sess.enqueueNotification(subagentNotification{
-			AgentID:       "01CHILD",
-			Status:        "completed",
-			Reason:        "completed",
-			TurnsUsed:     1,
+			AgentID: "01CHILD",
+			Status:  "completed", TurnsUsed: 1,
 			TranscriptRef: "local:01CHILD",
 		})
 	}
@@ -652,10 +643,8 @@ func TestNotification_GoalContinuesInlineWithoutKickFunc(t *testing.T) {
 	base3 := adapter.steps[3]
 	adapter.steps[3] = func(req llm.Request) llm.Response {
 		sess.enqueueNotification(subagentNotification{
-			AgentID:       "01CHILD",
-			Status:        "completed",
-			Reason:        "completed",
-			TurnsUsed:     2,
+			AgentID: "01CHILD",
+			Status:  "completed", TurnsUsed: 2,
 			TranscriptRef: "local:01CHILD",
 		})
 		return base3(req)
@@ -741,17 +730,15 @@ func TestNotification_GoalClearedDuringInterleaveStops(t *testing.T) {
 
 	// Back the interleaved notification with a real tracked, unconsumed terminal
 	// child so the suppress-at-drain filter (Task 4) treats it as deliverable.
-	trackSyntheticChild(t, sess, "01CHILD", SubagentCompleted, false, time.Now(), false)
+	trackSyntheticChild(t, sess, "01CHILD", SubagentCompleted, false, false, time.Now(), false)
 
 	// Arm the notification as continuation #1 ends (steps[3]) so it interleaves ahead
 	// of the gate-time deferred continuation #2.
 	base3 := adapter.steps[3]
 	adapter.steps[3] = func(req llm.Request) llm.Response {
 		sess.enqueueNotification(subagentNotification{
-			AgentID:       "01CHILD",
-			Status:        "completed",
-			Reason:        "completed",
-			TurnsUsed:     2,
+			AgentID: "01CHILD",
+			Status:  "completed", TurnsUsed: 2,
 			TranscriptRef: "local:01CHILD",
 		})
 		return base3(req)
@@ -841,16 +828,14 @@ func TestNotification_GoalRetargetedDuringInterleaveUsesNewObjective(t *testing.
 
 	// Back the interleaved notification with a real tracked, unconsumed terminal
 	// child so the suppress-at-drain filter (Task 4) treats it as deliverable.
-	trackSyntheticChild(t, sess, "01CHILD", SubagentCompleted, false, time.Now(), false)
+	trackSyntheticChild(t, sess, "01CHILD", SubagentCompleted, false, false, time.Now(), false)
 
 	// Arm the notification as continuation #1 ends (steps[3]).
 	base3 := adapter.steps[3]
 	adapter.steps[3] = func(req llm.Request) llm.Response {
 		sess.enqueueNotification(subagentNotification{
-			AgentID:       "01CHILD",
-			Status:        "completed",
-			Reason:        "completed",
-			TurnsUsed:     2,
+			AgentID: "01CHILD",
+			Status:  "completed", TurnsUsed: 2,
 			TranscriptRef: "local:01CHILD",
 		})
 		return base3(req)
@@ -1017,13 +1002,11 @@ func TestNotification_SuppressedWhenClosedOrAbsent(t *testing.T) {
 		}
 		collect := drainEvents(sess)
 
-		// A retained closed record: close_agent leaves status=closed, record tracked.
-		trackSyntheticChild(t, sess, "01CLOSED", SubagentClosed, false, time.Now(), false)
+		// A retained closed record: close_agent leaves closed=true, record tracked.
+		trackSyntheticChild(t, sess, "01CLOSED", SubagentCompleted, true /*closed*/, false, time.Now(), false)
 		sess.enqueueNotification(subagentNotification{
-			AgentID:       "01CLOSED",
-			Status:        "completed",
-			Reason:        "completed",
-			TurnsUsed:     3,
+			AgentID: "01CLOSED",
+			Status:  "completed", TurnsUsed: 3,
 			TranscriptRef: "local:01CLOSED",
 		})
 
@@ -1050,10 +1033,8 @@ func TestNotification_SuppressedWhenClosedOrAbsent(t *testing.T) {
 
 		// No tracking: the manager get returns nil for this agent_id (GC-reclaimed).
 		sess.enqueueNotification(subagentNotification{
-			AgentID:       "01GONE",
-			Status:        "completed",
-			Reason:        "completed",
-			TurnsUsed:     5,
+			AgentID: "01GONE",
+			Status:  "completed", TurnsUsed: 5,
 			TranscriptRef: "local:01GONE",
 		})
 
@@ -1085,12 +1066,10 @@ func TestNotification_DeliveredWhenUnconsumedTerminal(t *testing.T) {
 	defer sess.Close()
 
 	// A terminal, unconsumed, tracked child: the filter must KEEP its notification.
-	trackSyntheticChild(t, sess, "01LIVE", SubagentCompleted, false, time.Now(), false)
+	trackSyntheticChild(t, sess, "01LIVE", SubagentCompleted, false, false, time.Now(), false)
 	sess.enqueueNotification(subagentNotification{
-		AgentID:       "01LIVE",
-		Status:        "completed",
-		Reason:        "completed",
-		TurnsUsed:     2,
+		AgentID: "01LIVE",
+		Status:  "completed", TurnsUsed: 2,
 		TranscriptRef: "local:01LIVE",
 	})
 

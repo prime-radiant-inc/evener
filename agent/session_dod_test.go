@@ -4409,17 +4409,17 @@ func TestCloseAgent_ReturnsStructuredStatus(t *testing.T) {
 		t.Fatalf("close_agent error: %s", closeRes.Output)
 	}
 
-	// Verify close result is a subagentResult that reports the closed status while
-	// surfacing the last run outcome, and that the record is retained (not removed).
+	// Verify close result is a subagentResult that reports closed=true while
+	// preserving the run outcome in status, and that the record is retained (not removed).
 	var result subagentResult
 	if err := json.Unmarshal([]byte(closeRes.Output), &result); err != nil {
 		t.Fatalf("close_agent result is not JSON: %q (err: %v)", closeRes.Output, err)
 	}
-	if result.Status != SubagentClosed {
-		t.Errorf("close_agent status=%v, want %q", result.Status, SubagentClosed)
+	if !result.Closed {
+		t.Errorf("close_agent closed=false, want true")
 	}
-	if result.Reason != SubagentCompleted {
-		t.Errorf("close_agent reason=%v, want %q (last run outcome)", result.Reason, SubagentCompleted)
+	if result.Status != SubagentCompleted {
+		t.Errorf("close_agent status=%v, want %q (run outcome preserved)", result.Status, SubagentCompleted)
 	}
 	if !result.Success {
 		t.Errorf("close_agent success=false, want true for a child that completed before close")
@@ -4433,9 +4433,13 @@ func TestCloseAgent_ReturnsStructuredStatus(t *testing.T) {
 	}
 	sub.mu.Lock()
 	status := sub.status
+	closed := sub.closed
 	sub.mu.Unlock()
-	if status != SubagentClosed {
-		t.Errorf("retained record status=%v, want %q", status, SubagentClosed)
+	if !closed {
+		t.Errorf("retained record closed=false, want true")
+	}
+	if status != SubagentCompleted {
+		t.Errorf("retained record status=%v, want %q (run outcome preserved)", status, SubagentCompleted)
 	}
 }
 

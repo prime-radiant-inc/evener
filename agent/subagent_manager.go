@@ -28,8 +28,9 @@ type subagentManager struct {
 	// subagent so a child reaches the parent's queue without a back-reference.
 	notify func(subagentNotification)
 	// maxRetainedTerminal bounds how many terminal records (completed|failed|
-	// cancelled|closed) the manager retains per parent. Enforced at spawn time via
-	// reserveSlot, which GCs reclaimable records before failing loudly.
+	// cancelled) the manager retains per parent; a closed record still counts until
+	// reclaimed. Enforced at spawn time via reserveSlot, which GCs reclaimable
+	// records before failing loudly.
 	maxRetainedTerminal int
 }
 
@@ -85,16 +86,13 @@ func (m *subagentManager) drainForClose() []*subagent {
 	return subs
 }
 
-// countsTowardCap reports whether a status occupies a retention slot: only the
-// retained terminal records (completed|failed|cancelled|closed). running children
-// and closing/close-timed-out records never count, so they cannot deadlock spawns.
-func countsTowardCap(status SubagentStatus) bool {
-	switch status {
-	case SubagentCompleted, SubagentFailed, SubagentCancelled, SubagentClosed:
-		return true
-	default:
-		return false
-	}
+// countsTowardCap reports whether a record occupies a retention slot: a terminal
+// record (completed|failed|cancelled) whose close has not timed out. running
+// children and close-timed-out records never count, so they cannot deadlock
+// spawns. A closed record DOES count (it is terminal history) but is reclaimed
+// first by the GC.
+func countsTowardCap(status SubagentStatus, closeTimedOut bool) bool {
+	return terminalStatus(status) && !closeTimedOut
 }
 
 // retentionState is a per-sub snapshot taken under that sub's mutex, used by the
@@ -104,6 +102,7 @@ type retentionState struct {
 	status      SubagentStatus
 	consumed    bool
 	endedAt     time.Time
+	closed      bool
 	reclaimable bool // closed, or a consumed terminal run — safe to evict
 }
 
@@ -129,12 +128,14 @@ func (m *subagentManager) reserveSlot() (evicted []*subagent, err error) {
 		sub.mu.Lock()
 		status := sub.status
 		consumed := sub.resultConsumed
+		closed := sub.closed
+		closeTimedOut := sub.closeTimedOut
 		var endedAt time.Time
 		if sub.endedAt != nil {
 			endedAt = *sub.endedAt
 		}
 		sub.mu.Unlock()
-		if !countsTowardCap(status) {
+		if !countsTowardCap(status, closeTimedOut) {
 			continue
 		}
 		counted++
@@ -143,7 +144,8 @@ func (m *subagentManager) reserveSlot() (evicted []*subagent, err error) {
 			status:      status,
 			consumed:    consumed,
 			endedAt:     endedAt,
-			reclaimable: status == SubagentClosed || consumed,
+			closed:      closed,
+			reclaimable: closed || consumed,
 		})
 	}
 
@@ -159,8 +161,8 @@ func (m *subagentManager) reserveSlot() (evicted []*subagent, err error) {
 		}
 	}
 	sort.Slice(reclaimable, func(i, j int) bool {
-		ci := reclaimable[i].status == SubagentClosed
-		cj := reclaimable[j].status == SubagentClosed
+		ci := reclaimable[i].closed
+		cj := reclaimable[j].closed
 		if ci != cj {
 			return ci // closed records evicted before consumed terminal ones
 		}
@@ -179,23 +181,15 @@ func (m *subagentManager) reserveSlot() (evicted []*subagent, err error) {
 	return evicted, nil
 }
 
-// runOutcomeReason maps a subagent status to the last RUN OUTCOME reported in the
-// info record's reason field: the terminal outcome (completed|failed|cancelled) or
-// empty while running. It is the fallback for records without a retained outcome;
-// closing/closed records surface their retained lastOutcome via reasonLocked.
-func runOutcomeReason(status SubagentStatus) SubagentStatus {
+// terminalStatus reports whether a status is a finished run outcome
+// (completed|failed|cancelled) — one with a result to surface.
+func terminalStatus(status SubagentStatus) bool {
 	switch status {
 	case SubagentCompleted, SubagentFailed, SubagentCancelled:
-		return status
+		return true
 	default:
-		return ""
+		return false
 	}
-}
-
-// terminalStatus reports whether a status represents a finished run (one that has
-// a result to surface). Closing/closed are not terminal run states here.
-func terminalStatus(status SubagentStatus) bool {
-	return runOutcomeReason(status) != ""
 }
 
 // infoLocked builds the snapshot record for one subagent. It is called with sub.mu
@@ -208,15 +202,15 @@ func (a *subagent) infoLocked(parentID string) SubagentInfo {
 		AgentID:         a.id,
 		ID:              a.id,
 		Status:          a.status,
-		Reason:          a.reasonLocked(),
 		AgentType:       a.agentType,
 		ParentSessionID: parentID,
 		TurnsUsed:       a.turnsUsed,
-		ResultAvailable: terminalStatus(a.status) && !a.resultConsumed,
+		ResultAvailable: terminalStatus(a.status) && !a.resultConsumed && !a.closed,
 		ResultConsumed:  a.resultConsumed,
 		CreatedAt:       a.createdAt,
 		StartedAt:       a.startedAt,
 		EndedAt:         a.endedAt,
+		Closed:          a.closed,
 		CloseTimedOut:   a.closeTimedOut,
 	}
 	if a.sess != nil {
@@ -226,17 +220,17 @@ func (a *subagent) infoLocked(parentID string) SubagentInfo {
 	return info
 }
 
-// infos enumerates the tracked subagents for /status display, hiding closed
-// records so retained-but-closed children do not accumulate (running/completed/
-// failed/cancelled stay visible). It preserves the two-level lock order: manager
-// mutex outer, sub.mu inner.
+// infos enumerates the tracked subagents for /status display, hiding records
+// whose closed flag is set so retained-but-closed children do not accumulate
+// (running/completed/failed/cancelled stay visible). It preserves the two-level
+// lock order: manager mutex outer, sub.mu inner.
 func (m *subagentManager) infos() []SubagentInfo {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var infos []SubagentInfo
 	for _, sub := range m.subs {
 		sub.mu.Lock()
-		if sub.status != SubagentClosed {
+		if !sub.closed {
 			infos = append(infos, sub.infoLocked(""))
 		}
 		sub.mu.Unlock()
@@ -245,19 +239,20 @@ func (m *subagentManager) infos() []SubagentInfo {
 }
 
 // listAgents answers the list_agents query. With no status and includeClosed false
-// it returns all non-closed records. A status filter returns only records in that
-// status; status=closed implies includeClosed. includeClosed surfaces closed
-// records. It preserves the manager-outer/sub-inner lock order.
+// it returns all non-closed records. A status filter returns only records whose run
+// outcome matches; the legacy status="closed" sentinel maps to includeClosed (no
+// outcome filter). includeClosed surfaces closed records. It preserves the
+// manager-outer/sub-inner lock order.
 func (m *subagentManager) listAgents(parentID, status string, includeClosed bool) (agents []SubagentInfo, count int) {
-	if status == string(SubagentClosed) {
+	if status == "closed" {
 		includeClosed = true
+		status = ""
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, sub := range m.subs {
 		sub.mu.Lock()
-		subStatus := sub.status
-		include := subagentMatchesFilter(subStatus, status, includeClosed)
+		include := subagentMatchesFilter(sub.status, sub.closed, status, includeClosed)
 		var info SubagentInfo
 		if include {
 			info = sub.infoLocked(parentID)
@@ -270,15 +265,16 @@ func (m *subagentManager) listAgents(parentID, status string, includeClosed bool
 	return agents, len(agents)
 }
 
-// subagentMatchesFilter decides whether a subagent in subStatus passes the
-// list_agents filter. status "" means all (subject to includeClosed); status "all"
-// is the same sentinel; any other status matches only that status.
-func subagentMatchesFilter(subStatus SubagentStatus, status string, includeClosed bool) bool {
+// subagentMatchesFilter decides whether a record passes the list_agents filter. A
+// closed record is included only when includeClosed is set, regardless of the
+// status filter. status "" / "all" matches any run state; any other status matches
+// only that run outcome.
+func subagentMatchesFilter(subStatus SubagentStatus, closed bool, status string, includeClosed bool) bool {
+	if closed && !includeClosed {
+		return false
+	}
 	switch status {
 	case "", "all":
-		if subStatus == SubagentClosed {
-			return includeClosed
-		}
 		return true
 	default:
 		return string(subStatus) == status

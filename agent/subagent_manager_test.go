@@ -159,7 +159,7 @@ func TestInfos_HidesClosedByDefault(t *testing.T) {
 	fe := &fakeEmit{}
 	m := newSubagentManager(fe.emit, nil)
 	m.track(&subagent{id: "done", status: SubagentCompleted, turnsUsed: 2})
-	m.track(&subagent{id: "gone", status: SubagentClosed, turnsUsed: 5})
+	m.track(&subagent{id: "gone", status: SubagentCompleted, closed: true, turnsUsed: 5})
 
 	infos := m.infos()
 	byID := map[string]SubagentInfo{}
@@ -180,7 +180,7 @@ func TestListAgents_IncludeClosed(t *testing.T) {
 	fe := &fakeEmit{}
 	m := newSubagentManager(fe.emit, nil)
 	m.track(&subagent{id: "done", status: SubagentCompleted, turnsUsed: 2})
-	m.track(&subagent{id: "gone", status: SubagentClosed, turnsUsed: 5})
+	m.track(&subagent{id: "gone", status: SubagentCompleted, closed: true, turnsUsed: 5})
 
 	hidden, count := m.listAgents("01ROOT", "", false)
 	if count != 1 || len(hidden) != 1 || hidden[0].ID != "done" {
@@ -199,16 +199,24 @@ func TestListAgents_IncludeClosed(t *testing.T) {
 		t.Errorf("include_closed=true must include closed record; got %+v", shown)
 	}
 
-	// status=closed implies include_closed even when the flag is false.
-	closedOnly, count := m.listAgents("01ROOT", string(SubagentClosed), false)
-	if count != 1 || len(closedOnly) != 1 || closedOnly[0].ID != "gone" {
-		t.Fatalf("status=closed must surface only the closed record; got count=%d agents=%+v", count, closedOnly)
+	// The legacy status="closed" sentinel maps to include_closed (no outcome filter)
+	// even when the flag is false: closed records become visible alongside the rest.
+	sentinel, count := m.listAgents("01ROOT", "closed", false)
+	sentinelByID := map[string]SubagentInfo{}
+	for _, info := range sentinel {
+		sentinelByID[info.ID] = info
+	}
+	if count != 2 || len(sentinel) != 2 {
+		t.Fatalf("status=closed must surface closed records; got count=%d agents=%+v", count, sentinel)
+	}
+	if _, ok := sentinelByID["gone"]; !ok {
+		t.Errorf("status=closed sentinel must include the closed record; got %+v", sentinel)
 	}
 }
 
 // TestListAgents_RunningChildAppearsImmediately spawns a child non-blocking whose
 // run blocks inside an in-flight LLM call, then drives list_agents through its
-// registered tool and asserts the child shows up running with no reason and no
+// registered tool and asserts the child shows up running, not closed, with no
 // result available. The full record shape (ids/task/transcript_ref/parent/timestamps)
 // is asserted here too. Releasing the run via sess.Close() (deferred) drains the
 // goroutine — no sleeps.
@@ -267,8 +275,8 @@ func TestListAgents_RunningChildAppearsImmediately(t *testing.T) {
 	if got.Status != SubagentRunning {
 		t.Errorf("status = %q, want running", got.Status)
 	}
-	if got.Reason != "" {
-		t.Errorf("reason = %q, want empty for a running child", got.Reason)
+	if got.Closed {
+		t.Errorf("closed = true, want false for a running child")
 	}
 	if got.ResultAvailable {
 		t.Errorf("result_available must be false for a running child")
@@ -331,11 +339,10 @@ func countTracked(m *subagentManager) int {
 	return len(m.subs)
 }
 
-// trackSyntheticChild builds and tracks a child record with a real (but never-run)
-// child Session and controllable retention fields. The real Session matters because
-// the parent's Close path drains every tracked record and calls sub.sess.Close() on
-// it — a nil sess would panic. The child shares the parent's client/profile/env.
-func trackSyntheticChild(t *testing.T, sess *Session, id string, status SubagentStatus, consumed bool, endedAt time.Time, closeTimedOut bool) {
+// trackSyntheticChild tracks a hand-built child record. status is always a run
+// outcome (running|completed|failed|cancelled); closed/closeTimedOut are the close
+// flags. A closed record keeps the outcome it finished with.
+func trackSyntheticChild(t *testing.T, sess *Session, id string, status SubagentStatus, closed, consumed bool, endedAt time.Time, closeTimedOut bool) {
 	t.Helper()
 	child, err := NewSession(sess.client, NewOpenAIProfile("gpt-5.2"), sess.env, SessionConfig{MaxSubagentDepth: 1})
 	if err != nil {
@@ -346,30 +353,24 @@ func trackSyntheticChild(t *testing.T, sess *Session, id string, status Subagent
 		id:             id,
 		sess:           child,
 		status:         status,
+		closed:         closed,
 		resultConsumed: consumed,
 		closeTimedOut:  closeTimedOut,
 	}
 	if !endedAt.IsZero() {
 		sub.endedAt = &ended
 	}
-	// A terminal record carries its run outcome; a closed one retains the outcome it
-	// finished with (completed here) so reasonLocked still reports it.
-	switch status {
-	case SubagentCompleted, SubagentFailed, SubagentCancelled:
-		sub.lastOutcome = status
-	case SubagentClosed:
-		sub.lastOutcome = SubagentCompleted
-	}
 	sess.subagents.track(sub)
 }
 
 // TestClose_RetainsAsClosed drives a completed child through close and asserts the
-// record is RETAINED as closed (not removed): still tracked, status closed, hidden
-// from the default enumeration but visible with include_closed, and the close
-// snapshot still reports the last run outcome (reason=completed, success=true).
+// record is RETAINED as closed (not removed): still tracked, closed=true with the
+// run outcome (completed) preserved in status, hidden from the default enumeration
+// but visible with include_closed, and the close snapshot still reports the run
+// outcome (status=completed, success=true).
 //
-// Load-bearing: if close still removed the record, getSub would be nil; if the
-// retained-outcome design were missing, reason would be "closed" and success false.
+// Load-bearing: if close still removed the record, getSub would be nil; if close
+// clobbered the outcome, status would not be completed and success would be false.
 func TestClose_RetainsAsClosed(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -402,11 +403,11 @@ func TestClose_RetainsAsClosed(t *testing.T) {
 	if err := json.Unmarshal([]byte(closeRes.Output), &result); err != nil {
 		t.Fatalf("close_agent result not JSON: %q (err: %v)", closeRes.Output, err)
 	}
-	if result.Status != SubagentClosed {
-		t.Errorf("close snapshot status = %q, want %q", result.Status, SubagentClosed)
+	if !result.Closed {
+		t.Errorf("close snapshot closed = false, want true")
 	}
-	if result.Reason != SubagentCompleted {
-		t.Errorf("close snapshot reason = %q, want %q (last run outcome must survive close)", result.Reason, SubagentCompleted)
+	if result.Status != SubagentCompleted {
+		t.Errorf("close snapshot status = %q, want %q (run outcome must survive close)", result.Status, SubagentCompleted)
 	}
 	if !result.Success {
 		t.Errorf("close snapshot success = false, want true for a child that completed before close")
@@ -422,9 +423,13 @@ func TestClose_RetainsAsClosed(t *testing.T) {
 	}
 	sub.mu.Lock()
 	status := sub.status
+	closed := sub.closed
 	sub.mu.Unlock()
-	if status != SubagentClosed {
-		t.Errorf("retained record status = %q, want %q", status, SubagentClosed)
+	if !closed {
+		t.Errorf("retained record closed = false, want true")
+	}
+	if status != SubagentCompleted {
+		t.Errorf("retained record status = %q, want %q (run outcome preserved)", status, SubagentCompleted)
 	}
 
 	// Default enumeration hides the closed record; include_closed surfaces it.
@@ -435,8 +440,11 @@ func TestClose_RetainsAsClosed(t *testing.T) {
 	if count != 1 || len(shown) != 1 || shown[0].ID != agentID {
 		t.Fatalf("include_closed must surface the closed record; got count=%d agents=%+v", count, shown)
 	}
-	if shown[0].Reason != SubagentCompleted {
-		t.Errorf("closed record reason = %q, want %q", shown[0].Reason, SubagentCompleted)
+	if !shown[0].Closed {
+		t.Errorf("closed record closed = false, want true")
+	}
+	if shown[0].Status != SubagentCompleted {
+		t.Errorf("closed record status = %q, want %q", shown[0].Status, SubagentCompleted)
 	}
 	if shown[0].CloseTimedOut {
 		t.Errorf("close_timed_out must be false for a clean close")
@@ -466,8 +474,8 @@ func TestRetention_FailLoudAtCap(t *testing.T) {
 
 	sess.subagents.maxRetainedTerminal = 2
 	ended := time.Now()
-	trackSyntheticChild(t, sess, "t1", SubagentCompleted, false, ended, false)
-	trackSyntheticChild(t, sess, "t2", SubagentFailed, false, ended, false)
+	trackSyntheticChild(t, sess, "t1", SubagentCompleted, false, false, ended, false)
+	trackSyntheticChild(t, sess, "t2", SubagentFailed, false, false, ended, false)
 
 	before := countTracked(sess.subagents)
 	cleanupsBefore := env.count()
@@ -534,8 +542,8 @@ func TestRetention_GCReclaimsConsumedFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	consumedEnded := older
-	sess.subagents.track(&subagent{id: "consumed", sess: consumedChild, status: SubagentCompleted, resultConsumed: true, lastOutcome: SubagentCompleted, endedAt: &consumedEnded})
-	trackSyntheticChild(t, sess, "held", SubagentCompleted, false, newer, false)
+	sess.subagents.track(&subagent{id: "consumed", sess: consumedChild, status: SubagentCompleted, resultConsumed: true, endedAt: &consumedEnded})
+	trackSyntheticChild(t, sess, "held", SubagentCompleted, false, false, newer, false)
 
 	cleanupsBefore := consumedEnv.count()
 	newID := spawnCompletedChild(t, sess, "c1", "fresh")
@@ -554,12 +562,12 @@ func TestRetention_GCReclaimsConsumedFirst(t *testing.T) {
 	}
 }
 
-// TestRetention_ClosingDoesNotCountTowardCap fills the manager with records that do
-// NOT count toward the cap (closing, and close-timed-out) beyond the cap value, then
-// asserts a spawn still succeeds — closing/close_timed_out records never deadlock
-// spawns.
+// TestRetention_ClosingDoesNotCountTowardCap fills the manager with close-timed-out
+// records beyond the cap value, then asserts a spawn still succeeds —
+// close_timed_out records never deadlock spawns (a stuck close must not wedge the
+// cap).
 //
-// Load-bearing: if closing/close_timed_out were counted, the count (3) would exceed
+// Load-bearing: if close_timed_out records were counted, the count (3) would exceed
 // the cap (2) and the spawn would fail.
 func TestRetention_ClosingDoesNotCountTowardCap(t *testing.T) {
 	dir := t.TempDir()
@@ -580,13 +588,13 @@ func TestRetention_ClosingDoesNotCountTowardCap(t *testing.T) {
 
 	sess.subagents.maxRetainedTerminal = 2
 	zero := time.Time{}
-	trackSyntheticChild(t, sess, "cl1", SubagentClosing, false, zero, false)
-	trackSyntheticChild(t, sess, "cl2", SubagentClosing, false, zero, true)
-	trackSyntheticChild(t, sess, "cl3", SubagentClosing, false, zero, true)
+	trackSyntheticChild(t, sess, "cl1", SubagentCompleted, false, false, zero, true)
+	trackSyntheticChild(t, sess, "cl2", SubagentCompleted, false, false, zero, true)
+	trackSyntheticChild(t, sess, "cl3", SubagentCompleted, false, false, zero, true)
 
 	newID := spawnCompletedChild(t, sess, "c1", "should-succeed")
 	if got := sess.getSub(newID); got == nil {
-		t.Errorf("spawn must succeed when only closing/close_timed_out records are present")
+		t.Errorf("spawn must succeed when only close_timed_out records are present")
 	}
 }
 
@@ -638,13 +646,13 @@ func TestParentClose_DrainsAll(t *testing.T) {
 }
 
 // TestRetention_GCEvictsClosedBeforeConsumed guards the class-priority ordering in
-// the reserveSlot comparator: a SubagentClosed record must be evicted BEFORE a
-// consumed SubagentCompleted record even when the closed record has a NEWER endedAt.
+// the reserveSlot comparator: a closed record must be evicted BEFORE a consumed
+// SubagentCompleted record even when the closed record has a NEWER endedAt.
 // If the comparator were sorted by endedAt alone, the newer-but-closed record would
 // survive and the older-but-consumed record would be (wrongly) evicted.
 //
 // Setup: maxRetainedTerminal = 2, two counted reclaimable records:
-//   - "cls" — SubagentClosed,    NEWER endedAt  (should be evicted: class priority)
+//   - "cls" — closed,    NEWER endedAt  (should be evicted: class priority)
 //   - "cns" — SubagentCompleted, consumed, OLDER endedAt  (should be retained)
 //
 // Trigger: one additional spawn drives reserveSlot to evict exactly one slot.
@@ -671,9 +679,9 @@ func TestRetention_GCEvictsClosedBeforeConsumed(t *testing.T) {
 	newer := older.Add(time.Minute)
 
 	// "cns": consumed completed — older endedAt, reclaimable but LOWER class priority.
-	trackSyntheticChild(t, sess, "cns", SubagentCompleted, true, older, false)
+	trackSyntheticChild(t, sess, "cns", SubagentCompleted, false, true, older, false)
 	// "cls": closed — newer endedAt, reclaimable with HIGHER class priority.
-	trackSyntheticChild(t, sess, "cls", SubagentClosed, false, newer, false)
+	trackSyntheticChild(t, sess, "cls", SubagentCompleted, true, false, newer, false)
 
 	// counted == maxRetainedTerminal (2), so the next spawn triggers exactly one eviction.
 	newID := spawnCompletedChild(t, sess, "c1", "trigger-gc")
@@ -718,8 +726,8 @@ func TestRetention_GCEvictsOldestWithinClass(t *testing.T) {
 	newer := older.Add(time.Minute)
 
 	// Both are consumed completed — same class, tie-broken by endedAt oldest-first.
-	trackSyntheticChild(t, sess, "old", SubagentCompleted, true, older, false)
-	trackSyntheticChild(t, sess, "new", SubagentCompleted, true, newer, false)
+	trackSyntheticChild(t, sess, "old", SubagentCompleted, false, true, older, false)
+	trackSyntheticChild(t, sess, "new", SubagentCompleted, false, true, newer, false)
 
 	newID := spawnCompletedChild(t, sess, "c1", "trigger-gc")
 
@@ -735,27 +743,44 @@ func TestRetention_GCEvictsOldestWithinClass(t *testing.T) {
 }
 
 // TestInfo_SurfacesCloseTimedOut proves the close_timed_out flag set on the close
-// timeout path reaches the info/list record. A closing record stays visible in the
-// default list, and its CloseTimedOut must reflect the field.
+// timeout path reaches the info/list record. A close-timed-out record stays visible
+// in the default list (closed is still false), keeps its run outcome in status, and
+// its CloseTimedOut must reflect the field.
 //
 // Load-bearing: if infoLocked dropped the field, CloseTimedOut would be false here.
 func TestInfo_SurfacesCloseTimedOut(t *testing.T) {
 	fe := &fakeEmit{}
 	m := newSubagentManager(fe.emit, nil)
-	m.track(&subagent{id: "stuck", status: SubagentClosing, closeTimedOut: true, lastOutcome: SubagentCompleted})
+	m.track(&subagent{id: "stuck", status: SubagentCompleted, closeTimedOut: true})
 
 	agents, count := m.listAgents("01ROOT", "", false)
 	if count != 1 || len(agents) != 1 {
-		t.Fatalf("closing record must appear in default list; got count=%d agents=%+v", count, agents)
+		t.Fatalf("close-timed-out record must appear in default list; got count=%d agents=%+v", count, agents)
 	}
-	if agents[0].Status != SubagentClosing {
-		t.Errorf("status = %q, want %q", agents[0].Status, SubagentClosing)
+	if agents[0].Status != SubagentCompleted {
+		t.Errorf("status = %q, want %q (run outcome preserved)", agents[0].Status, SubagentCompleted)
 	}
 	if !agents[0].CloseTimedOut {
 		t.Errorf("close_timed_out must surface as true on a timed-out close")
 	}
-	// The retained outcome still drives reason even while closing.
-	if agents[0].Reason != SubagentCompleted {
-		t.Errorf("reason = %q, want %q (retained outcome survives closing)", agents[0].Reason, SubagentCompleted)
+	if agents[0].Closed {
+		t.Errorf("closed must be false for a close-timed-out record (close not confirmed)")
+	}
+}
+
+// TestSubagentRecord_NoReasonKey_ClosedFlag pins the merged wire model: a running
+// record marshals with status="running" and NO "reason" key; a closed record keeps
+// its run outcome in status with closed=true (close never clobbers the outcome).
+func TestSubagentRecord_NoReasonKey_ClosedFlag(t *testing.T) {
+	running := subagentResult{AgentID: "a", Status: SubagentRunning}
+	b, _ := json.Marshal(running)
+	if strings.Contains(string(b), "\"reason\"") {
+		t.Fatalf("running result must not carry a reason key: %s", b)
+	}
+
+	closed := subagentResult{AgentID: "a", Status: SubagentCompleted, Closed: true, Success: true}
+	b2, _ := json.Marshal(closed)
+	if !strings.Contains(string(b2), "\"status\":\"completed\"") || !strings.Contains(string(b2), "\"closed\":true") {
+		t.Fatalf("closed record must keep its outcome in status and set closed: %s", b2)
 	}
 }
