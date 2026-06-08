@@ -241,6 +241,15 @@ func (s *Session) peekNotifications() int {
 	return len(s.pendingNotifs)
 }
 
+// SetNotifyFunc registers the callback the server uses to wake an idle session
+// when a subagent finishes. It mirrors SetKickFunc: the agent module must not
+// import server, so serve.go wires this callback into the server's input channel.
+func (s *Session) SetNotifyFunc(f func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.notifyFunc = f
+}
+
 // communicateResult records whether and how the agent delivered a result via
 // the communicate/result tool during the current ProcessInput call. It is
 // transient — reset at the top of each call, then read back by Communicated,

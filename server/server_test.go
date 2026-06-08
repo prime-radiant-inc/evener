@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"primeradiant.com/serf/agent"
 )
 
 func TestStatusEndpoint_Idle(t *testing.T) {
@@ -873,5 +875,39 @@ func TestStatusCapabilities_QueueGatedByProcessing(t *testing.T) {
 	}
 	if !processing.Capabilities.Queue {
 		t.Fatalf("Queue should be true while processing")
+	}
+}
+
+func TestSubmitNotification_PushesEntryNotification(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SubmitNotification()
+	select {
+	case msg := <-srv.InputCh():
+		if msg.Kind != agent.EntryNotification {
+			t.Errorf("Kind: got %v, want EntryNotification", msg.Kind)
+		}
+		if msg.Text != "" {
+			t.Errorf("Text: got %q, want empty", msg.Text)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout: SubmitNotification did not deliver a message")
+	}
+}
+
+func TestSubmitNotification_DropIfFull(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	// Fill the 1-slot buffer.
+	srv.SubmitNotification()
+	// Second call must not block even though the channel is full.
+	done := make(chan struct{})
+	go func() {
+		srv.SubmitNotification()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// expected: returned without blocking
+	case <-time.After(time.Second):
+		t.Fatal("SubmitNotification blocked on full channel")
 	}
 }

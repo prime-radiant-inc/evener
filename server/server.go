@@ -476,3 +476,16 @@ func (s *Server) SubmitContinuation(prompt string) {
 	default:
 	}
 }
+
+// SubmitNotification wakes an idle session to drain its pending subagent
+// notifications. It pushes a text-less EntryNotification-kind message onto the
+// 1-slot input channel with non-blocking/drop-if-full semantics: a dropped kick
+// is safe because the durable notification queue and the tail-drain suppress
+// cover it (spec §N1). It is wired from serve.go via Session.SetNotifyFunc
+// (the agent module must not import server).
+func (s *Server) SubmitNotification() {
+	select {
+	case s.inputCh <- InputMessage{Kind: agent.EntryNotification}:
+	default:
+	}
+}

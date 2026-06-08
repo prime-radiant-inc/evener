@@ -297,6 +297,11 @@ func runServe(args []string) error {
 		// as an EntryContinuation-kind message (the agent module must not
 		// import server, so this is a callback into the server, spec §C4/§7).
 		s.SetKickFunc(func(prompt string) { srv.SubmitContinuation(prompt) })
+		// The notify wake is wired alongside the kick: when a child finishes
+		// and the parent is idle, the durable notification queue is already
+		// populated; this callback feeds a text-less EntryNotification kick
+		// into the serve loop so the parent drains it on the next turn.
+		s.SetNotifyFunc(func() { srv.SubmitNotification() })
 		go server.BridgeWithObserver(srv, s.Events(), eventObserver)
 	}
 
