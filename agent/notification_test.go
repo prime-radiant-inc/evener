@@ -163,6 +163,61 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 	}
 }
 
+// TestNotification_EmptyNoOpDoesNotSuppressNextTurnEnd proves that an empty
+// notification no-op does NOT poison sessionEndEmitted for a QUEUED user message
+// that the same ProcessInputKind call picks up and runs. When the notification
+// queue is empty but a user message is queued, the drain-loop must reset
+// sessionEndEmitted before running the queued turn so its idle tail can fire a
+// legitimate SESSION_END{input_complete}.
+//
+// Without the fix: acceptNotificationInput sets sessionEndEmitted=true (correct
+// for the notification-only case), then the popQueueHead pickup continues WITHOUT
+// resetting the flag, the user turn runs, but the idle tail sees the stale true
+// and suppresses the SESSION_END.  The session emits zero ends, causing the hub's
+// SetProcessing(false) to be skipped and leaving the session stuck.
+func TestNotification_EmptyNoOpDoesNotSuppressNextTurnEnd(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("queued reply") },
+		},
+	}
+	c.Register(adapter)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	collect := drainEvents(sess)
+
+	// No enqueueNotification: the notification queue is empty.
+	// Enqueue a real user message so popQueueHead picks it up after the no-op.
+	if err := sess.Enqueue(context.Background(), "queued user message"); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+
+	sess.Close()
+	evs := collect()
+
+	var sessionEnds []events.SessionEndData
+	for _, ev := range evs {
+		if ev.Kind != events.EventSessionEnd {
+			continue
+		}
+		if d, ok := ev.Data.(events.SessionEndData); ok && d.Reason == "input_complete" {
+			sessionEnds = append(sessionEnds, d)
+		}
+	}
+	if len(sessionEnds) != 1 {
+		t.Fatalf("SESSION_END{input_complete} count = %d, want 1 (queued user turn must emit its own end)", len(sessionEnds))
+	}
+}
+
 // TestNotificationTurn_EmptyQueueIsNoOp proves that a notification turn with an
 // empty queue is a true no-op: it makes NO model request and emits NO phantom
 // SESSION_END{input_complete}. The suppression works because acceptNotificationInput

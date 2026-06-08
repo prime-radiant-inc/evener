@@ -295,6 +295,9 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 		fu := s.popFollowUp()
 		if strings.TrimSpace(fu) != "" {
 			next = fu
+			s.mu.Lock()
+			s.sessionEndEmitted = false
+			s.mu.Unlock()
 			continue
 		}
 		// kata 111a: when the per-turn followup queue is empty, drain the
@@ -306,6 +309,9 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 		if queued := s.popQueueHead(); strings.TrimSpace(queued.Text) != "" || len(queued.Images) > 0 {
 			next = queued.Text
 			nextImages = queued.Images
+			s.mu.Lock()
+			s.sessionEndEmitted = false
+			s.mu.Unlock()
 			continue
 		}
 		// Goal continuation gate (priority 3, strictly below user input): if a
