@@ -33,15 +33,25 @@ type redactRule struct {
 	re *regexp.Regexp
 }
 
-// sensitiveKeyAlt is the alternation of credential-looking assignment/header key
-// names. Used by both the header-colon and the env/assignment rules so the two
-// forms stay in lockstep.
-const sensitiveKeyAlt = `(?:api[_-]?key|secret|token|password|passwd|access[_-]?key|aws_secret_access_key|private[_-]?key|client[_-]?secret)`
+// sensitiveWord is the alternation of credential-looking words. It matches a word
+// like "token" or "api_key" but NOT a larger identifier that merely contains it as
+// a substring ("tokenizer", "keyboard"): the callers below bound it to a complete
+// segment of the surrounding key, never an arbitrary substring.
+const sensitiveWord = `(?:api[_-]?key|secret|token|password|passwd|access[_-]?key|private[_-]?key|client[_-]?secret|passphrase|credentials?|refresh[_-]?token|authorization)`
 
-// standardRules masks the documented credential classes. Each rule keeps group 1
-// (the key/header name and its separator) and replaces the value with the marker.
-// Order matters: specific header rules precede the generic assignment rule, and
-// the standalone sk- token rule is independent of any anchor.
+// sensitiveKeyRun matches a full assignment/JSON key (a run of [A-Za-z0-9_-]) that
+// contains sensitiveWord as a COMPLETE _/-/boundary-delimited segment. The leading
+// `(?:[A-Za-z0-9]+[_-])*` and trailing `(?:[_-][A-Za-z0-9]+)*` consume any sibling
+// segments (the `OPENAI_`/`_ID` in `OPENAI_API_KEY`/`AWS_ACCESS_KEY_ID`), so a
+// prefix or suffix never breaks the match — while still requiring the sensitive
+// word to be its own segment. RE2 has no lookaround, so this structural framing,
+// not a lookahead, is what excludes substrings like "token" in "tokenizer".
+const sensitiveKeyRun = `(?:[A-Za-z0-9]+[_-])*` + sensitiveWord + `(?:[_-][A-Za-z0-9]+)*`
+
+// standardRules masks the documented credential classes. Each rule keeps its
+// capture groups (key/header name, separator, scheme — whatever is legible) and
+// replaces the secret with the marker. Order matters: specific header rules and
+// the structured key/JSON/URL rules precede the anchorless bare-token rules.
 var standardRules = []redactRule{
 	// Authorization: Bearer <tok> / Authorization: <tok> (also Proxy-Authorization).
 	{regexp.MustCompile(`(?i)((?:Proxy-)?Authorization:\s*(?:Bearer\s+|Basic\s+|Token\s+)?)\S+`)},
@@ -49,11 +59,39 @@ var standardRules = []redactRule{
 	{regexp.MustCompile(`(?i)((?:Set-)?Cookie:\s*).+`)},
 	// Any *-Key / X-Api-Key style header: mask the value run.
 	{regexp.MustCompile(`(?i)((?:[A-Za-z0-9-]*-)?(?:Api[_-]?)?Key:\s*).+`)},
+	// JSON object form: "<key>":"<value>" / "<key>": "<value>" where the key contains
+	// a sensitive segment. Keep `"key":"`, mask the value to the closing quote. The
+	// quotes are `\\?"` so the rule also matches when this JSON is itself a value inside
+	// an outer JSON string: the result snapshot is JSON-marshalled before redaction, so
+	// a child's embedded JSON arrives doubly-escaped (`"` → `\"`). The value body
+	// `(?:[^"\\]|\\.)*` spans escaped characters but halts at the closing quote. The
+	// optional `x-` covers header-style JSON keys ("x-api-key"). Precedes the KEY=VALUE
+	// rule so quoted JSON values are handled by their own quote-aware form.
+	{regexp.MustCompile(`(?i)(\\?"(?:x-)?` + sensitiveKeyRun + `\\?"\s*:\s*\\?")(?:[^"\\]|\\.)*`)},
+	// KEY=VALUE / KEY: VALUE assignment (env dump, config line) where KEY contains a
+	// sensitive segment with any prefix/suffix. Group 1 preserves the boundary (start
+	// of string/line or a non-key char) so it is not consumed; group 2 the key; group 3
+	// the separator. Masks an optionally-quoted value up to the next whitespace, quote,
+	// comma, OR backslash. The backslash stop is load-bearing: the snapshot is
+	// JSON-marshalled, so a real newline between env lines is the two chars `\`+`n`;
+	// stopping at `\` masks exactly one value instead of swallowing the next line's key.
+	{regexp.MustCompile(`(?i)(^|[^A-Za-z0-9_-])(` + sensitiveKeyRun + `)(\s*[:=]\s*)"?[^"\s,\\]+`)},
+	// URL-embedded password: scheme://user:PASSWORD@host. Keep `scheme://user:`,
+	// mask just the password between `:` and `@`, keep `@` and the host legible.
+	{regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.\-]*://[^/\s:@]+:)[^/\s:@]+(@)`)},
 	// Standalone provider API keys: sk-..., sk-ant-..., and similar long tokens.
 	{regexp.MustCompile(`(?i)\b(sk-)[A-Za-z0-9_-]{8,}`)},
-	// KEY=VALUE / KEY: VALUE assignment where KEY is credential-looking. Masks an
-	// optionally-quoted value up to the next whitespace/quote.
-	{regexp.MustCompile(`(?i)\b(` + sensitiveKeyAlt + `)(\s*[:=]\s*)"?[^"\s]+"?`)},
+	// GitHub PATs/tokens: ghp_/gho_/ghu_/ghs_/ghr_/github_pat_ prefix + body.
+	{regexp.MustCompile(`\b(ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]{8,}`)},
+	// Slack tokens: xoxb-/xoxa-/xoxp-/xoxr-/xoxs- prefix + body.
+	{regexp.MustCompile(`\b(xox[baprs]-)[A-Za-z0-9-]{8,}`)},
+	// AWS access key id: AKIA + 16 uppercase-alphanumeric. Keep the AKIA prefix.
+	{regexp.MustCompile(`\b(AKIA)[0-9A-Z]{16}\b`)},
+	// Google API key: AIza + 35+ url-safe chars. Keep the AIza prefix.
+	{regexp.MustCompile(`\b(AIza)[0-9A-Za-z_\-]{35,}`)},
+	// JWT: header.payload.signature of base64url segments. Keep the (algorithm) header
+	// segment legible; mask the payload and signature, which carry claims and the key.
+	{regexp.MustCompile(`\b(eyJ[A-Za-z0-9_\-]+)\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+`)},
 }
 
 // strictExtraRules run AFTER the standard table under redactStrict. They redact

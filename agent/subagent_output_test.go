@@ -227,6 +227,67 @@ func TestSubagentOutput_MaxBytesTruncatesAfterRedaction(t *testing.T) {
 	}
 }
 
+// TestSubagentOutput_RedactsEnvDumpEndToEnd is the end-to-end regression guard for
+// the canonical leak vector: a child whose result text is a realistic multi-line env
+// dump (the kind a child running `env`/`printenv` or echoing a JSON API-error body
+// would return). Peeking it via the real subagent_output{view:"result"} tool with
+// DEFAULT (standard) redaction must mask every secret value. It exercises the full
+// path: result snapshot → JSON marshal → redact → tool output.
+func TestSubagentOutput_RedactsEnvDumpEndToEnd(t *testing.T) {
+	// Distinctive secret bodies, one per credential class the redactor must cover.
+	const (
+		openAISecret = "sk-EnvDumpProj0123456789abcdef"
+		githubSecret = "ghp_EnvDumpToken0123456789ABCDEF"
+		awsSecret    = "AKIAIOSFODNN7EXAMPLE"
+		urlPwSecret  = "envDumpDbPw"
+		stripeSecret = "StripeSecretBody0123456789"
+		bearerSecret = "EnvDumpBearerSig123abc"
+	)
+	envDump := strings.Join([]string{
+		"PATH=/usr/local/bin:/usr/bin",
+		"OPENAI_API_KEY=" + openAISecret,
+		"GITHUB_TOKEN=" + githubSecret,
+		"AWS_ACCESS_KEY_ID=" + awsSecret,
+		"DATABASE_URL=postgres://dbuser:" + urlPwSecret + "@db.host:5432/app",
+		"STRIPE_SECRET_KEY=" + stripeSecret,
+		`error body: {"authorization":"Bearer ` + bearerSecret + `"}`,
+		"HOME=/root",
+	}, "\n")
+
+	sess := oneStepSession(t, envDump)
+	agentID := spawnFinalizedUnconsumedChild(t, sess)
+
+	// Peek via the real tool with DEFAULT redaction (no redaction arg → standard).
+	peek := callSubagentOutput(t, sess, fmt.Sprintf(`{"agent_id":%q,"view":"result"}`, agentID))
+	if peek.IsError {
+		t.Fatalf("subagent_output result error: %s", peek.Output)
+	}
+	var peeked subagentOutputResult
+	if err := json.Unmarshal([]byte(peek.Output), &peeked); err != nil {
+		t.Fatalf("unmarshal peek: %v (output: %s)", err, peek.Output)
+	}
+	if peeked.Redaction != "standard" {
+		t.Fatalf("default redaction must be standard; got %q", peeked.Redaction)
+	}
+
+	// None of the secret values may appear ANYWHERE in the tool output (content or
+	// envelope). Checking the raw peek.Output is the strongest guard.
+	for _, secret := range []string{openAISecret, githubSecret, awsSecret, urlPwSecret, stripeSecret, bearerSecret} {
+		if strings.Contains(peek.Output, secret) {
+			t.Fatalf("env-dump secret %q leaked through subagent_output:\n%s", secret, peek.Output)
+		}
+	}
+	// Sanity: redaction actually ran (marker present) and legible env names survive.
+	if !strings.Contains(peeked.Content, redactMarker) {
+		t.Fatalf("expected redaction marker in content; got: %s", peeked.Content)
+	}
+	for _, legible := range []string{"OPENAI_API_KEY", "DATABASE_URL", "postgres://", "dbuser"} {
+		if !strings.Contains(peeked.Content, legible) {
+			t.Fatalf("redaction destroyed legible %q; content: %s", legible, peeked.Content)
+		}
+	}
+}
+
 // TestSubagentOutput_ChildCannotCall asserts subagent_output is root-only: it is in
 // the root-only set and a depth>0 child's registry must not expose it.
 func TestSubagentOutput_ChildCannotCall(t *testing.T) {
