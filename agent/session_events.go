@@ -90,17 +90,26 @@ func (s *Session) sendEvent(kind events.EventKind, data events.EventData) events
 	return data
 }
 
-// fireNotificationHook runs the Notification hook for a genuine warning, guarded
-// against re-entrancy: if a warning is emitted DURING a Notification-hook run
-// (e.g. a future warning source inside that path), it must not re-trigger the
-// hook. inNotificationHook is a process-wide guard on the session; the
-// compare-and-swap makes the "am I already inside?" check atomic so concurrent
-// warning emits cannot both enter.
+// fireNotificationHook runs the Notification hook for a genuine, model-facing
+// warning. It carries no re-entrancy guard, and deliberately so: a warning→hook→
+// warning recursion is structurally impossible because nothing inside a
+// Notification dispatch emits an EventWarning synchronously.
+//
+//   - Invalid-matcher diagnostics are validated once at load (Runner.Validate) and
+//     MatchHooks skips invalid matchers SILENTLY at dispatch — no dispatch-time
+//     emit.
+//   - Hook-CONFIG diagnostics route through emitDiagnosticWarning, which never
+//     fires the Notification hook.
+//   - The only events RunNotification → runAll emits are HookStart/HookEnd (never
+//     EventWarning), and Steer (for systemMessage/additionalContext) emits nothing.
+//
+// A session-wide guard here would not prevent any real recursion but WOULD drop a
+// genuine, independent warning emitted concurrently from another goroutine (it
+// would lose the compare-and-swap for the whole synchronous hook duration). So the
+// hook fires unconditionally; the recursion regression tests (recursion_test.go,
+// TestNewSession_InvalidMatcherNotificationHookDoesNotRecurse) guard against a
+// future synchronous warning-emitter being introduced inside the dispatch path.
 func (s *Session) fireNotificationHook(message string) {
-	if !s.inNotificationHook.CompareAndSwap(false, true) {
-		return
-	}
-	defer s.inNotificationHook.Store(false)
 	s.runNotificationHook(context.Background(), message)
 }
 

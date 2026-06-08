@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -123,18 +125,23 @@ func TestNewSession_HookConfigWarningDoesNotRunNotificationHook(t *testing.T) {
 	}
 }
 
-// TestEmitWarning_ReentrancyGuardBlocksNotificationHook is the defense-in-depth
-// check: even setting aside the diagnostic path, a genuine EventWarning emitted
-// while a Notification-hook run is already in progress must NOT re-trigger the
-// hook. The hook appends a line to a counter file each time it runs; with the
-// guard already engaged (inNotificationHook=true, as it would be mid-run), the
-// emit must be a no-op for the hook, so no line is written.
-func TestEmitWarning_ReentrancyGuardBlocksNotificationHook(t *testing.T) {
+// TestEmitWarning_ConcurrentIndependentWarningsEachFireNotificationHook is the
+// regression gate for the over-suppression bug: two GENUINE, independent warnings
+// emitted concurrently from two goroutines (e.g. the session-namer goroutine's
+// "log open failed" overlapping the turn loop's "context length exceeded") must
+// EACH fire the Notification hook. A session-wide guard held for the full
+// synchronous duration of runNotificationHook makes the second emit lose the
+// CompareAndSwap and permanently drops its hook (no queue, no retry) — the hook
+// runs only once. The hook sleeps briefly so the two runs genuinely overlap, then
+// appends a line; the file must end with exactly two lines.
+func TestEmitWarning_ConcurrentIndependentWarningsEachFireNotificationHook(t *testing.T) {
 	counter := filepath.Join(t.TempDir(), "ran.log")
+	// The sleep makes the first hook run hold any session-wide guard long enough
+	// for the concurrent second emit to collide with it.
 	dir := writePluginHooks(t, "notif-plugin", `{
 		"hooks": {
 			"Notification": [
-				{"matcher": "*", "hooks": [{"type": "command", "command": "echo x >> `+counter+`"}]}
+				{"matcher": "*", "hooks": [{"type": "command", "command": "sleep 0.4; echo x >> `+counter+`"}]}
 			]
 		}
 	}`)
@@ -146,30 +153,30 @@ func TestEmitWarning_ReentrancyGuardBlocksNotificationHook(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer sess.Close()
+	drainEvents(sess) // keep the event channel moving; emit is best-effort anyway
 
-	// Simulate being inside a Notification-hook run, then emit a genuine warning.
-	if !sess.inNotificationHook.CompareAndSwap(false, true) {
-		t.Fatal("guard unexpectedly already set after NewSession")
+	// Two independent goroutines emit a genuine warning at the same time. emit runs
+	// the Notification hook synchronously in the calling goroutine, so both hook
+	// runs are in flight together — the collision the guard used to lose.
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			<-start
+			sess.emit(events.EventWarning, events.WarningData{
+				Message: fmt.Sprintf("independent warning %d", n),
+			})
+		}(i)
 	}
-	sess.emit(events.EventWarning, events.WarningData{Message: "context length exceeded"})
-	sess.inNotificationHook.Store(false)
+	close(start)
+	wg.Wait()
 
-	// The guard must have blocked the re-entrant hook run: no line written.
-	if data, err := os.ReadFile(counter); err == nil && len(strings.TrimSpace(string(data))) != 0 {
-		t.Fatalf("re-entrancy guard failed: Notification hook ran while one was in progress (counter=%q)", string(data))
-	}
-
-	// Sanity: with the guard clear, a genuine warning DOES run the hook exactly once.
-	sess.emit(events.EventWarning, events.WarningData{Message: "context length exceeded"})
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if data, err := os.ReadFile(counter); err == nil && strings.Count(string(data), "x") == 1 {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
 	data, _ := os.ReadFile(counter)
-	t.Fatalf("genuine warning should run the Notification hook exactly once; counter=%q", string(data))
+	if got := strings.Count(string(data), "x"); got != 2 {
+		t.Fatalf("two concurrent independent warnings fired the Notification hook %d time(s), want 2 (the second was dropped by an over-broad guard); counter=%q", got, string(data))
+	}
 }
 
 // TestNewSession_InvalidMatcherWarnsOnce asserts that an invalid PreToolUse matcher
