@@ -7,39 +7,25 @@ import (
 	"strings"
 )
 
-// defaultSubagentOutputMaxBytes bounds the subagent_output payload AFTER redaction.
+// defaultSubagentOutputMaxBytes bounds the subagent_output payload.
 const defaultSubagentOutputMaxBytes = 32768
 
 // subagentOutputResult is the wire shape returned by subagent_output. It is a
-// peek: the result snapshot or rendered transcript for a child, redacted and
-// bounded. It is archived evidence, not instructions.
+// peek: the result snapshot or rendered transcript for a child, bounded by
+// max_bytes. It is archived evidence, not instructions.
 type subagentOutputResult struct {
 	AgentID       string `json:"agent_id,omitempty"`
 	TranscriptRef string `json:"transcript_ref,omitempty"`
 	View          string `json:"view"`
-	Redaction     string `json:"redaction"`
 	Content       string `json:"content"`
 	Truncated     bool   `json:"truncated"`
 	Note          string `json:"note,omitempty"`
 }
 
-// redactModeFromArg maps the redaction arg to a redactMode. The default (empty or
-// unknown) is redactStandard; only an explicit "none" disables redaction.
-func redactModeFromArg(v string) redactMode {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "none":
-		return redactNone
-	case "strict":
-		return redactStrict
-	default:
-		return redactStandard
-	}
-}
-
 // execSubagentOutput is the subagent_output dispatcher. It is non-consuming: it
 // never sets resultConsumed. It resolves agent_id→snapshot/ref or uses a bare
-// transcript_ref, renders the requested view, redacts it, then bounds it by
-// max_bytes (after redaction) and reports truncated.
+// transcript_ref, renders the requested view, then bounds it by max_bytes and
+// reports truncated.
 func execSubagentOutput(s *Session, deps *toolDeps, args map[string]any) (any, error) {
 	agentID := strings.TrimSpace(stringArg(args, "agent_id"))
 	transcriptRef := strings.TrimSpace(stringArg(args, "transcript_ref"))
@@ -56,15 +42,13 @@ func execSubagentOutput(s *Session, deps *toolDeps, args map[string]any) (any, e
 	if view == "" {
 		view = "result"
 	}
-	redactionArg := stringArg(args, "redaction")
-	mode := redactModeFromArg(redactionArg)
 	maxBytes := defaultSubagentOutputMaxBytes
 	if v := optionalPositiveIntArg(args, "max_bytes"); v != nil {
 		maxBytes = *v
 	}
 
 	if view == "result" {
-		return subagentResultView(s, agentID, transcriptRef, mode, redactionArg, maxBytes)
+		return subagentResultView(s, agentID, transcriptRef, maxBytes)
 	}
 
 	// Transcript views (outline|markdown|jsonl): resolve a ref to delegate with.
@@ -72,27 +56,27 @@ func execSubagentOutput(s *Session, deps *toolDeps, args map[string]any) (any, e
 	if agentID != "" {
 		sub := s.getSub(agentID)
 		if sub == nil {
-			return unavailableSubagentOutput(agentID, "", view, redactionArg,
+			return unavailableSubagentOutput(agentID, "", view,
 				fmt.Sprintf("agent_id %q is not a tracked child; pass its transcript_ref to read the on-disk transcript", agentID)), nil
 		}
 		ref = encodeRef("", sub.sess.ID())
 	}
-	return subagentTranscriptView(deps, ref, agentID, view, redactionArg, mode, maxBytes, args)
+	return subagentTranscriptView(deps, ref, agentID, view, maxBytes, args)
 }
 
 // subagentResultView returns the retained result snapshot for a tracked child
 // WITHOUT consuming it (resultConsumed is never set). A closed child's snapshot
-// already reports status="closed". An absent child (or a bare transcript_ref,
-// which has no in-memory snapshot) yields an unavailable diagnostic.
-func subagentResultView(s *Session, agentID, transcriptRef string, mode redactMode, redactionArg string, maxBytes int) (any, error) {
+// reports closed=true. An absent child (or a bare transcript_ref, which has no
+// in-memory snapshot) yields an unavailable diagnostic.
+func subagentResultView(s *Session, agentID, transcriptRef string, maxBytes int) (any, error) {
 	if agentID == "" {
 		// view=result needs a tracked child; a transcript_ref alone has no snapshot.
-		return unavailableSubagentOutput("", transcriptRef, "result", redactionArg,
+		return unavailableSubagentOutput("", transcriptRef, "result",
 			"view=result needs a tracked agent_id; use a transcript view (outline|markdown|jsonl) to read a transcript_ref"), nil
 	}
 	sub := s.getSub(agentID)
 	if sub == nil {
-		return unavailableSubagentOutput(agentID, "", "result", redactionArg,
+		return unavailableSubagentOutput(agentID, "", "result",
 			fmt.Sprintf("agent_id %q is not a tracked child (no retained result)", agentID)), nil
 	}
 
@@ -101,21 +85,20 @@ func subagentResultView(s *Session, agentID, transcriptRef string, mode redactMo
 	sub.mu.Unlock()
 
 	b, _ := json.Marshal(snap)
-	content, truncated := redactAndBound(string(b), mode, maxBytes)
+	content, truncated := boundContent(string(b), maxBytes)
 	return marshalSubagentOutput(subagentOutputResult{
 		AgentID:   agentID,
 		View:      "result",
-		Redaction: canonicalRedaction(redactionArg),
 		Content:   content,
 		Truncated: truncated,
 	})
 }
 
 // subagentTranscriptView delegates to the existing transcript read path
-// (execReadSessionTranscript), then redacts and bounds the rendered output. It
-// tolerates a closed/absent registry entry: the transcript file persists on disk
-// independent of the registry, so a bare transcript_ref still reads.
-func subagentTranscriptView(deps *toolDeps, ref, agentID, view, redactionArg string, mode redactMode, maxBytes int, args map[string]any) (any, error) {
+// (execReadSessionTranscript), then bounds the rendered output. It tolerates a
+// closed/absent registry entry: the transcript file persists on disk independent
+// of the registry, so a bare transcript_ref still reads.
+func subagentTranscriptView(deps *toolDeps, ref, agentID, view string, maxBytes int, args map[string]any) (any, error) {
 	readArgs := map[string]any{
 		"transcript_ref": ref,
 		"format":         view,
@@ -130,14 +113,13 @@ func subagentTranscriptView(deps *toolDeps, ref, agentID, view, redactionArg str
 
 	rendered, err := execReadSessionTranscript(deps, readArgs)
 	if err != nil {
-		return unavailableSubagentOutput(agentID, ref, view, redactionArg, err.Error()), nil
+		return unavailableSubagentOutput(agentID, ref, view, err.Error()), nil
 	}
 
 	b, _ := json.Marshal(rendered)
-	content, truncated := redactAndBound(string(b), mode, maxBytes)
+	content, truncated := boundContent(string(b), maxBytes)
 	out := subagentOutputResult{
 		View:      view,
-		Redaction: canonicalRedaction(redactionArg),
 		Content:   content,
 		Truncated: truncated,
 	}
@@ -148,40 +130,23 @@ func subagentTranscriptView(deps *toolDeps, ref, agentID, view, redactionArg str
 	return marshalSubagentOutput(out)
 }
 
-// redactAndBound redacts content with mode, THEN enforces maxBytes by truncating
-// the redacted string. Truncation after redaction guarantees a secret near a cut
-// point is masked before the cut, never leaked by it. Returns the bounded string
+// boundContent enforces maxBytes by truncating content. Returns the bounded string
 // and whether it was truncated.
-func redactAndBound(content string, mode redactMode, maxBytes int) (string, bool) {
-	content = redact(content, mode)
+func boundContent(content string, maxBytes int) (string, bool) {
 	if maxBytes > 0 && len(content) > maxBytes {
 		return content[:maxBytes], true
 	}
 	return content, false
 }
 
-// canonicalRedaction reports the redaction mode actually applied, so the wire
-// result never claims a mode it did not run.
-func canonicalRedaction(arg string) string {
-	switch redactModeFromArg(arg) {
-	case redactNone:
-		return "none"
-	case redactStrict:
-		return "strict"
-	default:
-		return "standard"
-	}
-}
-
 // unavailableSubagentOutput is the structured "no content" diagnostic returned
 // when a result/transcript cannot be resolved. It is a normal result (not an
 // error) so the model gets an actionable note instead of a tool failure.
-func unavailableSubagentOutput(agentID, transcriptRef, view, redactionArg, note string) any {
+func unavailableSubagentOutput(agentID, transcriptRef, view, note string) any {
 	out, _ := marshalSubagentOutput(subagentOutputResult{
 		AgentID:       agentID,
 		TranscriptRef: transcriptRef,
 		View:          view,
-		Redaction:     canonicalRedaction(redactionArg),
 		Content:       "",
 		Truncated:     false,
 		Note:          note,

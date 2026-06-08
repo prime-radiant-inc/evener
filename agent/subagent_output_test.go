@@ -168,40 +168,15 @@ func TestSubagentOutput_XORValidation(t *testing.T) {
 	}
 }
 
-// TestSubagentOutput_MaxBytesTruncatesAfterRedaction proves redaction runs BEFORE
-// truncation, where the cut lands MID-SECRET. The token is an unanchored sk- key
-// whose secret TAIL is a long run of 'Z's; the standard sk- rule keeps the legible
-// "sk-" prefix and masks the tail. max_bytes is calibrated (via a redaction:none
-// probe) so the cut falls a few characters into the tail. Redact-first masks the
-// whole tail to the marker, so no run of 'Z's reaches the output. If truncation ran
-// first, the kept prefix would end in "sk-ZZZZ" — the fragment is below the sk-
-// rule's 8-char threshold, so redaction would miss it and the 'Z' run would leak.
-// Asserting the absence of a 'ZZZ' run therefore fails iff the ordering is inverted.
-func TestSubagentOutput_MaxBytesTruncatesAfterRedaction(t *testing.T) {
-	secret := "sk-" + strings.Repeat("Z", 64)
-	final := "report key " + secret + " " + strings.Repeat("x", 4096)
+// TestSubagentOutput_MaxBytesTruncates proves max_bytes bounds the raw content and
+// reports truncated. There is no redaction layer: content is the raw snapshot JSON.
+func TestSubagentOutput_MaxBytesTruncates(t *testing.T) {
+	final := strings.Repeat("x", 8192)
 	sess := oneStepSession(t, final)
 	agentID := spawnFinalizedUnconsumedChild(t, sess)
 
-	// Probe: full UNREDACTED content to find the true byte offset of the token. A
-	// large max_bytes keeps everything; redaction:none leaves the token in place.
-	probe := callSubagentOutput(t, sess, fmt.Sprintf(`{"agent_id":%q,"view":"result","redaction":"none","max_bytes":1000000}`, agentID))
-	if probe.IsError {
-		t.Fatalf("probe error: %s", probe.Output)
-	}
-	var probed subagentOutputResult
-	if err := json.Unmarshal([]byte(probe.Output), &probed); err != nil {
-		t.Fatalf("unmarshal probe: %v (output: %s)", err, probe.Output)
-	}
-	skIdx := strings.Index(probed.Content, "sk-")
-	if skIdx < 0 {
-		t.Fatalf("probe content should contain the unredacted token; content: %s", probed.Content)
-	}
-	// Cut four characters into the tail → "sk-ZZZZ" in a truncate-first prefix, below
-	// the sk- rule's 8-char threshold (so it would leak under the wrong ordering).
-	maxBytes := skIdx + len("sk-") + 4
-
-	res := callSubagentOutput(t, sess, fmt.Sprintf(`{"agent_id":%q,"view":"result","redaction":"standard","max_bytes":%d}`, agentID, maxBytes))
+	const maxBytes = 256
+	res := callSubagentOutput(t, sess, fmt.Sprintf(`{"agent_id":%q,"view":"result","max_bytes":%d}`, agentID, maxBytes))
 	if res.IsError {
 		t.Fatalf("subagent_output error: %s", res.Output)
 	}
@@ -215,49 +190,15 @@ func TestSubagentOutput_MaxBytesTruncatesAfterRedaction(t *testing.T) {
 	if len(out.Content) > maxBytes {
 		t.Fatalf("content exceeds max_bytes: len=%d max=%d", len(out.Content), maxBytes)
 	}
-	// Load-bearing: redact-first masks the whole tail before the cut, so no run of
-	// 'Z's survives. Truncate-first would leak "sk-ZZZZ".
-	if strings.Contains(out.Content, "ZZZ") {
-		t.Fatalf("secret tail leaked (redaction must run before truncation): %s", out.Content)
-	}
-	// The legible "sk-" prefix and the masking marker both land before the cut,
-	// confirming redaction ran on the retained region (not that the region was empty).
-	if !strings.Contains(out.Content, "«") {
-		t.Fatalf("expected the redaction marker's opening rune in the kept prefix; content: %s", out.Content)
-	}
 }
 
-// TestSubagentOutput_RedactsEnvDumpEndToEnd is the end-to-end regression guard for
-// the canonical leak vector: a child whose result text is a realistic multi-line env
-// dump (the kind a child running `env`/`printenv` or echoing a JSON API-error body
-// would return). Peeking it via the real subagent_output{view:"result"} tool with
-// DEFAULT (standard) redaction must mask every secret value. It exercises the full
-// path: result snapshot → JSON marshal → redact → tool output.
-func TestSubagentOutput_RedactsEnvDumpEndToEnd(t *testing.T) {
-	// Distinctive secret bodies, one per credential class the redactor must cover.
-	const (
-		openAISecret = "sk-EnvDumpProj0123456789abcdef"
-		githubSecret = "ghp_EnvDumpToken0123456789ABCDEF"
-		awsSecret    = "AKIAIOSFODNN7EXAMPLE"
-		urlPwSecret  = "envDumpDbPw"
-		stripeSecret = "StripeSecretBody0123456789"
-		bearerSecret = "EnvDumpBearerSig123abc"
-	)
-	envDump := strings.Join([]string{
-		"PATH=/usr/local/bin:/usr/bin",
-		"OPENAI_API_KEY=" + openAISecret,
-		"GITHUB_TOKEN=" + githubSecret,
-		"AWS_ACCESS_KEY_ID=" + awsSecret,
-		"DATABASE_URL=postgres://dbuser:" + urlPwSecret + "@db.host:5432/app",
-		"STRIPE_SECRET_KEY=" + stripeSecret,
-		`error body: {"authorization":"Bearer ` + bearerSecret + `"}`,
-		"HOME=/root",
-	}, "\n")
-
-	sess := oneStepSession(t, envDump)
+// TestSubagentOutput_ReturnsRawOutput proves subagent_output no longer sanitizes:
+// a child whose result contains a credential-shaped string returns it VERBATIM.
+func TestSubagentOutput_ReturnsRawOutput(t *testing.T) {
+	const secret = "API_KEY=sk-LIVETEST0123456789abcdef"
+	sess := oneStepSession(t, "here is the value "+secret)
 	agentID := spawnFinalizedUnconsumedChild(t, sess)
 
-	// Peek via the real tool with DEFAULT redaction (no redaction arg → standard).
 	peek := callSubagentOutput(t, sess, fmt.Sprintf(`{"agent_id":%q,"view":"result"}`, agentID))
 	if peek.IsError {
 		t.Fatalf("subagent_output result error: %s", peek.Output)
@@ -266,25 +207,8 @@ func TestSubagentOutput_RedactsEnvDumpEndToEnd(t *testing.T) {
 	if err := json.Unmarshal([]byte(peek.Output), &peeked); err != nil {
 		t.Fatalf("unmarshal peek: %v (output: %s)", err, peek.Output)
 	}
-	if peeked.Redaction != "standard" {
-		t.Fatalf("default redaction must be standard; got %q", peeked.Redaction)
-	}
-
-	// None of the secret values may appear ANYWHERE in the tool output (content or
-	// envelope). Checking the raw peek.Output is the strongest guard.
-	for _, secret := range []string{openAISecret, githubSecret, awsSecret, urlPwSecret, stripeSecret, bearerSecret} {
-		if strings.Contains(peek.Output, secret) {
-			t.Fatalf("env-dump secret %q leaked through subagent_output:\n%s", secret, peek.Output)
-		}
-	}
-	// Sanity: redaction actually ran (marker present) and legible env names survive.
-	if !strings.Contains(peeked.Content, redactMarker) {
-		t.Fatalf("expected redaction marker in content; got: %s", peeked.Content)
-	}
-	for _, legible := range []string{"OPENAI_API_KEY", "DATABASE_URL", "postgres://", "dbuser"} {
-		if !strings.Contains(peeked.Content, legible) {
-			t.Fatalf("redaction destroyed legible %q; content: %s", legible, peeked.Content)
-		}
+	if !strings.Contains(peeked.Content, secret) {
+		t.Fatalf("output must be returned raw (no redaction); content: %s", peeked.Content)
 	}
 }
 
@@ -311,10 +235,10 @@ func TestSubagentOutput_ChildCannotCall(t *testing.T) {
 	}
 }
 
-// TestSubagentOutput_TranscriptViewDelegatesAndRedacts covers the transcript path:
-// view=outline on a tracked child returns a rendered (redacted) outline, and a
-// bare transcript_ref call works even when the sub is not tracked.
-func TestSubagentOutput_TranscriptViewDelegatesAndRedacts(t *testing.T) {
+// TestSubagentOutput_TranscriptViewDelegates covers the transcript path:
+// view=outline on a tracked child returns a rendered outline, and a bare
+// transcript_ref call works even when the sub is not tracked.
+func TestSubagentOutput_TranscriptViewDelegates(t *testing.T) {
 	sess := oneStepSession(t, "child outline body")
 	agentID := spawnFinalizedUnconsumedChild(t, sess)
 	childRef := "local:" + sess.getSub(agentID).sess.ID()
@@ -333,9 +257,6 @@ func TestSubagentOutput_TranscriptViewDelegatesAndRedacts(t *testing.T) {
 	}
 	if out.Content == "" {
 		t.Fatalf("outline content must be non-empty (renderer delegation); out: %+v", out)
-	}
-	if out.Redaction != "standard" {
-		t.Fatalf("default redaction must be standard; got %q", out.Redaction)
 	}
 
 	// 2. Bare transcript_ref (no agent_id), sub need not be tracked: still reads.
