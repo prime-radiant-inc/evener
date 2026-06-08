@@ -39,6 +39,9 @@ type Input struct {
 	// Effort is the reasoning effort level for the current session (e.g. "low", "medium", "high").
 	// Used by Task 7 to set the CLAUDE_EFFORT env var for command hooks.
 	Effort string `json:"effort,omitempty"`
+	// Prompt is the official Claude UserPromptSubmit field. It carries the same
+	// value as the legacy UserPrompt alias; Claude-style hooks read "prompt".
+	Prompt string `json:"prompt,omitempty"`
 
 	// Legacy Serf aliases retained during migration.
 	// tool_result = tool_response; user_prompt = prompt.

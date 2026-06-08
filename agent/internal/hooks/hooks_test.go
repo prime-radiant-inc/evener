@@ -12,6 +12,57 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+// TestInput_PromptFieldMarshalsAlongsideUserPrompt verifies that a
+// UserPromptSubmit-style Input carries the official Claude "prompt" field as well
+// as the legacy "user_prompt" alias, with the same value. A Claude-style hook
+// reads "prompt"; before this fix serf sent only "user_prompt" (Fix 5).
+func TestInput_PromptFieldMarshalsAlongsideUserPrompt(t *testing.T) {
+	in := Input{
+		HookEventName: "UserPromptSubmit",
+		Prompt:        "do the thing",
+		UserPrompt:    "do the thing",
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["prompt"] != "do the thing" {
+		t.Errorf("prompt = %v, want %q", m["prompt"], "do the thing")
+	}
+	if m["user_prompt"] != "do the thing" {
+		t.Errorf("user_prompt = %v, want %q", m["user_prompt"], "do the thing")
+	}
+}
+
+// TestRunUserPromptSubmit_PipesPromptToStdin verifies the runner pipes the
+// official "prompt" field to a command hook's stdin (the end-to-end wire path),
+// not only the legacy alias. A command hook echoes its stdin; the parsed output
+// must contain the prompt value under "prompt" (Fix 5).
+func TestRunUserPromptSubmit_PipesPromptToStdin(t *testing.T) {
+	r := newRunner(nil, "")
+	// The hook prints whether stdin carried a top-level "prompt" key with our value.
+	r.Add(plugin.HookUserPromptSubmit, plugin.RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Timeout: 5,
+		Command: `grep -q '"prompt":"hello world"' && echo "prompt-present" || echo "prompt-MISSING"`,
+	})
+
+	out := r.RunUserPromptSubmit(context.Background(), Input{
+		HookEventName: "UserPromptSubmit",
+		Prompt:        "hello world",
+		UserPrompt:    "hello world",
+	})
+	joined := strings.Join(out.SystemMessages, " ")
+	if !strings.Contains(joined, "prompt-present") {
+		t.Fatalf("command hook did not see top-level \"prompt\" on stdin; messages = %v", out.SystemMessages)
+	}
+}
+
 // --- Task 8: Command Hook Execution ---
 
 func TestExecuteCommandHook(t *testing.T) {

@@ -673,6 +673,9 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 	// UserPromptSubmit hooks
 	if s.hookRunner != nil {
 		hi := s.hookInput(plugin.HookUserPromptSubmit)
+		// Send the official "prompt" field and the legacy "user_prompt" alias with
+		// the same value: Claude-style hooks read "prompt".
+		hi.Prompt = input
 		hi.UserPrompt = input
 		result := s.hookRunner.RunUserPromptSubmit(ctx, hi)
 		for _, msg := range result.SystemMessages {
