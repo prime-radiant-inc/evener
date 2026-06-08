@@ -30,11 +30,15 @@ const (
 	SubagentCompleted SubagentStatus = "completed"
 	// SubagentFailed indicates the sub-agent's run finished with an error.
 	SubagentFailed SubagentStatus = "failed"
+	// SubagentCancelled indicates the sub-agent's run was cancelled.
+	SubagentCancelled SubagentStatus = "cancelled"
 )
 
 // subagentResult is the structured output from a completed sub-agent.
 type subagentResult struct {
+	AgentID       string         `json:"agent_id"`
 	Status        SubagentStatus `json:"status"`
+	Reason        SubagentStatus `json:"reason,omitempty"`
 	Output        string         `json:"output"`
 	Success       bool           `json:"success"`
 	TurnsUsed     int            `json:"turns_used"`
@@ -577,9 +581,11 @@ func (a *subagent) resultSnapshotLocked() subagentResult {
 		output = a.err.Error()
 	}
 	return subagentResult{
+		AgentID:       a.id,
 		Status:        a.status,
+		Reason:        a.status,
 		Output:        output,
-		Success:       a.err == nil,
+		Success:       a.status == SubagentCompleted,
 		TurnsUsed:     a.turnsUsed,
 		TranscriptRef: encodeRef("", a.sess.ID()),
 	}

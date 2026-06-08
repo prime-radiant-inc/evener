@@ -81,18 +81,7 @@ func registerSubagentTools(reg *tool.Registry, s *Session) {
 			if agentID == "" {
 				return result, nil
 			}
-			waitResult, waitErr := s.waitAgent(ctx, agentID, 0) // 0 = wait indefinitely
-			// Include agent_id in the blocking result so the caller can
-			// use resume_agent later if needed (e.g. to iterate with a planner).
-			if waitStr, ok := waitResult.(string); ok {
-				var parsed map[string]any
-				if err := json.Unmarshal([]byte(waitStr), &parsed); err == nil {
-					parsed["agent_id"] = agentID
-					b, _ := json.Marshal(parsed)
-					return string(b), waitErr
-				}
-			}
-			return waitResult, waitErr
+			return s.waitAgent(ctx, agentID, 0) // 0 = wait indefinitely
 		},
 	})
 	_ = reg.Register(tool.RegisteredTool{
@@ -133,16 +122,7 @@ func registerSubagentTools(reg *tool.Registry, s *Session) {
 				return result, nil
 			}
 			// Blocking mode: wait for the agent to finish and return its result.
-			waitResult, waitErr := s.waitAgent(ctx, agentID, 0)
-			if waitStr, ok := waitResult.(string); ok {
-				var parsed map[string]any
-				if err := json.Unmarshal([]byte(waitStr), &parsed); err == nil {
-					parsed["agent_id"] = agentID
-					b, _ := json.Marshal(parsed)
-					return string(b), waitErr
-				}
-			}
-			return waitResult, waitErr
+			return s.waitAgent(ctx, agentID, 0)
 		},
 	})
 	_ = reg.Register(tool.RegisteredTool{
