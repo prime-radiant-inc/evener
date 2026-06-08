@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -212,19 +211,29 @@ func (r *Runner) Add(event plugin.HookEvent, hooks ...plugin.RegisteredHook) {
 }
 
 // MatchHooks returns hooks registered for the event whose Matcher matches toolName.
-// "*" matches everything; other matchers are compiled as regex.
+// Matching follows Claude-compatible semantics: empty/"*" match all; a matcher
+// of only [A-Za-z0-9_|] chars is treated as exact or pipe-list; anything else
+// is a Go RE2 regex. Invalid regex matchers are skipped without panicking and
+// a sanitized diagnostic is emitted when an event callback is registered.
 func (r *Runner) MatchHooks(event plugin.HookEvent, toolName string) []plugin.RegisteredHook {
 	var matched []plugin.RegisteredHook
 	for _, hook := range r.hooks[event] {
-		if hook.Matcher == "*" {
-			matched = append(matched, hook)
+		ok, err := matchTarget(hook.Matcher, toolName)
+		if err != nil {
+			// Invalid regex: skip the hook and surface a sanitized diagnostic.
+			if r.onEvent != nil {
+				r.onEvent(events.EventHookEnd, events.HookEndData{
+					Event:      string(event),
+					HookType:   hook.Type,
+					Matcher:    hook.Matcher,
+					PluginName: hook.PluginName,
+					ExitCode:   -1,
+					// TODO(task7): surface invalid_matcher as a dedicated diagnostic category.
+				})
+			}
 			continue
 		}
-		re, err := regexp.Compile(hook.Matcher)
-		if err != nil {
-			continue // skip invalid regex
-		}
-		if re.MatchString(toolName) {
+		if ok {
 			matched = append(matched, hook)
 		}
 	}

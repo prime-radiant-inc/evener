@@ -671,17 +671,72 @@ func TestHookRunner_Summary_Empty(t *testing.T) {
 
 // --- Phase 1: Characterization tests (lock current behavior) ---
 
-// TestMatchHooks_CurrentRegexSubstring_Characterization documents that today the
-// Matcher field is compiled as a regex and matched with MatchString (substring
-// semantics), so "Bash" matches "BashOutput". Task 3 changes this to exact/whole-word
-// matching and updates this test in the same commit.
-func TestMatchHooks_CurrentRegexSubstring_Characterization(t *testing.T) {
+// TestMatchHooks_ExactModeNoSubstring verifies that a plain word matcher like
+// "Bash" uses exact-match semantics and does NOT substring-match "BashOutput".
+// This is the headline fix from Task 3 (claude-compatible-subset).
+func TestMatchHooks_ExactModeNoSubstring(t *testing.T) {
 	r := newRunner(nil, "")
 	r.Add(plugin.HookPreToolUse, plugin.RegisteredHook{Matcher: "Bash", Type: "command", Command: "echo x"})
-	// TODAY: "Bash" regex-substring-matches "BashOutput". Task 3 makes this exact-mode (no match)
-	// and updates this test in the SAME commit. Until then it pins today's bug.
-	if got := r.MatchHooks(plugin.HookPreToolUse, "BashOutput"); len(got) != 1 {
-		t.Fatalf("current behavior: Bash regex-substring-matches BashOutput; got %d", len(got))
+	// Exact mode: "Bash" must not match "BashOutput".
+	if got := r.MatchHooks(plugin.HookPreToolUse, "BashOutput"); len(got) != 0 {
+		t.Fatalf("exact mode: Bash must not match BashOutput; got %d matches", len(got))
+	}
+	// Sanity: "Bash" does match "Bash".
+	if got := r.MatchHooks(plugin.HookPreToolUse, "Bash"); len(got) != 1 {
+		t.Fatalf("exact mode: Bash must match Bash; got %d matches", len(got))
+	}
+}
+
+// TestMatchHooks_NegativeMatcherCoverage covers the 07-spec acceptance cases:
+// pipe-list non-tool, MCP regex-vs-exact, and invalid-regex skip (no panic).
+func TestMatchHooks_NegativeMatcherCoverage(t *testing.T) {
+	// Pipe-list: "startup|clear|compact" must not match "resume".
+	r := newRunner(nil, "")
+	r.Add(plugin.HookSessionStart, plugin.RegisteredHook{
+		Matcher: "startup|clear|compact",
+		Type:    "command",
+		Command: "echo lifecycle",
+		Timeout: 5,
+	})
+	if got := r.MatchHooks(plugin.HookSessionStart, "resume"); len(got) != 0 {
+		t.Errorf("pipe-list: startup|clear|compact must not match resume; got %d", len(got))
+	}
+	if got := r.MatchHooks(plugin.HookSessionStart, "startup"); len(got) != 1 {
+		t.Errorf("pipe-list: startup|clear|compact must match startup; got %d", len(got))
+	}
+
+	// MCP regex-vs-exact: "mcp__memory__.*" (regex) matches; "mcp__memory" (exact) does not.
+	r2 := newRunner(nil, "")
+	r2.Add(plugin.HookPreToolUse,
+		plugin.RegisteredHook{Matcher: "mcp__memory__.*", Type: "command", Command: "echo regex", Timeout: 5},
+		plugin.RegisteredHook{Matcher: "mcp__memory", Type: "command", Command: "echo exact", Timeout: 5},
+	)
+	if got := r2.MatchHooks(plugin.HookPreToolUse, "mcp__memory__search"); len(got) != 1 {
+		t.Errorf("MCP: regex mcp__memory__.* must match mcp__memory__search; got %d", len(got))
+	}
+	if got := r2.MatchHooks(plugin.HookPreToolUse, "mcp__memory__write"); len(got) != 1 {
+		t.Errorf("MCP: regex mcp__memory__.* must match mcp__memory__write; got %d", len(got))
+	}
+
+	// Invalid regex: hook must be skipped, must not panic, and runner must not run it.
+	r3 := newRunner(nil, "")
+	r3.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
+		Matcher: "(",
+		Type:    "command",
+		Command: "echo should-not-run",
+		Timeout: 5,
+	})
+	if got := r3.MatchHooks(plugin.HookPreToolUse, "Bash"); len(got) != 0 {
+		t.Errorf("invalid regex: hook must be skipped; got %d matches", len(got))
+	}
+	// Ensure RunPreToolUse also does not panic with an invalid-regex hook.
+	result := r3.RunPreToolUse(context.Background(), Input{
+		CWD:           "/tmp",
+		HookEventName: "PreToolUse",
+		ToolName:      "Bash",
+	})
+	if result.Denied {
+		t.Error("invalid regex hook must not cause denial")
 	}
 }
 
