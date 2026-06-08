@@ -28,8 +28,7 @@ func newTestSession(t *testing.T) *Session {
 	return sess
 }
 
-// --- Step 1: characterization test for the CURRENT snapshot shape ---
-
+// TestResultSnapshot_CurrentShape verifies baseline snapshot fields for a completed subagent.
 func TestResultSnapshot_CurrentShape(t *testing.T) {
 	a := &subagent{id: "01CHILD", status: SubagentCompleted, result: "done", turnsUsed: 3, sess: newTestSession(t)}
 	snap := a.resultSnapshotLocked()
@@ -41,8 +40,7 @@ func TestResultSnapshot_CurrentShape(t *testing.T) {
 	}
 }
 
-// --- Step 2: failing test for new fields (AgentID, Reason) ---
-
+// TestResultSnapshot_CarriesAgentIDAndReason verifies that agent_id and reason are stamped on the snapshot.
 func TestResultSnapshot_CarriesAgentIDAndReason(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -66,8 +64,7 @@ func TestResultSnapshot_CarriesAgentIDAndReason(t *testing.T) {
 	}
 }
 
-// --- Step 6: blocking spawn result carries agent_id without the parse-and-inject wrapper ---
-
+// TestBlockingSpawn_SnapshotHasAgentID verifies that a blocking spawn result carries agent_id directly from the snapshot.
 func TestBlockingSpawn_SnapshotHasAgentID(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()

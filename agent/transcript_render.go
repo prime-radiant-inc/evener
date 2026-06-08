@@ -1019,7 +1019,9 @@ func subagentResultBody(raw string) (string, bool) {
 // captures. A body with any key outside this set is rendered via the general JSON
 // pretty-print so the extra evidence stays visible.
 var subagentResultKnownKeys = map[string]bool{
+	"agent_id":       true,
 	"status":         true,
+	"reason":         true,
 	"output":         true,
 	"success":        true,
 	"turns_used":     true,
