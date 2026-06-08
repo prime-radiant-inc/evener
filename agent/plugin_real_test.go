@@ -214,12 +214,13 @@ func TestRealPlugin_Superpowers_HookExecution(t *testing.T) {
 	result := runner.RunSessionStart(context.Background(), input)
 
 	// The superpowers session-start.sh outputs JSON with hookSpecificOutput.additionalContext
-	if len(result.SystemMessages) == 0 {
-		t.Error("SessionStart hook should produce system messages")
+	// which now routes to AdditionalContext (model-context), not SystemMessages (user-visible).
+	if len(result.AdditionalContext) == 0 {
+		t.Error("SessionStart hook should produce additional context")
 	}
 
 	// Verify the output contains the expected content injection
-	for _, msg := range result.SystemMessages {
+	for _, msg := range result.AdditionalContext {
 		if strings.Contains(msg, "superpowers") || strings.Contains(msg, "EXTREMELY_IMPORTANT") {
 			// Good - the hook injected its context
 			break

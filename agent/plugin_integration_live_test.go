@@ -368,18 +368,20 @@ func TestLive_Hooks_CommandExecution(t *testing.T) {
 		CWD:           dir,
 		HookEventName: "SessionStart",
 	})
-	if len(startResult.SystemMessages) == 0 {
-		t.Error("SessionStart should produce system messages")
+	// session-start.sh outputs additionalContext (model context), not systemMessage (user-visible).
+	// After Task 5, additionalContext routes to AdditionalContext, not SystemMessages.
+	if len(startResult.AdditionalContext) == 0 {
+		t.Error("SessionStart should produce additional context")
 	}
 	foundContext := false
-	for _, msg := range startResult.SystemMessages {
+	for _, msg := range startResult.AdditionalContext {
 		if strings.Contains(msg, "Live test plugin loaded") {
 			foundContext = true
 			break
 		}
 	}
 	if !foundContext {
-		t.Errorf("SessionStart context injection missing, got: %v", startResult.SystemMessages)
+		t.Errorf("SessionStart context injection missing, got: %v", startResult.AdditionalContext)
 	}
 
 	// --- PreToolUse (safe path) ---

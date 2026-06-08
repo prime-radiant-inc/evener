@@ -601,6 +601,11 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind) error {
 	for _, msg := range result.SystemMessages {
 		s.Steer(msg)
 	}
+	// TODO(phase-B): additionalContext is model-context; route distinctly from
+	// user-visible systemMessage once a context channel exists.
+	for _, msg := range result.AdditionalContext {
+		s.Steer(msg)
+	}
 
 	return nil
 }

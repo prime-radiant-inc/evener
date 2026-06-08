@@ -73,7 +73,11 @@ func (s *Session) runPreCompactHook(ctx context.Context, history *[]schema.Turn)
 	}
 	var messages []string
 	if s.hookRunner != nil {
-		messages = append(messages, s.hookRunner.RunPreCompact(ctx, s.hookInput(plugin.HookPreCompact)).SystemMessages...)
+		compactResult := s.hookRunner.RunPreCompact(ctx, s.hookInput(plugin.HookPreCompact))
+		messages = append(messages, compactResult.SystemMessages...)
+		// TODO(phase-B): additionalContext is model-context; route distinctly from
+		// user-visible systemMessage once a context channel exists.
+		messages = append(messages, compactResult.AdditionalContext...)
 	}
 	messages = append(messages, s.goalCompactionSteering()...)
 	return appendSteeringMessagesToHistory(history, messages)

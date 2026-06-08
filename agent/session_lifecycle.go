@@ -678,6 +678,11 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 		for _, msg := range result.SystemMessages {
 			s.Steer(msg)
 		}
+		// TODO(phase-B): additionalContext is model-context; route distinctly from
+		// user-visible systemMessage once a context channel exists.
+		for _, msg := range result.AdditionalContext {
+			s.Steer(msg)
+		}
 	}
 
 	// Count conversation turns (user input -> model response pairs), not LLM round-trips.

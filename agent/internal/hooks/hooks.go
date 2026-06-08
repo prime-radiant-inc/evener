@@ -25,10 +25,25 @@ type Input struct {
 	HookEventName string         `json:"hook_event_name"`
 	ToolName      string         `json:"tool_name,omitempty"`
 	ToolInput     map[string]any `json:"tool_input,omitempty"`
-	ToolResult    string         `json:"tool_result,omitempty"`
-	UserPrompt    string         `json:"user_prompt,omitempty"`
 	Message       string         `json:"message,omitempty"`
 	Reason        string         `json:"reason,omitempty"`
+
+	// Official Claude-compatible fields (claude-compatible-subset).
+	// These are additive; hooks may read them when present.
+	TranscriptPath string `json:"transcript_path,omitempty"`
+	PermissionMode string `json:"permission_mode,omitempty"`
+	ToolUseID      string `json:"tool_use_id,omitempty"`
+	ToolResponse   string `json:"tool_response,omitempty"`
+	AgentID        string `json:"agent_id,omitempty"`
+	AgentType      string `json:"agent_type,omitempty"`
+	// Effort is the reasoning effort level for the current session (e.g. "low", "medium", "high").
+	// Used by Task 7 to set the CLAUDE_EFFORT env var for command hooks.
+	Effort string `json:"effort,omitempty"`
+
+	// Legacy Serf aliases retained during migration.
+	// tool_result = tool_response; user_prompt = prompt.
+	ToolResult string `json:"tool_result,omitempty"`
+	UserPrompt string `json:"user_prompt,omitempty"`
 }
 
 // hookResult captures the output of a hook execution.
@@ -262,35 +277,43 @@ func (r *Runner) MatchHooks(event plugin.HookEvent, toolName string) []plugin.Re
 
 // RunResult contains the aggregated output from running hooks.
 type RunResult struct {
-	SystemMessages []string
+	SystemMessages    []string
+	AdditionalContext []string
+	TerminalSequences []string
 }
 
 // PreToolUseResult contains aggregated output from PreToolUse hooks.
 type PreToolUseResult struct {
-	Denied         bool
-	DenyMessage    string
-	SystemMessages []string
-	UpdatedInput   map[string]any
+	Denied            bool
+	DenyMessage       string
+	SystemMessages    []string
+	AdditionalContext []string
+	TerminalSequences []string
+	UpdatedInput      map[string]any
 }
 
 // StopResult contains aggregated output from Stop/SubagentStop hooks.
 type StopResult struct {
-	Blocked        bool
-	BlockReason    string
-	SystemMessages []string
+	Blocked           bool
+	BlockReason       string
+	SystemMessages    []string
+	AdditionalContext []string
+	TerminalSequences []string
 }
 
 // parsedHookOutput is the structured interpretation of a hook's stdout and exit code.
 type parsedHookOutput struct {
-	Continue       bool
-	SuppressOutput bool
-	SystemMessage  string
-	Denied         bool
-	UpdatedInput   map[string]any
-	Blocked        bool
-	BlockReason    string
-	IsError        bool
-	RawExitCode    int
+	Continue          bool
+	SuppressOutput    bool
+	SystemMessage     string
+	AdditionalContext string
+	TerminalSequence  string
+	Denied            bool
+	UpdatedInput      map[string]any
+	Blocked           bool
+	BlockReason       string
+	IsError           bool
+	RawExitCode       int
 }
 
 // parseHookOutput interprets hook stdout and exit code into structured output.
@@ -326,6 +349,9 @@ func parseHookOutput(stdout string, exitCode int) parsedHookOutput {
 	if s, ok := parsed["systemMessage"].(string); ok {
 		result.SystemMessage = s
 	}
+	if s, ok := parsed["terminalSequence"].(string); ok {
+		result.TerminalSequence = s
+	}
 
 	// Extract hookSpecificOutput
 	if hso, ok := parsed["hookSpecificOutput"].(map[string]any); ok {
@@ -340,13 +366,9 @@ func parseHookOutput(stdout string, exitCode int) parsedHookOutput {
 		if ui, ok := hso["updatedInput"].(map[string]any); ok {
 			result.UpdatedInput = ui
 		}
-		// SessionStart hooks inject context via additionalContext.
-		if ac, ok := hso["additionalContext"].(string); ok && ac != "" {
-			if result.SystemMessage == "" {
-				result.SystemMessage = ac
-			} else {
-				result.SystemMessage += "\n" + ac
-			}
+		// additionalContext is model context; route separately from user-visible systemMessage.
+		if ac, ok := hso["additionalContext"].(string); ok {
+			result.AdditionalContext = ac
 		}
 	}
 
@@ -442,6 +464,12 @@ func (r *Runner) RunPreToolUse(ctx context.Context, input Input) PreToolUseResul
 		if o.SystemMessage != "" {
 			result.SystemMessages = append(result.SystemMessages, o.SystemMessage)
 		}
+		if o.AdditionalContext != "" {
+			result.AdditionalContext = append(result.AdditionalContext, o.AdditionalContext)
+		}
+		if o.TerminalSequence != "" {
+			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
+		}
 		if o.Denied || o.RawExitCode == 2 {
 			result.Denied = true
 			if result.DenyMessage == "" {
@@ -492,6 +520,12 @@ func (r *Runner) runStopEvent(ctx context.Context, event plugin.HookEvent, input
 		if o.SystemMessage != "" {
 			result.SystemMessages = append(result.SystemMessages, o.SystemMessage)
 		}
+		if o.AdditionalContext != "" {
+			result.AdditionalContext = append(result.AdditionalContext, o.AdditionalContext)
+		}
+		if o.TerminalSequence != "" {
+			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
+		}
 		if o.Blocked {
 			result.Blocked = true
 			if result.BlockReason == "" {
@@ -540,12 +574,19 @@ func (r *Runner) RunNotification(ctx context.Context, input Input) RunResult {
 	return collectSystemMessages(outputs)
 }
 
-// collectSystemMessages aggregates system messages from parsed outputs.
+// collectSystemMessages aggregates system messages, additional context, and terminal
+// sequences from parsed outputs.
 func collectSystemMessages(outputs []parsedHookOutput) RunResult {
 	var result RunResult
 	for _, o := range outputs {
 		if o.SystemMessage != "" {
 			result.SystemMessages = append(result.SystemMessages, o.SystemMessage)
+		}
+		if o.AdditionalContext != "" {
+			result.AdditionalContext = append(result.AdditionalContext, o.AdditionalContext)
+		}
+		if o.TerminalSequence != "" {
+			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
 		}
 	}
 	return result

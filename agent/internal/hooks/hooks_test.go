@@ -742,14 +742,17 @@ func TestMatchHooks_NegativeMatcherCoverage(t *testing.T) {
 
 // TestParseHookOutput_CurrentContracts_Characterization locks two behavioral contracts:
 // exit code 2 → IsError=true with stdout as SystemMessage, and hookSpecificOutput.additionalContext
-// folds into SystemMessage when SystemMessage is otherwise empty.
+// is routed into AdditionalContext (separate from SystemMessage).
 func TestParseHookOutput_CurrentContracts_Characterization(t *testing.T) {
 	if o := parseHookOutput("boom", 2); !o.IsError || o.SystemMessage != "boom" {
 		t.Fatalf("exit2 contract drifted: %+v", o)
 	}
 	o := parseHookOutput(`{"hookSpecificOutput":{"additionalContext":"ctx"}}`, 0)
-	if o.SystemMessage != "ctx" {
-		t.Fatalf("current: additionalContext folds into SystemMessage; got %q", o.SystemMessage)
+	if o.SystemMessage != "" {
+		t.Fatalf("additionalContext must NOT fold into SystemMessage; SystemMessage=%q", o.SystemMessage)
+	}
+	if o.AdditionalContext != "ctx" {
+		t.Fatalf("additionalContext must route to AdditionalContext; got %q", o.AdditionalContext)
 	}
 }
 
@@ -780,6 +783,38 @@ func TestExecuteCommandHook_UnknownShellRejected(t *testing.T) {
 	_, err := executeCommandHook(context.Background(), hook, Input{CWD: "/tmp", HookEventName: "X"})
 	if err == nil {
 		t.Fatal("unknown shell should error")
+	}
+}
+
+// TestHookInput_OfficialFields verifies that the new official Claude-compatible input
+// fields serialize with the correct JSON tags and that legacy aliases are preserved.
+func TestHookInput_OfficialFields(t *testing.T) {
+	b, _ := json.Marshal(Input{
+		SessionID: "s", CWD: "/w", HookEventName: "PreToolUse", ToolName: "Bash",
+		TranscriptPath: "/t.jsonl", PermissionMode: "default", ToolUseID: "call-1",
+		ToolResponse: "ok", AgentID: "ag1", AgentType: "Explore",
+		ToolResult: "ok", // legacy alias preserved
+	})
+	for _, w := range []string{`"transcript_path":"/t.jsonl"`, `"permission_mode":"default"`, `"tool_use_id":"call-1"`, `"tool_response":"ok"`, `"agent_id":"ag1"`, `"agent_type":"Explore"`, `"tool_result":"ok"`} {
+		if !strings.Contains(string(b), w) {
+			t.Fatalf("missing %s in %s", w, b)
+		}
+	}
+}
+
+// TestParseHookOutput_AdditionalContextSeparate verifies that additionalContext from
+// hookSpecificOutput is routed into AdditionalContext (not folded into SystemMessage).
+func TestParseHookOutput_AdditionalContextSeparate(t *testing.T) {
+	o := parseHookOutput(`{"systemMessage":"user-visible","hookSpecificOutput":{"additionalContext":"model-ctx"}}`, 0)
+	if o.SystemMessage != "user-visible" {
+		t.Fatalf("systemMessage=%q", o.SystemMessage)
+	}
+	if o.AdditionalContext != "model-ctx" {
+		t.Fatalf("additionalContext=%q", o.AdditionalContext)
+	}
+	o2 := parseHookOutput(`{"terminalSequence":""}`, 0)
+	if o2.TerminalSequence != "" {
+		t.Fatalf("terminalSequence=%q", o2.TerminalSequence)
 	}
 }
 

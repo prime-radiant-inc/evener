@@ -77,13 +77,31 @@ func (s *Session) runNotificationHook(ctx context.Context, message string) {
 	for _, msg := range result.SystemMessages {
 		s.Steer(msg)
 	}
+	// TODO(phase-B): additionalContext is model-context; route distinctly from
+	// user-visible systemMessage once a context channel exists.
+	for _, msg := range result.AdditionalContext {
+		s.Steer(msg)
+	}
 }
 
-// hookInput creates a hooks.Input with the session's ID and working directory pre-filled.
+// hookInput creates a hooks.Input with the session's ID, working directory, and
+// available official Claude-compatible fields pre-filled.
 func (s *Session) hookInput(event plugin.HookEvent) hooks.Input {
-	return hooks.Input{
+	input := hooks.Input{
 		SessionID:     s.id,
 		CWD:           s.env.WorkingDirectory(),
 		HookEventName: string(event),
 	}
+	// TranscriptPath is empty when persistence is off; omitempty silences it.
+	input.TranscriptPath = s.TranscriptPath()
+	// Effort is empty when no effort has been configured; omitempty silences it.
+	s.mu.Lock()
+	effort := s.cfg.ReasoningEffort
+	s.mu.Unlock()
+	if effort != "" {
+		input.Effort = effort
+	}
+	// PermissionMode is intentionally left unset: serf has no permission-mode field
+	// on Session today. Do NOT fabricate a value the hook would act on.
+	return input
 }

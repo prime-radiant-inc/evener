@@ -377,6 +377,11 @@ func (s *Session) deliverIfCommunicated(ctx context.Context) (done bool, text st
 		for _, msg := range stopResult.SystemMessages {
 			s.Steer(msg)
 		}
+		// TODO(phase-B): additionalContext is model-context; route distinctly from
+		// user-visible systemMessage once a context channel exists.
+		for _, msg := range stopResult.AdditionalContext {
+			s.Steer(msg)
+		}
 		if stopResult.Blocked {
 			// Don't finish — keep looping.
 			return false, ""
