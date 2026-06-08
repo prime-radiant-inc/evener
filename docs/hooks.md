@@ -14,8 +14,8 @@ authoring mistake.
 
 > **Scope.** Everything described here is implemented and tested. Claude hook
 > capabilities serf recognizes but does **not** yet run — additional events, the
-> `http`/`mcp_tool`/`agent` handler types, the full `PreToolUse`
-> `allow|deny|ask|defer` schema, async execution, typed SDK hooks — are tracked,
+> `http`/`mcp_tool`/`agent` handler types, the `PreToolUse` `ask`/`defer` decisions
+> and `updatedInput` revalidation, async execution, typed SDK hooks — are tracked,
 > with the compatibility roadmap, in
 > [`subagent-management/07-lifecycle-hooks-claude-compat.md`](subagent-management/07-lifecycle-hooks-claude-compat.md).
 > Serf is honest about the line: a hook for something unimplemented is parsed and
@@ -97,9 +97,9 @@ warnings](#misconfiguration-warnings-loud-not-silent)).
 
 All nine are tier `claude-compatible-subset`: serf fires them with a
 Claude-compatible **subset** of the behavior. None is a complete end-to-end
-reimplementation of the Claude event — for example `PreToolUse` honors a `deny`
-decision but not the full `allow|ask|defer` schema, and several events ignore
-their matcher target today (noted above).
+reimplementation of the Claude event — for example `PreToolUse` honors `allow` and
+`deny` decisions but not `ask`/`defer` (no interactive permission prompt), and
+several events ignore their matcher target today (noted above).
 
 **Other Claude events are reserved, not fired.** Names like `PostToolUseFailure`,
 `PermissionRequest`, `SubagentStart`, `PostCompact`, `Setup`, `FileChanged`, and
@@ -372,8 +372,11 @@ Notes:
 Serf reads the command's **stdout**, **stderr**, and **exit code**.
 
 - **Exit 0, empty stdout** → success, no decision.
-- **Exit 0, plain-text stdout** → a `systemMessage` (in Phase 1, delivered to the
-  model).
+- **Exit 0, plain-text stdout** → reaches the **model** only for `SessionStart` and
+  `UserPromptSubmit` (context events); for all other events it is shown to the
+  **user** as a diagnostic warning. This is a deliberate divergence from Claude,
+  which debug-logs non-context plain stdout to neither model nor user; serf surfaces
+  it to the user so hook output never silently vanishes.
 - **Exit 0, JSON stdout** → parsed as a structured decision (below).
 - **Exit 2** → an event-specific block/error (see the [exit-code
   table](#exit-codes-per-event)). **JSON is ignored on exit 2** — only stderr is
@@ -390,12 +393,13 @@ The output JSON serf reads (exit 0):
 {
   "continue": true,
   "suppressOutput": false,
-  "systemMessage": "surfaced to the model in Phase 1",
+  "systemMessage": "shown to the user as a warning message",
   "terminalSequence": "",
   "decision": "block",
   "reason": "why (with decision:block)",
   "hookSpecificOutput": {
-    "permissionDecision": "deny",
+    "permissionDecision": "allow|deny",
+    "permissionDecisionReason": "why",
     "updatedInput": { "command": "ls -la" },
     "additionalContext": "extra context for the model"
   }
@@ -407,17 +411,21 @@ The output JSON serf reads (exit 0):
   deferred item); a hook that sets `continue: false` still runs to completion.
   `stopReason` and the rest of the structured output schema are reserved (see
   [07](subagent-management/07-lifecycle-hooks-claude-compat.md#hook-output-contract)).
-- `systemMessage` and `hookSpecificOutput.additionalContext` are **both delivered
-  to the model in Phase 1** — they are kept distinct in the data model, but the
-  separate user-visible-only delivery channel for `systemMessage` is a deferred
-  item. Do not rely on `systemMessage` being shown only to the user today; both
-  reach the model.
+- `hookSpecificOutput.additionalContext` is delivered to the **model**, wrapped in
+  a `<SYSTEM-REMINDER>`.
+- The top-level `systemMessage` field is shown to the **user** (a `[warning]`-style
+  message via serf's diagnostic-warning channel) — it is **not** sent to the model.
 - `terminalSequence` must be a safe terminal notification sequence.
 - `decision: "block"` blocks where the event supports it (e.g. `Stop`,
   `SubagentStop`).
-- For `PreToolUse`, `hookSpecificOutput.permissionDecision: "deny"` denies the
-  tool call; `updatedInput` rewrites the tool arguments before validation. The
-  full `allow|ask|defer` schema is reserved.
+- For `PreToolUse`, `hookSpecificOutput.permissionDecision` honors `allow` and
+  `deny`; the reason is read from `permissionDecisionReason`. Deprecated top-level
+  form is accepted as a fallback: `decision: "approve"` → allow, `decision: "block"`
+  → deny, top-level `reason` → the reason; the preferred `permissionDecision` wins
+  when both are present. `updatedInput` rewrites the tool arguments before
+  validation. `ask` and `defer` are recognized but **not honored** — serf has no
+  interactive permission prompt, so the tool proceeds and a user-visible diagnostic
+  names the unsupported decision. `updatedInput` revalidation is reserved.
 
 ### Exit codes per event
 
@@ -429,12 +437,12 @@ subset:
 | `PreToolUse` | block the tool call |
 | `Stop` | prevent stopping |
 | `SubagentStop` | prevent the subagent stopping |
-| `UserPromptSubmit` | **no block yet** — Claude erases the prompt here, but serf does not yet enforce the block; in Phase 1 the stderr is delivered to the model |
-| `PreCompact` | **no block yet** — Claude blocks compaction here, but serf does not yet enforce the block; in Phase 1 the stderr is delivered to the model |
-| `PostToolUse` | **no block** (cannot undo the tool) — in Phase 1 the stderr is delivered to the model as context |
-| `SessionStart` | **no block** — in Phase 1 the stderr is delivered to the model |
+| `UserPromptSubmit` | **no block yet** — Claude erases the prompt here, but serf does not yet enforce the block; stderr is delivered to the model |
+| `PreCompact` | **no block yet** — Claude blocks compaction here, but serf does not yet enforce the block; stderr is delivered to the model |
+| `PostToolUse` | **no block** (cannot undo the tool) — stderr is delivered to the model as context |
+| `SessionStart` | **no block** — stderr is delivered to the model |
 | `SessionEnd` | **no block** — the session is ending, so the stderr is captured but not delivered (no following turn) |
-| `Notification` | **no block** — in Phase 1 the stderr is delivered to the model |
+| `Notification` | **no block** — stderr is delivered to the model |
 
 (The full Claude table, including the reserved events, is in
 [07 §Exit-code semantics](subagent-management/07-lifecycle-hooks-claude-compat.md#exit-code-semantics).)
@@ -520,8 +528,10 @@ before they run, and (3) logs every tool result. Drop this at
 `PreToolUse` input JSON on stdin; to deny a call it prints
 `{"hookSpecificOutput":{"permissionDecision":"deny"}}` and exits 0, or simply
 exits 2. `hooks/log-result.sh` reads the `PostToolUse` input and exits 0 — its
-stdout becomes a `systemMessage` (delivered to the model in Phase 1). Remember:
-the `PreToolUse` matcher is `Bash`, **not** `shell`.
+plain-text stdout is shown to the **user** as a warning message (not sent to the
+model); to deliver context to the model from a hook, use
+`hookSpecificOutput.additionalContext` in the JSON output. Remember: the
+`PreToolUse` matcher is `Bash`, **not** `shell`.
 
 ## Hooks cannot bypass policy
 
