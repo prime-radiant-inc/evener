@@ -317,10 +317,14 @@ type parsedHookOutput struct {
 }
 
 // parseHookOutput interprets hook stdout and exit code into structured output.
+// For command hooks, JSON is parsed only when exitCode == 0; on exit 2 the
+// caller should pass the stderr content as stdout and JSON is not attempted.
+// This function is event-agnostic: blocking decisions are made by the callers
+// that consult exitBehavior(event).BlockOnExit2.
 func parseHookOutput(stdout string, exitCode int) parsedHookOutput {
 	result := parsedHookOutput{Continue: true, RawExitCode: exitCode}
 
-	if exitCode == 2 {
+	if exitCode != 0 {
 		result.IsError = true
 		result.SystemMessage = stdout
 		return result
@@ -384,7 +388,10 @@ func parseHookOutput(stdout string, exitCode int) parsedHookOutput {
 }
 
 // runHook executes a single hook (command or prompt) and returns the parsed output.
-func (r *Runner) runHook(ctx context.Context, hook plugin.RegisteredHook, input Input) parsedHookOutput {
+// For command hooks, JSON is parsed only on exit 0; on exit 2 the stderr path is used
+// and JSON is ignored per the Claude spec (07 §Exit-code semantics).
+// The event is used to determine whether exit 2 blocks the action via exitBehavior.
+func (r *Runner) runHook(ctx context.Context, hook plugin.RegisteredHook, event plugin.HookEvent, input Input) parsedHookOutput {
 	var hr hookResult
 	var err error
 
@@ -404,9 +411,11 @@ func (r *Runner) runHook(ctx context.Context, hook plugin.RegisteredHook, input 
 		return parsedHookOutput{Continue: true, IsError: true, SystemMessage: err.Error()}
 	}
 
-	// Per Claude Code spec: exit code 2 means stderr is fed back to Claude.
+	// Per Claude Code spec (07 §"General parsing rules"): for command hooks, JSON is
+	// parsed only on exit 0. On exit 2, stderr is fed back as the error message and
+	// JSON is ignored. Other non-zero exit codes are also non-blocking errors.
 	output := hr.Stdout
-	if hr.ExitCode == 2 && strings.TrimSpace(hr.Stderr) != "" {
+	if hr.ExitCode != 0 && strings.TrimSpace(hr.Stderr) != "" {
 		output = hr.Stderr
 	}
 	return parseHookOutput(output, hr.ExitCode)
@@ -436,7 +445,7 @@ func (r *Runner) runAll(ctx context.Context, event plugin.HookEvent, toolName st
 				})
 			}
 			start := time.Now()
-			results[idx] = r.runHook(ctx, h, input)
+			results[idx] = r.runHook(ctx, h, event, input)
 			elapsed := time.Since(start)
 			if r.onEvent != nil {
 				r.onEvent(events.EventHookEnd, events.HookEndData{
@@ -470,7 +479,7 @@ func (r *Runner) RunPreToolUse(ctx context.Context, input Input) PreToolUseResul
 		if o.TerminalSequence != "" {
 			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
 		}
-		if o.Denied || o.RawExitCode == 2 {
+		if o.Denied || (exitBehavior(plugin.HookPreToolUse).BlockOnExit2 && o.RawExitCode == 2) {
 			result.Denied = true
 			if result.DenyMessage == "" {
 				result.DenyMessage = o.SystemMessage
@@ -526,7 +535,7 @@ func (r *Runner) runStopEvent(ctx context.Context, event plugin.HookEvent, input
 		if o.TerminalSequence != "" {
 			result.TerminalSequences = append(result.TerminalSequences, o.TerminalSequence)
 		}
-		if o.Blocked {
+		if o.Blocked || (exitBehavior(event).BlockOnExit2 && o.RawExitCode == 2) {
 			result.Blocked = true
 			if result.BlockReason == "" {
 				result.BlockReason = o.BlockReason
