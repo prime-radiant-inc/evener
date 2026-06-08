@@ -109,8 +109,8 @@ func TestRestoreSessionFromMeta_DoesNotMatchStartupSessionStartHooks(t *testing.
 		t.Fatalf("NewSession: %v", err)
 	}
 	defer fresh.Close()
-	if got := fresh.SteeringQueueSnapshot(); len(got) != 1 || got[0].Text != "startup-bootstrap" {
-		t.Fatalf("fresh session bootstrap steering = %+v, want startup-bootstrap", got)
+	if got := fresh.SteeringQueueSnapshot(); len(got) != 1 || got[0].Text != "<SYSTEM-REMINDER>startup-bootstrap</SYSTEM-REMINDER>" {
+		t.Fatalf("fresh session bootstrap steering = %+v, want wrapped startup-bootstrap", got)
 	}
 
 	meta := schema.SessionMeta{

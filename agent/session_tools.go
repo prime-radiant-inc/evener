@@ -223,13 +223,11 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 		}
 
 		preResult := s.hookRunner.RunPreToolUse(ctx, hi)
-		for _, msg := range preResult.SystemMessages {
-			s.Steer(msg)
+		for _, m := range preResult.ModelContext {
+			s.deliverHookContext(m)
 		}
-		// TODO(phase-B): additionalContext is model-context; route distinctly from
-		// user-visible systemMessage once a context channel exists.
-		for _, ctx := range preResult.AdditionalContext {
-			s.Steer(ctx)
+		for _, m := range preResult.UserMessages {
+			s.deliverHookUserMessage(m)
 		}
 		if preResult.Denied {
 			denyMsg := "Tool call denied by hook"
@@ -375,13 +373,11 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData) tool.Exec
 		hi.ToolResult = res.FullOutput   // legacy alias
 		hi.ToolResponse = res.FullOutput // official field
 		postResult := s.hookRunner.RunPostToolUse(ctx, hi)
-		for _, msg := range postResult.SystemMessages {
-			s.Steer(msg)
+		for _, m := range postResult.ModelContext {
+			s.deliverHookContext(m)
 		}
-		// TODO(phase-B): additionalContext is model-context; route distinctly from
-		// user-visible systemMessage once a context channel exists.
-		for _, ctx := range postResult.AdditionalContext {
-			s.Steer(ctx)
+		for _, m := range postResult.UserMessages {
+			s.deliverHookUserMessage(m)
 		}
 	}
 

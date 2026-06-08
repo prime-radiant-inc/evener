@@ -133,13 +133,11 @@ func (s *Session) runNotificationHook(ctx context.Context, message string) {
 	input.Message = message
 	input.Reason = message
 	result := s.hookRunner.RunNotification(ctx, input)
-	for _, msg := range result.SystemMessages {
-		s.Steer(msg)
+	for _, m := range result.ModelContext {
+		s.deliverHookContext(m)
 	}
-	// TODO(phase-B): additionalContext is model-context; route distinctly from
-	// user-visible systemMessage once a context channel exists.
-	for _, msg := range result.AdditionalContext {
-		s.Steer(msg)
+	for _, m := range result.UserMessages {
+		s.deliverHookUserMessage(m)
 	}
 }
 

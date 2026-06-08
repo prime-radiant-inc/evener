@@ -374,13 +374,11 @@ func (s *Session) deliverIfCommunicated(ctx context.Context) (done bool, text st
 			hi.Reason = "communicate.complete"
 		}
 		stopResult := s.hookRunner.RunStop(ctx, hi)
-		for _, msg := range stopResult.SystemMessages {
-			s.Steer(msg)
+		for _, m := range stopResult.ModelContext {
+			s.deliverHookContext(m)
 		}
-		// TODO(phase-B): additionalContext is model-context; route distinctly from
-		// user-visible systemMessage once a context channel exists.
-		for _, msg := range stopResult.AdditionalContext {
-			s.Steer(msg)
+		for _, m := range stopResult.UserMessages {
+			s.deliverHookUserMessage(m)
 		}
 		if stopResult.Blocked {
 			// Don't finish — keep looping.

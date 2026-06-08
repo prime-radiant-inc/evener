@@ -689,13 +689,11 @@ func (a *subagent) runSubagentStopHook(ctx context.Context, res string, err erro
 		input.Reason = "complete"
 	}
 	stopResult := a.sess.hookRunner.RunSubagentStop(ctx, input)
-	for _, msg := range stopResult.SystemMessages {
-		a.sess.Steer(msg)
+	for _, m := range stopResult.ModelContext {
+		a.sess.deliverHookContext(m)
 	}
-	// TODO(phase-B): additionalContext is model-context; route distinctly from
-	// user-visible systemMessage once a context channel exists.
-	for _, msg := range stopResult.AdditionalContext {
-		a.sess.Steer(msg)
+	for _, m := range stopResult.UserMessages {
+		a.sess.deliverHookUserMessage(m)
 	}
 	if !stopResult.Blocked {
 		return res, err

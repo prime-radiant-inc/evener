@@ -678,13 +678,11 @@ func (s *Session) acceptUserInput(ctx context.Context, input string, images []Im
 		hi.Prompt = input
 		hi.UserPrompt = input
 		result := s.hookRunner.RunUserPromptSubmit(ctx, hi)
-		for _, msg := range result.SystemMessages {
-			s.Steer(msg)
+		for _, m := range result.ModelContext {
+			s.deliverHookContext(m)
 		}
-		// TODO(phase-B): additionalContext is model-context; route distinctly from
-		// user-visible systemMessage once a context channel exists.
-		for _, msg := range result.AdditionalContext {
-			s.Steer(msg)
+		for _, m := range result.UserMessages {
+			s.deliverHookUserMessage(m)
 		}
 	}
 

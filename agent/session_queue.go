@@ -78,6 +78,32 @@ func (s *Session) SteerWithImages(msg string, images []ImageAttachment) {
 	s.steeringQueue = append(s.steeringQueue, entry)
 }
 
+// wrapHookContext frames hook-provided model context as a system reminder so the
+// model treats it as context, not as user speech (matches Claude's "wrapped in a
+// system reminder" delivery of additionalContext).
+func wrapHookContext(text string) string {
+	return "<SYSTEM-REMINDER>" + text + "</SYSTEM-REMINDER>"
+}
+
+// deliverHookContext enqueues hook model-context as a steering turn (survives to
+// the next model turn for Stop/SubagentStop).
+func (s *Session) deliverHookContext(text string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	s.Steer(wrapHookContext(text))
+}
+
+// deliverHookUserMessage surfaces a hook's user-visible message via the
+// diagnostic-warning channel (CLI/TUI/hub), WITHOUT firing the Notification hook
+// (plain emit would re-enter it and recurse).
+func (s *Session) deliverHookUserMessage(text string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	s.emitDiagnosticWarning(events.WarningData{Source: "hook", Message: text})
+}
+
 // FollowUp queues a message to process after the current input completes.
 func (s *Session) FollowUp(msg string) {
 	s.mu.Lock()
