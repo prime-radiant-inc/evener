@@ -417,7 +417,7 @@ func TestRunShellBackgroundStopWinsOverLaterRuntimeTimeout(t *testing.T) {
 	if _, err := jm.stop(res.JobID); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	time.Sleep(150 * time.Millisecond)
+	waitForSignalCount(t, se, 2)
 	close(se.release)
 
 	waitForShellDone(t, jm, res.JobID)
@@ -427,6 +427,23 @@ func TestRunShellBackgroundStopWinsOverLaterRuntimeTimeout(t *testing.T) {
 	}
 	if se.signals.Load() < 2 {
 		t.Fatalf("signals = %d, want stop signal and later runtime-timeout signal", se.signals.Load())
+	}
+}
+
+func waitForSignalCount(t *testing.T, se *delayedExitStreamingExecutor, want int32) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		if got := se.signals.Load(); got >= want {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("signals = %d, want >= %d", se.signals.Load(), want)
+		case <-tick.C:
+		}
 	}
 }
 

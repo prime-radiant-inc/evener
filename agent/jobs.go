@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -324,7 +323,7 @@ func (jm *jobManager) grepOutput(jobID string, re *regexp.Regexp, limitBytes int
 	run := jm.running[jobID]
 	jm.mu.Unlock()
 	if run != nil {
-		return run.output.GrepLimit(re, limitBytes, maxJobGrepMatches)
+		return run.output.GrepLimitLineBytes(re, limitBytes, maxJobGrepMatches, maxJobGrepLineBytes)
 	}
 
 	recs, err := jm.store.Load()
@@ -634,59 +633,7 @@ func tailOutputFile(path string, tailBytes int) (output string, total int64, tru
 }
 
 func grepOutputFile(path string, re *regexp.Regexp, limitBytes int) (matches []jobstore.Match, err error) {
-	if limitBytes < 0 {
-		return nil, fmt.Errorf("%w: limitBytes=%d", jobstore.ErrInvalidLimit, limitBytes)
-	}
-	if limitBytes == 0 {
-		return nil, nil
-	}
-
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("jobstore: open output: %w", err)
-	}
-	defer func() {
-		if closeErr := f.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("jobstore: close output: %w", closeErr)
-		}
-	}()
-
-	var offset int64
-	budget := limitBytes
-	r := bufio.NewReader(f)
-	for {
-		rawLine, err := r.ReadString('\n')
-		if len(rawLine) > 0 {
-			line := rawLine
-			if line[len(line)-1] == '\n' {
-				line = line[:len(line)-1]
-				if len(line) > 0 && line[len(line)-1] == '\r' {
-					line = line[:len(line)-1]
-				}
-			}
-			if re.MatchString(line) {
-				if len(line) > budget {
-					break
-				}
-				matches = append(matches, jobstore.Match{ByteOffset: offset, Line: line})
-				if len(matches) >= maxJobGrepMatches {
-					break
-				}
-				budget -= len(line)
-				if budget <= 0 {
-					break
-				}
-			}
-			offset += int64(len(rawLine))
-		}
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			return nil, fmt.Errorf("jobstore: read output line: %w", err)
-		}
-	}
-	return matches, nil
+	return jobstore.GrepFileLimit(path, re, limitBytes, maxJobGrepMatches, maxJobGrepLineBytes)
 }
 
 func cloneJobRecord(rec *jobstore.JobRecord) *jobstore.JobRecord {

@@ -4,6 +4,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -154,6 +156,26 @@ func TestJobManagerCloseMarksRunningJobsCancelled(t *testing.T) {
 	got := recs[rec.JobID]
 	if got.Status != jobstore.StatusCancelled || got.Reason != "stopped_by_parent" {
 		t.Fatalf("record = %+v, want cancelled/stopped_by_parent", got)
+	}
+}
+
+func TestGrepOutputFileSkipsOverlongLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "job_A.log")
+	overlong := strings.Repeat("x", maxJobGrepLineBytes+1024) + "ready\n"
+	if err := os.WriteFile(path, []byte(overlong+"later ready\n"), 0o644); err != nil {
+		t.Fatalf("write output: %v", err)
+	}
+
+	matches, err := grepOutputFile(path, regexp.MustCompile(`ready`), 4096)
+	if err != nil {
+		t.Fatalf("grepOutputFile: %v", err)
+	}
+	if len(matches) != 1 || matches[0].Line != "later ready" {
+		t.Fatalf("matches = %+v, want only bounded later line", matches)
+	}
+	if matches[0].ByteOffset != int64(len(overlong)) {
+		t.Fatalf("byte offset = %d, want %d", matches[0].ByteOffset, len(overlong))
 	}
 }
 

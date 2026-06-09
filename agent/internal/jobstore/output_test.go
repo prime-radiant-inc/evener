@@ -4,6 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -225,5 +226,27 @@ func TestOutputGrepFinalLineWithoutNewlineOffset(t *testing.T) {
 	}
 	if matches[0].ByteOffset != int64(len("starting\nalmost ready\n")) {
 		t.Errorf("byte offset = %d, want %d", matches[0].ByteOffset, len("starting\nalmost ready\n"))
+	}
+}
+
+func TestOutputGrepLimitSkipsOverlongLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, 1<<20)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	overlong := strings.Repeat("x", 8192) + "ready\n"
+	appendOutput(t, o, overlong+"later ready\n")
+	re := regexp.MustCompile(`ready`)
+
+	matches, err := o.GrepLimitLineBytes(re, 1024, 10, 64)
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	if len(matches) != 1 || matches[0].Line != "later ready" {
+		t.Fatalf("matches = %+v, want only bounded later line", matches)
+	}
+	if matches[0].ByteOffset != int64(len(overlong)) {
+		t.Fatalf("byte offset = %d, want %d", matches[0].ByteOffset, len(overlong))
 	}
 }
