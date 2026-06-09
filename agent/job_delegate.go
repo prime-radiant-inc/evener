@@ -40,6 +40,28 @@ type delegateResult struct {
 	Err                   error
 }
 
+type sendMessageArgs struct {
+	Target         string
+	Message        string
+	OnFinished     string
+	Background     bool
+	BlockTimeoutMS int
+}
+
+type sendMessageResult struct {
+	Target              string
+	JobID               string
+	Type                string
+	Status              jobstore.Status
+	RunningInBackground bool
+	Action              string
+	ResumedFromJobID    string
+	TranscriptRef       string
+	Delivered           bool
+	MessageType         string
+	Err                 error
+}
+
 func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegateResult {
 	if ctx == nil {
 		ctx = context.Background()
@@ -71,21 +93,12 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	if sub == nil {
 		return delegateStartFailed(fmt.Errorf("spawned agent %q is not tracked", childID))
 	}
-	done := sub.done
-	if done == nil {
-		return delegateStartFailed(fmt.Errorf("spawned agent %q has no active run", childID))
-	}
 
-	run, err := s.attachDelegateJob(jm, childID, task, sub)
+	run, finalizeErr, done, err := s.attachAndBridgeDelegateJob(jm, childID, task, sub)
 	if err != nil {
 		cancelDelegateChild(s, childID)
 		return delegateStartFailed(err)
 	}
-	finalizeErr := make(chan error, 1)
-	go func() {
-		<-done
-		finalizeErr <- s.finalizeDelegate(run.rec.JobID, childID, sub)
-	}()
 
 	if args.Background {
 		return delegateResult{
@@ -117,6 +130,112 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 			Err:                 readErr,
 		}
 		return res
+	}
+}
+
+func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs) sendMessageResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	target := strings.TrimSpace(args.Target)
+	message := strings.TrimSpace(args.Message)
+	if target == "" {
+		return sendMessageFailed(target, errors.New("target is required"))
+	}
+	if message == "" {
+		return sendMessageFailed(target, errors.New("message is required"))
+	}
+	if isRuntimeMessageAlias(target) {
+		s.Steer(message)
+		return sendMessageResult{
+			Target:      target,
+			Action:      "sent",
+			Delivered:   true,
+			MessageType: "runtime",
+		}
+	}
+
+	s.mu.Lock()
+	depth := s.depth
+	s.mu.Unlock()
+	if depth > 0 {
+		return sendMessageFailed(target, fmt.Errorf("not_controllable: concrete delegate job targets are root-only"))
+	}
+
+	jm, err := sessionJobManager(s)
+	if err != nil {
+		return sendMessageFailed(target, err)
+	}
+	rec, err := findJobRecord(jm, target)
+	if err != nil {
+		return sendMessageFailed(target, fmt.Errorf("target_not_found: %w", err))
+	}
+	if rec.Type != jobstore.JobDelegate {
+		return sendMessageFailed(target, fmt.Errorf("target_not_messageable: job %q has type %q", target, rec.Type))
+	}
+	_, childID, err := decodeRef(rec.TranscriptRef)
+	if err != nil {
+		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: invalid transcript_ref for job %q: %w", target, err))
+	}
+	sub := s.subagents.get(childID)
+	if sub == nil || sub.sess == nil {
+		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate session %q is not retained", childID))
+	}
+
+	sub.mu.Lock()
+	running := sub.running
+	sub.mu.Unlock()
+	if running {
+		// Phase 3 v1 steers the live child session even when the selected job is
+		// an older run for that child; delegate_session_busy is deferred.
+		sub.sess.Steer(message)
+		return sendMessageResult{
+			Target:              target,
+			JobID:               rec.JobID,
+			Type:                string(jobstore.JobDelegate),
+			Status:              jobstore.StatusRunning,
+			RunningInBackground: true,
+			Action:              "sent",
+			TranscriptRef:       rec.TranscriptRef,
+		}
+	}
+	if strings.TrimSpace(args.OnFinished) == "fail" {
+		return sendMessageFailed(target, fmt.Errorf("target_terminal: delegate job %q is %s", target, rec.Status))
+	}
+
+	if _, err := s.sendInput(ctx, childID, message); err != nil {
+		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: resume delegate session %q: %w", childID, err))
+	}
+	run, _, _, err := s.attachAndBridgeDelegateJob(jm, childID, message, sub)
+	if err != nil {
+		cancelDelegateSub(sub)
+		return sendMessageFailed(target, err)
+	}
+	return sendMessageResult{
+		Target:              target,
+		JobID:               run.rec.JobID,
+		Type:                string(jobstore.JobDelegate),
+		Status:              jobstore.StatusRunning,
+		RunningInBackground: true,
+		Action:              "resumed",
+		ResumedFromJobID:    rec.JobID,
+		TranscriptRef:       run.rec.TranscriptRef,
+	}
+}
+
+func sendMessageFailed(target string, err error) sendMessageResult {
+	return sendMessageResult{
+		Target: target,
+		Err:    err,
+	}
+}
+
+func isRuntimeMessageAlias(target string) bool {
+	switch target {
+	case "caller", "main", "watched":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -175,6 +294,25 @@ func parseSpawnedAgentID(spawned any) (string, error) {
 		return "", errors.New("spawn_agent result missing agent_id")
 	}
 	return out.AgentID, nil
+}
+
+func (s *Session) attachAndBridgeDelegateJob(jm *jobManager, childID, task string, sub *subagent) (*runningJob, <-chan error, <-chan struct{}, error) {
+	sub.mu.Lock()
+	done := sub.done
+	sub.mu.Unlock()
+	if done == nil {
+		return nil, nil, nil, fmt.Errorf("delegate session %q has no active run", childID)
+	}
+	run, err := s.attachDelegateJob(jm, childID, task, sub)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	finalizeErr := make(chan error, 1)
+	go func() {
+		<-done
+		finalizeErr <- s.finalizeDelegate(run.rec.JobID, childID, sub)
+	}()
+	return run, finalizeErr, done, nil
 }
 
 func (s *Session) attachDelegateJob(jm *jobManager, childID, task string, sub *subagent) (*runningJob, error) {

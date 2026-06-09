@@ -450,6 +450,184 @@ func TestCreateDelegateForegroundOutputAppendFailureReturns(t *testing.T) {
 	waitForShellDone(t, sess.jobManager, res.JobID)
 }
 
+func TestSendDelegateMessageTerminalDelegateResumeCreatesNewJob(t *testing.T) {
+	c := llm.NewClient()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput("first complete")
+			},
+		},
+	}
+	c.Register(adapter)
+	sess := newDelegateTestSession(t, c)
+
+	first := sess.createDelegate(context.Background(), delegateArgs{
+		Task:           "finish first",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	if first.Status != jobstore.StatusCompleted {
+		t.Fatalf("first result = %+v, want completed", first)
+	}
+	adapter.mu.Lock()
+	adapter.steps = append(adapter.steps, func(req llm.Request) llm.Response {
+		return communicateWithDefaultOutput("second complete")
+	})
+	adapter.mu.Unlock()
+
+	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  first.JobID,
+		Message: "run again",
+	})
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
+	}
+	if res.Action != "resumed" ||
+		res.JobID == "" ||
+		res.JobID == first.JobID ||
+		res.ResumedFromJobID != first.JobID ||
+		res.TranscriptRef != first.TranscriptRef ||
+		res.Status != jobstore.StatusRunning ||
+		!res.RunningInBackground {
+		t.Fatalf("result = %+v, want resumed new running delegate job from %s", res, first.JobID)
+	}
+
+	waitForShellDone(t, sess.jobManager, res.JobID)
+	rec := loadShellRecord(t, sess.jobManager, res.JobID)
+	if rec.Status != jobstore.StatusCompleted || rec.TranscriptRef != first.TranscriptRef {
+		t.Fatalf("resumed record = %+v, want completed with same transcript ref", rec)
+	}
+	output, _, _, err := sess.jobManager.readOutput(res.JobID, shellInlineOutputBytes)
+	if err != nil {
+		t.Fatalf("read resumed output: %v", err)
+	}
+	if !strings.Contains(output, "second complete") {
+		t.Fatalf("resumed output = %q, want second run output", output)
+	}
+	jobs := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate})
+	if len(jobs) != 2 {
+		t.Fatalf("delegate jobs = %+v, want two durable jobs", jobs)
+	}
+}
+
+func TestSendDelegateMessageTerminalDelegateFailOnFinished(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput("terminal complete")
+			},
+		},
+	})
+	sess := newDelegateTestSession(t, c)
+
+	first := sess.createDelegate(context.Background(), delegateArgs{
+		Task:           "finish once",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+
+	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:     first.JobID,
+		Message:    "must be live",
+		OnFinished: "fail",
+	})
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "target_terminal") {
+		t.Fatalf("error = %v, want target_terminal", res.Err)
+	}
+	if jobs := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate}); len(jobs) != 1 {
+		t.Fatalf("delegate jobs = %+v, want no new job", jobs)
+	}
+}
+
+func TestSendDelegateMessageRunningDelegateTargetSteersWithoutNewJob(t *testing.T) {
+	adapter := &cancelAwareDelegateAdapter{name: "openai", started: make(chan struct{})}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess := newDelegateTestSession(t, c)
+
+	first := sess.createDelegate(context.Background(), delegateArgs{
+		Task:       "stay running",
+		Background: true,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	select {
+	case <-adapter.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("delegate child did not start")
+	}
+	before := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate})
+
+	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  first.JobID,
+		Message: "please adjust course",
+	})
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
+	}
+	if res.Action != "sent" ||
+		res.JobID != first.JobID ||
+		res.Status != jobstore.StatusRunning ||
+		!res.RunningInBackground ||
+		res.TranscriptRef != first.TranscriptRef {
+		t.Fatalf("result = %+v, want sent to running delegate job", res)
+	}
+	after := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate})
+	if len(after) != len(before) {
+		t.Fatalf("delegate jobs grew from %d to %d; jobs = %+v", len(before), len(after), after)
+	}
+	_, childID, err := decodeRef(first.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode transcript ref: %v", err)
+	}
+	sub := sess.subagents.get(childID)
+	if sub == nil {
+		t.Fatalf("subagent %s not found", childID)
+	}
+	queue := sub.sess.SteeringQueueSnapshot()
+	if len(queue) != 1 || queue[0].Text != "please adjust course" {
+		t.Fatalf("steering queue = %+v, want sent message", queue)
+	}
+
+	_, _ = sess.jobManager.stop(first.JobID)
+	waitForShellDone(t, sess.jobManager, first.JobID)
+}
+
+func TestSendDelegateMessageAliasTargetDeliversRuntimeMessage(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess := newDelegateTestSession(t, c)
+
+	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  "caller",
+		Message: "runtime advisory",
+	})
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
+	}
+	if res.Target != "caller" ||
+		!res.Delivered ||
+		res.Action != "sent" ||
+		res.MessageType != "runtime" {
+		t.Fatalf("result = %+v, want runtime delivered shape", res)
+	}
+	queue := sess.SteeringQueueSnapshot()
+	if len(queue) != 1 || queue[0].Text != "runtime advisory" {
+		t.Fatalf("steering queue = %+v, want runtime advisory", queue)
+	}
+}
+
 func newDelegateTestSession(t *testing.T, c *llm.Client) *Session {
 	t.Helper()
 	dir := t.TempDir()
@@ -524,6 +702,14 @@ func communicateWithStructured(message string, output map[string]any) llm.Respon
 		Name:      "communicate",
 		Arguments: args,
 		Type:      "function",
+	})
+}
+
+func communicateWithDefaultOutput(message string) llm.Response {
+	return communicateWithStructured(message, map[string]any{
+		"message":   message,
+		"data":      map[string]any{},
+		"artifacts": []string{},
 	})
 }
 
