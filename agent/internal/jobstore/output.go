@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sync"
 )
@@ -306,12 +307,48 @@ func writeOutputMetaFile(path string, meta outputMeta) error {
 	}
 	b = append(b, '\n')
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return fmt.Errorf("jobstore: open output metadata: %w", err)
+	}
+	if n, err := f.Write(b); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
 		return fmt.Errorf("jobstore: write output metadata: %w", err)
+	} else if n != len(b) {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("jobstore: write output metadata: %w", io.ErrShortWrite)
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("jobstore: sync output metadata: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("jobstore: close output metadata: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("jobstore: replace output metadata: %w", err)
+	}
+	if err := syncParentDir(path); err != nil {
+		return err
+	}
+	return nil
+}
+
+func syncParentDir(path string) error {
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("jobstore: open output metadata directory: %w", err)
+	}
+	defer func() {
+		_ = dir.Close()
+	}()
+	if err := dir.Sync(); err != nil {
+		return fmt.Errorf("jobstore: sync output metadata directory: %w", err)
 	}
 	return nil
 }

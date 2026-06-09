@@ -227,6 +227,36 @@ func TestOutputRecoversPendingMetadataWhenFinalSidecarIsStale(t *testing.T) {
 	}
 }
 
+func TestWriteOutputMetaFileReplacesReadableMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	retained := []byte("tail\n")
+	if err := os.WriteFile(path, retained, 0o644); err != nil {
+		t.Fatalf("write retained output: %v", err)
+	}
+	metaPath := outputMetaPath(path)
+	want := outputMeta{
+		TotalBytes:     int64(len("drop\n") + len(retained)),
+		RetainedStart:  int64(len("drop\n")),
+		RetainedSHA256: outputBytesSHA256(retained),
+	}
+	if err := writeOutputMetaFile(metaPath, want); err != nil {
+		t.Fatalf("write output metadata: %v", err)
+	}
+	if _, err := os.Stat(metaPath + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary metadata stat err = %v, want removed", err)
+	}
+	got, ok, err := readValidOutputMeta(metaPath, path, int64(len(retained)))
+	if err != nil {
+		t.Fatalf("read output metadata: %v", err)
+	}
+	if !ok {
+		t.Fatal("read output metadata ok=false, want true")
+	}
+	if got != want {
+		t.Fatalf("metadata = %+v, want %+v", got, want)
+	}
+}
+
 func TestOutputTailRejectsNegativeLimit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "job_A.log")
 	o, err := OpenOutput(path, 1<<20)
