@@ -215,7 +215,7 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	if err := registerFileTools(reg, deps); err != nil {
 		return err
 	}
-	if err := registerShellTools(reg, deps); err != nil {
+	if err := registerShellTools(reg, s, deps); err != nil {
 		return err
 	}
 	registerSubagentTools(reg, s, deps)

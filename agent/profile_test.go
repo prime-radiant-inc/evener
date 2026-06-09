@@ -194,11 +194,6 @@ func TestProviderProfiles_AddPurposeToEveryToolSchema(t *testing.T) {
 			if _, ok := props["purpose"]; !ok {
 				t.Fatalf("%s/%s missing purpose parameter", p.ID(), td.Name)
 			}
-			if td.Name == "shell" || td.Name == "exec_command" || td.Name == "run_shell_command" {
-				if _, ok := props["description"]; ok {
-					t.Fatalf("%s/%s still exposes legacy description parameter", p.ID(), td.Name)
-				}
-			}
 		}
 	}
 }

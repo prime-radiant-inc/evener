@@ -221,7 +221,7 @@ func TestParity_ShellCommandTimeout(t *testing.T) {
 							Content: []llm.ContentPart{
 								{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 									ID: "c1", Name: canonicalShell(pc.name), Type: "function",
-									Arguments: json.RawMessage(`{"command":"sleep 30","timeout_ms":50}`),
+									Arguments: json.RawMessage(`{"command":"sleep 30","block_timeout_ms":50}`),
 								}},
 							},
 						},

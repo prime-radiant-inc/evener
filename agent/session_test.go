@@ -1654,7 +1654,7 @@ func TestSession_ToolOutputTruncation_OverridesLimitsAndKeepsFullOutputInEvents(
 	call := llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"head -c 60000 </dev/zero | tr '\\\\0' 'x'","timeout_ms":5000}`),
+		Arguments: json.RawMessage(`{"command":"head -c 60000 </dev/zero | tr '\\\\0' 'x'","block_timeout_ms":5000}`),
 		Type:      "function",
 	}
 	f := &fakeAdapter{
@@ -1756,7 +1756,7 @@ func TestSession_ToolOutputTruncation_CanOverrideLineLimitViaSessionConfig(t *te
 	call := llm.ToolCallData{
 		ID:        "c1",
 		Name:      "shell",
-		Arguments: json.RawMessage(`{"command":"printf 'l0\\nl1\\nl2\\nl3\\nl4\\nl5\\nl6\\nl7\\nl8\\nl9\\n'","timeout_ms":5000}`),
+		Arguments: json.RawMessage(`{"command":"printf 'l0\\nl1\\nl2\\nl3\\nl4\\nl5\\nl6\\nl7\\nl8\\nl9\\n'","block_timeout_ms":5000}`),
 		Type:      "function",
 	}
 	f := &fakeAdapter{
@@ -1815,7 +1815,7 @@ func TestSession_ToolOutputTruncation_CanOverrideLineLimitViaSessionConfig(t *te
 	if truncated == "" {
 		t.Fatalf("expected tool result content")
 	}
-	for _, want := range []string{"lines omitted", "l0", "exit_code="} {
+	for _, want := range []string{"lines omitted", "l9", "exit_code="} {
 		if !strings.Contains(truncated, want) {
 			t.Fatalf("expected %q in truncated tool output:\n%s", want, truncated)
 		}
