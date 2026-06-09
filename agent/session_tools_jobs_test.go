@@ -182,6 +182,59 @@ func TestJobStopDefaultReturnsRequestedCancellation(t *testing.T) {
 	waitForShellDone(t, s.jobManager, shellOut.JobID)
 }
 
+func TestDelegateToolForegroundReturnsStructuredResult(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithStructured("done report", map[string]any{
+					"summary": "fixed",
+				})
+			},
+		},
+	})
+	s := newDelegateTestSession(t, c)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:   "delegate",
+		Name: "delegate",
+		Arguments: json.RawMessage(`{
+			"task":"fix the issue",
+			"background":false,
+			"block_timeout_ms":5000,
+			"result_schema":{
+				"type":"object",
+				"properties":{"summary":{"type":"string"}},
+				"required":["summary"]
+			}
+		}`),
+	})
+	if res.IsError {
+		t.Fatalf("delegate returned error: %s", res.Output)
+	}
+	var out struct {
+		JobID                 string         `json:"job_id"`
+		Type                  string         `json:"type"`
+		Status                string         `json:"status"`
+		TranscriptRef         string         `json:"transcript_ref"`
+		StructuredResult      map[string]any `json:"structured_result"`
+		StructuredResultValid bool           `json:"structured_result_valid"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal delegate output: %v (output: %s)", err, res.Output)
+	}
+	if out.JobID == "" ||
+		out.Type != string(jobstore.JobDelegate) ||
+		out.Status != string(jobstore.StatusCompleted) ||
+		out.TranscriptRef == "" {
+		t.Fatalf("delegate output = %+v, want completed delegate job", out)
+	}
+	if !out.StructuredResultValid || out.StructuredResult["summary"] != "fixed" {
+		t.Fatalf("structured result = %+v valid=%v, want summary=fixed", out.StructuredResult, out.StructuredResultValid)
+	}
+}
+
 func TestJobToolsDefinitions(t *testing.T) {
 	required := func(t *testing.T, def llm.ToolDefinition, name string, want []string) {
 		t.Helper()
@@ -208,6 +261,7 @@ func TestJobToolsDefinitions(t *testing.T) {
 	required(t, tooldefs.DefJobReadOutput(), "job_read_output", []string{"job_id"})
 	required(t, tooldefs.DefJobStop(), "job_stop", []string{"job_id"})
 	required(t, tooldefs.DefJobList(), "job_list", nil)
+	required(t, tooldefs.DefDelegate([]string{"reviewer"}), "delegate", []string{"task"})
 
 	readProps := tooldefs.DefJobReadOutput().Parameters["properties"].(map[string]any)
 	for _, param := range []string{"tail_bytes", "grep", "block", "block_timeout_ms", "limit_bytes", "max_chars"} {
@@ -233,6 +287,12 @@ func TestJobToolsDefinitions(t *testing.T) {
 	for _, param := range []string{"job_id", "signal", "block", "block_timeout_ms"} {
 		if _, ok := stopProps[param]; !ok {
 			t.Fatalf("job_stop missing param %q", param)
+		}
+	}
+	delegateProps := tooldefs.DefDelegate([]string{"reviewer"}).Parameters["properties"].(map[string]any)
+	for _, param := range []string{"task", "background", "agent_type", "model", "reasoning_effort", "block_timeout_ms", "result_schema"} {
+		if _, ok := delegateProps[param]; !ok {
+			t.Fatalf("delegate missing param %q", param)
 		}
 	}
 }
@@ -353,10 +413,11 @@ func TestJobToolOutputLimitsHaveJSONMinimum(t *testing.T) {
 			"job_read_output": {MaxChars: 1, Strategy: schema.TruncHeadTail},
 			"job_list":        {MaxChars: 1, Strategy: schema.TruncHeadTail},
 			"job_stop":        {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"delegate":        {MaxChars: 1, Strategy: schema.TruncHeadTail},
 		},
 	})
 
-	for _, name := range []string{"job_read_output", "job_list", "job_stop"} {
+	for _, name := range []string{"job_read_output", "job_list", "job_stop", "delegate"} {
 		rt := s.reg.Get(name)
 		if rt == nil {
 			t.Fatalf("%s not registered", name)

@@ -225,6 +225,55 @@ func TestCreateDelegateBackgroundStopCancelsChild(t *testing.T) {
 	}
 }
 
+func TestCreateDelegateSignalCancelsChildAfterSubagentDrain(t *testing.T) {
+	adapter := &cancelAwareDelegateAdapter{name: "openai", started: make(chan struct{})}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess := newDelegateTestSession(t, c)
+
+	res := sess.createDelegate(context.Background(), delegateArgs{
+		Task:       "run until signaled after drain",
+		Background: true,
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", res.Err)
+	}
+	select {
+	case <-adapter.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("delegate child did not start")
+	}
+	_, childID, err := decodeRef(res.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode transcript ref: %v", err)
+	}
+	sub := sess.subagents.get(childID)
+	if sub == nil {
+		t.Fatalf("subagent %s not found", childID)
+	}
+	drained := sess.subagents.drainForClose()
+	t.Cleanup(func() {
+		for _, drainedSub := range drained {
+			drainedSub.sess.close(false)
+		}
+	})
+	if got := sess.subagents.get(childID); got != nil {
+		t.Fatalf("subagent %s still tracked after drain", childID)
+	}
+
+	run := runningDelegateJob(t, sess.jobManager, res.JobID)
+	run.signal()
+
+	sub.mu.Lock()
+	cancelRequested := sub.cancelRequested
+	sub.mu.Unlock()
+	if !cancelRequested {
+		t.Fatal("delegate signal did not mark drained child cancelRequested")
+	}
+
+	waitForShellDone(t, sess.jobManager, res.JobID)
+}
+
 func TestCreateDelegateDurableRecordKeepsOutputPathAndTranscriptRef(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -325,6 +374,78 @@ func TestCreateDelegateForegroundFinalizeFailureReturns(t *testing.T) {
 	waitForShellDone(t, sess.jobManager, res.JobID)
 }
 
+func TestCreateDelegateForegroundOutputAppendFailureReturns(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				close(started)
+				<-release
+				return communicateWithStructured("append failure child complete", map[string]any{
+					"message": "append failure child complete",
+				})
+			},
+		},
+	})
+	sess := newDelegateTestSession(t, c)
+
+	done := make(chan delegateResult, 1)
+	go func() {
+		done <- sess.createDelegate(context.Background(), delegateArgs{
+			Task:           "finish while output append fails",
+			Background:     false,
+			BlockTimeoutMS: 5000,
+		})
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("delegate child did not start")
+	}
+	run := waitForRunningDelegateJob(t, sess.jobManager)
+	appendErr := run.output.Close()
+	if appendErr != nil {
+		t.Fatalf("close delegate output: %v", appendErr)
+	}
+
+	releaseOnce.Do(func() { close(release) })
+
+	var res delegateResult
+	select {
+	case res = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("createDelegate hung after output append failure")
+	}
+	if res.Err == nil {
+		t.Fatal("result error is nil, want output append failure")
+	}
+	if res.Reason != "finalize_failed" {
+		t.Fatalf("result = %+v, want finalize_failed", res)
+	}
+
+	reopened, err := jobstore.OpenOutput(run.rec.OutputPath, 0)
+	if err != nil {
+		t.Fatalf("reopen delegate output: %v", err)
+	}
+	sess.jobManager.mu.Lock()
+	run.output = reopened
+	sess.jobManager.mu.Unlock()
+	_, childID, err := decodeRef(res.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode transcript ref: %v", err)
+	}
+	if err := sess.finalizeDelegate(res.JobID, childID); err != nil {
+		t.Fatalf("cleanup finalizeDelegate: %v", err)
+	}
+	waitForShellDone(t, sess.jobManager, res.JobID)
+}
+
 func newDelegateTestSession(t *testing.T, c *llm.Client) *Session {
 	t.Helper()
 	dir := t.TempDir()
@@ -337,6 +458,35 @@ func newDelegateTestSession(t *testing.T, c *llm.Client) *Session {
 	}
 	t.Cleanup(func() { sess.Close() })
 	return sess
+}
+
+func runningDelegateJob(t *testing.T, jm *jobManager, jobID string) *runningJob {
+	t.Helper()
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	run := jm.running[jobID]
+	if run == nil {
+		t.Fatalf("delegate job %s is not running", jobID)
+	}
+	return run
+}
+
+func waitForRunningDelegateJob(t *testing.T, jm *jobManager) *runningJob {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		jm.mu.Lock()
+		for _, run := range jm.running {
+			if run.rec.Type == jobstore.JobDelegate {
+				jm.mu.Unlock()
+				return run
+			}
+		}
+		jm.mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for running delegate job")
+	return nil
 }
 
 type cancelAwareDelegateAdapter struct {

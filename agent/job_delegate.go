@@ -76,7 +76,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 		return delegateStartFailed(fmt.Errorf("spawned agent %q has no active run", childID))
 	}
 
-	run, err := s.attachDelegateJob(jm, childID, task)
+	run, err := s.attachDelegateJob(jm, childID, task, sub)
 	if err != nil {
 		cancelDelegateChild(s, childID)
 		return delegateStartFailed(err)
@@ -177,7 +177,7 @@ func parseSpawnedAgentID(spawned any) (string, error) {
 	return out.AgentID, nil
 }
 
-func (s *Session) attachDelegateJob(jm *jobManager, childID, task string) (*runningJob, error) {
+func (s *Session) attachDelegateJob(jm *jobManager, childID, task string, sub *subagent) (*runningJob, error) {
 	startedAt := jm.now()
 	jobID := jobstore.NewJobID()
 	transcriptRef := encodeRef("", childID)
@@ -199,7 +199,7 @@ func (s *Session) attachDelegateJob(jm *jobManager, childID, task string) (*runn
 			OutputPath:       outputPath,
 		},
 		output:         output,
-		signal:         func() { cancelDelegateChild(s, childID) },
+		signal:         func() { cancelDelegateSub(sub) },
 		done:           make(chan struct{}),
 		durableStarted: true,
 	}
@@ -251,6 +251,13 @@ func cancelDelegateChild(s *Session, childID string) {
 	if sub == nil {
 		return
 	}
+	cancelDelegateSub(sub)
+}
+
+func cancelDelegateSub(sub *subagent) {
+	if sub == nil {
+		return
+	}
 	sub.mu.Lock()
 	sub.cancelRequested = true
 	cancel := sub.cancel
@@ -290,23 +297,26 @@ func (s *Session) finalizeDelegate(jobID, childID string) error {
 		run.structured = structured
 	}
 	jm.mu.Unlock()
-	appendDelegateOutput(run, prose)
+	if err := appendDelegateOutput(run, prose); err != nil {
+		return err
+	}
 
 	jobStatus, reason := delegateTerminalStatus(jm, run, status)
 	return jm.finalize(jobID, jobStatus, reason, nil)
 }
 
-func appendDelegateOutput(run *runningJob, prose string) {
+func appendDelegateOutput(run *runningJob, prose string) error {
 	if run == nil || run.output == nil {
-		return
+		return nil
 	}
 	if strings.TrimSpace(prose) == "" {
-		return
+		return nil
 	}
 	if !strings.HasSuffix(prose, "\n") {
 		prose += "\n"
 	}
-	_, _ = run.output.Append([]byte(prose))
+	_, err := run.output.Append([]byte(prose))
+	return err
 }
 
 func delegateTerminalStatus(jm *jobManager, run *runningJob, status SubagentStatus) (jobstore.Status, string) {

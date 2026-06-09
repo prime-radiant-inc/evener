@@ -55,14 +55,49 @@ func registerJobTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	}); err != nil {
 		return err
 	}
-	return reg.Register(tool.RegisteredTool{
+	if err := reg.Register(tool.RegisteredTool{
 		Tool:  llm.Tool{Definition: tool.DefJobStop()},
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			return jobStopTool(ctx, s, args, jobToolResultMaxChars(reg, "job_stop"))
 		},
+	}); err != nil {
+		return err
+	}
+	return reg.Register(tool.RegisteredTool{
+		Tool:  llm.Tool{Definition: tool.DefDelegate(s.delegateAgentTypeNames())},
+		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = env
+			return delegateTool(ctx, s, args, jobToolResultMaxChars(reg, "delegate"))
+		},
 	})
+}
+
+func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (string, error) {
+	a := delegateArgs{
+		Task:            stringArg(args, "task"),
+		AgentType:       stringArg(args, "agent_type"),
+		Model:           stringArg(args, "model"),
+		ReasoningEffort: stringArg(args, "reasoning_effort"),
+		Background:      true,
+	}
+	if background, ok := args["background"].(bool); ok {
+		a.Background = background
+	}
+	if n, ok := shellIntArg(args, "block_timeout_ms"); ok {
+		a.BlockTimeoutMS = n
+	}
+	if resultSchema, ok := args["result_schema"].(map[string]any); ok {
+		a.ResultSchema = resultSchema
+	}
+
+	res := s.createDelegate(ctx, a)
+	if res.Err != nil {
+		return "", res.Err
+	}
+	return marshalDelegateResult(res, maxChars)
 }
 
 func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, registryMaxChars int) (string, error) {
@@ -237,6 +272,42 @@ type jobStopResult struct {
 	JobID  string  `json:"job_id"`
 	Status string  `json:"status"`
 	Reason *string `json:"reason"`
+}
+
+type delegateToolResult struct {
+	JobID                 string  `json:"job_id"`
+	Type                  string  `json:"type"`
+	Status                string  `json:"status"`
+	Reason                *string `json:"reason,omitempty"`
+	RunningInBackground   bool    `json:"running_in_background"`
+	TimedOut              bool    `json:"timed_out"`
+	TranscriptRef         string  `json:"transcript_ref"`
+	Output                *string `json:"output,omitempty"`
+	Truncated             *bool   `json:"truncated,omitempty"`
+	StructuredResult      any     `json:"structured_result,omitempty"`
+	StructuredResultValid *bool   `json:"structured_result_valid,omitempty"`
+}
+
+func marshalDelegateResult(res delegateResult, maxChars int) (string, error) {
+	out := delegateToolResult{
+		JobID:               res.JobID,
+		Type:                res.Type,
+		Status:              string(res.Status),
+		Reason:              stringPtrOrNil(res.Reason),
+		RunningInBackground: res.RunningInBackground,
+		TimedOut:            res.TimedOut,
+		TranscriptRef:       res.TranscriptRef,
+	}
+	if !res.RunningInBackground || res.TimedOut {
+		out.Output = &res.Output
+		out.Truncated = &res.Truncated
+	}
+	if res.StructuredResult != nil {
+		valid := res.StructuredResultValid
+		out.StructuredResult = res.StructuredResult
+		out.StructuredResultValid = &valid
+	}
+	return marshalBoundedJSON(out, maxChars)
 }
 
 func sessionJobManager(s *Session) (*jobManager, error) {
@@ -586,7 +657,7 @@ func enforceJobToolJSONLimits(reg *tool.Registry) {
 		return
 	}
 	overrides := map[string]schema.ToolOutputLimit{}
-	for _, name := range []string{"job_read_output", "job_list", "job_stop"} {
+	for _, name := range []string{"job_read_output", "job_list", "job_stop", "delegate"} {
 		registered := reg.Get(name)
 		if registered == nil || registered.Limit.MaxChars >= jobToolResultMinJSONChars {
 			continue
