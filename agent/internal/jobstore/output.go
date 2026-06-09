@@ -15,13 +15,17 @@ import (
 // model-facing output_unavailable / retention_pruned signal in a later phase.
 var ErrOutputPruned = errors.New("jobstore: output pruned")
 
+// ErrInvalidLimit is returned when an output read limit is negative.
+var ErrInvalidLimit = errors.New("jobstore: invalid limit")
+
 // Match is one grep hit: the matching line and its byte offset in the log.
 type Match struct {
 	ByteOffset int64  `json:"byte_offset"`
 	Line       string `json:"line"`
 }
 
-// OutputStore is a bounded append-only per-job output file.
+// OutputStore is an append-only per-job output file. capBytes records the
+// retention policy for later pruning phases; Phase 1 does not enforce it.
 type OutputStore struct {
 	mu       sync.Mutex
 	path     string
@@ -30,7 +34,8 @@ type OutputStore struct {
 	total    int64
 }
 
-// OpenOutput opens (creating if needed) the per-job log at path with a soft cap.
+// OpenOutput opens (creating if needed) the per-job log at path and records the
+// retention policy cap for later pruning phases.
 func OpenOutput(path string, capBytes int64) (*OutputStore, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
@@ -59,6 +64,10 @@ func (o *OutputStore) Append(b []byte) (int, error) {
 // Tail returns the last maxBytes bytes of the log, the total byte count, and
 // whether the returned slice is a truncated tail of a larger log.
 func (o *OutputStore) Tail(maxBytes int) ([]byte, int64, bool, error) {
+	if maxBytes < 0 {
+		return nil, 0, false, fmt.Errorf("%w: maxBytes=%d", ErrInvalidLimit, maxBytes)
+	}
+
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	info, err := os.Stat(o.path)
@@ -92,6 +101,13 @@ func (o *OutputStore) Tail(maxBytes int) ([]byte, int64, bool, error) {
 // Grep scans the log line by line and returns up to limitBytes worth of lines
 // matching re, each with its byte offset.
 func (o *OutputStore) Grep(re *regexp.Regexp, limitBytes int) ([]Match, error) {
+	if limitBytes < 0 {
+		return nil, fmt.Errorf("%w: limitBytes=%d", ErrInvalidLimit, limitBytes)
+	}
+	if limitBytes == 0 {
+		return nil, nil
+	}
+
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	f, err := os.Open(o.path)
@@ -107,6 +123,9 @@ func (o *OutputStore) Grep(re *regexp.Regexp, limitBytes int) ([]Match, error) {
 	for sc.Scan() {
 		line := sc.Text()
 		if re.MatchString(line) {
+			if len(line) > budget {
+				break
+			}
 			matches = append(matches, Match{ByteOffset: offset, Line: line})
 			budget -= len(line)
 			if budget <= 0 {
