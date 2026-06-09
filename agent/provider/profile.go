@@ -211,6 +211,8 @@ func toolDefinitionsForCapabilities(capabilities []toolCapability, efforts []str
 		add(tool.DefJobReadOutput())
 		add(tool.DefJobList())
 		add(tool.DefJobStop())
+		add(tool.DefDelegate(nil))
+		add(tool.DefJobSendMessage())
 	}
 	if enabled[capabilityWorkflow] {
 		add(tool.DefTaskList(efforts))
