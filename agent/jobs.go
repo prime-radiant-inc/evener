@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,13 +25,12 @@ type jobManager struct {
 }
 
 type runningJob struct {
-	rec        *jobstore.JobRecord
-	output     *jobstore.OutputStore
-	signal     func()
-	done       chan struct{}
-	finalizing bool
-	terminal   *terminalJob
-	finalize   *finalizeAttempt
+	rec      *jobstore.JobRecord
+	output   *jobstore.OutputStore
+	signal   func()
+	done     chan struct{}
+	terminal *terminalJob
+	finalize *finalizeAttempt
 }
 
 type finalizeAttempt struct {
@@ -45,7 +45,6 @@ type terminalJob struct {
 	endedAt     time.Time
 	outputBytes int64
 	generation  string
-	arming      bool
 }
 
 // jobNotification is the durable-job analogue of subagentNotification.
@@ -200,15 +199,7 @@ func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, t
 	if outputPath == "" {
 		outputPath = filepath.Join(jm.dir, "jobs", jobID+".log")
 	}
-	if _, err := os.Stat(outputPath); err != nil {
-		return "", 0, false, fmt.Errorf("job %q output unavailable: %w", jobID, err)
-	}
-	output, err := jobstore.OpenOutput(outputPath, 0)
-	if err != nil {
-		return "", 0, false, err
-	}
-	defer output.Close()
-	return tailOutput(output, tailBytes)
+	return tailOutputFile(outputPath, tailBytes)
 }
 
 func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {
@@ -249,9 +240,6 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 	attempt := &finalizeAttempt{done: make(chan struct{})}
 	run.finalize = attempt
 	terminal := run.terminal
-	if terminal == nil {
-		run.finalizing = true
-	}
 	jm.mu.Unlock()
 
 	var err error
@@ -299,11 +287,6 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 		OutputBytes: terminal.outputBytes,
 		TerminalGen: terminal.generation,
 	}); err != nil {
-		jm.mu.Lock()
-		if jm.running[run.rec.JobID] == run {
-			run.finalizing = false
-		}
-		jm.mu.Unlock()
 		return err
 	}
 
@@ -328,11 +311,6 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		jm.mu.Unlock()
 		return nil
 	}
-	if terminal.arming {
-		jm.mu.Unlock()
-		return nil
-	}
-	terminal.arming = true
 	jm.mu.Unlock()
 
 	if err := jm.appendEvent(jobstore.Event{
@@ -341,11 +319,6 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		JobID:       run.rec.JobID,
 		TerminalGen: terminal.generation,
 	}); err != nil {
-		jm.mu.Lock()
-		if jm.running[run.rec.JobID] == run && run.terminal == terminal {
-			terminal.arming = false
-		}
-		jm.mu.Unlock()
 		return err
 	}
 
@@ -383,7 +356,8 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 
 	jobs := make([]*jobstore.JobRecord, 0, len(recs))
 	for _, rec := range recs {
-		if rec.Status.IsTerminal() && rec.NotifyState == jobstore.NotifyNotArmed && rec.TerminalGen != "" {
+		if rec.Status.IsTerminal() && rec.TerminalGen != "" &&
+			(rec.NotifyState == jobstore.NotifyNotArmed || rec.NotifyState == jobstore.NotifyPending) {
 			jobs = append(jobs, rec)
 		}
 	}
@@ -395,13 +369,15 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 	})
 
 	for _, rec := range jobs {
-		if err := jm.appendEvent(jobstore.Event{
-			Kind:        jobstore.EventJobNotificationPending,
-			TS:          jm.now(),
-			JobID:       rec.JobID,
-			TerminalGen: rec.TerminalGen,
-		}); err != nil {
-			return err
+		if rec.NotifyState == jobstore.NotifyNotArmed {
+			if err := jm.appendEvent(jobstore.Event{
+				Kind:        jobstore.EventJobNotificationPending,
+				TS:          jm.now(),
+				JobID:       rec.JobID,
+				TerminalGen: rec.TerminalGen,
+			}); err != nil {
+				return err
+			}
 		}
 		if jm.enqueue != nil {
 			jm.enqueue(jobNotification{
@@ -424,6 +400,40 @@ func tailOutput(output *jobstore.OutputStore, tailBytes int) (string, int64, boo
 		return "", total, truncated, err
 	}
 	return string(b), total, truncated, nil
+}
+
+func tailOutputFile(path string, tailBytes int) (string, int64, bool, error) {
+	if tailBytes < 0 {
+		return "", 0, false, fmt.Errorf("%w: maxBytes=%d", jobstore.ErrInvalidLimit, tailBytes)
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return "", 0, false, fmt.Errorf("jobstore: open output: %w", err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return "", 0, false, fmt.Errorf("jobstore: stat output: %w", err)
+	}
+	total := info.Size()
+	start := int64(0)
+	truncated := false
+	if total > int64(tailBytes) {
+		start = total - int64(tailBytes)
+		truncated = true
+	}
+	if _, err := f.Seek(start, 0); err != nil {
+		return "", total, truncated, err
+	}
+	buf := make([]byte, total-start)
+	if len(buf) > 0 {
+		if _, err := io.ReadFull(f, buf); err != nil {
+			return "", total, truncated, fmt.Errorf("jobstore: read output: %w", err)
+		}
+	}
+	return string(buf), total, truncated, nil
 }
 
 func cloneJobRecord(rec *jobstore.JobRecord) *jobstore.JobRecord {

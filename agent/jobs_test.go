@@ -49,6 +49,28 @@ func TestJobManagerReadOutput(t *testing.T) {
 	}
 }
 
+func TestJobManagerReadOutputTerminalLog(t *testing.T) {
+	jm := newTestJM(t)
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := jm.running[rec.JobID].output.Append([]byte("hello\nworld\n")); err != nil {
+		t.Fatalf("append output: %v", err)
+	}
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", nil); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+
+	content, total, truncated, err := jm.readOutput(rec.JobID, len("world\n"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if content != "world\n" || total != int64(len("hello\nworld\n")) || !truncated {
+		t.Fatalf("readOutput = %q, %d, %v", content, total, truncated)
+	}
+}
+
 func TestJobManagerReadOutputMissingTerminalLogReturnsError(t *testing.T) {
 	jm := newTestJM(t)
 	rec, err := jm.createShell(createShellOpts{Command: "x"})
@@ -525,5 +547,91 @@ func TestJobManagerArmPendingTerminalNotificationsRecoversAfterRestart(t *testin
 	}
 	if len(queued) != 1 || queued[0].JobID != rec.JobID || queued[0].Status != string(jobstore.StatusCompleted) {
 		t.Fatalf("queued = %+v", queued)
+	}
+}
+
+func TestJobManagerArmPendingTerminalNotificationsEnqueuesAlreadyPending(t *testing.T) {
+	stateDir := t.TempDir()
+	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("newJobManager: %v", err)
+	}
+	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", nil); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	recs, err := jm.store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if recs[rec.JobID].NotifyState != jobstore.NotifyPending {
+		t.Fatalf("notify state before restart = %q, want pending", recs[rec.JobID].NotifyState)
+	}
+
+	var queued []jobNotification
+	restarted, err := newJobManager(stateDir, "S1", func(n jobNotification) {
+		queued = append(queued, n)
+	})
+	if err != nil {
+		t.Fatalf("restart newJobManager: %v", err)
+	}
+	restarted.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventJobNotificationPending {
+			t.Fatalf("unexpected pending append for already-pending record: %+v", e)
+		}
+		return restarted.store.Append(e)
+	}
+
+	if err := restarted.armPendingTerminalNotifications(); err != nil {
+		t.Fatalf("arm pending: %v", err)
+	}
+	if len(queued) != 1 || queued[0].JobID != rec.JobID || queued[0].Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("queued = %+v", queued)
+	}
+}
+
+func TestJobManagerArmPendingTerminalNotificationsSkipsDelivered(t *testing.T) {
+	stateDir := t.TempDir()
+	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("newJobManager: %v", err)
+	}
+	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", nil); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	recs, err := jm.store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if err := jm.store.Append(jobstore.Event{
+		Kind:        jobstore.EventJobNotificationDelivered,
+		TS:          jm.now(),
+		JobID:       rec.JobID,
+		TerminalGen: recs[rec.JobID].TerminalGen,
+	}); err != nil {
+		t.Fatalf("append delivered: %v", err)
+	}
+
+	var queued []jobNotification
+	restarted, err := newJobManager(stateDir, "S1", func(n jobNotification) {
+		queued = append(queued, n)
+	})
+	if err != nil {
+		t.Fatalf("restart newJobManager: %v", err)
+	}
+	if err := restarted.armPendingTerminalNotifications(); err != nil {
+		t.Fatalf("arm pending: %v", err)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("queued = %+v, want none", queued)
 	}
 }
