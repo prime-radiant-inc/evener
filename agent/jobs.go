@@ -21,16 +21,17 @@ var errJobManagerClosing = errors.New("job manager is closing")
 const maxPersistedStructuredResultJSONBytes = 1024 * 1024
 
 type jobManager struct {
-	mu          sync.Mutex
-	dir         string
-	sessionID   string
-	store       *jobstore.Store
-	running     map[string]*runningJob
-	watches     map[watchKey]*watchConfig
-	closing     bool
-	appendEvent func(jobstore.Event) error
-	enqueue     func(jobNotification)
-	now         func() time.Time
+	mu            sync.Mutex
+	watchNotifyMu sync.Mutex
+	dir           string
+	sessionID     string
+	store         *jobstore.Store
+	running       map[string]*runningJob
+	watches       map[watchKey]*watchConfig
+	closing       bool
+	appendEvent   func(jobstore.Event) error
+	enqueue       func(jobNotification)
+	now           func() time.Time
 }
 
 type runningJob struct {
@@ -123,8 +124,13 @@ func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*
 }
 
 func (jm *jobManager) close() error {
+	jm.watchNotifyMu.Lock()
 	jm.mu.Lock()
 	jm.closing = true
+	for key, cfg := range jm.watches {
+		closeWatchConfig(cfg)
+		delete(jm.watches, key)
+	}
 	running := make([]jobRuntimeHandle, 0, len(jm.running))
 	for _, run := range jm.running {
 		if run.stopStatus == "" {
@@ -139,6 +145,7 @@ func (jm *jobManager) close() error {
 		})
 	}
 	jm.mu.Unlock()
+	jm.watchNotifyMu.Unlock()
 
 	for _, run := range running {
 		if run.signal != nil {
@@ -347,6 +354,17 @@ func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, t
 		return "", 0, false, err
 	}
 	return tailOutputFile(path, tailBytes, validatedTotal)
+}
+
+func (jm *jobManager) appendJobOutput(jobID string, output *jobstore.OutputStore, b []byte) (int, error) {
+	if output == nil {
+		return 0, nil
+	}
+	n, err := output.Append(b)
+	if err == nil && n > 0 {
+		jm.feedJobOutput(jobID, b[:n])
+	}
+	return n, err
 }
 
 func (jm *jobManager) grepOutput(jobID string, re *regexp.Regexp, limitBytes int) ([]jobstore.Match, error) {

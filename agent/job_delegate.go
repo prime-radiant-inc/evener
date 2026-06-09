@@ -657,7 +657,7 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 			}
 			if outputWritten >= len(output) {
 				if len(output) > 0 {
-					if _, err := appendDelegateOutput(run, nil); err != nil {
+					if _, err := appendDelegateOutput(jm, run, nil); err != nil {
 						return "", "", nil, err
 					}
 				}
@@ -666,7 +666,7 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 				jm.mu.Unlock()
 				break
 			}
-			n, err := appendDelegateOutput(run, output[outputWritten:])
+			n, err := appendDelegateOutput(jm, run, output[outputWritten:])
 			if n > 0 {
 				jm.mu.Lock()
 				run.delegateOutputWritten += n
@@ -714,11 +714,11 @@ func delegateOutputBytes(prose string) []byte {
 	return []byte(prose)
 }
 
-func appendDelegateOutput(run *runningJob, b []byte) (int, error) {
+func appendDelegateOutput(jm *jobManager, run *runningJob, b []byte) (int, error) {
 	if run == nil || run.output == nil {
 		return 0, nil
 	}
-	return run.output.Append(b)
+	return jm.appendJobOutput(run.rec.JobID, run.output, b)
 }
 
 func delegateTerminalStatus(jm *jobManager, run *runningJob, status SubagentStatus) (jobstore.Status, string) {

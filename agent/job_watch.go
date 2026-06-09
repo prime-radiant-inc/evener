@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"time"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/jobstore"
@@ -118,17 +119,19 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 			return result, nil
 		}
 		closeWatchConfig(existing)
-		cfg.initProgressStop()
+		stop := cfg.initProgressStop()
 		jm.watches[key] = cfg
 		result := watchResultFromConfig(cfg, true)
 		jm.mu.Unlock()
+		jm.startProgressTimer(key, cfg, stop)
 		return result, nil
 	}
 
-	cfg.initProgressStop()
+	stop := cfg.initProgressStop()
 	jm.watches[key] = cfg
 	result := watchResultFromConfig(cfg, false)
 	jm.mu.Unlock()
+	jm.startProgressTimer(key, cfg, stop)
 	return result, nil
 }
 
@@ -253,10 +256,11 @@ func (jm *jobManager) clearWatch(key watchKey) watchResult {
 	}
 }
 
-func (cfg *watchConfig) initProgressStop() {
+func (cfg *watchConfig) initProgressStop() chan struct{} {
 	if cfg.progressIntervalMS > 0 {
 		cfg.progressStop = make(chan struct{})
 	}
+	return cfg.progressStop
 }
 
 func closeWatchConfig(cfg *watchConfig) {
@@ -351,6 +355,92 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 
 	// Called from Session.emit; only enqueue here so watch delivery does not
 	// re-enter session event emission.
+	jm.enqueueWatchNotifications(notifications)
+}
+
+func (jm *jobManager) feedJobOutput(jobID string, chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	var notifications []jobNotification
+
+	jm.mu.Lock()
+	for _, cfg := range jm.watches {
+		if cfg.target != jobID || cfg.outputMatcher == nil {
+			continue
+		}
+		matches := cfg.outputMatcher.Feed(chunk)
+		if cfg.send == nil {
+			for range matches {
+				notifications = append(notifications, jobNotification{})
+			}
+		}
+	}
+	jm.mu.Unlock()
+
+	jm.enqueueWatchNotifications(notifications)
+}
+
+func (jm *jobManager) startProgressTimer(key watchKey, cfg *watchConfig, stop <-chan struct{}) {
+	if cfg == nil || cfg.progressIntervalMS <= 0 || stop == nil {
+		return
+	}
+	interval := time.Duration(cfg.progressIntervalMS) * time.Millisecond
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				if !jm.fireProgressTick(key, cfg) {
+					return
+				}
+			case <-stop:
+				return
+			}
+		}
+	}()
+}
+
+func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
+	var notifications []jobNotification
+
+	jm.mu.Lock()
+	if jm.closing {
+		jm.mu.Unlock()
+		return false
+	}
+	if jm.watches[key] != cfg {
+		jm.mu.Unlock()
+		return false
+	}
+	if !isWatchSessionTarget(cfg.target) && jm.running[cfg.target] == nil {
+		jm.mu.Unlock()
+		return false
+	}
+	if cfg.send == nil {
+		notifications = append(notifications, jobNotification{})
+	}
+	jm.mu.Unlock()
+
+	jm.enqueueWatchNotifications(notifications)
+	return true
+}
+
+func (jm *jobManager) enqueueWatchNotifications(notifications []jobNotification) {
+	if len(notifications) == 0 {
+		return
+	}
+	jm.watchNotifyMu.Lock()
+	defer jm.watchNotifyMu.Unlock()
+	jm.mu.Lock()
+	closing := jm.closing
+	jm.mu.Unlock()
+	if closing {
+		return
+	}
 	for _, n := range notifications {
 		if jm.enqueue != nil {
 			jm.enqueue(n)

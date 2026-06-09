@@ -2,6 +2,7 @@ package agent
 
 import (
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/jobstore"
@@ -102,6 +103,76 @@ func TestEventWatchIgnoresUnwatchedKind(t *testing.T) {
 	jm.onSessionEvent(events.EventToolCallEnd, nil)
 	if fires != 0 {
 		t.Errorf("an unwatched event kind must not fire; fires = %d", fires)
+	}
+}
+
+func TestOutputMatchWatchFiresOnAppendedBytes(t *testing.T) {
+	jm := newTestJM(t)
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "(?i)ready"}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("booting\nserver READY\n")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	if len(notified) != 1 {
+		t.Fatalf("output_match must fire once on the matching appended line, got %d", len(notified))
+	}
+}
+
+func TestProgressTimerFiresPeriodically(t *testing.T) {
+	jm := newTestJM(t)
+	fired := make(chan struct{}, 4)
+	jm.enqueue = func(jobNotification) { fired <- struct{}{} }
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, ProgressIntervalMS: 1000}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	select {
+	case <-fired:
+	case <-time.After(3 * time.Second):
+		t.Fatal("progress timer did not fire within 3s")
+	}
+	_, _ = jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true})
+}
+
+func TestProgressTimerStopsOnClose(t *testing.T) {
+	jm := newTestJM(t)
+	fired := make(chan struct{}, 16)
+	jm.enqueue = func(jobNotification) { fired <- struct{}{} }
+
+	if _, err := jm.configureWatch(watchArgs{Target: "caller", ProgressIntervalMS: 10}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	select {
+	case <-fired:
+	case <-time.After(time.Second):
+		t.Fatal("progress timer did not fire before close")
+	}
+	if err := jm.close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	for {
+		select {
+		case <-fired:
+		default:
+			goto drained
+		}
+	}
+
+drained:
+	if count := jm.watchCount(); count != 0 {
+		t.Fatalf("close must remove watches; count = %d", count)
+	}
+	select {
+	case <-fired:
+		t.Fatal("progress timer fired after close")
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 

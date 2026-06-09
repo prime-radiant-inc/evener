@@ -48,11 +48,13 @@ type shellWaitResult struct {
 }
 
 type shellOutputWriter struct {
+	jm     *jobManager
+	jobID  string
 	output *jobstore.OutputStore
 }
 
 func (w shellOutputWriter) Write(b []byte) (int, error) {
-	return w.output.Append(b)
+	return w.jm.appendJobOutput(w.jobID, w.output, b)
 }
 
 func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor, args shellArgs) shellResult {
@@ -71,7 +73,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 	}
 
 	startCtx, detachStartCtx := newStartOnlyContext(ctx)
-	handle, err := se.StreamCommand(startCtx, args.Command, "", nil, shellOutputWriter{output: run.output})
+	handle, err := se.StreamCommand(startCtx, args.Command, "", nil, shellOutputWriter{jm: jm, jobID: run.rec.JobID, output: run.output})
 	detachStartCtx()
 	if err != nil {
 		jm.discardDelayedShell(run)
