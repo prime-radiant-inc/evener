@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -362,7 +361,7 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 	if jm.closing {
 		jm.mu.Unlock()
 		_ = output.Close()
-		_ = os.Remove(outputPath)
+		_ = jobstore.RemoveOutputArtifacts(outputPath)
 		return nil, errJobManagerClosing
 	}
 	jm.running[jobID] = run
@@ -437,7 +436,7 @@ func (jm *jobManager) discardDelayedShell(run *runningJob) {
 	jm.mu.Unlock()
 
 	_ = run.output.Close()
-	_ = os.Remove(run.rec.OutputPath)
+	_ = jobstore.RemoveOutputArtifacts(run.rec.OutputPath)
 	close(run.done)
 }
 

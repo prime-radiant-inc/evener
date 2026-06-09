@@ -306,6 +306,76 @@ func TestOutputRecoversPendingMetadataWhenFinalSidecarIsStale(t *testing.T) {
 	}
 }
 
+func TestOutputRecoversPendingMetadataBeforeDestructivePrune(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	retained := []byte("new\n")
+	if err := os.WriteFile(path, []byte("old\nnew\n"), 0o644); err != nil {
+		t.Fatalf("write unpruned output: %v", err)
+	}
+	if err := writeOutputMetaFile(outputMetaPath(path), outputMeta{
+		TotalBytes:     int64(len("old\n")),
+		RetainedStart:  0,
+		RetainedSHA256: outputBytesSHA256([]byte("old\n")),
+	}); err != nil {
+		t.Fatalf("write stale final metadata: %v", err)
+	}
+	if err := writeOutputMetaFile(outputPendingMetaPath(outputMetaPath(path)), outputMeta{
+		TotalBytes:     int64(len("old\nnew\n")),
+		RetainedStart:  int64(len("old\n")),
+		RetainedSHA256: outputBytesSHA256(retained),
+	}); err != nil {
+		t.Fatalf("write pending metadata: %v", err)
+	}
+
+	total, retainedStart, err := OutputFileStats(path)
+	if err != nil {
+		t.Fatalf("stats with pending metadata before prune: %v", err)
+	}
+	if total != int64(len("old\nnew\n")) || retainedStart != 0 {
+		t.Fatalf("stats total=%d retainedStart=%d, want full current retained output", total, retainedStart)
+	}
+
+	o, err := OpenOutput(path, int64(len(retained)))
+	if err != nil {
+		t.Fatalf("reopen with pending metadata before prune: %v", err)
+	}
+	data, total, truncated, err := o.Tail(1024)
+	if err != nil {
+		t.Fatalf("tail: %v", err)
+	}
+	if !bytes.Equal(data, retained) {
+		t.Fatalf("tail = %q, want retained output", data)
+	}
+	if total != int64(len("old\nnew\n")) || !truncated {
+		t.Fatalf("total=%d truncated=%v, want pending lifetime and truncated", total, truncated)
+	}
+}
+
+func TestOutputRejectsCorruptPendingMetadataWithoutFallback(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	retained := []byte("same\n")
+	if err := os.WriteFile(path, retained, 0o644); err != nil {
+		t.Fatalf("write retained output: %v", err)
+	}
+	if err := writeOutputMetaFile(outputMetaPath(path), outputMeta{
+		TotalBytes:     int64(len("drop\nsame\n")),
+		RetainedStart:  int64(len("drop\n")),
+		RetainedSHA256: outputBytesSHA256(retained),
+	}); err != nil {
+		t.Fatalf("write final metadata: %v", err)
+	}
+	if err := os.WriteFile(outputPendingMetaPath(outputMetaPath(path)), []byte("{not json}\n"), 0o644); err != nil {
+		t.Fatalf("write corrupt pending metadata: %v", err)
+	}
+
+	if _, err := OpenOutput(path, int64(len(retained))); err == nil {
+		t.Fatal("reopen with corrupt pending metadata succeeded, want error")
+	}
+	if _, _, err := OutputFileStats(path); err == nil {
+		t.Fatal("OutputFileStats with corrupt pending metadata succeeded, want error")
+	}
+}
+
 func TestWriteOutputMetaFileReplacesReadableMetadata(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "job_A.log")
 	retained := []byte("tail\n")

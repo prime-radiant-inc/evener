@@ -56,6 +56,17 @@ func loadShellRecord(t *testing.T, jm *jobManager, jobID string) *jobstore.JobRe
 	return rec
 }
 
+func assertNoShellJobArtifacts(t *testing.T, jm *jobManager) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(jm.dir, "jobs"))
+	if err != nil {
+		t.Fatalf("read shell job artifacts: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("foreground shell left job artifacts: %+v", entries)
+	}
+}
+
 func TestRunShellForegroundEphemeral(t *testing.T) {
 	jm, se := newShellTestRig(t)
 	res := runShell(context.Background(), jm, se, shellArgs{Command: "printf done", BlockTimeoutMS: 5000})
@@ -68,6 +79,7 @@ func TestRunShellForegroundEphemeral(t *testing.T) {
 	if len(jm.list(listFilter{})) != 0 {
 		t.Errorf("ephemeral job must not appear in job_list")
 	}
+	assertNoShellJobArtifacts(t, jm)
 }
 
 func TestRunShellForegroundEphemeralReturnsFullOutput(t *testing.T) {
@@ -248,7 +260,7 @@ func TestCommitDelayedShellAfterCloseAbandonmentFails(t *testing.T) {
 	jm.mu.Unlock()
 	defer func() {
 		_ = run.output.Close()
-		_ = os.Remove(run.rec.OutputPath)
+		_ = jobstore.RemoveOutputArtifacts(run.rec.OutputPath)
 		close(run.done)
 	}()
 
@@ -484,6 +496,7 @@ func TestRunShellForegroundCancelsBeforePromotion(t *testing.T) {
 	if jobs := jm.list(listFilter{}); len(jobs) != 0 {
 		t.Fatalf("cancelled foreground job must not be durable, got %+v", jobs)
 	}
+	assertNoShellJobArtifacts(t, jm)
 }
 
 func TestStartOnlyContextSeesPreCanceledParent(t *testing.T) {
