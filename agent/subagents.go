@@ -445,7 +445,7 @@ func (s *Session) startOrSteerSubagentRun(sub *subagent, input string) (bool, er
 	resetSubagentForRunLocked(sub, runCancel, resumeTime)
 	sub.mu.Unlock()
 
-	s.launchSubagentRun(sub, runCtx, runCancel, input)
+	s.launchSubagentRun(runCtx, sub, runCancel, input)
 	return true, nil
 }
 
@@ -466,7 +466,7 @@ func resetSubagentForRunLocked(sub *subagent, cancel context.CancelFunc, started
 	sub.closeTimedOut = false
 }
 
-func (s *Session) launchSubagentRun(sub *subagent, runCtx context.Context, runCancel context.CancelFunc, input string) {
+func (s *Session) launchSubagentRun(runCtx context.Context, sub *subagent, runCancel context.CancelFunc, input string) {
 	s.emit(events.EventSubagentStart, events.SubagentStartData{
 		AgentID: sub.id,
 		Task:    input,

@@ -1114,11 +1114,7 @@ func TestSendDelegateMessageRunningTargetHoldsRunLockThroughSteer(t *testing.T) 
 		done <- parent.sendRunningDelegateMessage(rec.JobID, "atomic steer", rec)
 	}()
 
-	deadline := time.Now().Add(time.Second)
-	for {
-		if !sub.mu.TryLock() {
-			break
-		}
+	for deadline := time.Now().Add(time.Second); sub.mu.TryLock(); {
 		sub.mu.Unlock()
 		select {
 		case res := <-done:

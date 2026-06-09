@@ -177,7 +177,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	depth := s.depth
 	s.mu.Unlock()
 	if depth > 0 {
-		return sendMessageFailed(target, fmt.Errorf("not_controllable: concrete delegate job targets are root-only"))
+		return sendMessageFailed(target, errors.New("not_controllable: concrete delegate job targets are root-only"))
 	}
 
 	jm, err := sessionJobManager(s)
@@ -358,7 +358,7 @@ func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message s
 		<-done
 		finalizeErr <- s.finalizeDelegate(run.rec.JobID, childID, sub)
 	}()
-	s.launchSubagentRun(sub, runCtx, runCancel, message)
+	s.launchSubagentRun(runCtx, sub, runCancel, message)
 	return run, finalizeErr, nil, nil
 }
 
