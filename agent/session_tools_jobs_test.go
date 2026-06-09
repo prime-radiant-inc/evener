@@ -306,6 +306,54 @@ func TestJobSendMessageForegroundResumeReturnsTerminalResult(t *testing.T) {
 	}
 }
 
+func TestJobSendMessageNegativeBlockTimeoutDoesNotResume(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput("first complete")
+			},
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput("must not resume")
+			},
+		},
+	})
+	s := newDelegateTestSession(t, c)
+
+	first := s.createDelegate(context.Background(), delegateArgs{
+		Task:           "finish first",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	if first.Status != jobstore.StatusCompleted {
+		t.Fatalf("first result = %+v, want completed", first)
+	}
+	before := s.jobManager.list(listFilter{Type: jobstore.JobDelegate})
+	if len(before) != 1 {
+		t.Fatalf("delegate jobs before send = %+v, want original terminal job only", before)
+	}
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "send",
+		Name:      "job_send_message",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"run again","background":false,"block_timeout_ms":-1}`, first.JobID)),
+	})
+	if !res.IsError {
+		t.Fatalf("job_send_message succeeded, want error: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "block_timeout_ms must be non-negative") {
+		t.Fatalf("job_send_message error = %q, want non-negative block_timeout_ms error", res.Output)
+	}
+	after := s.jobManager.list(listFilter{Type: jobstore.JobDelegate})
+	if len(after) != len(before) {
+		t.Fatalf("delegate jobs grew from %d to %d; jobs = %+v", len(before), len(after), after)
+	}
+}
+
 func TestJobSendMessageToShellJobNotMessageable(t *testing.T) {
 	s := newTestSession(t)
 

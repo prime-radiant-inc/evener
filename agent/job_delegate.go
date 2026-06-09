@@ -156,6 +156,9 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	if message == "" {
 		return sendMessageFailed(target, errors.New("message is required"))
 	}
+	if args.BlockTimeoutMS < 0 {
+		return sendMessageFailed(target, errors.New("block_timeout_ms must be non-negative"))
+	}
 	if isRuntimeMessageAlias(target) {
 		if steer := s.cfg.spawn.parentSteer; steer != nil {
 			steer(message)
