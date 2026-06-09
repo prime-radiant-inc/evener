@@ -66,6 +66,26 @@ func TestRunShellForegroundEphemeral(t *testing.T) {
 	}
 }
 
+func TestRunShellForegroundEphemeralReturnsFullOutput(t *testing.T) {
+	jm, se := newShellTestRig(t)
+	res := runShell(context.Background(), jm, se, shellArgs{
+		Command:        "head -c 70000 </dev/zero | tr '\\0' 'x'",
+		BlockTimeoutMS: 5000,
+	})
+	if res.Status != string(jobstore.StatusCompleted) || res.RunningInBackground {
+		t.Fatalf("res = %+v, want completed/foreground", res)
+	}
+	if got := len(res.Output); got != 70000 {
+		t.Fatalf("output len = %d, want full 70000-byte foreground output", got)
+	}
+	if res.Truncated {
+		t.Fatalf("truncated = true, want false for full foreground output")
+	}
+	if len(jm.list(listFilter{})) != 0 {
+		t.Errorf("ephemeral job must not appear in job_list")
+	}
+}
+
 func TestRunShellPromotesOnTimeout(t *testing.T) {
 	jm, se := newShellTestRig(t)
 	res := runShell(context.Background(), jm, se, shellArgs{Command: "sleep 30", BlockTimeoutMS: 1000})

@@ -133,7 +133,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			return jm.finishForegroundRuntimeTimeout(run, wait)
 		}
 		status, reason, exitCode := jm.shellTerminal(run, wait.exitCode, runtimeTimedOut.Load())
-		output, _, truncated, _ := tailOutput(run.output, shellInlineOutputBytes)
+		output, _, truncated, _ := fullOutput(run.output)
 		jm.discardDelayedShell(run)
 		return shellResult{
 			Type:                string(run.rec.Type),
@@ -173,7 +173,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 	case <-ctxDone:
 		handle.Signal()
 		wait := <-waitCh
-		output, _, truncated, _ := tailOutput(run.output, shellInlineOutputBytes)
+		output, _, truncated, _ := fullOutput(run.output)
 		jm.discardDelayedShell(run)
 		return shellResult{
 			Type:                string(run.rec.Type),
@@ -186,6 +186,17 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			Truncated:           truncated,
 		}
 	}
+}
+
+func fullOutput(output *jobstore.OutputStore) (string, int64, bool, error) {
+	_, total, _, err := output.Tail(0)
+	if err != nil {
+		return "", total, false, err
+	}
+	if total == 0 {
+		return "", 0, false, nil
+	}
+	return tailOutput(output, int(total))
 }
 
 type startOnlyContext struct {

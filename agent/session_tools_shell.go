@@ -26,6 +26,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 				if s == nil || s.jobManager == nil {
 					return "", errors.New("shell jobs require an initialized JobManager")
 				}
+				shellArgs = applyShellTimeoutPolicy(deps, shellArgs)
 				return marshalShellToolResult(runShell(ctx, s.jobManager, se, shellArgs), shellToolResultMaxChars(reg))
 			}
 			if shellArgs.Background {
@@ -275,7 +276,10 @@ func shellStringPtrOrNil(s string) *string {
 	return &s
 }
 
-func runBufferedShell(ctx context.Context, env execenv.ExecutionEnvironment, deps *toolDeps, args shellArgs) (string, error) {
+func applyShellTimeoutPolicy(deps *toolDeps, args shellArgs) shellArgs {
+	if deps == nil || deps.cmdTimeouts == nil {
+		return args
+	}
 	defTimeout, maxTimeout := deps.cmdTimeouts()
 	timeout := defTimeout
 	if args.BlockTimeoutMS > 0 {
@@ -284,6 +288,13 @@ func runBufferedShell(ctx context.Context, env execenv.ExecutionEnvironment, dep
 	if maxTimeout > 0 && timeout > maxTimeout {
 		timeout = maxTimeout
 	}
+	args.BlockTimeoutMS = timeout
+	return args
+}
+
+func runBufferedShell(ctx context.Context, env execenv.ExecutionEnvironment, deps *toolDeps, args shellArgs) (string, error) {
+	args = applyShellTimeoutPolicy(deps, args)
+	timeout := args.BlockTimeoutMS
 	res, err := env.ExecCommand(ctx, args.Command, timeout, "", nil)
 
 	// Return a line-oriented tool output so line truncation works as intended for shell output.

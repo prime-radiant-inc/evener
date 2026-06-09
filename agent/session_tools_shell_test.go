@@ -124,6 +124,55 @@ func TestShellToolClampsSmallMaxRuntime(t *testing.T) {
 	}
 }
 
+func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
+	s := newShellToolTestSession(t, SessionConfig{
+		DefaultCommandTimeoutMS: 1000,
+		MaxCommandTimeoutMS:     1000,
+	})
+
+	for _, tc := range []struct {
+		name string
+		args json.RawMessage
+	}{
+		{
+			name: "default",
+			args: json.RawMessage(`{"command":"printf start; sleep 2; printf end"}`),
+		},
+		{
+			name: "max",
+			args: json.RawMessage(`{"command":"printf start; sleep 2; printf end","block_timeout_ms":5000}`),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+				ID:        "c1",
+				Name:      "shell",
+				Arguments: tc.args,
+			})
+			if res.IsError {
+				t.Fatalf("shell returned error: %s", res.Output)
+			}
+			var out struct {
+				JobID               string `json:"job_id"`
+				Status              string `json:"status"`
+				Reason              string `json:"reason"`
+				RunningInBackground bool   `json:"running_in_background"`
+			}
+			if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+				t.Fatalf("unmarshal shell output: %v (output: %s)", err, res.Output)
+			}
+			if out.JobID == "" ||
+				out.Status != string(jobstore.StatusRunning) ||
+				out.Reason != "foreground_timeout" ||
+				!out.RunningInBackground {
+				t.Fatalf("shell output = %+v, want foreground timeout promoted to background", out)
+			}
+			_, _ = s.jobManager.stop(out.JobID)
+			waitForShellDone(t, s.jobManager, out.JobID)
+		})
+	}
+}
+
 func newShellToolTestSession(t *testing.T, cfg SessionConfig) *Session {
 	t.Helper()
 	c := llm.NewClient()
