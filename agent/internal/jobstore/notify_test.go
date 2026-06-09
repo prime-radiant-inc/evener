@@ -5,7 +5,7 @@ import "testing"
 func TestNewTerminalGenerationUnique(t *testing.T) {
 	a := NewTerminalGeneration()
 	b := NewTerminalGeneration()
-	if a == "" || a == b {
+	if a == "" || b == "" || a == b {
 		t.Errorf("terminal generations should be non-empty and unique: %q %q", a, b)
 	}
 }
