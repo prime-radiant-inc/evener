@@ -187,6 +187,26 @@ func TestOutputGrepLimitValidationAndBudget(t *testing.T) {
 	}
 }
 
+func TestOutputGrepLimitCapsZeroLengthMatches(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, 1<<20)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	for i := 0; i < 100; i++ {
+		appendOutput(t, o, "\n")
+	}
+	re := regexp.MustCompile(`^`)
+
+	matches, err := o.GrepLimit(re, 1<<16, 5)
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	if len(matches) != 5 {
+		t.Fatalf("matches = %d, want cap of 5", len(matches))
+	}
+}
+
 func TestOutputGrepFinalLineWithoutNewlineOffset(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "job_A.log")
 	o, err := OpenOutput(path, 1<<20)

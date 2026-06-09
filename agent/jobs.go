@@ -243,7 +243,7 @@ func (jm *jobManager) grepOutput(jobID string, re *regexp.Regexp, limitBytes int
 	run := jm.running[jobID]
 	jm.mu.Unlock()
 	if run != nil {
-		return run.output.Grep(re, limitBytes)
+		return run.output.GrepLimit(re, limitBytes, maxJobGrepMatches)
 	}
 
 	recs, err := jm.store.Load()

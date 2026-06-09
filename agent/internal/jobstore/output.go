@@ -101,6 +101,12 @@ func (o *OutputStore) Tail(maxBytes int) ([]byte, int64, bool, error) {
 // Grep scans the log line by line and returns up to limitBytes worth of lines
 // matching re, each with its byte offset.
 func (o *OutputStore) Grep(re *regexp.Regexp, limitBytes int) ([]Match, error) {
+	return o.GrepLimit(re, limitBytes, 0)
+}
+
+// GrepLimit is like Grep, with an optional maxMatches cap. maxMatches <= 0
+// means no match-count cap.
+func (o *OutputStore) GrepLimit(re *regexp.Regexp, limitBytes int, maxMatches int) ([]Match, error) {
 	if limitBytes < 0 {
 		return nil, fmt.Errorf("%w: limitBytes=%d", ErrInvalidLimit, limitBytes)
 	}
@@ -134,6 +140,9 @@ func (o *OutputStore) Grep(re *regexp.Regexp, limitBytes int) ([]Match, error) {
 					break
 				}
 				matches = append(matches, Match{ByteOffset: offset, Line: line})
+				if maxMatches > 0 && len(matches) >= maxMatches {
+					break
+				}
 				budget -= len(line)
 				if budget <= 0 {
 					break

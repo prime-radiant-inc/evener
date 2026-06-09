@@ -297,6 +297,43 @@ func TestJobReadOutputSmallMaxCharsReturnsValidJSON(t *testing.T) {
 	if strings.HasPrefix(res, "[WARNING: Tool output was truncated.") {
 		t.Fatalf("job_read_output was registry-truncated: %s", res)
 	}
+	if len([]rune(res)) > jobToolResultMinJSONChars {
+		t.Fatalf("job_read_output length = %d, want <= effective bound %d", len([]rune(res)), jobToolResultMinJSONChars)
+	}
+}
+
+func TestJobReadOutputGrepSearchesTerminalOutputFileBeyondTail(t *testing.T) {
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"printf 'needle-start\n'; yes filler-line | head -c 70000","background":true}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	waitForShellDone(t, s.jobManager, shellOut.JobID)
+
+	readOut := waitForJobGrepMatch(t, s, shellOut.JobID, "needle-start", 1024)
+	if readOut.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("status = %q, want completed", readOut.Status)
+	}
+	if strings.Contains(readOut.Content, "needle-start") {
+		t.Fatalf("tail content unexpectedly contains retained-only match: %q", readOut.Content)
+	}
+	if len(readOut.Matches) != 1 || !strings.Contains(readOut.Matches[0].Line, "needle-start") {
+		t.Fatalf("matches = %+v, want terminal retained output match", readOut.Matches)
+	}
+	if readOut.Matches[0].ByteOffset == nil || *readOut.Matches[0].ByteOffset != 0 {
+		t.Fatalf("match byte offset = %+v, want 0", readOut.Matches[0].ByteOffset)
+	}
 }
 
 func TestJobListAcceptsNullCursor(t *testing.T) {
