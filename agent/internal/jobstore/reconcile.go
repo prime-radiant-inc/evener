@@ -9,7 +9,7 @@ import (
 // live in-memory runtime, returning one job_finished event per such job
 // (stopped/runtime_lost, with a freshly minted terminal_generation). Records
 // that are already terminal, or whose job id is in liveJobIDs, produce nothing.
-// The returned events are sorted by job id for deterministic output.
+// The returned events are sorted by job id for deterministic ordering.
 func Reconcile(records map[string]*JobRecord, liveJobIDs map[string]bool, now time.Time) []Event {
 	var lost []string
 	for id, r := range records {
