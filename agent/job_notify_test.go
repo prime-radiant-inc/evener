@@ -17,13 +17,20 @@ func TestFormatJobNotification(t *testing.T) {
 		JobID: "job_X", JobType: "shell", Status: "completed", Reason: "exit_zero",
 		OutputBytes: 42, ExitCode: &code,
 	})
-	for _, want := range []string{`job_id="job_X"`, `event="completed"`, `job_type="shell"`, `status="completed"`, "job_read_output"} {
+	for _, want := range []string{`job_id="job_X"`, `event="completed"`, `job_type="shell"`, `status="completed"`, `reason="exit_zero"`, "job_read_output"} {
 		if !strings.Contains(block, want) {
 			t.Errorf("notification missing %q:\n%s", want, block)
 		}
 	}
 	if strings.Contains(block, "subagent-notification") {
 		t.Errorf("must use <job-notification>, not subagent")
+	}
+
+	emptyReason := formatJobNotificationBlock(jobNotification{
+		JobID: "job_Y", JobType: "shell", Status: "completed",
+	})
+	if !strings.Contains(emptyReason, `reason=""`) {
+		t.Errorf("empty reason must still be rendered:\n%s", emptyReason)
 	}
 }
 

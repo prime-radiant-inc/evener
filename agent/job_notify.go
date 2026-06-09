@@ -36,9 +36,7 @@ func formatJobNotificationBlock(n jobNotification) string {
 		fmt.Sprintf("event=%q", event),
 		fmt.Sprintf("job_type=%q", n.JobType),
 		fmt.Sprintf("status=%q", n.Status),
-	}
-	if n.Reason != "" {
-		attrs = append(attrs, fmt.Sprintf("reason=%q", n.Reason))
+		fmt.Sprintf("reason=%q", n.Reason),
 	}
 	attrs = append(attrs, fmt.Sprintf("output_bytes=%q", strconv.FormatInt(n.OutputBytes, 10)))
 	if n.ExitCode != nil {
