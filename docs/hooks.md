@@ -434,7 +434,7 @@ subset:
 
 | Event | Exit 2 effect |
 |---|---|
-| `PreToolUse` | block the tool call |
+| `PreToolUse` | block the tool call — the stderr becomes the deny reason, surfaced to the model as the tool's error result |
 | `Stop` | prevent stopping |
 | `SubagentStop` | prevent the subagent stopping |
 | `UserPromptSubmit` | **no block yet** — Claude erases the prompt here, but serf does not yet enforce the block; stderr is delivered to the model |

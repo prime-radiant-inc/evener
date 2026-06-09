@@ -465,6 +465,14 @@ func TestHookRunner_PreToolUse_ExitCode2Denies(t *testing.T) {
 	if !strings.Contains(result.DenyMessage, "blocked by hook") {
 		t.Fatalf("DenyMessage = %q, want hook stderr", result.DenyMessage)
 	}
+	// An exit-2 deny's stderr is ONLY the DenyMessage — it must not also leak into
+	// the model or user buckets (guards the `!denied || !o.IsError` routing guard).
+	if len(result.ModelContext) != 0 {
+		t.Fatalf("exit-2 deny must not populate ModelContext: %v", result.ModelContext)
+	}
+	if len(result.UserMessages) != 0 {
+		t.Fatalf("exit-2 deny must not populate UserMessages: %v", result.UserMessages)
+	}
 }
 
 func TestHookRunner_NoHooks(t *testing.T) {

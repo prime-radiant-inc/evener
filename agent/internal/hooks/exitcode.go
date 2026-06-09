@@ -30,8 +30,10 @@ type eventExitPolicy struct {
 // that consumes the flag (TestExitBehavior_BlockEntriesAreEnforced guards this).
 //
 // All other events (PostToolUse, SessionStart, SessionEnd, Notification, and all
-// reserved/unimplemented events) are non-blocking: exit 2 surfaces stderr as a
-// user-visible error message but does not block the action.
+// reserved/unimplemented events) are non-blocking: exit 2 does not block the action.
+// Where the exit-2 stderr goes is event-specific and decided by the runners /
+// routeOutput, not here — to the model for PostToolUse, user-visible for most
+// others, and discarded for SessionEnd (whose runner ignores all output).
 // Tier: claude-compatible-subset.
 func exitBehavior(e plugin.HookEvent) eventExitPolicy {
 	switch e {
