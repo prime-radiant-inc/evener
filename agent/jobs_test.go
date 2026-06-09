@@ -331,8 +331,14 @@ func TestJobManagerFinalizeConcurrentArmDoesNotDoubleNotify(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for first pending append")
 	}
-	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", nil); err != nil {
-		t.Fatalf("concurrent finalize: %v", err)
+	waitErrc := make(chan error, 1)
+	go func() {
+		waitErrc <- jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", nil)
+	}()
+	select {
+	case err := <-waitErrc:
+		t.Fatalf("concurrent finalize returned before pending append completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
 	}
 	if got := atomic.LoadInt32(&pendingAppends); got != 1 {
 		t.Fatalf("pending appends before release = %d, want 1", got)
@@ -346,6 +352,14 @@ func TestJobManagerFinalizeConcurrentArmDoesNotDoubleNotify(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for first finalize")
+	}
+	select {
+	case err := <-waitErrc:
+		if err != nil {
+			t.Fatalf("concurrent finalize: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for concurrent finalize")
 	}
 	select {
 	case <-done:
@@ -367,6 +381,90 @@ func TestJobManagerFinalizeConcurrentArmDoesNotDoubleNotify(t *testing.T) {
 	}
 	if recs[rec.JobID].NotifyState != jobstore.NotifyPending {
 		t.Fatalf("notify state = %q, want pending", recs[rec.JobID].NotifyState)
+	}
+}
+
+func TestJobManagerFinalizeConcurrentArmWaitsForPendingFailure(t *testing.T) {
+	var queued int32
+	jm, err := newJobManager(t.TempDir(), "S1", func(jobNotification) {
+		atomic.AddInt32(&queued, 1)
+	})
+	if err != nil {
+		t.Fatalf("newJobManager: %v", err)
+	}
+	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	done := jm.running[rec.JobID].done
+
+	appendErr := errors.New("pending append failed")
+	pendingStarted := make(chan struct{})
+	releasePending := make(chan struct{})
+	var pendingAppends int32
+	origAppend := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventJobNotificationPending {
+			if atomic.AddInt32(&pendingAppends, 1) == 1 {
+				close(pendingStarted)
+				<-releasePending
+				return appendErr
+			}
+		}
+		return origAppend(e)
+	}
+
+	errc := make(chan error, 1)
+	go func() {
+		errc <- jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", nil)
+	}()
+
+	select {
+	case <-pendingStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first pending append")
+	}
+	waitErrc := make(chan error, 1)
+	go func() {
+		waitErrc <- jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", nil)
+	}()
+	select {
+	case err := <-waitErrc:
+		t.Fatalf("concurrent finalize returned before pending append failed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releasePending)
+	select {
+	case err := <-errc:
+		if !errors.Is(err, appendErr) {
+			t.Fatalf("first finalize error = %v, want %v", err, appendErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first finalize")
+	}
+	select {
+	case err := <-waitErrc:
+		if !errors.Is(err, appendErr) {
+			t.Fatalf("concurrent finalize error = %v, want %v", err, appendErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for concurrent finalize")
+	}
+	select {
+	case <-done:
+		t.Fatal("done closed after failed notification-pending append")
+	default:
+	}
+	if _, ok := jm.running[rec.JobID]; !ok {
+		t.Fatal("job removed after failed notification-pending append")
+	}
+	if got := atomic.LoadInt32(&pendingAppends); got != 1 {
+		t.Fatalf("pending appends = %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&queued); got != 0 {
+		t.Fatalf("queued = %d, want 0", got)
 	}
 }
 

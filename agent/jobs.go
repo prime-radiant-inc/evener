@@ -30,6 +30,12 @@ type runningJob struct {
 	done       chan struct{}
 	finalizing bool
 	terminal   *terminalJob
+	finalize   *finalizeAttempt
+}
+
+type finalizeAttempt struct {
+	done chan struct{}
+	err  error
 }
 
 type terminalJob struct {
@@ -230,22 +236,44 @@ func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {
 func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason string, exitCode *int) error {
 	jm.mu.Lock()
 	run := jm.running[jobID]
-	if run != nil && run.finalizing {
-		terminal := run.terminal
+	if run == nil {
 		jm.mu.Unlock()
-		if terminal == nil {
-			return nil
-		}
-		return jm.armFinalizedJob(run, terminal)
+		return nil
 	}
-	if run != nil {
+	if run.finalize != nil {
+		attempt := run.finalize
+		jm.mu.Unlock()
+		<-attempt.done
+		return attempt.err
+	}
+	attempt := &finalizeAttempt{done: make(chan struct{})}
+	run.finalize = attempt
+	terminal := run.terminal
+	if terminal == nil {
 		run.finalizing = true
 	}
 	jm.mu.Unlock()
-	if run == nil {
-		return nil
+
+	var err error
+	if terminal == nil {
+		err = jm.finishJob(run, status, reason, exitCode)
+	} else {
+		err = jm.armFinalizedJob(run, terminal)
 	}
 
+	attempt.err = err
+	close(attempt.done)
+
+	jm.mu.Lock()
+	if jm.running[jobID] == run && run.finalize == attempt {
+		run.finalize = nil
+	}
+	jm.mu.Unlock()
+
+	return err
+}
+
+func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason string, exitCode *int) error {
 	var outputBytes int64
 	if _, total, _, err := run.output.Tail(0); err == nil {
 		outputBytes = total
@@ -263,7 +291,7 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 	if err := jm.appendEvent(jobstore.Event{
 		Kind:        jobstore.EventJobFinished,
 		TS:          endedAt,
-		JobID:       jobID,
+		JobID:       run.rec.JobID,
 		Status:      terminal.status,
 		Reason:      terminal.reason,
 		ExitCode:    terminal.exitCode,
@@ -272,7 +300,7 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 		TerminalGen: terminal.generation,
 	}); err != nil {
 		jm.mu.Lock()
-		if jm.running[jobID] == run {
+		if jm.running[run.rec.JobID] == run {
 			run.finalizing = false
 		}
 		jm.mu.Unlock()
@@ -280,7 +308,7 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 	}
 
 	jm.mu.Lock()
-	if jm.running[jobID] == run {
+	if jm.running[run.rec.JobID] == run {
 		run.terminal = terminal
 		run.rec.Status = terminal.status
 		run.rec.Reason = terminal.reason
