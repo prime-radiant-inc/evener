@@ -25,7 +25,7 @@ func TestRunShellForegroundEphemeral(t *testing.T) {
 	if res.JobID != "" {
 		t.Errorf("ephemeral job must have no job_id, got %q", res.JobID)
 	}
-	if res.Status != jobstore.StatusCompleted || res.RunningInBackground {
+	if res.Status != string(jobstore.StatusCompleted) || res.RunningInBackground {
 		t.Errorf("res = %+v, want completed/foreground", res)
 	}
 	if len(jm.list(listFilter{})) != 0 {
@@ -46,6 +46,40 @@ func TestRunShellPromotesOnTimeout(t *testing.T) {
 		t.Errorf("promoted job must appear in job_list")
 	}
 	_, _ = jm.stop(res.JobID)
+}
+
+func TestRunShellForegroundMaxRuntimeCreatesDurableStoppedJob(t *testing.T) {
+	jm, se := newShellTestRig(t)
+	start := time.Now()
+	res := runShell(context.Background(), jm, se, shellArgs{
+		Command:        "printf timeout-output; sleep 30",
+		BlockTimeoutMS: 5000,
+		MaxRuntimeMS:   500,
+	})
+	if time.Since(start) > 3*time.Second {
+		t.Error("max runtime must return before block timeout")
+	}
+	if res.JobID == "" {
+		t.Fatal("max runtime timeout must return a durable job_id")
+	}
+	if res.Status != string(jobstore.StatusStopped) || res.Reason != "run_timeout" || !res.TimedOut || res.RunningInBackground {
+		t.Errorf("res = %+v, want stopped/run_timeout/timed_out/foreground", res)
+	}
+
+	jobs := jm.list(listFilter{})
+	if len(jobs) != 1 {
+		t.Fatalf("max runtime job must appear in job_list, got %+v", jobs)
+	}
+	if jobs[0].JobID != res.JobID || jobs[0].Status != jobstore.StatusStopped || jobs[0].Reason != "run_timeout" {
+		t.Fatalf("job_list = %+v, want durable stopped/run_timeout job", jobs)
+	}
+	output, _, _, err := jm.readOutput(res.JobID, 1024)
+	if err != nil {
+		t.Fatalf("readOutput: %v", err)
+	}
+	if output != "timeout-output" {
+		t.Fatalf("output = %q, want preserved runtime log", output)
+	}
 }
 
 func TestRunShellBackgroundReturnsImmediately(t *testing.T) {

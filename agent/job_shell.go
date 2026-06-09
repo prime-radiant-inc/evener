@@ -29,7 +29,7 @@ type shellArgs struct {
 type shellResult struct {
 	JobID               string
 	Type                string
-	Status              jobstore.Status
+	Status              string
 	Reason              string
 	RunningInBackground bool
 	TimedOut            bool
@@ -55,18 +55,19 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 
 	run, err := jm.newDelayedShell(args)
 	if err != nil {
-		return shellResult{Type: string(jobstore.JobShell), Status: jobstore.StatusFailed, Reason: "start_failed"}
+		return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
 	}
 
 	handle, err := se.StreamCommand(ctx, args.Command, "", nil, shellOutputWriter{output: run.output})
 	if err != nil {
 		jm.discardDelayedShell(run)
-		return shellResult{Type: string(jobstore.JobShell), Status: jobstore.StatusFailed, Reason: "start_failed"}
+		return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
 	}
 
 	jm.setShellSignal(run, handle.Signal)
 	waitCh := make(chan shellWaitResult, 1)
 	processDone := make(chan struct{})
+	var runtimeTimeoutCh <-chan struct{}
 	var runtimeTimedOut atomic.Bool
 
 	go func() {
@@ -76,6 +77,8 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 	}()
 
 	if args.MaxRuntimeMS > 0 {
+		timeoutCh := make(chan struct{})
+		runtimeTimeoutCh = timeoutCh
 		timer := time.NewTimer(time.Duration(args.MaxRuntimeMS) * time.Millisecond)
 		go func() {
 			defer timer.Stop()
@@ -83,6 +86,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			case <-timer.C:
 				runtimeTimedOut.Store(true)
 				handle.Signal()
+				close(timeoutCh)
 			case <-processDone:
 			}
 		}()
@@ -92,13 +96,13 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 		if err := jm.commitDelayedShell(run); err != nil {
 			handle.Signal()
 			jm.discardDelayedShell(run)
-			return shellResult{Type: string(jobstore.JobShell), Status: jobstore.StatusFailed, Reason: "start_failed"}
+			return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
 		}
 		go jm.finalizeShellWhenDone(run.rec.JobID, waitCh, &runtimeTimedOut)
 		return shellResult{
 			JobID:               run.rec.JobID,
 			Type:                string(run.rec.Type),
-			Status:              jobstore.StatusRunning,
+			Status:              string(jobstore.StatusRunning),
 			RunningInBackground: true,
 		}
 	}
@@ -107,12 +111,15 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 	defer timer.Stop()
 	select {
 	case wait := <-waitCh:
+		if runtimeTimedOut.Load() {
+			return jm.finishForegroundRuntimeTimeout(run, wait)
+		}
 		status, reason, exitCode := shellTerminal(wait.exitCode, runtimeTimedOut.Load())
 		output, _, truncated, _ := tailOutput(run.output, shellInlineOutputBytes)
 		jm.discardDelayedShell(run)
 		return shellResult{
 			Type:                string(run.rec.Type),
-			Status:              status,
+			Status:              string(status),
 			Reason:              reason,
 			RunningInBackground: false,
 			TimedOut:            runtimeTimedOut.Load(),
@@ -120,24 +127,52 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			Output:              output,
 			Truncated:           truncated,
 		}
+	case <-runtimeTimeoutCh:
+		wait := <-waitCh
+		return jm.finishForegroundRuntimeTimeout(run, wait)
 	case <-timer.C:
+		if runtimeTimedOut.Load() {
+			wait := <-waitCh
+			return jm.finishForegroundRuntimeTimeout(run, wait)
+		}
 		if err := jm.commitDelayedShell(run); err != nil {
 			handle.Signal()
 			jm.discardDelayedShell(run)
-			return shellResult{Type: string(jobstore.JobShell), Status: jobstore.StatusFailed, Reason: "start_failed"}
+			return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
 		}
 		output, _, truncated, _ := tailOutput(run.output, shellInlineOutputBytes)
 		go jm.finalizeShellWhenDone(run.rec.JobID, waitCh, &runtimeTimedOut)
 		return shellResult{
 			JobID:               run.rec.JobID,
 			Type:                string(run.rec.Type),
-			Status:              jobstore.StatusRunning,
+			Status:              string(jobstore.StatusRunning),
 			Reason:              "foreground_timeout",
 			RunningInBackground: true,
 			TimedOut:            true,
 			Output:              output,
 			Truncated:           truncated,
 		}
+	}
+}
+
+func (jm *jobManager) finishForegroundRuntimeTimeout(run *runningJob, wait shellWaitResult) shellResult {
+	status, reason, exitCode := shellTerminal(wait.exitCode, true)
+	if err := jm.commitDelayedShell(run); err != nil {
+		jm.discardDelayedShell(run)
+		return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
+	}
+	output, _, truncated, _ := tailOutput(run.output, shellInlineOutputBytes)
+	_ = jm.finalize(run.rec.JobID, status, reason, exitCode)
+	return shellResult{
+		JobID:               run.rec.JobID,
+		Type:                string(run.rec.Type),
+		Status:              string(status),
+		Reason:              reason,
+		RunningInBackground: false,
+		TimedOut:            true,
+		ExitCode:            exitCode,
+		Output:              output,
+		Truncated:           truncated,
 	}
 }
 
