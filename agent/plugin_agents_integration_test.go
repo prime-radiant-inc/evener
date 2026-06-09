@@ -364,7 +364,7 @@ func TestSpawnAgent_PluginAgentType_RejectsTopLevelOnlyAgent(t *testing.T) {
 			Name:         "coordinator",
 			Description:  "Delegates to agents",
 			Model:        "inherit",
-			Tools:        []string{"read_file", "spawn_agent"},
+			Tools:        []string{"read_file", "delegate"},
 			SystemPrompt: "You coordinate by delegating.",
 			PluginName:   "my-plugin",
 		},

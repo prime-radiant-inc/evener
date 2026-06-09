@@ -1011,7 +1011,7 @@ func TestSpawnAgent_AllToolsAgentStripsAgentManagementTools(t *testing.T) {
 			t.Errorf("all-tools agent should retain %q, got tools: %v", want, subagentTools)
 		}
 	}
-	for _, forbidden := range rootOnlyAgentManagementTools {
+	for _, forbidden := range rootOnlySubagentTools() {
 		for _, name := range subagentTools {
 			if name == forbidden {
 				t.Errorf("all-tools subagent should not receive root-only tool %q, got tools: %v", forbidden, subagentTools)

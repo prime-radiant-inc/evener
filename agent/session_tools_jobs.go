@@ -376,7 +376,7 @@ func marshalSendMessageResult(res sendMessageResult, maxChars int) (string, erro
 		out.StructuredResult = res.StructuredResult
 		out.StructuredResultValid = &valid
 	}
-	return marshalBoundedJSON(out, maxChars)
+	return marshalBoundedSendMessageDelegateResult(out, maxChars)
 }
 
 func marshalDelegateResult(res delegateResult, maxChars int) (string, error) {
@@ -398,7 +398,99 @@ func marshalDelegateResult(res delegateResult, maxChars int) (string, error) {
 		out.StructuredResult = res.StructuredResult
 		out.StructuredResultValid = &valid
 	}
+	return marshalBoundedDelegateResult(out, maxChars)
+}
+
+func marshalBoundedSendMessageDelegateResult(out jobSendMessageDelegateResult, maxChars int) (string, error) {
+	if fit, ok, err := marshalSendMessageDelegateResultWithOutputLimit(out, maxChars); err != nil || ok {
+		return fit, err
+	}
+	empty := ""
+	out.Output = &empty
+	truncated := true
+	out.Truncated = &truncated
 	return marshalBoundedJSON(out, maxChars)
+}
+
+func marshalSendMessageDelegateResultWithOutputLimit(out jobSendMessageDelegateResult, maxChars int) (string, bool, error) {
+	if out.Output == nil {
+		return marshalBoundedJSONWithFit(out, maxChars)
+	}
+	original := []rune(*out.Output)
+	originalTruncated := out.Truncated != nil && *out.Truncated
+	return marshalWithOutputLimit(maxChars, len(original), func(keep int) (string, error) {
+		tail := string(original[len(original)-keep:])
+		out.Output = &tail
+		truncated := originalTruncated || keep < len(original)
+		out.Truncated = &truncated
+		b, err := json.Marshal(out)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	})
+}
+
+func marshalBoundedDelegateResult(out delegateToolResult, maxChars int) (string, error) {
+	if fit, ok, err := marshalDelegateResultWithOutputLimit(out, maxChars); err != nil || ok {
+		return fit, err
+	}
+	empty := ""
+	out.Output = &empty
+	truncated := true
+	out.Truncated = &truncated
+	return marshalBoundedJSON(out, maxChars)
+}
+
+func marshalDelegateResultWithOutputLimit(out delegateToolResult, maxChars int) (string, bool, error) {
+	if out.Output == nil {
+		return marshalBoundedJSONWithFit(out, maxChars)
+	}
+	original := []rune(*out.Output)
+	originalTruncated := out.Truncated != nil && *out.Truncated
+	return marshalWithOutputLimit(maxChars, len(original), func(keep int) (string, error) {
+		tail := string(original[len(original)-keep:])
+		out.Output = &tail
+		truncated := originalTruncated || keep < len(original)
+		out.Truncated = &truncated
+		b, err := json.Marshal(out)
+		if err != nil {
+			return "", err
+		}
+		return string(b), nil
+	})
+}
+
+func marshalBoundedJSONWithFit(v any, maxChars int) (string, bool, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", false, err
+	}
+	if maxChars <= 0 || jsonCharLen(b) <= maxChars {
+		return string(b), true, nil
+	}
+	return "", false, nil
+}
+
+func marshalWithOutputLimit(maxChars, outputRunes int, marshal func(keep int) (string, error)) (string, bool, error) {
+	best := ""
+	bestOK := false
+	lo, hi := 0, outputRunes
+	for lo <= hi {
+		mid := lo + (hi-lo)/2
+		candidate, err := marshal(mid)
+		if err != nil {
+			return "", false, err
+		}
+		if maxChars <= 0 || jsonCharLen([]byte(candidate)) <= maxChars {
+			best = candidate
+			bestOK = true
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+	return best, bestOK, nil
 }
 
 func sessionJobManager(s *Session) (*jobManager, error) {

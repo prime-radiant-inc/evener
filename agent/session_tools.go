@@ -493,14 +493,14 @@ func (s *Session) defaultToolSummaryForAgent(agent plugin.Agent) string {
 		canonical = append([]string(nil), allowedTools...)
 		canonical = appendUniqueStrings(canonical, s.resultToolName())
 	}
-	canonical = removeRootOnlyAgentManagementTools(canonical)
+	canonical = removeRootOnlySubagentTools(canonical)
 	return formatToolNamesForPrompt(s.providerVisibleToolNames(canonical))
 }
 
 func (s *Session) availableAgentEntries() []agentEntry {
 	names := make([]string, 0, len(s.pluginAgents))
 	for name, agent := range s.pluginAgents {
-		if agentUsesRootOnlyManagementTools(agent) {
+		if agentUsesRootOnlySubagentTools(agent) {
 			continue
 		}
 		names = append(names, name)
@@ -523,7 +523,7 @@ func (s *Session) availableAgentEntries() []agentEntry {
 func (s *Session) delegateAgentTypeNames() []string {
 	names := make([]string, 0, len(s.pluginAgents))
 	for name, agent := range s.pluginAgents {
-		if agentUsesRootOnlyManagementTools(agent) {
+		if agentUsesRootOnlySubagentTools(agent) {
 			continue
 		}
 		names = append(names, name)

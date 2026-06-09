@@ -491,10 +491,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind) ([]
 		s.reg.Remove(name)
 	}
 	if s.depth > 0 {
-		for _, name := range rootOnlyAgentManagementTools {
-			s.reg.Remove(name)
-		}
-		for _, name := range rootOnlyJobControlTools {
+		for _, name := range rootOnlySubagentTools() {
 			s.reg.Remove(name)
 		}
 	}

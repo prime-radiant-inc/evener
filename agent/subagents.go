@@ -116,17 +116,25 @@ func removeStrings(items, removals []string) []string {
 	return out
 }
 
+func rootOnlySubagentTools() []string {
+	return appendUniqueStrings(append([]string(nil), rootOnlyAgentManagementTools...), rootOnlyJobControlTools...)
+}
+
 func isRootOnlyAgentManagementTool(name string) bool {
 	return hasString(rootOnlyAgentManagementTools, name)
 }
 
-func removeRootOnlyAgentManagementTools(items []string) []string {
-	return removeStrings(items, rootOnlyAgentManagementTools)
+func isRootOnlySubagentTool(name string) bool {
+	return hasString(rootOnlySubagentTools(), name)
 }
 
-func agentUsesRootOnlyManagementTools(agent plugin.Agent) bool {
+func removeRootOnlySubagentTools(items []string) []string {
+	return removeStrings(items, rootOnlySubagentTools())
+}
+
+func agentUsesRootOnlySubagentTools(agent plugin.Agent) bool {
 	for _, tool := range agent.Tools {
-		if isRootOnlyAgentManagementTool(tool) {
+		if isRootOnlySubagentTool(tool) {
 			return true
 		}
 	}
@@ -142,7 +150,7 @@ func baseSubagentToolPolicy(agent *plugin.Agent) (allTools bool, allowed []strin
 		allowed = appendUniqueStrings(allowed, "task_list")
 		return false, allowed, nil
 	default:
-		return false, nil, append([]string(nil), rootOnlyAgentManagementTools...)
+		return false, nil, rootOnlySubagentTools()
 	}
 }
 
@@ -172,8 +180,8 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		if !ok {
 			return "", fmt.Errorf("unknown plugin agent type: %s", agentType)
 		}
-		if agentUsesRootOnlyManagementTools(a) {
-			return "", fmt.Errorf("agent_type %q is top-level only: it requires root-only agent-management tools", agentType)
+		if agentUsesRootOnlySubagentTools(a) {
+			return "", fmt.Errorf("agent_type %q is top-level only: it requires root-only tools", agentType)
 		}
 		agent = &a
 	}
@@ -267,8 +275,8 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	if len(canonicalGrantTools) > 0 {
 		currentTools := s.reg.RegisteredNames()
 		for _, toolName := range canonicalGrantTools {
-			if isRootOnlyAgentManagementTool(toolName) {
-				return "", fmt.Errorf("cannot grant tool %q: subagent-management tools are top-level only", toolName)
+			if isRootOnlySubagentTool(toolName) {
+				return "", fmt.Errorf("cannot grant tool %q: root-only tools are top-level only", toolName)
 			}
 			baseHasTool := allTools ||
 				hasString(allowedTools, toolName) ||

@@ -306,6 +306,70 @@ func TestJobSendMessageForegroundResumeReturnsTerminalResult(t *testing.T) {
 	}
 }
 
+func TestMarshalDelegateResultsBoundLargeOutput(t *testing.T) {
+	largeOutput := strings.Repeat("prefix-", 200) + "delegate-tail"
+	out, err := marshalDelegateResult(delegateResult{
+		JobID:               "job_delegate",
+		Type:                string(jobstore.JobDelegate),
+		Status:              jobstore.StatusCompleted,
+		RunningInBackground: false,
+		TranscriptRef:       "local:child",
+		Output:              largeOutput,
+	}, jobToolResultMinJSONChars)
+	if err != nil {
+		t.Fatalf("marshalDelegateResult: %v", err)
+	}
+	if !json.Valid([]byte(out)) {
+		t.Fatalf("delegate result returned invalid JSON: %s", out)
+	}
+	if len([]rune(out)) > jobToolResultMinJSONChars {
+		t.Fatalf("delegate result length = %d, want <= %d", len([]rune(out)), jobToolResultMinJSONChars)
+	}
+	var parsed struct {
+		Output    string `json:"output"`
+		Truncated bool   `json:"truncated"`
+	}
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("unmarshal delegate result: %v", err)
+	}
+	if !parsed.Truncated {
+		t.Fatalf("truncated = false, want true in %s", out)
+	}
+	if !strings.Contains(parsed.Output, "delegate-tail") {
+		t.Fatalf("output tail not retained: %q", parsed.Output)
+	}
+
+	sendOut, err := marshalSendMessageResult(sendMessageResult{
+		Target:              "job_old",
+		JobID:               "job_new",
+		Type:                string(jobstore.JobDelegate),
+		Status:              jobstore.StatusCompleted,
+		RunningInBackground: false,
+		Action:              "resumed",
+		ResumedFromJobID:    "job_old",
+		TranscriptRef:       "local:child",
+		Output:              strings.Repeat("prefix-", 200) + "send-tail",
+	}, jobToolResultMinJSONChars)
+	if err != nil {
+		t.Fatalf("marshalSendMessageResult: %v", err)
+	}
+	if !json.Valid([]byte(sendOut)) {
+		t.Fatalf("send result returned invalid JSON: %s", sendOut)
+	}
+	if len([]rune(sendOut)) > jobToolResultMinJSONChars {
+		t.Fatalf("send result length = %d, want <= %d", len([]rune(sendOut)), jobToolResultMinJSONChars)
+	}
+	if err := json.Unmarshal([]byte(sendOut), &parsed); err != nil {
+		t.Fatalf("unmarshal send result: %v", err)
+	}
+	if !parsed.Truncated {
+		t.Fatalf("truncated = false, want true in %s", sendOut)
+	}
+	if !strings.Contains(parsed.Output, "send-tail") {
+		t.Fatalf("output tail not retained: %q", parsed.Output)
+	}
+}
+
 func TestJobSendMessageNegativeBlockTimeoutDoesNotResume(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{

@@ -632,6 +632,9 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if !isRootOnlyAgentManagementTool("cancel_agent") {
 		t.Fatal("cancel_agent must be a root-only agent-management tool")
 	}
+	if !isRootOnlySubagentTool("delegate") {
+		t.Fatal("delegate must be a root-only subagent tool")
+	}
 
 	dir := t.TempDir()
 	c := llm.NewClient()
