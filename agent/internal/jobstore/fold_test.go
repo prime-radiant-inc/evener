@@ -167,3 +167,32 @@ func TestFoldNotificationPendingDoesNotDowngradeDelivered(t *testing.T) {
 		t.Errorf("notify state = %q, want delivered", r.NotifyState)
 	}
 }
+
+func TestFoldIgnoresNotificationsForDiscardedTerminalGeneration(t *testing.T) {
+	start := time.Unix(1, 0).UTC()
+	events := []Event{
+		ev(EventJobStarted, 1, "job_A", func(e *Event) {
+			e.Type = JobShell
+			e.OwnerSessionID = "S1"
+			e.VisibleToSession = "S1"
+			e.StartedAt = &start
+		}),
+		ev(EventJobFinished, 2, "job_A", func(e *Event) {
+			e.Status = StatusCompleted
+			e.TerminalGen = "GEN1"
+		}),
+		ev(EventJobFinished, 3, "job_A", func(e *Event) {
+			e.Status = StatusCompleted
+			e.TerminalGen = "GEN2"
+		}),
+		ev(EventJobNotificationPending, 4, "job_A", func(e *Event) { e.TerminalGen = "GEN2" }),
+		ev(EventJobNotificationDelivered, 5, "job_A", func(e *Event) { e.TerminalGen = "GEN2" }),
+	}
+	r := Fold(events)["job_A"]
+	if r.TerminalGen != "GEN1" {
+		t.Errorf("terminal_generation = %q, want GEN1 (first wins)", r.TerminalGen)
+	}
+	if r.NotifyState != NotifyNotArmed {
+		t.Errorf("notify state = %q, want not_armed", r.NotifyState)
+	}
+}

@@ -58,10 +58,20 @@ func applyEvent(r *JobRecord, e Event) {
 	case EventJobMessageSent:
 		// No record-field mutation; message events are diagnostic/history.
 	case EventJobNotificationPending:
+		if !notificationMatchesTerminalGeneration(r, e) {
+			return
+		}
 		if r.NotifyState == NotifyNotArmed {
 			r.NotifyState = NotifyPending
 		}
 	case EventJobNotificationDelivered:
+		if !notificationMatchesTerminalGeneration(r, e) {
+			return
+		}
 		r.NotifyState = NotifyDelivered
 	}
+}
+
+func notificationMatchesTerminalGeneration(r *JobRecord, e Event) bool {
+	return r.TerminalGen != "" && e.TerminalGen == r.TerminalGen
 }

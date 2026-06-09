@@ -24,6 +24,7 @@ func Reconcile(records map[string]*JobRecord, liveJobIDs map[string]bool, now ti
 		ended := now
 		events = append(events, Event{
 			Kind:        EventJobFinished,
+			TS:          now,
 			JobID:       id,
 			Status:      StatusStopped,
 			Reason:      "runtime_lost",

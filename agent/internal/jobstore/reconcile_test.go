@@ -32,6 +32,9 @@ func TestReconcileFinalizesLostRunningJobs(t *testing.T) {
 		if e.TerminalGen == "" {
 			t.Errorf("event[%d] must carry a minted terminal_generation", i)
 		}
+		if !e.TS.Equal(now) {
+			t.Errorf("event[%d] ts = %v, want %v", i, e.TS, now)
+		}
 		if e.EndedAt == nil || !e.EndedAt.Equal(now) {
 			t.Errorf("event[%d] ended_at = %v, want %v", i, e.EndedAt, now)
 		}
