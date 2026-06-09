@@ -694,37 +694,59 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 	pid := cmd.Process.Pid
 	e.runningPIDs.Store(pid, struct{}{})
 
+	done := make(chan struct{})
+	var doneOnce sync.Once
 	var signalOnce sync.Once
 	signal := func() {
+		select {
+		case <-done:
+			return
+		default:
+		}
 		signalOnce.Do(func() {
+			select {
+			case <-done:
+				return
+			default:
+			}
 			terminateProcessGroup(pid)
 			go func() {
-				time.Sleep(2 * time.Second)
-				killProcessGroup(pid)
+				timer := time.NewTimer(2 * time.Second)
+				defer timer.Stop()
+				select {
+				case <-done:
+					return
+				case <-timer.C:
+					select {
+					case <-done:
+						return
+					default:
+						killProcessGroup(pid)
+					}
+				}
 			}()
 		})
 	}
 
-	waitDone := make(chan struct{})
 	if ctx != nil {
 		go func() {
 			select {
 			case <-ctx.Done():
 				signal()
-			case <-waitDone:
+			case <-done:
 			}
 		}()
 	}
 
 	wait := func() (int, error) {
-		defer close(waitDone)
+		defer doneOnce.Do(func() { close(done) })
 		defer e.runningPIDs.Delete(pid)
 		if err := cmd.Wait(); err != nil {
 			ee := &exec.ExitError{}
 			if errors.As(err, &ee) {
 				return ee.ExitCode(), nil
 			}
-			return 127, nil
+			return 127, err
 		}
 		return 0, nil
 	}
