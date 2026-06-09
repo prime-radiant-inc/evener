@@ -296,3 +296,25 @@ func TestJobNotificationTurnRequeuesWhenStoreLoadFailsThenDelivers(t *testing.T)
 		t.Fatalf("notify state = %q, want delivered", got)
 	}
 }
+
+func TestJobNotificationRetryResetInvalidatesActiveTimer(t *testing.T) {
+	sess := newTestSession(t)
+	sess.pendingNotifsMu.Lock()
+	sess.jobNotifyRetry.delay = 10 * time.Millisecond
+	sess.pendingNotifsMu.Unlock()
+
+	sess.requeueJobNotifications([]jobNotification{{JobID: "job_X"}})
+	sess.resetJobNotificationRetry()
+	time.Sleep(50 * time.Millisecond)
+
+	sess.pendingNotifsMu.Lock()
+	delay := sess.jobNotifyRetry.delay
+	active := sess.jobNotifyRetry.active
+	sess.pendingNotifsMu.Unlock()
+	if active {
+		t.Fatal("retry timer still active after reset")
+	}
+	if delay != jobNotificationRetryInitialDelay {
+		t.Fatalf("retry delay = %s, want reset %s", delay, jobNotificationRetryInitialDelay)
+	}
+}

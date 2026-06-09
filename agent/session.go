@@ -223,8 +223,9 @@ type subagentNotification struct {
 }
 
 type notificationRetry struct {
-	active bool
-	delay  time.Duration
+	active     bool
+	delay      time.Duration
+	generation int
 }
 
 const (
@@ -334,15 +335,25 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 		delay = jobNotificationRetryInitialDelay
 	}
 	s.jobNotifyRetry.active = true
+	s.jobNotifyRetry.generation++
+	generation := s.jobNotifyRetry.generation
 	time.AfterFunc(delay, func() {
 		s.pendingNotifsMu.Lock()
+		if s.jobNotifyRetry.generation != generation {
+			s.pendingNotifsMu.Unlock()
+			return
+		}
 		s.jobNotifyRetry.active = false
+		pending := len(s.pendingJobNotifs) > 0
 		nextDelay := delay * 2
 		if nextDelay > jobNotificationRetryMaxDelay {
 			nextDelay = jobNotificationRetryMaxDelay
 		}
-		s.jobNotifyRetry.delay = nextDelay
-		pending := len(s.pendingJobNotifs) > 0
+		if pending {
+			s.jobNotifyRetry.delay = nextDelay
+		} else {
+			s.jobNotifyRetry.delay = jobNotificationRetryInitialDelay
+		}
 		s.pendingNotifsMu.Unlock()
 		if pending {
 			s.notify()
@@ -352,6 +363,8 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 
 func (s *Session) resetJobNotificationRetry() {
 	s.pendingNotifsMu.Lock()
+	s.jobNotifyRetry.generation++
+	s.jobNotifyRetry.active = false
 	s.jobNotifyRetry.delay = jobNotificationRetryInitialDelay
 	s.pendingNotifsMu.Unlock()
 }
