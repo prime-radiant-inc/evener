@@ -184,7 +184,7 @@ func TestCreateDelegateForegroundTimeoutLeavesChildRunning(t *testing.T) {
 	}
 }
 
-func TestCreateDelegateBackgroundStopCancelsChild(t *testing.T) {
+func TestDelegateStopMapsToCancelled(t *testing.T) {
 	adapter := &cancelAwareDelegateAdapter{name: "openai", started: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -196,6 +196,10 @@ func TestCreateDelegateBackgroundStopCancelsChild(t *testing.T) {
 	})
 	if res.Err != nil {
 		t.Fatalf("createDelegate returned error: %v", res.Err)
+	}
+	_, childID, err := decodeRef(res.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode transcript ref: %v", err)
 	}
 	select {
 	case <-adapter.started:
@@ -222,6 +226,17 @@ func TestCreateDelegateBackgroundStopCancelsChild(t *testing.T) {
 	rec := loadShellRecord(t, sess.jobManager, res.JobID)
 	if rec.Status != jobstore.StatusCancelled || rec.Reason != "stopped_by_parent" {
 		t.Fatalf("record = %+v, want cancelled/stopped_by_parent", rec)
+	}
+	sub := sess.subagents.get(childID)
+	if sub == nil {
+		t.Fatalf("subagent %s not found", childID)
+	}
+	sub.mu.Lock()
+	cancelRequested := sub.cancelRequested
+	status := sub.status
+	sub.mu.Unlock()
+	if !cancelRequested || status != SubagentCancelled {
+		t.Fatalf("child cancelRequested=%v status=%q, want cancelRequested=true status=%q", cancelRequested, status, SubagentCancelled)
 	}
 }
 
