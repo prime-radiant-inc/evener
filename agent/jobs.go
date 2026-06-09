@@ -29,6 +29,16 @@ type runningJob struct {
 	signal     func()
 	done       chan struct{}
 	finalizing bool
+	terminal   *terminalJob
+}
+
+type terminalJob struct {
+	status      jobstore.Status
+	reason      string
+	exitCode    *int
+	endedAt     time.Time
+	outputBytes int64
+	generation  string
 }
 
 // jobNotification is the durable-job analogue of subagentNotification.
@@ -183,6 +193,9 @@ func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, t
 	if outputPath == "" {
 		outputPath = filepath.Join(jm.dir, "jobs", jobID+".log")
 	}
+	if _, err := os.Stat(outputPath); err != nil {
+		return "", 0, false, fmt.Errorf("job %q output unavailable: %w", jobID, err)
+	}
 	output, err := jobstore.OpenOutput(outputPath, 0)
 	if err != nil {
 		return "", 0, false, err
@@ -217,7 +230,12 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 	jm.mu.Lock()
 	run := jm.running[jobID]
 	if run != nil && run.finalizing {
-		run = nil
+		terminal := run.terminal
+		jm.mu.Unlock()
+		if terminal == nil {
+			return nil
+		}
+		return jm.armFinalizedJob(run, terminal)
 	}
 	if run != nil {
 		run.finalizing = true
@@ -233,17 +251,24 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 	}
 
 	endedAt := jm.now()
-	terminalGen := jobstore.NewTerminalGeneration()
+	terminal := &terminalJob{
+		status:      status,
+		reason:      reason,
+		exitCode:    exitCode,
+		endedAt:     endedAt,
+		outputBytes: outputBytes,
+		generation:  jobstore.NewTerminalGeneration(),
+	}
 	if err := jm.appendEvent(jobstore.Event{
 		Kind:        jobstore.EventJobFinished,
 		TS:          endedAt,
 		JobID:       jobID,
-		Status:      status,
-		Reason:      reason,
-		ExitCode:    exitCode,
+		Status:      terminal.status,
+		Reason:      terminal.reason,
+		ExitCode:    terminal.exitCode,
 		EndedAt:     &endedAt,
-		OutputBytes: outputBytes,
-		TerminalGen: terminalGen,
+		OutputBytes: terminal.outputBytes,
+		TerminalGen: terminal.generation,
 	}); err != nil {
 		jm.mu.Lock()
 		if jm.running[jobID] == run {
@@ -252,32 +277,49 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 		jm.mu.Unlock()
 		return err
 	}
+
+	jm.mu.Lock()
+	if jm.running[jobID] == run {
+		run.terminal = terminal
+		run.rec.Status = terminal.status
+		run.rec.Reason = terminal.reason
+		run.rec.ExitCode = terminal.exitCode
+		run.rec.EndedAt = &terminal.endedAt
+		run.rec.OutputBytes = terminal.outputBytes
+		run.rec.TerminalGen = terminal.generation
+	}
+	jm.mu.Unlock()
+
+	return jm.armFinalizedJob(run, terminal)
+}
+
+func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) error {
+	if err := jm.appendEvent(jobstore.Event{
+		Kind:        jobstore.EventJobNotificationPending,
+		TS:          terminal.endedAt,
+		JobID:       run.rec.JobID,
+		TerminalGen: terminal.generation,
+	}); err != nil {
+		return err
+	}
 	_ = run.output.Close()
 	close(run.done)
 
 	jm.mu.Lock()
-	if jm.running[jobID] == run {
-		delete(jm.running, jobID)
+	if jm.running[run.rec.JobID] == run {
+		delete(jm.running, run.rec.JobID)
 	}
 	jm.mu.Unlock()
 
-	if err := jm.appendEvent(jobstore.Event{
-		Kind:        jobstore.EventJobNotificationPending,
-		TS:          endedAt,
-		JobID:       jobID,
-		TerminalGen: terminalGen,
-	}); err != nil {
-		return err
-	}
 	if jm.enqueue != nil {
 		jm.enqueue(jobNotification{
-			JobID:         jobID,
+			JobID:         run.rec.JobID,
 			JobType:       string(run.rec.Type),
-			Status:        string(status),
-			Reason:        reason,
+			Status:        string(terminal.status),
+			Reason:        terminal.reason,
 			TranscriptRef: run.rec.TranscriptRef,
-			OutputBytes:   outputBytes,
-			ExitCode:      exitCode,
+			OutputBytes:   terminal.outputBytes,
+			ExitCode:      terminal.exitCode,
 		})
 	}
 	return nil

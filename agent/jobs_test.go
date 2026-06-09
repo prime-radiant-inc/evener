@@ -48,6 +48,31 @@ func TestJobManagerReadOutput(t *testing.T) {
 	}
 }
 
+func TestJobManagerReadOutputMissingTerminalLogReturnsError(t *testing.T) {
+	jm := newTestJM(t)
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := jm.running[rec.JobID].output.Append([]byte("hello\n")); err != nil {
+		t.Fatalf("append output: %v", err)
+	}
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", nil); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if err := os.Remove(rec.OutputPath); err != nil {
+		t.Fatalf("remove output: %v", err)
+	}
+
+	content, total, truncated, err := jm.readOutput(rec.JobID, 1024)
+	if err == nil {
+		t.Fatalf("readOutput content=%q total=%d truncated=%v, want error", content, total, truncated)
+	}
+	if _, statErr := os.Stat(rec.OutputPath); !os.IsNotExist(statErr) {
+		t.Fatalf("output stat after readOutput = %v, want not exist", statErr)
+	}
+}
+
 func TestJobManagerCreateDoesNotPersistWhenOutputOpenFails(t *testing.T) {
 	jm := newTestJM(t)
 	outputDir := filepath.Join(jm.dir, "jobs")
@@ -181,7 +206,7 @@ func TestJobManagerFinalizeFinishAppendFailureKeepsRuntime(t *testing.T) {
 	}
 }
 
-func TestJobManagerFinalizePendingAppendFailureDoesNotEnqueue(t *testing.T) {
+func TestJobManagerFinalizePendingAppendFailureCanRetryWithSameGeneration(t *testing.T) {
 	var queued []jobNotification
 	jm, err := newJobManager(t.TempDir(), "S1", func(n jobNotification) {
 		queued = append(queued, n)
@@ -209,11 +234,11 @@ func TestJobManagerFinalizePendingAppendFailureDoesNotEnqueue(t *testing.T) {
 	}
 	select {
 	case <-done:
+		t.Fatal("done closed after failed notification-pending append")
 	default:
-		t.Fatal("done was not closed")
 	}
-	if _, ok := jm.running[rec.JobID]; ok {
-		t.Fatal("job still running")
+	if _, ok := jm.running[rec.JobID]; !ok {
+		t.Fatal("job removed after failed notification-pending append")
 	}
 	if len(queued) != 0 {
 		t.Fatalf("queued = %+v, want none", queued)
@@ -228,5 +253,40 @@ func TestJobManagerFinalizePendingAppendFailureDoesNotEnqueue(t *testing.T) {
 	}
 	if got.NotifyState != jobstore.NotifyNotArmed {
 		t.Fatalf("notify state = %q, want not_armed", got.NotifyState)
+	}
+	jobs := jm.list(listFilter{})
+	if len(jobs) != 1 || jobs[0].Status != jobstore.StatusCompleted {
+		t.Fatalf("list during retry window = %+v", jobs)
+	}
+	firstGeneration := got.TerminalGen
+	if firstGeneration == "" {
+		t.Fatal("terminal generation is empty")
+	}
+
+	jm.appendEvent = origAppend
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", nil); err != nil {
+		t.Fatalf("retry finalize: %v", err)
+	}
+	select {
+	case <-done:
+	default:
+		t.Fatal("done was not closed after retry")
+	}
+	if _, ok := jm.running[rec.JobID]; ok {
+		t.Fatal("job still running after retry")
+	}
+	if len(queued) != 1 || queued[0].JobID != rec.JobID {
+		t.Fatalf("queued = %+v, want one job notification", queued)
+	}
+	recs, err = jm.store.Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	got = recs[rec.JobID]
+	if got.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("notify state after retry = %q, want pending", got.NotifyState)
+	}
+	if got.TerminalGen != firstGeneration {
+		t.Fatalf("terminal generation after retry = %q, want %q", got.TerminalGen, firstGeneration)
 	}
 }
