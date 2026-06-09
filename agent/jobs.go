@@ -30,6 +30,8 @@ type runningJob struct {
 	signal         func()
 	done           chan struct{}
 	durableStarted bool
+	stopStatus     jobstore.Status
+	stopReason     string
 	terminal       *terminalJob
 	finalize       *finalizeAttempt
 }
@@ -210,13 +212,18 @@ func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, t
 func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {
 	jm.mu.Lock()
 	run := jm.running[jobID]
-	jm.mu.Unlock()
 	if run != nil {
-		if run.signal != nil {
-			run.signal()
+		run.stopStatus = jobstore.StatusStopped
+		run.stopReason = "stopped"
+		signal := run.signal
+		rec := cloneJobRecord(run.rec)
+		jm.mu.Unlock()
+		if signal != nil {
+			signal()
 		}
-		return cloneJobRecord(run.rec), nil
+		return rec, nil
 	}
+	jm.mu.Unlock()
 
 	recs, err := jm.store.Load()
 	if err != nil {

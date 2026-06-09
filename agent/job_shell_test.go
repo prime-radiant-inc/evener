@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +19,37 @@ func newShellTestRig(t *testing.T) (*jobManager, execenv.StreamingExecutor) {
 		t.Fatal(err)
 	}
 	return jm, env
+}
+
+func waitForShellDone(t *testing.T, jm *jobManager, jobID string) {
+	t.Helper()
+	jm.mu.Lock()
+	run := jm.running[jobID]
+	if run == nil {
+		jm.mu.Unlock()
+		return
+	}
+	done := run.done
+	jm.mu.Unlock()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("job %s did not finish", jobID)
+	}
+}
+
+func loadShellRecord(t *testing.T, jm *jobManager, jobID string) *jobstore.JobRecord {
+	t.Helper()
+	recs, err := jm.store.Load()
+	if err != nil {
+		t.Fatalf("load jobs: %v", err)
+	}
+	rec := recs[jobID]
+	if rec == nil {
+		t.Fatalf("job %s not found", jobID)
+	}
+	return rec
 }
 
 func TestRunShellForegroundEphemeral(t *testing.T) {
@@ -46,6 +79,11 @@ func TestRunShellPromotesOnTimeout(t *testing.T) {
 		t.Errorf("promoted job must appear in job_list")
 	}
 	_, _ = jm.stop(res.JobID)
+	waitForShellDone(t, jm, res.JobID)
+	rec := loadShellRecord(t, jm, res.JobID)
+	if rec.Status != jobstore.StatusStopped || rec.Reason != "stopped" {
+		t.Fatalf("stopped promoted job = %+v, want stopped/stopped", rec)
+	}
 }
 
 func TestRunShellForegroundMaxRuntimeCreatesDurableStoppedJob(t *testing.T) {
@@ -93,4 +131,35 @@ func TestRunShellBackgroundReturnsImmediately(t *testing.T) {
 		t.Errorf("res = %+v", res)
 	}
 	_, _ = jm.stop(res.JobID)
+	waitForShellDone(t, jm, res.JobID)
+	rec := loadShellRecord(t, jm, res.JobID)
+	if rec.Status != jobstore.StatusStopped || rec.Reason != "stopped" {
+		t.Fatalf("stopped background job = %+v, want stopped/stopped", rec)
+	}
+}
+
+func TestRunShellFinalizerRetriesAppendFailure(t *testing.T) {
+	jm, se := newShellTestRig(t)
+	appendErr := errors.New("temporary append failure")
+	var failed atomic.Bool
+	origAppend := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventJobFinished && failed.CompareAndSwap(false, true) {
+			return appendErr
+		}
+		return origAppend(e)
+	}
+
+	res := runShell(context.Background(), jm, se, shellArgs{Command: "printf retry", Background: true})
+	if res.JobID == "" {
+		t.Fatal("background shell must return a job_id")
+	}
+	waitForShellDone(t, jm, res.JobID)
+	rec := loadShellRecord(t, jm, res.JobID)
+	if rec.Status != jobstore.StatusCompleted || rec.Reason != "exit_zero" {
+		t.Fatalf("record after retry = %+v, want completed/exit_zero", rec)
+	}
+	if !failed.Load() {
+		t.Fatal("test did not exercise append failure")
+	}
 }

@@ -16,6 +16,8 @@ const (
 	minShellBlockTimeoutMS     = 1000
 	maxShellBlockTimeoutMS     = 600000
 	shellInlineOutputBytes     = 64 * 1024
+	shellFinalizeAttempts      = 5
+	shellFinalizeRetryDelay    = 20 * time.Millisecond
 )
 
 type shellArgs struct {
@@ -98,7 +100,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			jm.discardDelayedShell(run)
 			return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
 		}
-		go jm.finalizeShellWhenDone(run.rec.JobID, waitCh, &runtimeTimedOut)
+		go jm.finalizeShellWhenDone(run, waitCh, &runtimeTimedOut)
 		return shellResult{
 			JobID:               run.rec.JobID,
 			Type:                string(run.rec.Type),
@@ -114,7 +116,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 		if runtimeTimedOut.Load() {
 			return jm.finishForegroundRuntimeTimeout(run, wait)
 		}
-		status, reason, exitCode := shellTerminal(wait.exitCode, runtimeTimedOut.Load())
+		status, reason, exitCode := jm.shellTerminal(run, wait.exitCode, runtimeTimedOut.Load())
 		output, _, truncated, _ := tailOutput(run.output, shellInlineOutputBytes)
 		jm.discardDelayedShell(run)
 		return shellResult{
@@ -141,7 +143,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
 		}
 		output, _, truncated, _ := tailOutput(run.output, shellInlineOutputBytes)
-		go jm.finalizeShellWhenDone(run.rec.JobID, waitCh, &runtimeTimedOut)
+		go jm.finalizeShellWhenDone(run, waitCh, &runtimeTimedOut)
 		return shellResult{
 			JobID:               run.rec.JobID,
 			Type:                string(run.rec.Type),
@@ -156,13 +158,25 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 }
 
 func (jm *jobManager) finishForegroundRuntimeTimeout(run *runningJob, wait shellWaitResult) shellResult {
-	status, reason, exitCode := shellTerminal(wait.exitCode, true)
+	status, reason, exitCode := jm.shellTerminal(run, wait.exitCode, true)
 	if err := jm.commitDelayedShell(run); err != nil {
 		jm.discardDelayedShell(run)
 		return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
 	}
 	output, _, truncated, _ := tailOutput(run.output, shellInlineOutputBytes)
-	_ = jm.finalize(run.rec.JobID, status, reason, exitCode)
+	if err := jm.finalizeShellWithRetry(run.rec.JobID, status, reason, exitCode); err != nil {
+		return shellResult{
+			JobID:               run.rec.JobID,
+			Type:                string(run.rec.Type),
+			Status:              string(jobstore.StatusFailed),
+			Reason:              "finalize_failed",
+			RunningInBackground: true,
+			TimedOut:            true,
+			ExitCode:            exitCode,
+			Output:              output,
+			Truncated:           truncated,
+		}
+	}
 	return shellResult{
 		JobID:               run.rec.JobID,
 		Type:                string(run.rec.Type),
@@ -276,16 +290,36 @@ func (jm *jobManager) discardDelayedShell(run *runningJob) {
 	close(run.done)
 }
 
-func (jm *jobManager) finalizeShellWhenDone(jobID string, waitCh <-chan shellWaitResult, runtimeTimedOut *atomic.Bool) {
+func (jm *jobManager) finalizeShellWhenDone(run *runningJob, waitCh <-chan shellWaitResult, runtimeTimedOut *atomic.Bool) {
 	wait := <-waitCh
-	status, reason, exitCode := shellTerminal(wait.exitCode, runtimeTimedOut.Load())
-	_ = jm.finalize(jobID, status, reason, exitCode)
+	status, reason, exitCode := jm.shellTerminal(run, wait.exitCode, runtimeTimedOut.Load())
+	_ = jm.finalizeShellWithRetry(run.rec.JobID, status, reason, exitCode)
 }
 
-func shellTerminal(exitCode int, timedOut bool) (jobstore.Status, string, *int) {
+func (jm *jobManager) finalizeShellWithRetry(jobID string, status jobstore.Status, reason string, exitCode *int) error {
+	var err error
+	for attempt := 0; attempt < shellFinalizeAttempts; attempt++ {
+		err = jm.finalize(jobID, status, reason, exitCode)
+		if err == nil {
+			return nil
+		}
+		if attempt+1 < shellFinalizeAttempts {
+			time.Sleep(shellFinalizeRetryDelay)
+		}
+	}
+	return err
+}
+
+func (jm *jobManager) shellTerminal(run *runningJob, exitCode int, timedOut bool) (jobstore.Status, string, *int) {
 	code := exitCode
 	if timedOut {
 		return jobstore.StatusStopped, "run_timeout", &code
+	}
+	jm.mu.Lock()
+	stopStatus, stopReason := run.stopStatus, run.stopReason
+	jm.mu.Unlock()
+	if stopStatus != "" {
+		return stopStatus, stopReason, &code
 	}
 	if exitCode == 0 {
 		return jobstore.StatusCompleted, "exit_zero", &code
