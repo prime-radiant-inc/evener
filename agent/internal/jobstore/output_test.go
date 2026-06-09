@@ -1,6 +1,7 @@
 package jobstore
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"io"
@@ -351,6 +352,127 @@ func TestOutputRecoversPendingMetadataBeforeDestructivePrune(t *testing.T) {
 	}
 }
 
+func TestOutputRecoversPendingMetadataWhenFinalRetainedExceedsDiscardedPrefix(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	finalRetained := []byte("bcdef")
+	pendingRetained := []byte("cdefg")
+	if err := os.WriteFile(path, []byte("bcdefg"), 0o644); err != nil {
+		t.Fatalf("write unpruned output: %v", err)
+	}
+	if err := writeOutputMetaFile(outputMetaPath(path), outputMeta{
+		TotalBytes:     int64(len("abcdef")),
+		RetainedStart:  int64(len("a")),
+		RetainedSHA256: outputBytesSHA256(finalRetained),
+	}); err != nil {
+		t.Fatalf("write stale final metadata: %v", err)
+	}
+	if err := writeOutputMetaFile(outputPendingMetaPath(outputMetaPath(path)), outputMeta{
+		TotalBytes:     int64(len("abcdefg")),
+		RetainedStart:  int64(len("ab")),
+		RetainedSHA256: outputBytesSHA256(pendingRetained),
+	}); err != nil {
+		t.Fatalf("write pending metadata: %v", err)
+	}
+
+	total, retainedStart, err := OutputFileStats(path)
+	if err != nil {
+		t.Fatalf("stats with pending metadata before small prune: %v", err)
+	}
+	if total != int64(len("abcdefg")) || retainedStart != int64(len("a")) {
+		t.Fatalf("stats total=%d retainedStart=%d, want full previous retained output plus append", total, retainedStart)
+	}
+
+	o, err := OpenOutput(path, int64(len(pendingRetained)))
+	if err != nil {
+		t.Fatalf("reopen with pending metadata before small prune: %v", err)
+	}
+	data, total, truncated, err := o.Tail(1024)
+	if err != nil {
+		t.Fatalf("tail: %v", err)
+	}
+	if !bytes.Equal(data, pendingRetained) {
+		t.Fatalf("tail = %q, want retained output", data)
+	}
+	if total != int64(len("abcdefg")) || !truncated {
+		t.Fatalf("total=%d truncated=%v, want pending lifetime and truncated", total, truncated)
+	}
+}
+
+func TestOutputRecoversPendingMetadataWhenDiscardedPrefixExceedsFinalRetained(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	finalRetained := []byte("bcdef")
+	pendingRetained := []byte("hijkl")
+	if err := os.WriteFile(path, []byte("bcdefghijkl"), 0o644); err != nil {
+		t.Fatalf("write unpruned output after large append: %v", err)
+	}
+	if err := writeOutputMetaFile(outputMetaPath(path), outputMeta{
+		TotalBytes:     int64(len("abcdef")),
+		RetainedStart:  int64(len("a")),
+		RetainedSHA256: outputBytesSHA256(finalRetained),
+	}); err != nil {
+		t.Fatalf("write stale final metadata: %v", err)
+	}
+	if err := writeOutputMetaFile(outputPendingMetaPath(outputMetaPath(path)), outputMeta{
+		TotalBytes:     int64(len("abcdefghijkl")),
+		RetainedStart:  int64(len("abcdefg")),
+		RetainedSHA256: outputBytesSHA256(pendingRetained),
+	}); err != nil {
+		t.Fatalf("write pending metadata: %v", err)
+	}
+
+	total, retainedStart, err := OutputFileStats(path)
+	if err != nil {
+		t.Fatalf("stats with pending metadata after large append: %v", err)
+	}
+	if total != int64(len("abcdefghijkl")) || retainedStart != int64(len("a")) {
+		t.Fatalf("stats total=%d retainedStart=%d, want full previous retained output plus large append", total, retainedStart)
+	}
+
+	o, err := OpenOutput(path, int64(len(pendingRetained)))
+	if err != nil {
+		t.Fatalf("reopen with pending metadata after large append: %v", err)
+	}
+	data, total, truncated, err := o.Tail(1024)
+	if err != nil {
+		t.Fatalf("tail: %v", err)
+	}
+	if !bytes.Equal(data, pendingRetained) {
+		t.Fatalf("tail = %q, want pending retained output", data)
+	}
+	if total != int64(len("abcdefghijkl")) || !truncated {
+		t.Fatalf("total=%d truncated=%v, want pending lifetime and truncated", total, truncated)
+	}
+}
+
+func TestOutputRejectsPendingMetadataWithCorruptPrefixBeforeDestructivePrune(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	retained := []byte("new\n")
+	if err := os.WriteFile(path, []byte("BAD\nnew\n"), 0o644); err != nil {
+		t.Fatalf("write unpruned output: %v", err)
+	}
+	if err := writeOutputMetaFile(outputMetaPath(path), outputMeta{
+		TotalBytes:     int64(len("old\n")),
+		RetainedStart:  0,
+		RetainedSHA256: outputBytesSHA256([]byte("old\n")),
+	}); err != nil {
+		t.Fatalf("write final metadata: %v", err)
+	}
+	if err := writeOutputMetaFile(outputPendingMetaPath(outputMetaPath(path)), outputMeta{
+		TotalBytes:     int64(len("old\nnew\n")),
+		RetainedStart:  int64(len("old\n")),
+		RetainedSHA256: outputBytesSHA256(retained),
+	}); err != nil {
+		t.Fatalf("write pending metadata: %v", err)
+	}
+
+	if _, _, err := OutputFileStats(path); err == nil {
+		t.Fatal("OutputFileStats with corrupt pre-prune prefix succeeded, want metadata mismatch")
+	}
+	if _, err := OpenOutput(path, int64(len(retained))); err == nil {
+		t.Fatal("OpenOutput with corrupt pre-prune prefix succeeded, want metadata mismatch")
+	}
+}
+
 func TestOutputRejectsCorruptPendingMetadataWithoutFallback(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "job_A.log")
 	retained := []byte("same\n")
@@ -595,5 +717,83 @@ func TestOutputGrepLimitSkipsOverlongLine(t *testing.T) {
 	}
 	if matches[0].ByteOffset != int64(len(overlong)) {
 		t.Fatalf("byte offset = %d, want %d", matches[0].ByteOffset, len(overlong))
+	}
+}
+
+func TestOutputGrepLineLimitAllowsExactContentWithLF(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, 1<<20)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	line := strings.Repeat("x", 63) + "ready"
+	appendOutput(t, o, line+"\n")
+
+	matches, err := o.GrepLimitLineBytes(regexp.MustCompile(`ready$`), 1024, 10, len(line))
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	if len(matches) != 1 || matches[0].Line != line {
+		t.Fatalf("matches = %+v, want exact-boundary LF line", matches)
+	}
+}
+
+func TestOutputGrepLineLimitAllowsExactContentWithCRLF(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, 1<<20)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	line := strings.Repeat("x", 63) + "ready"
+	appendOutput(t, o, line+"\r\n")
+
+	matches, err := o.GrepLimitLineBytes(regexp.MustCompile(`ready$`), 1024, 10, len(line))
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	if len(matches) != 1 || matches[0].Line != line {
+		t.Fatalf("matches = %+v, want exact-boundary CRLF line", matches)
+	}
+}
+
+func TestOutputGrepLineLimitAllowsExactContentWithFragmentedCRLF(t *testing.T) {
+	line := strings.Repeat("x", 63) + "ready"
+	r := bufio.NewReaderSize(strings.NewReader(line+"\r\n"), len(line)+1)
+
+	matches, err := grepReaderLimit(r, regexp.MustCompile(`ready$`), 1024, 10, len(line))
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	if len(matches) != 1 || matches[0].Line != line {
+		t.Fatalf("matches = %+v, want exact-boundary fragmented CRLF line", matches)
+	}
+}
+
+func TestOutputGrepLineLimitSkipsContentBeyondLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, 1<<20)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	line := strings.Repeat("x", 64) + "ready"
+	appendOutput(t, o, line+"\n")
+
+	matches, err := o.GrepLimitLineBytes(regexp.MustCompile(`ready$`), 1024, 10, len(line)-1)
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("matches = %+v, want over-limit content skipped", matches)
+	}
+}
+
+func TestOutputGrepLineLimitCountsStandaloneTrailingCRAsContent(t *testing.T) {
+	line := strings.Repeat("x", 63) + "ready\r"
+	matches, err := grepReaderLimit(bufio.NewReader(strings.NewReader(line)), regexp.MustCompile(`ready\r$`), 1024, 10, len(line)-1)
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("matches = %+v, want standalone trailing CR counted as over-limit content", matches)
 	}
 }

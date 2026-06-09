@@ -13,7 +13,10 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
 
-const delegateFinalizeWaitTimeout = 5 * time.Second
+const (
+	delegateFinalizeWaitTimeout = 5 * time.Second
+	delegateFinalizeRetryDelay  = 20 * time.Millisecond
+)
 
 type delegateArgs struct {
 	Task            string
@@ -559,17 +562,7 @@ func (s *Session) attachDelegateJob(jm *jobManager, childID, task string, sub *s
 		VisibleToSession: run.rec.VisibleToSession,
 		StartedAt:        &startedAt,
 		OutputPath:       run.rec.OutputPath,
-	}); err != nil {
-		jm.mu.Unlock()
-		_ = output.Close()
-		_ = os.Remove(outputPath)
-		return nil, err
-	}
-	if err := jm.appendEvent(jobstore.Event{
-		Kind:          jobstore.EventJobSessionAssigned,
-		TS:            startedAt,
-		JobID:         run.rec.JobID,
-		TranscriptRef: run.rec.TranscriptRef,
+		TranscriptRef:    run.rec.TranscriptRef,
 	}); err != nil {
 		jm.mu.Unlock()
 		_ = output.Close()
@@ -614,6 +607,20 @@ func (s *Session) finalizeDelegate(jobID, childID string, sub *subagent) error {
 		sub = s.subagents.get(childID)
 	}
 
+	for {
+		err := s.finalizeDelegateOnce(jm, jobID, sub)
+		if err == nil {
+			return nil
+		}
+		if delegateFinalizeStopsRetry(jm, err) {
+			jm.abandonRunningJob(jobID)
+			return err
+		}
+		time.Sleep(delegateFinalizeRetryDelay)
+	}
+}
+
+func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subagent) error {
 	return jm.finalizeWithRun(jobID, func(run *runningJob) (jobstore.Status, string, *int, error) {
 		if sub == nil {
 			return jobstore.StatusFailed, "child_missing", nil, nil
@@ -633,22 +640,48 @@ func (s *Session) finalizeDelegate(jobID, childID string, sub *subagent) error {
 			structured = childSess.CommunicateStructured()
 		}
 
-		jm.mu.Lock()
-		run.structured = structured
-		run.afterDurableFinish = func() {
-			sub.mu.Lock()
-			sub.resultConsumed = true
-			sub.mu.Unlock()
-		}
-		outputAppended := run.delegateOutputAppended
-		jm.mu.Unlock()
-		if !outputAppended {
-			if err := appendDelegateOutput(run, prose); err != nil {
+		output := delegateOutputBytes(prose)
+		for {
+			jm.mu.Lock()
+			run.structured = structured
+			run.afterDurableFinish = func() {
+				sub.mu.Lock()
+				sub.resultConsumed = true
+				sub.mu.Unlock()
+			}
+			outputAppended := run.delegateOutputAppended
+			outputWritten := run.delegateOutputWritten
+			jm.mu.Unlock()
+			if outputAppended {
+				break
+			}
+			if outputWritten >= len(output) {
+				if len(output) > 0 {
+					if _, err := appendDelegateOutput(run, nil); err != nil {
+						return "", "", nil, err
+					}
+				}
+				jm.mu.Lock()
+				run.delegateOutputAppended = true
+				jm.mu.Unlock()
+				break
+			}
+			n, err := appendDelegateOutput(run, output[outputWritten:])
+			if n > 0 {
+				jm.mu.Lock()
+				run.delegateOutputWritten += n
+				outputWritten = run.delegateOutputWritten
+				jm.mu.Unlock()
+			}
+			if err != nil {
 				return "", "", nil, err
 			}
-			jm.mu.Lock()
-			run.delegateOutputAppended = true
-			jm.mu.Unlock()
+			if outputWritten >= len(output) {
+				jm.mu.Lock()
+				run.delegateOutputAppended = true
+				jm.mu.Unlock()
+				break
+			}
 		}
 
 		jobStatus, reason := delegateTerminalStatus(jm, run, status)
@@ -656,18 +689,36 @@ func (s *Session) finalizeDelegate(jobID, childID string, sub *subagent) error {
 	})
 }
 
-func appendDelegateOutput(run *runningJob, prose string) error {
-	if run == nil || run.output == nil {
-		return nil
+func delegateFinalizeStopsRetry(jm *jobManager, err error) bool {
+	return errors.Is(err, errJobManagerClosing) ||
+		errors.Is(err, jobstore.ErrStoreClosed) ||
+		delegateJobManagerClosing(jm)
+}
+
+func delegateJobManagerClosing(jm *jobManager) bool {
+	if jm == nil {
+		return true
 	}
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return jm.closing
+}
+
+func delegateOutputBytes(prose string) []byte {
 	if strings.TrimSpace(prose) == "" {
 		return nil
 	}
 	if !strings.HasSuffix(prose, "\n") {
 		prose += "\n"
 	}
-	_, err := run.output.Append([]byte(prose))
-	return err
+	return []byte(prose)
+}
+
+func appendDelegateOutput(run *runningJob, b []byte) (int, error) {
+	if run == nil || run.output == nil {
+		return 0, nil
+	}
+	return run.output.Append(b)
 }
 
 func delegateTerminalStatus(jm *jobManager, run *runningJob, status SubagentStatus) (jobstore.Status, string) {

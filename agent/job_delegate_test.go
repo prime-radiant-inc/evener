@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -121,6 +122,50 @@ func TestCreateDelegateBackgroundReturnsRunningJob(t *testing.T) {
 
 	_, _ = sess.jobManager.stop(res.JobID)
 	releaseOnce.Do(func() { close(release) })
+	waitForShellDone(t, sess.jobManager, res.JobID)
+}
+
+func TestCreateDelegateStartupDoesNotLeaveUnreturnedRunningJob(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess := newDelegateTestSession(t, c)
+
+	var sawDelegateStart atomic.Bool
+	origAppend := sess.jobManager.appendEvent
+	sess.jobManager.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventJobStarted && e.Type == jobstore.JobDelegate {
+			sawDelegateStart.Store(true)
+			return origAppend(e)
+		}
+		if sawDelegateStart.Load() && e.Kind == jobstore.EventJobSessionAssigned {
+			return errors.New("redundant assignment append must not be required")
+		}
+		return origAppend(e)
+	}
+
+	res := sess.createDelegate(context.Background(), delegateArgs{
+		Task:       "fail after delegate start",
+		Background: true,
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", res.Err)
+	}
+	if res.JobID == "" {
+		t.Fatal("successful startup returned empty job_id")
+	}
+	if !sawDelegateStart.Load() {
+		t.Fatal("delegate job_started append was not attempted")
+	}
+
+	jobs := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate})
+	if len(jobs) != 1 {
+		t.Fatalf("delegate jobs = %+v, want one returned live job", jobs)
+	}
+	if jobs[0].JobID != res.JobID || jobs[0].Status != jobstore.StatusRunning || jobs[0].TranscriptRef == "" {
+		t.Fatalf("durable delegate = %+v, result = %+v; want same running job with transcript_ref", jobs[0], res)
+	}
+
+	_, _ = sess.jobManager.stop(res.JobID)
 	waitForShellDone(t, sess.jobManager, res.JobID)
 }
 
@@ -544,36 +589,30 @@ func TestDelegateNotificationCarriesTranscriptRef(t *testing.T) {
 	}
 }
 
-func TestCreateDelegateForegroundFinalizeFailureReturns(t *testing.T) {
+func TestCreateDelegateForegroundFinalizeFailureRetriesUntilDurable(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return communicateWithStructured("finalize failure child complete", map[string]any{
-					"message": "finalize failure child complete",
-				})
+				return communicateWithDefaultOutput("finalize failure child complete")
 			},
 		},
 	})
 	sess := newDelegateTestSession(t, c)
-	appendErr := errors.New("append failed")
 	var finishAttempts atomic.Int32
 	origAppend := sess.jobManager.appendEvent
 	defer func() { sess.jobManager.appendEvent = origAppend }()
 	sess.jobManager.appendEvent = func(e jobstore.Event) error {
-		if e.Kind == jobstore.EventJobFinished {
-			finishAttempts.Add(1)
-			return appendErr
+		if e.Kind == jobstore.EventJobFinished && finishAttempts.Add(1) <= 2 {
+			return errors.New("append failed")
 		}
 		return origAppend(e)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancel()
 	done := make(chan delegateResult, 1)
 	go func() {
-		done <- sess.createDelegate(ctx, delegateArgs{
+		done <- sess.createDelegate(context.Background(), delegateArgs{
 			Task:           "finish while append fails",
 			Background:     false,
 			BlockTimeoutMS: 5000,
@@ -584,25 +623,16 @@ func TestCreateDelegateForegroundFinalizeFailureReturns(t *testing.T) {
 	select {
 	case res = <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("createDelegate hung after finalization append failure")
+		t.Fatal("createDelegate did not retry finalization append failure")
 	}
-	if res.Err == nil || !errors.Is(res.Err, appendErr) {
-		t.Fatalf("result error = %v, want append failure", res.Err)
+	if res.Err != nil {
+		t.Fatalf("createDelegate returned error after retry: %v", res.Err)
 	}
-	if res.Reason != "finalize_failed" {
-		t.Fatalf("result = %+v, want finalize_failed", res)
+	if res.Status != jobstore.StatusCompleted {
+		t.Fatalf("result = %+v, want completed", res)
 	}
-	if finishAttempts.Load() == 0 {
-		t.Fatal("job_finished append was not attempted")
-	}
-
-	sess.jobManager.appendEvent = origAppend
-	_, childID, err := decodeRef(res.TranscriptRef)
-	if err != nil {
-		t.Fatalf("decode transcript ref: %v", err)
-	}
-	if err := sess.finalizeDelegate(res.JobID, childID, nil); err != nil {
-		t.Fatalf("cleanup finalizeDelegate: %v", err)
+	if finishAttempts.Load() < 3 {
+		t.Fatalf("job_finished attempts = %d, want retry until success", finishAttempts.Load())
 	}
 	waitForShellDone(t, sess.jobManager, res.JobID)
 }
@@ -636,13 +666,8 @@ func TestFinalizeDelegateRetryAfterDurableFailureDoesNotDuplicateOutput(t *testi
 		return origAppend(e)
 	}
 	err = parent.finalizeDelegate(run.rec.JobID, child.ID(), sub)
-	if !errors.Is(err, appendErr) {
-		t.Fatalf("first finalizeDelegate error = %v, want %v", err, appendErr)
-	}
-
-	parent.jobManager.appendEvent = origAppend
-	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
-		t.Fatalf("retry finalizeDelegate: %v", err)
+	if err != nil {
+		t.Fatalf("finalizeDelegate after retry: %v", err)
 	}
 	waitForShellDone(t, parent.jobManager, run.rec.JobID)
 
@@ -659,9 +684,309 @@ func TestFinalizeDelegateRetryAfterDurableFailureDoesNotDuplicateOutput(t *testi
 	}
 }
 
+func TestFinalizeDelegateRetriesJobFinishedAppendUntilDurable(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	child.mu.Lock()
+	child.comm.structured = map[string]any{"summary": "retry structured"}
+	child.mu.Unlock()
+	sub := completedDelegateSubagent(child, "retry finished append")
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "retry terminal", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+
+	var finishAttempts atomic.Int32
+	origAppend := parent.jobManager.appendEvent
+	parent.jobManager.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventJobFinished && finishAttempts.Add(1) <= 2 {
+			return errors.New("job_finished failed")
+		}
+		return origAppend(e)
+	}
+
+	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
+		t.Fatalf("finalizeDelegate: %v", err)
+	}
+	if finishAttempts.Load() < 3 {
+		t.Fatalf("job_finished attempts = %d, want retry until success", finishAttempts.Load())
+	}
+	waitForShellDone(t, parent.jobManager, run.rec.JobID)
+	rec := loadShellRecord(t, parent.jobManager, run.rec.JobID)
+	if rec.Status != jobstore.StatusCompleted {
+		t.Fatalf("record status = %q, want completed", rec.Status)
+	}
+	structured, ok := rec.StructuredResult.(map[string]any)
+	if !ok || structured["summary"] != "retry structured" {
+		t.Fatalf("structured_result = %+v, want retry structured", rec.StructuredResult)
+	}
+	if rec.StructuredResultValid == nil || !*rec.StructuredResultValid {
+		t.Fatalf("structured_result_valid = %v, want true", rec.StructuredResultValid)
+	}
+}
+
+func TestFinalizeDelegateRetriesOutputAppendWithoutClosingDone(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	sub := completedDelegateSubagent(child, "retry output append")
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "retry output", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+	if err := run.output.Close(); err != nil {
+		t.Fatalf("close delegate output: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- parent.finalizeDelegate(run.rec.JobID, child.ID(), sub)
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("finalizeDelegate returned before output was writable: %v", err)
+	case <-run.done:
+		t.Fatal("delegate done closed before output append was durable")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	reopened, err := jobstore.OpenOutput(run.rec.OutputPath, 0)
+	if err != nil {
+		t.Fatalf("reopen delegate output: %v", err)
+	}
+	parent.jobManager.mu.Lock()
+	run.output = reopened
+	parent.jobManager.mu.Unlock()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("finalizeDelegate after output recovery: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("finalizeDelegate did not retry after output recovery")
+	}
+	waitForShellDone(t, parent.jobManager, run.rec.JobID)
+}
+
+func TestFinalizeDelegateOutputPostWriteFailureDoesNotDuplicateOutput(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	prose := "post-write append failure"
+	sub := completedDelegateSubagent(child, prose)
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "retry post-write output", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+
+	metaTmpPath := run.rec.OutputPath + ".meta.json.tmp"
+	if err := os.Mkdir(metaTmpPath, 0o755); err != nil {
+		t.Fatalf("create metadata temp directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(metaTmpPath) })
+
+	done := make(chan error, 1)
+	go func() {
+		done <- parent.finalizeDelegate(run.rec.JobID, child.ID(), sub)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		raw, readErr := os.ReadFile(run.rec.OutputPath)
+		if readErr != nil {
+			t.Fatalf("read output file: %v", readErr)
+		}
+		if strings.Contains(string(raw), prose) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("delegate output was not written before append error")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("finalizeDelegate returned before metadata write recovered: %v", err)
+	default:
+	}
+
+	if err := os.RemoveAll(metaTmpPath); err != nil {
+		t.Fatalf("remove metadata temp directory: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("finalizeDelegate after metadata recovery: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("finalizeDelegate did not retry after metadata recovery")
+	}
+	waitForShellDone(t, parent.jobManager, run.rec.JobID)
+	output, _, _, err := parent.jobManager.readOutput(run.rec.JobID, shellInlineOutputBytes)
+	if err != nil {
+		t.Fatalf("read delegate output: %v", err)
+	}
+	if got := strings.Count(output, prose); got != 1 {
+		t.Fatalf("delegate output contains terminal prose %d times, want 1: %q", got, output)
+	}
+}
+
+func TestFinalizeDelegateRetriesNotificationPendingAppendKeepsTerminalResult(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	sub := completedDelegateSubagent(child, "retry notification append")
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "retry notification", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+
+	var pendingAttempts atomic.Int32
+	origAppend := parent.jobManager.appendEvent
+	parent.jobManager.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventJobNotificationPending && pendingAttempts.Add(1) <= 2 {
+			return errors.New("notification pending failed")
+		}
+		return origAppend(e)
+	}
+
+	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
+		t.Fatalf("finalizeDelegate: %v", err)
+	}
+	if pendingAttempts.Load() < 3 {
+		t.Fatalf("notification pending attempts = %d, want retry until success", pendingAttempts.Load())
+	}
+	waitForShellDone(t, parent.jobManager, run.rec.JobID)
+	rec := loadShellRecord(t, parent.jobManager, run.rec.JobID)
+	if rec.Status != jobstore.StatusCompleted {
+		t.Fatalf("record status = %q, want completed", rec.Status)
+	}
+	output, _, _, err := parent.jobManager.readOutput(run.rec.JobID, shellInlineOutputBytes)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if !strings.Contains(output, "retry notification append") {
+		t.Fatalf("output = %q, want retained terminal result", output)
+	}
+}
+
+func TestFinalizeDelegateDuringManagerCloseDoesNotLeaveDoneOpen(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	sub := completedDelegateSubagent(child, "close finalization")
+	sub.running = true
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "close finalization", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+	var signalOnce sync.Once
+	parent.jobManager.mu.Lock()
+	run.signal = func() {
+		signalOnce.Do(func() {
+			sub.mu.Lock()
+			sub.running = false
+			sub.status = SubagentCancelled
+			sub.result = "closed during manager shutdown"
+			done := sub.done
+			sub.mu.Unlock()
+			close(done)
+		})
+	}
+	parent.jobManager.mu.Unlock()
+
+	finalizeDone := make(chan error, 1)
+	go func() {
+		<-sub.done
+		finalizeDone <- parent.finalizeDelegate(run.rec.JobID, child.ID(), sub)
+	}()
+
+	closeDone := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		closeDone <- parent.jobManager.close()
+	}()
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("jobManager.close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("jobManager.close waited for abandoned delegate timeout")
+	}
+	if elapsed := time.Since(start); elapsed >= 2*time.Second {
+		t.Fatalf("jobManager.close took %s, want no abandonment timeout", elapsed)
+	}
+	select {
+	case err := <-finalizeDone:
+		if err != nil && !errors.Is(err, errJobManagerClosing) {
+			t.Fatalf("finalizeDelegate during close error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("finalizeDelegate did not return during close")
+	}
+	select {
+	case <-run.done:
+	default:
+		t.Fatal("delegate run.done left open after manager close")
+	}
+	parent.jobManager.mu.Lock()
+	stuck := parent.jobManager.running[run.rec.JobID]
+	parent.jobManager.mu.Unlock()
+	if stuck != nil {
+		t.Fatalf("delegate runtime still registered after manager close: %+v", stuck.rec)
+	}
+}
+
+func TestFinalizeDelegateDuplicateTerminalNotificationsAreIdempotent(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	sub := completedDelegateSubagent(child, "duplicate terminal")
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "duplicate terminal", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+	var finished, pending atomic.Int32
+	origAppend := parent.jobManager.appendEvent
+	parent.jobManager.appendEvent = func(e jobstore.Event) error {
+		if e.JobID == run.rec.JobID {
+			switch e.Kind {
+			case jobstore.EventJobFinished:
+				finished.Add(1)
+			case jobstore.EventJobNotificationPending:
+				pending.Add(1)
+			}
+		}
+		return origAppend(e)
+	}
+
+	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
+		t.Fatalf("first finalizeDelegate: %v", err)
+	}
+	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
+		t.Fatalf("second finalizeDelegate: %v", err)
+	}
+	waitForShellDone(t, parent.jobManager, run.rec.JobID)
+
+	output, _, _, err := parent.jobManager.readOutput(run.rec.JobID, shellInlineOutputBytes)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if got := strings.Count(output, "duplicate terminal"); got != 1 {
+		t.Fatalf("output contains delegate result %d times, want 1: %q", got, output)
+	}
+	if finished.Load() != 1 || pending.Load() != 1 {
+		t.Fatalf("terminal events finished=%d pending=%d, want one each", finished.Load(), pending.Load())
+	}
+}
+
 func TestCreateDelegateForegroundOutputAppendFailureReturns(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
+	var startedOnce sync.Once
 	var releaseOnce sync.Once
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 
@@ -670,11 +995,9 @@ func TestCreateDelegateForegroundOutputAppendFailureReturns(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				close(started)
+				startedOnce.Do(func() { close(started) })
 				<-release
-				return communicateWithStructured("append failure child complete", map[string]any{
-					"message": "append failure child complete",
-				})
+				return communicateWithDefaultOutput("append failure child complete")
 			},
 		},
 	})
@@ -701,17 +1024,10 @@ func TestCreateDelegateForegroundOutputAppendFailureReturns(t *testing.T) {
 
 	releaseOnce.Do(func() { close(release) })
 
-	var res delegateResult
 	select {
-	case res = <-done:
-	case <-time.After(2 * time.Second):
-		t.Fatal("createDelegate hung after output append failure")
-	}
-	if res.Err == nil {
-		t.Fatal("result error is nil, want output append failure")
-	}
-	if res.Reason != "finalize_failed" {
-		t.Fatalf("result = %+v, want finalize_failed", res)
+	case res := <-done:
+		t.Fatalf("createDelegate returned before output append recovered: %+v", res)
+	case <-time.After(100 * time.Millisecond):
 	}
 
 	reopened, err := jobstore.OpenOutput(run.rec.OutputPath, 0)
@@ -721,12 +1037,18 @@ func TestCreateDelegateForegroundOutputAppendFailureReturns(t *testing.T) {
 	sess.jobManager.mu.Lock()
 	run.output = reopened
 	sess.jobManager.mu.Unlock()
-	_, childID, err := decodeRef(res.TranscriptRef)
-	if err != nil {
-		t.Fatalf("decode transcript ref: %v", err)
+
+	var res delegateResult
+	select {
+	case res = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("createDelegate did not retry after output append recovery")
 	}
-	if err := sess.finalizeDelegate(res.JobID, childID, nil); err != nil {
-		t.Fatalf("cleanup finalizeDelegate: %v", err)
+	if res.Err != nil {
+		t.Fatalf("createDelegate returned error after output recovery: %v", res.Err)
+	}
+	if res.Status != jobstore.StatusCompleted {
+		t.Fatalf("result = %+v, want completed", res)
 	}
 	waitForShellDone(t, sess.jobManager, res.JobID)
 }
@@ -1407,6 +1729,17 @@ func newDelegateTestSession(t *testing.T, c *llm.Client) *Session {
 	}
 	t.Cleanup(func() { sess.Close() })
 	return sess
+}
+
+func completedDelegateSubagent(child *Session, result string) *subagent {
+	return &subagent{
+		id:      child.ID(),
+		sess:    child,
+		running: false,
+		status:  SubagentCompleted,
+		result:  result,
+		done:    make(chan struct{}),
+	}
 }
 
 func runningDelegateJob(t *testing.T, jm *jobManager, jobID string) *runningJob {

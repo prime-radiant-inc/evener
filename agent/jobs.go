@@ -44,6 +44,7 @@ type runningJob struct {
 	terminal               *terminalJob
 	finalize               *finalizeAttempt
 	delegateOutputAppended bool
+	delegateOutputWritten  int
 	afterDurableFinish     func()
 }
 
@@ -180,6 +181,22 @@ func (jm *jobManager) abandonRunningJobs() {
 			_ = run.output.Close()
 		}
 	}
+}
+
+func (jm *jobManager) abandonRunningJob(jobID string) {
+	jm.mu.Lock()
+	run := jm.running[jobID]
+	if run != nil {
+		delete(jm.running, jobID)
+	}
+	jm.mu.Unlock()
+	if run == nil {
+		return
+	}
+	if run.output != nil {
+		_ = run.output.Close()
+	}
+	close(run.done)
 }
 
 func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, error) {

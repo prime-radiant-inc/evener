@@ -385,7 +385,7 @@ func outputPendingMetaPath(metaPath string) string {
 }
 
 func readOutputMetaForFile(path string, outputPath string, retained int64) (total int64, retainedStart int64, err error) {
-	pending, ok, err := readValidPendingOutputMeta(outputPendingMetaPath(path), outputPath, retained)
+	pending, ok, err := readValidPendingOutputMeta(outputPendingMetaPath(path), path, outputPath, retained)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -417,7 +417,7 @@ func readOutputMeta(path string) (outputMeta, bool, error) {
 	return meta, true, nil
 }
 
-func readValidPendingOutputMeta(path string, outputPath string, retained int64) (outputMeta, bool, error) {
+func readValidPendingOutputMeta(path string, finalMetaPath string, outputPath string, retained int64) (outputMeta, bool, error) {
 	meta, ok, err := readOutputMeta(path)
 	if err != nil || !ok {
 		return outputMeta{}, ok, err
@@ -433,6 +433,28 @@ func readValidPendingOutputMeta(path string, outputPath string, retained int64) 
 			return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
 		}
 		if meta.TotalBytes < retained {
+			return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
+		}
+		finalMeta, ok, err := readOutputMeta(finalMetaPath)
+		if err != nil {
+			return outputMeta{}, false, err
+		}
+		if !ok {
+			return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
+		}
+		prefixLen := retained - metaRetained
+		finalRetained, err := outputMetaRetainedBytes(finalMeta)
+		if err != nil {
+			return outputMeta{}, false, err
+		}
+		if finalRetained > retained ||
+			meta.RetainedStart != finalMeta.RetainedStart+prefixLen ||
+			meta.TotalBytes-retained != finalMeta.RetainedStart {
+			return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
+		}
+		if ok, err := outputFileHasPrefixSHA256(outputPath, finalRetained, finalMeta.RetainedSHA256); err != nil {
+			return outputMeta{}, false, err
+		} else if !ok {
 			return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
 		}
 		hash, err := outputFileSHA256(outputPath)
@@ -581,7 +603,8 @@ func grepReaderLimit(r *bufio.Reader, re *regexp.Regexp, limitBytes int, maxMatc
 		frag, err := r.ReadSlice('\n')
 		if len(frag) > 0 {
 			if !overlong {
-				if len(line)+len(frag) > maxLineBytes {
+				contentLen := logicalLineContentLen(line, frag)
+				if contentLen > maxLineBytes {
 					overlong = true
 					line = line[:0]
 				} else {
@@ -605,6 +628,9 @@ func grepReaderLimit(r *bufio.Reader, re *regexp.Regexp, limitBytes int, maxMatc
 			}
 			if errors.Is(err, io.EOF) {
 				if len(line) > 0 || overlong {
+					if !overlong && len(line) > maxLineBytes {
+						overlong = true
+					}
 					appendGrepLine(&matches, re, lineAt, line, &budget, maxMatches, overlong)
 				}
 				break
@@ -613,6 +639,27 @@ func grepReaderLimit(r *bufio.Reader, re *regexp.Regexp, limitBytes int, maxMatc
 		}
 	}
 	return matches, nil
+}
+
+func logicalLineContentLen(line []byte, frag []byte) int {
+	n := len(line) + len(frag)
+	if len(frag) == 0 {
+		return n
+	}
+	if frag[len(frag)-1] != '\n' {
+		if frag[len(frag)-1] == '\r' {
+			return n - 1
+		}
+		return n
+	}
+	n--
+	if len(frag) > 1 && frag[len(frag)-2] == '\r' {
+		return n - 1
+	}
+	if len(frag) == 1 && len(line) > 0 && line[len(line)-1] == '\r' {
+		return n - 1
+	}
+	return n
 }
 
 func appendGrepLine(matches *[]Match, re *regexp.Regexp, offset int64, raw []byte, budget *int, maxMatches int, overlong bool) (stop bool) {

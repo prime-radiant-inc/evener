@@ -35,6 +35,7 @@ func applyEvent(r *JobRecord, e Event) {
 		r.OriginTurnID = e.OriginTurnID
 		r.OriginToolCallID = e.OriginToolCallID
 		r.OutputPath = e.OutputPath
+		r.TranscriptRef = e.TranscriptRef
 		if e.StartedAt != nil {
 			r.StartedAt = *e.StartedAt
 		}
