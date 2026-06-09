@@ -210,6 +210,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	subCfg.spawn.parentSessionID = s.id
 	subCfg.spawn.subagentTask = task
 	subCfg.spawn.depth = depth + 1
+	subCfg.spawn.parentSteer = s.Steer
 	if s.cfg.ShareTasksWithChildren {
 		subCfg.spawn.sharedTaskStore = s.getOrCreateTaskStore()
 	} else {

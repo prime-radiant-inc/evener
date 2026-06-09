@@ -244,6 +244,7 @@ func TestSessionConfig_SpawnFieldsDropOnPersist(t *testing.T) {
 		spawn: spawnConfig{
 			parentSessionID:      "01PARENT",
 			parentToolCallID:     "call_abc",
+			parentSteer:          func(string) {},
 			subagentTask:         "do the thing",
 			depth:                3,
 			sharedTaskStore:      task.NewTaskStore("", "01PARENT"),
@@ -266,7 +267,7 @@ func TestSessionConfig_SpawnFieldsDropOnPersist(t *testing.T) {
 	}
 	for _, key := range []string{
 		"spawn", "parent_session_id", "parentSessionID", "subagent_task",
-		"depth", "shared_task_store", "role_prompt_override",
+		"parent_steer", "parentSteer", "depth", "shared_task_store", "role_prompt_override",
 		"allowed_tool_names", "denied_tool_names",
 	} {
 		if _, ok := raw[key]; ok {
@@ -282,7 +283,7 @@ func TestSessionConfig_SpawnFieldsDropOnPersist(t *testing.T) {
 	}
 	s := got.spawn
 	if s.parentSessionID != "" || s.parentToolCallID != "" || s.subagentTask != "" ||
-		s.depth != 0 || s.sharedTaskStore != nil || s.rolePromptOverride != "" ||
+		s.parentSteer != nil || s.depth != 0 || s.sharedTaskStore != nil || s.rolePromptOverride != "" ||
 		s.activatedSkillBodies != nil || s.allowedToolNames != nil || s.deniedToolNames != nil {
 		t.Fatalf("restored spawn must be the zero spawnConfig, got %+v", s)
 	}

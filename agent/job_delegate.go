@@ -157,7 +157,11 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		return sendMessageFailed(target, errors.New("message is required"))
 	}
 	if isRuntimeMessageAlias(target) {
-		s.Steer(message)
+		if steer := s.cfg.spawn.parentSteer; steer != nil {
+			steer(message)
+		} else {
+			s.Steer(message)
+		}
 		return sendMessageResult{
 			Target:      target,
 			Action:      "sent",

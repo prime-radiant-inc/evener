@@ -494,6 +494,9 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind) ([]
 		for _, name := range rootOnlyAgentManagementTools {
 			s.reg.Remove(name)
 		}
+		for _, name := range rootOnlyJobControlTools {
+			s.reg.Remove(name)
+		}
 	}
 
 	// Cache project docs once; reused every round for system prompt rebuilds.

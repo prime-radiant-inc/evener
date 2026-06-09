@@ -193,6 +193,9 @@ type spawnConfig struct {
 	// parentToolCallID is the tool call ID that spawned this sub-agent session.
 	parentToolCallID string
 
+	// parentSteer routes runtime alias messages from a live sub-agent to its caller.
+	parentSteer func(string)
+
 	// subagentTask is the task description passed to spawn_agent.
 	subagentTask string
 

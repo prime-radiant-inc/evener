@@ -1084,6 +1084,40 @@ func TestSendDelegateMessageAliasTargetDeliversRuntimeMessage(t *testing.T) {
 	}
 }
 
+func TestSendDelegateMessageAliasFromSubagentSteersCaller(t *testing.T) {
+	parent := newTestSession(t)
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	subCfg := SessionConfig{MaxSubagentDepth: 2}
+	subCfg.spawn.depth = 1
+	subCfg.spawn.parentSessionID = parent.ID()
+	subCfg.spawn.parentSteer = parent.Steer
+	child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), subCfg)
+	if err != nil {
+		t.Fatalf("NewSession child: %v", err)
+	}
+	t.Cleanup(func() { child.Close() })
+
+	res := child.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  "caller",
+		Message: "child advisory",
+	})
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
+	}
+	if res.Target != "caller" || !res.Delivered || res.Action != "sent" || res.MessageType != "runtime" {
+		t.Fatalf("result = %+v, want runtime alias delivery", res)
+	}
+	if queue := child.SteeringQueueSnapshot(); len(queue) != 0 {
+		t.Fatalf("child steering queue = %+v, want no alias message", queue)
+	}
+	queue := parent.SteeringQueueSnapshot()
+	if len(queue) != 1 || queue[0].Text != "child advisory" {
+		t.Fatalf("parent steering queue = %+v, want child advisory", queue)
+	}
+}
+
 func newDelegateTestSession(t *testing.T, c *llm.Client) *Session {
 	t.Helper()
 	dir := t.TempDir()

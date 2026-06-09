@@ -626,9 +626,9 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 	}
 }
 
-// TestCancelAgent_ChildCannotCall asserts cancel_agent is a root-only management
-// tool: a depth>0 subagent's registry must not expose it.
-func TestCancelAgent_ChildCannotCall(t *testing.T) {
+// TestSubagentCannotCallRootOnlyControlTools asserts depth>0 subagents keep
+// job_send_message for aliases while root-only controls stay unavailable.
+func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if !isRootOnlyAgentManagementTool("cancel_agent") {
 		t.Fatal("cancel_agent must be a root-only agent-management tool")
 	}
@@ -646,5 +646,11 @@ func TestCancelAgent_ChildCannotCall(t *testing.T) {
 
 	if child.reg.Get("cancel_agent") != nil {
 		t.Fatal("depth>0 child must not have cancel_agent registered")
+	}
+	if child.reg.Get("delegate") != nil {
+		t.Fatal("depth>0 child must not have delegate registered")
+	}
+	if child.reg.Get("job_send_message") == nil {
+		t.Fatal("depth>0 child must keep job_send_message registered")
 	}
 }

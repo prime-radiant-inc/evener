@@ -32,6 +32,8 @@ const (
 	maxJobGrepPatternBytes      = 4096
 )
 
+var rootOnlyJobControlTools = []string{"delegate", "job_watch"}
+
 func registerJobTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	_ = deps
 	if err := reg.Register(tool.RegisteredTool{
