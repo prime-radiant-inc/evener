@@ -176,6 +176,14 @@ func TestJobToolsDefinitions(t *testing.T) {
 			t.Fatalf("job_list missing param %q", param)
 		}
 	}
+	cursor, ok := listProps["cursor"].(map[string]any)
+	if !ok {
+		t.Fatalf("job_list cursor schema = %T, want map[string]any", listProps["cursor"])
+	}
+	cursorTypes, ok := cursor["type"].([]any)
+	if !ok || !containsAnyString(cursorTypes, "string") || !containsAnyString(cursorTypes, "null") {
+		t.Fatalf("job_list cursor type = %#v, want string/null", cursor["type"])
+	}
 	stopProps := tooldefs.DefJobStop().Parameters["properties"].(map[string]any)
 	for _, param := range []string{"job_id", "signal", "block", "block_timeout_ms"} {
 		if _, ok := stopProps[param]; !ok {
@@ -226,6 +234,63 @@ func TestJobReadOutputRejectsInvalidArgs(t *testing.T) {
 	}
 }
 
+func TestJobListAcceptsNullCursor(t *testing.T) {
+	s := newTestSession(t)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "list",
+		Name:      "job_list",
+		Arguments: json.RawMessage(`{"cursor":null}`),
+	})
+	if res.IsError {
+		t.Fatalf("job_list returned error for null cursor: %s", res.Output)
+	}
+	var out struct {
+		NextCursor *string `json:"next_cursor"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal job_list output: %v (output: %s)", err, res.Output)
+	}
+	if out.NextCursor != nil {
+		t.Fatalf("next_cursor = %q, want null", *out.NextCursor)
+	}
+}
+
+func TestJobReadOutputRejectsLargeGrepBeforeRegistryTruncation(t *testing.T) {
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"printf 'ready-line\n'","background":true}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(shellOut.JobID)
+		waitForShellDone(t, s.jobManager, shellOut.JobID)
+	})
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "read",
+		Name:      "job_read_output",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"grep":%q}`, shellOut.JobID, strings.Repeat("a", maxJobGrepPatternBytes+1))),
+	})
+	if !res.IsError {
+		t.Fatalf("job_read_output succeeded, want error: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "grep must be at most") {
+		t.Fatalf("job_read_output error = %q, want grep limit", res.Output)
+	}
+}
+
 type jobReadOutputTestResult struct {
 	JobID   string  `json:"job_id"`
 	Type    string  `json:"type"`
@@ -270,6 +335,15 @@ func waitForJobOutput(t *testing.T, s *Session, jobID, want string) jobReadOutpu
 }
 
 func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAnyString(values []any, want string) bool {
 	for _, value := range values {
 		if value == want {
 			return true

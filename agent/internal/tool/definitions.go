@@ -127,7 +127,7 @@ func DefJobList() llm.ToolDefinition {
 					"items": map[string]any{"type": "string", "enum": typeEnum},
 				},
 				"limit":  map[string]any{"type": "integer", "default": 50, "maximum": 100},
-				"cursor": map[string]any{"type": "string"},
+				"cursor": map[string]any{"type": []any{"string", "null"}},
 			},
 			"required": []any{},
 		},

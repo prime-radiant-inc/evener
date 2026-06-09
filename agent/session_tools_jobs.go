@@ -29,6 +29,7 @@ const (
 	jobManagerUnavailableReason = "job manager is not available"
 	maxJobGrepMatches           = 100
 	maxJobGrepLineBytes         = 4096
+	maxJobGrepPatternBytes      = 4096
 )
 
 func registerJobTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
@@ -110,6 +111,9 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		ExitCode:   rec.ExitCode,
 	}
 	if grep := stringArg(args, "grep"); grep != "" {
+		if len([]byte(grep)) > maxJobGrepPatternBytes {
+			return "", fmt.Errorf("grep must be at most %d bytes", maxJobGrepPatternBytes)
+		}
 		matches, err := grepJobOutput(content, totalBytes, truncated, grep)
 		if err != nil {
 			return "", err
