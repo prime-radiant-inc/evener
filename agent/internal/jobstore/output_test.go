@@ -3,6 +3,7 @@ package jobstore
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,6 +20,22 @@ func appendOutput(t *testing.T, o *OutputStore, s string) {
 	if n != len(s) {
 		t.Fatalf("append wrote %d bytes, want %d", n, len(s))
 	}
+}
+
+func appendFile(path string, s string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = f.Close()
+	}()
+	if n, err := f.WriteString(s); err != nil {
+		return err
+	} else if n != len(s) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 func TestOutputAppendAndTail(t *testing.T) {
@@ -177,6 +194,68 @@ func TestOutputRejectsStaleMetadataForPrunedRetainedFile(t *testing.T) {
 	}
 	if _, _, err := OutputFileStats(path); err == nil {
 		t.Fatal("OutputFileStats with stale sidecar succeeded, want metadata mismatch")
+	}
+}
+
+func TestOutputRecoversStaleMetadataAfterInterruptedAppend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, int64(len("keep\n")))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	appendOutput(t, o, "drop\n")
+	appendOutput(t, o, "keep\n")
+	if err := o.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if err := appendFile(path, "more\n"); err != nil {
+		t.Fatalf("append output outside store: %v", err)
+	}
+
+	total, retainedStart, err := OutputFileStats(path)
+	if err != nil {
+		t.Fatalf("stats after stale sidecar append: %v", err)
+	}
+	if total != int64(len("drop\nkeep\nmore\n")) || retainedStart != int64(len("drop\n")) {
+		t.Fatalf("stats total=%d retainedStart=%d, want recovered appended output", total, retainedStart)
+	}
+
+	reopened, err := OpenOutput(path, int64(len("keep\nmore\n")))
+	if err != nil {
+		t.Fatalf("reopen after stale sidecar append: %v", err)
+	}
+	data, total, truncated, err := reopened.Tail(1024)
+	if err != nil {
+		t.Fatalf("tail after recovery: %v", err)
+	}
+	if string(data) != "keep\nmore\n" {
+		t.Fatalf("tail after recovery = %q, want retained output plus appended bytes", data)
+	}
+	if total != int64(len("drop\nkeep\nmore\n")) || !truncated {
+		t.Fatalf("tail total=%d truncated=%v, want recovered lifetime and truncated", total, truncated)
+	}
+}
+
+func TestOutputRejectsCorruptPrefixWithStaleMetadataAfterAppend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, int64(len("keep\n")))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	appendOutput(t, o, "drop\n")
+	appendOutput(t, o, "keep\n")
+	if err := o.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("KORRUPT\nmore\n"), 0o644); err != nil {
+		t.Fatalf("replace output with corrupt prefix: %v", err)
+	}
+
+	if _, _, err := OutputFileStats(path); err == nil {
+		t.Fatal("OutputFileStats with corrupt retained prefix succeeded, want metadata mismatch")
+	}
+	if _, err := OpenOutput(path, int64(len("keep\nmore\n"))); err == nil {
+		t.Fatal("reopen with corrupt retained prefix succeeded, want metadata mismatch")
 	}
 }
 

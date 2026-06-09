@@ -392,7 +392,25 @@ func readValidOutputMeta(path string, outputPath string, retained int64) (output
 	if err := json.Unmarshal(b, &meta); err != nil {
 		return outputMeta{}, false, fmt.Errorf("jobstore: parse output metadata: %w", err)
 	}
-	if meta.TotalBytes < retained || meta.RetainedStart < 0 || meta.TotalBytes-meta.RetainedStart != retained {
+	if meta.RetainedStart < 0 || meta.TotalBytes < meta.RetainedStart {
+		return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
+	}
+	metaRetained := meta.TotalBytes - meta.RetainedStart
+	if metaRetained < retained {
+		if ok, err := outputFileHasPrefixSHA256(outputPath, metaRetained, meta.RetainedSHA256); err != nil {
+			return outputMeta{}, false, err
+		} else if !ok {
+			return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
+		}
+		hash, err := outputFileSHA256(outputPath)
+		if err != nil {
+			return outputMeta{}, false, err
+		}
+		meta.TotalBytes = meta.RetainedStart + retained
+		meta.RetainedSHA256 = hash
+		return meta, true, nil
+	}
+	if metaRetained != retained {
 		return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
 	}
 	hash, err := outputFileSHA256(outputPath)
@@ -403,6 +421,21 @@ func readValidOutputMeta(path string, outputPath string, retained int64) (output
 		return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
 	}
 	return meta, true, nil
+}
+
+func outputFileHasPrefixSHA256(path string, n int64, want string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, fmt.Errorf("jobstore: open output for metadata hash: %w", err)
+	}
+	defer func() {
+		_ = f.Close()
+	}()
+	h := sha256.New()
+	if _, err := io.CopyN(h, f, n); err != nil {
+		return false, fmt.Errorf("jobstore: hash output metadata: %w", err)
+	}
+	return hex.EncodeToString(h.Sum(nil)) == want, nil
 }
 
 func outputFileSHA256(path string) (string, error) {

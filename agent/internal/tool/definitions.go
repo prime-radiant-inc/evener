@@ -166,7 +166,7 @@ func DefJobSendMessage() llm.ToolDefinition {
 func DefJobReadOutput() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "job_read_output",
-		Description: "Read a job's captured output and current status by job_id. Returns a bounded tail of shell stdout/stderr or a delegate final report; reads never consume or acknowledge output. Pass grep to search retained output with a regex. block=true performs one bounded wait for terminal state, not a polling loop.",
+		Description: "Read a job's captured output and current status by job_id. Returns a bounded tail of shell stdout/stderr or a delegate final report; reads never consume or acknowledge output. Pass grep to search retained output with a regex. block=true performs one bounded wait for the next output or terminal state, not a polling loop.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
