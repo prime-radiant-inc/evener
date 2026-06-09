@@ -196,7 +196,11 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	running := sub.running
 	sub.mu.Unlock()
 	if running {
-		return sendMessageFailed(target, fmt.Errorf("delegate_session_busy: delegate session %q is already running", childID))
+		active, err := findRunningDelegateByTranscriptRef(jm, rec.TranscriptRef)
+		if err != nil {
+			return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate session %q is running but active job is unknown: %w", childID, err))
+		}
+		return s.sendRunningDelegateMessage(target, message, active)
 	}
 
 	if _, err := s.sendInput(ctx, childID, message); err != nil {
@@ -217,6 +221,22 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		ResumedFromJobID:    rec.JobID,
 		TranscriptRef:       run.rec.TranscriptRef,
 	}
+}
+
+func findRunningDelegateByTranscriptRef(jm *jobManager, transcriptRef string) (*jobstore.JobRecord, error) {
+	jobs, err := jm.listWithError(listFilter{
+		Type:   jobstore.JobDelegate,
+		Status: jobstore.StatusRunning,
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, rec := range jobs {
+		if rec.TranscriptRef == transcriptRef {
+			return rec, nil
+		}
+	}
+	return nil, fmt.Errorf("active_delegate_not_found: no running delegate job with transcript_ref %q", transcriptRef)
 }
 
 func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobstore.JobRecord) sendMessageResult {

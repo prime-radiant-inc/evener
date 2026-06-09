@@ -549,6 +549,80 @@ func TestSendDelegateMessageTerminalDelegateFailOnFinished(t *testing.T) {
 	}
 }
 
+func TestSendDelegateMessageTerminalDelegateResumeSteersActiveRun(t *testing.T) {
+	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess := newDelegateTestSession(t, c)
+
+	first := sess.createDelegate(context.Background(), delegateArgs{
+		Task:           "finish first",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	if first.Status != jobstore.StatusCompleted {
+		t.Fatalf("first result = %+v, want completed", first)
+	}
+
+	second := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  first.JobID,
+		Message: "run again",
+	})
+	if second.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", second.Err)
+	}
+	if second.Action != "resumed" || second.JobID == "" || second.JobID == first.JobID {
+		t.Fatalf("second result = %+v, want resumed new running delegate job", second)
+	}
+	select {
+	case <-adapter.secondStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("resumed delegate did not start")
+	}
+
+	before := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate})
+	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  first.JobID,
+		Message: "steer current run",
+	})
+	if res.Err != nil {
+		if strings.Contains(res.Err.Error(), "delegate_session_busy") {
+			t.Fatalf("sendDelegateMessage returned delegate_session_busy: %v", res.Err)
+		}
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
+	}
+	if res.Action != "sent" ||
+		res.JobID != second.JobID ||
+		res.JobID == first.JobID ||
+		res.Status != jobstore.StatusRunning ||
+		!res.RunningInBackground ||
+		res.TranscriptRef != first.TranscriptRef {
+		t.Fatalf("result = %+v, want sent to active resumed delegate job %s", res, second.JobID)
+	}
+	after := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate})
+	if len(after) != len(before) {
+		t.Fatalf("delegate jobs grew from %d to %d; jobs = %+v", len(before), len(after), after)
+	}
+	_, childID, err := decodeRef(first.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode transcript ref: %v", err)
+	}
+	sub := sess.subagents.get(childID)
+	if sub == nil {
+		t.Fatalf("subagent %s not found", childID)
+	}
+	queue := sub.sess.SteeringQueueSnapshot()
+	if len(queue) != 1 || queue[0].Text != "steer current run" {
+		t.Fatalf("steering queue = %+v, want steered message", queue)
+	}
+
+	_, _ = sess.jobManager.stop(second.JobID)
+	waitForShellDone(t, sess.jobManager, second.JobID)
+}
+
 func TestSendDelegateMessageTerminalTargetFailDoesNotSteerLaterRun(t *testing.T) {
 	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
 	c := llm.NewClient()
