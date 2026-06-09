@@ -515,6 +515,70 @@ func TestSendDelegateMessageTerminalDelegateResumeCreatesNewJob(t *testing.T) {
 	}
 }
 
+func TestSendDelegateMessageTerminalDelegateForegroundResumeTimeoutLeavesChildRunning(t *testing.T) {
+	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess := newDelegateTestSession(t, c)
+
+	first := sess.createDelegate(context.Background(), delegateArgs{
+		Task:           "finish first",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	if first.Status != jobstore.StatusCompleted {
+		t.Fatalf("first result = %+v, want completed", first)
+	}
+
+	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:         first.JobID,
+		Message:        "run again",
+		Background:     false,
+		BackgroundSet:  true,
+		BlockTimeoutMS: 1000,
+	})
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
+	}
+	if res.Action != "resumed" ||
+		res.JobID == "" ||
+		res.JobID == first.JobID ||
+		res.ResumedFromJobID != first.JobID ||
+		res.Status != jobstore.StatusRunning ||
+		res.Reason != "foreground_timeout" ||
+		!res.RunningInBackground ||
+		!res.TimedOut ||
+		res.TranscriptRef != first.TranscriptRef {
+		t.Fatalf("result = %+v, want resumed foreground timeout running in background", res)
+	}
+	select {
+	case <-adapter.secondStarted:
+	default:
+		t.Fatal("resumed delegate did not start before foreground timeout")
+	}
+	_, childID, err := decodeRef(first.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode transcript ref: %v", err)
+	}
+	sub := sess.subagents.get(childID)
+	if sub == nil {
+		t.Fatalf("subagent %s not found", childID)
+	}
+	sub.mu.Lock()
+	cancelled := sub.cancelRequested
+	running := sub.running
+	sub.mu.Unlock()
+	if cancelled || !running {
+		t.Fatalf("child cancelled=%v running=%v, want not cancelled and running", cancelled, running)
+	}
+
+	_, _ = sess.jobManager.stop(res.JobID)
+	waitForShellDone(t, sess.jobManager, res.JobID)
+}
+
 func TestSendDelegateMessageTerminalDelegateFailOnFinished(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -546,6 +610,47 @@ func TestSendDelegateMessageTerminalDelegateFailOnFinished(t *testing.T) {
 	}
 	if jobs := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate}); len(jobs) != 1 {
 		t.Fatalf("delegate jobs = %+v, want no new job", jobs)
+	}
+}
+
+func TestSendDelegateMessageObservedTerminalRunningRecordFailReturnsTargetTerminal(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	sub := &subagent{
+		id:      child.ID(),
+		sess:    child,
+		running: false,
+		status:  SubagentCompleted,
+		result:  "already done",
+		done:    make(chan struct{}),
+	}
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "already terminal", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
+			t.Fatalf("cleanup finalizeDelegate: %v", err)
+		}
+		waitForShellDone(t, parent.jobManager, run.rec.JobID)
+	})
+
+	before := parent.jobManager.list(listFilter{Type: jobstore.JobDelegate})
+	res := parent.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:     run.rec.JobID,
+		Message:    "must still be live",
+		OnFinished: "fail",
+	})
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "target_terminal") {
+		t.Fatalf("error = %v, want target_terminal", res.Err)
+	}
+	if strings.Contains(res.Err.Error(), "not_controllable") {
+		t.Fatalf("error = %v, must not report not_controllable", res.Err)
+	}
+	after := parent.jobManager.list(listFilter{Type: jobstore.JobDelegate})
+	if len(after) != len(before) {
+		t.Fatalf("delegate jobs grew from %d to %d; jobs = %+v", len(before), len(after), after)
 	}
 }
 

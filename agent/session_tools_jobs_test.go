@@ -235,6 +235,77 @@ func TestDelegateToolForegroundReturnsStructuredResult(t *testing.T) {
 	}
 }
 
+func TestJobSendMessageForegroundResumeReturnsTerminalResult(t *testing.T) {
+	c := llm.NewClient()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput("first complete")
+			},
+		},
+	}
+	c.Register(adapter)
+	s := newDelegateTestSession(t, c)
+
+	first := s.createDelegate(context.Background(), delegateArgs{
+		Task:           "finish first",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	adapter.mu.Lock()
+	adapter.steps = append(adapter.steps, func(req llm.Request) llm.Response {
+		return communicateWithDefaultOutput("second complete")
+	})
+	adapter.mu.Unlock()
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "send",
+		Name:      "job_send_message",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"run again","background":false,"block_timeout_ms":5000}`, first.JobID)),
+	})
+	if res.IsError {
+		t.Fatalf("job_send_message returned error: %s", res.Output)
+	}
+	var out struct {
+		Target              string `json:"target"`
+		JobID               string `json:"job_id"`
+		Type                string `json:"type"`
+		Status              string `json:"status"`
+		RunningInBackground bool   `json:"running_in_background"`
+		TimedOut            bool   `json:"timed_out"`
+		Action              string `json:"action"`
+		ResumedFromJobID    string `json:"resumed_from_job_id"`
+		TranscriptRef       string `json:"transcript_ref"`
+		Output              string `json:"output"`
+		Truncated           bool   `json:"truncated"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal job_send_message output: %v (output: %s)", err, res.Output)
+	}
+	if out.Target != first.JobID ||
+		out.JobID == "" ||
+		out.JobID == first.JobID ||
+		out.Type != string(jobstore.JobDelegate) ||
+		out.Status != string(jobstore.StatusCompleted) ||
+		out.RunningInBackground ||
+		out.TimedOut ||
+		out.Action != "resumed" ||
+		out.ResumedFromJobID != first.JobID ||
+		out.TranscriptRef != first.TranscriptRef ||
+		!strings.Contains(out.Output, "second complete") ||
+		out.Truncated {
+		t.Fatalf("job_send_message output = %+v, want foreground terminal resumed result", out)
+	}
+	rec := loadShellRecord(t, s.jobManager, out.JobID)
+	if rec.Status != jobstore.StatusCompleted || rec.TranscriptRef != first.TranscriptRef {
+		t.Fatalf("resumed record = %+v, want completed with same transcript ref", rec)
+	}
+}
+
 func TestJobSendMessageToShellJobNotMessageable(t *testing.T) {
 	s := newTestSession(t)
 

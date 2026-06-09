@@ -45,21 +45,28 @@ type sendMessageArgs struct {
 	Message        string
 	OnFinished     string
 	Background     bool
+	BackgroundSet  bool
 	BlockTimeoutMS int
 }
 
 type sendMessageResult struct {
-	Target              string
-	JobID               string
-	Type                string
-	Status              jobstore.Status
-	RunningInBackground bool
-	Action              string
-	ResumedFromJobID    string
-	TranscriptRef       string
-	Delivered           bool
-	MessageType         string
-	Err                 error
+	Target                string
+	JobID                 string
+	Type                  string
+	Status                jobstore.Status
+	Reason                string
+	RunningInBackground   bool
+	TimedOut              bool
+	Action                string
+	ResumedFromJobID      string
+	TranscriptRef         string
+	Output                string
+	Truncated             bool
+	StructuredResult      any
+	StructuredResultValid bool
+	Delivered             bool
+	MessageType           string
+	Err                   error
 }
 
 func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegateResult {
@@ -137,6 +144,10 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	background := true
+	if args.BackgroundSet {
+		background = args.Background
+	}
 	target := strings.TrimSpace(args.Target)
 	message := strings.TrimSpace(args.Message)
 	if target == "" {
@@ -174,7 +185,30 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		return sendMessageFailed(target, fmt.Errorf("target_not_messageable: job %q has type %q", target, rec.Type))
 	}
 	if rec.Status == jobstore.StatusRunning {
-		return s.sendRunningDelegateMessage(target, message, rec)
+		_, childID, err := decodeRef(rec.TranscriptRef)
+		if err != nil {
+			return sendMessageFailed(target, fmt.Errorf("target_not_resumable: invalid transcript_ref for job %q: %w", target, err))
+		}
+		sub := s.subagents.get(childID)
+		if sub == nil || sub.sess == nil {
+			return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate session %q is not retained", childID))
+		}
+		sub.mu.Lock()
+		running := sub.running
+		sub.mu.Unlock()
+		if running {
+			return s.sendRunningDelegateMessage(target, message, rec)
+		}
+		if strings.TrimSpace(args.OnFinished) == "fail" {
+			return sendMessageFailed(target, fmt.Errorf("target_terminal: delegate job %q is %s", target, rec.Status))
+		}
+		if err := s.finalizeDelegate(rec.JobID, childID, sub); err != nil {
+			return sendMessageFailed(target, fmt.Errorf("target_not_resumable: finalize observed-terminal delegate job %q: %w", target, err))
+		}
+		rec, err = findJobRecord(jm, target)
+		if err != nil {
+			return sendMessageFailed(target, fmt.Errorf("target_not_found: %w", err))
+		}
 	}
 	if !rec.Status.IsTerminal() {
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate job %q has status %q", target, rec.Status))
@@ -203,12 +237,15 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		return s.sendRunningDelegateMessage(target, message, active)
 	}
 
-	run, active, err := s.resumeOrFindRunningDelegate(jm, childID, message, sub, rec.TranscriptRef)
+	run, finalizeErr, active, err := s.resumeOrFindRunningDelegate(jm, childID, message, sub, rec.TranscriptRef)
 	if err != nil {
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: resume delegate session %q: %w", childID, err))
 	}
 	if active != nil {
 		return s.sendRunningDelegateMessage(target, message, active)
+	}
+	if !background {
+		return waitForResumedDelegateResult(ctx, jm, target, rec.JobID, run, finalizeErr, args.BlockTimeoutMS)
 	}
 	return sendMessageResult{
 		Target:              target,
@@ -275,15 +312,15 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 	}
 }
 
-func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message string, sub *subagent, transcriptRef string) (*runningJob, *jobstore.JobRecord, error) {
+func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message string, sub *subagent, transcriptRef string) (*runningJob, <-chan error, *jobstore.JobRecord, error) {
 	sub.mu.Lock()
 	if sub.running {
 		sub.mu.Unlock()
 		active, err := findRunningDelegateByTranscriptRef(jm, transcriptRef)
 		if err != nil {
-			return nil, nil, fmt.Errorf("delegate session %q is running but active job is unknown: %w", childID, err)
+			return nil, nil, nil, fmt.Errorf("delegate session %q is running but active job is unknown: %w", childID, err)
 		}
-		return nil, active, nil
+		return nil, nil, active, nil
 	}
 
 	runCtx, runCancel := context.WithCancel(context.Background())
@@ -293,7 +330,7 @@ func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message s
 		s.mu.Unlock()
 		sub.mu.Unlock()
 		runCancel()
-		return nil, nil, errors.New("session is closed")
+		return nil, nil, nil, errors.New("session is closed")
 	}
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
@@ -303,18 +340,19 @@ func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message s
 		sub.mu.Unlock()
 		runCancel()
 		s.sendersWG.Done()
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	resetSubagentForRunLocked(sub, runCancel, resumeTime)
 	done := sub.done
 	sub.mu.Unlock()
 
+	finalizeErr := make(chan error, 1)
 	go func() {
 		<-done
-		_ = s.finalizeDelegate(run.rec.JobID, childID, sub)
+		finalizeErr <- s.finalizeDelegate(run.rec.JobID, childID, sub)
 	}()
 	s.launchSubagentRun(sub, runCtx, runCancel, message)
-	return run, nil, nil
+	return run, finalizeErr, nil, nil
 }
 
 func sendMessageFailed(target string, err error) sendMessageResult {
@@ -349,6 +387,64 @@ func waitForDelegateFinalization(ctx context.Context, jm *jobManager, run *runni
 		return delegateFinalizeFailedResult(run, "cancelled", ctx.Err())
 	case <-timer.C:
 		return delegateFinalizeFailedResult(run, "finalize_timeout", errors.New("delegate finalization timed out"))
+	}
+}
+
+func waitForResumedDelegateResult(ctx context.Context, jm *jobManager, target, resumedFromJobID string, run *runningJob, finalizeErr <-chan error, blockTimeoutMS int) sendMessageResult {
+	blockTimeout := time.Duration(clampShellBlockTimeoutMS(blockTimeoutMS)) * time.Millisecond
+	timer := time.NewTimer(blockTimeout)
+	defer timer.Stop()
+
+	var res delegateResult
+	select {
+	case <-run.done:
+		res = delegateTerminalResult(jm, run)
+	case err := <-finalizeErr:
+		if err != nil {
+			res = delegateFinalizeFailedResult(run, "finalize_failed", err)
+			break
+		}
+		res = delegateTerminalResult(jm, run)
+	case <-timer.C:
+		output, _, truncated, readErr := tailOutput(run.output, shellInlineOutputBytes)
+		return sendMessageResult{
+			Target:              target,
+			JobID:               run.rec.JobID,
+			Type:                string(jobstore.JobDelegate),
+			Status:              jobstore.StatusRunning,
+			Reason:              "foreground_timeout",
+			RunningInBackground: true,
+			TimedOut:            true,
+			Action:              "resumed",
+			ResumedFromJobID:    resumedFromJobID,
+			TranscriptRef:       run.rec.TranscriptRef,
+			Output:              output,
+			Truncated:           truncated,
+			Err:                 readErr,
+		}
+	case <-ctx.Done():
+		res = delegateFinalizeFailedResult(run, "cancelled", ctx.Err())
+	}
+	return sendMessageResultFromDelegateResult(target, resumedFromJobID, "resumed", res)
+}
+
+func sendMessageResultFromDelegateResult(target, resumedFromJobID, action string, res delegateResult) sendMessageResult {
+	return sendMessageResult{
+		Target:                target,
+		JobID:                 res.JobID,
+		Type:                  res.Type,
+		Status:                res.Status,
+		Reason:                res.Reason,
+		RunningInBackground:   res.RunningInBackground,
+		TimedOut:              res.TimedOut,
+		Action:                action,
+		ResumedFromJobID:      resumedFromJobID,
+		TranscriptRef:         res.TranscriptRef,
+		Output:                res.Output,
+		Truncated:             res.Truncated,
+		StructuredResult:      res.StructuredResult,
+		StructuredResultValid: res.StructuredResultValid,
+		Err:                   res.Err,
 	}
 }
 

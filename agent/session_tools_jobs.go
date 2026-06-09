@@ -94,6 +94,7 @@ func jobSendMessageTool(ctx context.Context, s *Session, args map[string]any, ma
 	}
 	if background, ok := args["background"].(bool); ok {
 		a.Background = background
+		a.BackgroundSet = true
 	}
 	if n, ok := shellIntArg(args, "block_timeout_ms"); ok {
 		a.BlockTimeoutMS = n
@@ -306,14 +307,20 @@ type jobStopResult struct {
 }
 
 type jobSendMessageDelegateResult struct {
-	Target              string `json:"target"`
-	JobID               string `json:"job_id"`
-	Type                string `json:"type"`
-	Status              string `json:"status"`
-	RunningInBackground bool   `json:"running_in_background"`
-	Action              string `json:"action"`
-	ResumedFromJobID    string `json:"resumed_from_job_id,omitempty"`
-	TranscriptRef       string `json:"transcript_ref"`
+	Target                string  `json:"target"`
+	JobID                 string  `json:"job_id"`
+	Type                  string  `json:"type"`
+	Status                string  `json:"status"`
+	Reason                *string `json:"reason,omitempty"`
+	RunningInBackground   bool    `json:"running_in_background"`
+	TimedOut              bool    `json:"timed_out,omitempty"`
+	Action                string  `json:"action"`
+	ResumedFromJobID      string  `json:"resumed_from_job_id,omitempty"`
+	TranscriptRef         string  `json:"transcript_ref"`
+	Output                *string `json:"output,omitempty"`
+	Truncated             *bool   `json:"truncated,omitempty"`
+	StructuredResult      any     `json:"structured_result,omitempty"`
+	StructuredResultValid *bool   `json:"structured_result_valid,omitempty"`
 }
 
 type jobSendMessageAliasResult struct {
@@ -346,16 +353,28 @@ func marshalSendMessageResult(res sendMessageResult, maxChars int) (string, erro
 			MessageType: res.MessageType,
 		}, maxChars)
 	}
-	return marshalBoundedJSON(jobSendMessageDelegateResult{
+	out := jobSendMessageDelegateResult{
 		Target:              res.Target,
 		JobID:               res.JobID,
 		Type:                res.Type,
 		Status:              string(res.Status),
+		Reason:              stringPtrOrNil(res.Reason),
 		RunningInBackground: res.RunningInBackground,
+		TimedOut:            res.TimedOut,
 		Action:              res.Action,
 		ResumedFromJobID:    res.ResumedFromJobID,
 		TranscriptRef:       res.TranscriptRef,
-	}, maxChars)
+	}
+	if !res.RunningInBackground || res.TimedOut {
+		out.Output = &res.Output
+		out.Truncated = &res.Truncated
+	}
+	if res.StructuredResult != nil {
+		valid := res.StructuredResultValid
+		out.StructuredResult = res.StructuredResult
+		out.StructuredResultValid = &valid
+	}
+	return marshalBoundedJSON(out, maxChars)
 }
 
 func marshalDelegateResult(res delegateResult, maxChars int) (string, error) {
