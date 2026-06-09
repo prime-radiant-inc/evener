@@ -163,6 +163,9 @@ func TestJobManagerFinalizeFinishAppendFailureKeepsRuntime(t *testing.T) {
 	if _, ok := jm.running[rec.JobID]; !ok {
 		t.Fatal("job removed after failed terminal append")
 	}
+	if _, err := jm.running[rec.JobID].output.Append([]byte("still running\n")); err != nil {
+		t.Fatalf("output append after failed terminal append: %v", err)
+	}
 	if len(queued) != 0 {
 		t.Fatalf("queued = %+v, want none", queued)
 	}

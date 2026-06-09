@@ -231,7 +231,6 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 	if _, total, _, err := run.output.Tail(0); err == nil {
 		outputBytes = total
 	}
-	_ = run.output.Close()
 
 	endedAt := jm.now()
 	terminalGen := jobstore.NewTerminalGeneration()
