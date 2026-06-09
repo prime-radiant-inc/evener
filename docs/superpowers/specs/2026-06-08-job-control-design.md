@@ -1066,6 +1066,11 @@ they need explicit handling):**
   consumers.
 - The `<subagent-notification>` format/formatter and `acceptNotificationInput`'s subagent framing →
   `<job-notification>`.
+- **Non-Go surfaces the original grep missed (the "grepped the tree" claim covered only Go):** the
+  e2e scenario cards under `test/scenarios/*.md` (e.g. `subagent-list-and-output`,
+  `subagent-notification-wake`, `subagent-cancel-runaway`, `subagent-close-retains`) — rewrite against
+  the job tools — and `tools/dashboard/static/js/task-structure.js` (renders `spawn_agent`). Both carry
+  gate tokens; without them the gate stays red.
 
 **Docs:** `docs/subagent-management/00-subagent-control-plane.md` is superseded by
 `docs/job-control.md`. Also update the live reference docs that name the old tools: `docs/hooks.md`,
@@ -1084,10 +1089,13 @@ the `SUBAGENT_START`/`SUBAGENT_END` strings) — not the phantom `wait_job` (the
 `wait`, an un-greppable English word, so gate on its symbol/registration):
 
 ```
-rg -n 'spawn_agent|resume_agent|close_agent|cancel_agent|list_agents|subagent_output|subagent-notification|DefSpawnAgent|DefSendInput|DefWait|DefCloseAgent|DefCancelAgent|DefListAgents|DefSubagentOutput|rootOnlyAgentManagementTools|SUBAGENT_START|SUBAGENT_END|EventSubagentStart|EventSubagentEnd|SubagentStartData|SubagentEndData|NotifySerfSubagent|SerfSubagentInfo|SubagentStatusInfo'
+rg -n 'spawn_agent|resume_agent|close_agent|cancel_agent|list_agents|subagent_output|subagent-notification|DefSpawnAgent|DefSendInput|DefWait|DefCloseAgent|DefCancelAgent|DefListAgents|DefSubagentOutput|rootOnlyAgentManagementTools|SUBAGENT_START|SUBAGENT_END|EventSubagentStart|EventSubagentEnd|SubagentStartData|SubagentEndData|NotifySerfSubagent|SerfSubagentInfo|SubagentStatusInfo' \
+  -g '!docs/superpowers/specs/**' -g '!docs/superpowers/plans/**' -g '!docs/job-control.md' -g '!**/CHANGELOG*'
 ```
 
-must return nothing outside historical changelogs and this spec's legacy-mapping references, AND
+(The exclusions drop this spec, the plans, and changelogs, where the tokens legitimately survive as
+historical/contract references. A dry run of the un-filtered command today returns ~600 live hits —
+that is exactly the surface this phase drives to zero.) The filtered command must return nothing, AND
 `make build`/`make test` must pass (a clean grep is necessary but not sufficient — the build catches
 renamed-symbol consumers a token list can miss). The internal `agent_id`/`subagent` *naming* deferral
 (§16) does not exempt the model-/UI-facing surfaces above — events, snapshots, prompts, and docs are
