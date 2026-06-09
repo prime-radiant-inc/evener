@@ -115,9 +115,12 @@ type Session struct {
 	//
 	// Guarded by its own mutex; never taken while holding sub.mu or the manager
 	// mutex.
-	pendingNotifsMu sync.Mutex
-	pendingNotifs   []subagentNotification
-	notifyFunc      func()
+	pendingNotifsMu  sync.Mutex
+	pendingNotifs    []subagentNotification
+	pendingJobNotifs []jobNotification
+	notifyFunc       func()
+
+	jobManager *jobManager
 
 	// context management
 	contextMgr *contextmgr.Manager
@@ -226,6 +229,12 @@ func (s *Session) enqueueNotification(n subagentNotification) {
 	s.pendingNotifs = append(s.pendingNotifs, n)
 }
 
+func (s *Session) enqueueJobNotification(n jobNotification) {
+	s.pendingNotifsMu.Lock()
+	defer s.pendingNotifsMu.Unlock()
+	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
+}
+
 // drainNotifications swaps out the pending queue under pendingNotifsMu, returning
 // the queued notifications and resetting the queue to nil.
 func (s *Session) drainNotifications() []subagentNotification {
@@ -236,6 +245,14 @@ func (s *Session) drainNotifications() []subagentNotification {
 	return drained
 }
 
+func (s *Session) drainJobNotifications() []jobNotification {
+	s.pendingNotifsMu.Lock()
+	defer s.pendingNotifsMu.Unlock()
+	drained := s.pendingJobNotifs
+	s.pendingJobNotifs = nil
+	return drained
+}
+
 // peekNotifications reports how many notifications are pending WITHOUT draining
 // them. The drain-loop tail uses it to decide whether to run a notification turn
 // next; the actual drain stays in acceptNotificationInput so the queue is consumed
@@ -243,7 +260,7 @@ func (s *Session) drainNotifications() []subagentNotification {
 func (s *Session) peekNotifications() int {
 	s.pendingNotifsMu.Lock()
 	defer s.pendingNotifsMu.Unlock()
-	return len(s.pendingNotifs)
+	return len(s.pendingNotifs) + len(s.pendingJobNotifs)
 }
 
 // SetNotifyFunc registers the callback the server uses to wake an idle session

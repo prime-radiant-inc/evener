@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
@@ -762,7 +763,8 @@ func (s *Session) acceptContinuationInput(ctx context.Context, input string) {
 // an empty notification turn is a true no-op that makes no model request.
 func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 	notifs := s.filterDeliverableNotifications(s.drainNotifications())
-	if len(notifs) == 0 {
+	jobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
+	if len(notifs) == 0 && len(jobNotifs) == 0 {
 		s.mu.Lock()
 		s.sessionEndEmitted = true
 		s.mu.Unlock()
@@ -771,9 +773,10 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 
 	s.repairOrphanedToolResults("before accepting notification")
 
-	reminder := formatNotificationReminder(notifs)
+	reminder := formatNotificationReminder(notifs, jobNotifs)
 	s.appendTurn(schema.TurnSteering, llm.User(reminder))
 	s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder})
+	s.markJobNotificationsDelivered(jobNotifs)
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	for _, msg := range s.drainSteering() {
@@ -816,11 +819,53 @@ func (s *Session) filterDeliverableNotifications(raw []subagentNotification) []s
 	return survivors
 }
 
-// formatNotificationReminder renders one <subagent-notification ...> block per
-// drained entry, joined by newlines. Each block carries the entry's metadata and
-// a human line pointing the model at wait()/subagent_output() to read the result.
-func formatNotificationReminder(notifs []subagentNotification) string {
-	blocks := make([]string, 0, len(notifs))
+func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) []deliverableJobNotification {
+	if len(raw) == 0 || s.jobManager == nil {
+		return nil
+	}
+	recs, err := s.jobManager.store.Load()
+	if err != nil {
+		return nil
+	}
+	survivors := make([]deliverableJobNotification, 0, len(raw))
+	seen := make(map[jobstore.DedupeKey]bool)
+	for _, n := range raw {
+		rec := recs[n.JobID]
+		if rec == nil || !jobstore.ShouldDeliver(rec) {
+			continue
+		}
+		key := rec.DedupeKey()
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		survivors = append(survivors, deliverableJobNotification{
+			notification: jobNotificationFromRecord(rec),
+			terminalGen:  rec.TerminalGen,
+		})
+	}
+	return survivors
+}
+
+func (s *Session) markJobNotificationsDelivered(notifs []deliverableJobNotification) {
+	if len(notifs) == 0 || s.jobManager == nil {
+		return
+	}
+	for _, n := range notifs {
+		_ = s.jobManager.appendEvent(jobstore.Event{
+			Kind:        jobstore.EventJobNotificationDelivered,
+			TS:          s.jobManager.now(),
+			JobID:       n.notification.JobID,
+			TerminalGen: n.terminalGen,
+		})
+	}
+}
+
+// formatNotificationReminder renders notification blocks for a notification turn,
+// joined by newlines. Each block carries metadata and points the model at the
+// matching read tool for the completed work.
+func formatNotificationReminder(notifs []subagentNotification, jobNotifs []deliverableJobNotification) string {
+	blocks := make([]string, 0, len(notifs)+len(jobNotifs))
 	for _, n := range notifs {
 		blocks = append(blocks, fmt.Sprintf(
 			"<subagent-notification agent_id=%q status=%q turns_used=%q transcript_ref=%q>\n"+
@@ -829,6 +874,9 @@ func formatNotificationReminder(notifs []subagentNotification) string {
 			n.AgentID, n.Status, strconv.Itoa(n.TurnsUsed), n.TranscriptRef,
 			n.AgentID, n.Status, n.AgentID, n.AgentID,
 		))
+	}
+	for _, n := range jobNotifs {
+		blocks = append(blocks, formatJobNotificationBlock(n.notification))
 	}
 	return strings.Join(blocks, "\n")
 }
