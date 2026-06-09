@@ -51,6 +51,7 @@ type sendMessageArgs struct {
 	Background     bool
 	BackgroundSet  bool
 	BlockTimeoutMS int
+	FromWatch      bool
 }
 
 type sendMessageResult struct {

@@ -120,6 +120,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err != nil {
 		return nil, fmt.Errorf("job manager: %w", err)
 	}
+	jm.send = s.sendDelegateMessage
 	s.jobManager = jm
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind)
@@ -315,6 +316,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		return nil, fmt.Errorf("job reconcile: %w", err)
 	}
 	jm.enqueue = s.enqueueJobNotificationAndNotify
+	jm.send = s.sendDelegateMessage
 	if err := jm.armPendingTerminalNotifications(); err != nil {
 		return nil, fmt.Errorf("job notifications: %w", err)
 	}

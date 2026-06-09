@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +32,7 @@ type jobManager struct {
 	closing       bool
 	appendEvent   func(jobstore.Event) error
 	enqueue       func(jobNotification)
+	send          func(context.Context, sendMessageArgs) sendMessageResult
 	now           func() time.Time
 }
 

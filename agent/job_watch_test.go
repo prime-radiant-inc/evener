@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -121,6 +123,87 @@ func TestOutputMatchWatchFiresOnAppendedBytes(t *testing.T) {
 
 	if len(notified) != 1 {
 		t.Fatalf("output_match must fire once on the matching appended line, got %d", len(notified))
+	}
+}
+
+func TestWatchSendDeliversFrameToTarget(t *testing.T) {
+	jm := newTestJM(t)
+	var sent []sendMessageArgs
+	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{}
+	}
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	_, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "(?i)ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "saw ready", IncludeFrame: true},
+	})
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.feedJobOutput(rec.JobID, []byte("server READY\n"))
+
+	if len(sent) != 1 {
+		t.Fatalf("a send watch must deliver once, got %d", len(sent))
+	}
+	if sent[0].Target != "job_obs" {
+		t.Errorf("delivery target = %q, want job_obs", sent[0].Target)
+	}
+	if !sent[0].Background || !sent[0].BackgroundSet || !sent[0].FromWatch {
+		t.Errorf("delivery args = %+v, want background watch send", sent[0])
+	}
+	if !strings.Contains(sent[0].Message, "saw ready") {
+		t.Errorf("delivery must carry the configured message + frame; got %q", sent[0].Message)
+	}
+	if !strings.Contains(sent[0].Message, "output_match: server READY") {
+		t.Errorf("delivery frame must carry the match trigger; got %q", sent[0].Message)
+	}
+}
+
+func TestWatchSendFrameIsBounded(t *testing.T) {
+	jm := newTestJM(t)
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte(strings.Repeat("x", watchFrameMaxChars*2))); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	frame := jm.buildWatchFrame(&watchConfig{
+		send: &watchSendArgs{
+			Message:        strings.Repeat("m", watchMessageMaxChars+100),
+			IncludeFrame:   true,
+			IncludeExcerpt: true,
+		},
+	}, rec.JobID, strings.Repeat("trigger", watchTriggerMaxChars))
+
+	if len([]rune(frame)) > watchFrameMaxChars {
+		t.Fatalf("frame length = %d, want <= %d", len([]rune(frame)), watchFrameMaxChars)
+	}
+	if !strings.Contains(frame, "Watch frame") || !strings.Contains(frame, "excerpt:") {
+		t.Fatalf("frame must include bounded metadata and excerpt; got %q", frame)
+	}
+}
+
+func TestWatchSendExcerptWithoutFrameOmitsFrameMetadata(t *testing.T) {
+	jm := newTestJM(t)
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("ready excerpt\n")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	frame := jm.buildWatchFrame(&watchConfig{
+		send: &watchSendArgs{
+			Message:        "saw ready",
+			IncludeExcerpt: true,
+		},
+	}, rec.JobID, "output_match: ready excerpt")
+
+	if !strings.Contains(frame, "saw ready") || !strings.Contains(frame, "ready excerpt") {
+		t.Fatalf("excerpt-only delivery must include message and excerpt; got %q", frame)
+	}
+	if strings.Contains(frame, "Watch frame") || strings.Contains(frame, "trigger:") {
+		t.Fatalf("excerpt-only delivery must not include frame metadata; got %q", frame)
 	}
 }
 

@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"primeradiant.com/serf/agent/events"
@@ -29,6 +31,16 @@ var modelEventKinds = map[string]events.EventKind{
 	WatchEventKindNames[3]: events.EventSubagentEnd, // job lifecycle; repointed to the job event in Phase 6
 	WatchEventKindNames[2]: events.EventCommunicate,
 }
+
+const (
+	watchFrameMaxChars      = 4096
+	watchMessageMaxChars    = 2048
+	watchTriggerMaxChars    = 1024
+	watchExcerptTailBytes   = 4096
+	watchExcerptMaxChars    = 4096
+	watchReadErrorMaxChars  = 256
+	watchTruncatedIndicator = "\n[truncated]"
+)
 
 type watchKey struct {
 	VisibleSessionID string
@@ -78,6 +90,12 @@ type watchResult struct {
 	ProgressIntervalMS int
 	Send               *watchSendArgs
 	ReplacedExisting   bool
+}
+
+type watchSendDelivery struct {
+	cfg     *watchConfig
+	jobID   string
+	trigger string
 }
 
 func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
@@ -235,6 +253,14 @@ func cloneWatchSendArgs(send *watchSendArgs) *watchSendArgs {
 	return &clone
 }
 
+func watchSendSnapshot(cfg *watchConfig, jobID, trigger string) watchSendDelivery {
+	return watchSendDelivery{
+		cfg:     &watchConfig{send: cloneWatchSendArgs(cfg.send)},
+		jobID:   jobID,
+		trigger: trigger,
+	}
+}
+
 func (jm *jobManager) clearWatch(key watchKey) watchResult {
 	jm.mu.Lock()
 	if key.SendTo != "" {
@@ -325,6 +351,7 @@ func watchResultFromConfig(cfg *watchConfig, replacedExisting bool) watchResult 
 func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventData) {
 	_ = data
 	var notifications []jobNotification
+	var deliveries []watchSendDelivery
 
 	jm.mu.Lock()
 	for _, cfg := range jm.watches {
@@ -347,7 +374,9 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 				continue
 			}
 		}
-		if cfg.send == nil {
+		if cfg.send != nil {
+			deliveries = append(deliveries, watchSendSnapshot(cfg, cfg.target, fmt.Sprintf("event: %s", kind)))
+		} else {
 			notifications = append(notifications, jobNotification{})
 		}
 	}
@@ -356,6 +385,7 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 	// Called from Session.emit; only enqueue here so watch delivery does not
 	// re-enter session event emission.
 	jm.enqueueWatchNotifications(notifications)
+	jm.deliverWatchSends(context.Background(), deliveries)
 }
 
 func (jm *jobManager) feedJobOutput(jobID string, chunk []byte) {
@@ -363,6 +393,7 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte) {
 		return
 	}
 	var notifications []jobNotification
+	var deliveries []watchSendDelivery
 
 	jm.mu.Lock()
 	for _, cfg := range jm.watches {
@@ -370,8 +401,10 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte) {
 			continue
 		}
 		matches := cfg.outputMatcher.Feed(chunk)
-		if cfg.send == nil {
-			for range matches {
+		for _, match := range matches {
+			if cfg.send != nil {
+				deliveries = append(deliveries, watchSendSnapshot(cfg, jobID, "output_match: "+match))
+			} else {
 				notifications = append(notifications, jobNotification{})
 			}
 		}
@@ -379,6 +412,7 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte) {
 	jm.mu.Unlock()
 
 	jm.enqueueWatchNotifications(notifications)
+	jm.deliverWatchSends(context.Background(), deliveries)
 }
 
 func (jm *jobManager) startProgressTimer(key watchKey, cfg *watchConfig, stop <-chan struct{}) {
@@ -406,6 +440,7 @@ func (jm *jobManager) startProgressTimer(key watchKey, cfg *watchConfig, stop <-
 
 func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 	var notifications []jobNotification
+	var deliveries []watchSendDelivery
 
 	jm.mu.Lock()
 	if jm.closing {
@@ -420,13 +455,91 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 		jm.mu.Unlock()
 		return false
 	}
-	if cfg.send == nil {
+	if cfg.send != nil {
+		deliveries = append(deliveries, watchSendSnapshot(cfg, cfg.target, "progress_tick"))
+	} else {
 		notifications = append(notifications, jobNotification{})
 	}
 	jm.mu.Unlock()
 
 	jm.enqueueWatchNotifications(notifications)
+	jm.deliverWatchSends(context.Background(), deliveries)
 	return true
+}
+
+func (jm *jobManager) deliverWatchSends(ctx context.Context, deliveries []watchSendDelivery) {
+	for _, d := range deliveries {
+		jm.deliverWatchSend(ctx, d.cfg, d.jobID, d.trigger)
+	}
+}
+
+func (jm *jobManager) deliverWatchSend(ctx context.Context, cfg *watchConfig, jobID, trigger string) {
+	if jm.send == nil || cfg == nil || cfg.send == nil {
+		return
+	}
+	res := jm.send(ctx, sendMessageArgs{
+		Target:        cfg.send.To,
+		Message:       jm.buildWatchFrame(cfg, jobID, trigger),
+		Background:    true,
+		BackgroundSet: true,
+		FromWatch:     true,
+	})
+	_ = res.Err
+}
+
+func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger string) string {
+	if cfg == nil || cfg.send == nil {
+		return ""
+	}
+
+	message := limitWatchText(strings.TrimSpace(cfg.send.Message), watchMessageMaxChars)
+	if !cfg.send.IncludeFrame && !cfg.send.IncludeExcerpt {
+		return limitWatchText(message, watchFrameMaxChars)
+	}
+
+	var b strings.Builder
+	if message != "" {
+		b.WriteString(message)
+		b.WriteString("\n\n")
+	}
+	if cfg.send.IncludeFrame {
+		b.WriteString("Watch frame\n")
+		b.WriteString("job_id: ")
+		b.WriteString(limitWatchText(jobID, watchTriggerMaxChars))
+		b.WriteString("\ntrigger: ")
+		b.WriteString(limitWatchText(trigger, watchTriggerMaxChars))
+	}
+
+	if cfg.send.IncludeExcerpt {
+		if cfg.send.IncludeFrame {
+			b.WriteString("\n")
+		}
+		excerpt, _, truncated, err := jm.readOutput(jobID, watchExcerptTailBytes)
+		b.WriteString("excerpt:\n")
+		if err != nil {
+			b.WriteString("output_read_error: ")
+			b.WriteString(limitWatchText(err.Error(), watchReadErrorMaxChars))
+		} else {
+			b.WriteString(limitWatchText(excerpt, watchExcerptMaxChars))
+			if truncated {
+				b.WriteString("\n[excerpt truncated]")
+			}
+		}
+	}
+
+	return limitWatchText(b.String(), watchFrameMaxChars)
+}
+
+func limitWatchText(s string, maxChars int) string {
+	if maxChars <= 0 || len([]rune(s)) <= maxChars {
+		return s
+	}
+	indicator := watchTruncatedIndicator
+	keep := maxChars - len([]rune(indicator))
+	if keep <= 0 {
+		return string([]rune(s)[:maxChars])
+	}
+	return string([]rune(s)[:keep]) + indicator
 }
 
 func (jm *jobManager) enqueueWatchNotifications(notifications []jobNotification) {
