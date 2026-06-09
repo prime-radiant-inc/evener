@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -63,10 +64,12 @@ func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecu
 	}
 }
 
-// Initialize prepares the environment for use. The local environment needs no
-// setup, so this always returns nil.
+// Initialize prepares the environment for use.
 func (e *LocalExecutionEnvironment) Initialize() error {
-	return nil // Local env needs no setup
+	if e.runningPIDs == nil {
+		e.runningPIDs = &sync.Map{}
+	}
+	return nil
 }
 
 // Cleanup terminates any tracked processes by sending SIGTERM to each process
@@ -649,6 +652,88 @@ func (e *LocalExecutionEnvironment) ExecCommand(ctx context.Context, command str
 		TimedOut:   timedOut,
 		DurationMS: time.Since(start).Milliseconds(),
 	}, waitErr
+}
+
+// StreamCommand runs command through the platform shell in its own process
+// group, streaming combined stdout/stderr to out and returning immediately with
+// a handle for waiting on or signalling the command.
+func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, workingDir string, envVars map[string]string, out io.Writer) (*StreamHandle, error) {
+	if e.runningPIDs == nil {
+		e.runningPIDs = &sync.Map{}
+	}
+	dir := strings.TrimSpace(workingDir)
+	if dir == "" {
+		dir = e.RootDir
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(e.RootDir, dir)
+	}
+	if err := e.ensureUnderRoot(dir); err != nil {
+		return nil, fmt.Errorf("working directory %w", err)
+	}
+
+	if ctx != nil {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+	}
+
+	cmd := shellCommand(command)
+	cmd.Dir = dir
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Env = filteredEnvWithPolicy(e.EnvPolicy, envVars)
+	cmd.Env = injectLocalVenvPath(cmd.Env, []string{dir, e.RootDir})
+	cmd.Stdout = out
+	cmd.Stderr = out
+
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	pid := cmd.Process.Pid
+	e.runningPIDs.Store(pid, struct{}{})
+
+	var signalOnce sync.Once
+	signal := func() {
+		signalOnce.Do(func() {
+			terminateProcessGroup(pid)
+			go func() {
+				time.Sleep(2 * time.Second)
+				killProcessGroup(pid)
+			}()
+		})
+	}
+
+	waitDone := make(chan struct{})
+	if ctx != nil {
+		go func() {
+			select {
+			case <-ctx.Done():
+				signal()
+			case <-waitDone:
+			}
+		}()
+	}
+
+	wait := func() (int, error) {
+		defer close(waitDone)
+		defer e.runningPIDs.Delete(pid)
+		if err := cmd.Wait(); err != nil {
+			ee := &exec.ExitError{}
+			if errors.As(err, &ee) {
+				return ee.ExitCode(), nil
+			}
+			return 127, nil
+		}
+		return 0, nil
+	}
+
+	return &StreamHandle{
+		Pid:    pid,
+		Wait:   wait,
+		Signal: signal,
+	}, nil
 }
 
 func injectLocalVenvPath(env []string, roots []string) []string {
