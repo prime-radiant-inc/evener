@@ -72,13 +72,16 @@ func DefEditFile() llm.ToolDefinition {
 func DefShell() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "shell",
-		Description: "Execute a shell command and return stdout, stderr, and exit code. Use this for build, test, git, runtime, and inspection commands. When using the shell to search text or files, prefer rg or rg --files if available.",
+		Description: "Run a shell command and return its stdout, stderr, and exit code inline. Use it for build, test, git, and inspection commands whose result you need now; prefer `rg` or `rg --files` for searching. Pass `background=true` to start the command as a durable job instead -- a dev server, or a long command you should not wait on -- and get back a `job_id`. `block_timeout_ms` bounds only the foreground wait: a command still running at the timeout is promoted to a background job, not killed. `max_runtime_ms` is the separate limit on how long the process itself may run before Serf stops it.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"command":    map[string]any{"type": "string"},
-				"timeout_ms": map[string]any{"type": "integer"},
+				"command":          map[string]any{"type": "string"},
+				"description":      map[string]any{"type": "string"},
+				"background":       map[string]any{"type": "boolean"},
+				"block_timeout_ms": map[string]any{"type": "integer"},
+				"max_runtime_ms":   map[string]any{"type": "integer"},
 			},
 			"required": []string{"command"},
 		},

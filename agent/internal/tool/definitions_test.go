@@ -2,6 +2,18 @@ package tool
 
 import "testing"
 
+func TestDefShellHasJobParams(t *testing.T) {
+	props := DefShell().Parameters["properties"].(map[string]any)
+	for _, p := range []string{"command", "description", "background", "block_timeout_ms", "max_runtime_ms"} {
+		if _, ok := props[p]; !ok {
+			t.Errorf("DefShell missing param %q", p)
+		}
+	}
+	if _, ok := props["timeout_ms"]; ok {
+		t.Errorf("DefShell must not have the old timeout_ms param")
+	}
+}
+
 // TestTranscriptToolDefinitions locks the two-tool surface: correct names, strict
 // opt-out (so the model omits unused args), find takes no session selector, read takes
 // transcript_ref + the format/range/expand_turn knobs.
