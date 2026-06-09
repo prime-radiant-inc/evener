@@ -1,4 +1,4 @@
-// Package jobstore provides the pure, Session-free durable substrate for job records.
+// Package jobstore provides the pure, Session-free durable substrate for Serf's job-control system.
 package jobstore
 
 import (
