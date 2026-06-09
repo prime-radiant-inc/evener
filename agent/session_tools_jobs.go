@@ -65,6 +65,16 @@ func registerJobTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	}); err != nil {
 		return err
 	}
+	if err := reg.Register(tool.RegisteredTool{
+		Tool:  llm.Tool{Definition: tool.DefJobSendMessage()},
+		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = env
+			return jobSendMessageTool(ctx, s, args, jobToolResultMaxChars(reg, "job_send_message"))
+		},
+	}); err != nil {
+		return err
+	}
 	return reg.Register(tool.RegisteredTool{
 		Tool:  llm.Tool{Definition: tool.DefDelegate(s.delegateAgentTypeNames())},
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
@@ -73,6 +83,27 @@ func registerJobTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			return delegateTool(ctx, s, args, jobToolResultMaxChars(reg, "delegate"))
 		},
 	})
+}
+
+func jobSendMessageTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (string, error) {
+	a := sendMessageArgs{
+		Target:     stringArg(args, "target"),
+		Message:    stringArg(args, "message"),
+		OnFinished: stringArg(args, "on_finished"),
+		Background: true,
+	}
+	if background, ok := args["background"].(bool); ok {
+		a.Background = background
+	}
+	if n, ok := shellIntArg(args, "block_timeout_ms"); ok {
+		a.BlockTimeoutMS = n
+	}
+
+	res := s.sendDelegateMessage(ctx, a)
+	if res.Err != nil {
+		return "", res.Err
+	}
+	return marshalSendMessageResult(res, maxChars)
 }
 
 func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (string, error) {
@@ -274,6 +305,24 @@ type jobStopResult struct {
 	Reason *string `json:"reason"`
 }
 
+type jobSendMessageDelegateResult struct {
+	Target              string `json:"target"`
+	JobID               string `json:"job_id"`
+	Type                string `json:"type"`
+	Status              string `json:"status"`
+	RunningInBackground bool   `json:"running_in_background"`
+	Action              string `json:"action"`
+	ResumedFromJobID    string `json:"resumed_from_job_id,omitempty"`
+	TranscriptRef       string `json:"transcript_ref"`
+}
+
+type jobSendMessageAliasResult struct {
+	Target      string `json:"target"`
+	Delivered   bool   `json:"delivered"`
+	Action      string `json:"action"`
+	MessageType string `json:"message_type"`
+}
+
 type delegateToolResult struct {
 	JobID                 string  `json:"job_id"`
 	Type                  string  `json:"type"`
@@ -286,6 +335,27 @@ type delegateToolResult struct {
 	Truncated             *bool   `json:"truncated,omitempty"`
 	StructuredResult      any     `json:"structured_result,omitempty"`
 	StructuredResultValid *bool   `json:"structured_result_valid,omitempty"`
+}
+
+func marshalSendMessageResult(res sendMessageResult, maxChars int) (string, error) {
+	if res.MessageType == "runtime" {
+		return marshalBoundedJSON(jobSendMessageAliasResult{
+			Target:      res.Target,
+			Delivered:   res.Delivered,
+			Action:      res.Action,
+			MessageType: res.MessageType,
+		}, maxChars)
+	}
+	return marshalBoundedJSON(jobSendMessageDelegateResult{
+		Target:              res.Target,
+		JobID:               res.JobID,
+		Type:                res.Type,
+		Status:              string(res.Status),
+		RunningInBackground: res.RunningInBackground,
+		Action:              res.Action,
+		ResumedFromJobID:    res.ResumedFromJobID,
+		TranscriptRef:       res.TranscriptRef,
+	}, maxChars)
 }
 
 func marshalDelegateResult(res delegateResult, maxChars int) (string, error) {
@@ -657,7 +727,7 @@ func enforceJobToolJSONLimits(reg *tool.Registry) {
 		return
 	}
 	overrides := map[string]schema.ToolOutputLimit{}
-	for _, name := range []string{"job_read_output", "job_list", "job_stop", "delegate"} {
+	for _, name := range []string{"job_read_output", "job_list", "job_stop", "delegate", "job_send_message"} {
 		registered := reg.Get(name)
 		if registered == nil || registered.Limit.MaxChars >= jobToolResultMinJSONChars {
 			continue

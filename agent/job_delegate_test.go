@@ -850,6 +850,66 @@ func TestSendDelegateMessageRunningDelegateTargetSteersWithoutNewJob(t *testing.
 	waitForShellDone(t, sess.jobManager, first.JobID)
 }
 
+func TestSendDelegateMessageRunningTargetHoldsRunLockThroughSteer(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	sub := &subagent{
+		id:      child.ID(),
+		sess:    child,
+		running: true,
+		status:  SubagentRunning,
+		done:    make(chan struct{}),
+	}
+	parent.subagents.track(sub)
+	rec := &jobstore.JobRecord{
+		JobID:         "job_atomic_delegate",
+		Type:          jobstore.JobDelegate,
+		Status:        jobstore.StatusRunning,
+		TranscriptRef: encodeRef("", child.ID()),
+	}
+
+	child.mu.Lock()
+	childLocked := true
+	t.Cleanup(func() {
+		if childLocked {
+			child.mu.Unlock()
+		}
+	})
+
+	done := make(chan sendMessageResult, 1)
+	go func() {
+		done <- parent.sendRunningDelegateMessage(rec.JobID, "atomic steer", rec)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		if !sub.mu.TryLock() {
+			break
+		}
+		sub.mu.Unlock()
+		select {
+		case res := <-done:
+			t.Fatalf("sendRunningDelegateMessage returned before Steer could append: %+v", res)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("subagent run lock was not held while steering was blocked")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	child.mu.Unlock()
+	childLocked = false
+	res := <-done
+	if res.Err != nil {
+		t.Fatalf("sendRunningDelegateMessage returned error: %v", res.Err)
+	}
+	queue := child.SteeringQueueSnapshot()
+	if len(queue) != 1 || queue[0].Text != "atomic steer" {
+		t.Fatalf("steering queue = %+v, want atomic steer", queue)
+	}
+}
+
 func TestFindRunningDelegateByTranscriptRefRejectsAmbiguousMatches(t *testing.T) {
 	adapter := &cancelAwareDelegateAdapter{name: "openai", started: make(chan struct{})}
 	c := llm.NewClient()

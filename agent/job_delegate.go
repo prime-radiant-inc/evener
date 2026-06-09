@@ -257,12 +257,13 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 
 	sub.mu.Lock()
 	running := sub.running
-	sub.mu.Unlock()
 	if !running {
+		sub.mu.Unlock()
 		return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is running but session %q is not live", target, childID))
 	}
 
 	sub.sess.Steer(message)
+	sub.mu.Unlock()
 	return sendMessageResult{
 		Target:              target,
 		JobID:               rec.JobID,

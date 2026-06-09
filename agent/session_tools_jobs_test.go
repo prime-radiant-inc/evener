@@ -235,6 +235,77 @@ func TestDelegateToolForegroundReturnsStructuredResult(t *testing.T) {
 	}
 }
 
+func TestJobSendMessageToShellJobNotMessageable(t *testing.T) {
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	if shellOut.JobID == "" {
+		t.Fatal("background shell returned no job_id")
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(shellOut.JobID)
+		waitForShellDone(t, s.jobManager, shellOut.JobID)
+	})
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "send",
+		Name:      "job_send_message",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"message":"hi"}`, shellOut.JobID)),
+	})
+	if !res.IsError {
+		t.Fatalf("job_send_message succeeded, want error: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "target_not_messageable") {
+		t.Fatalf("job_send_message error = %q, want target_not_messageable", res.Output)
+	}
+}
+
+func TestJobSendMessageAliasTargetReturnsRuntimeShape(t *testing.T) {
+	s := newTestSession(t)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "send",
+		Name:      "job_send_message",
+		Arguments: json.RawMessage(`{"target":"caller","message":"runtime advisory"}`),
+	})
+	if res.IsError {
+		t.Fatalf("job_send_message returned error: %s", res.Output)
+	}
+	var out struct {
+		Target      string `json:"target"`
+		Delivered   bool   `json:"delivered"`
+		Action      string `json:"action"`
+		MessageType string `json:"message_type"`
+		JobID       string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal job_send_message output: %v (output: %s)", err, res.Output)
+	}
+	if out.Target != "caller" || !out.Delivered || out.Action != "sent" || out.MessageType != "runtime" {
+		t.Fatalf("job_send_message output = %+v, want runtime sent shape", out)
+	}
+	if out.JobID != "" {
+		t.Fatalf("job_send_message alias output included job_id %q", out.JobID)
+	}
+	queue := s.SteeringQueueSnapshot()
+	if len(queue) != 1 || queue[0].Text != "runtime advisory" {
+		t.Fatalf("steering queue = %+v, want runtime advisory", queue)
+	}
+}
+
 func TestJobToolsDefinitions(t *testing.T) {
 	required := func(t *testing.T, def llm.ToolDefinition, name string, want []string) {
 		t.Helper()
@@ -262,6 +333,7 @@ func TestJobToolsDefinitions(t *testing.T) {
 	required(t, tooldefs.DefJobStop(), "job_stop", []string{"job_id"})
 	required(t, tooldefs.DefJobList(), "job_list", nil)
 	required(t, tooldefs.DefDelegate([]string{"reviewer"}), "delegate", []string{"task"})
+	required(t, tooldefs.DefJobSendMessage(), "job_send_message", []string{"target", "message"})
 
 	readProps := tooldefs.DefJobReadOutput().Parameters["properties"].(map[string]any)
 	for _, param := range []string{"tail_bytes", "grep", "block", "block_timeout_ms", "limit_bytes", "max_chars"} {
@@ -293,6 +365,12 @@ func TestJobToolsDefinitions(t *testing.T) {
 	for _, param := range []string{"task", "background", "agent_type", "model", "reasoning_effort", "block_timeout_ms", "result_schema"} {
 		if _, ok := delegateProps[param]; !ok {
 			t.Fatalf("delegate missing param %q", param)
+		}
+	}
+	sendProps := tooldefs.DefJobSendMessage().Parameters["properties"].(map[string]any)
+	for _, param := range []string{"target", "message", "on_finished", "background", "block_timeout_ms"} {
+		if _, ok := sendProps[param]; !ok {
+			t.Fatalf("job_send_message missing param %q", param)
 		}
 	}
 }
@@ -410,14 +488,15 @@ func TestJobReadOutputSmallMaxCharsReturnsValidJSON(t *testing.T) {
 func TestJobToolOutputLimitsHaveJSONMinimum(t *testing.T) {
 	s := newShellToolTestSession(t, SessionConfig{
 		ToolOutputLimits: map[string]schema.ToolOutputLimit{
-			"job_read_output": {MaxChars: 1, Strategy: schema.TruncHeadTail},
-			"job_list":        {MaxChars: 1, Strategy: schema.TruncHeadTail},
-			"job_stop":        {MaxChars: 1, Strategy: schema.TruncHeadTail},
-			"delegate":        {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"job_read_output":  {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"job_list":         {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"job_stop":         {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"delegate":         {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"job_send_message": {MaxChars: 1, Strategy: schema.TruncHeadTail},
 		},
 	})
 
-	for _, name := range []string{"job_read_output", "job_list", "job_stop", "delegate"} {
+	for _, name := range []string{"job_read_output", "job_list", "job_stop", "delegate", "job_send_message"} {
 		rt := s.reg.Get(name)
 		if rt == nil {
 			t.Fatalf("%s not registered", name)
