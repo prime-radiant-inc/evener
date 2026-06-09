@@ -693,6 +693,11 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 	}
 	pid := cmd.Process.Pid
 	e.runningPIDs.Store(pid, struct{}{})
+	detachedStart := false
+	if d, ok := ctx.(interface{ DetachAfterStart() }); ok {
+		d.DetachAfterStart()
+		detachedStart = true
+	}
 
 	done := make(chan struct{})
 	var doneOnce sync.Once
@@ -728,7 +733,7 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 		})
 	}
 
-	if ctx != nil {
+	if ctx != nil && !detachedStart {
 		go func() {
 			select {
 			case <-ctx.Done():

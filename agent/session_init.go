@@ -114,9 +114,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	}
 	s.subagents = newSubagentManager(s.emit, func(n subagentNotification) {
 		s.enqueueNotification(n)
-		if s.notifyFunc != nil {
-			s.notifyFunc()
-		}
+		s.notify()
 	})
 	jm, err := newJobManager(s.stateDir, s.id, s.enqueueJobNotificationAndNotify)
 	if err != nil {
@@ -307,9 +305,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	s.subagents = newSubagentManager(s.emit, func(n subagentNotification) {
 		s.enqueueNotification(n)
-		if s.notifyFunc != nil {
-			s.notifyFunc()
-		}
+		s.notify()
 	})
 	jm, err := newJobManager(s.stateDir, s.id, nil)
 	if err != nil {

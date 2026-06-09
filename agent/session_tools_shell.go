@@ -183,7 +183,7 @@ func shellToolResultMaxChars(reg *tool.Registry) int {
 	return registered.Limit.MaxChars
 }
 
-func marshalShellToolResult(res shellResult, maxChars int) (string, error) {
+func marshalShellToolResult(res shellResult, maxChars int) (tool.TextResult, error) {
 	out := shellToolResult{
 		JobID:               res.JobID,
 		Type:                res.Type,
@@ -197,14 +197,20 @@ func marshalShellToolResult(res shellResult, maxChars int) (string, error) {
 		out.Output = &res.Output
 		out.Truncated = &res.Truncated
 	}
-	if maxChars > 0 {
-		return marshalBoundedShellToolResult(out, maxChars)
-	}
 	b, err := json.Marshal(out)
 	if err != nil {
-		return "", err
+		return tool.TextResult{}, err
 	}
-	return string(b), nil
+	full := string(b)
+	model := full
+	if maxChars > 0 {
+		var err error
+		model, err = marshalBoundedShellToolResult(out, maxChars)
+		if err != nil {
+			return tool.TextResult{}, err
+		}
+	}
+	return tool.TextResult{Output: model, FullOutput: full}, nil
 }
 
 func marshalBoundedShellToolResult(out shellToolResult, maxChars int) (string, error) {

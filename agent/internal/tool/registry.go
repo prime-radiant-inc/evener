@@ -122,6 +122,13 @@ type StateResult struct {
 	State  any
 }
 
+// TextResult is returned by executors that need different text for the model
+// and for the full TOOL_CALL_END event payload.
+type TextResult struct {
+	Output     string
+	FullOutput string
+}
+
 // ImageResult is returned by tool executors (e.g. read_file) when a file is
 // an image. Text is the human-readable description sent as the tool output;
 // Data and MediaType carry the raw image for multimodal models.
@@ -469,6 +476,14 @@ func (r *Registry) ExecuteCall(ctx context.Context, env execenv.ExecutionEnviron
 			} else {
 				log.Printf("tool %s: marshal StateResult.State: %v", name, err)
 			}
+		}
+		return res
+	}
+
+	if text, ok := v.(TextResult); ok {
+		res := truncateResult(name, callID, text.Output, false, t.Limit)
+		if text.FullOutput != "" {
+			res.FullOutput = text.FullOutput
 		}
 		return res
 	}

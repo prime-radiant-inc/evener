@@ -191,6 +191,77 @@ func TestRunShellBackgroundReturnsImmediately(t *testing.T) {
 	}
 }
 
+func TestRunShellBackgroundSurvivesToolContextCancellation(t *testing.T) {
+	jm, se := newShellTestRig(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	res := runShell(ctx, jm, se, shellArgs{Command: "sleep 1; printf survived", Background: true})
+	cancel()
+	if res.JobID == "" || !res.RunningInBackground {
+		t.Fatalf("res = %+v, want background job", res)
+	}
+
+	waitForShellDone(t, jm, res.JobID)
+	rec := loadShellRecord(t, jm, res.JobID)
+	if rec.Status != jobstore.StatusCompleted || rec.Reason != "exit_zero" {
+		t.Fatalf("record = %+v, want completed/exit_zero", rec)
+	}
+	output, _, _, err := jm.readOutput(res.JobID, 1024)
+	if err != nil {
+		t.Fatalf("readOutput: %v", err)
+	}
+	if output != "survived" {
+		t.Fatalf("output = %q, want survived", output)
+	}
+}
+
+func TestRunShellForegroundCancelsBeforePromotion(t *testing.T) {
+	jm, se := newShellTestRig(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+	res := runShell(ctx, jm, se, shellArgs{Command: "sleep 30", BlockTimeoutMS: 5000})
+	if res.Status != string(jobstore.StatusStopped) || res.Reason != "cancelled" || res.RunningInBackground {
+		t.Fatalf("res = %+v, want stopped/cancelled foreground", res)
+	}
+	if jobs := jm.list(listFilter{}); len(jobs) != 0 {
+		t.Fatalf("cancelled foreground job must not be durable, got %+v", jobs)
+	}
+}
+
+func TestStartOnlyContextSeesPreCanceledParent(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	cancel()
+	startCtx, detach := newStartOnlyContext(parent)
+	detach()
+
+	select {
+	case <-startCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("start-only context did not observe pre-canceled parent")
+	}
+	if startCtx.Err() == nil {
+		t.Fatal("start-only context Err() = nil, want cancellation")
+	}
+}
+
+func TestStartOnlyContextIgnoresCancellationAfterDetach(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	startCtx, detach := newStartOnlyContext(parent)
+	detach()
+	cancel()
+
+	select {
+	case <-startCtx.Done():
+		t.Fatal("start-only context cancelled after detach")
+	case <-time.After(100 * time.Millisecond):
+	}
+	if startCtx.Err() != nil {
+		t.Fatalf("start-only context Err() = %v, want nil", startCtx.Err())
+	}
+}
+
 func TestRunShellDetachedFinalizerRetriesUntilDurable(t *testing.T) {
 	jm, se := newShellTestRig(t)
 	appendErr := errors.New("temporary append failure")

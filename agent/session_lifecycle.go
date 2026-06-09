@@ -97,6 +97,10 @@ func (s *Session) Close() {
 		// 2-4. Kill running child processes (SIGTERM → wait 2s → SIGKILL).
 		s.env.Cleanup()
 
+		if s.jobManager != nil {
+			_ = s.jobManager.close()
+		}
+
 		// SessionEnd hooks (best-effort, bounded timeout)
 		if s.hookRunner != nil {
 			hookCtx, hookCancel := context.WithTimeout(context.Background(), 10*time.Second)

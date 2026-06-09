@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -110,6 +111,11 @@ func TestReconcileOnRestoreRequeuesTerminalNotifications(t *testing.T) {
 			if got := sess.peekNotifications(); got != 1 {
 				t.Fatalf("peekNotifications = %d, want 1", got)
 			}
+			var wakes int
+			sess.SetNotifyFunc(func() { wakes++ })
+			if wakes != 1 {
+				t.Fatalf("late notify wakes = %d, want 1", wakes)
+			}
 			recs, err := sess.jobManager.store.Load()
 			if err != nil {
 				t.Fatalf("load jobs: %v", err)
@@ -140,5 +146,46 @@ func TestJobManagerNotificationCallbackWakesSession(t *testing.T) {
 	}
 	if wakes != 1 {
 		t.Fatalf("notify wakes = %d, want 1", wakes)
+	}
+}
+
+func TestJobManagerNotificationCallbackRegistrationRace(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{StateDir: dir, NoProjectPrompts: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 100; i++ {
+			sess.SetNotifyFunc(func() {})
+			sess.SetNotifyFunc(nil)
+		}
+	}()
+	for i := 0; i < 100; i++ {
+		sess.enqueueJobNotificationAndNotify(jobNotification{JobID: "job_done"})
+	}
+	<-done
+}
+
+func TestSessionCloseClosesJobStore(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{StateDir: dir, NoProjectPrompts: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := sess.jobManager.store
+
+	sess.Close()
+
+	if _, err := store.Load(); !errors.Is(err, jobstore.ErrStoreClosed) {
+		t.Fatalf("store.Load after Close err = %v, want ErrStoreClosed", err)
 	}
 }

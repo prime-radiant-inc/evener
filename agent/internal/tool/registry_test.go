@@ -237,6 +237,33 @@ func TestToolRegistry_TruncationMarkers(t *testing.T) {
 	}
 }
 
+func TestToolRegistry_TextResultKeepsFullOutput(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(RegisteredTool{
+		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "t"}},
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			return TextResult{Output: "short", FullOutput: strings.Repeat("x", 2000)}, nil
+		},
+		Limit: schema.ToolOutputLimit{MaxChars: 10, Strategy: schema.TruncTail},
+	}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	res := r.ExecuteCall(context.Background(), execenv.NewLocalExecutionEnvironment(t.TempDir()), llm.ToolCallData{
+		ID:        "c1",
+		Name:      "t",
+		Arguments: json.RawMessage(`{}`),
+	})
+	if res.IsError {
+		t.Fatalf("unexpected error")
+	}
+	if res.Output != "short" {
+		t.Fatalf("Output = %q, want short", res.Output)
+	}
+	if len(res.FullOutput) != 2000 {
+		t.Fatalf("FullOutput length = %d, want 2000", len(res.FullOutput))
+	}
+}
+
 func TestToolRegistry_TruncationOrder_CharsFirstThenLines(t *testing.T) {
 	r := NewRegistry()
 	full := strings.Repeat("0123456789\n", 100) // ~1100 chars, many lines

@@ -53,6 +53,13 @@ type terminalJob struct {
 	generation  string
 }
 
+type jobRuntimeHandle struct {
+	jobID  string
+	signal func()
+	done   <-chan struct{}
+	output *jobstore.OutputStore
+}
+
 // jobNotification is the durable-job analogue of subagentNotification.
 type jobNotification struct {
 	JobID, JobType, Status, Reason, TranscriptRef string
@@ -102,6 +109,64 @@ func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*
 		enqueue:     enqueue,
 		now:         time.Now,
 	}, nil
+}
+
+func (jm *jobManager) close() error {
+	jm.mu.Lock()
+	running := make([]jobRuntimeHandle, 0, len(jm.running))
+	for _, run := range jm.running {
+		running = append(running, jobRuntimeHandle{
+			jobID:  run.rec.JobID,
+			signal: run.signal,
+			done:   run.done,
+			output: run.output,
+		})
+	}
+	jm.mu.Unlock()
+
+	for _, run := range running {
+		if run.signal != nil {
+			run.signal()
+		}
+	}
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	var waitErr error
+waitLoop:
+	for _, run := range running {
+		select {
+		case <-run.done:
+		case <-deadline.C:
+			waitErr = errors.New("job manager close timed out waiting for running jobs")
+			jm.abandonRunningJobs()
+			break waitLoop
+		}
+	}
+	if err := jm.store.Close(); err != nil {
+		if waitErr != nil {
+			return fmt.Errorf("%w; close store: %w", waitErr, err)
+		}
+		return err
+	}
+	return waitErr
+}
+
+func (jm *jobManager) abandonRunningJobs() {
+	jm.mu.Lock()
+	running := make([]jobRuntimeHandle, 0, len(jm.running))
+	for _, run := range jm.running {
+		running = append(running, jobRuntimeHandle{
+			jobID:  run.rec.JobID,
+			output: run.output,
+		})
+		delete(jm.running, run.rec.JobID)
+	}
+	jm.mu.Unlock()
+	for _, run := range running {
+		if run.output != nil {
+			_ = run.output.Close()
+		}
+	}
 }
 
 func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, error) {

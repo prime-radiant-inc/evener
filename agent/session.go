@@ -237,9 +237,7 @@ func (s *Session) enqueueJobNotification(n jobNotification) {
 
 func (s *Session) enqueueJobNotificationAndNotify(n jobNotification) {
 	s.enqueueJobNotification(n)
-	if s.notifyFunc != nil {
-		s.notifyFunc()
-	}
+	s.notify()
 }
 
 func (s *Session) requeueJobNotifications(notifs []jobNotification) {
@@ -284,8 +282,26 @@ func (s *Session) peekNotifications() int {
 // import server, so serve.go wires this callback into the server's input channel.
 func (s *Session) SetNotifyFunc(f func()) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.notifyFunc = f
+	s.mu.Unlock()
+	if f == nil {
+		return
+	}
+	s.pendingNotifsMu.Lock()
+	pending := len(s.pendingNotifs)+len(s.pendingJobNotifs) > 0
+	s.pendingNotifsMu.Unlock()
+	if pending {
+		f()
+	}
+}
+
+func (s *Session) notify() {
+	s.mu.Lock()
+	f := s.notifyFunc
+	s.mu.Unlock()
+	if f != nil {
+		f()
+	}
 }
 
 // communicateResult records whether and how the agent delivered a result via

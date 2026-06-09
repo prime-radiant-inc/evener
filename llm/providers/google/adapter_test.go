@@ -300,6 +300,7 @@ func TestAdapter_Complete_StripsAdditionalPropertiesFromSchemas(t *testing.T) {
 						"additionalProperties": false,
 						"properties":           map[string]any{"y": map[string]any{"type": "string"}},
 					},
+					"cursor": map[string]any{"type": []any{"string", "null"}},
 				},
 			},
 		}},
@@ -324,6 +325,10 @@ func TestAdapter_Complete_StripsAdditionalPropertiesFromSchemas(t *testing.T) {
 	x, _ := props["x"].(map[string]any)
 	if _, ok := x["additionalProperties"]; ok {
 		t.Fatalf("unexpected nested additionalProperties in tool parameters: %#v", x["additionalProperties"])
+	}
+	cursor, _ := props["cursor"].(map[string]any)
+	if cursor["type"] != "string" || cursor["nullable"] != true {
+		t.Fatalf("cursor schema = %#v, want string nullable", cursor)
 	}
 
 	// Response schema: additionalProperties must also be stripped.

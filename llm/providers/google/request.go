@@ -132,6 +132,13 @@ func sanitizeGeminiSchema(v any) any {
 			if k == "additionalProperties" {
 				continue
 			}
+			if k == "type" {
+				if typ, nullable, ok := geminiNullableType(vv); ok {
+					out[k] = typ
+					out["nullable"] = nullable
+					continue
+				}
+			}
 			out[k] = sanitizeGeminiSchema(vv)
 		}
 		return out
@@ -144,6 +151,47 @@ func sanitizeGeminiSchema(v any) any {
 	default:
 		return v
 	}
+}
+
+func geminiNullableType(v any) (string, bool, bool) {
+	var values []string
+	switch x := v.(type) {
+	case []any:
+		values = make([]string, 0, len(x))
+		for _, item := range x {
+			s, ok := item.(string)
+			if !ok {
+				return "", false, false
+			}
+			values = append(values, s)
+		}
+	case []string:
+		values = x
+	default:
+		return "", false, false
+	}
+	if len(values) != 2 {
+		return "", false, false
+	}
+	var typ string
+	nullable := false
+	for _, v := range values {
+		switch v {
+		case "null":
+			nullable = true
+		case "":
+			return "", false, false
+		default:
+			if typ != "" {
+				return "", false, false
+			}
+			typ = v
+		}
+	}
+	if typ == "" || !nullable {
+		return "", false, false
+	}
+	return typ, true, true
 }
 
 func geminiImagePart(p llm.ContentPart) (map[string]any, error) {

@@ -635,3 +635,27 @@ func TestJobManagerArmPendingTerminalNotificationsSkipsDelivered(t *testing.T) {
 		t.Fatalf("queued = %+v, want none", queued)
 	}
 }
+
+func TestJobManagerCloseClosesStoreAfterRuntimeWaitTimeout(t *testing.T) {
+	jm := newTestJM(t)
+	run := &runningJob{
+		rec:  &jobstore.JobRecord{JobID: "job_hung"},
+		done: make(chan struct{}),
+	}
+	jm.running[run.rec.JobID] = run
+
+	start := time.Now()
+	err := jm.close()
+	if err == nil {
+		t.Fatal("close error = nil, want timeout")
+	}
+	if time.Since(start) > 6*time.Second {
+		t.Fatal("close waited longer than expected")
+	}
+	if len(jm.running) != 0 {
+		t.Fatalf("running jobs after timed-out close = %d, want 0", len(jm.running))
+	}
+	if _, loadErr := jm.store.Load(); !errors.Is(loadErr, jobstore.ErrStoreClosed) {
+		t.Fatalf("store.Load after timed-out close err = %v, want ErrStoreClosed", loadErr)
+	}
+}

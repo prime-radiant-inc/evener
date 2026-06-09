@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -55,13 +57,22 @@ func (w shellOutputWriter) Write(b []byte) (int, error) {
 
 func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor, args shellArgs) shellResult {
 	blockTimeout := time.Duration(clampShellBlockTimeoutMS(args.BlockTimeoutMS)) * time.Millisecond
+	if ctx != nil {
+		select {
+		case <-ctx.Done():
+			return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
+		default:
+		}
+	}
 
 	run, err := jm.newDelayedShell(args)
 	if err != nil {
 		return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
 	}
 
-	handle, err := se.StreamCommand(ctx, args.Command, "", nil, shellOutputWriter{output: run.output})
+	startCtx, detachStartCtx := newStartOnlyContext(ctx)
+	handle, err := se.StreamCommand(startCtx, args.Command, "", nil, shellOutputWriter{output: run.output})
+	detachStartCtx()
 	if err != nil {
 		jm.discardDelayedShell(run)
 		return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
@@ -112,6 +123,10 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 
 	timer := time.NewTimer(blockTimeout)
 	defer timer.Stop()
+	var ctxDone <-chan struct{}
+	if ctx != nil {
+		ctxDone = ctx.Done()
+	}
 	select {
 	case wait := <-waitCh:
 		if runtimeTimedOut.Load() {
@@ -155,7 +170,108 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 			Output:              output,
 			Truncated:           truncated,
 		}
+	case <-ctxDone:
+		handle.Signal()
+		wait := <-waitCh
+		output, _, truncated, _ := tailOutput(run.output, shellInlineOutputBytes)
+		jm.discardDelayedShell(run)
+		return shellResult{
+			Type:                string(run.rec.Type),
+			Status:              string(jobstore.StatusStopped),
+			Reason:              "cancelled",
+			RunningInBackground: false,
+			TimedOut:            false,
+			ExitCode:            &wait.exitCode,
+			Output:              output,
+			Truncated:           truncated,
+		}
 	}
+}
+
+type startOnlyContext struct {
+	parent     context.Context
+	done       chan struct{}
+	detach     chan struct{}
+	cancelOnce sync.Once
+	detachOnce sync.Once
+	mu         sync.Mutex
+	err        error
+	detached   bool
+}
+
+func newStartOnlyContext(parent context.Context) (*startOnlyContext, func()) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx := &startOnlyContext{
+		parent: parent,
+		done:   make(chan struct{}),
+		detach: make(chan struct{}),
+	}
+	if err := parent.Err(); err != nil {
+		ctx.cancel(err)
+		return ctx, ctx.detachStart
+	}
+	go func() {
+		select {
+		case <-parent.Done():
+			ctx.cancel(parent.Err())
+		case <-ctx.detach:
+		}
+	}()
+	return ctx, ctx.detachStart
+}
+
+func (c *startOnlyContext) Deadline() (time.Time, bool) {
+	return c.parent.Deadline()
+}
+
+func (c *startOnlyContext) Done() <-chan struct{} {
+	return c.done
+}
+
+func (c *startOnlyContext) Err() error {
+	select {
+	case <-c.done:
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.err
+	default:
+		return nil
+	}
+}
+
+func (c *startOnlyContext) Value(key any) any {
+	return c.parent.Value(key)
+}
+
+func (c *startOnlyContext) DetachAfterStart() {
+	c.detachStart()
+}
+
+func (c *startOnlyContext) cancel(err error) {
+	if err == nil {
+		err = context.Canceled
+	}
+	c.cancelOnce.Do(func() {
+		c.mu.Lock()
+		if c.detached {
+			c.mu.Unlock()
+			return
+		}
+		c.err = err
+		c.mu.Unlock()
+		close(c.done)
+	})
+}
+
+func (c *startOnlyContext) detachStart() {
+	c.detachOnce.Do(func() {
+		c.mu.Lock()
+		c.detached = true
+		c.mu.Unlock()
+		close(c.detach)
+	})
 }
 
 func (jm *jobManager) finishForegroundRuntimeTimeout(run *runningJob, wait shellWaitResult) shellResult {
@@ -315,7 +431,7 @@ func (jm *jobManager) finalizeShellWithRetry(jobID string, status jobstore.Statu
 func (jm *jobManager) finalizeShellUntilDurable(jobID string, status jobstore.Status, reason string, exitCode *int) {
 	attempt := 0
 	for {
-		if err := jm.finalize(jobID, status, reason, exitCode); err == nil {
+		if err := jm.finalize(jobID, status, reason, exitCode); err == nil || errors.Is(err, jobstore.ErrStoreClosed) {
 			return
 		}
 		time.Sleep(shellFinalizeBackoff(attempt))

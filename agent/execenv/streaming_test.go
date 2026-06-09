@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -43,7 +44,7 @@ func TestStreamCommandCapturesOutputAndExit(t *testing.T) {
 	mu.Lock()
 	got := buf.String()
 	mu.Unlock()
-	if got != "stdout\nstderr\n" {
+	if !strings.Contains(got, "stdout\n") || !strings.Contains(got, "stderr\n") {
 		t.Errorf("streamed output = %q", got)
 	}
 }

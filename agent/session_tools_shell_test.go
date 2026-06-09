@@ -74,6 +74,9 @@ func TestShellToolTinyMaxCharsStillReturnsJSON(t *testing.T) {
 	if got := len([]rune(res.Output)); got > shellToolResultMinJSONChars {
 		t.Fatalf("shell JSON escaped internal minimum: got %d want <= %d", got, shellToolResultMinJSONChars)
 	}
+	if len(res.FullOutput) <= len(res.Output) {
+		t.Fatalf("FullOutput length = %d, Output length = %d; want full event payload preserved", len(res.FullOutput), len(res.Output))
+	}
 
 	var out struct {
 		Status    string `json:"status"`
