@@ -13,13 +13,14 @@ import (
 )
 
 type jobManager struct {
-	mu        sync.Mutex
-	dir       string
-	sessionID string
-	store     *jobstore.Store
-	running   map[string]*runningJob
-	enqueue   func(jobNotification)
-	now       func() time.Time
+	mu          sync.Mutex
+	dir         string
+	sessionID   string
+	store       *jobstore.Store
+	running     map[string]*runningJob
+	appendEvent func(jobstore.Event) error
+	enqueue     func(jobNotification)
+	now         func() time.Time
 }
 
 type runningJob struct {
@@ -68,12 +69,13 @@ func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*
 		return nil, err
 	}
 	return &jobManager{
-		dir:       dir,
-		sessionID: sessionID,
-		store:     store,
-		running:   make(map[string]*runningJob),
-		enqueue:   enqueue,
-		now:       time.Now,
+		dir:         dir,
+		sessionID:   sessionID,
+		store:       store,
+		running:     make(map[string]*runningJob),
+		appendEvent: store.Append,
+		enqueue:     enqueue,
+		now:         time.Now,
 	}, nil
 }
 
@@ -92,7 +94,11 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		StartedAt:        startedAt,
 		OutputPath:       outputPath,
 	}
-	if err := jm.store.Append(jobstore.Event{
+	output, err := jobstore.OpenOutput(outputPath, 0)
+	if err != nil {
+		return nil, err
+	}
+	if err := jm.appendEvent(jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
 		JobID:            rec.JobID,
@@ -103,10 +109,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		VisibleToSession: rec.VisibleToSession,
 		StartedAt:        &startedAt,
 	}); err != nil {
-		return nil, err
-	}
-	output, err := jobstore.OpenOutput(outputPath, 0)
-	if err != nil {
+		_ = output.Close()
 		return nil, err
 	}
 
@@ -122,9 +125,17 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 }
 
 func (jm *jobManager) list(filter listFilter) []*jobstore.JobRecord {
-	recs, err := jm.store.Load()
+	jobs, err := jm.listWithError(filter)
 	if err != nil {
 		return nil
+	}
+	return jobs
+}
+
+func (jm *jobManager) listWithError(filter listFilter) ([]*jobstore.JobRecord, error) {
+	recs, err := jm.store.Load()
+	if err != nil {
+		return nil, err
 	}
 
 	jm.mu.Lock()
@@ -149,7 +160,7 @@ func (jm *jobManager) list(filter listFilter) []*jobstore.JobRecord {
 		}
 		return jobs[i].StartedAt.After(jobs[j].StartedAt)
 	})
-	return jobs
+	return jobs, nil
 }
 
 func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, total int64, truncated bool, err error) {
@@ -202,7 +213,7 @@ func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {
 	return cloneJobRecord(rec), nil
 }
 
-func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason string, exitCode *int) {
+func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason string, exitCode *int) error {
 	jm.mu.Lock()
 	run := jm.running[jobID]
 	if run != nil && run.finalizing {
@@ -213,7 +224,7 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 	}
 	jm.mu.Unlock()
 	if run == nil {
-		return
+		return nil
 	}
 
 	var outputBytes int64
@@ -224,7 +235,7 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 
 	endedAt := jm.now()
 	terminalGen := jobstore.NewTerminalGeneration()
-	_ = jm.store.Append(jobstore.Event{
+	if err := jm.appendEvent(jobstore.Event{
 		Kind:        jobstore.EventJobFinished,
 		TS:          endedAt,
 		JobID:       jobID,
@@ -234,7 +245,15 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 		EndedAt:     &endedAt,
 		OutputBytes: outputBytes,
 		TerminalGen: terminalGen,
-	})
+	}); err != nil {
+		jm.mu.Lock()
+		if jm.running[jobID] == run {
+			run.finalizing = false
+		}
+		jm.mu.Unlock()
+		return err
+	}
+	_ = run.output.Close()
 	close(run.done)
 
 	jm.mu.Lock()
@@ -243,12 +262,14 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 	}
 	jm.mu.Unlock()
 
-	_ = jm.store.Append(jobstore.Event{
+	if err := jm.appendEvent(jobstore.Event{
 		Kind:        jobstore.EventJobNotificationPending,
 		TS:          endedAt,
 		JobID:       jobID,
 		TerminalGen: terminalGen,
-	})
+	}); err != nil {
+		return err
+	}
 	if jm.enqueue != nil {
 		jm.enqueue(jobNotification{
 			JobID:         jobID,
@@ -260,6 +281,7 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 			ExitCode:      exitCode,
 		})
 	}
+	return nil
 }
 
 func tailOutput(output *jobstore.OutputStore, tailBytes int) (string, int64, bool, error) {

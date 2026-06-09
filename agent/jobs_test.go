@@ -1,6 +1,9 @@
 package agent
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -45,6 +48,42 @@ func TestJobManagerReadOutput(t *testing.T) {
 	}
 }
 
+func TestJobManagerCreateDoesNotPersistWhenOutputOpenFails(t *testing.T) {
+	jm := newTestJM(t)
+	outputDir := filepath.Join(jm.dir, "jobs")
+	if err := os.RemoveAll(outputDir); err != nil {
+		t.Fatalf("remove jobs dir: %v", err)
+	}
+	if err := os.WriteFile(outputDir, []byte("not a directory"), 0o644); err != nil {
+		t.Fatalf("replace jobs dir: %v", err)
+	}
+
+	if _, err := jm.createShell(createShellOpts{Command: "x"}); err == nil {
+		t.Fatal("createShell succeeded with invalid output dir")
+	}
+	recs, err := jm.store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Fatalf("records = %+v, want none", recs)
+	}
+}
+
+func TestJobManagerListWithErrorSurfacesLoadFailure(t *testing.T) {
+	jm := newTestJM(t)
+	if err := jm.store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	if _, err := jm.listWithError(listFilter{}); err == nil {
+		t.Fatal("listWithError returned nil error")
+	}
+	if jobs := jm.list(listFilter{}); jobs != nil {
+		t.Fatalf("list = %+v, want nil on load error", jobs)
+	}
+}
+
 func TestJobManagerFinalize(t *testing.T) {
 	var queued []jobNotification
 	jm, err := newJobManager(t.TempDir(), "S1", func(n jobNotification) {
@@ -62,7 +101,9 @@ func TestJobManagerFinalize(t *testing.T) {
 	done := jm.running[rec.JobID].done
 	_, _ = jm.running[rec.JobID].output.Append([]byte("hello\n"))
 
-	jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", nil)
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", nil); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
 
 	select {
 	case <-done:
@@ -85,5 +126,104 @@ func TestJobManagerFinalize(t *testing.T) {
 	}
 	if len(queued) != 1 || queued[0].JobID != rec.JobID || queued[0].Status != string(jobstore.StatusCompleted) {
 		t.Fatalf("queued = %+v", queued)
+	}
+}
+
+func TestJobManagerFinalizeFinishAppendFailureKeepsRuntime(t *testing.T) {
+	var queued []jobNotification
+	jm, err := newJobManager(t.TempDir(), "S1", func(n jobNotification) {
+		queued = append(queued, n)
+	})
+	if err != nil {
+		t.Fatalf("newJobManager: %v", err)
+	}
+	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	done := jm.running[rec.JobID].done
+
+	appendErr := errors.New("finish append failed")
+	origAppend := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventJobFinished {
+			return appendErr
+		}
+		return origAppend(e)
+	}
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", nil); !errors.Is(err, appendErr) {
+		t.Fatalf("finalize error = %v, want %v", err, appendErr)
+	}
+	select {
+	case <-done:
+		t.Fatal("done closed after failed terminal append")
+	default:
+	}
+	if _, ok := jm.running[rec.JobID]; !ok {
+		t.Fatal("job removed after failed terminal append")
+	}
+	if len(queued) != 0 {
+		t.Fatalf("queued = %+v, want none", queued)
+	}
+
+	jm.appendEvent = origAppend
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", nil); err != nil {
+		t.Fatalf("retry finalize: %v", err)
+	}
+	select {
+	case <-done:
+	default:
+		t.Fatal("done was not closed after retry")
+	}
+}
+
+func TestJobManagerFinalizePendingAppendFailureDoesNotEnqueue(t *testing.T) {
+	var queued []jobNotification
+	jm, err := newJobManager(t.TempDir(), "S1", func(n jobNotification) {
+		queued = append(queued, n)
+	})
+	if err != nil {
+		t.Fatalf("newJobManager: %v", err)
+	}
+	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	done := jm.running[rec.JobID].done
+
+	appendErr := errors.New("pending append failed")
+	origAppend := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventJobNotificationPending {
+			return appendErr
+		}
+		return origAppend(e)
+	}
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", nil); !errors.Is(err, appendErr) {
+		t.Fatalf("finalize error = %v, want %v", err, appendErr)
+	}
+	select {
+	case <-done:
+	default:
+		t.Fatal("done was not closed")
+	}
+	if _, ok := jm.running[rec.JobID]; ok {
+		t.Fatal("job still running")
+	}
+	if len(queued) != 0 {
+		t.Fatalf("queued = %+v, want none", queued)
+	}
+	recs, err := jm.store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	got := recs[rec.JobID]
+	if got.Status != jobstore.StatusCompleted {
+		t.Fatalf("status = %q, want completed", got.Status)
+	}
+	if got.NotifyState != jobstore.NotifyNotArmed {
+		t.Fatalf("notify state = %q, want not_armed", got.NotifyState)
 	}
 }
