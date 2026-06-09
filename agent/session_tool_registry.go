@@ -218,6 +218,9 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	if err := registerShellTools(reg, s, deps); err != nil {
 		return err
 	}
+	if err := registerJobTools(reg, s, deps); err != nil {
+		return err
+	}
 	registerSubagentTools(reg, s, deps)
 	registerTaskTools(reg, deps)
 	registerGoalTools(reg, deps)

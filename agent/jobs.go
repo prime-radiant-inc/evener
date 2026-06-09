@@ -63,8 +63,11 @@ type createShellOpts struct {
 }
 
 type listFilter struct {
-	Status jobstore.Status
-	Type   jobstore.JobType
+	Status   jobstore.Status
+	Statuses []jobstore.Status
+	Type     jobstore.JobType
+	Types    []jobstore.JobType
+	Limit    int
 }
 
 // jobsDir returns the per-session job directory: <stateDir>/sessions/<id>.
@@ -172,7 +175,13 @@ func (jm *jobManager) listWithError(filter listFilter) ([]*jobstore.JobRecord, e
 		if filter.Status != "" && rec.Status != filter.Status {
 			continue
 		}
+		if len(filter.Statuses) > 0 && !statusAllowed(rec.Status, filter.Statuses) {
+			continue
+		}
 		if filter.Type != "" && rec.Type != filter.Type {
+			continue
+		}
+		if len(filter.Types) > 0 && !typeAllowed(rec.Type, filter.Types) {
 			continue
 		}
 		jobs = append(jobs, cloneJobRecord(rec))
@@ -183,7 +192,28 @@ func (jm *jobManager) listWithError(filter listFilter) ([]*jobstore.JobRecord, e
 		}
 		return jobs[i].StartedAt.After(jobs[j].StartedAt)
 	})
+	if filter.Limit > 0 && len(jobs) > filter.Limit {
+		jobs = jobs[:filter.Limit]
+	}
 	return jobs, nil
+}
+
+func statusAllowed(status jobstore.Status, allowed []jobstore.Status) bool {
+	for _, want := range allowed {
+		if status == want {
+			return true
+		}
+	}
+	return false
+}
+
+func typeAllowed(jobType jobstore.JobType, allowed []jobstore.JobType) bool {
+	for _, want := range allowed {
+		if jobType == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, total int64, truncated bool, err error) {

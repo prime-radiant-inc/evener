@@ -88,6 +88,70 @@ func DefShell() llm.ToolDefinition {
 	}
 }
 
+func DefJobReadOutput() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name:        "job_read_output",
+		Description: "Read a job's captured output and current status by job_id. Returns a bounded tail of shell stdout/stderr or a delegate final report; reads never consume or acknowledge output. Pass grep to search retained output with a regex. block=true performs one bounded wait for terminal state or new output, not a polling loop.",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"job_id":           map[string]any{"type": "string"},
+				"tail_bytes":       map[string]any{"type": "integer", "default": 65536, "maximum": 1048576},
+				"grep":             map[string]any{"type": "string"},
+				"block":            map[string]any{"type": "boolean", "default": false},
+				"block_timeout_ms": map[string]any{"type": "integer"},
+				"max_chars":        map[string]any{"type": "integer"},
+			},
+			"required": []string{"job_id"},
+		},
+	}
+}
+
+func DefJobList() llm.ToolDefinition {
+	statusEnum := []any{"running", "completed", "failed", "cancelled", "stopped"}
+	typeEnum := []any{"shell", "delegate"}
+	return llm.ToolDefinition{
+		Name:        "job_list",
+		Description: "List durable jobs for recovery and inspection. Filter by status or type; results are newest-first. Use this to find a job_id or inspect inventory, not to wait for completion.",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"status": map[string]any{
+					"type":  "array",
+					"items": map[string]any{"type": "string", "enum": statusEnum},
+				},
+				"type": map[string]any{
+					"type":  "array",
+					"items": map[string]any{"type": "string", "enum": typeEnum},
+				},
+				"limit":  map[string]any{"type": "integer", "default": 50, "maximum": 100},
+				"cursor": map[string]any{"type": "string"},
+			},
+			"required": []any{},
+		},
+	}
+}
+
+func DefJobStop() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name:        "job_stop",
+		Description: "Request cancellation of a running job by job_id. Use it only to stop work; it does not delete output or history. block=true performs one bounded wait for the stop to finalize.",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"job_id":           map[string]any{"type": "string"},
+				"signal":           map[string]any{"type": "string"},
+				"block":            map[string]any{"type": "boolean", "default": false},
+				"block_timeout_ms": map[string]any{"type": "integer", "default": 5000, "minimum": 1000, "maximum": 60000},
+			},
+			"required": []string{"job_id"},
+		},
+	}
+}
+
 func DefGrep() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "grep",

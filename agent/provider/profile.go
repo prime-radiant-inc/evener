@@ -53,6 +53,7 @@ const (
 	capabilityShellSearch      toolCapability = "shell_search"
 	capabilityDirectoryListing toolCapability = "directory_listing"
 	capabilityAgentControl     toolCapability = "agent_control"
+	capabilityJobControl       toolCapability = "job_control"
 	capabilityWorkflow         toolCapability = "workflow"
 	capabilityWebFetch         toolCapability = "web_fetch"
 	capabilityWebSearch        toolCapability = "web_search"
@@ -84,6 +85,7 @@ var (
 		capabilityCodexEditing,
 		capabilityShellSearch,
 		capabilityAgentControl,
+		capabilityJobControl,
 		capabilityWorkflow,
 		capabilityWebFetch,
 	}
@@ -92,6 +94,7 @@ var (
 		capabilityExactEditing,
 		capabilityShellSearch,
 		capabilityAgentControl,
+		capabilityJobControl,
 		capabilityWorkflow,
 		capabilityWebFetch,
 	}
@@ -101,6 +104,7 @@ var (
 		capabilityShellSearch,
 		capabilityDirectoryListing,
 		capabilityAgentControl,
+		capabilityJobControl,
 		capabilityWorkflow,
 		capabilityWebFetch,
 		capabilityWebSearch,
@@ -202,6 +206,11 @@ func toolDefinitionsForCapabilities(capabilities []toolCapability, efforts []str
 		add(tool.DefSendInput())
 		add(tool.DefWait())
 		add(tool.DefCloseAgent())
+	}
+	if enabled[capabilityJobControl] {
+		add(tool.DefJobReadOutput())
+		add(tool.DefJobList())
+		add(tool.DefJobStop())
 	}
 	if enabled[capabilityWorkflow] {
 		add(tool.DefTaskList(efforts))
