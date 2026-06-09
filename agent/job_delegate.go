@@ -84,7 +84,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	finalizeErr := make(chan error, 1)
 	go func() {
 		<-done
-		finalizeErr <- s.finalizeDelegate(run.rec.JobID, childID)
+		finalizeErr <- s.finalizeDelegate(run.rec.JobID, childID, sub)
 	}()
 
 	if args.Background {
@@ -267,12 +267,14 @@ func cancelDelegateSub(sub *subagent) {
 	}
 }
 
-func (s *Session) finalizeDelegate(jobID, childID string) error {
+func (s *Session) finalizeDelegate(jobID, childID string, sub *subagent) error {
 	jm, err := sessionJobManager(s)
 	if err != nil {
 		return err
 	}
-	sub := s.subagents.get(childID)
+	if sub == nil {
+		sub = s.subagents.get(childID)
+	}
 	if sub == nil {
 		return jm.finalize(jobID, jobstore.StatusFailed, "child_missing", nil)
 	}

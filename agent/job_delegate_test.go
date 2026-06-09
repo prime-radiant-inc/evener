@@ -272,6 +272,10 @@ func TestCreateDelegateSignalCancelsChildAfterSubagentDrain(t *testing.T) {
 	}
 
 	waitForShellDone(t, sess.jobManager, res.JobID)
+	rec := loadShellRecord(t, sess.jobManager, res.JobID)
+	if rec.Status != jobstore.StatusCancelled || rec.Reason != "stopped_by_parent" {
+		t.Fatalf("record = %+v, want cancelled/stopped_by_parent after drained-map signal", rec)
+	}
 }
 
 func TestCreateDelegateDurableRecordKeepsOutputPathAndTranscriptRef(t *testing.T) {
@@ -368,7 +372,7 @@ func TestCreateDelegateForegroundFinalizeFailureReturns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode transcript ref: %v", err)
 	}
-	if err := sess.finalizeDelegate(res.JobID, childID); err != nil {
+	if err := sess.finalizeDelegate(res.JobID, childID, nil); err != nil {
 		t.Fatalf("cleanup finalizeDelegate: %v", err)
 	}
 	waitForShellDone(t, sess.jobManager, res.JobID)
@@ -440,7 +444,7 @@ func TestCreateDelegateForegroundOutputAppendFailureReturns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode transcript ref: %v", err)
 	}
-	if err := sess.finalizeDelegate(res.JobID, childID); err != nil {
+	if err := sess.finalizeDelegate(res.JobID, childID, nil); err != nil {
 		t.Fatalf("cleanup finalizeDelegate: %v", err)
 	}
 	waitForShellDone(t, sess.jobManager, res.JobID)
