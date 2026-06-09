@@ -16,34 +16,48 @@ This is **Phase 4 of 6**, implementing spec `docs/superpowers/specs/2026-06-08-j
 
 ## Dependency note: the Phase 3 `job_send_message` Go seam
 
-Phase 3 is not yet written at authoring time. This plan assumes Phase 3 lands a JobManager-side delivery method that the `job_send_message` **tool handler** wraps, and that a fired watch's `send` reuses the same method (spec §5.5: "`job_send_message` is also the substrate for `job_watch.send`"). The signature this plan calls is:
+Phase 3 ships the delivery as a **`*Session` method** (these types are owned by Phase 3 —
+`agent/job_delegate.go`; **do NOT redeclare them here**, that is a compile error):
 
 ```go
-// agent/job_send_message.go (Phase 3) — the JobManager-side delivery used by
-// both the job_send_message tool and a fired job_watch send. Resolves target
-// (job_id | caller | main | watched), authorizes by caller role, and delivers.
-func (jm *jobManager) sendMessage(ctx context.Context, opts sendMessageOpts) (sendMessageResult, error)
-
-type sendMessageOpts struct {
+type sendMessageArgs struct {
 	Target         string // job_id or alias: caller|main|watched
 	Message        string
-	OnFinished     string // "resume" | "fail"; default "resume"
+	OnFinished     string // "resume" (default) | "fail"
 	Background     bool
 	BlockTimeoutMS int
-	// FromWatch marks a watch-originated send so Phase 3 can skip caller-role
-	// re-authorization the watch already performed at configuration time and so
-	// observer telemetry is excluded from re-feeding watches (spec §9).
-	FromWatch bool
 }
 type sendMessageResult struct {
-	Target, JobID, Type, Status, Reason, Action, TranscriptRef string
-	ResumedFromJobID                                           string
-	Delivered                                                  bool
-	MessageType                                                string
+	Target, JobID, Type string
+	Status              jobstore.Status
+	RunningInBackground bool
+	Action              string // "sent" | "resumed"
+	ResumedFromJobID    string
+	TranscriptRef       string
+	Delivered           bool   // alias targets
+	MessageType         string // "runtime" for alias targets
+	Err                 error  // the method returns by value; errors ride here
 }
+func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs) sendMessageResult
 ```
 
-**If Phase 3 named it differently, adapt the call site in Task 6 to the real method — do not invent a parallel delivery path.** Verify with `grep -n "func (jm \*jobManager) sendMessage\|job_send_message" agent/job_send_message.go agent/session_tools_jobs.go` before writing Task 6, and if the seam is a package-level `sendMessage(ctx, jm, opts)` (matching Phase 2's `runShell(ctx, jm, se, args)` style) rather than a method, call it that way. The watch registry and matcher (Tasks 1–5) have **no** Phase 3 dependency and can be built first.
+A fired watch's `send` reuses this (spec §5.5: "`job_send_message` is also the substrate for
+`job_watch.send`"). Because the watch registry lives in the `jobManager` but `sendDelegateMessage`
+is a `*Session` method, this phase gives the `jobManager` an **injected** delivery func (mirroring
+Phase 2's injected `enqueue`/`now`):
+
+```go
+// added to the jobManager struct (Phase 4):
+send func(context.Context, sendMessageArgs) sendMessageResult
+```
+
+wired to `s.sendDelegateMessage` when the session builds the manager, and set to a capture in tests.
+**This phase also adds a `FromWatch bool` field to Phase 3's `sendMessageArgs`** plus the matching
+behavior in `sendDelegateMessage`: when `FromWatch` is true, skip the caller-role re-authorization the
+watch already performed at configure time and exclude the delivery from observer telemetry to avoid
+feedback loops (spec §9). Before writing Tasks 6/9, `grep -n "func (s \*Session) sendDelegateMessage\|type sendMessageArgs" agent/job_delegate.go`
+to confirm the real names and adapt if Phase 3 drifted. The watch registry and matcher (Tasks 1–5)
+have **no** Phase 3 dependency and can be built first.
 
 ---
 
@@ -680,16 +694,20 @@ git commit -m "feat(agent): output_match output tap + progress_interval timer"
 
 When `send` is present, a fired watch delivers the configured message plus a bounded frame/excerpt to `send.to` via the Phase 3 `job_send_message` seam (spec §5.9, §5.5). Frames are bounded and filtered (spec §5.9). The message sent is the configuration **current at fire time** (read `cfg.Send` live).
 
-> **Dependency:** this task calls the Phase 3 `jm.sendMessage(ctx, sendMessageOpts{...})` documented in the dependency note at the top. Verify the real signature first and adapt.
+> **Dependency:** this task delivers via the injected `jm.send(ctx, sendMessageArgs{...})` (wired to Phase 3's `s.sendDelegateMessage`, see the dependency note at the top). Verify the real names first and adapt.
 
 - [ ] **Step 1: Write the failing test** — append to `agent/job_watch_test.go`:
 
 ```go
 func TestWatchSendDeliversFrameToTarget(t *testing.T) {
 	jm := newTestJM(t)
-	// Capture deliveries instead of running a real Phase 3 send.
-	var sent []sendMessageOpts
-	jm.sendForTest = func(opts sendMessageOpts) { sent = append(sent, opts) } // test seam (see step 3)
+	// Capture deliveries by setting the injected send func (production wires it
+	// to s.sendDelegateMessage; here we capture).
+	var sent []sendMessageArgs
+	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{}
+	}
 
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	_, err := jm.configureWatch(watchArgs{
@@ -714,14 +732,14 @@ func TestWatchSendDeliversFrameToTarget(t *testing.T) {
 }
 ```
 
-(Adjust to the real `sendMessageOpts` field names — this plan's seam names the target field `Target`. Add `"strings"` import if missing.)
+(Phase 3's `sendMessageArgs` names the target field `Target` and the body `Message`. Add `"context"`/`"strings"` imports if missing.)
 
-- [ ] **Step 2: Run test to verify it fails** — `cd agent && go test ./ -run TestWatchSend -v`. Expected: FAIL to compile (`deliverWatchSend`, `sendForTest` undefined).
+- [ ] **Step 2: Run test to verify it fails** — `cd agent && go test ./ -run TestWatchSend -v`. Expected: FAIL to compile (`deliverWatchSend`, the `jm.send` field undefined).
 
 - [ ] **Step 3: Implement.**
+  - Add the `send func(context.Context, sendMessageArgs) sendMessageResult` field to `jobManager` (per the dependency note), and add `FromWatch bool` to Phase 3's `sendMessageArgs` + the configure-time-auth skip in `sendDelegateMessage`. Wire `jm.send = s.sendDelegateMessage` at the session-build site (where the JobManager is constructed).
   - `func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger string) string` — compose the delivered message: `cfg.Send.Message`, plus (when `IncludeFrame`) a bounded frame describing the trigger (`jobID`, the matched line / event kind / progress tick), plus (when `IncludeExcerpt`) a bounded tail of the job's output via the Phase 2 `readOutput`. Bound every piece (e.g. cap the excerpt at a few KB). Exclude observer telemetry to avoid loops (spec §9): never include a watched job's own watch-send output in a frame.
-  - `func (jm *jobManager) deliverWatchSend(ctx context.Context, cfg *watchConfig, jobID, trigger string)` — build the frame and call the Phase 3 seam: `jm.sendMessage(ctx, sendMessageOpts{Target: cfg.Send.To, Message: jm.buildWatchFrame(...), Background: true, FromWatch: true})`. A delivery error must be swallowed into diagnostics (spec §9: "sidecar failure produces diagnostics, never fails the watched session") — log/record, do not propagate.
-  - **Test seam.** To keep this task testable without a live Phase 3 child, add an injectable `sendForTest func(sendMessageOpts)` field on `jobManager` (nil in production). `deliverWatchSend` calls `sendForTest` when non-nil, else the real `jm.sendMessage`. This mirrors Phase 2's injectable `now func() time.Time`. Wire the real `jm.sendMessage` once Phase 3 is confirmed.
+  - `func (jm *jobManager) deliverWatchSend(ctx context.Context, cfg *watchConfig, jobID, trigger string)` — build the frame and deliver: `res := jm.send(ctx, sendMessageArgs{Target: cfg.Send.To, Message: jm.buildWatchFrame(...), Background: true, FromWatch: true})`. A delivery error (`res.Err`) must be swallowed into diagnostics (spec §9: "sidecar failure produces diagnostics, never fails the watched session") — log/record, do not propagate. If `jm.send` is nil (e.g. persistence-off / no delegate runtime), skip silently.
   - Route the Task 4/Task 5 fire points through `deliverWatchSend` for `cfg.Send != nil` and through `jm.enqueue` for `cfg.Send == nil`.
 
 - [ ] **Step 4: Run test to verify it passes** — `cd agent && go test ./ -run TestWatchSend -v`. Expected: PASS.
@@ -956,7 +974,7 @@ func TestObserverSidecarReceivesFrameAndAdvisesBack(t *testing.T) {
 	}
 
 	// 3. Feed matching output; assert a frame was delivered toward job_obs.
-	captured := captureWatchSends(t, s.jobs) // installs s.jobs.sendForTest, returns a getter
+	captured := captureWatchSends(t, s.jobs) // sets s.jobs.send to a capture, returns a getter
 	s.jobs.feedJobOutput(watchedID, []byte("server READY\n"))
 	sends := captured()
 	if len(sends) != 1 || sends[0].Target != "job_obs" {
@@ -969,7 +987,7 @@ func TestObserverSidecarReceivesFrameAndAdvisesBack(t *testing.T) {
 }
 ```
 
-  `captureWatchSends` is a small test helper that sets `s.jobs.sendForTest` (the Task 6 seam) and returns a closure exposing the captured `[]sendMessageOpts`. If Phase 3 is merged and you want the **fuller** flow (a real sidecar reading the frame and calling alias-target `job_send_message` back), add a second test that: spawns a `delegate` sidecar, configures the watch to its real `job_id`, drives output, and asserts (via the watched session's transcript/notification) that the sidecar's alias `job_send_message(target="watched")` landed. Keep it real (no mocked child) per the global rule; if that is too heavy for a unit test, cover it in the live e2e scenario (Task 10) instead and keep this unit test at the delivery-seam level.
+  `captureWatchSends` is a small test helper that sets `s.jobs.send` (the injected delivery func) to a capture and returns a closure exposing the captured `[]sendMessageArgs`. If Phase 3 is merged and you want the **fuller** flow (a real sidecar reading the frame and calling alias-target `job_send_message` back), add a second test that: spawns a `delegate` sidecar, configures the watch to its real `job_id`, drives output, and asserts (via the watched session's transcript/notification) that the sidecar's alias `job_send_message(target="watched")` landed. Keep it real (no mocked child) per the global rule; if that is too heavy for a unit test, cover it in the live e2e scenario (Task 10) instead and keep this unit test at the delivery-seam level.
 
 - [ ] **Step 2: Run the test** — `cd agent && go test ./ -run TestObserverSidecar -v`. Expected: PASS (it exercises only existing seams).
 
@@ -1024,7 +1042,7 @@ git commit -m "test(job-control): phase 4 watches suite + profile fixups green"
 
 - **Spec coverage:** pure `output_match` matcher with no-silent-miss over a chunked stream (Task 1) ↔ §5.9 / §8 seam split; `DefJobWatch` params + event-kind interpolation (Task 2) ↔ §5.9 / §5.11; registry keyed `(visible_session_id, target, send.to)` with idempotent-duplicate / `replaced_existing` / `clear` / `target_not_found` / no-condition error (Task 3) ↔ §5.9 / §5.10; `events`/`trigger` event-frame gating via the `Session.emit` tap + the Nth-event counter (Task 4) ↔ §8; `output_match` output tap + `progress_interval_ms` timer (Task 5) ↔ §5.9; `send` delivery via the Phase 3 `job_send_message` seam + bounded frames with observer-telemetry exclusion (Task 6) ↔ §5.9 / §9; concrete-job watch expiry with flush-then-terminal ordering (Task 7) ↔ §5.9; root-only tool registration (Task 8) ↔ §5.1; observer-sidecar composition end-to-end (Task 9) ↔ §9; full green + live e2e (Task 10) ↔ §14.
 - **Seam discipline (§8, mandatory):** the only `jobstore` addition is the pure `OutputMatcher` (stdlib + `regexp`, no `agent/events` import — verified `internal/tool` and `provider`/`jobstore` do not import `events`). All event-kind naming, the registry, gating, timers, and delivery live in package `agent`, where `events.EventKind` is nameable. The model-facing event-name → `events.EventKind` map is **new** and defined once in `job_watch.go` (no prior mapping exists in the tree).
-- **Phase 2/3 reuse (no parallel paths):** the caller-notification path reuses the Phase 2 `jobNotification` queue (`jm.enqueue`); the `send` path reuses the Phase 3 `job_send_message` delivery seam (`jm.sendMessage`); the output tap reuses the Phase 2 `OutputStore` append path (a tee `io.Writer`, not a second store); expiry folds into the Phase 2 `finalize`. The injectable `sendForTest` seam mirrors Phase 2's injectable `now`.
+- **Phase 2/3 reuse (no parallel paths):** the caller-notification path reuses the Phase 2 `jobNotification` queue (`jm.enqueue`); the `send` path reuses the Phase 3 delivery via the injected `jm.send` (wired to `s.sendDelegateMessage`); the output tap reuses the Phase 2 `OutputStore` append path (a tee `io.Writer`, not a second store); expiry folds into the Phase 2 `finalize`. The injectable `jm.send` mirrors Phase 2's injectable `now`.
 - **Dependency honesty:** Phase 3 is unwritten at authoring time — the `job_send_message` Go seam is documented as an assumption at the top with a verify-and-adapt instruction, and Tasks 6/9 (the only Phase-3 consumers) are last and explicitly call it out. Tasks 1–5, 7, 8 have no Phase 3 dependency.
 - **Lock safety:** `onSessionEvent` runs inside `Session.emit`, so it must only enqueue and never re-emit/re-enter the session lock (documented in Task 4). `expireJobWatches` folds into `finalize`'s existing critical section (Task 7).
 - **Verify-against-code reminders embedded:** every task that touches a Phase 2/3 symbol (`jm.enqueue`, `jm.sessionID`, `finalize`, `s.jobs`, the `OutputStore` append site, `delegate`'s root-only gating, `newTestSessionWithLocalEnv`/`extractJobID`/`callTool`) instructs the implementer to grep-confirm the real name before use, because Phase 2/3 fix those names.

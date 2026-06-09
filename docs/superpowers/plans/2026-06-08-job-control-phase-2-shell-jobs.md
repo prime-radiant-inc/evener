@@ -514,7 +514,7 @@ func TestReconcileOnRestoreFinalizesLostJob(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails** — `cd agent && go test ./ -run TestReconcileOnRestore -v`. Expected: FAIL (`reconcileLostJobs` undefined).
 
-- [ ] **Step 3: Implement** `jobManager.reconcileLostJobs()` in `agent/jobs.go`: `recs, _ := jm.store.Load()`; build `live := map[string]bool{}` from `jm.running`; `events := jobstore.Reconcile(recs, live, jm.now())`; for each event: `jm.store.Append(event)`, then arm — `store.Append(EventJobNotificationPending{...})` and `jm.enqueue(jobNotification{JobID:..., JobType: string(rec.Type), Status: "stopped", Reason: "runtime_lost", ...})`. Then in `RestoreSessionFromMetaWithConfig` (after the subagent manager line), add:
+- [ ] **Step 3: Implement** `jobManager.reconcileLostJobs()` in `agent/jobs.go`: `recs, _ := jm.store.Load()`; build `live := map[string]bool{}` from `jm.running`; `events := jobstore.Reconcile(recs, live, jm.now())`; for each event: `jm.store.Append(event)`, then arm — `jm.store.Append(jobstore.Event{Kind: jobstore.EventJobNotificationPending, JobID: event.JobID, TerminalGen: event.TerminalGen})` and `jm.enqueue(jobNotification{JobID: event.JobID, JobType: string(rec.Type), Status: "stopped", Reason: "runtime_lost", ...})`. Then in `RestoreSessionFromMetaWithConfig` (after the subagent manager line), add:
 
 ```go
 jm, err := newJobManager(s.stateDir, s.id, s.enqueueJobNotification)
