@@ -2,6 +2,7 @@ package hooks
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"primeradiant.com/serf/agent/plugin"
@@ -109,17 +110,15 @@ func TestHookRunner_PostToolUse_ExitCode2_DoesNotBlock(t *testing.T) {
 		t.Fatal("PostToolUse exit 2 should surface a model context message")
 	}
 	// PostToolUse exit 2: must NOT behave like a deny — RunResult has no Denied field,
-	// so the key assertion is that a model context message appears without blocking behavior.
-	// The absence of a block/deny field on RunResult is the structural guarantee;
-	// confirm the message contains our stderr content.
+	// so the key assertion is that the stderr content reaches the model without blocking.
 	found := false
 	for _, msg := range result.ModelContext {
-		if msg == "post-tool-error" || len(msg) > 0 {
+		if strings.Contains(msg, "post-tool-error") {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("PostToolUse exit 2 model context = %v, want non-empty", result.ModelContext)
+		t.Fatalf("PostToolUse exit 2 model context = %v, want it to contain the stderr", result.ModelContext)
 	}
 }

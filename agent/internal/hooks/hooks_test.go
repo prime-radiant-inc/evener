@@ -528,8 +528,8 @@ func TestParseHookOutput_PlainText(t *testing.T) {
 	if result.SystemMessage != "some plain text output" {
 		t.Errorf("SystemMessage = %q, want %q", result.SystemMessage, "some plain text output")
 	}
-	if result.Denied {
-		t.Error("plain text should not be denied")
+	if result.PermissionDecision != "" {
+		t.Error("plain text should not set a permission decision")
 	}
 	if result.Blocked {
 		t.Error("plain text should not be blocked")
@@ -559,8 +559,8 @@ func TestParseHookOutput_StructuredJSON(t *testing.T) {
 func TestParseHookOutput_PreToolUseDeny(t *testing.T) {
 	output := `{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"dangerous operation"}}`
 	result := parseHookOutput(output, 0)
-	if !result.Denied {
-		t.Error("expected Denied=true")
+	if result.PermissionDecision != "deny" {
+		t.Errorf("PermissionDecision = %q, want deny", result.PermissionDecision)
 	}
 	if result.PermissionReason != "dangerous operation" {
 		t.Errorf("PermissionReason = %q, want %q", result.PermissionReason, "dangerous operation")
@@ -574,9 +574,6 @@ func TestParseHookOutput_PermissionDecisionAllow(t *testing.T) {
 	}
 	if o.PermissionReason != "looks fine" {
 		t.Fatalf("PermissionReason = %q, want \"looks fine\"", o.PermissionReason)
-	}
-	if o.Denied {
-		t.Fatal("allow must not set Denied")
 	}
 }
 
@@ -662,8 +659,8 @@ func TestParseHookOutput_EmptyOutput(t *testing.T) {
 	if result.SystemMessage != "" {
 		t.Errorf("SystemMessage = %q, want empty", result.SystemMessage)
 	}
-	if result.Denied {
-		t.Error("empty output should not deny")
+	if result.PermissionDecision != "" {
+		t.Error("empty output should not set a permission decision")
 	}
 	if result.Blocked {
 		t.Error("empty output should not block")
@@ -944,6 +941,104 @@ func TestRunPreToolUse_DenyStillRoutesAdditionalContext(t *testing.T) {
 	}
 	if len(r.UserMessages) != 0 {
 		t.Fatalf("deny reason must not leak to UserMessages; got %v", r.UserMessages)
+	}
+}
+
+func TestRunPreToolUse_DenySystemMessageToUser(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: `echo '{"systemMessage":"contact security","hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"blocked"}}'`,
+	})
+	r := runner.RunPreToolUse(context.Background(), Input{CWD: "/tmp", HookEventName: "PreToolUse", ToolName: "Bash"})
+	if !r.Denied || r.DenyMessage != "blocked" {
+		t.Fatalf("expected deny with reason 'blocked'; Denied=%v DenyMessage=%q", r.Denied, r.DenyMessage)
+	}
+	// A top-level systemMessage is user-visible guidance distinct from the deny
+	// reason; a deny must not suppress it.
+	if len(r.UserMessages) != 1 || r.UserMessages[0] != "contact security" {
+		t.Fatalf("deny must still surface the systemMessage to the user; UserMessages = %v", r.UserMessages)
+	}
+}
+
+func TestRunPreToolUse_DeferProceeds(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookPreToolUse, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: `echo '{"hookSpecificOutput":{"permissionDecision":"defer"}}'`,
+	})
+	r := runner.RunPreToolUse(context.Background(), Input{CWD: "/tmp", HookEventName: "PreToolUse", ToolName: "Bash"})
+	if r.Denied {
+		t.Fatal("defer must not deny")
+	}
+	if len(r.UserMessages) != 1 || !strings.Contains(r.UserMessages[0], "defer") {
+		t.Fatalf("defer must add a UserMessages diagnostic naming the decision; got %v", r.UserMessages)
+	}
+}
+
+func TestRouting_JSONSystemMessageOnContextEventToUser(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookSessionStart, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: `echo '{"systemMessage":"user-msg"}'`,
+	})
+	r := runner.RunSessionStart(context.Background(), Input{CWD: "/tmp", HookEventName: "SessionStart"})
+	// On a context event, plain stdout reaches the model, but the JSON systemMessage
+	// field is still user-visible only.
+	if len(r.UserMessages) != 1 || r.UserMessages[0] != "user-msg" {
+		t.Fatalf("JSON systemMessage on a context event must go to the user; UserMessages = %v", r.UserMessages)
+	}
+	if len(r.ModelContext) != 0 {
+		t.Fatalf("JSON systemMessage must not reach the model; ModelContext = %v", r.ModelContext)
+	}
+}
+
+func TestRunNotification_Routing(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: `echo '{"hookSpecificOutput":{"additionalContext":"to-model"}}'`,
+	})
+	r := runner.RunNotification(context.Background(), Input{CWD: "/tmp", HookEventName: "Notification"})
+	if len(r.ModelContext) != 1 || r.ModelContext[0] != "to-model" {
+		t.Fatalf("Notification additionalContext must reach the model; ModelContext = %v", r.ModelContext)
+	}
+}
+
+func TestRunNotification_PlainStdoutToUser(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5, Command: `echo notice`,
+	})
+	r := runner.RunNotification(context.Background(), Input{CWD: "/tmp", HookEventName: "Notification"})
+	if len(r.UserMessages) != 1 || r.UserMessages[0] != "notice" {
+		t.Fatalf("Notification plain stdout must go to the user; UserMessages = %v", r.UserMessages)
+	}
+	if len(r.ModelContext) != 0 {
+		t.Fatalf("Notification plain stdout must not reach the model; ModelContext = %v", r.ModelContext)
+	}
+}
+
+func TestRunPreCompact_Routing(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookPreCompact, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5,
+		Command: `echo '{"hookSpecificOutput":{"additionalContext":"to-model"}}'`,
+	})
+	r := runner.RunPreCompact(context.Background(), Input{CWD: "/tmp", HookEventName: "PreCompact"})
+	if len(r.ModelContext) != 1 || r.ModelContext[0] != "to-model" {
+		t.Fatalf("PreCompact additionalContext must reach the model; ModelContext = %v", r.ModelContext)
+	}
+}
+
+func TestRunPreCompact_PlainStdoutToUser(t *testing.T) {
+	runner := newRunner(nil, "")
+	runner.Add(plugin.HookPreCompact, plugin.RegisteredHook{
+		Matcher: "*", Type: "command", Timeout: 5, Command: `echo compacting`,
+	})
+	r := runner.RunPreCompact(context.Background(), Input{CWD: "/tmp", HookEventName: "PreCompact"})
+	if len(r.UserMessages) != 1 || r.UserMessages[0] != "compacting" {
+		t.Fatalf("PreCompact plain stdout must go to the user; UserMessages = %v", r.UserMessages)
 	}
 }
 

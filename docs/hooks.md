@@ -398,7 +398,7 @@ The output JSON serf reads (exit 0):
   "decision": "block",
   "reason": "why (with decision:block)",
   "hookSpecificOutput": {
-    "permissionDecision": "allow|deny",
+    "permissionDecision": "allow|deny|ask|defer",
     "permissionDecisionReason": "why",
     "updatedInput": { "command": "ls -la" },
     "additionalContext": "extra context for the model"

@@ -411,12 +411,14 @@ type parsedHookOutput struct {
 	SystemMessage     string
 	AdditionalContext string
 	TerminalSequence  string
-	Denied            bool
 	UpdatedInput      map[string]any
-	Blocked           bool
-	BlockReason       string
-	IsError           bool
-	RawExitCode       int
+	// Blocked is the top-level JSON decision:"block" signal. It is consumed by
+	// Stop/SubagentStop (runStopEvent); PreToolUse uses PermissionDecision instead
+	// (the deprecated block->deny mapping sets PermissionDecision, not this flag).
+	Blocked     bool
+	BlockReason string
+	IsError     bool
+	RawExitCode int
 	// PermissionDecision is the PreToolUse hookSpecificOutput.permissionDecision
 	// ("allow"|"deny"|"ask"|"defer"), or "" if absent. RunPreToolUse interprets it.
 	PermissionDecision string
@@ -475,9 +477,6 @@ func parseHookOutput(stdout string, exitCode int) parsedHookOutput {
 	if hso, ok := parsed["hookSpecificOutput"].(map[string]any); ok {
 		if pd, ok := hso["permissionDecision"].(string); ok {
 			result.PermissionDecision = pd
-			if pd == "deny" {
-				result.Denied = true
-			}
 		}
 		if r, ok := hso["permissionDecisionReason"].(string); ok {
 			result.PermissionReason = r
@@ -627,12 +626,13 @@ func (r *Runner) RunPreToolUse(ctx context.Context, input Input) PreToolUseResul
 			result.UserMessages = append(result.UserMessages,
 				"hook returned permissionDecision \""+o.PermissionDecision+"\" which serf does not support (no interactive permission prompt); the tool will proceed")
 		}
-		if !denied {
+		// Route the output's additionalContext (-> model) and JSON systemMessage
+		// field (-> user) normally. The only thing a deny withholds is the exit-2
+		// error stderr, which becomes the DenyMessage instead of model context;
+		// a denying JSON output (not IsError) carries its reason in PermissionReason,
+		// so routing its other fields never double-delivers the reason.
+		if !denied || !o.IsError {
 			routeOutput(plugin.HookPreToolUse, o, &result.ModelContext, &result.UserMessages)
-		} else if o.AdditionalContext != "" {
-			// A denied call still passes its additionalContext to the model; only the
-			// deny reason (SystemMessage/PermissionReason) is withheld from the buckets.
-			result.ModelContext = append(result.ModelContext, o.AdditionalContext)
 		}
 		if o.UpdatedInput != nil {
 			result.UpdatedInput = mergeHookInputMaps(result.UpdatedInput, o.UpdatedInput)

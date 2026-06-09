@@ -218,3 +218,38 @@ func TestNewSession_InvalidMatcherWarnsOnce(t *testing.T) {
 		t.Errorf("PluginName = %q, want %q", matcherWarnings[0].PluginName, "badmatch-plugin")
 	}
 }
+
+// TestNotificationHook_SystemMessageOutputDoesNotRecurse is the Phase B recursion
+// gate: a Notification hook whose OWN output is a systemMessage must not re-fire
+// the Notification hook. The systemMessage is delivered via deliverHookUserMessage
+// → emitDiagnosticWarning (which does not run the Notification hook); if it were
+// delivered via emit, the EventWarning would re-enter runNotificationHook and
+// recurse. The hook appends to a counter and prints a systemMessage; firing one
+// warning must run the hook exactly once.
+func TestNotificationHook_SystemMessageOutputDoesNotRecurse(t *testing.T) {
+	counter := filepath.Join(t.TempDir(), "ran.log")
+	dir := writePluginHooks(t, "notif-sysmsg-plugin", `{
+		"hooks": {
+			"Notification": [
+				{"matcher": "*", "hooks": [{"type": "command", "command": "echo x >> `+counter+`; echo '{\"systemMessage\":\"notice\"}'"}]}
+			]
+		}
+	}`)
+
+	client := llm.NewClient()
+	cfg := SessionConfig{PluginDirs: []string{dir}}
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+	drainEvents(sess)
+
+	// Fire one genuine warning; emit runs the Notification hook synchronously.
+	sess.emit(events.EventWarning, events.WarningData{Message: "trigger"})
+
+	data, _ := os.ReadFile(counter)
+	if got := strings.Count(string(data), "x"); got != 1 {
+		t.Fatalf("Notification hook ran %d time(s), want 1 — a systemMessage output must not re-fire the Notification hook; counter=%q", got, string(data))
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/internal/diagnostic"
 	"primeradiant.com/serf/llm"
 )
 
@@ -101,7 +102,7 @@ func (s *Session) deliverHookUserMessage(text string) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
-	s.emitDiagnosticWarning(events.WarningData{Source: "hook", Message: text})
+	s.emitDiagnosticWarning(events.WarningData{Source: string(diagnostic.SourceHook), Message: text})
 }
 
 // FollowUp queues a message to process after the current input completes.
