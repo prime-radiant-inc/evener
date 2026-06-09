@@ -1,6 +1,9 @@
 package execenv
 
-import "context"
+import (
+	"context"
+	"io"
+)
 
 // ExecResult holds the outcome of a command executed in an ExecutionEnvironment.
 type ExecResult struct {
@@ -16,6 +19,22 @@ type DirEntry struct {
 	Name  string `json:"name"`
 	IsDir bool   `json:"is_dir"`
 	Size  int64  `json:"size,omitempty"`
+}
+
+// StreamingExecutor is an optional capability: a long-running command whose
+// output streams to out as it arrives, returning a handle to wait on and signal.
+// It is separate from ExecutionEnvironment so existing implementers (incl. test
+// fakes) are unaffected; the job runtime type-asserts for it.
+type StreamingExecutor interface {
+	StreamCommand(ctx context.Context, command, workingDir string, envVars map[string]string, out io.Writer) (*StreamHandle, error)
+}
+
+// StreamHandle is a running streamed process. Wait blocks until exit and returns
+// the exit code; Signal terminates the process group (SIGTERM then SIGKILL).
+type StreamHandle struct {
+	Pid    int
+	Wait   func() (exitCode int, err error)
+	Signal func()
 }
 
 // ExecutionEnvironment abstracts the filesystem and command runner used by tools.
