@@ -1,6 +1,9 @@
 package tool
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestDefShellHasJobParams(t *testing.T) {
 	props := DefShell().Parameters["properties"].(map[string]any)
@@ -78,6 +81,27 @@ func TestDefJobSendMessageParams(t *testing.T) {
 	enum := of["enum"].([]string)
 	if len(enum) != 2 || enum[0] != "resume" || enum[1] != "fail" {
 		t.Errorf("on_finished enum = %v, want [resume fail]", enum)
+	}
+}
+
+func TestDefJobWatchParamsAndKinds(t *testing.T) {
+	def := DefJobWatch([]string{"assistant.message", "job.notification"})
+	if def.Name != "job_watch" {
+		t.Fatalf("name = %q, want job_watch", def.Name)
+	}
+	props := def.Parameters["properties"].(map[string]any)
+	for _, p := range []string{"target", "output_match", "progress_interval_ms", "events", "trigger", "send", "clear"} {
+		if _, ok := props[p]; !ok {
+			t.Errorf("DefJobWatch missing param %q", p)
+		}
+	}
+	req := def.Parameters["required"].([]string)
+	if len(req) != 1 || req[0] != "target" {
+		t.Errorf("required = %#v, want [target]", req)
+	}
+	// The available event kinds are interpolated into the description.
+	if !strings.Contains(def.Description, "assistant.message") || !strings.Contains(def.Description, "job.notification") {
+		t.Errorf("description must enumerate the available event kinds:\n%s", def.Description)
 	}
 }
 

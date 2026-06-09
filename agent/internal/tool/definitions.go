@@ -1,6 +1,10 @@
 package tool
 
-import "primeradiant.com/serf/llm"
+import (
+	"strings"
+
+	"primeradiant.com/serf/llm"
+)
 
 func DefReadFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
@@ -159,6 +163,62 @@ func DefJobSendMessage() llm.ToolDefinition {
 				"block_timeout_ms": map[string]any{"type": "integer", "description": "Foreground wait bound when background=false."},
 			},
 			"required": []string{"target", "message"},
+		},
+	}
+}
+
+// DefJobWatch defines the root-only job_watch tool. eventKinds are the
+// model-facing session/job event-kind names available this session; they are
+// interpolated into the description so the model can discover them (spec §5.11).
+func DefJobWatch(eventKinds []string) llm.ToolDefinition {
+	kinds := strings.Join(eventKinds, ", ")
+	if kinds == "" {
+		kinds = "none available this session"
+	}
+	desc := "Add an extra trigger on a running job or a visible session. Omit `send` to get a notification " +
+		"yourself when the trigger fires; include `send` to deliver a bounded frame to another target, " +
+		"such as an observer delegate. Triggers: `output_match`, a regex over output produced while " +
+		"the watch is active; `progress_interval_ms`, periodic; or `events`/`trigger`, selected " +
+		"session/job event frames (kinds available this session: " + kinds + ", or `*`). This is not how you " +
+		"learn a job finished — terminal notifications are automatic. Pass `clear=true` to remove a watch."
+	return llm.ToolDefinition{
+		Name:        "job_watch",
+		Description: desc,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"target":               map[string]any{"type": "string", "description": "job_id, or a visible session: caller | main | watched, or * for all visible."},
+				"output_match":         map[string]any{"type": "string", "description": "RE2 regex over output appended while the watch is active. Case-sensitive unless (?i). Invalid regex errors at creation."},
+				"progress_interval_ms": map[string]any{"type": "integer", "description": "Periodic trigger interval in ms (min 1000, max 3600000; handler clamps later). Omit for none."},
+				"events": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "Event kinds to watch; [\"*\"] = all visible. Available: " + kinds + ".",
+				},
+				"trigger": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"description":          "Fire only on the Nth occurrence of a named event.",
+					"properties": map[string]any{
+						"event": map[string]any{"type": "string"},
+						"every": map[string]any{"type": "integer"},
+					},
+				},
+				"send": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"description":          "Deliver to another target instead of notifying the caller.",
+					"properties": map[string]any{
+						"to":              map[string]any{"type": "string", "description": "job_id or alias: caller | main | watched."},
+						"message":         map[string]any{"type": "string"},
+						"include_frame":   map[string]any{"type": "boolean"},
+						"include_excerpt": map[string]any{"type": "boolean"},
+					},
+				},
+				"clear": map[string]any{"type": "boolean", "description": "Remove the matching watch. The only unwatch operation."},
+			},
+			"required": []string{"target"},
 		},
 	}
 }
