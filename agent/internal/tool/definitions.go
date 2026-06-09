@@ -88,6 +88,80 @@ func DefShell() llm.ToolDefinition {
 	}
 }
 
+// DefDelegate defines the delegate tool, which starts a NEW delegate
+// conversation (independent agentic work) and returns a job_id. agentTypes
+// constrains the agent_type enum to the session's available roles; pass nil to
+// omit the enum (free-form). reasoning_effort is a separate enum; v1 leaves it
+// free-form here and lets the handler resolve it (the prompt's agents section
+// and the provider's effort levels remain the human-readable roster).
+func DefDelegate(agentTypes []string) llm.ToolDefinition {
+	agentTypeSchema := map[string]any{
+		"type":        "string",
+		"description": "Role for the delegate. Choose from the enum; the roles are described in your agents section.",
+	}
+	if len(agentTypes) > 0 {
+		agentTypeSchema["enum"] = append([]string(nil), agentTypes...)
+	}
+	return llm.ToolDefinition{
+		Name: "delegate",
+		Description: "Start a NEW delegate conversation to do independent agentic work, and get back a `job_id`. " +
+			"It runs in the background by default; omit `background` unless you mean to wait inline. " +
+			"`delegate` never resumes or steers an existing delegate — to follow up on one you already " +
+			"started, use `job_send_message`. Optional: `agent_type` to pick a role (choose from the enum; " +
+			"the roles are described in your agents section); `model` and `reasoning_effort` overrides; a " +
+			"`result_schema` to request a validated structured result; or `background=false` to wait up to " +
+			"`block_timeout_ms` (a timeout leaves the job running). Judge the task from the output, not from " +
+			"`status=\"completed\"`.",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"task":             map[string]any{"type": "string"},
+				"background":       map[string]any{"type": "boolean", "description": "Default true. Set false to wait inline up to block_timeout_ms."},
+				"agent_type":       agentTypeSchema,
+				"model":            map[string]any{"type": "string", "description": "Model override (default: parent model)."},
+				"reasoning_effort": map[string]any{"type": "string", "description": "Reasoning effort for this delegate (e.g. low, medium, high, xhigh). Default inherits from parent."},
+				"block_timeout_ms": map[string]any{"type": "integer", "description": "Foreground wait bound when background=false. A timeout leaves the job running."},
+				"result_schema": map[string]any{
+					"type":                 "object",
+					"description":          "JSON-Schema-like object for a structured result. Becomes the delegate's structured communicate output; Serf validates it and surfaces structured_result.",
+					"additionalProperties": true,
+				},
+			},
+			"required": []string{"task"},
+		},
+	}
+}
+
+// DefJobSendMessage defines the job_send_message tool, the single follow-up
+// surface for delegate jobs and observer/sidecar commentary.
+func DefJobSendMessage() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name: "job_send_message",
+		Description: "Send a follow-up message to a delegate by `job_id`. If that delegate is still running, your " +
+			"message steers the live run; if it has finished, Serf resumes the same conversation as a new " +
+			"job and returns the new `job_id`. Set `on_finished=\"fail\"` to require a live target — if the " +
+			"delegate has already finished, the call then fails (`target_terminal`) instead of resuming. " +
+			"The same tool delivers observer commentary to a session alias (`caller`, `main`, `watched`).",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"target":  map[string]any{"type": "string", "description": "A delegate job_id, or a session alias: caller | main | watched."},
+				"message": map[string]any{"type": "string"},
+				"on_finished": map[string]any{
+					"type":        "string",
+					"enum":        []string{"resume", "fail"},
+					"description": "Default resume: a finished delegate is resumed as a new job. fail: require a live target (target_terminal if finished).",
+				},
+				"background":       map[string]any{"type": "boolean", "description": "Default true for newly resumed jobs."},
+				"block_timeout_ms": map[string]any{"type": "integer", "description": "Foreground wait bound when background=false."},
+			},
+			"required": []string{"target", "message"},
+		},
+	}
+}
+
 func DefJobReadOutput() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "job_read_output",

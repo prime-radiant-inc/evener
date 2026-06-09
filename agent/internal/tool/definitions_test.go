@@ -14,6 +14,65 @@ func TestDefShellHasJobParams(t *testing.T) {
 	}
 }
 
+func TestDefDelegateParamsAndEnum(t *testing.T) {
+	agentTypes := []string{"explorer", "implementer"}
+	def := DefDelegate(agentTypes)
+	if def.Name != "delegate" {
+		t.Fatalf("name = %q, want delegate", def.Name)
+	}
+	props := def.Parameters["properties"].(map[string]any)
+	for _, p := range []string{"task", "background", "agent_type", "model", "reasoning_effort", "block_timeout_ms", "result_schema"} {
+		if _, ok := props[p]; !ok {
+			t.Errorf("DefDelegate missing param %q", p)
+		}
+	}
+	req := def.Parameters["required"].([]string)
+	if len(req) != 1 || req[0] != "task" {
+		t.Errorf("required = %v, want [task]", req)
+	}
+	at := props["agent_type"].(map[string]any)
+	enum := at["enum"].([]string)
+	if len(enum) != 2 || enum[0] != "explorer" || enum[1] != "implementer" {
+		t.Errorf("agent_type enum = %v, want [explorer implementer]", enum)
+	}
+
+	agentTypes[0] = "mutated"
+	if enum[0] != "explorer" {
+		t.Errorf("agent_type enum was not copied: %v", enum)
+	}
+}
+
+func TestDefDelegateNoEnumWhenNoTypes(t *testing.T) {
+	def := DefDelegate(nil)
+	props := def.Parameters["properties"].(map[string]any)
+	at := props["agent_type"].(map[string]any)
+	if _, ok := at["enum"]; ok {
+		t.Errorf("agent_type must have no enum when no types are available")
+	}
+}
+
+func TestDefJobSendMessageParams(t *testing.T) {
+	def := DefJobSendMessage()
+	if def.Name != "job_send_message" {
+		t.Fatalf("name = %q, want job_send_message", def.Name)
+	}
+	props := def.Parameters["properties"].(map[string]any)
+	for _, p := range []string{"target", "message", "on_finished", "background", "block_timeout_ms"} {
+		if _, ok := props[p]; !ok {
+			t.Errorf("DefJobSendMessage missing param %q", p)
+		}
+	}
+	req := def.Parameters["required"].([]string)
+	if len(req) != 2 || req[0] != "target" || req[1] != "message" {
+		t.Errorf("required = %v, want [target message]", req)
+	}
+	of := props["on_finished"].(map[string]any)
+	enum := of["enum"].([]string)
+	if len(enum) != 2 || enum[0] != "resume" || enum[1] != "fail" {
+		t.Errorf("on_finished enum = %v, want [resume fail]", enum)
+	}
+}
+
 // TestTranscriptToolDefinitions locks the two-tool surface: correct names, strict
 // opt-out (so the model omits unused args), find takes no session selector, read takes
 // transcript_ref + the format/range/expand_turn knobs.
