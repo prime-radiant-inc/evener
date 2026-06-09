@@ -304,6 +304,7 @@ func TestJobNotificationRetryResetInvalidatesActiveTimer(t *testing.T) {
 	sess.pendingNotifsMu.Unlock()
 
 	sess.requeueJobNotifications([]jobNotification{{JobID: "job_X"}})
+	_ = sess.drainJobNotifications()
 	sess.resetJobNotificationRetry()
 	time.Sleep(50 * time.Millisecond)
 
@@ -316,5 +317,27 @@ func TestJobNotificationRetryResetInvalidatesActiveTimer(t *testing.T) {
 	}
 	if delay != jobNotificationRetryInitialDelay {
 		t.Fatalf("retry delay = %s, want reset %s", delay, jobNotificationRetryInitialDelay)
+	}
+}
+
+func TestJobNotificationRetryResetDoesNotCancelPendingRetry(t *testing.T) {
+	sess := newTestSession(t)
+	sess.pendingNotifsMu.Lock()
+	sess.jobNotifyRetry.delay = 10 * time.Millisecond
+	sess.pendingNotifsMu.Unlock()
+
+	sess.requeueJobNotifications([]jobNotification{{JobID: "job_X"}})
+	sess.resetJobNotificationRetry()
+	time.Sleep(50 * time.Millisecond)
+
+	sess.pendingNotifsMu.Lock()
+	delay := sess.jobNotifyRetry.delay
+	active := sess.jobNotifyRetry.active
+	sess.pendingNotifsMu.Unlock()
+	if active {
+		t.Fatal("retry timer still active after firing")
+	}
+	if delay != 20*time.Millisecond {
+		t.Fatalf("retry delay = %s, want pending retry to advance to 20ms", delay)
 	}
 }

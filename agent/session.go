@@ -363,6 +363,10 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 
 func (s *Session) resetJobNotificationRetry() {
 	s.pendingNotifsMu.Lock()
+	if len(s.pendingJobNotifs) > 0 {
+		s.pendingNotifsMu.Unlock()
+		return
+	}
 	s.jobNotifyRetry.generation++
 	s.jobNotifyRetry.active = false
 	s.jobNotifyRetry.delay = jobNotificationRetryInitialDelay
