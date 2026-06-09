@@ -348,7 +348,13 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 		parent.Close()
 		close(parentCloseDone)
 	}()
-	time.Sleep(50 * time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for !child.isClosingOrClosed() {
+		if time.Now().After(deadline) {
+			t.Fatal("child session was not marked closing")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	close(releaseModel)
 
 	select {
