@@ -513,7 +513,7 @@ func tailOutput(output *jobstore.OutputStore, tailBytes int) (string, int64, boo
 	return string(b), total, truncated, nil
 }
 
-func tailOutputFile(path string, tailBytes int) (string, int64, bool, error) {
+func tailOutputFile(path string, tailBytes int) (output string, total int64, truncated bool, err error) {
 	if tailBytes < 0 {
 		return "", 0, false, fmt.Errorf("%w: maxBytes=%d", jobstore.ErrInvalidLimit, tailBytes)
 	}
@@ -522,15 +522,18 @@ func tailOutputFile(path string, tailBytes int) (string, int64, bool, error) {
 	if err != nil {
 		return "", 0, false, fmt.Errorf("jobstore: open output: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("jobstore: close output: %w", closeErr)
+		}
+	}()
 
 	info, err := f.Stat()
 	if err != nil {
 		return "", 0, false, fmt.Errorf("jobstore: stat output: %w", err)
 	}
-	total := info.Size()
+	total = info.Size()
 	start := int64(0)
-	truncated := false
 	if total > int64(tailBytes) {
 		start = total - int64(tailBytes)
 		truncated = true
@@ -547,7 +550,7 @@ func tailOutputFile(path string, tailBytes int) (string, int64, bool, error) {
 	return string(buf), total, truncated, nil
 }
 
-func grepOutputFile(path string, re *regexp.Regexp, limitBytes int) ([]jobstore.Match, error) {
+func grepOutputFile(path string, re *regexp.Regexp, limitBytes int) (matches []jobstore.Match, err error) {
 	if limitBytes < 0 {
 		return nil, fmt.Errorf("%w: limitBytes=%d", jobstore.ErrInvalidLimit, limitBytes)
 	}
@@ -559,9 +562,12 @@ func grepOutputFile(path string, re *regexp.Regexp, limitBytes int) ([]jobstore.
 	if err != nil {
 		return nil, fmt.Errorf("jobstore: open output: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("jobstore: close output: %w", closeErr)
+		}
+	}()
 
-	var matches []jobstore.Match
 	var offset int64
 	budget := limitBytes
 	r := bufio.NewReader(f)

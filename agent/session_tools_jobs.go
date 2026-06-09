@@ -337,7 +337,7 @@ func validateJobGrepPattern(pattern string, maxChars int) error {
 		return err
 	}
 	if jsonCharLen(b) > maxJobGrepPatternJSONChars(maxChars) {
-		return fmt.Errorf("grep is too large after JSON escaping")
+		return errors.New("grep is too large after JSON escaping")
 	}
 	return nil
 }

@@ -63,7 +63,7 @@ func (o *OutputStore) Append(b []byte) (int, error) {
 
 // Tail returns the last maxBytes bytes of the log, the total byte count, and
 // whether the returned slice is a truncated tail of a larger log.
-func (o *OutputStore) Tail(maxBytes int) ([]byte, int64, bool, error) {
+func (o *OutputStore) Tail(maxBytes int) (buf []byte, total int64, truncated bool, err error) {
 	if maxBytes < 0 {
 		return nil, 0, false, fmt.Errorf("%w: maxBytes=%d", ErrInvalidLimit, maxBytes)
 	}
@@ -74,9 +74,8 @@ func (o *OutputStore) Tail(maxBytes int) ([]byte, int64, bool, error) {
 	if err != nil {
 		return nil, 0, false, fmt.Errorf("jobstore: stat output: %w", err)
 	}
-	total := info.Size()
+	total = info.Size()
 	start := int64(0)
-	truncated := false
 	if total > int64(maxBytes) {
 		start = total - int64(maxBytes)
 		truncated = true
@@ -85,11 +84,15 @@ func (o *OutputStore) Tail(maxBytes int) ([]byte, int64, bool, error) {
 	if err != nil {
 		return nil, total, truncated, fmt.Errorf("jobstore: open output: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("jobstore: close output: %w", closeErr)
+		}
+	}()
 	if _, err := f.Seek(start, 0); err != nil {
 		return nil, total, truncated, err
 	}
-	buf := make([]byte, total-start)
+	buf = make([]byte, total-start)
 	if len(buf) > 0 {
 		if _, err := io.ReadFull(f, buf); err != nil {
 			return nil, total, truncated, fmt.Errorf("jobstore: read output: %w", err)
@@ -106,7 +109,7 @@ func (o *OutputStore) Grep(re *regexp.Regexp, limitBytes int) ([]Match, error) {
 
 // GrepLimit is like Grep, with an optional maxMatches cap. maxMatches <= 0
 // means no match-count cap.
-func (o *OutputStore) GrepLimit(re *regexp.Regexp, limitBytes int, maxMatches int) ([]Match, error) {
+func (o *OutputStore) GrepLimit(re *regexp.Regexp, limitBytes int, maxMatches int) (matches []Match, err error) {
 	if limitBytes < 0 {
 		return nil, fmt.Errorf("%w: limitBytes=%d", ErrInvalidLimit, limitBytes)
 	}
@@ -120,8 +123,11 @@ func (o *OutputStore) GrepLimit(re *regexp.Regexp, limitBytes int, maxMatches in
 	if err != nil {
 		return nil, fmt.Errorf("jobstore: open output: %w", err)
 	}
-	defer f.Close()
-	var matches []Match
+	defer func() {
+		if closeErr := f.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("jobstore: close output: %w", closeErr)
+		}
+	}()
 	var offset int64
 	budget := limitBytes
 	r := bufio.NewReader(f)

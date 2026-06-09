@@ -96,7 +96,7 @@ func (s *Store) readAll() ([]Event, error) {
 	return s.readAllLocked()
 }
 
-func (s *Store) readAllLocked() ([]Event, error) {
+func (s *Store) readAllLocked() (events []Event, err error) {
 	f, err := os.Open(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -104,8 +104,11 @@ func (s *Store) readAllLocked() ([]Event, error) {
 		}
 		return nil, fmt.Errorf("jobstore: read %s: %w", s.path, err)
 	}
-	defer f.Close()
-	var events []Event
+	defer func() {
+		if closeErr := f.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("jobstore: close %s: %w", s.path, closeErr)
+		}
+	}()
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
 	lineNo := 0
@@ -150,7 +153,7 @@ func (s *Store) writeLineLocked(line []byte) error {
 
 func (s *Store) appendFailureLocked(operation string, err error, startOffset int64) error {
 	if rollbackErr := s.rollbackAppendLocked(startOffset); rollbackErr != nil {
-		return fmt.Errorf("jobstore: %s: %w; rollback failed: %v", operation, err, rollbackErr)
+		return fmt.Errorf("jobstore: %s: %w; rollback failed: %w", operation, err, rollbackErr)
 	}
 	return fmt.Errorf("jobstore: %s: %w", operation, err)
 }
@@ -159,7 +162,7 @@ func (s *Store) rollbackAppendLocked(startOffset int64) error {
 	truncateErr := s.f.Truncate(startOffset)
 	_, seekErr := s.f.Seek(0, io.SeekEnd)
 	if truncateErr != nil && seekErr != nil {
-		return fmt.Errorf("truncate to %d: %w; seek eof: %v", startOffset, truncateErr, seekErr)
+		return fmt.Errorf("truncate to %d: %w; seek eof: %w", startOffset, truncateErr, seekErr)
 	}
 	if truncateErr != nil {
 		return fmt.Errorf("truncate to %d: %w", startOffset, truncateErr)
