@@ -249,6 +249,15 @@ func (s *Session) requeueJobNotifications(notifs []jobNotification) {
 	s.pendingJobNotifs = append(notifs, s.pendingJobNotifs...)
 }
 
+func (s *Session) requeueNotifications(notifs []subagentNotification) {
+	if len(notifs) == 0 {
+		return
+	}
+	s.pendingNotifsMu.Lock()
+	defer s.pendingNotifsMu.Unlock()
+	s.pendingNotifs = append(notifs, s.pendingNotifs...)
+}
+
 // drainNotifications swaps out the pending queue under pendingNotifsMu, returning
 // the queued notifications and resetting the queue to nil.
 func (s *Session) drainNotifications() []subagentNotification {
@@ -552,6 +561,18 @@ func (s *Session) appendTurn(kind schema.TurnKind, m llm.Message) {
 	if err := s.transcript.Append(t); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
+}
+
+func (s *Session) appendTurnDurably(kind schema.TurnKind, m llm.Message) error {
+	t := schema.NewTurn(kind, m)
+	if err := s.transcript.AppendDurable(t); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		return err
+	}
+	s.mu.Lock()
+	s.history = append(s.history, t)
+	s.mu.Unlock()
+	return nil
 }
 
 // appendAssistantTurn appends an assistant turn that carries the full response

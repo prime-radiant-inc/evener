@@ -148,6 +148,44 @@ func TestWriter_PeriodicSync_SkipsSyncWithinInterval(t *testing.T) {
 	}
 }
 
+func TestWriter_AppendDurableSyncsWithinInterval(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "transcript.jsonl")
+
+	w, err := NewWriter(path, Header{
+		SessionID: "sess-sync-durable",
+		CreatedAt: time.Now().UTC(),
+		ProfileID: "test",
+		Model:     "test-model",
+	})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	defer w.Close()
+	w.SyncInterval = 1 * time.Hour
+
+	before := time.Now()
+	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("durable"))); err != nil {
+		t.Fatalf("AppendDurable: %v", err)
+	}
+
+	w.mu.Lock()
+	dirty := w.dirty
+	lastSync := w.lastSync
+	w.mu.Unlock()
+	if dirty {
+		t.Fatal("dirty = true, want false after durable append")
+	}
+	if lastSync.Before(before) {
+		t.Fatalf("lastSync = %v, want >= %v", lastSync, before)
+	}
+
+	lines := readTranscriptLines(t, path)
+	if len(lines) != 2 {
+		t.Fatalf("lines = %d, want header + durable entry", len(lines))
+	}
+}
+
 func TestWriter_PeriodicSync_SyncsAfterIntervalExpires(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "transcript.jsonl")

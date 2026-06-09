@@ -126,14 +126,14 @@ func TestJobToolsControlBackgroundShellJob(t *testing.T) {
 	if err := json.Unmarshal([]byte(stopRes.Output), &stopOut); err != nil {
 		t.Fatalf("unmarshal job_stop output: %v (output: %s)", err, stopRes.Output)
 	}
-	if stopOut.JobID != shellOut.JobID || stopOut.Status != string(jobstore.StatusStopped) || stopOut.Reason == nil || *stopOut.Reason != "stopped" {
-		t.Fatalf("job_stop = %+v, want stopped/stopped", stopOut)
+	if stopOut.JobID != shellOut.JobID || stopOut.Status != string(jobstore.StatusCancelled) || stopOut.Reason == nil || *stopOut.Reason != "stopped_by_parent" {
+		t.Fatalf("job_stop = %+v, want cancelled/stopped_by_parent", stopOut)
 	}
 
 	waitForShellDone(t, s.jobManager, shellOut.JobID)
 	rec := loadShellRecord(t, s.jobManager, shellOut.JobID)
-	if rec.Status != jobstore.StatusStopped || rec.Reason != "stopped" {
-		t.Fatalf("durable job after stop = %+v, want stopped/stopped", rec)
+	if rec.Status != jobstore.StatusCancelled || rec.Reason != "stopped_by_parent" {
+		t.Fatalf("durable job after stop = %+v, want cancelled/stopped_by_parent", rec)
 	}
 }
 

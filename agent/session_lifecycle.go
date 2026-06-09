@@ -769,8 +769,9 @@ func (s *Session) acceptContinuationInput(ctx context.Context, input string) {
 // an empty notification turn is a true no-op that makes no model request.
 func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 	notifs := s.filterDeliverableNotifications(s.drainNotifications())
-	jobNotifs, retryJobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
+	jobNotifs, retryJobNotifs, injectedJobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
 	s.requeueJobNotifications(retryJobNotifs)
+	s.requeueJobNotifications(s.markJobNotificationsDelivered(injectedJobNotifs))
 	if len(notifs) == 0 && len(jobNotifs) == 0 {
 		s.mu.Lock()
 		s.sessionEndEmitted = true
@@ -781,9 +782,13 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 	s.repairOrphanedToolResults("before accepting notification")
 
 	reminder := formatNotificationReminder(notifs, jobNotifs)
-	s.appendTurn(schema.TurnSteering, llm.User(reminder))
+	if err := s.appendTurnDurably(schema.TurnSteering, llm.User(reminder)); err != nil {
+		s.requeueNotifications(notifs)
+		s.requeueJobNotifications(jobNotifications(jobNotifs))
+		return false
+	}
 	s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder})
-	s.markJobNotificationsDelivered(jobNotifs)
+	s.requeueJobNotifications(s.markJobNotificationsDelivered(jobNotifs))
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	for _, msg := range s.drainSteering() {
@@ -826,18 +831,19 @@ func (s *Session) filterDeliverableNotifications(raw []subagentNotification) []s
 	return survivors
 }
 
-func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]deliverableJobNotification, []jobNotification) {
+func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]deliverableJobNotification, []jobNotification, []deliverableJobNotification) {
 	if len(raw) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if s.jobManager == nil {
-		return nil, raw
+		return nil, raw, nil
 	}
 	recs, err := s.jobManager.store.Load()
 	if err != nil {
-		return nil, raw
+		return nil, raw, nil
 	}
 	survivors := make([]deliverableJobNotification, 0, len(raw))
+	injected := make([]deliverableJobNotification, 0, len(raw))
 	seen := make(map[jobstore.DedupeKey]bool)
 	for _, n := range raw {
 		rec := recs[n.JobID]
@@ -849,26 +855,63 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]de
 			continue
 		}
 		seen[key] = true
-		survivors = append(survivors, deliverableJobNotification{
+		deliverable := deliverableJobNotification{
 			notification: jobNotificationFromRecord(rec),
 			terminalGen:  rec.TerminalGen,
-		})
+		}
+		if s.jobNotificationAlreadyInjected(rec.JobID) {
+			injected = append(injected, deliverable)
+			continue
+		}
+		survivors = append(survivors, deliverable)
 	}
-	return survivors, nil
+	return survivors, nil, injected
 }
 
-func (s *Session) markJobNotificationsDelivered(notifs []deliverableJobNotification) {
-	if len(notifs) == 0 || s.jobManager == nil {
-		return
+func (s *Session) jobNotificationAlreadyInjected(jobID string) bool {
+	if jobID == "" {
+		return false
 	}
+	needle := fmt.Sprintf("job_id=%q", jobID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, turn := range s.history {
+		if strings.Contains(turn.Message.Text(), "<job-notification") &&
+			strings.Contains(turn.Message.Text(), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Session) markJobNotificationsDelivered(notifs []deliverableJobNotification) []jobNotification {
+	if len(notifs) == 0 || s.jobManager == nil {
+		return nil
+	}
+	var failed []jobNotification
 	for _, n := range notifs {
-		_ = s.jobManager.appendEvent(jobstore.Event{
+		if err := s.jobManager.appendEvent(jobstore.Event{
 			Kind:        jobstore.EventJobNotificationDelivered,
 			TS:          s.jobManager.now(),
 			JobID:       n.notification.JobID,
 			TerminalGen: n.terminalGen,
-		})
+		}); err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("job notification delivery mark failed: %v", err)})
+			failed = append(failed, n.notification)
+		}
 	}
+	return failed
+}
+
+func jobNotifications(notifs []deliverableJobNotification) []jobNotification {
+	if len(notifs) == 0 {
+		return nil
+	}
+	out := make([]jobNotification, 0, len(notifs))
+	for _, n := range notifs {
+		out = append(out, n.notification)
+	}
+	return out
 }
 
 // formatNotificationReminder renders notification blocks for a notification turn,

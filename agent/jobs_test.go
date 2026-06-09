@@ -96,6 +96,36 @@ func TestJobManagerReadOutputMissingTerminalLogReturnsError(t *testing.T) {
 	}
 }
 
+func TestJobManagerStopMarksLiveJobCancelled(t *testing.T) {
+	jm := newTestJM(t)
+	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if _, err := jm.stop(rec.JobID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	run := jm.running[rec.JobID]
+	if run == nil {
+		t.Fatal("running job missing after stop")
+	}
+	status, reason, exitCode := jm.shellTerminal(run, 143, false)
+	if err := jm.finalize(rec.JobID, status, reason, exitCode); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+
+	recs, err := jm.store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	got := recs[rec.JobID]
+	if got.Status != jobstore.StatusCancelled || got.Reason != "stopped_by_parent" {
+		t.Fatalf("record = %+v, want cancelled/stopped_by_parent", got)
+	}
+}
+
 func TestJobManagerCreateDoesNotPersistWhenOutputOpenFails(t *testing.T) {
 	jm := newTestJM(t)
 	outputDir := filepath.Join(jm.dir, "jobs")

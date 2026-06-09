@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -119,6 +120,76 @@ func TestJobNotificationTurnDeliversPendingDurableRecord(t *testing.T) {
 	}
 	if got := recs["job_X"].NotifyState; got != jobstore.NotifyDelivered {
 		t.Fatalf("notify state = %q, want delivered", got)
+	}
+}
+
+func TestJobNotificationTurnRequeuesWhenDeliveredMarkFails(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("ack") },
+		},
+	}
+	c.Register(adapter)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	jm, err := newJobManager(dir, sess.ID(), sess.enqueueJobNotification)
+	if err != nil {
+		t.Fatalf("newJobManager: %v", err)
+	}
+	sess.jobManager = jm
+	appendPendingJobNotificationRecord(t, jm, sess.ID())
+	sess.enqueueJobNotification(jobNotification{JobID: "job_X"})
+
+	appendErr := errors.New("append delivered failed")
+	origAppend := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventJobNotificationDelivered {
+			return appendErr
+		}
+		return origAppend(e)
+	}
+
+	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+	if got := sess.peekNotifications(); got != 1 {
+		t.Fatalf("peekNotifications = %d, want 1 after delivered mark failure", got)
+	}
+	if !requestsContain(adapter.Requests(), "<job-notification", `job_id="job_X"`, `status="completed"`) {
+		t.Fatalf("model request did not contain durable job notification")
+	}
+	recs, err := jm.store.Load()
+	if err != nil {
+		t.Fatalf("load jobs: %v", err)
+	}
+	if got := recs["job_X"].NotifyState; got != jobstore.NotifyPending {
+		t.Fatalf("notify state = %q, want pending after delivered mark failure", got)
+	}
+
+	jm.appendEvent = origAppend
+	requestsAfterFailure := len(adapter.Requests())
+	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification) retry: %v", err)
+	}
+	if got := len(adapter.Requests()); got != requestsAfterFailure {
+		t.Fatalf("model requests after retry = %d, want %d; already-injected notification must be suppressed", got, requestsAfterFailure)
+	}
+	if got := sess.peekNotifications(); got != 0 {
+		t.Fatalf("peekNotifications = %d, want 0 after delivered mark retry", got)
+	}
+	recs, err = jm.store.Load()
+	if err != nil {
+		t.Fatalf("reload jobs: %v", err)
+	}
+	if got := recs["job_X"].NotifyState; got != jobstore.NotifyDelivered {
+		t.Fatalf("notify state after retry = %q, want delivered", got)
 	}
 }
 

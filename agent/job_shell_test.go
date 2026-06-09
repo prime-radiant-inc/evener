@@ -101,8 +101,8 @@ func TestRunShellPromotesOnTimeout(t *testing.T) {
 	_, _ = jm.stop(res.JobID)
 	waitForShellDone(t, jm, res.JobID)
 	rec := loadShellRecord(t, jm, res.JobID)
-	if rec.Status != jobstore.StatusStopped || rec.Reason != "stopped" {
-		t.Fatalf("stopped promoted job = %+v, want stopped/stopped", rec)
+	if rec.Status != jobstore.StatusCancelled || rec.Reason != "stopped_by_parent" {
+		t.Fatalf("stopped promoted job = %+v, want cancelled/stopped_by_parent", rec)
 	}
 }
 
@@ -206,8 +206,8 @@ func TestRunShellBackgroundReturnsImmediately(t *testing.T) {
 	_, _ = jm.stop(res.JobID)
 	waitForShellDone(t, jm, res.JobID)
 	rec := loadShellRecord(t, jm, res.JobID)
-	if rec.Status != jobstore.StatusStopped || rec.Reason != "stopped" {
-		t.Fatalf("stopped background job = %+v, want stopped/stopped", rec)
+	if rec.Status != jobstore.StatusCancelled || rec.Reason != "stopped_by_parent" {
+		t.Fatalf("stopped background job = %+v, want cancelled/stopped_by_parent", rec)
 	}
 }
 

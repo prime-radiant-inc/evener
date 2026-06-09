@@ -131,6 +131,16 @@ func NewWriter(path string, header Header) (*Writer, error) {
 // Append writes a turn as an Entry to the JSONL file.
 // Safe for concurrent use. No-op if the receiver is nil.
 func (w *Writer) Append(turn schema.Turn) error {
+	return w.append(turn, false)
+}
+
+// AppendDurable writes a turn and fsyncs it before returning.
+// Safe for concurrent use. No-op if the receiver is nil.
+func (w *Writer) AppendDurable(turn schema.Turn) error {
+	return w.append(turn, true)
+}
+
+func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 	if w == nil || w.closed.Load() {
 		return nil
 	}
@@ -160,7 +170,7 @@ func (w *Writer) Append(turn schema.Turn) error {
 	}
 
 	w.dirty = true
-	if w.SyncInterval == 0 || time.Since(w.lastSync) >= w.SyncInterval {
+	if forceSync || w.SyncInterval == 0 || time.Since(w.lastSync) >= w.SyncInterval {
 		if err := w.file.Sync(); err != nil {
 			return fmt.Errorf("sync transcript entry: %w", err)
 		}
