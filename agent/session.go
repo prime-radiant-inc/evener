@@ -267,8 +267,9 @@ func (s *Session) requeueNotifications(notifs []subagentNotification) {
 		return
 	}
 	s.pendingNotifsMu.Lock()
-	defer s.pendingNotifsMu.Unlock()
 	s.pendingNotifs = append(notifs, s.pendingNotifs...)
+	s.scheduleJobNotificationRetryLocked()
+	s.pendingNotifsMu.Unlock()
 }
 
 // drainNotifications swaps out the pending queue under pendingNotifsMu, returning
@@ -344,7 +345,7 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 			return
 		}
 		s.jobNotifyRetry.active = false
-		pending := len(s.pendingJobNotifs) > 0
+		pending := len(s.pendingNotifs)+len(s.pendingJobNotifs) > 0
 		nextDelay := delay * 2
 		if nextDelay > jobNotificationRetryMaxDelay {
 			nextDelay = jobNotificationRetryMaxDelay
@@ -363,7 +364,7 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 
 func (s *Session) resetJobNotificationRetry() {
 	s.pendingNotifsMu.Lock()
-	if len(s.pendingJobNotifs) > 0 {
+	if len(s.pendingNotifs)+len(s.pendingJobNotifs) > 0 {
 		s.pendingNotifsMu.Unlock()
 		return
 	}

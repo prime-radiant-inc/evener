@@ -817,6 +817,31 @@ func TestNotificationNoOpDroppedDeferredGoalContinuationDoesNotSuppressSessionEn
 	}
 }
 
+func TestSubagentNotificationRequeueSchedulesRetryWake(t *testing.T) {
+	sess := newTestSession(t)
+	wake := make(chan struct{}, 1)
+	sess.SetNotifyFunc(func() {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	})
+	sess.pendingNotifsMu.Lock()
+	sess.jobNotifyRetry.delay = 10 * time.Millisecond
+	sess.pendingNotifsMu.Unlock()
+
+	sess.requeueNotifications([]subagentNotification{{AgentID: "01CHILD", Status: "completed"}})
+
+	select {
+	case <-wake:
+	case <-time.After(2 * time.Second):
+		t.Fatal("requeued subagent notification did not schedule a retry wake")
+	}
+	if got := sess.peekNotifications(); got != 1 {
+		t.Fatalf("peekNotifications = %d, want 1 after retry wake", got)
+	}
+}
+
 // TestNotification_GoalClearedDuringInterleaveStops proves that clearing the goal
 // DURING an interleaved notification turn drops the gate-time deferred continuation
 // rather than running it against a goal that no longer exists. The gate folds
