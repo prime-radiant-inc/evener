@@ -26,6 +26,7 @@ type jobManager struct {
 	sessionID   string
 	store       *jobstore.Store
 	running     map[string]*runningJob
+	watches     map[watchKey]*watchConfig
 	closing     bool
 	appendEvent func(jobstore.Event) error
 	enqueue     func(jobNotification)
@@ -114,6 +115,7 @@ func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*
 		sessionID:   sessionID,
 		store:       store,
 		running:     make(map[string]*runningJob),
+		watches:     make(map[watchKey]*watchConfig),
 		appendEvent: store.Append,
 		enqueue:     enqueue,
 		now:         time.Now,
