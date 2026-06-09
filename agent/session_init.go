@@ -118,7 +118,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			s.notifyFunc()
 		}
 	})
-	jm, err := newJobManager(s.stateDir, s.id, s.enqueueJobNotification)
+	jm, err := newJobManager(s.stateDir, s.id, s.enqueueJobNotificationAndNotify)
 	if err != nil {
 		return nil, fmt.Errorf("job manager: %w", err)
 	}
@@ -311,12 +311,16 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			s.notifyFunc()
 		}
 	})
-	jm, err := newJobManager(s.stateDir, s.id, s.enqueueJobNotification)
+	jm, err := newJobManager(s.stateDir, s.id, nil)
 	if err != nil {
 		return nil, fmt.Errorf("job manager: %w", err)
 	}
 	if err := jm.reconcileLostJobs(); err != nil {
 		return nil, fmt.Errorf("job reconcile: %w", err)
+	}
+	jm.enqueue = s.enqueueJobNotificationAndNotify
+	if err := jm.armPendingTerminalNotifications(); err != nil {
+		return nil, fmt.Errorf("job notifications: %w", err)
 	}
 	s.jobManager = jm
 

@@ -235,6 +235,13 @@ func (s *Session) enqueueJobNotification(n jobNotification) {
 	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
 }
 
+func (s *Session) enqueueJobNotificationAndNotify(n jobNotification) {
+	s.enqueueJobNotification(n)
+	if s.notifyFunc != nil {
+		s.notifyFunc()
+	}
+}
+
 func (s *Session) requeueJobNotifications(notifs []jobNotification) {
 	if len(notifs) == 0 {
 		return
