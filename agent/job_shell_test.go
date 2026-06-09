@@ -138,14 +138,23 @@ func TestRunShellBackgroundReturnsImmediately(t *testing.T) {
 	}
 }
 
-func TestRunShellFinalizerRetriesAppendFailure(t *testing.T) {
+func TestRunShellDetachedFinalizerRetriesUntilDurable(t *testing.T) {
 	jm, se := newShellTestRig(t)
 	appendErr := errors.New("temporary append failure")
-	var failed atomic.Bool
+	var finishAttempts atomic.Int32
+	var pendingAttempts atomic.Int32
+	failuresBeforeSuccess := int32(shellFinalizeAttempts + 2)
 	origAppend := jm.appendEvent
 	jm.appendEvent = func(e jobstore.Event) error {
-		if e.Kind == jobstore.EventJobFinished && failed.CompareAndSwap(false, true) {
-			return appendErr
+		switch e.Kind {
+		case jobstore.EventJobFinished:
+			if finishAttempts.Add(1) <= failuresBeforeSuccess {
+				return appendErr
+			}
+		case jobstore.EventJobNotificationPending:
+			if pendingAttempts.Add(1) <= failuresBeforeSuccess {
+				return appendErr
+			}
 		}
 		return origAppend(e)
 	}
@@ -159,7 +168,7 @@ func TestRunShellFinalizerRetriesAppendFailure(t *testing.T) {
 	if rec.Status != jobstore.StatusCompleted || rec.Reason != "exit_zero" {
 		t.Fatalf("record after retry = %+v, want completed/exit_zero", rec)
 	}
-	if !failed.Load() {
-		t.Fatal("test did not exercise append failure")
+	if finishAttempts.Load() <= failuresBeforeSuccess || pendingAttempts.Load() <= failuresBeforeSuccess {
+		t.Fatalf("attempts finish=%d pending=%d, want retries past %d", finishAttempts.Load(), pendingAttempts.Load(), failuresBeforeSuccess)
 	}
 }

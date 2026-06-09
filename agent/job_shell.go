@@ -293,7 +293,7 @@ func (jm *jobManager) discardDelayedShell(run *runningJob) {
 func (jm *jobManager) finalizeShellWhenDone(run *runningJob, waitCh <-chan shellWaitResult, runtimeTimedOut *atomic.Bool) {
 	wait := <-waitCh
 	status, reason, exitCode := jm.shellTerminal(run, wait.exitCode, runtimeTimedOut.Load())
-	_ = jm.finalizeShellWithRetry(run.rec.JobID, status, reason, exitCode)
+	jm.finalizeShellUntilDurable(run.rec.JobID, status, reason, exitCode)
 }
 
 func (jm *jobManager) finalizeShellWithRetry(jobID string, status jobstore.Status, reason string, exitCode *int) error {
@@ -308,6 +308,15 @@ func (jm *jobManager) finalizeShellWithRetry(jobID string, status jobstore.Statu
 		}
 	}
 	return err
+}
+
+func (jm *jobManager) finalizeShellUntilDurable(jobID string, status jobstore.Status, reason string, exitCode *int) {
+	for {
+		if err := jm.finalize(jobID, status, reason, exitCode); err == nil {
+			return
+		}
+		time.Sleep(shellFinalizeRetryDelay)
+	}
 }
 
 func (jm *jobManager) shellTerminal(run *runningJob, exitCode int, timedOut bool) (jobstore.Status, string, *int) {
