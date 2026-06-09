@@ -769,6 +769,9 @@ func watchSendArg(args map[string]any) (*watchSendArgs, error) {
 	if !ok {
 		return nil, errors.New("send must be an object")
 	}
+	if isEmptyWatchSend(values) {
+		return nil, nil
+	}
 	to := strings.TrimSpace(stringArg(values, "to"))
 	if to == "" {
 		return nil, errors.New("invalid_request: send.to is required")
@@ -779,6 +782,13 @@ func watchSendArg(args map[string]any) (*watchSendArgs, error) {
 		IncludeFrame:   shellBoolArg(values, "include_frame"),
 		IncludeExcerpt: shellBoolArg(values, "include_excerpt"),
 	}, nil
+}
+
+func isEmptyWatchSend(values map[string]any) bool {
+	return strings.TrimSpace(stringArg(values, "to")) == "" &&
+		stringArg(values, "message") == "" &&
+		!shellBoolArg(values, "include_frame") &&
+		!shellBoolArg(values, "include_excerpt")
 }
 
 func boundedJobWatchResultEvents(events []string) []string {

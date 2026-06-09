@@ -13,6 +13,8 @@ type deliverableJobNotification struct {
 	terminalGen  string
 }
 
+const jobNotificationEventWatch = "watch"
+
 func jobNotificationFromRecord(rec *jobstore.JobRecord) jobNotification {
 	return jobNotification{
 		JobID:         rec.JobID,

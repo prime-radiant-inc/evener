@@ -123,6 +123,42 @@ func TestJobNotificationTurnDeliversPendingDurableRecord(t *testing.T) {
 	}
 }
 
+func TestJobNotificationTurnDeliversWatchNotification(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("ack") },
+		},
+	}
+	c.Register(adapter)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	sess.enqueueJobNotification(watchNotification("job_watch_target", "output_match: PHASE4_TASK10_READY"))
+
+	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+
+	if !requestsContain(adapter.Requests(),
+		"<job-notification",
+		`job_id="job_watch_target"`,
+		`event="watch"`,
+		`job_type="watch"`,
+		`reason="output_match: PHASE4_TASK10_READY"`,
+	) {
+		t.Fatalf("model request did not contain watch notification")
+	}
+	if got := sess.peekNotifications(); got != 0 {
+		t.Fatalf("peekNotifications = %d, want 0 after watch notification delivery", got)
+	}
+}
+
 func TestJobNotificationTurnRequeuesWhenDeliveredMarkFails(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()

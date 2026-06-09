@@ -267,8 +267,8 @@ func TestJobWatchSendToRequired(t *testing.T) {
 		name string
 		send string
 	}{
-		{name: "missing", send: `{}`},
-		{name: "empty", send: `{"to":"   "}`},
+		{name: "message without target", send: `{"message":"observe"}`},
+		{name: "frame without target", send: `{"to":"   ","include_frame":true}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newTestSession(t)
@@ -287,6 +287,25 @@ func TestJobWatchSendToRequired(t *testing.T) {
 				t.Fatalf("watch count = %d, want 0", s.jobManager.watchCount())
 			}
 		})
+	}
+}
+
+func TestJobWatchEmptySendPlaceholderIsOmitted(t *testing.T) {
+	s := newTestSession(t)
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "watch",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(`{"target":"caller","events":["assistant.message"],"send":{"to":"","message":"","include_frame":false,"include_excerpt":false}}`),
+	})
+	if res.IsError {
+		t.Fatalf("job_watch returned error for empty send placeholder: %s", res.Output)
+	}
+	var out jobWatchToolResult
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal job_watch output: %v (output: %s)", err, res.Output)
+	}
+	if out.Send != nil {
+		t.Fatalf("send placeholder should be omitted from result, got %+v", out.Send)
 	}
 }
 

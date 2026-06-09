@@ -866,17 +866,28 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]de
 	if len(raw) == 0 {
 		return nil, nil, nil
 	}
+	survivors := make([]deliverableJobNotification, 0, len(raw))
+	durableRaw := make([]jobNotification, 0, len(raw))
+	for _, n := range raw {
+		if n.Status == jobNotificationEventWatch {
+			survivors = append(survivors, deliverableJobNotification{notification: n})
+			continue
+		}
+		durableRaw = append(durableRaw, n)
+	}
+	if len(durableRaw) == 0 {
+		return survivors, nil, nil
+	}
 	if s.jobManager == nil {
-		return nil, raw, nil
+		return survivors, durableRaw, nil
 	}
 	recs, err := s.jobManager.store.Load()
 	if err != nil {
-		return nil, raw, nil
+		return survivors, durableRaw, nil
 	}
-	survivors := make([]deliverableJobNotification, 0, len(raw))
-	injected := make([]deliverableJobNotification, 0, len(raw))
+	injected := make([]deliverableJobNotification, 0, len(durableRaw))
 	seen := make(map[jobstore.DedupeKey]bool)
-	for _, n := range raw {
+	for _, n := range durableRaw {
 		rec := recs[n.JobID]
 		if rec == nil || !jobstore.ShouldDeliver(rec) {
 			continue
@@ -921,6 +932,9 @@ func (s *Session) markJobNotificationsDelivered(notifs []deliverableJobNotificat
 	}
 	var failed []jobNotification
 	for _, n := range notifs {
+		if n.terminalGen == "" {
+			continue
+		}
 		if err := s.jobManager.appendEvent(jobstore.Event{
 			Kind:        jobstore.EventJobNotificationDelivered,
 			TS:          s.jobManager.now(),

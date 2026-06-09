@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -102,10 +103,10 @@ type watchSendDelivery struct {
 
 func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	if a.Target == "" {
-		return watchResult{}, fmt.Errorf("invalid_request: target is required")
+		return watchResult{}, errors.New("invalid_request: target is required")
 	}
 	if a.ProgressIntervalMS < 0 {
-		return watchResult{}, fmt.Errorf("invalid_request: progress_interval_ms must be non-negative")
+		return watchResult{}, errors.New("invalid_request: progress_interval_ms must be non-negative")
 	}
 	if a.ProgressIntervalMS > 0 && a.ProgressIntervalMS < minWatchProgressIntervalMS {
 		a.ProgressIntervalMS = minWatchProgressIntervalMS
@@ -114,7 +115,7 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 		a.ProgressIntervalMS = maxWatchProgressIntervalMS
 	}
 	if !a.Clear && !watchArgsHasCondition(a) {
-		return watchResult{}, fmt.Errorf("invalid_request: nothing to watch")
+		return watchResult{}, errors.New("invalid_request: nothing to watch")
 	}
 	if err := jm.validateWatchTarget(a.Target); err != nil {
 		return watchResult{}, err
@@ -383,7 +384,7 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 
 	jm.mu.Lock()
 	for _, cfg := range jm.watches {
-		if !isWatchSessionTarget(cfg.target) {
+		if !isActiveWatchTargetLocked(jm, cfg.target) {
 			continue
 		}
 		if !cfg.wildcardEvents && !cfg.eventKinds[kind] {
@@ -405,7 +406,7 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 		if cfg.send != nil {
 			deliveries = append(deliveries, watchSendSnapshot(cfg, cfg.target, fmt.Sprintf("event: %s", kind)))
 		} else {
-			notifications = append(notifications, jobNotification{})
+			notifications = append(notifications, watchNotification(cfg.target, fmt.Sprintf("event: %s", kind)))
 		}
 	}
 	jm.mu.Unlock()
@@ -414,6 +415,13 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 	// re-enter session event emission.
 	jm.enqueueWatchNotifications(notifications)
 	jm.deliverWatchSends(context.Background(), deliveries)
+}
+
+func isActiveWatchTargetLocked(jm *jobManager, target string) bool {
+	if isWatchSessionTarget(target) {
+		return true
+	}
+	return isWatchableConcreteJobLocked(jm.running[target])
 }
 
 func (jm *jobManager) feedJobOutput(jobID string, chunk []byte) {
@@ -433,7 +441,7 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte) {
 			if cfg.send != nil {
 				deliveries = append(deliveries, watchSendSnapshot(cfg, jobID, "output_match: "+match))
 			} else {
-				notifications = append(notifications, jobNotification{})
+				notifications = append(notifications, watchNotification(jobID, "output_match: "+match))
 			}
 		}
 	}
@@ -456,7 +464,7 @@ func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, [
 				if cfg.send != nil {
 					deliveries = append(deliveries, watchSendSnapshot(cfg, jobID, "output_match: "+match))
 				} else {
-					notifications = append(notifications, jobNotification{})
+					notifications = append(notifications, watchNotification(jobID, "output_match: "+match))
 				}
 			}
 		}
@@ -510,13 +518,22 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 	if cfg.send != nil {
 		deliveries = append(deliveries, watchSendSnapshot(cfg, cfg.target, "progress_tick"))
 	} else {
-		notifications = append(notifications, jobNotification{})
+		notifications = append(notifications, watchNotification(cfg.target, "progress_tick"))
 	}
 	jm.mu.Unlock()
 
 	jm.enqueueWatchNotifications(notifications)
 	jm.deliverWatchSends(context.Background(), deliveries)
 	return true
+}
+
+func watchNotification(jobID, reason string) jobNotification {
+	return jobNotification{
+		JobID:   jobID,
+		JobType: jobNotificationEventWatch,
+		Status:  jobNotificationEventWatch,
+		Reason:  reason,
+	}
 }
 
 func (jm *jobManager) deliverWatchSends(ctx context.Context, deliveries []watchSendDelivery) {

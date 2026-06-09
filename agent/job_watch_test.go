@@ -151,6 +151,38 @@ func TestEventWatchIgnoresUnwatchedKind(t *testing.T) {
 	}
 }
 
+func TestConcreteJobEventWatchSendsFrame(t *testing.T) {
+	jm := newTestJM(t)
+	var sent []sendMessageArgs
+	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{}
+	}
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	_, err := jm.configureWatch(watchArgs{
+		Target: rec.JobID,
+		Events: []string{"assistant.tool"},
+		Send:   &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+	})
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.onSessionEvent(events.EventToolCallEnd, nil)
+
+	if len(sent) != 1 {
+		t.Fatalf("concrete job event watch must send once, got %d", len(sent))
+	}
+	if sent[0].Target != "job_obs" {
+		t.Fatalf("delivery target = %q, want job_obs", sent[0].Target)
+	}
+	if !strings.Contains(sent[0].Message, "observe") ||
+		!strings.Contains(sent[0].Message, rec.JobID) ||
+		!strings.Contains(sent[0].Message, "event: TOOL_CALL_END") {
+		t.Fatalf("delivery frame = %q, want configured message, job id, and trigger", sent[0].Message)
+	}
+}
+
 func TestOutputMatchWatchFiresOnAppendedBytes(t *testing.T) {
 	jm := newTestJM(t)
 	var notified []jobNotification
@@ -200,7 +232,7 @@ func TestConcreteWatchFlushesBeforeTerminalNotification(t *testing.T) {
 	jm := newTestJM(t)
 	var order []string
 	jm.enqueue = func(n jobNotification) {
-		if n.JobID == "" {
+		if n.Status == jobNotificationEventWatch {
 			order = append(order, "watch")
 		} else {
 			order = append(order, "terminal")
