@@ -78,6 +78,10 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 	if err != nil {
 		return "", err
 	}
+	limitBytes, err := boundedJobBytesArg(args, "limit_bytes", defaultJobOutputBytes)
+	if err != nil {
+		return "", err
+	}
 	maxChars, err := jobReadMaxCharsArg(args, registryMaxChars)
 	if err != nil {
 		return "", err
@@ -114,12 +118,17 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		if err := validateJobGrepPattern(grep, maxChars); err != nil {
 			return "", err
 		}
-		matches, err := grepJobOutput(content, totalBytes, truncated, grep)
+		re, err := regexp.Compile(grep)
+		if err != nil {
+			return "", err
+		}
+		matches, err := jm.grepOutput(jobID, re, limitBytes)
 		if err != nil {
 			return "", err
 		}
 		result.Grep = &grep
-		result.Matches = &matches
+		projected := projectJobOutputMatches(matches)
+		result.Matches = &projected
 	}
 	return marshalBoundedJobReadOutputResult(result, maxChars)
 }
@@ -157,7 +166,9 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 	if jobID == "" {
 		return "", errors.New("job_id is required")
 	}
-	_ = strings.TrimSpace(stringArg(args, "signal"))
+	if signal := strings.TrimSpace(stringArg(args, "signal")); signal != "" {
+		return "", errors.New("signal is not supported for job_stop in this phase")
+	}
 	timeoutMS, err := jobBlockTimeoutMS(args)
 	if err != nil {
 		return "", err
@@ -418,42 +429,6 @@ func jobDone(jm *jobManager, jobID string) (<-chan struct{}, bool) {
 	return run.done, true
 }
 
-func grepJobOutput(content string, totalBytes int64, truncated bool, pattern string) ([]jobOutputMatch, error) {
-	re, err := regexp.Compile(pattern)
-	if err != nil {
-		return nil, err
-	}
-	baseOffset := int64(0)
-	if truncated {
-		baseOffset = totalBytes - int64(len([]byte(content)))
-		if baseOffset < 0 {
-			baseOffset = 0
-		}
-	}
-
-	var matches []jobOutputMatch
-	offset := int64(0)
-	for len(content) > 0 && len(matches) < maxJobGrepMatches {
-		line := content
-		if idx := strings.IndexByte(content, '\n'); idx >= 0 {
-			line = content[:idx+1]
-			content = content[idx+1:]
-		} else {
-			content = ""
-		}
-		trimmed := strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
-		loc := re.FindStringIndex(trimmed)
-		if loc != nil {
-			matches = append(matches, jobOutputMatch{
-				ByteOffset: baseOffset + offset + int64(loc[0]),
-				Line:       boundedMatchLine(trimmed),
-			})
-		}
-		offset += int64(len([]byte(line)))
-	}
-	return matches, nil
-}
-
 func boundedMatchLine(line string) string {
 	if len([]byte(line)) <= maxJobGrepLineBytes {
 		return line
@@ -463,6 +438,20 @@ func boundedMatchLine(line string) string {
 		runes = runes[:len(runes)-1]
 	}
 	return string(runes)
+}
+
+func projectJobOutputMatches(matches []jobstore.Match) []jobOutputMatch {
+	out := make([]jobOutputMatch, 0, len(matches))
+	for i, match := range matches {
+		if i >= maxJobGrepMatches {
+			break
+		}
+		out = append(out, jobOutputMatch{
+			ByteOffset: match.ByteOffset,
+			Line:       boundedMatchLine(match.Line),
+		})
+	}
+	return out
 }
 
 func projectJobRecord(rec *jobstore.JobRecord) jobListEntry {
@@ -571,6 +560,9 @@ func marshalBoundedJSON(v any, maxChars int) (string, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return "", err
+	}
+	if maxChars > 0 && jsonCharLen(b) > maxChars {
+		return "", fmt.Errorf("job tool JSON output exceeds %d characters after bounding", maxChars)
 	}
 	return string(b), nil
 }

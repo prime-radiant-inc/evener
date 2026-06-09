@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -233,6 +236,25 @@ func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, t
 		return "", 0, false, fmt.Errorf("job %q not found", jobID)
 	}
 	return tailOutputFile(jm.outputPathForJob(rec, jobID), tailBytes)
+}
+
+func (jm *jobManager) grepOutput(jobID string, re *regexp.Regexp, limitBytes int) ([]jobstore.Match, error) {
+	jm.mu.Lock()
+	run := jm.running[jobID]
+	jm.mu.Unlock()
+	if run != nil {
+		return run.output.Grep(re, limitBytes)
+	}
+
+	recs, err := jm.store.Load()
+	if err != nil {
+		return nil, err
+	}
+	rec := recs[jobID]
+	if rec == nil {
+		return nil, fmt.Errorf("job %q not found", jobID)
+	}
+	return grepOutputFile(jm.outputPathForJob(rec, jobID), re, limitBytes)
 }
 
 func (jm *jobManager) reconcileLostJobs() error {
@@ -523,6 +545,59 @@ func tailOutputFile(path string, tailBytes int) (string, int64, bool, error) {
 		}
 	}
 	return string(buf), total, truncated, nil
+}
+
+func grepOutputFile(path string, re *regexp.Regexp, limitBytes int) ([]jobstore.Match, error) {
+	if limitBytes < 0 {
+		return nil, fmt.Errorf("%w: limitBytes=%d", jobstore.ErrInvalidLimit, limitBytes)
+	}
+	if limitBytes == 0 {
+		return nil, nil
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("jobstore: open output: %w", err)
+	}
+	defer f.Close()
+
+	var matches []jobstore.Match
+	var offset int64
+	budget := limitBytes
+	r := bufio.NewReader(f)
+	for {
+		rawLine, err := r.ReadString('\n')
+		if len(rawLine) > 0 {
+			line := rawLine
+			if line[len(line)-1] == '\n' {
+				line = line[:len(line)-1]
+				if len(line) > 0 && line[len(line)-1] == '\r' {
+					line = line[:len(line)-1]
+				}
+			}
+			if re.MatchString(line) {
+				if len(line) > budget {
+					break
+				}
+				matches = append(matches, jobstore.Match{ByteOffset: offset, Line: line})
+				if len(matches) >= maxJobGrepMatches {
+					break
+				}
+				budget -= len(line)
+				if budget <= 0 {
+					break
+				}
+			}
+			offset += int64(len(rawLine))
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, fmt.Errorf("jobstore: read output line: %w", err)
+		}
+	}
+	return matches, nil
 }
 
 func cloneJobRecord(rec *jobstore.JobRecord) *jobstore.JobRecord {

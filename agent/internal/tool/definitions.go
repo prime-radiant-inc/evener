@@ -91,7 +91,7 @@ func DefShell() llm.ToolDefinition {
 func DefJobReadOutput() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "job_read_output",
-		Description: "Read a job's captured output and current status by job_id. Returns a bounded tail of shell stdout/stderr or a delegate final report; reads never consume or acknowledge output. Pass grep to search retained output with a regex. block=true performs one bounded wait for terminal state or new output, not a polling loop.",
+		Description: "Read a job's captured output and current status by job_id. Returns a bounded tail of shell stdout/stderr or a delegate final report; reads never consume or acknowledge output. Pass grep to search retained output with a regex. block=true performs one bounded wait for terminal state, not a polling loop.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -101,6 +101,7 @@ func DefJobReadOutput() llm.ToolDefinition {
 				"grep":             map[string]any{"type": "string"},
 				"block":            map[string]any{"type": "boolean", "default": false},
 				"block_timeout_ms": map[string]any{"type": "integer"},
+				"limit_bytes":      map[string]any{"type": "integer", "default": 65536, "maximum": 1048576},
 				"max_chars":        map[string]any{"type": "integer"},
 			},
 			"required": []string{"job_id"},
@@ -113,7 +114,7 @@ func DefJobList() llm.ToolDefinition {
 	typeEnum := []any{"shell", "delegate"}
 	return llm.ToolDefinition{
 		Name:        "job_list",
-		Description: "List durable jobs for recovery and inspection. Filter by status or type; results are newest-first. Use this to find a job_id or inspect inventory, not to wait for completion.",
+		Description: "List durable jobs for recovery and inspection. Filter by status or type; results are newest-first. Use this to find a job_id or inspect inventory, not to wait for completion. Cursor is accepted for forward-compatible calls; Phase 2 returns next_cursor as null.",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,

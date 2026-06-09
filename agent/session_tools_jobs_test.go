@@ -165,7 +165,7 @@ func TestJobToolsDefinitions(t *testing.T) {
 	required(t, tooldefs.DefJobList(), "job_list", nil)
 
 	readProps := tooldefs.DefJobReadOutput().Parameters["properties"].(map[string]any)
-	for _, param := range []string{"tail_bytes", "grep", "block", "block_timeout_ms", "max_chars"} {
+	for _, param := range []string{"tail_bytes", "grep", "block", "block_timeout_ms", "limit_bytes", "max_chars"} {
 		if _, ok := readProps[param]; !ok {
 			t.Fatalf("job_read_output missing param %q", param)
 		}
@@ -234,6 +234,71 @@ func TestJobReadOutputRejectsInvalidArgs(t *testing.T) {
 	}
 }
 
+func TestJobReadOutputGrepSearchesRetainedOutputBeyondTail(t *testing.T) {
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"printf 'needle-start\n'; yes filler-line | head -c 70000; sleep 30","background":true}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(shellOut.JobID)
+		waitForShellDone(t, s.jobManager, shellOut.JobID)
+	})
+
+	readOut := waitForJobGrepMatch(t, s, shellOut.JobID, "needle-start", 1024)
+	if strings.Contains(readOut.Content, "needle-start") {
+		t.Fatalf("tail content unexpectedly contains retained-only match: %q", readOut.Content)
+	}
+	if len(readOut.Matches) != 1 || !strings.Contains(readOut.Matches[0].Line, "needle-start") {
+		t.Fatalf("matches = %+v, want retained output match", readOut.Matches)
+	}
+	if readOut.Matches[0].ByteOffset == nil || *readOut.Matches[0].ByteOffset != 0 {
+		t.Fatalf("match byte offset = %+v, want 0", readOut.Matches[0].ByteOffset)
+	}
+}
+
+func TestJobReadOutputSmallMaxCharsReturnsValidJSON(t *testing.T) {
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"yes filler-line | head -c 10000; sleep 30","background":true}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(shellOut.JobID)
+		waitForShellDone(t, s.jobManager, shellOut.JobID)
+	})
+
+	res := waitForJobOutputBytes(t, s, shellOut.JobID, 1000, 100)
+	if !json.Valid([]byte(res)) {
+		t.Fatalf("job_read_output returned invalid JSON: %s", res)
+	}
+	if strings.HasPrefix(res, "[WARNING: Tool output was truncated.") {
+		t.Fatalf("job_read_output was registry-truncated: %s", res)
+	}
+}
+
 func TestJobListAcceptsNullCursor(t *testing.T) {
 	s := newTestSession(t)
 
@@ -253,6 +318,41 @@ func TestJobListAcceptsNullCursor(t *testing.T) {
 	}
 	if out.NextCursor != nil {
 		t.Fatalf("next_cursor = %q, want null", *out.NextCursor)
+	}
+}
+
+func TestJobStopRejectsUnsupportedSignal(t *testing.T) {
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(shellOut.JobID)
+		waitForShellDone(t, s.jobManager, shellOut.JobID)
+	})
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "stop",
+		Name:      "job_stop",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"signal":"KILL"}`, shellOut.JobID)),
+	})
+	if !res.IsError {
+		t.Fatalf("job_stop succeeded, want error: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "signal is not supported") {
+		t.Fatalf("job_stop error = %q, want unsupported signal", res.Output)
 	}
 }
 
@@ -371,6 +471,60 @@ func waitForJobOutput(t *testing.T, s *Session, jobID, want string) jobReadOutpu
 	}
 	t.Fatalf("job_read_output never contained %q; last output: %s", want, last)
 	return jobReadOutputTestResult{}
+}
+
+func waitForJobGrepMatch(t *testing.T, s *Session, jobID, want string, tailBytes int) jobReadOutputTestResult {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var last string
+	for time.Now().Before(deadline) {
+		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+			ID:        "read",
+			Name:      "job_read_output",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_bytes":%d,"grep":%q,"limit_bytes":4096,"max_chars":20000}`, jobID, tailBytes, want)),
+		})
+		if res.IsError {
+			t.Fatalf("job_read_output returned error: %s", res.Output)
+		}
+		last = res.Output
+		var out jobReadOutputTestResult
+		if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+			t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, res.Output)
+		}
+		if out.TotalBytes > int64(tailBytes) && len(out.Matches) > 0 {
+			return out
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("job_read_output never found grep match %q; last output: %s", want, last)
+	return jobReadOutputTestResult{}
+}
+
+func waitForJobOutputBytes(t *testing.T, s *Session, jobID string, wantBytes int64, maxChars int) string {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var last string
+	for time.Now().Before(deadline) {
+		res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+			ID:        "read",
+			Name:      "job_read_output",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_bytes":65536,"max_chars":%d}`, jobID, maxChars)),
+		})
+		if res.IsError {
+			t.Fatalf("job_read_output returned error: %s", res.Output)
+		}
+		last = res.Output
+		var out jobReadOutputTestResult
+		if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+			t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, res.Output)
+		}
+		if out.TotalBytes >= wantBytes {
+			return res.Output
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("job_read_output never reached %d bytes; last output: %s", wantBytes, last)
+	return ""
 }
 
 func containsString(values []string, want string) bool {
