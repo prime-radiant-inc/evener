@@ -202,11 +202,7 @@ func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, t
 	if rec == nil {
 		return "", 0, false, fmt.Errorf("job %q not found", jobID)
 	}
-	outputPath := rec.OutputPath
-	if outputPath == "" {
-		outputPath = filepath.Join(jm.dir, "jobs", jobID+".log")
-	}
-	return tailOutputFile(outputPath, tailBytes)
+	return tailOutputFile(jm.outputPathForJob(rec, jobID), tailBytes)
 }
 
 func (jm *jobManager) reconcileLostJobs() error {
@@ -224,6 +220,9 @@ func (jm *jobManager) reconcileLostJobs() error {
 
 	for _, finished := range jobstore.Reconcile(recs, live, jm.now()) {
 		rec := recs[finished.JobID]
+		if info, err := os.Stat(jm.outputPathForJob(rec, finished.JobID)); err == nil && !info.IsDir() {
+			finished.OutputBytes = info.Size()
+		}
 		if err := jm.appendEvent(finished); err != nil {
 			return err
 		}
@@ -248,6 +247,13 @@ func (jm *jobManager) reconcileLostJobs() error {
 		}
 	}
 	return nil
+}
+
+func (jm *jobManager) outputPathForJob(rec *jobstore.JobRecord, jobID string) string {
+	if rec != nil && rec.OutputPath != "" {
+		return rec.OutputPath
+	}
+	return filepath.Join(jm.dir, "jobs", jobID+".log")
 }
 
 func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {

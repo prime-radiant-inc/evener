@@ -24,6 +24,9 @@ func TestReconcileOnRestoreFinalizesLostJob(t *testing.T) {
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(dir+"/sessions/S1/jobs/job_lost.log", []byte("lost output\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	var queued []jobNotification
 	jm, err := newJobManager(dir, "S1", func(n jobNotification) { queued = append(queued, n) })
@@ -43,7 +46,10 @@ func TestReconcileOnRestoreFinalizesLostJob(t *testing.T) {
 	if recs["job_lost"].Status != jobstore.StatusStopped || recs["job_lost"].Reason != "runtime_lost" {
 		t.Fatalf("job_lost = %+v, want stopped/runtime_lost", recs["job_lost"])
 	}
-	if len(queued) != 1 || queued[0].JobID != "job_lost" {
+	if recs["job_lost"].OutputBytes != int64(len("lost output\n")) {
+		t.Fatalf("job_lost output bytes = %d, want %d", recs["job_lost"].OutputBytes, len("lost output\n"))
+	}
+	if len(queued) != 1 || queued[0].JobID != "job_lost" || queued[0].OutputBytes != int64(len("lost output\n")) {
 		t.Fatalf("expected one queued runtime_lost notification, got %+v", queued)
 	}
 }
