@@ -161,7 +161,7 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		if err != nil {
 			return "", err
 		}
-		waitForJobDone(ctx, jm, jobID, time.Duration(timeoutMS)*time.Millisecond)
+		waitForJobDoneOrOutput(ctx, jm, jobID, time.Duration(timeoutMS)*time.Millisecond)
 	}
 
 	rec, err := findJobRecord(jm, jobID)
@@ -182,6 +182,11 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		TotalBytes: totalBytes,
 		Truncated:  truncated,
 		ExitCode:   rec.ExitCode,
+	}
+	if rec.StructuredResult != nil {
+		valid := true
+		result.StructuredResult = rec.StructuredResult
+		result.StructuredResultValid = &valid
 	}
 	if grep := stringArg(args, "grep"); grep != "" {
 		if err := validateJobGrepPattern(grep, maxChars); err != nil {
@@ -261,16 +266,18 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 }
 
 type jobReadOutputResult struct {
-	JobID      string            `json:"job_id"`
-	Type       string            `json:"type"`
-	Status     string            `json:"status"`
-	Reason     *string           `json:"reason"`
-	Content    string            `json:"content"`
-	Grep       *string           `json:"grep,omitempty"`
-	Matches    *[]jobOutputMatch `json:"matches,omitempty"`
-	TotalBytes int64             `json:"total_bytes"`
-	Truncated  bool              `json:"truncated"`
-	ExitCode   *int              `json:"exit_code"`
+	JobID                 string            `json:"job_id"`
+	Type                  string            `json:"type"`
+	Status                string            `json:"status"`
+	Reason                *string           `json:"reason"`
+	Content               string            `json:"content"`
+	Grep                  *string           `json:"grep,omitempty"`
+	Matches               *[]jobOutputMatch `json:"matches,omitempty"`
+	TotalBytes            int64             `json:"total_bytes"`
+	Truncated             bool              `json:"truncated"`
+	ExitCode              *int              `json:"exit_code"`
+	StructuredResult      any               `json:"structured_result,omitempty"`
+	StructuredResultValid *bool             `json:"structured_result_valid,omitempty"`
 }
 
 type jobOutputMatch struct {
@@ -671,6 +678,38 @@ func waitForJobDone(ctx context.Context, jm *jobManager, jobID string, timeout t
 	case <-timer.C:
 	case <-ctx.Done():
 	}
+}
+
+func waitForJobDoneOrOutput(ctx context.Context, jm *jobManager, jobID string, timeout time.Duration) {
+	initial, _ := jobOutputBytes(jm, jobID)
+	done, ok := jobDone(jm, jobID)
+	if !ok {
+		return
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			current, err := jobOutputBytes(jm, jobID)
+			if err == nil && current > initial {
+				return
+			}
+		case <-timer.C:
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func jobOutputBytes(jm *jobManager, jobID string) (int64, error) {
+	_, total, _, err := jm.readOutput(jobID, 0)
+	return total, err
 }
 
 func jobDone(jm *jobManager, jobID string) (<-chan struct{}, bool) {

@@ -337,7 +337,7 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 	startedAt := jm.now()
 	jobID := jobstore.NewJobID()
 	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
-	output, err := jobstore.OpenOutput(outputPath, 0)
+	output, err := jobstore.OpenOutput(outputPath, maxJobOutputBytes)
 	if err != nil {
 		return nil, err
 	}

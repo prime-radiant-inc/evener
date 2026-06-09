@@ -55,6 +55,7 @@ func applyEvent(r *JobRecord, e Event) {
 		r.ExitCode = e.ExitCode
 		r.EndedAt = e.EndedAt
 		r.OutputBytes = e.OutputBytes
+		r.StructuredResult = e.StructuredResult
 		r.TerminalGen = e.TerminalGen
 	case EventJobMessageSent:
 		// No record-field mutation; message events are diagnostic/history.

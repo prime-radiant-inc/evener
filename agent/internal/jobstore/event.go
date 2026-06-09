@@ -44,12 +44,13 @@ type Event struct {
 	NotResumableWhy string `json:"not_resumable_reason,omitempty"`
 
 	// job_finished payload
-	Status      Status     `json:"status,omitempty"`
-	Reason      string     `json:"reason,omitempty"`
-	ExitCode    *int       `json:"exit_code,omitempty"`
-	EndedAt     *time.Time `json:"ended_at,omitempty"`
-	OutputBytes int64      `json:"output_bytes,omitempty"`
-	TerminalGen string     `json:"terminal_generation,omitempty"`
+	Status           Status     `json:"status,omitempty"`
+	Reason           string     `json:"reason,omitempty"`
+	ExitCode         *int       `json:"exit_code,omitempty"`
+	EndedAt          *time.Time `json:"ended_at,omitempty"`
+	OutputBytes      int64      `json:"output_bytes,omitempty"`
+	TerminalGen      string     `json:"terminal_generation,omitempty"`
+	StructuredResult any        `json:"structured_result,omitempty"`
 
 	// job_message_sent payload
 	Target string `json:"target,omitempty"`

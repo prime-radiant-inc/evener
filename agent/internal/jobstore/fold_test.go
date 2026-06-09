@@ -76,6 +76,7 @@ func TestFoldAppliesFinishAndKeepsFirstGeneration(t *testing.T) {
 			e.ExitCode = &code
 			e.EndedAt = &end
 			e.OutputBytes = 2048
+			e.StructuredResult = map[string]any{"summary": "done"}
 			e.TerminalGen = "GEN1"
 		}),
 		// A duplicate reconstructed terminal write must NOT replace the generation.
@@ -90,6 +91,10 @@ func TestFoldAppliesFinishAndKeepsFirstGeneration(t *testing.T) {
 	}
 	if r.OutputBytes != 2048 || r.ExitCode == nil || *r.ExitCode != 0 {
 		t.Errorf("finish payload not folded: %+v", r)
+	}
+	structured, ok := r.StructuredResult.(map[string]any)
+	if !ok || structured["summary"] != "done" {
+		t.Errorf("structured result = %+v, want summary=done", r.StructuredResult)
 	}
 	if r.TerminalGen != "GEN1" {
 		t.Errorf("terminal_generation = %q, want GEN1 (first wins)", r.TerminalGen)

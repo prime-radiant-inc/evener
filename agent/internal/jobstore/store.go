@@ -2,6 +2,7 @@ package jobstore
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -97,6 +98,9 @@ func (s *Store) readAll() ([]Event, error) {
 }
 
 func (s *Store) readAllLocked() (events []Event, err error) {
+	if err := s.recoverTrailingPartialLineLocked(); err != nil {
+		return nil, err
+	}
 	f, err := os.Open(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -130,6 +134,66 @@ func (s *Store) readAllLocked() (events []Event, err error) {
 	return events, nil
 }
 
+func (s *Store) recoverTrailingPartialLineLocked() (err error) {
+	info, err := os.Stat(s.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("jobstore: stat %s: %w", s.path, err)
+	}
+	if info.Size() == 0 {
+		return nil
+	}
+	f, err := os.Open(s.path)
+	if err != nil {
+		return fmt.Errorf("jobstore: inspect %s: %w", s.path, err)
+	}
+	defer func() {
+		if closeErr := f.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("jobstore: close %s: %w", s.path, closeErr)
+		}
+	}()
+	if _, err := f.Seek(-1, io.SeekEnd); err != nil {
+		return fmt.Errorf("jobstore: inspect trailing byte: %w", err)
+	}
+	last := make([]byte, 1)
+	if _, err := io.ReadFull(f, last); err != nil {
+		return fmt.Errorf("jobstore: read trailing byte: %w", err)
+	}
+	if last[0] == '\n' {
+		return nil
+	}
+	raw, err := os.ReadFile(s.path)
+	if err != nil {
+		return fmt.Errorf("jobstore: read %s: %w", s.path, err)
+	}
+	cut := bytes.LastIndexByte(raw, '\n')
+	if cut < 0 {
+		var e Event
+		if err := json.Unmarshal(raw, &e); err != nil {
+			return fmt.Errorf("jobstore: parse event line 1: %w", err)
+		}
+		return nil
+	}
+	trailing := raw[cut+1:]
+	var e Event
+	if err := json.Unmarshal(trailing, &e); err == nil {
+		return nil
+	}
+	offset := int64(cut + 1)
+	if err := s.f.Truncate(offset); err != nil {
+		return fmt.Errorf("jobstore: truncate trailing partial line: %w", err)
+	}
+	if _, err := s.f.Seek(0, io.SeekEnd); err != nil {
+		return fmt.Errorf("jobstore: seek after trailing recovery: %w", err)
+	}
+	if err := s.f.Sync(); err != nil {
+		return fmt.Errorf("jobstore: sync trailing recovery: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) ensureOpenLocked() error {
 	if s.closed {
 		return ErrStoreClosed
@@ -161,6 +225,10 @@ func (s *Store) appendFailureLocked(operation string, err error, startOffset int
 func (s *Store) rollbackAppendLocked(startOffset int64) error {
 	truncateErr := s.f.Truncate(startOffset)
 	_, seekErr := s.f.Seek(0, io.SeekEnd)
+	syncErr := error(nil)
+	if truncateErr == nil && seekErr == nil {
+		syncErr = s.f.Sync()
+	}
 	if truncateErr != nil && seekErr != nil {
 		return fmt.Errorf("truncate to %d: %w; seek eof: %w", startOffset, truncateErr, seekErr)
 	}
@@ -169,6 +237,9 @@ func (s *Store) rollbackAppendLocked(startOffset int64) error {
 	}
 	if seekErr != nil {
 		return fmt.Errorf("seek eof: %w", seekErr)
+	}
+	if syncErr != nil {
+		return fmt.Errorf("sync rollback truncate: %w", syncErr)
 	}
 	return nil
 }

@@ -68,6 +68,7 @@ type JobRecord struct {
 	ExitCode         *int        `json:"exit_code,omitempty"`
 	OutputPath       string      `json:"output_path,omitempty"`
 	OutputBytes      int64       `json:"output_bytes"`
+	StructuredResult any         `json:"structured_result,omitempty"`
 	TerminalGen      string      `json:"terminal_generation,omitempty"`
 	NotifyState      NotifyState `json:"terminal_notification_state"`
 }

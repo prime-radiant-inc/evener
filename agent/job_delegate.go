@@ -517,7 +517,7 @@ func (s *Session) attachDelegateJob(jm *jobManager, childID, task string, sub *s
 	jobID := jobstore.NewJobID()
 	transcriptRef := encodeRef("", childID)
 	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
-	output, err := jobstore.OpenOutput(outputPath, 0)
+	output, err := jobstore.OpenOutput(outputPath, maxJobOutputBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -632,6 +632,11 @@ func (s *Session) finalizeDelegate(jobID, childID string, sub *subagent) error {
 
 		jm.mu.Lock()
 		run.structured = structured
+		run.afterDurableFinish = func() {
+			sub.mu.Lock()
+			sub.resultConsumed = true
+			sub.mu.Unlock()
+		}
 		outputAppended := run.delegateOutputAppended
 		jm.mu.Unlock()
 		if !outputAppended {
@@ -698,7 +703,10 @@ func delegateTerminalResult(jm *jobManager, run *runningJob) delegateResult {
 	}
 	output, _, truncated, err := jm.readOutput(rec.JobID, shellInlineOutputBytes)
 	jm.mu.Lock()
-	structured := run.structured
+	structured := rec.StructuredResult
+	if structured == nil {
+		structured = run.structured
+	}
 	jm.mu.Unlock()
 	return delegateResult{
 		JobID:                 rec.JobID,

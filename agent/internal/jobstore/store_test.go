@@ -154,6 +154,43 @@ func TestStoreParseErrorIncludesLineNumber(t *testing.T) {
 	}
 }
 
+func TestStoreOpenTruncatesTrailingPartialLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	data := []byte("{\"kind\":\"job_started\",\"seq\":1,\"job_id\":\"job_A\"}\n{\"kind\":\"job_finished\"")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write store: %v", err)
+	}
+
+	s := openStore(t, path)
+	raw := readAllEvents(t, s)
+	if len(raw) != 1 || raw[0].JobID != "job_A" {
+		t.Fatalf("events after recovery = %+v, want first event only", raw)
+	}
+	recovered, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read recovered store: %v", err)
+	}
+	if string(recovered) != "{\"kind\":\"job_started\",\"seq\":1,\"job_id\":\"job_A\"}\n" {
+		t.Fatalf("recovered store = %q, want partial line truncated", recovered)
+	}
+}
+
+func TestStoreOpenPreservesCorruptCompleteLineError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	data := []byte("{\"kind\":\"job_started\",\"seq\":1,\"job_id\":\"job_A\"}\n{bad json}\n")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write store: %v", err)
+	}
+
+	_, err := Open(path)
+	if err == nil {
+		t.Fatal("open corrupt store succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "line 2") {
+		t.Fatalf("parse error = %q, want line number", err)
+	}
+}
+
 func openStore(t *testing.T, path string) *Store {
 	t.Helper()
 	s, err := Open(path)

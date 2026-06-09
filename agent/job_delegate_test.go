@@ -330,6 +330,103 @@ func TestCreateDelegateDurableRecordKeepsOutputPathAndTranscriptRef(t *testing.T
 	}
 }
 
+func TestCreateDelegateDurableRecordKeepsStructuredResult(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithStructured("durable structured delegate complete", map[string]any{
+					"summary": "durable",
+				})
+			},
+		},
+	})
+	sess := newDelegateTestSession(t, c)
+
+	res := sess.createDelegate(context.Background(), delegateArgs{
+		Task:           "persist structured delegate result",
+		Background:     true,
+		BlockTimeoutMS: 5000,
+		ResultSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"summary": map[string]any{"type": "string"},
+			},
+			"required": []string{"summary"},
+		},
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", res.Err)
+	}
+	waitForShellDone(t, sess.jobManager, res.JobID)
+	rec := loadShellRecord(t, sess.jobManager, res.JobID)
+	structured, ok := rec.StructuredResult.(map[string]any)
+	if !ok || structured["summary"] != "durable" {
+		t.Fatalf("durable structured result = %+v, want summary=durable", rec.StructuredResult)
+	}
+	output, _, _, err := sess.jobManager.readOutput(res.JobID, shellInlineOutputBytes)
+	if err != nil {
+		t.Fatalf("read delegate output: %v", err)
+	}
+	if !strings.Contains(output, "durable structured delegate complete") {
+		t.Fatalf("delegate output = %q, want prose copied to job output", output)
+	}
+}
+
+func TestCreateDelegateMarksChildConsumedAfterDurableFinish(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput("consume child result")
+			},
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput("resume still works")
+			},
+		},
+	})
+	sess := newDelegateTestSession(t, c)
+
+	res := sess.createDelegate(context.Background(), delegateArgs{
+		Task:       "consume retained child after durable ownership",
+		Background: true,
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", res.Err)
+	}
+	waitForShellDone(t, sess.jobManager, res.JobID)
+	_, childID, err := decodeRef(res.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode transcript ref: %v", err)
+	}
+	sub := sess.subagents.get(childID)
+	if sub == nil {
+		t.Fatalf("subagent %s not retained", childID)
+	}
+	sub.mu.Lock()
+	consumed := sub.resultConsumed
+	closed := sub.closed
+	sub.mu.Unlock()
+	if !consumed || closed {
+		t.Fatalf("child consumed=%v closed=%v, want consumed and retained open", consumed, closed)
+	}
+
+	resume := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:        res.JobID,
+		Message:       "resume after consumption",
+		Background:    false,
+		BackgroundSet: true,
+	})
+	if resume.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", resume.Err)
+	}
+	if resume.Status != jobstore.StatusCompleted || !strings.Contains(resume.Output, "resume still works") {
+		t.Fatalf("resume result = %+v, want completed resumed delegate", resume)
+	}
+}
+
 func TestDelegateNotificationCarriesTranscriptRef(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{

@@ -235,6 +235,108 @@ func TestDelegateToolForegroundReturnsStructuredResult(t *testing.T) {
 	}
 }
 
+func TestJobReadOutputReturnsBackgroundDelegateStructuredResult(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithStructured("background report", map[string]any{
+					"summary": "persisted",
+				})
+			},
+		},
+	})
+	s := newDelegateTestSession(t, c)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:   "delegate",
+		Name: "delegate",
+		Arguments: json.RawMessage(`{
+			"task":"produce a structured result",
+			"result_schema":{
+				"type":"object",
+				"properties":{"summary":{"type":"string"}},
+				"required":["summary"]
+			}
+		}`),
+	})
+	if res.IsError {
+		t.Fatalf("delegate returned error: %s", res.Output)
+	}
+	var delegateOut struct {
+		JobID  string `json:"job_id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &delegateOut); err != nil {
+		t.Fatalf("unmarshal delegate output: %v (output: %s)", err, res.Output)
+	}
+	if delegateOut.JobID == "" || delegateOut.Status != string(jobstore.StatusRunning) {
+		t.Fatalf("delegate output = %+v, want running background job", delegateOut)
+	}
+	waitForShellDone(t, s.jobManager, delegateOut.JobID)
+
+	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "read",
+		Name:      "job_read_output",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"max_chars":20000}`, delegateOut.JobID)),
+	})
+	if readRes.IsError {
+		t.Fatalf("job_read_output returned error: %s", readRes.Output)
+	}
+	var readOut jobReadOutputTestResult
+	if err := json.Unmarshal([]byte(readRes.Output), &readOut); err != nil {
+		t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, readRes.Output)
+	}
+	if readOut.Status != string(jobstore.StatusCompleted) ||
+		!readOut.StructuredResultValid ||
+		readOut.StructuredResult["summary"] != "persisted" {
+		t.Fatalf("job_read_output = %+v, want persisted structured result", readOut)
+	}
+}
+
+func TestJobReadOutputBlockReturnsOnNewOutput(t *testing.T) {
+	s := newTestSession(t)
+	rec, err := s.jobManager.createShell(createShellOpts{Command: "manual running job"})
+	if err != nil {
+		t.Fatalf("create shell job: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = s.jobManager.finalize(rec.JobID, jobstore.StatusCancelled, "test_cleanup", nil)
+		waitForShellDone(t, s.jobManager, rec.JobID)
+	})
+
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		s.jobManager.mu.Lock()
+		run := s.jobManager.running[rec.JobID]
+		s.jobManager.mu.Unlock()
+		if run != nil {
+			_, _ = run.output.Append([]byte("new output\n"))
+		}
+	}()
+
+	started := time.Now()
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "read",
+		Name:      "job_read_output",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"block":true,"block_timeout_ms":1000}`, rec.JobID)),
+	})
+	if res.IsError {
+		t.Fatalf("job_read_output returned error: %s", res.Output)
+	}
+	if elapsed := time.Since(started); elapsed >= 900*time.Millisecond {
+		t.Fatalf("job_read_output blocked for %s, want return on output before timeout", elapsed)
+	}
+	var out jobReadOutputTestResult
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, res.Output)
+	}
+	if !strings.Contains(out.Content, "new output") || out.Status != string(jobstore.StatusRunning) {
+		t.Fatalf("job_read_output = %+v, want running job with new output", out)
+	}
+}
+
 func TestJobSendMessageForegroundResumeReturnsTerminalResult(t *testing.T) {
 	c := llm.NewClient()
 	adapter := &fakeAdapter{
@@ -866,9 +968,11 @@ type jobReadOutputTestResult struct {
 		ByteOffset *int64 `json:"byte_offset"`
 		Line       string `json:"line"`
 	} `json:"matches"`
-	TotalBytes int64 `json:"total_bytes"`
-	Truncated  bool  `json:"truncated"`
-	ExitCode   *int  `json:"exit_code"`
+	TotalBytes            int64          `json:"total_bytes"`
+	Truncated             bool           `json:"truncated"`
+	ExitCode              *int           `json:"exit_code"`
+	StructuredResult      map[string]any `json:"structured_result"`
+	StructuredResultValid bool           `json:"structured_result_valid"`
 }
 
 func waitForJobOutput(t *testing.T, s *Session, jobID, want string) jobReadOutputTestResult {

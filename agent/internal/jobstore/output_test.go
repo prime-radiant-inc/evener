@@ -59,6 +59,48 @@ func TestOutputTailTruncatesToLastBytes(t *testing.T) {
 	}
 }
 
+func TestOutputEnforcesCapAndReportsLifetimeBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, 6)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	appendOutput(t, o, "abcdef")
+	appendOutput(t, o, "ghij")
+
+	data, total, truncated, err := o.Tail(1024)
+	if err != nil {
+		t.Fatalf("tail: %v", err)
+	}
+	if string(data) != "efghij" {
+		t.Fatalf("tail = %q, want capped retained tail", data)
+	}
+	if total != 10 || !truncated {
+		t.Fatalf("total=%d truncated=%v, want lifetime 10 and truncated", total, truncated)
+	}
+}
+
+func TestOutputCapGrepScansRetainedTailOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, int64(len("keep ready\n")))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	appendOutput(t, o, "drop ready\n")
+	appendOutput(t, o, "keep ready\n")
+
+	matches, err := o.Grep(regexp.MustCompile(`ready`), 1<<16)
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	if len(matches) != 1 || matches[0].Line != "keep ready" {
+		t.Fatalf("matches = %+v, want retained match only", matches)
+	}
+	if matches[0].ByteOffset != int64(len("drop ready\n")) {
+		t.Fatalf("byte offset = %d, want lifetime offset", matches[0].ByteOffset)
+	}
+}
+
 func TestOutputTailRejectsNegativeLimit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "job_A.log")
 	o, err := OpenOutput(path, 1<<20)

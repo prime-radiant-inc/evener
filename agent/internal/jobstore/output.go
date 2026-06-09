@@ -25,17 +25,20 @@ type Match struct {
 }
 
 // OutputStore is an append-only per-job output file. capBytes records the
-// retention policy for later pruning phases; Phase 1 does not enforce it.
+// retained-tail policy. total tracks lifetime bytes, while retainedStart is the
+// lifetime offset corresponding to byte 0 in the retained file.
 type OutputStore struct {
-	mu       sync.Mutex
-	path     string
-	f        *os.File
-	capBytes int64
-	total    int64
+	mu            sync.Mutex
+	path          string
+	f             *os.File
+	capBytes      int64
+	total         int64
+	retainedStart int64
 }
 
-// OpenOutput opens (creating if needed) the per-job log at path and records the
-// retention policy cap for later pruning phases.
+// OpenOutput opens (creating if needed) the per-job log at path and enforces the
+// retained-tail cap. Existing oversized files are treated as unpruned lifetime
+// output and reduced to their capped tail.
 func OpenOutput(path string, capBytes int64) (*OutputStore, error) {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
@@ -46,7 +49,12 @@ func OpenOutput(path string, capBytes int64) (*OutputStore, error) {
 		_ = f.Close()
 		return nil, err
 	}
-	return &OutputStore{path: path, f: f, capBytes: capBytes, total: info.Size()}, nil
+	o := &OutputStore{path: path, f: f, capBytes: capBytes, total: info.Size()}
+	if err := o.pruneLocked(); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return o, nil
 }
 
 // Append writes b to the log and returns the number of bytes written.
@@ -57,6 +65,9 @@ func (o *OutputStore) Append(b []byte) (int, error) {
 	o.total += int64(n)
 	if err != nil {
 		return n, fmt.Errorf("jobstore: append output: %w", err)
+	}
+	if err := o.pruneLocked(); err != nil {
+		return n, err
 	}
 	return n, nil
 }
@@ -74,10 +85,14 @@ func (o *OutputStore) Tail(maxBytes int) (buf []byte, total int64, truncated boo
 	if err != nil {
 		return nil, 0, false, fmt.Errorf("jobstore: stat output: %w", err)
 	}
-	total = info.Size()
+	retained := info.Size()
+	total = o.total
 	start := int64(0)
-	if total > int64(maxBytes) {
-		start = total - int64(maxBytes)
+	if retained > int64(maxBytes) {
+		start = retained - int64(maxBytes)
+		truncated = true
+	}
+	if o.retainedStart > 0 {
 		truncated = true
 	}
 	f, err := os.Open(o.path)
@@ -92,7 +107,7 @@ func (o *OutputStore) Tail(maxBytes int) (buf []byte, total int64, truncated boo
 	if _, err := f.Seek(start, 0); err != nil {
 		return nil, total, truncated, err
 	}
-	buf = make([]byte, total-start)
+	buf = make([]byte, retained-start)
 	if len(buf) > 0 {
 		if _, err := io.ReadFull(f, buf); err != nil {
 			return nil, total, truncated, fmt.Errorf("jobstore: read output: %w", err)
@@ -134,12 +149,23 @@ func (o *OutputStore) GrepLimitLineBytes(re *regexp.Regexp, limitBytes int, maxM
 			err = fmt.Errorf("jobstore: close output: %w", closeErr)
 		}
 	}()
-	return grepReaderLimit(bufio.NewReader(f), re, limitBytes, maxMatches, maxLineBytes)
+	matches, err = grepReaderLimit(bufio.NewReader(f), re, limitBytes, maxMatches, maxLineBytes)
+	if err != nil {
+		return nil, err
+	}
+	shiftMatches(matches, o.retainedStart)
+	return matches, nil
 }
 
 // GrepFileLimit scans a closed output log with the same bounded line handling as
 // OutputStore.GrepLimitLineBytes.
 func GrepFileLimit(path string, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int) (matches []Match, err error) {
+	return GrepFileLimitAt(path, re, limitBytes, maxMatches, maxLineBytes, 0)
+}
+
+// GrepFileLimitAt is like GrepFileLimit, but shifts returned offsets by
+// retainedStart when the file contains only a retained tail.
+func GrepFileLimitAt(path string, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int, retainedStart int64) (matches []Match, err error) {
 	if limitBytes < 0 {
 		return nil, fmt.Errorf("%w: limitBytes=%d", ErrInvalidLimit, limitBytes)
 	}
@@ -156,7 +182,60 @@ func GrepFileLimit(path string, re *regexp.Regexp, limitBytes int, maxMatches in
 			err = fmt.Errorf("jobstore: close output: %w", closeErr)
 		}
 	}()
-	return grepReaderLimit(bufio.NewReader(f), re, limitBytes, maxMatches, maxLineBytes)
+	matches, err = grepReaderLimit(bufio.NewReader(f), re, limitBytes, maxMatches, maxLineBytes)
+	if err != nil {
+		return nil, err
+	}
+	shiftMatches(matches, retainedStart)
+	return matches, nil
+}
+
+func (o *OutputStore) pruneLocked() error {
+	if o.capBytes <= 0 {
+		return nil
+	}
+	info, err := o.f.Stat()
+	if err != nil {
+		return fmt.Errorf("jobstore: stat output: %w", err)
+	}
+	if info.Size() <= o.capBytes {
+		o.retainedStart = o.total - info.Size()
+		return nil
+	}
+	keep := o.capBytes
+	tail := make([]byte, keep)
+	if _, err := o.f.Seek(info.Size()-keep, 0); err != nil {
+		return fmt.Errorf("jobstore: seek output prune tail: %w", err)
+	}
+	if _, err := io.ReadFull(o.f, tail); err != nil {
+		return fmt.Errorf("jobstore: read output prune tail: %w", err)
+	}
+	if err := o.f.Truncate(0); err != nil {
+		return fmt.Errorf("jobstore: truncate output: %w", err)
+	}
+	if _, err := o.f.Seek(0, 0); err != nil {
+		return fmt.Errorf("jobstore: seek output rewrite: %w", err)
+	}
+	if _, err := o.f.Write(tail); err != nil {
+		return fmt.Errorf("jobstore: rewrite output tail: %w", err)
+	}
+	if err := o.f.Truncate(keep); err != nil {
+		return fmt.Errorf("jobstore: trim output tail: %w", err)
+	}
+	if _, err := o.f.Seek(0, io.SeekEnd); err != nil {
+		return fmt.Errorf("jobstore: seek output eof: %w", err)
+	}
+	o.retainedStart = o.total - keep
+	return nil
+}
+
+func shiftMatches(matches []Match, retainedStart int64) {
+	if retainedStart == 0 {
+		return
+	}
+	for i := range matches {
+		matches[i].ByteOffset += retainedStart
+	}
 }
 
 func grepReaderLimit(r *bufio.Reader, re *regexp.Regexp, limitBytes int, maxMatches int, maxLineBytes int) ([]Match, error) {

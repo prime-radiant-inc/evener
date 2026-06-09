@@ -41,6 +41,7 @@ type runningJob struct {
 	terminal               *terminalJob
 	finalize               *finalizeAttempt
 	delegateOutputAppended bool
+	afterDurableFinish     func()
 }
 
 type finalizeAttempt struct {
@@ -193,7 +194,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		StartedAt:        startedAt,
 		OutputPath:       outputPath,
 	}
-	output, err := jobstore.OpenOutput(outputPath, 0)
+	output, err := jobstore.OpenOutput(outputPath, maxJobOutputBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -318,7 +319,7 @@ func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, t
 	if rec == nil {
 		return "", 0, false, fmt.Errorf("job %q not found", jobID)
 	}
-	return tailOutputFile(jm.outputPathForJob(rec, jobID), tailBytes)
+	return tailOutputFile(jm.outputPathForJob(rec, jobID), tailBytes, rec.OutputBytes)
 }
 
 func (jm *jobManager) grepOutput(jobID string, re *regexp.Regexp, limitBytes int) ([]jobstore.Match, error) {
@@ -337,7 +338,7 @@ func (jm *jobManager) grepOutput(jobID string, re *regexp.Regexp, limitBytes int
 	if rec == nil {
 		return nil, fmt.Errorf("job %q not found", jobID)
 	}
-	return grepOutputFile(jm.outputPathForJob(rec, jobID), re, limitBytes)
+	return grepOutputFile(jm.outputPathForJob(rec, jobID), re, limitBytes, rec.OutputBytes)
 }
 
 func (jm *jobManager) reconcileLostJobs() error {
@@ -473,6 +474,10 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 	if _, total, _, err := run.output.Tail(0); err == nil {
 		outputBytes = total
 	}
+	jm.mu.Lock()
+	structured := run.structured
+	afterDurableFinish := run.afterDurableFinish
+	jm.mu.Unlock()
 
 	endedAt := jm.now()
 	terminal := &terminalJob{
@@ -484,15 +489,16 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 		generation:  jobstore.NewTerminalGeneration(),
 	}
 	if err := jm.appendEvent(jobstore.Event{
-		Kind:        jobstore.EventJobFinished,
-		TS:          endedAt,
-		JobID:       run.rec.JobID,
-		Status:      terminal.status,
-		Reason:      terminal.reason,
-		ExitCode:    terminal.exitCode,
-		EndedAt:     &endedAt,
-		OutputBytes: terminal.outputBytes,
-		TerminalGen: terminal.generation,
+		Kind:             jobstore.EventJobFinished,
+		TS:               endedAt,
+		JobID:            run.rec.JobID,
+		Status:           terminal.status,
+		Reason:           terminal.reason,
+		ExitCode:         terminal.exitCode,
+		EndedAt:          &endedAt,
+		OutputBytes:      terminal.outputBytes,
+		StructuredResult: structured,
+		TerminalGen:      terminal.generation,
 	}); err != nil {
 		return err
 	}
@@ -505,10 +511,14 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 		run.rec.ExitCode = terminal.exitCode
 		run.rec.EndedAt = &terminal.endedAt
 		run.rec.OutputBytes = terminal.outputBytes
+		run.rec.StructuredResult = structured
 		run.rec.TerminalGen = terminal.generation
 	}
 	jm.mu.Unlock()
 
+	if afterDurableFinish != nil {
+		afterDurableFinish()
+	}
 	return jm.armFinalizedJob(run, terminal)
 }
 
@@ -609,7 +619,7 @@ func tailOutput(output *jobstore.OutputStore, tailBytes int) (string, int64, boo
 	return string(b), total, truncated, nil
 }
 
-func tailOutputFile(path string, tailBytes int) (output string, total int64, truncated bool, err error) {
+func tailOutputFile(path string, tailBytes int, lifetimeBytes int64) (output string, total int64, truncated bool, err error) {
 	if tailBytes < 0 {
 		return "", 0, false, fmt.Errorf("%w: maxBytes=%d", jobstore.ErrInvalidLimit, tailBytes)
 	}
@@ -628,16 +638,23 @@ func tailOutputFile(path string, tailBytes int) (output string, total int64, tru
 	if err != nil {
 		return "", 0, false, fmt.Errorf("jobstore: stat output: %w", err)
 	}
-	total = info.Size()
+	retained := info.Size()
+	total = retained
+	if lifetimeBytes > total {
+		total = lifetimeBytes
+	}
 	start := int64(0)
-	if total > int64(tailBytes) {
-		start = total - int64(tailBytes)
+	if retained > int64(tailBytes) {
+		start = retained - int64(tailBytes)
+		truncated = true
+	}
+	if total > retained {
 		truncated = true
 	}
 	if _, err := f.Seek(start, 0); err != nil {
 		return "", total, truncated, err
 	}
-	buf := make([]byte, total-start)
+	buf := make([]byte, retained-start)
 	if len(buf) > 0 {
 		if _, err := io.ReadFull(f, buf); err != nil {
 			return "", total, truncated, fmt.Errorf("jobstore: read output: %w", err)
@@ -646,8 +663,12 @@ func tailOutputFile(path string, tailBytes int) (output string, total int64, tru
 	return string(buf), total, truncated, nil
 }
 
-func grepOutputFile(path string, re *regexp.Regexp, limitBytes int) (matches []jobstore.Match, err error) {
-	return jobstore.GrepFileLimit(path, re, limitBytes, maxJobGrepMatches, maxJobGrepLineBytes)
+func grepOutputFile(path string, re *regexp.Regexp, limitBytes int, lifetimeBytes int64) (matches []jobstore.Match, err error) {
+	var retainedStart int64
+	if info, statErr := os.Stat(path); statErr == nil && lifetimeBytes > info.Size() {
+		retainedStart = lifetimeBytes - info.Size()
+	}
+	return jobstore.GrepFileLimitAt(path, re, limitBytes, maxJobGrepMatches, maxJobGrepLineBytes, retainedStart)
 }
 
 func cloneJobRecord(rec *jobstore.JobRecord) *jobstore.JobRecord {
