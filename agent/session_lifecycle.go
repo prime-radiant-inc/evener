@@ -354,7 +354,9 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 		// continuation already folded). This is a non-draining length check; the
 		// queue is consumed inside acceptNotificationInput when the EntryNotification
 		// turn runs (an empty queue there is a no-op, but the peek guards against it).
-		if s.peekNotifications() > 0 {
+		// After a notification turn, do not immediately rerun this gate: job
+		// notifications may have been requeued because durable state was unavailable.
+		if ranKind != EntryNotification && s.peekNotifications() > 0 {
 			next = ""
 			nextImages = nil
 			nextKind = EntryNotification
@@ -763,7 +765,8 @@ func (s *Session) acceptContinuationInput(ctx context.Context, input string) {
 // an empty notification turn is a true no-op that makes no model request.
 func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 	notifs := s.filterDeliverableNotifications(s.drainNotifications())
-	jobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
+	jobNotifs, retryJobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
+	s.requeueJobNotifications(retryJobNotifs)
 	if len(notifs) == 0 && len(jobNotifs) == 0 {
 		s.mu.Lock()
 		s.sessionEndEmitted = true
@@ -819,13 +822,16 @@ func (s *Session) filterDeliverableNotifications(raw []subagentNotification) []s
 	return survivors
 }
 
-func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) []deliverableJobNotification {
-	if len(raw) == 0 || s.jobManager == nil {
-		return nil
+func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]deliverableJobNotification, []jobNotification) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if s.jobManager == nil {
+		return nil, raw
 	}
 	recs, err := s.jobManager.store.Load()
 	if err != nil {
-		return nil
+		return nil, raw
 	}
 	survivors := make([]deliverableJobNotification, 0, len(raw))
 	seen := make(map[jobstore.DedupeKey]bool)
@@ -844,7 +850,7 @@ func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) []del
 			terminalGen:  rec.TerminalGen,
 		})
 	}
-	return survivors
+	return survivors, nil
 }
 
 func (s *Session) markJobNotificationsDelivered(notifs []deliverableJobNotification) {

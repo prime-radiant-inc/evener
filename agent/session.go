@@ -235,6 +235,15 @@ func (s *Session) enqueueJobNotification(n jobNotification) {
 	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
 }
 
+func (s *Session) requeueJobNotifications(notifs []jobNotification) {
+	if len(notifs) == 0 {
+		return
+	}
+	s.pendingNotifsMu.Lock()
+	defer s.pendingNotifsMu.Unlock()
+	s.pendingJobNotifs = append(notifs, s.pendingJobNotifs...)
+}
+
 // drainNotifications swaps out the pending queue under pendingNotifsMu, returning
 // the queued notifications and resetting the queue to nil.
 func (s *Session) drainNotifications() []subagentNotification {
