@@ -111,12 +111,43 @@ func TestJobManagerStopMarksLiveJobCancelled(t *testing.T) {
 	if run == nil {
 		t.Fatal("running job missing after stop")
 	}
-	status, reason, exitCode := jm.shellTerminal(run, 143, false)
+	status, reason, exitCode := jm.shellTerminal(run, 143, false, nil)
 	if err := jm.finalize(rec.JobID, status, reason, exitCode); err != nil {
 		t.Fatalf("finalize: %v", err)
 	}
 
 	recs, err := jm.store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	got := recs[rec.JobID]
+	if got.Status != jobstore.StatusCancelled || got.Reason != "stopped_by_parent" {
+		t.Fatalf("record = %+v, want cancelled/stopped_by_parent", got)
+	}
+}
+
+func TestJobManagerCloseMarksRunningJobsCancelled(t *testing.T) {
+	jm := newTestJM(t)
+	rec, err := jm.createShell(createShellOpts{Command: "sleep 30"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	run := jm.running[rec.JobID]
+	run.signal = func() {
+		status, reason, exitCode := jm.shellTerminal(run, 143, false, nil)
+		_ = jm.finalize(rec.JobID, status, reason, exitCode)
+	}
+
+	if err := jm.close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	st, err := jobstore.Open(filepath.Join(jm.dir, "jobs.jsonl"))
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer st.Close()
+	recs, err := st.Load()
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}

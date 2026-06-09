@@ -45,6 +45,7 @@ type shellResult struct {
 
 type shellWaitResult struct {
 	exitCode int
+	err      error
 }
 
 type shellOutputWriter struct {
@@ -85,9 +86,9 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 	var runtimeTimedOut atomic.Bool
 
 	go func() {
-		code, _ := handle.Wait()
+		code, err := handle.Wait()
 		close(processDone)
-		waitCh <- shellWaitResult{exitCode: code}
+		waitCh <- shellWaitResult{exitCode: code, err: err}
 	}()
 
 	if args.MaxRuntimeMS > 0 {
@@ -132,7 +133,7 @@ func runShell(ctx context.Context, jm *jobManager, se execenv.StreamingExecutor,
 		if runtimeTimedOut.Load() {
 			return jm.finishForegroundRuntimeTimeout(run, wait)
 		}
-		status, reason, exitCode := jm.shellTerminal(run, wait.exitCode, runtimeTimedOut.Load())
+		status, reason, exitCode := jm.shellTerminal(run, wait.exitCode, runtimeTimedOut.Load(), wait.err)
 		output, _, truncated, _ := fullOutput(run.output)
 		jm.discardDelayedShell(run)
 		return shellResult{
@@ -286,7 +287,7 @@ func (c *startOnlyContext) detachStart() {
 }
 
 func (jm *jobManager) finishForegroundRuntimeTimeout(run *runningJob, wait shellWaitResult) shellResult {
-	status, reason, exitCode := jm.shellTerminal(run, wait.exitCode, true)
+	status, reason, exitCode := jm.shellTerminal(run, wait.exitCode, true, wait.err)
 	if err := jm.commitDelayedShell(run); err != nil {
 		jm.discardDelayedShell(run)
 		return shellResult{Type: string(jobstore.JobShell), Status: string(jobstore.StatusFailed), Reason: "start_failed"}
@@ -421,7 +422,7 @@ func (jm *jobManager) discardDelayedShell(run *runningJob) {
 
 func (jm *jobManager) finalizeShellWhenDone(run *runningJob, waitCh <-chan shellWaitResult, runtimeTimedOut *atomic.Bool) {
 	wait := <-waitCh
-	status, reason, exitCode := jm.shellTerminal(run, wait.exitCode, runtimeTimedOut.Load())
+	status, reason, exitCode := jm.shellTerminal(run, wait.exitCode, runtimeTimedOut.Load(), wait.err)
 	jm.finalizeShellUntilDurable(run.rec.JobID, status, reason, exitCode)
 }
 
@@ -461,7 +462,7 @@ func shellFinalizeBackoff(attempt int) time.Duration {
 	return delay
 }
 
-func (jm *jobManager) shellTerminal(run *runningJob, exitCode int, timedOut bool) (jobstore.Status, string, *int) {
+func (jm *jobManager) shellTerminal(run *runningJob, exitCode int, timedOut bool, waitErr error) (jobstore.Status, string, *int) {
 	code := exitCode
 	if timedOut {
 		return jobstore.StatusStopped, "run_timeout", &code
@@ -471,6 +472,9 @@ func (jm *jobManager) shellTerminal(run *runningJob, exitCode int, timedOut bool
 	jm.mu.Unlock()
 	if stopStatus != "" {
 		return stopStatus, stopReason, &code
+	}
+	if waitErr != nil {
+		return jobstore.StatusFailed, "wait_failed", &code
 	}
 	if exitCode == 0 {
 		return jobstore.StatusCompleted, "exit_zero", &code

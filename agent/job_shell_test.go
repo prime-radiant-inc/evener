@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"io"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -83,6 +84,40 @@ func TestRunShellForegroundEphemeralReturnsFullOutput(t *testing.T) {
 	}
 	if len(jm.list(listFilter{})) != 0 {
 		t.Errorf("ephemeral job must not appear in job_list")
+	}
+}
+
+type waitErrorStreamingExecutor struct{}
+
+func (waitErrorStreamingExecutor) StreamCommand(_ context.Context, _ string, _ string, _ map[string]string, out io.Writer) (*execenv.StreamHandle, error) {
+	_, _ = out.Write([]byte("partial"))
+	return &execenv.StreamHandle{
+		Wait:   func() (int, error) { return 0, errors.New("wait failed") },
+		Signal: func() {},
+	}, nil
+}
+
+func TestRunShellForegroundWaitErrorFailsJob(t *testing.T) {
+	jm := newTestJM(t)
+	res := runShell(context.Background(), jm, waitErrorStreamingExecutor{}, shellArgs{Command: "x", BlockTimeoutMS: 5000})
+	if res.Status != string(jobstore.StatusFailed) || res.Reason != "wait_failed" || res.RunningInBackground {
+		t.Fatalf("res = %+v, want failed/wait_failed foreground", res)
+	}
+	if res.Output != "partial" {
+		t.Fatalf("output = %q, want partial", res.Output)
+	}
+}
+
+func TestRunShellBackgroundWaitErrorFinalizesFailed(t *testing.T) {
+	jm := newTestJM(t)
+	res := runShell(context.Background(), jm, waitErrorStreamingExecutor{}, shellArgs{Command: "x", Background: true})
+	if res.JobID == "" || !res.RunningInBackground {
+		t.Fatalf("res = %+v, want background job", res)
+	}
+	waitForShellDone(t, jm, res.JobID)
+	rec := loadShellRecord(t, jm, res.JobID)
+	if rec.Status != jobstore.StatusFailed || rec.Reason != "wait_failed" {
+		t.Fatalf("record = %+v, want failed/wait_failed", rec)
 	}
 }
 

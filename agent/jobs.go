@@ -115,6 +115,10 @@ func (jm *jobManager) close() error {
 	jm.mu.Lock()
 	running := make([]jobRuntimeHandle, 0, len(jm.running))
 	for _, run := range jm.running {
+		if run.stopStatus == "" {
+			run.stopStatus = jobstore.StatusCancelled
+			run.stopReason = "stopped_by_parent"
+		}
 		running = append(running, jobRuntimeHandle{
 			jobID:  run.rec.JobID,
 			signal: run.signal,
