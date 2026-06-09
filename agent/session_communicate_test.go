@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/llm"
 )
 
@@ -187,6 +189,49 @@ func TestCommunicate_StructuredOutputExitsLoop(t *testing.T) {
 
 	if got := len(f.Requests()); got != 1 {
 		t.Fatalf("requests: got %d want 1", got)
+	}
+}
+
+func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
+	var captured any
+	deps := &toolDeps{
+		emit: func(events.EventKind, events.EventData) {},
+		abort: func(context.Context) error {
+			return nil
+		},
+		drainSteering: func() []steeringMessage {
+			return nil
+		},
+		prependSteering: func([]steeringMessage) {},
+		resultToolName: func() string {
+			return "communicate"
+		},
+		setCommunicateResult:     func(bool, string, string, string) {},
+		setCommunicateStructured: func(raw any) { captured = raw },
+	}
+	reg := tool.NewRegistry()
+	registerCommunicateTool(reg, deps)
+	rt := reg.Get("communicate")
+	if rt == nil {
+		t.Fatal("communicate not registered")
+	}
+
+	args := map[string]any{
+		"message":     "report",
+		"await_reply": false,
+		"output": map[string]any{
+			"summary": "did the thing",
+			"files":   []any{"a.go", "b.go"},
+		},
+	}
+	if _, err := rt.Exec(context.Background(), execenv.ExecutionEnvironment(nil), args); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+
+	want := map[string]any{"summary": "did the thing", "files": []any{"a.go", "b.go"}}
+	if !reflect.DeepEqual(captured, want) {
+		got, _ := json.Marshal(captured)
+		t.Fatalf("captured structured = %s, want raw output preserved", got)
 	}
 }
 

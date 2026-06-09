@@ -379,11 +379,12 @@ func (s *Session) resetJobNotificationRetry() {
 // transient — reset at the top of each call, then read back by Communicated,
 // CommunicateOutput, and the turn loop's deliver step. Guarded by s.mu.
 type communicateResult struct {
-	called     bool   // communicate/result was invoked this turn
-	awaitReply bool   // the call expects a user reply rather than completing
-	text       string // the message shown to the user
-	reply      string // the text handed back to the caller
+	called     bool // communicate/result was invoked this turn
+	awaitReply bool // the call expects a user reply rather than completing
+	text       string
+	reply      string
 	output     string // canonical structured output (CommunicateOutput)
+	structured any    // raw args["output"] object before communicate canonicalization
 }
 
 // sessionName holds the session's auto-generated display name and its
@@ -599,6 +600,14 @@ func (s *Session) CommunicateOutput() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.comm.output
+}
+
+// CommunicateStructured returns the raw structured output object from the most
+// recent communicate call, before normalizeNodeOutput canonicalization.
+func (s *Session) CommunicateStructured() any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.comm.structured
 }
 
 // extractOriginalPrompt returns the text of the first user input in the session history.

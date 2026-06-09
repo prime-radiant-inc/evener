@@ -46,14 +46,15 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			if message == "" {
 				return nil, errors.New("communicate requires message or output.message")
 			}
-			explicitStructuredOutput := hasMeaningfulNodeOutput(originalOutput)
+			explicitNodeOutput := hasMeaningfulNodeOutput(originalOutput)
+			explicitStructuredOutput := explicitNodeOutput || hasMeaningfulRawOutput(args["output"])
 			effectiveOutput := originalOutput
 			if strings.TrimSpace(effectiveOutput.Message) == "" {
 				effectiveOutput.Message = message
 			}
 			resultText := message
 			structuredText := canonicalNodeOutputText(effectiveOutput)
-			if explicitStructuredOutput {
+			if explicitNodeOutput {
 				resultText = structuredText
 			}
 			if err := deps.abort(ctx); err != nil {
@@ -83,6 +84,9 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			deps.prependSteering(deferred)
 
 			deps.setCommunicateResult(awaitReply, message, resultText, structuredText)
+			if explicitStructuredOutput {
+				deps.setCommunicateStructured(args["output"])
+			}
 
 			resp := map[string]any{
 				"accepted":    true,
@@ -180,6 +184,48 @@ func hasMeaningfulNodeOutput(out nodeOutput) bool {
 		strings.TrimSpace(out.Message) != "" ||
 		len(out.Data) > 0 ||
 		len(out.Artifacts) > 0
+}
+
+func hasMeaningfulRawOutput(raw any) bool {
+	if raw == nil {
+		return false
+	}
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return true
+	}
+	for k, v := range m {
+		switch k {
+		case "decision", "message":
+			if strings.TrimSpace(fmt.Sprint(v)) != "" {
+				return true
+			}
+		case "data":
+			if data, ok := v.(map[string]any); ok && len(data) == 0 {
+				continue
+			}
+			if v != nil {
+				return true
+			}
+		case "artifacts":
+			switch arts := v.(type) {
+			case []string:
+				if len(arts) > 0 {
+					return true
+				}
+			case []any:
+				if len(arts) > 0 {
+					return true
+				}
+			case nil:
+			default:
+				return true
+			}
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 func canonicalNodeOutputText(raw any) string {

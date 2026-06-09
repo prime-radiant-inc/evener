@@ -62,6 +62,10 @@ type toolDeps struct {
 	// (fields stay Session-owned; this is the only writer reachable from the handler).
 	setCommunicateResult func(awaitReply bool, message, reply, output string)
 
+	// setCommunicateStructured records the raw output object the model emitted,
+	// before communicate canonicalization, for delegate structured_result capture.
+	setCommunicateStructured func(raw any)
+
 	// skill looks up a discovered skill by name.
 	skill func(name string) (skill.SkillMeta, bool)
 
@@ -175,6 +179,11 @@ func newToolDeps(s *Session) *toolDeps {
 				reply:      reply,
 				output:     output,
 			}
+			s.mu.Unlock()
+		},
+		setCommunicateStructured: func(raw any) {
+			s.mu.Lock()
+			s.comm.structured = raw
 			s.mu.Unlock()
 		},
 		skill: func(name string) (skill.SkillMeta, bool) {
