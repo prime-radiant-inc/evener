@@ -23,10 +23,11 @@ type jobManager struct {
 }
 
 type runningJob struct {
-	rec    *jobstore.JobRecord
-	output *jobstore.OutputStore
-	signal func()
-	done   chan struct{}
+	rec        *jobstore.JobRecord
+	output     *jobstore.OutputStore
+	signal     func()
+	done       chan struct{}
+	finalizing bool
 }
 
 // jobNotification is the durable-job analogue of subagentNotification.
@@ -204,8 +205,11 @@ func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {
 func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason string, exitCode *int) {
 	jm.mu.Lock()
 	run := jm.running[jobID]
+	if run != nil && run.finalizing {
+		run = nil
+	}
 	if run != nil {
-		delete(jm.running, jobID)
+		run.finalizing = true
 	}
 	jm.mu.Unlock()
 	if run == nil {
@@ -232,6 +236,12 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 		TerminalGen: terminalGen,
 	})
 	close(run.done)
+
+	jm.mu.Lock()
+	if jm.running[jobID] == run {
+		delete(jm.running, jobID)
+	}
+	jm.mu.Unlock()
 
 	_ = jm.store.Append(jobstore.Event{
 		Kind:        jobstore.EventJobNotificationPending,

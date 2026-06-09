@@ -44,3 +44,46 @@ func TestJobManagerReadOutput(t *testing.T) {
 		t.Errorf("content = %q", content)
 	}
 }
+
+func TestJobManagerFinalize(t *testing.T) {
+	var queued []jobNotification
+	jm, err := newJobManager(t.TempDir(), "S1", func(n jobNotification) {
+		queued = append(queued, n)
+	})
+	if err != nil {
+		t.Fatalf("newJobManager: %v", err)
+	}
+	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	done := jm.running[rec.JobID].done
+	_, _ = jm.running[rec.JobID].output.Append([]byte("hello\n"))
+
+	jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", nil)
+
+	select {
+	case <-done:
+	default:
+		t.Fatal("done was not closed")
+	}
+	if _, ok := jm.running[rec.JobID]; ok {
+		t.Fatal("job still running")
+	}
+	recs, err := jm.store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	got := recs[rec.JobID]
+	if got.Status != jobstore.StatusCompleted || got.Reason != "exit_zero" || got.OutputBytes != int64(len("hello\n")) {
+		t.Fatalf("record = %+v", got)
+	}
+	if got.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("notify state = %q, want pending", got.NotifyState)
+	}
+	if len(queued) != 1 || queued[0].JobID != rec.JobID || queued[0].Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("queued = %+v", queued)
+	}
+}
