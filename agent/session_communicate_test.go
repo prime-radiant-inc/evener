@@ -235,6 +235,63 @@ func TestCommunicateCapturesRawStructuredOutput(t *testing.T) {
 	}
 }
 
+func TestCommunicateCapturesEmptyRawStructuredOutputForCustomSchema(t *testing.T) {
+	var captured any
+	deps := &toolDeps{
+		emit: func(events.EventKind, events.EventData) {},
+		abort: func(context.Context) error {
+			return nil
+		},
+		drainSteering: func() []steeringMessage {
+			return nil
+		},
+		prependSteering: func([]steeringMessage) {},
+		resultToolName: func() string {
+			return "communicate"
+		},
+		setCommunicateResult:     func(bool, string, string, string) {},
+		setCommunicateStructured: func(raw any) { captured = raw },
+	}
+	reg := tool.NewRegistry()
+	def := tool.DefCommunicateNamed("communicate")
+	params := tool.CloneSchemaMap(def.Parameters)
+	props := params["properties"].(map[string]any)
+	props["output"] = map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{},
+	}
+	def.Parameters = params
+	if err := reg.Register(tool.RegisteredTool{
+		Tool: llm.Tool{Definition: def},
+		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
+			return nil, nil
+		},
+	}); err != nil {
+		t.Fatalf("pre-register communicate: %v", err)
+	}
+	registerCommunicateTool(reg, deps)
+	rt := reg.Get("communicate")
+	if rt == nil {
+		t.Fatal("communicate not registered")
+	}
+
+	output := map[string]any{}
+	args := map[string]any{
+		"message":     "report",
+		"await_reply": false,
+		"output":      output,
+	}
+	if _, err := rt.Exec(context.Background(), execenv.ExecutionEnvironment(nil), args); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+
+	if !reflect.DeepEqual(captured, output) {
+		got, _ := json.Marshal(captured)
+		t.Fatalf("captured structured = %s, want empty raw output preserved", got)
+	}
+}
+
 func TestCommunicate_BareTextFallback(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()

@@ -47,7 +47,9 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 				return nil, errors.New("communicate requires message or output.message")
 			}
 			explicitNodeOutput := hasMeaningfulNodeOutput(originalOutput)
-			explicitStructuredOutput := explicitNodeOutput || hasMeaningfulRawOutput(args["output"])
+			rawOutput, outputPresent := args["output"]
+			usesCustomOutputSchema := !usesDefaultCommunicateOutputEnvelope(resultToolDef)
+			explicitStructuredOutput := explicitNodeOutput || (outputPresent && usesCustomOutputSchema) || hasMeaningfulRawOutput(rawOutput)
 			effectiveOutput := originalOutput
 			if strings.TrimSpace(effectiveOutput.Message) == "" {
 				effectiveOutput.Message = message
@@ -85,7 +87,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 
 			deps.setCommunicateResult(awaitReply, message, resultText, structuredText)
 			if explicitStructuredOutput {
-				deps.setCommunicateStructured(args["output"])
+				deps.setCommunicateStructured(rawOutput)
 			}
 
 			resp := map[string]any{
@@ -184,6 +186,53 @@ func hasMeaningfulNodeOutput(out nodeOutput) bool {
 		strings.TrimSpace(out.Message) != "" ||
 		len(out.Data) > 0 ||
 		len(out.Artifacts) > 0
+}
+
+func usesDefaultCommunicateOutputEnvelope(def llm.ToolDefinition) bool {
+	props, _ := def.Parameters["properties"].(map[string]any)
+	output, _ := props["output"].(map[string]any)
+	outProps, _ := output["properties"].(map[string]any)
+	if outProps == nil {
+		return false
+	}
+	for _, name := range []string{"message", "data", "artifacts"} {
+		if _, ok := outProps[name]; !ok {
+			return false
+		}
+	}
+	required := communicateSchemaStringSlice(output["required"])
+	for _, name := range []string{"message", "data", "artifacts"} {
+		if !communicateSchemaContains(required, name) {
+			return false
+		}
+	}
+	return true
+}
+
+func communicateSchemaStringSlice(v any) []string {
+	switch x := v.(type) {
+	case []string:
+		return append([]string(nil), x...)
+	case []any:
+		out := make([]string, 0, len(x))
+		for _, item := range x {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func communicateSchemaContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func hasMeaningfulRawOutput(raw any) bool {

@@ -20,6 +20,9 @@ func TestDefDelegateParamsAndEnum(t *testing.T) {
 	if def.Name != "delegate" {
 		t.Fatalf("name = %q, want delegate", def.Name)
 	}
+	if def.Strict == nil || *def.Strict {
+		t.Fatalf("Strict = %v, want false", def.Strict)
+	}
 	props := def.Parameters["properties"].(map[string]any)
 	for _, p := range []string{"task", "background", "agent_type", "model", "reasoning_effort", "block_timeout_ms", "result_schema"} {
 		if _, ok := props[p]; !ok {
@@ -39,6 +42,11 @@ func TestDefDelegateParamsAndEnum(t *testing.T) {
 	agentTypes[0] = "mutated"
 	if enum[0] != "explorer" {
 		t.Errorf("agent_type enum was not copied: %v", enum)
+	}
+
+	effortEnum := props["reasoning_effort"].(map[string]any)["enum"].([]string)
+	if len(effortEnum) != 3 || effortEnum[0] != "low" || effortEnum[1] != "medium" || effortEnum[2] != "high" {
+		t.Errorf("reasoning_effort enum = %v, want [low medium high]", effortEnum)
 	}
 }
 

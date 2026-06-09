@@ -91,10 +91,10 @@ func DefShell() llm.ToolDefinition {
 // DefDelegate defines the delegate tool, which starts a NEW delegate
 // conversation (independent agentic work) and returns a job_id. agentTypes
 // constrains the agent_type enum to the session's available roles; pass nil to
-// omit the enum (free-form). reasoning_effort is a separate enum; v1 leaves it
-// free-form here and lets the handler resolve it (the prompt's agents section
-// and the provider's effort levels remain the human-readable roster).
+// omit the enum (free-form). reasoning_effort uses the delegate contract's
+// portable low/medium/high enum; the handler resolves provider-specific details.
 func DefDelegate(agentTypes []string) llm.ToolDefinition {
+	strictFalse := false
 	agentTypeSchema := map[string]any{
 		"type":        "string",
 		"description": "Role for the delegate. Choose from the enum; the roles are described in your agents section.",
@@ -112,6 +112,7 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 			"`result_schema` to request a validated structured result; or `background=false` to wait up to " +
 			"`block_timeout_ms` (a timeout leaves the job running). Judge the task from the output, not from " +
 			"`status=\"completed\"`.",
+		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -120,7 +121,7 @@ func DefDelegate(agentTypes []string) llm.ToolDefinition {
 				"background":       map[string]any{"type": "boolean", "description": "Default true. Set false to wait inline up to block_timeout_ms."},
 				"agent_type":       agentTypeSchema,
 				"model":            map[string]any{"type": "string", "description": "Model override (default: parent model)."},
-				"reasoning_effort": map[string]any{"type": "string", "description": "Reasoning effort for this delegate (e.g. low, medium, high, xhigh). Default inherits from parent."},
+				"reasoning_effort": map[string]any{"type": "string", "description": "Reasoning effort for this delegate (low, medium, or high). Default inherits from parent.", "enum": []string{"low", "medium", "high"}},
 				"block_timeout_ms": map[string]any{"type": "integer", "description": "Foreground wait bound when background=false. A timeout leaves the job running."},
 				"result_schema": map[string]any{
 					"type":                 "object",

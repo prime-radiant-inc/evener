@@ -347,6 +347,83 @@ func TestAdapter_Complete_CommunicateTool_UsesNonStrictSchema(t *testing.T) {
 	}
 }
 
+func TestAdapter_Complete_DelegateTool_UsesNonStrictResultSchema(t *testing.T) {
+	var gotBody map[string]any
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		_ = json.Unmarshal(b, &gotBody)
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+  "id": "resp_1",
+  "model": "gpt-5.2",
+  "output": [{"type": "message", "content": [{"type":"output_text", "text":"ok"}]}],
+  "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	strictFalse := false
+	_, err := a.Complete(ctx, llm.Request{
+		Model:    "gpt-5.2",
+		Messages: []llm.Message{llm.User("hi")},
+		Tools: []llm.ToolDefinition{{
+			Name:        "delegate",
+			Description: "Start a delegate job.",
+			Strict:      &strictFalse,
+			Parameters: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"task": map[string]any{"type": "string"},
+					"result_schema": map[string]any{
+						"type":                 "object",
+						"additionalProperties": true,
+						"properties": map[string]any{
+							"summary": map[string]any{"type": "string"},
+						},
+					},
+				},
+				"required": []string{"task"},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	toolsAny, ok := gotBody["tools"].([]any)
+	if !ok || len(toolsAny) != 1 {
+		t.Fatalf("tools: %#v", gotBody["tools"])
+	}
+	tool, ok := toolsAny[0].(map[string]any)
+	if !ok {
+		t.Fatalf("tool: %#v", toolsAny[0])
+	}
+	if strict, ok := tool["strict"].(bool); !ok || strict {
+		t.Fatalf("tool.strict=%#v, want false", tool["strict"])
+	}
+	params, ok := tool["parameters"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool.parameters=%#v", tool["parameters"])
+	}
+	props, _ := params["properties"].(map[string]any)
+	resultSchema, _ := props["result_schema"].(map[string]any)
+	if resultSchema["additionalProperties"] != true {
+		t.Fatalf("result_schema.additionalProperties=%#v, want true", resultSchema["additionalProperties"])
+	}
+	resultProps, _ := resultSchema["properties"].(map[string]any)
+	if _, ok := resultProps["summary"]; !ok {
+		t.Fatalf("result_schema.properties=%#v, want summary preserved", resultProps)
+	}
+}
+
 func TestAdapter_Complete_Usage_MapsReasoningAndCacheTokens(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
