@@ -981,9 +981,12 @@ jobs running/visible per session, and observer/sidecar jobs. The policy may queu
 excess work; unbounded delegate fan-out or shell process creation is not in the contract.
 
 Today there is a 128 retained-terminal cap (`subagent_manager.go`) and **no running cap**; v1
-adds running caps. Exact limits are configuration; defaults documented in the
-implementation. Excess → queue or a synchronous capacity error (an `invalid_request`-class
-failure that creates no record).
+adds one. **YAGNI (decided): hard-coded constants, zero config surface** — a single per-session
+total running-job cap constant satisfies the contract's "must be bounded" (the contract lists
+per-category bounds, but a total cap suffices for v1; add per-category constants only if a real
+need appears), and retention reuses the existing retained-terminal mechanism rather than new
+machinery. No knobs, no config plumbing. Excess → queue or a synchronous capacity error (an
+`invalid_request`-class failure that creates no record).
 
 ---
 
@@ -1053,9 +1056,9 @@ they need explicit handling):**
   **wire-protocol** notifications `appwire.NotifySerfSubagentStarted`/`Ended`
   (`"serf/subagent/started"`/`"serf/subagent/completed"`, `appwire/types.go:68`) and `SerfSubagentInfo`
   / `Subagents`; `server/server.go`'s `SubagentStatusInfo`/`Subagents` carry it onward to the
-  hub/web/tui clients. Decide per the UI need: emit equivalent job-lifecycle events + wire
-  notifications and repoint `appprojector` + `appwire/types.go` + `server`, or keep the names as an
-  internal alias. A deliberate decision applied everywhere — not a silent keep. (Those events are not
+  hub/web/tui clients. **Full repoint (decided): emit new job-lifecycle events + wire notifications
+  and repoint `appprojector` + `appwire/types.go` + `server` + every UI renderer** — do NOT keep the
+  subagent names as an alias. (Those events are not
   switched on in `cmd/serf-hub/internal/hubcore/*` or `cmd/serf-tui/*` directly — but
   `server/appwire_runtime.go:500` **does** populate `appwire.SerfSubagentInfo` from the snapshot, so it
   is a gate-token consumer that must be repointed alongside `server/server.go`'s `SubagentStatusInfo`.)
@@ -1165,20 +1168,26 @@ and asserted.
 
 ---
 
-## 16. Open questions / deferred
+## 16. Decisions & deferred (binding for the autonomous build)
 
-- **Shell approval flow:** v1 uses synchronous `permission_required`; the `awaiting_permission`
-  running-state path is reserved for when an async approval flow exists. The hooks Phase-B work
-  (`docs/subagent-management/07`) is where that approval flow would land; the
+The items below are settled. The **deferred** set is a hard "do NOT implement in v1" list — building
+any of it is out of scope and counts as a defect, not progress.
+
+- **Shell approval flow (deferred — do NOT implement):** v1 uses synchronous `permission_required`;
+  the `awaiting_permission` running-state path is reserved for when an async approval flow exists. The
+  hooks Phase-B work (`docs/subagent-management/07`) is where that approval flow would land; the
   `awaiting_permission` reason and a `running` approval state are designed-for but not wired.
-- **Per-job output cap default** (8 MiB suggested) and retention policy are configuration, not
-  normative; confirm defaults during implementation.
+- **Per-job output cap + retention (decided):** hard-coded constants, not config — an `8 MiB` per-job
+  cap, and retention reuses the existing retained-terminal mechanism. No config surface (§11).
 - **Internal naming:** the child runtime may keep "subagent" in **internal-only** symbol names that
   never reach the model or a UI; only the model-facing surface and records are job/delegate. This
   deferral does **not** cover the cross-package event/snapshot/prompt/doc surfaces — §13 reconciles
   those now. A full internal rename of the remaining private symbols is optional.
-- **Concurrency-cap defaults** (running shell/delegate/observer) to be set during
-  implementation.
+- **Concurrency caps (decided):** a single hard-coded total running-job cap constant — no per-type
+  knobs, no config (§11).
+- **Deferred — do NOT implement in v1:** nested *delegate* jobs; durable watches across restart;
+  the `not_controllable` path (designed-for, unreachable in v1 — leave the one-line reserved comment);
+  the shell async-approval flow (above); the internal "subagent" symbol rename (below).
 - **Subagent job-tool set (decided here):** subagents get the job-capable shell plus
   `job_read_output`/`job_list`/`job_stop` (to manage their own nested shell jobs) and **alias-target
   `job_send_message`** (so an observer sidecar can comment back, §9). Root-only by tool-presence =

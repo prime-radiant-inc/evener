@@ -718,8 +718,12 @@ func (s *Session) ownerJobManagerFor(jobID string) (*jobManager, *jobstore.JobRe
 
 // readNestedOrLocalOutput reads a job's output, routing a forwarded nested job to
 // its owner child runtime when live; otherwise it reads this session's own store
-// (Phase 2 readOutput) — which for a forwarded-but-owner-gone job returns the
-// durable record's state (bytes are owner-routed, not mirrored, in v1).
+// via Phase 2 readOutput. This satisfies spec §3.4 ("durable routing metadata"):
+// the forwarded record carries the CHILD's OutputPath, and Phase 2 readOutput opens
+// rec.OutputPath directly for terminal jobs, so the parent reads the child's
+// retained <child>/jobs/<job_id>.log even after the child runtime is gone — no
+// mirroring needed. (Requires the Phase 2 readOutput OutputPath fix; confirm with
+// grep -n "OutputPath" agent/jobs.go.)
 func (s *Session) readNestedOrLocalOutput(jobID string, tailBytes int) (string, error) {
 	if ownerJM, _ := s.ownerJobManagerFor(jobID); ownerJM != nil {
 		content, _, _, err := ownerJM.readOutput(jobID, tailBytes)
