@@ -41,6 +41,24 @@ func TestFoldBuildsRunningShellRecord(t *testing.T) {
 	}
 }
 
+func TestFoldAppliesOutputPathFromStarted(t *testing.T) {
+	start := time.Unix(1, 0).UTC()
+	events := []Event{
+		ev(EventJobStarted, 1, "job_A", func(e *Event) {
+			e.Type = JobDelegate
+			e.Task = "summarize"
+			e.OwnerSessionID = "S1"
+			e.VisibleToSession = "S1"
+			e.StartedAt = &start
+			e.OutputPath = "/tmp/serf/jobs/job_A.log"
+		}),
+	}
+	r := Fold(events)["job_A"]
+	if r.OutputPath != "/tmp/serf/jobs/job_A.log" {
+		t.Errorf("output_path = %q, want /tmp/serf/jobs/job_A.log", r.OutputPath)
+	}
+}
+
 func TestFoldAppliesFinishAndKeepsFirstGeneration(t *testing.T) {
 	start := time.Unix(1, 0).UTC()
 	end := time.Unix(2, 0).UTC()

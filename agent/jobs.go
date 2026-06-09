@@ -221,6 +221,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		OwnerSessionID:   rec.OwnerSessionID,
 		VisibleToSession: rec.VisibleToSession,
 		StartedAt:        &startedAt,
+		OutputPath:       rec.OutputPath,
 	}); err != nil {
 		jm.mu.Unlock()
 		_ = output.Close()

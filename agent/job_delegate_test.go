@@ -3,9 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
@@ -121,6 +124,207 @@ func TestCreateDelegateBackgroundReturnsRunningJob(t *testing.T) {
 	waitForShellDone(t, sess.jobManager, res.JobID)
 }
 
+func TestCreateDelegateForegroundTimeoutLeavesChildRunning(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				<-release
+				return communicateWithStructured("timeout child complete", map[string]any{
+					"message": "timeout child complete",
+				})
+			},
+		},
+	})
+	sess := newDelegateTestSession(t, c)
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+
+	res := sess.createDelegate(context.Background(), delegateArgs{
+		Task:           "wait past foreground timeout",
+		Background:     false,
+		BlockTimeoutMS: 1000,
+		ResultSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"message": map[string]any{"type": "string"},
+			},
+			"required": []string{"message"},
+		},
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", res.Err)
+	}
+	if res.Reason != "foreground_timeout" || !res.RunningInBackground || !res.TimedOut {
+		t.Fatalf("result = %+v, want foreground_timeout/background/timed_out", res)
+	}
+	_, childID, err := decodeRef(res.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode transcript ref: %v", err)
+	}
+	sub := sess.subagents.get(childID)
+	if sub == nil {
+		t.Fatalf("subagent %s not found", childID)
+	}
+	sub.mu.Lock()
+	cancelled := sub.cancelRequested
+	running := sub.running
+	sub.mu.Unlock()
+	if cancelled || !running {
+		t.Fatalf("child cancelled=%v running=%v, want not cancelled and running", cancelled, running)
+	}
+
+	releaseOnce.Do(func() { close(release) })
+	waitForShellDone(t, sess.jobManager, res.JobID)
+	rec := loadShellRecord(t, sess.jobManager, res.JobID)
+	if rec.Status != jobstore.StatusCompleted {
+		t.Fatalf("record after releasing child = %+v, want completed", rec)
+	}
+}
+
+func TestCreateDelegateBackgroundStopCancelsChild(t *testing.T) {
+	adapter := &cancelAwareDelegateAdapter{name: "openai", started: make(chan struct{})}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess := newDelegateTestSession(t, c)
+
+	res := sess.createDelegate(context.Background(), delegateArgs{
+		Task:       "run until stopped",
+		Background: true,
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", res.Err)
+	}
+	select {
+	case <-adapter.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("delegate child did not start")
+	}
+
+	out, err := jobStopTool(context.Background(), sess, map[string]any{
+		"job_id":           res.JobID,
+		"block":            true,
+		"block_timeout_ms": 1000,
+	}, jobToolResultDefaultMaxChar)
+	if err != nil {
+		t.Fatalf("jobStopTool: %v", err)
+	}
+	var stop jobStopResult
+	if err := json.Unmarshal([]byte(out), &stop); err != nil {
+		t.Fatalf("unmarshal job_stop output: %v (output: %s)", err, out)
+	}
+	if stop.JobID != res.JobID || stop.Status != string(jobstore.StatusCancelled) || stop.Reason == nil || *stop.Reason != "stopped_by_parent" {
+		t.Fatalf("job_stop = %+v, want cancelled/stopped_by_parent", stop)
+	}
+	waitForShellDone(t, sess.jobManager, res.JobID)
+	rec := loadShellRecord(t, sess.jobManager, res.JobID)
+	if rec.Status != jobstore.StatusCancelled || rec.Reason != "stopped_by_parent" {
+		t.Fatalf("record = %+v, want cancelled/stopped_by_parent", rec)
+	}
+}
+
+func TestCreateDelegateDurableRecordKeepsOutputPathAndTranscriptRef(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithStructured("durable delegate complete", map[string]any{
+					"message": "durable delegate complete",
+				})
+			},
+		},
+	})
+	sess := newDelegateTestSession(t, c)
+
+	res := sess.createDelegate(context.Background(), delegateArgs{
+		Task:           "write durable delegate metadata",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", res.Err)
+	}
+	sess.jobManager.mu.Lock()
+	run := sess.jobManager.running[res.JobID]
+	sess.jobManager.mu.Unlock()
+	if run != nil {
+		t.Fatalf("job %s still running after foreground completion", res.JobID)
+	}
+	rec := loadShellRecord(t, sess.jobManager, res.JobID)
+	if rec.OutputPath == "" {
+		t.Fatalf("durable record missing output_path: %+v", rec)
+	}
+	if rec.TranscriptRef != res.TranscriptRef {
+		t.Fatalf("transcript_ref = %q, want %q", rec.TranscriptRef, res.TranscriptRef)
+	}
+}
+
+func TestCreateDelegateForegroundFinalizeFailureReturns(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithStructured("finalize failure child complete", map[string]any{
+					"message": "finalize failure child complete",
+				})
+			},
+		},
+	})
+	sess := newDelegateTestSession(t, c)
+	appendErr := errors.New("append failed")
+	var finishAttempts atomic.Int32
+	origAppend := sess.jobManager.appendEvent
+	defer func() { sess.jobManager.appendEvent = origAppend }()
+	sess.jobManager.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventJobFinished {
+			finishAttempts.Add(1)
+			return appendErr
+		}
+		return origAppend(e)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	done := make(chan delegateResult, 1)
+	go func() {
+		done <- sess.createDelegate(ctx, delegateArgs{
+			Task:           "finish while append fails",
+			Background:     false,
+			BlockTimeoutMS: 5000,
+		})
+	}()
+
+	var res delegateResult
+	select {
+	case res = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("createDelegate hung after finalization append failure")
+	}
+	if res.Err == nil || !errors.Is(res.Err, appendErr) {
+		t.Fatalf("result error = %v, want append failure", res.Err)
+	}
+	if res.Reason != "finalize_failed" {
+		t.Fatalf("result = %+v, want finalize_failed", res)
+	}
+	if finishAttempts.Load() == 0 {
+		t.Fatal("job_finished append was not attempted")
+	}
+
+	sess.jobManager.appendEvent = origAppend
+	_, childID, err := decodeRef(res.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode transcript ref: %v", err)
+	}
+	if err := sess.finalizeDelegate(res.JobID, childID); err != nil {
+		t.Fatalf("cleanup finalizeDelegate: %v", err)
+	}
+	waitForShellDone(t, sess.jobManager, res.JobID)
+}
+
 func newDelegateTestSession(t *testing.T, c *llm.Client) *Session {
 	t.Helper()
 	dir := t.TempDir()
@@ -133,6 +337,26 @@ func newDelegateTestSession(t *testing.T, c *llm.Client) *Session {
 	}
 	t.Cleanup(func() { sess.Close() })
 	return sess
+}
+
+type cancelAwareDelegateAdapter struct {
+	name    string
+	started chan struct{}
+	once    sync.Once
+}
+
+func (a *cancelAwareDelegateAdapter) Name() string { return a.name }
+
+func (a *cancelAwareDelegateAdapter) Complete(ctx context.Context, req llm.Request) (llm.Response, error) {
+	a.once.Do(func() { close(a.started) })
+	<-ctx.Done()
+	return llm.Response{Provider: a.name, Model: req.Model}, ctx.Err()
+}
+
+func (a *cancelAwareDelegateAdapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
+	_ = ctx
+	_ = req
+	return nil, llm.ErrStreamUnsupported
 }
 
 func communicateWithStructured(message string, output map[string]any) llm.Response {

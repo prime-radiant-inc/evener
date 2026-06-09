@@ -36,6 +36,7 @@ type Event struct {
 	OriginTurnID     string     `json:"origin_turn_id,omitempty"`
 	OriginToolCallID string     `json:"origin_tool_call_id,omitempty"`
 	StartedAt        *time.Time `json:"started_at,omitempty"`
+	OutputPath       string     `json:"output_path,omitempty"`
 
 	// job_session_assigned payload
 	TranscriptRef   string `json:"transcript_ref,omitempty"`

@@ -416,6 +416,7 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 		OwnerSessionID:   rec.OwnerSessionID,
 		VisibleToSession: rec.VisibleToSession,
 		StartedAt:        &startedAt,
+		OutputPath:       rec.OutputPath,
 	}); err != nil {
 		jm.mu.Unlock()
 		return err

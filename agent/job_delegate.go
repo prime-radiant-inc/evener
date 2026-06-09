@@ -13,6 +13,8 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
 
+const delegateFinalizeWaitTimeout = 5 * time.Second
+
 type delegateArgs struct {
 	Task            string
 	AgentType       string
@@ -79,9 +81,10 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 		cancelDelegateChild(s, childID)
 		return delegateStartFailed(err)
 	}
+	finalizeErr := make(chan error, 1)
 	go func() {
 		<-done
-		s.finalizeDelegate(run.rec.JobID, childID)
+		finalizeErr <- s.finalizeDelegate(run.rec.JobID, childID)
 	}()
 
 	if args.Background {
@@ -98,8 +101,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 	defer timer.Stop()
 	select {
 	case <-done:
-		<-run.done
-		return delegateTerminalResult(jm, run)
+		return waitForDelegateFinalization(ctx, jm, run, finalizeErr)
 	case <-timer.C:
 		output, _, truncated, readErr := tailOutput(run.output, shellInlineOutputBytes)
 		res := delegateResult{
@@ -115,6 +117,37 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 			Err:                 readErr,
 		}
 		return res
+	}
+}
+
+func waitForDelegateFinalization(ctx context.Context, jm *jobManager, run *runningJob, finalizeErr <-chan error) delegateResult {
+	timer := time.NewTimer(delegateFinalizeWaitTimeout)
+	defer timer.Stop()
+
+	select {
+	case <-run.done:
+		return delegateTerminalResult(jm, run)
+	case err := <-finalizeErr:
+		if err != nil {
+			return delegateFinalizeFailedResult(run, "finalize_failed", err)
+		}
+		return delegateTerminalResult(jm, run)
+	case <-ctx.Done():
+		return delegateFinalizeFailedResult(run, "cancelled", ctx.Err())
+	case <-timer.C:
+		return delegateFinalizeFailedResult(run, "finalize_timeout", errors.New("delegate finalization timed out"))
+	}
+}
+
+func delegateFinalizeFailedResult(run *runningJob, reason string, err error) delegateResult {
+	return delegateResult{
+		JobID:               run.rec.JobID,
+		Type:                string(jobstore.JobDelegate),
+		Status:              jobstore.StatusFailed,
+		Reason:              reason,
+		RunningInBackground: true,
+		TranscriptRef:       run.rec.TranscriptRef,
+		Err:                 err,
 	}
 }
 
@@ -187,6 +220,7 @@ func (s *Session) attachDelegateJob(jm *jobManager, childID, task string) (*runn
 		OwnerSessionID:   run.rec.OwnerSessionID,
 		VisibleToSession: run.rec.VisibleToSession,
 		StartedAt:        &startedAt,
+		OutputPath:       run.rec.OutputPath,
 	}); err != nil {
 		jm.mu.Unlock()
 		_ = output.Close()
@@ -226,15 +260,14 @@ func cancelDelegateChild(s *Session, childID string) {
 	}
 }
 
-func (s *Session) finalizeDelegate(jobID, childID string) {
+func (s *Session) finalizeDelegate(jobID, childID string) error {
 	jm, err := sessionJobManager(s)
 	if err != nil {
-		return
+		return err
 	}
 	sub := s.subagents.get(childID)
 	if sub == nil {
-		_ = jm.finalize(jobID, jobstore.StatusFailed, "child_missing", nil)
-		return
+		return jm.finalize(jobID, jobstore.StatusFailed, "child_missing", nil)
 	}
 
 	sub.mu.Lock()
@@ -260,7 +293,7 @@ func (s *Session) finalizeDelegate(jobID, childID string) {
 	appendDelegateOutput(run, prose)
 
 	jobStatus, reason := delegateTerminalStatus(jm, run, status)
-	_ = jm.finalize(jobID, jobStatus, reason, nil)
+	return jm.finalize(jobID, jobStatus, reason, nil)
 }
 
 func appendDelegateOutput(run *runningJob, prose string) {
