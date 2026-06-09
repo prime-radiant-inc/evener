@@ -681,6 +681,72 @@ func TestNotification_GoalContinuesInlineWithoutKickFunc(t *testing.T) {
 	}
 }
 
+func TestNotificationNoOpBeforeDeferredGoalContinuationDoesNotSuppressSessionEnd(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(writeFileCall("u1", "u.txt", "user work"))
+			},
+			func(req llm.Request) llm.Response { return finalResponse("user turn done") },
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(writeFileCall("c1", "c.txt", "cont work"))
+			},
+			func(req llm.Request) llm.Response { return finalResponse("cont 1 done") },
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(updateGoalCall("g1", "complete"))
+			},
+			func(req llm.Request) llm.Response { return finalResponse("goal achieved") },
+		},
+	}
+	c.Register(adapter)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	collect := drainEvents(sess)
+	sess.getOrCreateGoalStore().Set("inline objective", time.Now())
+
+	base3 := adapter.steps[3]
+	adapter.steps[3] = func(req llm.Request) llm.Response {
+		sess.enqueueNotification(subagentNotification{
+			AgentID: "01MISSING",
+			Status:  "completed", TurnsUsed: 2,
+			TranscriptRef: "local:01MISSING",
+		})
+		return base3(req)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "begin", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	sess.Close()
+	evs := collect()
+	var sessionEnds int
+	for _, ev := range evs {
+		if ev.Kind != events.EventSessionEnd {
+			continue
+		}
+		if d, ok := ev.Data.(events.SessionEndData); ok && d.Reason == "input_complete" {
+			sessionEnds++
+		}
+	}
+	if sessionEnds != 1 {
+		t.Fatalf("SESSION_END{input_complete} count = %d, want 1 after deferred continuation real work", sessionEnds)
+	}
+	if got := countGoalContinuations(evs); got < 2 {
+		t.Fatalf("count(EventGoalContinuation) = %d, want >= 2", got)
+	}
+	if d := lastGoalEnded(t, evs); d.Status != "complete" {
+		t.Fatalf("EventGoalEnded.Status = %q, want complete", d.Status)
+	}
+}
+
 // TestNotification_GoalClearedDuringInterleaveStops proves that clearing the goal
 // DURING an interleaved notification turn drops the gate-time deferred continuation
 // rather than running it against a goal that no longer exists. The gate folds

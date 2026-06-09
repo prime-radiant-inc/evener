@@ -390,6 +390,9 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 			// fall through to settle + idle; if it is active, run a FRESH render of the
 			// CURRENT objective so a retarget pursues the new goal.
 			if cont, ok := s.currentGoalContinuation(); ok {
+				s.mu.Lock()
+				s.sessionEndEmitted = false
+				s.mu.Unlock()
 				next = cont
 				nextImages = nil
 				nextKind = EntryContinuation
