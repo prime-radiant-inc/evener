@@ -291,6 +291,45 @@ func TestJobReadOutputRejectsLargeGrepBeforeRegistryTruncation(t *testing.T) {
 	}
 }
 
+func TestJobReadOutputRejectsJSONExpandedGrepBeforeRegistryTruncation(t *testing.T) {
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"printf 'ready-line\n'","background":true}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(shellOut.JobID)
+		waitForShellDone(t, s.jobManager, shellOut.JobID)
+	})
+
+	patternJSON, err := json.Marshal(strings.Repeat("\x00", maxJobGrepPatternJSONChars(jobToolResultDefaultMaxChar)/4))
+	if err != nil {
+		t.Fatalf("marshal grep pattern: %v", err)
+	}
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "read",
+		Name:      "job_read_output",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"grep":%s}`, shellOut.JobID, patternJSON)),
+	})
+	if !res.IsError {
+		t.Fatalf("job_read_output succeeded, want error: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "grep is too large after JSON escaping") {
+		t.Fatalf("job_read_output error = %q, want JSON escaping limit", res.Output)
+	}
+}
+
 type jobReadOutputTestResult struct {
 	JobID   string  `json:"job_id"`
 	Type    string  `json:"type"`

@@ -111,8 +111,8 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		ExitCode:   rec.ExitCode,
 	}
 	if grep := stringArg(args, "grep"); grep != "" {
-		if len([]byte(grep)) > maxJobGrepPatternBytes {
-			return "", fmt.Errorf("grep must be at most %d bytes", maxJobGrepPatternBytes)
+		if err := validateJobGrepPattern(grep, maxChars); err != nil {
+			return "", err
 		}
 		matches, err := grepJobOutput(content, totalBytes, truncated, grep)
 		if err != nil {
@@ -315,6 +315,28 @@ func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, erro
 		}
 	}
 	return statuses, nil
+}
+
+func validateJobGrepPattern(pattern string, maxChars int) error {
+	if len([]byte(pattern)) > maxJobGrepPatternBytes {
+		return fmt.Errorf("grep must be at most %d bytes", maxJobGrepPatternBytes)
+	}
+	b, err := json.Marshal(pattern)
+	if err != nil {
+		return err
+	}
+	if jsonCharLen(b) > maxJobGrepPatternJSONChars(maxChars) {
+		return fmt.Errorf("grep is too large after JSON escaping")
+	}
+	return nil
+}
+
+func maxJobGrepPatternJSONChars(maxChars int) int {
+	limit := maxChars / 4
+	if limit < 64 {
+		return 64
+	}
+	return limit
 }
 
 func jobTypeArrayArg(args map[string]any, key string) ([]jobstore.JobType, error) {
