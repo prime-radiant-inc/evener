@@ -405,34 +405,50 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 }
 
 func (s *Session) sendInput(ctx context.Context, agentID string, input string) (any, error) {
+	_ = ctx
 	sub := s.getSub(agentID)
 	if sub == nil {
 		return "", fmt.Errorf("unknown agent_id: %s", agentID)
 	}
-	sub.mu.Lock()
-	running := sub.running
-	sub.mu.Unlock()
+	if _, err := s.startOrSteerSubagentRun(sub, input); err != nil {
+		return "", err
+	}
+	return "ok", nil
+}
 
-	if running {
+func (s *Session) startOrSteerSubagentRun(sub *subagent, input string) (bool, error) {
+	sub.mu.Lock()
+	if sub.running {
+		subSess := sub.sess
+		sub.mu.Unlock()
 		// Inject as steering message into the running session.
-		sub.sess.Steer(input)
-		return "ok", nil
+		subSess.Steer(input)
+		return false, nil
 	}
 
 	// Agent is idle — start a new ProcessInput round. Enroll the resumed run in
 	// sendersWG under s.mu (gated on closing) so it joins the same teardown
 	// barrier as the initial spawn.
+	runCtx, runCancel := context.WithCancel(context.Background())
+	resumeTime := time.Now()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return "", errors.New("session is closed")
+		sub.mu.Unlock()
+		runCancel()
+		return false, errors.New("session is closed")
 	}
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
 
-	runCtx, runCancel := context.WithCancel(context.Background())
-	resumeTime := time.Now()
-	sub.mu.Lock()
+	resetSubagentForRunLocked(sub, runCancel, resumeTime)
+	sub.mu.Unlock()
+
+	s.launchSubagentRun(sub, runCtx, runCancel, input)
+	return true, nil
+}
+
+func resetSubagentForRunLocked(sub *subagent, cancel context.CancelFunc, startedAt time.Time) {
 	sub.done = make(chan struct{})
 	sub.running = true
 	sub.status = SubagentRunning
@@ -441,14 +457,15 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 	sub.resultConsumed = false
 	sub.endEmitted = false
 	sub.notifyArmed = false
-	sub.cancel = runCancel
+	sub.cancel = cancel
 	sub.cancelRequested = false
-	sub.startedAt = resumeTime
+	sub.startedAt = startedAt
 	sub.endedAt = nil
 	sub.closed = false
 	sub.closeTimedOut = false
-	sub.mu.Unlock()
+}
 
+func (s *Session) launchSubagentRun(sub *subagent, runCtx context.Context, runCancel context.CancelFunc, input string) {
 	s.emit(events.EventSubagentStart, events.SubagentStartData{
 		AgentID: sub.id,
 		Task:    input,
@@ -460,7 +477,6 @@ func (s *Session) sendInput(ctx context.Context, agentID string, input string) (
 		defer runCancel()
 		sub.run(runCtx, input)
 	}()
-	return "ok", nil
 }
 
 func (s *Session) waitAgent(ctx context.Context, agentID string, timeoutMS int) (any, error) {

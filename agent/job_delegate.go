@@ -203,13 +203,12 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		return s.sendRunningDelegateMessage(target, message, active)
 	}
 
-	if _, err := s.sendInput(ctx, childID, message); err != nil {
+	run, active, err := s.resumeOrFindRunningDelegate(jm, childID, message, sub, rec.TranscriptRef)
+	if err != nil {
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: resume delegate session %q: %w", childID, err))
 	}
-	run, _, _, err := s.attachAndBridgeDelegateJob(jm, childID, message, sub)
-	if err != nil {
-		cancelDelegateSub(sub)
-		return sendMessageFailed(target, err)
+	if active != nil {
+		return s.sendRunningDelegateMessage(target, message, active)
 	}
 	return sendMessageResult{
 		Target:              target,
@@ -231,12 +230,19 @@ func findRunningDelegateByTranscriptRef(jm *jobManager, transcriptRef string) (*
 	if err != nil {
 		return nil, err
 	}
+	var found *jobstore.JobRecord
 	for _, rec := range jobs {
 		if rec.TranscriptRef == transcriptRef {
-			return rec, nil
+			if found != nil {
+				return nil, fmt.Errorf("active_delegate_ambiguous: multiple running delegate jobs with transcript_ref %q", transcriptRef)
+			}
+			found = rec
 		}
 	}
-	return nil, fmt.Errorf("active_delegate_not_found: no running delegate job with transcript_ref %q", transcriptRef)
+	if found == nil {
+		return nil, fmt.Errorf("active_delegate_not_found: no running delegate job with transcript_ref %q", transcriptRef)
+	}
+	return found, nil
 }
 
 func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobstore.JobRecord) sendMessageResult {
@@ -266,6 +272,48 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 		Action:              "sent",
 		TranscriptRef:       rec.TranscriptRef,
 	}
+}
+
+func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message string, sub *subagent, transcriptRef string) (*runningJob, *jobstore.JobRecord, error) {
+	sub.mu.Lock()
+	if sub.running {
+		sub.mu.Unlock()
+		active, err := findRunningDelegateByTranscriptRef(jm, transcriptRef)
+		if err != nil {
+			return nil, nil, fmt.Errorf("delegate session %q is running but active job is unknown: %w", childID, err)
+		}
+		return nil, active, nil
+	}
+
+	runCtx, runCancel := context.WithCancel(context.Background())
+	resumeTime := time.Now()
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		sub.mu.Unlock()
+		runCancel()
+		return nil, nil, errors.New("session is closed")
+	}
+	s.sendersWG.Add(1)
+	s.mu.Unlock()
+
+	run, err := s.attachDelegateJob(jm, childID, message, sub)
+	if err != nil {
+		sub.mu.Unlock()
+		runCancel()
+		s.sendersWG.Done()
+		return nil, nil, err
+	}
+	resetSubagentForRunLocked(sub, runCancel, resumeTime)
+	done := sub.done
+	sub.mu.Unlock()
+
+	go func() {
+		<-done
+		_ = s.finalizeDelegate(run.rec.JobID, childID, sub)
+	}()
+	s.launchSubagentRun(sub, runCtx, runCancel, message)
+	return run, nil, nil
 }
 
 func sendMessageFailed(target string, err error) sendMessageResult {

@@ -623,6 +623,113 @@ func TestSendDelegateMessageTerminalDelegateResumeSteersActiveRun(t *testing.T) 
 	waitForShellDone(t, sess.jobManager, second.JobID)
 }
 
+func TestSendDelegateMessageTerminalResumeWaitsForDelegateJobAttachment(t *testing.T) {
+	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess := newDelegateTestSession(t, c)
+
+	first := sess.createDelegate(context.Background(), delegateArgs{
+		Task:           "finish first",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	if first.Status != jobstore.StatusCompleted {
+		t.Fatalf("first result = %+v, want completed", first)
+	}
+
+	attachStarted := make(chan struct{})
+	releaseAttach := make(chan struct{})
+	var attachOnce sync.Once
+	origAppend := sess.jobManager.appendEvent
+	defer func() { sess.jobManager.appendEvent = origAppend }()
+	sess.jobManager.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventJobStarted && e.Type == jobstore.JobDelegate && e.Task == "run again" {
+			attachOnce.Do(func() { close(attachStarted) })
+			<-releaseAttach
+		}
+		return origAppend(e)
+	}
+
+	firstResumeDone := make(chan sendMessageResult, 1)
+	go func() {
+		firstResumeDone <- sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+			Target:  first.JobID,
+			Message: "run again",
+		})
+	}()
+	select {
+	case <-attachStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("resumed delegate job attachment did not start")
+	}
+
+	secondResumeDone := make(chan sendMessageResult, 1)
+	go func() {
+		secondResumeDone <- sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+			Target:  first.JobID,
+			Message: "steer while attaching",
+		})
+	}()
+	select {
+	case res := <-secondResumeDone:
+		t.Fatalf("second terminal resume returned before delegate job attached: %+v", res)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseAttach)
+	var firstResume sendMessageResult
+	select {
+	case firstResume = <-firstResumeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first terminal resume did not return")
+	}
+	if firstResume.Err != nil {
+		t.Fatalf("first terminal resume returned error: %v", firstResume.Err)
+	}
+	if firstResume.Action != "resumed" || firstResume.JobID == "" || firstResume.JobID == first.JobID {
+		t.Fatalf("first terminal resume = %+v, want resumed new delegate job", firstResume)
+	}
+
+	var secondResume sendMessageResult
+	select {
+	case secondResume = <-secondResumeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second terminal resume did not return after attachment released")
+	}
+	if secondResume.Err != nil {
+		t.Fatalf("second terminal resume returned error: %v", secondResume.Err)
+	}
+	if secondResume.Action != "sent" ||
+		secondResume.JobID != firstResume.JobID ||
+		secondResume.TranscriptRef != first.TranscriptRef {
+		t.Fatalf("second terminal resume = %+v, want sent to active resumed job %s", secondResume, firstResume.JobID)
+	}
+
+	_, childID, err := decodeRef(first.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode transcript ref: %v", err)
+	}
+	sub := sess.subagents.get(childID)
+	if sub == nil {
+		t.Fatalf("subagent %s not found", childID)
+	}
+	queue := sub.sess.SteeringQueueSnapshot()
+	if len(queue) != 1 || queue[0].Text != "steer while attaching" {
+		t.Fatalf("steering queue = %+v, want concurrent terminal resume steered", queue)
+	}
+	jobs := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate})
+	if len(jobs) != 2 {
+		t.Fatalf("delegate jobs = %+v, want original plus one resumed job", jobs)
+	}
+
+	_, _ = sess.jobManager.stop(firstResume.JobID)
+	waitForShellDone(t, sess.jobManager, firstResume.JobID)
+}
+
 func TestSendDelegateMessageTerminalTargetFailDoesNotSteerLaterRun(t *testing.T) {
 	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
 	c := llm.NewClient()
@@ -737,6 +844,51 @@ func TestSendDelegateMessageRunningDelegateTargetSteersWithoutNewJob(t *testing.
 	queue := sub.sess.SteeringQueueSnapshot()
 	if len(queue) != 1 || queue[0].Text != "please adjust course" {
 		t.Fatalf("steering queue = %+v, want sent message", queue)
+	}
+
+	_, _ = sess.jobManager.stop(first.JobID)
+	waitForShellDone(t, sess.jobManager, first.JobID)
+}
+
+func TestFindRunningDelegateByTranscriptRefRejectsAmbiguousMatches(t *testing.T) {
+	adapter := &cancelAwareDelegateAdapter{name: "openai", started: make(chan struct{})}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess := newDelegateTestSession(t, c)
+
+	first := sess.createDelegate(context.Background(), delegateArgs{
+		Task:       "stay running",
+		Background: true,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	select {
+	case <-adapter.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("delegate child did not start")
+	}
+
+	sess.jobManager.mu.Lock()
+	sess.jobManager.running["job_duplicate_delegate"] = &runningJob{
+		rec: &jobstore.JobRecord{
+			JobID:         "job_duplicate_delegate",
+			Type:          jobstore.JobDelegate,
+			Status:        jobstore.StatusRunning,
+			TranscriptRef: first.TranscriptRef,
+		},
+		durableStarted: true,
+	}
+	sess.jobManager.mu.Unlock()
+	t.Cleanup(func() {
+		sess.jobManager.mu.Lock()
+		delete(sess.jobManager.running, "job_duplicate_delegate")
+		sess.jobManager.mu.Unlock()
+	})
+
+	_, err := findRunningDelegateByTranscriptRef(sess.jobManager, first.TranscriptRef)
+	if err == nil || !strings.Contains(err.Error(), "active_delegate_ambiguous") {
+		t.Fatalf("findRunningDelegateByTranscriptRef error = %v, want active_delegate_ambiguous", err)
 	}
 
 	_, _ = sess.jobManager.stop(first.JobID)
