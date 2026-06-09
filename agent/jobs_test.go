@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -288,5 +289,143 @@ func TestJobManagerFinalizePendingAppendFailureCanRetryWithSameGeneration(t *tes
 	}
 	if got.TerminalGen != firstGeneration {
 		t.Fatalf("terminal generation after retry = %q, want %q", got.TerminalGen, firstGeneration)
+	}
+}
+
+func TestJobManagerFinalizeConcurrentArmDoesNotDoubleNotify(t *testing.T) {
+	var queued int32
+	jm, err := newJobManager(t.TempDir(), "S1", func(jobNotification) {
+		atomic.AddInt32(&queued, 1)
+	})
+	if err != nil {
+		t.Fatalf("newJobManager: %v", err)
+	}
+	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	done := jm.running[rec.JobID].done
+
+	pendingStarted := make(chan struct{})
+	releasePending := make(chan struct{})
+	var pendingAppends int32
+	origAppend := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventJobNotificationPending {
+			if atomic.AddInt32(&pendingAppends, 1) == 1 {
+				close(pendingStarted)
+				<-releasePending
+			}
+		}
+		return origAppend(e)
+	}
+
+	errc := make(chan error, 1)
+	go func() {
+		errc <- jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", nil)
+	}()
+
+	select {
+	case <-pendingStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first pending append")
+	}
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", nil); err != nil {
+		t.Fatalf("concurrent finalize: %v", err)
+	}
+	if got := atomic.LoadInt32(&pendingAppends); got != 1 {
+		t.Fatalf("pending appends before release = %d, want 1", got)
+	}
+
+	close(releasePending)
+	select {
+	case err := <-errc:
+		if err != nil {
+			t.Fatalf("first finalize: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first finalize")
+	}
+	select {
+	case <-done:
+	default:
+		t.Fatal("done was not closed")
+	}
+	if _, ok := jm.running[rec.JobID]; ok {
+		t.Fatal("job still running")
+	}
+	if got := atomic.LoadInt32(&pendingAppends); got != 1 {
+		t.Fatalf("pending appends = %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&queued); got != 1 {
+		t.Fatalf("queued = %d, want 1", got)
+	}
+	recs, err := jm.store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if recs[rec.JobID].NotifyState != jobstore.NotifyPending {
+		t.Fatalf("notify state = %q, want pending", recs[rec.JobID].NotifyState)
+	}
+}
+
+func TestJobManagerArmPendingTerminalNotificationsRecoversAfterRestart(t *testing.T) {
+	stateDir := t.TempDir()
+	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("newJobManager: %v", err)
+	}
+	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	appendErr := errors.New("pending append failed")
+	origAppend := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventJobNotificationPending {
+			return appendErr
+		}
+		return origAppend(e)
+	}
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", nil); !errors.Is(err, appendErr) {
+		t.Fatalf("finalize error = %v, want %v", err, appendErr)
+	}
+	recs, err := jm.store.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	firstGeneration := recs[rec.JobID].TerminalGen
+	if recs[rec.JobID].NotifyState != jobstore.NotifyNotArmed || firstGeneration == "" {
+		t.Fatalf("record before recovery = %+v", recs[rec.JobID])
+	}
+
+	var queued []jobNotification
+	restarted, err := newJobManager(stateDir, "S1", func(n jobNotification) {
+		queued = append(queued, n)
+	})
+	if err != nil {
+		t.Fatalf("restart newJobManager: %v", err)
+	}
+	restarted.now = func() time.Time { return time.Unix(1001, 0).UTC() }
+
+	if err := restarted.armPendingTerminalNotifications(); err != nil {
+		t.Fatalf("arm pending: %v", err)
+	}
+	recs, err = restarted.store.Load()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	got := recs[rec.JobID]
+	if got.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("notify state = %q, want pending", got.NotifyState)
+	}
+	if got.TerminalGen != firstGeneration {
+		t.Fatalf("terminal generation = %q, want %q", got.TerminalGen, firstGeneration)
+	}
+	if len(queued) != 1 || queued[0].JobID != rec.JobID || queued[0].Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("queued = %+v", queued)
 	}
 }

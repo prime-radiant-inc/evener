@@ -39,6 +39,7 @@ type terminalJob struct {
 	endedAt     time.Time
 	outputBytes int64
 	generation  string
+	arming      bool
 }
 
 // jobNotification is the durable-job analogue of subagentNotification.
@@ -294,22 +295,43 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 }
 
 func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) error {
+	jm.mu.Lock()
+	if jm.running[run.rec.JobID] != run || run.terminal != terminal {
+		jm.mu.Unlock()
+		return nil
+	}
+	if terminal.arming {
+		jm.mu.Unlock()
+		return nil
+	}
+	terminal.arming = true
+	jm.mu.Unlock()
+
 	if err := jm.appendEvent(jobstore.Event{
 		Kind:        jobstore.EventJobNotificationPending,
 		TS:          terminal.endedAt,
 		JobID:       run.rec.JobID,
 		TerminalGen: terminal.generation,
 	}); err != nil {
+		jm.mu.Lock()
+		if jm.running[run.rec.JobID] == run && run.terminal == terminal {
+			terminal.arming = false
+		}
+		jm.mu.Unlock()
 		return err
 	}
-	_ = run.output.Close()
-	close(run.done)
 
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] == run {
 		delete(jm.running, run.rec.JobID)
+	} else {
+		jm.mu.Unlock()
+		return nil
 	}
 	jm.mu.Unlock()
+
+	_ = run.output.Close()
+	close(run.done)
 
 	if jm.enqueue != nil {
 		jm.enqueue(jobNotification{
@@ -321,6 +343,49 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 			OutputBytes:   terminal.outputBytes,
 			ExitCode:      terminal.exitCode,
 		})
+	}
+	return nil
+}
+
+func (jm *jobManager) armPendingTerminalNotifications() error {
+	recs, err := jm.store.Load()
+	if err != nil {
+		return err
+	}
+
+	jobs := make([]*jobstore.JobRecord, 0, len(recs))
+	for _, rec := range recs {
+		if rec.Status.IsTerminal() && rec.NotifyState == jobstore.NotifyNotArmed && rec.TerminalGen != "" {
+			jobs = append(jobs, rec)
+		}
+	}
+	sort.Slice(jobs, func(i, j int) bool {
+		if jobs[i].StartedAt.Equal(jobs[j].StartedAt) {
+			return jobs[i].JobID < jobs[j].JobID
+		}
+		return jobs[i].StartedAt.After(jobs[j].StartedAt)
+	})
+
+	for _, rec := range jobs {
+		if err := jm.appendEvent(jobstore.Event{
+			Kind:        jobstore.EventJobNotificationPending,
+			TS:          jm.now(),
+			JobID:       rec.JobID,
+			TerminalGen: rec.TerminalGen,
+		}); err != nil {
+			return err
+		}
+		if jm.enqueue != nil {
+			jm.enqueue(jobNotification{
+				JobID:         rec.JobID,
+				JobType:       string(rec.Type),
+				Status:        string(rec.Status),
+				Reason:        rec.Reason,
+				TranscriptRef: rec.TranscriptRef,
+				OutputBytes:   rec.OutputBytes,
+				ExitCode:      rec.ExitCode,
+			})
+		}
 	}
 	return nil
 }
