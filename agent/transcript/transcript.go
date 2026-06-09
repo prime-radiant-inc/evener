@@ -165,13 +165,33 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 		return fmt.Errorf("marshal transcript entry: %w", err)
 	}
 
-	if _, err := w.file.Write(append(data, '\n')); err != nil {
+	var startOffset int64
+	if forceSync {
+		var err error
+		startOffset, err = w.file.Seek(0, io.SeekEnd)
+		if err != nil {
+			return fmt.Errorf("seek transcript append start: %w", err)
+		}
+	}
+
+	previousDirty := w.dirty
+	if err := w.writeLineLocked(append(data, '\n')); err != nil {
+		if forceSync {
+			return w.appendFailureLocked("write transcript entry", err, startOffset)
+		}
 		return fmt.Errorf("write transcript entry: %w", err)
 	}
 
 	w.dirty = true
 	if forceSync || w.SyncInterval == 0 || time.Since(w.lastSync) >= w.SyncInterval {
 		if err := w.file.Sync(); err != nil {
+			if forceSync {
+				if rollbackErr := w.rollbackAppendLocked(startOffset); rollbackErr != nil {
+					return fmt.Errorf("sync transcript entry: %w; rollback failed: %w", err, rollbackErr)
+				}
+				w.dirty = previousDirty
+				return fmt.Errorf("sync transcript entry: %w", err)
+			}
 			return fmt.Errorf("sync transcript entry: %w", err)
 		}
 		w.lastSync = time.Now()
@@ -179,6 +199,42 @@ func (w *Writer) append(turn schema.Turn, forceSync bool) error {
 	}
 
 	w.seq++
+	return nil
+}
+
+func (w *Writer) writeLineLocked(line []byte) error {
+	for len(line) > 0 {
+		n, err := w.file.Write(line)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		line = line[n:]
+	}
+	return nil
+}
+
+func (w *Writer) appendFailureLocked(operation string, err error, startOffset int64) error {
+	if rollbackErr := w.rollbackAppendLocked(startOffset); rollbackErr != nil {
+		return fmt.Errorf("%s: %w; rollback failed: %w", operation, err, rollbackErr)
+	}
+	return fmt.Errorf("%s: %w", operation, err)
+}
+
+func (w *Writer) rollbackAppendLocked(startOffset int64) error {
+	truncateErr := w.file.Truncate(startOffset)
+	_, seekErr := w.file.Seek(0, io.SeekEnd)
+	if truncateErr != nil && seekErr != nil {
+		return fmt.Errorf("truncate to %d: %w; seek eof: %w", startOffset, truncateErr, seekErr)
+	}
+	if truncateErr != nil {
+		return fmt.Errorf("truncate to %d: %w", startOffset, truncateErr)
+	}
+	if seekErr != nil {
+		return fmt.Errorf("seek eof: %w", seekErr)
+	}
 	return nil
 }
 

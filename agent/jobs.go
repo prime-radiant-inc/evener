@@ -381,6 +381,8 @@ func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {
 		run.stopReason = "stopped_by_parent"
 		signal := run.signal
 		rec := cloneJobRecord(run.rec)
+		rec.Status = run.stopStatus
+		rec.Reason = run.stopReason
 		jm.mu.Unlock()
 		if signal != nil {
 			signal()

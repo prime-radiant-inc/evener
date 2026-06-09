@@ -137,6 +137,50 @@ func TestJobToolsControlBackgroundShellJob(t *testing.T) {
 	}
 }
 
+func TestJobStopDefaultReturnsRequestedCancellation(t *testing.T) {
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	if shellOut.JobID == "" {
+		t.Fatal("background shell returned no job_id")
+	}
+
+	stopRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "stop",
+		Name:      "job_stop",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q}`, shellOut.JobID)),
+	})
+	if stopRes.IsError {
+		t.Fatalf("job_stop returned error: %s", stopRes.Output)
+	}
+	var stopOut struct {
+		JobID  string  `json:"job_id"`
+		Status string  `json:"status"`
+		Reason *string `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(stopRes.Output), &stopOut); err != nil {
+		t.Fatalf("unmarshal job_stop output: %v (output: %s)", err, stopRes.Output)
+	}
+	if stopOut.JobID != shellOut.JobID || stopOut.Status != string(jobstore.StatusCancelled) || stopOut.Reason == nil || *stopOut.Reason != "stopped_by_parent" {
+		t.Fatalf("job_stop = %+v, want immediate cancelled/stopped_by_parent", stopOut)
+	}
+
+	waitForShellDone(t, s.jobManager, shellOut.JobID)
+}
+
 func TestJobToolsDefinitions(t *testing.T) {
 	required := func(t *testing.T, def llm.ToolDefinition, name string, want []string) {
 		t.Helper()
