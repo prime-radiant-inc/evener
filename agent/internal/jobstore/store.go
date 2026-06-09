@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -210,11 +211,26 @@ func (s *Store) finishTrailingJSONLineLocked() error {
 }
 
 func isIncompleteTrailingJSON(line []byte, err error) bool {
-	if len(bytes.TrimSpace(line)) == 0 {
+	trimmed := bytes.TrimSpace(line)
+	if len(trimmed) == 0 {
 		return false
 	}
+	if err.Error() == "unexpected end of JSON input" {
+		return true
+	}
 	var syntaxErr *json.SyntaxError
-	return errors.As(err, &syntaxErr) && err.Error() == "unexpected end of JSON input"
+	if !errors.As(err, &syntaxErr) {
+		return false
+	}
+	if syntaxErr.Offset < int64(len(trimmed)) {
+		return false
+	}
+	last := trimmed[len(trimmed)-1]
+	if last == '}' || last == ']' {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "literal") || strings.Contains(msg, "numeric literal")
 }
 
 func (s *Store) ensureOpenLocked() error {

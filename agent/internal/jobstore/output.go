@@ -262,8 +262,10 @@ func (o *OutputStore) pruneLocked() error {
 	if _, err := o.f.Seek(0, 0); err != nil {
 		return fmt.Errorf("jobstore: seek output rewrite: %w", err)
 	}
-	if _, err := o.f.Write(tail); err != nil {
+	if n, err := o.f.Write(tail); err != nil {
 		return fmt.Errorf("jobstore: rewrite output tail: %w", err)
+	} else if n != len(tail) {
+		return fmt.Errorf("jobstore: rewrite output tail: %w", io.ErrShortWrite)
 	}
 	if err := o.f.Truncate(keep); err != nil {
 		return fmt.Errorf("jobstore: trim output tail: %w", err)
@@ -278,6 +280,9 @@ func (o *OutputStore) pruneLocked() error {
 func (o *OutputStore) persistMetaLocked() error {
 	if o.metaPath == "" {
 		return nil
+	}
+	if err := o.f.Sync(); err != nil {
+		return fmt.Errorf("jobstore: sync output before metadata: %w", err)
 	}
 	meta := outputMeta{
 		TotalBytes:    o.total,

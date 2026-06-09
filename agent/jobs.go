@@ -322,7 +322,12 @@ func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, t
 	if rec == nil {
 		return "", 0, false, fmt.Errorf("job %q not found", jobID)
 	}
-	return tailOutputFile(jm.outputPathForJob(rec, jobID), tailBytes, rec.OutputBytes)
+	path := jm.outputPathForJob(rec, jobID)
+	validatedTotal, _, err := validatedOutputStatsForRecord(path, rec)
+	if err != nil {
+		return "", 0, false, err
+	}
+	return tailOutputFile(path, tailBytes, validatedTotal)
 }
 
 func (jm *jobManager) grepOutput(jobID string, re *regexp.Regexp, limitBytes int) ([]jobstore.Match, error) {
@@ -341,7 +346,12 @@ func (jm *jobManager) grepOutput(jobID string, re *regexp.Regexp, limitBytes int
 	if rec == nil {
 		return nil, fmt.Errorf("job %q not found", jobID)
 	}
-	return grepOutputFile(jm.outputPathForJob(rec, jobID), re, limitBytes, rec.OutputBytes)
+	path := jm.outputPathForJob(rec, jobID)
+	_, retainedStart, err := validatedOutputStatsForRecord(path, rec)
+	if err != nil {
+		return nil, err
+	}
+	return grepOutputFile(path, re, limitBytes, retainedStart)
 }
 
 func (jm *jobManager) reconcileLostJobs() error {
@@ -639,7 +649,18 @@ func tailOutput(output *jobstore.OutputStore, tailBytes int) (string, int64, boo
 	return string(b), total, truncated, nil
 }
 
-func tailOutputFile(path string, tailBytes int, lifetimeBytes int64) (output string, total int64, truncated bool, err error) {
+func validatedOutputStatsForRecord(path string, rec *jobstore.JobRecord) (total int64, retainedStart int64, err error) {
+	total, retainedStart, err = jobstore.OutputFileStats(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	if rec != nil && rec.OutputBytes != total {
+		return 0, 0, fmt.Errorf("jobstore: output metadata total %d does not match job record total %d", total, rec.OutputBytes)
+	}
+	return total, retainedStart, nil
+}
+
+func tailOutputFile(path string, tailBytes int, total int64) (output string, totalBytes int64, truncated bool, err error) {
 	if tailBytes < 0 {
 		return "", 0, false, fmt.Errorf("%w: maxBytes=%d", jobstore.ErrInvalidLimit, tailBytes)
 	}
@@ -659,35 +680,28 @@ func tailOutputFile(path string, tailBytes int, lifetimeBytes int64) (output str
 		return "", 0, false, fmt.Errorf("jobstore: stat output: %w", err)
 	}
 	retained := info.Size()
-	total = retained
-	if lifetimeBytes > total {
-		total = lifetimeBytes
-	}
+	totalBytes = total
 	start := int64(0)
 	if retained > int64(tailBytes) {
 		start = retained - int64(tailBytes)
 		truncated = true
 	}
-	if total > retained {
+	if totalBytes > retained {
 		truncated = true
 	}
 	if _, err := f.Seek(start, 0); err != nil {
-		return "", total, truncated, err
+		return "", totalBytes, truncated, err
 	}
 	buf := make([]byte, retained-start)
 	if len(buf) > 0 {
 		if _, err := io.ReadFull(f, buf); err != nil {
-			return "", total, truncated, fmt.Errorf("jobstore: read output: %w", err)
+			return "", totalBytes, truncated, fmt.Errorf("jobstore: read output: %w", err)
 		}
 	}
-	return string(buf), total, truncated, nil
+	return string(buf), totalBytes, truncated, nil
 }
 
-func grepOutputFile(path string, re *regexp.Regexp, limitBytes int, lifetimeBytes int64) (matches []jobstore.Match, err error) {
-	var retainedStart int64
-	if info, statErr := os.Stat(path); statErr == nil && lifetimeBytes > info.Size() {
-		retainedStart = lifetimeBytes - info.Size()
-	}
+func grepOutputFile(path string, re *regexp.Regexp, limitBytes int, retainedStart int64) (matches []jobstore.Match, err error) {
 	return jobstore.GrepFileLimitAt(path, re, limitBytes, maxJobGrepMatches, maxJobGrepLineBytes, retainedStart)
 }
 

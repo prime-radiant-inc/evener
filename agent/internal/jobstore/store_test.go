@@ -230,6 +230,48 @@ func TestStoreOpenTruncatesWholeFileTrailingPartialLine(t *testing.T) {
 	}
 }
 
+func TestStoreOpenTruncatesTrailingPartialJSONCuts(t *testing.T) {
+	prefix := "{\"kind\":\"job_started\",\"seq\":1,\"job_id\":\"job_A\"}\n"
+	for _, tc := range []struct {
+		name    string
+		partial string
+	}{
+		{
+			name:    "boolean",
+			partial: "{\"kind\":\"job_session_assigned\",\"seq\":2,\"job_id\":\"job_A\",\"resumable\":tru",
+		},
+		{
+			name:    "number",
+			partial: "{\"kind\":\"job_finished\",\"seq\":2,\"job_id\":\"job_A\",\"output_bytes\":12e",
+		},
+		{
+			name:    "string",
+			partial: "{\"kind\":\"job_started\",\"seq\":2,\"job_id\":\"job_",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "jobs.jsonl")
+			data := []byte(prefix + tc.partial)
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				t.Fatalf("write store: %v", err)
+			}
+
+			s := openStore(t, path)
+			raw := readAllEvents(t, s)
+			if len(raw) != 1 || raw[0].JobID != "job_A" {
+				t.Fatalf("events after recovery = %+v, want first event only", raw)
+			}
+			recovered, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read recovered store: %v", err)
+			}
+			if string(recovered) != prefix {
+				t.Fatalf("recovered store = %q, want partial line truncated", recovered)
+			}
+		})
+	}
+}
+
 func TestStoreOpenPreservesCorruptCompleteLineError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "jobs.jsonl")
 	data := []byte("{\"kind\":\"job_started\",\"seq\":1,\"job_id\":\"job_A\"}\n{bad json}\n")

@@ -99,6 +99,61 @@ func TestJobManagerReadOutputMissingTerminalLogReturnsError(t *testing.T) {
 	}
 }
 
+func TestJobManagerTerminalOutputValidatesRetainedSidecar(t *testing.T) {
+	jm := newTestJM(t)
+	jobID := "job_terminal"
+	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
+	out, err := jobstore.OpenOutput(outputPath, int64(len("keep\n")))
+	if err != nil {
+		t.Fatalf("open output: %v", err)
+	}
+	appendOutput := func(s string) {
+		t.Helper()
+		if _, err := out.Append([]byte(s)); err != nil {
+			t.Fatalf("append output %q: %v", s, err)
+		}
+	}
+	appendOutput("drop\n")
+	appendOutput("keep\n")
+	if err := out.Close(); err != nil {
+		t.Fatalf("close output: %v", err)
+	}
+
+	start := time.Unix(1, 0).UTC()
+	end := time.Unix(2, 0).UTC()
+	if err := jm.store.Append(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		JobID:            jobID,
+		Type:             jobstore.JobShell,
+		OwnerSessionID:   "S1",
+		VisibleToSession: "S1",
+		StartedAt:        &start,
+		OutputPath:       outputPath,
+	}); err != nil {
+		t.Fatalf("append start event: %v", err)
+	}
+	if err := jm.store.Append(jobstore.Event{
+		Kind:        jobstore.EventJobFinished,
+		JobID:       jobID,
+		Status:      jobstore.StatusCompleted,
+		EndedAt:     &end,
+		OutputBytes: int64(len("drop\nkeep\n")),
+		TerminalGen: "GEN1",
+	}); err != nil {
+		t.Fatalf("append finish event: %v", err)
+	}
+	if err := os.WriteFile(outputPath, []byte("more\n"), 0o644); err != nil {
+		t.Fatalf("replace retained output: %v", err)
+	}
+
+	if content, total, truncated, err := jm.readOutput(jobID, 1024); err == nil {
+		t.Fatalf("readOutput content=%q total=%d truncated=%v, want sidecar validation error", content, total, truncated)
+	}
+	if matches, err := jm.grepOutput(jobID, regexp.MustCompile(`more`), 1024); err == nil {
+		t.Fatalf("grepOutput matches=%+v, want sidecar validation error", matches)
+	}
+}
+
 func TestJobOutputReadLimitRemainsModelFacingCap(t *testing.T) {
 	if maxJobOutputBytes != 1024*1024 {
 		t.Fatalf("maxJobOutputBytes = %d, want 1 MiB", maxJobOutputBytes)
@@ -242,7 +297,7 @@ func TestGrepOutputFileSkipsOverlongLine(t *testing.T) {
 		t.Fatalf("write output: %v", err)
 	}
 
-	matches, err := grepOutputFile(path, regexp.MustCompile(`ready`), 4096, int64(len(overlong+"later ready\n")))
+	matches, err := grepOutputFile(path, regexp.MustCompile(`ready`), 4096, 0)
 	if err != nil {
 		t.Fatalf("grepOutputFile: %v", err)
 	}
