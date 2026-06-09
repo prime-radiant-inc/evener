@@ -94,12 +94,14 @@ func (s *Session) Close() {
 			s.cancelFunc()
 		}
 
-		// 2-4. Kill running child processes (SIGTERM → wait 2s → SIGKILL).
-		s.env.Cleanup()
-
+		// 2. Mark and stop durable jobs before environment cleanup can reap
+		// process handles and make deliberate shutdown look like runtime failure.
 		if s.jobManager != nil {
 			_ = s.jobManager.close()
 		}
+
+		// 3-4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
+		s.env.Cleanup()
 
 		// SessionEnd hooks (best-effort, bounded timeout)
 		if s.hookRunner != nil {

@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/serf/agent/internal/jobstore"
 	tooldefs "primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -343,6 +344,26 @@ func TestJobReadOutputSmallMaxCharsReturnsValidJSON(t *testing.T) {
 	}
 	if len([]rune(res)) > jobToolResultMinJSONChars {
 		t.Fatalf("job_read_output length = %d, want <= effective bound %d", len([]rune(res)), jobToolResultMinJSONChars)
+	}
+}
+
+func TestJobToolOutputLimitsHaveJSONMinimum(t *testing.T) {
+	s := newShellToolTestSession(t, SessionConfig{
+		ToolOutputLimits: map[string]schema.ToolOutputLimit{
+			"job_read_output": {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"job_list":        {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"job_stop":        {MaxChars: 1, Strategy: schema.TruncHeadTail},
+		},
+	})
+
+	for _, name := range []string{"job_read_output", "job_list", "job_stop"} {
+		rt := s.reg.Get(name)
+		if rt == nil {
+			t.Fatalf("%s not registered", name)
+		}
+		if rt.Limit.MaxChars != jobToolResultMinJSONChars {
+			t.Fatalf("%s MaxChars = %d, want JSON minimum %d", name, rt.Limit.MaxChars, jobToolResultMinJSONChars)
+		}
 	}
 }
 

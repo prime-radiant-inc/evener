@@ -581,6 +581,23 @@ func jobToolResultMaxChars(reg *tool.Registry, name string) int {
 	return registered.Limit.MaxChars
 }
 
+func enforceJobToolJSONLimits(reg *tool.Registry) {
+	if reg == nil {
+		return
+	}
+	overrides := map[string]schema.ToolOutputLimit{}
+	for _, name := range []string{"job_read_output", "job_list", "job_stop"} {
+		registered := reg.Get(name)
+		if registered == nil || registered.Limit.MaxChars >= jobToolResultMinJSONChars {
+			continue
+		}
+		overrides[name] = schema.ToolOutputLimit{MaxChars: jobToolResultMinJSONChars, Strategy: registered.Limit.Strategy}
+	}
+	if len(overrides) > 0 {
+		reg.OverrideLimits(overrides)
+	}
+}
+
 func stringPtrOrNil(value string) *string {
 	if value == "" {
 		return nil

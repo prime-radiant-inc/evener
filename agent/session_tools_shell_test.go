@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -170,6 +171,49 @@ func TestShellToolStreamingPathHonorsSessionTimeouts(t *testing.T) {
 			_, _ = s.jobManager.stop(out.JobID)
 			waitForShellDone(t, s.jobManager, out.JobID)
 		})
+	}
+}
+
+func TestSessionCloseMarksBackgroundShellCancelledBeforeEnvCleanup(t *testing.T) {
+	stateDir := t.TempDir()
+	s := newShellToolTestSession(t, SessionConfig{StateDir: stateDir})
+	sessionID := s.ID()
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+	})
+	if res.IsError {
+		t.Fatalf("shell returned error: %s", res.Output)
+	}
+	var out struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, res.Output)
+	}
+	if out.JobID == "" {
+		t.Fatal("background shell returned no job_id")
+	}
+
+	s.Close()
+
+	st, err := jobstore.Open(filepath.Join(jobsDir(stateDir, sessionID), "jobs.jsonl"))
+	if err != nil {
+		t.Fatalf("reopen job store: %v", err)
+	}
+	defer st.Close()
+	recs, err := st.Load()
+	if err != nil {
+		t.Fatalf("load jobs: %v", err)
+	}
+	rec := recs[out.JobID]
+	if rec == nil {
+		t.Fatalf("job %s not found after close", out.JobID)
+	}
+	if rec.Status != jobstore.StatusCancelled || rec.Reason != "stopped_by_parent" {
+		t.Fatalf("record = %+v, want cancelled/stopped_by_parent", rec)
 	}
 }
 
