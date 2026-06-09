@@ -475,6 +475,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind) ([]
 		return nil, err
 	}
 	reg.OverrideLimits(s.cfg.ToolOutputLimits)
+	enforceShellToolJSONLimit(reg)
 	s.reg = reg
 
 	s.coreToolNames = reg.RegisteredNames()

@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -125,6 +126,9 @@ func parseShellToolArgs(args map[string]any) (shellArgs, error) {
 	if parsed.MaxRuntimeMS < 0 {
 		return shellArgs{}, errors.New("max_runtime_ms must be non-negative")
 	}
+	if parsed.MaxRuntimeMS > 0 && parsed.MaxRuntimeMS < minShellMaxRuntimeMS {
+		parsed.MaxRuntimeMS = minShellMaxRuntimeMS
+	}
 	return parsed, nil
 }
 
@@ -146,7 +150,24 @@ func shellIntArg(args map[string]any, key string) (int, bool) {
 	}
 }
 
-const shellToolResultDefaultMaxChars = 30_000
+const (
+	shellToolResultDefaultMaxChars = 30_000
+	shellToolResultMinJSONChars    = 800
+	minShellMaxRuntimeMS           = 1000
+)
+
+func enforceShellToolJSONLimit(reg *tool.Registry) {
+	if reg == nil {
+		return
+	}
+	registered := reg.Get("shell")
+	if registered == nil || registered.Limit.MaxChars >= shellToolResultMinJSONChars {
+		return
+	}
+	reg.OverrideLimits(map[string]schema.ToolOutputLimit{
+		"shell": {MaxChars: shellToolResultMinJSONChars},
+	})
+}
 
 func shellToolResultMaxChars(reg *tool.Registry) int {
 	if reg == nil {
@@ -155,6 +176,9 @@ func shellToolResultMaxChars(reg *tool.Registry) int {
 	registered := reg.Get("shell")
 	if registered == nil || registered.Limit.MaxChars <= 0 {
 		return shellToolResultDefaultMaxChars
+	}
+	if registered.Limit.MaxChars < shellToolResultMinJSONChars {
+		return shellToolResultMinJSONChars
 	}
 	return registered.Limit.MaxChars
 }
