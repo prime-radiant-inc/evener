@@ -484,14 +484,14 @@ func shellFinalizeBackoff(attempt int) time.Duration {
 
 func (jm *jobManager) shellTerminal(run *runningJob, exitCode int, timedOut bool, waitErr error) (jobstore.Status, string, *int) {
 	code := exitCode
-	if timedOut {
-		return jobstore.StatusStopped, "run_timeout", &code
-	}
 	jm.mu.Lock()
 	stopStatus, stopReason := run.stopStatus, run.stopReason
 	jm.mu.Unlock()
 	if stopStatus != "" {
 		return stopStatus, stopReason, &code
+	}
+	if timedOut {
+		return jobstore.StatusStopped, "run_timeout", &code
 	}
 	if waitErr != nil {
 		return jobstore.StatusFailed, "wait_failed", &code

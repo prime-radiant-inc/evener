@@ -132,6 +132,28 @@ func (e *blockingStartStreamingExecutor) StreamCommand(_ context.Context, _ stri
 	}, nil
 }
 
+type delayedExitStreamingExecutor struct {
+	release chan struct{}
+	signals atomic.Int32
+}
+
+func newDelayedExitStreamingExecutor() *delayedExitStreamingExecutor {
+	return &delayedExitStreamingExecutor{release: make(chan struct{})}
+}
+
+func (e *delayedExitStreamingExecutor) StreamCommand(_ context.Context, _ string, _ string, _ map[string]string, out io.Writer) (*execenv.StreamHandle, error) {
+	_, _ = out.Write([]byte("running"))
+	return &execenv.StreamHandle{
+		Wait: func() (int, error) {
+			<-e.release
+			return 143, nil
+		},
+		Signal: func() {
+			e.signals.Add(1)
+		},
+	}, nil
+}
+
 func TestRunShellForegroundWaitErrorFailsJob(t *testing.T) {
 	jm := newTestJM(t)
 	res := runShell(context.Background(), jm, waitErrorStreamingExecutor{}, shellArgs{Command: "x", BlockTimeoutMS: 5000})
@@ -377,6 +399,34 @@ func TestRunShellBackgroundReturnsImmediately(t *testing.T) {
 	rec := loadShellRecord(t, jm, res.JobID)
 	if rec.Status != jobstore.StatusCancelled || rec.Reason != "stopped_by_parent" {
 		t.Fatalf("stopped background job = %+v, want cancelled/stopped_by_parent", rec)
+	}
+}
+
+func TestRunShellBackgroundStopWinsOverLaterRuntimeTimeout(t *testing.T) {
+	jm := newTestJM(t)
+	se := newDelayedExitStreamingExecutor()
+	res := runShell(context.Background(), jm, se, shellArgs{
+		Command:      "sleep 30",
+		Background:   true,
+		MaxRuntimeMS: 50,
+	})
+	if res.JobID == "" || !res.RunningInBackground {
+		t.Fatalf("res = %+v, want background job", res)
+	}
+
+	if _, err := jm.stop(res.JobID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	close(se.release)
+
+	waitForShellDone(t, jm, res.JobID)
+	rec := loadShellRecord(t, jm, res.JobID)
+	if rec.Status != jobstore.StatusCancelled || rec.Reason != "stopped_by_parent" {
+		t.Fatalf("record = %+v, want cancelled/stopped_by_parent despite later runtime timeout", rec)
+	}
+	if se.signals.Load() < 2 {
+		t.Fatalf("signals = %d, want stop signal and later runtime-timeout signal", se.signals.Load())
 	}
 }
 
