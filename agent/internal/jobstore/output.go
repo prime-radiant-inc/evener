@@ -118,24 +118,35 @@ func (o *OutputStore) Grep(re *regexp.Regexp, limitBytes int) ([]Match, error) {
 	var matches []Match
 	var offset int64
 	budget := limitBytes
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	for sc.Scan() {
-		line := sc.Text()
-		if re.MatchString(line) {
-			if len(line) > budget {
-				break
+	r := bufio.NewReader(f)
+	for {
+		rawLine, err := r.ReadString('\n')
+		if len(rawLine) > 0 {
+			line := rawLine
+			if line[len(line)-1] == '\n' {
+				line = line[:len(line)-1]
+				if len(line) > 0 && line[len(line)-1] == '\r' {
+					line = line[:len(line)-1]
+				}
 			}
-			matches = append(matches, Match{ByteOffset: offset, Line: line})
-			budget -= len(line)
-			if budget <= 0 {
-				break
+			if re.MatchString(line) {
+				if len(line) > budget {
+					break
+				}
+				matches = append(matches, Match{ByteOffset: offset, Line: line})
+				budget -= len(line)
+				if budget <= 0 {
+					break
+				}
 			}
+			offset += int64(len(rawLine))
 		}
-		offset += int64(len(line)) + 1 // +1 for the newline the scanner stripped
-	}
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("jobstore: scan output: %w", err)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, fmt.Errorf("jobstore: read output line: %w", err)
+		}
 	}
 	return matches, nil
 }

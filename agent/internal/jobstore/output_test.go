@@ -124,6 +124,27 @@ func TestOutputGrepReturnsMatchesWithOffsets(t *testing.T) {
 	}
 }
 
+func TestOutputGrepReturnsCRLFByteOffsets(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, 1<<20)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	appendOutput(t, o, "a\r\nready\r\n")
+	re := regexp.MustCompile(`ready`)
+
+	matches, err := o.Grep(re, 1<<16)
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	if len(matches) != 1 || matches[0].Line != "ready" {
+		t.Fatalf("matches = %+v", matches)
+	}
+	if matches[0].ByteOffset != 3 {
+		t.Errorf("byte offset = %d, want 3", matches[0].ByteOffset)
+	}
+}
+
 func TestOutputGrepLimitValidationAndBudget(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "job_A.log")
 	o, err := OpenOutput(path, 1<<20)
