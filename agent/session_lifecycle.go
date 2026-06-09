@@ -71,6 +71,10 @@ type retryTracker struct {
 // when configured for the root session, removes any embedded skills directory,
 // waits for in-flight event emitters to finish, and closes the events channel.
 func (s *Session) Close() {
+	s.close(true)
+}
+
+func (s *Session) close(cleanupEnv bool) {
 	s.closeOnce.Do(func() {
 		s.responseSideEffectsMu.Lock()
 		s.mu.Lock()
@@ -100,23 +104,17 @@ func (s *Session) Close() {
 			_ = s.jobManager.close()
 		}
 
-		// 3. Pre-close child job managers before closing any child session. Child
-		// sessions can share this environment, and each child Close() also runs
-		// env cleanup; all sibling job managers must classify shutdown first.
+		// 3. Close subagents before shared environment cleanup; child sessions
+		// can own durable jobs whose process handles live in the parent env. The
+		// parent owns cleanup of the shared env, so child closes skip env cleanup.
 		for _, sub := range subs {
-			if sub.sess.jobManager != nil {
-				_ = sub.sess.jobManager.close()
-			}
+			sub.sess.close(false)
 		}
 
-		// 4. Close subagents before shared environment cleanup; child sessions
-		// can own durable jobs whose process handles live in the parent env.
-		for _, sub := range subs {
-			sub.sess.Close()
+		// 4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
+		if cleanupEnv {
+			s.env.Cleanup()
 		}
-
-		// 5. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
-		s.env.Cleanup()
 
 		// SessionEnd hooks (best-effort, bounded timeout)
 		if s.hookRunner != nil {
