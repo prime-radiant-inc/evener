@@ -516,6 +516,18 @@ func (s *Session) availableAgentEntries() []agentEntry {
 	return entries
 }
 
+func (s *Session) delegateAgentTypeNames() []string {
+	names := make([]string, 0, len(s.pluginAgents))
+	for name, agent := range s.pluginAgents {
+		if agentUsesRootOnlyManagementTools(agent) {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // wireToolDef renders a canonical tool definition in its provider-visible wire
 // form: it renames the tool to the provider-specific name (nameMap is
 // canonical→provider) and adds the shared "purpose" parameter. This is the form
@@ -553,6 +565,9 @@ func (s *Session) rebuildToolDefsCache() {
 	included := make(map[string]bool)
 	for _, td := range s.profile.ToolDefinitions() {
 		if registered[td.Name] {
+			if td.Name == "delegate" {
+				td = tool.DefDelegate(s.delegateAgentTypeNames())
+			}
 			wire := wireToolDef(td, nameMap)
 			defs = append(defs, wire)
 			included[td.Name] = true // canonical
