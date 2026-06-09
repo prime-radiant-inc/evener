@@ -361,6 +361,8 @@ func (jm *jobManager) reconcileLostJobs() error {
 		rec := recs[finished.JobID]
 		if total, _, err := jobstore.OutputFileStats(jm.outputPathForJob(rec, finished.JobID)); err == nil {
 			finished.OutputBytes = total
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
 		}
 		if err := jm.appendEvent(finished); err != nil {
 			return err

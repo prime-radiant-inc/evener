@@ -2,6 +2,7 @@ package jobstore
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -52,6 +53,38 @@ func TestStoreRecoversSeqAcrossReopen(t *testing.T) {
 	raw := readAllEvents(t, s2)
 	if raw[len(raw)-1].Seq != 2 {
 		t.Errorf("seq after reopen = %d, want 2", raw[len(raw)-1].Seq)
+	}
+}
+
+func TestStoreOpenTerminatesValidTrailingEventBeforeAppend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	first, err := json.Marshal(Event{Kind: EventJobStarted, Seq: 1, JobID: "job_A"})
+	if err != nil {
+		t.Fatalf("marshal first event: %v", err)
+	}
+	if err := os.WriteFile(path, first, 0o644); err != nil {
+		t.Fatalf("write unterminated store: %v", err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	appendEvent(t, s, Event{Kind: EventJobStarted, JobID: "job_B"})
+	raw := readAllEvents(t, s)
+	if len(raw) != 2 {
+		t.Fatalf("events after recovery and append = %+v, want two events", raw)
+	}
+	if raw[0].JobID != "job_A" || raw[1].JobID != "job_B" {
+		t.Fatalf("events after recovery and append = %+v, want job_A then job_B", raw)
+	}
+
+	recovered, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read recovered store: %v", err)
+	}
+	if !bytes.Contains(recovered, []byte("}\n{")) || recovered[len(recovered)-1] != '\n' {
+		t.Fatalf("recovered store = %q, want JSONL-delimited events", recovered)
 	}
 }
 

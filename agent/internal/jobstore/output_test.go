@@ -1,7 +1,9 @@
 package jobstore
 
 import (
+	"bytes"
 	"errors"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -152,6 +154,76 @@ func TestOutputPrunedLifetimeSurvivesReopenAndAppend(t *testing.T) {
 	}
 	if len(matches) != 1 || matches[0].ByteOffset != int64(len("drop\nkeep\n")) {
 		t.Fatalf("matches after append = %+v, want more at lifetime offset 10", matches)
+	}
+}
+
+func TestOutputRejectsStaleMetadataForPrunedRetainedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, int64(len("keep\n")))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	appendOutput(t, o, "drop\n")
+	appendOutput(t, o, "keep\n")
+	if err := o.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	if err := os.WriteFile(path, []byte("more\n"), 0o644); err != nil {
+		t.Fatalf("replace retained output with stale metadata: %v", err)
+	}
+	if _, err := OpenOutput(path, int64(len("keep\n"))); err == nil {
+		t.Fatal("reopen with stale sidecar succeeded, want metadata mismatch")
+	}
+	if _, _, err := OutputFileStats(path); err == nil {
+		t.Fatal("OutputFileStats with stale sidecar succeeded, want metadata mismatch")
+	}
+}
+
+func TestOutputRecoversPendingMetadataWhenFinalSidecarIsStale(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	retained := []byte("same\n")
+	if err := os.WriteFile(path, retained, 0o644); err != nil {
+		t.Fatalf("write retained output: %v", err)
+	}
+	if err := writeOutputMetaFile(outputMetaPath(path), outputMeta{
+		TotalBytes:     int64(len("drop\nsame\n")),
+		RetainedStart:  int64(len("drop\n")),
+		RetainedSHA256: outputBytesSHA256(retained),
+	}); err != nil {
+		t.Fatalf("write stale final metadata: %v", err)
+	}
+	if err := writeOutputMetaFile(outputPendingMetaPath(outputMetaPath(path)), outputMeta{
+		TotalBytes:     int64(len("drop\nsame\nsame\n")),
+		RetainedStart:  int64(len("drop\nsame\n")),
+		RetainedSHA256: outputBytesSHA256(retained),
+	}); err != nil {
+		t.Fatalf("write pending metadata: %v", err)
+	}
+
+	o, err := OpenOutput(path, int64(len(retained)))
+	if err != nil {
+		t.Fatalf("reopen with pending metadata: %v", err)
+	}
+	data, total, truncated, err := o.Tail(1024)
+	if err != nil {
+		t.Fatalf("tail: %v", err)
+	}
+	if !bytes.Equal(data, retained) {
+		t.Fatalf("tail = %q, want retained output", data)
+	}
+	if total != int64(len("drop\nsame\nsame\n")) || !truncated {
+		t.Fatalf("total=%d truncated=%v, want recovered lifetime and truncated", total, truncated)
+	}
+	matches, err := o.Grep(regexp.MustCompile(`same`), 1024)
+	if err != nil {
+		t.Fatalf("grep: %v", err)
+	}
+	if len(matches) != 1 || matches[0].ByteOffset != int64(len("drop\nsame\n")) {
+		t.Fatalf("matches = %+v, want recovered lifetime offset", matches)
+	}
+	if _, err := os.Stat(outputPendingMetaPath(outputMetaPath(path))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending metadata stat err = %v, want removed", err)
 	}
 }
 

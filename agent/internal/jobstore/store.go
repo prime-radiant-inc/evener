@@ -179,7 +179,7 @@ func (s *Store) recoverTrailingJSONLineLocked(line []byte, offset int64) error {
 	var e Event
 	err := json.Unmarshal(line, &e)
 	if err == nil {
-		return nil
+		return s.finishTrailingJSONLineLocked()
 	}
 	if !isIncompleteTrailingJSON(line, err) {
 		return nil
@@ -189,6 +189,19 @@ func (s *Store) recoverTrailingJSONLineLocked(line []byte, offset int64) error {
 	}
 	if _, err := s.f.Seek(0, io.SeekEnd); err != nil {
 		return fmt.Errorf("jobstore: seek after trailing recovery: %w", err)
+	}
+	if err := s.f.Sync(); err != nil {
+		return fmt.Errorf("jobstore: sync trailing recovery: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) finishTrailingJSONLineLocked() error {
+	if _, err := s.f.Seek(0, io.SeekEnd); err != nil {
+		return fmt.Errorf("jobstore: seek after trailing recovery: %w", err)
+	}
+	if err := s.writeLineLocked([]byte{'\n'}); err != nil {
+		return fmt.Errorf("jobstore: terminate trailing event: %w", err)
 	}
 	if err := s.f.Sync(); err != nil {
 		return fmt.Errorf("jobstore: sync trailing recovery: %w", err)
