@@ -71,12 +71,14 @@ func TestFoldAppliesFinishAndKeepsFirstGeneration(t *testing.T) {
 			e.StartedAt = &start
 		}),
 		ev(EventJobFinished, 2, "job_A", func(e *Event) {
+			valid := true
 			e.Status = StatusCompleted
 			e.Reason = "exit_zero"
 			e.ExitCode = &code
 			e.EndedAt = &end
 			e.OutputBytes = 2048
 			e.StructuredResult = map[string]any{"summary": "done"}
+			e.StructuredResultValid = &valid
 			e.TerminalGen = "GEN1"
 		}),
 		// A duplicate reconstructed terminal write must NOT replace the generation.
@@ -95,6 +97,9 @@ func TestFoldAppliesFinishAndKeepsFirstGeneration(t *testing.T) {
 	structured, ok := r.StructuredResult.(map[string]any)
 	if !ok || structured["summary"] != "done" {
 		t.Errorf("structured result = %+v, want summary=done", r.StructuredResult)
+	}
+	if r.StructuredResultValid == nil || !*r.StructuredResultValid {
+		t.Errorf("structured_result_valid = %v, want true", r.StructuredResultValid)
 	}
 	if r.TerminalGen != "GEN1" {
 		t.Errorf("terminal_generation = %q, want GEN1 (first wins)", r.TerminalGen)

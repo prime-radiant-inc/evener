@@ -770,6 +770,39 @@ func TestJobReadOutputSmallMaxCharsReturnsValidJSON(t *testing.T) {
 	}
 }
 
+func TestJobReadOutputDropsOversizedStructuredResultWhenBounding(t *testing.T) {
+	valid := true
+	out, err := marshalBoundedJobReadOutputResult(jobReadOutputResult{
+		JobID:                 "job_delegate",
+		Type:                  string(jobstore.JobDelegate),
+		Status:                string(jobstore.StatusCompleted),
+		Content:               strings.Repeat("output-", 200),
+		TotalBytes:            1400,
+		Truncated:             true,
+		StructuredResult:      map[string]any{"payload": strings.Repeat("x", jobToolResultMinJSONChars)},
+		StructuredResultValid: &valid,
+	}, jobToolResultMinJSONChars)
+	if err != nil {
+		t.Fatalf("marshalBoundedJobReadOutputResult: %v", err)
+	}
+	if !json.Valid([]byte(out)) {
+		t.Fatalf("job_read_output projection returned invalid JSON: %s", out)
+	}
+	if len([]rune(out)) > jobToolResultMinJSONChars {
+		t.Fatalf("job_read_output projection length = %d, want <= %d", len([]rune(out)), jobToolResultMinJSONChars)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("unmarshal bounded projection: %v", err)
+	}
+	if _, ok := parsed["structured_result"]; ok {
+		t.Fatalf("bounded projection kept oversized structured_result: %s", out)
+	}
+	if parsed["structured_result_valid"] != false {
+		t.Fatalf("structured_result_valid = %v, want false", parsed["structured_result_valid"])
+	}
+}
+
 func TestJobToolOutputLimitsHaveJSONMinimum(t *testing.T) {
 	s := newShellToolTestSession(t, SessionConfig{
 		ToolOutputLimits: map[string]schema.ToolOutputLimit{

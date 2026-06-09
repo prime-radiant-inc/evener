@@ -26,18 +26,19 @@ type delegateArgs struct {
 }
 
 type delegateResult struct {
-	JobID                 string
-	Type                  string
-	Status                jobstore.Status
-	Reason                string
-	RunningInBackground   bool
-	TimedOut              bool
-	TranscriptRef         string
-	Output                string
-	Truncated             bool
-	StructuredResult      any
-	StructuredResultValid bool
-	Err                   error
+	JobID                    string
+	Type                     string
+	Status                   jobstore.Status
+	Reason                   string
+	RunningInBackground      bool
+	TimedOut                 bool
+	TranscriptRef            string
+	Output                   string
+	Truncated                bool
+	StructuredResult         any
+	StructuredResultValid    bool
+	StructuredResultValidSet bool
+	Err                      error
 }
 
 type sendMessageArgs struct {
@@ -50,23 +51,24 @@ type sendMessageArgs struct {
 }
 
 type sendMessageResult struct {
-	Target                string
-	JobID                 string
-	Type                  string
-	Status                jobstore.Status
-	Reason                string
-	RunningInBackground   bool
-	TimedOut              bool
-	Action                string
-	ResumedFromJobID      string
-	TranscriptRef         string
-	Output                string
-	Truncated             bool
-	StructuredResult      any
-	StructuredResultValid bool
-	Delivered             bool
-	MessageType           string
-	Err                   error
+	Target                   string
+	JobID                    string
+	Type                     string
+	Status                   jobstore.Status
+	Reason                   string
+	RunningInBackground      bool
+	TimedOut                 bool
+	Action                   string
+	ResumedFromJobID         string
+	TranscriptRef            string
+	Output                   string
+	Truncated                bool
+	StructuredResult         any
+	StructuredResultValid    bool
+	StructuredResultValidSet bool
+	Delivered                bool
+	MessageType              string
+	Err                      error
 }
 
 func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegateResult {
@@ -437,21 +439,22 @@ func waitForResumedDelegateResult(ctx context.Context, jm *jobManager, target, r
 
 func sendMessageResultFromDelegateResult(target, resumedFromJobID, action string, res delegateResult) sendMessageResult {
 	return sendMessageResult{
-		Target:                target,
-		JobID:                 res.JobID,
-		Type:                  res.Type,
-		Status:                res.Status,
-		Reason:                res.Reason,
-		RunningInBackground:   res.RunningInBackground,
-		TimedOut:              res.TimedOut,
-		Action:                action,
-		ResumedFromJobID:      resumedFromJobID,
-		TranscriptRef:         res.TranscriptRef,
-		Output:                res.Output,
-		Truncated:             res.Truncated,
-		StructuredResult:      res.StructuredResult,
-		StructuredResultValid: res.StructuredResultValid,
-		Err:                   res.Err,
+		Target:                   target,
+		JobID:                    res.JobID,
+		Type:                     res.Type,
+		Status:                   res.Status,
+		Reason:                   res.Reason,
+		RunningInBackground:      res.RunningInBackground,
+		TimedOut:                 res.TimedOut,
+		Action:                   action,
+		ResumedFromJobID:         resumedFromJobID,
+		TranscriptRef:            res.TranscriptRef,
+		Output:                   res.Output,
+		Truncated:                res.Truncated,
+		StructuredResult:         res.StructuredResult,
+		StructuredResultValid:    res.StructuredResultValid,
+		StructuredResultValidSet: res.StructuredResultValidSet,
+		Err:                      res.Err,
 	}
 }
 
@@ -704,21 +707,28 @@ func delegateTerminalResult(jm *jobManager, run *runningJob) delegateResult {
 	output, _, truncated, err := jm.readOutput(rec.JobID, shellInlineOutputBytes)
 	jm.mu.Lock()
 	structured := rec.StructuredResult
+	structuredValid := rec.StructuredResultValid
 	if structured == nil {
 		structured = run.structured
+		if structured != nil && structuredValid == nil {
+			valid := true
+			structuredValid = &valid
+		}
 	}
 	jm.mu.Unlock()
+	valid := structuredValid != nil && *structuredValid
 	return delegateResult{
-		JobID:                 rec.JobID,
-		Type:                  string(rec.Type),
-		Status:                rec.Status,
-		Reason:                rec.Reason,
-		RunningInBackground:   false,
-		TranscriptRef:         rec.TranscriptRef,
-		Output:                output,
-		Truncated:             truncated,
-		StructuredResult:      structured,
-		StructuredResultValid: structured != nil,
-		Err:                   err,
+		JobID:                    rec.JobID,
+		Type:                     string(rec.Type),
+		Status:                   rec.Status,
+		Reason:                   rec.Reason,
+		RunningInBackground:      false,
+		TranscriptRef:            rec.TranscriptRef,
+		Output:                   output,
+		Truncated:                truncated,
+		StructuredResult:         structured,
+		StructuredResultValid:    valid,
+		StructuredResultValidSet: structuredValid != nil,
+		Err:                      err,
 	}
 }

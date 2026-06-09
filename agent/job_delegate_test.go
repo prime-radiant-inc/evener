@@ -365,12 +365,68 @@ func TestCreateDelegateDurableRecordKeepsStructuredResult(t *testing.T) {
 	if !ok || structured["summary"] != "durable" {
 		t.Fatalf("durable structured result = %+v, want summary=durable", rec.StructuredResult)
 	}
+	if rec.StructuredResultValid == nil || !*rec.StructuredResultValid {
+		t.Fatalf("structured_result_valid = %v, want true", rec.StructuredResultValid)
+	}
 	output, _, _, err := sess.jobManager.readOutput(res.JobID, shellInlineOutputBytes)
 	if err != nil {
 		t.Fatalf("read delegate output: %v", err)
 	}
 	if !strings.Contains(output, "durable structured delegate complete") {
 		t.Fatalf("delegate output = %q, want prose copied to job output", output)
+	}
+}
+
+func TestCreateDelegateDropsOversizedStructuredResultBeforePersistence(t *testing.T) {
+	large := strings.Repeat("x", maxPersistedStructuredResultJSONBytes+1)
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithStructured("oversized structured delegate complete", map[string]any{
+					"payload": large,
+				})
+			},
+		},
+	})
+	sess := newDelegateTestSession(t, c)
+
+	res := sess.createDelegate(context.Background(), delegateArgs{
+		Task:           "persist oversized structured delegate result",
+		Background:     true,
+		BlockTimeoutMS: 5000,
+		ResultSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"payload": map[string]any{"type": "string"},
+			},
+			"required": []string{"payload"},
+		},
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", res.Err)
+	}
+	waitForShellDone(t, sess.jobManager, res.JobID)
+
+	reopened, err := jobstore.Open(sess.jobManager.dir + "/jobs.jsonl")
+	if err != nil {
+		t.Fatalf("reopen job store: %v", err)
+	}
+	defer reopened.Close()
+	recs, err := reopened.Load()
+	if err != nil {
+		t.Fatalf("load reopened job store: %v", err)
+	}
+	rec := recs[res.JobID]
+	if rec == nil {
+		t.Fatalf("job %s missing after reopen", res.JobID)
+	}
+	if rec.StructuredResult != nil {
+		t.Fatalf("structured_result persisted oversized value: %T", rec.StructuredResult)
+	}
+	if rec.StructuredResultValid == nil || *rec.StructuredResultValid {
+		t.Fatalf("structured_result_valid = %v, want false", rec.StructuredResultValid)
 	}
 }
 

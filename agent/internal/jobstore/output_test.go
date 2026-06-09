@@ -101,6 +101,60 @@ func TestOutputCapGrepScansRetainedTailOnly(t *testing.T) {
 	}
 }
 
+func TestOutputPrunedLifetimeSurvivesReopenAndAppend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job_A.log")
+	o, err := OpenOutput(path, int64(len("keep\n")))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	appendOutput(t, o, "drop\n")
+	appendOutput(t, o, "keep\n")
+	if err := o.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	reopened, err := OpenOutput(path, int64(len("keep\n")))
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	data, total, truncated, err := reopened.Tail(1024)
+	if err != nil {
+		t.Fatalf("tail after reopen: %v", err)
+	}
+	if string(data) != "keep\n" {
+		t.Fatalf("tail after reopen = %q, want retained tail", data)
+	}
+	if total != int64(len("drop\nkeep\n")) || !truncated {
+		t.Fatalf("after reopen total=%d truncated=%v, want lifetime 10 and truncated", total, truncated)
+	}
+	matches, err := reopened.Grep(regexp.MustCompile(`keep`), 1024)
+	if err != nil {
+		t.Fatalf("grep after reopen: %v", err)
+	}
+	if len(matches) != 1 || matches[0].ByteOffset != int64(len("drop\n")) {
+		t.Fatalf("matches after reopen = %+v, want keep at lifetime offset 5", matches)
+	}
+
+	appendOutput(t, reopened, "more\n")
+	data, total, truncated, err = reopened.Tail(1024)
+	if err != nil {
+		t.Fatalf("tail after append: %v", err)
+	}
+	if string(data) != "more\n" {
+		t.Fatalf("tail after append = %q, want newly retained tail", data)
+	}
+	if total != int64(len("drop\nkeep\nmore\n")) || !truncated {
+		t.Fatalf("after append total=%d truncated=%v, want lifetime 15 and truncated", total, truncated)
+	}
+	matches, err = reopened.Grep(regexp.MustCompile(`more`), 1024)
+	if err != nil {
+		t.Fatalf("grep after append: %v", err)
+	}
+	if len(matches) != 1 || matches[0].ByteOffset != int64(len("drop\nkeep\n")) {
+		t.Fatalf("matches after append = %+v, want more at lifetime offset 10", matches)
+	}
+}
+
 func TestOutputTailRejectsNegativeLimit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "job_A.log")
 	o, err := OpenOutput(path, 1<<20)

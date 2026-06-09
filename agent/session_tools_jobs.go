@@ -185,9 +185,10 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		ExitCode:   rec.ExitCode,
 	}
 	if rec.StructuredResult != nil {
-		valid := true
 		result.StructuredResult = rec.StructuredResult
-		result.StructuredResultValid = &valid
+	}
+	if rec.StructuredResultValid != nil {
+		result.StructuredResultValid = rec.StructuredResultValid
 	}
 	if grep := stringArg(args, "grep"); grep != "" {
 		if err := validateJobGrepPattern(grep, maxChars); err != nil {
@@ -379,7 +380,7 @@ func marshalSendMessageResult(res sendMessageResult, maxChars int) (string, erro
 		out.Output = &res.Output
 		out.Truncated = &res.Truncated
 	}
-	if res.StructuredResult != nil {
+	if res.StructuredResult != nil || res.StructuredResultValidSet {
 		valid := res.StructuredResultValid
 		out.StructuredResult = res.StructuredResult
 		out.StructuredResultValid = &valid
@@ -401,7 +402,7 @@ func marshalDelegateResult(res delegateResult, maxChars int) (string, error) {
 		out.Output = &res.Output
 		out.Truncated = &res.Truncated
 	}
-	if res.StructuredResult != nil {
+	if res.StructuredResult != nil || res.StructuredResultValidSet {
 		valid := res.StructuredResultValid
 		out.StructuredResult = res.StructuredResult
 		out.StructuredResultValid = &valid
@@ -417,6 +418,12 @@ func marshalBoundedSendMessageDelegateResult(out jobSendMessageDelegateResult, m
 	out.Output = &empty
 	truncated := true
 	out.Truncated = &truncated
+	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
+		return fit, err
+	}
+	out.StructuredResult = nil
+	invalid := false
+	out.StructuredResultValid = &invalid
 	return marshalBoundedJSON(out, maxChars)
 }
 
@@ -447,6 +454,12 @@ func marshalBoundedDelegateResult(out delegateToolResult, maxChars int) (string,
 	out.Output = &empty
 	truncated := true
 	out.Truncated = &truncated
+	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
+		return fit, err
+	}
+	out.StructuredResult = nil
+	invalid := false
+	out.StructuredResultValid = &invalid
 	return marshalBoundedJSON(out, maxChars)
 }
 
@@ -787,6 +800,14 @@ func marshalBoundedJobReadOutputResult(out jobReadOutputResult, maxChars int) (s
 	}
 	if fit, ok, err := marshalJobReadOutputWithContentLimit(out, maxChars); err != nil || ok {
 		return fit, err
+	}
+	if out.StructuredResult != nil {
+		out.StructuredResult = nil
+		invalid := false
+		out.StructuredResultValid = &invalid
+		if fit, ok, err := marshalJobReadOutputWithContentLimit(out, maxChars); err != nil || ok {
+			return fit, err
+		}
 	}
 	out.Content = ""
 	return marshalBoundedJSON(out, maxChars)

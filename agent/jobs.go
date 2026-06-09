@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,8 @@ import (
 )
 
 var errJobManagerClosing = errors.New("job manager is closing")
+
+const maxPersistedStructuredResultJSONBytes = 1024 * 1024
 
 type jobManager struct {
 	mu          sync.Mutex
@@ -356,8 +359,8 @@ func (jm *jobManager) reconcileLostJobs() error {
 
 	for _, finished := range jobstore.Reconcile(recs, live, jm.now()) {
 		rec := recs[finished.JobID]
-		if info, err := os.Stat(jm.outputPathForJob(rec, finished.JobID)); err == nil && !info.IsDir() {
-			finished.OutputBytes = info.Size()
+		if total, _, err := jobstore.OutputFileStats(jm.outputPathForJob(rec, finished.JobID)); err == nil {
+			finished.OutputBytes = total
 		}
 		if err := jm.appendEvent(finished); err != nil {
 			return err
@@ -475,7 +478,7 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 		outputBytes = total
 	}
 	jm.mu.Lock()
-	structured := run.structured
+	structured, structuredValid := boundedStructuredResult(run.structured)
 	afterDurableFinish := run.afterDurableFinish
 	jm.mu.Unlock()
 
@@ -489,16 +492,17 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 		generation:  jobstore.NewTerminalGeneration(),
 	}
 	if err := jm.appendEvent(jobstore.Event{
-		Kind:             jobstore.EventJobFinished,
-		TS:               endedAt,
-		JobID:            run.rec.JobID,
-		Status:           terminal.status,
-		Reason:           terminal.reason,
-		ExitCode:         terminal.exitCode,
-		EndedAt:          &endedAt,
-		OutputBytes:      terminal.outputBytes,
-		StructuredResult: structured,
-		TerminalGen:      terminal.generation,
+		Kind:                  jobstore.EventJobFinished,
+		TS:                    endedAt,
+		JobID:                 run.rec.JobID,
+		Status:                terminal.status,
+		Reason:                terminal.reason,
+		ExitCode:              terminal.exitCode,
+		EndedAt:               &endedAt,
+		OutputBytes:           terminal.outputBytes,
+		StructuredResult:      structured,
+		StructuredResultValid: structuredValid,
+		TerminalGen:           terminal.generation,
 	}); err != nil {
 		return err
 	}
@@ -512,6 +516,7 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 		run.rec.EndedAt = &terminal.endedAt
 		run.rec.OutputBytes = terminal.outputBytes
 		run.rec.StructuredResult = structured
+		run.rec.StructuredResultValid = structuredValid
 		run.rec.TerminalGen = terminal.generation
 	}
 	jm.mu.Unlock()
@@ -520,6 +525,19 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 		afterDurableFinish()
 	}
 	return jm.armFinalizedJob(run, terminal)
+}
+
+func boundedStructuredResult(value any) (any, *bool) {
+	if value == nil {
+		return nil, nil
+	}
+	valid := true
+	b, err := json.Marshal(value)
+	if err != nil || len(b) > maxPersistedStructuredResultJSONBytes {
+		valid = false
+		return nil, &valid
+	}
+	return value, &valid
 }
 
 func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) error {

@@ -2,6 +2,7 @@ package jobstore
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -30,10 +31,16 @@ type Match struct {
 type OutputStore struct {
 	mu            sync.Mutex
 	path          string
+	metaPath      string
 	f             *os.File
 	capBytes      int64
 	total         int64
 	retainedStart int64
+}
+
+type outputMeta struct {
+	TotalBytes    int64 `json:"total_bytes"`
+	RetainedStart int64 `json:"retained_start"`
 }
 
 // OpenOutput opens (creating if needed) the per-job log at path and enforces the
@@ -49,8 +56,18 @@ func OpenOutput(path string, capBytes int64) (*OutputStore, error) {
 		_ = f.Close()
 		return nil, err
 	}
-	o := &OutputStore{path: path, f: f, capBytes: capBytes, total: info.Size()}
+	metaPath := outputMetaPath(path)
+	total, retainedStart, err := readOutputMetaForSize(metaPath, info.Size())
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	o := &OutputStore{path: path, metaPath: metaPath, f: f, capBytes: capBytes, total: total, retainedStart: retainedStart}
 	if err := o.pruneLocked(); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if err := o.persistMetaLocked(); err != nil {
 		_ = f.Close()
 		return nil, err
 	}
@@ -67,6 +84,9 @@ func (o *OutputStore) Append(b []byte) (int, error) {
 		return n, fmt.Errorf("jobstore: append output: %w", err)
 	}
 	if err := o.pruneLocked(); err != nil {
+		return n, err
+	}
+	if err := o.persistMetaLocked(); err != nil {
 		return n, err
 	}
 	return n, nil
@@ -190,6 +210,20 @@ func GrepFileLimitAt(path string, re *regexp.Regexp, limitBytes int, maxMatches 
 	return matches, nil
 }
 
+// OutputFileStats returns durable lifetime output metadata for a closed output
+// file. If no metadata exists, the file is treated as unpruned.
+func OutputFileStats(path string) (total int64, retainedStart int64, err error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0, 0, fmt.Errorf("jobstore: stat output: %w", err)
+	}
+	total, retainedStart, err = readOutputMetaForSize(outputMetaPath(path), info.Size())
+	if err != nil {
+		return 0, 0, err
+	}
+	return total, retainedStart, nil
+}
+
 func (o *OutputStore) pruneLocked() error {
 	if o.capBytes <= 0 {
 		return nil
@@ -227,6 +261,52 @@ func (o *OutputStore) pruneLocked() error {
 	}
 	o.retainedStart = o.total - keep
 	return nil
+}
+
+func (o *OutputStore) persistMetaLocked() error {
+	if o.metaPath == "" {
+		return nil
+	}
+	meta := outputMeta{
+		TotalBytes:    o.total,
+		RetainedStart: o.retainedStart,
+	}
+	b, err := json.Marshal(meta)
+	if err != nil {
+		return fmt.Errorf("jobstore: marshal output metadata: %w", err)
+	}
+	b = append(b, '\n')
+	tmp := o.metaPath + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return fmt.Errorf("jobstore: write output metadata: %w", err)
+	}
+	if err := os.Rename(tmp, o.metaPath); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("jobstore: replace output metadata: %w", err)
+	}
+	return nil
+}
+
+func outputMetaPath(path string) string {
+	return path + ".meta.json"
+}
+
+func readOutputMetaForSize(path string, retained int64) (total int64, retainedStart int64, err error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return retained, 0, nil
+	}
+	if err != nil {
+		return 0, 0, fmt.Errorf("jobstore: read output metadata: %w", err)
+	}
+	var meta outputMeta
+	if err := json.Unmarshal(b, &meta); err != nil {
+		return 0, 0, fmt.Errorf("jobstore: parse output metadata: %w", err)
+	}
+	if meta.TotalBytes < retained || meta.RetainedStart < 0 || meta.TotalBytes-meta.RetainedStart != retained {
+		return 0, 0, errors.New("jobstore: output metadata does not match retained output")
+	}
+	return meta.TotalBytes, meta.RetainedStart, nil
 }
 
 func shiftMatches(matches []Match, retainedStart int64) {
