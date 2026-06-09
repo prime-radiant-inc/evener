@@ -118,6 +118,11 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			s.notifyFunc()
 		}
 	})
+	jm, err := newJobManager(s.stateDir, s.id, s.enqueueJobNotification)
+	if err != nil {
+		return nil, fmt.Errorf("job manager: %w", err)
+	}
+	s.jobManager = jm
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind)
 	if err != nil {
@@ -306,6 +311,14 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			s.notifyFunc()
 		}
 	})
+	jm, err := newJobManager(s.stateDir, s.id, s.enqueueJobNotification)
+	if err != nil {
+		return nil, fmt.Errorf("job manager: %w", err)
+	}
+	if err := jm.reconcileLostJobs(); err != nil {
+		return nil, fmt.Errorf("job reconcile: %w", err)
+	}
+	s.jobManager = jm
 
 	// Restore persisted goal state before initSessionState so the goal store is
 	// populated before any turn runs. No kick is wired yet ("loaded but idle"):

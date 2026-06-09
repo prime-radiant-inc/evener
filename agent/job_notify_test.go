@@ -137,6 +137,7 @@ func TestJobNotificationTurnRequeuesWhenJobManagerMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer sess.Close()
+	sess.jobManager = nil
 
 	sess.enqueueJobNotification(jobNotification{JobID: "job_X"})
 

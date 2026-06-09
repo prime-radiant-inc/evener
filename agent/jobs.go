@@ -209,6 +209,47 @@ func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, t
 	return tailOutputFile(outputPath, tailBytes)
 }
 
+func (jm *jobManager) reconcileLostJobs() error {
+	recs, err := jm.store.Load()
+	if err != nil {
+		return err
+	}
+
+	jm.mu.Lock()
+	live := make(map[string]bool, len(jm.running))
+	for jobID := range jm.running {
+		live[jobID] = true
+	}
+	jm.mu.Unlock()
+
+	for _, finished := range jobstore.Reconcile(recs, live, jm.now()) {
+		rec := recs[finished.JobID]
+		if err := jm.appendEvent(finished); err != nil {
+			return err
+		}
+		if err := jm.appendEvent(jobstore.Event{
+			Kind:        jobstore.EventJobNotificationPending,
+			TS:          finished.TS,
+			JobID:       finished.JobID,
+			TerminalGen: finished.TerminalGen,
+		}); err != nil {
+			return err
+		}
+		if jm.enqueue != nil {
+			jm.enqueue(jobNotification{
+				JobID:         finished.JobID,
+				JobType:       string(rec.Type),
+				Status:        string(finished.Status),
+				Reason:        finished.Reason,
+				TranscriptRef: rec.TranscriptRef,
+				OutputBytes:   finished.OutputBytes,
+				ExitCode:      finished.ExitCode,
+			})
+		}
+	}
+	return nil
+}
+
 func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {
 	jm.mu.Lock()
 	run := jm.running[jobID]

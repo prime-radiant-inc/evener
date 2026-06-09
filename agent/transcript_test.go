@@ -1587,14 +1587,9 @@ func TestSubagent_TranscriptPersistsAfterCloseAgent(t *testing.T) {
 	}
 }
 
-func TestSession_TranscriptCreateFailureEmitsWarning(t *testing.T) {
+func TestSession_StateDirSessionsPathConflictFailsJobManager(t *testing.T) {
 	stateDir := t.TempDir()
 
-	// Make the sessions subdirectory unusable by pre-creating it as a regular
-	// file: the transcript writer's MkdirAll then fails, exercising the
-	// "transcript create failed" warning path through the public NewSession
-	// API. The session must still come up and process input with a nil
-	// transcript (Append is a no-op on a nil writer).
 	if err := os.WriteFile(filepath.Join(stateDir, sessionsSubdir), []byte("not a directory"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1612,49 +1607,12 @@ func TestSession_TranscriptCreateFailureEmitsWarning(t *testing.T) {
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	cfg := SessionConfig{StateDir: stateDir}
 	sess, err := NewSession(c, testProfile("openai", "test", 100000), env, cfg)
-	if err != nil {
-		t.Fatal(err)
+	if err == nil {
+		sess.Close()
+		t.Fatal("NewSession succeeded with unusable state sessions path")
 	}
-
-	// Collect events. The create-failure warning was emitted during NewSession
-	// and is buffered in the events channel, so it is still readable here.
-	var warnings []string
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for ev := range sess.Events() {
-			if ev.Kind == events.EventWarning {
-				if wd, ok := ev.Data.(events.WarningData); ok {
-					warnings = append(warnings, wd.Message)
-				}
-			}
-		}
-	}()
-
-	// Process input: should succeed despite the transcript being unavailable.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	out, err := sess.ProcessInput(ctx, "hello", nil)
-	if err != nil {
-		t.Fatalf("ProcessInput failed: %v", err)
-	}
-	if out == "" {
-		t.Error("expected non-empty output")
-	}
-
-	sess.Close()
-	<-done
-
-	// Should have at least one warning about the transcript failure.
-	hasTranscriptWarning := false
-	for _, w := range warnings {
-		if strings.Contains(w, "transcript") {
-			hasTranscriptWarning = true
-			break
-		}
-	}
-	if !hasTranscriptWarning {
-		t.Errorf("expected transcript warning, got warnings: %v", warnings)
+	if !strings.Contains(err.Error(), "job manager:") || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("NewSession error = %v, want job manager state-dir failure", err)
 	}
 }
 
