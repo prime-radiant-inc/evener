@@ -245,6 +245,13 @@ func TestJobNotificationTurnRequeuesWhenStoreLoadFailsThenDelivers(t *testing.T)
 	}
 	appendPendingJobNotificationRecord(t, jm, sess.ID())
 	sess.jobManager = jm
+	wake := make(chan struct{}, 1)
+	sess.SetNotifyFunc(func() {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	})
 	sess.enqueueJobNotification(jobNotification{JobID: "job_X"})
 	if err := jm.store.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
@@ -258,6 +265,11 @@ func TestJobNotificationTurnRequeuesWhenStoreLoadFailsThenDelivers(t *testing.T)
 	}
 	if got := len(adapter.Requests()); got != 0 {
 		t.Fatalf("model requests = %d, want 0 when job notification cannot be inspected", got)
+	}
+	select {
+	case <-wake:
+	case <-time.After(2 * time.Second):
+		t.Fatal("requeued job notification did not schedule a retry wake")
 	}
 
 	reopened, err := newJobManager(dir, sess.ID(), sess.enqueueJobNotification)

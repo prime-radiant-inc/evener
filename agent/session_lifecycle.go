@@ -771,8 +771,12 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 	notifs := s.filterDeliverableNotifications(s.drainNotifications())
 	jobNotifs, retryJobNotifs, injectedJobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
 	s.requeueJobNotifications(retryJobNotifs)
-	s.requeueJobNotifications(s.markJobNotificationsDelivered(injectedJobNotifs))
+	injectedFailures := s.markJobNotificationsDelivered(injectedJobNotifs)
+	s.requeueJobNotifications(injectedFailures)
 	if len(notifs) == 0 && len(jobNotifs) == 0 {
+		if len(retryJobNotifs) == 0 && len(injectedFailures) == 0 {
+			s.resetJobNotificationRetry()
+		}
 		s.mu.Lock()
 		s.sessionEndEmitted = true
 		s.mu.Unlock()
@@ -788,7 +792,11 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 		return false
 	}
 	s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder})
-	s.requeueJobNotifications(s.markJobNotificationsDelivered(jobNotifs))
+	deliveredFailures := s.markJobNotificationsDelivered(jobNotifs)
+	s.requeueJobNotifications(deliveredFailures)
+	if len(deliveredFailures) == 0 {
+		s.resetJobNotificationRetry()
+	}
 
 	// Drain any pending steering messages before the first LLM call (spec 2.5).
 	for _, msg := range s.drainSteering() {

@@ -119,6 +119,7 @@ type Session struct {
 	pendingNotifs    []subagentNotification
 	pendingJobNotifs []jobNotification
 	notifyFunc       func()
+	jobNotifyRetry   notificationRetry
 
 	jobManager *jobManager
 
@@ -221,6 +222,16 @@ type subagentNotification struct {
 	TurnsUsed                      int
 }
 
+type notificationRetry struct {
+	active bool
+	delay  time.Duration
+}
+
+const (
+	jobNotificationRetryInitialDelay = 250 * time.Millisecond
+	jobNotificationRetryMaxDelay     = 5 * time.Second
+)
+
 // enqueueNotification appends a pending notification under pendingNotifsMu. The
 // lock is never taken while holding sub.mu or the manager mutex.
 func (s *Session) enqueueNotification(n subagentNotification) {
@@ -245,8 +256,9 @@ func (s *Session) requeueJobNotifications(notifs []jobNotification) {
 		return
 	}
 	s.pendingNotifsMu.Lock()
-	defer s.pendingNotifsMu.Unlock()
 	s.pendingJobNotifs = append(notifs, s.pendingJobNotifs...)
+	s.scheduleJobNotificationRetryLocked()
+	s.pendingNotifsMu.Unlock()
 }
 
 func (s *Session) requeueNotifications(notifs []subagentNotification) {
@@ -311,6 +323,37 @@ func (s *Session) notify() {
 	if f != nil {
 		f()
 	}
+}
+
+func (s *Session) scheduleJobNotificationRetryLocked() {
+	if s.jobNotifyRetry.active {
+		return
+	}
+	delay := s.jobNotifyRetry.delay
+	if delay <= 0 {
+		delay = jobNotificationRetryInitialDelay
+	}
+	s.jobNotifyRetry.active = true
+	time.AfterFunc(delay, func() {
+		s.pendingNotifsMu.Lock()
+		s.jobNotifyRetry.active = false
+		nextDelay := delay * 2
+		if nextDelay > jobNotificationRetryMaxDelay {
+			nextDelay = jobNotificationRetryMaxDelay
+		}
+		s.jobNotifyRetry.delay = nextDelay
+		pending := len(s.pendingJobNotifs) > 0
+		s.pendingNotifsMu.Unlock()
+		if pending {
+			s.notify()
+		}
+	})
+}
+
+func (s *Session) resetJobNotificationRetry() {
+	s.pendingNotifsMu.Lock()
+	s.jobNotifyRetry.delay = jobNotificationRetryInitialDelay
+	s.pendingNotifsMu.Unlock()
 }
 
 // communicateResult records whether and how the agent delivered a result via
