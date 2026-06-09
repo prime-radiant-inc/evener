@@ -100,8 +100,8 @@ func TestRunShellForegroundMaxRuntimeCreatesDurableStoppedJob(t *testing.T) {
 	if res.JobID == "" {
 		t.Fatal("max runtime timeout must return a durable job_id")
 	}
-	if res.Status != string(jobstore.StatusStopped) || res.Reason != "run_timeout" || !res.TimedOut || res.RunningInBackground {
-		t.Errorf("res = %+v, want stopped/run_timeout/timed_out/foreground", res)
+	if res.Status != string(jobstore.StatusStopped) || res.Reason != "run_timeout" || res.TimedOut || res.RunningInBackground {
+		t.Errorf("res = %+v, want stopped/run_timeout/not_timed_out/foreground", res)
 	}
 
 	jobs := jm.list(listFilter{})
@@ -149,8 +149,8 @@ func TestRunShellForegroundMaxRuntimeFinalizerFailureConvergesDetached(t *testin
 	if res.JobID == "" {
 		t.Fatal("max runtime finalize failure must still return the durable job_id")
 	}
-	if res.Status != string(jobstore.StatusFailed) || res.Reason != "finalize_failed" || !res.TimedOut || !res.RunningInBackground {
-		t.Fatalf("res = %+v, want failed/finalize_failed/timed_out/background", res)
+	if res.Status != string(jobstore.StatusFailed) || res.Reason != "finalize_failed" || res.TimedOut || !res.RunningInBackground {
+		t.Fatalf("res = %+v, want failed/finalize_failed/not_timed_out/background", res)
 	}
 	if finishAttempts.Load() < shellFinalizeAttempts {
 		t.Fatalf("finish attempts = %d, want bounded attempts exhausted", finishAttempts.Load())
