@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -25,33 +24,28 @@ func TestShellToolBackgroundReturnsJobID(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("shell returned error: %s", res.Output)
 	}
-	if !strings.Contains(res.Output, "job_") {
-		t.Fatalf("expected a job_id in %q", res.Output)
+	var out struct {
+		JobID               string `json:"job_id"`
+		Type                string `json:"type"`
+		Status              string `json:"status"`
+		RunningInBackground bool   `json:"running_in_background"`
 	}
-
-	jobID := shellToolOutputField(res.Output, "job_id")
-	if jobID == "" ||
-		shellToolOutputField(res.Output, "status") != string(jobstore.StatusRunning) ||
-		shellToolOutputField(res.Output, "running_in_background") != "true" {
-		t.Fatalf("shell output = %q, want running background job", res.Output)
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, res.Output)
+	}
+	if out.JobID == "" ||
+		out.Type != string(jobstore.JobShell) ||
+		out.Status != string(jobstore.StatusRunning) ||
+		!out.RunningInBackground {
+		t.Fatalf("shell output = %+v, want running background shell job", out)
 	}
 	t.Cleanup(func() {
-		_, _ = s.jobManager.stop(jobID)
-		waitForShellDone(t, s.jobManager, jobID)
+		_, _ = s.jobManager.stop(out.JobID)
+		waitForShellDone(t, s.jobManager, out.JobID)
 	})
 
 	jobs := s.jobManager.list(listFilter{})
-	if len(jobs) != 1 || jobs[0].JobID != jobID || jobs[0].Status != jobstore.StatusRunning {
-		t.Fatalf("jobs = %+v, want one running shell job %q", jobs, jobID)
+	if len(jobs) != 1 || jobs[0].JobID != out.JobID || jobs[0].Status != jobstore.StatusRunning {
+		t.Fatalf("jobs = %+v, want one running shell job %q", jobs, out.JobID)
 	}
-}
-
-func shellToolOutputField(output, key string) string {
-	prefix := key + "="
-	for _, field := range strings.Fields(output) {
-		if strings.HasPrefix(field, prefix) {
-			return strings.TrimPrefix(field, prefix)
-		}
-	}
-	return ""
 }

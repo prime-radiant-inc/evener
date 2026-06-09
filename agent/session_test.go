@@ -1815,10 +1815,25 @@ func TestSession_ToolOutputTruncation_CanOverrideLineLimitViaSessionConfig(t *te
 	if truncated == "" {
 		t.Fatalf("expected tool result content")
 	}
-	for _, want := range []string{"lines omitted", "l9", "exit_code="} {
-		if !strings.Contains(truncated, want) {
-			t.Fatalf("expected %q in truncated tool output:\n%s", want, truncated)
-		}
+	var shellResult struct {
+		Status              string `json:"status"`
+		Reason              string `json:"reason"`
+		RunningInBackground bool   `json:"running_in_background"`
+		ExitCode            int    `json:"exit_code"`
+		Output              string `json:"output"`
+		Truncated           bool   `json:"truncated"`
+	}
+	if err := json.Unmarshal([]byte(truncated), &shellResult); err != nil {
+		t.Fatalf("expected JSON shell result: %v\n%s", err, truncated)
+	}
+	if shellResult.Status != "completed" ||
+		shellResult.Reason != "exit_zero" ||
+		shellResult.RunningInBackground ||
+		shellResult.ExitCode != 0 ||
+		shellResult.Truncated ||
+		!strings.Contains(shellResult.Output, "l0\n") ||
+		!strings.Contains(shellResult.Output, "l9\n") {
+		t.Fatalf("unexpected shell result: %+v", shellResult)
 	}
 }
 

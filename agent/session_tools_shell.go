@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -146,35 +147,43 @@ func shellIntArg(args map[string]any, key string) (int, bool) {
 }
 
 func marshalShellToolResult(res shellResult) (string, error) {
-	var b strings.Builder
-	if res.JobID != "" {
-		b.WriteString("job_id=")
-		b.WriteString(res.JobID)
-		b.WriteString(" ")
-	}
-	b.WriteString("type=")
-	b.WriteString(res.Type)
-	b.WriteString(" status=")
-	b.WriteString(res.Status)
-	if res.Reason != "" {
-		b.WriteString(" reason=")
-		b.WriteString(res.Reason)
-	} else {
-		b.WriteString(" reason=null")
-	}
-	b.WriteString(fmt.Sprintf(" running_in_background=%t timed_out=%t", res.RunningInBackground, res.TimedOut))
-	if res.ExitCode != nil {
-		b.WriteString(fmt.Sprintf(" exit_code=%d", *res.ExitCode))
+	out := shellToolResult{
+		JobID:               res.JobID,
+		Type:                res.Type,
+		Status:              res.Status,
+		Reason:              shellStringPtrOrNil(res.Reason),
+		RunningInBackground: res.RunningInBackground,
+		TimedOut:            res.TimedOut,
+		ExitCode:            res.ExitCode,
 	}
 	if !res.RunningInBackground || res.Output != "" {
-		b.WriteString(fmt.Sprintf(" truncated=%t", res.Truncated))
-		b.WriteString("\noutput:\n")
-		b.WriteString(res.Output)
-		if res.Output != "" && !strings.HasSuffix(res.Output, "\n") {
-			b.WriteString("\n")
-		}
+		out.Output = &res.Output
+		out.Truncated = &res.Truncated
 	}
-	return b.String(), nil
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+type shellToolResult struct {
+	JobID               string  `json:"job_id,omitempty"`
+	Type                string  `json:"type"`
+	Status              string  `json:"status"`
+	Reason              *string `json:"reason"`
+	RunningInBackground bool    `json:"running_in_background"`
+	TimedOut            bool    `json:"timed_out"`
+	ExitCode            *int    `json:"exit_code,omitempty"`
+	Output              *string `json:"output,omitempty"`
+	Truncated           *bool   `json:"truncated,omitempty"`
+}
+
+func shellStringPtrOrNil(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 func runBufferedShell(ctx context.Context, env execenv.ExecutionEnvironment, deps *toolDeps, args shellArgs) (string, error) {
