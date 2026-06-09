@@ -281,6 +281,101 @@ func TestParentCloseMarksSubagentBackgroundShellCancelledBeforeSharedEnvCleanup(
 	}
 }
 
+func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
+	stateDir := t.TempDir()
+	workDir := t.TempDir()
+	env := execenv.NewLocalExecutionEnvironment(workDir)
+	modelEntered := make(chan struct{})
+	releaseModel := make(chan struct{})
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				close(modelEntered)
+				<-releaseModel
+				return llm.Response{
+					Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{{
+							Kind: llm.ContentToolCall,
+							ToolCall: &llm.ToolCallData{
+								ID:        "late-shell",
+								Name:      "shell",
+								Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+								Type:      "function",
+							},
+						}},
+					},
+				}
+			},
+		},
+	}
+	c := llm.NewClient()
+	c.Register(adapter)
+
+	parent, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+		StateDir:         stateDir,
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession parent: %v", err)
+	}
+	t.Cleanup(func() { parent.Close() })
+
+	child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+		StateDir:         stateDir,
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession child: %v", err)
+	}
+	childID := child.ID()
+	parent.subagents.track(&subagent{id: childID, sess: child})
+
+	childDone := make(chan struct{})
+	go func() {
+		_, _ = child.ProcessInput(context.Background(), "start late shell", nil)
+		close(childDone)
+	}()
+	select {
+	case <-modelEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("child model call did not start")
+	}
+
+	parentCloseDone := make(chan struct{})
+	go func() {
+		parent.Close()
+		close(parentCloseDone)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	close(releaseModel)
+
+	select {
+	case <-parentCloseDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("parent close did not finish")
+	}
+	select {
+	case <-childDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("child turn did not finish")
+	}
+
+	st, err := jobstore.Open(filepath.Join(jobsDir(stateDir, childID), "jobs.jsonl"))
+	if err != nil {
+		t.Fatalf("reopen child job store: %v", err)
+	}
+	defer st.Close()
+	recs, err := st.Load()
+	if err != nil {
+		t.Fatalf("load child jobs: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Fatalf("late child shell created durable jobs during close: %+v", recs)
+	}
+}
+
 func newShellToolTestSession(t *testing.T, cfg SessionConfig) *Session {
 	t.Helper()
 	c := llm.NewClient()
