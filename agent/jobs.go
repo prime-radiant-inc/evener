@@ -30,16 +30,17 @@ type jobManager struct {
 }
 
 type runningJob struct {
-	rec            *jobstore.JobRecord
-	output         *jobstore.OutputStore
-	signal         func()
-	done           chan struct{}
-	durableStarted bool
-	stopStatus     jobstore.Status
-	stopReason     string
-	structured     any
-	terminal       *terminalJob
-	finalize       *finalizeAttempt
+	rec                    *jobstore.JobRecord
+	output                 *jobstore.OutputStore
+	signal                 func()
+	done                   chan struct{}
+	durableStarted         bool
+	stopStatus             jobstore.Status
+	stopReason             string
+	structured             any
+	terminal               *terminalJob
+	finalize               *finalizeAttempt
+	delegateOutputAppended bool
 }
 
 type finalizeAttempt struct {
@@ -420,6 +421,12 @@ func (jm *jobManager) stop(jobID string) (*jobstore.JobRecord, error) {
 }
 
 func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason string, exitCode *int) error {
+	return jm.finalizeWithRun(jobID, func(run *runningJob) (jobstore.Status, string, *int, error) {
+		return status, reason, exitCode, nil
+	})
+}
+
+func (jm *jobManager) finalizeWithRun(jobID string, prepare func(*runningJob) (jobstore.Status, string, *int, error)) error {
 	jm.mu.Lock()
 	run := jm.running[jobID]
 	if run == nil {
@@ -439,7 +446,12 @@ func (jm *jobManager) finalize(jobID string, status jobstore.Status, reason stri
 
 	var err error
 	if terminal == nil {
-		err = jm.finishJob(run, status, reason, exitCode)
+		status, reason, exitCode, prepareErr := prepare(run)
+		if prepareErr != nil {
+			err = prepareErr
+		} else {
+			err = jm.finishJob(run, status, reason, exitCode)
+		}
 	} else {
 		err = jm.armFinalizedJob(run, terminal)
 	}

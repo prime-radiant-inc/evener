@@ -610,36 +610,42 @@ func (s *Session) finalizeDelegate(jobID, childID string, sub *subagent) error {
 	if sub == nil {
 		sub = s.subagents.get(childID)
 	}
-	if sub == nil {
-		return jm.finalize(jobID, jobstore.StatusFailed, "child_missing", nil)
-	}
 
-	sub.mu.Lock()
-	status := sub.status
-	prose := sub.result
-	if strings.TrimSpace(prose) == "" && sub.err != nil {
-		prose = sub.err.Error()
-	}
-	childSess := sub.sess
-	sub.mu.Unlock()
+	return jm.finalizeWithRun(jobID, func(run *runningJob) (jobstore.Status, string, *int, error) {
+		if sub == nil {
+			return jobstore.StatusFailed, "child_missing", nil, nil
+		}
 
-	var structured any
-	if childSess != nil {
-		structured = childSess.CommunicateStructured()
-	}
+		sub.mu.Lock()
+		status := sub.status
+		prose := sub.result
+		if strings.TrimSpace(prose) == "" && sub.err != nil {
+			prose = sub.err.Error()
+		}
+		childSess := sub.sess
+		sub.mu.Unlock()
 
-	jm.mu.Lock()
-	run := jm.running[jobID]
-	if run != nil {
+		var structured any
+		if childSess != nil {
+			structured = childSess.CommunicateStructured()
+		}
+
+		jm.mu.Lock()
 		run.structured = structured
-	}
-	jm.mu.Unlock()
-	if err := appendDelegateOutput(run, prose); err != nil {
-		return err
-	}
+		outputAppended := run.delegateOutputAppended
+		jm.mu.Unlock()
+		if !outputAppended {
+			if err := appendDelegateOutput(run, prose); err != nil {
+				return "", "", nil, err
+			}
+			jm.mu.Lock()
+			run.delegateOutputAppended = true
+			jm.mu.Unlock()
+		}
 
-	jobStatus, reason := delegateTerminalStatus(jm, run, status)
-	return jm.finalize(jobID, jobStatus, reason, nil)
+		jobStatus, reason := delegateTerminalStatus(jm, run, status)
+		return jobStatus, reason, nil, nil
+	})
 }
 
 func appendDelegateOutput(run *runningJob, prose string) error {

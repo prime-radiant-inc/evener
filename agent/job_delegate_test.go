@@ -378,6 +378,58 @@ func TestCreateDelegateForegroundFinalizeFailureReturns(t *testing.T) {
 	waitForShellDone(t, sess.jobManager, res.JobID)
 }
 
+func TestFinalizeDelegateRetryAfterDurableFailureDoesNotDuplicateOutput(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	sub := &subagent{
+		id:      child.ID(),
+		sess:    child,
+		running: false,
+		status:  SubagentCompleted,
+		result:  "retry complete",
+		done:    make(chan struct{}),
+	}
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "retry terminal", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+
+	appendErr := errors.New("job_finished failed")
+	var finishAttempts atomic.Int32
+	origAppend := parent.jobManager.appendEvent
+	parent.jobManager.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventJobFinished {
+			if finishAttempts.Add(1) == 1 {
+				return appendErr
+			}
+		}
+		return origAppend(e)
+	}
+	err = parent.finalizeDelegate(run.rec.JobID, child.ID(), sub)
+	if !errors.Is(err, appendErr) {
+		t.Fatalf("first finalizeDelegate error = %v, want %v", err, appendErr)
+	}
+
+	parent.jobManager.appendEvent = origAppend
+	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
+		t.Fatalf("retry finalizeDelegate: %v", err)
+	}
+	waitForShellDone(t, parent.jobManager, run.rec.JobID)
+
+	output, _, _, err := parent.jobManager.readOutput(run.rec.JobID, shellInlineOutputBytes)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if got := strings.Count(output, "retry complete"); got != 1 {
+		t.Fatalf("output contains delegate result %d times, want 1: %q", got, output)
+	}
+	rec := loadShellRecord(t, parent.jobManager, run.rec.JobID)
+	if rec.Status != jobstore.StatusCompleted {
+		t.Fatalf("record status = %q, want completed", rec.Status)
+	}
+}
+
 func TestCreateDelegateForegroundOutputAppendFailureReturns(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
