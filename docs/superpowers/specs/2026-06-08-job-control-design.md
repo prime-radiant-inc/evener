@@ -73,7 +73,8 @@ and signalling process groups needs `*Session` (package `agent`). The design spl
 line:
 
 - **`agent/internal/jobstore/`** — pure, `Session`-free machinery. Records, bytes, event
-  logs only. Imports stdlib + `agent/schema`. Unit-testable in isolation.
+  logs only. Imports only stdlib + a ULID library; `JobRecord` and its enums are defined here and
+  use no `agent`-package types. Unit-testable in isolation.
 - **package `agent` (new files)** — runtime glue that holds a `*jobstore.Store` and bridges
   it to live runtimes (child sessions, OS processes, the notification turn path).
 
@@ -115,6 +116,10 @@ agent/session_init.go               EDIT — restore path reconstructs the job s
                                      reconciliation
 cmd/serf/serve.go                   EDIT — the existing SubmitNotification wiring carries
                                      job-notifications (mechanism unchanged)
+agent/execenv/execenv.go            EDIT — extend the ExecutionEnvironment interface with a
+                                     streaming exec method (today it exposes only buffered ExecCommand)
+agent/execenv/local.go              EDIT — streaming impl reusing execenv's private
+                                     Setpgid / env-policy / venv-PATH / root-enforcement; per-job PID/pgid
 ```
 
 The existing `subagentManager` is **absorbed** into `job_delegate.go` + `jobs.go` as the
@@ -128,7 +133,7 @@ in-memory running-delegate overlay; it is not kept as a parallel tracking system
 | Notification delivery (`EntryNotification`, `pendingNotifs`, serve-mode wake) | reuse | durable pending/delivered underneath |
 | Session/transcript persistence | reuse, untouched | the separate job store sits beside it |
 | Tool registry, `wireToolDef`, purpose param | reuse (job tools are canonical — no Description rewrite) | — |
-| Shell exec | reuse `Setpgid` + the SIGTERM→SIGKILL process-group stop | a **streaming** exec that writes to the per-job log and returns immediately, with per-job PID/pgid tracking for `job_stop`. The existing buffered `ExecCommand` returns only at process exit and has no job→PID map, so it is **not** reused for jobs (see §5.3) |
+| Shell exec | reuse `execenv`'s private `Setpgid` / env-policy / venv-PATH / root-enforcement machinery | a new **streaming** method on the `execenv.ExecutionEnvironment` interface (edits to `execenv/execenv.go` + `local.go`) that writes to the per-job log and returns immediately, with per-job PID/pgid tracking for `job_stop`. The buffered `ExecCommand` returns only at exit and has no job→PID map, so it is **not** reused for jobs; `job_shell.go` orchestrates via the new method rather than re-implementing exec in package `agent` (see §5.3) |
 
 ---
 
@@ -173,7 +178,7 @@ type JobRecord struct {
     OriginTurnID     string    `json:"origin_turn_id,omitempty"`
     OriginToolCallID string    `json:"origin_tool_call_id,omitempty"`
     TranscriptRef    string    `json:"transcript_ref,omitempty"`        // delegate: local:<sessionID>
-    Resumable        bool      `json:"resumable,omitempty"`             // delegate
+    Resumable        *bool     `json:"resumable,omitempty"`             // delegate; nil for shell, *false stays visible
     NotResumableWhy  string    `json:"not_resumable_reason,omitempty"`  // delegate
     StartedAt        time.Time `json:"started_at"`
     EndedAt          *time.Time `json:"ended_at,omitempty"`
@@ -188,6 +193,15 @@ type JobRecord struct {
 `job_id` is `"job_" + ulid.Make().String()`, minted per job, distinct from the session ULID
 (one delegate session can host multiple jobs across resumes). `transcript_ref` is the only
 model-facing child-conversation handle.
+
+**Wire-shape note (avoid the `omitempty` footgun).** The struct above is the durable record. The
+**model-facing projection** (what `job_list` and the tool returns emit) follows the contract's
+explicit-`null` convention: `reason`, `parent_job_id`, `not_resumable_reason`, `ended_at`, and
+`exit_code` serialize as `null` when unset, not absent (use pointers / a projection type, not
+`string`+`omitempty`). `Resumable` is a `*bool` precisely so a non-resumable delegate emits
+`resumable:false` — a plain `bool`+`omitempty` would drop the `false` an agent most needs to see.
+Only genuinely type-inapplicable fields are omitted (`command` for a delegate, `task`/`transcript_ref`
+for a shell job), per the contract.
 
 ### 3.3 Job-event log (`jobs.jsonl`)
 
@@ -270,10 +284,21 @@ listable/readable.
 
 ### 5.1 Shared system-prompt section (DRY)
 
-The cross-cutting mental model lives **once** in a `## Background jobs` system-prompt
-section, rendered per session (so provider tool names can be substituted — see 5.2). Tool
-descriptions stay short and lean on it. This section is rendered into the prompt template(s)
-alongside the existing sections in `agent/session_prompts.go`.
+The cross-cutting mental model lives in a `## Background jobs` system-prompt section, rendered per
+session (so provider tool names can be substituted — see 5.2). Tool descriptions stay short and lean
+on it. It has **two variants**, matching the two existing prompt templates (`system` for the root,
+`subagent` for depth > 0 — both composed in `agent/session_prompts.go`):
+
+- **root variant** (shown below): the full model — shell jobs, `delegate`, and all job tools.
+- **subagent variant**: shell jobs only. A subagent may start nested **shell** jobs (§10) and manage
+  its own with `job_read_output` / `job_list` / `job_stop`, but it **cannot** `delegate` (nested
+  delegate is a v1 non-goal) or call `job_send_message` / `job_watch` (root-only). The subagent
+  variant omits every mention of `delegate` and the root-only tools, so a delegate-incapable session
+  is never told to delegate.
+
+Tool availability mirrors this split: root-only = {`delegate`, `job_send_message`, `job_watch`};
+subagent-available = {job-capable shell, `job_read_output`, `job_list`, `job_stop`} (see §13 for the
+`rootOnlyAgentManagementTools` retarget).
 
 > ## Background jobs
 >
@@ -369,10 +394,13 @@ Defaults and bounds:
   `max_runtime_ms`, Serf stops it and finalizes `stopped/run_timeout`.
 
 Behavior. The key mechanism: **every shell command streams to a per-job log from the first byte**
-via the new streaming exec — the buffered `ExecCommand` is not used by the shell tool, because a
-synchronous buffered call cannot return a `job_id` while the process keeps running (it returns only
-at exit and kills the process group at its timeout), so it could neither promote without an output
-seam nor be detached. The launch path is identical for every call; only the wait boundary differs:
+via a new streaming method on the `execenv.ExecutionEnvironment` interface (today the interface
+exposes only buffered `ExecCommand`; the streaming method reuses `execenv`'s private
+`Setpgid`/env/venv/root machinery — see §2.3). The buffered `ExecCommand` is not used by the shell
+tool, because a synchronous buffered call cannot return a `job_id` while the process keeps running
+(it returns only at exit and kills the process group at its timeout), so it could neither promote
+without an output seam nor be detached. The launch path is identical for every call; only the wait
+boundary differs:
 
 - `background=false`, process exits before `block_timeout_ms`: return the streamed output inline,
   **ephemeral** — no durable `job_started` is committed, the temp log is discarded, the job never
@@ -416,11 +444,12 @@ be reflected consistently in `job_list`, `job_read_output`, and notifications.
 ### 5.4 `delegate`
 
 `DefDelegate(agentTypes []string)` — `agent_type` is constrained to the session's available agent
-types. Discovery follows the two existing precedents rather than splicing a list into prose: the
-type list populates the `agent_type` **enum** (exactly as `DefTaskList(efforts)` populates the
-reasoning-effort enum, not its description), and the human-readable roster is rendered by the prompt
-section that already enumerates available agents (`agent/prompts/sections/available-agents.md.tmpl`).
-Starts a new delegate conversation/job; never resumes/steers an existing one.
+types. Discovery uses two existing mechanisms rather than splicing a list into prose: the type list
+populates the `agent_type` **enum** (the same build-time enum mechanism `DefTaskList(efforts)` uses
+for reasoning-effort, applied to a new parameter — `agent_type` is free-form today), and the
+human-readable roster is rendered by the prompt section that already enumerates available agents
+(`agent/prompts/sections/available-agents.md.tmpl`). Starts a new delegate conversation/job; never
+resumes/steers an existing one.
 
 ```go
 Name: "delegate"
@@ -451,8 +480,10 @@ Defaults/behavior:
 - `background` defaults to `true`. Each call creates a new delegate job and a new child
   session. Does not accept `target`, `mode`, `job_id`, or `transcript_ref`.
 - `block_timeout_ms`: same semantics/bounds as shell; a timeout leaves the job running.
-- `result_schema`: a JSON-Schema-like contract. Output remains readable as prose; Serf also
-  validates and surfaces `structured_result` (+ `structured_result_valid`) when possible.
+- `result_schema`: a JSON Schema that **becomes** the child's structured `communicate` output (it
+  replaces the `output` property wholesale — see §5.4.1, which corrects how this seam actually
+  behaves). The prose output remains readable; Serf validates the structured output and surfaces
+  `structured_result` (+ `structured_result_valid`).
 - Turn-based: a delegate needing more input finishes with a request; the parent follows up via
   `job_send_message`. `status="completed"` means the turn ended normally, not that the task
   succeeded.
@@ -486,14 +517,24 @@ job model changes three things:
   capture path is what makes `job_read_output` work after the runtime is gone.
 - **Non-consuming reads (changed).** `job_read_output` never consumes; the result lives in the
   durable record + log. The legacy `resultConsumed` model and the consuming `wait` are removed.
-- **`result_schema` → `structured_result` (new, via an existing seam).** When `result_schema` is
-  supplied, Serf injects it as the child's `communicate` output schema through the existing
-  `Profile.WithCommunicateOutputSchema` override (the seam `WithCommunicateOverridesFrom` already
-  preserves across model switches), validates the child's `communicate` `data` against the schema,
-  and surfaces `structured_result` + `structured_result_valid`. `communicate`'s fixed
-  `{decision,message,data,artifacts}` shape is the carrier; the caller schema constrains `data`. A
-  validation failure sets `structured_result_valid:false` and still returns the prose output — it
-  does not fail the job.
+- **`result_schema` → `structured_result` (new; the injection seam exists, the validation does
+  not).** When `result_schema` is supplied, Serf injects it via `Profile.WithCommunicateOutputSchema`,
+  which **replaces the child's `communicate` `output` property wholesale** with the caller's schema
+  (verified: `replaceCommunicateOutputSchema` does `props["output"] = schema`,
+  `agent/provider/profile_overrides.go:137`, asserted by `TestWithCommunicateOutputSchema_ReplacesOutput`
+  — it does *not* keep the default `{message,data,artifacts}` envelope and does *not* nest the schema
+  under `data`). So the child's structured answer **is** its `communicate.output`, shaped entirely by
+  `result_schema` — not a `data` sub-field. The prose result is unaffected: it comes from
+  `communicate`'s top-level `message` parameter, which the override leaves intact
+  (`session_tools_communicate.go` builds `resultText` from `message`), plus the streamed log.
+  `structured_result` is the child's emitted `output`; `structured_result_valid` is the result of
+  validating that `output` against `result_schema` with the JSON-Schema validator already vendored in
+  the agent module (`github.com/santhosh-tekuri/jsonschema/v5`, compiled today in
+  `agent/internal/tool/registry.go:compileSchema`). This validate-and-surface step is **net-new
+  work** — there is no `structured_result` producer yet. A validation failure sets
+  `structured_result_valid:false` and still returns the prose output; it does not fail the job.
+  (`WithAllowedDecisions` stacks on top by injecting a `decision` field, so a caller schema that
+  needs to compose with Toil-style decisions must expose a `properties` map.)
 
 ### 5.5 `job_send_message`
 
@@ -593,7 +634,7 @@ Behavior/bounds:
 Return shape:
 
 ```json
-{"job_id":"job_...","type":"shell","status":"running","content":"...","grep":"(?i)ready","matches":[{"byte_offset":2048,"line":"server ready"}],"total_bytes":10000,"truncated":false,"exit_code":null}
+{"job_id":"job_...","type":"shell","status":"running","reason":null,"content":"...","grep":"(?i)ready","matches":[{"byte_offset":2048,"line":"server ready"}],"total_bytes":10000,"truncated":false,"exit_code":null}
 ```
 
 Absolute byte-offset paging is an implementation/UI capability, documented separately, not the
@@ -761,9 +802,9 @@ Synchronous tool errors. They create **no** durable job record.
 
 The reference contract makes these normative, and the two tools use different mechanisms. For
 `delegate`, the available `agent_type`s populate the parameter **enum** (built via
-`DefDelegate(agentTypes)`, exactly as `DefTaskList(efforts)` populates the effort enum) and the
-human-readable roster comes from the existing agents prompt section — not spliced into the tool
-description. For `job_watch`, the available event kinds are interpolated into the description (built
+`DefDelegate(agentTypes)`, reusing the build-time enum mechanism `DefTaskList(efforts)` applies to
+reasoning-effort) and the human-readable roster comes from the existing agents prompt section — not
+spliced into the tool description. For `job_watch`, the available event kinds are interpolated into the description (built
 via `DefJobWatch(eventKinds)`), since `events` is a free-form array with no enum or prompt-section
 precedent; an agent may also use `events:["*"]`+filtering when targeted names are unavailable.
 
@@ -800,12 +841,16 @@ reuses the existing `EntryNotification` turn mechanism (`pendingNotifs` queue, s
   with durable suppression is allowed; repeated notification on every restore is not.
 - **Ordering:** flush any queued watch send for a concrete job, then deliver its terminal
   notification.
-- **Delivery filter (changed).** Today `filterDeliverableNotifications` (`agent/session_lifecycle.go`)
-  drops a queued notification when its **in-memory** subagent record is absent
-  (`s.subagents.get(id) == nil`). After a restart a reconstructed terminal job has no in-memory
-  runtime, so that rule would silently swallow exactly the replayed terminal notifications this
-  section guarantees. The filter must key on the **durable job record** (a reconstructed terminal job
-  has one); "missing record ⇒ drop" applies only when no durable record exists at all.
+- **Delivery filter + payload source (changed).** Today `filterDeliverableNotifications`
+  (`agent/session_lifecycle.go`) drops a queued notification on **three** in-memory conditions:
+  record absent (`s.subagents.get(id) == nil`), `sub.closed`, or `sub.resultConsumed`. In the job
+  model the latter two disappear — reads are non-consuming (no `resultConsumed`, per §5.4.1) and
+  `JobRecord` has no `closed` field — so the filter reduces to one rule keyed on the **durable**
+  record: deliver if a durable job record exists; "missing ⇒ drop" applies only when no durable
+  record exists at all. The notification **payload** must likewise be built from the durable
+  `JobRecord` (`job_id`/`status`/`reason`/`transcript_ref`/`output_bytes`/`exit_code`), not the
+  in-memory overlay — a restart-replayed terminal job has no overlay, so sourcing the payload from
+  `s.subagents` (as the legacy `subagentNotification` does) would lose its fields.
 
 `<job-notification>` (replaces `<subagent-notification>`) carries `job_id`, `event` (the
 lifecycle/progress kind — never named `type`, which is the job class), `job_type`, `status`,
@@ -911,10 +956,12 @@ failure that creates no record).
 
 New: `agent/internal/jobstore/*`; `agent/jobs.go`, `job_shell.go`, `job_delegate.go`,
 `job_notify.go`, `session_tools_jobs.go`; the six job `Def*` + reworked `DefShell`; the
-`## Background jobs` prompt section; the streaming shell exec path + per-job PID/pgid tracking; the
-delegate durable-output-log capture, non-consuming reads, and the `result_schema`→`structured_result`
-validation (via `WithCommunicateOutputSchema`); running caps; restart reconciliation; durable
-notification bookkeeping; the `filterDeliverableNotifications` durable-record keying.
+`## Background jobs` prompt section (root + subagent variants); a streaming `ExecutionEnvironment`
+method + per-job PID/pgid tracking; the delegate durable-output-log capture, non-consuming reads, and
+the net-new `structured_result` validation (schema injected via `WithCommunicateOutputSchema`, which
+replaces `communicate.output` wholesale; validation reuses the vendored jsonschema compiler); running
+caps; restart reconciliation; durable notification bookkeeping; the `filterDeliverableNotifications`
+durable-record keying + payload source.
 
 Reused: the child-session run/cancel/finalize mechanics and the `communicate` result path (salvaged
 into `job_delegate.go`); the `EntryNotification` delivery path and serve-mode wake; session/
@@ -938,21 +985,38 @@ functions; the inventory below was built by grepping the tree, not from memory.
   then the old entry points removed.
 - `rootOnlyAgentManagementTools` (`agent/subagents.go`) and its consumers `baseSubagentToolPolicy` /
   `removeRootOnlyAgentManagementTools` / `agentUsesRootOnlyManagementTools` (`agent/session_tools.go`):
-  retarget the root-only set to the six job tools (the job tools are also root-only — only the parent
-  may call them).
+  retarget the root-only set to the **subset** `{delegate, job_send_message, job_watch}` (per §5.1) —
+  NOT all six; subagents keep the job-capable shell plus `job_read_output`/`job_list`/`job_stop` for
+  their own nested jobs.
 - `subagent_manager.go`'s retention/cap manager is **absorbed** into `jobs.go`/`job_delegate.go`;
   remove the file once its logic moves.
+- **Tool-name + per-tool behavior tables keyed on the old names** (these are functional, not cosmetic,
+  and each is a gate-token hit): `agent/internal/toolname/toolname.go:16` (`"Task":"spawn_agent"` in
+  the Claude-plugin name map → `"Task":"delegate"`); `agent/internal/tool/registry.go:548`
+  (`case "spawn_agent"` output-truncation limit → add `delegate`/job-tool cases); and
+  `agent/internal/contextmgr/context_manager.go:583` (`case "spawn_agent"` compaction render that
+  extracts `agent_id` → repoint to `delegate`/`job_id`).
+- **serf-tui renderers** keyed on the old tool names: `cmd/serf-tui/internal/msgrender/tool_renderers.go`,
+  `cmd/serf-tui/internal/msgrender/tool_bodies.go`, `cmd/serf-tui/internal/toolsummary/tool_summary.go`
+  → repoint to the job tools.
 
 **Re-point (cross-package projections with live consumers — these do NOT match the gate tokens, so
 they need explicit handling):**
 
 - `agent/events`: `EventSubagentStart`/`EventSubagentEnd` (`"SUBAGENT_START"`/`"SUBAGENT_END"`) and
-  `SubagentStartData`/`SubagentEndData` (`payloads.go`). Live consumers render these in
-  `cmd/serf-hub/internal/hubcore/*`, `server/appwire_runtime.go`, and `cmd/serf-tui/*`. Decide per
-  the UI need: emit equivalent job-lifecycle events and repoint the hub/tui/web renderers, or keep
-  the event names as an internal alias. A deliberate decision, applied everywhere — not a silent keep.
-- `SubagentInfo` / `SubagentStatus` and the snapshot/status/web-render chain (`agent/status.go`,
-  `agent/schema/snapshot.go`, hub/web projections, `session_outline.go`'s `subagentLifecycleTools`,
+  `SubagentStartData`/`SubagentEndData` (`payloads.go`). The real consumer is
+  `internal/appprojector/appwire_projection.go:410` (it switches on the `events.EventSubagentStart`
+  **symbol**, which the gate's string token does NOT catch — see the gate below), translating to the
+  **wire-protocol** notifications `appwire.NotifySerfSubagentStarted`/`Ended`
+  (`"serf/subagent/started"`/`"serf/subagent/completed"`, `appwire/types.go:68`) and `SerfSubagentInfo`
+  / `Subagents`; `server/server.go`'s `SubagentStatusInfo`/`Subagents` carry it onward to the
+  hub/web/tui clients. Decide per the UI need: emit equivalent job-lifecycle events + wire
+  notifications and repoint `appprojector` + `appwire/types.go` + `server`, or keep the names as an
+  internal alias. A deliberate decision applied everywhere — not a silent keep. (Earlier drafts
+  mis-named the consumers as `hubcore`/`appwire_runtime`/`serf-tui`; those do not switch on these
+  events directly.)
+- `SubagentInfo` / `SubagentStatus` and the snapshot/status/render chain (`agent/status.go`,
+  `agent/schema/snapshot.go`, `session_outline.go`'s `subagentLifecycleTools`,
   `transcript_render.go`'s `subagentResultKnownKeys`/`decodeSubagentResult`): superseded by
   `JobRecord` projections; repoint consumers.
 - The `<subagent-notification>` format/formatter and `acceptNotificationInput`'s subagent framing →
@@ -967,17 +1031,22 @@ the rest of `docs/subagent-management/` and `docs/architecture.md`.
 **`capabilityAgentControl` → `capabilityJobControl`** (`agent/provider/profile.go`), wiring the six
 job tools (shell stays under `capabilityShellSearch`).
 
-**Acceptance gate.** Grep real discriminators, not the phantom `wait_job` (the legacy tool is named
-`wait` — an un-greppable English word, so gate on its symbol/registration instead):
+**Acceptance gate.** The gate is **authoritative, not the inventory**: run it, repoint every hit, re-run
+until clean. The inventory above names the known consumers, but treat a green gate + a green build as
+the proof. Gate on real discriminators — the string tokens AND the Go symbol forms (the event symbols
+`EventSubagentStart`/`EventSubagentEnd` and the wire constants `NotifySerfSubagent*` do not contain
+the `SUBAGENT_START`/`SUBAGENT_END` strings) — not the phantom `wait_job` (the legacy tool is named
+`wait`, an un-greppable English word, so gate on its symbol/registration):
 
 ```
-rg -n 'spawn_agent|resume_agent|close_agent|cancel_agent|list_agents|subagent_output|subagent-notification|DefSpawnAgent|DefSendInput|DefWait|DefCloseAgent|DefCancelAgent|DefListAgents|DefSubagentOutput|rootOnlyAgentManagementTools|SUBAGENT_START|SUBAGENT_END'
+rg -n 'spawn_agent|resume_agent|close_agent|cancel_agent|list_agents|subagent_output|subagent-notification|DefSpawnAgent|DefSendInput|DefWait|DefCloseAgent|DefCancelAgent|DefListAgents|DefSubagentOutput|rootOnlyAgentManagementTools|SUBAGENT_START|SUBAGENT_END|EventSubagentStart|EventSubagentEnd|SubagentStartData|SubagentEndData|NotifySerfSubagent|SerfSubagentInfo|SubagentStatusInfo'
 ```
 
-must return nothing outside historical changelogs and this spec's legacy-mapping references. The
-internal `agent_id`/`subagent` *naming* deferral (§16) does not exempt the model-/UI-facing surfaces
-above — events, snapshots, prompts, and docs are reconciled now. Legacy subagent test files are
-deleted or rewritten against the job tools.
+must return nothing outside historical changelogs and this spec's legacy-mapping references, AND
+`make build`/`make test` must pass (a clean grep is necessary but not sufficient — the build catches
+renamed-symbol consumers a token list can miss). The internal `agent_id`/`subagent` *naming* deferral
+(§16) does not exempt the model-/UI-facing surfaces above — events, snapshots, prompts, and docs are
+reconciled now. Legacy subagent test files are deleted or rewritten against the job tools.
 
 ---
 
@@ -1057,3 +1126,8 @@ and asserted.
   those now. A full internal rename of the remaining private symbols is optional.
 - **Concurrency-cap defaults** (running shell/delegate/observer) to be set during
   implementation.
+- **Subagent job-tool set (decided here):** subagents get the job-capable shell plus
+  `job_read_output`/`job_list`/`job_stop` (to manage their own nested shell jobs); root-only =
+  `{delegate, job_send_message, job_watch}` (§5.1, §13). The alternative — letting a subagent start a
+  background shell job it cannot then read or stop — is strictly worse, so this is the v1 call; revisit
+  if nested delegate jobs land.
