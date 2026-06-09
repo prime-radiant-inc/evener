@@ -18,6 +18,7 @@ const (
 	shellInlineOutputBytes     = 64 * 1024
 	shellFinalizeAttempts      = 5
 	shellFinalizeRetryDelay    = 20 * time.Millisecond
+	shellFinalizeMaxRetryDelay = 50 * time.Millisecond
 )
 
 type shellArgs struct {
@@ -165,6 +166,7 @@ func (jm *jobManager) finishForegroundRuntimeTimeout(run *runningJob, wait shell
 	}
 	output, _, truncated, _ := tailOutput(run.output, shellInlineOutputBytes)
 	if err := jm.finalizeShellWithRetry(run.rec.JobID, status, reason, exitCode); err != nil {
+		go jm.finalizeShellUntilDurable(run.rec.JobID, status, reason, exitCode)
 		return shellResult{
 			JobID:               run.rec.JobID,
 			Type:                string(run.rec.Type),
@@ -304,19 +306,32 @@ func (jm *jobManager) finalizeShellWithRetry(jobID string, status jobstore.Statu
 			return nil
 		}
 		if attempt+1 < shellFinalizeAttempts {
-			time.Sleep(shellFinalizeRetryDelay)
+			time.Sleep(shellFinalizeBackoff(attempt))
 		}
 	}
 	return err
 }
 
 func (jm *jobManager) finalizeShellUntilDurable(jobID string, status jobstore.Status, reason string, exitCode *int) {
+	attempt := 0
 	for {
 		if err := jm.finalize(jobID, status, reason, exitCode); err == nil {
 			return
 		}
-		time.Sleep(shellFinalizeRetryDelay)
+		time.Sleep(shellFinalizeBackoff(attempt))
+		attempt++
 	}
+}
+
+func shellFinalizeBackoff(attempt int) time.Duration {
+	delay := shellFinalizeRetryDelay
+	for i := 0; i < attempt; i++ {
+		delay *= 2
+		if delay >= shellFinalizeMaxRetryDelay {
+			return shellFinalizeMaxRetryDelay
+		}
+	}
+	return delay
 }
 
 func (jm *jobManager) shellTerminal(run *runningJob, exitCode int, timedOut bool) (jobstore.Status, string, *int) {

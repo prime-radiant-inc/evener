@@ -120,6 +120,59 @@ func TestRunShellForegroundMaxRuntimeCreatesDurableStoppedJob(t *testing.T) {
 	}
 }
 
+func TestRunShellForegroundMaxRuntimeFinalizerFailureConvergesDetached(t *testing.T) {
+	jm, se := newShellTestRig(t)
+	appendErr := errors.New("temporary append failure")
+	var finishAttempts atomic.Int32
+	var pendingAttempts atomic.Int32
+	failuresBeforeSuccess := int32(shellFinalizeAttempts + 2)
+	origAppend := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error {
+		switch e.Kind {
+		case jobstore.EventJobFinished:
+			if finishAttempts.Add(1) <= failuresBeforeSuccess {
+				return appendErr
+			}
+		case jobstore.EventJobNotificationPending:
+			if pendingAttempts.Add(1) <= failuresBeforeSuccess {
+				return appendErr
+			}
+		}
+		return origAppend(e)
+	}
+
+	res := runShell(context.Background(), jm, se, shellArgs{
+		Command:        "printf timeout-retry; sleep 30",
+		BlockTimeoutMS: 5000,
+		MaxRuntimeMS:   100,
+	})
+	if res.JobID == "" {
+		t.Fatal("max runtime finalize failure must still return the durable job_id")
+	}
+	if res.Status != string(jobstore.StatusFailed) || res.Reason != "finalize_failed" || !res.TimedOut || !res.RunningInBackground {
+		t.Fatalf("res = %+v, want failed/finalize_failed/timed_out/background", res)
+	}
+	if finishAttempts.Load() < shellFinalizeAttempts {
+		t.Fatalf("finish attempts = %d, want bounded attempts exhausted", finishAttempts.Load())
+	}
+
+	waitForShellDone(t, jm, res.JobID)
+	rec := loadShellRecord(t, jm, res.JobID)
+	if rec.Status != jobstore.StatusStopped || rec.Reason != "run_timeout" {
+		t.Fatalf("record after detached convergence = %+v, want stopped/run_timeout", rec)
+	}
+	if pendingAttempts.Load() <= failuresBeforeSuccess {
+		t.Fatalf("pending attempts = %d, want detached notification retries past %d", pendingAttempts.Load(), failuresBeforeSuccess)
+	}
+	output, _, _, err := jm.readOutput(res.JobID, 1024)
+	if err != nil {
+		t.Fatalf("readOutput: %v", err)
+	}
+	if output != "timeout-retry" {
+		t.Fatalf("output = %q, want preserved runtime log", output)
+	}
+}
+
 func TestRunShellBackgroundReturnsImmediately(t *testing.T) {
 	jm, se := newShellTestRig(t)
 	start := time.Now()
