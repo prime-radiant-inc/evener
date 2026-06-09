@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -95,6 +96,80 @@ func TestJobManagerReadOutputMissingTerminalLogReturnsError(t *testing.T) {
 	}
 	if _, statErr := os.Stat(rec.OutputPath); !os.IsNotExist(statErr) {
 		t.Fatalf("output stat after readOutput = %v, want not exist", statErr)
+	}
+}
+
+func TestJobOutputReadLimitRemainsModelFacingCap(t *testing.T) {
+	if maxJobOutputBytes != 1024*1024 {
+		t.Fatalf("maxJobOutputBytes = %d, want 1 MiB", maxJobOutputBytes)
+	}
+	if maxJobOutputRetentionBytes != 8*1024*1024 {
+		t.Fatalf("maxJobOutputRetentionBytes = %d, want 8 MiB", maxJobOutputRetentionBytes)
+	}
+
+	got, err := boundedJobBytesArg(map[string]any{"tail_bytes": maxJobOutputRetentionBytes}, "tail_bytes", defaultJobOutputBytes)
+	if err != nil {
+		t.Fatalf("boundedJobBytesArg: %v", err)
+	}
+	if got != maxJobOutputBytes {
+		t.Fatalf("bounded tail_bytes = %d, want model-facing cap %d", got, maxJobOutputBytes)
+	}
+}
+
+func TestJobOutputShellStoreEnforcesRetentionCap(t *testing.T) {
+	jm := newTestJM(t)
+	t.Cleanup(func() { _ = jm.close() })
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	assertJobOutputRetentionCap(t, jm.running[rec.JobID])
+}
+
+func TestJobOutputDelegateStoreEnforcesRetentionCap(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	sub := &subagent{
+		id:      child.ID(),
+		sess:    child,
+		running: true,
+		status:  SubagentRunning,
+		done:    make(chan struct{}),
+	}
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "retain delegate output", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+
+	assertJobOutputRetentionCap(t, run)
+}
+
+func assertJobOutputRetentionCap(t *testing.T, run *runningJob) {
+	t.Helper()
+	data := bytes.Repeat([]byte("x"), maxJobOutputRetentionBytes+1)
+	n, err := run.output.Append(data)
+	if err != nil {
+		t.Fatalf("append retained output: %v", err)
+	}
+	if n != len(data) {
+		t.Fatalf("append wrote %d bytes, want %d", n, len(data))
+	}
+
+	info, err := os.Stat(run.rec.OutputPath)
+	if err != nil {
+		t.Fatalf("stat output: %v", err)
+	}
+	if info.Size() != maxJobOutputRetentionBytes {
+		t.Fatalf("retained output size = %d, want %d", info.Size(), maxJobOutputRetentionBytes)
+	}
+	_, total, truncated, err := run.output.Tail(maxJobOutputRetentionBytes)
+	if err != nil {
+		t.Fatalf("tail retained output: %v", err)
+	}
+	if total != int64(len(data)) || !truncated {
+		t.Fatalf("tail total=%d truncated=%v, want lifetime %d and truncated", total, truncated, len(data))
 	}
 }
 

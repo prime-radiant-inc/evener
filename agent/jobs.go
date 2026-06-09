@@ -194,7 +194,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		StartedAt:        startedAt,
 		OutputPath:       outputPath,
 	}
-	output, err := jobstore.OpenOutput(outputPath, maxJobOutputBytes)
+	output, err := jobstore.OpenOutput(outputPath, maxJobOutputRetentionBytes)
 	if err != nil {
 		return nil, err
 	}

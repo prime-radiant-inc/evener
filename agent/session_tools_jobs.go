@@ -19,6 +19,7 @@ import (
 const (
 	defaultJobOutputBytes       = 65536
 	maxJobOutputBytes           = 1048576
+	maxJobOutputRetentionBytes  = 8 * 1024 * 1024
 	defaultJobListLimit         = 50
 	maxJobListLimit             = 100
 	defaultJobBlockTimeoutMS    = 5000

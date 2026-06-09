@@ -517,7 +517,7 @@ func (s *Session) attachDelegateJob(jm *jobManager, childID, task string, sub *s
 	jobID := jobstore.NewJobID()
 	transcriptRef := encodeRef("", childID)
 	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
-	output, err := jobstore.OpenOutput(outputPath, maxJobOutputBytes)
+	output, err := jobstore.OpenOutput(outputPath, maxJobOutputRetentionBytes)
 	if err != nil {
 		return nil, err
 	}

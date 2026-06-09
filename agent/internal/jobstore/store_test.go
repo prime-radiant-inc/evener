@@ -1,6 +1,7 @@
 package jobstore
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"os"
@@ -175,6 +176,27 @@ func TestStoreOpenTruncatesTrailingPartialLine(t *testing.T) {
 	}
 }
 
+func TestStoreOpenTruncatesWholeFileTrailingPartialLine(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	data := []byte("{\"kind\":\"job_started\",\"seq\":1")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write store: %v", err)
+	}
+
+	s := openStore(t, path)
+	raw := readAllEvents(t, s)
+	if len(raw) != 0 {
+		t.Fatalf("events after recovery = %+v, want none", raw)
+	}
+	recovered, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read recovered store: %v", err)
+	}
+	if len(recovered) != 0 {
+		t.Fatalf("recovered store = %q, want empty file", recovered)
+	}
+}
+
 func TestStoreOpenPreservesCorruptCompleteLineError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "jobs.jsonl")
 	data := []byte("{\"kind\":\"job_started\",\"seq\":1,\"job_id\":\"job_A\"}\n{bad json}\n")
@@ -188,6 +210,29 @@ func TestStoreOpenPreservesCorruptCompleteLineError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "line 2") {
 		t.Fatalf("parse error = %q, want line number", err)
+	}
+}
+
+func TestStoreOpenPreservesCorruptTrailingLineError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	data := []byte("{\"kind\":\"job_started\",\"seq\":1,\"job_id\":\"job_A\"}\n{\"kind\":}")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write store: %v", err)
+	}
+
+	_, err := Open(path)
+	if err == nil {
+		t.Fatal("open corrupt trailing store succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "line 2") {
+		t.Fatalf("parse error = %q, want line number", err)
+	}
+	recovered, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read recovered store: %v", readErr)
+	}
+	if !bytes.Equal(recovered, data) {
+		t.Fatalf("recovered store = %q, want corrupt trailing line preserved", recovered)
 	}
 }
 

@@ -170,18 +170,20 @@ func (s *Store) recoverTrailingPartialLineLocked() (err error) {
 	}
 	cut := bytes.LastIndexByte(raw, '\n')
 	if cut < 0 {
-		var e Event
-		if err := json.Unmarshal(raw, &e); err != nil {
-			return fmt.Errorf("jobstore: parse event line 1: %w", err)
-		}
-		return nil
+		return s.recoverTrailingJSONLineLocked(raw, 0)
 	}
-	trailing := raw[cut+1:]
+	return s.recoverTrailingJSONLineLocked(raw[cut+1:], int64(cut+1))
+}
+
+func (s *Store) recoverTrailingJSONLineLocked(line []byte, offset int64) error {
 	var e Event
-	if err := json.Unmarshal(trailing, &e); err == nil {
+	err := json.Unmarshal(line, &e)
+	if err == nil {
 		return nil
 	}
-	offset := int64(cut + 1)
+	if !isIncompleteTrailingJSON(line, err) {
+		return nil
+	}
 	if err := s.f.Truncate(offset); err != nil {
 		return fmt.Errorf("jobstore: truncate trailing partial line: %w", err)
 	}
@@ -192,6 +194,14 @@ func (s *Store) recoverTrailingPartialLineLocked() (err error) {
 		return fmt.Errorf("jobstore: sync trailing recovery: %w", err)
 	}
 	return nil
+}
+
+func isIncompleteTrailingJSON(line []byte, err error) bool {
+	if len(bytes.TrimSpace(line)) == 0 {
+		return false
+	}
+	var syntaxErr *json.SyntaxError
+	return errors.As(err, &syntaxErr) && err.Error() == "unexpected end of JSON input"
 }
 
 func (s *Store) ensureOpenLocked() error {
