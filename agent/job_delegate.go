@@ -173,6 +173,16 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	if rec.Type != jobstore.JobDelegate {
 		return sendMessageFailed(target, fmt.Errorf("target_not_messageable: job %q has type %q", target, rec.Type))
 	}
+	if rec.Status == jobstore.StatusRunning {
+		return s.sendRunningDelegateMessage(target, message, rec)
+	}
+	if !rec.Status.IsTerminal() {
+		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate job %q has status %q", target, rec.Status))
+	}
+	if strings.TrimSpace(args.OnFinished) == "fail" {
+		return sendMessageFailed(target, fmt.Errorf("target_terminal: delegate job %q is %s", target, rec.Status))
+	}
+
 	_, childID, err := decodeRef(rec.TranscriptRef)
 	if err != nil {
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: invalid transcript_ref for job %q: %w", target, err))
@@ -186,21 +196,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	running := sub.running
 	sub.mu.Unlock()
 	if running {
-		// Phase 3 v1 steers the live child session even when the selected job is
-		// an older run for that child; delegate_session_busy is deferred.
-		sub.sess.Steer(message)
-		return sendMessageResult{
-			Target:              target,
-			JobID:               rec.JobID,
-			Type:                string(jobstore.JobDelegate),
-			Status:              jobstore.StatusRunning,
-			RunningInBackground: true,
-			Action:              "sent",
-			TranscriptRef:       rec.TranscriptRef,
-		}
-	}
-	if strings.TrimSpace(args.OnFinished) == "fail" {
-		return sendMessageFailed(target, fmt.Errorf("target_terminal: delegate job %q is %s", target, rec.Status))
+		return sendMessageFailed(target, fmt.Errorf("delegate_session_busy: delegate session %q is already running", childID))
 	}
 
 	if _, err := s.sendInput(ctx, childID, message); err != nil {
@@ -220,6 +216,35 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		Action:              "resumed",
 		ResumedFromJobID:    rec.JobID,
 		TranscriptRef:       run.rec.TranscriptRef,
+	}
+}
+
+func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobstore.JobRecord) sendMessageResult {
+	_, childID, err := decodeRef(rec.TranscriptRef)
+	if err != nil {
+		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: invalid transcript_ref for job %q: %w", target, err))
+	}
+	sub := s.subagents.get(childID)
+	if sub == nil || sub.sess == nil {
+		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate session %q is not retained", childID))
+	}
+
+	sub.mu.Lock()
+	running := sub.running
+	sub.mu.Unlock()
+	if !running {
+		return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is running but session %q is not live", target, childID))
+	}
+
+	sub.sess.Steer(message)
+	return sendMessageResult{
+		Target:              target,
+		JobID:               rec.JobID,
+		Type:                string(jobstore.JobDelegate),
+		Status:              jobstore.StatusRunning,
+		RunningInBackground: true,
+		Action:              "sent",
+		TranscriptRef:       rec.TranscriptRef,
 	}
 }
 
