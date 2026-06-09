@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/goal"
+	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -744,6 +745,75 @@ func TestNotificationNoOpBeforeDeferredGoalContinuationDoesNotSuppressSessionEnd
 	}
 	if d := lastGoalEnded(t, evs); d.Status != "complete" {
 		t.Fatalf("EventGoalEnded.Status = %q, want complete", d.Status)
+	}
+}
+
+func TestNotificationNoOpDroppedDeferredGoalContinuationDoesNotSuppressSessionEnd(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return toolCallResponse(writeFileCall("u1", "u.txt", "user work"))
+			},
+			func(req llm.Request) llm.Response { return finalResponse("user turn done") },
+		},
+	}
+	c.Register(adapter)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	collect := drainEvents(sess)
+	sess.getOrCreateGoalStore().Set("inline objective", time.Now())
+
+	jm, err := newJobManager(dir, sess.ID(), sess.enqueueJobNotification)
+	if err != nil {
+		t.Fatalf("newJobManager: %v", err)
+	}
+	sess.jobManager = jm
+	appendPendingJobNotificationRecord(t, jm, sess.ID())
+	sess.appendTurn(schema.TurnSteering, llm.User(formatJobNotificationBlock(jobNotification{JobID: "job_X"})))
+
+	origAppend := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventJobNotificationDelivered {
+			sess.ClearGoal()
+		}
+		return origAppend(e)
+	}
+	base1 := adapter.steps[1]
+	adapter.steps[1] = func(req llm.Request) llm.Response {
+		sess.enqueueJobNotification(jobNotification{JobID: "job_X"})
+		return base1(req)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "begin", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	sess.Close()
+	evs := collect()
+	var sessionEnds int
+	for _, ev := range evs {
+		if ev.Kind != events.EventSessionEnd {
+			continue
+		}
+		if d, ok := ev.Data.(events.SessionEndData); ok && d.Reason == "input_complete" {
+			sessionEnds++
+		}
+	}
+	if sessionEnds != 1 {
+		t.Fatalf("SESSION_END{input_complete} count = %d, want 1 after dropping deferred continuation", sessionEnds)
+	}
+	if got := countGoalContinuations(evs); got != 0 {
+		t.Fatalf("count(EventGoalContinuation) = %d, want 0 after goal clear", got)
+	}
+	if _, ok := sess.getOrCreateGoalStore().Snapshot(); ok {
+		t.Fatal("goal snapshot present after ClearGoal; want absent")
 	}
 }
 
