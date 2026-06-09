@@ -129,6 +129,10 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	}
 
 	jm.mu.Lock()
+	if !isWatchSessionTarget(key.Target) && !isWatchableConcreteJobLocked(jm.running[key.Target]) {
+		jm.mu.Unlock()
+		return watchResult{}, watchTargetNotFoundError(key.Target)
+	}
 	existing := jm.watches[key]
 	if existing != nil {
 		if watchConfigsEqual(existing, cfg) {
@@ -164,22 +168,35 @@ func (jm *jobManager) validateWatchTarget(target string) error {
 
 	jm.mu.Lock()
 	run := jm.running[target]
+	if isWatchableConcreteJobLocked(run) {
+		jm.mu.Unlock()
+		return nil
+	}
 	jm.mu.Unlock()
 	if run != nil {
-		return nil
+		return watchTargetNotFoundError(target)
 	}
 
 	recs, err := jm.store.Load()
 	if err != nil {
 		return err
 	}
-	if recs[target] == nil {
-		return fmt.Errorf("target_not_found: job %q not found", target)
+	rec := recs[target]
+	if rec == nil || rec.Status.IsTerminal() {
+		return watchTargetNotFoundError(target)
 	}
 
 	// TODO(spec §5.9): enforce cross-session watch authorization when Phase 5
 	// extends nested-job visibility beyond root-caller-visible targets.
 	return nil
+}
+
+func isWatchableConcreteJobLocked(run *runningJob) bool {
+	return run != nil && run.terminal == nil && run.finalize == nil
+}
+
+func watchTargetNotFoundError(target string) error {
+	return fmt.Errorf("target_not_found: job %q not found", target)
 }
 
 func isWatchSessionTarget(target string) bool {
@@ -413,6 +430,30 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte) {
 
 	jm.enqueueWatchNotifications(notifications)
 	jm.deliverWatchSends(context.Background(), deliveries)
+}
+
+func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, []watchSendDelivery) {
+	var notifications []jobNotification
+	var deliveries []watchSendDelivery
+
+	for key, cfg := range jm.watches {
+		if key.Target != jobID {
+			continue
+		}
+		if cfg.outputMatcher != nil {
+			for _, match := range cfg.outputMatcher.Flush() {
+				if cfg.send != nil {
+					deliveries = append(deliveries, watchSendSnapshot(cfg, jobID, "output_match: "+match))
+				} else {
+					notifications = append(notifications, jobNotification{})
+				}
+			}
+		}
+		closeWatchConfig(cfg)
+		delete(jm.watches, key)
+	}
+
+	return notifications, deliveries
 }
 
 func (jm *jobManager) startProgressTimer(key watchKey, cfg *watchConfig, stop <-chan struct{}) {

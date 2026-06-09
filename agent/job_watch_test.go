@@ -26,6 +26,26 @@ func TestConfigureWatchTargetNotFound(t *testing.T) {
 	}
 }
 
+func TestConfigureWatchRejectsTerminalizingConcreteJob(t *testing.T) {
+	jm := newTestJM(t)
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+
+	jm.mu.Lock()
+	jm.running[rec.JobID].finalize = &finalizeAttempt{done: make(chan struct{})}
+	jm.mu.Unlock()
+
+	_, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"})
+	if err == nil {
+		t.Fatal("a terminalizing concrete job must not accept new watches")
+	}
+	if !strings.Contains(err.Error(), "target_not_found") {
+		t.Fatalf("error = %v, want target_not_found", err)
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("terminalizing job watch was registered; count = %d", jm.watchCount())
+	}
+}
+
 func TestConfigureWatchIdempotentAndReplace(t *testing.T) {
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -123,6 +143,61 @@ func TestOutputMatchWatchFiresOnAppendedBytes(t *testing.T) {
 
 	if len(notified) != 1 {
 		t.Fatalf("output_match must fire once on the matching appended line, got %d", len(notified))
+	}
+}
+
+func TestConcreteWatchExpiresOnTerminal(t *testing.T) {
+	jm := newTestJM(t)
+	jm.enqueue = func(jobNotification) {}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	_, _ = jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"})
+	if jm.watchCount() != 1 {
+		t.Fatalf("watch not registered")
+	}
+	code := 0
+	jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code)
+	if jm.watchCount() != 0 {
+		t.Errorf("a concrete-job watch must expire when the job goes terminal; count = %d", jm.watchCount())
+	}
+}
+
+func TestSessionWatchSurvivesAJobTerminal(t *testing.T) {
+	jm := newTestJM(t)
+	jm.enqueue = func(jobNotification) {}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	_, _ = jm.configureWatch(watchArgs{Target: "caller", Events: []string{"assistant.message"}})
+	code := 0
+	jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code)
+	if jm.watchCount() != 1 {
+		t.Errorf("a session-alias watch must survive a job going terminal; count = %d", jm.watchCount())
+	}
+}
+
+func TestConcreteWatchFlushesBeforeTerminalNotification(t *testing.T) {
+	jm := newTestJM(t)
+	var order []string
+	jm.enqueue = func(n jobNotification) {
+		if n.JobID == "" {
+			order = append(order, "watch")
+		} else {
+			order = append(order, "terminal")
+		}
+	}
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("server ready")); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	code := 0
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if strings.Join(order, ",") != "watch,terminal" {
+		t.Fatalf("notification order = %v, want watch before terminal", order)
 	}
 }
 

@@ -597,7 +597,11 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		jm.mu.Unlock()
 		return nil
 	}
+	watchNotifications, watchDeliveries := jm.expireJobWatchesLocked(run.rec.JobID)
 	jm.mu.Unlock()
+
+	jm.enqueueWatchNotifications(watchNotifications)
+	jm.deliverWatchSends(context.Background(), watchDeliveries)
 
 	if err := jm.appendEvent(jobstore.Event{
 		Kind:        jobstore.EventJobNotificationPending,
