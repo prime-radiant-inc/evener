@@ -25,12 +25,13 @@ type jobManager struct {
 }
 
 type runningJob struct {
-	rec      *jobstore.JobRecord
-	output   *jobstore.OutputStore
-	signal   func()
-	done     chan struct{}
-	terminal *terminalJob
-	finalize *finalizeAttempt
+	rec            *jobstore.JobRecord
+	output         *jobstore.OutputStore
+	signal         func()
+	done           chan struct{}
+	durableStarted bool
+	terminal       *terminalJob
+	finalize       *finalizeAttempt
 }
 
 type finalizeAttempt struct {
@@ -131,10 +132,11 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 
 	jm.mu.Lock()
 	jm.running[jobID] = &runningJob{
-		rec:    rec,
-		output: output,
-		signal: func() {},
-		done:   make(chan struct{}),
+		rec:            rec,
+		output:         output,
+		signal:         func() {},
+		done:           make(chan struct{}),
+		durableStarted: true,
 	}
 	jm.mu.Unlock()
 	return rec, nil
@@ -156,6 +158,9 @@ func (jm *jobManager) listWithError(filter listFilter) ([]*jobstore.JobRecord, e
 
 	jm.mu.Lock()
 	for jobID, run := range jm.running {
+		if !run.durableStarted {
+			continue
+		}
 		recs[jobID] = cloneJobRecord(run.rec)
 	}
 	jm.mu.Unlock()
