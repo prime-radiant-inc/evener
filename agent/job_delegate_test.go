@@ -330,6 +330,67 @@ func TestCreateDelegateDurableRecordKeepsOutputPathAndTranscriptRef(t *testing.T
 	}
 }
 
+func TestDelegateNotificationCarriesTranscriptRef(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithStructured("notification delegate complete", map[string]any{
+					"message": "notification delegate complete",
+				})
+			},
+		},
+	})
+	sess := newDelegateTestSession(t, c)
+
+	var mu sync.Mutex
+	var queued []jobNotification
+	sess.jobManager.enqueue = func(n jobNotification) {
+		mu.Lock()
+		defer mu.Unlock()
+		queued = append(queued, n)
+	}
+
+	res := sess.createDelegate(context.Background(), delegateArgs{
+		Task:       "finish and notify",
+		Background: true,
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", res.Err)
+	}
+	if res.JobID == "" || res.TranscriptRef == "" {
+		t.Fatalf("result = %+v, want job_id and transcript_ref", res)
+	}
+
+	var got []jobNotification
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		got = append([]jobNotification(nil), queued...)
+		mu.Unlock()
+		if len(got) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if len(got) != 1 {
+		t.Fatalf("queued notifications = %+v, want exactly one", got)
+	}
+
+	rec := loadShellRecord(t, sess.jobManager, res.JobID)
+	n := got[0]
+	if n.JobID != res.JobID {
+		t.Fatalf("notification job_id = %q, want %q", n.JobID, res.JobID)
+	}
+	if n.JobType != string(jobstore.JobDelegate) {
+		t.Fatalf("notification job_type = %q, want %q", n.JobType, jobstore.JobDelegate)
+	}
+	if n.TranscriptRef == "" || n.TranscriptRef != res.TranscriptRef || n.TranscriptRef != rec.TranscriptRef {
+		t.Fatalf("notification transcript_ref = %q, result = %q, record = %q", n.TranscriptRef, res.TranscriptRef, rec.TranscriptRef)
+	}
+}
+
 func TestCreateDelegateForegroundFinalizeFailureReturns(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
