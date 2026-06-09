@@ -79,6 +79,11 @@ type profileSpec struct {
 	cheapModel      string
 }
 
+// Keep in sync with agent.WatchEventKindNames / agent.modelEventKinds. The
+// provider package cannot import agent, but provider-advertised job_watch must
+// describe the same model-facing event vocabulary as the registered tool.
+var jobWatchEventKindNames = []string{"assistant.message", "assistant.tool", "communicate", "job.notification"}
+
 var (
 	openAICodexCapabilities = []toolCapability{
 		capabilityFiles,
@@ -212,6 +217,7 @@ func toolDefinitionsForCapabilities(capabilities []toolCapability, efforts []str
 		add(tool.DefJobList())
 		add(tool.DefJobStop())
 		add(tool.DefDelegate(nil))
+		add(tool.DefJobWatch(jobWatchEventKindNames))
 		add(tool.DefJobSendMessage())
 	}
 	if enabled[capabilityWorkflow] {

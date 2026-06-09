@@ -18,6 +18,29 @@ func TestConfigureWatchRequiresCondition(t *testing.T) {
 	}
 }
 
+func TestConfigureWatchRejectsNegativeProgressInterval(t *testing.T) {
+	jm := newTestJM(t)
+	_, err := jm.configureWatch(watchArgs{Target: "caller", ProgressIntervalMS: -1})
+	if err == nil {
+		t.Fatal("negative progress interval must error")
+	}
+	if !strings.Contains(err.Error(), "progress_interval_ms must be non-negative") {
+		t.Fatalf("error = %v, want progress_interval_ms validation", err)
+	}
+}
+
+func TestConfigureWatchClampsProgressInterval(t *testing.T) {
+	jm := newTestJM(t)
+	t.Cleanup(func() { _ = jm.close() })
+	res, err := jm.configureWatch(watchArgs{Target: "caller", ProgressIntervalMS: 10})
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if res.ProgressIntervalMS != minWatchProgressIntervalMS {
+		t.Fatalf("progress interval = %d, want %d", res.ProgressIntervalMS, minWatchProgressIntervalMS)
+	}
+}
+
 func TestConfigureWatchTargetNotFound(t *testing.T) {
 	jm := newTestJM(t)
 	_, err := jm.configureWatch(watchArgs{Target: "job_does_not_exist", OutputMatch: "ready"})
@@ -304,12 +327,12 @@ func TestProgressTimerStopsOnClose(t *testing.T) {
 	fired := make(chan struct{}, 16)
 	jm.enqueue = func(jobNotification) { fired <- struct{}{} }
 
-	if _, err := jm.configureWatch(watchArgs{Target: "caller", ProgressIntervalMS: 10}); err != nil {
+	if _, err := jm.configureWatch(watchArgs{Target: "caller", ProgressIntervalMS: minWatchProgressIntervalMS}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
 	select {
 	case <-fired:
-	case <-time.After(time.Second):
+	case <-time.After(1500 * time.Millisecond):
 		t.Fatal("progress timer did not fire before close")
 	}
 	if err := jm.close(); err != nil {

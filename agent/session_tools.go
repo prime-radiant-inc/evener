@@ -572,6 +572,9 @@ func (s *Session) rebuildToolDefsCache() {
 			if td.Name == "delegate" {
 				td = tool.DefDelegate(s.delegateAgentTypeNames())
 			}
+			if td.Name == "job_watch" {
+				td = tool.DefJobWatch(availableEventKindNames())
+			}
 			wire := wireToolDef(td, nameMap)
 			defs = append(defs, wire)
 			included[td.Name] = true // canonical

@@ -33,13 +33,15 @@ var modelEventKinds = map[string]events.EventKind{
 }
 
 const (
-	watchFrameMaxChars      = 4096
-	watchMessageMaxChars    = 2048
-	watchTriggerMaxChars    = 1024
-	watchExcerptTailBytes   = 4096
-	watchExcerptMaxChars    = 4096
-	watchReadErrorMaxChars  = 256
-	watchTruncatedIndicator = "\n[truncated]"
+	minWatchProgressIntervalMS = 1000
+	maxWatchProgressIntervalMS = 3600000
+	watchFrameMaxChars         = 4096
+	watchMessageMaxChars       = 2048
+	watchTriggerMaxChars       = 1024
+	watchExcerptTailBytes      = 4096
+	watchExcerptMaxChars       = 4096
+	watchReadErrorMaxChars     = 256
+	watchTruncatedIndicator    = "\n[truncated]"
 )
 
 type watchKey struct {
@@ -101,6 +103,15 @@ type watchSendDelivery struct {
 func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	if a.Target == "" {
 		return watchResult{}, fmt.Errorf("invalid_request: target is required")
+	}
+	if a.ProgressIntervalMS < 0 {
+		return watchResult{}, fmt.Errorf("invalid_request: progress_interval_ms must be non-negative")
+	}
+	if a.ProgressIntervalMS > 0 && a.ProgressIntervalMS < minWatchProgressIntervalMS {
+		a.ProgressIntervalMS = minWatchProgressIntervalMS
+	}
+	if a.ProgressIntervalMS > maxWatchProgressIntervalMS {
+		a.ProgressIntervalMS = maxWatchProgressIntervalMS
 	}
 	if !a.Clear && !watchArgsHasCondition(a) {
 		return watchResult{}, fmt.Errorf("invalid_request: nothing to watch")

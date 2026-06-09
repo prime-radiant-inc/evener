@@ -8,7 +8,7 @@ func TestJobControlCapabilityIncludesDelegateAndSendMessage(t *testing.T) {
 	for _, d := range defs {
 		have[d.Name] = true
 	}
-	for _, name := range []string{"delegate", "job_send_message", "job_read_output", "job_list", "job_stop"} {
+	for _, name := range []string{"delegate", "job_watch", "job_send_message", "job_read_output", "job_list", "job_stop"} {
 		if !have[name] {
 			t.Errorf("capabilityJobControl missing %q", name)
 		}

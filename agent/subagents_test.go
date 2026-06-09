@@ -635,6 +635,9 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if !isRootOnlySubagentTool("delegate") {
 		t.Fatal("delegate must be a root-only subagent tool")
 	}
+	if !isRootOnlySubagentTool("job_watch") {
+		t.Fatal("job_watch must be a root-only subagent tool")
+	}
 
 	dir := t.TempDir()
 	c := llm.NewClient()
@@ -653,7 +656,25 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if child.reg.Get("delegate") != nil {
 		t.Fatal("depth>0 child must not have delegate registered")
 	}
+	if child.reg.Get("job_watch") != nil {
+		t.Fatal("depth>0 child must not have job_watch registered")
+	}
 	if child.reg.Get("job_send_message") == nil {
 		t.Fatal("depth>0 child must keep job_send_message registered")
 	}
+	if hasCachedToolDefinition(child, "job_watch") {
+		t.Fatal("depth>0 child must not advertise job_watch")
+	}
+	if !hasCachedToolDefinition(child, "job_send_message") {
+		t.Fatal("depth>0 child must advertise job_send_message")
+	}
+}
+
+func hasCachedToolDefinition(s *Session, name string) bool {
+	for _, def := range s.cachedToolDefs {
+		if def.Name == name {
+			return true
+		}
+	}
+	return false
 }

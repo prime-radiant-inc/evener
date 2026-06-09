@@ -138,6 +138,175 @@ func TestJobToolsControlBackgroundShellJob(t *testing.T) {
 	}
 }
 
+func TestJobWatchToolConfiguresWatch(t *testing.T) {
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	if shellOut.JobID == "" {
+		t.Fatal("background shell returned no job_id")
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(shellOut.JobID)
+		waitForShellDone(t, s.jobManager, shellOut.JobID)
+	})
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "watch",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"target":%q,"output_match":"(?i)ready"}`, shellOut.JobID)),
+	})
+	if res.IsError {
+		t.Fatalf("job_watch returned error: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, `"watching":true`) {
+		t.Fatalf("job_watch output = %s, want watching true", res.Output)
+	}
+	if s.jobManager.watchCount() != 1 {
+		t.Fatalf("watch count = %d, want 1", s.jobManager.watchCount())
+	}
+}
+
+func TestJobWatchNoConditionErrors(t *testing.T) {
+	s := newTestSession(t)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "watch",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(`{"target":"caller"}`),
+	})
+	if !res.IsError {
+		t.Fatalf("job_watch succeeded, want error: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "invalid_request: nothing to watch") {
+		t.Fatalf("job_watch error = %q, want no-condition error", res.Output)
+	}
+}
+
+func TestJobWatchLargeEchoFieldsReturnBoundedSuccess(t *testing.T) {
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(shellOut.JobID)
+		waitForShellDone(t, s.jobManager, shellOut.JobID)
+	})
+
+	largeMessage := strings.Repeat("watch-message-", jobToolResultDefaultMaxChar)
+	args, err := json.Marshal(map[string]any{
+		"target":       shellOut.JobID,
+		"output_match": "ready",
+		"send": map[string]any{
+			"to":      "caller",
+			"message": largeMessage,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "watch",
+		Name:      "job_watch",
+		Arguments: args,
+	})
+	if res.IsError {
+		t.Fatalf("job_watch returned error after installing watch candidate: %s", res.Output)
+	}
+	if len([]rune(res.Output)) > jobToolResultDefaultMaxChar {
+		t.Fatalf("job_watch output length = %d, want <= %d", len([]rune(res.Output)), jobToolResultDefaultMaxChar)
+	}
+	var out struct {
+		Target   string `json:"target"`
+		Watching bool   `json:"watching"`
+		Send     *struct {
+			To      string `json:"to"`
+			Message string `json:"message"`
+		} `json:"send"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal job_watch output: %v (output: %s)", err, res.Output)
+	}
+	if out.Target != shellOut.JobID || !out.Watching || out.Send == nil || out.Send.To != "caller" {
+		t.Fatalf("job_watch output = %+v, want watching response for %s", out, shellOut.JobID)
+	}
+	if out.Send.Message == largeMessage {
+		t.Fatal("job_watch output echoed unbounded send.message")
+	}
+	if s.jobManager.watchCount() != 1 {
+		t.Fatalf("watch count = %d, want 1", s.jobManager.watchCount())
+	}
+}
+
+func TestJobWatchSendToRequired(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		send string
+	}{
+		{name: "missing", send: `{}`},
+		{name: "empty", send: `{"to":"   "}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSession(t)
+			res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+				ID:        "watch",
+				Name:      "job_watch",
+				Arguments: json.RawMessage(fmt.Sprintf(`{"target":"caller","events":["assistant.message"],"send":%s}`, tc.send)),
+			})
+			if !res.IsError {
+				t.Fatalf("job_watch succeeded, want send.to error: %s", res.Output)
+			}
+			if !strings.Contains(res.Output, "invalid_request: send.to is required") {
+				t.Fatalf("job_watch error = %q, want send.to validation", res.Output)
+			}
+			if s.jobManager.watchCount() != 0 {
+				t.Fatalf("watch count = %d, want 0", s.jobManager.watchCount())
+			}
+		})
+	}
+}
+
+func TestJobWatchAdvertisedDefinitionUsesCanonicalEventKinds(t *testing.T) {
+	want := tooldefs.DefJobWatch(WatchEventKindNames)
+	var got *llm.ToolDefinition
+	for _, def := range NewOpenAIProfile("gpt-5.2").ToolDefinitions() {
+		if def.Name == "job_watch" {
+			got = &def
+			break
+		}
+	}
+	if got == nil {
+		t.Fatal("OpenAI profile does not advertise job_watch")
+	}
+	if got.Description != want.Description {
+		t.Fatalf("job_watch description drifted from WatchEventKindNames\n got: %q\nwant: %q", got.Description, want.Description)
+	}
+}
+
 func TestJobStopDefaultReturnsRequestedCancellation(t *testing.T) {
 	s := newTestSession(t)
 
@@ -618,6 +787,7 @@ func TestJobToolsDefinitions(t *testing.T) {
 	required(t, tooldefs.DefJobStop(), "job_stop", []string{"job_id"})
 	required(t, tooldefs.DefJobList(), "job_list", nil)
 	required(t, tooldefs.DefDelegate([]string{"reviewer"}), "delegate", []string{"task"})
+	required(t, tooldefs.DefJobWatch(WatchEventKindNames), "job_watch", []string{"target"})
 	required(t, tooldefs.DefJobSendMessage(), "job_send_message", []string{"target", "message"})
 
 	readProps := tooldefs.DefJobReadOutput().Parameters["properties"].(map[string]any)
@@ -656,6 +826,12 @@ func TestJobToolsDefinitions(t *testing.T) {
 	for _, param := range []string{"target", "message", "on_finished", "background", "block_timeout_ms"} {
 		if _, ok := sendProps[param]; !ok {
 			t.Fatalf("job_send_message missing param %q", param)
+		}
+	}
+	watchProps := tooldefs.DefJobWatch(WatchEventKindNames).Parameters["properties"].(map[string]any)
+	for _, param := range []string{"target", "output_match", "progress_interval_ms", "events", "trigger", "send", "clear"} {
+		if _, ok := watchProps[param]; !ok {
+			t.Fatalf("job_watch missing param %q", param)
 		}
 	}
 }
@@ -810,11 +986,12 @@ func TestJobToolOutputLimitsHaveJSONMinimum(t *testing.T) {
 			"job_list":         {MaxChars: 1, Strategy: schema.TruncHeadTail},
 			"job_stop":         {MaxChars: 1, Strategy: schema.TruncHeadTail},
 			"delegate":         {MaxChars: 1, Strategy: schema.TruncHeadTail},
+			"job_watch":        {MaxChars: 1, Strategy: schema.TruncHeadTail},
 			"job_send_message": {MaxChars: 1, Strategy: schema.TruncHeadTail},
 		},
 	})
 
-	for _, name := range []string{"job_read_output", "job_list", "job_stop", "delegate", "job_send_message"} {
+	for _, name := range []string{"job_read_output", "job_list", "job_stop", "delegate", "job_watch", "job_send_message"} {
 		rt := s.reg.Get(name)
 		if rt == nil {
 			t.Fatalf("%s not registered", name)

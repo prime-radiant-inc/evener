@@ -31,6 +31,8 @@ const (
 	maxJobGrepMatches           = 100
 	maxJobGrepLineBytes         = 4096
 	maxJobGrepPatternBytes      = 4096
+	maxJobWatchResultTextChars  = 128
+	maxJobWatchResultEvents     = 8
 )
 
 var rootOnlyJobControlTools = []string{"delegate", "job_watch"}
@@ -78,6 +80,17 @@ func registerJobTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	}); err != nil {
 		return err
 	}
+	if err := reg.Register(tool.RegisteredTool{
+		Tool:  llm.Tool{Definition: tool.DefJobWatch(availableEventKindNames())},
+		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
+		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
+			_ = ctx
+			_ = env
+			return jobWatchTool(s, args, jobToolResultMaxChars(reg, "job_watch"))
+		},
+	}); err != nil {
+		return err
+	}
 	return reg.Register(tool.RegisteredTool{
 		Tool:  llm.Tool{Definition: tool.DefDelegate(s.delegateAgentTypeNames())},
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
@@ -108,6 +121,22 @@ func jobSendMessageTool(ctx context.Context, s *Session, args map[string]any, ma
 		return "", res.Err
 	}
 	return marshalSendMessageResult(res, maxChars)
+}
+
+func jobWatchTool(s *Session, args map[string]any, maxChars int) (string, error) {
+	jm, err := sessionJobManager(s)
+	if err != nil {
+		return "", err
+	}
+	a, err := watchArgsFromToolArgs(args)
+	if err != nil {
+		return "", err
+	}
+	res, err := jm.configureWatch(a)
+	if err != nil {
+		return "", err
+	}
+	return marshalWatchResult(res, maxChars)
 }
 
 func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars int) (string, error) {
@@ -341,6 +370,23 @@ type jobSendMessageAliasResult struct {
 	MessageType string `json:"message_type"`
 }
 
+type jobWatchToolResult struct {
+	Target             string                `json:"target"`
+	Watching           bool                  `json:"watching"`
+	OutputMatch        string                `json:"output_match,omitempty"`
+	Events             []string              `json:"events,omitempty"`
+	ProgressIntervalMS int                   `json:"progress_interval_ms,omitempty"`
+	Send               *jobWatchToolSendArgs `json:"send,omitempty"`
+	ReplacedExisting   bool                  `json:"replaced_existing,omitempty"`
+}
+
+type jobWatchToolSendArgs struct {
+	To             string `json:"to"`
+	Message        string `json:"message,omitempty"`
+	IncludeFrame   bool   `json:"include_frame,omitempty"`
+	IncludeExcerpt bool   `json:"include_excerpt,omitempty"`
+}
+
 type delegateToolResult struct {
 	JobID                 string  `json:"job_id"`
 	Type                  string  `json:"type"`
@@ -386,6 +432,48 @@ func marshalSendMessageResult(res sendMessageResult, maxChars int) (string, erro
 		out.StructuredResultValid = &valid
 	}
 	return marshalBoundedSendMessageDelegateResult(out, maxChars)
+}
+
+func marshalWatchResult(res watchResult, maxChars int) (string, error) {
+	out := jobWatchToolResult{
+		Target:             res.Target,
+		Watching:           res.Watching,
+		OutputMatch:        res.OutputMatch,
+		Events:             res.Events,
+		ProgressIntervalMS: res.ProgressIntervalMS,
+		ReplacedExisting:   res.ReplacedExisting,
+	}
+	if res.Send != nil {
+		out.Send = &jobWatchToolSendArgs{
+			To:             res.Send.To,
+			Message:        res.Send.Message,
+			IncludeFrame:   res.Send.IncludeFrame,
+			IncludeExcerpt: res.Send.IncludeExcerpt,
+		}
+	}
+	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
+		return fit, err
+	}
+	out.Target = limitWatchText(out.Target, maxJobWatchResultTextChars)
+	out.OutputMatch = limitWatchText(out.OutputMatch, maxJobWatchResultTextChars)
+	out.Events = boundedJobWatchResultEvents(out.Events)
+	if out.Send != nil {
+		out.Send.To = limitWatchText(out.Send.To, maxJobWatchResultTextChars)
+		out.Send.Message = limitWatchText(out.Send.Message, maxJobWatchResultTextChars)
+	}
+	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
+		return fit, err
+	}
+	out.OutputMatch = ""
+	out.Events = nil
+	if out.Send != nil {
+		out.Send.Message = ""
+	}
+	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
+		return fit, err
+	}
+	out.Send = nil
+	return marshalBoundedJSON(out, maxChars)
 }
 
 func marshalDelegateResult(res delegateResult, maxChars int) (string, error) {
@@ -601,6 +689,111 @@ func jobStatusArrayArg(args map[string]any, key string) ([]jobstore.Status, erro
 		}
 	}
 	return statuses, nil
+}
+
+func watchArgsFromToolArgs(args map[string]any) (watchArgs, error) {
+	a := watchArgs{
+		Target:      strings.TrimSpace(stringArg(args, "target")),
+		OutputMatch: stringArg(args, "output_match"),
+		Clear:       shellBoolArg(args, "clear"),
+	}
+	if n, ok := shellIntArg(args, "progress_interval_ms"); ok {
+		a.ProgressIntervalMS = n
+	}
+	events, err := stringArrayArg(args, "events")
+	if err != nil {
+		return watchArgs{}, err
+	}
+	a.Events = events
+	if trigger, err := watchTriggerArg(args); err != nil {
+		return watchArgs{}, err
+	} else if trigger != nil {
+		a.TriggerEvent = trigger.event
+		a.TriggerEvery = trigger.every
+	}
+	send, err := watchSendArg(args)
+	if err != nil {
+		return watchArgs{}, err
+	}
+	a.Send = send
+	return a, nil
+}
+
+func stringArrayArg(args map[string]any, key string) ([]string, error) {
+	raw, ok := args[key]
+	if !ok {
+		return nil, nil
+	}
+	values, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s must be an array", key)
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		s, ok := value.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s values must be strings", key)
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+type watchTriggerToolArgs struct {
+	event string
+	every int
+}
+
+func watchTriggerArg(args map[string]any) (*watchTriggerToolArgs, error) {
+	raw, ok := args["trigger"]
+	if !ok {
+		return nil, nil
+	}
+	values, ok := raw.(map[string]any)
+	if !ok {
+		return nil, errors.New("trigger must be an object")
+	}
+	trigger := &watchTriggerToolArgs{event: stringArg(values, "event")}
+	if n, ok := shellIntArg(values, "every"); ok {
+		trigger.every = n
+	}
+	return trigger, nil
+}
+
+func watchSendArg(args map[string]any) (*watchSendArgs, error) {
+	raw, ok := args["send"]
+	if !ok {
+		return nil, nil
+	}
+	values, ok := raw.(map[string]any)
+	if !ok {
+		return nil, errors.New("send must be an object")
+	}
+	to := strings.TrimSpace(stringArg(values, "to"))
+	if to == "" {
+		return nil, errors.New("invalid_request: send.to is required")
+	}
+	return &watchSendArgs{
+		To:             to,
+		Message:        stringArg(values, "message"),
+		IncludeFrame:   shellBoolArg(values, "include_frame"),
+		IncludeExcerpt: shellBoolArg(values, "include_excerpt"),
+	}, nil
+}
+
+func boundedJobWatchResultEvents(events []string) []string {
+	if len(events) == 0 {
+		return nil
+	}
+	limit := len(events)
+	if limit > maxJobWatchResultEvents {
+		limit = maxJobWatchResultEvents
+	}
+	out := make([]string, 0, limit)
+	for _, event := range events[:limit] {
+		out = append(out, limitWatchText(event, maxJobWatchResultTextChars))
+	}
+	return out
 }
 
 func validateJobGrepPattern(pattern string, maxChars int) error {
@@ -901,7 +1094,7 @@ func enforceJobToolJSONLimits(reg *tool.Registry) {
 		return
 	}
 	overrides := map[string]schema.ToolOutputLimit{}
-	for _, name := range []string{"job_read_output", "job_list", "job_stop", "delegate", "job_send_message"} {
+	for _, name := range []string{"job_read_output", "job_list", "job_stop", "delegate", "job_watch", "job_send_message"} {
 		registered := reg.Get(name)
 		if registered == nil || registered.Limit.MaxChars >= jobToolResultMinJSONChars {
 			continue
