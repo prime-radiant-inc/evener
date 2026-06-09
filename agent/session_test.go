@@ -1647,7 +1647,7 @@ func TestSession_SubagentStopHookRunsWhenSubagentFinishes(t *testing.T) {
 	}
 }
 
-func TestSession_ToolOutputTruncation_OverridesLimitsAndKeepsFullOutputInEvents(t *testing.T) {
+func TestSession_ToolOutputTruncation_OverridesLimitsAndKeepsShellJSONValid(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -1701,55 +1701,46 @@ func TestSession_ToolOutputTruncation_OverridesLimitsAndKeepsFullOutputInEvents(
 	if len(reqs) != 2 {
 		t.Fatalf("requests: got %d want 2", len(reqs))
 	}
-	// The second request should include a truncated tool result sent back to the model.
-	truncated := ""
+	toolResult := ""
 	for _, m := range reqs[1].Messages {
 		if m.Role == llm.RoleTool {
 			for _, p := range m.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					if s, ok := p.ToolResult.Content.(string); ok {
-						truncated = s
+						toolResult = s
 					}
 				}
 			}
 		}
 	}
-	if !strings.Contains(truncated, "Tool output was truncated") {
-		t.Fatalf("expected truncation marker in tool result, got:\n%s", truncated)
+	if toolResult == "" {
+		t.Fatalf("expected tool result content")
 	}
-	if len(truncated) > 2000 {
-		t.Fatalf("expected truncated tool result to be small, got %d chars", len(truncated))
+	if got := len([]rune(toolResult)); got > 800 {
+		t.Fatalf("tool result escaped configured max chars: got %d want <= 800", got)
 	}
 
-	// TOOL_CALL_OUTPUT_DELTA / TOOL_CALL_END should reflect the full shell output,
-	// not the truncated payload sent back to the model in the next request.
-	var full string
-	totalDeltaBytes := 0
-	for ev := range sess.Events() {
-		switch ev.Kind {
-		case events.EventToolCallOutputDelta:
-			if d, ok := ev.Data.(events.ToolCallOutputDeltaData); ok && d.ToolName == "shell" {
-				totalDeltaBytes += len(d.Delta)
-			}
-		case events.EventToolCallEnd:
-			if d, ok := ev.Data.(events.ToolCallEndData); ok && d.ToolName == "shell" {
-				if d.Output != "" {
-					full = d.Output
-				} else {
-					full = d.Error
-				}
-			}
-		}
+	var shellResult struct {
+		Status    string `json:"status"`
+		Reason    string `json:"reason"`
+		ExitCode  int    `json:"exit_code"`
+		Output    string `json:"output"`
+		Truncated bool   `json:"truncated"`
 	}
-	if strings.TrimSpace(full) == "" {
-		t.Fatalf("expected non-empty full output from TOOL_CALL_END event")
+	if err := json.Unmarshal([]byte(toolResult), &shellResult); err != nil {
+		t.Fatalf("expected valid JSON shell result: %v\n%s", err, toolResult)
 	}
-	if totalDeltaBytes <= len(truncated) {
-		t.Fatalf("expected shell output deltas to exceed truncated request payload: deltas=%d truncated=%d", totalDeltaBytes, len(truncated))
+	if shellResult.Status != "completed" ||
+		shellResult.Reason != "exit_zero" ||
+		shellResult.ExitCode != 0 ||
+		!shellResult.Truncated ||
+		shellResult.Output == "" ||
+		len(shellResult.Output) >= 60_000 {
+		t.Fatalf("unexpected shell result: %+v", shellResult)
 	}
 }
 
-func TestSession_ToolOutputTruncation_CanOverrideLineLimitViaSessionConfig(t *testing.T) {
+func TestSession_ToolOutputTruncation_LineLimitPreservesStreamingShellJSON(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 

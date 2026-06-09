@@ -25,7 +25,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 				if s == nil || s.jobManager == nil {
 					return "", errors.New("shell jobs require an initialized JobManager")
 				}
-				return marshalShellToolResult(runShell(ctx, s.jobManager, se, shellArgs))
+				return marshalShellToolResult(runShell(ctx, s.jobManager, se, shellArgs), shellToolResultMaxChars(reg))
 			}
 			if shellArgs.Background {
 				return "background shell jobs require streaming execution support", errors.New("background shell jobs require streaming execution support")
@@ -146,7 +146,20 @@ func shellIntArg(args map[string]any, key string) (int, bool) {
 	}
 }
 
-func marshalShellToolResult(res shellResult) (string, error) {
+const shellToolResultDefaultMaxChars = 30_000
+
+func shellToolResultMaxChars(reg *tool.Registry) int {
+	if reg == nil {
+		return shellToolResultDefaultMaxChars
+	}
+	registered := reg.Get("shell")
+	if registered == nil || registered.Limit.MaxChars <= 0 {
+		return shellToolResultDefaultMaxChars
+	}
+	return registered.Limit.MaxChars
+}
+
+func marshalShellToolResult(res shellResult, maxChars int) (string, error) {
 	out := shellToolResult{
 		JobID:               res.JobID,
 		Type:                res.Type,
@@ -160,11 +173,57 @@ func marshalShellToolResult(res shellResult) (string, error) {
 		out.Output = &res.Output
 		out.Truncated = &res.Truncated
 	}
+	if maxChars > 0 {
+		return marshalBoundedShellToolResult(out, maxChars)
+	}
 	b, err := json.Marshal(out)
 	if err != nil {
 		return "", err
 	}
 	return string(b), nil
+}
+
+func marshalBoundedShellToolResult(out shellToolResult, maxChars int) (string, error) {
+	b, err := json.Marshal(out)
+	if err != nil {
+		return "", err
+	}
+	if jsonCharLen(b) <= maxChars || out.Output == nil {
+		return string(b), nil
+	}
+
+	original := []rune(*out.Output)
+	truncated := true
+	out.Truncated = &truncated
+
+	best := ""
+	lo, hi := 0, len(original)
+	for lo <= hi {
+		mid := lo + (hi-lo)/2
+		candidate := string(original[len(original)-mid:])
+		out.Output = &candidate
+		b, err = json.Marshal(out)
+		if err != nil {
+			return "", err
+		}
+		if jsonCharLen(b) <= maxChars {
+			best = candidate
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+
+	out.Output = &best
+	b, err = json.Marshal(out)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func jsonCharLen(b []byte) int {
+	return len([]rune(string(b)))
 }
 
 type shellToolResult struct {
