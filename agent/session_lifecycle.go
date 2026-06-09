@@ -100,7 +100,22 @@ func (s *Session) Close() {
 			_ = s.jobManager.close()
 		}
 
-		// 3-4. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
+		// 3. Pre-close child job managers before closing any child session. Child
+		// sessions can share this environment, and each child Close() also runs
+		// env cleanup; all sibling job managers must classify shutdown first.
+		for _, sub := range subs {
+			if sub.sess.jobManager != nil {
+				_ = sub.sess.jobManager.close()
+			}
+		}
+
+		// 4. Close subagents before shared environment cleanup; child sessions
+		// can own durable jobs whose process handles live in the parent env.
+		for _, sub := range subs {
+			sub.sess.Close()
+		}
+
+		// 5. Kill any remaining child processes (SIGTERM → wait 2s → SIGKILL).
 		s.env.Cleanup()
 
 		// SessionEnd hooks (best-effort, bounded timeout)
@@ -117,11 +132,6 @@ func (s *Session) Close() {
 				State:  string(SessionClosed),
 				Turns:  turns,
 			})
-		}
-
-		// 7. Close subagents.
-		for _, sub := range subs {
-			sub.sess.Close()
 		}
 
 		if s.mcpMgr != nil {

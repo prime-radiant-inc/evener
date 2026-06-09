@@ -217,6 +217,70 @@ func TestSessionCloseMarksBackgroundShellCancelledBeforeEnvCleanup(t *testing.T)
 	}
 }
 
+func TestParentCloseMarksSubagentBackgroundShellCancelledBeforeSharedEnvCleanup(t *testing.T) {
+	stateDir := t.TempDir()
+	workDir := t.TempDir()
+	env := execenv.NewLocalExecutionEnvironment(workDir)
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+
+	parent, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+		StateDir:         stateDir,
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession parent: %v", err)
+	}
+	t.Cleanup(func() { parent.Close() })
+
+	child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+		StateDir:         stateDir,
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession child: %v", err)
+	}
+	childID := child.ID()
+	parent.subagents.track(&subagent{id: childID, sess: child})
+
+	res := child.reg.ExecuteCall(context.Background(), child.env, llm.ToolCallData{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+	})
+	if res.IsError {
+		t.Fatalf("child shell returned error: %s", res.Output)
+	}
+	var out struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal child shell output: %v (output: %s)", err, res.Output)
+	}
+	if out.JobID == "" {
+		t.Fatal("child background shell returned no job_id")
+	}
+
+	parent.Close()
+
+	st, err := jobstore.Open(filepath.Join(jobsDir(stateDir, childID), "jobs.jsonl"))
+	if err != nil {
+		t.Fatalf("reopen child job store: %v", err)
+	}
+	defer st.Close()
+	recs, err := st.Load()
+	if err != nil {
+		t.Fatalf("load child jobs: %v", err)
+	}
+	rec := recs[out.JobID]
+	if rec == nil {
+		t.Fatalf("child job %s not found after parent close", out.JobID)
+	}
+	if rec.Status != jobstore.StatusCancelled || rec.Reason != "stopped_by_parent" {
+		t.Fatalf("child record = %+v, want cancelled/stopped_by_parent", rec)
+	}
+}
+
 func newShellToolTestSession(t *testing.T, cfg SessionConfig) *Session {
 	t.Helper()
 	c := llm.NewClient()
