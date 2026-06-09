@@ -78,6 +78,58 @@ func TestFoldAppliesFinishAndKeepsFirstGeneration(t *testing.T) {
 	}
 }
 
+func TestFoldAppliesEventsInSeqOrder(t *testing.T) {
+	start := time.Unix(1, 0).UTC()
+	events := []Event{
+		ev(EventJobFinished, 3, "job_A", func(e *Event) {
+			e.Status = StatusCompleted
+			e.TerminalGen = "GEN2"
+		}),
+		ev(EventJobStarted, 1, "job_A", func(e *Event) {
+			e.Type = JobShell
+			e.OwnerSessionID = "S1"
+			e.VisibleToSession = "S1"
+			e.StartedAt = &start
+		}),
+		ev(EventJobFinished, 2, "job_A", func(e *Event) {
+			e.Status = StatusCompleted
+			e.TerminalGen = "GEN1"
+		}),
+	}
+	r := Fold(events)["job_A"]
+	if r.TerminalGen != "GEN1" {
+		t.Errorf("terminal_generation = %q, want GEN1 from lower seq event", r.TerminalGen)
+	}
+}
+
+func TestFoldAppliesSessionAssigned(t *testing.T) {
+	start := time.Unix(1, 0).UTC()
+	resumable := false
+	events := []Event{
+		ev(EventJobStarted, 1, "job_A", func(e *Event) {
+			e.Type = JobShell
+			e.OwnerSessionID = "S1"
+			e.VisibleToSession = "S1"
+			e.StartedAt = &start
+		}),
+		ev(EventJobSessionAssigned, 2, "job_A", func(e *Event) {
+			e.TranscriptRef = "sessions/S2.transcript.jsonl"
+			e.Resumable = &resumable
+			e.NotResumableWhy = "missing checkpoint"
+		}),
+	}
+	r := Fold(events)["job_A"]
+	if r.TranscriptRef != "sessions/S2.transcript.jsonl" {
+		t.Errorf("transcript_ref = %q, want sessions/S2.transcript.jsonl", r.TranscriptRef)
+	}
+	if r.Resumable == nil || *r.Resumable {
+		t.Errorf("resumable = %v, want false", r.Resumable)
+	}
+	if r.NotResumableWhy != "missing checkpoint" {
+		t.Errorf("not_resumable_reason = %q, want missing checkpoint", r.NotResumableWhy)
+	}
+}
+
 func TestFoldNotificationStateTransitions(t *testing.T) {
 	start := time.Unix(1, 0).UTC()
 	events := []Event{
@@ -90,6 +142,25 @@ func TestFoldNotificationStateTransitions(t *testing.T) {
 		ev(EventJobFinished, 2, "job_A", func(e *Event) { e.Status = StatusCompleted; e.TerminalGen = "GEN1" }),
 		ev(EventJobNotificationPending, 3, "job_A", func(e *Event) { e.TerminalGen = "GEN1" }),
 		ev(EventJobNotificationDelivered, 4, "job_A", func(e *Event) { e.TerminalGen = "GEN1" }),
+	}
+	r := Fold(events)["job_A"]
+	if r.NotifyState != NotifyDelivered {
+		t.Errorf("notify state = %q, want delivered", r.NotifyState)
+	}
+}
+
+func TestFoldNotificationPendingDoesNotDowngradeDelivered(t *testing.T) {
+	start := time.Unix(1, 0).UTC()
+	events := []Event{
+		ev(EventJobStarted, 1, "job_A", func(e *Event) {
+			e.Type = JobShell
+			e.OwnerSessionID = "S1"
+			e.VisibleToSession = "S1"
+			e.StartedAt = &start
+		}),
+		ev(EventJobFinished, 2, "job_A", func(e *Event) { e.Status = StatusCompleted; e.TerminalGen = "GEN1" }),
+		ev(EventJobNotificationDelivered, 3, "job_A", func(e *Event) { e.TerminalGen = "GEN1" }),
+		ev(EventJobNotificationPending, 4, "job_A", func(e *Event) { e.TerminalGen = "GEN1" }),
 	}
 	r := Fold(events)["job_A"]
 	if r.NotifyState != NotifyDelivered {
