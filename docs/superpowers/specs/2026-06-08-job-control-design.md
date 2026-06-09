@@ -1179,10 +1179,11 @@ any of it is out of scope and counts as a defect, not progress.
   `awaiting_permission` reason and a `running` approval state are designed-for but not wired.
 - **Per-job output cap + retention (decided):** hard-coded constants, not config — an `8 MiB` per-job
   cap, and retention reuses the existing retained-terminal mechanism. No config surface (§11).
-- **Internal naming:** the child runtime may keep "subagent" in **internal-only** symbol names that
-  never reach the model or a UI; only the model-facing surface and records are job/delegate. This
-  deferral does **not** cover the cross-package event/snapshot/prompt/doc surfaces — §13 reconciles
-  those now. A full internal rename of the remaining private symbols is optional.
+- **Internal naming (decided — do NOT rename):** the child runtime **stays named `subagent`** in
+  internal-only symbols. A "subagent" is domain-accurate for a child-agent runtime, so the name
+  describes what it does, not its history — only the model-facing surface and records are job/delegate.
+  This does **not** exempt the cross-package event/snapshot/prompt/doc surfaces — §13 reconciles those
+  now. Do not spend effort renaming the remaining private symbols (`spawnAgent`/`subagent`/`SubagentStatus`/…).
 - **Concurrency caps (decided):** a single hard-coded total running-job cap constant — no per-type
   knobs, no config (§11).
 - **Deferred — do NOT implement in v1:** nested *delegate* jobs; durable watches across restart;
