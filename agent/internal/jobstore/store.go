@@ -3,19 +3,25 @@ package jobstore
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 )
+
+// ErrStoreClosed is returned when an operation is attempted after Close.
+var ErrStoreClosed = errors.New("jobstore: store closed")
 
 // Store is an append-only jobs.jsonl event log for one session. It assigns a
 // monotonic Seq to each appended event, fsyncs, and reconstructs records via
 // Fold. It is safe for concurrent use.
 type Store struct {
-	mu   sync.Mutex
-	path string
-	f    *os.File
-	seq  int64
+	mu     sync.Mutex
+	path   string
+	f      *os.File
+	seq    int64
+	closed bool
 }
 
 // Open opens (creating if needed) the jobs.jsonl at path and recovers the next
@@ -43,22 +49,36 @@ func Open(path string) (*Store, error) {
 func (s *Store) Append(e Event) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.seq++
-	e.Seq = s.seq
+	if err := s.ensureOpenLocked(); err != nil {
+		return err
+	}
+	nextSeq := s.seq + 1
+	e.Seq = nextSeq
 	b, err := json.Marshal(e)
 	if err != nil {
 		return fmt.Errorf("jobstore: marshal event: %w", err)
 	}
-	if _, err := s.f.Write(append(b, '\n')); err != nil {
-		return fmt.Errorf("jobstore: write event: %w", err)
+	startOffset, err := s.f.Seek(0, io.SeekEnd)
+	if err != nil {
+		return fmt.Errorf("jobstore: seek append start: %w", err)
 	}
-	return s.f.Sync()
+	if err := s.writeLineLocked(append(b, '\n')); err != nil {
+		return s.appendFailureLocked("write event", err, startOffset)
+	}
+	if err := s.f.Sync(); err != nil {
+		return s.appendFailureLocked("sync event", err, startOffset)
+	}
+	s.seq = nextSeq
+	return nil
 }
 
 // Load reads every event and folds them to the current records.
 func (s *Store) Load() (map[string]*JobRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.ensureOpenLocked(); err != nil {
+		return nil, err
+	}
 	events, err := s.readAllLocked()
 	if err != nil {
 		return nil, err
@@ -70,6 +90,9 @@ func (s *Store) Load() (map[string]*JobRecord, error) {
 func (s *Store) readAll() ([]Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := s.ensureOpenLocked(); err != nil {
+		return nil, err
+	}
 	return s.readAllLocked()
 }
 
@@ -85,14 +108,16 @@ func (s *Store) readAllLocked() ([]Event, error) {
 	var events []Event
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	lineNo := 0
 	for sc.Scan() {
+		lineNo++
 		line := sc.Bytes()
 		if len(line) == 0 {
 			continue
 		}
 		var e Event
 		if err := json.Unmarshal(line, &e); err != nil {
-			return nil, fmt.Errorf("jobstore: parse event line: %w", err)
+			return nil, fmt.Errorf("jobstore: parse event line %d: %w", lineNo, err)
 		}
 		events = append(events, e)
 	}
@@ -102,9 +127,59 @@ func (s *Store) readAllLocked() ([]Event, error) {
 	return events, nil
 }
 
+func (s *Store) ensureOpenLocked() error {
+	if s.closed {
+		return ErrStoreClosed
+	}
+	return nil
+}
+
+func (s *Store) writeLineLocked(line []byte) error {
+	for len(line) > 0 {
+		n, err := s.f.Write(line)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		line = line[n:]
+	}
+	return nil
+}
+
+func (s *Store) appendFailureLocked(operation string, err error, startOffset int64) error {
+	if rollbackErr := s.rollbackAppendLocked(startOffset); rollbackErr != nil {
+		return fmt.Errorf("jobstore: %s: %w; rollback failed: %v", operation, err, rollbackErr)
+	}
+	return fmt.Errorf("jobstore: %s: %w", operation, err)
+}
+
+func (s *Store) rollbackAppendLocked(startOffset int64) error {
+	truncateErr := s.f.Truncate(startOffset)
+	_, seekErr := s.f.Seek(0, io.SeekEnd)
+	if truncateErr != nil && seekErr != nil {
+		return fmt.Errorf("truncate to %d: %w; seek eof: %v", startOffset, truncateErr, seekErr)
+	}
+	if truncateErr != nil {
+		return fmt.Errorf("truncate to %d: %w", startOffset, truncateErr)
+	}
+	if seekErr != nil {
+		return fmt.Errorf("seek eof: %w", seekErr)
+	}
+	return nil
+}
+
 // Close closes the underlying file.
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.f.Close()
+	if err := s.ensureOpenLocked(); err != nil {
+		return err
+	}
+	if err := s.f.Close(); err != nil {
+		return fmt.Errorf("jobstore: close %s: %w", s.path, err)
+	}
+	s.closed = true
+	return nil
 }
