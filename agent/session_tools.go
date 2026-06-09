@@ -27,6 +27,10 @@ type ctxKey string
 // ctxToolCallID carries the tool call ID into tool execution closures via context.
 const ctxToolCallID ctxKey = "toolCallID"
 
+// ctxCommunicateOutputSchema carries a delegate result schema into spawnAgent
+// without changing the subagent tool signature.
+const ctxCommunicateOutputSchema ctxKey = "communicateOutputSchema"
+
 const (
 	defaultAgentName = "default"
 )

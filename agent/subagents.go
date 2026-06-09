@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/skill"
 	taskpkg "primeradiant.com/serf/agent/task"
 )
@@ -217,6 +218,9 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	if callID, ok := ctx.Value(ctxToolCallID).(string); ok {
 		subCfg.spawn.parentToolCallID = callID
 	}
+	if schema, ok := ctx.Value(ctxCommunicateOutputSchema).(map[string]any); ok && len(schema) > 0 {
+		subCfg.spawn.communicateOutputSchema = schema
+	}
 	if maxTurns > 0 {
 		subCfg.MaxTurns = maxTurns
 	} else {
@@ -297,6 +301,10 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		} else {
 			return "", errors.New("execution environment does not support working_dir override")
 		}
+	}
+
+	if schema := subCfg.spawn.communicateOutputSchema; len(schema) > 0 {
+		subProfile = provider.WithCommunicateOutputSchema(subProfile, schema)
 	}
 
 	subSess, err := NewSession(s.client, subProfile, subEnv, subCfg)

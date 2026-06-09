@@ -205,10 +205,11 @@ type spawnConfig struct {
 
 	// rolePromptOverride and the three fields below carry internal prompt and
 	// session shaping for restricted subagents and reviewer runs.
-	rolePromptOverride   string
-	activatedSkillBodies []string
-	allowedToolNames     []string
-	deniedToolNames      []string
+	rolePromptOverride      string
+	activatedSkillBodies    []string
+	allowedToolNames        []string
+	deniedToolNames         []string
+	communicateOutputSchema map[string]any
 }
 
 func (c *SessionConfig) applyDefaults() {

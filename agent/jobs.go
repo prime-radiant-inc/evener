@@ -37,6 +37,7 @@ type runningJob struct {
 	durableStarted bool
 	stopStatus     jobstore.Status
 	stopReason     string
+	structured     any
 	terminal       *terminalJob
 	finalize       *finalizeAttempt
 }
