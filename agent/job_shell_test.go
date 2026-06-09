@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -97,6 +100,38 @@ func (waitErrorStreamingExecutor) StreamCommand(_ context.Context, _ string, _ s
 	}, nil
 }
 
+type blockingStartStreamingExecutor struct {
+	started  chan struct{}
+	release  chan struct{}
+	waitDone chan struct{}
+	once     sync.Once
+	signals  atomic.Int32
+}
+
+func newBlockingStartStreamingExecutor() *blockingStartStreamingExecutor {
+	return &blockingStartStreamingExecutor{
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+		waitDone: make(chan struct{}),
+	}
+}
+
+func (e *blockingStartStreamingExecutor) StreamCommand(_ context.Context, _ string, _ string, _ map[string]string, out io.Writer) (*execenv.StreamHandle, error) {
+	_, _ = out.Write([]byte("partial"))
+	close(e.started)
+	<-e.release
+	return &execenv.StreamHandle{
+		Wait: func() (int, error) {
+			<-e.waitDone
+			return -1, nil
+		},
+		Signal: func() {
+			e.signals.Add(1)
+			e.once.Do(func() { close(e.waitDone) })
+		},
+	}, nil
+}
+
 func TestRunShellForegroundWaitErrorFailsJob(t *testing.T) {
 	jm := newTestJM(t)
 	res := runShell(context.Background(), jm, waitErrorStreamingExecutor{}, shellArgs{Command: "x", BlockTimeoutMS: 5000})
@@ -118,6 +153,105 @@ func TestRunShellBackgroundWaitErrorFinalizesFailed(t *testing.T) {
 	rec := loadShellRecord(t, jm, res.JobID)
 	if rec.Status != jobstore.StatusFailed || rec.Reason != "wait_failed" {
 		t.Fatalf("record = %+v, want failed/wait_failed", rec)
+	}
+}
+
+func TestRunShellBackgroundCloseDuringStartDoesNotCommitJob(t *testing.T) {
+	jm := newTestJM(t)
+	se := newBlockingStartStreamingExecutor()
+
+	resultCh := make(chan shellResult, 1)
+	go func() {
+		resultCh <- runShell(context.Background(), jm, se, shellArgs{Command: "sleep 30", Background: true})
+	}()
+
+	select {
+	case <-se.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("streaming executor did not start")
+	}
+
+	closeCh := make(chan error, 1)
+	go func() {
+		closeCh <- jm.close()
+	}()
+	waitForJobManagerClosing(t, jm)
+	close(se.release)
+
+	var res shellResult
+	select {
+	case res = <-resultCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runShell did not return after job manager close")
+	}
+	if res.Status != string(jobstore.StatusFailed) || res.Reason != "start_failed" || res.JobID != "" || res.RunningInBackground {
+		t.Fatalf("res = %+v, want failed/start_failed with no durable job", res)
+	}
+	if se.signals.Load() == 0 {
+		t.Fatal("late-installed shell signal was not invoked after close requested stop")
+	}
+
+	select {
+	case err := <-closeCh:
+		if err != nil {
+			t.Fatalf("close: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("job manager close did not finish")
+	}
+
+	store, err := jobstore.Open(filepath.Join(jm.dir, "jobs.jsonl"))
+	if err != nil {
+		t.Fatalf("reopen job store: %v", err)
+	}
+	defer store.Close()
+	recs, err := store.Load()
+	if err != nil {
+		t.Fatalf("load reopened store: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Fatalf("background job committed during close: %+v", recs)
+	}
+}
+
+func TestCommitDelayedShellAfterCloseAbandonmentFails(t *testing.T) {
+	jm := newTestJM(t)
+	run, err := jm.newDelayedShell(shellArgs{Command: "sleep 30", Background: true})
+	if err != nil {
+		t.Fatalf("newDelayedShell: %v", err)
+	}
+	jm.mu.Lock()
+	jm.closing = true
+	delete(jm.running, run.rec.JobID)
+	jm.mu.Unlock()
+	defer func() {
+		_ = run.output.Close()
+		_ = os.Remove(run.rec.OutputPath)
+		close(run.done)
+	}()
+
+	if err := jm.commitDelayedShell(run); !errors.Is(err, errJobManagerClosing) {
+		t.Fatalf("commitDelayedShell error = %v, want %v", err, errJobManagerClosing)
+	}
+}
+
+func waitForJobManagerClosing(t *testing.T, jm *jobManager) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	tick := time.NewTicker(10 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		jm.mu.Lock()
+		closing := jm.closing
+		jm.mu.Unlock()
+		if closing {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("job manager close did not set closing")
+		case <-tick.C:
+		}
 	}
 }
 

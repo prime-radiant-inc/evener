@@ -16,12 +16,15 @@ import (
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
 
+var errJobManagerClosing = errors.New("job manager is closing")
+
 type jobManager struct {
 	mu          sync.Mutex
 	dir         string
 	sessionID   string
 	store       *jobstore.Store
 	running     map[string]*runningJob
+	closing     bool
 	appendEvent func(jobstore.Event) error
 	enqueue     func(jobNotification)
 	now         func() time.Time
@@ -113,6 +116,7 @@ func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*
 
 func (jm *jobManager) close() error {
 	jm.mu.Lock()
+	jm.closing = true
 	running := make([]jobRuntimeHandle, 0, len(jm.running))
 	for _, run := range jm.running {
 		if run.stopStatus == "" {
@@ -192,6 +196,21 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 	if err != nil {
 		return nil, err
 	}
+	run := &runningJob{
+		rec:            rec,
+		output:         output,
+		signal:         func() {},
+		done:           make(chan struct{}),
+		durableStarted: true,
+	}
+
+	jm.mu.Lock()
+	if jm.closing {
+		jm.mu.Unlock()
+		_ = output.Close()
+		_ = os.Remove(outputPath)
+		return nil, errJobManagerClosing
+	}
 	if err := jm.appendEvent(jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
@@ -203,18 +222,11 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		VisibleToSession: rec.VisibleToSession,
 		StartedAt:        &startedAt,
 	}); err != nil {
+		jm.mu.Unlock()
 		_ = output.Close()
 		return nil, err
 	}
-
-	jm.mu.Lock()
-	jm.running[jobID] = &runningJob{
-		rec:            rec,
-		output:         output,
-		signal:         func() {},
-		done:           make(chan struct{}),
-		durableStarted: true,
-	}
+	jm.running[jobID] = run
 	jm.mu.Unlock()
 	return rec, nil
 }

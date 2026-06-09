@@ -787,9 +787,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 		if len(retryJobNotifs) == 0 && len(injectedFailures) == 0 {
 			s.resetJobNotificationRetry()
 		}
-		s.mu.Lock()
-		s.sessionEndEmitted = true
-		s.mu.Unlock()
+		s.finishNotificationNoop()
 		return false
 	}
 
@@ -799,6 +797,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 	if err := s.appendTurnDurably(schema.TurnSteering, llm.User(reminder)); err != nil {
 		s.requeueNotifications(notifs)
 		s.requeueJobNotifications(jobNotifications(jobNotifs))
+		s.finishNotificationNoop()
 		return false
 	}
 	s.emit(events.EventSteeringInjected, events.SteeringInjectedData{Text: reminder})
@@ -814,6 +813,15 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	}
 	return true
+}
+
+func (s *Session) finishNotificationNoop() {
+	s.mu.Lock()
+	if s.state == SessionProcessing && !s.closingOrClosedLocked() {
+		s.state = SessionIdle
+	}
+	s.sessionEndEmitted = true
+	s.mu.Unlock()
 }
 
 // filterDeliverableNotifications drops a drained notification that should no

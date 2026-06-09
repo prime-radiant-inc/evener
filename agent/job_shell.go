@@ -359,22 +359,39 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 	}
 
 	jm.mu.Lock()
+	if jm.closing {
+		jm.mu.Unlock()
+		_ = output.Close()
+		_ = os.Remove(outputPath)
+		return nil, errJobManagerClosing
+	}
 	jm.running[jobID] = run
 	jm.mu.Unlock()
 	return run, nil
 }
 
 func (jm *jobManager) setShellSignal(run *runningJob, signal func()) {
+	var signalNow func()
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] == run {
 		run.signal = signal
+		if run.stopStatus != "" {
+			signalNow = signal
+		}
 	}
 	jm.mu.Unlock()
+	if signalNow != nil {
+		signalNow()
+	}
 }
 
 func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] != run {
+		if jm.closing {
+			jm.mu.Unlock()
+			return errJobManagerClosing
+		}
 		jm.mu.Unlock()
 		return nil
 	}
@@ -382,8 +399,11 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 		jm.mu.Unlock()
 		return nil
 	}
+	if jm.closing {
+		jm.mu.Unlock()
+		return errJobManagerClosing
+	}
 	rec := cloneJobRecord(run.rec)
-	jm.mu.Unlock()
 
 	startedAt := rec.StartedAt
 	if err := jm.appendEvent(jobstore.Event{
@@ -397,10 +417,10 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 		VisibleToSession: rec.VisibleToSession,
 		StartedAt:        &startedAt,
 	}); err != nil {
+		jm.mu.Unlock()
 		return err
 	}
 
-	jm.mu.Lock()
 	if jm.running[run.rec.JobID] == run {
 		run.durableStarted = true
 	}

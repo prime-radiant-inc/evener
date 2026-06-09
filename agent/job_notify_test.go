@@ -184,6 +184,9 @@ func TestJobNotificationTurnRequeuesWhenDeliveredMarkFails(t *testing.T) {
 	if got := sess.peekNotifications(); got != 0 {
 		t.Fatalf("peekNotifications = %d, want 0 after delivered mark retry", got)
 	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after delivered mark retry = %q, want %q", got, SessionIdle)
+	}
 	recs, err = jm.store.Load()
 	if err != nil {
 		t.Fatalf("reload jobs: %v", err)
@@ -220,6 +223,9 @@ func TestJobNotificationTurnRequeuesWhenJobManagerMissing(t *testing.T) {
 	}
 	if got := len(adapter.Requests()); got != 0 {
 		t.Fatalf("model requests = %d, want 0 when job notification cannot be inspected", got)
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after missing job manager = %q, want %q", got, SessionIdle)
 	}
 }
 
@@ -265,6 +271,9 @@ func TestJobNotificationTurnRequeuesWhenStoreLoadFailsThenDelivers(t *testing.T)
 	}
 	if got := len(adapter.Requests()); got != 0 {
 		t.Fatalf("model requests = %d, want 0 when job notification cannot be inspected", got)
+	}
+	if got := sess.State(); got != SessionIdle {
+		t.Fatalf("state after store load failure = %q, want %q", got, SessionIdle)
 	}
 	select {
 	case <-wake:
