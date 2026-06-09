@@ -5,8 +5,29 @@ import (
 	"regexp"
 	"sort"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
+
+// WatchEventKindNames is the canonical, stable list of model-facing event-kind
+// names job_watch accepts. DefJobWatch enumerates them in its description; the
+// JobManager gates on them via modelEventKinds. Exported so the provider-side
+// capabilityJobControl block (which cannot import agent/events) passes the same
+// literal into DefJobWatch (Task 8).
+var WatchEventKindNames = []string{"assistant.message", "assistant.tool", "communicate", "job.notification"}
+
+func availableEventKindNames() []string { return append([]string(nil), WatchEventKindNames...) }
+
+// modelEventKinds maps the model-facing event-kind names that job_watch accepts
+// (and DefJobWatch enumerates) to the internal events.EventKind taxonomy. This is
+// the discoverable vocabulary of spec §5.9; it is intentionally a small, stable
+// subset of the full event stream, not every internal kind.
+var modelEventKinds = map[string]events.EventKind{
+	WatchEventKindNames[0]: events.EventAssistantTextEnd,
+	WatchEventKindNames[1]: events.EventToolCallEnd,
+	WatchEventKindNames[3]: events.EventSubagentEnd, // job lifecycle; repointed to the job event in Phase 6
+	WatchEventKindNames[2]: events.EventCommunicate,
+}
 
 type watchKey struct {
 	VisibleSessionID string
@@ -20,8 +41,12 @@ type watchConfig struct {
 	outputMatcher      *jobstore.OutputMatcher
 	progressIntervalMS int
 	events             []string
+	eventKinds         map[events.EventKind]bool
+	wildcardEvents     bool
 	triggerEvent       string
+	triggerKind        events.EventKind
 	triggerEvery       int
+	eventCount         int
 	send               *watchSendArgs
 	progressStop       chan struct{}
 }
@@ -146,12 +171,20 @@ func isWatchSessionTarget(target string) bool {
 }
 
 func newWatchConfig(a watchArgs) (*watchConfig, error) {
+	eventKinds, wildcardEvents := resolveEventKinds(a.Events)
+	triggerKind := modelEventKinds[a.TriggerEvent]
+	if len(a.Events) == 0 && a.TriggerEvent != "" && triggerKind != "" {
+		eventKinds[triggerKind] = true
+	}
 	cfg := &watchConfig{
 		target:             a.Target,
 		outputMatch:        a.OutputMatch,
 		progressIntervalMS: a.ProgressIntervalMS,
 		events:             canonicalWatchEvents(a.Events),
+		eventKinds:         eventKinds,
+		wildcardEvents:     wildcardEvents,
 		triggerEvent:       a.TriggerEvent,
+		triggerKind:        triggerKind,
 		triggerEvery:       a.TriggerEvery,
 		send:               cloneWatchSendArgs(a.Send),
 	}
@@ -163,6 +196,23 @@ func newWatchConfig(a watchArgs) (*watchConfig, error) {
 		cfg.outputMatcher = jobstore.NewOutputMatcher(re)
 	}
 	return cfg, nil
+}
+
+func resolveEventKinds(names []string) (map[events.EventKind]bool, bool) {
+	resolved := make(map[events.EventKind]bool)
+	wildcard := false
+	for _, name := range names {
+		if name == "*" {
+			wildcard = true
+			continue
+		}
+		kind, ok := modelEventKinds[name]
+		if !ok {
+			continue
+		}
+		resolved[kind] = true
+	}
+	return resolved, wildcard
 }
 
 func canonicalWatchEvents(events []string) []string {
@@ -265,6 +315,46 @@ func watchResultFromConfig(cfg *watchConfig, replacedExisting bool) watchResult 
 		ProgressIntervalMS: cfg.progressIntervalMS,
 		Send:               cloneWatchSendArgs(cfg.send),
 		ReplacedExisting:   replacedExisting,
+	}
+}
+
+func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventData) {
+	_ = data
+	var notifications []jobNotification
+
+	jm.mu.Lock()
+	for _, cfg := range jm.watches {
+		if !isWatchSessionTarget(cfg.target) {
+			continue
+		}
+		if !cfg.wildcardEvents && !cfg.eventKinds[kind] {
+			continue
+		}
+		if cfg.triggerEvent != "" {
+			if cfg.triggerKind != kind {
+				continue
+			}
+			cfg.eventCount++
+			triggerEvery := cfg.triggerEvery
+			if triggerEvery <= 0 {
+				triggerEvery = 1
+			}
+			if cfg.eventCount%triggerEvery != 0 {
+				continue
+			}
+		}
+		if cfg.send == nil {
+			notifications = append(notifications, jobNotification{})
+		}
+	}
+	jm.mu.Unlock()
+
+	// Called from Session.emit; only enqueue here so watch delivery does not
+	// re-enter session event emission.
+	for _, n := range notifications {
+		if jm.enqueue != nil {
+			jm.enqueue(n)
+		}
 	}
 }
 

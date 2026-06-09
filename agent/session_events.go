@@ -47,6 +47,9 @@ func (s *Session) emit(kind events.EventKind, data events.EventData) {
 		return
 	}
 	data = s.sendEvent(kind, data)
+	if s.jobManager != nil {
+		s.jobManager.onSessionEvent(kind, data)
+	}
 	if kind == events.EventWarning {
 		s.fireNotificationHook(warningHookMessage(data))
 	}
