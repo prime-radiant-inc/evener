@@ -90,7 +90,9 @@ agent/internal/jobstore/            NEW — pure durable substrate
   store.go         append-only event-log writer/reader; fold-to-records reconstruction
   output.go        per-job output file: append, tail/offset/limit, RE2 grep, truncation
   notify.go        durable notification pending/delivered + terminal_generation
-  watch.go         watch registry + trigger evaluation over appended output bytes
+  watch.go         output_match matcher (RE2 over appended bytes, no-silent-miss). NOTE: events/trigger
+                   event-frame gating is NOT here — it needs agent/events kinds, so it lives in the
+                   agent-side JobManager (§8)
   reconcile.go     running-without-runtime → stopped/runtime_lost (pure decision)
   *_test.go        table tests for every file above
 
@@ -116,10 +118,11 @@ agent/session_init.go               EDIT — restore path reconstructs the job s
                                      reconciliation
 cmd/serf/serve.go                   EDIT — the existing SubmitNotification wiring carries
                                      job-notifications (mechanism unchanged)
-agent/execenv/execenv.go            EDIT — extend the ExecutionEnvironment interface with a
-                                     streaming exec method (today it exposes only buffered ExecCommand)
-agent/execenv/local.go              EDIT — streaming impl reusing execenv's private
-                                     Setpgid / env-policy / venv-PATH / root-enforcement; per-job PID/pgid
+agent/execenv/execenv.go            EDIT — add a NEW optional StreamingExecutor interface (a type-assertion
+                                     target), NOT a method on ExecutionEnvironment — so the 5 existing
+                                     implementers (incl. the shared agenttest.FakeEnv + in-test fakes) keep compiling
+agent/execenv/local.go              EDIT — LocalExecutionEnvironment implements StreamingExecutor, reusing
+                                     execenv's private Setpgid / env-policy / venv-PATH / root-enforcement; per-job PID/pgid
 ```
 
 The existing `subagentManager` is **absorbed** into `job_delegate.go` + `jobs.go` as the
@@ -133,7 +136,7 @@ in-memory running-delegate overlay; it is not kept as a parallel tracking system
 | Notification delivery (`EntryNotification`, `pendingNotifs`, serve-mode wake) | reuse | durable pending/delivered underneath |
 | Session/transcript persistence | reuse, untouched | the separate job store sits beside it |
 | Tool registry, `wireToolDef`, purpose param | reuse (job tools are canonical — no Description rewrite) | — |
-| Shell exec | reuse `execenv`'s private `Setpgid` / env-policy / venv-PATH / root-enforcement machinery | a new **streaming** method on the `execenv.ExecutionEnvironment` interface (edits to `execenv/execenv.go` + `local.go`) that writes to the per-job log and returns immediately, with per-job PID/pgid tracking for `job_stop`. The buffered `ExecCommand` returns only at exit and has no job→PID map, so it is **not** reused for jobs; `job_shell.go` orchestrates via the new method rather than re-implementing exec in package `agent` (see §5.3) |
+| Shell exec | reuse `execenv`'s private `Setpgid` / env-policy / venv-PATH / root-enforcement machinery | a new **optional `StreamingExecutor` interface** that only `LocalExecutionEnvironment` implements (a type-assertion target — *not* a new method on the core `ExecutionEnvironment`, so the 5 existing implementers incl. the shared `agenttest.FakeEnv` keep compiling); it writes to the per-job log and returns immediately, with per-job PID/pgid tracking for `job_stop`. The buffered `ExecCommand` returns only at exit and has no job→PID map, so it is **not** reused for jobs; `job_shell.go` type-asserts for `StreamingExecutor` rather than re-implementing exec in package `agent` (see §5.3) |
 
 ---
 
@@ -210,12 +213,17 @@ to `<job_id>.log`; the event log carries only lifecycle plus byte-count metadata
 
 | Event | Emitted when | Carries |
 | --- | --- | --- |
-| `job_started` | job created (durable) | job_id, type, command/task, parent/owner/visible session, parent_job_id, origin refs, started_at |
-| `job_session_assigned` | delegate child session known | job_id, transcript_ref |
+| `job_started` | job created (durable) | job_id, type, command/task, **description**, parent/owner/visible session, parent_job_id, origin refs, started_at |
+| `job_session_assigned` | delegate child session known | job_id, transcript_ref, **resumable, not_resumable_reason** |
 | `job_finished` | terminal observed/reconstructed | job_id, status, reason, exit_code, ended_at, output_bytes, **terminal_generation** |
 | `job_message_sent` | `job_send_message` delivered | job_id, target, action |
 | `job_notification_pending` | terminal armed + observed | job_id, terminal_generation |
 | `job_notification_delivered` | notification injected durably | job_id, terminal_generation |
+
+**Reconstruction completeness:** every model-facing `JobRecord` field must be carried by some event,
+or it is lost on restart. In particular `description` rides on `job_started`, and delegate
+`resumable`/`not_resumable_reason` ride on `job_session_assigned` (added above) — without that, a
+restored `job_list` would show blank labels and unknown resumability.
 
 `terminal_generation` is a stable id **minted once** when the job first finalizes — a ULID written
 into that first `job_finished` event and copied verbatim onto its
@@ -290,15 +298,21 @@ on it. It has **two variants**, matching the two existing prompt templates (`sys
 `subagent` for depth > 0 — both composed in `agent/session_prompts.go`):
 
 - **root variant** (shown below): the full model — shell jobs, `delegate`, and all job tools.
-- **subagent variant**: shell jobs only. A subagent may start nested **shell** jobs (§10) and manage
-  its own with `job_read_output` / `job_list` / `job_stop`, but it **cannot** `delegate` (nested
-  delegate is a v1 non-goal) or call `job_send_message` / `job_watch` (root-only). The subagent
-  variant omits every mention of `delegate` and the root-only tools, so a delegate-incapable session
-  is never told to delegate.
+- **subagent variant**: no `delegate`. A subagent may start nested **shell** jobs (§10) and manage its
+  own with `job_read_output` / `job_list` / `job_stop`, and may call `job_send_message` **only to a
+  session alias** (`caller` / `main` / `watched`) to advise back — which is exactly how an observer
+  sidecar (§9) comments. It **cannot** `delegate` (nested delegate is a v1 non-goal), cannot
+  `job_send_message` to a concrete delegate `job_id` (that resumes/steers a delegate — root-only), and
+  cannot `job_watch` (root-only). The variant omits `delegate` and the root-only tools.
 
-Tool availability mirrors this split: root-only = {`delegate`, `job_send_message`, `job_watch`};
-subagent-available = {job-capable shell, `job_read_output`, `job_list`, `job_stop`} (see §13 for the
-`rootOnlyAgentManagementTools` retarget).
+Tool availability: tools whose mere presence is **root-only** = {`delegate`, `job_watch`}.
+`job_send_message` is **present for subagents too**, but it authorizes its *target* by caller role —
+a subagent may target only session aliases (`caller`/`main`/`watched`), while targeting a concrete
+delegate `job_id` (resume/steer) is root-only and enforced inside the handler (the contract already
+makes target resolution permission-based, §5.5). subagent-available = {job-capable shell,
+`job_read_output`, `job_list`, `job_stop`, alias-target `job_send_message`} (see §13 for the
+`rootOnlyAgentManagementTools` retarget). This is what makes the §9 observer sidecar — a delegate that
+comments back — implementable.
 
 > ## Background jobs
 >
@@ -394,9 +408,9 @@ Defaults and bounds:
   `max_runtime_ms`, Serf stops it and finalizes `stopped/run_timeout`.
 
 Behavior. The key mechanism: **every shell command streams to a per-job log from the first byte**
-via a new streaming method on the `execenv.ExecutionEnvironment` interface (today the interface
-exposes only buffered `ExecCommand`; the streaming method reuses `execenv`'s private
-`Setpgid`/env/venv/root machinery — see §2.3). The buffered `ExecCommand` is not used by the shell
+via a new optional `execenv.StreamingExecutor` interface that `LocalExecutionEnvironment` implements
+(the core `ExecutionEnvironment` exposes only buffered `ExecCommand`; the streaming impl reuses
+`execenv`'s private `Setpgid`/env/venv/root machinery — see §2.3; `job_shell.go` type-asserts for it). The buffered `ExecCommand` is not used by the shell
 tool, because a synchronous buffered call cannot return a `job_id` while the process keeps running
 (it returns only at exit and kills the process group at its timeout), so it could neither promote
 without an output seam nor be detached. The launch path is identical for every call; only the wait
@@ -517,24 +531,34 @@ job model changes three things:
   capture path is what makes `job_read_output` work after the runtime is gone.
 - **Non-consuming reads (changed).** `job_read_output` never consumes; the result lives in the
   durable record + log. The legacy `resultConsumed` model and the consuming `wait` are removed.
-- **`result_schema` → `structured_result` (new; the injection seam exists, the validation does
-  not).** When `result_schema` is supplied, Serf injects it via `Profile.WithCommunicateOutputSchema`,
-  which **replaces the child's `communicate` `output` property wholesale** with the caller's schema
-  (verified: `replaceCommunicateOutputSchema` does `props["output"] = schema`,
-  `agent/provider/profile_overrides.go:137`, asserted by `TestWithCommunicateOutputSchema_ReplacesOutput`
-  — it does *not* keep the default `{message,data,artifacts}` envelope and does *not* nest the schema
-  under `data`). So the child's structured answer **is** its `communicate.output`, shaped entirely by
-  `result_schema` — not a `data` sub-field. The prose result is unaffected: it comes from
-  `communicate`'s top-level `message` parameter, which the override leaves intact
-  (`session_tools_communicate.go` builds `resultText` from `message`), plus the streamed log.
-  `structured_result` is the child's emitted `output`; `structured_result_valid` is the result of
-  validating that `output` against `result_schema` with the JSON-Schema validator already vendored in
-  the agent module (`github.com/santhosh-tekuri/jsonschema/v5`, compiled today in
-  `agent/internal/tool/registry.go:compileSchema`). This validate-and-surface step is **net-new
-  work** — there is no `structured_result` producer yet. A validation failure sets
-  `structured_result_valid:false` and still returns the prose output; it does not fail the job.
-  (`WithAllowedDecisions` stacks on top by injecting a `decision` field, so a caller schema that
-  needs to compose with Toil-style decisions must expose a `properties` map.)
+- **`result_schema` is injected and enforced for free; the *capture* is the real new work.**
+  `result_schema` is injected via `Profile.WithCommunicateOutputSchema`, which replaces the child's
+  `communicate` `output` property wholesale (`replaceCommunicateOutputSchema` does `props["output"] = schema`,
+  `agent/provider/profile_overrides.go:137`; `TestWithCommunicateOutputSchema_ReplacesOutput` confirms
+  the `{message,data,artifacts}` envelope is gone — the schema is *not* nested under `data`). The
+  child's emitted `output` then conforms **by construction**, because the tool-arg validator already
+  runs at the `communicate` call boundary (`agent/internal/tool/registry.go:424`,
+  `t.Schema.Validate(args)`): a non-conforming `output` is rejected as "tool args schema validation
+  failed" and the model retries — it is never surfaced as an invalid result. So `structured_result_valid`
+  is **true-by-construction**, kept only for contract parity and informational (a meaningfully `false`
+  value would require deliberately *not* enforcing the schema, which v1 does not do; no post-hoc
+  re-validation is needed, which is good because `compileSchema` is unexported in `agent/internal/tool`
+  and not importable as-is from package `agent`).
+- **Capturing the schema-shaped output is net-new.** Today the `communicate` Exec funnels `output`
+  through `normalizeNodeOutput` (`agent/session_tools_communicate.go:130`), whose `nodeOutput` struct
+  keeps only `{decision,message,data,artifacts}` and **drops every other field**; `CommunicateOutput()`
+  returns that canonicalized envelope string (`session.go:479`). A `result_schema` of `{summary,files}`
+  would therefore be silently lost. The delegate path must **preserve the raw `args["output"]` object**
+  for schema-bearing children and thread it to the job record as `structured_result`, separate from the
+  prose. This is the actual new code — not validation.
+- **Prose vs structured are separate channels.** The human-readable result is the child's top-level
+  `communicate.message` parameter (a sibling of `output`, untouched by the override). Note that today
+  the Exec sets `resultText = structuredText` whenever structured output is present
+  (`session_tools_communicate.go:54`), conflating the two; for delegate jobs the capture must keep the
+  prose (`message`, surfaced as `output`/`job_read_output`) and the structured object
+  (`structured_result`) distinct. (`WithAllowedDecisions` stacks by injecting a `decision` field into
+  `output.properties`, so a `result_schema` that must compose with Toil-style decisions has to expose a
+  `properties` map.)
 
 ### 5.5 `job_send_message`
 
@@ -893,11 +917,13 @@ Job job_... stopped because Serf restarted and no live runtime was attached. Use
 ## 8. Watches (internals)
 
 In-memory registry in the JobManager keyed `(visible_session_id, target, send.to)`. Trigger
-evaluation lives in `jobstore/watch.go` (pure: it evaluates configured triggers over appended
-output bytes and event frames); delivery (caller notification vs `job_send_message`) is the
-JobManager's job. The no-silent-miss matcher operates on the append stream, independent of the
-preview-window eviction used for notification previews. Watches are not persisted across
-restart in v1.
+evaluation **splits across the seam**: the `output_match` matcher (RE2 over appended output bytes,
+no-silent-miss over the append stream) is pure and lives in `jobstore/watch.go`; the `events`/`trigger`
+**event-frame** evaluation (counting the Nth `assistant.message`, filtering by event kind) lives in
+the **JobManager** in package `agent`, because event kinds are `agent/events` concepts a `Session`-free
+package cannot name. The JobManager owns the session-event view and the Nth-event counter; `jobstore`
+owns bytes. Delivery (caller notification vs `job_send_message`) is also the JobManager's job. Watches
+are not persisted across restart in v1.
 
 ---
 
@@ -911,11 +937,14 @@ Observers are composed, not special:
 3. The sidecar receives frames as messages and advises with
    `job_send_message(target="caller"|"watched"|"main", message=...)`.
 
-Aliases resolve by caller context and permission. Frames are bounded/filtered; observer
-telemetry is excluded by default to avoid feedback loops; advice is runtime-advisory, never
-user instruction; sidecar failure produces diagnostics, never fails the watched session; `*`
-watches are allowed only over events/jobs visible to the caller. Until nested delegate jobs
-exist, observer sidecars must not themselves delegate unless explicitly exempted.
+A sidecar is a subagent (a delegate at depth > 0), and these are **session-alias** targets — which
+§5.1 makes subagent-permitted precisely so this composition works. The sidecar does not (and cannot)
+target a concrete delegate `job_id`, so it never resumes/steers a delegate; the root sets up the
+`job_watch` (root-only) that feeds it. Aliases resolve by caller context and permission. Frames are
+bounded/filtered; observer telemetry is excluded by default to avoid feedback loops; advice is
+runtime-advisory, never user instruction; sidecar failure produces diagnostics, never fails the
+watched session; `*` watches are allowed only over events/jobs visible to the caller. Until nested
+delegate jobs exist, observer sidecars must not themselves `delegate` unless explicitly exempted.
 
 ---
 
@@ -934,6 +963,12 @@ control plane.
   owner runtime if live; if routing is unavailable after restart → `stopped/runtime_lost`; if
   routing fails while the owner is believed live → `not_controllable`.
 - `job_stop(parent, include_children=true)` recursively stops visible active nested jobs.
+- **Cross-store `terminal_generation` (a child has its own `jobs.jsonl`).** A subagent session owns its
+  own job store, so the **owner mints `terminal_generation` once** (§3.3) and forwarding **copies it
+  verbatim** into the parent-visible forwarded `job_started`/`job_finished` — the parent never re-mints.
+  That keeps the dedupe key `(visible_session_id, job_id, terminal_generation)` identical in both stores,
+  so the parent's terminal notification for a nested job dedupes correctly across a restart. (The shared
+  `job_id` is already globally unique per §3.2; the generation must travel with it.)
 
 Nested **delegate** jobs are deferred but use the same `parent_job_id` machinery when added.
 
@@ -956,12 +991,13 @@ failure that creates no record).
 
 New: `agent/internal/jobstore/*`; `agent/jobs.go`, `job_shell.go`, `job_delegate.go`,
 `job_notify.go`, `session_tools_jobs.go`; the six job `Def*` + reworked `DefShell`; the
-`## Background jobs` prompt section (root + subagent variants); a streaming `ExecutionEnvironment`
-method + per-job PID/pgid tracking; the delegate durable-output-log capture, non-consuming reads, and
-the net-new `structured_result` validation (schema injected via `WithCommunicateOutputSchema`, which
-replaces `communicate.output` wholesale; validation reuses the vendored jsonschema compiler); running
-caps; restart reconciliation; durable notification bookkeeping; the `filterDeliverableNotifications`
-durable-record keying + payload source.
+`## Background jobs` prompt section (root + subagent variants); an optional `StreamingExecutor`
+interface impl + per-job PID/pgid tracking; the delegate durable-output-log capture, non-consuming
+reads, and the net-new `structured_result` **capture** (preserve the raw `output` past
+`normalizeNodeOutput`; the schema is injected + enforced upstream by `WithCommunicateOutputSchema` +
+the communicate-boundary validator, so validation itself is not new); the JobManager-side event-frame
+watch evaluation; running caps; restart reconciliation; durable notification bookkeeping; the
+`filterDeliverableNotifications` durable-record keying + payload source.
 
 Reused: the child-session run/cancel/finalize mechanics and the `communicate` result path (salvaged
 into `job_delegate.go`); the `EntryNotification` delivery path and serve-mode wake; session/
@@ -985,9 +1021,10 @@ functions; the inventory below was built by grepping the tree, not from memory.
   then the old entry points removed.
 - `rootOnlyAgentManagementTools` (`agent/subagents.go`) and its consumers `baseSubagentToolPolicy` /
   `removeRootOnlyAgentManagementTools` / `agentUsesRootOnlyManagementTools` (`agent/session_tools.go`):
-  retarget the root-only set to the **subset** `{delegate, job_send_message, job_watch}` (per §5.1) —
-  NOT all six; subagents keep the job-capable shell plus `job_read_output`/`job_list`/`job_stop` for
-  their own nested jobs.
+  retarget the root-only **tool-presence** set to `{delegate, job_watch}` (per §5.1) — NOT all six.
+  `job_send_message` stays present for subagents but gates its *target* by caller role inside the
+  handler (alias targets for subagents; concrete-delegate-`job_id` resume/steer root-only). Subagents
+  keep the job-capable shell plus `job_read_output`/`job_list`/`job_stop` for their own nested jobs.
 - `subagent_manager.go`'s retention/cap manager is **absorbed** into `jobs.go`/`job_delegate.go`;
   remove the file once its logic moves.
 - **Tool-name + per-tool behavior tables keyed on the old names** (these are functional, not cosmetic,
@@ -999,6 +1036,12 @@ functions; the inventory below was built by grepping the tree, not from memory.
 - **serf-tui renderers** keyed on the old tool names: `cmd/serf-tui/internal/msgrender/tool_renderers.go`,
   `cmd/serf-tui/internal/msgrender/tool_bodies.go`, `cmd/serf-tui/internal/toolsummary/tool_summary.go`
   → repoint to the job tools.
+- **serf-hub web client JS assets** (`go:embed`-ed, served live — gate-token hits the static gate would
+  otherwise leave red): `cmd/serf-hub/assets/renderer.js` (`case "SUBAGENT_START"`/`"SUBAGENT_END"` and
+  `"spawn_agent"`/`"resume_agent"`/`"close_agent"` renderers) and `cmd/serf-hub/assets/appwire.js`
+  (the `serf/subagent/started|completed` → `SUBAGENT_*` mapping). Repoint to the job lifecycle +
+  job-tool names. (Earlier the inventory grepped only the Go tree — this is the JS consumer of the
+  same wire notifications.)
 
 **Re-point (cross-package projections with live consumers — these do NOT match the gate tokens, so
 they need explicit handling):**
@@ -1012,13 +1055,15 @@ they need explicit handling):**
   / `Subagents`; `server/server.go`'s `SubagentStatusInfo`/`Subagents` carry it onward to the
   hub/web/tui clients. Decide per the UI need: emit equivalent job-lifecycle events + wire
   notifications and repoint `appprojector` + `appwire/types.go` + `server`, or keep the names as an
-  internal alias. A deliberate decision applied everywhere — not a silent keep. (Earlier drafts
-  mis-named the consumers as `hubcore`/`appwire_runtime`/`serf-tui`; those do not switch on these
-  events directly.)
+  internal alias. A deliberate decision applied everywhere — not a silent keep. (Those events are not
+  switched on in `cmd/serf-hub/internal/hubcore/*` or `cmd/serf-tui/*` directly — but
+  `server/appwire_runtime.go:500` **does** populate `appwire.SerfSubagentInfo` from the snapshot, so it
+  is a gate-token consumer that must be repointed alongside `server/server.go`'s `SubagentStatusInfo`.)
 - `SubagentInfo` / `SubagentStatus` and the snapshot/status/render chain (`agent/status.go`,
-  `agent/schema/snapshot.go`, `session_outline.go`'s `subagentLifecycleTools`,
-  `transcript_render.go`'s `subagentResultKnownKeys`/`decodeSubagentResult`): superseded by
-  `JobRecord` projections; repoint consumers.
+  `agent/schema/snapshot.go`, `server/server.go`'s `SubagentStatusInfo`, `server/appwire_runtime.go`,
+  `session_outline.go`'s `subagentLifecycleTools`, `transcript_render.go`'s
+  `subagentResultKnownKeys`/`decodeSubagentResult`): superseded by `JobRecord` projections; repoint
+  consumers.
 - The `<subagent-notification>` format/formatter and `acceptNotificationInput`'s subagent framing →
   `<job-notification>`.
 
@@ -1127,7 +1172,9 @@ and asserted.
 - **Concurrency-cap defaults** (running shell/delegate/observer) to be set during
   implementation.
 - **Subagent job-tool set (decided here):** subagents get the job-capable shell plus
-  `job_read_output`/`job_list`/`job_stop` (to manage their own nested shell jobs); root-only =
-  `{delegate, job_send_message, job_watch}` (§5.1, §13). The alternative — letting a subagent start a
-  background shell job it cannot then read or stop — is strictly worse, so this is the v1 call; revisit
-  if nested delegate jobs land.
+  `job_read_output`/`job_list`/`job_stop` (to manage their own nested shell jobs) and **alias-target
+  `job_send_message`** (so an observer sidecar can comment back, §9). Root-only by tool-presence =
+  `{delegate, job_watch}`; `job_send_message` is present but gates concrete-delegate-`job_id` targets
+  to root by role (§5.1, §13). The alternatives — a subagent that can't read/stop its own job, or a
+  sidecar that can't comment — are both strictly worse, so this is the v1 call; revisit if nested
+  delegate jobs land.
