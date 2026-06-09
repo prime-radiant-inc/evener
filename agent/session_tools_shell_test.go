@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -287,6 +288,11 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 	env := execenv.NewLocalExecutionEnvironment(workDir)
 	modelEntered := make(chan struct{})
 	releaseModel := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(releaseModel) })
+	}
+	defer release()
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(llm.Request) llm.Response{
@@ -355,7 +361,7 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	close(releaseModel)
+	release()
 
 	select {
 	case <-parentCloseDone:
