@@ -91,7 +91,10 @@ Required behavior:
 
 - `caller` remains the runtime-originating session alias.
 - `watched` is valid only when Serf has an internal watch context for the
-  current delivery. Outside that context it fails synchronously.
+  current delivery. Outside that context it fails synchronously. Session events
+  without a concrete messageable watched identity do not support `watched`;
+  they fail at watch registration when that can be known from the event set,
+  otherwise they emit a visible diagnostic at delivery time.
 - `main` is not accepted by `job_send_message`, `job_watch.target`, or
   `job_watch.send.to`.
 - No docs, prompts, or tool descriptions should suggest `main`.
@@ -127,8 +130,9 @@ Acceptance tests:
   docs/specs:
 
 ```bash
-rg -n 'caller|main|watched|target="main"|"main"' docs agent test tools cmd \
-  | rg -v 'docs/superpowers/(specs|plans)/|CHANGELOG|/design/2026-|main session|package main|func main|GitBranch|src/main.go'
+rg -n '(caller.{0,120}\bmain\b|\bmain\b.{0,120}caller|watched.{0,120}\bmain\b|\bmain\b.{0,120}watched|"?((target)|(to))"?[[:space:]]*[:=][[:space:]]*[^[:space:]]*\bmain\b|"main".*alias|alias.*"main")' \
+  docs/job-control.md agent/internal/tool agent/prompts agent/bundled_plugins docs/tools \
+  | rg -v 'docs/superpowers/(specs|plans)/|main session|package main|func main'
 ```
 
 The grep is a review aid, not the only proof; do not delete unrelated ordinary
@@ -147,6 +151,11 @@ Required behavior:
   and child metadata. This task introduces the descriptor if it does not exist
   yet, with `result_schema` and enough identity fields to fold/reopen it; Task 4
   extends the same descriptor with the remaining restore metadata.
+- Every resumed delegate job record must carry the inherited original
+  `result_schema` in its own durable restore descriptor. Do not rely on a
+  pointer to an earlier job record as the only schema authority. Multi-hop resume
+  therefore works by copying the inherited schema forward into each new delegate
+  job descriptor.
 - `job_send_message` to a delegate job uses the original schema for the resumed
   turn.
 - The foreground/background return shape and `job_read_output` expose:
@@ -204,6 +213,14 @@ Acceptance tests:
 - A resumed turn with invalid/missing structured output returns no
   `structured_result`, sets `structured_result_valid:false`, and includes
   `structured_result_reason`.
+- An initial foreground `delegate(result_schema=...)` turn with invalid/missing
+  structured output returns no `structured_result`, sets
+  `structured_result_valid:false`, includes `structured_result_reason`, and
+  persists the same invalid shape for `job_read_output`.
+- An initial background `delegate(result_schema=...)` turn with invalid/missing
+  structured output produces a durable record where `job_read_output` omits
+  `structured_result`, sets `structured_result_valid:false`, and includes
+  `structured_result_reason`.
 - The inherited schema still applies after session restore where delegate
   resume is supported by Task 4 below.
 - Existing oversized structured-result bounds still drop the value and mark it
@@ -235,14 +252,49 @@ Required behavior:
     `caller`/`watched` alias rules.
   - Replacing or clearing a watch increments/removes the watch generation and
     deletes stale pending frames for the old generation.
+- `watch_generation` is durable and never reused after restore. Allocate it at
+  watch configuration time as either a jobstore-backed monotonic sequence or an
+  opaque unique id; do not derive it from an in-memory counter that can reset
+  after restart. Standing watches are not restored, but their already-fired
+  pending frames retain the original generation until delivered, dropped,
+  evicted, or explicitly cleared by that generation.
 - At most one pending frame exists per key. New frames replace the pending frame
   for that key; they do not append unboundedly.
 - The pending frame records enough metadata to build the final sent message:
   configured message, bounded frame/excerpt, triggering job/session, trigger
   reason, watch context for alias resolution, and a coalesced/replaced count.
+- The pending frame stores the exact bounded message/frame to send. It is
+  snapshotted at trigger/coalesce time; retry must not reread watched output or
+  rebuild excerpts from later retained output state.
 - Pending watch-send frames are durable. If the parent process restarts while a
   frame is pending, restore rehydrates it and later delivers it or emits exactly
   one hard-failure diagnostic.
+- Add explicit durable state for pending watch sends. Either jobstore events or
+  an equivalent append-only sidecar may be used, but the durable representation
+  must contain:
+  - event kind/state: `watch_send_pending`, `watch_send_delivered`,
+    `watch_send_dropped`, and `watch_send_evicted` or equivalent;
+  - the full coalescing key;
+  - watch generation;
+  - pending generation or monotonically increasing update sequence;
+  - bounded frame/message payload;
+  - trigger identity and trigger reason;
+  - coalesced/replaced count;
+  - creation/update timestamps or sequence numbers;
+  - diagnostic reason for dropped/evicted states.
+- Fold rule: latest `watch_send_pending` per key wins; `delivered`, `dropped`,
+  and `evicted` remove the pending entry for that key. Replaying the log after
+  restore may attempt delivery for a pending key, but hard-failure diagnostic
+  emission must be idempotent: repeated restore emits at most one diagnostic per
+  dropped/evicted pending generation.
+- Delivery is at-least-once across crash boundaries. Append
+  `watch_send_delivered` only after `job_send_message` returns delivered. A crash
+  after the side effect but before the delivered marker may resend the same
+  pending frame after restore. To make that safe and observable, include the
+  stable pending generation/delivery id in the watch frame metadata sent to the
+  sidecar and in diagnostics. If a future implementation adds end-to-end
+  duplicate suppression, it may strengthen this to effectively-once delivery,
+  but v1 must not append `delivered` before the side effect.
 - Pending frames are bounded both per key and per active watch generation. The
   default per-watch-generation cap is 32 pending keys. When a new distinct key
   would exceed the cap, Serf evicts the oldest pending key for that watch
@@ -262,23 +314,35 @@ Required behavior:
   coalesced frame must remain pending and the terminal notification must still be
   delivered; actual sidecar commentary may arrive after the terminal
   notification.
-- Watch-originated sends must retain the existing feedback-loop suppression
-  (`FromWatch`) so sidecar lifecycle events do not retrigger their own watch.
+- If persisting the final pending watch-send frame or required hard-failure
+  diagnostic fails during job finalization, finalization must return/retry while
+  preserving the terminal `runningJob`/`terminalJob` state. The terminal
+  notification must not overtake or erase that final watch send because of a
+  persistence failure.
+- Watch-originated sends must retain feedback-loop suppression (`FromWatch`).
+  V1 suppression is global for watch-originated lifecycle events: a
+  watch-originated delegate start/finish event does not trigger any watch. Do
+  not implement per-watch-key suppression unless a later spec explicitly adds a
+  source watch key/generation to event payloads.
 - Pending coalesced frames are durable after a watch fires. Standing watch
   registrations are not restored as active watches in v1.
-- Clean up pending frames on successful delivery, hard diagnostic, watch clear,
-  watch replacement, concrete watch expiry, watched-target prune, and
-  job-manager/session close.
+- Expiring a concrete watch registration at terminal state is not the same as
+  deleting already-fired pending frames. Normal terminal expiry preserves fired
+  pending frames. Clean up pending frames only on successful delivery, durable
+  hard diagnostic/drop, durable eviction, explicit watch clear/replacement,
+  watched-target prune, or job-manager/session close.
 
 Implementation notes:
 
 - `agent/job_watch.go` is the likely home for pending send state and delivery
   attempts.
 - Delivery retry must be event-driven and expose a deterministic retry hook.
-  Invoke it when a delegate target completes a turn or otherwise transitions
-  from running to terminal/resumable. The retry path must run before and
-  independently of event-trigger filtering, so `FromWatch` loop suppression
-  cannot block it. Tests call this hook directly; do not rely on sleeps/timers.
+  Invoke it after the target delegate's resumable terminal state and child
+  session idle state are both visible. For a target delegate finishing its own
+  watch-originated turn, retry pending frames before enqueueing that target's
+  terminal notification. The retry path must run before and independently of
+  event-trigger filtering, so global `FromWatch` loop suppression cannot block
+  it. Tests call this hook directly; do not rely on sleeps/timers.
 - Keep frame size bounds unchanged.
 - Do not classify retryable vs hard failure by matching incidental error text.
   Use a typed/internal delivery classification such as `delivered`, `busy`, or
@@ -303,6 +367,13 @@ Acceptance tests:
   use different pending keys and do not overwrite each other.
 - Hard failure: pending frame to a non-resumable/pruned target is dropped and
   produces one caller-visible diagnostic.
+- Restore idempotence: replaying pending durable state after two consecutive
+  restarts emits at most one hard-failure diagnostic for one dropped pending
+  generation.
+- Session-event `watched` handling: `send.to:"watched"` is rejected for
+  `assistant.message`, `assistant.tool`, and `communicate` session-event watches
+  that do not carry a concrete messageable watched identity; `job.notification`
+  with a concrete job identity remains valid.
 - Terminal ordering: immediate deliverable final watch send happens before the
   terminal notification; if the sidecar is busy, the terminal notification is not
   lost and the pending sidecar frame remains queued.
@@ -316,6 +387,14 @@ Acceptance tests:
 - Restore durability: a busy pending frame survives restore and later delivers,
   or emits exactly one hard-failure diagnostic if the target becomes
   non-resumable.
+- Generation uniqueness: a pending frame survives restart; configuring a new
+  watch for the same target/send pair after restart gets a different generation
+  and neither overwrites nor clears the old pending frame except through an
+  explicit operation that names or matches the old generation.
+- Crash boundary: simulate `job_send_message` succeeding and crashing before
+  `watch_send_delivered` is appended; after restore, the same pending generation
+  is retried and the sent frame includes the stable delivery id. The test may
+  document at-least-once duplicate delivery rather than suppressing it.
 
 ### 4. Extend delegate restore descriptors
 
@@ -330,14 +409,20 @@ Required behavior:
   into the job's `job_started` state. Task 2 may already have introduced this
   descriptor for `result_schema`; this task completes the descriptor for
   restore-based resume.
+- Refactor launch ordering so durable state exists before the first child model
+  request. Split child construction/tracking from run launch: construct the
+  child/session identity and descriptor, append `job_started` plus the
+  descriptor, then call `launchSubagentRun`. Do not start `sub.run` before the
+  job record and restore descriptor are durable.
 - The versioned descriptor contains:
   - child session id and transcript ref;
   - parent session id, parent job id, owner/visible session ids, and origin
     turn/tool-call ids needed for forwarded nested job visibility;
   - original task;
   - requested `agent_type`, requested model override, resolved profile id,
-    resolved model, reasoning effort, agent name, and role prompt source needed
-    to rebuild the child session consistently;
+    resolved model, reasoning effort, agent name, and frozen role/task/tool/skill
+    shaping fields needed to rebuild the child session consistently even if a
+    plugin agent definition later drifts;
   - local execution working directory and local env policy for
     `execenv.LocalExecutionEnvironment`; v1 does not snapshot arbitrary process
     environment variables;
@@ -345,17 +430,29 @@ Required behavior:
   - subagent tool policy/grants if the original delegate launch used explicit
     grants.
 - The descriptor is folded into `jobstore.JobRecord` and survives store reopen.
-- Do not read from this descriptor yet except in tests; this task only makes the
-  required state durable.
+- Task 2 may read the descriptor's `result_schema` immediately. Until Task 6,
+  do not use non-schema restore metadata for runtime reconstruction except in
+  tests; this task otherwise only makes the required state durable.
+- Profile/model lookup order is fixed:
+  1. use `resolved_profile_id` plus `resolved_model` when both are present;
+  2. if only `resolved_model` is present, resolve it through the current parent
+     session profile resolver;
+  3. if resolution fails, return `profile_unavailable`;
+  4. do not reinterpret `requested_model` as a different provider/profile on
+     restore.
 
 Acceptance tests:
 
 - Delegate launch appends a descriptor before or with durable job start, and a
   reopened jobstore exposes it on the delegate job record.
+- A blocked model adapter test proves the descriptor/job record exists before
+  the first child model request is made.
 - Descriptor fields match the original launch settings, working directory, env
   policy, result schema, parent/job linkage, and child transcript ref.
 - Missing optional launch settings are represented as empty/omitted values, not
   defaulted to misleading non-empty values.
+- A resumed delegate job created by `job_send_message` carries the inherited
+  `result_schema` in its own descriptor.
 
 ### 5. Add strict child restore preflight
 
@@ -370,18 +467,23 @@ Required behavior:
   resumed.
 - The resolved profile/model must be available through the normal profile
   resolver.
-- Non-tail transcript corruption is a hard `target_not_resumable` failure.
-  Existing trailing-partial-line recovery may still apply if the transcript
-  reader already supports it.
+- Use a dedicated strict child transcript reader for restore preflight. The
+  existing lenient transcript reader may continue to skip corrupt lines for user
+  display, but restore preflight must fail on corrupt non-final entries, validate
+  the header/session id, and return typed errors mapped to the reasons below.
+  Existing trailing-partial-line recovery may still apply only for a final
+  incomplete entry if the strict reader can prove the preceding entries are
+  valid.
 - Any failed preflight returns a synchronous error string with the exact shape
   `target_not_resumable:<not_resumable_reason>` before appending a new job
   event. The prefix is the stable tool error class; the suffix is one of the
   required reason values below. Do not return prose-only variants for these
   cases.
-- `job_list` projects restored resumability: `resumable:true` for
-  restore-resumable `stopped/runtime_lost` delegate jobs and `resumable:false`
-  with `not_resumable_reason` when retained state is missing, corrupt, pruned, or
-  lacks the delegate restore descriptor.
+- `job_list` projects restored resumability through the same
+  `AssessDelegateResumability` path used by preflight. The projection is pure and
+  dynamic: `job_list` must not append `job_session_assigned` events or mutate
+  jobstore just to report resumability. Deleted/corrupt child state and profile
+  availability changes are reflected on the next `job_list` call.
 
 Required `not_resumable_reason` values:
 
@@ -391,7 +493,6 @@ Required `not_resumable_reason` values:
 - `corrupt_child_transcript`
 - `transcript_session_mismatch`
 - `missing_delegate_resume_metadata`
-- `pruned_child_session_state`
 - `child_session_busy`
 - `parent_linkage_unavailable`
 - `profile_unavailable`
@@ -402,21 +503,17 @@ Reason precedence:
    `missing_delegate_resume_metadata`.
 2. If descriptor parent/session/job linkage does not match the parent job record
    being resumed, use `parent_linkage_unavailable`.
-3. If retained-session metadata explicitly records that the child session was
-   pruned by retention, use `pruned_child_session_state`.
-4. If there is no pruning marker and the child meta file is absent, use
-   `missing_child_session_meta`.
-5. If the child meta file exists but cannot be parsed, use
+3. If the child meta file is absent, use `missing_child_session_meta`.
+4. If the child meta file exists but cannot be parsed, use
    `corrupt_child_session_meta`.
-6. If there is no pruning marker and the child transcript file is absent, use
-   `missing_child_transcript`.
-7. If the child transcript exists but cannot be parsed under the strict restore
+5. If the child transcript file is absent, use `missing_child_transcript`.
+6. If the child transcript exists but cannot be parsed under the strict restore
    policy, use `corrupt_child_transcript`.
-8. If the transcript parses but its session id/header conflicts with the
+7. If the transcript parses but its session id/header conflicts with the
    descriptor, use `transcript_session_mismatch`.
-9. If the child session is already retained as live/running in a conflicting
+8. If the child session is already retained as live/running in a conflicting
    state, use `child_session_busy`.
-10. If the resolved profile/model is unavailable after retained-state checks
+9. If the resolved profile/model is unavailable after retained-state checks
    pass, use `profile_unavailable`.
 
 Acceptance tests:
@@ -436,11 +533,10 @@ Acceptance tests:
 - Before/after jobstore counts prove failed preflight paths create no partial
   job/run.
 - `job_list` reports `resumable:true` for retained-state delegates and
-  `resumable:false` plus `not_resumable_reason` for missing/corrupt/pruned
-  retained state.
+  `resumable:false` plus `not_resumable_reason` for missing/corrupt retained
+  state.
 - Preflight and `job_list` tests cover each required `not_resumable_reason`
-  value, including the precedence between explicit pruning markers and missing
-  files.
+  value.
 
 ### 6. Reconstruct idle child runtime after restore
 
@@ -567,6 +663,10 @@ public marker/capacity escape hatches and no stale "open decision" language:
 rg -n 'private-sidecar|private sidecar|sidecar.*capacity|capacity.*sidecar|implementation-specific policy.*sidecar|sidecar.*implementation-specific policy' \
   docs/job-control.md agent/internal/tool agent/prompts docs/tools \
   | rg -v 'docs/superpowers/(specs|plans)/'
+
+rg -n '"(sidecar|private|observer_mode)"|`(sidecar|private|observer_mode)`|sidecar[[:space:]_]*mode|observer[[:space:]_]*mode' \
+  agent/internal/tool docs/job-control.md agent/prompts docs/tools \
+  | rg -v 'docs/superpowers/(specs|plans)/|private key|private data|private network'
 
 rg -n 'Open decision|open decision|deferred/open decision|remains open|not yet normative' \
   docs/job-control.md agent/internal/tool agent/prompts docs/tools \
