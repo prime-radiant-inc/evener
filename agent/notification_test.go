@@ -140,6 +140,12 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 	if !requestsContain(reqs, "<subagent-notification", "01CHILD") {
 		t.Fatalf("model request history did not contain the <subagent-notification ...> block for 01CHILD")
 	}
+	if !requestsContain(reqs, "job_read_output", "read_session_transcript", "local:01CHILD") {
+		t.Fatalf("model request history did not point subagent notification at job-control/transcript tools")
+	}
+	if requestsContain(reqs, "wait(") || requestsContain(reqs, "subagent_output") {
+		t.Fatalf("model request history contained deleted subagent result tool guidance")
+	}
 
 	// (c) A notification turn is NOT a user turn: s.turns must not increment.
 	sess.mu.Lock()

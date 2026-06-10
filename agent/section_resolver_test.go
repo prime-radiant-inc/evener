@@ -600,7 +600,7 @@ func TestReviewerTemplate_UsesCommunicateDecisionContract(t *testing.T) {
 		ResultToolName:              "communicate",
 		ProfileTools:                toolEntriesFromDefinitions(NewOpenAIProfile("gpt-5.2").ToolDefinitions()),
 		CallableToolNames:           []string{"read_file", "grep", "glob", "shell", "communicate"},
-		UnavailableProfileToolNames: []string{"apply_patch", "write_file", "spawn_agent", "resume_agent", "wait", "close_agent", "task_list", "web_fetch"},
+		UnavailableProfileToolNames: []string{"apply_patch", "write_file", "delegate", "job_watch", "task_list", "web_fetch"},
 	}
 
 	result, _, err := resolver.RenderEmbedded(embeddedPrompts, "prompts/templates/", "subagent", data)
@@ -623,8 +623,11 @@ func TestReviewerTemplate_UsesCommunicateDecisionContract(t *testing.T) {
 	if !strings.Contains(result, "Provider tools currently unavailable here:") {
 		t.Error("reviewer prompt should show the unavailable provider tools for this role")
 	}
-	if !strings.Contains(result, "`spawn_agent`") {
+	if !strings.Contains(result, "`delegate`") {
 		t.Error("reviewer prompt should identify unavailable delegated tools")
+	}
+	if strings.Contains(result, "`spawn_agent`") || strings.Contains(result, "`resume_agent`") || strings.Contains(result, "`close_agent`") {
+		t.Error("reviewer prompt should not mention deleted delegation tools")
 	}
 }
 

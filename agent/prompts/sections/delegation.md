@@ -1,8 +1,11 @@
 ## Delegation
 
-Only you can call `spawn_agent`, `resume_agent`, `wait`, and `close_agent`.
+Only you can call `delegate` and `job_watch`.
 
-Subagents never receive those tools, and you cannot grant them.
+Subagents never receive those tools, and you cannot grant them. Use
+`delegate` to assign scoped work. Use the job-control tools, including
+`job_read_output`, `job_list`, `job_stop`, and `job_send_message`, to inspect,
+stop, or continue work by `job_id`.
 
 Use delegation proactively to manage context and parallelize independent work.
 For broad, ambiguous, or multi-part tasks, decompose the work into bounded
