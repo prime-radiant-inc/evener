@@ -30,8 +30,8 @@ class TestClassifyTool:
     def test_serf_shell(self):
         assert classify_tool("shell") == "EXEC"
 
-    def test_serf_spawn_agent(self):
-        assert classify_tool("spawn_agent") == "SPAWN"
+    def test_serf_delegate(self):
+        assert classify_tool("delegate") == "SPAWN"
 
     def test_serf_communicate(self):
         assert classify_tool("communicate") == "SUBMIT"
@@ -94,8 +94,8 @@ class TestClassifyRound:
     def test_exec_tool(self):
         assert classify_round(["shell"], has_text=False) == "EXEC"
 
-    def test_spawn_tool(self):
-        assert classify_round(["spawn_agent"], has_text=False) == "SPAWN"
+    def test_delegate_tool(self):
+        assert classify_round(["delegate"], has_text=False) == "SPAWN"
 
     def test_submit_tools(self):
         assert classify_round(["communicate"], has_text=False) == "SUBMIT"
@@ -111,8 +111,8 @@ class TestClassifyRound:
         """SUBMIT priority beats EXPLORE."""
         assert classify_round(["read_file", "communicate"], has_text=True) == "SUBMIT"
 
-    def test_mixed_spawn_wins_over_edit(self):
-        assert classify_round(["spawn_agent", "apply_patch"], has_text=False) == "SPAWN"
+    def test_mixed_delegate_wins_over_edit(self):
+        assert classify_round(["delegate", "apply_patch"], has_text=False) == "SPAWN"
 
     def test_mixed_edit_wins_over_exec(self):
         assert classify_round(["shell", "apply_patch"], has_text=False) == "EDIT"
@@ -547,11 +547,11 @@ class TestSummaryGeneration:
         assert rounds[0]["action"] == "PLAN"
         assert rounds[0]["summary"] == 'communicate:message("I am still validating the fix.")'
 
-    def test_spawn_summary(self):
+    def test_delegate_summary(self):
         entries = [
             self._user_entry(0),
             self._assistant_entry(1, tool_calls=[
-                {"id": "tc-1", "name": "spawn_agent",
+                {"id": "tc-1", "name": "delegate",
                  "arguments": '{"agent": "test-engineer", "task": "Write tests for the widget module."}'},
             ]),
         ]

@@ -159,8 +159,8 @@ func TestSummarizeTool_WebSearch(t *testing.T) {
 	}
 }
 
-func TestSummarizeTool_SpawnAgent(t *testing.T) {
-	desc, _ := SummarizeTool("spawn_agent", `{"task":"Explore the codebase and find all usages of the Foo interface"}`)
+func TestSummarizeTool_Delegate(t *testing.T) {
+	desc, _ := SummarizeTool("delegate", `{"task":"Explore the codebase and find all usages of the Foo interface"}`)
 	if !strings.Contains(desc, "Explore") {
 		t.Errorf("got %q", desc)
 	}

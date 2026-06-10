@@ -107,7 +107,7 @@ function extractStructureFromTrajectory(trajectory, seedTaskList) {
                     tasks: Array.isArray(args.tasks) ? args.tasks : null,
                     updates: enrichedUpdates,
                 });
-            } else if (name === 'spawn_agent') {
+            } else if (name === 'delegate') {
                 events.push({
                     kind: 'delegation',
                     round: round.round,

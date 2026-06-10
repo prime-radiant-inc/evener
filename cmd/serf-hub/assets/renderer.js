@@ -160,7 +160,7 @@
 
       this.activeMessages = new Map();   // messageId -> {el, textBuf, markdownTimer}
       this.activeTools = new Map();      // callId -> {el, outputBuf}
-      this.activeJobs = new Map();       // job_id -> job reference el
+      this.activeJobs = new Map();       // appwire jobId -> job reference el
       this.suppressedToolCalls = new Set();
       this.pendingTaskCalls = new Map(); // callId -> args (for system-line rendering on END)
       this.lastCurrentTaskId = null;     // dedupe state for "now on X" system-line
@@ -1408,13 +1408,13 @@
 
     makeJobRef(data) {
       data = data || {};
-      const jobId = data.job_id || ("job-" + Math.random().toString(36).slice(2, 9));
+      const jobId = data.jobId || ("job-" + Math.random().toString(36).slice(2, 9));
       const ref = document.createElement("div");
       ref.className = "subagent-reference";
       ref.dataset.jobId = jobId;
-      if (data.transcript_ref) ref.dataset.transcriptRef = data.transcript_ref;
+      if (data.transcriptRef) ref.dataset.transcriptRef = data.transcriptRef;
       const verb = document.createElement("span");
-      verb.className = "verb"; verb.textContent = data.job_type || "job";
+      verb.className = "verb"; verb.textContent = data.jobType || "job";
       const target = document.createElement("span");
       target.className = "target";
       target.textContent = jobId;
@@ -1430,10 +1430,10 @@
     },
 
     applyJobRefTarget(ref, data) {
-      if (!ref || !data || !data.transcript_ref) return;
-      ref.dataset.transcriptRef = data.transcript_ref;
+      if (!ref || !data || !data.transcriptRef) return;
+      ref.dataset.transcriptRef = data.transcriptRef;
       ref.style.cursor = "pointer";
-      ref.onclick = () => { window.location.href = "/s/" + encodeURIComponent(data.transcript_ref); };
+      ref.onclick = () => { window.location.href = "/s/" + encodeURIComponent(data.transcriptRef); };
     },
 
     beginJobRef(data) {
@@ -1444,7 +1444,7 @@
     },
 
     finalizeJobRef(data) {
-      const jobId = data.job_id || "";
+      const jobId = data.jobId || "";
       let ref = this.activeJobs.get(jobId);
       if (!ref) {
         ref = this.makeJobRef(data);
@@ -1469,9 +1469,9 @@
         status.textContent = data.status;
         ref.appendChild(status);
       }
-      if (data.output_bytes != null) {
+      if (data.outputBytes != null) {
         const bytes = document.createElement("span"); bytes.className = "result";
-        bytes.textContent = data.output_bytes + " bytes";
+        bytes.textContent = data.outputBytes + " bytes";
         ref.appendChild(bytes);
       }
       this.applyJobRefTarget(ref, data);

@@ -34,7 +34,7 @@ Declarative workflow templates are intentionally not specified here. Agent `task
 
 These current files are the implementation surface this contract should cite and preserve where possible:
 
-- Subagent model-facing tools: `agent/session_tools_subagent.go`.
+- Job/delegate model-facing tools: `agent/session_tools_jobs.go`, `agent/job_delegate.go`, `agent/internal/tool/definitions.go`.
 - Subagent runtime and policy checks: `agent/subagents.go`.
 - Subagent in-memory manager/status: `agent/subagent_manager.go`, `agent/status.go`.
 - Subagent policy tests, including grant-tool rejection: `agent/plugin_agents_integration_test.go`.
@@ -88,7 +88,7 @@ At every model-call, tool-call, plugin-agent, child-agent, hook, and helper boun
 2. `tools: all` means all tools effective for this child in this session, not all registered tools in the process.
 3. Explicit `grant_tools` can only add tools that are already available to the parent/session and not root-only for the child.
 4. Visibility policy and execution policy must agree. If a tool is hidden from the model, a forged or stale model-returned call to that tool must still be denied before execution.
-5. Root-only management tools (`spawn_agent`, `resume_agent`, `wait`, `close_agent`, and future registry-management tools) must not become visible or executable inside ordinary child agents unless an explicit future root-delegation mode is designed and tested. This applies to plugin agents that request `tools: all` as well as explicit tool lists.
+5. Root-only management tools (`delegate`, `job_watch`, and future registry-management tools) must not become visible or executable inside ordinary child agents unless an explicit future root-delegation mode is designed and tested. This applies to plugin agents that request `tools: all` as well as explicit tool lists. Ordinary child agents may use their own shell job tools and may send permitted follow-up messages through `job_send_message`.
 6. Policy decisions become immutable after execution starts. Later lifecycle events may observe the decision/result but must not retroactively mutate an already-started tool execution.
 7. Partial MCP startup, if supported, must be explicit. Unknown or unavailable MCP tools must either fail deterministically at session/agent startup or at spawn/execution time according to the MCP partial/fail-fast mode; do not silently ignore requested tools.
 8. Provider feature policy must run before request construction. A helper/subagent/session cannot request unsupported provider features merely because an agent definition names them.
@@ -137,22 +137,22 @@ Tool lifecycle:
 
 Current Serf emits `TOOL_CALL_START` before registry lookup, schema validation, middleware, and execution policy. Until migrated, treat that event as an attempted-call observation and test both current and target ordering during the migration.
 
-Serf emits `SUBAGENT_START` before launching the run goroutine on both initial spawn and idle resume (so START precedes END in program order), and closes the run's `done` channel before emitting `SUBAGENT_END`. This lifecycle behavior is specified in `00-subagent-control-plane.md`. The sequence below is the **target canonical order for new lifecycle/hook work**. If implementation changes the ordering to match this target, it must do so deliberately and with regression tests for waiters, event subscribers, and hook execution.
+Current Serf starts the delegate child run through `spawnAgent` before `attachDelegateJobWithID` emits `JOB_STARTED`. On completion, `finishJob` emits `JOB_FINISHED` before `armFinalizedJob` closes the run's `done` channel. The sequence below remains the **target canonical order for new lifecycle/hook work**. If implementation changes the ordering to match this target, it must do so deliberately and with regression tests for bounded readers, event subscribers, and hook execution.
 
-Subagent lifecycle target:
+Delegate job lifecycle target:
 
-1. spawn request decoded;
+1. delegate request decoded;
 2. agent type resolved;
 3. effective child policy computed;
 4. child session/job created;
 5. optional `SubagentStart` compatibility/SDK hooks run before first child model turn if they can add context;
-6. `SUBAGENT_START` event emits with stable child identity;
+6. `JOB_STARTED` event emits with stable job and child identity;
 7. child run starts;
 8. child run completes, fails, or is cancelled;
 9. `SubagentStop` compatibility hook runs, with loop guard if it can block completion;
 10. result snapshot/diagnostic is finalized;
 11. registry/status updates;
-12. waiters are released and `SUBAGENT_END` event emits in a deterministic tested order. Current code releases waiters before `SUBAGENT_END`; keep that observable behavior unless a separate migration explains and tests why event-before-waiter semantics should win.
+12. bounded readers/watchers are released and `JOB_FINISHED` event emits in a deterministic tested order.
 
 Helper lifecycle:
 
@@ -164,7 +164,7 @@ Helper lifecycle:
 
 ### Event payload rules
 
-1. Events must carry stable IDs or enough fields for idempotent projection where clients use them. Current subagent event payloads are intentionally minimal (`agent_id`/`task` for start and `agent_id`/`status`/`turns_used` for end); parent session ID is available on the event envelope. Future additive subagent payload fields may include child ref, agent type, usage, transcript ref, and sanitized error, but clients must not assume those fields exist until implemented and documented.
+1. Events must carry stable IDs or enough fields for idempotent projection where clients use them. Current `JOB_STARTED` payloads carry `job_id`, `job_type`, `status`, and `from_watch`; current `JOB_FINISHED` payloads carry `job_id`, `job_type`, `status`, `reason`, `exit_code`, `output_bytes`, `transcript_ref`, and `from_watch`. Parent session ID is available on the event envelope.
 2. Observability events must not block critical paths. Blocking behavior belongs to explicit hooks with context, timeout, and error policy.
 3. Event payloads must avoid raw secrets and unbounded data by default.
 4. Event payloads should include references or offsets for large outputs/transcripts, not inline full transcript bodies.
@@ -174,7 +174,7 @@ Helper lifecycle:
 ### Implementation guidance
 
 - Extend existing `agent/events/events.go` and `agent/events/payloads.go` additively when possible.
-- Keep compatibility with current `SUBAGENT_START` and `SUBAGENT_END` consumers.
+- Keep compatibility with current `JOB_STARTED` and `JOB_FINISHED` consumers.
 - Prefer a simple projector from existing session events to Hub/TUI/SDK DTOs over a new event bus.
 
 ## Contract 3: diagnostics and validation errors
@@ -254,7 +254,7 @@ This type is illustrative. Runtime errors and validation diagnostics do not need
 4. A helper must not mutate task stores, session history, plugin agent state, or project docs.
 5. A helper must not run plugin hooks by default. If a future hook handler uses an LLM internally, that is hook-owned behavior and still must obey hook policy.
 6. A helper may reuse provider/profile/model resolution, the retry semantics of its chosen underlying LLM API, rate-limit header metadata, Complete-based API logging middleware when attached, stream middleware for streaming helpers, prompt cache, and usage accounting where safe.
-7. Helper diagnostics belong to the owning operation: tool result metadata, events, debug logs, or SDK callback data. They must not appear in `list_agents` or child job status.
+7. Helper diagnostics belong to the owning operation: tool result metadata, events, debug logs, or SDK callback data. They must not appear in `job_list` or child job status.
 8. Helper prompts must be bounded and testable. Cacheable helper outputs require input hash, prompt version, model/profile version, and relevant option keys in the cache key.
 9. Helper failures are surfaced as part of the owning operation. They should not be reported as child-agent failures.
 
@@ -325,8 +325,8 @@ Policy tests:
 Event and ordering tests:
 
 - Tool lifecycle ordering: visibility policy, decoded/best-effort hook input, `PreToolUse`, updated-input merge, final schema validation, final policy, tool start, execution, tool end, `PostToolUse`.
-- Subagent start ordering: policy validation, child creation, optional start hook, `SUBAGENT_START`, first child turn.
-- Subagent stop ordering: child completion, `SubagentStop`, result finalization/status update, waiter release/`SUBAGENT_END` order matching the documented current or migrated semantics.
+- Delegate job start ordering: policy validation, child creation, optional start hook, `JOB_STARTED`, first child turn.
+- Delegate job stop ordering: child completion, `SubagentStop`, result finalization/status update, bounded reader release/`JOB_FINISHED` order matching the documented current or migrated semantics.
 - Session start/end exactly once on normal completion, provider failure, cancellation, and close.
 - Observability events do not block unless the tested surface is an explicit blocking hook.
 

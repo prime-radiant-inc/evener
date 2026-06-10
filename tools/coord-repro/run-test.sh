@@ -89,7 +89,7 @@ for f in sorted(glob.glob('${STATEDIR}/sessions/*.transcript.jsonl')):
                     args = j.loads(args)
                 except:
                     args = {}
-            if name == 'spawn_agent':
+            if name == 'delegate':
                 spawned = True
             elif name == 'write_file':
                 wrote = True
@@ -99,14 +99,14 @@ for f in sorted(glob.glob('${STATEDIR}/sessions/*.transcript.jsonl')):
                     if 'move.txt' in cmd or 'move' in cmd.lower():
                         shell_wrote = True
 
-print('spawn_agent=' + str(spawned).lower())
+print('delegate=' + str(spawned).lower())
 print('write_file=' + str(wrote).lower())
 print('shell_write=' + str(shell_wrote).lower())
 " > "/tmp/coord-repro-result-${LABEL}.txt"
 
 source "/tmp/coord-repro-result-${LABEL}.txt"
 
-if [ "$spawn_agent" = "true" ]; then
+if [ "$delegate" = "true" ]; then
   echo "DELEGATE  label=$LABEL"
 elif [ "$write_file" = "true" ] || [ "$shell_write" = "true" ]; then
   echo "BYPASS    label=$LABEL"

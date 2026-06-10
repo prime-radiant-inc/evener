@@ -1,5 +1,5 @@
 // Smoke-test the per-tool renderer registry: shell with stdout,
-// edit_file with diff, web_fetch, web_search, spawn_agent, and the
+// edit_file with diff, web_fetch, web_search, delegate, and the
 // cheap-cluster grouping for read_file/grep/list_dir/glob.
 const fs = require("fs");
 const { JSDOM } = require("jsdom");
@@ -221,7 +221,7 @@ await scenario("job control tools render structured summaries", [
 
 await scenario("orphan JOB_FINISHED preserves job payload", [
   ["SESSION_START", { session_id: "01TEST" }],
-  ["JOB_FINISHED", { job_id: "job_ORPHAN", job_type: "delegate", status: "completed", output_bytes: 77, transcript_ref: "local:child" }],
+  ["JOB_FINISHED", { jobId: "job_ORPHAN", jobType: "delegate", status: "completed", outputBytes: 77, transcriptRef: "local:child" }],
 ], ({ conv }) => {
   const ref = conv.querySelector(".subagent-reference");
   if (!ref) return { ok: false, detail: "missing fallback job reference" };

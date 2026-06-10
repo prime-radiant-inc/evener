@@ -144,7 +144,7 @@ func SummarizeTool(toolName, argsJSON string) (desc, detail string) {
 		desc = trunc(url, 80)
 		return desc, detail
 
-	case "spawn_agent":
+	case "delegate":
 		task := str("task")
 		firstLine := task
 		if i := strings.IndexByte(task, '\n'); i >= 0 {
@@ -156,12 +156,12 @@ func SummarizeTool(toolName, argsJSON string) (desc, detail string) {
 		}
 		return desc, detail
 
-	case "resume_agent":
-		desc = str("agent_id")
+	case "job_send_message":
+		desc = str("target")
 		return desc, detail
 
-	case "wait", "close_agent":
-		desc = str("agent_id")
+	case "job_read_output", "job_stop":
+		desc = str("job_id")
 		return desc, detail
 
 	case "use_skill":

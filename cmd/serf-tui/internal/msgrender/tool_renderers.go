@@ -349,9 +349,9 @@ func init() {
 		},
 	}
 
-	// spawn_agent
-	toolRenderers["spawn_agent"] = ToolRenderer{
-		Verb: func(_ ToolArgs) string { return "spawn" },
+	// delegate
+	toolRenderers["delegate"] = ToolRenderer{
+		Verb: func(_ ToolArgs) string { return "delegate" },
 		Target: func(args ToolArgs) string {
 			task := args.Str("task")
 			if len(task) > 80 {
@@ -367,11 +367,11 @@ func init() {
 		},
 	}
 
-	// resume_agent / wait / close_agent — agent control factory
-	agentControl := func(verb string) ToolRenderer {
+	// job control
+	jobControl := func(verb string) ToolRenderer {
 		return ToolRenderer{
 			Verb:   func(_ ToolArgs) string { return verb },
-			Target: func(args ToolArgs) string { return shortID(args.Str("agent_id")) },
+			Target: func(args ToolArgs) string { return shortID(args.Str("job_id")) },
 			Result: func(_ ToolArgs, _ string, errStr string, _ time.Duration) string {
 				if errStr != "" {
 					return "error"
@@ -380,9 +380,23 @@ func init() {
 			},
 		}
 	}
-	toolRenderers["resume_agent"] = agentControl("resume")
-	toolRenderers["wait"] = agentControl("wait")
-	toolRenderers["close_agent"] = agentControl("close")
+	toolRenderers["job_send_message"] = jobControl("message")
+	jobSendMessageR := toolRenderers["job_send_message"]
+	jobSendMessageR.Target = func(args ToolArgs) string { return args.Str("target") }
+	toolRenderers["job_send_message"] = jobSendMessageR
+	toolRenderers["job_read_output"] = jobControl("read")
+	toolRenderers["job_stop"] = jobControl("stop")
+	toolRenderers["job_list"] = ToolRenderer{
+		Verb:   func(_ ToolArgs) string { return "jobs" },
+		Target: func(_ ToolArgs) string { return "" },
+		Result: func(_ ToolArgs, _ string, errStr string, _ time.Duration) string {
+			if errStr != "" {
+				return "error"
+			}
+			return "ok"
+		},
+		Body: jsonBody,
+	}
 
 	// task_list
 	toolRenderers["task_list"] = ToolRenderer{
@@ -437,10 +451,10 @@ func init() {
 	taskListR.Body = taskListBody
 	toolRenderers["task_list"] = taskListR
 
-	// Wave 6, task 6.4: wire subagentBody into spawn_agent renderer.
-	spawnR := toolRenderers["spawn_agent"]
-	spawnR.Body = subagentBody
-	toolRenderers["spawn_agent"] = spawnR
+	// Wave 6, task 6.4: wire delegateBody into delegate renderer.
+	delegateR := toolRenderers["delegate"]
+	delegateR.Body = delegateBody
+	toolRenderers["delegate"] = delegateR
 
 	// Wave 6, task 6.5: wire ShellBody + webSearchBody.
 	shellR := toolRenderers["shell"]

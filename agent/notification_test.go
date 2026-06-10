@@ -147,7 +147,7 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 	}
 	// (b) The recorded request's message history carries the notification block
 	// for the completed delegate job.
-	if !requestsContain(reqs, "<job-notification", fmt.Sprintf(`job_id="%s"`, jobID), `job_type="delegate"`, "job_read_output") {
+	if !requestsContain(reqs, "<job-notification", fmt.Sprintf(`job_id=%q`, jobID), `job_type="delegate"`, "job_read_output") {
 		t.Fatalf("model request history did not contain the <job-notification ...> block for %s", jobID)
 	}
 	// (c) A notification turn is NOT a user turn: s.turns must not increment.
@@ -939,35 +939,6 @@ func TestNotification_GoalRetargetedDuringInterleaveUsesNewObjective(t *testing.
 	}
 	if snap.Objective != newObjective {
 		t.Fatalf("goal objective = %q after run, want %q", snap.Objective, newObjective)
-	}
-}
-
-// assertNotificationSuppressed runs a single EntryNotification turn and asserts it
-// was a true no-op: the fake adapter recorded zero model requests and no
-// SESSION_END{input_complete} was emitted. This is the observable signature of a
-// notification whose every queued entry was filtered out at drain — identical to
-// the empty-queue no-op path. The session is consumed (closed) so its events can
-// be collected.
-func assertNotificationSuppressed(t *testing.T, sess *Session, adapter *fakeAdapter, collect func() []events.SessionEvent) {
-	t.Helper()
-	// Count requests made before the notification turn (a spawned child's own run
-	// records requests on the shared adapter) so the assertion is "the notification
-	// turn added zero", not "the adapter is pristine".
-	before := len(adapter.Requests())
-	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
-		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
-	}
-	if added := len(adapter.Requests()) - before; added != 0 {
-		t.Fatalf("suppressed notification turn made %d model request(s), want 0 (every entry should have been filtered at drain)", added)
-	}
-	sess.Close()
-	for _, ev := range collect() {
-		if ev.Kind != events.EventSessionEnd {
-			continue
-		}
-		if d, ok := ev.Data.(events.SessionEndData); ok && d.Reason == "input_complete" {
-			t.Fatalf("suppressed notification turn emitted a phantom SESSION_END{input_complete}; want none")
-		}
 	}
 }
 

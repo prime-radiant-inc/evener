@@ -220,7 +220,7 @@ def cmd_delegation(args):
         print("No sessions found.")
         return
 
-    # Look in the coordinator session (first session) for spawn_agent calls
+    # Look in the coordinator session (first session) for delegate calls.
     _sid, tpath, _mpath = sessions[0]
     entries = load_transcript(tpath)
 
@@ -241,7 +241,7 @@ def cmd_delegation(args):
             if item.get("kind") != "tool_call":
                 continue
             tc = item.get("tool_call", {})
-            if tc.get("name") != "spawn_agent":
+            if tc.get("name") != "delegate":
                 continue
 
             delegation_num += 1
@@ -264,7 +264,7 @@ def cmd_delegation(args):
             print()
 
     if delegation_num == 0:
-        print("No spawn_agent calls found in coordinator session.")
+        print("No delegate calls found in coordinator session.")
 
 
 def cmd_verifier(args):

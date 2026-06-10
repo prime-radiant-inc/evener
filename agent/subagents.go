@@ -50,16 +50,7 @@ Do NOT try to spawn further subagents.
 
 Your job is to complete the task and report your findings.`
 
-var rootOnlyAgentManagementTools = []string{"delegate", "job_watch"}
-var legacyRootOnlySubagentControlTools = []string{
-	"spawn_agent",
-	"resume_agent",
-	"wait",
-	"close_agent",
-	"cancel_agent",
-	"list_agents",
-	"subagent_output",
-}
+var rootOnlyJobPresenceTools = []string{"delegate", "job_watch"}
 
 type subagent struct {
 	id   string
@@ -78,13 +69,13 @@ type subagent struct {
 	runFromWatch    bool               // true for a run resumed by job_watch.send; suppresses observer feedback loops
 	nudgeEnabled    bool               // true for default subagents that should be nudged to communicate
 	cancel          context.CancelFunc // cancels the current run's context
-	cancelRequested bool               // set by cancel_agent so finalize maps a context.Canceled run to cancelled
+	cancelRequested bool               // set by parent stop so finalize maps a context.Canceled run to cancelled
 	agentType       string             // plugin agent type name; empty for default subagents
 	createdAt       time.Time          // set once at spawn; never reset on resume
 	startedAt       time.Time          // set at spawn; re-stamped at each idle-resume
 	endedAt         *time.Time         // set at run finalize; cleared to nil at idle-resume
 	closed          bool               // session torn down; record retained as terminal history
-	closeTimedOut   bool               // close_agent's session-close wait exceeded its bound; close not confirmed
+	closeTimedOut   bool               // session-close wait exceeded its bound; close not confirmed
 }
 
 func hasString(items []string, want string) bool {
@@ -121,12 +112,11 @@ func removeStrings(items, removals []string) []string {
 }
 
 func rootOnlySubagentTools() []string {
-	tools := appendUniqueStrings(append([]string(nil), rootOnlyAgentManagementTools...), rootOnlyJobControlTools...)
-	return appendUniqueStrings(tools, legacyRootOnlySubagentControlTools...)
+	return appendUniqueStrings(append([]string(nil), rootOnlyJobPresenceTools...), rootOnlyJobControlTools...)
 }
 
-func isRootOnlyAgentManagementTool(name string) bool {
-	return hasString(rootOnlyAgentManagementTools, name)
+func isRootOnlyJobPresenceTool(name string) bool {
+	return hasString(rootOnlyJobPresenceTools, name)
 }
 
 func isRootOnlySubagentTool(name string) bool {
@@ -404,7 +394,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	// The parent may stop waiting, finish its input, or time out while the
 	// child keeps running. Child cancellation is handled by subSess.Close(),
 	// including when the parent session closes. The per-run context lets
-	// cancel_agent interrupt this run without destroying the child session.
+	// parent stops interrupt this run without destroying the child session.
 	runCtx, runCancel := context.WithCancel(context.Background())
 	sub.mu.Lock()
 	sub.cancel = runCancel

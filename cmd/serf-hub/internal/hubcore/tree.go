@@ -29,7 +29,7 @@ type TreeProject struct {
 //
 // Kind:
 //   - "session"  – top-level session
-//   - "subagent" – spawned via spawn_agent (purple dot, indented)
+//   - "subagent" - created by delegate (purple dot, indented)
 //   - "fork"     – branched session (⎇ glyph, same indent as session, dim)
 type TreeNode struct {
 	ID        string

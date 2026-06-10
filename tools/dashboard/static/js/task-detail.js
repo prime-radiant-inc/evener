@@ -197,7 +197,7 @@ function SessionTree({ sessions, depth }) {
                 const sessionLabel = session.label || (sid ? `${sid} (${session.model || '?'})` : null);
                 const systemPrompt = session.system_prompt || '';
 
-                // Index children by the spawn_agent tool_call that created them
+                // Index children by the delegate tool call that created them.
                 const childrenByToolCall = new Map();
                 for (const c of children) {
                     if (c.parent_tool_call_id) childrenByToolCall.set(c.parent_tool_call_id, c);
@@ -216,10 +216,10 @@ function SessionTree({ sessions, depth }) {
                             </details>
                         `}
                         ${sessionRounds.map((r, i) => {
-                            // Find subagents spawned in this round, inline them here
+                            // Find delegate children created in this round, inline them here.
                             const inlineChildren = [];
                             for (const tc of (r.tool_calls || [])) {
-                                if ((tc.name || '').toLowerCase() !== 'spawn_agent') continue;
+                                if ((tc.name || '').toLowerCase() !== 'delegate') continue;
                                 const child = childrenByToolCall.get(tc.id);
                                 if (child) {
                                     inlineChildren.push(child);

@@ -63,19 +63,19 @@ func TestTaskListBodyRendersPerTaskRows(t *testing.T) {
 	}
 }
 
-func TestSubagentBodyShowsSummaryWhenChildUnavailable(t *testing.T) {
-	args := ToolArgs{"agent_id": "01NONEXISTENT", "turns_used": float64(3)}
-	got := subagentBody(args, "", 60)
+func TestDelegateBodyShowsSummaryWhenChildUnavailable(t *testing.T) {
+	args := ToolArgs{"job_id": "job_01NONEXISTENT", "turns_used": float64(3)}
+	got := delegateBody(args, "", 60)
 	if !strings.Contains(got, "turns") {
-		t.Errorf("subagentBody should show turn summary: %q", got)
+		t.Errorf("delegateBody should show turn summary: %q", got)
 	}
 }
 
-func TestSubagentBodyHandlesNarrowWidth(t *testing.T) {
-	args := ToolArgs{"agent_id": "01ABCD"}
-	got := subagentBody(args, "", 10)
+func TestDelegateBodyHandlesNarrowWidth(t *testing.T) {
+	args := ToolArgs{"job_id": "job_01ABCD"}
+	got := delegateBody(args, "", 10)
 	if strings.Contains(got, "panic") {
-		t.Errorf("subagentBody should not panic at narrow width")
+		t.Errorf("delegateBody should not panic at narrow width")
 	}
 }
 

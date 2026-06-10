@@ -50,7 +50,7 @@ type promptData struct {
 	CallableToolNames           []string
 	UnavailableProfileToolNames []string
 
-	// Available agents (for spawn_agent)
+	// Available agents (for delegate)
 	AvailableAgents []agentEntry
 
 	// Project docs

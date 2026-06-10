@@ -253,8 +253,8 @@ def _parse_tool_result_from_entry(content_item):
 def _render_tool_args(name, args):
     """Render tool arguments as formatted HTML. Never truncates."""
     if isinstance(args, dict):
-        # Special handling for spawn_agent - show key params prominently
-        if name == "spawn_agent":
+        # Special handling for delegate - show key params prominently.
+        if name == "delegate":
             parts = []
             for key in ("agent_type", "model", "reasoning_effort", "max_turns", "blocking"):
                 if key in args:
@@ -396,7 +396,7 @@ def render_session_html(session_id, session, sessions, depth=0):
 
                 elif c.get("kind") == "tool_call":
                     name, args, call_id = _parse_tool_call_from_entry(c)
-                    tool_class = "tool-spawn" if name == "spawn_agent" else \
+                    tool_class = "tool-spawn" if name == "delegate" else \
                                  "tool-communicate" if name == "communicate" else ""
                     parts.append(f'<div class="tool-call {tool_class}">')
                     parts.append(f'<span class="tool-name">{_esc(name)}</span>')

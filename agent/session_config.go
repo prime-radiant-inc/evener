@@ -93,7 +93,7 @@ type SessionConfig struct {
 	ContextStrategy string `json:"context_strategy,omitempty"`
 
 	// ShareTasksWithChildren, when true, passes the parent's task store to
-	// child sessions spawned via spawn_agent. Both parent and children see
+	// child sessions created for delegate jobs. Both parent and children see
 	// the same task list, enabling cross-session task coordination.
 	ShareTasksWithChildren bool `json:"share_tasks_with_children,omitempty"`
 
@@ -204,7 +204,7 @@ type spawnConfig struct {
 	// parentSteer routes runtime alias messages from a live sub-agent to its caller.
 	parentSteer func(string)
 
-	// subagentTask is the task description passed to spawn_agent.
+	// subagentTask is the task description passed to delegate.
 	subagentTask string
 
 	// depth is the sub-agent nesting depth (0 for root sessions).

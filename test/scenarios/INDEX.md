@@ -175,11 +175,11 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   Session B discovers Session A by content (`find({query})`), gets A's
   `transcript_ref`, and reads it to reconstruct A's work — B is never
   handed A's ref. Makes the bucket-sharing precondition explicit.
-- `transcript-subagent-audit-children-of.md` — a parent spawns a
-  subagent; `find({children_of:"<parent ref>"})` enumerates the child
-  (kind `subagent`, `parent_ref` set, no transcript opened), then an
-  outline + range read judges whether the child actually ran the
-  commands it claims (the delegation trust-but-verify loop).
+- `transcript-subagent-audit-children-of.md` — a parent starts a delegate
+  job; `find({children_of:"<parent ref>"})` enumerates the child (kind
+  `subagent`, `parent_ref` set, no transcript opened), then an outline +
+  range read judges whether the child actually ran the commands it claims
+  (the delegation trust-but-verify loop).
 - `transcript-read-jsonl-debug-hatch.md` — `format:"jsonl"` returns raw
   NDJSON (header + system prompt + api_call lines) with a hint to
   re-read as markdown; asserts the agent picks markdown, not jsonl, when
@@ -189,33 +189,18 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   different project bucket; default scope misses it, the cross-bucket
   hit comes back as a `proj:<bucketHash>:<id>` ref, and that ref reads.
 
-## Subagent control plane (CLI)
+## Job control (CLI)
 
-- `subagent-cancel-runaway.md` — `cancel_agent` aborts a child mid-run
-  (child told to `sleep 30`) returning `status:"cancelled",
-  success:false`, then `resume_agent` starts a fresh run on the
-  preserved history and completes — proving cancel keeps the child
-  resumable (the child analog of Esc, vs close which destroys).
-- `subagent-list-and-output.md` — `list_agents` enumerates a live child
-  (status/closed/task/transcript_ref); `subagent_output(view:result|
-  outline)` peeks it WITHOUT consuming (a second peek still returns the
-  result) and REDACTS a planted `sk-LIVETEST123456` to `«redacted»`.
-  Scope: redaction is subagent_output-only — the token stays verbatim in
-  the spawn result and the `list_agents` task field.
-- `subagent-close-retains.md` — `close_agent` destroys the child session
-  but RETAINS a `closed` record: default `list_agents` HIDES it
-  (`count:0`), `include_closed:true` SURFACES it with `closed:true` and
-  the run outcome preserved in `status` (`status:"completed"`).
-- `subagent-notification-wake.md` — the proactive completion wake
-  (serve-mode ONLY, driven through the hub): a parent spawns NON-blocking
-  (`spawn_agent blocking:false`) and ENDS its turn (goes idle without
-  waiting); when the child reaches a terminal state ~15s later, serf wakes
-  the parent by appending the `<subagent-notification ... status="completed"
-  ...>` block as a `STEERING` turn that drives a fresh model turn. Proof is
-  the post-idle `STEERING` entry in the PARENT transcript; the woken model
-  then `subagent_output`s the child and surfaces `CHILD_DONE_42`. One-shot
-  `serf run` does NOT deliver (no later turn to wake). Verified live against
-  `openai/gpt-5.4-mini`, first attempt.
+- `subagent-cancel-runaway.md` — `job_stop` stops a long-running delegate
+  job, then `job_send_message` targets the same delegate job to resume the
+  preserved child conversation and complete a shorter follow-up.
+- `subagent-list-and-output.md` — `job_list` enumerates a delegate job and
+  `job_read_output` peeks the result twice without consuming or hiding it.
+- `job-notification-wake.md` — the proactive completion wake
+  (serve-mode ONLY, driven through the hub): a parent starts a non-blocking
+  delegate and ends its turn; when the child reaches a terminal state later,
+  Serf wakes the parent with `<job-notification ...>` and the woken model
+  reads the result with `job_read_output`.
 
 ## Regression sweep (older surfaces)
 

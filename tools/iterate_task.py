@@ -113,7 +113,7 @@ def extract_delegation(trial_dir: str) -> dict:
             if first_action is None and name not in ("task_list",):
                 first_action = name
 
-            if name == "spawn_agent":
+            if name == "delegate":
                 atype = args.get("agent_type", "default")
                 spawns.append(atype)
                 coordinator_actions.append(f"spawn:{atype}")

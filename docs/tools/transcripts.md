@@ -158,12 +158,12 @@ number `range`/`expand_turn` take):
 58 · Assistant · exec_command · "run tests" · ok · 18 lines [truncated]
 ```
 
-A subagent-lifecycle turn (`spawn_agent`/`wait`/`resume_agent`/`close_agent`) replaces the
-size note with one **audit-pivot bracket per lifecycle call**, so the parent→child handle
+A delegate/job-control turn (`delegate`/`job_read_output`/`job_send_message`/`job_stop`) replaces the
+size note with one **audit-pivot bracket per lifecycle call**, so the parent-to-child handle
 is right in the map:
 
 ```
-27 · Assistant · wait · wait[success=true status=completed child=local:01KT…]
+27 · Assistant · job_read_output · job_read_output[status=completed child=local:01KT…]
 ```
 
 `range` applies to outline too: a windowed outline (`range:"last:200"`) is how you map a

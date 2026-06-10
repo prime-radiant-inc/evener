@@ -562,8 +562,8 @@ func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 		t.Fatalf("finished job=%+v", finishedJob)
 	}
 	finishedJSON := string(notificationParamsJSON(t, finished, appwire.NotifySerfJobFinished))
-	if !strings.Contains(finishedJSON, `"output_bytes":0`) {
-		t.Fatalf("finished notification json=%s missing zero output_bytes", finishedJSON)
+	if !strings.Contains(finishedJSON, `"outputBytes":0`) {
+		t.Fatalf("finished notification json=%s missing zero outputBytes", finishedJSON)
 	}
 }
 

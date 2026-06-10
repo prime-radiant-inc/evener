@@ -35,14 +35,14 @@ write_variant("00-baseline", BASELINE)
 
 # 01: Remove shell entirely
 write_variant("01-no-shell", BASELINE.replace(
-    "tools: [glob, grep, read_file, shell, spawn_agent, resume_agent, task_list]",
-    "tools: [glob, grep, read_file, spawn_agent, resume_agent, task_list]"
+    "tools: [glob, grep, read_file, shell, delegate, job_send_message, task_list]",
+    "tools: [glob, grep, read_file, delegate, job_send_message, task_list]"
 ))
 
 # 02: Remove shell + read_file (can only glob/grep + delegate)
 write_variant("02-no-shell-no-read", BASELINE.replace(
-    "tools: [glob, grep, read_file, shell, spawn_agent, resume_agent, task_list]",
-    "tools: [glob, grep, spawn_agent, resume_agent, task_list]"
+    "tools: [glob, grep, read_file, shell, delegate, job_send_message, task_list]",
+    "tools: [glob, grep, delegate, job_send_message, task_list]"
 ))
 
 # --- POSITION: Where the critical rule appears ---
@@ -54,7 +54,7 @@ You are the quality gate, not the worker. A gate cannot inspect what it built.
 Every time you write code or create files directly, you bypass the error-catching
 loop that produces correct solutions. Delegate first, verify second — always.
 
-After inventory, your NEXT action is `spawn_agent(agent_type="implementer", ...)`.
+After inventory, your NEXT action is `delegate(agent_type="implementer", ...)`.
 
 You have exactly three types of spawn:
 - `explorer` — workspace inventory (step 1 only, for large workspaces)
@@ -104,13 +104,13 @@ write_variant("08-verifier-identity", BASELINE.replace(
 # 09: Explicit tool prohibition
 write_variant("09-tool-prohibition", BASELINE.replace(
     "You NEVER write or modify files yourself. That is the implementer's job.\nSmall tasks and simple workspaces are not exceptions.",
-    "You NEVER write or modify files yourself. That is the implementer's job.\nSmall tasks and simple workspaces are not exceptions.\n\nProhibited actions:\n- Do not call write_file for any reason.\n- Do not use shell to write, append, or redirect to files (no >, >>, tee, cat <<).\n- Do not use shell to run echo/printf into files.\nThe ONLY way to create deliverable files is spawn_agent."
+    "You NEVER write or modify files yourself. That is the implementer's job.\nSmall tasks and simple workspaces are not exceptions.\n\nProhibited actions:\n- Do not call write_file for any reason.\n- Do not use shell to write, append, or redirect to files (no >, >>, tee, cat <<).\n- Do not use shell to run echo/printf into files.\nThe ONLY way to create deliverable files is delegate."
 ))
 
 # 10: Tool call sequence mandate
 write_variant("10-sequence-mandate", BASELINE.replace(
-    "After inventory, your NEXT action is `spawn_agent(agent_type=\"implementer\", ...)`.",
-    "After inventory, your NEXT action is `spawn_agent(agent_type=\"implementer\", ...)`.\n\nRequired tool call sequence: glob/list_dir → spawn_agent → (verify with read_file/shell) → communicate. Any deviation fails the task."
+    "After inventory, your NEXT action is `delegate(agent_type=\"implementer\", ...)`.",
+    "After inventory, your NEXT action is `delegate(agent_type=\"implementer\", ...)`.\n\nRequired tool call sequence: glob/list_dir → delegate → (verify with read_file/shell) → communicate. Any deviation fails the task."
 ))
 
 # 11: "If you know the answer, you still delegate"
@@ -122,7 +122,7 @@ write_variant("11-knowing-isnt-doing", BASELINE.replace(
 # 12: Pre-action checkpoint
 write_variant("12-pre-action-check", BASELINE.replace(
     "### CRITICAL: You must spawn an implementer",
-    "### BEFORE EVERY TOOL CALL — CHECK\n\nBefore calling any tool, ask: \"Have I spawned an implementer yet?\" If no, your next call MUST be spawn_agent. No exceptions.\n\n### CRITICAL: You must spawn an implementer"
+    "### BEFORE EVERY TOOL CALL — CHECK\n\nBefore calling any tool, ask: \"Have I spawned an implementer yet?\" If no, your next call MUST be delegate. No exceptions.\n\n### CRITICAL: You must spawn an implementer"
 ))
 
 # 13: Make write_file trigger a "STOP" response
@@ -139,7 +139,7 @@ name: coordinator
 description: "Architect and coordinator. Decomposes tasks and delegates to sub-agents."
 model: inherit
 color: blue
-tools: [glob, grep, read_file, shell, spawn_agent, resume_agent, task_list]
+tools: [glob, grep, read_file, shell, delegate, job_send_message, task_list]
 ---
 
 You are a coordinator. You NEVER write files or create deliverables.
@@ -159,7 +159,7 @@ name: coordinator
 description: "Architect and coordinator. Decomposes tasks and delegates to sub-agents."
 model: inherit
 color: blue
-tools: [glob, grep, read_file, shell, spawn_agent, resume_agent, task_list]
+tools: [glob, grep, read_file, shell, delegate, job_send_message, task_list]
 ---
 
 Spawn an implementer with the complete task description and your file inventory. Verify its output. Submit. You never write files yourself.
@@ -169,8 +169,8 @@ Spawn an implementer with the complete task description and your file inventory.
 
 # 16: No shell + inability framing
 no_shell_inability = BASELINE.replace(
-    "tools: [glob, grep, read_file, shell, spawn_agent, resume_agent, task_list]",
-    "tools: [glob, grep, read_file, spawn_agent, resume_agent, task_list]"
+    "tools: [glob, grep, read_file, shell, delegate, job_send_message, task_list]",
+    "tools: [glob, grep, read_file, delegate, job_send_message, task_list]"
 ).replace(
     "## Role\n\nYou are a coordinator. You delegate, verify, and iterate. You do not implement.",
     "## Role\n\nYou are a coordinator. You cannot create correct deliverables — you lack the domain tools the implementer has. Delegate everything."
@@ -183,7 +183,7 @@ name: coordinator
 description: "Architect and coordinator. Decomposes tasks and delegates to sub-agents."
 model: inherit
 color: blue
-tools: [glob, grep, read_file, spawn_agent, resume_agent, task_list]
+tools: [glob, grep, read_file, delegate, job_send_message, task_list]
 ---
 
 You are a coordinator. You NEVER write files or create deliverables.
@@ -209,7 +209,7 @@ write_variant("18-score-plus-end", score_end)
 # 19: Knowing isn't doing + tool prohibition
 know_prohibit = BASELINE.replace(
     "You NEVER write or modify files yourself. That is the implementer's job.\nSmall tasks and simple workspaces are not exceptions.",
-    "You NEVER write or modify files yourself. That is the implementer's job.\nSmall tasks and simple workspaces are not exceptions.\n\nEven if you believe you know the answer, you MUST delegate. Your answer would be unverified and likely wrong.\n\nProhibited: write_file, shell redirects (>, >>), tee, cat <<EOF. The ONLY path to deliverables is spawn_agent."
+    "You NEVER write or modify files yourself. That is the implementer's job.\nSmall tasks and simple workspaces are not exceptions.\n\nEven if you believe you know the answer, you MUST delegate. Your answer would be unverified and likely wrong.\n\nProhibited: write_file, shell redirects (>, >>), tee, cat <<EOF. The ONLY path to deliverables is delegate."
 )
 write_variant("19-knowing-plus-prohibition", know_prohibit)
 
@@ -219,7 +219,7 @@ name: coordinator
 description: "Delegation manager. Dispatches agents and verifies their output."
 model: inherit
 color: blue
-tools: [glob, grep, read_file, spawn_agent, resume_agent, task_list]
+tools: [glob, grep, read_file, delegate, job_send_message, task_list]
 ---
 
 ## Role
@@ -269,17 +269,17 @@ write_variant("22-repeated-rule", repeated)
 
 # 23: No shell + stop-on-write + score framing
 write_variant("23-noshell-stop-score", BASELINE.replace(
-    "tools: [glob, grep, read_file, shell, spawn_agent, resume_agent, task_list]",
-    "tools: [glob, grep, read_file, spawn_agent, resume_agent, task_list]"
+    "tools: [glob, grep, read_file, shell, delegate, job_send_message, task_list]",
+    "tools: [glob, grep, read_file, delegate, job_send_message, task_list]"
 ).replace(
     "You NEVER write or modify files yourself. That is the implementer's job.\nSmall tasks and simple workspaces are not exceptions.",
     "You NEVER write or modify files yourself. That is the implementer's job.\nSmall tasks and simple workspaces are not exceptions.\n\nIf you are about to create a file: STOP. That means you skipped delegation. The task fails with score 0 if you write deliverables yourself."
 ))
 
-# 24: "First action MUST be spawn_agent" — hard gate at the top
+# 24: "First action MUST be delegate" — hard gate at the top
 write_variant("24-first-action-spawn", BASELINE.replace(
     "## Role\n\nYou are a coordinator. You delegate, verify, and iterate. You do not implement.\n\n### How to work\n\n1. **Inventory**",
-    "## FIRST ACTION\n\nYour first tool call after reading this must be either glob/list_dir (inventory) or spawn_agent (delegate). After at most 2 inventory calls, you MUST call spawn_agent. No other tool calls are permitted before spawn_agent.\n\n## Role\n\nYou are a coordinator. You delegate, verify, and iterate. You do not implement.\n\n### How to work\n\n1. **Inventory**"
+    "## FIRST ACTION\n\nYour first tool call after reading this must be either glob/list_dir (inventory) or delegate (delegate). After at most 2 inventory calls, you MUST call delegate. No other tool calls are permitted before delegate.\n\n## Role\n\nYou are a coordinator. You delegate, verify, and iterate. You do not implement.\n\n### How to work\n\n1. **Inventory**"
 ))
 
 print(f"\nGenerated 25 variants (00-24) in {OUTDIR}/")

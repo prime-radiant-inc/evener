@@ -61,20 +61,20 @@ func TestSerfDiagnosticsJobsJSONRoundTrip(t *testing.T) {
 	got := string(raw)
 	for _, want := range []string{
 		`"jobs"`,
-		`"job_id":"job_1"`,
-		`"job_type":"delegate"`,
+		`"jobId":"job_1"`,
+		`"jobType":"delegate"`,
 		`"status":"failed"`,
 		`"reason":"exit"`,
-		`"exit_code":2`,
-		`"output_bytes":0`,
-		`"transcript_ref":"local:child"`,
-		`"from_watch":true`,
+		`"exitCode":2`,
+		`"outputBytes":0`,
+		`"transcriptRef":"local:child"`,
+		`"fromWatch":true`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("marshal=%s missing %s", got, want)
 		}
 	}
-	for _, banned := range []string{`"subagents"`, `"turnsUsed"`, `"jobId"`, `"jobType"`} {
+	for _, banned := range []string{`"subagents"`, `"turnsUsed"`, `"job_id"`, `"job_type"`} {
 		if strings.Contains(got, banned) {
 			t.Fatalf("marshal=%s should not contain %s", got, banned)
 		}

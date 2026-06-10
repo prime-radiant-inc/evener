@@ -588,17 +588,17 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 // TestSubagentCannotCallRootOnlyControlTools asserts depth>0 subagents keep
 // job_send_message for aliases while root-only controls stay unavailable.
 func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
-	if len(rootOnlyAgentManagementTools) != 2 || rootOnlyAgentManagementTools[0] != "delegate" || rootOnlyAgentManagementTools[1] != "job_watch" {
-		t.Fatalf("rootOnlyAgentManagementTools = %v, want exactly [delegate job_watch]", rootOnlyAgentManagementTools)
+	if len(rootOnlyJobPresenceTools) != 2 || rootOnlyJobPresenceTools[0] != "delegate" || rootOnlyJobPresenceTools[1] != "job_watch" {
+		t.Fatalf("rootOnlyJobPresenceTools = %v, want exactly [delegate job_watch]", rootOnlyJobPresenceTools)
 	}
-	if !isRootOnlyAgentManagementTool("delegate") {
-		t.Fatal("delegate must be a root-only agent-management tool")
+	if !isRootOnlyJobPresenceTool("delegate") {
+		t.Fatal("delegate must be a root-only job-presence tool")
 	}
-	if !isRootOnlyAgentManagementTool("job_watch") {
-		t.Fatal("job_watch must be a root-only agent-management tool")
+	if !isRootOnlyJobPresenceTool("job_watch") {
+		t.Fatal("job_watch must be a root-only job-presence tool")
 	}
-	if isRootOnlyAgentManagementTool("job_send_message") {
-		t.Fatal("job_send_message must not be a root-only agent-management tool")
+	if isRootOnlyJobPresenceTool("job_send_message") {
+		t.Fatal("job_send_message must not be a root-only job-presence tool")
 	}
 	if !isRootOnlySubagentTool("delegate") {
 		t.Fatal("delegate must be a root-only subagent tool")

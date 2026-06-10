@@ -14,7 +14,7 @@ Subagents remain the right abstraction for isolated multi-turn work with tools, 
 - Keep helper calls standalone: no subagent job, no child transcript, no task-store mutation, no tool loop unless the caller deliberately uses a lower-level API outside the helper contract.
 - Provide a precise helper API pattern that is thin enough to implement incrementally and test with fake adapters.
 - Preserve existing middleware, provider selection, request validation, usage, adapter timeout/error stamping, and error classification behavior. Helpers built on `llm.Generate`/`StreamGenerate` also use the generate retry path; helpers that call `llm.Client.Complete` directly preserve validation/middleware/provider stamping/error typing only and must wrap retry explicitly if they need it. Complete-based helper calls preserve API logging when the provided client has logging middleware attached; streaming helpers preserve stream middleware, but current API logging middleware does not log streams until `APILogger.WrapStream` is implemented. Active rate limiting should not be implied beyond current rate-limit header parsing/metadata.
-- Make helper calls observable through their owning operation, hook, or session event rather than through `list_agents` or subagent lifecycle tools.
+- Make helper calls observable through their owning operation, hook, or session event rather than through `job_list` or delegate/job lifecycle tools.
 - Keep helper prompts bounded, deterministic where possible, and easy to unit test.
 
 ## Non-goals
@@ -87,7 +87,7 @@ Examples:
 
 - The task needs tools.
 - The task may require multiple turns, investigation, retries with changed strategy, or user steering.
-- The parent needs `resume_agent`, `wait`, `close_agent`, progress, or child status.
+- The parent needs `job_send_message`, `job_read_output`, `job_stop`, progress, or child status.
 - The work should be isolated from the parent context.
 - A child transcript/audit trail is required.
 
@@ -265,8 +265,8 @@ Implementation guidance:
 
 Standalone helpers must not:
 
-- call `spawn_agent` or create a `Session`;
-- appear in `list_agents` or subagent status;
+- call `delegate` or create a `Session`;
+- appear in `job_list` or child job status;
 - run subagent lifecycle hooks;
 - write transcripts or session meta;
 - mutate task state;

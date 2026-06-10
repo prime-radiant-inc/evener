@@ -507,16 +507,16 @@ func delegateStartFailed(err error) delegateResult {
 func parseSpawnedAgentID(spawned any) (string, error) {
 	raw, ok := spawned.(string)
 	if !ok {
-		return "", fmt.Errorf("spawn_agent returned %T, want JSON string", spawned)
+		return "", fmt.Errorf("delegate runtime returned %T, want JSON string", spawned)
 	}
 	var out struct {
 		AgentID string `json:"agent_id"`
 	}
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		return "", fmt.Errorf("parse spawn_agent result: %w", err)
+		return "", fmt.Errorf("parse delegate runtime result: %w", err)
 	}
 	if strings.TrimSpace(out.AgentID) == "" {
-		return "", errors.New("spawn_agent result missing agent_id")
+		return "", errors.New("delegate runtime result missing child session id")
 	}
 	return out.AgentID, nil
 }

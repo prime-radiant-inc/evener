@@ -361,12 +361,12 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 				haveDeferredCont = true
 			}
 		}
-			// Notification interleave (priority 3): a pending job notification runs
-			// AFTER the fold above but BEFORE the deferred continuation, so it is
-			// transparent to goal accounting (the just-finished continuation already
-			// folded). This is a non-draining length check; the queue is consumed inside
-			// acceptNotificationInput when the EntryNotification turn runs (an empty
-			// queue there is a no-op, but the peek guards against it).
+		// Notification interleave (priority 3): a pending job notification runs
+		// AFTER the fold above but BEFORE the deferred continuation, so it is
+		// transparent to goal accounting (the just-finished continuation already
+		// folded). This is a non-draining length check; the queue is consumed inside
+		// acceptNotificationInput when the EntryNotification turn runs (an empty
+		// queue there is a no-op, but the peek guards against it).
 		// After a notification turn, do not immediately rerun this gate: job
 		// notifications may have been requeued because durable state was unavailable.
 		if ranKind != EntryNotification && s.peekNotifications() > 0 {

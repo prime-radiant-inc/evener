@@ -194,38 +194,33 @@ func taskListBody(_ ToolArgs, output string, width int) string {
 	return strings.Join(lines, "\n")
 }
 
-// subagentBody renders a summary line for a spawned subagent.  At narrow
+// delegateBody renders a summary line for a delegate job.  At narrow
 // widths (< 30 cols) only the summary is returned.  Full nested inline
 // rendering of child transcripts is deferred to a follow-up kata.
 //
-// Metadata is sourced from the tool output (preferred) or args (fallback for
-// older shapes where spawn_agent put metadata in args instead of output).
-func subagentBody(args ToolArgs, output string, width int) string {
-	var agentID, status string
+// Metadata is sourced from the tool output (preferred) or args.
+func delegateBody(args ToolArgs, output string, width int) string {
+	var jobID, status string
 	var turns int
 
 	// Try to parse metadata from output first.
 	if output != "" {
 		var meta struct {
-			AgentID   string `json:"agent_id"`
-			Status    string `json:"status"`
-			TurnsUsed int    `json:"turns_used"`
-			SessionID string `json:"session_id"`
-			Task      string `json:"task"`
+			JobID         string `json:"job_id"`
+			Status        string `json:"status"`
+			TurnsUsed     int    `json:"turns_used"`
+			TranscriptRef string `json:"transcript_ref"`
+			Task          string `json:"task"`
 		}
-		if err := json.Unmarshal([]byte(output), &meta); err == nil && (meta.AgentID != "" || meta.SessionID != "") {
-			agentID = meta.AgentID
-			if agentID == "" {
-				agentID = meta.SessionID
-			}
+		if err := json.Unmarshal([]byte(output), &meta); err == nil && meta.JobID != "" {
+			jobID = meta.JobID
 			status = meta.Status
 			turns = meta.TurnsUsed
 		}
 	}
 
-	// Fall back to args for older shapes.
-	if agentID == "" {
-		agentID = args.Str("agent_id")
+	if jobID == "" {
+		jobID = args.Str("job_id")
 		if v, ok := args["turns_used"].(float64); ok {
 			turns = int(v)
 		}
@@ -237,7 +232,7 @@ func subagentBody(args ToolArgs, output string, width int) string {
 	}
 
 	th := tuitheme.ActiveTheme()
-	summary := fmt.Sprintf("subagent %s (%d turns, %s)", shortID(agentID), turns, status)
+	summary := fmt.Sprintf("delegate %s (%d turns, %s)", shortID(jobID), turns, status)
 	styled := lipgloss.NewStyle().Foreground(th.StateSubagent).Render(summary)
 
 	if width < 30 {

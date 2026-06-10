@@ -277,14 +277,14 @@ type SerfPluginInfo struct {
 }
 
 type SerfJobInfo struct {
-	JobID         string `json:"job_id"`
-	JobType       string `json:"job_type"`
+	JobID         string `json:"jobId"`
+	JobType       string `json:"jobType"`
 	Status        string `json:"status"`
 	Reason        string `json:"reason,omitempty"`
-	ExitCode      *int   `json:"exit_code,omitempty"`
-	OutputBytes   int64  `json:"output_bytes"`
-	TranscriptRef string `json:"transcript_ref,omitempty"`
-	FromWatch     bool   `json:"from_watch,omitempty"`
+	ExitCode      *int   `json:"exitCode,omitempty"`
+	OutputBytes   int64  `json:"outputBytes"`
+	TranscriptRef string `json:"transcriptRef,omitempty"`
+	FromWatch     bool   `json:"fromWatch,omitempty"`
 }
 
 type Turn struct {

@@ -236,36 +236,39 @@ func TestWebSearchRenderer(t *testing.T) {
 	}
 }
 
-func TestSpawnAgentRenderer(t *testing.T) {
-	r, _ := lookupToolRenderer("spawn_agent")
+func TestDelegateRenderer(t *testing.T) {
+	r, _ := lookupToolRenderer("delegate")
 	args := toolArgsFromJSON(`{"task":"do something useful"}`)
-	if r.Verb(args) != "spawn" {
-		t.Errorf("spawn_agent verb = %q", r.Verb(args))
+	if r.Verb(args) != "delegate" {
+		t.Errorf("delegate verb = %q", r.Verb(args))
 	}
 	if !strings.Contains(r.Target(args), "do something") {
-		t.Errorf("spawn_agent target should include task: %q", r.Target(args))
+		t.Errorf("delegate target should include task: %q", r.Target(args))
 	}
 }
 
-func TestResumeAgentRenderer(t *testing.T) {
-	r, _ := lookupToolRenderer("resume_agent")
-	args := toolArgsFromJSON(`{"agent_id":"01ABCD"}`)
-	if r.Verb(args) != "resume" {
-		t.Errorf("resume_agent verb = %q", r.Verb(args))
+func TestJobSendMessageRenderer(t *testing.T) {
+	r, _ := lookupToolRenderer("job_send_message")
+	args := toolArgsFromJSON(`{"target":"job_01ABCD"}`)
+	if r.Verb(args) != "message" {
+		t.Errorf("job_send_message verb = %q", r.Verb(args))
+	}
+	if r.Target(args) != "job_01ABCD" {
+		t.Errorf("job_send_message target = %q", r.Target(args))
 	}
 }
 
-func TestWaitRenderer(t *testing.T) {
-	r, _ := lookupToolRenderer("wait")
-	if r.Verb(toolArgsFromJSON(`{}`)) != "wait" {
-		t.Errorf("wait verb wrong")
+func TestJobReadOutputRenderer(t *testing.T) {
+	r, _ := lookupToolRenderer("job_read_output")
+	if r.Verb(toolArgsFromJSON(`{"job_id":"job_01ABCD"}`)) != "read" {
+		t.Errorf("job_read_output verb wrong")
 	}
 }
 
-func TestCloseAgentRenderer(t *testing.T) {
-	r, _ := lookupToolRenderer("close_agent")
-	if r.Verb(toolArgsFromJSON(`{}`)) != "close" {
-		t.Errorf("close_agent verb wrong")
+func TestJobStopRenderer(t *testing.T) {
+	r, _ := lookupToolRenderer("job_stop")
+	if r.Verb(toolArgsFromJSON(`{"job_id":"job_01ABCD"}`)) != "stop" {
+		t.Errorf("job_stop verb wrong")
 	}
 }
 

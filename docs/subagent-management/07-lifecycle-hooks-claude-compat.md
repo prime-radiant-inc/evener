@@ -184,18 +184,18 @@ Existing event names remain; ordering is stable and tested. Steps for events ser
 13. Run `PostToolUse` hooks with sanitized result/error (the reserved `PostToolUseFailure` on failure once implemented).
 14. (Reserved) After a batch of tool calls, run `PostToolBatch` before the next model request once batching is implemented.
 
-### Subagent lifecycle
+### Delegate job lifecycle
 
-1. Decode spawn request.
+1. Decode delegate request.
 2. Resolve agent type and plugin/builtin/project agent definition.
 3. Compute effective child policy.
 4. Create child session/job so hook input can include stable child identity/session metadata.
 5. (Reserved) Run `SubagentStart` compatibility/SDK hooks before the child model receives initial context once implemented.
-6. Emit `SUBAGENT_START`. The current code differs by path: initial spawn starts the child goroutine before emitting `SUBAGENT_START`, while idle resume emits `SUBAGENT_START` before starting the resumed goroutine. Treat any ordering change as deliberate and regression-tested.
+6. Emit `JOB_STARTED` with stable job and child identity.
 7. Run child turns.
 8. On completion, failure, cancellation, or close, run `SubagentStop` if configured.
 9. Finalize result/diagnostics/status.
-10. Emit `SUBAGENT_END` and release waiters.
+10. Emit `JOB_FINISHED` and release bounded readers/watchers in deterministic tested order.
 
 ## Claude-compatible hook config contract
 

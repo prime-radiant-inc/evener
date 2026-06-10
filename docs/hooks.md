@@ -150,7 +150,7 @@ matcher must name the **Claude** tool:
 | file writes | `write_file` | `Write` |
 | file edits | `edit_file` | `Edit` |
 | grep / glob | `grep` / `glob` | `Grep` / `Glob` |
-| spawning a subagent | `spawn_agent` | `Task` |
+| starting a delegate job | `delegate` | `Task` |
 | web fetch / search | `web_fetch` / `web_search` | `WebFetch` / `WebSearch` |
 | notebook edits | `notebook_edit` | `NotebookEdit` |
 
