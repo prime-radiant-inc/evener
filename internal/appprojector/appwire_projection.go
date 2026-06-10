@@ -407,17 +407,33 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Ref:      p.ref,
 			Queue:    appwire.QueueState{Depth: data.Depth, Preview: append([]string(nil), data.Preview...)},
 		})}
-	case events.EventSubagentStart:
-		return []AppNotification{p.notification(appwire.NotifySerfSubagentStarted, map[string]any{
+	case events.EventJobStarted:
+		data := eventData[events.JobStartedData](event.Data)
+		return []AppNotification{p.notification(appwire.NotifySerfJobStarted, map[string]any{
 			"threadId": p.threadID,
 			"ref":      p.ref,
-			"subagent": event.Data,
+			"job": appwire.SerfJobInfo{
+				JobID:     data.JobID,
+				JobType:   data.JobType,
+				Status:    data.Status,
+				FromWatch: data.FromWatch,
+			},
 		})}
-	case events.EventSubagentEnd:
-		return []AppNotification{p.notification(appwire.NotifySerfSubagentEnded, map[string]any{
+	case events.EventJobFinished:
+		data := eventData[events.JobFinishedData](event.Data)
+		return []AppNotification{p.notification(appwire.NotifySerfJobFinished, map[string]any{
 			"threadId": p.threadID,
 			"ref":      p.ref,
-			"subagent": event.Data,
+			"job": appwire.SerfJobInfo{
+				JobID:         data.JobID,
+				JobType:       data.JobType,
+				Status:        data.Status,
+				Reason:        data.Reason,
+				ExitCode:      data.ExitCode,
+				OutputBytes:   data.OutputBytes,
+				TranscriptRef: data.TranscriptRef,
+				FromWatch:     data.FromWatch,
+			},
 		})}
 	case events.EventSessionEnd:
 		data := eventData[events.SessionEndData](event.Data)

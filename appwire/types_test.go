@@ -36,6 +36,64 @@ func TestDiagnosticCauseJSONRoundTrip(t *testing.T) {
 	}
 }
 
+// TestSerfDiagnosticsJobsJSONRoundTrip verifies the job-control diagnostics
+// wire shape uses the job surface, not the legacy subagent one.
+func TestSerfDiagnosticsJobsJSONRoundTrip(t *testing.T) {
+	exitCode := 2
+	in := SerfDiagnostics{
+		Jobs: []SerfJobInfo{
+			{
+				JobID:         "job_1",
+				JobType:       "delegate",
+				Status:        "failed",
+				Reason:        "exit",
+				ExitCode:      &exitCode,
+				OutputBytes:   1234,
+				TranscriptRef: "local:child",
+				FromWatch:     true,
+			},
+		},
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(raw)
+	for _, want := range []string{
+		`"jobs"`,
+		`"job_id":"job_1"`,
+		`"job_type":"delegate"`,
+		`"status":"failed"`,
+		`"reason":"exit"`,
+		`"exit_code":2`,
+		`"output_bytes":1234`,
+		`"transcript_ref":"local:child"`,
+		`"from_watch":true`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("marshal=%s missing %s", got, want)
+		}
+	}
+	for _, banned := range []string{`"subagents"`, `"turnsUsed"`, `"jobId"`, `"jobType"`} {
+		if strings.Contains(got, banned) {
+			t.Fatalf("marshal=%s should not contain %s", got, banned)
+		}
+	}
+	var out SerfDiagnostics
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(out.Jobs) != 1 {
+		t.Fatalf("roundtrip jobs len=%d, want 1", len(out.Jobs))
+	}
+	job := out.Jobs[0]
+	if job.JobID != "job_1" || job.JobType != "delegate" || job.Status != "failed" ||
+		job.Reason != "exit" || job.ExitCode == nil || *job.ExitCode != exitCode ||
+		job.OutputBytes != 1234 || job.TranscriptRef != "local:child" || !job.FromWatch {
+		t.Fatalf("roundtrip job=%+v", job)
+	}
+}
+
 // TestInstanceListResponseJSONRoundTrip verifies the wire shape of
 // InstanceListResponse and InstanceEntry: camelCase JSON tags and correct
 // field round-trip for a populated entry.

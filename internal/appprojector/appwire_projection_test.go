@@ -501,15 +501,65 @@ func TestAppEventProjectorIncludesCallIDOnToolOutputDelta(t *testing.T) {
 	}
 }
 
-func TestAppEventProjectorProjectsSubagentEvents(t *testing.T) {
+func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
-	out := projector.Project(events.SessionEvent{
-		Kind:      events.EventSubagentStart,
+	started := projector.Project(events.SessionEvent{
+		Kind:      events.EventJobStarted,
 		SessionID: "th_1",
-		Data:      events.SubagentStartData{AgentID: "a1", Task: "inspect"},
+		Data: events.JobStartedData{
+			JobID:     "job_1",
+			JobType:   "delegate",
+			Status:    "running",
+			FromWatch: true,
+		},
 	})
-	if len(out) != 1 || out[0].Method != appwire.NotifySerfSubagentStarted {
-		t.Fatalf("out=%+v", out)
+	if len(started) != 1 || started[0].Method != appwire.NotifySerfJobStarted {
+		t.Fatalf("started=%+v", started)
+	}
+	startedParams, ok := started[0].Params.(map[string]any)
+	if !ok {
+		t.Fatalf("started params=%T", started[0].Params)
+	}
+	startedJob, ok := startedParams["job"].(appwire.SerfJobInfo)
+	if !ok {
+		t.Fatalf("started job=%T in %+v", startedParams["job"], startedParams)
+	}
+	if startedJob.JobID != "job_1" || startedJob.JobType != "delegate" || startedJob.Status != "running" || !startedJob.FromWatch {
+		t.Fatalf("started job=%+v", startedJob)
+	}
+	if _, ok := startedParams["subagent"]; ok {
+		t.Fatalf("started params should not carry legacy subagent key: %+v", startedParams)
+	}
+
+	exitCode := 137
+	finished := projector.Project(events.SessionEvent{
+		Kind:      events.EventJobFinished,
+		SessionID: "th_1",
+		Data: events.JobFinishedData{
+			JobID:         "job_1",
+			JobType:       "delegate",
+			Status:        "failed",
+			Reason:        "signal",
+			ExitCode:      &exitCode,
+			OutputBytes:   4096,
+			TranscriptRef: "local:child",
+		},
+	})
+	if len(finished) != 1 || finished[0].Method != appwire.NotifySerfJobFinished {
+		t.Fatalf("finished=%+v", finished)
+	}
+	finishedParams, ok := finished[0].Params.(map[string]any)
+	if !ok {
+		t.Fatalf("finished params=%T", finished[0].Params)
+	}
+	finishedJob, ok := finishedParams["job"].(appwire.SerfJobInfo)
+	if !ok {
+		t.Fatalf("finished job=%T in %+v", finishedParams["job"], finishedParams)
+	}
+	if finishedJob.JobID != "job_1" || finishedJob.JobType != "delegate" || finishedJob.Status != "failed" ||
+		finishedJob.Reason != "signal" || finishedJob.ExitCode == nil || *finishedJob.ExitCode != exitCode ||
+		finishedJob.OutputBytes != 4096 || finishedJob.TranscriptRef != "local:child" {
+		t.Fatalf("finished job=%+v", finishedJob)
 	}
 }
 

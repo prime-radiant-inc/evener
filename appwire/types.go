@@ -65,8 +65,8 @@ const (
 	NotifySerfContextPressure  = "serf/thread/contextPressure/updated"
 	NotifySerfTaskUpdated      = "serf/task/updated"
 	NotifySerfSteeringInjected = "serf/steering/injected"
-	NotifySerfSubagentStarted  = "serf/subagent/started"
-	NotifySerfSubagentEnded    = "serf/subagent/completed"
+	NotifySerfJobStarted       = "serf/job/started"
+	NotifySerfJobFinished      = "serf/job/finished"
 	NotifySerfAuthUpdated      = "serf/auth/updated"
 	NotifySerfLaunchUpdated    = "serf/launch/updated"
 )
@@ -243,13 +243,13 @@ type ThreadCapabilities struct {
 }
 
 type SerfDiagnostics struct {
-	Tools     []SerfToolInfo      `json:"tools,omitempty"`
-	MCP       []SerfMCPServerInfo `json:"mcp,omitempty"`
-	Skills    []SerfSkillInfo     `json:"skills,omitempty"`
-	Plugins   []SerfPluginInfo    `json:"plugins,omitempty"`
-	Hooks     map[string]int      `json:"hooks,omitempty"`
-	Subagents []SerfSubagentInfo  `json:"subagents,omitempty"`
-	Agents    []string            `json:"agents,omitempty"`
+	Tools   []SerfToolInfo      `json:"tools,omitempty"`
+	MCP     []SerfMCPServerInfo `json:"mcp,omitempty"`
+	Skills  []SerfSkillInfo     `json:"skills,omitempty"`
+	Plugins []SerfPluginInfo    `json:"plugins,omitempty"`
+	Hooks   map[string]int      `json:"hooks,omitempty"`
+	Jobs    []SerfJobInfo       `json:"jobs,omitempty"`
+	Agents  []string            `json:"agents,omitempty"`
 }
 
 type SerfToolInfo struct {
@@ -276,10 +276,15 @@ type SerfPluginInfo struct {
 	MCPCount   int    `json:"mcpCount"`
 }
 
-type SerfSubagentInfo struct {
-	ID        string `json:"id"`
-	Status    string `json:"status"`
-	TurnsUsed int    `json:"turnsUsed"`
+type SerfJobInfo struct {
+	JobID         string `json:"job_id"`
+	JobType       string `json:"job_type"`
+	Status        string `json:"status"`
+	Reason        string `json:"reason,omitempty"`
+	ExitCode      *int   `json:"exit_code,omitempty"`
+	OutputBytes   int64  `json:"output_bytes,omitempty"`
+	TranscriptRef string `json:"transcript_ref,omitempty"`
+	FromWatch     bool   `json:"from_watch,omitempty"`
 }
 
 type Turn struct {
