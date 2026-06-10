@@ -1871,6 +1871,12 @@ func TestJobSendMessageMainAliasFailsTargetNotFound(t *testing.T) {
 	if jobs := sess.jobManager.list(listFilter{}); len(jobs) != 0 {
 		t.Fatalf("jobs = %+v, want no jobs created", jobs)
 	}
+	sess.jobManager.mu.Lock()
+	runningJobs := len(sess.jobManager.running)
+	sess.jobManager.mu.Unlock()
+	if runningJobs != 0 {
+		t.Fatalf("running jobs = %d, want no runs created", runningJobs)
+	}
 }
 
 func TestJobSendMessageWatchedWithoutWatchContextFails(t *testing.T) {

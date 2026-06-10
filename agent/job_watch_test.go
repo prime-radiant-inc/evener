@@ -53,7 +53,7 @@ func TestConfigureWatchTargetNotFound(t *testing.T) {
 func TestJobWatchMainAliasTargetFailsTargetNotFound(t *testing.T) {
 	jm := newTestJM(t)
 
-	_, err := jm.configureWatch(watchArgs{Target: "main", Events: []string{"assistant.message"}})
+	_, err := jm.configureWatch(watchArgs{Target: "main"})
 
 	if err == nil || !strings.Contains(err.Error(), "target_not_found") {
 		t.Fatalf("error = %v, want target_not_found", err)
@@ -66,7 +66,7 @@ func TestJobWatchMainAliasTargetFailsTargetNotFound(t *testing.T) {
 func TestJobWatchWatchedTargetWithoutContextFails(t *testing.T) {
 	jm := newTestJM(t)
 
-	_, err := jm.configureWatch(watchArgs{Target: "watched", Events: []string{"assistant.message"}})
+	_, err := jm.configureWatch(watchArgs{Target: "watched"})
 
 	if err == nil || !strings.Contains(err.Error(), "target_not_found") {
 		t.Fatalf("error = %v, want target_not_found", err)

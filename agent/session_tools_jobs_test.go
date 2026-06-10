@@ -255,7 +255,7 @@ func TestJobWatchToolMainAliasTargetFailsTargetNotFound(t *testing.T) {
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(`{"target":"main","events":["assistant.message"]}`),
+		Arguments: json.RawMessage(`{"target":"main"}`),
 	})
 
 	if !res.IsError {
@@ -275,7 +275,7 @@ func TestJobWatchToolWatchedTargetWithoutContextFailsTargetNotFound(t *testing.T
 	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
 		ID:        "watch",
 		Name:      "job_watch",
-		Arguments: json.RawMessage(`{"target":"watched","events":["assistant.message"]}`),
+		Arguments: json.RawMessage(`{"target":"watched"}`),
 	})
 
 	if !res.IsError {
@@ -306,6 +306,40 @@ func TestJobWatchToolSendToMainAliasFailsTargetNotFound(t *testing.T) {
 	}
 	if s.jobManager.watchCount() != 0 {
 		t.Fatalf("watch count = %d, want 0", s.jobManager.watchCount())
+	}
+}
+
+func TestJobSendMessageToolMainAliasFailsTargetNotFoundWithoutSideEffects(t *testing.T) {
+	s := newTestSession(t)
+	called := false
+	s.cfg.spawn.parentSteer = func(string) { called = true }
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "send",
+		Name:      "job_send_message",
+		Arguments: json.RawMessage(`{"target":"main","message":"hello"}`),
+	})
+
+	if !res.IsError {
+		t.Fatalf("job_send_message succeeded, want error: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "target_not_found") {
+		t.Fatalf("job_send_message error = %q, want target_not_found", res.Output)
+	}
+	if called {
+		t.Fatal("main alias called parentSteer")
+	}
+	if queue := s.SteeringQueueSnapshot(); len(queue) != 0 {
+		t.Fatalf("steering queue = %+v, want no side effects", queue)
+	}
+	if jobs := s.jobManager.list(listFilter{}); len(jobs) != 0 {
+		t.Fatalf("jobs = %+v, want no jobs created", jobs)
+	}
+	s.jobManager.mu.Lock()
+	runningJobs := len(s.jobManager.running)
+	s.jobManager.mu.Unlock()
+	if runningJobs != 0 {
+		t.Fatalf("running jobs = %d, want no runs created", runningJobs)
 	}
 }
 

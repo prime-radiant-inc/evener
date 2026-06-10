@@ -114,11 +114,11 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	if a.ProgressIntervalMS > maxWatchProgressIntervalMS {
 		a.ProgressIntervalMS = maxWatchProgressIntervalMS
 	}
-	if !a.Clear && !watchArgsHasCondition(a) {
-		return watchResult{}, errors.New("invalid_request: nothing to watch")
-	}
 	if err := jm.validateWatchTarget(a.Target); err != nil {
 		return watchResult{}, err
+	}
+	if !a.Clear && !watchArgsHasCondition(a) {
+		return watchResult{}, errors.New("invalid_request: nothing to watch")
 	}
 	if !a.Clear && a.Send != nil {
 		a.Send.To = strings.TrimSpace(a.Send.To)
