@@ -89,6 +89,23 @@ func TestFoldWatchSendNewerTerminalTombstoneRejectsOlderPending(t *testing.T) {
 	}
 }
 
+func TestFoldWatchSendZeroSeqTerminalTombstoneRejectsZeroSeqPending(t *testing.T) {
+	key := WatchSendKey{
+		VisibleSessionID:        "root",
+		WatchTarget:             "job_A",
+		ResolvedWatchedIdentity: "job_A",
+		ResolvedSendTo:          "job_sidecar",
+		WatchGeneration:         "wg_1",
+	}
+	events := []Event{
+		{Kind: EventWatchSendDelivered, Seq: 1, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1"}},
+		{Kind: EventWatchSendPending, Seq: 2, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1", Message: "stale"}},
+	}
+	if got := FoldWatchSends(events).Pending; len(got) != 0 {
+		t.Fatalf("pending after zero-seq delivered tombstone = %+v, want none", got)
+	}
+}
+
 func TestFoldWatchSendOlderPendingDoesNotOverwriteNewerPending(t *testing.T) {
 	key := WatchSendKey{
 		VisibleSessionID:        "root",

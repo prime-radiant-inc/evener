@@ -61,7 +61,7 @@ func FoldWatchSends(events []Event) WatchSendRecord {
 			state := *e.WatchSend
 			rec.Pending[key] = &state
 		case EventWatchSendDelivered, EventWatchSendDropped, EventWatchSendEvicted:
-			if e.WatchSend.UpdateSeq > terminalSeq[key] {
+			if settled, ok := terminalSeq[key]; !ok || e.WatchSend.UpdateSeq > settled {
 				terminalSeq[key] = e.WatchSend.UpdateSeq
 			}
 			if pending := rec.Pending[key]; pending != nil && e.WatchSend.UpdateSeq >= pending.UpdateSeq {
