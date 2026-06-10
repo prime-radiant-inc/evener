@@ -379,6 +379,77 @@ func TestClosedStoreNestedOwnerFallsBackToForwardedRecord(t *testing.T) {
 	}
 }
 
+func TestNestedReadOutputFallsBackWhenOwnerStoreClosesAfterSelection(t *testing.T) {
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		_ = childJM.store.Close()
+	})
+
+	childJM.forward = parentJM.forwardEvent
+	childJM.parentJobID = "job_PARENTDELEGATE"
+	nested, err := childJM.createShell(createShellOpts{Command: "sleep 1", Description: "nested"})
+	if err != nil {
+		t.Fatalf("create nested shell: %v", err)
+	}
+	childJM.mu.Lock()
+	run := childJM.running[nested.JobID]
+	childJM.mu.Unlock()
+	if run == nil || run.output == nil {
+		t.Fatalf("nested job %q has no live output store", nested.JobID)
+	}
+	if _, err := childJM.appendJobOutput(nested.JobID, run.output, []byte("durable nested output\n")); err != nil {
+		t.Fatalf("append nested output: %v", err)
+	}
+	code := 0
+	if err := childJM.finalize(nested.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize nested job: %v", err)
+	}
+
+	parent := &Session{
+		id:         "PARENT",
+		jobManager: parentJM,
+		subagents:  newSubagentManager(nil, nil),
+	}
+	parent.subagents.track(&subagent{
+		id:     "CHILD",
+		sess:   &Session{id: "CHILD", jobManager: childJM},
+		status: SubagentCompleted,
+	})
+
+	owner, forwarded := parent.ownerJobManagerFor(nested.JobID)
+	if owner != childJM {
+		t.Fatalf("ownerJobManagerFor owner = %p, want child manager %p", owner, childJM)
+	}
+	if forwarded == nil || forwarded.JobID != nested.JobID {
+		t.Fatalf("ownerJobManagerFor forwarded record = %+v, want nested job %q", forwarded, nested.JobID)
+	}
+	if err := childJM.store.Close(); err != nil {
+		t.Fatalf("close child store: %v", err)
+	}
+
+	snap, err := parent.readJobOutputSnapshot(owner, nested.JobID, 65536, nil, 0)
+	if err != nil {
+		t.Fatalf("readJobOutputSnapshot returned error: %v", err)
+	}
+	if snap.Manager != parentJM {
+		t.Fatalf("readJobOutputSnapshot manager = %p, want parent fallback %p", snap.Manager, parentJM)
+	}
+	if snap.Record == nil || snap.Record.JobID != nested.JobID || snap.Record.Status != jobstore.StatusCompleted {
+		t.Fatalf("snapshot record = %+v, want completed parent forwarded record", snap.Record)
+	}
+	if !strings.Contains(snap.Content, "durable nested output") {
+		t.Fatalf("snapshot content = %q, want parent durable output", snap.Content)
+	}
+}
+
 func TestNestedReadOutputBlockRefreshesOwnerRecord(t *testing.T) {
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
 	if err != nil {

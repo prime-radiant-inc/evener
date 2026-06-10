@@ -169,7 +169,7 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 	if jobID == "" {
 		return "", errors.New("job_id is required")
 	}
-	jm, rec, err := s.nestedOrLocalJobManager(jobID)
+	jm, _, err := s.nestedOrLocalJobManager(jobID)
 	if err != nil {
 		return "", err
 	}
@@ -185,6 +185,18 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 	if err != nil {
 		return "", err
 	}
+	grep := stringArg(args, "grep")
+	var grepRE *regexp.Regexp
+	if grep != "" {
+		if err := validateJobGrepPattern(grep, maxChars); err != nil {
+			return "", err
+		}
+		re, err := regexp.Compile(grep)
+		if err != nil {
+			return "", err
+		}
+		grepRE = re
+	}
 
 	if shellBoolArg(args, "block") {
 		timeoutMS, err := jobBlockTimeoutMS(args)
@@ -192,25 +204,22 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 			return "", err
 		}
 		waitForJobDoneOrOutput(ctx, jm, jobID, time.Duration(timeoutMS)*time.Millisecond)
-		rec, err = findJobRecord(jm, jobID)
-		if err != nil {
-			return "", err
-		}
 	}
 
-	content, totalBytes, truncated, err := jm.readOutput(jobID, tailBytes)
+	snap, err := s.readJobOutputSnapshot(jm, jobID, tailBytes, grepRE, limitBytes)
 	if err != nil {
 		return "", err
 	}
+	rec := snap.Record
 
 	result := jobReadOutputResult{
 		JobID:      rec.JobID,
 		Type:       string(rec.Type),
 		Status:     string(rec.Status),
 		Reason:     stringPtrOrNil(rec.Reason),
-		Content:    content,
-		TotalBytes: totalBytes,
-		Truncated:  truncated,
+		Content:    snap.Content,
+		TotalBytes: snap.TotalBytes,
+		Truncated:  snap.Truncated,
 		ExitCode:   rec.ExitCode,
 	}
 	if rec.StructuredResult != nil {
@@ -219,23 +228,100 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 	if rec.StructuredResultValid != nil {
 		result.StructuredResultValid = rec.StructuredResultValid
 	}
-	if grep := stringArg(args, "grep"); grep != "" {
-		if err := validateJobGrepPattern(grep, maxChars); err != nil {
-			return "", err
-		}
-		re, err := regexp.Compile(grep)
-		if err != nil {
-			return "", err
-		}
-		matches, err := jm.grepOutput(jobID, re, limitBytes)
-		if err != nil {
-			return "", err
-		}
+	if grep != "" {
 		result.Grep = &grep
-		projected := projectJobOutputMatches(matches)
+		projected := projectJobOutputMatches(snap.Matches)
 		result.Matches = &projected
 	}
 	return marshalBoundedJobReadOutputResult(result, maxChars)
+}
+
+type jobReadOutputSnapshot struct {
+	Manager    *jobManager
+	Record     *jobstore.JobRecord
+	Content    string
+	TotalBytes int64
+	Truncated  bool
+	Matches    []jobstore.Match
+}
+
+func (s *Session) readJobOutputSnapshot(jm *jobManager, jobID string, tailBytes int, grepRE *regexp.Regexp, limitBytes int) (jobReadOutputSnapshot, error) {
+	for {
+		rec, err := findJobRecord(jm, jobID)
+		if err != nil {
+			next, ok, fallbackErr := s.jobReadClosedStoreFallback(jm, err)
+			if ok {
+				jm = next
+				continue
+			}
+			return jobReadOutputSnapshot{}, fallbackErr
+		}
+
+		content, totalBytes, truncated, err := jm.readOutput(jobID, tailBytes)
+		if err != nil {
+			next, ok, fallbackErr := s.jobReadClosedStoreFallback(jm, err)
+			if ok {
+				jm = next
+				continue
+			}
+			return jobReadOutputSnapshot{}, fallbackErr
+		}
+
+		rec, err = findJobRecord(jm, jobID)
+		if err != nil {
+			next, ok, fallbackErr := s.jobReadClosedStoreFallback(jm, err)
+			if ok {
+				jm = next
+				continue
+			}
+			return jobReadOutputSnapshot{}, fallbackErr
+		}
+
+		var matches []jobstore.Match
+		if grepRE != nil {
+			matches, err = jm.grepOutput(jobID, grepRE, limitBytes)
+			if err != nil {
+				next, ok, fallbackErr := s.jobReadClosedStoreFallback(jm, err)
+				if ok {
+					jm = next
+					continue
+				}
+				return jobReadOutputSnapshot{}, fallbackErr
+			}
+			rec, err = findJobRecord(jm, jobID)
+			if err != nil {
+				next, ok, fallbackErr := s.jobReadClosedStoreFallback(jm, err)
+				if ok {
+					jm = next
+					continue
+				}
+				return jobReadOutputSnapshot{}, fallbackErr
+			}
+		}
+
+		return jobReadOutputSnapshot{
+			Manager:    jm,
+			Record:     rec,
+			Content:    content,
+			TotalBytes: totalBytes,
+			Truncated:  truncated,
+			Matches:    matches,
+		}, nil
+	}
+}
+
+func (s *Session) jobReadClosedStoreFallback(current *jobManager, err error) (*jobManager, bool, error) {
+	if !errors.Is(err, jobstore.ErrStoreClosed) {
+		return nil, false, err
+	}
+	local, localErr := sessionJobManager(s)
+	if localErr != nil {
+		return nil, false, localErr
+	}
+	if local == current {
+		return nil, false, err
+	}
+	return local, true, nil
 }
 
 func jobListTool(s *Session, args map[string]any, maxChars int) (string, error) {

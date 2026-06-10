@@ -56,6 +56,9 @@ func (s *Session) nestedOrLocalJobManager(jobID string) (*jobManager, *jobstore.
 	}
 	rec, err := findJobRecord(owner, jobID)
 	if err != nil {
+		if errors.Is(err, jobstore.ErrStoreClosed) && forwarded != nil {
+			return local, forwarded, nil
+		}
 		return nil, nil, err
 	}
 	return owner, rec, nil
