@@ -62,10 +62,9 @@ var legacyRootOnlySubagentControlTools = []string{
 }
 
 type subagent struct {
-	id     string
-	sess   *Session
-	emit   func(events.EventKind, events.EventData)
-	notify func(subagentNotification)
+	id   string
+	sess *Session
+	emit func(events.EventKind, events.EventData)
 
 	mu              sync.Mutex
 	running         bool
@@ -76,7 +75,6 @@ type subagent struct {
 	err             error
 	resultConsumed  bool // true after the first wait returns this run's result
 	endEmitted      bool
-	notifyArmed     bool               // true after this run armed its one terminal notification; reset on idle-resume
 	runFromWatch    bool               // true for a run resumed by job_watch.send; suppresses observer feedback loops
 	nudgeEnabled    bool               // true for default subagents that should be nudged to communicate
 	cancel          context.CancelFunc // cancels the current run's context
@@ -380,7 +378,6 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		id:           subSess.id,
 		sess:         subSess,
 		emit:         s.emit,
-		notify:       s.subagents.notify,
 		running:      true,
 		status:       SubagentRunning,
 		done:         make(chan struct{}),
@@ -479,7 +476,6 @@ func resetSubagentForRunLockedFromWatch(sub *subagent, cancel context.CancelFunc
 	sub.err = nil
 	sub.resultConsumed = false
 	sub.endEmitted = false
-	sub.notifyArmed = false
 	sub.runFromWatch = fromWatch
 	sub.cancel = cancel
 	sub.cancelRequested = false
@@ -588,27 +584,10 @@ func (a *subagent) run(ctx context.Context, input string) {
 	}
 	done := a.done
 	a.endEmitted = true
-	// Arm exactly one terminal notification per run. Capture the metadata while
-	// locked, then deliver after unlocking — notify must never run under a.mu.
-	armNow := !a.notifyArmed && a.notify != nil
-	var n subagentNotification
-	if armNow {
-		a.notifyArmed = true
-		n = subagentNotification{
-			AgentID:       a.id,
-			Status:        string(a.status),
-			TranscriptRef: encodeRef("", a.sess.ID()),
-			TurnsUsed:     a.turnsUsed,
-		}
-	}
-	notify := a.notify
 	a.mu.Unlock()
 
 	if done != nil {
 		close(done)
-	}
-	if armNow {
-		notify(n)
 	}
 }
 

@@ -79,7 +79,7 @@ type jobRuntimeHandle struct {
 	output *jobstore.OutputStore
 }
 
-// jobNotification is the durable-job analogue of subagentNotification.
+// jobNotification is the in-memory wake record for a durable job notification.
 type jobNotification struct {
 	JobID, JobType, Status, Reason, TranscriptRef string
 	OutputBytes                                   int64

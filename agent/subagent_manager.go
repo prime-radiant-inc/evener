@@ -23,10 +23,6 @@ type subagentManager struct {
 	mu   sync.Mutex
 	subs map[string]*subagent
 	emit func(events.EventKind, events.EventData)
-	// notify enqueues a child-completion notification on the parent and kicks the
-	// drain. It mirrors emit: captured here at construction and copied onto each
-	// subagent so a child reaches the parent's queue without a back-reference.
-	notify func(subagentNotification)
 	// maxRetainedTerminal bounds how many terminal records (completed|failed|
 	// cancelled) the manager retains per parent; a closed record still counts until
 	// reclaimed. Enforced at spawn time via reserveSlot, which GCs reclaimable
@@ -38,13 +34,11 @@ type subagentManager struct {
 const defaultMaxRetainedTerminal = 128
 
 // newSubagentManager creates a manager that captures the parent session's emit
-// and notify closures for forwarding subagent lifecycle events and arming
-// child-completion notifications.
-func newSubagentManager(emit func(events.EventKind, events.EventData), notify func(subagentNotification)) *subagentManager {
+// closure for forwarding subagent lifecycle events.
+func newSubagentManager(emit func(events.EventKind, events.EventData)) *subagentManager {
 	return &subagentManager{
 		subs:                map[string]*subagent{},
 		emit:                emit,
-		notify:              notify,
 		maxRetainedTerminal: defaultMaxRetainedTerminal,
 	}
 }

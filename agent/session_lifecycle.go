@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -184,9 +183,9 @@ const (
 	EntryUserInput EntryKind = iota
 	// EntryContinuation is a system-framed goal continuation turn.
 	EntryContinuation
-	// EntryNotification is a system-framed turn that drains the pending
-	// subagent-completion queue and surfaces it to the model as a steering
-	// reminder. An empty queue makes it a no-op (no model request).
+	// EntryNotification is a system-framed turn that drains pending job
+	// notifications and surfaces them to the model as a steering reminder. An empty
+	// queue makes it a no-op (no model request).
 	EntryNotification
 )
 
@@ -362,12 +361,12 @@ func (s *Session) ProcessInputKind(ctx context.Context, input string, images []I
 				haveDeferredCont = true
 			}
 		}
-		// Notification interleave (priority 3): a pending subagent-completion
-		// notification runs AFTER the fold above but BEFORE the deferred
-		// continuation, so it is transparent to goal accounting (the just-finished
-		// continuation already folded). This is a non-draining length check; the
-		// queue is consumed inside acceptNotificationInput when the EntryNotification
-		// turn runs (an empty queue there is a no-op, but the peek guards against it).
+			// Notification interleave (priority 3): a pending job notification runs
+			// AFTER the fold above but BEFORE the deferred continuation, so it is
+			// transparent to goal accounting (the just-finished continuation already
+			// folded). This is a non-draining length check; the queue is consumed inside
+			// acceptNotificationInput when the EntryNotification turn runs (an empty
+			// queue there is a no-op, but the peek guards against it).
 		// After a notification turn, do not immediately rerun this gate: job
 		// notifications may have been requeued because durable state was unavailable.
 		if ranKind != EntryNotification && s.peekNotifications() > 0 {
@@ -770,7 +769,7 @@ func (s *Session) acceptContinuationInput(ctx context.Context, input string) {
 	}
 }
 
-// acceptNotificationInput records a subagent-completion notification turn at the
+// acceptNotificationInput records a job-completion notification turn at the
 // start of an input turn. It mirrors acceptContinuationInput's framing — the
 // drained queue is delivered to the model as a schema.TurnSteering reminder (a
 // user-role message that expandHistory passes through without rendering a user
@@ -783,12 +782,11 @@ func (s *Session) acceptContinuationInput(ctx context.Context, input string) {
 // the drain loop's idle tail suppresses the phantom SESSION_END{input_complete} —
 // an empty notification turn is a true no-op that makes no model request.
 func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
-	notifs := s.filterDeliverableNotifications(s.drainNotifications())
 	jobNotifs, retryJobNotifs, injectedJobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
 	s.requeueJobNotifications(retryJobNotifs)
 	injectedFailures := s.markJobNotificationsDelivered(injectedJobNotifs)
 	s.requeueJobNotifications(injectedFailures)
-	if len(notifs) == 0 && len(jobNotifs) == 0 {
+	if len(jobNotifs) == 0 {
 		if len(retryJobNotifs) == 0 && len(injectedFailures) == 0 {
 			s.resetJobNotificationRetry()
 		}
@@ -798,9 +796,8 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 
 	s.repairOrphanedToolResults("before accepting notification")
 
-	reminder := formatNotificationReminder(notifs, jobNotifs, s.stateDir != "")
+	reminder := formatJobNotificationReminder(jobNotifs)
 	if err := s.appendTurnDurably(schema.TurnSteering, llm.User(reminder)); err != nil {
-		s.requeueNotifications(notifs)
 		s.requeueJobNotifications(jobNotifications(jobNotifs))
 		s.finishNotificationNoop()
 		return false
@@ -827,39 +824,6 @@ func (s *Session) finishNotificationNoop() {
 	}
 	s.sessionEndEmitted = true
 	s.mu.Unlock()
-}
-
-// filterDeliverableNotifications drops a drained notification that should no
-// longer wake the model at delivery time: the child's record is absent (the
-// manager get returns nil — GC-reclaimed), the record is closed, or its
-// result was already consumed by a blocking wait. The notification is armed
-// unconditionally at terminal run end (so arming never races a concurrent
-// wait/close); suppression happens here, at the moment the parent's turn would
-// surface it. A notification turn is a wake, not a consume — surviving entries
-// are NOT marked consumed — so suppression keys only on what wait/close already
-// did.
-//
-// Lock discipline: the queue is already drained (under pendingNotifsMu) before
-// this runs. For each entry it takes the manager mutex once (the single get) and
-// then reads status/resultConsumed under sub.mu briefly, per-entry. It never
-// holds pendingNotifsMu or the manager mutex while reading sub.mu, and never
-// nests sub.mu inside another sub's lock.
-func (s *Session) filterDeliverableNotifications(raw []subagentNotification) []subagentNotification {
-	survivors := make([]subagentNotification, 0, len(raw))
-	for _, n := range raw {
-		sub := s.subagents.get(n.AgentID)
-		if sub == nil {
-			continue
-		}
-		sub.mu.Lock()
-		drop := sub.closed || sub.resultConsumed
-		sub.mu.Unlock()
-		if drop {
-			continue
-		}
-		survivors = append(survivors, n)
-	}
-	return survivors
 }
 
 func (s *Session) filterDeliverableJobNotifications(raw []jobNotification) ([]deliverableJobNotification, []jobNotification, []deliverableJobNotification) {
@@ -982,26 +946,10 @@ func jobNotifications(notifs []deliverableJobNotification) []jobNotification {
 	return out
 }
 
-// formatNotificationReminder renders notification blocks for a notification turn,
-// joined by newlines. Each block carries metadata and only points the model at
-// read tools that are actually registered for the session.
-func formatNotificationReminder(notifs []subagentNotification, jobNotifs []deliverableJobNotification, transcriptToolsAvailable bool) string {
-	blocks := make([]string, 0, len(notifs)+len(jobNotifs))
-	for _, n := range notifs {
-		message := fmt.Sprintf("Subagent %s finished (%s). This notification has no job_id.", n.AgentID, n.Status)
-		if transcriptToolsAvailable {
-			message += fmt.Sprintf(" Inspect the archived child transcript with read_session_transcript using transcript_ref=%q.", n.TranscriptRef)
-		} else {
-			message += " No archived transcript inspection path is available in this non-persistent session."
-		}
-		blocks = append(blocks, fmt.Sprintf(
-			"<subagent-notification agent_id=%q status=%q turns_used=%q transcript_ref=%q>\n"+
-				"%s\n"+
-				"</subagent-notification>",
-			n.AgentID, n.Status, strconv.Itoa(n.TurnsUsed), n.TranscriptRef,
-			message,
-		))
-	}
+// formatJobNotificationReminder renders notification blocks for a notification
+// turn, joined by newlines.
+func formatJobNotificationReminder(jobNotifs []deliverableJobNotification) string {
+	blocks := make([]string, 0, len(jobNotifs))
 	for _, n := range jobNotifs {
 		blocks = append(blocks, formatJobNotificationBlock(n.notification))
 	}

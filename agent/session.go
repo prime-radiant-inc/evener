@@ -108,18 +108,17 @@ type Session struct {
 	depth     int
 	subagents *subagentManager
 
-	// pendingNotifs is the durable per-parent queue of pending child-completion
-	// notifications. It is the single source of truth, drop-safe, and drained later
-	// by a notification turn. notifyFunc, when set by the server (Task 5), kicks the
-	// drain; it stays nil here and a nil kick is a no-op.
+	// pendingJobNotifs is the durable per-parent queue of pending job-completion
+	// notifications. It is drop-safe and drained later by a notification turn.
+	// notifyFunc, when set by the server, kicks the drain; it stays nil here and a
+	// nil kick is a no-op.
 	//
 	// Guarded by its own mutex; never taken while holding sub.mu or the manager
 	// mutex.
-	pendingNotifsMu  sync.Mutex
-	pendingNotifs    []subagentNotification
-	pendingJobNotifs []jobNotification
-	notifyFunc       func()
-	jobNotifyRetry   notificationRetry
+	pendingJobNotifsMu sync.Mutex
+	pendingJobNotifs   []jobNotification
+	notifyFunc         func()
+	jobNotifyRetry     notificationRetry
 
 	jobManager *jobManager
 
@@ -214,14 +213,6 @@ type Session struct {
 	promptSourceLog      []promptSource
 }
 
-// subagentNotification is the metadata-only record armed when a child's run
-// reaches a terminal state. It carries no child output: a notification turn
-// reads the transcript via TranscriptRef when it wants more.
-type subagentNotification struct {
-	AgentID, Status, TranscriptRef string
-	TurnsUsed                      int
-}
-
 type notificationRetry struct {
 	active     bool
 	delay      time.Duration
@@ -233,17 +224,9 @@ const (
 	jobNotificationRetryMaxDelay     = 5 * time.Second
 )
 
-// enqueueNotification appends a pending notification under pendingNotifsMu. The
-// lock is never taken while holding sub.mu or the manager mutex.
-func (s *Session) enqueueNotification(n subagentNotification) {
-	s.pendingNotifsMu.Lock()
-	defer s.pendingNotifsMu.Unlock()
-	s.pendingNotifs = append(s.pendingNotifs, n)
-}
-
 func (s *Session) enqueueJobNotification(n jobNotification) {
-	s.pendingNotifsMu.Lock()
-	defer s.pendingNotifsMu.Unlock()
+	s.pendingJobNotifsMu.Lock()
+	defer s.pendingJobNotifsMu.Unlock()
 	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
 }
 
@@ -256,35 +239,15 @@ func (s *Session) requeueJobNotifications(notifs []jobNotification) {
 	if len(notifs) == 0 {
 		return
 	}
-	s.pendingNotifsMu.Lock()
+	s.pendingJobNotifsMu.Lock()
 	s.pendingJobNotifs = append(notifs, s.pendingJobNotifs...)
 	s.scheduleJobNotificationRetryLocked()
-	s.pendingNotifsMu.Unlock()
-}
-
-func (s *Session) requeueNotifications(notifs []subagentNotification) {
-	if len(notifs) == 0 {
-		return
-	}
-	s.pendingNotifsMu.Lock()
-	s.pendingNotifs = append(notifs, s.pendingNotifs...)
-	s.scheduleJobNotificationRetryLocked()
-	s.pendingNotifsMu.Unlock()
-}
-
-// drainNotifications swaps out the pending queue under pendingNotifsMu, returning
-// the queued notifications and resetting the queue to nil.
-func (s *Session) drainNotifications() []subagentNotification {
-	s.pendingNotifsMu.Lock()
-	defer s.pendingNotifsMu.Unlock()
-	drained := s.pendingNotifs
-	s.pendingNotifs = nil
-	return drained
+	s.pendingJobNotifsMu.Unlock()
 }
 
 func (s *Session) drainJobNotifications() []jobNotification {
-	s.pendingNotifsMu.Lock()
-	defer s.pendingNotifsMu.Unlock()
+	s.pendingJobNotifsMu.Lock()
+	defer s.pendingJobNotifsMu.Unlock()
 	drained := s.pendingJobNotifs
 	s.pendingJobNotifs = nil
 	return drained
@@ -295,14 +258,15 @@ func (s *Session) drainJobNotifications() []jobNotification {
 // next; the actual drain stays in acceptNotificationInput so the queue is consumed
 // exactly once, inside the turn that surfaces it.
 func (s *Session) peekNotifications() int {
-	s.pendingNotifsMu.Lock()
-	defer s.pendingNotifsMu.Unlock()
-	return len(s.pendingNotifs) + len(s.pendingJobNotifs)
+	s.pendingJobNotifsMu.Lock()
+	defer s.pendingJobNotifsMu.Unlock()
+	return len(s.pendingJobNotifs)
 }
 
 // SetNotifyFunc registers the callback the server uses to wake an idle session
-// when a subagent finishes. It mirrors SetKickFunc: the agent module must not
-// import server, so serve.go wires this callback into the server's input channel.
+// when a job notification is pending. It mirrors SetKickFunc: the agent module
+// must not import server, so serve.go wires this callback into the server's input
+// channel.
 func (s *Session) SetNotifyFunc(f func()) {
 	s.mu.Lock()
 	s.notifyFunc = f
@@ -310,9 +274,9 @@ func (s *Session) SetNotifyFunc(f func()) {
 	if f == nil {
 		return
 	}
-	s.pendingNotifsMu.Lock()
-	pending := len(s.pendingNotifs)+len(s.pendingJobNotifs) > 0
-	s.pendingNotifsMu.Unlock()
+	s.pendingJobNotifsMu.Lock()
+	pending := len(s.pendingJobNotifs) > 0
+	s.pendingJobNotifsMu.Unlock()
 	if pending {
 		f()
 	}
@@ -339,13 +303,13 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 	s.jobNotifyRetry.generation++
 	generation := s.jobNotifyRetry.generation
 	time.AfterFunc(delay, func() {
-		s.pendingNotifsMu.Lock()
+		s.pendingJobNotifsMu.Lock()
 		if s.jobNotifyRetry.generation != generation {
-			s.pendingNotifsMu.Unlock()
+			s.pendingJobNotifsMu.Unlock()
 			return
 		}
 		s.jobNotifyRetry.active = false
-		pending := len(s.pendingNotifs)+len(s.pendingJobNotifs) > 0
+		pending := len(s.pendingJobNotifs) > 0
 		nextDelay := delay * 2
 		if nextDelay > jobNotificationRetryMaxDelay {
 			nextDelay = jobNotificationRetryMaxDelay
@@ -355,7 +319,7 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 		} else {
 			s.jobNotifyRetry.delay = jobNotificationRetryInitialDelay
 		}
-		s.pendingNotifsMu.Unlock()
+		s.pendingJobNotifsMu.Unlock()
 		if pending {
 			s.notify()
 		}
@@ -363,15 +327,15 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 }
 
 func (s *Session) resetJobNotificationRetry() {
-	s.pendingNotifsMu.Lock()
-	if len(s.pendingNotifs)+len(s.pendingJobNotifs) > 0 {
-		s.pendingNotifsMu.Unlock()
+	s.pendingJobNotifsMu.Lock()
+	if len(s.pendingJobNotifs) > 0 {
+		s.pendingJobNotifsMu.Unlock()
 		return
 	}
 	s.jobNotifyRetry.generation++
 	s.jobNotifyRetry.active = false
 	s.jobNotifyRetry.delay = jobNotificationRetryInitialDelay
-	s.pendingNotifsMu.Unlock()
+	s.pendingJobNotifsMu.Unlock()
 }
 
 // communicateResult records whether and how the agent delivered a result via

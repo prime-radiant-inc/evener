@@ -112,10 +112,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		sessionCtx:     sessCtx,
 		cancelFunc:     sessCancel,
 	}
-	s.subagents = newSubagentManager(s.emit, func(n subagentNotification) {
-		s.enqueueNotification(n)
-		s.notify()
-	})
+	s.subagents = newSubagentManager(s.emit)
 	jm, err := newJobManager(s.stateDir, s.id, s.enqueueJobNotificationAndNotify)
 	if err != nil {
 		return nil, fmt.Errorf("job manager: %w", err)
@@ -307,10 +304,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		sessionCtx: sessCtx,
 		cancelFunc: sessCancel,
 	}
-	s.subagents = newSubagentManager(s.emit, func(n subagentNotification) {
-		s.enqueueNotification(n)
-		s.notify()
-	})
+	s.subagents = newSubagentManager(s.emit)
 	jm, err := newJobManager(s.stateDir, s.id, nil)
 	if err != nil {
 		return nil, fmt.Errorf("job manager: %w", err)
