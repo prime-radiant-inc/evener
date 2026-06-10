@@ -122,7 +122,7 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	}
 	if !a.Clear && a.Send != nil {
 		a.Send.To = strings.TrimSpace(a.Send.To)
-		if err := jm.validateWatchSendTarget(a.Send.To, a.Target); err != nil {
+		if err := jm.validateWatchSendTarget(a.Send.To, a); err != nil {
 			return watchResult{}, err
 		}
 	}
@@ -212,15 +212,15 @@ func (jm *jobManager) validateWatchTarget(target string) error {
 	return nil
 }
 
-func (jm *jobManager) validateWatchSendTarget(target, watchTarget string) error {
+func (jm *jobManager) validateWatchSendTarget(target string, a watchArgs) error {
 	if target == "" {
 		return errors.New("invalid_request: send.to is required")
 	}
 	switch target {
-	case "caller":
+	case runtimeMessageAliasCaller:
 		return nil
-	case "watched":
-		return jm.validateWatchedSendTarget(watchTarget)
+	case runtimeMessageAliasWatched:
+		return jm.validateWatchedSendTarget(a)
 	case "main", "*":
 		return watchTargetNotFoundError(target)
 	}
@@ -241,9 +241,16 @@ func (jm *jobManager) validateWatchSendTarget(target, watchTarget string) error 
 	return nil
 }
 
-func (jm *jobManager) validateWatchedSendTarget(watchTarget string) error {
-	if watchTarget == "" || isWatchSessionTarget(watchTarget) {
-		return nil
+func (jm *jobManager) validateWatchedSendTarget(a watchArgs) error {
+	watchTarget := a.Target
+	if watchTarget == "" {
+		return watchTargetNotFoundError(runtimeMessageAliasWatched)
+	}
+	if isWatchSessionTarget(watchTarget) {
+		if watchCanResolveConcreteWatchedTarget(a) {
+			return nil
+		}
+		return watchTargetNotFoundError(runtimeMessageAliasWatched)
 	}
 	recs, err := jm.listWithError(listFilter{IncludeNested: true})
 	if err != nil {
@@ -261,6 +268,24 @@ func (jm *jobManager) validateWatchedSendTarget(watchTarget string) error {
 	return watchTargetNotFoundError(watchTarget)
 }
 
+func watchCanResolveConcreteWatchedTarget(a watchArgs) bool {
+	if a.Target != "*" || a.ProgressIntervalMS > 0 || a.OutputMatch != "" {
+		return false
+	}
+	if a.TriggerEvent != "" && a.TriggerEvent != "job.notification" {
+		return false
+	}
+	if len(a.Events) == 0 {
+		return a.TriggerEvent == "job.notification"
+	}
+	for _, eventName := range a.Events {
+		if eventName != "job.notification" {
+			return false
+		}
+	}
+	return true
+}
+
 func isWatchableConcreteJobLocked(run *runningJob) bool {
 	return run != nil && run.terminal == nil && run.finalize == nil
 }
@@ -271,7 +296,7 @@ func watchTargetNotFoundError(target string) error {
 
 func isWatchSessionTarget(target string) bool {
 	switch target {
-	case "caller", "*":
+	case runtimeMessageAliasCaller, "*":
 		return true
 	default:
 		return false
@@ -662,7 +687,7 @@ func (jm *jobManager) deliverWatchSend(ctx context.Context, cfg *watchConfig, jo
 }
 
 func resolveWatchSendTarget(target, watchedJobID string) (string, error) {
-	if target != "watched" {
+	if target != runtimeMessageAliasWatched {
 		return target, nil
 	}
 	if watchedJobID == "" || isWatchSessionTarget(watchedJobID) {

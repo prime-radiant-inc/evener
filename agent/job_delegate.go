@@ -16,6 +16,9 @@ import (
 const (
 	delegateFinalizeWaitTimeout = 5 * time.Second
 	delegateFinalizeRetryDelay  = 20 * time.Millisecond
+
+	runtimeMessageAliasCaller  = "caller"
+	runtimeMessageAliasWatched = "watched"
 )
 
 type delegateArgs struct {
@@ -400,17 +403,12 @@ func sendMessageFailed(target string, err error) sendMessageResult {
 }
 
 func isRuntimeMessageAlias(target string) bool {
-	switch target {
-	case "caller":
-		return true
-	default:
-		return false
-	}
+	return target == runtimeMessageAliasCaller
 }
 
 func isUnsupportedRuntimeMessageAlias(target string) bool {
 	switch target {
-	case "main", "watched":
+	case "main", runtimeMessageAliasWatched:
 		return true
 	default:
 		return false

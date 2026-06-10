@@ -442,6 +442,32 @@ func TestWatchSendToWatchedDeliversFrameToConcreteTarget(t *testing.T) {
 	}
 }
 
+func TestWatchSendToWatchedWildcardJobNotificationDeliversConcreteTarget(t *testing.T) {
+	jm := newTestJM(t)
+	var sent []sendMessageArgs
+	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{}
+	}
+
+	_, err := jm.configureWatch(watchArgs{
+		Target: "*",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "watched", Message: "observe"},
+	})
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_delegate", JobType: "delegate", Status: "completed"})
+
+	if len(sent) != 1 {
+		t.Fatalf("wildcard job notification must deliver once, got %d", len(sent))
+	}
+	if sent[0].Target != "job_delegate" {
+		t.Fatalf("delivery target = %q, want concrete watched job", sent[0].Target)
+	}
+}
+
 func createRunningDelegateWatchTarget(t *testing.T, jm *jobManager) *jobstore.JobRecord {
 	t.Helper()
 	rec, err := jm.createShell(createShellOpts{Command: "delegate-output"})
@@ -457,34 +483,32 @@ func createRunningDelegateWatchTarget(t *testing.T, jm *jobManager) *jobstore.Jo
 	return rec
 }
 
-func TestWatchSendToWatchedWithoutConcreteTargetNotifiesWatchedUnresolved(t *testing.T) {
-	jm := newTestJM(t)
-	var sent []sendMessageArgs
-	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
-		sent = append(sent, a)
-		return sendMessageResult{}
-	}
-	var notified []jobNotification
-	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+func TestWatchSendToWatchedRejectsSessionEventsWithoutConcreteTarget(t *testing.T) {
+	for _, eventName := range []string{"assistant.message", "assistant.tool", "communicate"} {
+		t.Run(eventName, func(t *testing.T) {
+			jm := newTestJM(t)
+			var sent []sendMessageArgs
+			jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+				sent = append(sent, a)
+				return sendMessageResult{}
+			}
 
-	_, err := jm.configureWatch(watchArgs{
-		Target: "*",
-		Events: []string{"assistant.message"},
-		Send:   &watchSendArgs{To: "watched", Message: "observe"},
-	})
-	if err != nil {
-		t.Fatalf("configure: %v", err)
-	}
-	jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+			_, err := jm.configureWatch(watchArgs{
+				Target: "*",
+				Events: []string{eventName},
+				Send:   &watchSendArgs{To: "watched", Message: "observe"},
+			})
 
-	if len(sent) != 0 {
-		t.Fatalf("unresolved watched target delivered sends: %#v", sent)
-	}
-	if len(notified) != 1 {
-		t.Fatalf("unresolved watched target must notify once, got %d", len(notified))
-	}
-	if !strings.Contains(notified[0].Reason, "watched_unresolved") {
-		t.Fatalf("notification reason = %q, want watched_unresolved", notified[0].Reason)
+			if err == nil || !strings.Contains(err.Error(), "target_not_found") {
+				t.Fatalf("error = %v, want target_not_found", err)
+			}
+			if jm.watchCount() != 0 {
+				t.Fatalf("watch count = %d, want 0", jm.watchCount())
+			}
+			if len(sent) != 0 {
+				t.Fatalf("rejected watched send delivered sends: %#v", sent)
+			}
+		})
 	}
 }
 
