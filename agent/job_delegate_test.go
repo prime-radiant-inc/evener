@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/plugin"
+	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
 )
 
@@ -1385,6 +1386,136 @@ func TestSendDelegateMessageTerminalDelegateResumeCreatesNewJob(t *testing.T) {
 	jobs := sess.jobManager.list(listFilter{Type: jobstore.JobDelegate})
 	if len(jobs) != 2 {
 		t.Fatalf("delegate jobs = %+v, want two durable jobs", jobs)
+	}
+}
+
+func TestSendDelegateMessageResumedJobCopiesCompleteDelegateDescriptor(t *testing.T) {
+	c := llm.NewClient()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput("first complete")
+			},
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput("second complete")
+			},
+		},
+	}
+	c.Register(adapter)
+	workDir := t.TempDir()
+	env := execenv.NewLocalExecutionEnvironment(workDir)
+	env.EnvPolicy = execenv.EnvPolicyCoreOnly
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+	sess.pluginAgents = map[string]plugin.Agent{
+		"reviewer": {
+			Name:         "reviewer",
+			Description:  "Reviews work",
+			Model:        "inherit",
+			Tools:        []string{"read_file"},
+			Skills:       []string{"review-skill"},
+			Tasks:        []taskpkg.TaskTemplate{{Title: "Review", Prompt: "Check the patch carefully."}},
+			SystemPrompt: "Review carefully.",
+			PluginName:   "test-plugin",
+		},
+	}
+	resultSchema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"message": map[string]any{"type": "string"},
+		},
+		"required": []string{"message"},
+	}
+
+	jobID := jobstore.NewJobID()
+	ctx := context.WithValue(context.Background(), ctxParentJobID, jobID)
+	ctx = context.WithValue(ctx, ctxToolCallID, "call_original_delegate")
+	ctx = context.WithValue(ctx, ctxCommunicateOutputSchema, resultSchema)
+	prepared, err := sess.prepareSubagentRun(ctx, "finish first", "gpt-5.3", "", 0, "reviewer", "high", nil, []string{"shell"})
+	if err != nil {
+		t.Fatalf("prepareSubagentRun: %v", err)
+	}
+	childID := prepared.sub.id
+	run, err := sess.attachDelegateJobWithPrepared(sess.jobManager, childID, "finish first", prepared.sub, jobID, resultSchema, false, prepared)
+	if err != nil {
+		prepared.runCancel()
+		prepared.sub.sess.Close()
+		t.Fatalf("attachDelegateJobWithPrepared: %v", err)
+	}
+	if err := sess.trackAndLaunchPreparedSubagent(prepared); err != nil {
+		prepared.runCancel()
+		prepared.sub.sess.Close()
+		t.Fatalf("trackAndLaunchPreparedSubagent: %v", err)
+	}
+	finalizeErr, _ := sess.bridgeDelegateFinalization(run.rec.JobID, childID, prepared.sub)
+	first := waitForDelegateFinalization(context.Background(), sess.jobManager, run, finalizeErr)
+	if first.Err != nil || first.Status != jobstore.StatusCompleted {
+		t.Fatalf("first delegate result = %+v, want completed", first)
+	}
+
+	original := loadShellRecord(t, sess.jobManager, first.JobID)
+	if original.DelegateRestore == nil {
+		t.Fatalf("original record missing descriptor: %+v", original)
+	}
+	resultSchema["required"] = []string{"mutated"}
+
+	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  first.JobID,
+		Message: "run again",
+	})
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
+	}
+	if res.Action != "resumed" || res.JobID == "" || res.JobID == first.JobID {
+		t.Fatalf("resume result = %+v, want new resumed job", res)
+	}
+	waitForShellDone(t, sess.jobManager, res.JobID)
+	rec := loadShellRecord(t, sess.jobManager, res.JobID)
+	if rec.DelegateRestore == nil {
+		t.Fatalf("resumed record missing descriptor: %+v", rec)
+	}
+	desc := rec.DelegateRestore
+	if desc.ChildSessionID != childID || desc.TranscriptRef != first.TranscriptRef {
+		t.Fatalf("resumed descriptor identity = child %q ref %q, want child %q ref %q", desc.ChildSessionID, desc.TranscriptRef, childID, first.TranscriptRef)
+	}
+	if desc.ParentSessionID != sess.ID() || desc.ParentJobID != res.JobID || desc.OwnerSessionID != sess.ID() || desc.VisibleSessionID != sess.ID() {
+		t.Fatalf("resumed descriptor linkage = parent %q job %q owner %q visible %q", desc.ParentSessionID, desc.ParentJobID, desc.OwnerSessionID, desc.VisibleSessionID)
+	}
+	if desc.OriginToolCallID != "call_original_delegate" || desc.Task != "finish first" {
+		t.Fatalf("resumed descriptor origin/task = %q/%q, want original launch values", desc.OriginToolCallID, desc.Task)
+	}
+	if desc.AgentType != "reviewer" || desc.RequestedModel != "gpt-5.3" || desc.ResolvedProfileID != "openai" || desc.ResolvedModel != "gpt-5.3" {
+		t.Fatalf("resumed descriptor model fields = agent %q requested %q resolved %q/%q", desc.AgentType, desc.RequestedModel, desc.ResolvedProfileID, desc.ResolvedModel)
+	}
+	if desc.ReasoningEffort != "high" || desc.AgentName != "reviewer" || desc.FrozenRolePrompt != "Review carefully." || desc.FrozenTaskPrompt != "Check the patch carefully." {
+		t.Fatalf("resumed descriptor shaping = reasoning %q agent %q role %q task %q", desc.ReasoningEffort, desc.AgentName, desc.FrozenRolePrompt, desc.FrozenTaskPrompt)
+	}
+	if !hasString(desc.FrozenToolNames, "read_file") || !hasString(desc.FrozenToolNames, "task_list") || !hasString(desc.FrozenToolNames, "shell") {
+		t.Fatalf("resumed frozen tool names = %+v, want original read_file/task_list/shell", desc.FrozenToolNames)
+	}
+	if len(desc.FrozenSkillNames) != 1 || desc.FrozenSkillNames[0] != "review-skill" {
+		t.Fatalf("resumed frozen skill names = %+v, want [review-skill]", desc.FrozenSkillNames)
+	}
+	if desc.WorkingDir != workDir || desc.LocalEnvPolicy != "core_only" {
+		t.Fatalf("resumed env fields = %q/%q, want %q/core_only", desc.WorkingDir, desc.LocalEnvPolicy, workDir)
+	}
+	if len(desc.ExplicitToolGrants) != 1 || desc.ExplicitToolGrants[0] != "shell" {
+		t.Fatalf("resumed explicit grants = %+v, want [shell]", desc.ExplicitToolGrants)
+	}
+	schema, ok := desc.ResultSchema.(map[string]any)
+	if !ok {
+		t.Fatalf("resumed result_schema = %#v, want object schema", desc.ResultSchema)
+	}
+	required, ok := schema["required"].([]any)
+	if !ok || len(required) != 1 || required[0] != "message" {
+		t.Fatalf("resumed result_schema.required = %#v, want original [message]", schema["required"])
 	}
 }
 

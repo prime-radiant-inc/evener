@@ -266,7 +266,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		return s.sendRunningDelegateMessage(target, message, active, args.FromWatch)
 	}
 
-	run, finalizeErr, active, err := s.resumeOrFindRunningDelegate(jm, childID, message, sub, rec.TranscriptRef, delegateResultSchema(rec), args.FromWatch)
+	run, finalizeErr, active, err := s.resumeOrFindRunningDelegate(jm, childID, message, sub, rec.TranscriptRef, delegateResultSchema(rec), rec.DelegateRestore, args.FromWatch)
 	if err != nil {
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: resume delegate session %q: %w", childID, err))
 	}
@@ -451,7 +451,7 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 	}
 }
 
-func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message string, sub *subagent, transcriptRef string, resultSchema any, fromWatch bool) (*runningJob, <-chan error, *jobstore.JobRecord, error) {
+func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message string, sub *subagent, transcriptRef string, resultSchema any, restore *jobstore.DelegateRestoreDescriptor, fromWatch bool) (*runningJob, <-chan error, *jobstore.JobRecord, error) {
 	sub.mu.Lock()
 	if sub.running {
 		sub.mu.Unlock()
@@ -474,7 +474,7 @@ func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message s
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
 
-	run, err := s.attachDelegateJobFromWatch(jm, childID, message, sub, resultSchema, fromWatch)
+	run, err := s.attachDelegateJobFromWatch(jm, childID, message, sub, resultSchema, restore, fromWatch)
 	if err != nil {
 		sub.mu.Unlock()
 		runCancel()
@@ -664,15 +664,19 @@ func (s *Session) attachDelegateJob(jm *jobManager, childID, task string, sub *s
 	return s.attachDelegateJobWithID(jm, childID, task, sub, jobstore.NewJobID(), nil, false)
 }
 
-func (s *Session) attachDelegateJobFromWatch(jm *jobManager, childID, task string, sub *subagent, resultSchema any, fromWatch bool) (*runningJob, error) {
-	return s.attachDelegateJobWithID(jm, childID, task, sub, jobstore.NewJobID(), resultSchema, fromWatch)
+func (s *Session) attachDelegateJobFromWatch(jm *jobManager, childID, task string, sub *subagent, resultSchema any, restore *jobstore.DelegateRestoreDescriptor, fromWatch bool) (*runningJob, error) {
+	return s.attachDelegateJobWithRestore(jm, childID, task, sub, jobstore.NewJobID(), resultSchema, fromWatch, nil, restore)
 }
 
 func (s *Session) attachDelegateJobWithID(jm *jobManager, childID, task string, sub *subagent, jobID string, resultSchema any, fromWatch bool) (*runningJob, error) {
-	return s.attachDelegateJobWithPrepared(jm, childID, task, sub, jobID, resultSchema, fromWatch, nil)
+	return s.attachDelegateJobWithRestore(jm, childID, task, sub, jobID, resultSchema, fromWatch, nil, nil)
 }
 
 func (s *Session) attachDelegateJobWithPrepared(jm *jobManager, childID, task string, sub *subagent, jobID string, resultSchema any, fromWatch bool, prepared *preparedSubagentRun) (*runningJob, error) {
+	return s.attachDelegateJobWithRestore(jm, childID, task, sub, jobID, resultSchema, fromWatch, prepared, nil)
+}
+
+func (s *Session) attachDelegateJobWithRestore(jm *jobManager, childID, task string, sub *subagent, jobID string, resultSchema any, fromWatch bool, prepared *preparedSubagentRun, previousRestore *jobstore.DelegateRestoreDescriptor) (*runningJob, error) {
 	startedAt := jm.now()
 	transcriptRef := encodeRef("", childID)
 	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
@@ -681,6 +685,9 @@ func (s *Session) attachDelegateJobWithPrepared(jm *jobManager, childID, task st
 		return nil, err
 	}
 	restore := s.delegateRestoreDescriptor(jobID, childID, task, transcriptRef, resultSchema, prepared)
+	if previousRestore != nil {
+		restore = s.resumedDelegateRestoreDescriptor(jobID, childID, transcriptRef, resultSchema, previousRestore)
+	}
 	run := &runningJob{
 		rec: &jobstore.JobRecord{
 			JobID:            jobID,
@@ -775,6 +782,43 @@ func (s *Session) delegateRestoreDescriptor(jobID, childID, task, transcriptRef 
 		profile := prepared.sub.sess.currentProfile()
 		desc.ResolvedProfileID = profile.ID()
 		desc.ResolvedModel = profile.Model()
+	}
+	return desc
+}
+
+func (s *Session) resumedDelegateRestoreDescriptor(jobID, childID, transcriptRef string, resultSchema any, previous *jobstore.DelegateRestoreDescriptor) *jobstore.DelegateRestoreDescriptor {
+	version := previous.Version
+	if version == 0 {
+		version = 1
+	}
+	desc := &jobstore.DelegateRestoreDescriptor{
+		Version:            version,
+		ChildSessionID:     childID,
+		TranscriptRef:      transcriptRef,
+		ParentSessionID:    s.id,
+		ParentJobID:        jobID,
+		OwnerSessionID:     s.id,
+		VisibleSessionID:   s.id,
+		OriginTurnID:       previous.OriginTurnID,
+		OriginToolCallID:   previous.OriginToolCallID,
+		Task:               previous.Task,
+		AgentType:          previous.AgentType,
+		RequestedModel:     previous.RequestedModel,
+		ResolvedProfileID:  previous.ResolvedProfileID,
+		ResolvedModel:      previous.ResolvedModel,
+		ReasoningEffort:    previous.ReasoningEffort,
+		AgentName:          previous.AgentName,
+		FrozenRolePrompt:   previous.FrozenRolePrompt,
+		FrozenTaskPrompt:   previous.FrozenTaskPrompt,
+		FrozenToolNames:    append([]string(nil), previous.FrozenToolNames...),
+		FrozenSkillNames:   append([]string(nil), previous.FrozenSkillNames...),
+		WorkingDir:         previous.WorkingDir,
+		LocalEnvPolicy:     previous.LocalEnvPolicy,
+		ResultSchema:       cloneDelegateResultSchema(previous.ResultSchema),
+		ExplicitToolGrants: append([]string(nil), previous.ExplicitToolGrants...),
+	}
+	if resultSchema != nil {
+		desc.ResultSchema = cloneDelegateResultSchema(resultSchema)
 	}
 	return desc
 }
