@@ -785,7 +785,7 @@ func (jm *jobManager) isCurrentWatchSendDelivery(d watchSendDelivery) bool {
 
 func (jm *jobManager) isCurrentWatchSendDeliveryLocked(d watchSendDelivery) bool {
 	if d.allowAfterTerminalExpiry {
-		return d.cfg != nil && d.cfg.generation == d.generation
+		return d.cfg != nil && d.cfg.generation == d.generation && !jm.closing
 	}
 	return d.cfg != nil && jm.watches[d.key] == d.cfg && d.cfg.generation == d.generation
 }
@@ -807,6 +807,12 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 		return nil, nil
 	}
 	cfg := d.cfg
+	if d.allowAfterTerminalExpiry {
+		if jm.terminalFlush == nil {
+			jm.terminalFlush = make(map[*watchConfig]bool)
+		}
+		jm.terminalFlush[cfg] = true
+	}
 	if cfg.pending == nil {
 		cfg.pending = make(map[jobstore.WatchSendKey]*jobstore.WatchSendState)
 	}
@@ -848,6 +854,7 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 		})
 		diagnostics = append(diagnostics, watchNotification(evictedState.Key.ResolvedWatchedIdentity, "watch send evicted: "+evictedState.TriggerIdentity))
 	}
+	jm.forgetTerminalFlushIfEmptyLocked(cfg)
 	return events, diagnostics
 }
 
@@ -855,6 +862,7 @@ func (jm *jobManager) removePendingWatchSend(cfg *watchConfig, key jobstore.Watc
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	removePendingWatchSendLocked(cfg, key)
+	jm.forgetTerminalFlushIfEmptyLocked(cfg)
 }
 
 func removePendingWatchSendLocked(cfg *watchConfig, key jobstore.WatchSendKey) {
@@ -873,6 +881,13 @@ func removePendingWatchSendLocked(cfg *watchConfig, key jobstore.WatchSendKey) {
 		cfg.pendingOrder = cfg.pendingOrder[:len(cfg.pendingOrder)-1]
 		return
 	}
+}
+
+func (jm *jobManager) forgetTerminalFlushIfEmptyLocked(cfg *watchConfig) {
+	if cfg == nil || len(cfg.pending) != 0 || jm.terminalFlush == nil {
+		return
+	}
+	delete(jm.terminalFlush, cfg)
 }
 
 func watchSendTerminalEventsLocked(cfg *watchConfig, kind jobstore.EventKind, reason string, now time.Time) []jobstore.Event {

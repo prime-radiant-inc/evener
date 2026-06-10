@@ -42,6 +42,7 @@ type jobManager struct {
 	store         *jobstore.Store
 	running       map[string]*runningJob
 	watches       map[watchKey]*watchConfig
+	terminalFlush map[*watchConfig]bool
 	closing       bool
 	appendEvent   func(jobstore.Event) error
 	emit          func(events.EventKind, events.EventData)
@@ -153,6 +154,10 @@ func (jm *jobManager) close() error {
 		dropped = append(dropped, watchSendTerminalEventsLocked(cfg, jobstore.EventWatchSendDropped, "job manager closed", jm.now())...)
 		closeWatchConfig(cfg)
 		delete(jm.watches, key)
+	}
+	for cfg := range jm.terminalFlush {
+		dropped = append(dropped, watchSendTerminalEventsLocked(cfg, jobstore.EventWatchSendDropped, "job manager closed", jm.now())...)
+		delete(jm.terminalFlush, cfg)
 	}
 	running := make([]jobRuntimeHandle, 0, len(jm.running))
 	for _, run := range jm.running {
