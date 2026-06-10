@@ -609,6 +609,34 @@ func TestWatchSendClearDropsPending(t *testing.T) {
 	}
 }
 
+func TestWatchSendWatchedTargetPruneDropsPending(t *testing.T) {
+	jm := newTestJM(t)
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.feedJobOutput(rec.JobID, []byte("ready\n"))
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("pending before prune = %d, want 1", len(pending))
+	}
+
+	jm.abandonRunningJob(rec.JobID)
+
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("pending after watched-target prune = %+v, want none", pending)
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count after watched-target prune = %d, want 0", jm.watchCount())
+	}
+}
+
 func TestWatchSendPendingDeliveredRemovesBeforeNextFailure(t *testing.T) {
 	jm := newTestJM(t)
 	failSend := true

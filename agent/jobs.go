@@ -210,14 +210,21 @@ waitLoop:
 func (jm *jobManager) abandonRunningJobs() {
 	jm.mu.Lock()
 	running := make([]jobRuntimeHandle, 0, len(jm.running))
+	var dropped []jobstore.Event
 	for _, run := range jm.running {
 		running = append(running, jobRuntimeHandle{
 			jobID:  run.rec.JobID,
 			output: run.output,
 		})
 		delete(jm.running, run.rec.JobID)
+		dropped = append(dropped, jm.pruneWatchedTargetWatchesLocked(run.rec.JobID, "watched target pruned", jm.now())...)
 	}
 	jm.mu.Unlock()
+	if err := jm.appendWatchSendEvents(dropped); err != nil {
+		jm.enqueueWatchNotifications([]jobNotification{
+			watchNotification("", "watch send prune cleanup failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+		})
+	}
 	for _, run := range running {
 		if run.output != nil {
 			_ = run.output.Close()
@@ -228,12 +235,19 @@ func (jm *jobManager) abandonRunningJobs() {
 func (jm *jobManager) abandonRunningJob(jobID string) {
 	jm.mu.Lock()
 	run := jm.running[jobID]
+	var dropped []jobstore.Event
 	if run != nil {
 		delete(jm.running, jobID)
+		dropped = jm.pruneWatchedTargetWatchesLocked(jobID, "watched target pruned", jm.now())
 	}
 	jm.mu.Unlock()
 	if run == nil {
 		return
+	}
+	if err := jm.appendWatchSendEvents(dropped); err != nil {
+		jm.enqueueWatchNotifications([]jobNotification{
+			watchNotification(jobID, "watch send prune cleanup failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+		})
 	}
 	if run.output != nil {
 		_ = run.output.Close()

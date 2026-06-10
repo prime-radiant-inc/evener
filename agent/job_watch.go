@@ -416,6 +416,19 @@ func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
 	}, nil
 }
 
+func (jm *jobManager) pruneWatchedTargetWatchesLocked(jobID, reason string, now time.Time) []jobstore.Event {
+	var dropped []jobstore.Event
+	for key, cfg := range jm.watches {
+		if key.Target != jobID {
+			continue
+		}
+		dropped = append(dropped, watchSendTerminalEventsLocked(cfg, jobstore.EventWatchSendDropped, reason, now)...)
+		closeWatchConfig(cfg)
+		delete(jm.watches, key)
+	}
+	return dropped
+}
+
 func (cfg *watchConfig) initProgressStop() chan struct{} {
 	if cfg.progressIntervalMS > 0 {
 		cfg.progressStop = make(chan struct{})
