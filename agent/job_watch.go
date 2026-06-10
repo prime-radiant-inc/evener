@@ -174,7 +174,7 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	}
 
 	jm.mu.Lock()
-	if run := jm.running[key.Target]; !isWatchSessionTarget(key.Target) && run != nil && !isWatchableConcreteJobLocked(run) {
+	if !isWatchSessionTarget(key.Target) && !isWatchableConcreteJobLocked(jm.running[key.Target]) {
 		jm.mu.Unlock()
 		return watchResult{}, watchTargetNotFoundError(key.Target)
 	}

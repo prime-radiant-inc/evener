@@ -168,6 +168,26 @@ func TestConfigureWatchRejectsTerminalizingConcreteJob(t *testing.T) {
 	}
 }
 
+func TestJobWatchRejectsConcreteJobWithoutRunningRuntime(t *testing.T) {
+	jm := newTestJM(t)
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+
+	jm.mu.Lock()
+	delete(jm.running, rec.JobID)
+	jm.mu.Unlock()
+
+	_, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"})
+	if err == nil {
+		t.Fatal("a concrete job without a running runtime must not accept new watches")
+	}
+	if !strings.Contains(err.Error(), "target_not_found") {
+		t.Fatalf("error = %v, want target_not_found", err)
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("inert concrete job watch was registered; count = %d", jm.watchCount())
+	}
+}
+
 func TestConfigureWatchIdempotentAndReplace(t *testing.T) {
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -589,6 +609,12 @@ func TestWatchSendGenerationChangesAfterRestoreAndKeepsOldPending(t *testing.T) 
 	}
 	reopened.now = func() time.Time { return time.Unix(1001, 0).UTC() }
 	reopened.send = jm.send
+	output, err := jobstore.OpenOutput(reopened.outputPathForJob(rec, rec.JobID), maxJobOutputRetentionBytes)
+	if err != nil {
+		t.Fatalf("reopen output: %v", err)
+	}
+	reopened.running[rec.JobID] = &runningJob{rec: rec, output: output, done: make(chan struct{})}
+	t.Cleanup(func() { _ = output.Close() })
 	if _, err := reopened.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "(?i)ready",
