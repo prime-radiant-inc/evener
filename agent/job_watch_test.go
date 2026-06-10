@@ -918,8 +918,92 @@ func TestWatchSendAppendFailureDuringClearKeepsPendingInMemory(t *testing.T) {
 	if got := len(cfg.pending); got != 1 {
 		t.Fatalf("in-memory pending after failed clear append = %d, want 1", got)
 	}
+	jm.mu.Lock()
+	reachable := jm.watches[key] == cfg
+	jm.mu.Unlock()
+	if !reachable {
+		t.Fatal("watch config with pending was detached after failed clear append")
+	}
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("folded pending after failed clear append = %d, want 1", len(pending))
+	}
+
+	jm.appendEvent = realAppend
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err != nil {
+		t.Fatalf("retry clear: %v", err)
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("folded pending after retry clear = %d, want 0", len(pending))
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count after retry clear = %d, want 0", jm.watchCount())
+	}
+}
+
+func TestWatchSendAppendFailureDuringReplaceLeavesOldWatchReachable(t *testing.T) {
+	jm := newTestJM(t)
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.feedJobOutput(rec.JobID, []byte("ready\n"))
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: "job_obs"}
+	jm.mu.Lock()
+	oldCfg := jm.watches[key]
+	jm.mu.Unlock()
+	if oldCfg == nil || len(oldCfg.pending) != 1 {
+		t.Fatalf("pending before replace = %+v, want one", oldCfg)
+	}
+	realAppend := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventWatchSendDropped {
+			return errors.New("append dropped failed")
+		}
+		return realAppend(e)
+	}
+
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "blocked",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err == nil {
+		t.Fatal("replace succeeded, want append failure")
+	}
+
+	jm.mu.Lock()
+	stillReachable := jm.watches[key] == oldCfg
+	jm.mu.Unlock()
+	if !stillReachable {
+		t.Fatal("old watch config was replaced after failed drop append")
+	}
+	if got := len(oldCfg.pending); got != 1 {
+		t.Fatalf("old pending after failed replace append = %d, want 1", got)
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("folded pending after failed replace append = %d, want 1", len(pending))
+	}
+
+	jm.appendEvent = realAppend
+	res, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "blocked",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	})
+	if err != nil {
+		t.Fatalf("retry replace: %v", err)
+	}
+	if !res.ReplacedExisting {
+		t.Fatal("retry replace did not report replaced_existing")
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("folded pending after retry replace = %d, want 0", len(pending))
 	}
 }
 
@@ -959,6 +1043,65 @@ func TestWatchSendAppendFailureDuringDeliveredKeepsPendingInMemory(t *testing.T)
 	}
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("folded pending after failed delivered append = %d, want 1", len(pending))
+	}
+}
+
+func TestWatchSendAppendFailureDuringEvictionKeepsMemoryAndDurableConsistent(t *testing.T) {
+	jm := newTestJM(t)
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+	if _, err := jm.configureWatch(watchArgs{
+		Target: "*",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	for i := 0; i < defaultWatchSendPendingCap; i++ {
+		jobID := "job_trigger_" + string(rune('A'+i))
+		jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: jobID, JobType: "delegate", Status: "completed"})
+	}
+	jm.mu.Lock()
+	var cfg *watchConfig
+	for _, watch := range jm.watches {
+		cfg = watch
+	}
+	jm.mu.Unlock()
+	if cfg == nil || len(cfg.pending) != defaultWatchSendPendingCap {
+		t.Fatalf("pending before eviction = %+v, want cap", cfg)
+	}
+
+	realAppend := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventWatchSendEvicted {
+			return errors.New("append evicted failed")
+		}
+		return realAppend(e)
+	}
+	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_over_cap", JobType: "delegate", Status: "completed"})
+
+	if got := len(cfg.pending); got != defaultWatchSendPendingCap+1 {
+		t.Fatalf("in-memory pending after failed eviction append = %d, want %d", got, defaultWatchSendPendingCap+1)
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != defaultWatchSendPendingCap+1 {
+		t.Fatalf("folded pending after failed eviction append = %d, want %d", len(pending), defaultWatchSendPendingCap+1)
+	}
+	for _, n := range notified {
+		if strings.Contains(n.Reason, "watch send evicted") {
+			t.Fatalf("eviction diagnostic emitted before durable evicted append succeeded: %+v", n)
+		}
+	}
+
+	jm.appendEvent = realAppend
+	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_retry_cleanup", JobType: "delegate", Status: "completed"})
+	if got := len(cfg.pending); got != defaultWatchSendPendingCap {
+		t.Fatalf("in-memory pending after retry eviction = %d, want %d", got, defaultWatchSendPendingCap)
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != defaultWatchSendPendingCap {
+		t.Fatalf("folded pending after retry eviction = %d, want %d", len(pending), defaultWatchSendPendingCap)
 	}
 }
 
