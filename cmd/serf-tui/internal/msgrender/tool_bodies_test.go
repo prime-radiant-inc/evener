@@ -64,10 +64,10 @@ func TestTaskListBodyRendersPerTaskRows(t *testing.T) {
 }
 
 func TestDelegateBodyShowsSummaryWhenChildUnavailable(t *testing.T) {
-	args := ToolArgs{"job_id": "job_01NONEXISTENT", "turns_used": float64(3)}
+	args := ToolArgs{"job_id": "job_01NONEXISTENT", "status": "completed"}
 	got := delegateBody(args, "", 60)
-	if !strings.Contains(got, "turns") {
-		t.Errorf("delegateBody should show turn summary: %q", got)
+	if !strings.Contains(got, "completed") || strings.Contains(got, "turns") {
+		t.Errorf("delegateBody should show status without obsolete turn count: %q", got)
 	}
 }
 

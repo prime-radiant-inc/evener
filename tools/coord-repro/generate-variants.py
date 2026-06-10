@@ -16,9 +16,24 @@ OUTDIR = sys.argv[1] if len(sys.argv) > 1 else "/tmp/coord-variants"
 os.makedirs(OUTDIR, exist_ok=True)
 
 # Read the baseline
-BASELINE_PATH = os.path.join(os.path.dirname(__file__), "../../agent/bundled_plugins/workflow/agents/coordinator.md")
+BASELINE_PATH = os.path.join(os.path.dirname(__file__), "../../agent/bundled_plugins/coordinator-workflow/agents/coordinator.md")
 with open(BASELINE_PATH) as f:
     BASELINE = f.read()
+
+BASELINE_TOOLS = ["glob", "grep", "read_file", "shell", "delegate", "job_send_message", "job_read_output", "job_list", "job_stop", "job_watch", "task_list"]
+NO_SHELL_TOOLS = ["glob", "grep", "read_file", "delegate", "job_send_message", "job_read_output", "job_list", "job_stop", "job_watch", "task_list"]
+NO_SHELL_NO_READ_TOOLS = ["glob", "grep", "delegate", "job_send_message", "job_read_output", "job_list", "job_stop", "job_watch", "task_list"]
+
+def tool_line(tools):
+    return f"tools: [{', '.join(tools)}]"
+
+def replace_tools(content, tools):
+    lines = content.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith("tools: ["):
+            lines[i] = tool_line(tools)
+            return "\n".join(lines) + ("\n" if content.endswith("\n") else "")
+    raise ValueError("coordinator baseline has no tools line")
 
 def write_variant(name, content):
     path = os.path.join(OUTDIR, f"{name}.md")
@@ -34,16 +49,10 @@ write_variant("00-baseline", BASELINE)
 # --- STRUCTURAL: Tool changes ---
 
 # 01: Remove shell entirely
-write_variant("01-no-shell", BASELINE.replace(
-    "tools: [glob, grep, read_file, shell, delegate, job_send_message, task_list]",
-    "tools: [glob, grep, read_file, delegate, job_send_message, task_list]"
-))
+write_variant("01-no-shell", replace_tools(BASELINE, NO_SHELL_TOOLS))
 
 # 02: Remove shell + read_file (can only glob/grep + delegate)
-write_variant("02-no-shell-no-read", BASELINE.replace(
-    "tools: [glob, grep, read_file, shell, delegate, job_send_message, task_list]",
-    "tools: [glob, grep, delegate, job_send_message, task_list]"
-))
+write_variant("02-no-shell-no-read", replace_tools(BASELINE, NO_SHELL_NO_READ_TOOLS))
 
 # --- POSITION: Where the critical rule appears ---
 
@@ -134,12 +143,12 @@ write_variant("13-stop-on-write", BASELINE.replace(
 # --- EXTREME BREVITY ---
 
 # 14: Minimal coordinator — just the essentials
-write_variant("14-minimal", """---
+write_variant("14-minimal", f"""---
 name: coordinator
 description: "Architect and coordinator. Decomposes tasks and delegates to sub-agents."
 model: inherit
 color: blue
-tools: [glob, grep, read_file, shell, delegate, job_send_message, task_list]
+{tool_line(BASELINE_TOOLS)}
 ---
 
 You are a coordinator. You NEVER write files or create deliverables.
@@ -154,12 +163,12 @@ Do not write files. Do not use shell to write files. Do not decompose — one im
 """)
 
 # 15: Ultra-minimal — three lines
-write_variant("15-ultra-minimal", """---
+write_variant("15-ultra-minimal", f"""---
 name: coordinator
 description: "Architect and coordinator. Decomposes tasks and delegates to sub-agents."
 model: inherit
 color: blue
-tools: [glob, grep, read_file, shell, delegate, job_send_message, task_list]
+{tool_line(BASELINE_TOOLS)}
 ---
 
 Spawn an implementer with the complete task description and your file inventory. Verify its output. Submit. You never write files yourself.
@@ -168,22 +177,19 @@ Spawn an implementer with the complete task description and your file inventory.
 # --- COMBINED APPROACHES ---
 
 # 16: No shell + inability framing
-no_shell_inability = BASELINE.replace(
-    "tools: [glob, grep, read_file, shell, delegate, job_send_message, task_list]",
-    "tools: [glob, grep, read_file, delegate, job_send_message, task_list]"
-).replace(
+no_shell_inability = replace_tools(BASELINE, NO_SHELL_TOOLS).replace(
     "## Role\n\nYou are a coordinator. You delegate, verify, and iterate. You do not implement.",
     "## Role\n\nYou are a coordinator. You cannot create correct deliverables — you lack the domain tools the implementer has. Delegate everything."
 )
 write_variant("16-no-shell-inability", no_shell_inability)
 
 # 17: No shell + minimal
-write_variant("17-no-shell-minimal", """---
+write_variant("17-no-shell-minimal", f"""---
 name: coordinator
 description: "Architect and coordinator. Decomposes tasks and delegates to sub-agents."
 model: inherit
 color: blue
-tools: [glob, grep, read_file, delegate, job_send_message, task_list]
+{tool_line(NO_SHELL_TOOLS)}
 ---
 
 You are a coordinator. You NEVER write files or create deliverables.
@@ -214,12 +220,12 @@ know_prohibit = BASELINE.replace(
 write_variant("19-knowing-plus-prohibition", know_prohibit)
 
 # 20: Delegation manager + sequence mandate + no shell
-write_variant("20-manager-sequence-noshell", """---
+write_variant("20-manager-sequence-noshell", f"""---
 name: coordinator
 description: "Delegation manager. Dispatches agents and verifies their output."
 model: inherit
 color: blue
-tools: [glob, grep, read_file, delegate, job_send_message, task_list]
+{tool_line(NO_SHELL_TOOLS)}
 ---
 
 ## Role
@@ -268,10 +274,7 @@ repeated = BASELINE.replace(
 write_variant("22-repeated-rule", repeated)
 
 # 23: No shell + stop-on-write + score framing
-write_variant("23-noshell-stop-score", BASELINE.replace(
-    "tools: [glob, grep, read_file, shell, delegate, job_send_message, task_list]",
-    "tools: [glob, grep, read_file, delegate, job_send_message, task_list]"
-).replace(
+write_variant("23-noshell-stop-score", replace_tools(BASELINE, NO_SHELL_TOOLS).replace(
     "You NEVER write or modify files yourself. That is the implementer's job.\nSmall tasks and simple workspaces are not exceptions.",
     "You NEVER write or modify files yourself. That is the implementer's job.\nSmall tasks and simple workspaces are not exceptions.\n\nIf you are about to create a file: STOP. That means you skipped delegation. The task fails with score 0 if you write deliverables yourself."
 ))

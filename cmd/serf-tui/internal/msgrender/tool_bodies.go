@@ -201,29 +201,23 @@ func taskListBody(_ ToolArgs, output string, width int) string {
 // Metadata is sourced from the tool output (preferred) or args.
 func delegateBody(args ToolArgs, output string, width int) string {
 	var jobID, status string
-	var turns int
 
 	// Try to parse metadata from output first.
 	if output != "" {
 		var meta struct {
 			JobID         string `json:"job_id"`
 			Status        string `json:"status"`
-			TurnsUsed     int    `json:"turns_used"`
 			TranscriptRef string `json:"transcript_ref"`
 			Task          string `json:"task"`
 		}
 		if err := json.Unmarshal([]byte(output), &meta); err == nil && meta.JobID != "" {
 			jobID = meta.JobID
 			status = meta.Status
-			turns = meta.TurnsUsed
 		}
 	}
 
 	if jobID == "" {
 		jobID = args.Str("job_id")
-		if v, ok := args["turns_used"].(float64); ok {
-			turns = int(v)
-		}
 		status = args.Str("status")
 	}
 
@@ -232,7 +226,7 @@ func delegateBody(args ToolArgs, output string, width int) string {
 	}
 
 	th := tuitheme.ActiveTheme()
-	summary := fmt.Sprintf("delegate %s (%d turns, %s)", shortID(jobID), turns, status)
+	summary := fmt.Sprintf("delegate %s (%s)", shortID(jobID), status)
 	styled := lipgloss.NewStyle().Foreground(th.StateSubagent).Render(summary)
 
 	if width < 30 {
