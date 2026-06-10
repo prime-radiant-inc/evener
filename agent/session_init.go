@@ -314,8 +314,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err != nil {
 		return nil, fmt.Errorf("job manager: %w", err)
 	}
-	jm.forward = cfg.spawn.forwardJobEvent
-	jm.parentJobID = cfg.spawn.parentJobID
 	if err := jm.reconcileLostJobs(); err != nil {
 		return nil, fmt.Errorf("job reconcile: %w", err)
 	}
