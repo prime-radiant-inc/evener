@@ -2967,22 +2967,24 @@
   const delegateRenderer = {
     mode: "default", friendly: "delegate",
     target: (a) => clip(a.task || "", 80),
-    result: (data) => {
-      const st = parseToolState(data.tool_state);
+    result: (data, out) => {
+      const st = parseToolJSON(out) || parseToolState(data.tool_state);
       if (st && st.status) return st.status;
       return "done";
     },
     replace: (state, data) => {
-      const st = parseToolState(data.tool_state);
+      const st = parseToolJSON(data.output || state.outputBuf || "") || parseToolState(data.tool_state);
       if (!st || !st.job_id) return null;
       const ref = document.createElement("div");
       ref.className = "subagent-reference";
       ref.dataset.jobId = st.job_id;
+      if (st.transcript_ref) ref.dataset.transcriptRef = st.transcript_ref;
       ref.innerHTML = '<span class="verb">delegate</span><span class="target"></span>' +
                       '<span class="result-good">●</span>' +
                       '<span class="result">' + (st.status || "running") + '</span>';
       ref.querySelector(".target").textContent = clip(st.task || state.args.task || "", 80);
       if (st.transcript_ref) {
+        ref.style.cursor = "pointer";
         ref.onclick = () => { window.location.href = "/s/" + encodeURIComponent(st.transcript_ref); };
       }
       return ref;

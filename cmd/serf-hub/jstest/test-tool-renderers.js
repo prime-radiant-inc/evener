@@ -155,6 +155,29 @@ await scenario("job_read_output renders status, truncation, and content preview"
   return { ok: true };
 });
 
+await scenario("delegate output replaces tool row with clickable job card", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "d1", tool_name: "delegate", arguments_json: JSON.stringify({ task: "Write focused tests" }) }],
+  ["TOOL_CALL_END", { call_id: "d1", tool_name: "delegate", output: JSON.stringify({
+    job_id: "job_DELEGATE",
+    type: "delegate",
+    status: "running",
+    transcript_ref: "local:delegate-child",
+  }) }],
+], ({ conv }) => {
+  if (conv.querySelector(".tool-call.delegate")) return { ok: false, detail: "delegate tool row was not replaced" };
+  const ref = conv.querySelector(".subagent-reference");
+  if (!ref) return { ok: false, detail: "missing delegate reference card" };
+  if (ref.dataset.jobId !== "job_DELEGATE") return { ok: false, detail: "missing job id dataset" };
+  if (ref.dataset.transcriptRef !== "local:delegate-child") return { ok: false, detail: "missing transcript ref dataset" };
+  const text = ref.textContent;
+  for (const want of ["delegate", "Write focused tests", "running"]) {
+    if (!text.includes(want)) return { ok: false, detail: "delegate card missing " + want + ": " + text };
+  }
+  if (ref.style.cursor !== "pointer") return { ok: false, detail: "delegate card should be clickable" };
+  return { ok: true };
+});
+
 await scenario("job control tools render structured summaries", [
   ["SESSION_START", { session_id: "01TEST" }],
   ["TOOL_CALL_START", { call_id: "js1", tool_name: "job_send_message", arguments_json: JSON.stringify({ target: "job_A", message: "continue" }) }],
