@@ -340,6 +340,10 @@ func TestParentClose_DrainsAll(t *testing.T) {
 	if got := sess.getSub(agentID); got == nil {
 		t.Fatal("precondition: completed child must be retained before parent close")
 	}
+	trackSyntheticChild(t, sess, "closed-retained", SubagentCompleted, true, false, time.Now().UTC(), false)
+	if got := sess.getSub("closed-retained"); got == nil {
+		t.Fatal("precondition: closed child record must be retained before parent close")
+	}
 
 	sess.Close()
 
@@ -348,6 +352,9 @@ func TestParentClose_DrainsAll(t *testing.T) {
 	}
 	if got := sess.getSub(agentID); got != nil {
 		t.Errorf("retained closed record must be drained on parent close; still present: %+v", got)
+	}
+	if got := sess.getSub("closed-retained"); got != nil {
+		t.Errorf("synthetic closed record must be drained on parent close; still present: %+v", got)
 	}
 }
 

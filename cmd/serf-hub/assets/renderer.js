@@ -37,6 +37,20 @@
     return "";
   }
 
+  function normalizedJobRefData(data) {
+    data = data || {};
+    const outputBytes = data.outputBytes != null ? data.outputBytes : data.output_bytes;
+    return {
+      jobId: data.jobId || data.job_id || "",
+      jobType: data.jobType || data.job_type || "",
+      status: data.status || "",
+      reason: data.reason || "",
+      outputBytes,
+      transcriptRef: data.transcriptRef || data.transcript_ref || "",
+      label: data.label || data.task || data.description || "",
+    };
+  }
+
   const transcriptStatusPrefsKey = "serf-hub.transcript.systemStatus";
   const transcriptStatusDefaults = {
     roundTimings: false,
@@ -1347,8 +1361,11 @@
       this.renderToolMeta(m, endedAt);
       if (m.renderer.bodyEnd) m.renderer.bodyEnd(m, data, out);
       if (m.renderer.replace) {
-        const replacement = m.renderer.replace(m, data);
+        const replacement = m.renderer.replace.call(this, m, data);
         if (replacement && m.el.parentNode) m.el.parentNode.replaceChild(replacement, m.el);
+        if (replacement && replacement.classList && replacement.classList.contains("subagent-reference") && replacement.dataset.jobId) {
+          this.activeJobs.set(replacement.dataset.jobId, replacement);
+        }
       }
       for (const id of m.ids || []) {
         this.activeTools.delete(id);
@@ -1407,7 +1424,7 @@
     },
 
     makeJobRef(data) {
-      data = data || {};
+      data = normalizedJobRefData(data);
       const jobId = data.jobId || ("job-" + Math.random().toString(36).slice(2, 9));
       const ref = document.createElement("div");
       ref.className = "subagent-reference";
@@ -1417,7 +1434,7 @@
       verb.className = "verb"; verb.textContent = data.jobType || "job";
       const target = document.createElement("span");
       target.className = "target";
-      target.textContent = jobId;
+      target.textContent = data.label ? clip(data.label, 80) : jobId;
       const dot = document.createElement("span");
       dot.className = "status-indicator";
       dot.style.color = "var(--state-processing)";
@@ -1430,28 +1447,74 @@
     },
 
     applyJobRefTarget(ref, data) {
-      if (!ref || !data || !data.transcriptRef) return;
+      data = normalizedJobRefData(data);
+      if (!ref || !data.transcriptRef) return;
       ref.dataset.transcriptRef = data.transcriptRef;
       ref.style.cursor = "pointer";
       ref.onclick = () => { window.location.href = "/s/" + encodeURIComponent(data.transcriptRef); };
     },
 
-    beginJobRef(data) {
-      this.cheapToolCluster = null;
-      const ref = this.makeJobRef(data);
-      this.conversation.appendChild(ref);
-      this.activeJobs.set(ref.dataset.jobId, ref);
+    findJobRef(jobId) {
+      if (!jobId || !this.conversation) return null;
+      for (const ref of this.conversation.querySelectorAll(".subagent-reference")) {
+        if (ref.dataset.jobId === jobId) return ref;
+      }
+      return null;
     },
 
-    finalizeJobRef(data) {
-      const jobId = data.jobId || "";
-      let ref = this.activeJobs.get(jobId);
+    updateJobRef(ref, data) {
+      data = normalizedJobRefData(data);
+      if (!ref || !data.jobId) return ref;
+      ref.dataset.jobId = data.jobId;
+      const verb = ref.querySelector(".verb");
+      if (verb && data.jobType) verb.textContent = data.jobType;
+      const target = ref.querySelector(".target");
+      if (target && data.label) target.textContent = clip(data.label, 80);
+      this.applyJobRefTarget(ref, data);
+      return ref;
+    },
+
+    updateJobRefDetails(ref, data) {
+      data = normalizedJobRefData(data);
+      if (!ref) return;
+      for (const el of ref.querySelectorAll(".result")) el.remove();
+      if (data.status) {
+        const status = document.createElement("span"); status.className = "result";
+        status.textContent = data.status;
+        ref.appendChild(status);
+      }
+      if (data.outputBytes != null) {
+        const bytes = document.createElement("span"); bytes.className = "result";
+        bytes.textContent = data.outputBytes + " bytes";
+        ref.appendChild(bytes);
+      }
+    },
+
+    upsertJobRef(data) {
+      data = normalizedJobRefData(data);
+      let ref = data.jobId ? (this.activeJobs.get(data.jobId) || this.findJobRef(data.jobId)) : null;
       if (!ref) {
         ref = this.makeJobRef(data);
         this.conversation.appendChild(ref);
       } else {
-        this.activeJobs.delete(jobId);
+        this.updateJobRef(ref, data);
       }
+      if (data.jobId) this.activeJobs.set(data.jobId, ref);
+      if (data.status || data.outputBytes != null) this.updateJobRefDetails(ref, data);
+      return ref;
+    },
+
+    beginJobRef(data) {
+      this.cheapToolCluster = null;
+      this.upsertJobRef(data);
+    },
+
+    finalizeJobRef(data) {
+      this.cheapToolCluster = null;
+      data = normalizedJobRefData(data);
+      const jobId = data.jobId || "";
+      const ref = this.upsertJobRef(data);
+      this.activeJobs.delete(jobId);
       const dot = ref.querySelector(".status-indicator");
       if (dot) {
         const s = data.status || "completed";
@@ -1464,16 +1527,7 @@
         }
         dot.textContent = "●";
       }
-      if (data.status) {
-        const status = document.createElement("span"); status.className = "result";
-        status.textContent = data.status;
-        ref.appendChild(status);
-      }
-      if (data.outputBytes != null) {
-        const bytes = document.createElement("span"); bytes.className = "result";
-        bytes.textContent = data.outputBytes + " bytes";
-        ref.appendChild(bytes);
-      }
+      this.updateJobRefDetails(ref, data);
       this.applyJobRefTarget(ref, data);
     },
 
@@ -2975,19 +3029,13 @@
     replace: (state, data) => {
       const st = parseToolJSON(data.output || state.outputBuf || "") || parseToolState(data.tool_state);
       if (!st || !st.job_id) return null;
-      const ref = document.createElement("div");
-      ref.className = "subagent-reference";
-      ref.dataset.jobId = st.job_id;
-      if (st.transcript_ref) ref.dataset.transcriptRef = st.transcript_ref;
-      ref.innerHTML = '<span class="verb">delegate</span><span class="target"></span>' +
-                      '<span class="result-good">●</span>' +
-                      '<span class="result">' + (st.status || "running") + '</span>';
-      ref.querySelector(".target").textContent = clip(st.task || state.args.task || "", 80);
-      if (st.transcript_ref) {
-        ref.style.cursor = "pointer";
-        ref.onclick = () => { window.location.href = "/s/" + encodeURIComponent(st.transcript_ref); };
-      }
-      return ref;
+      return this.upsertJobRef({
+        jobId: st.job_id,
+        jobType: st.type || "delegate",
+        status: st.status || "running",
+        transcriptRef: st.transcript_ref || "",
+        label: st.task || state.args.task || "",
+      });
     },
   };
 

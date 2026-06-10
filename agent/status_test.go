@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -289,6 +290,88 @@ func TestSession_DetailedStatus_Jobs(t *testing.T) {
 		job.Reason != "exit_nonzero" || job.TranscriptRef != "local:child-status" ||
 		job.OutputBytes != 128 || job.ExitCode == nil || *job.ExitCode != exitCode {
 		t.Fatalf("job status = %+v", job)
+	}
+}
+
+func TestSession_DetailedStatus_JobsKeepsActiveAndBoundsTerminal(t *testing.T) {
+	dir := t.TempDir()
+
+	c := llm.NewClient()
+	f := &fakeAdapter{name: "openai"}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	base := time.Now().UTC()
+	runningStartedAt := base.Add(-time.Hour)
+	const runningJobID = "job_running_old"
+	if err := sess.jobManager.store.Append(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               runningStartedAt,
+		JobID:            runningJobID,
+		Type:             jobstore.JobShell,
+		Status:           jobstore.StatusRunning,
+		OwnerSessionID:   sess.ID(),
+		VisibleToSession: sess.ID(),
+		StartedAt:        &runningStartedAt,
+	}); err != nil {
+		t.Fatalf("append running job: %v", err)
+	}
+
+	for i := 0; i < detailedStatusTerminalJobsLimit+2; i++ {
+		startedAt := base.Add(time.Duration(i) * time.Second)
+		endedAt := startedAt.Add(time.Second)
+		jobID := fmt.Sprintf("job_terminal_%02d", i)
+		if err := sess.jobManager.store.Append(jobstore.Event{
+			Kind:             jobstore.EventJobStarted,
+			TS:               startedAt,
+			JobID:            jobID,
+			Type:             jobstore.JobShell,
+			Status:           jobstore.StatusRunning,
+			OwnerSessionID:   sess.ID(),
+			VisibleToSession: sess.ID(),
+			StartedAt:        &startedAt,
+		}); err != nil {
+			t.Fatalf("append started %s: %v", jobID, err)
+		}
+		if err := sess.jobManager.store.Append(jobstore.Event{
+			Kind:        jobstore.EventJobFinished,
+			TS:          endedAt,
+			JobID:       jobID,
+			Status:      jobstore.StatusCompleted,
+			Reason:      "exit_zero",
+			EndedAt:     &endedAt,
+			OutputBytes: int64(i),
+		}); err != nil {
+			t.Fatalf("append finished %s: %v", jobID, err)
+		}
+	}
+
+	ds := sess.DetailedStatus()
+	seen := map[string]JobStatusInfo{}
+	terminal := 0
+	for _, job := range ds.Jobs {
+		seen[job.JobID] = job
+		if jobstore.Status(job.Status).IsTerminal() {
+			terminal++
+		}
+	}
+
+	if _, ok := seen[runningJobID]; !ok {
+		t.Fatalf("active job %q missing from DetailedStatus jobs: %+v", runningJobID, ds.Jobs)
+	}
+	if terminal != detailedStatusTerminalJobsLimit {
+		t.Fatalf("terminal jobs = %d, want %d", terminal, detailedStatusTerminalJobsLimit)
+	}
+	if _, ok := seen["job_terminal_00"]; ok {
+		t.Fatalf("oldest terminal job should be excluded from bounded DetailedStatus jobs: %+v", ds.Jobs)
+	}
+	if _, ok := seen[fmt.Sprintf("job_terminal_%02d", detailedStatusTerminalJobsLimit+1)]; !ok {
+		t.Fatalf("newest terminal job missing from DetailedStatus jobs: %+v", ds.Jobs)
 	}
 }
 

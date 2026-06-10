@@ -235,6 +235,28 @@ await scenario("orphan JOB_FINISHED preserves job payload", [
   return { ok: true };
 });
 
+await scenario("orphan JOB_FINISHED separates surrounding cheap tool clusters", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "r1", tool_name: "read_file", arguments_json: JSON.stringify({ file_path: "a.go" }) }],
+  ["TOOL_CALL_END", { call_id: "r1", output: "alpha\n", tool_name: "read_file" }],
+  ["JOB_FINISHED", { jobId: "job_ORPHAN", jobType: "delegate", status: "completed", outputBytes: 77, transcriptRef: "local:child" }],
+  ["TOOL_CALL_START", { call_id: "g1", tool_name: "grep", arguments_json: JSON.stringify({ pattern: "TODO" }) }],
+  ["TOOL_CALL_END", { call_id: "g1", output: "a.go:1:TODO\n", tool_name: "grep" }],
+], ({ conv }) => {
+  const children = Array.from(conv.children);
+  const firstCluster = children.find(el => el.classList.contains("tool-call-cluster"));
+  const ref = children.find(el => el.classList.contains("subagent-reference"));
+  const clusters = children.filter(el => el.classList.contains("tool-call-cluster"));
+  if (clusters.length !== 2) return { ok: false, detail: "expected two cheap clusters, got " + clusters.length };
+  if (!firstCluster || !firstCluster.querySelector(".tool-call.read_file")) return { ok: false, detail: "first cheap cluster missing read_file" };
+  if (!ref) return { ok: false, detail: "missing orphan job reference" };
+  if (!clusters[1].querySelector(".tool-call.grep")) return { ok: false, detail: "second cheap cluster missing grep" };
+  if (children.indexOf(firstCluster) > children.indexOf(ref) || children.indexOf(ref) > children.indexOf(clusters[1])) {
+    return { ok: false, detail: "wrong order: " + children.map(el => el.className).join(" | ") };
+  }
+  return { ok: true };
+});
+
 
 await scenario("bottom task status shows progress and current task text", [
   ["SESSION_START", { session_id: "01TEST" }],

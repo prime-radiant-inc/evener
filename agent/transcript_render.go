@@ -1133,7 +1133,7 @@ func prettyJSON(raw string) (string, bool) {
 	dec := json.NewDecoder(strings.NewReader(trimmed))
 	dec.UseNumber()
 	var v any
-	if err := dec.Decode(&v); err != nil {
+	if err := decodeSingleJSON(dec, &v); err != nil {
 		return "", false
 	}
 	var buf strings.Builder

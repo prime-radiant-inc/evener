@@ -2,7 +2,9 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 
@@ -79,13 +81,23 @@ func decodeJobResult(body string) (jobResult, bool) {
 	var r jobResult
 	dec := json.NewDecoder(strings.NewReader(body))
 	dec.UseNumber()
-	if err := dec.Decode(&r); err != nil {
+	if err := decodeSingleJSON(dec, &r); err != nil {
 		return jobResult{}, false
 	}
 	if r.JobID == "" && r.TranscriptRef == "" {
 		return jobResult{}, false
 	}
 	return r, true
+}
+
+func decodeSingleJSON(dec *json.Decoder, v any) error {
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return errors.New("trailing JSON data")
+	}
+	return nil
 }
 
 // extractJobResult parses a job lifecycle tool result body and returns its

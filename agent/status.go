@@ -64,6 +64,8 @@ type DetailedStatus struct {
 	Agents     []string          `json:"agents,omitempty"` // public agent names
 }
 
+const detailedStatusTerminalJobsLimit = 50
+
 // DetailedStatus builds a snapshot of the session's loaded tools, MCP servers,
 // skills, plugins, hooks, jobs, and public agent names.
 func (s *Session) DetailedStatus() DetailedStatus {
@@ -152,7 +154,7 @@ func (s *Session) DetailedStatus() DetailedStatus {
 
 	// Jobs.
 	if s.jobManager != nil {
-		ds.Jobs = projectJobStatusInfos(s.jobManager.list(listFilter{}))
+		ds.Jobs = projectJobStatusInfos(detailedStatusJobRecords(s.jobManager.list(listFilter{})))
 	}
 
 	// Plugin agent names (sorted).
@@ -162,6 +164,21 @@ func (s *Session) DetailedStatus() DetailedStatus {
 	sort.Strings(ds.Agents)
 
 	return ds
+}
+
+func detailedStatusJobRecords(records []*jobstore.JobRecord) []*jobstore.JobRecord {
+	jobs := make([]*jobstore.JobRecord, 0, len(records))
+	terminal := 0
+	for _, rec := range records {
+		if rec.Status.IsTerminal() {
+			if terminal >= detailedStatusTerminalJobsLimit {
+				continue
+			}
+			terminal++
+		}
+		jobs = append(jobs, rec)
+	}
+	return jobs
 }
 
 func projectJobStatusInfos(records []*jobstore.JobRecord) []JobStatusInfo {

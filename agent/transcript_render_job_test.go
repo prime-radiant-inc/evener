@@ -251,6 +251,12 @@ func TestRenderMarkdown_GenericJSONResultPrettyPrinted(t *testing.T) {
 	}
 }
 
+func TestPrettyJSONRejectsTrailingData(t *testing.T) {
+	if _, ok := prettyJSON(`{"a":1} {"b":2}`); ok {
+		t.Fatal("prettyJSON must reject trailing data")
+	}
+}
+
 // TestRenderMarkdown_NonJSONResultUnchanged verifies a plain-text (non-JSON)
 // result renders exactly as before: no pretty-print, no status line.
 func TestRenderMarkdown_NonJSONResultUnchanged(t *testing.T) {
@@ -317,6 +323,13 @@ func TestDecodeJobResult(t *testing.T) {
 	t.Run("non-JSON body reports false", func(t *testing.T) {
 		if _, ok := decodeJobResult("not json at all"); ok {
 			t.Errorf("non-JSON body must report false")
+		}
+	})
+
+	t.Run("trailing data reports false", func(t *testing.T) {
+		body := `{"job_id":"job_decode","type":"delegate","status":"completed","transcript_ref":"local:01Z"} {"job_id":"job_other"}`
+		if _, ok := decodeJobResult(body); ok {
+			t.Errorf("job result with trailing data must report false")
 		}
 	})
 
