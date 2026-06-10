@@ -3026,7 +3026,7 @@
       if (st && st.status) return st.status;
       return "done";
     },
-    replace: (state, data) => {
+    replace(state, data) {
       const st = parseToolJSON(data.output || state.outputBuf || "") || parseToolState(data.tool_state);
       if (!st || !st.job_id) return null;
       return this.upsertJobRef({
