@@ -1,8 +1,8 @@
 # Job control
 
-Status: Evergreen reference design.
+Status: Evergreen contract for the shipped job-control system.
 
-This document defines Serf's target job-control model. It is an architecture/reference contract for a future system, not an implementation plan. Implementation sequencing belongs in a separate ephemeral spec or plan.
+This document defines Serf's job-control model. It is an architecture/reference contract for the shipped system, not an implementation plan. Implementation sequencing belongs in separate ephemeral specs or plans.
 
 ## Summary
 
@@ -62,16 +62,18 @@ Tool descriptions should avoid these phrases because they train bad behavior:
 | Job | One asynchronous unit of work owned by a session. |
 | Job type | The class of work: initially `shell` or `delegate`. |
 | `job_id` | Durable opaque identifier for one job. This is the primary job-control handle. |
-| Parent session | The Serf session that owns or can see the job. |
+| Parent session | The session containing the job or turn that caused another session/job to exist. |
 | Owner session | The session whose runtime/job manager owns the job. |
 | Visible session | A session that may list/control the job because the job was forwarded, e.g. parent visibility into nested jobs. |
 | Parent job | The job that caused this job to exist, for nested jobs. |
 | Delegate session | The child Serf session used by a delegate job. |
 | Transcript ref | A safe reference to a Serf session transcript, e.g. `local:<sessionID>`. |
-| Notification | Metadata injected into the owning/visible session to tell the agent that a job reached a lifecycle/progress event. |
+| Notification | Metadata injected into a visible session to tell the agent that a job reached a lifecycle/progress event. |
 | Output | Bounded textual/log content associated with a job. |
 
 A **delegate job** is not the same as a **delegate session**. Each `delegate` invocation is a new job in a new child session. Follow-up on an existing delegate session is performed through `job_send_message` against a prior delegate `job_id`; if that prior job is terminal and resumable, `job_send_message` creates a new job with a new `job_id` in the same delegate session. Observer/sidecar comments use the same message-sending surface with runtime-resolved aliases rather than a separate observer-comment command.
+
+For a top-level job, `owner_session_id` and `visible_to_session_id` are the creating session; `parent_session_id` is omitted unless an implementation records a diagnostic lineage field. For a nested forwarded job, `owner_session_id` is the child/delegate session that owns the runtime, `visible_to_session_id` is the parent session that can see the forwarded record, `parent_session_id` identifies the session that caused the child session to exist when that lineage is recorded, and `parent_job_id` links to the delegate job that caused the nested job.
 
 The lifecycle/output/notification contract is generic enough for future job types. The initial public job types are `shell` and `delegate`; clients must not assume type-specific fields exist unless the record's `type` is known.
 
@@ -105,19 +107,19 @@ Canonical statuses:
 
 | Status | Terminal? | Meaning | Normative reasons | Notification type |
 | --- | --- | --- | --- | --- |
-| `running` | no | Job has a live or believed-live runtime. | `awaiting_permission`, `stop_pending`, `foreground_timeout` | progress/match only |
+| `running` | no | Job has a live or believed-live runtime. | `awaiting_permission`, `stop_pending`, `foreground_timeout` | promotion/progress/match |
 | `completed` | yes | Work succeeded. | `exit_zero` for shell; otherwise usually `null` | `completed` |
 | `failed` | yes | A created job ran or attempted to run and failed. | `exit_nonzero`, `permission_denied`, `startup_failed` | `failed` |
 | `cancelled` | yes | Serf intentionally stopped the job and confirmed cancellation. | `stopped_by_parent`, `stopped_with_children` | `cancelled` |
 | `stopped` | yes | Work did not complete and Serf cannot attribute it to normal failure or confirmed cancellation. | `runtime_lost`, `stop_unconfirmed`, `supervision_lost`, `run_timeout` | `stopped` |
 
-Validation, lookup, and routing errors are synchronous tool errors and do **not** create durable job records. Canonical synchronous errors include `invalid_request`, `permission_required`, `target_not_found`, `target_not_delegate`, `target_not_messageable`, `target_terminal`, `target_not_resumable`, `target_not_watchable`, `delegate_session_busy`, and `not_controllable`. If a `job_id` is returned, the job exists and must be listable and readable according to the durable job contract.
+Validation, lookup, and routing errors are synchronous tool errors and do **not** create durable job records. Canonical synchronous errors include `invalid_request`, `permission_required`, `target_not_found`, `target_not_messageable`, `target_terminal`, `target_not_resumable`, `target_not_watchable`, `delegate_session_busy`, and `not_controllable`. If a `job_id` is returned, the job exists and must be listable and readable according to the durable job contract.
 
 `status` is the primary machine branch field. `reason` is optional diagnostic metadata for a job that exists. The normative reason names above are the small portable subset whose behavior this contract defines because they affect recovery, stopping, runtime loss, timeout handling, approval/blocking state, or shell exit interpretation. Tool descriptions must say this plainly: agents should branch on `status` first, and consult `reason` only for documented operational cases such as `runtime_lost`, `run_timeout`, `awaiting_permission`, and `stop_pending`, or when summarizing diagnostics to the user. Implementations may attach additional diagnostic text or implementation-specific reason values, but agents should not need those values for ordinary control flow.
 
 This deliberately differs from the current subagent-only output simplification: generic shell/delegate jobs need a small lifecycle diagnostic vocabulary for runtime loss, stop confirmation, and process exit cases. The vocabulary should stay small; do not add closed-enum reasons for diagnostics that can be represented as free-text `diagnostic` or `error` fields.
 
-`cancelled` is for intentional, confirmed stop. `stopped` is for supervision/runtime loss, runtime timeout, or unconfirmed stop. Restart reconciliation uses `stopped` with reason `runtime_lost`; it is not command failure. `not_controllable` is a synchronous routing/control tool error when the owner runtime is believed live but rejects or cannot perform the requested operation; it is not a terminal job status reason.
+`cancelled` is for intentional, confirmed stop. `stopped` is for supervision/runtime loss, runtime timeout, or unconfirmed stop. Restart reconciliation uses `stopped` with reason `runtime_lost`; it means Serf restored durable state and found no live runtime for a previously running job. `supervision_lost` means the supervising owner runtime ended or became unable to supervise a nested job while Serf was otherwise live. Neither is command failure. `not_controllable` is a synchronous routing/control tool error when the owner runtime is believed live but rejects or cannot perform the requested operation; it is not a terminal job status reason.
 
 ```mermaid
 stateDiagram-v2
@@ -176,7 +178,7 @@ Defaults and timeout semantics:
 - With `background=false`, the tool blocks up to `block_timeout_ms` for terminal status.
 - A foreground shell command that completes before `block_timeout_ms` returns inline output and is ephemeral by default: no durable `job_id` is required and it does not appear in `job_list`.
 - If a foreground shell command exceeds `block_timeout_ms`, Serf promotes it to a durable background job, returns current bounded output/status with a `job_id`, and injects a system notification telling the agent that the command is still running in the background and which tools to use next.
-- With `background=true`, the tool creates a durable background job immediately, returns after job creation/startup acknowledgement, and never waits for terminal completion.
+- With `background=true`, the tool creates a durable background job immediately, returns after job creation/startup acknowledgement, and never waits for terminal completion. `block_timeout_ms` has no terminal-wait effect in this mode.
 - `block_timeout_ms` is a foreground wait/read timeout only. It is **not** a process runtime timeout.
 - `max_runtime_ms` is an optional process runtime limit for shell jobs. If the process is still running after `max_runtime_ms`, Serf stops it and finalizes the job as `stopped` with reason `run_timeout`. The name is intentionally distinct from `block_timeout_ms`: `block_timeout_ms` controls how long the tool call waits; `max_runtime_ms` controls how long the process may run.
 - Omitted `max_runtime_ms` means implementation-defined shell runtime policy. Recommended policy: default finite runtime for foreground/promoted shell jobs, no default runtime limit for explicit long-lived `background=true` jobs unless configured by the user/tool call.
@@ -297,7 +299,8 @@ Defaults:
 - `background` defaults to `true`.
 - Each `delegate` call creates a new delegate job and a new child session.
 - `delegate` does not accept `target`, `mode`, `job_id`, or `transcript_ref` for continuation.
-- `block_timeout_ms` has the same foreground wait semantics and bounds as shell creation: timeout leaves the delegate job running in the background.
+- With `background=false`, `block_timeout_ms` has the same foreground wait semantics and bounds as shell creation: timeout leaves the delegate job running in the background. With `background=true`, Serf returns after creating/starting the delegate job and does not wait for terminal completion.
+- Delegates have no model-facing `max_runtime_ms` in v1. Delegate runtime limits, if any, are implementation policy rather than a tool argument.
 - `result_schema`, when supplied, is a JSON Schema-like contract for the delegate final result. The delegate output remains readable as prose/log text, but Serf should also validate and surface a structured result when possible.
 - Delegate interaction is turn-based in this target contract. A delegate that needs more input should finish with a request for that input; the parent follows up with `job_send_message`. Mid-turn interactive input/awaiting-input notifications are not a v1 guarantee. Delegate `status="completed"` means the delegate turn ended normally; it does not assert that the requested task succeeded. Agents must inspect `output`, `structured_result`, or task-specific schema fields for task success/failure.
 
@@ -362,7 +365,7 @@ Target shape:
   "target": "job_prior_or_running_delegate",
   "message": "Check whether the serializer has the same issue.",
   "on_finished": "resume",
-  "background": true,
+  "background": false,
   "block_timeout_ms": 120000
 }
 ```
@@ -386,7 +389,8 @@ Semantics:
 - If another job is already running in the same delegate session and the target is not that running job, the call fails synchronously with `delegate_session_busy` unless an implementation explicitly supports concurrent child turns.
 - Target state is resolved atomically at delivery time. A race between terminal/running state and the tool call is resolved by the observed state at delivery.
 - `on_finished` defaults to `resume`. Allowed values are `resume` and `fail`. The return `action` must make the outcome explicit: `sent` for live injection, `resumed` for a new delegate job in the same session, or a synchronous error such as `target_terminal`.
-- `background` defaults to `true` for newly resumed jobs. Sending to a running job or session alias returns promptly and does not wait for subsequent work to finish.
+- `background` defaults to `true` for newly resumed jobs. With `background=false`, a resumed delegate performs one bounded foreground wait using `block_timeout_ms`; if that wait expires, the new job remains running in the background with reason `foreground_timeout`. Sending to a running job or session alias returns promptly and does not wait for subsequent work to finish.
+- `on_finished`, `background`, and `block_timeout_ms` apply to concrete delegate-job targets. Alias sends are prompt runtime injections and do not create or wait on a job.
 
 `job_send_message` is also the runtime substrate used by `job_watch.send`: when a watch condition fires, Serf sends the configured message/frame to the configured target using the same target-resolution and authorization rules.
 
@@ -517,7 +521,7 @@ Trigger sources:
 Delivery modes:
 
 - If `send` is omitted, the watch produces a normal notification to the caller when the condition is met.
-- If `send` is present, Serf sends `send.message` plus the requested bounded frame/excerpt to `send.to` using `job_send_message` target-resolution and authorization semantics.
+- If `send` is present, Serf sends `send.message` plus the requested bounded frame/excerpt to `send.to` using `job_send_message` target-resolution and authorization semantics. Watch sends use the normal `on_finished="resume"` behavior and default to background delivery for any newly resumed delegate job.
 - `include_frame=true` attaches a bounded event frame.
 - `include_excerpt=true` attaches a bounded output excerpt for output/job watches.
 - The sent message is the current configured message at the time the watch fires.
@@ -537,10 +541,10 @@ Rules:
 
 - Every notification-armed background job emits one terminal notification when Serf observes or reconstructs terminal state, subject to durable duplicate suppression. `job_watch` is unrelated to that terminal notification.
 - `job_watch` only adds extra notifications or configured sends while the watched target is active/visible.
-- `job_watch` fails synchronously with `target_not_found` for unknown concrete job targets.
+- `job_watch` fails synchronously with `target_not_found` for unknown, already-terminal, or no-longer-retained concrete job targets.
 - `job_watch(clear=true)` does not stop the watched job. If `send.to` is supplied, it clears the watch for the `(visible_session_id, target, send.to)` key. If `send.to` is omitted, it clears all watches for `(visible_session_id, target)` that the caller is allowed to clear, including both notify-caller and sidecar watches.
 - `job_watch` fails synchronously with `target_not_watchable` for targets the caller is not allowed to watch.
-- Watches expire automatically when their concrete watched job reaches terminal state. Session-level watches remain active until their configured scope ends or retention policy removes them.
+- Watches expire automatically when their concrete watched job reaches terminal state. Session-level watches remain active until their configured scope ends, the session/job manager closes, or retention policy removes them.
 - Watches are not required to survive Serf process restart unless an implementation explicitly marks them durable.
 - `job_watch(clear=true)` is the model-facing unwatch operation; there is no separate unwatch tool.
 - There is at most one active watch configuration per `(visible_session_id, target, send.to)` unless an implementation documents additive watches. For notify-caller watches, `send.to` is the implicit caller notification endpoint. A duplicate call with the same configuration is idempotent. A different call replaces the previous configuration for that key, and the return value must make replacement explicit with `replaced_existing=true`.
@@ -642,7 +646,7 @@ Canonical return shape:
 
 #### Advanced output paging
 
-Absolute byte-offset paging, retained-start accounting, next offsets, and detailed truncation-reason arrays are implementation/UI capabilities, not the canonical agent-facing shape. Model-facing examples should stay centered on `tail_bytes`, `grep`, `block`, and `block_timeout_ms`. If an implementation exposes absolute paging to models, it must document validation, retention, and truncation behavior separately without making ordinary agents learn the paging algorithm.
+Absolute byte-offset paging, retained-start accounting, next offsets, and detailed truncation-reason arrays are implementation/UI capabilities, not the canonical agent-facing shape. `limit_bytes` is part of the canonical bounded read/grep result shape; it is not absolute paging. Model-facing examples should stay centered on `tail_bytes`, `grep`, `limit_bytes` only when needed, `block`, and `block_timeout_ms`. If an implementation exposes absolute paging to models, it must document validation, retention, and truncation behavior separately without making ordinary agents learn the paging algorithm.
 
 `block=true` with a nonterminal job waits until one of these occurs:
 
@@ -680,7 +684,7 @@ Rules:
 - `job_list` is authoritative durable inventory for the visible session. Use it to recover known jobs, find `job_id`s, inspect durable state, or include nested jobs. Do not call it repeatedly to wait for completion. For completion, rely on automatic terminal notifications; for output, call `job_read_output` once for the relevant job.
 - The owning session can list its own jobs.
 - A parent session may list nested jobs owned by delegate child sessions only when those jobs have been forwarded into parent-visible durable job records.
-- Delegate records include `transcript_ref`, `resumable`, and optional `not_resumable_reason`. `job_send_message(target=...)` uses the same resumability contract when the target delegate job is terminal.
+- Delegate records include `transcript_ref`, `resumable`, and optional `not_resumable_reason`. A stopped delegate remains ordinarily resumable when its child transcript is retained; `runtime_lost` by itself does not make the delegate non-resumable. `job_send_message(target=...)` uses the same resumability contract when the target delegate job is terminal.
 - Most agents should ignore session identity fields and use only `job_id`, `status`, `type`, `reason`, `transcript_ref`, and output metadata. Session fields are for diagnostics and nested/routed job visibility.
 
 Good inventory example:
@@ -725,6 +729,8 @@ Return shape:
   "next_cursor": null
 }
 ```
+
+`description` is optional display metadata. For shell jobs it comes from the shell tool's `description` argument. Delegate jobs have no separate `description` argument in v1; implementations may derive a display label from the delegate `task` or leave `description` empty while retaining `task` in durable storage.
 
 `job_list` returns a collection. Control/read tools operate on one `job_id`.
 
@@ -804,6 +810,17 @@ stateDiagram-v2
     Stopped --> [*]
 ```
 
+## V1 tool availability
+
+The v1 model-facing tool matrix is:
+
+| Caller context | Available job tools | Notes |
+| --- | --- | --- |
+| Root session | shell, `delegate`, `job_watch`, `job_send_message`, `job_read_output`, `job_list`, `job_stop` | Root may create delegates and watches, message concrete delegate jobs, and use aliases when authorized. |
+| Delegate/subagent session | shell, `job_send_message`, `job_read_output`, `job_list`, `job_stop` | Delegates may start shell jobs. `delegate` and `job_watch` are root-only in v1. Delegate `job_send_message` may use runtime aliases; concrete delegate `job_id` targets are root-only until nested delegate jobs are deliberately designed. |
+
+Tool availability is part of the model-facing contract. If an implementation narrows these permissions for policy reasons, it must make that visible in tool availability or tool descriptions rather than failing late with surprising generic errors.
+
 ## Removed / intentionally absent tools
 
 ### No `wait_job`
@@ -881,6 +898,8 @@ A durable job record exists for explicit background jobs, promoted shell jobs, d
 
 Fields that do not apply to a job type are omitted. `command` is shell-specific. `task`, `transcript_ref`, and resumability fields are delegate-specific. `delegate_session_id` may exist internally or in diagnostics, but `transcript_ref` is the model-facing child-conversation handle.
 
+Retained output start offsets and detailed output availability may be stored with the output store rather than duplicated into the model-facing job record. The invariant is durable reconstruction, not that every storage-level field appears in `job_list`.
+
 ## Durable reconstruction invariants
 
 Serf persists job history as append-only session events or equivalent durable records. The physical encoding may be events, database rows, or another durable representation. The contract is that Serf can reconstruct:
@@ -945,9 +964,9 @@ Job job_... completed. Use job_read_output to inspect output.
 
 Rules:
 
-- Notifications carry `job_id`, `event` (the lifecycle/progress notification kind), `job_type` (`shell` or `delegate`), status, reason, output byte count, exit code when known, and optional transcript ref for delegate jobs. Notification `event` must not be named `type`, because durable job records already use `type` for the job class.
+- Notifications carry `job_id`, `event` (the lifecycle/progress notification kind), `job_type` (`shell` or `delegate`), status, reason, output byte count, exit code when known, and optional transcript ref for delegate jobs. Notification `event` must not be named `type`, because durable job records already use `type` for the job class. The v1 event vocabulary is `running` for foreground promotion, terminal statuses `completed`, `failed`, `cancelled`, and `stopped`, and `watch` for watch output/event/progress notifications.
 - Notifications include a bounded excerpt/tail preview, not full output.
-- Notifications wake the owning/visible session if idle.
+- Notifications wake the visible session if idle. A child/delegate session with no live run queue must not be resumed solely to deliver a notification; its owner-side notification state remains durable and is delivered at the next safe run boundary for that session.
 - If the parent is mid-turn, notifications queue for a safe turn boundary.
 - Duplicate terminal notifications for the same job are suppressed.
 - Watch wake-ups and configured watch sends are opt-in through `job_watch`.
@@ -1073,7 +1092,7 @@ Safety and behavior rules:
 - Watch frames are bounded and filtered. Redaction may be applied for cross-session or observer delivery, but frames are not guaranteed secret-free.
 - Observer/sidecar telemetry should be excluded from frames by default to avoid feedback loops.
 - Observer advice is runtime-originated commentary, not user instruction.
-- Observer failures should not fail the watched session; they produce diagnostics or warnings.
+- Observer failures should not fail the watched session; they produce diagnostics or warnings. A failed watch send must surface as a caller-visible diagnostic notification rather than silently dropping the matched condition.
 - Access control is target-resolution based: aliases such as `caller`, `watched`, and `main` resolve according to caller context and permissions.
 - Broad watches such as `target="*"` are allowed only over events/jobs visible to the caller.
 
