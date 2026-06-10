@@ -677,6 +677,24 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 	})
 
 	for _, rec := range jobs {
+		endedAt := rec.EndedAt
+		finishedAt := jm.now()
+		if endedAt != nil {
+			finishedAt = *endedAt
+		}
+		jm.forwardLocked(jobstore.Event{
+			Kind:                  jobstore.EventJobFinished,
+			TS:                    finishedAt,
+			JobID:                 rec.JobID,
+			Status:                rec.Status,
+			Reason:                rec.Reason,
+			ExitCode:              rec.ExitCode,
+			EndedAt:               endedAt,
+			OutputBytes:           rec.OutputBytes,
+			StructuredResult:      rec.StructuredResult,
+			StructuredResultValid: rec.StructuredResultValid,
+			TerminalGen:           rec.TerminalGen,
+		})
 		pending := jobstore.Event{
 			Kind:        jobstore.EventJobNotificationPending,
 			TS:          jm.now(),

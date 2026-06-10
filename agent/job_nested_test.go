@@ -1210,6 +1210,96 @@ func TestNestedArmPendingTerminalNotificationsForwardsAlreadyPending(t *testing.
 	}
 }
 
+func TestNestedArmPendingTerminalNotificationsRepairsParentMissingFinished(t *testing.T) {
+	var parentQueued []jobNotification
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(n jobNotification) {
+		parentQueued = append(parentQueued, n)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		_ = childJM.store.Close()
+	})
+	childJM.forward = parentJM.forwardEvent
+	childJM.parentJobID = "job_DELEGATE"
+	startedAt := time.Unix(1, 0).UTC()
+	endedAt := time.Unix(2, 0).UTC()
+	started := jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               startedAt,
+		JobID:            "job_PENDING_MISSING_FINISHED",
+		Type:             jobstore.JobShell,
+		Command:          "true",
+		Description:      "pending nested missing parent terminal",
+		ParentJobID:      "job_DELEGATE",
+		OwnerSessionID:   "CHILD",
+		VisibleToSession: "CHILD",
+		StartedAt:        &startedAt,
+	}
+	if err := childJM.store.Append(started); err != nil {
+		t.Fatalf("append child started: %v", err)
+	}
+	parentStarted := started
+	parentStarted.VisibleToSession = "PARENT"
+	if err := parentJM.store.Append(parentStarted); err != nil {
+		t.Fatalf("append parent started: %v", err)
+	}
+	finished := jobstore.Event{
+		Kind:        jobstore.EventJobFinished,
+		TS:          endedAt,
+		JobID:       "job_PENDING_MISSING_FINISHED",
+		Status:      jobstore.StatusCompleted,
+		Reason:      "exit_zero",
+		EndedAt:     &endedAt,
+		TerminalGen: "terminal-generation",
+	}
+	if err := childJM.store.Append(finished); err != nil {
+		t.Fatalf("append child finished: %v", err)
+	}
+	if err := childJM.store.Append(jobstore.Event{
+		Kind:        jobstore.EventJobNotificationPending,
+		TS:          endedAt,
+		JobID:       "job_PENDING_MISSING_FINISHED",
+		TerminalGen: "terminal-generation",
+	}); err != nil {
+		t.Fatalf("append child pending: %v", err)
+	}
+
+	if err := childJM.armPendingTerminalNotifications(); err != nil {
+		t.Fatalf("arm child pending notifications: %v", err)
+	}
+	parentRecs, err := parentJM.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := parentRecs["job_PENDING_MISSING_FINISHED"]
+	if got == nil || got.Status != jobstore.StatusCompleted || got.TerminalGen != "terminal-generation" || got.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("parent record after pending recovery = %+v, want completed terminal-generation pending", got)
+	}
+
+	parentJM.now = func() time.Time { return time.Unix(100, 0).UTC() }
+	if err := parentJM.reconcileLostJobs(); err != nil {
+		t.Fatalf("parent reconcile lost jobs: %v", err)
+	}
+	parentRecs, err = parentJM.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = parentRecs["job_PENDING_MISSING_FINISHED"]
+	if got.Status != jobstore.StatusCompleted || got.Reason != "exit_zero" || got.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("parent record after reconcile = %+v, want completed/exit_zero pending", got)
+	}
+	if len(parentQueued) != 1 || parentQueued[0].JobID != "job_PENDING_MISSING_FINISHED" || parentQueued[0].Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("parent queued = %+v, want repaired terminal notification", parentQueued)
+	}
+}
+
 func TestNestedRunShellForwardsDelayedJobStarted(t *testing.T) {
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
 	if err != nil {
