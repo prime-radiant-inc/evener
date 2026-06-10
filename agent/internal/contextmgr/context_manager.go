@@ -580,13 +580,12 @@ func summarizeToolResult(toolName string, content any, args json.RawMessage) str
 		url := getArg("url")
 		return fmt.Sprintf("[web_fetch: %s → %d chars]", url, len(contentStr))
 
-	case "spawn_agent":
-		// Try to extract agent_id from the JSON output.
-		agentID := extractJSONField(contentStr, "agent_id")
-		if agentID != "" {
-			return fmt.Sprintf("[spawn_agent: %s]", agentID)
+	case "delegate":
+		jobID := extractJSONField(contentStr, "job_id")
+		if jobID != "" {
+			return fmt.Sprintf("[delegate: %s]", jobID)
 		}
-		return fmt.Sprintf("[spawn_agent: %d chars]", len(contentStr))
+		return fmt.Sprintf("[delegate: %d chars]", len(contentStr))
 
 	case "task_list":
 		action := getArg("action")

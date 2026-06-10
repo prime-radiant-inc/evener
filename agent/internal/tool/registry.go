@@ -560,7 +560,7 @@ func defaultToolLimit(toolName string) schema.ToolOutputLimit {
 		return schema.ToolOutputLimit{MaxChars: 10_000, Strategy: schema.TruncTail}
 	case "write_file":
 		return schema.ToolOutputLimit{MaxChars: 1_000, Strategy: schema.TruncTail}
-	case "spawn_agent":
+	case "delegate":
 		return schema.ToolOutputLimit{MaxChars: 20_000, Strategy: schema.TruncHeadTail}
 	case "task_list":
 		return schema.ToolOutputLimit{MaxChars: 20_000, Strategy: schema.TruncTail}

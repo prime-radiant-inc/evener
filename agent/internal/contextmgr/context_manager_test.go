@@ -216,9 +216,15 @@ func TestSummarizeToolResult_WebFetch(t *testing.T) {
 	}
 }
 
-func TestSummarizeToolResult_SpawnAgent(t *testing.T) {
-	got := summarizeToolResult("spawn_agent", `{"agent_id":"abc123"}`, json.RawMessage(`{"task":"do stuff"}`))
-	want := "[spawn_agent: abc123]"
+func TestSummarizeToolResult_Delegate(t *testing.T) {
+	got := summarizeToolResult("delegate", `{"job_id":"job_abc123"}`, json.RawMessage(`{"task":"do stuff"}`))
+	want := "[delegate: job_abc123]"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+
+	got = summarizeToolResult("delegate", `{"status":"running"}`, json.RawMessage(`{"task":"do stuff"}`))
+	want = "[delegate: 20 chars]"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}

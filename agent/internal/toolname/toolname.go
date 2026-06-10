@@ -13,7 +13,7 @@ var claudeToSerf = map[string]string{
 	"Bash":         "shell",
 	"Grep":         "grep",
 	"Glob":         "glob",
-	"Task":         "spawn_agent",
+	"Task":         "delegate",
 	"WebFetch":     "web_fetch",
 	"WebSearch":    "web_search",
 	"NotebookEdit": "notebook_edit",

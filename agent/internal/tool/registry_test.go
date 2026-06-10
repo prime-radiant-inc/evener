@@ -733,7 +733,7 @@ func TestDefaultToolLimit_MatchesSpecTable(t *testing.T) {
 		{tool: "edit_file", chars: 10_000, lines: 0, strategy: schema.TruncTail},
 		{tool: "apply_patch", chars: 10_000, lines: 0, strategy: schema.TruncTail},
 		{tool: "write_file", chars: 1_000, lines: 0, strategy: schema.TruncTail},
-		{tool: "spawn_agent", chars: 20_000, lines: 0, strategy: schema.TruncHeadTail},
+		{tool: "delegate", chars: 20_000, lines: 0, strategy: schema.TruncHeadTail},
 	}
 	for _, tc := range cases {
 		lim := defaultToolLimit(tc.tool)
