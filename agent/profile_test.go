@@ -208,7 +208,7 @@ func TestSystemPrompt_ImplementerWarnsOnUnavailableTools(t *testing.T) {
 	prompt := renderPromptForTest(t, NewOpenAIProfile("gpt-5.4"), promptData{
 		Agent:                       "implementer",
 		CallableToolNames:           []string{"read_file", "exec_command", "communicate"},
-		UnavailableProfileToolNames: []string{"spawn_agent", "resume_agent", "wait", "close_agent"},
+		UnavailableProfileToolNames: []string{"delegate", "job_watch"},
 	})
 
 	if !strings.Contains(prompt, "If the task depends on tools or capabilities explicitly listed as unavailable in") {
@@ -1195,47 +1195,6 @@ func TestProviderProfile_KnowledgeCutoff(t *testing.T) {
 				t.Fatalf("KnowledgeCutoff() = %q, want %q", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestSendInput_UsesMessageParam(t *testing.T) {
-	td := tool.DefSendInput()
-	if td.Name != "resume_agent" {
-		t.Fatalf("Name = %q, want resume_agent", td.Name)
-	}
-	props := td.Parameters["properties"].(map[string]any)
-	if _, ok := props["message"]; !ok {
-		t.Fatal("resume_agent should have 'message' parameter")
-	}
-	if _, ok := props["input"]; ok {
-		t.Fatal("resume_agent should not have 'input' parameter")
-	}
-	req := td.Parameters["required"].([]string)
-	found := false
-	for _, r := range req {
-		if r == "message" {
-			found = true
-		}
-		if r == "input" {
-			t.Fatal("required should not contain 'input'")
-		}
-	}
-	if !found {
-		t.Fatal("required should contain 'message'")
-	}
-}
-
-func TestSpawnAgent_HasMaxTurns(t *testing.T) {
-	td := tool.DefSpawnAgent()
-	if td.Name != "spawn_agent" {
-		t.Fatalf("Name = %q, want spawn_agent", td.Name)
-	}
-	props := td.Parameters["properties"].(map[string]any)
-	if _, ok := props["working_dir"]; ok {
-		t.Fatal("spawn_agent should NOT have working_dir parameter (removed)")
-	}
-	if _, ok := props["max_turns"]; !ok {
-		t.Fatal("spawn_agent missing max_turns parameter")
 	}
 }
 

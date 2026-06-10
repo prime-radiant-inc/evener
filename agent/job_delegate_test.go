@@ -1671,7 +1671,7 @@ func TestWatchOriginatedSendToRunningDelegateSuppressesLifecycleWatch(t *testing
 	case <-time.After(2 * time.Second):
 		t.Fatal("delegate child did not start")
 	}
-	_, childID, err := decodeRef(first.TranscriptRef)
+	_, _, err := decodeRef(first.TranscriptRef)
 	if err != nil {
 		t.Fatalf("decode transcript ref: %v", err)
 	}

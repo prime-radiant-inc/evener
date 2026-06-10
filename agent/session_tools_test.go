@@ -25,7 +25,7 @@ func TestDelegateAdvertisesAgentTypeEnum(t *testing.T) {
 	sess.pluginAgents = map[string]plugin.Agent{
 		"implementer": {Name: "implementer", Description: "implement"},
 		"root-manager": {Name: "root-manager", Description: "manage agents", Tools: []string{
-			"spawn_agent",
+			"delegate",
 		}},
 		"explorer": {Name: "explorer", Description: "explore"},
 	}

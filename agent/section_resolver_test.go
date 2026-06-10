@@ -626,9 +626,6 @@ func TestReviewerTemplate_UsesCommunicateDecisionContract(t *testing.T) {
 	if !strings.Contains(result, "`delegate`") {
 		t.Error("reviewer prompt should identify unavailable delegated tools")
 	}
-	if strings.Contains(result, "`spawn_agent`") || strings.Contains(result, "`resume_agent`") || strings.Contains(result, "`close_agent`") {
-		t.Error("reviewer prompt should not mention deleted delegation tools")
-	}
 }
 
 func TestAnthropicProvider_UsesEditFile(t *testing.T) {

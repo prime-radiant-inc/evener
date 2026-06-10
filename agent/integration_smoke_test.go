@@ -260,11 +260,11 @@ func TestIntegration_Steering(t *testing.T) {
 	t.Logf("steered.txt content: %q", string(data))
 }
 
-func TestIntegration_Subagent(t *testing.T) {
+func TestIntegration_Delegate(t *testing.T) {
 	skipWithoutAPIKey(t)
 
-	// Subagent flow needs more tool rounds: the parent calls spawn_agent,
-	// wait, close_agent, and the subagent itself uses several rounds.
+	// Delegate flow needs more tool rounds: the parent calls delegate and may
+	// inspect the resulting job while the delegated session uses several rounds.
 	client, err := llm.NewFromEnv()
 	if err != nil {
 		t.Fatal(err)
@@ -283,9 +283,9 @@ func TestIntegration_Subagent(t *testing.T) {
 	defer cancel()
 
 	_, err = sess.ProcessInput(ctx,
-		"Spawn a sub-agent (do NOT set a working_dir) with the task: "+
-			"'Create a file called subagent_output.txt containing exactly the text: created by subagent'. "+
-			"Wait for it to finish, then close it. Do not use the task_list tool.", nil)
+		"Use the delegate tool with the task: "+
+			"'Create a file called delegate_output.txt containing exactly the text: created by delegate'. "+
+			"Wait for the delegate job to finish and inspect it if needed. Do not use the task_list tool.", nil)
 	sess.Close()
 	evs := collectEvents()
 
@@ -293,25 +293,25 @@ func TestIntegration_Subagent(t *testing.T) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 
-	// Verify spawn_agent was called by checking events.
-	var sawSpawn bool
+	// Verify delegate was called by checking events.
+	var sawDelegate bool
 	for _, ev := range evs {
 		if d, ok := ev.Data.(events.ToolCallStartData); ok {
-			if d.ToolName == "spawn_agent" {
-				sawSpawn = true
+			if d.ToolName == "delegate" {
+				sawDelegate = true
 				break
 			}
 		}
 	}
-	if !sawSpawn {
-		t.Fatal("model did not call spawn_agent tool")
+	if !sawDelegate {
+		t.Fatal("model did not call delegate tool")
 	}
 
-	// The subagent shares the parent working directory, so the file should
+	// The delegate shares the parent working directory, so the file should
 	// be there. Search recursively as a fallback in case the model used a
 	// subdirectory.
 	workDir := sess.env.WorkingDirectory()
-	target := filepath.Join(workDir, "subagent_output.txt")
+	target := filepath.Join(workDir, "delegate_output.txt")
 	data, err := os.ReadFile(target)
 	if err != nil {
 		// Walk the temp dir tree to find the file.
@@ -320,7 +320,7 @@ func TestIntegration_Subagent(t *testing.T) {
 			if err != nil {
 				return nil //nolint:nilerr // best-effort search: skip unreadable entries and keep walking
 			}
-			if info.Name() == "subagent_output.txt" {
+			if info.Name() == "delegate_output.txt" {
 				found = path
 				return filepath.SkipAll
 			}
@@ -335,10 +335,10 @@ func TestIntegration_Subagent(t *testing.T) {
 		}
 		t.Logf("file found at %s (not at root)", found)
 	}
-	if !strings.Contains(strings.ToLower(string(data)), "created by subagent") {
-		t.Fatalf("unexpected subagent file content: %q", string(data))
+	if !strings.Contains(strings.ToLower(string(data)), "created by delegate") {
+		t.Fatalf("unexpected delegate file content: %q", string(data))
 	}
-	t.Logf("subagent_output.txt content: %q", string(data))
+	t.Logf("delegate_output.txt content: %q", string(data))
 }
 
 func TestIntegration_Timeout(t *testing.T) {

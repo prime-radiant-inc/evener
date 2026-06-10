@@ -79,13 +79,13 @@ func TestAvailableAgentsSection_WithAgents(t *testing.T) {
 	if !strings.Contains(result, "available_agents") {
 		t.Error("should have available_agents XML tag")
 	}
-	if !strings.Contains(result, "spawn_agent") {
-		t.Error("should mention spawn_agent usage")
+	if !strings.Contains(result, "delegate") {
+		t.Error("should mention delegate usage")
 	}
 	if !strings.Contains(result, "Default tools: `communicate`, `grep_files`, `read_file`, `task_list`") {
 		t.Errorf("should include default tool summary, got: %s", result)
 	}
-	if !strings.Contains(result, "Delegated tasks from `task_list` replace this step when provided.") {
+	if !strings.Contains(result, "Include relevant parent task details in the `delegate` task prompt for this step.") {
 		t.Errorf("should explain parent task slot behavior, got: %s", result)
 	}
 }
@@ -108,7 +108,7 @@ func TestAvailableAgentsSection_Sorted(t *testing.T) {
 
 func TestAvailableAgentsSection_OmitsTopLevelOnlyAgents(t *testing.T) {
 	agents := map[string]plugin.Agent{
-		"coordinator": {Name: "coordinator", Description: "Delegates to agents", Tools: []string{"read_file", "spawn_agent"}},
+		"coordinator": {Name: "coordinator", Description: "Delegates to agents", Tools: []string{"read_file", "delegate"}},
 		"reviewer":    {Name: "reviewer", Description: "Reviews work", Tools: []string{"read_file"}},
 	}
 	result := renderAvailableAgentsSectionForTest(t, agents)

@@ -102,7 +102,7 @@ func TestTaskWorkflow_ParentTaskInsertion(t *testing.T) {
 
 func TestTaskWorkflow_AgentDefinitionWithTasks(t *testing.T) {
 	// Parse a coordinator-like agent definition.
-	input := []byte("---\nname: test-coord\ndescription: \"Test coordinator\"\nmodel: inherit\ntools: [read_file, spawn_agent]\ntasks:\n  - title: Inventory\n    prompt: \"List files\"\n    reasoning_effort: low\n  - title: Plan\n    prompt: \"Analyze task\"\n    reasoning_effort: xhigh\n  - title: Delegate\n    prompt: \"Spawn agent\"\n    reasoning_effort: low\n---\n\nYou coordinate.\n")
+	input := []byte("---\nname: test-coord\ndescription: \"Test coordinator\"\nmodel: inherit\ntools: [read_file, delegate]\ntasks:\n  - title: Inventory\n    prompt: \"List files\"\n    reasoning_effort: low\n  - title: Plan\n    prompt: \"Analyze task\"\n    reasoning_effort: xhigh\n  - title: Delegate\n    prompt: \"Delegate work\"\n    reasoning_effort: low\n---\n\nYou coordinate.\n")
 
 	agent, err := plugin.ParseAgent(input, "test")
 	if err != nil {

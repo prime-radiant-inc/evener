@@ -35,11 +35,6 @@ func TestStandardProfilesAdvertiseJobControlWithoutLegacyAgentControl(t *testing
 					t.Errorf("profile missing job-control tool %q", name)
 				}
 			}
-			for _, name := range []string{"spawn_agent", "resume_agent", "wait", "close_agent"} {
-				if have[name] {
-					t.Errorf("profile still advertises legacy agent-control tool %q", name)
-				}
-			}
 		})
 	}
 }

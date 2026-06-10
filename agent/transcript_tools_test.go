@@ -808,68 +808,6 @@ func firstLineOf(s string) string {
 
 // --- TestRead_Outline* ---
 
-// writeSpawnWaitSession writes a synthetic session that has a "wait" lifecycle
-// tool call with a subagentResult result body, so the outline bracket path can
-// be exercised. Layout:
-//
-//	Turn 0: User
-//	Turn 1: Assistant (wait call + result)
-//	Turn 2: TOOL_RESULTS (folds under turn 1, no outline line)
-func writeSpawnWaitSession(t *testing.T, bucketDir string, spec findMetaSpec, childRef string) {
-	t.Helper()
-	tpath := transcriptPath(bucketDir, spec.id)
-	sessDir := filepath.Dir(tpath)
-	if err := os.MkdirAll(sessDir, 0o755); err != nil {
-		t.Fatalf("writeSpawnWaitSession mkdir: %v", err)
-	}
-	tw, err := transcript.NewWriter(tpath, transcript.Header{
-		SessionID: spec.id,
-		CreatedAt: spec.updated,
-		Model:     spec.model,
-	})
-	if err != nil {
-		t.Fatalf("write spawn-wait transcript: %v", err)
-	}
-	callID := "call-wait-001"
-	// Turn 0: user
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("spawn something"))); err != nil {
-		t.Fatalf("append user turn: %v", err)
-	}
-	// Turn 1: assistant with wait call
-	assistantMsg := llm.Message{
-		Role: llm.RoleAssistant,
-		Content: []llm.ContentPart{
-			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-				ID:        callID,
-				Name:      "wait",
-				Arguments: json.RawMessage(`{"agent_id":"child-1"}`),
-			}},
-		},
-	}
-	if err := tw.Append(schema.NewTurn(schema.TurnAssistant, assistantMsg)); err != nil {
-		t.Fatalf("append assistant turn: %v", err)
-	}
-	// Turn 2: tool result carrying a subagentResult body
-	resultBody := fmt.Sprintf(`{"status":"completed","output":"done","success":true,"turns_used":3,"transcript_ref":%q}`, childRef)
-	resultMsg := llm.Message{
-		Role: llm.RoleTool,
-		Content: []llm.ContentPart{
-			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
-				ToolCallID: callID,
-				Name:       "wait",
-				Content:    resultBody,
-			}},
-		},
-	}
-	if err := tw.Append(schema.NewTurn(schema.TurnToolResults, resultMsg)); err != nil {
-		t.Fatalf("append tool-result turn: %v", err)
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatalf("close spawn-wait transcript: %v", err)
-	}
-	saveFindMeta(t, bucketDir, spec)
-}
-
 // TestRead_OutlineBasic verifies that format:"outline" returns:
 //   - format: "outline"
 //   - turns_total matching the session's entry count
@@ -989,41 +927,7 @@ func TestRead_OutlineRange(t *testing.T) {
 }
 
 // TestRead_OutlineLifecycleBracket verifies that a session with a subagent
-// lifecycle "wait" call shows the audit-pivot bracket (child=...) in the outline.
-func TestRead_OutlineLifecycleBracket(t *testing.T) {
-	dir := newBucket(t)
-	now := time.Now().UTC().Truncate(time.Second)
-	const sessionID = "OUTLBRKТ"
-	const childRef = "local:CHILD999"
-
-	writeSpawnWaitSession(t, dir, findMetaSpec{
-		id:      sessionID,
-		name:    "outline bracket",
-		updated: now,
-	}, childRef)
-
-	deps := &toolDeps{stateDir: dir, sessionID: "OTHER000"}
-	b := marshalRead(t, deps, map[string]any{
-		"transcript_ref": "local:" + sessionID,
-		"format":         "outline",
-	})
-	env := decodeReadEnvelope(t, b)
-
-	content, ok := env["content"].(string)
-	if !ok || content == "" {
-		t.Fatal("content missing or empty")
-	}
-
-	// The assistant turn (turn 1) should show the wait bracket with child= ref.
-	if !strings.Contains(content, "child="+childRef) {
-		t.Errorf("outline must contain child ref bracket; got:\n%s", content)
-	}
-	if !strings.Contains(content, "wait[") {
-		t.Errorf("outline must contain wait[ bracket; got:\n%s", content)
-	}
-}
-
-// --- TestFind_ChildrenOf_ProjBucket ---
+// lifecycle "wait" call shows the audit-pivot bracket (child=...) in the outline.// --- TestFind_ChildrenOf_ProjBucket ---
 
 // TestFind_ChildrenOf_ProjBucket verifies children_of for a parent in a sibling
 // project (proj: ref): the parent's bucket is resolved from the ref with no stat, and

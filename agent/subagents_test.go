@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -30,6 +29,43 @@ func newTestSession(t *testing.T) *Session {
 	}
 	t.Cleanup(func() { sess.Close() })
 	return sess
+}
+
+func spawnRuntimeAgent(t *testing.T, sess *Session, task, model string, maxTurns int, agentType, reasoningEffort string, grantTools []string) string {
+	t.Helper()
+	result, err := sess.spawnAgent(context.Background(), task, model, "", maxTurns, agentType, reasoningEffort, nil, grantTools)
+	if err != nil {
+		t.Fatalf("spawnAgent: %v", err)
+	}
+	var spawned struct {
+		AgentID string `json:"agent_id"`
+		Status  string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(result.(string)), &spawned); err != nil {
+		t.Fatalf("unmarshal spawn result: %v (out=%q)", err, result)
+	}
+	if spawned.AgentID == "" {
+		t.Fatalf("spawn result missing agent_id: %s", result)
+	}
+	return spawned.AgentID
+}
+
+func waitForRuntimeSubagent(t *testing.T, sess *Session, agentID string) subagentResult {
+	t.Helper()
+	sub := sess.getSub(agentID)
+	if sub == nil {
+		t.Fatalf("subagent %q not found", agentID)
+	}
+	select {
+	case <-sub.done:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for subagent %q", agentID)
+	}
+	sub.mu.Lock()
+	result := sub.resultSnapshotLocked()
+	sub.resultConsumed = true
+	sub.mu.Unlock()
+	return result
 }
 
 // TestResultSnapshot_CurrentShape verifies baseline snapshot fields for a completed subagent.
@@ -70,7 +106,7 @@ func TestResultSnapshot_CarriesAgentIDAndStatus(t *testing.T) {
 }
 
 // TestBlockingSpawn_SnapshotHasAgentID verifies that a blocking spawn result carries agent_id directly from the snapshot.
-func TestBlockingSpawn_SnapshotHasAgentID(t *testing.T) {
+func TestDelegateForeground_SnapshotHasJobID(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -93,30 +129,15 @@ func TestBlockingSpawn_SnapshotHasAgentID(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	res := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
-		ID:        "c1",
-		Name:      "spawn_agent",
-		Arguments: json.RawMessage(`{"task":"test task","blocking":true}`),
-	})
-	if res.IsError {
-		t.Fatalf("blocking spawn returned error: %s", res.Output)
+	result := sess.createDelegate(ctx, delegateArgs{Task: "test task", Background: false, BlockTimeoutMS: 5000})
+	if result.Err != nil {
+		t.Fatalf("delegate returned error: %v", result.Err)
 	}
-
-	var result subagentResult
-	if err := json.Unmarshal([]byte(res.Output), &result); err != nil {
-		t.Fatalf("parsing blocking result: %v (output: %s)", err, res.Output)
+	if result.JobID == "" {
+		t.Fatalf("job_id must be set in delegate result: %+v", result)
 	}
-	if result.AgentID == "" {
-		t.Errorf("agent_id must be set in blocking result, got: %s", res.Output)
-	}
-	if result.Status != SubagentCompleted {
-		t.Errorf("status = %q, want %q", result.Status, SubagentCompleted)
-	}
-	if !result.Success {
-		t.Error("success must be true for a completed agent")
-	}
-	if result.TurnsUsed < 1 {
-		t.Error("turns_used must be >= 1")
+	if result.Status != "completed" {
+		t.Errorf("status = %q, want completed", result.Status)
 	}
 	if result.TranscriptRef == "" {
 		t.Error("transcript_ref must be set")
@@ -272,37 +293,21 @@ func TestCancelAgent_RunningChildBecomesCancelledAndResumable(t *testing.T) {
 	}
 	defer sess.Close()
 
-	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID:        "c1",
-		Name:      "spawn_agent",
-		Arguments: json.RawMessage(`{"task":"do long work"}`),
-	})
-	if spawnRes.IsError {
-		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
-	}
-	var spawned map[string]any
-	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
-		t.Fatalf("unmarshal spawn result: %v", err)
-	}
-	agentID := strings.TrimSpace(fmt.Sprint(spawned["agent_id"]))
+	agentID := spawnRuntimeAgent(t, sess, "do long work", "", 0, "", "", nil)
 
 	// Wait until the child's run is blocked inside the in-flight LLM call.
 	<-blocked
 
-	cancelRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID:        "c2",
-		Name:      "cancel_agent",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q}`, agentID)),
-	})
-	if cancelRes.IsError {
-		t.Fatalf("cancel_agent error: %s", cancelRes.Output)
+	cancelOut, err := sess.cancelAgent(agentID)
+	if err != nil {
+		t.Fatalf("cancelAgent: %v", err)
 	}
 	var cancelled subagentResult
-	if err := json.Unmarshal([]byte(cancelRes.Output), &cancelled); err != nil {
-		t.Fatalf("unmarshal cancel result: %v (output: %s)", err, cancelRes.Output)
+	if err := json.Unmarshal([]byte(cancelOut.(string)), &cancelled); err != nil {
+		t.Fatalf("unmarshal cancel result: %v (output: %s)", err, cancelOut)
 	}
 	if cancelled.Status != SubagentCancelled {
-		t.Fatalf("status = %q, want %q (output: %s)", cancelled.Status, SubagentCancelled, cancelRes.Output)
+		t.Fatalf("status = %q, want %q (output: %s)", cancelled.Status, SubagentCancelled, cancelOut)
 	}
 	if cancelled.Success {
 		t.Errorf("cancelled run must not report success")
@@ -321,20 +326,12 @@ func TestCancelAgent_RunningChildBecomesCancelledAndResumable(t *testing.T) {
 	}
 
 	// A following resume runs a fresh round to completion.
-	resumeRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID:        "c3",
-		Name:      "resume_agent",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"message":"continue","blocking":true}`, agentID)),
-	})
-	if resumeRes.IsError {
-		t.Fatalf("resume_agent error: %s", resumeRes.Output)
+	if _, err := sess.sendInput(context.Background(), agentID, "continue"); err != nil {
+		t.Fatalf("sendInput: %v", err)
 	}
-	var resumed subagentResult
-	if err := json.Unmarshal([]byte(resumeRes.Output), &resumed); err != nil {
-		t.Fatalf("unmarshal resume result: %v (output: %s)", err, resumeRes.Output)
-	}
+	resumed := waitForRuntimeSubagent(t, sess, agentID)
 	if resumed.Status != SubagentCompleted {
-		t.Fatalf("resumed status = %q, want %q (output: %s)", resumed.Status, SubagentCompleted, resumeRes.Output)
+		t.Fatalf("resumed status = %q, want %q (output: %+v)", resumed.Status, SubagentCompleted, resumed)
 	}
 	if !resumed.Success {
 		t.Errorf("resumed run must report success")
@@ -501,29 +498,10 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 	defer cancel()
 
 	// Non-blocking spawn; the first run (adapter step 0) completes immediately.
-	spawnRes := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
-		ID:        "ts1",
-		Name:      "spawn_agent",
-		Arguments: json.RawMessage(`{"task":"timestamp test"}`),
-	})
-	if spawnRes.IsError {
-		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
-	}
-	var spawned map[string]any
-	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
-		t.Fatalf("unmarshal spawn result: %v", err)
-	}
-	agentID := strings.TrimSpace(fmt.Sprint(spawned["agent_id"]))
+	agentID := spawnRuntimeAgent(t, sess, "timestamp test", "", 0, "", "", nil)
 
 	// Wait for the first run to complete so we observe a stable post-finalize state.
-	waitRes := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
-		ID:        "ts2",
-		Name:      "wait",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":5000}`, agentID)),
-	})
-	if waitRes.IsError {
-		t.Fatalf("wait error: %s", waitRes.Output)
-	}
+	waitForRuntimeSubagent(t, sess, agentID)
 
 	// Capture timestamps and agentType after first run.
 	sub := sess.getSub(agentID)
@@ -558,13 +536,8 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 
 	// Non-blocking resume: sendInput spawns the goroutine and returns "ok" immediately
 	// while adapter step 1 blocks inside Complete waiting for release.
-	resumeRes := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
-		ID:        "ts3",
-		Name:      "resume_agent",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"message":"continue","blocking":false}`, agentID)),
-	})
-	if resumeRes.IsError {
-		t.Fatalf("resume_agent error: %s", resumeRes.Output)
+	if _, err := sess.sendInput(ctx, agentID, "continue"); err != nil {
+		t.Fatalf("sendInput: %v", err)
 	}
 
 	// Wait (channel receive, no sleep) until the resumed run is blocked in-flight.
@@ -601,14 +574,7 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 
 	// Release the adapter so the resumed run can finish; then wait for it.
 	close(adapter.release)
-	waitRes2 := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
-		ID:        "ts4",
-		Name:      "wait",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":5000}`, agentID)),
-	})
-	if waitRes2.IsError {
-		t.Fatalf("wait (post-resume) error: %s", waitRes2.Output)
-	}
+	waitForRuntimeSubagent(t, sess, agentID)
 
 	// Secondary: finalize must have re-set endedAt.
 	sub.mu.Lock()
@@ -622,8 +588,6 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 // TestSubagentCannotCallRootOnlyControlTools asserts depth>0 subagents keep
 // job_send_message for aliases while root-only controls stay unavailable.
 func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
-	legacyControls := []string{"spawn_agent", "resume_agent", "wait", "close_agent", "cancel_agent", "list_agents", "subagent_output"}
-
 	if len(rootOnlyAgentManagementTools) != 2 || rootOnlyAgentManagementTools[0] != "delegate" || rootOnlyAgentManagementTools[1] != "job_watch" {
 		t.Fatalf("rootOnlyAgentManagementTools = %v, want exactly [delegate job_watch]", rootOnlyAgentManagementTools)
 	}
@@ -642,12 +606,6 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if !isRootOnlySubagentTool("job_watch") {
 		t.Fatal("job_watch must be a root-only subagent tool")
 	}
-	for _, name := range legacyControls {
-		if !isRootOnlySubagentTool(name) {
-			t.Fatalf("%s must remain stripped from subagents until legacy tool deletion", name)
-		}
-	}
-
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
@@ -665,11 +623,6 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if child.reg.Get("job_watch") != nil {
 		t.Fatal("depth>0 child must not have job_watch registered")
 	}
-	for _, name := range legacyControls {
-		if child.reg.Get(name) != nil {
-			t.Fatalf("depth>0 child must not have legacy control %s registered", name)
-		}
-	}
 	if child.reg.Get("job_send_message") == nil {
 		t.Fatal("depth>0 child must keep job_send_message registered")
 	}
@@ -680,11 +633,6 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	}
 	if hasCachedCallableToolDefinition(child, "job_watch") {
 		t.Fatal("depth>0 child must not advertise job_watch")
-	}
-	for _, name := range legacyControls {
-		if hasCachedCallableToolDefinition(child, name) {
-			t.Fatalf("depth>0 child must not advertise legacy control %s", name)
-		}
 	}
 	if !hasCachedCallableToolDefinition(child, "job_send_message") {
 		t.Fatal("depth>0 child must advertise job_send_message")

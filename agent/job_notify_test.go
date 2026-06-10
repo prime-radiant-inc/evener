@@ -24,8 +24,8 @@ func TestFormatJobNotification(t *testing.T) {
 			t.Errorf("notification missing %q:\n%s", want, block)
 		}
 	}
-	if strings.Contains(block, "subagent-notification") {
-		t.Errorf("must use <job-notification>, not subagent")
+	if strings.Contains(block, "subagent") {
+		t.Errorf("must use job notification wording, not subagent")
 	}
 
 	emptyReason := formatJobNotificationBlock(jobNotification{
@@ -388,19 +388,19 @@ func TestJobNotificationTurnRequeuesWhenStoreLoadFailsThenDelivers(t *testing.T)
 
 func TestJobNotificationRetryResetInvalidatesActiveTimer(t *testing.T) {
 	sess := newTestSession(t)
-	sess.pendingNotifsMu.Lock()
+	sess.pendingJobNotifsMu.Lock()
 	sess.jobNotifyRetry.delay = 10 * time.Millisecond
-	sess.pendingNotifsMu.Unlock()
+	sess.pendingJobNotifsMu.Unlock()
 
 	sess.requeueJobNotifications([]jobNotification{{JobID: "job_X"}})
 	_ = sess.drainJobNotifications()
 	sess.resetJobNotificationRetry()
 	time.Sleep(50 * time.Millisecond)
 
-	sess.pendingNotifsMu.Lock()
+	sess.pendingJobNotifsMu.Lock()
 	delay := sess.jobNotifyRetry.delay
 	active := sess.jobNotifyRetry.active
-	sess.pendingNotifsMu.Unlock()
+	sess.pendingJobNotifsMu.Unlock()
 	if active {
 		t.Fatal("retry timer still active after reset")
 	}
@@ -411,18 +411,18 @@ func TestJobNotificationRetryResetInvalidatesActiveTimer(t *testing.T) {
 
 func TestJobNotificationRetryResetDoesNotCancelPendingRetry(t *testing.T) {
 	sess := newTestSession(t)
-	sess.pendingNotifsMu.Lock()
+	sess.pendingJobNotifsMu.Lock()
 	sess.jobNotifyRetry.delay = 10 * time.Millisecond
-	sess.pendingNotifsMu.Unlock()
+	sess.pendingJobNotifsMu.Unlock()
 
 	sess.requeueJobNotifications([]jobNotification{{JobID: "job_X"}})
 	sess.resetJobNotificationRetry()
 	time.Sleep(50 * time.Millisecond)
 
-	sess.pendingNotifsMu.Lock()
+	sess.pendingJobNotifsMu.Lock()
 	delay := sess.jobNotifyRetry.delay
 	active := sess.jobNotifyRetry.active
-	sess.pendingNotifsMu.Unlock()
+	sess.pendingJobNotifsMu.Unlock()
 	if active {
 		t.Fatal("retry timer still active after firing")
 	}

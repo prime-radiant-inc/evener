@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
-	"primeradiant.com/serf/agent/internal/tool"
 	"primeradiant.com/serf/agent/internal/toolname"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/llm"
@@ -303,124 +302,6 @@ func TestAvailableAgentsSection_UsesAvailableAgentsTag(t *testing.T) {
 	}
 }
 
-// --- spawn_agent blocking parameter ---
-
-func TestDefSpawnAgent_HasBlockingParameter(t *testing.T) {
-	def := tool.DefSpawnAgent()
-	props, ok := def.Parameters["properties"].(map[string]any)
-	if !ok {
-		t.Fatal("expected properties map")
-	}
-	blocking, ok := props["blocking"]
-	if !ok {
-		t.Fatal("expected 'blocking' property in spawn_agent definition")
-	}
-	m, ok := blocking.(map[string]any)
-	if !ok {
-		t.Fatal("blocking should be a map")
-	}
-	if m["type"] != "boolean" {
-		t.Errorf("blocking type = %v, want 'boolean'", m["type"])
-	}
-}
-
-func TestSpawnAgent_BlockingMode(t *testing.T) {
-	dir := t.TempDir()
-	c := llm.NewClient()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return finalResponse("subagent done")
-			},
-		},
-	}
-	c.Register(adapter)
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
-	// Blocking spawn should return the result directly (not an agent_id).
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	res := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
-		ID:        "c1",
-		Name:      "spawn_agent",
-		Arguments: json.RawMessage(`{"task":"test task","blocking":true}`),
-	})
-	if res.IsError {
-		t.Fatalf("blocking spawn returned error: %s", res.Output)
-	}
-
-	// Should be a subagentResult JSON (with output, success, turns_used),
-	// NOT a spawn result JSON (with agent_id, status).
-	var result subagentResult
-	if err := json.Unmarshal([]byte(res.Output), &result); err != nil {
-		t.Fatalf("parsing blocking result: %v (output: %s)", err, res.Output)
-	}
-	if !result.Success {
-		t.Error("expected success=true")
-	}
-	if result.TurnsUsed < 1 {
-		t.Error("expected turns_used >= 1")
-	}
-	// Blocking result should include agent_id so the caller can use resume_agent later.
-	if !strings.Contains(res.Output, "agent_id") {
-		t.Errorf("blocking result should contain agent_id for resume_agent, got: %s", res.Output)
-	}
-}
-
-func TestSpawnAgent_NonBlockingMode(t *testing.T) {
-	dir := t.TempDir()
-	c := llm.NewClient()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return finalResponse("done")
-			},
-		},
-	}
-	c.Register(adapter)
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Default (no blocking param) should return agent_id.
-	res := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
-		ID:        "c1",
-		Name:      "spawn_agent",
-		Arguments: json.RawMessage(`{"task":"test task"}`),
-	})
-	if res.IsError {
-		t.Fatalf("non-blocking spawn error: %s", res.Output)
-	}
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(res.Output), &parsed); err != nil {
-		t.Fatalf("parsing result: %v", err)
-	}
-	if parsed["agent_id"] == nil {
-		t.Error("non-blocking spawn should return agent_id")
-	}
-	if parsed["status"] != "running" {
-		t.Errorf("status = %v, want 'running'", parsed["status"])
-	}
-}
-
 type releaseAdapter struct {
 	name    string
 	started chan struct{}
@@ -470,22 +351,17 @@ func TestSpawnAgent_NonBlockingSubagentSurvivesParentContextCancellation(t *test
 	defer sess.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	res := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
-		ID:        "c1",
-		Name:      "spawn_agent",
-		Arguments: json.RawMessage(`{"task":"test task"}`),
-	})
-	if res.IsError {
-		t.Fatalf("non-blocking spawn error: %s", res.Output)
+	result, err := sess.spawnAgent(ctx, "test task", "", "", 0, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("spawnAgent: %v", err)
 	}
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(res.Output), &parsed); err != nil {
-		t.Fatalf("parsing result: %v", err)
+	var spawned struct {
+		AgentID string `json:"agent_id"`
 	}
-	agentID := fmt.Sprint(parsed["agent_id"])
-	if agentID == "" {
-		t.Fatal("spawn_agent did not return agent_id")
+	if err := json.Unmarshal([]byte(result.(string)), &spawned); err != nil {
+		t.Fatalf("unmarshal spawn result: %v", err)
 	}
+	agentID := spawned.AgentID
 
 	select {
 	case <-adapter.started:
@@ -496,24 +372,12 @@ func TestSpawnAgent_NonBlockingSubagentSurvivesParentContextCancellation(t *test
 	cancel()
 	close(adapter.release)
 
-	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID:        "c2",
-		Name:      "wait",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":2000}`, agentID)),
-	})
-	if waitRes.IsError {
-		t.Fatalf("wait error: %s", waitRes.Output)
+	runResult := waitForRuntimeSubagent(t, sess, agentID)
+	if !runResult.Success {
+		t.Fatalf("expected success=true, got false (out=%q)", runResult.Output)
 	}
-
-	var result subagentResult
-	if err := json.Unmarshal([]byte(waitRes.Output), &result); err != nil {
-		t.Fatalf("unmarshal subagentResult: %v (out=%q)", err, waitRes.Output)
-	}
-	if !result.Success {
-		t.Fatalf("expected success=true, got false (out=%q)", result.Output)
-	}
-	if result.Output != "child done" {
-		t.Fatalf("expected output=%q, got %q", "child done", result.Output)
+	if runResult.Output != "child done" {
+		t.Fatalf("expected output=%q, got %q", "child done", runResult.Output)
 	}
 }
 
@@ -545,17 +409,8 @@ func TestSpawnAgent_BlockingWithExplorerAgent(t *testing.T) {
 	}
 	defer sess.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	res := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
-		ID:        "c1",
-		Name:      "spawn_agent",
-		Arguments: json.RawMessage(`{"task":"survey the project","agent_type":"explorer","blocking":true}`),
-	})
-	if res.IsError {
-		t.Fatalf("blocking explorer spawn error: %s", res.Output)
-	}
+	agentID := spawnRuntimeAgent(t, sess, "survey the project", "", 0, "explorer", "", nil)
+	waitForRuntimeSubagent(t, sess, agentID)
 
 	// Should have used the explorer's system prompt.
 	if !strings.Contains(subagentSystemPrompt, "workspace scout") {
@@ -591,17 +446,8 @@ func TestSpawnAgent_PluginAgentGetsComposedPrompt(t *testing.T) {
 	}
 	defer sess.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	res := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
-		ID:        "c1",
-		Name:      "spawn_agent",
-		Arguments: json.RawMessage(`{"task":"survey the project","agent_type":"explorer","blocking":true}`),
-	})
-	if res.IsError {
-		t.Fatalf("blocking explorer spawn error: %s", res.Output)
-	}
+	agentID := spawnRuntimeAgent(t, sess, "survey the project", "", 0, "explorer", "", nil)
+	waitForRuntimeSubagent(t, sess, agentID)
 
 	// Subagent prompt should contain template-rendered content AND the agent-specific prompt.
 	if !strings.Contains(subagentSystemPrompt, "communicate") {
@@ -640,18 +486,8 @@ func TestSpawnAgent_DefaultSubagentGetsComposedPrompt(t *testing.T) {
 	}
 	defer sess.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// No agent_type = default subagent.
-	res := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
-		ID:        "c1",
-		Name:      "spawn_agent",
-		Arguments: json.RawMessage(`{"task":"do something","blocking":true}`),
-	})
-	if res.IsError {
-		t.Fatalf("blocking spawn error: %s", res.Output)
-	}
+	agentID := spawnRuntimeAgent(t, sess, "do something", "", 0, "", "", nil)
+	waitForRuntimeSubagent(t, sess, agentID)
 
 	// Default subagent should get core + subagent persona.
 	if !strings.Contains(subagentSystemPrompt, "communicate") {
@@ -703,97 +539,14 @@ func TestSpawnAgent_SystemPromptFileDoesNotOverrideSubagentPrompt(t *testing.T) 
 		t.Fatal("root cached system prompt should include the custom top-level prompt")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	res := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
-		ID:        "c-root-only",
-		Name:      "spawn_agent",
-		Arguments: json.RawMessage(`{"task":"do something","blocking":true}`),
-	})
-	if res.IsError {
-		t.Fatalf("blocking spawn error: %s", res.Output)
-	}
+	agentID := spawnRuntimeAgent(t, sess, "do something", "", 0, "", "", nil)
+	waitForRuntimeSubagent(t, sess, agentID)
 
 	if strings.Contains(subagentSystemPrompt, "ROOT ONLY CUSTOM PROMPT") {
 		t.Fatalf("subagent prompt should not inherit the root-only system prompt override:\n%s", subagentSystemPrompt)
 	}
 	if !strings.Contains(subagentSystemPrompt, "Delegated task limits") {
 		t.Fatalf("subagent prompt should still use the dedicated subagent template:\n%s", subagentSystemPrompt)
-	}
-}
-
-// --- minWaitTimeoutMS ---
-
-func TestMinWaitTimeoutMS_IsAtLeast120Seconds(t *testing.T) {
-	if minWaitTimeoutMS < 120_000 {
-		t.Errorf("minWaitTimeoutMS = %d, want >= 120000", minWaitTimeoutMS)
-	}
-}
-
-func TestWaitToolDescription_SuggestsFiveMinutes(t *testing.T) {
-	def := tool.DefWait()
-	if !strings.Contains(def.Description, "300000") {
-		t.Errorf("wait description should suggest 300000ms, got: %s", def.Description)
-	}
-}
-
-// TestToolDescriptions_TeachJobControlModel guards the model-facing job-control
-// contract: the rewritten descriptions must teach spawn-and-be-notified, advertise
-// transcript_ref (not a `transcript` field), say close retains a closed record, and
-// must not reintroduce the old poll/block or blocking-recommended anti-patterns.
-func TestToolDescriptions_TeachJobControlModel(t *testing.T) {
-	wait := tool.DefWait().Description
-	if !strings.Contains(wait, "transcript_ref") {
-		t.Error("wait must advertise transcript_ref")
-	}
-	if strings.Contains(wait, "`transcript`") || strings.Contains(wait, " transcript field") {
-		t.Error("stale transcript-field wording in wait")
-	}
-
-	closeD := tool.DefCloseAgent().Description
-	if strings.Contains(closeD, "removes the sub-agent") {
-		t.Error("close now retains a closed record, not 'removes the sub-agent'")
-	}
-
-	spawn := tool.DefSpawnAgent()
-	if strings.Contains(spawn.Description, "call wait() on each agent_id") {
-		t.Error("spawn must not teach the poll/block anti-pattern")
-	}
-	if !strings.Contains(strings.ToLower(spawn.Description), "notif") {
-		t.Error("spawn must teach the auto-notification pattern")
-	}
-	// The poll/block anti-pattern also must not survive in the blocking param doc.
-	if blocking, ok := spawn.Parameters["properties"].(map[string]any)["blocking"].(map[string]any); ok {
-		if strings.Contains(fmt.Sprint(blocking["description"]), "call wait() on each agent_id") {
-			t.Error("spawn blocking param must not teach the poll/block anti-pattern")
-		}
-	}
-
-	resume := tool.DefSendInput().Description
-	if strings.Contains(resume, "(recommended)") {
-		t.Error("resume must not recommend blocking=true")
-	}
-}
-
-// --- spawn_agent reasoning_effort parameter ---
-
-func TestSpawnAgent_ReasoningEffortParameter(t *testing.T) {
-	def := tool.DefSpawnAgent()
-	props, ok := def.Parameters["properties"].(map[string]any)
-	if !ok {
-		t.Fatal("expected properties map")
-	}
-	re, ok := props["reasoning_effort"]
-	if !ok {
-		t.Fatal("expected 'reasoning_effort' property in spawn_agent definition")
-	}
-	m, ok := re.(map[string]any)
-	if !ok {
-		t.Fatal("reasoning_effort should be a map")
-	}
-	if m["type"] != "string" {
-		t.Errorf("reasoning_effort type = %v, want 'string'", m["type"])
 	}
 }
 
@@ -821,17 +574,8 @@ func TestSpawnAgent_ReasoningEffortApplied(t *testing.T) {
 	}
 	defer sess.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	res := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
-		ID:        "c1",
-		Name:      "spawn_agent",
-		Arguments: json.RawMessage(`{"task":"hard problem","reasoning_effort":"xhigh","blocking":true}`),
-	})
-	if res.IsError {
-		t.Fatalf("spawn error: %s", res.Output)
-	}
+	agentID := spawnRuntimeAgent(t, sess, "hard problem", "", 0, "", "xhigh", nil)
+	waitForRuntimeSubagent(t, sess, agentID)
 	if subagentReasoningEffort == nil || *subagentReasoningEffort != "xhigh" {
 		got := "<nil>"
 		if subagentReasoningEffort != nil {
@@ -935,18 +679,9 @@ func TestSpawnAgent_TaskListPreservedForNamedAgent(t *testing.T) {
 	}
 	defer sess.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
 	// Spawn an explorer (named agent with explicit tool list that doesn't include task_list).
-	res := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
-		ID:        "c1",
-		Name:      "spawn_agent",
-		Arguments: json.RawMessage(`{"task":"explore the code","agent_type":"explorer","blocking":true}`),
-	})
-	if res.IsError {
-		t.Fatalf("spawn error: %s", res.Output)
-	}
+	agentID := spawnRuntimeAgent(t, sess, "explore the code", "", 0, "explorer", "", nil)
+	waitForRuntimeSubagent(t, sess, agentID)
 
 	// task_list should be in the subagent's tools even though explorer.md doesn't list it.
 	hasTaskList := false
@@ -987,17 +722,8 @@ func TestSpawnAgent_AllToolsAgentStripsAgentManagementTools(t *testing.T) {
 	}
 	defer sess.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	res := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
-		ID:        "c-all",
-		Name:      "spawn_agent",
-		Arguments: json.RawMessage(`{"task":"help with the task","agent_type":"default","blocking":true}`),
-	})
-	if res.IsError {
-		t.Fatalf("spawn error: %s", res.Output)
-	}
+	agentID := spawnRuntimeAgent(t, sess, "help with the task", "", 0, "default", "", nil)
+	waitForRuntimeSubagent(t, sess, agentID)
 
 	for _, want := range []string{"task_list"} {
 		found := false
@@ -1038,19 +764,12 @@ func TestSpawnAgent_GrantTools_RejectsRootOnlyTool(t *testing.T) {
 	}
 	defer sess.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	res := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
-		ID:        "c-grant",
-		Name:      "spawn_agent",
-		Arguments: json.RawMessage(`{"task":"help with follow-up work","grant_tools":["delegate"]}`),
-	})
-	if !res.IsError {
-		t.Fatalf("expected root-only grant rejection, got %s", res.Output)
+	_, err = sess.spawnAgent(context.Background(), "help with follow-up work", "", "", 0, "", "", nil, []string{"delegate"})
+	if err == nil {
+		t.Fatal("expected root-only grant rejection")
 	}
-	if !strings.Contains(res.Output, "top-level only") {
-		t.Fatalf("grant error = %q, want top-level-only message", res.Output)
+	if !strings.Contains(err.Error(), "top-level only") {
+		t.Fatalf("grant error = %q, want top-level-only message", err)
 	}
 }
 
@@ -1113,17 +832,5 @@ func TestBuiltinAgents_SubagentHasTaskList(t *testing.T) {
 	}
 	if !hasTaskList {
 		t.Errorf("subagent should have task_list in tools, got: %v", sub.Tools)
-	}
-}
-
-// --- spawn_agent blocking description ---
-
-func TestSpawnAgent_BlockingDescription_NoFireAndForget(t *testing.T) {
-	def := tool.DefSpawnAgent()
-	props := def.Parameters["properties"].(map[string]any)
-	blocking := props["blocking"].(map[string]any)
-	desc := fmt.Sprint(blocking["description"])
-	if strings.Contains(strings.ToLower(desc), "fire-and-forget") {
-		t.Error("blocking description should not say 'fire-and-forget'")
 	}
 }

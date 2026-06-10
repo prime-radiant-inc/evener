@@ -1093,9 +1093,8 @@ func TestToolInputSummary(t *testing.T) {
 		{"glob shows pattern", "glob", `{"pattern":"**/*.go"}`, "**/*.go", ""},
 		{"web_fetch shows host not full url", "web_fetch", `{"url":"https://example.com/a/b?c=d","question":"what"}`, "example.com", ""},
 		{"web_search shows query", "web_search", `{"query":"golang testing"}`, "golang testing", ""},
-		{"spawn_agent shows task/type/blocking", "spawn_agent", `{"task":"do thing","agent_type":"explorer","blocking":true}`, "explorer", ""},
-		{"resume_agent shows id/message", "resume_agent", `{"agent_id":"01J","message":"continue"}`, "01J", ""},
-		{"wait shows id/timeout", "wait", `{"agent_id":"01J","timeout_ms":300000}`, "01J", ""},
+		{"delegate shows task/type/background", "delegate", `{"task":"do thing","agent_type":"explorer","background":true}`, "explorer", ""},
+		{"job_send_message shows id/message", "job_send_message", `{"target":"job_01J","message":"continue"}`, "job_01J", ""},
 		{"use_skill shows skill", "use_skill", `{"skill_name":"brainstorming"}`, "brainstorming", ""},
 	}
 	for _, tc := range tests {

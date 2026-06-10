@@ -154,7 +154,7 @@ func TestSpawnAgent_PluginAgentType_SystemPrompt(t *testing.T) {
 
 	// Wait for the subagent to complete
 	agentID := parsed["agent_id"].(string)
-	_, _ = sess.waitAgent(ctx, agentID, 5000)
+	waitForRuntimeSubagent(t, sess, agentID)
 
 	// The subagent's system prompt should contain the plugin agent's system prompt
 	if !strings.Contains(subagentSystemPrompt, "code review specialist") {
@@ -207,7 +207,7 @@ func TestSpawnAgent_PluginAgentType_ModelOverride(t *testing.T) {
 	var parsed map[string]any
 	json.Unmarshal([]byte(result.(string)), &parsed)
 	agentID := parsed["agent_id"].(string)
-	_, _ = sess.waitAgent(ctx, agentID, 5000)
+	waitForRuntimeSubagent(t, sess, agentID)
 
 	// The subagent's LLM request should use the plugin agent's model
 	if subagentModel != "gpt-4.1-nano" {
@@ -260,7 +260,7 @@ func TestSpawnAgent_PluginAgentType_InheritModel(t *testing.T) {
 	var parsed map[string]any
 	json.Unmarshal([]byte(result.(string)), &parsed)
 	agentID := parsed["agent_id"].(string)
-	_, _ = sess.waitAgent(ctx, agentID, 5000)
+	waitForRuntimeSubagent(t, sess, agentID)
 
 	// With "inherit", the subagent should use the parent's model
 	if subagentModel != "gpt-5.2" {
@@ -316,7 +316,7 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 	var parsed map[string]any
 	json.Unmarshal([]byte(result.(string)), &parsed)
 	agentID := parsed["agent_id"].(string)
-	_, _ = sess.waitAgent(ctx, agentID, 5000)
+	waitForRuntimeSubagent(t, sess, agentID)
 
 	// The subagent should only have read_file, grep, task_list (always kept), and communicate (always kept)
 	allowed := map[string]bool{"read_file": true, "grep": true, "task_list": true, "communicate": true}
@@ -429,7 +429,7 @@ func TestSpawnAgent_PluginAgentType_GrantTools_AddsProviderVisibleTool(t *testin
 		t.Fatalf("unmarshal result: %v", err)
 	}
 	agentID := parsed["agent_id"].(string)
-	_, _ = sess.waitAgent(ctx, agentID, 5000)
+	waitForRuntimeSubagent(t, sess, agentID)
 
 	sub := sess.getSub(agentID)
 	if sub == nil {
@@ -457,7 +457,7 @@ func TestSpawnAgent_GrantTools_RejectsUnavailableParentTool(t *testing.T) {
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxSubagentDepth: 2,
-		spawn:            spawnConfig{allowedToolNames: []string{"read_file", "spawn_agent"}},
+		spawn:            spawnConfig{allowedToolNames: []string{"read_file"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -548,7 +548,7 @@ func TestSpawnAgent_PluginAgentType_InjectsSkillContent(t *testing.T) {
 	var parsed map[string]any
 	json.Unmarshal([]byte(result.(string)), &parsed)
 	agentID := parsed["agent_id"].(string)
-	_, _ = sess.waitAgent(ctx, agentID, 5000)
+	waitForRuntimeSubagent(t, sess, agentID)
 
 	// The subagent's system prompt should contain the injected skill body
 	if !strings.Contains(subagentSystemPrompt, "test skill body content for injection") {
@@ -557,24 +557,5 @@ func TestSpawnAgent_PluginAgentType_InjectsSkillContent(t *testing.T) {
 	// Also should still contain the agent's own system prompt
 	if !strings.Contains(subagentSystemPrompt, "test engineer") {
 		t.Errorf("subagent system prompt should contain agent system prompt, got:\n%s", subagentSystemPrompt)
-	}
-}
-
-func TestDefSpawnAgent_HasAgentTypeParameter(t *testing.T) {
-	def := tool.DefSpawnAgent()
-	props, ok := def.Parameters["properties"].(map[string]any)
-	if !ok {
-		t.Fatal("expected properties map")
-	}
-	agentType, ok := props["agent_type"]
-	if !ok {
-		t.Fatal("expected agent_type property in spawn_agent definition")
-	}
-	m, ok := agentType.(map[string]any)
-	if !ok {
-		t.Fatal("agent_type should be a map")
-	}
-	if m["type"] != "string" {
-		t.Errorf("agent_type type = %v, want 'string'", m["type"])
 	}
 }

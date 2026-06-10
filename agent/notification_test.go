@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -15,58 +16,6 @@ import (
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
-
-// TestRun_ArmsOneNotificationOnTerminal proves a child reaching a terminal run
-// state arms exactly one metadata notification on the parent. The notification
-// carries the child's agent_id, the completed status/reason, a transcript_ref,
-// and turns_used — and no child output. Arming happens once per run: a second
-// drain returns nothing.
-//
-// Load-bearing: the arm site in run's finalize is what enqueues the entry. If it
-// were removed, the first drainNotifications would return 0 and the len==1
-// assertion would fail.
-func TestRun_ArmsOneNotificationOnTerminal(t *testing.T) {
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("child done") },
-		},
-	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
-	childID := spawnCompletedChild(t, sess, "n1", "do the thing")
-
-	notifs := sess.drainNotifications()
-	if len(notifs) != 1 {
-		t.Fatalf("drainNotifications after terminal run = %d entries, want 1", len(notifs))
-	}
-	n := notifs[0]
-	if n.AgentID != childID {
-		t.Errorf("notification AgentID = %q, want %q", n.AgentID, childID)
-	}
-	if n.Status != string(SubagentCompleted) {
-		t.Errorf("notification Status = %q, want %q", n.Status, SubagentCompleted)
-	}
-	if want := encodeRef("", childID); n.TranscriptRef != want {
-		t.Errorf("notification TranscriptRef = %q, want %q", n.TranscriptRef, want)
-	}
-	if n.TurnsUsed < 0 {
-		t.Errorf("notification TurnsUsed = %d, want >= 0", n.TurnsUsed)
-	}
-
-	// Armed at most once per run: the queue is now empty.
-	if again := sess.drainNotifications(); len(again) != 0 {
-		t.Fatalf("second drainNotifications = %d entries, want 0 (armed once)", len(again))
-	}
-}
 
 // requestsContain reports whether any text content part across any recorded
 // request message contains every wanted substring.
@@ -89,12 +38,69 @@ func requestsContain(reqs []llm.Request, wants ...string) bool {
 	return false
 }
 
+func enqueueCompletedDelegateNotification(t *testing.T, sess *Session, jobID string) {
+	t.Helper()
+	started := time.Now().Add(-time.Second).UTC()
+	ended := time.Now().UTC()
+	code := 0
+	if err := sess.jobManager.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               started,
+		JobID:            jobID,
+		Type:             jobstore.JobDelegate,
+		OwnerSessionID:   sess.ID(),
+		VisibleToSession: sess.ID(),
+		StartedAt:        &started,
+	}); err != nil {
+		t.Fatalf("append delegate job start: %v", err)
+	}
+	if err := sess.jobManager.appendEvent(jobstore.Event{
+		Kind:          jobstore.EventJobFinished,
+		TS:            ended,
+		JobID:         jobID,
+		Status:        jobstore.StatusCompleted,
+		Reason:        "communicated",
+		ExitCode:      &code,
+		EndedAt:       &ended,
+		OutputBytes:   12,
+		TranscriptRef: encodeRef("", "child-"+jobID),
+		TerminalGen:   "gen-" + jobID,
+	}); err != nil {
+		t.Fatalf("append delegate job finish: %v", err)
+	}
+	if err := sess.jobManager.appendEvent(jobstore.Event{
+		Kind:        jobstore.EventJobNotificationPending,
+		TS:          ended,
+		JobID:       jobID,
+		TerminalGen: "gen-" + jobID,
+	}); err != nil {
+		t.Fatalf("append delegate notification pending: %v", err)
+	}
+	sess.enqueueJobNotification(jobNotification{JobID: jobID})
+}
+
+func completeBackgroundDelegateForNotification(t *testing.T, sess *Session) string {
+	t.Helper()
+	res := sess.createDelegate(context.Background(), delegateArgs{
+		Task:       "finish and notify",
+		Background: true,
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate: %v", res.Err)
+	}
+	if res.JobID == "" {
+		t.Fatalf("delegate result missing job_id: %+v", res)
+	}
+	waitForShellDone(t, sess.jobManager, res.JobID)
+	return res.JobID
+}
+
 // TestNotificationTurn_DrivesModelRequestWithReminder proves that a notification
 // turn drains the queue, frames the entry as a TurnSteering reminder, and DRIVES
 // A REAL MODEL REQUEST carrying that reminder this turn — not merely an append to
 // s.history that the model never sees (the rejected v4). The load-bearing
 // assertion is (a): the fake adapter recorded a request whose message history
-// contains the "<subagent-notification ...>" block, so the notification reached
+// contains the "<job-notification ...>" block, so the notification reached
 // the MODEL.
 func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 	dir := t.TempDir()
@@ -102,25 +108,28 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 	adapter := &fakeAdapter{
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ack") },
+			func(req llm.Request) llm.Response {
+				return communicateWithStructured("delegate complete", map[string]any{
+					"message": "delegate complete",
+				})
+			},
+			func(req llm.Request) llm.Response { return communicateWithDefaultOutput("delegate done") },
+			func(req llm.Request) llm.Response { return communicateWithDefaultOutput("ack") },
+			func(req llm.Request) llm.Response { return communicateWithDefaultOutput("ack") },
+			func(req llm.Request) llm.Response { return communicateWithDefaultOutput("ack") },
 		},
 	}
 	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 1,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer sess.Close()
 
-	// Back the notification with a real tracked, unconsumed terminal child so the
-	// suppress-at-drain filter (Task 4) treats it as deliverable. Without a backing
-	// record the manager get returns nil and the entry is dropped as GC-reclaimed.
-	trackSyntheticChild(t, sess, "01CHILD", SubagentCompleted, false, false, time.Now(), false)
-	sess.enqueueNotification(subagentNotification{
-		AgentID: "01CHILD",
-		Status:  "completed", TurnsUsed: 4,
-		TranscriptRef: "local:01CHILD",
-	})
+	jobID := completeBackgroundDelegateForNotification(t, sess)
 
 	sess.mu.Lock()
 	turnsBefore := sess.turns
@@ -137,20 +146,10 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 		t.Fatal("notification turn made no model request; the notification never reached the model (v4 regression)")
 	}
 	// (b) The recorded request's message history carries the notification block
-	// without naming transcript tools that are unavailable without StateDir.
-	if !requestsContain(reqs, "<subagent-notification", "01CHILD") {
-		t.Fatalf("model request history did not contain the <subagent-notification ...> block for 01CHILD")
+	// for the completed delegate job.
+	if !requestsContain(reqs, "<job-notification", fmt.Sprintf(`job_id="%s"`, jobID), `job_type="delegate"`, "job_read_output") {
+		t.Fatalf("model request history did not contain the <job-notification ...> block for %s", jobID)
 	}
-	if !requestsContain(reqs, "no job_id", "No archived transcript inspection path is available", "local:01CHILD") {
-		t.Fatalf("model request history did not explain unavailable transcript inspection")
-	}
-	if requestsContain(reqs, "read_session_transcript") {
-		t.Fatalf("model request history pointed at unavailable transcript inspection")
-	}
-	if requestsContain(reqs, "wait(") || requestsContain(reqs, "subagent_output") || requestsContain(reqs, "job_read_output") {
-		t.Fatalf("model request history contained deleted subagent result tool guidance")
-	}
-
 	// (c) A notification turn is NOT a user turn: s.turns must not increment.
 	sess.mu.Lock()
 	turnsAfter := sess.turns
@@ -163,58 +162,17 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 	sess.mu.Lock()
 	var sawSteering bool
 	for _, tn := range sess.history {
-		if tn.Kind == schema.TurnUserInput && strings.Contains(tn.Message.Text(), "<subagent-notification") {
+		if tn.Kind == schema.TurnUserInput && strings.Contains(tn.Message.Text(), "<job-notification") {
 			sess.mu.Unlock()
 			t.Fatal("notification reminder appended as TurnUserInput (user bubble); want TurnSteering")
 		}
-		if tn.Kind == schema.TurnSteering && strings.Contains(tn.Message.Text(), "<subagent-notification") {
+		if tn.Kind == schema.TurnSteering && strings.Contains(tn.Message.Text(), "<job-notification") {
 			sawSteering = true
 		}
 	}
 	sess.mu.Unlock()
 	if !sawSteering {
-		t.Fatal("no TurnSteering entry carrying the <subagent-notification ...> block was appended to history")
-	}
-}
-
-func TestNotificationTurn_WithStateDirPointsAtTranscriptInspection(t *testing.T) {
-	dir := t.TempDir()
-	c := llm.NewClient()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ack") },
-		},
-	}
-	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		StateDir: dir,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
-	trackSyntheticChild(t, sess, "01CHILD", SubagentCompleted, false, false, time.Now(), false)
-	sess.enqueueNotification(subagentNotification{
-		AgentID: "01CHILD",
-		Status:  "completed", TurnsUsed: 4,
-		TranscriptRef: "local:01CHILD",
-	})
-
-	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
-		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
-	}
-
-	reqs := adapter.Requests()
-	if len(reqs) == 0 {
-		t.Fatal("notification turn made no model request")
-	}
-	if !requestsContain(reqs, "no job_id", "read_session_transcript", "local:01CHILD") {
-		t.Fatalf("model request history did not point persistent notification at transcript inspection")
-	}
-	if requestsContain(reqs, "wait(") || requestsContain(reqs, "subagent_output") || requestsContain(reqs, "job_read_output") {
-		t.Fatalf("model request history contained deleted subagent result tool guidance")
+		t.Fatal("no TurnSteering entry carrying the <job-notification ...> block was appended to history")
 	}
 }
 
@@ -334,7 +292,7 @@ func TestNotificationTurn_EmptyQueueIsNoOp(t *testing.T) {
 //     notification during the turn. At the tail the gate folds continuation #1
 //     FIRST (Iterations -> 1) and defers continuation #2; THEN the notification peek
 //     interleaves an EntryNotification turn ahead of continuation #2.
-//   - turn 3 (notification): drains the queue, frames the <subagent-notification>
+//   - turn 3 (notification): drains the queue, frames the <job-notification>
 //     reminder, drives a real model request. Its step snapshots the goal counters
 //     (Iterations already 1, folded at continuation #1's own gate); because
 //     ranKind==EntryNotification short-circuits the gate, no RecordContinuation runs
@@ -345,7 +303,7 @@ func TestNotificationTurn_EmptyQueueIsNoOp(t *testing.T) {
 //   - continuation #3: declare the goal complete; the gate sees the terminal status
 //     and stops, emitting EventGoalEnded{complete}.
 //
-// Load-bearing assertions: a model request carries the <subagent-notification>
+// Load-bearing assertions: a model request carries the <job-notification>
 // block (the reminder interleaved into the chain); the goal's Iterations and
 // NoProgressStreak are identical at the start of the notification turn and at the
 // start of the deferred continuation that runs right after it (the notification
@@ -404,20 +362,12 @@ func TestNotification_InterleavesWithActiveGoal(t *testing.T) {
 
 	sess.getOrCreateGoalStore().Set("interleave objective", time.Now())
 
-	// Back the interleaved notification with a real tracked, unconsumed terminal
-	// child so the suppress-at-drain filter (Task 4) treats it as deliverable.
-	trackSyntheticChild(t, sess, "01CHILD", SubagentCompleted, false, false, time.Now(), false)
-
 	// Enqueue the notification as continuation #1 ends (its round-1 step, steps[3]),
 	// so after continuation #1 folds at its gate the tail interleaves a notification
 	// turn ahead of the deferred continuation #2.
 	base3 := adapter.steps[3]
 	adapter.steps[3] = func(req llm.Request) llm.Response {
-		sess.enqueueNotification(subagentNotification{
-			AgentID: "01CHILD",
-			Status:  "completed", TurnsUsed: 2,
-			TranscriptRef: "local:01CHILD",
-		})
+		enqueueCompletedDelegateNotification(t, sess, "job_interleave")
 		return base3(req)
 	}
 	// Snapshot the goal counters from inside the notification turn (steps[4]):
@@ -448,8 +398,8 @@ func TestNotification_InterleavesWithActiveGoal(t *testing.T) {
 
 	// The notification request carries the reminder block — it reached the model,
 	// interleaved into the chain rather than waiting for the goal to finish.
-	if !requestsContain(adapter.Requests(), "<subagent-notification", "01CHILD") {
-		t.Fatal("model never saw the <subagent-notification ...> block; the notification did not interleave into the chain")
+	if !requestsContain(adapter.Requests(), "<job-notification", `job_id="job_interleave"`, `job_type="delegate"`) {
+		t.Fatal("model never saw the <job-notification ...> block; the notification did not interleave into the chain")
 	}
 	if !snapCaptured {
 		t.Fatal("the notification turn's adapter step never ran; an EntryNotification turn did not interleave between continuations")
@@ -488,12 +438,12 @@ func TestNotification_InterleavesWithActiveGoal(t *testing.T) {
 	}
 }
 
-// sustainedNotificationAdapter models the central workload of the subagent
-// control plane: a goal whose strategy spawns a subagent every work turn. Each
+// sustainedNotificationAdapter models the central workload of the job
+// control plane: a goal whose strategy finishes a job every work turn. Each
 // work turn (the user's "begin" and every goal continuation) makes NO mutating
-// tool call — it just ends the turn — and arms one subagent-completion
+// tool call — it just ends the turn — and arms one job-completion
 // notification, so a notification is pending at the tail of every continuation.
-// A notification turn (detected by the <subagent-notification ...> reminder being
+// A notification turn (detected by the <job-notification ...> reminder being
 // the most recent message in the request) does NOT re-arm, so notification turns
 // do not chain into one another.
 //
@@ -506,6 +456,7 @@ func TestNotification_InterleavesWithActiveGoal(t *testing.T) {
 type sustainedNotificationAdapter struct {
 	name string
 	sess *Session // armed lazily by the test after NewSession
+	t    *testing.T
 
 	mu    sync.Mutex
 	calls int
@@ -529,11 +480,7 @@ func (a *sustainedNotificationAdapter) Complete(ctx context.Context, req llm.Req
 	// continuation), but never on a notification turn — otherwise notification
 	// turns would chain endlessly and the deferred continuation would never run.
 	if a.sess != nil && !lastMessageIsNotification(req) {
-		a.sess.enqueueNotification(subagentNotification{
-			AgentID: "01CHILD",
-			Status:  "completed", TurnsUsed: 1,
-			TranscriptRef: "local:01CHILD",
-		})
+		enqueueCompletedDelegateNotification(a.t, a.sess, fmt.Sprintf("job_sustained_%d", n))
 	}
 	resp := finalResponse("work turn (no progress)")
 	resp.Provider = a.name
@@ -550,13 +497,13 @@ func (a *sustainedNotificationAdapter) Stream(ctx context.Context, req llm.Reque
 }
 
 // lastMessageIsNotification reports whether the last text-bearing message in the
-// request is the <subagent-notification ...> reminder — i.e. this model call is a
+// request is the <job-notification ...> reminder — i.e. this model call is a
 // notification turn. acceptNotificationInput appends that reminder as the final
 // steering turn before the request, so it is the most recent message text.
 func lastMessageIsNotification(req llm.Request) bool {
 	for i := len(req.Messages) - 1; i >= 0; i-- {
 		if t := req.Messages[i].Text(); strings.TrimSpace(t) != "" {
-			return strings.Contains(t, "<subagent-notification")
+			return strings.Contains(t, "<job-notification")
 		}
 	}
 	return false
@@ -595,7 +542,7 @@ func lastTextMessage(req llm.Request) string {
 func TestNotification_BreakerFiresUnderSustainedNotifications(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
-	adapter := &sustainedNotificationAdapter{name: "openai", ceil: 60}
+	adapter := &sustainedNotificationAdapter{name: "openai", t: t, ceil: 60}
 	c.Register(adapter)
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {
@@ -694,11 +641,7 @@ func TestNotification_GoalContinuesInlineWithoutKickFunc(t *testing.T) {
 	// tail-drain peek preempts the next continuation.
 	base3 := adapter.steps[3]
 	adapter.steps[3] = func(req llm.Request) llm.Response {
-		sess.enqueueNotification(subagentNotification{
-			AgentID: "01CHILD",
-			Status:  "completed", TurnsUsed: 2,
-			TranscriptRef: "local:01CHILD",
-		})
+		enqueueCompletedDelegateNotification(t, sess, "job_inline")
 		return base3(req)
 	}
 
@@ -727,72 +670,6 @@ func TestNotification_GoalContinuesInlineWithoutKickFunc(t *testing.T) {
 	evs := collect()
 	if got := countGoalEnded(evs); got != 1 {
 		t.Fatalf("count(EventGoalEnded) = %d, want 1", got)
-	}
-	if d := lastGoalEnded(t, evs); d.Status != "complete" {
-		t.Fatalf("EventGoalEnded.Status = %q, want complete", d.Status)
-	}
-}
-
-func TestNotificationNoOpBeforeDeferredGoalContinuationDoesNotSuppressSessionEnd(t *testing.T) {
-	dir := t.TempDir()
-	c := llm.NewClient()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return toolCallResponse(writeFileCall("u1", "u.txt", "user work"))
-			},
-			func(req llm.Request) llm.Response { return finalResponse("user turn done") },
-			func(req llm.Request) llm.Response {
-				return toolCallResponse(writeFileCall("c1", "c.txt", "cont work"))
-			},
-			func(req llm.Request) llm.Response { return finalResponse("cont 1 done") },
-			func(req llm.Request) llm.Response {
-				return toolCallResponse(updateGoalCall("g1", "complete"))
-			},
-			func(req llm.Request) llm.Response { return finalResponse("goal achieved") },
-		},
-	}
-	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	collect := drainEvents(sess)
-	sess.getOrCreateGoalStore().Set("inline objective", time.Now())
-
-	base3 := adapter.steps[3]
-	adapter.steps[3] = func(req llm.Request) llm.Response {
-		sess.enqueueNotification(subagentNotification{
-			AgentID: "01MISSING",
-			Status:  "completed", TurnsUsed: 2,
-			TranscriptRef: "local:01MISSING",
-		})
-		return base3(req)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if _, err := sess.ProcessInput(ctx, "begin", nil); err != nil {
-		t.Fatalf("ProcessInput: %v", err)
-	}
-
-	sess.Close()
-	evs := collect()
-	var sessionEnds int
-	for _, ev := range evs {
-		if ev.Kind != events.EventSessionEnd {
-			continue
-		}
-		if d, ok := ev.Data.(events.SessionEndData); ok && d.Reason == "input_complete" {
-			sessionEnds++
-		}
-	}
-	if sessionEnds != 1 {
-		t.Fatalf("SESSION_END{input_complete} count = %d, want 1 after deferred continuation real work", sessionEnds)
-	}
-	if got := countGoalContinuations(evs); got < 2 {
-		t.Fatalf("count(EventGoalContinuation) = %d, want >= 2", got)
 	}
 	if d := lastGoalEnded(t, evs); d.Status != "complete" {
 		t.Fatalf("EventGoalEnded.Status = %q, want complete", d.Status)
@@ -868,31 +745,6 @@ func TestNotificationNoOpDroppedDeferredGoalContinuationDoesNotSuppressSessionEn
 	}
 }
 
-func TestSubagentNotificationRequeueSchedulesRetryWake(t *testing.T) {
-	sess := newTestSession(t)
-	wake := make(chan struct{}, 1)
-	sess.SetNotifyFunc(func() {
-		select {
-		case wake <- struct{}{}:
-		default:
-		}
-	})
-	sess.pendingNotifsMu.Lock()
-	sess.jobNotifyRetry.delay = 10 * time.Millisecond
-	sess.pendingNotifsMu.Unlock()
-
-	sess.requeueNotifications([]subagentNotification{{AgentID: "01CHILD", Status: "completed"}})
-
-	select {
-	case <-wake:
-	case <-time.After(2 * time.Second):
-		t.Fatal("requeued subagent notification did not schedule a retry wake")
-	}
-	if got := sess.peekNotifications(); got != 1 {
-		t.Fatalf("peekNotifications = %d, want 1 after retry wake", got)
-	}
-}
-
 // TestNotification_GoalClearedDuringInterleaveStops proves that clearing the goal
 // DURING an interleaved notification turn drops the gate-time deferred continuation
 // rather than running it against a goal that no longer exists. The gate folds
@@ -940,19 +792,11 @@ func TestNotification_GoalClearedDuringInterleaveStops(t *testing.T) {
 
 	sess.getOrCreateGoalStore().Set("clear-me objective", time.Now())
 
-	// Back the interleaved notification with a real tracked, unconsumed terminal
-	// child so the suppress-at-drain filter (Task 4) treats it as deliverable.
-	trackSyntheticChild(t, sess, "01CHILD", SubagentCompleted, false, false, time.Now(), false)
-
 	// Arm the notification as continuation #1 ends (steps[3]) so it interleaves ahead
 	// of the gate-time deferred continuation #2.
 	base3 := adapter.steps[3]
 	adapter.steps[3] = func(req llm.Request) llm.Response {
-		sess.enqueueNotification(subagentNotification{
-			AgentID: "01CHILD",
-			Status:  "completed", TurnsUsed: 2,
-			TranscriptRef: "local:01CHILD",
-		})
+		enqueueCompletedDelegateNotification(t, sess, "job_clear")
 		return base3(req)
 	}
 	// During the notification turn (steps[4]), clear the goal — modelling `/goal clear`
@@ -1038,18 +882,10 @@ func TestNotification_GoalRetargetedDuringInterleaveUsesNewObjective(t *testing.
 
 	sess.getOrCreateGoalStore().Set(oldObjective, time.Now())
 
-	// Back the interleaved notification with a real tracked, unconsumed terminal
-	// child so the suppress-at-drain filter (Task 4) treats it as deliverable.
-	trackSyntheticChild(t, sess, "01CHILD", SubagentCompleted, false, false, time.Now(), false)
-
 	// Arm the notification as continuation #1 ends (steps[3]).
 	base3 := adapter.steps[3]
 	adapter.steps[3] = func(req llm.Request) llm.Response {
-		sess.enqueueNotification(subagentNotification{
-			AgentID: "01CHILD",
-			Status:  "completed", TurnsUsed: 2,
-			TranscriptRef: "local:01CHILD",
-		})
+		enqueueCompletedDelegateNotification(t, sess, "job_retarget")
 		return base3(req)
 	}
 	// During the notification turn (steps[4]), retarget the goal to NEW — modelling
@@ -1132,169 +968,6 @@ func assertNotificationSuppressed(t *testing.T, sess *Session, adapter *fakeAdap
 		if d, ok := ev.Data.(events.SessionEndData); ok && d.Reason == "input_complete" {
 			t.Fatalf("suppressed notification turn emitted a phantom SESSION_END{input_complete}; want none")
 		}
-	}
-}
-
-// TestNotification_SuppressedWhenConsumed proves a notification armed at terminal
-// run end is DROPPED at drain when the child's result was already consumed by a
-// blocking wait before the notification turn runs. spawnCompletedChild spawns a
-// non-blocking child that completes (arming one notification) and then wait()s on
-// it (setting resultConsumed=true). The subsequent notification turn must find
-// nothing to render and make NO model request.
-//
-// Load-bearing: the filter keys on resultConsumed. WITHOUT it, the consumed
-// entry would still render a <subagent-notification> reminder and drive a real
-// model request — so the len(Requests())==0 assertion is what proves the
-// consumed entry was suppressed rather than delivered.
-func TestNotification_SuppressedWhenConsumed(t *testing.T) {
-	dir := t.TempDir()
-	c := llm.NewClient()
-	// One step for the child's single run. The notification turn must make NO
-	// further request (so no extra step is needed); if the filter regressed and
-	// the turn DID call the model, the adapter falls back to its default "done"
-	// response and the len==0 assertion below fails loudly.
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("child done") },
-		},
-	}
-	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	collect := drainEvents(sess)
-
-	// Spawn + wait: arms a notification AND consumes the result (resultConsumed=true).
-	childID := spawnCompletedChild(t, sess, "sc", "do the thing")
-
-	// Sanity: the entry was armed and its backing record is consumed, so the filter
-	// must drop it. (We do not drain here — that is the turn's job below.)
-	if got := sess.peekNotifications(); got != 1 {
-		t.Fatalf("peekNotifications after spawn+wait = %d, want 1 (the terminal run armed one)", got)
-	}
-	if sub := sess.subagents.get(childID); sub == nil {
-		t.Fatalf("child %s not tracked", childID)
-	} else {
-		sub.mu.Lock()
-		consumed := sub.resultConsumed
-		sub.mu.Unlock()
-		if !consumed {
-			t.Fatalf("child %s resultConsumed = false after wait, want true", childID)
-		}
-	}
-
-	assertNotificationSuppressed(t, sess, adapter, collect)
-}
-
-// TestNotification_SuppressedWhenClosedOrAbsent proves a notification is dropped
-// at drain when, by delivery time, the child's record is closed (close_agent ran,
-// record retained as closed) or absent (GC-reclaimed → manager get returns nil).
-// Both are modelled with synthetic tracked records / an untracked agent_id so the
-// drain filter is exercised deterministically without spawn-goroutine timing.
-func TestNotification_SuppressedWhenClosedOrAbsent(t *testing.T) {
-	t.Run("closed", func(t *testing.T) {
-		dir := t.TempDir()
-		c := llm.NewClient()
-		adapter := &fakeAdapter{
-			name: "openai",
-			steps: []func(req llm.Request) llm.Response{
-				func(req llm.Request) llm.Response { return finalResponse("should not be called") },
-			},
-		}
-		c.Register(adapter)
-		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-			MaxSubagentDepth: 1,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		collect := drainEvents(sess)
-
-		// A retained closed record: close_agent leaves closed=true, record tracked.
-		trackSyntheticChild(t, sess, "01CLOSED", SubagentCompleted, true /*closed*/, false, time.Now(), false)
-		sess.enqueueNotification(subagentNotification{
-			AgentID: "01CLOSED",
-			Status:  "completed", TurnsUsed: 3,
-			TranscriptRef: "local:01CLOSED",
-		})
-
-		assertNotificationSuppressed(t, sess, adapter, collect)
-	})
-
-	t.Run("absent", func(t *testing.T) {
-		dir := t.TempDir()
-		c := llm.NewClient()
-		adapter := &fakeAdapter{
-			name: "openai",
-			steps: []func(req llm.Request) llm.Response{
-				func(req llm.Request) llm.Response { return finalResponse("should not be called") },
-			},
-		}
-		c.Register(adapter)
-		sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-			MaxSubagentDepth: 1,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		collect := drainEvents(sess)
-
-		// No tracking: the manager get returns nil for this agent_id (GC-reclaimed).
-		sess.enqueueNotification(subagentNotification{
-			AgentID: "01GONE",
-			Status:  "completed", TurnsUsed: 5,
-			TranscriptRef: "local:01GONE",
-		})
-
-		assertNotificationSuppressed(t, sess, adapter, collect)
-	})
-}
-
-// TestNotification_DeliveredWhenUnconsumedTerminal is the POSITIVE control: the
-// filter must NOT over-suppress. A still-tracked, terminal (completed),
-// UNconsumed child's notification IS delivered — the notification turn drives a
-// real model request carrying the <subagent-notification> reminder. This proves
-// the drain filter keeps survivors rather than dropping everything.
-func TestNotification_DeliveredWhenUnconsumedTerminal(t *testing.T) {
-	dir := t.TempDir()
-	c := llm.NewClient()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("ack") },
-		},
-	}
-	c.Register(adapter)
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
-	// A terminal, unconsumed, tracked child: the filter must KEEP its notification.
-	trackSyntheticChild(t, sess, "01LIVE", SubagentCompleted, false, false, time.Now(), false)
-	sess.enqueueNotification(subagentNotification{
-		AgentID: "01LIVE",
-		Status:  "completed", TurnsUsed: 2,
-		TranscriptRef: "local:01LIVE",
-	})
-
-	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
-		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
-	}
-
-	reqs := adapter.Requests()
-	if len(reqs) == 0 {
-		t.Fatal("unconsumed-terminal notification made no model request; the filter over-suppressed a deliverable entry")
-	}
-	if !requestsContain(reqs, "<subagent-notification", "01LIVE") {
-		t.Fatal("model request history did not carry the <subagent-notification ...> block for the unconsumed terminal child")
 	}
 }
 

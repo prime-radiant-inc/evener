@@ -37,7 +37,7 @@ func newNestedStopTestSession(t *testing.T, parentJobID string) (*Session, *jobM
 	parent := &Session{
 		id:         "PARENT",
 		jobManager: parentJM,
-		subagents:  newSubagentManager(nil, nil),
+		subagents:  newSubagentManager(nil),
 	}
 	parent.subagents.track(&subagent{
 		id:     "CHILD",
@@ -323,7 +323,7 @@ func TestClosedNestedOwnerFallsBackToForwardedRecord(t *testing.T) {
 	parent := &Session{
 		id:         "PARENT",
 		jobManager: parentJM,
-		subagents:  newSubagentManager(nil, nil),
+		subagents:  newSubagentManager(nil),
 	}
 	parent.subagents.track(&subagent{
 		id:     "CHILD",
@@ -385,7 +385,7 @@ func TestJobStopClosedNestedOwnerErrors(t *testing.T) {
 	parent := &Session{
 		id:         "PARENT",
 		jobManager: parentJM,
-		subagents:  newSubagentManager(nil, nil),
+		subagents:  newSubagentManager(nil),
 	}
 	parent.subagents.track(&subagent{
 		id:     "CHILD",
@@ -436,7 +436,7 @@ func TestClosedStoreNestedOwnerFallsBackToForwardedRecord(t *testing.T) {
 	parent := &Session{
 		id:         "PARENT",
 		jobManager: parentJM,
-		subagents:  newSubagentManager(nil, nil),
+		subagents:  newSubagentManager(nil),
 	}
 	parent.subagents.track(&subagent{
 		id:            "CHILD",
@@ -504,7 +504,7 @@ func TestNestedReadOutputFallsBackWhenOwnerStoreClosesAfterSelection(t *testing.
 	parent := &Session{
 		id:         "PARENT",
 		jobManager: parentJM,
-		subagents:  newSubagentManager(nil, nil),
+		subagents:  newSubagentManager(nil),
 	}
 	parent.subagents.track(&subagent{
 		id:     "CHILD",
@@ -561,7 +561,7 @@ func TestNestedReadOutputBlockRefreshesOwnerRecord(t *testing.T) {
 	parent := &Session{
 		id:         "PARENT",
 		jobManager: parentJM,
-		subagents:  newSubagentManager(nil, nil),
+		subagents:  newSubagentManager(nil),
 	}
 	parent.subagents.track(&subagent{
 		id:     "CHILD",

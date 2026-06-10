@@ -541,7 +541,7 @@ func TestCachedSystemPromptComponents_AgentSection(t *testing.T) {
 	if !strings.Contains(sess.cachedSystemPrompt, "Default task list:") {
 		t.Errorf("cached system prompt should summarize default agent task lists, got: %q", sess.cachedSystemPrompt)
 	}
-	if !strings.Contains(sess.cachedSystemPrompt, "Delegated tasks from `task_list` replace this step when provided.") {
+	if !strings.Contains(sess.cachedSystemPrompt, "Include relevant parent task details in the `delegate` task prompt for this step.") {
 		t.Errorf("cached system prompt should explain parent task slot behavior, got: %q", sess.cachedSystemPrompt)
 	}
 	if strings.Contains(sess.cachedSystemPrompt, "Name: `coordinator`") {

@@ -2,8 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,7 +48,7 @@ func (f *fakeEmit) count() int {
 
 func TestSubagentManager_TrackGetRemove(t *testing.T) {
 	fe := &fakeEmit{}
-	m := newSubagentManager(fe.emit, nil)
+	m := newSubagentManager(fe.emit)
 
 	if got := m.get("missing"); got != nil {
 		t.Fatalf("get on empty manager: got %v, want nil", got)
@@ -79,7 +77,7 @@ func TestSubagentManager_TrackGetRemove(t *testing.T) {
 
 func TestSubagentManager_DrainForCloseReturnsAllAndClears(t *testing.T) {
 	fe := &fakeEmit{}
-	m := newSubagentManager(fe.emit, nil)
+	m := newSubagentManager(fe.emit)
 
 	want := map[string]*subagent{
 		"a": {id: "a"},
@@ -121,185 +119,11 @@ func TestSubagentManager_DrainForCloseReturnsAllAndClears(t *testing.T) {
 
 func TestSubagentManager_EmitClosureIsCaptured(t *testing.T) {
 	fe := &fakeEmit{}
-	m := newSubagentManager(fe.emit, nil)
+	m := newSubagentManager(fe.emit)
 	m.emit(events.EventJobStarted, nil)
 	m.emit(events.EventJobFinished, nil)
 	if got := fe.count(); got != 2 {
 		t.Fatalf("captured emit forwarded %d events, want 2", got)
-	}
-}
-
-func TestSubagentManager_InfosEnumeratesTracked(t *testing.T) {
-	fe := &fakeEmit{}
-	m := newSubagentManager(fe.emit, nil)
-	m.track(&subagent{id: "a", status: SubagentRunning, turnsUsed: 3})
-	m.track(&subagent{id: "b", status: SubagentCompleted, turnsUsed: 7})
-
-	infos := m.infos()
-	if len(infos) != 2 {
-		t.Fatalf("infos returned %d entries, want 2", len(infos))
-	}
-	byID := map[string]SubagentInfo{}
-	for _, info := range infos {
-		byID[info.ID] = info
-	}
-	if byID["a"].Status != SubagentRunning || byID["a"].TurnsUsed != 3 {
-		t.Fatalf("infos[a] = %+v, want running/3", byID["a"])
-	}
-	if byID["b"].Status != SubagentCompleted || byID["b"].TurnsUsed != 7 {
-		t.Fatalf("infos[b] = %+v, want completed/7", byID["b"])
-	}
-}
-
-// TestInfos_HidesClosedByDefault proves the /status enumeration path drops closed
-// records so retained-but-closed children (Task 7) don't accumulate, while a
-// completed record stays visible. The closed record is constructed directly — at
-// this task nothing produces one — so this exercises the filter, not the close path.
-func TestInfos_HidesClosedByDefault(t *testing.T) {
-	fe := &fakeEmit{}
-	m := newSubagentManager(fe.emit, nil)
-	m.track(&subagent{id: "done", status: SubagentCompleted, turnsUsed: 2})
-	m.track(&subagent{id: "gone", status: SubagentCompleted, closed: true, turnsUsed: 5})
-
-	infos := m.infos()
-	byID := map[string]SubagentInfo{}
-	for _, info := range infos {
-		byID[info.ID] = info
-	}
-	if _, ok := byID["gone"]; ok {
-		t.Errorf("infos() must hide closed records; got %+v", infos)
-	}
-	if _, ok := byID["done"]; !ok {
-		t.Errorf("infos() must keep completed records; got %+v", infos)
-	}
-}
-
-// TestListAgents_IncludeClosed proves include_closed=true surfaces a closed record
-// that the default filter would hide.
-func TestListAgents_IncludeClosed(t *testing.T) {
-	fe := &fakeEmit{}
-	m := newSubagentManager(fe.emit, nil)
-	m.track(&subagent{id: "done", status: SubagentCompleted, turnsUsed: 2})
-	m.track(&subagent{id: "gone", status: SubagentCompleted, closed: true, turnsUsed: 5})
-
-	hidden, count := m.listAgents("01ROOT", "", false)
-	if count != 1 || len(hidden) != 1 || hidden[0].ID != "done" {
-		t.Fatalf("default list must hide closed; got count=%d agents=%+v", count, hidden)
-	}
-
-	shown, count := m.listAgents("01ROOT", "", true)
-	byID := map[string]SubagentInfo{}
-	for _, info := range shown {
-		byID[info.ID] = info
-	}
-	if count != 2 || len(shown) != 2 {
-		t.Fatalf("include_closed must surface closed; got count=%d agents=%+v", count, shown)
-	}
-	if _, ok := byID["gone"]; !ok {
-		t.Errorf("include_closed=true must include closed record; got %+v", shown)
-	}
-
-	// The legacy status="closed" sentinel maps to include_closed (no outcome filter)
-	// even when the flag is false: closed records become visible alongside the rest.
-	sentinel, count := m.listAgents("01ROOT", "closed", false)
-	sentinelByID := map[string]SubagentInfo{}
-	for _, info := range sentinel {
-		sentinelByID[info.ID] = info
-	}
-	if count != 2 || len(sentinel) != 2 {
-		t.Fatalf("status=closed must surface closed records; got count=%d agents=%+v", count, sentinel)
-	}
-	if _, ok := sentinelByID["gone"]; !ok {
-		t.Errorf("status=closed sentinel must include the closed record; got %+v", sentinel)
-	}
-}
-
-// TestListAgents_RunningChildAppearsImmediately spawns a child non-blocking whose
-// run blocks inside an in-flight LLM call, then drives list_agents through its
-// registered tool and asserts the child shows up running, not closed, with no
-// result available. The full record shape (ids/task/transcript_ref/parent/timestamps)
-// is asserted here too. Releasing the run via sess.Close() (deferred) drains the
-// goroutine — no sleeps.
-func TestListAgents_RunningChildAppearsImmediately(t *testing.T) {
-	dir := t.TempDir()
-	c := llm.NewClient()
-	blocked := make(chan struct{})
-	c.Register(&cancelBlockAdapter{name: "openai", blocked: blocked, resume: "resumed work"})
-
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
-	const task = "do long work"
-	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID:        "c1",
-		Name:      "spawn_agent",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"task":%q}`, task)),
-	})
-	if spawnRes.IsError {
-		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
-	}
-	var spawned map[string]any
-	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
-		t.Fatalf("unmarshal spawn result: %v", err)
-	}
-	agentID := strings.TrimSpace(fmt.Sprint(spawned["agent_id"]))
-
-	// Block until the child's run is in-flight inside the LLM call.
-	<-blocked
-
-	listRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID:        "c2",
-		Name:      "list_agents",
-		Arguments: json.RawMessage(`{}`),
-	})
-	if listRes.IsError {
-		t.Fatalf("list_agents error: %s", listRes.Output)
-	}
-
-	var payload struct {
-		Agents []SubagentInfo `json:"agents"`
-		Count  int            `json:"count"`
-	}
-	if err := json.Unmarshal([]byte(listRes.Output), &payload); err != nil {
-		t.Fatalf("unmarshal list result: %v (output: %s)", err, listRes.Output)
-	}
-	if payload.Count != 1 || len(payload.Agents) != 1 {
-		t.Fatalf("list_agents count=%d agents=%d, want 1/1 (output: %s)", payload.Count, len(payload.Agents), listRes.Output)
-	}
-	got := payload.Agents[0]
-	if got.Status != SubagentRunning {
-		t.Errorf("status = %q, want running", got.Status)
-	}
-	if got.Closed {
-		t.Errorf("closed = true, want false for a running child")
-	}
-	if got.ResultAvailable {
-		t.Errorf("result_available must be false for a running child")
-	}
-	// Full record shape.
-	if got.ID != agentID || got.AgentID != agentID {
-		t.Errorf("id=%q agent_id=%q, want both %q", got.ID, got.AgentID, agentID)
-	}
-	if got.Task != task {
-		t.Errorf("task = %q, want %q", got.Task, task)
-	}
-	if got.ParentSessionID != sess.ID() {
-		t.Errorf("parent_session_id = %q, want %q", got.ParentSessionID, sess.ID())
-	}
-	wantRef := encodeRef("", agentID)
-	if got.TranscriptRef != wantRef {
-		t.Errorf("transcript_ref = %q, want %q", got.TranscriptRef, wantRef)
-	}
-	if got.CreatedAt.IsZero() || got.StartedAt.IsZero() {
-		t.Errorf("created_at/started_at must be set; got created=%v started=%v", got.CreatedAt, got.StartedAt)
-	}
-	if got.EndedAt != nil {
-		t.Errorf("ended_at must be nil while running; got %v", got.EndedAt)
 	}
 }
 
@@ -308,27 +132,9 @@ func TestListAgents_RunningChildAppearsImmediately(t *testing.T) {
 // supply a finalResponse step for the child's single run.
 func spawnCompletedChild(t *testing.T, sess *Session, callPrefix, task string) string {
 	t.Helper()
-	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID:        callPrefix + "-spawn",
-		Name:      "spawn_agent",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"task":%q}`, task)),
-	})
-	if spawnRes.IsError {
-		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
-	}
-	var spawned map[string]any
-	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
-		t.Fatalf("unmarshal spawn result: %v", err)
-	}
-	agentID := strings.TrimSpace(fmt.Sprint(spawned["agent_id"]))
-	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID:        callPrefix + "-wait",
-		Name:      "wait",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":5000}`, agentID)),
-	})
-	if waitRes.IsError {
-		t.Fatalf("wait error: %s", waitRes.Output)
-	}
+	_ = callPrefix
+	agentID := spawnRuntimeAgent(t, sess, task, "", 0, "", "", nil)
+	waitForRuntimeSubagent(t, sess, agentID)
 	return agentID
 }
 
@@ -363,94 +169,6 @@ func trackSyntheticChild(t *testing.T, sess *Session, id string, status Subagent
 	sess.subagents.track(sub)
 }
 
-// TestClose_RetainsAsClosed drives a completed child through close and asserts the
-// record is RETAINED as closed (not removed): still tracked, closed=true with the
-// run outcome (completed) preserved in status, hidden from the default enumeration
-// but visible with include_closed, and the close snapshot still reports the run
-// outcome (status=completed, success=true).
-//
-// Load-bearing: if close still removed the record, getSub would be nil; if close
-// clobbered the outcome, status would not be completed and success would be false.
-func TestClose_RetainsAsClosed(t *testing.T) {
-	dir := t.TempDir()
-	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return finalResponse("child output") },
-		},
-	})
-	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		MaxSubagentDepth: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer sess.Close()
-
-	agentID := spawnCompletedChild(t, sess, "c1", "do work")
-
-	closeRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID:        "c2-close",
-		Name:      "close_agent",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q}`, agentID)),
-	})
-	if closeRes.IsError {
-		t.Fatalf("close_agent error: %s", closeRes.Output)
-	}
-
-	var result subagentResult
-	if err := json.Unmarshal([]byte(closeRes.Output), &result); err != nil {
-		t.Fatalf("close_agent result not JSON: %q (err: %v)", closeRes.Output, err)
-	}
-	if !result.Closed {
-		t.Errorf("close snapshot closed = false, want true")
-	}
-	if result.Status != SubagentCompleted {
-		t.Errorf("close snapshot status = %q, want %q (run outcome must survive close)", result.Status, SubagentCompleted)
-	}
-	if !result.Success {
-		t.Errorf("close snapshot success = false, want true for a child that completed before close")
-	}
-	if result.Output != "child output" {
-		t.Errorf("close snapshot output = %q, want %q", result.Output, "child output")
-	}
-
-	// The record is RETAINED, not removed.
-	sub := sess.getSub(agentID)
-	if sub == nil {
-		t.Fatal("close_agent must retain the record (got nil from getSub)")
-	}
-	sub.mu.Lock()
-	status := sub.status
-	closed := sub.closed
-	sub.mu.Unlock()
-	if !closed {
-		t.Errorf("retained record closed = false, want true")
-	}
-	if status != SubagentCompleted {
-		t.Errorf("retained record status = %q, want %q (run outcome preserved)", status, SubagentCompleted)
-	}
-
-	// Default enumeration hides the closed record; include_closed surfaces it.
-	if infos := sess.subagents.infos(); len(infos) != 0 {
-		t.Errorf("infos() must hide the closed record; got %+v", infos)
-	}
-	shown, count := sess.subagents.listAgents(sess.ID(), "", true)
-	if count != 1 || len(shown) != 1 || shown[0].ID != agentID {
-		t.Fatalf("include_closed must surface the closed record; got count=%d agents=%+v", count, shown)
-	}
-	if !shown[0].Closed {
-		t.Errorf("closed record closed = false, want true")
-	}
-	if shown[0].Status != SubagentCompleted {
-		t.Errorf("closed record status = %q, want %q", shown[0].Status, SubagentCompleted)
-	}
-	if shown[0].CloseTimedOut {
-		t.Errorf("close_timed_out must be false for a clean close")
-	}
-}
-
 // TestRetention_FailLoudAtCap fills the retention cap with UNCONSUMED terminal
 // records (none reclaimable), then asserts the next spawn fails loudly naming the
 // remedy and does NOT track a new child (no leak — the created session is Closed
@@ -480,17 +198,13 @@ func TestRetention_FailLoudAtCap(t *testing.T) {
 	before := countTracked(sess.subagents)
 	cleanupsBefore := env.count()
 
-	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID:        "c1-spawn",
-		Name:      "spawn_agent",
-		Arguments: json.RawMessage(`{"task":"overflow"}`),
-	})
-	if !spawnRes.IsError {
-		t.Fatalf("spawn at cap must fail; got success: %s", spawnRes.Output)
+	_, err = sess.spawnAgent(context.Background(), "overflow", "", "", 0, "", "", nil, nil)
+	if err == nil {
+		t.Fatal("spawn at cap must fail")
 	}
-	msg := strings.ToLower(spawnRes.Output)
-	if !strings.Contains(msg, "close_agent") || !strings.Contains(msg, "wait") {
-		t.Errorf("cap error must name the remedy (close_agent/wait); got %q", spawnRes.Output)
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "retained delegate limit") || !strings.Contains(msg, "job records finish") {
+		t.Errorf("cap error must name the delegate retention remedy; got %q", err.Error())
 	}
 
 	// No new child was tracked: the spawn was rejected before track.
@@ -621,18 +335,10 @@ func TestParentClose_DrainsAll(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A real child closed-and-retained, plus a hand-built closed record.
+	// A real child plus a hand-built closed record.
 	agentID := spawnCompletedChild(t, sess, "c1", "do work")
-	closeRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID:        "c2-close",
-		Name:      "close_agent",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q}`, agentID)),
-	})
-	if closeRes.IsError {
-		t.Fatalf("close_agent error: %s", closeRes.Output)
-	}
 	if got := sess.getSub(agentID); got == nil {
-		t.Fatal("precondition: closed child must be retained before parent close")
+		t.Fatal("precondition: completed child must be retained before parent close")
 	}
 
 	sess.Close()
@@ -739,48 +445,5 @@ func TestRetention_GCEvictsOldestWithinClass(t *testing.T) {
 	}
 	if got := sess.getSub(newID); got == nil {
 		t.Errorf("newly spawned child must be tracked after eviction")
-	}
-}
-
-// TestInfo_SurfacesCloseTimedOut proves the close_timed_out flag set on the close
-// timeout path reaches the info/list record. A close-timed-out record stays visible
-// in the default list (closed is still false), keeps its run outcome in status, and
-// its CloseTimedOut must reflect the field.
-//
-// Load-bearing: if infoLocked dropped the field, CloseTimedOut would be false here.
-func TestInfo_SurfacesCloseTimedOut(t *testing.T) {
-	fe := &fakeEmit{}
-	m := newSubagentManager(fe.emit, nil)
-	m.track(&subagent{id: "stuck", status: SubagentCompleted, closeTimedOut: true})
-
-	agents, count := m.listAgents("01ROOT", "", false)
-	if count != 1 || len(agents) != 1 {
-		t.Fatalf("close-timed-out record must appear in default list; got count=%d agents=%+v", count, agents)
-	}
-	if agents[0].Status != SubagentCompleted {
-		t.Errorf("status = %q, want %q (run outcome preserved)", agents[0].Status, SubagentCompleted)
-	}
-	if !agents[0].CloseTimedOut {
-		t.Errorf("close_timed_out must surface as true on a timed-out close")
-	}
-	if agents[0].Closed {
-		t.Errorf("closed must be false for a close-timed-out record (close not confirmed)")
-	}
-}
-
-// TestSubagentRecord_NoReasonKey_ClosedFlag pins the merged wire model: a running
-// record marshals with status="running" and NO "reason" key; a closed record keeps
-// its run outcome in status with closed=true (close never clobbers the outcome).
-func TestSubagentRecord_NoReasonKey_ClosedFlag(t *testing.T) {
-	running := subagentResult{AgentID: "a", Status: SubagentRunning}
-	b, _ := json.Marshal(running)
-	if strings.Contains(string(b), "\"reason\"") {
-		t.Fatalf("running result must not carry a reason key: %s", b)
-	}
-
-	closed := subagentResult{AgentID: "a", Status: SubagentCompleted, Closed: true, Success: true}
-	b2, _ := json.Marshal(closed)
-	if !strings.Contains(string(b2), "\"status\":\"completed\"") || !strings.Contains(string(b2), "\"closed\":true") {
-		t.Fatalf("closed record must keep its outcome in status and set closed: %s", b2)
 	}
 }

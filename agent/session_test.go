@@ -1639,9 +1639,7 @@ func TestSession_SubagentStopHookRunsWhenSubagentFinishes(t *testing.T) {
 	if spawned.AgentID == "" {
 		t.Fatalf("spawn result missing agent_id: %s", result)
 	}
-	if _, err := sess.waitAgent(context.Background(), spawned.AgentID, 0); err != nil {
-		t.Fatalf("waitAgent: %v", err)
-	}
+	waitForRuntimeSubagent(t, sess, spawned.AgentID)
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("SubagentStop hook did not run: %v", err)
 	}
