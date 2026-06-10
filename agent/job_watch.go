@@ -118,6 +118,13 @@ type watchSendDelivery struct {
 	trigger                  string
 }
 
+type restoredWatchConfigKey struct {
+	visibleSessionID string
+	target           string
+	sendTo           string
+	generation       string
+}
+
 func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	if a.Target == "" {
 		return watchResult{}, errors.New("invalid_request: target is required")
@@ -426,6 +433,92 @@ func (jm *jobManager) watchSendSnapshot(cfg *watchConfig, jobID, trigger string)
 		watchedIdentity:  jobID,
 		trigger:          trigger,
 	}
+}
+
+func (jm *jobManager) restoreWatchSendPending() error {
+	rec, err := jm.store.LoadWatchSends()
+	if err != nil {
+		return err
+	}
+	if len(rec.Pending) == 0 {
+		return nil
+	}
+	states := make([]*jobstore.WatchSendState, 0, len(rec.Pending))
+	for _, state := range rec.Pending {
+		if state == nil {
+			continue
+		}
+		copied := *state
+		states = append(states, &copied)
+	}
+	sort.SliceStable(states, func(i, j int) bool {
+		return watchSendStateLess(states[i], states[j])
+	})
+
+	cfgs := make(map[restoredWatchConfigKey]*watchConfig)
+	for _, state := range states {
+		key := state.Key
+		cfgKey := restoredWatchConfigKey{
+			visibleSessionID: key.VisibleSessionID,
+			target:           key.WatchTarget,
+			sendTo:           key.ResolvedSendTo,
+			generation:       key.WatchGeneration,
+		}
+		cfg := cfgs[cfgKey]
+		if cfg == nil {
+			cfg = &watchConfig{
+				target:     key.WatchTarget,
+				send:       &watchSendArgs{To: key.ResolvedSendTo},
+				generation: key.WatchGeneration,
+				pending:    make(map[jobstore.WatchSendKey]*jobstore.WatchSendState),
+			}
+			cfgs[cfgKey] = cfg
+		}
+		pending := *state
+		cfg.pending[key] = &pending
+		cfg.pendingOrder = append(cfg.pendingOrder, key)
+		if pending.UpdateSeq > cfg.nextUpdateSeq {
+			cfg.nextUpdateSeq = pending.UpdateSeq
+		}
+	}
+	if jm.terminalFlush == nil {
+		jm.terminalFlush = make(map[*watchConfig]bool)
+	}
+	for _, cfg := range cfgs {
+		if len(cfg.pending) != 0 {
+			jm.terminalFlush[cfg] = true
+		}
+	}
+	return nil
+}
+
+func watchSendStateLess(a, b *jobstore.WatchSendState) bool {
+	if !a.CreatedAt.Equal(b.CreatedAt) {
+		return a.CreatedAt.Before(b.CreatedAt)
+	}
+	if !a.UpdatedAt.Equal(b.UpdatedAt) {
+		return a.UpdatedAt.Before(b.UpdatedAt)
+	}
+	if a.UpdateSeq != b.UpdateSeq {
+		return a.UpdateSeq < b.UpdateSeq
+	}
+	return watchSendKeyLess(a.Key, b.Key)
+}
+
+func watchSendKeyLess(a, b jobstore.WatchSendKey) bool {
+	if a.VisibleSessionID != b.VisibleSessionID {
+		return a.VisibleSessionID < b.VisibleSessionID
+	}
+	if a.WatchTarget != b.WatchTarget {
+		return a.WatchTarget < b.WatchTarget
+	}
+	if a.ResolvedWatchedIdentity != b.ResolvedWatchedIdentity {
+		return a.ResolvedWatchedIdentity < b.ResolvedWatchedIdentity
+	}
+	if a.ResolvedSendTo != b.ResolvedSendTo {
+		return a.ResolvedSendTo < b.ResolvedSendTo
+	}
+	return a.WatchGeneration < b.WatchGeneration
 }
 
 func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
@@ -861,27 +954,41 @@ func (jm *jobManager) isCurrentWatchSendDeliveryLocked(d watchSendDelivery) bool
 
 func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d watchSendDelivery) {
 	record := jm.recordWatchSendPending(state, d)
-	if err := jm.appendWatchSendEvents(record.pendingEvents); err != nil {
-		jm.enqueueWatchNotifications([]jobNotification{
-			watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
-		})
+	if len(record.pendingEvents) == 0 {
 		return
 	}
+	var evictionDiagnostics []jobNotification
 	for _, eviction := range record.evictions {
-		if err := jm.appendWatchSendEvents(eviction.terminal.events); err != nil {
+		applied, err := jm.appendWatchSendTerminalSnapshots([]watchSendTerminalSnapshot{eviction.terminal})
+		if err != nil {
+			jm.removeWatchSendTerminalSnapshots(applied)
+			jm.rollbackWatchSendPendingRecord(record)
 			jm.enqueueWatchNotifications([]jobNotification{
 				watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 			})
 			return
 		}
-		jm.removeWatchSendTerminalSnapshots([]watchSendTerminalSnapshot{eviction.terminal})
-		jm.enqueueWatchNotifications([]jobNotification{eviction.diagnostic})
+		jm.removeWatchSendTerminalSnapshots(applied)
+		evictionDiagnostics = append(evictionDiagnostics, eviction.diagnostic)
+	}
+	if err := jm.appendWatchSendEvents(record.pendingEvents); err != nil {
+		jm.rollbackWatchSendPendingRecord(record)
+		jm.enqueueWatchNotifications([]jobNotification{
+			watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+		})
+		return
+	}
+	for _, diagnostic := range evictionDiagnostics {
+		jm.enqueueWatchNotifications([]jobNotification{diagnostic})
 	}
 }
 
 type watchSendPendingRecord struct {
 	pendingEvents []jobstore.Event
 	evictions     []watchSendEviction
+	cfg           *watchConfig
+	key           jobstore.WatchSendKey
+	previous      *jobstore.WatchSendState
 }
 
 type watchSendEviction struct {
@@ -904,10 +1011,16 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 	if cfg.pending == nil {
 		cfg.pending = make(map[jobstore.WatchSendKey]*jobstore.WatchSendState)
 	}
+	record := watchSendPendingRecord{
+		cfg: cfg,
+		key: state.Key,
+	}
 	if existing := cfg.pending[state.Key]; existing != nil {
 		if state.UpdateSeq < existing.UpdateSeq {
 			return watchSendPendingRecord{}
 		}
+		previous := *existing
+		record.previous = &previous
 		state.CoalescedCount = existing.CoalescedCount + 1
 		state.CreatedAt = existing.CreatedAt
 	} else {
@@ -923,11 +1036,11 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 		jm.rememberDetachedPendingLocked(cfg)
 	}
 
-	record := watchSendPendingRecord{pendingEvents: []jobstore.Event{{
+	record.pendingEvents = []jobstore.Event{{
 		Kind:      jobstore.EventWatchSendPending,
 		TS:        now,
 		WatchSend: &pendingState,
-	}}}
+	}}
 	overflow := len(cfg.pending) - defaultWatchSendPendingCap
 	for _, evictedKey := range cfg.pendingOrder {
 		if overflow <= 0 {
@@ -953,6 +1066,27 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 	return record
 }
 
+func (jm *jobManager) rollbackWatchSendPendingRecord(record watchSendPendingRecord) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	cfg := record.cfg
+	if cfg == nil || cfg.pending == nil || len(record.pendingEvents) == 0 || record.pendingEvents[0].WatchSend == nil {
+		return
+	}
+	persisted := record.pendingEvents[0].WatchSend
+	current := cfg.pending[record.key]
+	if current == nil || current.UpdateSeq != persisted.UpdateSeq {
+		return
+	}
+	if record.previous != nil {
+		previous := *record.previous
+		cfg.pending[record.key] = &previous
+	} else {
+		deletePendingWatchSendKeyLocked(cfg, record.key)
+	}
+	jm.forgetTerminalFlushIfEmptyLocked(cfg)
+}
+
 func (jm *jobManager) removePendingWatchSend(cfg *watchConfig, key jobstore.WatchSendKey, updateSeq uint64) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
@@ -970,6 +1104,13 @@ func removePendingWatchSendLocked(cfg *watchConfig, key jobstore.WatchSendKey, u
 	}
 	pending, ok := cfg.pending[key]
 	if !ok || updateSeq < pending.UpdateSeq {
+		return
+	}
+	deletePendingWatchSendKeyLocked(cfg, key)
+}
+
+func deletePendingWatchSendKeyLocked(cfg *watchConfig, key jobstore.WatchSendKey) {
+	if cfg == nil || cfg.pending == nil {
 		return
 	}
 	delete(cfg.pending, key)

@@ -133,7 +133,7 @@ func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*
 	if err != nil {
 		return nil, err
 	}
-	return &jobManager{
+	jm := &jobManager{
 		dir:         dir,
 		sessionID:   sessionID,
 		store:       store,
@@ -142,7 +142,12 @@ func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*
 		appendEvent: store.Append,
 		enqueue:     enqueue,
 		now:         time.Now,
-	}, nil
+	}
+	if err := jm.restoreWatchSendPending(); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	return jm, nil
 }
 
 func (jm *jobManager) close() error {

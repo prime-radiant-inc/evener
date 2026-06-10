@@ -88,6 +88,20 @@ func (s *Store) Load() (map[string]*JobRecord, error) {
 	return Fold(events), nil
 }
 
+// LoadWatchSends reads every event and folds durable pending watch-send state.
+func (s *Store) LoadWatchSends() (WatchSendRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureOpenLocked(); err != nil {
+		return WatchSendRecord{}, err
+	}
+	events, err := s.readAllLocked()
+	if err != nil {
+		return WatchSendRecord{}, err
+	}
+	return FoldWatchSends(events), nil
+}
+
 // readAll is the locked-public test/helper variant of readAllLocked.
 func (s *Store) readAll() ([]Event, error) {
 	s.mu.Lock()

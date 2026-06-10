@@ -620,6 +620,61 @@ func TestWatchSendGenerationChangesAfterRestoreAndKeepsOldPending(t *testing.T) 
 	t.Fatal("second pending key not found")
 }
 
+func TestWatchSendRestoreLoadsPendingStateForFutureRetry(t *testing.T) {
+	stateDir := t.TempDir()
+	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new job manager: %v", err)
+	}
+	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true, IncludeExcerpt: true},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("server ready\nstored excerpt\n")); err != nil {
+		t.Fatalf("append output: %v", err)
+	}
+	delivery := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: server ready")
+	jm.deliverWatchSend(context.Background(), delivery)
+	folded := loadWatchSendRecord(t, jm).Pending
+	if len(folded) != 1 {
+		t.Fatalf("folded pending before restore = %d, want 1", len(folded))
+	}
+	var wantFrame string
+	for _, state := range folded {
+		wantFrame = state.Frame
+	}
+	if err := jm.store.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	reopened, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("reopen job manager: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.store.Close() })
+
+	restored := runtimeWatchSendPending(t, reopened)
+	if len(restored) != 1 {
+		t.Fatalf("runtime pending after restore = %d, want 1: %+v", len(restored), restored)
+	}
+	for _, state := range restored {
+		if state.Frame != wantFrame {
+			t.Fatalf("restored frame = %q, want stored frame %q", state.Frame, wantFrame)
+		}
+		if !strings.Contains(state.Frame, "stored excerpt") {
+			t.Fatalf("restored frame = %q, want stored payload", state.Frame)
+		}
+	}
+}
+
 func TestWatchSendClearDropsPending(t *testing.T) {
 	jm := newTestJM(t)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
@@ -1502,11 +1557,17 @@ func TestWatchSendAppendFailureDuringEvictionKeepsMemoryAndDurableConsistent(t *
 	}
 	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_over_cap", JobType: "delegate", Status: "completed"})
 
-	if got := len(cfg.pending); got != defaultWatchSendPendingCap+1 {
-		t.Fatalf("in-memory pending after failed eviction append = %d, want %d", got, defaultWatchSendPendingCap+1)
+	if got := len(cfg.pending); got != defaultWatchSendPendingCap {
+		t.Fatalf("in-memory pending after failed eviction append = %d, want %d", got, defaultWatchSendPendingCap)
 	}
-	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != defaultWatchSendPendingCap+1 {
-		t.Fatalf("folded pending after failed eviction append = %d, want %d", len(pending), defaultWatchSendPendingCap+1)
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != defaultWatchSendPendingCap {
+		t.Fatalf("folded pending after failed eviction append = %d, want %d", len(pending), defaultWatchSendPendingCap)
+	} else {
+		for key := range pending {
+			if key.ResolvedWatchedIdentity == "job_trigger_over_cap" {
+				t.Fatalf("pending over cap was durable after failed eviction append: %+v", pending)
+			}
+		}
 	}
 	for _, n := range notified {
 		if strings.Contains(n.Reason, "watch send evicted") {
@@ -1667,6 +1728,26 @@ func loadWatchSendRecord(t *testing.T, jm *jobManager) jobstore.WatchSendRecord 
 		events = append(events, e)
 	}
 	return jobstore.FoldWatchSends(events)
+}
+
+func runtimeWatchSendPending(t *testing.T, jm *jobManager) map[jobstore.WatchSendKey]*jobstore.WatchSendState {
+	t.Helper()
+	out := make(map[jobstore.WatchSendKey]*jobstore.WatchSendState)
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for _, cfg := range jm.watches {
+		for key, state := range cfg.pending {
+			copied := *state
+			out[key] = &copied
+		}
+	}
+	for cfg := range jm.terminalFlush {
+		for key, state := range cfg.pending {
+			copied := *state
+			out[key] = &copied
+		}
+	}
+	return out
 }
 
 func TestWatchSendToWatchedRejectsSessionEventsWithoutConcreteTarget(t *testing.T) {
