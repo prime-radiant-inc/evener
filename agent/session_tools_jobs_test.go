@@ -249,6 +249,26 @@ func TestJobWatchNoConditionErrors(t *testing.T) {
 	}
 }
 
+func TestJobWatchToolMainAliasTargetFailsTargetNotFound(t *testing.T) {
+	s := newTestSession(t)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "watch",
+		Name:      "job_watch",
+		Arguments: json.RawMessage(`{"target":"main","events":["assistant.message"]}`),
+	})
+
+	if !res.IsError {
+		t.Fatalf("job_watch succeeded, want error: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "target_not_found") {
+		t.Fatalf("job_watch error = %q, want target_not_found", res.Output)
+	}
+	if s.jobManager.watchCount() != 0 {
+		t.Fatalf("watch count = %d, want 0", s.jobManager.watchCount())
+	}
+}
+
 func TestJobWatchLargeEchoFieldsReturnBoundedSuccess(t *testing.T) {
 	s := newTestSession(t)
 

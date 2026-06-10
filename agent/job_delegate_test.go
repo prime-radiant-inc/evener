@@ -1849,6 +1849,46 @@ func TestSendDelegateMessageAliasTargetDeliversRuntimeMessage(t *testing.T) {
 	}
 }
 
+func TestJobSendMessageMainAliasFailsTargetNotFound(t *testing.T) {
+	sess := newTestSession(t)
+	called := false
+	sess.cfg.spawn.parentSteer = func(string) { called = true }
+
+	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  "main",
+		Message: "hello",
+	})
+
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "target_not_found") {
+		t.Fatalf("error = %v, want target_not_found", res.Err)
+	}
+	if called {
+		t.Fatal("main alias called parentSteer")
+	}
+	if queue := sess.SteeringQueueSnapshot(); len(queue) != 0 {
+		t.Fatalf("steering queue = %+v, want no side effects", queue)
+	}
+	if jobs := sess.jobManager.list(listFilter{}); len(jobs) != 0 {
+		t.Fatalf("jobs = %+v, want no jobs created", jobs)
+	}
+}
+
+func TestJobSendMessageWatchedWithoutWatchContextFails(t *testing.T) {
+	sess := newTestSession(t)
+
+	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  "watched",
+		Message: "hello",
+	})
+
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "target_not_found") {
+		t.Fatalf("error = %v, want target_not_found", res.Err)
+	}
+	if queue := sess.SteeringQueueSnapshot(); len(queue) != 0 {
+		t.Fatalf("steering queue = %+v, want no side effects", queue)
+	}
+}
+
 func TestSendDelegateMessageAliasFromSubagentSteersCaller(t *testing.T) {
 	parent := newTestSession(t)
 	dir := t.TempDir()

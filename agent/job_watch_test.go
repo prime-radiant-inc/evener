@@ -50,9 +50,35 @@ func TestConfigureWatchTargetNotFound(t *testing.T) {
 	}
 }
 
+func TestJobWatchMainAliasTargetFailsTargetNotFound(t *testing.T) {
+	jm := newTestJM(t)
+
+	_, err := jm.configureWatch(watchArgs{Target: "main", Events: []string{"assistant.message"}})
+
+	if err == nil || !strings.Contains(err.Error(), "target_not_found") {
+		t.Fatalf("error = %v, want target_not_found", err)
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count = %d, want 0", jm.watchCount())
+	}
+}
+
+func TestJobWatchWatchedTargetWithoutContextFails(t *testing.T) {
+	jm := newTestJM(t)
+
+	_, err := jm.configureWatch(watchArgs{Target: "watched", Events: []string{"assistant.message"}})
+
+	if err == nil || !strings.Contains(err.Error(), "target_not_found") {
+		t.Fatalf("error = %v, want target_not_found", err)
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count = %d, want 0", jm.watchCount())
+	}
+}
+
 func TestConfigureWatchRejectsOutputMatchOnSessionTargets(t *testing.T) {
 	jm := newTestJM(t)
-	for _, target := range []string{"caller", "main", "watched", "*"} {
+	for _, target := range []string{"caller", "*"} {
 		t.Run(target, func(t *testing.T) {
 			_, err := jm.configureWatch(watchArgs{Target: target, OutputMatch: "ready"})
 			if err == nil {
@@ -62,6 +88,43 @@ func TestConfigureWatchRejectsOutputMatchOnSessionTargets(t *testing.T) {
 				t.Fatalf("error = %v, want output_match concrete-target validation", err)
 			}
 		})
+	}
+}
+
+func TestJobWatchSendToMainAliasFailsTargetNotFound(t *testing.T) {
+	jm := newTestJM(t)
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+
+	_, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "main", Message: "observe"},
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "target_not_found") {
+		t.Fatalf("error = %v, want target_not_found", err)
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count = %d, want 0", jm.watchCount())
+	}
+}
+
+func TestJobWatchSendToKnownShellJobFailsTargetNotMessageable(t *testing.T) {
+	jm := newTestJM(t)
+	watched, _ := jm.createShell(createShellOpts{Command: "watched"})
+	observer, _ := jm.createShell(createShellOpts{Command: "observer"})
+
+	_, err := jm.configureWatch(watchArgs{
+		Target:      watched.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: observer.JobID, Message: "observe"},
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "target_not_messageable") {
+		t.Fatalf("error = %v, want target_not_messageable", err)
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count = %d, want 0", jm.watchCount())
 	}
 }
 
@@ -331,6 +394,64 @@ func TestWatchSendDeliversFrameToTarget(t *testing.T) {
 	}
 	if !strings.Contains(sent[0].Message, "output_match: server READY") {
 		t.Errorf("delivery frame must carry the match trigger; got %q", sent[0].Message)
+	}
+}
+
+func TestWatchSendToWatchedDeliversFrameToConcreteTarget(t *testing.T) {
+	jm := newTestJM(t)
+	var sent []sendMessageArgs
+	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{}
+	}
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	_, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "(?i)ready",
+		Send:        &watchSendArgs{To: "watched", Message: "saw ready"},
+	})
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.feedJobOutput(rec.JobID, []byte("server READY\n"))
+
+	if len(sent) != 1 {
+		t.Fatalf("a send watch must deliver once, got %d", len(sent))
+	}
+	if sent[0].Target != rec.JobID {
+		t.Fatalf("delivery target = %q, want watched job %q", sent[0].Target, rec.JobID)
+	}
+}
+
+func TestWatchSendToWatchedWithoutConcreteTargetNotifiesWatchedUnresolved(t *testing.T) {
+	jm := newTestJM(t)
+	var sent []sendMessageArgs
+	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{}
+	}
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	_, err := jm.configureWatch(watchArgs{
+		Target: "*",
+		Events: []string{"assistant.message"},
+		Send:   &watchSendArgs{To: "watched", Message: "observe"},
+	})
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.onSessionEvent(events.EventAssistantTextEnd, nil)
+
+	if len(sent) != 0 {
+		t.Fatalf("unresolved watched target delivered sends: %#v", sent)
+	}
+	if len(notified) != 1 {
+		t.Fatalf("unresolved watched target must notify once, got %d", len(notified))
+	}
+	if !strings.Contains(notified[0].Reason, "watched_unresolved") {
+		t.Fatalf("notification reason = %q, want watched_unresolved", notified[0].Reason)
 	}
 }
 

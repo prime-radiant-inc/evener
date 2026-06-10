@@ -398,7 +398,7 @@ func sendMessageFailed(target string, err error) sendMessageResult {
 
 func isRuntimeMessageAlias(target string) bool {
 	switch target {
-	case "caller", "main", "watched":
+	case "caller":
 		return true
 	default:
 		return false

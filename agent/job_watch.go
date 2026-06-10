@@ -120,6 +120,12 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	if err := jm.validateWatchTarget(a.Target); err != nil {
 		return watchResult{}, err
 	}
+	if !a.Clear && a.Send != nil {
+		a.Send.To = strings.TrimSpace(a.Send.To)
+		if err := jm.validateWatchSendTarget(a.Send.To); err != nil {
+			return watchResult{}, err
+		}
+	}
 	if !a.Clear && a.OutputMatch != "" && isWatchSessionTarget(a.Target) {
 		return watchResult{}, errors.New("invalid_request: output_match requires a concrete job target")
 	}
@@ -206,6 +212,33 @@ func (jm *jobManager) validateWatchTarget(target string) error {
 	return nil
 }
 
+func (jm *jobManager) validateWatchSendTarget(target string) error {
+	if target == "" {
+		return errors.New("invalid_request: send.to is required")
+	}
+	switch target {
+	case "caller", "watched":
+		return nil
+	case "main", "*":
+		return watchTargetNotFoundError(target)
+	}
+
+	recs, err := jm.listWithError(listFilter{IncludeNested: true})
+	if err != nil {
+		return err
+	}
+	for _, rec := range recs {
+		if rec.JobID != target {
+			continue
+		}
+		if rec.Type != jobstore.JobDelegate {
+			return fmt.Errorf("target_not_messageable: job %q has type %q", target, rec.Type)
+		}
+		return nil
+	}
+	return nil
+}
+
 func isWatchableConcreteJobLocked(run *runningJob) bool {
 	return run != nil && run.terminal == nil && run.finalize == nil
 }
@@ -216,7 +249,7 @@ func watchTargetNotFoundError(target string) error {
 
 func isWatchSessionTarget(target string) bool {
 	switch target {
-	case "caller", "main", "watched", "*":
+	case "caller", "*":
 		return true
 	default:
 		return false
@@ -409,7 +442,7 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 			}
 		}
 		if cfg.send != nil {
-			deliveries = append(deliveries, watchSendSnapshot(cfg, cfg.target, fmt.Sprintf("event: %s", kind)))
+			deliveries = append(deliveries, watchSendSnapshot(cfg, watchEventWatchedIdentity(cfg.target, data), fmt.Sprintf("event: %s", kind)))
 		} else {
 			notifications = append(notifications, watchNotification(cfg.target, fmt.Sprintf("event: %s", kind)))
 		}
@@ -430,6 +463,23 @@ func isWatchOriginEventData(data events.EventData) bool {
 		return d.FromWatch
 	default:
 		return false
+	}
+}
+
+func watchEventWatchedIdentity(target string, data events.EventData) string {
+	if !isWatchSessionTarget(target) {
+		return target
+	}
+	if target != "*" {
+		return target
+	}
+	switch d := data.(type) {
+	case events.JobStartedData:
+		return d.JobID
+	case events.JobFinishedData:
+		return d.JobID
+	default:
+		return target
 	}
 }
 
@@ -568,8 +618,15 @@ func (jm *jobManager) deliverWatchSend(ctx context.Context, cfg *watchConfig, jo
 		})
 		return
 	}
+	target, err := resolveWatchSendTarget(cfg.send.To, jobID)
+	if err != nil {
+		jm.enqueueWatchNotifications([]jobNotification{
+			watchNotification(jobID, "watch send failed: "+err.Error()),
+		})
+		return
+	}
 	res := jm.send(ctx, sendMessageArgs{
-		Target:        cfg.send.To,
+		Target:        target,
 		Message:       jm.buildWatchFrame(cfg, jobID, trigger),
 		Background:    true,
 		BackgroundSet: true,
@@ -580,6 +637,16 @@ func (jm *jobManager) deliverWatchSend(ctx context.Context, cfg *watchConfig, jo
 			watchNotification(jobID, "watch send failed: "+limitWatchText(res.Err.Error(), watchReadErrorMaxChars)),
 		})
 	}
+}
+
+func resolveWatchSendTarget(target, watchedJobID string) (string, error) {
+	if target != "watched" {
+		return target, nil
+	}
+	if watchedJobID == "" || isWatchSessionTarget(watchedJobID) {
+		return "", errors.New("watched_unresolved")
+	}
+	return watchedJobID, nil
 }
 
 func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger string) string {
