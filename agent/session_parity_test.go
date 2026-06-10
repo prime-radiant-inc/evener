@@ -963,18 +963,18 @@ func TestParity_SubagentNoMCPInheritance(t *testing.T) {
 }
 
 func TestParity_WorkingDirRemovedFromSchema(t *testing.T) {
-	// working_dir was removed from spawn_agent — subagents always use parent's working dir.
+	// working_dir is not model-configurable; delegated jobs always use the parent's working dir.
 	pc := providerCases[0]
 	for _, td := range pc.profile("test-model").ToolDefinitions() {
-		if td.Name == "spawn_agent" {
+		if td.Name == "delegate" {
 			props := td.Parameters["properties"].(map[string]any)
 			if _, ok := props["working_dir"]; ok {
-				t.Fatal("spawn_agent should NOT have working_dir parameter")
+				t.Fatal("delegate should NOT have working_dir parameter")
 			}
 			return
 		}
 	}
-	t.Fatal("spawn_agent not found")
+	t.Fatal("delegate not found")
 }
 
 // canonicalXxx returns the wire-name for a tool given the provider name.
