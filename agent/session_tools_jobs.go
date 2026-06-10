@@ -340,7 +340,7 @@ func jobListTool(s *Session, args map[string]any, maxChars int) (string, error) 
 	}
 	jobs := make([]jobListEntry, 0, len(recs))
 	for _, rec := range recs {
-		jobs = append(jobs, projectJobRecord(rec))
+		jobs = append(jobs, projectJobRecord(s, rec))
 	}
 	return marshalBoundedJobListResult(jobListResult{
 		Jobs:       jobs,
@@ -1074,7 +1074,19 @@ func projectJobOutputMatches(matches []jobstore.Match) []jobOutputMatch {
 	return out
 }
 
-func projectJobRecord(rec *jobstore.JobRecord) jobListEntry {
+func projectJobRecord(s *Session, rec *jobstore.JobRecord) jobListEntry {
+	resumable := rec.Resumable
+	notResumableReason := stringPtrOrNil(rec.NotResumableWhy)
+	if isRuntimeLostDelegate(rec) {
+		assessment := s.AssessDelegateResumability(rec)
+		resumableValue := assessment.Resumable
+		resumable = &resumableValue
+		if assessment.Resumable {
+			notResumableReason = nil
+		} else {
+			notResumableReason = stringPtrOrNil(assessment.Reason)
+		}
+	}
 	return jobListEntry{
 		JobID:              rec.JobID,
 		Type:               string(rec.Type),
@@ -1085,8 +1097,8 @@ func projectJobRecord(rec *jobstore.JobRecord) jobListEntry {
 		OwnerSessionID:     rec.OwnerSessionID,
 		VisibleToSessionID: rec.VisibleToSession,
 		TranscriptRef:      stringPtrOrNil(rec.TranscriptRef),
-		Resumable:          rec.Resumable,
-		NotResumableReason: stringPtrOrNil(rec.NotResumableWhy),
+		Resumable:          resumable,
+		NotResumableReason: notResumableReason,
 		StartedAt:          rec.StartedAt.Format(time.RFC3339Nano),
 		EndedAt:            timePtrOrNil(rec.EndedAt),
 		ExitCode:           rec.ExitCode,

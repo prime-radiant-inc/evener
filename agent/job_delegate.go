@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 )
 
@@ -20,7 +21,30 @@ const (
 
 	runtimeMessageAliasCaller  = "caller"
 	runtimeMessageAliasWatched = "watched"
+
+	notResumableMissingDelegateResumeMetadata = "missing_delegate_resume_metadata"
+	notResumableParentLinkageUnavailable      = "parent_linkage_unavailable"
+	notResumableMissingChildSessionMeta       = "missing_child_session_meta"
+	notResumableCorruptChildSessionMeta       = "corrupt_child_session_meta"
+	notResumableMissingChildTranscript        = "missing_child_transcript"
+	notResumableCorruptChildTranscript        = "corrupt_child_transcript"
+	notResumableTranscriptSessionMismatch     = "transcript_session_mismatch"
+	notResumableChildSessionBusy              = "child_session_busy"
+	notResumableProfileUnavailable            = "profile_unavailable"
 )
+
+type DelegateResumability struct {
+	Resumable bool
+	Reason    string
+	Preflight *delegateRestorePreflight
+}
+
+type delegateRestorePreflight struct {
+	Meta       schema.SessionMeta
+	Transcript transcriptData
+	History    []schema.Turn
+	Profile    *provider.Profile
+}
 
 type delegateArgs struct {
 	Task            string
@@ -242,6 +266,12 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	if strings.TrimSpace(args.OnFinished) == "fail" {
 		return sendMessageFailed(target, fmt.Errorf("target_terminal: delegate job %q is %s", target, rec.Status))
 	}
+	if isRuntimeLostDelegate(rec) {
+		assessment := s.AssessDelegateResumability(rec)
+		if !assessment.Resumable {
+			return sendMessageFailed(target, fmt.Errorf("target_not_resumable:%s", assessment.Reason))
+		}
+	}
 
 	_, childID, err := decodeRef(rec.TranscriptRef)
 	if err != nil {
@@ -286,6 +316,109 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		ResumedFromJobID:    rec.JobID,
 		TranscriptRef:       run.rec.TranscriptRef,
 	}
+}
+
+func isRuntimeLostDelegate(rec *jobstore.JobRecord) bool {
+	return rec != nil &&
+		rec.Type == jobstore.JobDelegate &&
+		rec.Status == jobstore.StatusStopped &&
+		rec.Reason == "runtime_lost"
+}
+
+func (s *Session) AssessDelegateResumability(rec *jobstore.JobRecord) DelegateResumability {
+	if s == nil || rec == nil || rec.Type != jobstore.JobDelegate {
+		return DelegateResumability{Reason: notResumableMissingDelegateResumeMetadata}
+	}
+	desc := rec.DelegateRestore
+	if desc == nil {
+		return DelegateResumability{Reason: notResumableMissingDelegateResumeMetadata}
+	}
+	childID := strings.TrimSpace(desc.ChildSessionID)
+	if childID == "" || desc.TranscriptRef != rec.TranscriptRef ||
+		desc.ParentSessionID != s.ID() ||
+		desc.ParentJobID != rec.JobID ||
+		desc.OwnerSessionID != rec.OwnerSessionID ||
+		desc.VisibleSessionID != rec.VisibleToSession {
+		return DelegateResumability{Reason: notResumableParentLinkageUnavailable}
+	}
+	if _, transcriptChildID, err := decodeRef(rec.TranscriptRef); err != nil || transcriptChildID != childID {
+		return DelegateResumability{Reason: notResumableParentLinkageUnavailable}
+	}
+	if s.stateDir == "" {
+		return DelegateResumability{Reason: notResumableMissingChildSessionMeta}
+	}
+
+	meta, err := schema.LoadSessionMeta(s.stateDir, childID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return DelegateResumability{Reason: notResumableMissingChildSessionMeta}
+		}
+		return DelegateResumability{Reason: notResumableCorruptChildSessionMeta}
+	}
+
+	transcriptPath := filepath.Join(s.stateDir, sessionsSubdir, childID+".transcript.jsonl")
+	if _, err := os.Stat(transcriptPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return DelegateResumability{Reason: notResumableMissingChildTranscript}
+		}
+		return DelegateResumability{Reason: notResumableCorruptChildTranscript}
+	}
+	transcriptData, err := readStrictChildTranscript(transcriptPath, childID)
+	if err != nil {
+		if strings.Contains(err.Error(), notResumableTranscriptSessionMismatch) {
+			return DelegateResumability{Reason: notResumableTranscriptSessionMismatch}
+		}
+		return DelegateResumability{Reason: notResumableCorruptChildTranscript}
+	}
+
+	if sub := s.subagents.get(childID); sub != nil {
+		sub.mu.Lock()
+		running := sub.running
+		sub.mu.Unlock()
+		if running {
+			return DelegateResumability{Reason: notResumableChildSessionBusy}
+		}
+	}
+
+	profile, err := s.resolveDelegateRestoreProfile(meta, desc)
+	if err != nil {
+		return DelegateResumability{Reason: notResumableProfileUnavailable}
+	}
+	return DelegateResumability{
+		Resumable: true,
+		Preflight: &delegateRestorePreflight{
+			Meta:       meta,
+			Transcript: transcriptData,
+			History:    ResumeHistory(transcriptData.Entries),
+			Profile:    profile,
+		},
+	}
+}
+
+func (s *Session) resolveDelegateRestoreProfile(meta schema.SessionMeta, desc *jobstore.DelegateRestoreDescriptor) (*provider.Profile, error) {
+	if s == nil || s.profile == nil {
+		return nil, errors.New("profile unavailable")
+	}
+	ref := strings.TrimSpace(meta.Model)
+	if ref == "" && desc != nil {
+		ref = strings.TrimSpace(desc.ResolvedModel)
+	}
+	if desc != nil && strings.TrimSpace(desc.ResolvedProfileID) != "" && strings.TrimSpace(desc.ResolvedModel) != "" {
+		if desc.ResolvedProfileID != s.profile.ID() {
+			ref = strings.TrimSpace(desc.ResolvedProfileID) + "/" + strings.TrimSpace(desc.ResolvedModel)
+		}
+	}
+	if ref == "" {
+		return s.profile, nil
+	}
+	resolved, crossProvider, err := s.resolveProfileForRef(s.profile, ref)
+	if err != nil {
+		return nil, err
+	}
+	if crossProvider {
+		resolved = resolved.WithCommunicateOverridesFrom(s.profile)
+	}
+	return resolved, nil
 }
 
 func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID string) (*subagent, error) {

@@ -2181,3 +2181,66 @@ func TestOpenTranscriptWriter_ResumesWithAPICallSeq(t *testing.T) {
 		t.Errorf("resumed entry seq = %d, want 3", data.Entries[2].Seq)
 	}
 }
+
+func TestStrictChildTranscriptRejectsCorruptNonFinalLineAndLenientReadStillSkips(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{
+		SessionID: "child-session",
+		Model:     "test-model",
+	})
+	if err != nil {
+		t.Fatalf("transcript.NewWriter: %v", err)
+	}
+	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
+		t.Fatalf("append turn: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close transcript: %v", err)
+	}
+	lines := readTranscriptLines(t, path)
+	if len(lines) != 2 {
+		t.Fatalf("transcript lines = %d, want header and entry", len(lines))
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open transcript for append: %v", err)
+	}
+	if _, err := f.WriteString("{not-json}\n"); err != nil {
+		t.Fatalf("append corrupt line: %v", err)
+	}
+	if _, err := f.WriteString(lines[1] + "\n"); err != nil {
+		t.Fatalf("append valid line: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close append handle: %v", err)
+	}
+
+	if _, err := readStrictChildTranscript(path, "child-session"); err == nil || !strings.Contains(err.Error(), "corrupt_child_transcript") {
+		t.Fatalf("strict read error = %v, want corrupt_child_transcript", err)
+	}
+	_, entries, skipped, err := readTranscript(path)
+	if err != nil {
+		t.Fatalf("lenient readTranscript: %v", err)
+	}
+	if len(entries) != 2 || skipped != 1 {
+		t.Fatalf("lenient entries/skipped = %d/%d, want 2/1", len(entries), skipped)
+	}
+}
+
+func TestStrictChildTranscriptSessionMismatch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{
+		SessionID: "other-session",
+		Model:     "test-model",
+	})
+	if err != nil {
+		t.Fatalf("transcript.NewWriter: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("close transcript: %v", err)
+	}
+
+	if _, err := readStrictChildTranscript(path, "child-session"); err == nil || !strings.Contains(err.Error(), "transcript_session_mismatch") {
+		t.Fatalf("strict read error = %v, want transcript_session_mismatch", err)
+	}
+}

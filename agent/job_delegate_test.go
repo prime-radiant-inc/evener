@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +17,8 @@ import (
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/plugin"
+	"primeradiant.com/serf/agent/provider"
+	"primeradiant.com/serf/agent/schema"
 	taskpkg "primeradiant.com/serf/agent/task"
 	"primeradiant.com/serf/llm"
 )
@@ -1998,6 +2002,127 @@ func TestSendDelegateMessageTerminalTargetFailDoesNotSteerLaterRun(t *testing.T)
 	waitForShellDone(t, sess.jobManager, second.JobID)
 }
 
+func TestSendDelegateMessageStoppedDelegateRestorePreflightNotResumable(t *testing.T) {
+	cases := []struct {
+		name       string
+		breakState func(*testing.T, *Session, *jobstore.JobRecord)
+		want       string
+	}{
+		{
+			name: "missing descriptor",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				rec.DelegateRestore = nil
+				replaceStoredDelegateRecord(t, s, rec)
+			},
+			want: "target_not_resumable:missing_delegate_resume_metadata",
+		},
+		{
+			name: "bad linkage",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				rec.DelegateRestore.ParentJobID = "job_other"
+				replaceStoredDelegateRecord(t, s, rec)
+			},
+			want: "target_not_resumable:parent_linkage_unavailable",
+		},
+		{
+			name: "missing meta",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				removeChildSessionMeta(t, s, rec)
+			},
+			want: "target_not_resumable:missing_child_session_meta",
+		},
+		{
+			name: "corrupt meta",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				writeChildSessionMeta(t, s, rec, []byte(`{`))
+			},
+			want: "target_not_resumable:corrupt_child_session_meta",
+		},
+		{
+			name: "missing transcript",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				removeChildTranscript(t, s, rec)
+			},
+			want: "target_not_resumable:missing_child_transcript",
+		},
+		{
+			name: "corrupt transcript",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				appendChildTranscript(t, s, rec, "\n{not-json}\n{\"kind\":\"entry\"}\n")
+			},
+			want: "target_not_resumable:corrupt_child_transcript",
+		},
+		{
+			name: "session mismatch",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				writeChildTranscript(t, s, rec, []byte(`{"session_id":"other"}`+"\n"))
+			},
+			want: "target_not_resumable:transcript_session_mismatch",
+		},
+		{
+			name: "busy child",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				childID := rec.DelegateRestore.ChildSessionID
+				s.subagents.track(&subagent{
+					id:      childID,
+					sess:    newTestSession(t),
+					running: true,
+					done:    make(chan struct{}),
+				})
+			},
+			want: "target_not_resumable:child_session_busy",
+		},
+		{
+			name: "profile unavailable",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				meta, err := schema.LoadSessionMeta(s.stateDir, rec.DelegateRestore.ChildSessionID)
+				if err != nil {
+					t.Fatalf("load child meta: %v", err)
+				}
+				meta.Model = "missing/gpt-5.2"
+				if err := schema.SaveSessionMeta(s.stateDir, meta); err != nil {
+					t.Fatalf("save child meta: %v", err)
+				}
+				s.resolveProfile = func(ref string) (*provider.Profile, error) {
+					return nil, fmt.Errorf("no profile for %s", ref)
+				}
+			},
+			want: "target_not_resumable:profile_unavailable",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := llm.NewClient()
+			adapter := &fakeAdapter{name: "openai"}
+			c.Register(adapter)
+			s := newDelegateRestorePreflightSession(t, c)
+			rec := seedStoppedDelegateRestoreRecord(t, s)
+			tc.breakState(t, s, rec)
+			beforeEvents := len(loadJobStoreEvents(t, s.jobManager))
+			beforeJobs := len(s.jobManager.list(listFilter{Type: jobstore.JobDelegate}))
+
+			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
+				Target:  rec.JobID,
+				Message: "resume",
+			})
+
+			if res.Err == nil || res.Err.Error() != tc.want {
+				t.Fatalf("error = %v, want %s", res.Err, tc.want)
+			}
+			if got := len(loadJobStoreEvents(t, s.jobManager)); got != beforeEvents {
+				t.Fatalf("jobstore event count = %d, want unchanged %d", got, beforeEvents)
+			}
+			if got := len(s.jobManager.list(listFilter{Type: jobstore.JobDelegate})); got != beforeJobs {
+				t.Fatalf("delegate job count = %d, want unchanged %d", got, beforeJobs)
+			}
+			if requests := adapter.Requests(); len(requests) != 0 {
+				t.Fatalf("adapter requests = %+v, want none", requests)
+			}
+		})
+	}
+}
+
 func TestSendDelegateMessageRunningDelegateTargetSteersWithoutNewJob(t *testing.T) {
 	adapter := &cancelAwareDelegateAdapter{name: "openai", started: make(chan struct{})}
 	c := llm.NewClient()
@@ -2382,6 +2507,170 @@ func newDelegateTestSession(t *testing.T, c *llm.Client) *Session {
 	}
 	t.Cleanup(func() { sess.Close() })
 	return sess
+}
+
+func newDelegateRestorePreflightSession(t *testing.T, c *llm.Client) *Session {
+	t.Helper()
+	workDir := t.TempDir()
+	stateDir := t.TempDir()
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{
+		StateDir:         stateDir,
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+	return sess
+}
+
+func seedStoppedDelegateRestoreRecord(t *testing.T, s *Session) *jobstore.JobRecord {
+	t.Helper()
+	childID := seedRetainedChildSession(t, s)
+	jobID := jobstore.NewJobID()
+	now := time.Now().UTC()
+	ref := encodeRef("", childID)
+	desc := &jobstore.DelegateRestoreDescriptor{
+		Version:           1,
+		ChildSessionID:    childID,
+		TranscriptRef:     ref,
+		ParentSessionID:   s.ID(),
+		ParentJobID:       jobID,
+		OwnerSessionID:    s.ID(),
+		VisibleSessionID:  s.ID(),
+		Task:              "retained delegate",
+		ResolvedProfileID: "openai",
+		ResolvedModel:     "gpt-5.2",
+	}
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               now,
+		JobID:            jobID,
+		Type:             jobstore.JobDelegate,
+		Task:             desc.Task,
+		OwnerSessionID:   s.ID(),
+		VisibleToSession: s.ID(),
+		StartedAt:        &now,
+		TranscriptRef:    ref,
+		DelegateRestore:  desc,
+	}); err != nil {
+		t.Fatalf("append delegate start: %v", err)
+	}
+	if err := s.jobManager.appendEvent(jobstore.Event{
+		Kind:        jobstore.EventJobFinished,
+		TS:          now,
+		JobID:       jobID,
+		Status:      jobstore.StatusStopped,
+		Reason:      "runtime_lost",
+		EndedAt:     &now,
+		TerminalGen: jobstore.NewWatchGeneration(),
+	}); err != nil {
+		t.Fatalf("append delegate stopped: %v", err)
+	}
+	return loadShellRecord(t, s.jobManager, jobID)
+}
+
+func seedRetainedChildSession(t *testing.T, parent *Session) string {
+	t.Helper()
+	cfg := SessionConfig{
+		StateDir:         parent.stateDir,
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+	}
+	cfg.spawn.depth = parent.depth + 1
+	cfg.spawn.parentSessionID = parent.ID()
+	child, err := NewSession(parent.client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+	if err != nil {
+		t.Fatalf("NewSession child: %v", err)
+	}
+	if child.transcript != nil {
+		if err := child.transcript.Close(); err != nil {
+			t.Fatalf("close child transcript: %v", err)
+		}
+		child.transcript = nil
+	}
+	t.Cleanup(func() { child.Close() })
+	return child.ID()
+}
+
+func replaceStoredDelegateRecord(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+	t.Helper()
+	events := loadJobStoreEvents(t, s.jobManager)
+	for i := range events {
+		if events[i].JobID == rec.JobID && events[i].Kind == jobstore.EventJobStarted {
+			events[i].DelegateRestore = rec.DelegateRestore
+			events[i].TranscriptRef = rec.TranscriptRef
+			events[i].OwnerSessionID = rec.OwnerSessionID
+			events[i].VisibleToSession = rec.VisibleToSession
+			break
+		}
+	}
+	rewriteJobStoreEvents(t, s.jobManager, events)
+}
+
+func rewriteJobStoreEvents(t *testing.T, jm *jobManager, events []jobstore.Event) {
+	t.Helper()
+	path := filepath.Join(jm.dir, "jobs.jsonl")
+	var lines []string
+	for _, event := range events {
+		data, err := json.Marshal(event)
+		if err != nil {
+			t.Fatalf("marshal job event: %v", err)
+		}
+		lines = append(lines, string(data))
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("rewrite jobs.jsonl: %v", err)
+	}
+}
+
+func childSessionMetaPath(s *Session, rec *jobstore.JobRecord) string {
+	return filepath.Join(s.stateDir, sessionsSubdir, rec.DelegateRestore.ChildSessionID+".meta.json")
+}
+
+func childTranscriptPath(s *Session, rec *jobstore.JobRecord) string {
+	return filepath.Join(s.stateDir, sessionsSubdir, rec.DelegateRestore.ChildSessionID+".transcript.jsonl")
+}
+
+func removeChildSessionMeta(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+	t.Helper()
+	if err := os.Remove(childSessionMetaPath(s, rec)); err != nil {
+		t.Fatalf("remove child meta: %v", err)
+	}
+}
+
+func writeChildSessionMeta(t *testing.T, s *Session, rec *jobstore.JobRecord, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(childSessionMetaPath(s, rec), data, 0o644); err != nil {
+		t.Fatalf("write child meta: %v", err)
+	}
+}
+
+func removeChildTranscript(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+	t.Helper()
+	if err := os.Remove(childTranscriptPath(s, rec)); err != nil {
+		t.Fatalf("remove child transcript: %v", err)
+	}
+}
+
+func writeChildTranscript(t *testing.T, s *Session, rec *jobstore.JobRecord, data []byte) {
+	t.Helper()
+	if err := os.WriteFile(childTranscriptPath(s, rec), data, 0o644); err != nil {
+		t.Fatalf("write child transcript: %v", err)
+	}
+}
+
+func appendChildTranscript(t *testing.T, s *Session, rec *jobstore.JobRecord, data string) {
+	t.Helper()
+	f, err := os.OpenFile(childTranscriptPath(s, rec), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open child transcript: %v", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(data); err != nil {
+		t.Fatalf("append child transcript: %v", err)
+	}
 }
 
 func completedDelegateSubagent(child *Session, result string) *subagent {

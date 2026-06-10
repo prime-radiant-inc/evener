@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/serf/agent/internal/jobstore"
 	tooldefs "primeradiant.com/serf/agent/internal/tool"
+	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
@@ -189,6 +190,139 @@ func TestJobListToolIncludeNestedSurfacesForwardedRecords(t *testing.T) {
 	}
 	if nestedJob.ParentJobID == nil || *nestedJob.ParentJobID != "job_PARENTDELEGATE" {
 		t.Fatalf("nested job parent_job_id = %v, want job_PARENTDELEGATE", nestedJob.ParentJobID)
+	}
+}
+
+func TestJobListStoppedDelegateResumableAssessmentIsDynamicAndPure(t *testing.T) {
+	cases := []struct {
+		name       string
+		breakState func(*testing.T, *Session, *jobstore.JobRecord)
+		wantReason string
+	}{
+		{
+			name: "resumable",
+		},
+		{
+			name: "missing descriptor",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				rec.DelegateRestore = nil
+				replaceStoredDelegateRecord(t, s, rec)
+			},
+			wantReason: "missing_delegate_resume_metadata",
+		},
+		{
+			name: "bad linkage",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				rec.DelegateRestore.ParentSessionID = "other"
+				replaceStoredDelegateRecord(t, s, rec)
+			},
+			wantReason: "parent_linkage_unavailable",
+		},
+		{
+			name: "missing meta",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				removeChildSessionMeta(t, s, rec)
+			},
+			wantReason: "missing_child_session_meta",
+		},
+		{
+			name: "corrupt meta",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				writeChildSessionMeta(t, s, rec, []byte(`{`))
+			},
+			wantReason: "corrupt_child_session_meta",
+		},
+		{
+			name: "missing transcript",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				removeChildTranscript(t, s, rec)
+			},
+			wantReason: "missing_child_transcript",
+		},
+		{
+			name: "corrupt transcript",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				appendChildTranscript(t, s, rec, "\n{not-json}\n")
+			},
+			wantReason: "corrupt_child_transcript",
+		},
+		{
+			name: "session mismatch",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				writeChildTranscript(t, s, rec, []byte(`{"session_id":"other"}`+"\n"))
+			},
+			wantReason: "transcript_session_mismatch",
+		},
+		{
+			name: "busy child",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				s.subagents.track(&subagent{
+					id:      rec.DelegateRestore.ChildSessionID,
+					sess:    newTestSession(t),
+					running: true,
+					done:    make(chan struct{}),
+				})
+			},
+			wantReason: "child_session_busy",
+		},
+		{
+			name: "profile unavailable",
+			breakState: func(t *testing.T, s *Session, rec *jobstore.JobRecord) {
+				meta, err := schema.LoadSessionMeta(s.stateDir, rec.DelegateRestore.ChildSessionID)
+				if err != nil {
+					t.Fatalf("load child meta: %v", err)
+				}
+				meta.Model = "missing/gpt-5.2"
+				if err := schema.SaveSessionMeta(s.stateDir, meta); err != nil {
+					t.Fatalf("save child meta: %v", err)
+				}
+				s.resolveProfile = func(ref string) (*provider.Profile, error) {
+					return nil, fmt.Errorf("no profile for %s", ref)
+				}
+			},
+			wantReason: "profile_unavailable",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := llm.NewClient()
+			c.Register(&fakeAdapter{name: "openai"})
+			s := newDelegateRestorePreflightSession(t, c)
+			rec := seedStoppedDelegateRestoreRecord(t, s)
+			if tc.breakState != nil {
+				tc.breakState(t, s, rec)
+			}
+			beforeEvents := len(loadJobStoreEvents(t, s.jobManager))
+
+			raw, err := jobListTool(s, map[string]any{"type": []any{"delegate"}}, jobToolResultDefaultMaxChar)
+			if err != nil {
+				t.Fatalf("jobListTool: %v", err)
+			}
+			if got := len(loadJobStoreEvents(t, s.jobManager)); got != beforeEvents {
+				t.Fatalf("jobstore event count = %d, want unchanged %d", got, beforeEvents)
+			}
+			var out jobListToolOutput
+			if err := json.Unmarshal([]byte(raw), &out); err != nil {
+				t.Fatalf("unmarshal job_list: %v (output: %s)", err, raw)
+			}
+			listed := findJobListToolOutput(out.Jobs, rec.JobID)
+			if listed == nil {
+				t.Fatalf("job_list jobs = %+v, want %s", out.Jobs, rec.JobID)
+			}
+			if tc.wantReason == "" {
+				if listed.Resumable == nil || !*listed.Resumable || listed.NotResumableReason != nil {
+					t.Fatalf("listed job = %+v, want resumable with no reason", listed)
+				}
+				return
+			}
+			if listed.Resumable == nil || *listed.Resumable {
+				t.Fatalf("listed job = %+v, want not resumable", listed)
+			}
+			if listed.NotResumableReason == nil || *listed.NotResumableReason != tc.wantReason {
+				t.Fatalf("not_resumable_reason = %v, want %s", listed.NotResumableReason, tc.wantReason)
+			}
+		})
 	}
 }
 
@@ -1675,8 +1809,10 @@ type jobListToolOutput struct {
 }
 
 type jobListToolEntry struct {
-	JobID       string  `json:"job_id"`
-	ParentJobID *string `json:"parent_job_id"`
+	JobID              string  `json:"job_id"`
+	ParentJobID        *string `json:"parent_job_id"`
+	Resumable          *bool   `json:"resumable"`
+	NotResumableReason *string `json:"not_resumable_reason"`
 }
 
 func jobListToolOutputContains(records []jobListToolEntry, jobID string) bool {

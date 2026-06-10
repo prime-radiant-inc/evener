@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -136,6 +137,77 @@ func readTranscriptFull(path string) (transcriptData, error) {
 	}
 	if err := scanner.Err(); err != nil {
 		return transcriptData{}, fmt.Errorf("reading transcript: %w", err)
+	}
+
+	return data, nil
+}
+
+func readStrictChildTranscript(path, expectedSessionID string) (transcriptData, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return transcriptData{}, fmt.Errorf("open transcript: %w", err)
+	}
+	if len(raw) == 0 {
+		return transcriptData{}, errors.New("corrupt_child_transcript: transcript file is empty")
+	}
+
+	headerEnd := bytes.IndexByte(raw, '\n')
+	if headerEnd < 0 {
+		headerEnd = len(raw)
+	}
+	var data transcriptData
+	if err := json.Unmarshal(raw[:headerEnd], &data.Header); err != nil {
+		return transcriptData{}, fmt.Errorf("corrupt_child_transcript: parsing transcript header: %w", err)
+	}
+	if data.Header.SessionID != expectedSessionID {
+		return transcriptData{}, fmt.Errorf("transcript_session_mismatch: header session %q does not match %q", data.Header.SessionID, expectedSessionID)
+	}
+
+	if headerEnd == len(raw) {
+		return data, nil
+	}
+	body := raw[headerEnd+1:]
+	lines := bytes.Split(body, []byte{'\n'})
+	finalComplete := bytes.HasSuffix(raw, []byte{'\n'})
+	for i, line := range lines {
+		if len(line) == 0 {
+			continue
+		}
+		isFinalIncomplete := i == len(lines)-1 && !finalComplete
+		var peek struct {
+			Kind string `json:"kind"`
+		}
+		if err := json.Unmarshal(line, &peek); err != nil {
+			if isFinalIncomplete {
+				data.Skipped++
+				break
+			}
+			return transcriptData{}, fmt.Errorf("corrupt_child_transcript: parsing transcript line: %w", err)
+		}
+		switch peek.Kind {
+		case "entry":
+			var entry transcript.Entry
+			if err := json.Unmarshal(line, &entry); err != nil {
+				if isFinalIncomplete {
+					data.Skipped++
+					break
+				}
+				return transcriptData{}, fmt.Errorf("corrupt_child_transcript: parsing transcript entry: %w", err)
+			}
+			data.Entries = append(data.Entries, entry)
+		case "api_call":
+			var call transcript.APICall
+			if err := json.Unmarshal(line, &call); err != nil {
+				if isFinalIncomplete {
+					data.Skipped++
+					break
+				}
+				return transcriptData{}, fmt.Errorf("corrupt_child_transcript: parsing transcript api_call: %w", err)
+			}
+			data.APICalls = append(data.APICalls, call)
+		default:
+			return transcriptData{}, fmt.Errorf("corrupt_child_transcript: unknown transcript line kind %q", peek.Kind)
+		}
 	}
 
 	return data, nil
