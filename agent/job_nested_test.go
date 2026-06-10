@@ -824,6 +824,87 @@ func TestStopDelegateIncludeChildrenSurfacesChildStopError(t *testing.T) {
 	}
 }
 
+func TestForwardedNestedReconcilesRuntimeLostOnRestart(t *testing.T) {
+	parentDir := t.TempDir()
+
+	seed, err := newJobManager(parentDir, "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	startedAt := time.Unix(1, 0).UTC()
+	if err := seed.store.Append(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               startedAt,
+		JobID:            "job_NESTED",
+		Type:             jobstore.JobShell,
+		Command:          "sleep 999",
+		Description:      "forwarded nested job",
+		ParentJobID:      "job_DELEGATE",
+		OwnerSessionID:   "CHILDGONE",
+		VisibleToSession: "PARENT",
+		StartedAt:        &startedAt,
+	}); err != nil {
+		t.Fatalf("append forwarded job_started: %v", err)
+	}
+	if err := seed.store.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+
+	var queued []jobNotification
+	jm, err := newJobManager(parentDir, "PARENT", func(n jobNotification) { queued = append(queued, n) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = jm.store.Close()
+	})
+	jm.now = func() time.Time { return time.Unix(100, 0).UTC() }
+
+	if err := jm.reconcileLostJobs(); err != nil {
+		t.Fatalf("reconcile lost jobs: %v", err)
+	}
+
+	recs, err := jm.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := recs["job_NESTED"]
+	if rec == nil {
+		t.Fatalf("records = %v, want job_NESTED", keysOf(recs))
+	}
+	if rec.JobID != "job_NESTED" || rec.Status != jobstore.StatusStopped || rec.Reason != "runtime_lost" {
+		t.Fatalf("forwarded nested record = %+v, want job_NESTED stopped/runtime_lost", rec)
+	}
+	if rec.Type != jobstore.JobShell || rec.Command != "sleep 999" || rec.Description != "forwarded nested job" {
+		t.Fatalf("forwarded nested metadata = %+v, want original shell command metadata", rec)
+	}
+	if rec.ParentJobID != "job_DELEGATE" || rec.OwnerSessionID != "CHILDGONE" || rec.VisibleToSession != "PARENT" {
+		t.Fatalf("forwarded nested ownership metadata = %+v, want parent/owner/visible preserved", rec)
+	}
+	if rec.TerminalGen == "" {
+		t.Fatalf("forwarded nested terminal generation is empty: %+v", rec)
+	}
+	if len(queued) != 1 || queued[0].JobID != "job_NESTED" || queued[0].Status != string(jobstore.StatusStopped) || queued[0].Reason != "runtime_lost" {
+		t.Fatalf("expected one runtime_lost notification for the nested job, got %+v", queued)
+	}
+
+	terminalGen := rec.TerminalGen
+	if err := jm.reconcileLostJobs(); err != nil {
+		t.Fatalf("second reconcile lost jobs: %v", err)
+	}
+	recs, err = jm.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = recs["job_NESTED"]
+	if rec.TerminalGen != terminalGen {
+		t.Fatalf("reconcile re-minted terminal_generation: %q -> %q", terminalGen, rec.TerminalGen)
+	}
+	if len(queued) != 1 {
+		t.Fatalf("second reconcile queued another notification: %+v", queued)
+	}
+}
+
 func TestNestedRunShellForwardsDelayedJobStarted(t *testing.T) {
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
 	if err != nil {
