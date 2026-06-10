@@ -11,5 +11,19 @@ func (jm *jobManager) forwardLocked(e jobstore.Event) {
 
 func (jm *jobManager) forwardEvent(e jobstore.Event) {
 	e.VisibleToSession = jm.sessionID
-	_ = jm.store.Append(e)
+	if err := jm.store.Append(e); err != nil {
+		return
+	}
+	if e.Kind != jobstore.EventJobNotificationPending || jm.enqueue == nil {
+		return
+	}
+	recs, err := jm.store.Load()
+	if err != nil {
+		return
+	}
+	rec := recs[e.JobID]
+	if rec == nil || !jobstore.ShouldDeliver(rec) {
+		return
+	}
+	jm.enqueue(jobNotificationFromRecord(rec))
 }

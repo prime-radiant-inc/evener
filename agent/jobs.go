@@ -548,7 +548,7 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 		outputBytes: outputBytes,
 		generation:  jobstore.NewTerminalGeneration(),
 	}
-	if err := jm.appendEvent(jobstore.Event{
+	finished := jobstore.Event{
 		Kind:                  jobstore.EventJobFinished,
 		TS:                    endedAt,
 		JobID:                 run.rec.JobID,
@@ -560,7 +560,8 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 		StructuredResult:      structured,
 		StructuredResultValid: structuredValid,
 		TerminalGen:           terminal.generation,
-	}); err != nil {
+	}
+	if err := jm.appendEvent(finished); err != nil {
 		return err
 	}
 
@@ -577,6 +578,8 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 		run.rec.TerminalGen = terminal.generation
 	}
 	jm.mu.Unlock()
+
+	jm.forwardLocked(finished)
 
 	if afterDurableFinish != nil {
 		afterDurableFinish()
@@ -609,12 +612,13 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 	jm.enqueueWatchNotifications(watchNotifications)
 	jm.deliverWatchSends(context.Background(), watchDeliveries)
 
-	if err := jm.appendEvent(jobstore.Event{
+	pending := jobstore.Event{
 		Kind:        jobstore.EventJobNotificationPending,
 		TS:          terminal.endedAt,
 		JobID:       run.rec.JobID,
 		TerminalGen: terminal.generation,
-	}); err != nil {
+	}
+	if err := jm.appendEvent(pending); err != nil {
 		return err
 	}
 
@@ -641,6 +645,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 			ExitCode:      terminal.exitCode,
 		})
 	}
+	jm.forwardLocked(pending)
 	return nil
 }
 

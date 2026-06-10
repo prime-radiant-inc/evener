@@ -144,6 +144,91 @@ func TestNestedRunShellForwardsDelayedJobStarted(t *testing.T) {
 	}
 }
 
+func TestNestedTerminalForwardsGenerationVerbatim(t *testing.T) {
+	var parentNotifications []jobNotification
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(n jobNotification) {
+		parentNotifications = append(parentNotifications, n)
+	})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		_ = childJM.store.Close()
+	})
+
+	childJM.forward = parentJM.forwardEvent
+	childJM.parentJobID = "job_PARENTDELEGATE"
+
+	rec, err := childJM.createShell(createShellOpts{Command: "true", Description: "nested"})
+	if err != nil {
+		t.Fatalf("createShell: %v", err)
+	}
+	code := 0
+	if err := childJM.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+
+	childRecords, err := childJM.store.Load()
+	if err != nil {
+		t.Fatalf("load child store: %v", err)
+	}
+	childRec := childRecords[rec.JobID]
+	if childRec == nil {
+		t.Fatalf("child store keys = %v, want job %q", keysOf(childRecords), rec.JobID)
+	}
+	if childRec.Status != jobstore.StatusCompleted {
+		t.Fatalf("child record Status = %q, want %q", childRec.Status, jobstore.StatusCompleted)
+	}
+	if childRec.TerminalGen == "" {
+		t.Fatal("child record TerminalGen is empty")
+	}
+
+	parentRecords, err := parentJM.store.Load()
+	if err != nil {
+		t.Fatalf("load parent store: %v", err)
+	}
+	parentRec := parentRecords[rec.JobID]
+	if parentRec == nil {
+		t.Fatalf("parent store keys = %v, want forwarded job %q", keysOf(parentRecords), rec.JobID)
+	}
+	if parentRec.Status != jobstore.StatusCompleted {
+		t.Fatalf("parent record Status = %q, want %q", parentRec.Status, jobstore.StatusCompleted)
+	}
+	if parentRec.TerminalGen != childRec.TerminalGen {
+		t.Fatalf("parent TerminalGen = %q, want child TerminalGen %q", parentRec.TerminalGen, childRec.TerminalGen)
+	}
+	if parentRec.VisibleToSession != "PARENT" {
+		t.Fatalf("parent record VisibleToSession = %q, want PARENT", parentRec.VisibleToSession)
+	}
+	if parentRec.ParentJobID != "job_PARENTDELEGATE" {
+		t.Fatalf("parent record ParentJobID = %q, want job_PARENTDELEGATE", parentRec.ParentJobID)
+	}
+	if parentRec.OwnerSessionID != "CHILD" {
+		t.Fatalf("parent record OwnerSessionID = %q, want CHILD", parentRec.OwnerSessionID)
+	}
+	if parentRec.DedupeKey() != (jobstore.DedupeKey{
+		VisibleSessionID: "PARENT",
+		JobID:            rec.JobID,
+		TerminalGen:      childRec.TerminalGen,
+	}) {
+		t.Fatalf("parent dedupe key = %+v, want parent visible session and child terminal generation", parentRec.DedupeKey())
+	}
+	if parentRec.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("parent NotifyState = %q, want %q", parentRec.NotifyState, jobstore.NotifyPending)
+	}
+	if len(parentNotifications) != 1 {
+		t.Fatalf("parent notifications = %+v, want exactly one", parentNotifications)
+	}
+	if parentNotifications[0].JobID != rec.JobID || parentNotifications[0].Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("parent notification = %+v, want terminal notification for %s", parentNotifications[0], rec.JobID)
+	}
+}
+
 func TestChildJobManagerHasForwardSeam(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
