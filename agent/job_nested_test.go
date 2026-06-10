@@ -2,12 +2,68 @@ package agent
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"testing"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/llm"
 )
+
+func TestNestedShellForwardsJobStarted(t *testing.T) {
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		_ = childJM.store.Close()
+	})
+
+	childJM.forward = parentJM.forwardEvent
+	childJM.parentJobID = "job_PARENTDELEGATE"
+
+	rec, err := childJM.createShell(createShellOpts{Command: "sleep 1", Description: "nested"})
+	if err != nil {
+		t.Fatalf("createShell: %v", err)
+	}
+	t.Cleanup(func() {
+		childJM.mu.Lock()
+		run := childJM.running[rec.JobID]
+		childJM.mu.Unlock()
+		if run != nil && run.output != nil {
+			_ = run.output.Close()
+		}
+	})
+
+	if rec.ParentJobID != "job_PARENTDELEGATE" {
+		t.Fatalf("record ParentJobID = %q, want job_PARENTDELEGATE", rec.ParentJobID)
+	}
+	parentRecords, err := parentJM.store.Load()
+	if err != nil {
+		t.Fatalf("load parent store: %v", err)
+	}
+	parentRec, ok := parentRecords[rec.JobID]
+	if !ok {
+		t.Fatalf("parent store keys = %v, want forwarded job %q", keysOf(parentRecords), rec.JobID)
+	}
+	if parentRec.ParentJobID != "job_PARENTDELEGATE" {
+		t.Fatalf("parent record ParentJobID = %q, want job_PARENTDELEGATE", parentRec.ParentJobID)
+	}
+	if parentRec.OwnerSessionID != "CHILD" {
+		t.Fatalf("parent record OwnerSessionID = %q, want CHILD", parentRec.OwnerSessionID)
+	}
+	if parentRec.VisibleToSession != "PARENT" {
+		t.Fatalf("parent record VisibleToSession = %q, want PARENT", parentRec.VisibleToSession)
+	}
+	if parentRec.Status != jobstore.StatusRunning {
+		t.Fatalf("parent record Status = %q, want %q", parentRec.Status, jobstore.StatusRunning)
+	}
+}
 
 func TestChildJobManagerHasForwardSeam(t *testing.T) {
 	release := make(chan struct{})
@@ -173,3 +229,12 @@ func TestDelegateChildDirectSpawnDoesNotInheritForwardSeam(t *testing.T) {
 }
 
 func assertJobForwardHookType(_ func(jobstore.Event)) {}
+
+func keysOf(records map[string]*jobstore.JobRecord) []string {
+	keys := make([]string, 0, len(records))
+	for key := range records {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}

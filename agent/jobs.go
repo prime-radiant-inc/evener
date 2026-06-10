@@ -127,9 +127,6 @@ func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*
 	}, nil
 }
 
-func (jm *jobManager) forwardEvent(jobstore.Event) {
-}
-
 func (jm *jobManager) close() error {
 	jm.watchNotifyMu.Lock()
 	jm.mu.Lock()
@@ -227,6 +224,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		Description:      opts.Description,
 		OwnerSessionID:   jm.sessionID,
 		VisibleToSession: jm.sessionID,
+		ParentJobID:      jm.parentJobID,
 		StartedAt:        startedAt,
 		OutputPath:       outputPath,
 	}
@@ -249,7 +247,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		_ = os.Remove(outputPath)
 		return nil, errJobManagerClosing
 	}
-	if err := jm.appendEvent(jobstore.Event{
+	started := jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
 		JobID:            rec.JobID,
@@ -258,13 +256,16 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		Description:      rec.Description,
 		OwnerSessionID:   rec.OwnerSessionID,
 		VisibleToSession: rec.VisibleToSession,
+		ParentJobID:      rec.ParentJobID,
 		StartedAt:        &startedAt,
 		OutputPath:       rec.OutputPath,
-	}); err != nil {
+	}
+	if err := jm.appendEvent(started); err != nil {
 		jm.mu.Unlock()
 		_ = output.Close()
 		return nil, err
 	}
+	jm.forwardLocked(started)
 	jm.running[jobID] = run
 	jm.mu.Unlock()
 	return rec, nil
