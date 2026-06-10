@@ -147,12 +147,12 @@ func DefJobSendMessage() llm.ToolDefinition {
 			"message steers the live run; if it has finished, Serf resumes the same conversation as a new " +
 			"job and returns the new `job_id`. Set `on_finished=\"fail\"` to require a live target — if the " +
 			"delegate has already finished, the call then fails (`target_terminal`) instead of resuming. " +
-			"The same tool delivers observer commentary to a session alias (`caller`, `main`, `watched`).",
+			"The same tool delivers observer commentary to a session alias (`caller`, `watched`).",
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"target":  map[string]any{"type": "string", "description": "A delegate job_id, or a session alias: caller | main | watched."},
+				"target":  map[string]any{"type": "string", "description": "A delegate job_id, or a session alias: caller | watched."},
 				"message": map[string]any{"type": "string"},
 				"on_finished": map[string]any{
 					"type":        "string",
@@ -188,7 +188,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 			"type":                 "object",
 			"additionalProperties": false,
 			"properties": map[string]any{
-				"target":               map[string]any{"type": "string", "description": "job_id, or a visible session: caller | main | watched, or * for all visible."},
+				"target":               map[string]any{"type": "string", "description": "job_id, or a visible session: caller, or * for all visible."},
 				"output_match":         map[string]any{"type": "string", "description": "RE2 regex over output appended while the watch is active. Case-sensitive unless (?i). Invalid regex errors at creation."},
 				"progress_interval_ms": map[string]any{"type": "integer", "description": "Periodic trigger interval in ms (min 1000, max 3600000; handler clamps later). Omit for none."},
 				"events": map[string]any{
@@ -210,7 +210,7 @@ func DefJobWatch(eventKinds []string) llm.ToolDefinition {
 					"additionalProperties": false,
 					"description":          "Deliver to another target instead of notifying the caller.",
 					"properties": map[string]any{
-						"to":              map[string]any{"type": "string", "description": "job_id or alias: caller | main | watched."},
+						"to":              map[string]any{"type": "string", "description": "job_id or alias: caller | watched."},
 						"message":         map[string]any{"type": "string"},
 						"include_frame":   map[string]any{"type": "boolean"},
 						"include_excerpt": map[string]any{"type": "boolean"},

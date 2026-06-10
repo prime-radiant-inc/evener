@@ -35,7 +35,7 @@ This reference contract is not itself the runtime system prompt, but the followi
 - Delegate work starts in the background by default; omit `background` unless intentionally overriding it. Shell and delegate defaults differ deliberately: shell commands are usually short decision-producing calls, while delegates are independent agentic work.
 - Use `delegate` to start a new delegate conversation/job. It does not continue an existing conversation.
 - Use `job_send_message` for follow-up on a messageable target: if a delegate target is running, it injects guidance; if a delegate target is terminal and resumable, it starts a new delegate job in that same delegate conversation by default. Use `on_finished="fail"` only for live-only nudges that must not resume terminal work.
-- Use `job_send_message` for observer/sidecar commentary too. Runtime aliases such as `caller`, `main`, or `watched` are available in current Serf for runtime-originated steering, but their final v1 vocabulary and per-context resolution semantics remain an open product decision. Ordinary delegate follow-up should target a concrete `job_id`.
+- Use `job_send_message` for observer/sidecar commentary too. Runtime aliases `caller` and contextual `watched` are available for runtime-originated steering; `main` is not a v1 alias. Ordinary delegate follow-up should target a concrete `job_id`.
 - After starting a background job, continue useful work or respond to the user. Do not immediately wait, poll `job_list`, or loop on `job_read_output`.
 - Serf automatically injects one terminal notification for notification-armed background jobs when they complete, fail, are cancelled, or are stopped/lost.
 - Use `job_watch` when a condition should notify the caller or send a configured message/frame to another target. `send` is the delivery discriminator: omit it for caller notification, include it for target delivery. Trigger sources are orthogonal: `output_match`, `progress_interval_ms`, and, for event/frame watches, `events`/`trigger`. Do not use `job_watch` to learn when a job completes.
@@ -376,14 +376,14 @@ Core target resolution:
 | --- | --- |
 | `job_...` | A concrete messageable job, initially delegate jobs. |
 
-Advanced/contextual aliases are available in current Serf for observer/sidecar and runtime contexts, subject to permissions: `caller`, `main`, and `watched`. Ordinary delegate follow-up should target a concrete `job_id`. Open decision: the final v1 alias vocabulary and exact resolution for `caller`, `main`, and `watched` in every caller/watch context are not yet normative.
+Runtime aliases are available for observer/sidecar and runtime contexts, subject to permissions: `caller` and contextual `watched`. Ordinary delegate follow-up should target a concrete `job_id`. `main` is not a v1 alias.
 
 Semantics:
 
 - If `target` identifies a running delegate job, Serf injects the message into that active run, returns the same `job_id`, and does not create another terminal notification.
 - If `target` identifies a terminal/resumable delegate job and `on_finished="resume"` or is omitted, Serf creates a new delegate job in the same delegate session, with a new `job_id`.
 - If `target` identifies a terminal delegate job and `on_finished="fail"`, the call fails synchronously with `target_terminal`. Use this for live-only nudges that must not race into a new resumed job.
-- If `target` resolves to a session alias such as `caller`, `main`, or `watched`, Serf injects a runtime message into that session. The message is advisory/runtime-originated unless the target's tool description says otherwise; it must not impersonate the user.
+- If `target` resolves to a session alias such as `caller` or contextual `watched`, Serf injects a runtime message into that session. The message is advisory/runtime-originated unless the target's tool description says otherwise; it must not impersonate the user.
 - If `target` is a non-messageable job such as a shell job, the call fails synchronously with `target_not_messageable`.
 - If `target` is unknown, not authorized, not resumable, terminal without resume permission, or busy, the call fails synchronously without creating a job record.
 - If another job is already running in the same delegate session and the target is not that running job, the call fails synchronously with `delegate_session_busy` unless an implementation explicitly supports concurrent child turns.
@@ -400,7 +400,7 @@ stateDiagram-v2
     ValidateTarget --> Error: unknown / unauthorized / not messageable
     ValidateTarget --> TargetRunning: delegate running
     ValidateTarget --> TargetTerminal: delegate terminal
-    ValidateTarget --> SessionAlias: caller/main/watched
+    ValidateTarget --> SessionAlias: caller/watched
     TargetRunning --> MessageSameJob: inject guidance
     TargetTerminal --> NewJobSameSession: on_finished omitted/resume + resumable + idle
     TargetTerminal --> Error: on_finished=fail / not_resumable / session_busy
@@ -497,13 +497,13 @@ Send configured frame/message shape:
 
 ```json
 {
-  "target": "job_...|main|caller|watched|*",
+  "target": "job_...|caller|*",
   "output_match": "(?i)(ready|blocked|needs input)",
   "events": ["assistant.message", "tool.result", "job.notification"],
   "trigger": { "event": "assistant.message", "every": 3 },
   "progress_interval_ms": 300000,
   "send": {
-    "to": "job_observer|caller|main|watched",
+    "to": "job_observer|caller|watched",
     "message": "Review this frame and comment only if useful.",
     "include_frame": true,
     "include_excerpt": true
@@ -1078,7 +1078,7 @@ Observer sidecars are a v1 Serf composition pattern. Claude Monitor covers only 
 1. Start a sidecar with `delegate(...)`; this creates a normal delegate job unless an implementation-specific policy explicitly marks sidecars differently.
 2. Configure `job_watch(...)` over a job, session alias, or `*`.
 3. Set `send.to` to the sidecar job and `include_frame=true` so the watch condition sends bounded event/output frames to the sidecar.
-4. The sidecar responds with `job_send_message(target="caller"|"watched"|"main", message=...)` when it has useful commentary or advice.
+4. The sidecar responds with `job_send_message(target="caller"|"watched", message=...)` when it has useful commentary or advice.
 
 This makes observer behavior a composition of two primitives:
 
@@ -1093,7 +1093,7 @@ Safety and behavior rules:
 - Observer/sidecar telemetry should be excluded from frames by default to avoid feedback loops.
 - Observer advice is runtime-originated commentary, not user instruction.
 - Observer failures should not fail the watched session; they produce diagnostics or warnings. A failed watch send must surface as a caller-visible diagnostic notification rather than silently dropping the matched condition.
-- Access control is target-resolution based: aliases such as `caller`, `watched`, and `main` resolve according to caller context and permissions. The final alias vocabulary and exact resolution table remain open decisions.
+- Access control is target-resolution based: aliases such as `caller` and contextual `watched` resolve according to caller context and permissions. `main` is not a v1 alias.
 - Broad watches such as `target="*"` are allowed only over events/jobs visible to the caller.
 
 ## Relationship to transcript tools

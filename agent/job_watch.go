@@ -122,7 +122,7 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	}
 	if !a.Clear && a.Send != nil {
 		a.Send.To = strings.TrimSpace(a.Send.To)
-		if err := jm.validateWatchSendTarget(a.Send.To); err != nil {
+		if err := jm.validateWatchSendTarget(a.Send.To, a.Target); err != nil {
 			return watchResult{}, err
 		}
 	}
@@ -212,13 +212,15 @@ func (jm *jobManager) validateWatchTarget(target string) error {
 	return nil
 }
 
-func (jm *jobManager) validateWatchSendTarget(target string) error {
+func (jm *jobManager) validateWatchSendTarget(target, watchTarget string) error {
 	if target == "" {
 		return errors.New("invalid_request: send.to is required")
 	}
 	switch target {
-	case "caller", "watched":
+	case "caller":
 		return nil
+	case "watched":
+		return jm.validateWatchedSendTarget(watchTarget)
 	case "main", "*":
 		return watchTargetNotFoundError(target)
 	}
@@ -237,6 +239,26 @@ func (jm *jobManager) validateWatchSendTarget(target string) error {
 		return nil
 	}
 	return nil
+}
+
+func (jm *jobManager) validateWatchedSendTarget(watchTarget string) error {
+	if watchTarget == "" || isWatchSessionTarget(watchTarget) {
+		return nil
+	}
+	recs, err := jm.listWithError(listFilter{IncludeNested: true})
+	if err != nil {
+		return err
+	}
+	for _, rec := range recs {
+		if rec.JobID != watchTarget {
+			continue
+		}
+		if rec.Type != jobstore.JobDelegate {
+			return fmt.Errorf("target_not_messageable: job %q has type %q", watchTarget, rec.Type)
+		}
+		return nil
+	}
+	return watchTargetNotFoundError(watchTarget)
 }
 
 func isWatchableConcreteJobLocked(run *runningJob) bool {

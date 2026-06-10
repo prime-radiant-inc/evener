@@ -1923,6 +1923,44 @@ func TestSendDelegateMessageAliasFromSubagentSteersCaller(t *testing.T) {
 	}
 }
 
+func TestSendDelegateMessageUnsupportedAliasesFromSubagentFailTargetNotFound(t *testing.T) {
+	for _, target := range []string{"main", "watched"} {
+		t.Run(target, func(t *testing.T) {
+			parent := newTestSession(t)
+			dir := t.TempDir()
+			c := llm.NewClient()
+			c.Register(&fakeAdapter{name: "openai"})
+			subCfg := SessionConfig{MaxSubagentDepth: 2}
+			subCfg.spawn.depth = 1
+			subCfg.spawn.parentSessionID = parent.ID()
+			subCfg.spawn.parentSteer = parent.Steer
+			child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), subCfg)
+			if err != nil {
+				t.Fatalf("NewSession child: %v", err)
+			}
+			t.Cleanup(func() { child.Close() })
+
+			res := child.sendDelegateMessage(context.Background(), sendMessageArgs{
+				Target:  target,
+				Message: "child advisory",
+			})
+
+			if res.Err == nil || !strings.Contains(res.Err.Error(), "target_not_found") {
+				t.Fatalf("error = %v, want target_not_found", res.Err)
+			}
+			if strings.Contains(res.Err.Error(), "not_controllable") {
+				t.Fatalf("error = %v, must not report not_controllable", res.Err)
+			}
+			if queue := parent.SteeringQueueSnapshot(); len(queue) != 0 {
+				t.Fatalf("parent steering queue = %+v, want no side effects", queue)
+			}
+			if queue := child.SteeringQueueSnapshot(); len(queue) != 0 {
+				t.Fatalf("child steering queue = %+v, want no side effects", queue)
+			}
+		})
+	}
+}
+
 func newDelegateTestSession(t *testing.T, c *llm.Client) *Session {
 	t.Helper()
 	dir := t.TempDir()

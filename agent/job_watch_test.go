@@ -128,6 +128,24 @@ func TestJobWatchSendToKnownShellJobFailsTargetNotMessageable(t *testing.T) {
 	}
 }
 
+func TestJobWatchSendToWatchedKnownShellJobFailsTargetNotMessageable(t *testing.T) {
+	jm := newTestJM(t)
+	watched, _ := jm.createShell(createShellOpts{Command: "watched"})
+
+	_, err := jm.configureWatch(watchArgs{
+		Target:      watched.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "watched", Message: "observe"},
+	})
+
+	if err == nil || !strings.Contains(err.Error(), "target_not_messageable") {
+		t.Fatalf("error = %v, want target_not_messageable", err)
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count = %d, want 0", jm.watchCount())
+	}
+}
+
 func TestConfigureWatchRejectsTerminalizingConcreteJob(t *testing.T) {
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
@@ -405,7 +423,7 @@ func TestWatchSendToWatchedDeliversFrameToConcreteTarget(t *testing.T) {
 		return sendMessageResult{}
 	}
 
-	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	rec := createRunningDelegateWatchTarget(t, jm)
 	_, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "(?i)ready",
@@ -422,6 +440,21 @@ func TestWatchSendToWatchedDeliversFrameToConcreteTarget(t *testing.T) {
 	if sent[0].Target != rec.JobID {
 		t.Fatalf("delivery target = %q, want watched job %q", sent[0].Target, rec.JobID)
 	}
+}
+
+func createRunningDelegateWatchTarget(t *testing.T, jm *jobManager) *jobstore.JobRecord {
+	t.Helper()
+	rec, err := jm.createShell(createShellOpts{Command: "delegate-output"})
+	if err != nil {
+		t.Fatalf("create watch target: %v", err)
+	}
+	jm.mu.Lock()
+	run := jm.running[rec.JobID]
+	run.rec.Type = jobstore.JobDelegate
+	run.rec.TranscriptRef = encodeRef("", "child-"+rec.JobID)
+	rec = cloneJobRecord(run.rec)
+	jm.mu.Unlock()
+	return rec
 }
 
 func TestWatchSendToWatchedWithoutConcreteTargetNotifiesWatchedUnresolved(t *testing.T) {

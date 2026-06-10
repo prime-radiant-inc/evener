@@ -180,6 +180,9 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 			MessageType: "runtime",
 		}
 	}
+	if isUnsupportedRuntimeMessageAlias(target) {
+		return sendMessageFailed(target, fmt.Errorf("target_not_found: job %q not found", target))
+	}
 
 	s.mu.Lock()
 	depth := s.depth
@@ -399,6 +402,15 @@ func sendMessageFailed(target string, err error) sendMessageResult {
 func isRuntimeMessageAlias(target string) bool {
 	switch target {
 	case "caller":
+		return true
+	default:
+		return false
+	}
+}
+
+func isUnsupportedRuntimeMessageAlias(target string) bool {
+	switch target {
+	case "main", "watched":
 		return true
 	default:
 		return false
