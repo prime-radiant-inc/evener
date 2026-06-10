@@ -93,6 +93,8 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 		ctx = context.WithValue(ctx, ctxCommunicateOutputSchema, args.ResultSchema)
 	}
 
+	jobID := jobstore.NewJobID()
+	ctx = context.WithValue(ctx, ctxParentJobID, jobID)
 	spawned, err := s.spawnAgent(ctx, task, args.Model, "", 0, args.AgentType, args.ReasoningEffort, nil, nil)
 	if err != nil {
 		return delegateStartFailed(err)
@@ -107,7 +109,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 		return delegateStartFailed(fmt.Errorf("spawned agent %q is not tracked", childID))
 	}
 
-	run, finalizeErr, done, err := s.attachAndBridgeDelegateJob(jm, childID, task, sub)
+	run, finalizeErr, done, err := s.attachAndBridgeDelegateJob(jm, childID, task, sub, jobID)
 	if err != nil {
 		cancelDelegateChild(s, childID)
 		return delegateStartFailed(err)
@@ -503,14 +505,14 @@ func parseSpawnedAgentID(spawned any) (string, error) {
 	return out.AgentID, nil
 }
 
-func (s *Session) attachAndBridgeDelegateJob(jm *jobManager, childID, task string, sub *subagent) (*runningJob, <-chan error, <-chan struct{}, error) {
+func (s *Session) attachAndBridgeDelegateJob(jm *jobManager, childID, task string, sub *subagent, jobID string) (*runningJob, <-chan error, <-chan struct{}, error) {
 	sub.mu.Lock()
 	done := sub.done
 	sub.mu.Unlock()
 	if done == nil {
 		return nil, nil, nil, fmt.Errorf("delegate session %q has no active run", childID)
 	}
-	run, err := s.attachDelegateJob(jm, childID, task, sub)
+	run, err := s.attachDelegateJobWithID(jm, childID, task, sub, jobID)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -523,8 +525,11 @@ func (s *Session) attachAndBridgeDelegateJob(jm *jobManager, childID, task strin
 }
 
 func (s *Session) attachDelegateJob(jm *jobManager, childID, task string, sub *subagent) (*runningJob, error) {
+	return s.attachDelegateJobWithID(jm, childID, task, sub, jobstore.NewJobID())
+}
+
+func (s *Session) attachDelegateJobWithID(jm *jobManager, childID, task string, sub *subagent, jobID string) (*runningJob, error) {
 	startedAt := jm.now()
-	jobID := jobstore.NewJobID()
 	transcriptRef := encodeRef("", childID)
 	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
 	output, err := jobstore.OpenOutput(outputPath, maxJobOutputRetentionBytes)

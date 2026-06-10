@@ -31,6 +31,8 @@ type jobManager struct {
 	watches       map[watchKey]*watchConfig
 	closing       bool
 	appendEvent   func(jobstore.Event) error
+	forward       func(jobstore.Event)
+	parentJobID   string
 	enqueue       func(jobNotification)
 	send          func(context.Context, sendMessageArgs) sendMessageResult
 	now           func() time.Time
@@ -123,6 +125,9 @@ func newJobManager(stateDir, sessionID string, enqueue func(jobNotification)) (*
 		enqueue:     enqueue,
 		now:         time.Now,
 	}, nil
+}
+
+func (jm *jobManager) forwardEvent(jobstore.Event) {
 }
 
 func (jm *jobManager) close() error {

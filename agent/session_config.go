@@ -2,6 +2,7 @@ package agent
 
 import (
 	"primeradiant.com/serf/agent/internal/contextmgr"
+	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/provider"
 	"primeradiant.com/serf/agent/schema"
@@ -192,6 +193,13 @@ type spawnConfig struct {
 
 	// parentToolCallID is the tool call ID that spawned this sub-agent session.
 	parentToolCallID string
+
+	// parentJobID is the delegate job ID that spawned this sub-agent session.
+	parentJobID string
+
+	// forwardJobEvent lets child job managers send nested job events to the
+	// parent manager. The forwarding behavior is installed by later phases.
+	forwardJobEvent func(jobstore.Event)
 
 	// parentSteer routes runtime alias messages from a live sub-agent to its caller.
 	parentSteer func(string)

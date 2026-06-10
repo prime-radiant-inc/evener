@@ -27,6 +27,9 @@ type ctxKey string
 // ctxToolCallID carries the tool call ID into tool execution closures via context.
 const ctxToolCallID ctxKey = "toolCallID"
 
+// ctxParentJobID carries the delegate job ID into child session spawn plumbing.
+const ctxParentJobID ctxKey = "parentJobID"
+
 // ctxCommunicateOutputSchema carries a delegate result schema into spawnAgent
 // without changing the subagent tool signature.
 const ctxCommunicateOutputSchema ctxKey = "communicateOutputSchema"

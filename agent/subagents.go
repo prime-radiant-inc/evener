@@ -228,6 +228,12 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	if callID, ok := ctx.Value(ctxToolCallID).(string); ok {
 		subCfg.spawn.parentToolCallID = callID
 	}
+	if parentJobID, ok := ctx.Value(ctxParentJobID).(string); ok && parentJobID != "" {
+		subCfg.spawn.parentJobID = parentJobID
+		if s.jobManager != nil {
+			subCfg.spawn.forwardJobEvent = s.jobManager.forwardEvent
+		}
+	}
 	if schema, ok := ctx.Value(ctxCommunicateOutputSchema).(map[string]any); ok && len(schema) > 0 {
 		subCfg.spawn.communicateOutputSchema = schema
 	}
