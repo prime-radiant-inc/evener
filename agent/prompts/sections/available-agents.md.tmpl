@@ -1,5 +1,5 @@
 {{ if .AvailableAgents }}<available_agents>
-The following subagent types are available for `spawn_agent` with the `agent_type` parameter:
+The following subagent types are available for `delegate` with the `agent_type` parameter:
 {{ range .AvailableAgents }}<agent>
 Name: `{{ .Name }}`
 Description: {{ .Description }}
