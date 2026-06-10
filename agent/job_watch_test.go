@@ -921,6 +921,41 @@ func TestWatchSendTerminalFlushCloseDropsPending(t *testing.T) {
 	}
 }
 
+func TestWatchSendTerminalFlushClearBeforeFailedSendDoesNotPersistPending(t *testing.T) {
+	jm := newTestJM(t)
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	cleared := false
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		if !cleared {
+			cleared = true
+			if _, err := jm.clearWatch(watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: "job_obs"}); err != nil {
+				t.Fatalf("clear terminal-flushed watch: %v", err)
+			}
+		}
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("server ready")); err != nil {
+		t.Fatalf("append output: %v", err)
+	}
+	code := 0
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if !cleared {
+		t.Fatal("send callback did not clear watch")
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("pending after terminal flush clear = %+v, want none", pending)
+	}
+}
+
 func TestWatchSendTerminalExpiryCloseDropsExistingPending(t *testing.T) {
 	jm := newTestJM(t)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
@@ -1509,6 +1544,20 @@ func TestWatchSendAppendFailureDuringCloseKeepsPendingReachable(t *testing.T) {
 	}
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("folded pending after failed close append = %d, want 1", len(pending))
+	}
+	jm.mu.Lock()
+	closing := jm.closing
+	jm.mu.Unlock()
+	if closing {
+		t.Fatal("job manager remained closing after failed close append")
+	}
+	later, err := jm.createShell(createShellOpts{Command: "after failed close"})
+	if err != nil {
+		t.Fatalf("create after failed close: %v", err)
+	}
+	code := 0
+	if err := jm.finalize(later.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize after failed close: %v", err)
 	}
 
 	jm.appendEvent = realAppend

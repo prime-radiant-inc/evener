@@ -187,6 +187,9 @@ func (jm *jobManager) close() error {
 	if err != nil {
 		jm.removeWatchSendTerminalSnapshots(applied)
 		jm.rollbackWatchConfigSnapshotsRejecting(targets)
+		jm.mu.Lock()
+		jm.closing = false
+		jm.mu.Unlock()
 		return err
 	}
 	jm.detachWatchConfigSnapshots(targets)
