@@ -21,6 +21,12 @@ func (s *Session) ownerJobManagerFor(jobID string) (*jobManager, *jobstore.JobRe
 	if sub == nil || sub.sess == nil || sub.sess.jobManager == nil {
 		return nil, rec
 	}
+	sub.mu.Lock()
+	closed := sub.closed
+	sub.mu.Unlock()
+	if closed {
+		return nil, rec
+	}
 	return sub.sess.jobManager, rec
 }
 

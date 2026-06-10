@@ -254,6 +254,68 @@ func TestParentReadsNestedOutputViaOwnerRuntime(t *testing.T) {
 	}
 }
 
+func TestClosedNestedOwnerFallsBackToForwardedRecord(t *testing.T) {
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		childJM.mu.Lock()
+		run := childJM.running
+		childJM.mu.Unlock()
+		for _, running := range run {
+			if running.output != nil {
+				_ = running.output.Close()
+			}
+		}
+	})
+
+	childJM.forward = parentJM.forwardEvent
+	childJM.parentJobID = "job_PARENTDELEGATE"
+	nested, err := childJM.createShell(createShellOpts{Command: "sleep 1", Description: "nested"})
+	if err != nil {
+		t.Fatalf("create nested shell: %v", err)
+	}
+
+	parent := &Session{
+		id:         "PARENT",
+		jobManager: parentJM,
+		subagents:  newSubagentManager(nil, nil),
+	}
+	parent.subagents.track(&subagent{
+		id:     "CHILD",
+		sess:   &Session{id: "CHILD", jobManager: childJM},
+		status: SubagentCompleted,
+		closed: true,
+	})
+	if err := childJM.store.Close(); err != nil {
+		t.Fatalf("close child store: %v", err)
+	}
+
+	owner, forwarded := parent.ownerJobManagerFor(nested.JobID)
+	if owner != nil {
+		t.Fatalf("ownerJobManagerFor returned closed child manager, want owner-gone fallback")
+	}
+	if forwarded == nil || forwarded.JobID != nested.JobID {
+		t.Fatalf("ownerJobManagerFor forwarded record = %+v, want nested job %q", forwarded, nested.JobID)
+	}
+	selected, rec, err := parent.nestedOrLocalJobManager(nested.JobID)
+	if err != nil {
+		t.Fatalf("nestedOrLocalJobManager returned error: %v", err)
+	}
+	if selected != parentJM {
+		t.Fatalf("nestedOrLocalJobManager selected closed child manager, want parent manager")
+	}
+	if rec == nil || rec.JobID != nested.JobID || rec.OwnerSessionID != "CHILD" {
+		t.Fatalf("nestedOrLocalJobManager record = %+v, want parent forwarded record", rec)
+	}
+}
+
 func TestNestedRunShellForwardsDelayedJobStarted(t *testing.T) {
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
 	if err != nil {
