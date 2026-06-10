@@ -160,7 +160,7 @@
 
       this.activeMessages = new Map();   // messageId -> {el, textBuf, markdownTimer}
       this.activeTools = new Map();      // callId -> {el, outputBuf}
-      this.activeSubagents = new Map();  // agent_id -> subagent reference el
+      this.activeJobs = new Map();       // job_id -> job reference el
       this.suppressedToolCalls = new Set();
       this.pendingTaskCalls = new Map(); // callId -> args (for system-line rendering on END)
       this.lastCurrentTaskId = null;     // dedupe state for "now on X" system-line
@@ -668,7 +668,7 @@
       this.conversation.innerHTML = "";
       this.activeMessages.clear();
       this.activeTools.clear();
-      this.activeSubagents.clear();
+      this.activeJobs.clear();
       this.suppressedToolCalls.clear();
       this.pendingTaskCalls.clear();
       this.currentMessageId = null;
@@ -744,7 +744,7 @@
             this.conversation.innerHTML = "";
             this.activeMessages.clear();
             this.activeTools.clear();
-            this.activeSubagents.clear();
+            this.activeJobs.clear();
             this.suppressedToolCalls.clear();
             this.pendingTaskCalls.clear();
             taskDescriptions.clear();
@@ -882,11 +882,11 @@
             this.appendBanner("note", "session ended: " + data.reason);
           }
           break;
-        case "SUBAGENT_START":
-          this.beginSubagentRef(data);
+        case "JOB_STARTED":
+          this.beginJobRef(data);
           break;
-        case "SUBAGENT_END":
-          this.finalizeSubagentRef(data);
+        case "JOB_FINISHED":
+          this.finalizeJobRef(data);
           break;
         case "COMMUNICATE":
           // Already rendered via TOOL_CALL_START's arguments_json.message.
@@ -1406,17 +1406,17 @@
       state.metaEl.textContent = parts.join(" · ");
     },
 
-    beginSubagentRef(data) {
+    beginJobRef(data) {
       this.cheapToolCluster = null;
-      const agentId = data.agent_id || ("sa-" + Math.random().toString(36).slice(2, 9));
+      const jobId = data.job_id || ("job-" + Math.random().toString(36).slice(2, 9));
       const ref = document.createElement("div");
       ref.className = "subagent-reference";
-      ref.dataset.subagentId = agentId;
+      ref.dataset.jobId = jobId;
       const verb = document.createElement("span");
-      verb.className = "verb"; verb.textContent = "subagent";
+      verb.className = "verb"; verb.textContent = data.job_type || "job";
       const target = document.createElement("span");
       target.className = "target";
-      target.textContent = (data.task || "").slice(0, 80);
+      target.textContent = jobId;
       const dot = document.createElement("span");
       dot.className = "status-indicator";
       dot.style.color = "var(--state-processing)";
@@ -1425,40 +1425,38 @@
       ref.appendChild(target);
       ref.appendChild(dot);
       this.conversation.appendChild(ref);
-      this.activeSubagents.set(agentId, ref);
+      this.activeJobs.set(jobId, ref);
     },
 
-    finalizeSubagentRef(data) {
-      const agentId = data.agent_id || "";
-      const ref = this.activeSubagents.get(agentId);
+    finalizeJobRef(data) {
+      const jobId = data.job_id || "";
+      const ref = this.activeJobs.get(jobId);
       if (!ref) {
-        // Fallback: no matching SUBAGENT_START — emit a banner
-        this.appendBanner("note", "[subagent end] status=" + (data.status || "?"));
+        // Fallback: no matching JOB_STARTED — emit a banner
+        this.appendBanner("note", "[job finished] status=" + (data.status || "?"));
         return;
       }
-      this.activeSubagents.delete(agentId);
+      this.activeJobs.delete(jobId);
       const dot = ref.querySelector(".status-indicator");
       if (dot) {
-        const s = data.status || "done";
-        if (s === "done") {
+        const s = data.status || "completed";
+        if (s === "completed" || s === "cancelled" || s === "stopped" || s === "done") {
           dot.style.color = "var(--state-idle)";
-        } else if (s === "errored") {
+        } else if (s === "failed" || s === "errored") {
           dot.style.color = "var(--state-awaiting)";
         } else {
           dot.style.color = "var(--state-processing)";
         }
         dot.textContent = "●";
       }
-      // Append turns count
-      if (data.turns_used != null) {
-        const turns = document.createElement("span"); turns.className = "result";
-        turns.textContent = data.turns_used + " turns";
-        ref.appendChild(turns);
+      if (data.output_bytes != null) {
+        const bytes = document.createElement("span"); bytes.className = "result";
+        bytes.textContent = data.output_bytes + " bytes";
+        ref.appendChild(bytes);
       }
-      // Make clickable if session_id is provided
-      if (data.session_id) {
+      if (data.transcript_ref) {
         ref.style.cursor = "pointer";
-        ref.onclick = () => { window.location.href = "/s/" + encodeURIComponent(data.session_id); };
+        ref.onclick = () => { window.location.href = "/s/" + encodeURIComponent(data.transcript_ref); };
       }
     },
 
@@ -2839,10 +2837,8 @@
     },
   };
 
-  // spawn_agent renderer — replaces the tool-call line with a subagent
-  // reference card on completion (clickable, navigates to subagent session).
-  const spawnAgentRenderer = {
-    mode: "default", friendly: "subagent",
+  const delegateRenderer = {
+    mode: "default", friendly: "delegate",
     target: (a) => clip(a.task || "", 80),
     result: (data) => {
       const st = parseToolState(data.tool_state);
@@ -2851,23 +2847,24 @@
     },
     replace: (state, data) => {
       const st = parseToolState(data.tool_state);
-      if (!st || !st.session_id) return null;
+      if (!st || !st.job_id) return null;
       const ref = document.createElement("div");
       ref.className = "subagent-reference";
-      ref.dataset.subagentId = st.session_id;
-      ref.innerHTML = '<span class="verb">subagent</span><span class="target"></span>' +
+      ref.dataset.jobId = st.job_id;
+      ref.innerHTML = '<span class="verb">delegate</span><span class="target"></span>' +
                       '<span class="result-good">●</span>' +
-                      '<span class="result">' + (st.status || "done") + '</span>' +
-                      '<span class="result">' + (st.turns_used || 0) + ' turns</span>';
+                      '<span class="result">' + (st.status || "running") + '</span>';
       ref.querySelector(".target").textContent = clip(st.task || state.args.task || "", 80);
-      ref.onclick = () => { window.location.href = "/s/" + encodeURIComponent(st.session_id); };
+      if (st.transcript_ref) {
+        ref.onclick = () => { window.location.href = "/s/" + encodeURIComponent(st.transcript_ref); };
+      }
       return ref;
     },
   };
 
-  const subagentControlRenderer = (friendly) => ({
+  const jobControlRenderer = (friendly) => ({
     mode: "cheap", friendly,
-    target: (a) => clip(a.session_id || a.agent_id || a.id || "", 26),
+    target: (a) => clip(a.job_id || a.target || a.id || "", 26),
     result: () => "ok",
   });
 
@@ -2895,10 +2892,11 @@
     "apply_patch": patchRenderer(),
     "web_fetch": webFetchRenderer,
     "web_search": webSearchRenderer,
-    "spawn_agent": spawnAgentRenderer,
-    "resume_agent": subagentControlRenderer("resume"),
-    "wait": subagentControlRenderer("wait"),
-    "close_agent": subagentControlRenderer("close"),
+    "delegate": delegateRenderer,
+    "job_send_message": jobControlRenderer("message"),
+    "job_read_output": jobControlRenderer("read"),
+    "job_list": jobControlRenderer("jobs"),
+    "job_stop": jobControlRenderer("stop"),
   };
 
   // applyStatusDotPulse sets [data-pulse] on every .status-dot under root

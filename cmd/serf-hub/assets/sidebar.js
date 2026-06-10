@@ -159,8 +159,8 @@
       case "turn/completed":
       case "item/started":
       case "item/completed":
-      case "serf/subagent/started":
-      case "serf/subagent/completed":
+      case "serf/job/started":
+      case "serf/job/finished":
         return true;
       default:
         return false;

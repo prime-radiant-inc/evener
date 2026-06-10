@@ -803,8 +803,8 @@
       return [["WARNING", payload]];
     }
     if (method === "serf/steering/injected") return [["STEERING_INJECTED", { text: params.text || "", images: params.images || [] }]];
-    if (method === "serf/subagent/started") return [["SUBAGENT_START", params.subagent || params]];
-    if (method === "serf/subagent/completed") return [["SUBAGENT_END", params.subagent || params]];
+    if (method === "serf/job/started") return [["JOB_STARTED", params.job || params]];
+    if (method === "serf/job/finished") return [["JOB_FINISHED", params.job || params]];
     return [];
   }
 
