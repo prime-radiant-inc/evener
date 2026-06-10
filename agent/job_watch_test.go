@@ -1069,6 +1069,115 @@ func TestWatchSendTerminalFlushConfigureClearDropsPending(t *testing.T) {
 	}
 }
 
+func TestWatchSendTerminalExpiryWithoutPendingDoesNotRetainDetachedConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args watchArgs
+	}{
+		{
+			name: "notification only",
+			args: watchArgs{OutputMatch: "ready"},
+		},
+		{
+			name: "send without flushed match",
+			args: watchArgs{OutputMatch: "ready", Send: &watchSendArgs{To: "job_obs", Message: "observe"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			jm := newTestJM(t)
+			rec, _ := jm.createShell(createShellOpts{Command: "x"})
+			tc.args.Target = rec.JobID
+			if _, err := jm.configureWatch(tc.args); err != nil {
+				t.Fatalf("configure: %v", err)
+			}
+
+			code := 0
+			if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+				t.Fatalf("finalize: %v", err)
+			}
+
+			jm.mu.Lock()
+			detached := len(jm.terminalFlush)
+			jm.mu.Unlock()
+			if detached != 0 {
+				t.Fatalf("detached terminal flush configs = %d, want 0", detached)
+			}
+			if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err == nil || !strings.Contains(err.Error(), "target_not_found") {
+				t.Fatalf("clear expired watch without pending = %v, want target_not_found", err)
+			}
+		})
+	}
+}
+
+func TestWatchSendTerminalExpiryWithInflightSendRemainsClearable(t *testing.T) {
+	jm := newTestJM(t)
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("server ready")); err != nil {
+		t.Fatalf("append output: %v", err)
+	}
+
+	code := 0
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+
+	jm.mu.Lock()
+	detached := len(jm.terminalFlush)
+	jm.mu.Unlock()
+	if detached != 1 {
+		t.Fatalf("detached terminal flush configs = %d, want 1", detached)
+	}
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Send: &watchSendArgs{To: "job_obs"}, Clear: true}); err != nil {
+		t.Fatalf("clear terminal-flushed send: %v", err)
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("pending after clear = %+v, want none", pending)
+	}
+}
+
+func TestWatchSendClearNormalizesSendTarget(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		configured  string
+		clearTarget string
+	}{
+		{name: "configured untrimmed", configured: " job_obs ", clearTarget: "job_obs"},
+		{name: "clear untrimmed", configured: "job_obs", clearTarget: " job_obs "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			jm := newTestJM(t)
+			rec, _ := jm.createShell(createShellOpts{Command: "x"})
+			if _, err := jm.configureWatch(watchArgs{
+				Target:      rec.JobID,
+				OutputMatch: "ready",
+				Send:        &watchSendArgs{To: tc.configured, Message: "observe"},
+			}); err != nil {
+				t.Fatalf("configure: %v", err)
+			}
+			if _, err := jm.configureWatch(watchArgs{
+				Target: rec.JobID,
+				Send:   &watchSendArgs{To: tc.clearTarget},
+				Clear:  true,
+			}); err != nil {
+				t.Fatalf("clear: %v", err)
+			}
+			if jm.watchCount() != 0 {
+				t.Fatalf("watch count after clear = %d, want 0", jm.watchCount())
+			}
+		})
+	}
+}
+
 func TestWatchSendTerminalFlushWatchedTargetedClearDropsPending(t *testing.T) {
 	jm := newTestJM(t)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {

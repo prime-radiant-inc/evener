@@ -140,6 +140,7 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	}
 	sendTo := ""
 	if a.Send != nil {
+		a.Send.To = strings.TrimSpace(a.Send.To)
 		sendTo = a.Send.To
 	}
 	key := watchKey{
@@ -157,7 +158,6 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 		return watchResult{}, errors.New("invalid_request: nothing to watch")
 	}
 	if !a.Clear && a.Send != nil {
-		a.Send.To = strings.TrimSpace(a.Send.To)
 		if err := jm.validateWatchSendTarget(a.Send.To, a); err != nil {
 			return watchResult{}, err
 		}
@@ -833,17 +833,23 @@ func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, [
 			continue
 		}
 		if cfg.outputMatcher != nil {
+			trackTerminalFlush := len(cfg.pending) != 0
 			for _, match := range cfg.outputMatcher.Flush() {
 				if cfg.send != nil {
 					delivery := jm.watchSendSnapshot(cfg, jobID, "output_match: "+match)
 					delivery.allowAfterTerminalExpiry = true
 					deliveries = append(deliveries, delivery)
+					trackTerminalFlush = true
 				} else {
 					notifications = append(notifications, watchNotification(jobID, "output_match: "+match))
 				}
 			}
+			if trackTerminalFlush {
+				jm.rememberDetachedPendingLocked(cfg)
+			}
+		} else if len(cfg.pending) != 0 {
+			jm.rememberDetachedPendingLocked(cfg)
 		}
-		jm.rememberDetachedPendingLocked(cfg)
 		closeWatchConfig(cfg)
 		delete(jm.watches, key)
 	}
