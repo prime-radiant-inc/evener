@@ -21,9 +21,6 @@ import (
 // closures no longer reference the concrete *Session type. Every member
 // forwards to an existing *Session method or field, preserving all locking and
 // ordering; toolDeps adds no behavior of its own.
-//
-// Subagent spawn/wait/send/close are deliberately NOT here — that is a separate
-// seam. registerSubagentTools still captures *Session directly.
 type toolDeps struct {
 	// emit publishes a session event (best-effort, same as Session.emit).
 	emit func(kind events.EventKind, data events.EventData)
@@ -230,7 +227,6 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	if err := registerJobTools(reg, s, deps); err != nil {
 		return err
 	}
-	registerSubagentTools(reg, s, deps)
 	registerTaskTools(reg, deps)
 	registerGoalTools(reg, deps)
 	registerWebTools(reg, deps)

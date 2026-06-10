@@ -17,10 +17,6 @@ import (
 	taskpkg "primeradiant.com/serf/agent/task"
 )
 
-// minWaitTimeoutMS is the minimum timeout for the wait tool, preventing the model
-// from burning rounds with rapid 1-second retries.
-const minWaitTimeoutMS = 120_000 // 2 minutes
-
 // SubagentStatus tracks the lifecycle of a sub-agent.
 type SubagentStatus string
 
@@ -513,92 +509,6 @@ func (s *Session) launchSubagentRun(runCtx context.Context, sub *subagent, runCa
 	}()
 }
 
-func (s *Session) waitAgent(ctx context.Context, agentID string, timeoutMS int) (any, error) {
-	sub := s.getSub(agentID)
-	if sub == nil {
-		return "", fmt.Errorf("unknown agent_id: %s", agentID)
-	}
-
-	sub.mu.Lock()
-	if sub.resultConsumed && !sub.running {
-		sub.mu.Unlock()
-		return "", fmt.Errorf("agent %s already completed and results already consumed; use resume_agent to resume or close_agent to clean up", agentID)
-	}
-	sub.mu.Unlock()
-
-	done := sub.done
-	if done == nil {
-		return "", errors.New("agent has no active run")
-	}
-	if timeoutMS <= 0 {
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-done:
-		}
-	} else {
-		t := time.NewTimer(time.Duration(timeoutMS) * time.Millisecond)
-		defer t.Stop()
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-done:
-		case <-t.C:
-			return "", errors.New("wait timeout")
-		}
-	}
-	sub.mu.Lock()
-	result := sub.resultSnapshotLocked()
-	sub.resultConsumed = true
-	sub.mu.Unlock()
-
-	b, _ := json.Marshal(result)
-	return string(b), nil
-}
-
-// closeAgent gracefully shuts a child down and RETAINS the record rather than
-// removing it: the record stays queryable (hidden from the default list, surfaced
-// by include_closed) with closed=true, and its snapshot still reports the run
-// outcome — close never overwrites status. It closes the child Session (outside
-// every mutex), waits up to 5s for the in-flight run to finish, then marks the
-// record closed. On a close-wait timeout it sets close_timed_out, leaves closed
-// false, returns the timeout error, and keeps the record tracked so a stuck child
-// does not silently vanish.
-func (s *Session) closeAgent(agentID string) (any, error) {
-	sub := s.getSub(agentID)
-	if sub == nil {
-		return "", fmt.Errorf("unknown agent_id: %s", agentID)
-	}
-
-	sub.mu.Lock()
-	done := sub.done
-	sub.mu.Unlock()
-
-	// Close the child Session outside every mutex (it acquires its own locks).
-	sub.sess.Close()
-
-	// done==nil means there is no in-flight run to await (effectively unreachable
-	// for a tracked sub, which always has a done channel).
-	if done != nil {
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			sub.mu.Lock()
-			sub.closeTimedOut = true // close not confirmed; record stays tracked
-			sub.mu.Unlock()
-			return "", fmt.Errorf("timed out closing subagent %s", agentID)
-		}
-	}
-
-	sub.mu.Lock()
-	sub.closed = true
-	result := sub.resultSnapshotLocked()
-	sub.mu.Unlock()
-
-	b, _ := json.Marshal(result)
-	return string(b), nil
-}
-
 func (s *Session) cancelAgent(agentID string) (any, error) {
 	sub := s.getSub(agentID)
 	if sub == nil {
@@ -631,18 +541,6 @@ func (s *Session) cancelAgent(agentID string) (any, error) {
 
 func (s *Session) getSub(agentID string) *subagent {
 	return s.subagents.get(agentID)
-}
-
-// listAgents answers the list_agents tool: a read-only snapshot of this session's
-// child agents as {"agents":[...],"count":N}. The parent session id (immutable) is
-// stamped on each record's parent_session_id.
-func (s *Session) listAgents(status string, includeClosed bool) (any, error) {
-	agents, count := s.subagents.listAgents(s.id, status, includeClosed)
-	if agents == nil {
-		agents = []SubagentInfo{}
-	}
-	b, _ := json.Marshal(map[string]any{"agents": agents, "count": count})
-	return string(b), nil
 }
 
 // communicateNudge returns the message sent to a subagent that stops without
