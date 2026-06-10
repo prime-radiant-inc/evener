@@ -396,6 +396,29 @@ Required `not_resumable_reason` values:
 - `parent_linkage_unavailable`
 - `profile_unavailable`
 
+Reason precedence:
+
+1. If the delegate job record has no restore descriptor, use
+   `missing_delegate_resume_metadata`.
+2. If descriptor parent/session/job linkage does not match the parent job record
+   being resumed, use `parent_linkage_unavailable`.
+3. If retained-session metadata explicitly records that the child session was
+   pruned by retention, use `pruned_child_session_state`.
+4. If there is no pruning marker and the child meta file is absent, use
+   `missing_child_session_meta`.
+5. If the child meta file exists but cannot be parsed, use
+   `corrupt_child_session_meta`.
+6. If there is no pruning marker and the child transcript file is absent, use
+   `missing_child_transcript`.
+7. If the child transcript exists but cannot be parsed under the strict restore
+   policy, use `corrupt_child_transcript`.
+8. If the transcript parses but its session id/header conflicts with the
+   descriptor, use `transcript_session_mismatch`.
+9. If the child session is already retained as live/running in a conflicting
+   state, use `child_session_busy`.
+10. If the resolved profile/model is unavailable after retained-state checks
+   pass, use `profile_unavailable`.
+
 Acceptance tests:
 
 - Missing child meta returns
@@ -415,6 +438,9 @@ Acceptance tests:
 - `job_list` reports `resumable:true` for retained-state delegates and
   `resumable:false` plus `not_resumable_reason` for missing/corrupt/pruned
   retained state.
+- Preflight and `job_list` tests cover each required `not_resumable_reason`
+  value, including the precedence between explicit pruning markers and missing
+  files.
 
 ### 6. Reconstruct idle child runtime after restore
 
@@ -423,23 +449,26 @@ Required behavior:
 - Restore-based resume reconstructs the minimum child-session runtime state from
   the descriptor and retained child session metadata. It must not rely on
   `SessionConfig.spawn` having been persisted.
-- Reconstruction is lazy. `RestoreSessionFromMetaWithConfig` and job
-  reconciliation must not launch delegates, spend tokens, or enqueue a child
-  turn by themselves.
+- Reconstruction is lazy and happens inside `job_send_message` after strict
+  preflight succeeds. `RestoreSessionFromMetaWithConfig` and job reconciliation
+  project resumability only; they must not create a child runtime/subagent entry,
+  launch delegates, spend tokens, or enqueue a child turn by themselves.
 - The reconstructed child session has retained transcript history, original
   parent/caller linkage, profile/model/reasoning settings, working directory,
   local env policy, and inherited result schema.
-- The reconstructed child is tracked as an idle retained delegate session so the
-  normal resume path can launch the next turn.
+- During `job_send_message`, after preflight succeeds and before appending the
+  new resumed job, Serf reconstructs and tracks the child as an idle retained
+  delegate session so the normal resume path can launch the next turn.
 
 Acceptance tests:
 
 - Restart restore itself does not call the model adapter and does not create a
-  new delegate job.
+  new delegate job or retained child runtime entry.
 - Reconstructed runtime has the expected profile id, model, reasoning effort,
   working directory, local env policy, parent session id, parent job id, and
   result schema.
 - No old delegate task is submitted as a new turn during reconstruction.
+- Failed preflight creates no job, no run, and no retained child runtime entry.
 
 ### 7. Resume runtime-lost delegates from retained state
 
@@ -526,8 +555,8 @@ definitions. This gate must find no active v1 `main` alias examples outside
 historical specs/plans and ordinary code words:
 
 ```bash
-rg -n 'caller[[:space:]]*\|[[:space:]]*main[[:space:]]*\|[[:space:]]*watched|caller`, `main`, `watched|"?(target|to)"?[[:space:]]*[:=][[:space:]]*"main"|"main".*alias|alias.*"main"' \
-  docs/job-control.md agent/internal/tool agent/prompts docs/tools \
+rg -n '(caller.{0,120}\bmain\b|\bmain\b.{0,120}caller|watched.{0,120}\bmain\b|\bmain\b.{0,120}watched|"?((target)|(to))"?[[:space:]]*[:=][[:space:]]*[^[:space:]]*\bmain\b|"main".*alias|alias.*"main")' \
+  docs/job-control.md agent/internal/tool agent/prompts agent/agents agent/bundled_plugins docs/tools \
   | rg -v 'docs/superpowers/(specs|plans)/|main session|package main|func main'
 ```
 
