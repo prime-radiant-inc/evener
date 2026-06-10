@@ -191,6 +191,40 @@ func TestRenderMarkdown_JobResultWithExtraKeysFallsBack(t *testing.T) {
 	}
 }
 
+func TestRenderMarkdown_JobResultPreservesStructuredResultNumbers(t *testing.T) {
+	bodyStr := `{"job_id":"job_structured","type":"delegate","status":"completed","running_in_background":false,"timed_out":false,"transcript_ref":"local:01STRUCTURED","output":"done","truncated":false,"structured_result":{"large_id":9007199254740993}}`
+
+	out := renderToolCardForResult("delegate", "call_delegate", bodyStr)
+
+	if !strings.Contains(out, "9007199254740993") {
+		t.Fatalf("structured_result large integer must render exactly, got:\n%s", out)
+	}
+	if strings.Contains(out, "9007199254740992") {
+		t.Fatalf("structured_result large integer was rounded, got:\n%s", out)
+	}
+}
+
+func TestRenderMarkdown_JobResultMetadataVisible(t *testing.T) {
+	bodyStr := `{"target":"job_old","job_id":"job_new","type":"delegate","status":"running","reason":"foreground_timeout","running_in_background":true,"timed_out":true,"action":"resumed","resumed_from_job_id":"job_old","transcript_ref":"local:01META","output":"partial","truncated":true,"structured_result":{"ok":false},"structured_result_valid":false}`
+
+	out := renderToolCardForResult("job_send_message", "call_send", bodyStr)
+
+	for _, want := range []string{
+		"target=job_old",
+		"type=delegate",
+		"action=resumed",
+		"resumed_from_job_id=job_old",
+		"running_in_background=true",
+		"timed_out=true",
+		"truncated=true",
+		"structured_result_valid=false",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("job metadata %q must remain visible, got:\n%s", want, out)
+		}
+	}
+}
+
 // TestRenderMarkdown_GenericJSONResultPrettyPrinted verifies a generic JSON result
 // from a non-job tool is pretty-printed (indented) but NOT given the job
 // status-line treatment — the no-false-positive case.

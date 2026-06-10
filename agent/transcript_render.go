@@ -1016,6 +1016,11 @@ func jobResultBody(raw string) (string, bool) {
 	var b strings.Builder
 	b.WriteString(strings.Join(statusParts, " "))
 	b.WriteString("\n")
+	if metadata := jobResultMetadata(raw); metadata != "" {
+		b.WriteString("metadata: ")
+		b.WriteString(metadata)
+		b.WriteString("\n")
+	}
 	if r.Output != "" {
 		b.WriteString(r.Output) // already de-escaped (real newlines) by the JSON decoder
 		b.WriteString("\n")
@@ -1053,6 +1058,40 @@ var jobResultKnownKeys = map[string]bool{
 	"structured_result_valid": true,
 	"delivered":               true,
 	"message_type":            true,
+}
+
+var jobResultMetadataKeys = []string{
+	"target",
+	"type",
+	"action",
+	"resumed_from_job_id",
+	"running_in_background",
+	"timed_out",
+	"truncated",
+	"exit_code",
+	"structured_result_valid",
+	"delivered",
+	"message_type",
+}
+
+func jobResultMetadata(raw string) string {
+	var m map[string]any
+	dec := json.NewDecoder(strings.NewReader(strings.TrimSpace(raw)))
+	dec.UseNumber()
+	if err := dec.Decode(&m); err != nil {
+		return ""
+	}
+	var parts []string
+	for _, k := range jobResultMetadataKeys {
+		v, ok := m[k]
+		if !ok {
+			continue
+		}
+		if s := scalarString(v); s != "" {
+			parts = append(parts, k+"="+s)
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 // hasNonJobResultKeys reports whether the JSON object in raw carries any

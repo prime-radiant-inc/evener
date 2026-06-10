@@ -77,7 +77,9 @@ func decodeJobResult(body string) (jobResult, bool) {
 		return jobResult{}, false
 	}
 	var r jobResult
-	if err := json.Unmarshal([]byte(body), &r); err != nil {
+	dec := json.NewDecoder(strings.NewReader(body))
+	dec.UseNumber()
+	if err := dec.Decode(&r); err != nil {
 		return jobResult{}, false
 	}
 	if r.JobID == "" && r.TranscriptRef == "" {
