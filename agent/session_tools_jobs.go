@@ -228,6 +228,7 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 	if rec.StructuredResultValid != nil {
 		result.StructuredResultValid = rec.StructuredResultValid
 	}
+	result.StructuredResultReason = rec.StructuredResultReason
 	if grep != "" {
 		result.Grep = &grep
 		projected := projectJobOutputMatches(snap.Matches)
@@ -394,18 +395,19 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 }
 
 type jobReadOutputResult struct {
-	JobID                 string            `json:"job_id"`
-	Type                  string            `json:"type"`
-	Status                string            `json:"status"`
-	Reason                *string           `json:"reason"`
-	Content               string            `json:"content"`
-	Grep                  *string           `json:"grep,omitempty"`
-	Matches               *[]jobOutputMatch `json:"matches,omitempty"`
-	TotalBytes            int64             `json:"total_bytes"`
-	Truncated             bool              `json:"truncated"`
-	ExitCode              *int              `json:"exit_code"`
-	StructuredResult      any               `json:"structured_result,omitempty"`
-	StructuredResultValid *bool             `json:"structured_result_valid,omitempty"`
+	JobID                  string            `json:"job_id"`
+	Type                   string            `json:"type"`
+	Status                 string            `json:"status"`
+	Reason                 *string           `json:"reason"`
+	Content                string            `json:"content"`
+	Grep                   *string           `json:"grep,omitempty"`
+	Matches                *[]jobOutputMatch `json:"matches,omitempty"`
+	TotalBytes             int64             `json:"total_bytes"`
+	Truncated              bool              `json:"truncated"`
+	ExitCode               *int              `json:"exit_code"`
+	StructuredResult       any               `json:"structured_result,omitempty"`
+	StructuredResultValid  *bool             `json:"structured_result_valid,omitempty"`
+	StructuredResultReason string            `json:"structured_result_reason,omitempty"`
 }
 
 type jobOutputMatch struct {
@@ -444,20 +446,21 @@ type jobStopResult struct {
 }
 
 type jobSendMessageDelegateResult struct {
-	Target                string  `json:"target"`
-	JobID                 string  `json:"job_id"`
-	Type                  string  `json:"type"`
-	Status                string  `json:"status"`
-	Reason                *string `json:"reason,omitempty"`
-	RunningInBackground   bool    `json:"running_in_background"`
-	TimedOut              bool    `json:"timed_out,omitempty"`
-	Action                string  `json:"action"`
-	ResumedFromJobID      string  `json:"resumed_from_job_id,omitempty"`
-	TranscriptRef         string  `json:"transcript_ref"`
-	Output                *string `json:"output,omitempty"`
-	Truncated             *bool   `json:"truncated,omitempty"`
-	StructuredResult      any     `json:"structured_result,omitempty"`
-	StructuredResultValid *bool   `json:"structured_result_valid,omitempty"`
+	Target                 string  `json:"target"`
+	JobID                  string  `json:"job_id"`
+	Type                   string  `json:"type"`
+	Status                 string  `json:"status"`
+	Reason                 *string `json:"reason,omitempty"`
+	RunningInBackground    bool    `json:"running_in_background"`
+	TimedOut               bool    `json:"timed_out,omitempty"`
+	Action                 string  `json:"action"`
+	ResumedFromJobID       string  `json:"resumed_from_job_id,omitempty"`
+	TranscriptRef          string  `json:"transcript_ref"`
+	Output                 *string `json:"output,omitempty"`
+	Truncated              *bool   `json:"truncated,omitempty"`
+	StructuredResult       any     `json:"structured_result,omitempty"`
+	StructuredResultValid  *bool   `json:"structured_result_valid,omitempty"`
+	StructuredResultReason string  `json:"structured_result_reason,omitempty"`
 }
 
 type jobSendMessageAliasResult struct {
@@ -485,17 +488,18 @@ type jobWatchToolSendArgs struct {
 }
 
 type delegateToolResult struct {
-	JobID                 string  `json:"job_id"`
-	Type                  string  `json:"type"`
-	Status                string  `json:"status"`
-	Reason                *string `json:"reason,omitempty"`
-	RunningInBackground   bool    `json:"running_in_background"`
-	TimedOut              bool    `json:"timed_out"`
-	TranscriptRef         string  `json:"transcript_ref"`
-	Output                *string `json:"output,omitempty"`
-	Truncated             *bool   `json:"truncated,omitempty"`
-	StructuredResult      any     `json:"structured_result,omitempty"`
-	StructuredResultValid *bool   `json:"structured_result_valid,omitempty"`
+	JobID                  string  `json:"job_id"`
+	Type                   string  `json:"type"`
+	Status                 string  `json:"status"`
+	Reason                 *string `json:"reason,omitempty"`
+	RunningInBackground    bool    `json:"running_in_background"`
+	TimedOut               bool    `json:"timed_out"`
+	TranscriptRef          string  `json:"transcript_ref"`
+	Output                 *string `json:"output,omitempty"`
+	Truncated              *bool   `json:"truncated,omitempty"`
+	StructuredResult       any     `json:"structured_result,omitempty"`
+	StructuredResultValid  *bool   `json:"structured_result_valid,omitempty"`
+	StructuredResultReason string  `json:"structured_result_reason,omitempty"`
 }
 
 func marshalSendMessageResult(res sendMessageResult, maxChars int) (string, error) {
@@ -527,6 +531,7 @@ func marshalSendMessageResult(res sendMessageResult, maxChars int) (string, erro
 		valid := res.StructuredResultValid
 		out.StructuredResult = res.StructuredResult
 		out.StructuredResultValid = &valid
+		out.StructuredResultReason = res.StructuredResultReason
 	}
 	return marshalBoundedSendMessageDelegateResult(out, maxChars)
 }
@@ -591,6 +596,7 @@ func marshalDelegateResult(res delegateResult, maxChars int) (string, error) {
 		valid := res.StructuredResultValid
 		out.StructuredResult = res.StructuredResult
 		out.StructuredResultValid = &valid
+		out.StructuredResultReason = res.StructuredResultReason
 	}
 	return marshalBoundedDelegateResult(out, maxChars)
 }
@@ -606,9 +612,12 @@ func marshalBoundedSendMessageDelegateResult(out jobSendMessageDelegateResult, m
 	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
 		return fit, err
 	}
-	out.StructuredResult = nil
-	invalid := false
-	out.StructuredResultValid = &invalid
+	if out.StructuredResult != nil {
+		out.StructuredResult = nil
+		invalid := false
+		out.StructuredResultValid = &invalid
+		out.StructuredResultReason = structuredResultReasonProjectionTooLarge
+	}
 	return marshalBoundedJSON(out, maxChars)
 }
 
@@ -642,9 +651,12 @@ func marshalBoundedDelegateResult(out delegateToolResult, maxChars int) (string,
 	if fit, ok, err := marshalBoundedJSONWithFit(out, maxChars); err != nil || ok {
 		return fit, err
 	}
-	out.StructuredResult = nil
-	invalid := false
-	out.StructuredResultValid = &invalid
+	if out.StructuredResult != nil {
+		out.StructuredResult = nil
+		invalid := false
+		out.StructuredResultValid = &invalid
+		out.StructuredResultReason = structuredResultReasonProjectionTooLarge
+	}
 	return marshalBoundedJSON(out, maxChars)
 }
 
@@ -1106,6 +1118,7 @@ func marshalBoundedJobReadOutputResult(out jobReadOutputResult, maxChars int) (s
 		out.StructuredResult = nil
 		invalid := false
 		out.StructuredResultValid = &invalid
+		out.StructuredResultReason = structuredResultReasonProjectionTooLarge
 		if fit, ok, err := marshalJobReadOutputWithContentLimit(out, maxChars); err != nil || ok {
 			return fit, err
 		}

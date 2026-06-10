@@ -474,6 +474,44 @@ func TestCreateDelegateDropsOversizedStructuredResultBeforePersistence(t *testin
 	if rec.StructuredResultValid == nil || *rec.StructuredResultValid {
 		t.Fatalf("structured_result_valid = %v, want false", rec.StructuredResultValid)
 	}
+	if rec.StructuredResultReason != "schema_result_too_large" {
+		t.Fatalf("structured_result_reason = %q, want schema_result_too_large", rec.StructuredResultReason)
+	}
+}
+
+func TestFinalizeDelegatePersistsSchemaValidationFailedReason(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	child.mu.Lock()
+	child.comm.structured = map[string]any{"count": "not a number"}
+	child.mu.Unlock()
+	sub := completedDelegateSubagent(child, "validation failed")
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJobWithID(parent.jobManager, child.ID(), "validate structured result", sub, jobstore.NewJobID(), map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"count": map[string]any{"type": "number"},
+		},
+		"required": []string{"count"},
+	}, false)
+	if err != nil {
+		t.Fatalf("attachDelegateJobWithID: %v", err)
+	}
+
+	if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
+		t.Fatalf("finalizeDelegate: %v", err)
+	}
+	waitForShellDone(t, parent.jobManager, run.rec.JobID)
+	rec := loadShellRecord(t, parent.jobManager, run.rec.JobID)
+	if rec.StructuredResult != nil {
+		t.Fatalf("structured_result persisted invalid value: %T", rec.StructuredResult)
+	}
+	if rec.StructuredResultValid == nil || *rec.StructuredResultValid {
+		t.Fatalf("structured_result_valid = %v, want false", rec.StructuredResultValid)
+	}
+	if rec.StructuredResultReason != "schema_validation_failed" {
+		t.Fatalf("structured_result_reason = %q, want schema_validation_failed", rec.StructuredResultReason)
+	}
 }
 
 func TestCreateDelegateMarksChildConsumedAfterDurableFinish(t *testing.T) {
@@ -1066,11 +1104,19 @@ func TestSendDelegateMessageTerminalDelegateResumeCreatesNewJob(t *testing.T) {
 	}
 	c.Register(adapter)
 	sess := newDelegateTestSession(t, c)
+	resultSchema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"message": map[string]any{"type": "string"},
+		},
+		"required": []string{"message"},
+	}
 
 	first := sess.createDelegate(context.Background(), delegateArgs{
 		Task:           "finish first",
 		Background:     false,
 		BlockTimeoutMS: 5000,
+		ResultSchema:   resultSchema,
 	})
 	if first.Err != nil {
 		t.Fatalf("createDelegate returned error: %v", first.Err)
@@ -1078,6 +1124,7 @@ func TestSendDelegateMessageTerminalDelegateResumeCreatesNewJob(t *testing.T) {
 	if first.Status != jobstore.StatusCompleted {
 		t.Fatalf("first result = %+v, want completed", first)
 	}
+	resultSchema["required"] = []string{"mutated"}
 	adapter.mu.Lock()
 	adapter.steps = append(adapter.steps, func(req llm.Request) llm.Response {
 		return communicateWithDefaultOutput("second complete")
@@ -1105,6 +1152,17 @@ func TestSendDelegateMessageTerminalDelegateResumeCreatesNewJob(t *testing.T) {
 	rec := loadShellRecord(t, sess.jobManager, res.JobID)
 	if rec.Status != jobstore.StatusCompleted || rec.TranscriptRef != first.TranscriptRef {
 		t.Fatalf("resumed record = %+v, want completed with same transcript ref", rec)
+	}
+	if rec.DelegateRestore == nil {
+		t.Fatalf("resumed record missing delegate restore descriptor: %+v", rec)
+	}
+	schema, ok := rec.DelegateRestore.ResultSchema.(map[string]any)
+	if !ok {
+		t.Fatalf("resumed result_schema = %#v, want object schema", rec.DelegateRestore.ResultSchema)
+	}
+	required, ok := schema["required"].([]any)
+	if !ok || len(required) != 1 || required[0] != "message" {
+		t.Fatalf("resumed result_schema.required = %#v, want [message]", schema["required"])
 	}
 	output, _, _, err := sess.jobManager.readOutput(res.JobID, shellInlineOutputBytes)
 	if err != nil {
@@ -2082,6 +2140,19 @@ func communicateWithStructured(message string, output map[string]any) llm.Respon
 		"message":     message,
 		"await_reply": false,
 		"output":      output,
+	})
+	return toolCallResponse(llm.ToolCallData{
+		ID:        "delegate_communicate",
+		Name:      "communicate",
+		Arguments: args,
+		Type:      "function",
+	})
+}
+
+func communicateWithoutStructured(message string) llm.Response {
+	args, _ := json.Marshal(map[string]any{
+		"message":     message,
+		"await_reply": false,
 	})
 	return toolCallResponse(llm.ToolCallData{
 		ID:        "delegate_communicate",

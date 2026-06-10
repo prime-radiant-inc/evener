@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/santhosh-tekuri/jsonschema/v5"
+
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
@@ -22,6 +25,14 @@ import (
 var errJobManagerClosing = errors.New("job manager is closing")
 
 const maxPersistedStructuredResultJSONBytes = 1024 * 1024
+
+const (
+	structuredResultReasonSchemaValidationFailed = "schema_validation_failed"
+	structuredResultReasonSchemaResultMissing    = "schema_result_missing"
+	structuredResultReasonSchemaResultTooLarge   = "schema_result_too_large"
+	structuredResultReasonSchemaCaptureFailed    = "schema_capture_failed"
+	structuredResultReasonProjectionTooLarge     = "projection_too_large"
+)
 
 type jobManager struct {
 	mu            sync.Mutex
@@ -42,20 +53,21 @@ type jobManager struct {
 }
 
 type runningJob struct {
-	rec                    *jobstore.JobRecord
-	output                 *jobstore.OutputStore
-	signal                 func()
-	done                   chan struct{}
-	durableStarted         bool
-	stopStatus             jobstore.Status
-	stopReason             string
-	structured             any
-	terminal               *terminalJob
-	finalize               *finalizeAttempt
-	delegateOutputAppended bool
-	delegateOutputWritten  int
-	afterDurableFinish     func()
-	fromWatch              atomic.Bool
+	rec                     *jobstore.JobRecord
+	output                  *jobstore.OutputStore
+	signal                  func()
+	done                    chan struct{}
+	durableStarted          bool
+	stopStatus              jobstore.Status
+	stopReason              string
+	structured              any
+	structuredCaptureFailed bool
+	terminal                *terminalJob
+	finalize                *finalizeAttempt
+	delegateOutputAppended  bool
+	delegateOutputWritten   int
+	afterDurableFinish      func()
+	fromWatch               atomic.Bool
 }
 
 type finalizeAttempt struct {
@@ -585,7 +597,8 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 		outputBytes = total
 	}
 	jm.mu.Lock()
-	structured, structuredValid := boundedStructuredResult(run.structured)
+	resultSchema := delegateResultSchema(run.rec)
+	structured, structuredValid, structuredReason := boundedStructuredResult(run.structured, resultSchema, run.structuredCaptureFailed)
 	afterDurableFinish := run.afterDurableFinish
 	jm.mu.Unlock()
 
@@ -599,17 +612,18 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 		generation:  jobstore.NewTerminalGeneration(),
 	}
 	finished := jobstore.Event{
-		Kind:                  jobstore.EventJobFinished,
-		TS:                    endedAt,
-		JobID:                 run.rec.JobID,
-		Status:                terminal.status,
-		Reason:                terminal.reason,
-		ExitCode:              terminal.exitCode,
-		EndedAt:               &endedAt,
-		OutputBytes:           terminal.outputBytes,
-		StructuredResult:      structured,
-		StructuredResultValid: structuredValid,
-		TerminalGen:           terminal.generation,
+		Kind:                   jobstore.EventJobFinished,
+		TS:                     endedAt,
+		JobID:                  run.rec.JobID,
+		Status:                 terminal.status,
+		Reason:                 terminal.reason,
+		ExitCode:               terminal.exitCode,
+		EndedAt:                &endedAt,
+		OutputBytes:            terminal.outputBytes,
+		StructuredResult:       structured,
+		StructuredResultValid:  structuredValid,
+		StructuredResultReason: structuredReason,
+		TerminalGen:            terminal.generation,
 	}
 	if err := jm.appendEvent(finished); err != nil {
 		return err
@@ -625,6 +639,7 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 		run.rec.OutputBytes = terminal.outputBytes
 		run.rec.StructuredResult = structured
 		run.rec.StructuredResultValid = structuredValid
+		run.rec.StructuredResultReason = structuredReason
 		run.rec.TerminalGen = terminal.generation
 	}
 	jm.mu.Unlock()
@@ -638,17 +653,59 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 	return jm.armFinalizedJob(run, terminal)
 }
 
-func boundedStructuredResult(value any) (any, *bool) {
+func boundedStructuredResult(value any, resultSchema any, captureFailed bool) (any, *bool, string) {
+	schemaRequested := resultSchema != nil
 	if value == nil {
-		return nil, nil
+		if captureFailed {
+			valid := false
+			return nil, &valid, structuredResultReasonSchemaCaptureFailed
+		}
+		if schemaRequested {
+			valid := false
+			return nil, &valid, structuredResultReasonSchemaResultMissing
+		}
+		return nil, nil, ""
 	}
 	valid := true
 	b, err := json.Marshal(value)
 	if err != nil || len(b) > maxPersistedStructuredResultJSONBytes {
 		valid = false
-		return nil, &valid
+		reason := structuredResultReasonSchemaCaptureFailed
+		if err == nil {
+			reason = structuredResultReasonSchemaResultTooLarge
+		}
+		return nil, &valid, reason
 	}
-	return value, &valid
+	if schemaRequested {
+		if err := validateStructuredResult(value, resultSchema); err != nil {
+			valid = false
+			return nil, &valid, structuredResultReasonSchemaValidationFailed
+		}
+	}
+	return value, &valid, ""
+}
+
+func validateStructuredResult(value any, resultSchema any) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("schema validation panicked: %v", r)
+		}
+	}()
+
+	b, err := json.Marshal(resultSchema)
+	if err != nil {
+		return err
+	}
+	c := jsonschema.NewCompiler()
+	const schemaURI = "urn:serf:delegate-result-schema"
+	if err := c.AddResource(schemaURI, bytes.NewReader(b)); err != nil {
+		return err
+	}
+	compiled, err := c.Compile(schemaURI)
+	if err != nil {
+		return err
+	}
+	return compiled.Validate(value)
 }
 
 func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) error {

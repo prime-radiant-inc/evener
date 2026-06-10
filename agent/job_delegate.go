@@ -44,6 +44,7 @@ type delegateResult struct {
 	StructuredResult         any
 	StructuredResultValid    bool
 	StructuredResultValidSet bool
+	StructuredResultReason   string
 	Err                      error
 }
 
@@ -73,6 +74,7 @@ type sendMessageResult struct {
 	StructuredResult         any
 	StructuredResultValid    bool
 	StructuredResultValidSet bool
+	StructuredResultReason   string
 	Delivered                bool
 	MessageType              string
 	Err                      error
@@ -112,7 +114,7 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 		return delegateStartFailed(fmt.Errorf("spawned agent %q is not tracked", childID))
 	}
 
-	run, finalizeErr, done, err := s.attachAndBridgeDelegateJob(jm, childID, task, sub, jobID)
+	run, finalizeErr, done, err := s.attachAndBridgeDelegateJob(jm, childID, task, sub, jobID, args.ResultSchema)
 	if err != nil {
 		cancelDelegateChild(s, childID)
 		return delegateStartFailed(err)
@@ -258,7 +260,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		return s.sendRunningDelegateMessage(target, message, active, args.FromWatch)
 	}
 
-	run, finalizeErr, active, err := s.resumeOrFindRunningDelegate(jm, childID, message, sub, rec.TranscriptRef, args.FromWatch)
+	run, finalizeErr, active, err := s.resumeOrFindRunningDelegate(jm, childID, message, sub, rec.TranscriptRef, delegateResultSchema(rec), args.FromWatch)
 	if err != nil {
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: resume delegate session %q: %w", childID, err))
 	}
@@ -352,7 +354,7 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 	}
 }
 
-func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message string, sub *subagent, transcriptRef string, fromWatch bool) (*runningJob, <-chan error, *jobstore.JobRecord, error) {
+func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message string, sub *subagent, transcriptRef string, resultSchema any, fromWatch bool) (*runningJob, <-chan error, *jobstore.JobRecord, error) {
 	sub.mu.Lock()
 	if sub.running {
 		sub.mu.Unlock()
@@ -375,7 +377,7 @@ func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message s
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
 
-	run, err := s.attachDelegateJobFromWatch(jm, childID, message, sub, fromWatch)
+	run, err := s.attachDelegateJobFromWatch(jm, childID, message, sub, resultSchema, fromWatch)
 	if err != nil {
 		sub.mu.Unlock()
 		runCancel()
@@ -489,6 +491,7 @@ func sendMessageResultFromDelegateResult(target, resumedFromJobID, action string
 		StructuredResult:         res.StructuredResult,
 		StructuredResultValid:    res.StructuredResultValid,
 		StructuredResultValidSet: res.StructuredResultValidSet,
+		StructuredResultReason:   res.StructuredResultReason,
 		Err:                      res.Err,
 	}
 }
@@ -531,14 +534,14 @@ func parseSpawnedAgentID(spawned any) (string, error) {
 	return out.AgentID, nil
 }
 
-func (s *Session) attachAndBridgeDelegateJob(jm *jobManager, childID, task string, sub *subagent, jobID string) (*runningJob, <-chan error, <-chan struct{}, error) {
+func (s *Session) attachAndBridgeDelegateJob(jm *jobManager, childID, task string, sub *subagent, jobID string, resultSchema any) (*runningJob, <-chan error, <-chan struct{}, error) {
 	sub.mu.Lock()
 	done := sub.done
 	sub.mu.Unlock()
 	if done == nil {
 		return nil, nil, nil, fmt.Errorf("delegate session %q has no active run", childID)
 	}
-	run, err := s.attachDelegateJobWithID(jm, childID, task, sub, jobID, false)
+	run, err := s.attachDelegateJobWithID(jm, childID, task, sub, jobID, resultSchema, false)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -551,14 +554,14 @@ func (s *Session) attachAndBridgeDelegateJob(jm *jobManager, childID, task strin
 }
 
 func (s *Session) attachDelegateJob(jm *jobManager, childID, task string, sub *subagent) (*runningJob, error) {
-	return s.attachDelegateJobWithID(jm, childID, task, sub, jobstore.NewJobID(), false)
+	return s.attachDelegateJobWithID(jm, childID, task, sub, jobstore.NewJobID(), nil, false)
 }
 
-func (s *Session) attachDelegateJobFromWatch(jm *jobManager, childID, task string, sub *subagent, fromWatch bool) (*runningJob, error) {
-	return s.attachDelegateJobWithID(jm, childID, task, sub, jobstore.NewJobID(), fromWatch)
+func (s *Session) attachDelegateJobFromWatch(jm *jobManager, childID, task string, sub *subagent, resultSchema any, fromWatch bool) (*runningJob, error) {
+	return s.attachDelegateJobWithID(jm, childID, task, sub, jobstore.NewJobID(), resultSchema, fromWatch)
 }
 
-func (s *Session) attachDelegateJobWithID(jm *jobManager, childID, task string, sub *subagent, jobID string, fromWatch bool) (*runningJob, error) {
+func (s *Session) attachDelegateJobWithID(jm *jobManager, childID, task string, sub *subagent, jobID string, resultSchema any, fromWatch bool) (*runningJob, error) {
 	startedAt := jm.now()
 	transcriptRef := encodeRef("", childID)
 	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
@@ -575,8 +578,15 @@ func (s *Session) attachDelegateJobWithID(jm *jobManager, childID, task string, 
 			OwnerSessionID:   s.id,
 			VisibleToSession: s.id,
 			TranscriptRef:    transcriptRef,
-			StartedAt:        startedAt,
-			OutputPath:       outputPath,
+			DelegateRestore: &jobstore.DelegateRestoreDescriptor{
+				Version:        1,
+				ChildSessionID: childID,
+				TranscriptRef:  transcriptRef,
+				Task:           task,
+				ResultSchema:   cloneDelegateResultSchema(resultSchema),
+			},
+			StartedAt:  startedAt,
+			OutputPath: outputPath,
 		},
 		output:         output,
 		signal:         func() { cancelDelegateSub(sub) },
@@ -603,6 +613,7 @@ func (s *Session) attachDelegateJobWithID(jm *jobManager, childID, task string, 
 		StartedAt:        &startedAt,
 		OutputPath:       run.rec.OutputPath,
 		TranscriptRef:    run.rec.TranscriptRef,
+		DelegateRestore:  run.rec.DelegateRestore,
 	}
 	if err := jm.appendEvent(started); err != nil {
 		jm.mu.Unlock()
@@ -678,14 +689,18 @@ func (s *Session) finalizeDelegateOnce(jm *jobManager, jobID string, sub *subage
 		sub.mu.Unlock()
 
 		var structured any
+		structuredCaptureFailed := false
 		if childSess != nil {
 			structured = childSess.CommunicateStructured()
+		} else if delegateResultSchema(run.rec) != nil {
+			structuredCaptureFailed = true
 		}
 
 		output := delegateOutputBytes(prose)
 		for {
 			jm.mu.Lock()
 			run.structured = structured
+			run.structuredCaptureFailed = structuredCaptureFailed
 			run.afterDurableFinish = func() {
 				sub.mu.Lock()
 				sub.resultConsumed = true
@@ -801,7 +816,7 @@ func delegateTerminalResult(jm *jobManager, run *runningJob) delegateResult {
 	jm.mu.Lock()
 	structured := rec.StructuredResult
 	structuredValid := rec.StructuredResultValid
-	if structured == nil {
+	if structured == nil && structuredValid == nil {
 		structured = run.structured
 		if structured != nil && structuredValid == nil {
 			valid := true
@@ -822,6 +837,29 @@ func delegateTerminalResult(jm *jobManager, run *runningJob) delegateResult {
 		StructuredResult:         structured,
 		StructuredResultValid:    valid,
 		StructuredResultValidSet: structuredValid != nil,
+		StructuredResultReason:   rec.StructuredResultReason,
 		Err:                      err,
 	}
+}
+
+func delegateResultSchema(rec *jobstore.JobRecord) any {
+	if rec == nil || rec.DelegateRestore == nil {
+		return nil
+	}
+	return rec.DelegateRestore.ResultSchema
+}
+
+func cloneDelegateResultSchema(schema any) any {
+	if schema == nil {
+		return nil
+	}
+	b, err := json.Marshal(schema)
+	if err != nil {
+		return schema
+	}
+	var cloned any
+	if err := json.Unmarshal(b, &cloned); err != nil {
+		return schema
+	}
+	return cloned
 }

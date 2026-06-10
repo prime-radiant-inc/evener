@@ -571,6 +571,61 @@ func TestDelegateToolForegroundReturnsStructuredResult(t *testing.T) {
 	}
 }
 
+func TestDelegateToolForegroundSchemaResultMissingProjectsReason(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithoutStructured("done without structured result")
+			},
+		},
+	})
+	s := newDelegateTestSession(t, c)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:   "delegate",
+		Name: "delegate",
+		Arguments: json.RawMessage(`{
+			"task":"return a structured result",
+			"background":false,
+			"block_timeout_ms":5000,
+			"result_schema":{
+				"type":"object",
+				"properties":{"summary":{"type":"string"}},
+				"required":["summary"]
+			}
+		}`),
+	})
+	if res.IsError {
+		t.Fatalf("delegate returned error: %s", res.Output)
+	}
+	assertStructuredResultInvalidReason(t, res.Output, "schema_result_missing")
+}
+
+func TestDelegateToolForegroundNoSchemaNoStructuredOmitsStructuredFields(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithoutStructured("plain delegate result")
+			},
+		},
+	})
+	s := newDelegateTestSession(t, c)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "delegate",
+		Name:      "delegate",
+		Arguments: json.RawMessage(`{"task":"return prose only","background":false,"block_timeout_ms":5000}`),
+	})
+	if res.IsError {
+		t.Fatalf("delegate returned error: %s", res.Output)
+	}
+	assertStructuredResultFieldsAbsent(t, res.Output)
+}
+
 func TestJobReadOutputReturnsBackgroundDelegateStructuredResult(t *testing.T) {
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -629,6 +684,56 @@ func TestJobReadOutputReturnsBackgroundDelegateStructuredResult(t *testing.T) {
 		readOut.StructuredResult["summary"] != "persisted" {
 		t.Fatalf("job_read_output = %+v, want persisted structured result", readOut)
 	}
+}
+
+func TestJobReadOutputReturnsBackgroundDelegateSchemaResultMissingReason(t *testing.T) {
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithoutStructured("background missing structured result")
+			},
+		},
+	})
+	s := newDelegateTestSession(t, c)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:   "delegate",
+		Name: "delegate",
+		Arguments: json.RawMessage(`{
+			"task":"produce a structured result",
+			"result_schema":{
+				"type":"object",
+				"properties":{"summary":{"type":"string"}},
+				"required":["summary"]
+			}
+		}`),
+	})
+	if res.IsError {
+		t.Fatalf("delegate returned error: %s", res.Output)
+	}
+	var delegateOut struct {
+		JobID  string `json:"job_id"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &delegateOut); err != nil {
+		t.Fatalf("unmarshal delegate output: %v (output: %s)", err, res.Output)
+	}
+	if delegateOut.JobID == "" || delegateOut.Status != string(jobstore.StatusRunning) {
+		t.Fatalf("delegate output = %+v, want running background job", delegateOut)
+	}
+	waitForShellDone(t, s.jobManager, delegateOut.JobID)
+
+	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "read",
+		Name:      "job_read_output",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"max_chars":20000}`, delegateOut.JobID)),
+	})
+	if readRes.IsError {
+		t.Fatalf("job_read_output returned error: %s", readRes.Output)
+	}
+	assertStructuredResultInvalidReason(t, readRes.Output, "schema_result_missing")
 }
 
 func TestJobReadOutputBlockReturnsOnNewOutput(t *testing.T) {
@@ -1115,15 +1220,17 @@ func TestJobReadOutputSmallMaxCharsReturnsValidJSON(t *testing.T) {
 
 func TestJobReadOutputDropsOversizedStructuredResultWhenBounding(t *testing.T) {
 	valid := true
+	reason := "schema_result_too_large"
 	out, err := marshalBoundedJobReadOutputResult(jobReadOutputResult{
-		JobID:                 "job_delegate",
-		Type:                  string(jobstore.JobDelegate),
-		Status:                string(jobstore.StatusCompleted),
-		Content:               strings.Repeat("output-", 200),
-		TotalBytes:            1400,
-		Truncated:             true,
-		StructuredResult:      map[string]any{"payload": strings.Repeat("x", jobToolResultMinJSONChars)},
-		StructuredResultValid: &valid,
+		JobID:                  "job_delegate",
+		Type:                   string(jobstore.JobDelegate),
+		Status:                 string(jobstore.StatusCompleted),
+		Content:                strings.Repeat("output-", 200),
+		TotalBytes:             1400,
+		Truncated:              true,
+		StructuredResult:       map[string]any{"payload": strings.Repeat("x", jobToolResultMinJSONChars)},
+		StructuredResultValid:  &valid,
+		StructuredResultReason: reason,
 	}, jobToolResultMinJSONChars)
 	if err != nil {
 		t.Fatalf("marshalBoundedJobReadOutputResult: %v", err)
@@ -1143,6 +1250,70 @@ func TestJobReadOutputDropsOversizedStructuredResultWhenBounding(t *testing.T) {
 	}
 	if parsed["structured_result_valid"] != false {
 		t.Fatalf("structured_result_valid = %v, want false", parsed["structured_result_valid"])
+	}
+	if parsed["structured_result_reason"] != "projection_too_large" {
+		t.Fatalf("reason = %v, want projection_too_large", parsed["structured_result_reason"])
+	}
+}
+
+func TestJobReadOutputProjectionTooLargeDoesNotMutateDurableStructuredResult(t *testing.T) {
+	payload := strings.Repeat("x", jobToolResultMinJSONChars)
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithStructured("background report", map[string]any{
+					"payload": payload,
+				})
+			},
+		},
+	})
+	s := newDelegateTestSession(t, c)
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:   "delegate",
+		Name: "delegate",
+		Arguments: json.RawMessage(`{
+			"task":"produce a large structured result",
+			"result_schema":{
+				"type":"object",
+				"properties":{"payload":{"type":"string"}},
+				"required":["payload"]
+			}
+		}`),
+	})
+	if res.IsError {
+		t.Fatalf("delegate returned error: %s", res.Output)
+	}
+	var delegateOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(res.Output), &delegateOut); err != nil {
+		t.Fatalf("unmarshal delegate output: %v (output: %s)", err, res.Output)
+	}
+	waitForShellDone(t, s.jobManager, delegateOut.JobID)
+
+	readRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "read",
+		Name:      "job_read_output",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"max_chars":%d}`, delegateOut.JobID, jobToolResultMinJSONChars)),
+	})
+	if readRes.IsError {
+		t.Fatalf("job_read_output returned error: %s", readRes.Output)
+	}
+	assertStructuredResultInvalidReason(t, readRes.Output, "projection_too_large")
+
+	rec := loadShellRecord(t, s.jobManager, delegateOut.JobID)
+	structured, ok := rec.StructuredResult.(map[string]any)
+	if !ok || structured["payload"] != payload {
+		t.Fatalf("durable structured_result = %+v, want original payload", rec.StructuredResult)
+	}
+	if rec.StructuredResultValid == nil || !*rec.StructuredResultValid {
+		t.Fatalf("durable structured_result_valid = %v, want true", rec.StructuredResultValid)
+	}
+	if rec.StructuredResultReason != "" {
+		t.Fatalf("durable structured_result_reason = %q, want empty", rec.StructuredResultReason)
 	}
 }
 
@@ -1382,6 +1553,40 @@ type jobReadOutputTestResult struct {
 	ExitCode              *int           `json:"exit_code"`
 	StructuredResult      map[string]any `json:"structured_result"`
 	StructuredResultValid bool           `json:"structured_result_valid"`
+}
+
+func assertStructuredResultInvalidReason(t *testing.T, out, reason string) {
+	t.Helper()
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := parsed["structured_result"]; ok {
+		t.Fatal("structured_result present for invalid/missing schema result")
+	}
+	if parsed["structured_result_valid"] != false {
+		t.Fatalf("structured_result_valid = %v, want false", parsed["structured_result_valid"])
+	}
+	if parsed["structured_result_reason"] != reason {
+		t.Fatalf("reason = %v, want %s", parsed["structured_result_reason"], reason)
+	}
+}
+
+func assertStructuredResultFieldsAbsent(t *testing.T, out string) {
+	t.Helper()
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := parsed["structured_result"]; ok {
+		t.Fatal("structured_result present without schema or structured output")
+	}
+	if _, ok := parsed["structured_result_valid"]; ok {
+		t.Fatal("structured_result_valid present without schema or structured output")
+	}
+	if _, ok := parsed["structured_result_reason"]; ok {
+		t.Fatal("structured_result_reason present without schema or structured output")
+	}
 }
 
 func waitForJobOutput(t *testing.T, s *Session, jobID, want string) jobReadOutputTestResult {
