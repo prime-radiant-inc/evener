@@ -149,12 +149,15 @@ func (jm *jobManager) close() error {
 	jm.watchNotifyMu.Lock()
 	jm.mu.Lock()
 	jm.closing = true
-	var dropped []watchSendTerminalSnapshot
+	targets := make([]watchConfigTerminalSnapshot, 0, len(jm.watches))
 	for key, cfg := range jm.watches {
-		dropped = append(dropped, watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "job manager closed", jm.now()))
-		closeWatchConfig(cfg)
-		delete(jm.watches, key)
+		targets = append(targets, watchConfigTerminalSnapshot{
+			key:      key,
+			cfg:      cfg,
+			terminal: watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "job manager closed", jm.now()),
+		})
 	}
+	dropped := terminalSnapshots(targets)
 	for cfg := range jm.terminalFlush {
 		dropped = append(dropped, watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "job manager closed", jm.now()))
 	}
@@ -174,12 +177,11 @@ func (jm *jobManager) close() error {
 	jm.mu.Unlock()
 	jm.watchNotifyMu.Unlock()
 
-	var closeErr error
 	if err := jm.appendWatchSendTerminalSnapshots(dropped); err != nil {
-		closeErr = err
-	} else {
-		jm.removeWatchSendTerminalSnapshots(dropped)
+		return err
 	}
+	jm.detachWatchConfigSnapshots(targets)
+	jm.removeWatchSendTerminalSnapshots(dropped)
 	for _, run := range running {
 		if run.signal != nil {
 			run.signal()
@@ -204,33 +206,29 @@ waitLoop:
 		}
 		return err
 	}
-	if closeErr != nil {
-		if waitErr != nil {
-			return fmt.Errorf("%w; close watch sends: %w", waitErr, closeErr)
-		}
-		return closeErr
-	}
 	return waitErr
 }
 
 func (jm *jobManager) abandonRunningJobs() {
 	jm.mu.Lock()
 	running := make([]jobRuntimeHandle, 0, len(jm.running))
-	var dropped []watchSendTerminalSnapshot
+	var targets []watchConfigTerminalSnapshot
 	for _, run := range jm.running {
 		running = append(running, jobRuntimeHandle{
 			jobID:  run.rec.JobID,
 			output: run.output,
 		})
 		delete(jm.running, run.rec.JobID)
-		dropped = append(dropped, jm.pruneWatchedTargetWatchesLocked(run.rec.JobID, "watched target pruned", jm.now())...)
+		targets = append(targets, jm.pruneWatchedTargetWatchesLocked(run.rec.JobID, "watched target pruned", jm.now())...)
 	}
 	jm.mu.Unlock()
+	dropped := terminalSnapshots(targets)
 	if err := jm.appendWatchSendTerminalSnapshots(dropped); err != nil {
 		jm.enqueueWatchNotifications([]jobNotification{
 			watchNotification("", "watch send prune cleanup failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})
 	} else {
+		jm.detachWatchConfigSnapshots(targets)
 		jm.removeWatchSendTerminalSnapshots(dropped)
 	}
 	for _, run := range running {
@@ -243,20 +241,22 @@ func (jm *jobManager) abandonRunningJobs() {
 func (jm *jobManager) abandonRunningJob(jobID string) {
 	jm.mu.Lock()
 	run := jm.running[jobID]
-	var dropped []watchSendTerminalSnapshot
+	var targets []watchConfigTerminalSnapshot
 	if run != nil {
 		delete(jm.running, jobID)
-		dropped = jm.pruneWatchedTargetWatchesLocked(jobID, "watched target pruned", jm.now())
+		targets = jm.pruneWatchedTargetWatchesLocked(jobID, "watched target pruned", jm.now())
 	}
 	jm.mu.Unlock()
 	if run == nil {
 		return
 	}
+	dropped := terminalSnapshots(targets)
 	if err := jm.appendWatchSendTerminalSnapshots(dropped); err != nil {
 		jm.enqueueWatchNotifications([]jobNotification{
 			watchNotification(jobID, "watch send prune cleanup failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})
 	} else {
+		jm.detachWatchConfigSnapshots(targets)
 		jm.removeWatchSendTerminalSnapshots(dropped)
 	}
 	if run.output != nil {

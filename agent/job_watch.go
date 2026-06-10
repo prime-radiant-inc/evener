@@ -442,14 +442,7 @@ func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
 	if err := jm.appendWatchSendTerminalSnapshots(dropped); err != nil {
 		return watchResult{}, err
 	}
-	jm.mu.Lock()
-	for _, target := range targets {
-		if target.cfg != nil && jm.watches[target.key] == target.cfg {
-			closeWatchConfig(target.cfg)
-			delete(jm.watches, target.key)
-		}
-	}
-	jm.mu.Unlock()
+	jm.detachWatchConfigSnapshots(targets)
 	jm.removeWatchSendTerminalSnapshots(dropped)
 
 	return watchResult{
@@ -458,17 +451,19 @@ func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
 	}, nil
 }
 
-func (jm *jobManager) pruneWatchedTargetWatchesLocked(jobID, reason string, now time.Time) []watchSendTerminalSnapshot {
-	var dropped []watchSendTerminalSnapshot
+func (jm *jobManager) pruneWatchedTargetWatchesLocked(jobID, reason string, now time.Time) []watchConfigTerminalSnapshot {
+	var targets []watchConfigTerminalSnapshot
 	for key, cfg := range jm.watches {
 		if key.Target != jobID {
 			continue
 		}
-		dropped = append(dropped, watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, reason, now))
-		closeWatchConfig(cfg)
-		delete(jm.watches, key)
+		targets = append(targets, watchConfigTerminalSnapshot{
+			key:      key,
+			cfg:      cfg,
+			terminal: watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, reason, now),
+		})
 	}
-	return dropped
+	return targets
 }
 
 func (cfg *watchConfig) initProgressStop() chan struct{} {
@@ -662,6 +657,7 @@ func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, [
 				}
 			}
 		}
+		jm.rememberDetachedPendingLocked(cfg)
 		closeWatchConfig(cfg)
 		delete(jm.watches, key)
 	}
@@ -882,12 +878,6 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 		return watchSendPendingRecord{}
 	}
 	cfg := d.cfg
-	if d.allowAfterTerminalExpiry {
-		if jm.terminalFlush == nil {
-			jm.terminalFlush = make(map[*watchConfig]bool)
-		}
-		jm.terminalFlush[cfg] = true
-	}
 	if cfg.pending == nil {
 		cfg.pending = make(map[jobstore.WatchSendKey]*jobstore.WatchSendState)
 	}
@@ -903,6 +893,9 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 	state.UpdatedAt = now
 	pendingState := state
 	cfg.pending[state.Key] = &pendingState
+	if d.allowAfterTerminalExpiry {
+		jm.rememberDetachedPendingLocked(cfg)
+	}
 
 	record := watchSendPendingRecord{pendingEvents: []jobstore.Event{{
 		Kind:      jobstore.EventWatchSendPending,
@@ -967,6 +960,16 @@ func (jm *jobManager) forgetTerminalFlushIfEmptyLocked(cfg *watchConfig) {
 	delete(jm.terminalFlush, cfg)
 }
 
+func (jm *jobManager) rememberDetachedPendingLocked(cfg *watchConfig) {
+	if cfg == nil || len(cfg.pending) == 0 {
+		return
+	}
+	if jm.terminalFlush == nil {
+		jm.terminalFlush = make(map[*watchConfig]bool)
+	}
+	jm.terminalFlush[cfg] = true
+}
+
 type watchSendTerminalSnapshot struct {
 	cfg    *watchConfig
 	events []jobstore.Event
@@ -984,6 +987,17 @@ func terminalSnapshots(targets []watchConfigTerminalSnapshot) []watchSendTermina
 		out = append(out, target.terminal)
 	}
 	return out
+}
+
+func (jm *jobManager) detachWatchConfigSnapshots(targets []watchConfigTerminalSnapshot) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for _, target := range targets {
+		if target.cfg != nil && jm.watches[target.key] == target.cfg {
+			closeWatchConfig(target.cfg)
+			delete(jm.watches, target.key)
+		}
+	}
 }
 
 func watchSendTerminalSnapshotsLocked(cfg *watchConfig, kind jobstore.EventKind, reason string, now time.Time) watchSendTerminalSnapshot {

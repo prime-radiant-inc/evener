@@ -674,6 +674,62 @@ func TestWatchSendWatchedTargetPruneDropsPending(t *testing.T) {
 	}
 }
 
+func TestWatchSendPruneAppendFailureKeepsPendingReachable(t *testing.T) {
+	jm := newTestJM(t)
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.feedJobOutput(rec.JobID, []byte("ready\n"))
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: "job_obs"}
+	jm.mu.Lock()
+	cfg := jm.watches[key]
+	jm.mu.Unlock()
+	if cfg == nil || len(cfg.pending) != 1 {
+		t.Fatalf("pending before prune = %+v, want one", cfg)
+	}
+	realAppend := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventWatchSendDropped {
+			return errors.New("append dropped failed")
+		}
+		return realAppend(e)
+	}
+
+	jm.abandonRunningJob(rec.JobID)
+
+	if got := len(cfg.pending); got != 1 {
+		t.Fatalf("in-memory pending after failed prune append = %d, want 1", got)
+	}
+	jm.mu.Lock()
+	reachable := jm.watches[key] == cfg
+	if !reachable && jm.terminalFlush != nil {
+		reachable = jm.terminalFlush[cfg]
+	}
+	jm.mu.Unlock()
+	if !reachable {
+		t.Fatal("pending watch config was unreachable after failed prune append")
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("folded pending after failed prune append = %d, want 1", len(pending))
+	}
+
+	jm.appendEvent = realAppend
+	if err := jm.close(); err != nil {
+		t.Fatalf("retry cleanup through close: %v", err)
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("folded pending after retry cleanup = %d, want 0", len(pending))
+	}
+}
+
 func TestWatchSendTerminalFlushPersistsAlreadyFiredPending(t *testing.T) {
 	jm := newTestJM(t)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
@@ -732,6 +788,43 @@ func TestWatchSendTerminalFlushCloseDropsPending(t *testing.T) {
 	}
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
 		t.Fatalf("pending before close = %d, want 1", len(pending))
+	}
+
+	if err := jm.close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("pending after close = %+v, want none", pending)
+	}
+}
+
+func TestWatchSendTerminalExpiryCloseDropsExistingPending(t *testing.T) {
+	jm := newTestJM(t)
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("pending before terminal expiry = %d, want 1", len(pending))
+	}
+	code := 0
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count after terminal expiry = %d, want 0", jm.watchCount())
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("pending after terminal expiry = %d, want 1", len(pending))
 	}
 
 	if err := jm.close(); err != nil {
@@ -1004,6 +1097,65 @@ func TestWatchSendAppendFailureDuringReplaceLeavesOldWatchReachable(t *testing.T
 	}
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
 		t.Fatalf("folded pending after retry replace = %d, want 0", len(pending))
+	}
+}
+
+func TestWatchSendAppendFailureDuringCloseKeepsPendingReachable(t *testing.T) {
+	jm := newTestJM(t)
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	if _, err := jm.configureWatch(watchArgs{
+		Target: "*",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger", JobType: "delegate", Status: "completed"})
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: "*", SendTo: "job_obs"}
+	jm.mu.Lock()
+	cfg := jm.watches[key]
+	jm.mu.Unlock()
+	if cfg == nil || len(cfg.pending) != 1 {
+		t.Fatalf("pending before close = %+v, want one", cfg)
+	}
+	realAppend := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventWatchSendDropped {
+			return errors.New("append dropped failed")
+		}
+		return realAppend(e)
+	}
+
+	if err := jm.close(); err == nil {
+		t.Fatal("close succeeded, want append failure")
+	}
+	if _, err := jm.store.Load(); err != nil {
+		t.Fatalf("store after failed close = %v, want still open", err)
+	}
+	if got := len(cfg.pending); got != 1 {
+		t.Fatalf("in-memory pending after failed close append = %d, want 1", got)
+	}
+	jm.mu.Lock()
+	reachable := jm.watches[key] == cfg
+	if !reachable && jm.terminalFlush != nil {
+		reachable = jm.terminalFlush[cfg]
+	}
+	jm.mu.Unlock()
+	if !reachable {
+		t.Fatal("pending watch config was unreachable after failed close append")
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("folded pending after failed close append = %d, want 1", len(pending))
+	}
+
+	jm.appendEvent = realAppend
+	if err := jm.close(); err != nil {
+		t.Fatalf("retry close: %v", err)
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("folded pending after retry close = %d, want 0", len(pending))
 	}
 }
 
