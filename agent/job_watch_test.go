@@ -637,6 +637,42 @@ func TestWatchSendWatchedTargetPruneDropsPending(t *testing.T) {
 	}
 }
 
+func TestWatchSendTerminalFlushPersistsAlreadyFiredPending(t *testing.T) {
+	jm := newTestJM(t)
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("server ready")); err != nil {
+		t.Fatalf("append output: %v", err)
+	}
+
+	code := 0
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+
+	pending := loadWatchSendRecord(t, jm).Pending
+	if len(pending) != 1 {
+		t.Fatalf("pending after terminal flush = %d, want 1: %+v", len(pending), pending)
+	}
+	for _, state := range pending {
+		if !strings.Contains(state.Frame, "output_match: server ready") {
+			t.Fatalf("pending frame = %q, want flushed trigger", state.Frame)
+		}
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count after terminal expiry = %d, want 0", jm.watchCount())
+	}
+}
+
 func TestWatchSendStaleDeliveryClearedDuringSendDoesNotPersistPending(t *testing.T) {
 	jm := newTestJM(t)
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})

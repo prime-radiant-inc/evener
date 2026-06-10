@@ -101,14 +101,15 @@ type watchResult struct {
 }
 
 type watchSendDelivery struct {
-	cfg              *watchConfig
-	key              watchKey
-	generation       string
-	send             *watchSendArgs
-	visibleSessionID string
-	watchTarget      string
-	watchedIdentity  string
-	trigger          string
+	cfg                      *watchConfig
+	key                      watchKey
+	generation               string
+	allowAfterTerminalExpiry bool
+	send                     *watchSendArgs
+	visibleSessionID         string
+	watchTarget              string
+	watchedIdentity          string
+	trigger                  string
 }
 
 func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
@@ -618,7 +619,9 @@ func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, [
 		if cfg.outputMatcher != nil {
 			for _, match := range cfg.outputMatcher.Flush() {
 				if cfg.send != nil {
-					deliveries = append(deliveries, jm.watchSendSnapshot(cfg, jobID, "output_match: "+match))
+					delivery := jm.watchSendSnapshot(cfg, jobID, "output_match: "+match)
+					delivery.allowAfterTerminalExpiry = true
+					deliveries = append(deliveries, delivery)
 				} else {
 					notifications = append(notifications, watchNotification(jobID, "output_match: "+match))
 				}
@@ -781,6 +784,9 @@ func (jm *jobManager) isCurrentWatchSendDelivery(d watchSendDelivery) bool {
 }
 
 func (jm *jobManager) isCurrentWatchSendDeliveryLocked(d watchSendDelivery) bool {
+	if d.allowAfterTerminalExpiry {
+		return d.cfg != nil && d.cfg.generation == d.generation
+	}
 	return d.cfg != nil && jm.watches[d.key] == d.cfg && d.cfg.generation == d.generation
 }
 
