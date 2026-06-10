@@ -45,33 +45,63 @@ const (
 	NotifyDelivered NotifyState = "delivered"
 )
 
+// DelegateRestoreDescriptor carries the durable state needed to restore a delegate job.
+type DelegateRestoreDescriptor struct {
+	Version            int      `json:"version"`
+	ChildSessionID     string   `json:"child_session_id"`
+	TranscriptRef      string   `json:"transcript_ref"`
+	ParentSessionID    string   `json:"parent_session_id,omitempty"`
+	ParentJobID        string   `json:"parent_job_id,omitempty"`
+	OwnerSessionID     string   `json:"owner_session_id,omitempty"`
+	VisibleSessionID   string   `json:"visible_session_id,omitempty"`
+	OriginTurnID       string   `json:"origin_turn_id,omitempty"`
+	OriginToolCallID   string   `json:"origin_tool_call_id,omitempty"`
+	Task               string   `json:"task,omitempty"`
+	AgentType          string   `json:"agent_type,omitempty"`
+	RequestedModel     string   `json:"requested_model,omitempty"`
+	ResolvedProfileID  string   `json:"resolved_profile_id,omitempty"`
+	ResolvedModel      string   `json:"resolved_model,omitempty"`
+	ReasoningEffort    string   `json:"reasoning_effort,omitempty"`
+	AgentName          string   `json:"agent_name,omitempty"`
+	FrozenRolePrompt   string   `json:"frozen_role_prompt,omitempty"`
+	FrozenTaskPrompt   string   `json:"frozen_task_prompt,omitempty"`
+	FrozenToolNames    []string `json:"frozen_tool_names,omitempty"`
+	FrozenSkillNames   []string `json:"frozen_skill_names,omitempty"`
+	WorkingDir         string   `json:"working_dir,omitempty"`
+	LocalEnvPolicy     string   `json:"local_env_policy,omitempty"`
+	ResultSchema       any      `json:"result_schema,omitempty"`
+	ExplicitToolGrants []string `json:"explicit_tool_grants,omitempty"`
+}
+
 // JobRecord is the durable storage shape reconstructed from the job event log.
 type JobRecord struct {
-	JobID                 string      `json:"job_id"`
-	Type                  JobType     `json:"type"`
-	Status                Status      `json:"status"`
-	Reason                string      `json:"reason,omitempty"`
-	Description           string      `json:"description,omitempty"`
-	Command               string      `json:"command,omitempty"`
-	Task                  string      `json:"task,omitempty"`
-	ParentSessionID       string      `json:"parent_session_id,omitempty"`
-	OwnerSessionID        string      `json:"owner_session_id"`
-	VisibleToSession      string      `json:"visible_to_session_id"`
-	ParentJobID           string      `json:"parent_job_id,omitempty"`
-	OriginTurnID          string      `json:"origin_turn_id,omitempty"`
-	OriginToolCallID      string      `json:"origin_tool_call_id,omitempty"`
-	TranscriptRef         string      `json:"transcript_ref,omitempty"`
-	Resumable             *bool       `json:"resumable,omitempty"`
-	NotResumableWhy       string      `json:"not_resumable_reason,omitempty"`
-	StartedAt             time.Time   `json:"started_at"`
-	EndedAt               *time.Time  `json:"ended_at,omitempty"`
-	ExitCode              *int        `json:"exit_code,omitempty"`
-	OutputPath            string      `json:"output_path,omitempty"`
-	OutputBytes           int64       `json:"output_bytes"`
-	StructuredResult      any         `json:"structured_result,omitempty"`
-	StructuredResultValid *bool       `json:"structured_result_valid,omitempty"`
-	TerminalGen           string      `json:"terminal_generation,omitempty"`
-	NotifyState           NotifyState `json:"terminal_notification_state"`
+	JobID                  string                     `json:"job_id"`
+	Type                   JobType                    `json:"type"`
+	Status                 Status                     `json:"status"`
+	Reason                 string                     `json:"reason,omitempty"`
+	Description            string                     `json:"description,omitempty"`
+	Command                string                     `json:"command,omitempty"`
+	Task                   string                     `json:"task,omitempty"`
+	ParentSessionID        string                     `json:"parent_session_id,omitempty"`
+	OwnerSessionID         string                     `json:"owner_session_id"`
+	VisibleToSession       string                     `json:"visible_to_session_id"`
+	ParentJobID            string                     `json:"parent_job_id,omitempty"`
+	OriginTurnID           string                     `json:"origin_turn_id,omitempty"`
+	OriginToolCallID       string                     `json:"origin_tool_call_id,omitempty"`
+	DelegateRestore        *DelegateRestoreDescriptor `json:"delegate_restore,omitempty"`
+	TranscriptRef          string                     `json:"transcript_ref,omitempty"`
+	Resumable              *bool                      `json:"resumable,omitempty"`
+	NotResumableWhy        string                     `json:"not_resumable_reason,omitempty"`
+	StartedAt              time.Time                  `json:"started_at"`
+	EndedAt                *time.Time                 `json:"ended_at,omitempty"`
+	ExitCode               *int                       `json:"exit_code,omitempty"`
+	OutputPath             string                     `json:"output_path,omitempty"`
+	OutputBytes            int64                      `json:"output_bytes"`
+	StructuredResult       any                        `json:"structured_result,omitempty"`
+	StructuredResultValid  *bool                      `json:"structured_result_valid,omitempty"`
+	StructuredResultReason string                     `json:"structured_result_reason,omitempty"`
+	TerminalGen            string                     `json:"terminal_generation,omitempty"`
+	NotifyState            NotifyState                `json:"terminal_notification_state"`
 }
 
 func NewJobID() string {

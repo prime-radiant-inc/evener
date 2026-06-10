@@ -59,6 +59,61 @@ func TestFoldAppliesOutputPathFromStarted(t *testing.T) {
 	}
 }
 
+func TestFoldDelegateDescriptorSchemaAndStructuredReason(t *testing.T) {
+	valid := false
+	events := []Event{
+		{
+			Kind:  EventJobStarted,
+			Seq:   1,
+			JobID: "job_1",
+			Type:  JobDelegate,
+			DelegateRestore: &DelegateRestoreDescriptor{
+				Version:        1,
+				ChildSessionID: "child_1",
+				TranscriptRef:  "transcript_1",
+				ResultSchema:   map[string]any{"type": "object"},
+			},
+		},
+		{
+			Kind:                   EventJobFinished,
+			Seq:                    2,
+			JobID:                  "job_1",
+			Status:                 StatusCompleted,
+			StructuredResultValid:  &valid,
+			StructuredResultReason: "schema_result_missing",
+		},
+	}
+	rec := Fold(events)["job_1"]
+	if rec.DelegateRestore == nil || rec.DelegateRestore.ResultSchema == nil {
+		t.Fatalf("delegate restore/schema not folded: %+v", rec.DelegateRestore)
+	}
+	if rec.StructuredResultReason != "schema_result_missing" {
+		t.Fatalf("reason = %q", rec.StructuredResultReason)
+	}
+}
+
+func TestFoldStructuredResultReasonOnlyForInvalidStructuredResult(t *testing.T) {
+	valid := true
+	events := []Event{
+		ev(EventJobFinished, 1, "job_valid", func(e *Event) {
+			e.Status = StatusCompleted
+			e.StructuredResultValid = &valid
+			e.StructuredResultReason = "schema_result_missing"
+		}),
+		ev(EventJobFinished, 1, "job_unspecified", func(e *Event) {
+			e.Status = StatusCompleted
+			e.StructuredResultReason = "schema_result_missing"
+		}),
+	}
+	recs := Fold(events)
+	if recs["job_valid"].StructuredResultReason != "" {
+		t.Fatalf("valid structured result folded reason %q", recs["job_valid"].StructuredResultReason)
+	}
+	if recs["job_unspecified"].StructuredResultReason != "" {
+		t.Fatalf("unspecified structured result folded reason %q", recs["job_unspecified"].StructuredResultReason)
+	}
+}
+
 func TestFoldAppliesFinishAndKeepsFirstGeneration(t *testing.T) {
 	start := time.Unix(1, 0).UTC()
 	end := time.Unix(2, 0).UTC()

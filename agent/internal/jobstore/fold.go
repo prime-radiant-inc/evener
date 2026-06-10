@@ -34,6 +34,7 @@ func applyEvent(r *JobRecord, e Event) {
 		r.ParentJobID = e.ParentJobID
 		r.OriginTurnID = e.OriginTurnID
 		r.OriginToolCallID = e.OriginToolCallID
+		r.DelegateRestore = e.DelegateRestore
 		r.OutputPath = e.OutputPath
 		r.TranscriptRef = e.TranscriptRef
 		if e.StartedAt != nil {
@@ -58,6 +59,9 @@ func applyEvent(r *JobRecord, e Event) {
 		r.OutputBytes = e.OutputBytes
 		r.StructuredResult = e.StructuredResult
 		r.StructuredResultValid = e.StructuredResultValid
+		if e.StructuredResultValid != nil && !*e.StructuredResultValid {
+			r.StructuredResultReason = e.StructuredResultReason
+		}
 		r.TerminalGen = e.TerminalGen
 	case EventJobMessageSent:
 		// No record-field mutation; message events are diagnostic/history.

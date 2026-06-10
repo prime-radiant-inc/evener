@@ -25,18 +25,19 @@ type Event struct {
 	JobID string `json:"job_id"`
 
 	// job_started payload
-	Type             JobType    `json:"type,omitempty"`
-	Command          string     `json:"command,omitempty"`
-	Task             string     `json:"task,omitempty"`
-	Description      string     `json:"description,omitempty"`
-	ParentSessionID  string     `json:"parent_session_id,omitempty"`
-	OwnerSessionID   string     `json:"owner_session_id,omitempty"`
-	VisibleToSession string     `json:"visible_to_session_id,omitempty"`
-	ParentJobID      string     `json:"parent_job_id,omitempty"`
-	OriginTurnID     string     `json:"origin_turn_id,omitempty"`
-	OriginToolCallID string     `json:"origin_tool_call_id,omitempty"`
-	StartedAt        *time.Time `json:"started_at,omitempty"`
-	OutputPath       string     `json:"output_path,omitempty"`
+	Type             JobType                    `json:"type,omitempty"`
+	Command          string                     `json:"command,omitempty"`
+	Task             string                     `json:"task,omitempty"`
+	Description      string                     `json:"description,omitempty"`
+	ParentSessionID  string                     `json:"parent_session_id,omitempty"`
+	OwnerSessionID   string                     `json:"owner_session_id,omitempty"`
+	VisibleToSession string                     `json:"visible_to_session_id,omitempty"`
+	ParentJobID      string                     `json:"parent_job_id,omitempty"`
+	OriginTurnID     string                     `json:"origin_turn_id,omitempty"`
+	OriginToolCallID string                     `json:"origin_tool_call_id,omitempty"`
+	StartedAt        *time.Time                 `json:"started_at,omitempty"`
+	OutputPath       string                     `json:"output_path,omitempty"`
+	DelegateRestore  *DelegateRestoreDescriptor `json:"delegate_restore,omitempty"`
 
 	// job_session_assigned payload
 	TranscriptRef   string `json:"transcript_ref,omitempty"`
@@ -44,14 +45,15 @@ type Event struct {
 	NotResumableWhy string `json:"not_resumable_reason,omitempty"`
 
 	// job_finished payload
-	Status                Status     `json:"status,omitempty"`
-	Reason                string     `json:"reason,omitempty"`
-	ExitCode              *int       `json:"exit_code,omitempty"`
-	EndedAt               *time.Time `json:"ended_at,omitempty"`
-	OutputBytes           int64      `json:"output_bytes,omitempty"`
-	TerminalGen           string     `json:"terminal_generation,omitempty"`
-	StructuredResult      any        `json:"structured_result,omitempty"`
-	StructuredResultValid *bool      `json:"structured_result_valid,omitempty"`
+	Status                 Status     `json:"status,omitempty"`
+	Reason                 string     `json:"reason,omitempty"`
+	ExitCode               *int       `json:"exit_code,omitempty"`
+	EndedAt                *time.Time `json:"ended_at,omitempty"`
+	OutputBytes            int64      `json:"output_bytes,omitempty"`
+	TerminalGen            string     `json:"terminal_generation,omitempty"`
+	StructuredResult       any        `json:"structured_result,omitempty"`
+	StructuredResultValid  *bool      `json:"structured_result_valid,omitempty"`
+	StructuredResultReason string     `json:"structured_result_reason,omitempty"`
 
 	// job_message_sent payload
 	Target string `json:"target,omitempty"`
