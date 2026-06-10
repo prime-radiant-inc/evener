@@ -102,6 +102,8 @@ type watchResult struct {
 
 type watchSendDelivery struct {
 	cfg              *watchConfig
+	key              watchKey
+	generation       string
 	send             *watchSendArgs
 	visibleSessionID string
 	watchTarget      string
@@ -379,8 +381,14 @@ func cloneWatchSendArgs(send *watchSendArgs) *watchSendArgs {
 }
 
 func (jm *jobManager) watchSendSnapshot(cfg *watchConfig, jobID, trigger string) watchSendDelivery {
+	sendTo := ""
+	if cfg.send != nil {
+		sendTo = cfg.send.To
+	}
 	return watchSendDelivery{
 		cfg:              cfg,
+		key:              watchKey{VisibleSessionID: jm.sessionID, Target: cfg.target, SendTo: sendTo},
+		generation:       cfg.generation,
 		send:             cloneWatchSendArgs(cfg.send),
 		visibleSessionID: jm.sessionID,
 		watchTarget:      cfg.target,
@@ -694,6 +702,9 @@ func (jm *jobManager) deliverWatchSend(ctx context.Context, d watchSendDelivery)
 	if d.cfg == nil || d.send == nil {
 		return
 	}
+	if !jm.isCurrentWatchSendDelivery(d) {
+		return
+	}
 	target, err := resolveWatchSendTarget(d.send.To, d.watchedIdentity)
 	if err != nil {
 		jm.enqueueWatchNotifications([]jobNotification{
@@ -703,7 +714,10 @@ func (jm *jobManager) deliverWatchSend(ctx context.Context, d watchSendDelivery)
 	}
 	state := jm.watchSendState(d, target)
 	if jm.send == nil {
-		jm.persistPendingWatchSend(state, d.cfg)
+		if !jm.isCurrentWatchSendDelivery(d) {
+			return
+		}
+		jm.persistPendingWatchSend(state, d)
 		jm.enqueueWatchNotifications([]jobNotification{
 			watchNotification(d.watchedIdentity, "watch send failed: delivery unavailable"),
 		})
@@ -717,10 +731,16 @@ func (jm *jobManager) deliverWatchSend(ctx context.Context, d watchSendDelivery)
 		FromWatch:     true,
 	})
 	if res.Err != nil {
-		jm.persistPendingWatchSend(state, d.cfg)
+		if !jm.isCurrentWatchSendDelivery(d) {
+			return
+		}
+		jm.persistPendingWatchSend(state, d)
 		jm.enqueueWatchNotifications([]jobNotification{
 			watchNotification(d.watchedIdentity, "watch send failed: "+limitWatchText(res.Err.Error(), watchReadErrorMaxChars)),
 		})
+		return
+	}
+	if !jm.isCurrentWatchSendDelivery(d) {
 		return
 	}
 	delivered := state
@@ -744,7 +764,7 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 			WatchTarget:             d.watchTarget,
 			ResolvedWatchedIdentity: d.watchedIdentity,
 			ResolvedSendTo:          resolvedSendTo,
-			WatchGeneration:         d.cfg.generation,
+			WatchGeneration:         d.generation,
 		},
 		DeliveryID:      jobstore.NewWatchSendDeliveryID(),
 		Message:         message,
@@ -754,19 +774,33 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 	}
 }
 
-func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, cfg *watchConfig) {
-	events, diagnostics := jm.recordWatchSendPending(state, cfg)
+func (jm *jobManager) isCurrentWatchSendDelivery(d watchSendDelivery) bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return jm.isCurrentWatchSendDeliveryLocked(d)
+}
+
+func (jm *jobManager) isCurrentWatchSendDeliveryLocked(d watchSendDelivery) bool {
+	return d.cfg != nil && jm.watches[d.key] == d.cfg && d.cfg.generation == d.generation
+}
+
+func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d watchSendDelivery) {
+	events, diagnostics := jm.recordWatchSendPending(state, d)
 	if err := jm.appendWatchSendEvents(events); err != nil {
 		diagnostics = append(diagnostics, watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)))
 	}
 	jm.enqueueWatchNotifications(diagnostics)
 }
 
-func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, cfg *watchConfig) ([]jobstore.Event, []jobNotification) {
+func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d watchSendDelivery) ([]jobstore.Event, []jobNotification) {
 	now := jm.now()
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 
+	if !jm.isCurrentWatchSendDeliveryLocked(d) {
+		return nil, nil
+	}
+	cfg := d.cfg
 	if cfg.pending == nil {
 		cfg.pending = make(map[jobstore.WatchSendKey]*jobstore.WatchSendState)
 	}

@@ -41,6 +41,34 @@ func TestFoldBuildsRunningShellRecord(t *testing.T) {
 	}
 }
 
+func TestFoldIgnoresWatchSendEventsForJobRecords(t *testing.T) {
+	start := time.Unix(1, 0).UTC()
+	key := WatchSendKey{
+		VisibleSessionID:        "root",
+		WatchTarget:             "job_A",
+		ResolvedWatchedIdentity: "job_A",
+		ResolvedSendTo:          "job_sidecar",
+		WatchGeneration:         "wg_1",
+	}
+	events := []Event{
+		ev(EventJobStarted, 1, "job_A", func(e *Event) {
+			e.Type = JobShell
+			e.OwnerSessionID = "S1"
+			e.VisibleToSession = "S1"
+			e.StartedAt = &start
+		}),
+		{Kind: EventWatchSendPending, Seq: 2, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1", Message: "pending"}},
+	}
+
+	recs := Fold(events)
+	if _, ok := recs[""]; ok {
+		t.Fatalf("watch-send event created blank job record: %+v", recs[""])
+	}
+	if recs["job_A"] == nil {
+		t.Fatal("normal job record missing")
+	}
+}
+
 func TestFoldAppliesOutputPathFromStarted(t *testing.T) {
 	start := time.Unix(1, 0).UTC()
 	events := []Event{

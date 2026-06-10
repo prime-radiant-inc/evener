@@ -637,6 +637,60 @@ func TestWatchSendWatchedTargetPruneDropsPending(t *testing.T) {
 	}
 }
 
+func TestWatchSendStaleDeliveryClearedDuringSendDoesNotPersistPending(t *testing.T) {
+	jm := newTestJM(t)
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err != nil {
+			t.Fatalf("clear during send: %v", err)
+		}
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	delivery := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: ready")
+
+	jm.deliverWatchSend(context.Background(), delivery)
+
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("stale delivery cleared during send persisted pending = %+v", pending)
+	}
+}
+
+func TestWatchSendStaleDeliveryReplacedDuringSendDoesNotPersistPending(t *testing.T) {
+	jm := newTestJM(t)
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		if _, err := jm.configureWatch(watchArgs{
+			Target:      rec.JobID,
+			OutputMatch: "blocked",
+			Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+		}); err != nil {
+			t.Fatalf("replace during send: %v", err)
+		}
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	delivery := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: ready")
+
+	jm.deliverWatchSend(context.Background(), delivery)
+
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("stale delivery replaced during send persisted pending = %+v", pending)
+	}
+}
+
 func TestWatchSendPendingDeliveredRemovesBeforeNextFailure(t *testing.T) {
 	jm := newTestJM(t)
 	failSend := true
@@ -675,6 +729,19 @@ func TestWatchSendPendingDeliveredRemovesBeforeNextFailure(t *testing.T) {
 			t.Fatalf("coalesced_count after delivered cleanup = %d, want 0", state.CoalescedCount)
 		}
 	}
+}
+
+func captureWatchSendDelivery(t *testing.T, jm *jobManager, jobID, trigger string) watchSendDelivery {
+	t.Helper()
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for _, cfg := range jm.watches {
+		if cfg.target == jobID {
+			return jm.watchSendSnapshot(cfg, jobID, trigger)
+		}
+	}
+	t.Fatalf("watch for %s not found", jobID)
+	return watchSendDelivery{}
 }
 
 func TestWatchSendCapEvictsOldestPendingAndNotifies(t *testing.T) {

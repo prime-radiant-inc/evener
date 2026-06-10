@@ -11,6 +11,9 @@ func Fold(events []Event) map[string]*JobRecord {
 
 	recs := make(map[string]*JobRecord)
 	for _, e := range sorted {
+		if !isJobRecordEventKind(e.Kind) {
+			continue
+		}
 		r := recs[e.JobID]
 		if r == nil {
 			r = &JobRecord{JobID: e.JobID, NotifyState: NotifyNotArmed}
@@ -19,6 +22,20 @@ func Fold(events []Event) map[string]*JobRecord {
 		applyEvent(r, e)
 	}
 	return recs
+}
+
+func isJobRecordEventKind(kind EventKind) bool {
+	switch kind {
+	case EventJobStarted,
+		EventJobSessionAssigned,
+		EventJobFinished,
+		EventJobMessageSent,
+		EventJobNotificationPending,
+		EventJobNotificationDelivered:
+		return true
+	default:
+		return false
+	}
 }
 
 // FoldWatchSends reconstructs pending watch-send frames from durable events.
