@@ -798,7 +798,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context) (proceed bool) {
 
 	s.repairOrphanedToolResults("before accepting notification")
 
-	reminder := formatNotificationReminder(notifs, jobNotifs)
+	reminder := formatNotificationReminder(notifs, jobNotifs, s.stateDir != "")
 	if err := s.appendTurnDurably(schema.TurnSteering, llm.User(reminder)); err != nil {
 		s.requeueNotifications(notifs)
 		s.requeueJobNotifications(jobNotifications(jobNotifs))
@@ -983,17 +983,23 @@ func jobNotifications(notifs []deliverableJobNotification) []jobNotification {
 }
 
 // formatNotificationReminder renders notification blocks for a notification turn,
-// joined by newlines. Each block carries metadata and points the model at the
-// matching read tool for the completed work.
-func formatNotificationReminder(notifs []subagentNotification, jobNotifs []deliverableJobNotification) string {
+// joined by newlines. Each block carries metadata and only points the model at
+// read tools that are actually registered for the session.
+func formatNotificationReminder(notifs []subagentNotification, jobNotifs []deliverableJobNotification, transcriptToolsAvailable bool) string {
 	blocks := make([]string, 0, len(notifs)+len(jobNotifs))
 	for _, n := range notifs {
+		message := fmt.Sprintf("Subagent %s finished (%s). This notification has no job_id.", n.AgentID, n.Status)
+		if transcriptToolsAvailable {
+			message += fmt.Sprintf(" Inspect the archived child transcript with read_session_transcript using transcript_ref=%q.", n.TranscriptRef)
+		} else {
+			message += " No archived transcript inspection path is available in this non-persistent session."
+		}
 		blocks = append(blocks, fmt.Sprintf(
 			"<subagent-notification agent_id=%q status=%q turns_used=%q transcript_ref=%q>\n"+
-				"Subagent %s finished (%s). This notification has no job_id. Inspect the archived child transcript with read_session_transcript using transcript_ref=%q.\n"+
+				"%s\n"+
 				"</subagent-notification>",
 			n.AgentID, n.Status, strconv.Itoa(n.TurnsUsed), n.TranscriptRef,
-			n.AgentID, n.Status, n.TranscriptRef,
+			message,
 		))
 	}
 	for _, n := range jobNotifs {

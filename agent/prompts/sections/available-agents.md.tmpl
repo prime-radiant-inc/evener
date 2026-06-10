@@ -5,7 +5,7 @@ Name: `{{ .Name }}`
 Description: {{ .Description }}
 Default tools: {{ .DefaultTools }}
 Default task list:
-{{ if .TaskList }}{{ range .TaskList }}- `{{ .Title }}`: {{ .Description }}{{ if .ReplacedByParentTasks }} Delegated tasks from `task_list` replace this step when provided.{{ end }}
+{{ if .TaskList }}{{ range .TaskList }}- `{{ .Title }}`: {{ .Description }}{{ if .ReplacedByParentTasks }} Include relevant parent task details in the `delegate` task prompt for this step.{{ end }}
 {{ end }}{{ else }}- none
 {{ end }}</agent>
 {{ end }}</available_agents>

@@ -136,12 +136,16 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 	if len(reqs) == 0 {
 		t.Fatal("notification turn made no model request; the notification never reached the model (v4 regression)")
 	}
-	// (b) The recorded request's message history carries the notification block.
+	// (b) The recorded request's message history carries the notification block
+	// without naming transcript tools that are unavailable without StateDir.
 	if !requestsContain(reqs, "<subagent-notification", "01CHILD") {
 		t.Fatalf("model request history did not contain the <subagent-notification ...> block for 01CHILD")
 	}
-	if !requestsContain(reqs, "no job_id", "read_session_transcript", "local:01CHILD") {
-		t.Fatalf("model request history did not point subagent-only notification at transcript inspection")
+	if !requestsContain(reqs, "no job_id", "No archived transcript inspection path is available", "local:01CHILD") {
+		t.Fatalf("model request history did not explain unavailable transcript inspection")
+	}
+	if requestsContain(reqs, "read_session_transcript") {
+		t.Fatalf("model request history pointed at unavailable transcript inspection")
 	}
 	if requestsContain(reqs, "wait(") || requestsContain(reqs, "subagent_output") || requestsContain(reqs, "job_read_output") {
 		t.Fatalf("model request history contained deleted subagent result tool guidance")
@@ -170,6 +174,47 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 	sess.mu.Unlock()
 	if !sawSteering {
 		t.Fatal("no TurnSteering entry carrying the <subagent-notification ...> block was appended to history")
+	}
+}
+
+func TestNotificationTurn_WithStateDirPointsAtTranscriptInspection(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("ack") },
+		},
+	}
+	c.Register(adapter)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: dir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	trackSyntheticChild(t, sess, "01CHILD", SubagentCompleted, false, false, time.Now(), false)
+	sess.enqueueNotification(subagentNotification{
+		AgentID: "01CHILD",
+		Status:  "completed", TurnsUsed: 4,
+		TranscriptRef: "local:01CHILD",
+	})
+
+	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+
+	reqs := adapter.Requests()
+	if len(reqs) == 0 {
+		t.Fatal("notification turn made no model request")
+	}
+	if !requestsContain(reqs, "no job_id", "read_session_transcript", "local:01CHILD") {
+		t.Fatalf("model request history did not point persistent notification at transcript inspection")
+	}
+	if requestsContain(reqs, "wait(") || requestsContain(reqs, "subagent_output") || requestsContain(reqs, "job_read_output") {
+		t.Fatalf("model request history contained deleted subagent result tool guidance")
 	}
 }
 

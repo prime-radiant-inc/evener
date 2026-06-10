@@ -128,10 +128,10 @@ verify before you submit.
 
 Start with ONE implementer for the full task + context + test expectations.
 Do NOT decompose into research → implement → verify phases at the coordinator
-level. If verification finds specific failures, start focused fix agents with
-delegate. Each fix agent should address ONE specific failure, not
-re-attempt the whole task. This iterative pattern (one full attempt, then
-targeted fixes) is how you converge on a correct solution.
+level. If verification finds specific failures, continue the existing
+implementer job with job_send_message. Each fix message should address ONE
+specific failure, not re-attempt the whole task. This iterative pattern (one
+full attempt, then targeted fixes) is how you converge on a correct solution.
 
 If the spec explicitly requires capabilities unavailable to the implementer
 (for example delegation/orchestration tools the implementer cannot call), this
