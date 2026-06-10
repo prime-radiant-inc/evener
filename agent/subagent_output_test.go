@@ -212,11 +212,13 @@ func TestSubagentOutput_ReturnsRawOutput(t *testing.T) {
 	}
 }
 
-// TestSubagentOutput_ChildCannotCall asserts subagent_output is root-only: it is in
-// the root-only set and a depth>0 child's registry must not expose it.
+// TestSubagentOutput_ChildCannotCall asserts root-only job controls remain
+// unavailable to depth>0 children.
 func TestSubagentOutput_ChildCannotCall(t *testing.T) {
-	if !isRootOnlyAgentManagementTool("subagent_output") {
-		t.Fatal("subagent_output must be a root-only agent-management tool")
+	for _, name := range []string{"delegate", "job_watch"} {
+		if !isRootOnlyAgentManagementTool(name) {
+			t.Fatalf("%s must be a root-only agent-management tool", name)
+		}
 	}
 
 	dir := t.TempDir()
@@ -230,8 +232,10 @@ func TestSubagentOutput_ChildCannotCall(t *testing.T) {
 	}
 	defer child.Close()
 
-	if child.reg.Get("subagent_output") != nil {
-		t.Fatal("depth>0 child must not have subagent_output registered")
+	for _, name := range []string{"delegate", "job_watch"} {
+		if child.reg.Get(name) != nil {
+			t.Fatalf("depth>0 child must not have %s registered", name)
+		}
 	}
 }
 
