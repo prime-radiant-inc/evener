@@ -171,7 +171,7 @@ func (m *subagentManager) reserveSlot() (evicted []*subagent, err error) {
 
 	need := counted - m.maxRetainedTerminal + 1 // free enough to leave room for the new child
 	if len(reclaimable) < need {
-		return nil, fmt.Errorf("retained subagent limit reached (%d): close_agent or wait on a finished agent to reclaim a slot before spawning", m.maxRetainedTerminal)
+		return nil, fmt.Errorf("retained delegate limit reached (%d): finished delegate sessions are still finalizing; retry after job records finish before spawning another delegate", m.maxRetainedTerminal)
 	}
 	for i := 0; i < need; i++ {
 		id := reclaimable[i].id
