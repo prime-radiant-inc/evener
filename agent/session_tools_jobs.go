@@ -872,7 +872,7 @@ func jobBlockTimeoutMS(args map[string]any) (int, error) {
 }
 
 func findJobRecord(jm *jobManager, jobID string) (*jobstore.JobRecord, error) {
-	recs, err := jm.listWithError(listFilter{})
+	recs, err := jm.listWithError(listFilter{IncludeNested: true})
 	if err != nil {
 		return nil, err
 	}

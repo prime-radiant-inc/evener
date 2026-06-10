@@ -127,6 +127,45 @@ func TestJobListIncludeNestedFilter(t *testing.T) {
 	}
 }
 
+func TestFindJobRecordFindsForwardedNestedJob(t *testing.T) {
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		_ = childJM.store.Close()
+	})
+
+	childJM.forward = parentJM.forwardEvent
+	childJM.parentJobID = "job_PARENTDELEGATE"
+
+	childRec, err := childJM.createShell(createShellOpts{Command: "sleep 1", Description: "nested"})
+	if err != nil {
+		t.Fatalf("create child shell: %v", err)
+	}
+	t.Cleanup(func() {
+		finishRunningTestJob(t, childJM, childRec.JobID)
+	})
+
+	nestedJobs := parentJM.list(listFilter{IncludeNested: true})
+	if !containsJobID(nestedJobs, childRec.JobID) {
+		t.Fatalf("include_nested parent list = %+v, want nested job %q", nestedJobs, childRec.JobID)
+	}
+
+	found, err := findJobRecord(parentJM, childRec.JobID)
+	if err != nil {
+		t.Fatalf("findJobRecord(%q): %v", childRec.JobID, err)
+	}
+	if found.ParentJobID != "job_PARENTDELEGATE" {
+		t.Fatalf("found ParentJobID = %q, want job_PARENTDELEGATE", found.ParentJobID)
+	}
+}
+
 func TestNestedRunShellForwardsDelayedJobStarted(t *testing.T) {
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
 	if err != nil {
