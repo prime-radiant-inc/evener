@@ -1406,12 +1406,13 @@
       state.metaEl.textContent = parts.join(" · ");
     },
 
-    beginJobRef(data) {
-      this.cheapToolCluster = null;
+    makeJobRef(data) {
+      data = data || {};
       const jobId = data.job_id || ("job-" + Math.random().toString(36).slice(2, 9));
       const ref = document.createElement("div");
       ref.className = "subagent-reference";
       ref.dataset.jobId = jobId;
+      if (data.transcript_ref) ref.dataset.transcriptRef = data.transcript_ref;
       const verb = document.createElement("span");
       verb.className = "verb"; verb.textContent = data.job_type || "job";
       const target = document.createElement("span");
@@ -1424,19 +1425,33 @@
       ref.appendChild(verb);
       ref.appendChild(target);
       ref.appendChild(dot);
+      this.applyJobRefTarget(ref, data);
+      return ref;
+    },
+
+    applyJobRefTarget(ref, data) {
+      if (!ref || !data || !data.transcript_ref) return;
+      ref.dataset.transcriptRef = data.transcript_ref;
+      ref.style.cursor = "pointer";
+      ref.onclick = () => { window.location.href = "/s/" + encodeURIComponent(data.transcript_ref); };
+    },
+
+    beginJobRef(data) {
+      this.cheapToolCluster = null;
+      const ref = this.makeJobRef(data);
       this.conversation.appendChild(ref);
-      this.activeJobs.set(jobId, ref);
+      this.activeJobs.set(ref.dataset.jobId, ref);
     },
 
     finalizeJobRef(data) {
       const jobId = data.job_id || "";
-      const ref = this.activeJobs.get(jobId);
+      let ref = this.activeJobs.get(jobId);
       if (!ref) {
-        // Fallback: no matching JOB_STARTED — emit a banner
-        this.appendBanner("note", "[job finished] status=" + (data.status || "?"));
-        return;
+        ref = this.makeJobRef(data);
+        this.conversation.appendChild(ref);
+      } else {
+        this.activeJobs.delete(jobId);
       }
-      this.activeJobs.delete(jobId);
       const dot = ref.querySelector(".status-indicator");
       if (dot) {
         const s = data.status || "completed";
@@ -1449,15 +1464,17 @@
         }
         dot.textContent = "●";
       }
+      if (data.status) {
+        const status = document.createElement("span"); status.className = "result";
+        status.textContent = data.status;
+        ref.appendChild(status);
+      }
       if (data.output_bytes != null) {
         const bytes = document.createElement("span"); bytes.className = "result";
         bytes.textContent = data.output_bytes + " bytes";
         ref.appendChild(bytes);
       }
-      if (data.transcript_ref) {
-        ref.style.cursor = "pointer";
-        ref.onclick = () => { window.location.href = "/s/" + encodeURIComponent(data.transcript_ref); };
-      }
+      this.applyJobRefTarget(ref, data);
     },
 
     appendBanner(kind, text, diagnostic) {
@@ -2407,6 +2424,21 @@
     try { return typeof s === "string" ? JSON.parse(s) : s; } catch (e) { return null; }
   }
 
+  function parseToolJSON(out) {
+    if (!out) return null;
+    try { return JSON.parse(out); } catch (e) { return null; }
+  }
+
+  function formatBytes(n) {
+    const value = Number(n);
+    if (!Number.isFinite(value)) return "";
+    return value + " " + (value === 1 ? "byte" : "bytes");
+  }
+
+  function compactParts(parts) {
+    return parts.map(p => String(p || "").trim()).filter(Boolean).join(" · ");
+  }
+
   function toolLooksGood(data) {
     if (data.error) return false;
     const st = parseToolState(data.tool_state);
@@ -2662,6 +2694,101 @@
     bodyEnd: cheapToolBodyEnd,
   };
 
+  function jobReadOutputText(st, out) {
+    if (st && typeof st.content === "string") return st.content;
+    if (st && Array.isArray(st.matches)) return st.matches.map(m => m && m.line || "").filter(Boolean).join("\n");
+    if (st && st.structured_result !== undefined) return JSON.stringify(st.structured_result, null, 2);
+    return out || "";
+  }
+
+  const jobReadOutputRenderer = {
+    mode: "card", friendly: "job output",
+    target: (a) => a.job_id || "",
+    result: (data, out) => {
+      const st = parseToolJSON(out);
+      if (!st) return out ? formatBytes(out.length) : "";
+      return compactParts([
+        st.status,
+        formatBytes(st.total_bytes),
+        st.truncated ? "truncated" : "",
+        Array.isArray(st.matches) ? st.matches.length + " matches" : "",
+      ]);
+    },
+    body: (args, conversation) => outputPreviewBody("job-output-body", "job-output", conversation),
+    bodyEnd: (state, data, out) => {
+      if (!state.body) return;
+      const st = parseToolJSON(out);
+      const text = data.error || jobReadOutputText(st, out);
+      setExpandableOutput(state.body, clip(text, 8000), { moreClass: "job-output-more", outputClassName: "job-output" });
+      if (!String(text || "").trim()) state.body.wrap.style.display = "none";
+    },
+  };
+
+  const jobSendMessageRenderer = {
+    mode: "card", friendly: "message",
+    target: (a) => clip(a.target || "", 26),
+    result: (data, out) => {
+      const st = parseToolJSON(out);
+      if (!st) return out ? formatBytes(out.length) : "";
+      return compactParts([
+        st.action,
+        st.status,
+        st.job_id,
+        st.delivered === true ? "delivered" : "",
+        st.reason,
+      ]);
+    },
+    body: (args, conversation) => outputPreviewBody("job-message-body", "job-message-output", conversation),
+    bodyEnd: (state, data, out) => {
+      if (!state.body) return;
+      const st = parseToolJSON(out);
+      let text = "";
+      if (data.error) text = data.error;
+      else if (st && typeof st.output === "string") text = st.output;
+      else if (st && st.structured_result !== undefined) text = JSON.stringify(st.structured_result, null, 2);
+      setExpandableOutput(state.body, clip(text, 8000), { moreClass: "job-message-output-more", outputClassName: "job-message-output" });
+      if (!String(text || "").trim()) state.body.wrap.style.display = "none";
+    },
+  };
+
+  const jobListRenderer = {
+    mode: "card", friendly: "jobs",
+    target: (a) => Array.isArray(a.status) ? a.status.join(",") : (a.status || ""),
+    result: (data, out) => {
+      const st = parseToolJSON(out);
+      if (!st) return out ? formatBytes(out.length) : "";
+      const count = typeof st.count === "number" ? st.count : (Array.isArray(st.jobs) ? st.jobs.length : 0);
+      return count + " " + (count === 1 ? "job" : "jobs");
+    },
+    body: (args, conversation) => outputPreviewBody("job-list-body", "job-list-output", conversation),
+    bodyEnd: (state, data, out) => {
+      if (!state.body) return;
+      const st = parseToolJSON(out);
+      let text = data.error || out || "";
+      if (st && Array.isArray(st.jobs)) {
+        text = st.jobs.map(job => compactParts([
+          job.job_id,
+          job.type,
+          job.status,
+          job.description,
+          formatBytes(job.output_bytes),
+        ])).join("\n");
+      }
+      setExpandableOutput(state.body, clip(text, 8000), { moreClass: "job-list-output-more", outputClassName: "job-list-output" });
+      if (!String(text || "").trim()) state.body.wrap.style.display = "none";
+    },
+  };
+
+  const jobStopRenderer = {
+    mode: "cheap", friendly: "stop",
+    target: (a) => clip(a.job_id || "", 26),
+    result: (data, out) => {
+      const st = parseToolJSON(out);
+      if (!st) return out ? formatBytes(out.length) : "";
+      return compactParts([st.status, st.reason]);
+    },
+  };
+
   // Card renderer for shell with collapsible stdout/stderr.
   const shellRenderer = {
     mode: "card", friendly: "shell",
@@ -2862,12 +2989,6 @@
     },
   };
 
-  const jobControlRenderer = (friendly) => ({
-    mode: "cheap", friendly,
-    target: (a) => clip(a.job_id || a.target || a.id || "", 26),
-    result: () => "ok",
-  });
-
   const defaultRenderer = {
     mode: "default",
     friendly: undefined, // fallback to tool name
@@ -2893,10 +3014,10 @@
     "web_fetch": webFetchRenderer,
     "web_search": webSearchRenderer,
     "delegate": delegateRenderer,
-    "job_send_message": jobControlRenderer("message"),
-    "job_read_output": jobControlRenderer("read"),
-    "job_list": jobControlRenderer("jobs"),
-    "job_stop": jobControlRenderer("stop"),
+    "job_send_message": jobSendMessageRenderer,
+    "job_read_output": jobReadOutputRenderer,
+    "job_list": jobListRenderer,
+    "job_stop": jobStopRenderer,
   };
 
   // applyStatusDotPulse sets [data-pulse] on every .status-dot under root

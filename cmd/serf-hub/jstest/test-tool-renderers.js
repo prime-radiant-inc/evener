@@ -132,6 +132,86 @@ await scenario("tool intent renders below header and above results", [
   return { ok: true };
 });
 
+await scenario("job_read_output renders status, truncation, and content preview", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "jr1", tool_name: "job_read_output", arguments_json: JSON.stringify({ job_id: "job_A" }) }],
+  ["TOOL_CALL_END", { call_id: "jr1", tool_name: "job_read_output", output: JSON.stringify({
+    job_id: "job_A",
+    type: "shell",
+    status: "completed",
+    content: "line one\nline two\nline three",
+    total_bytes: 128,
+    truncated: true,
+  }) }],
+], ({ conv }) => {
+  const call = conv.querySelector(".tool-call.job_read_output");
+  if (!call) return { ok: false, detail: "no job_read_output card" };
+  const result = call.querySelector(".result-detail");
+  if (!result || !result.textContent.includes("completed")) return { ok: false, detail: "missing status summary" };
+  if (!result.textContent.includes("128 bytes")) return { ok: false, detail: "missing byte summary: " + (result && result.textContent) };
+  if (!result.textContent.includes("truncated")) return { ok: false, detail: "missing truncation summary" };
+  const output = call.querySelector(".job-output");
+  if (!output || !output.textContent.includes("line one\nline two")) return { ok: false, detail: "missing job output preview" };
+  return { ok: true };
+});
+
+await scenario("job control tools render structured summaries", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["TOOL_CALL_START", { call_id: "js1", tool_name: "job_send_message", arguments_json: JSON.stringify({ target: "job_A", message: "continue" }) }],
+  ["TOOL_CALL_END", { call_id: "js1", tool_name: "job_send_message", output: JSON.stringify({
+    target: "job_A",
+    job_id: "job_B",
+    status: "completed",
+    action: "resumed",
+    transcript_ref: "local:child",
+    output: "final delegate note",
+  }) }],
+  ["TOOL_CALL_START", { call_id: "jl1", tool_name: "job_list", arguments_json: JSON.stringify({ status: ["running"] }) }],
+  ["TOOL_CALL_END", { call_id: "jl1", tool_name: "job_list", output: JSON.stringify({
+    count: 2,
+    jobs: [
+      { job_id: "job_1", type: "delegate", status: "running", description: "write tests" },
+      { job_id: "job_2", type: "shell", status: "completed", output_bytes: 42 },
+    ],
+  }) }],
+  ["TOOL_CALL_START", { call_id: "jstop1", tool_name: "job_stop", arguments_json: JSON.stringify({ job_id: "job_1" }) }],
+  ["TOOL_CALL_END", { call_id: "jstop1", tool_name: "job_stop", output: JSON.stringify({ job_id: "job_1", status: "stopped", reason: "user" }) }],
+], ({ conv }) => {
+  const send = conv.querySelector(".tool-call.job_send_message .result-detail");
+  if (!send || !send.textContent.includes("resumed") || !send.textContent.includes("completed") || !send.textContent.includes("job_B")) {
+    return { ok: false, detail: "job_send_message summary missing structured fields: " + (send && send.textContent) };
+  }
+  const sendOutput = conv.querySelector(".tool-call.job_send_message .job-message-output");
+  if (!sendOutput || !sendOutput.textContent.includes("final delegate note")) return { ok: false, detail: "job_send_message output missing" };
+  const list = conv.querySelector(".tool-call.job_list .result-detail");
+  if (!list || !list.textContent.includes("2 jobs")) return { ok: false, detail: "job_list count missing: " + (list && list.textContent) };
+  const listOutput = conv.querySelector(".tool-call.job_list .job-list-output");
+  if (!listOutput || !["job_1", "delegate", "running", "write tests"].every(part => listOutput.textContent.includes(part))) {
+    return { ok: false, detail: "job_list body missing entry" };
+  }
+  const stop = conv.querySelector(".tool-call.job_stop .result-detail");
+  if (!stop || !stop.textContent.includes("stopped") || !stop.textContent.includes("user")) {
+    return { ok: false, detail: "job_stop summary missing structured fields: " + (stop && stop.textContent) };
+  }
+  return { ok: true };
+});
+
+await scenario("orphan JOB_FINISHED preserves job payload", [
+  ["SESSION_START", { session_id: "01TEST" }],
+  ["JOB_FINISHED", { job_id: "job_ORPHAN", job_type: "delegate", status: "completed", output_bytes: 77, transcript_ref: "local:child" }],
+], ({ conv }) => {
+  const ref = conv.querySelector(".subagent-reference");
+  if (!ref) return { ok: false, detail: "missing fallback job reference" };
+  if (ref.dataset.jobId !== "job_ORPHAN") return { ok: false, detail: "missing job id dataset" };
+  if (ref.dataset.transcriptRef !== "local:child") return { ok: false, detail: "missing transcript ref dataset" };
+  const text = ref.textContent;
+  for (const want of ["delegate", "job_ORPHAN", "completed", "77 bytes"]) {
+    if (!text.includes(want)) return { ok: false, detail: "fallback card missing " + want + ": " + text };
+  }
+  if (ref.style.cursor !== "pointer") return { ok: false, detail: "fallback card should be clickable" };
+  return { ok: true };
+});
+
 
 await scenario("bottom task status shows progress and current task text", [
   ["SESSION_START", { session_id: "01TEST" }],
