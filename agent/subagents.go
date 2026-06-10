@@ -55,6 +55,15 @@ Do NOT try to spawn further subagents.
 Your job is to complete the task and report your findings.`
 
 var rootOnlyAgentManagementTools = []string{"delegate", "job_watch"}
+var legacyRootOnlySubagentControlTools = []string{
+	"spawn_agent",
+	"resume_agent",
+	"wait",
+	"close_agent",
+	"cancel_agent",
+	"list_agents",
+	"subagent_output",
+}
 
 type subagent struct {
 	id     string
@@ -118,7 +127,8 @@ func removeStrings(items, removals []string) []string {
 }
 
 func rootOnlySubagentTools() []string {
-	return appendUniqueStrings(append([]string(nil), rootOnlyAgentManagementTools...), rootOnlyJobControlTools...)
+	tools := appendUniqueStrings(append([]string(nil), rootOnlyAgentManagementTools...), rootOnlyJobControlTools...)
+	return appendUniqueStrings(tools, legacyRootOnlySubagentControlTools...)
 }
 
 func isRootOnlyAgentManagementTool(name string) bool {

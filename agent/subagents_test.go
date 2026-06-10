@@ -629,6 +629,11 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 // TestSubagentCannotCallRootOnlyControlTools asserts depth>0 subagents keep
 // job_send_message for aliases while root-only controls stay unavailable.
 func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
+	legacyControls := []string{"spawn_agent", "resume_agent", "wait", "close_agent", "cancel_agent", "list_agents", "subagent_output"}
+
+	if len(rootOnlyAgentManagementTools) != 2 || rootOnlyAgentManagementTools[0] != "delegate" || rootOnlyAgentManagementTools[1] != "job_watch" {
+		t.Fatalf("rootOnlyAgentManagementTools = %v, want exactly [delegate job_watch]", rootOnlyAgentManagementTools)
+	}
 	if !isRootOnlyAgentManagementTool("delegate") {
 		t.Fatal("delegate must be a root-only agent-management tool")
 	}
@@ -643,6 +648,11 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	}
 	if !isRootOnlySubagentTool("job_watch") {
 		t.Fatal("job_watch must be a root-only subagent tool")
+	}
+	for _, name := range legacyControls {
+		if !isRootOnlySubagentTool(name) {
+			t.Fatalf("%s must remain stripped from subagents until legacy tool deletion", name)
+		}
 	}
 
 	dir := t.TempDir()
@@ -662,6 +672,11 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if child.reg.Get("job_watch") != nil {
 		t.Fatal("depth>0 child must not have job_watch registered")
 	}
+	for _, name := range legacyControls {
+		if child.reg.Get(name) != nil {
+			t.Fatalf("depth>0 child must not have legacy control %s registered", name)
+		}
+	}
 	if child.reg.Get("job_send_message") == nil {
 		t.Fatal("depth>0 child must keep job_send_message registered")
 	}
@@ -672,6 +687,11 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	}
 	if hasCachedCallableToolDefinition(child, "job_watch") {
 		t.Fatal("depth>0 child must not advertise job_watch")
+	}
+	for _, name := range legacyControls {
+		if hasCachedCallableToolDefinition(child, name) {
+			t.Fatalf("depth>0 child must not advertise legacy control %s", name)
+		}
 	}
 	if !hasCachedCallableToolDefinition(child, "job_send_message") {
 		t.Fatal("depth>0 child must advertise job_send_message")
