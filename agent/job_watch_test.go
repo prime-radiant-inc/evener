@@ -975,6 +975,142 @@ func TestWatchSendOverlapOlderDeliveredDoesNotRemoveNewerPending(t *testing.T) {
 	}
 }
 
+func TestWatchSendStaleFailedDeliveryAfterNewerDeliveredDoesNotPersistPending(t *testing.T) {
+	jm := newTestJM(t)
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{}
+	}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	first := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: first ready")
+	second := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: second ready")
+
+	jm.deliverWatchSend(context.Background(), second)
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("pending after newer delivered = %d, want 0", len(pending))
+	}
+
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	jm.deliverWatchSend(context.Background(), first)
+
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("folded pending after stale failed delivery = %+v, want none", pending)
+	}
+	if got := len(first.cfg.pending); got != 0 {
+		t.Fatalf("in-memory pending after stale failed delivery = %d, want 0", got)
+	}
+}
+
+func TestWatchSendTeardownRejectsInFlightFailedDeliveryDuringDroppedAppend(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*testing.T, *jobManager) (watchSendDelivery, func() error)
+	}{
+		{
+			name: "clear",
+			setup: func(t *testing.T, jm *jobManager) (watchSendDelivery, func() error) {
+				t.Helper()
+				rec, delivery := setupConcretePendingWatchSend(t, jm)
+				return delivery, func() error {
+					_, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true})
+					return err
+				}
+			},
+		},
+		{
+			name: "replace",
+			setup: func(t *testing.T, jm *jobManager) (watchSendDelivery, func() error) {
+				t.Helper()
+				rec, delivery := setupConcretePendingWatchSend(t, jm)
+				return delivery, func() error {
+					_, err := jm.configureWatch(watchArgs{
+						Target:      rec.JobID,
+						OutputMatch: "blocked",
+						Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+					})
+					return err
+				}
+			},
+		},
+		{
+			name: "prune",
+			setup: func(t *testing.T, jm *jobManager) (watchSendDelivery, func() error) {
+				t.Helper()
+				rec, delivery := setupConcretePendingWatchSend(t, jm)
+				return delivery, func() error {
+					jm.abandonRunningJob(rec.JobID)
+					return nil
+				}
+			},
+		},
+		{
+			name: "close",
+			setup: func(t *testing.T, jm *jobManager) (watchSendDelivery, func() error) {
+				t.Helper()
+				if _, err := jm.configureWatch(watchArgs{
+					Target: "*",
+					Events: []string{"job.notification"},
+					Send:   &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+				}); err != nil {
+					t.Fatalf("configure: %v", err)
+				}
+				jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_trigger_one", JobType: "delegate", Status: "completed"})
+				key := watchKey{VisibleSessionID: jm.sessionID, Target: "*", SendTo: "job_obs"}
+				delivery := captureWatchSendDeliveryForKey(t, jm, key, "job_trigger_two", "job.notification")
+				return delivery, jm.close
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			jm := newTestJM(t)
+			jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+				return sendMessageResult{Err: errors.New("busy")}
+			}
+			delivery, teardown := tc.setup(t, jm)
+			if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+				t.Fatalf("pending before teardown = %d, want 1", len(pending))
+			}
+			dropStarted := make(chan struct{})
+			releaseDrop := make(chan struct{})
+			realAppend := jm.appendEvent
+			blocked := false
+			jm.appendEvent = func(e jobstore.Event) error {
+				if e.Kind == jobstore.EventWatchSendDropped && !blocked {
+					blocked = true
+					close(dropStarted)
+					<-releaseDrop
+				}
+				return realAppend(e)
+			}
+
+			errCh := make(chan error, 1)
+			go func() { errCh <- teardown() }()
+			waitForTestSignal(t, dropStarted, "dropped append")
+
+			jm.deliverWatchSend(context.Background(), delivery)
+			close(releaseDrop)
+			if err := waitForTestError(t, errCh, "teardown"); err != nil {
+				t.Fatalf("teardown: %v", err)
+			}
+
+			if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+				t.Fatalf("pending after teardown = %+v, want none", pending)
+			}
+			if got := len(delivery.cfg.pending); got != 0 {
+				t.Fatalf("in-memory pending after teardown = %d, want 0", got)
+			}
+		})
+	}
+}
+
 func TestWatchSendAppendFailureDuringClearKeepsPendingInMemory(t *testing.T) {
 	jm := newTestJM(t)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
@@ -1272,6 +1408,56 @@ func captureWatchSendDelivery(t *testing.T, jm *jobManager, jobID, trigger strin
 		t.Fatalf("watch for %s not found", jobID)
 	}
 	return jm.snapshotWatchSendFrame(delivery)
+}
+
+func captureWatchSendDeliveryForKey(t *testing.T, jm *jobManager, key watchKey, watchedIdentity, trigger string) watchSendDelivery {
+	t.Helper()
+	jm.mu.Lock()
+	cfg := jm.watches[key]
+	var delivery watchSendDelivery
+	if cfg != nil {
+		delivery = jm.watchSendSnapshot(cfg, watchedIdentity, trigger)
+	}
+	jm.mu.Unlock()
+	if delivery.cfg == nil {
+		t.Fatalf("watch for %+v not found", key)
+	}
+	return jm.snapshotWatchSendFrame(delivery)
+}
+
+func setupConcretePendingWatchSend(t *testing.T, jm *jobManager) (*jobstore.JobRecord, watchSendDelivery) {
+	t.Helper()
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.feedJobOutput(rec.JobID, []byte("ready one\n"))
+	delivery := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: ready two")
+	return rec, delivery
+}
+
+func waitForTestSignal(t *testing.T, ch <-chan struct{}, label string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", label)
+	}
+}
+
+func waitForTestError(t *testing.T, ch <-chan error, label string) error {
+	t.Helper()
+	select {
+	case err := <-ch:
+		return err
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", label)
+		return nil
+	}
 }
 
 func TestWatchSendCapEvictsOldestPendingAndNotifies(t *testing.T) {

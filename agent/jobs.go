@@ -157,6 +157,7 @@ func (jm *jobManager) close() error {
 			terminal: watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "job manager closed", jm.now()),
 		})
 	}
+	markWatchConfigSnapshotsRejectingLocked(targets)
 	dropped := terminalSnapshots(targets)
 	for cfg := range jm.terminalFlush {
 		dropped = append(dropped, watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "job manager closed", jm.now()))
@@ -178,6 +179,7 @@ func (jm *jobManager) close() error {
 	jm.watchNotifyMu.Unlock()
 
 	if err := jm.appendWatchSendTerminalSnapshots(dropped); err != nil {
+		jm.rollbackWatchConfigSnapshotsRejecting(targets)
 		return err
 	}
 	jm.detachWatchConfigSnapshots(targets)
@@ -224,6 +226,7 @@ func (jm *jobManager) abandonRunningJobs() {
 	jm.mu.Unlock()
 	dropped := terminalSnapshots(targets)
 	if err := jm.appendWatchSendTerminalSnapshots(dropped); err != nil {
+		jm.rollbackWatchConfigSnapshotsRejecting(targets)
 		jm.enqueueWatchNotifications([]jobNotification{
 			watchNotification("", "watch send prune cleanup failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})
@@ -252,6 +255,7 @@ func (jm *jobManager) abandonRunningJob(jobID string) {
 	}
 	dropped := terminalSnapshots(targets)
 	if err := jm.appendWatchSendTerminalSnapshots(dropped); err != nil {
+		jm.rollbackWatchConfigSnapshotsRejecting(targets)
 		jm.enqueueWatchNotifications([]jobNotification{
 			watchNotification(jobID, "watch send prune cleanup failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})

@@ -68,6 +68,8 @@ type watchConfig struct {
 	generation         string
 	pending            map[jobstore.WatchSendKey]*jobstore.WatchSendState
 	pendingOrder       []jobstore.WatchSendKey
+	settledUpdateSeq   map[jobstore.WatchSendKey]uint64
+	rejectingDelivery  bool
 	nextUpdateSeq      uint64
 	progressStop       chan struct{}
 }
@@ -175,9 +177,16 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 			jm.mu.Unlock()
 			return result, nil
 		}
-		dropped := []watchSendTerminalSnapshot{watchSendTerminalSnapshotsLocked(existing, jobstore.EventWatchSendDropped, "watch replaced", jm.now())}
+		targets := []watchConfigTerminalSnapshot{{
+			key:      key,
+			cfg:      existing,
+			terminal: watchSendTerminalSnapshotsLocked(existing, jobstore.EventWatchSendDropped, "watch replaced", jm.now()),
+		}}
+		markWatchConfigSnapshotsRejectingLocked(targets)
+		dropped := terminalSnapshots(targets)
 		jm.mu.Unlock()
 		if err := jm.appendWatchSendTerminalSnapshots(dropped); err != nil {
+			jm.rollbackWatchConfigSnapshotsRejecting(targets)
 			return watchResult{}, err
 		}
 
@@ -437,9 +446,11 @@ func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
 			}
 		}
 	}
+	markWatchConfigSnapshotsRejectingLocked(targets)
 	jm.mu.Unlock()
 	dropped := terminalSnapshots(targets)
 	if err := jm.appendWatchSendTerminalSnapshots(dropped); err != nil {
+		jm.rollbackWatchConfigSnapshotsRejecting(targets)
 		return watchResult{}, err
 	}
 	jm.detachWatchConfigSnapshots(targets)
@@ -463,6 +474,7 @@ func (jm *jobManager) pruneWatchedTargetWatchesLocked(jobID, reason string, now 
 			terminal: watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, reason, now),
 		})
 	}
+	markWatchConfigSnapshotsRejectingLocked(targets)
 	return targets
 }
 
@@ -833,10 +845,13 @@ func (jm *jobManager) isCurrentWatchSendDelivery(d watchSendDelivery) bool {
 }
 
 func (jm *jobManager) isCurrentWatchSendDeliveryLocked(d watchSendDelivery) bool {
-	if d.allowAfterTerminalExpiry {
-		return d.cfg != nil && d.cfg.generation == d.generation && !jm.closing
+	if d.cfg == nil || d.cfg.generation != d.generation || d.cfg.rejectingDelivery || jm.closing {
+		return false
 	}
-	return d.cfg != nil && jm.watches[d.key] == d.cfg && d.cfg.generation == d.generation
+	if d.allowAfterTerminalExpiry {
+		return true
+	}
+	return jm.watches[d.key] == d.cfg
 }
 
 func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, d watchSendDelivery) {
@@ -878,6 +893,9 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 		return watchSendPendingRecord{}
 	}
 	cfg := d.cfg
+	if settled, ok := cfg.settledUpdateSeq[state.Key]; ok && state.UpdateSeq <= settled {
+		return watchSendPendingRecord{}
+	}
 	if cfg.pending == nil {
 		cfg.pending = make(map[jobstore.WatchSendKey]*jobstore.WatchSendState)
 	}
@@ -935,7 +953,11 @@ func (jm *jobManager) removePendingWatchSend(cfg *watchConfig, key jobstore.Watc
 }
 
 func removePendingWatchSendLocked(cfg *watchConfig, key jobstore.WatchSendKey, updateSeq uint64) {
-	if cfg == nil || cfg.pending == nil {
+	if cfg == nil {
+		return
+	}
+	settleWatchSendLocked(cfg, key, updateSeq)
+	if cfg.pending == nil {
 		return
 	}
 	pending, ok := cfg.pending[key]
@@ -950,6 +972,15 @@ func removePendingWatchSendLocked(cfg *watchConfig, key jobstore.WatchSendKey, u
 		copy(cfg.pendingOrder[i:], cfg.pendingOrder[i+1:])
 		cfg.pendingOrder = cfg.pendingOrder[:len(cfg.pendingOrder)-1]
 		return
+	}
+}
+
+func settleWatchSendLocked(cfg *watchConfig, key jobstore.WatchSendKey, updateSeq uint64) {
+	if cfg.settledUpdateSeq == nil {
+		cfg.settledUpdateSeq = make(map[jobstore.WatchSendKey]uint64)
+	}
+	if updateSeq > cfg.settledUpdateSeq[key] {
+		cfg.settledUpdateSeq[key] = updateSeq
 	}
 }
 
@@ -987,6 +1018,24 @@ func terminalSnapshots(targets []watchConfigTerminalSnapshot) []watchSendTermina
 		out = append(out, target.terminal)
 	}
 	return out
+}
+
+func markWatchConfigSnapshotsRejectingLocked(targets []watchConfigTerminalSnapshot) {
+	for _, target := range targets {
+		if target.cfg != nil {
+			target.cfg.rejectingDelivery = true
+		}
+	}
+}
+
+func (jm *jobManager) rollbackWatchConfigSnapshotsRejecting(targets []watchConfigTerminalSnapshot) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for _, target := range targets {
+		if target.cfg != nil && jm.watches[target.key] == target.cfg {
+			target.cfg.rejectingDelivery = false
+		}
+	}
 }
 
 func (jm *jobManager) detachWatchConfigSnapshots(targets []watchConfigTerminalSnapshot) {

@@ -44,6 +44,7 @@ func FoldWatchSends(events []Event) WatchSendRecord {
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
 
 	rec := WatchSendRecord{Pending: make(map[WatchSendKey]*WatchSendState)}
+	terminalSeq := make(map[WatchSendKey]uint64)
 	for _, e := range sorted {
 		if e.WatchSend == nil {
 			continue
@@ -51,9 +52,15 @@ func FoldWatchSends(events []Event) WatchSendRecord {
 		key := e.WatchSend.Key
 		switch e.Kind {
 		case EventWatchSendPending:
+			if settled, ok := terminalSeq[key]; ok && e.WatchSend.UpdateSeq <= settled {
+				continue
+			}
 			state := *e.WatchSend
 			rec.Pending[key] = &state
 		case EventWatchSendDelivered, EventWatchSendDropped, EventWatchSendEvicted:
+			if e.WatchSend.UpdateSeq > terminalSeq[key] {
+				terminalSeq[key] = e.WatchSend.UpdateSeq
+			}
 			if pending := rec.Pending[key]; pending != nil && e.WatchSend.UpdateSeq >= pending.UpdateSeq {
 				delete(rec.Pending, key)
 			}

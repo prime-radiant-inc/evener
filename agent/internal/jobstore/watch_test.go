@@ -72,6 +72,23 @@ func TestFoldWatchSendOlderTerminalDoesNotRemoveNewerPending(t *testing.T) {
 	}
 }
 
+func TestFoldWatchSendNewerTerminalTombstoneRejectsOlderPending(t *testing.T) {
+	key := WatchSendKey{
+		VisibleSessionID:        "root",
+		WatchTarget:             "job_A",
+		ResolvedWatchedIdentity: "job_A",
+		ResolvedSendTo:          "job_sidecar",
+		WatchGeneration:         "wg_1",
+	}
+	events := []Event{
+		{Kind: EventWatchSendDelivered, Seq: 1, WatchSend: &WatchSendState{Key: key, DeliveryID: "d2", UpdateSeq: 2}},
+		{Kind: EventWatchSendPending, Seq: 2, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1", UpdateSeq: 1, Message: "stale"}},
+	}
+	if got := FoldWatchSends(events).Pending; len(got) != 0 {
+		t.Fatalf("pending after newer delivered tombstone = %+v, want none", got)
+	}
+}
+
 func TestOutputMatcherMatchesCompletedLine(t *testing.T) {
 	m := NewOutputMatcher(regexp.MustCompile(`(?i)ready`))
 	got := m.Feed([]byte("starting\nserver ready\n"))
