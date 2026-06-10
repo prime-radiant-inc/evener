@@ -1143,6 +1143,134 @@ func TestChildJobManagerHasForwardSeam(t *testing.T) {
 	waitForShellDone(t, parent.jobManager, res.JobID)
 }
 
+func TestNestedShellEndToEndThroughTools(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				<-release
+				return communicateWithDefaultOutput("delegate complete")
+			},
+		},
+	})
+	parent := newDelegateTestSession(t, c)
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+
+	delegateCall := parent.reg.ExecuteCall(context.Background(), parent.env, llm.ToolCallData{
+		ID:        "delegate",
+		Name:      "delegate",
+		Arguments: json.RawMessage(`{"task":"host nested shell","background":true,"block_timeout_ms":120000}`),
+	})
+	if delegateCall.IsError {
+		t.Fatalf("delegate tool returned error: %s", delegateCall.Output)
+	}
+	var delegate delegateToolResult
+	if err := json.Unmarshal([]byte(delegateCall.Output), &delegate); err != nil {
+		t.Fatalf("unmarshal delegate result: %v (output: %s)", err, delegateCall.Output)
+	}
+	if delegate.JobID == "" || !delegate.RunningInBackground || delegate.TranscriptRef == "" {
+		t.Fatalf("delegate result = %+v, want background job with transcript ref", delegate)
+	}
+	t.Cleanup(func() {
+		_, _ = parent.jobManager.stop(delegate.JobID)
+		releaseOnce.Do(func() { close(release) })
+		waitForShellDone(t, parent.jobManager, delegate.JobID)
+	})
+
+	_, childID, err := decodeRef(delegate.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode transcript ref: %v", err)
+	}
+	sub := parent.subagents.get(childID)
+	if sub == nil || sub.sess == nil {
+		t.Fatalf("tracked subagent %q not found", childID)
+	}
+	child := sub.sess
+
+	shellCall := child.reg.ExecuteCall(context.Background(), child.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"printf 'nested-e2e-ready\n'; sleep 30","background":true}`),
+	})
+	if shellCall.IsError {
+		t.Fatalf("child shell tool returned error: %s", shellCall.Output)
+	}
+	var shell shellToolResult
+	if err := json.Unmarshal([]byte(shellCall.Output), &shell); err != nil {
+		t.Fatalf("unmarshal shell result: %v (output: %s)", err, shellCall.Output)
+	}
+	if shell.JobID == "" || !shell.RunningInBackground || shell.Status != string(jobstore.StatusRunning) {
+		t.Fatalf("shell result = %+v, want running background nested job", shell)
+	}
+	nestedID := shell.JobID
+	t.Cleanup(func() {
+		if rec, err := findJobRecord(child.jobManager, nestedID); err == nil && rec.Status == jobstore.StatusRunning {
+			_, _ = parent.stopNestedOrLocal(nestedID)
+		}
+		waitForShellDone(t, child.jobManager, nestedID)
+	})
+
+	defaultListCall := parent.reg.ExecuteCall(context.Background(), parent.env, llm.ToolCallData{
+		ID:        "list-default",
+		Name:      "job_list",
+		Arguments: json.RawMessage(`{}`),
+	})
+	if defaultListCall.IsError {
+		t.Fatalf("default job_list returned error: %s", defaultListCall.Output)
+	}
+	var defaultList jobListToolOutput
+	if err := json.Unmarshal([]byte(defaultListCall.Output), &defaultList); err != nil {
+		t.Fatalf("unmarshal default job_list: %v (output: %s)", err, defaultListCall.Output)
+	}
+	if jobListToolOutputContains(defaultList.Jobs, nestedID) {
+		t.Fatalf("default job_list exposed nested job %q: %+v", nestedID, defaultList.Jobs)
+	}
+
+	nestedListCall := parent.reg.ExecuteCall(context.Background(), parent.env, llm.ToolCallData{
+		ID:        "list-nested",
+		Name:      "job_list",
+		Arguments: json.RawMessage(`{"include_nested":true}`),
+	})
+	if nestedListCall.IsError {
+		t.Fatalf("include_nested job_list returned error: %s", nestedListCall.Output)
+	}
+	var nestedList jobListToolOutput
+	if err := json.Unmarshal([]byte(nestedListCall.Output), &nestedList); err != nil {
+		t.Fatalf("unmarshal include_nested job_list: %v (output: %s)", err, nestedListCall.Output)
+	}
+	nestedEntry := findJobListToolOutput(nestedList.Jobs, nestedID)
+	if nestedEntry == nil {
+		t.Fatalf("include_nested job_list missing nested job %q: %+v", nestedID, nestedList.Jobs)
+	}
+	if nestedEntry.ParentJobID == nil || *nestedEntry.ParentJobID != delegate.JobID {
+		t.Fatalf("nested job parent_job_id = %v, want delegate job %q", nestedEntry.ParentJobID, delegate.JobID)
+	}
+
+	read := waitForJobOutput(t, parent, nestedID, "nested-e2e-ready")
+	if read.JobID != nestedID || read.Status != string(jobstore.StatusRunning) || !strings.Contains(read.Content, "nested-e2e-ready") {
+		t.Fatalf("job_read_output result = %+v, want routed running nested output", read)
+	}
+
+	stopCall := parent.reg.ExecuteCall(context.Background(), parent.env, llm.ToolCallData{
+		ID:        "stop-nested",
+		Name:      "job_stop",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q}`, nestedID)),
+	})
+	if stopCall.IsError {
+		t.Fatalf("job_stop returned error: %s", stopCall.Output)
+	}
+	var stop jobStopResult
+	if err := json.Unmarshal([]byte(stopCall.Output), &stop); err != nil {
+		t.Fatalf("unmarshal job_stop: %v (output: %s)", err, stopCall.Output)
+	}
+	if stop.JobID != nestedID || (stop.Status != string(jobstore.StatusCancelled) && stop.Status != string(jobstore.StatusStopped)) {
+		t.Fatalf("job_stop result = %+v, want cancelled/stopped nested job %q", stop, nestedID)
+	}
+}
+
 func TestDelegateChildDirectSpawnDoesNotInheritForwardSeam(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once

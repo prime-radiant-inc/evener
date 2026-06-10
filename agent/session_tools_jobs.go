@@ -247,7 +247,7 @@ type jobReadOutputSnapshot struct {
 
 func (s *Session) readJobOutputSnapshot(jm *jobManager, jobID string, tailBytes int, grepRE *regexp.Regexp, limitBytes int) (jobReadOutputSnapshot, error) {
 	for {
-		rec, err := findJobRecord(jm, jobID)
+		_, err := findJobRecord(jm, jobID)
 		if err != nil {
 			next, ok, fallbackErr := s.jobReadClosedStoreFallback(jm, err)
 			if ok {
@@ -267,7 +267,7 @@ func (s *Session) readJobOutputSnapshot(jm *jobManager, jobID string, tailBytes 
 			return jobReadOutputSnapshot{}, fallbackErr
 		}
 
-		rec, err = findJobRecord(jm, jobID)
+		rec, err := findJobRecord(jm, jobID)
 		if err != nil {
 			next, ok, fallbackErr := s.jobReadClosedStoreFallback(jm, err)
 			if ok {
