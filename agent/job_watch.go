@@ -179,19 +179,24 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 		return watchResult{}, watchTargetNotFoundError(key.Target)
 	}
 	existing := jm.watches[key]
+	detached := jm.detachedWatchSendTerminalSnapshotsLocked(key, jobstore.EventWatchSendDropped, "watch replaced", jm.now())
 	if existing != nil {
-		if watchConfigsEqual(existing, cfg) {
+		equal := watchConfigsEqual(existing, cfg)
+		if equal && len(detached) == 0 {
 			result := watchResultFromConfig(existing, false)
 			jm.mu.Unlock()
 			return result, nil
 		}
-		targets := []watchConfigTerminalSnapshot{{
-			key:      key,
-			cfg:      existing,
-			terminal: watchSendTerminalSnapshotsLocked(existing, jobstore.EventWatchSendDropped, "watch replaced", jm.now()),
-		}}
+		var targets []watchConfigTerminalSnapshot
+		if !equal {
+			targets = append(targets, watchConfigTerminalSnapshot{
+				key:      key,
+				cfg:      existing,
+				terminal: watchSendTerminalSnapshotsLocked(existing, jobstore.EventWatchSendDropped, "watch replaced", jm.now()),
+			})
+		}
 		markWatchConfigSnapshotsRejectingLocked(targets)
-		dropped := terminalSnapshots(targets)
+		dropped := append(terminalSnapshots(targets), detached...)
 		jm.mu.Unlock()
 		applied, err := jm.appendWatchSendTerminalSnapshots(dropped)
 		if err != nil {
@@ -210,6 +215,12 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 			}
 			return watchResultFromConfig(current, false), nil
 		}
+		if equal {
+			result := watchResultFromConfig(existing, false)
+			jm.mu.Unlock()
+			jm.removeWatchSendTerminalSnapshots(applied)
+			return result, nil
+		}
 		closeWatchConfig(existing)
 		stop := cfg.initProgressStop()
 		jm.watches[key] = cfg
@@ -220,6 +231,23 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 		return result, nil
 	}
 
+	if len(detached) != 0 {
+		jm.mu.Unlock()
+		applied, err := jm.appendWatchSendTerminalSnapshots(detached)
+		if err != nil {
+			jm.removeWatchSendTerminalSnapshots(applied)
+			return watchResult{}, err
+		}
+		jm.mu.Lock()
+		if current := jm.watches[key]; current != nil {
+			jm.mu.Unlock()
+			jm.removeWatchSendTerminalSnapshots(applied)
+			return watchResultFromConfig(current, false), nil
+		}
+		jm.mu.Unlock()
+		jm.removeWatchSendTerminalSnapshots(applied)
+		jm.mu.Lock()
+	}
 	stop := cfg.initProgressStop()
 	jm.watches[key] = cfg
 	result := watchResultFromConfig(cfg, false)
@@ -524,6 +552,7 @@ func watchSendKeyLess(a, b jobstore.WatchSendKey) bool {
 func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
 	var targets []watchConfigTerminalSnapshot
 	jm.mu.Lock()
+	detached := jm.detachedWatchSendTerminalSnapshotsLocked(key, jobstore.EventWatchSendDropped, "watch cleared", jm.now())
 	if key.SendTo != "" {
 		cfg := jm.watches[key]
 		targets = append(targets, watchConfigTerminalSnapshot{
@@ -544,7 +573,7 @@ func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
 	}
 	markWatchConfigSnapshotsRejectingLocked(targets)
 	jm.mu.Unlock()
-	dropped := terminalSnapshots(targets)
+	dropped := append(terminalSnapshots(targets), detached...)
 	applied, err := jm.appendWatchSendTerminalSnapshots(dropped)
 	if err != nil {
 		jm.removeWatchSendTerminalSnapshots(applied)
@@ -1227,6 +1256,48 @@ func watchSendTerminalSnapshotsLocked(cfg *watchConfig, kind jobstore.EventKind,
 		})
 	}
 	return snapshot
+}
+
+func (jm *jobManager) detachedWatchSendTerminalSnapshotsLocked(key watchKey, kind jobstore.EventKind, reason string, now time.Time) []watchSendTerminalSnapshot {
+	var snapshots []watchSendTerminalSnapshot
+	for cfg := range jm.terminalFlush {
+		snapshot := watchSendTerminalSnapshotMatchingKeyLocked(cfg, key, kind, reason, now)
+		if len(snapshot.events) != 0 {
+			snapshots = append(snapshots, snapshot)
+		}
+	}
+	return snapshots
+}
+
+func watchSendTerminalSnapshotMatchingKeyLocked(cfg *watchConfig, key watchKey, kind jobstore.EventKind, reason string, now time.Time) watchSendTerminalSnapshot {
+	snapshot := watchSendTerminalSnapshot{cfg: cfg}
+	if cfg == nil || len(cfg.pending) == 0 {
+		return snapshot
+	}
+	for _, pendingKey := range cfg.pendingOrder {
+		if !watchSendKeyMatchesWatchKey(pendingKey, key) {
+			continue
+		}
+		state := cfg.pending[pendingKey]
+		if state == nil {
+			continue
+		}
+		terminal := *state
+		terminal.DiagnosticReason = reason
+		snapshot.events = append(snapshot.events, jobstore.Event{
+			Kind:      kind,
+			TS:        now,
+			WatchSend: &terminal,
+		})
+	}
+	return snapshot
+}
+
+func watchSendKeyMatchesWatchKey(pending jobstore.WatchSendKey, key watchKey) bool {
+	if pending.VisibleSessionID != key.VisibleSessionID || pending.WatchTarget != key.Target {
+		return false
+	}
+	return key.SendTo == "" || pending.ResolvedSendTo == key.SendTo
 }
 
 func (jm *jobManager) appendWatchSendTerminalSnapshots(snapshots []watchSendTerminalSnapshot) ([]watchSendTerminalSnapshot, error) {

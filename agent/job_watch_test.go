@@ -571,7 +571,7 @@ func TestWatchSendPendingUsesTriggerTimeFrameSnapshot(t *testing.T) {
 	}
 }
 
-func TestWatchSendGenerationChangesAfterRestoreAndKeepsOldPending(t *testing.T) {
+func TestWatchSendGenerationChangesAfterRestoreAndReplacementDropsOldPending(t *testing.T) {
 	stateDir := t.TempDir()
 	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
 	if err != nil {
@@ -625,16 +625,13 @@ func TestWatchSendGenerationChangesAfterRestoreAndKeepsOldPending(t *testing.T) 
 	reopened.feedJobOutput(rec.JobID, []byte("second READY\n"))
 
 	pending := loadWatchSendRecord(t, reopened).Pending
-	if len(pending) != 2 {
-		t.Fatalf("pending count after restore = %d, want 2: %+v", len(pending), pending)
+	if len(pending) != 1 {
+		t.Fatalf("pending count after restore replacement = %d, want 1: %+v", len(pending), pending)
 	}
-	if _, ok := pending[firstKey]; !ok {
-		t.Fatalf("old pending key was overwritten or removed: %+v", pending)
+	if _, ok := pending[firstKey]; ok {
+		t.Fatalf("old restored pending key survived replacement cleanup: %+v", pending)
 	}
 	for key, state := range pending {
-		if key == firstKey {
-			continue
-		}
 		if key.WatchGeneration == firstKey.WatchGeneration {
 			t.Fatalf("watch generation reused after restore: %q", key.WatchGeneration)
 		}
@@ -643,7 +640,7 @@ func TestWatchSendGenerationChangesAfterRestoreAndKeepsOldPending(t *testing.T) 
 		}
 		return
 	}
-	t.Fatal("second pending key not found")
+	t.Fatal("new pending key not found")
 }
 
 func TestWatchSendRestoreLoadsPendingStateForFutureRetry(t *testing.T) {
@@ -698,6 +695,50 @@ func TestWatchSendRestoreLoadsPendingStateForFutureRetry(t *testing.T) {
 		if !strings.Contains(state.Frame, "stored excerpt") {
 			t.Fatalf("restored frame = %q, want stored payload", state.Frame)
 		}
+	}
+}
+
+func TestWatchSendRestoreClearDropsPendingState(t *testing.T) {
+	stateDir := t.TempDir()
+	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new job manager: %v", err)
+	}
+	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("pending before restore = %d, want 1", len(pending))
+	}
+	if err := jm.store.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	reopened, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("reopen job manager: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.store.Close() })
+	if restored := runtimeWatchSendPending(t, reopened); len(restored) != 1 {
+		t.Fatalf("runtime pending after restore = %d, want 1", len(restored))
+	}
+
+	if _, err := reopened.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err != nil {
+		t.Fatalf("clear restored pending: %v", err)
+	}
+
+	if pending := loadWatchSendRecord(t, reopened).Pending; len(pending) != 0 {
+		t.Fatalf("folded pending after restore clear = %+v, want none", pending)
 	}
 }
 
