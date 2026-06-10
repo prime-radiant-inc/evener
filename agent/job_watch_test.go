@@ -975,6 +975,47 @@ func TestWatchSendOverlapOlderDeliveredDoesNotRemoveNewerPending(t *testing.T) {
 	}
 }
 
+func TestWatchSendOverlapOlderFailedDoesNotOverwriteNewerPending(t *testing.T) {
+	jm := newTestJM(t)
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	first := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: first ready")
+	second := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: second ready")
+
+	jm.deliverWatchSend(context.Background(), second)
+	jm.deliverWatchSend(context.Background(), first)
+
+	pending := loadWatchSendRecord(t, jm).Pending
+	if len(pending) != 1 {
+		t.Fatalf("folded pending after older failed delivery = %d, want 1: %+v", len(pending), pending)
+	}
+	for _, state := range pending {
+		if !strings.Contains(state.Frame, "second ready") {
+			t.Fatalf("pending frame = %q, want newer trigger", state.Frame)
+		}
+		if state.CoalescedCount != 0 {
+			t.Fatalf("coalesced_count = %d, want 0 for ignored older delivery", state.CoalescedCount)
+		}
+	}
+	if got := len(second.cfg.pending); got != 1 {
+		t.Fatalf("in-memory pending after older failed delivery = %d, want 1", got)
+	}
+	for _, state := range second.cfg.pending {
+		if !strings.Contains(state.Frame, "second ready") {
+			t.Fatalf("in-memory pending frame = %q, want newer trigger", state.Frame)
+		}
+	}
+}
+
 func TestWatchSendStaleFailedDeliveryAfterNewerDeliveredDoesNotPersistPending(t *testing.T) {
 	jm := newTestJM(t)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {

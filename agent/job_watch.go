@@ -900,6 +900,9 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 		cfg.pending = make(map[jobstore.WatchSendKey]*jobstore.WatchSendState)
 	}
 	if existing := cfg.pending[state.Key]; existing != nil {
+		if state.UpdateSeq < existing.UpdateSeq {
+			return watchSendPendingRecord{}
+		}
 		state.CoalescedCount = existing.CoalescedCount + 1
 		state.CreatedAt = existing.CreatedAt
 	} else {
