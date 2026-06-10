@@ -138,6 +138,18 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	if a.ProgressIntervalMS > maxWatchProgressIntervalMS {
 		a.ProgressIntervalMS = maxWatchProgressIntervalMS
 	}
+	sendTo := ""
+	if a.Send != nil {
+		sendTo = a.Send.To
+	}
+	key := watchKey{
+		VisibleSessionID: jm.sessionID,
+		Target:           a.Target,
+		SendTo:           sendTo,
+	}
+	if a.Clear && jm.hasWatchClearState(key) {
+		return jm.clearWatch(key)
+	}
 	if err := jm.validateWatchTarget(a.Target); err != nil {
 		return watchResult{}, err
 	}
@@ -152,16 +164,6 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	}
 	if !a.Clear && a.OutputMatch != "" && isWatchSessionTarget(a.Target) {
 		return watchResult{}, errors.New("invalid_request: output_match requires a concrete job target")
-	}
-
-	sendTo := ""
-	if a.Send != nil {
-		sendTo = a.Send.To
-	}
-	key := watchKey{
-		VisibleSessionID: jm.sessionID,
-		Target:           a.Target,
-		SendTo:           sendTo,
 	}
 
 	if a.Clear {
@@ -598,6 +600,40 @@ func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
 		Target:   key.Target,
 		Watching: false,
 	}, nil
+}
+
+func (jm *jobManager) hasWatchClearState(key watchKey) bool {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	if key.SendTo != "" {
+		if jm.watches[key] != nil {
+			return true
+		}
+	} else {
+		for existingKey := range jm.watches {
+			if existingKey.VisibleSessionID == key.VisibleSessionID && existingKey.Target == key.Target {
+				return true
+			}
+		}
+	}
+	for cfg := range jm.terminalFlush {
+		if watchConfigHasPendingMatchingKey(cfg, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func watchConfigHasPendingMatchingKey(cfg *watchConfig, key watchKey) bool {
+	if cfg == nil || len(cfg.pending) == 0 {
+		return false
+	}
+	for pendingKey := range cfg.pending {
+		if watchSendKeyMatchesWatchKey(pendingKey, key) {
+			return true
+		}
+	}
+	return false
 }
 
 func (jm *jobManager) pruneWatchedTargetWatchesLocked(jobID, reason string, now time.Time) []watchConfigTerminalSnapshot {

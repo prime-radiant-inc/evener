@@ -1030,6 +1030,45 @@ func TestWatchSendTerminalFlushCloseDropsPending(t *testing.T) {
 	}
 }
 
+func TestWatchSendTerminalFlushConfigureClearDropsPending(t *testing.T) {
+	jm := newTestJM(t)
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("server ready")); err != nil {
+		t.Fatalf("append output: %v", err)
+	}
+	code := 0
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if jm.watchCount() != 0 {
+		t.Fatalf("watch count after terminal expiry = %d, want 0", jm.watchCount())
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("pending before configure clear = %d, want 1", len(pending))
+	}
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, OutputMatch: "ready"}); err == nil || !strings.Contains(err.Error(), "target_not_found") {
+		t.Fatalf("terminal concrete watch registration error = %v, want target_not_found", err)
+	}
+
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err != nil {
+		t.Fatalf("configure clear terminal-flushed pending: %v", err)
+	}
+
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("pending after configure clear = %+v, want none", pending)
+	}
+}
+
 func TestWatchSendTerminalFlushWatchedTargetedClearDropsPending(t *testing.T) {
 	jm := newTestJM(t)
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
