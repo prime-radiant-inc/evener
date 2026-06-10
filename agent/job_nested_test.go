@@ -717,6 +717,44 @@ func TestStopDelegateWithoutIncludeChildrenLeavesNestedRunning(t *testing.T) {
 	}
 }
 
+func TestStopDelegateIncludeChildrenSurfacesChildStopError(t *testing.T) {
+	parent, _ := newNestedStopTestSession(t, "")
+	delegate, err := parent.jobManager.createShell(createShellOpts{Command: "delegate", Description: "delegate"})
+	if err != nil {
+		t.Fatalf("create delegate stand-in: %v", err)
+	}
+	t.Cleanup(func() {
+		finishRunningTestJob(t, parent.jobManager, delegate.JobID)
+	})
+
+	startedAt := parent.jobManager.now()
+	if err := parent.jobManager.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               startedAt,
+		JobID:            "job_missing_child",
+		Type:             jobstore.JobShell,
+		Command:          "sleep 30",
+		Description:      "stale nested child",
+		OwnerSessionID:   "CHILD",
+		VisibleToSession: "PARENT",
+		ParentJobID:      delegate.JobID,
+		StartedAt:        &startedAt,
+	}); err != nil {
+		t.Fatalf("append stale forwarded child: %v", err)
+	}
+
+	_, err = jobStopTool(context.Background(), parent, map[string]any{
+		"job_id":           delegate.JobID,
+		"include_children": true,
+	}, 20000)
+	if err == nil {
+		t.Fatal("job_stop include_children succeeded, want child stop error")
+	}
+	if !strings.Contains(err.Error(), `job "job_missing_child" not found`) {
+		t.Fatalf("job_stop error = %q, want missing child job", err.Error())
+	}
+}
+
 func TestNestedRunShellForwardsDelayedJobStarted(t *testing.T) {
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
 	if err != nil {

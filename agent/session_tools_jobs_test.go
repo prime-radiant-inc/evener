@@ -884,7 +884,7 @@ func TestJobToolsDefinitions(t *testing.T) {
 		t.Fatalf("job_list cursor type = %#v, want string/null", cursor["type"])
 	}
 	stopProps := tooldefs.DefJobStop().Parameters["properties"].(map[string]any)
-	for _, param := range []string{"job_id", "signal", "block", "block_timeout_ms"} {
+	for _, param := range []string{"job_id", "signal", "block", "block_timeout_ms", "include_children"} {
 		if _, ok := stopProps[param]; !ok {
 			t.Fatalf("job_stop missing param %q", param)
 		}
@@ -1163,6 +1163,38 @@ func TestJobStopRejectsUnsupportedSignal(t *testing.T) {
 	}
 	if !strings.Contains(res.Output, "signal is not supported") {
 		t.Fatalf("job_stop error = %q, want unsupported signal", res.Output)
+	}
+}
+
+func TestJobStopAcceptsIncludeChildrenThroughRegistry(t *testing.T) {
+	s := newTestSession(t)
+
+	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "shell",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command":"sleep 30","background":true}`),
+	})
+	if shellRes.IsError {
+		t.Fatalf("shell returned error: %s", shellRes.Output)
+	}
+	var shellOut struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal([]byte(shellRes.Output), &shellOut); err != nil {
+		t.Fatalf("unmarshal shell output: %v (output: %s)", err, shellRes.Output)
+	}
+	t.Cleanup(func() {
+		_, _ = s.jobManager.stop(shellOut.JobID)
+		waitForShellDone(t, s.jobManager, shellOut.JobID)
+	})
+
+	res := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{
+		ID:        "stop",
+		Name:      "job_stop",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"include_children":true}`, shellOut.JobID)),
+	})
+	if res.IsError {
+		t.Fatalf("job_stop rejected include_children through registry: %s", res.Output)
 	}
 }
 

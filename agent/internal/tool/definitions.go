@@ -283,6 +283,7 @@ func DefJobStop() llm.ToolDefinition {
 				"signal":           map[string]any{"type": "string"},
 				"block":            map[string]any{"type": "boolean", "default": false},
 				"block_timeout_ms": map[string]any{"type": "integer", "default": 5000, "minimum": 1000, "maximum": 60000},
+				"include_children": map[string]any{"type": "boolean", "default": false},
 			},
 			"required": []string{"job_id"},
 		},

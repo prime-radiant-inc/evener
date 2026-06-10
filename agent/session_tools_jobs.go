@@ -370,7 +370,9 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 		targetJM = routed
 	}
 	if shellBoolArg(args, "include_children") {
-		_, _ = s.stopChildren(jobID)
+		if _, err := s.stopChildren(jobID); err != nil {
+			return "", err
+		}
 	}
 	rec, err := s.stopNestedOrLocal(jobID)
 	if err != nil {
