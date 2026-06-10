@@ -78,6 +78,29 @@ type subagent struct {
 	closeTimedOut   bool               // session-close wait exceeded its bound; close not confirmed
 }
 
+type preparedSubagentRun struct {
+	sub                *subagent
+	input              string
+	runCtx             context.Context
+	runCancel          context.CancelFunc
+	parentSessionID    string
+	parentJobID        string
+	originToolCallID   string
+	task               string
+	agentType          string
+	requestedModel     string
+	resolvedAgentName  string
+	reasoningEffort    string
+	frozenRolePrompt   string
+	frozenTaskPrompt   string
+	frozenToolNames    []string
+	frozenSkillNames   []string
+	workingDir         string
+	localEnvPolicy     string
+	resultSchema       map[string]any
+	explicitToolGrants []string
+}
+
 func hasString(items []string, want string) bool {
 	for _, item := range items {
 		if item == want {
@@ -149,6 +172,69 @@ func baseSubagentToolPolicy(agent *plugin.Agent) (allTools bool, allowed []strin
 	}
 }
 
+func frozenSubagentToolNames(allTools bool, allowed, denied []string) []string {
+	switch {
+	case allTools:
+		return []string{"*"}
+	case len(allowed) > 0:
+		return append([]string(nil), allowed...)
+	case len(denied) > 0:
+		return nil
+	default:
+		return nil
+	}
+}
+
+func frozenSkillNames(agent *plugin.Agent) []string {
+	if agent == nil || len(agent.Skills) == 0 {
+		return nil
+	}
+	return append([]string(nil), agent.Skills...)
+}
+
+func localEnvPolicyName(env execenv.ExecutionEnvironment) string {
+	le, ok := env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		return ""
+	}
+	switch le.EnvPolicy {
+	case execenv.EnvPolicyAll:
+		return "all"
+	case execenv.EnvPolicyNone:
+		return "none"
+	case execenv.EnvPolicyCoreOnly:
+		return "core_only"
+	default:
+		return "default"
+	}
+}
+
+func cloneMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(in)
+	if err != nil {
+		return cloneShallowMap(in)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return cloneShallowMap(in)
+	}
+	return out
+}
+
+func cloneShallowMap(in map[string]any) map[string]any {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
 func subagentNeedsCommunicateNudge(agent *plugin.Agent) bool {
 	if agent == nil {
 		return true
@@ -157,15 +243,29 @@ func subagentNeedsCommunicateNudge(agent *plugin.Agent) bool {
 }
 
 func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string, parentTasks []taskpkg.TaskTemplate, grantTools []string) (any, error) {
+	prepared, err := s.prepareSubagentRun(ctx, task, model, workingDir, maxTurns, agentType, reasoningEffort, parentTasks, grantTools)
+	if err != nil {
+		return "", err
+	}
+	if err := s.trackAndLaunchPreparedSubagent(prepared); err != nil {
+		prepared.sub.sess.Close()
+		return "", err
+	}
+
+	b, _ := json.Marshal(map[string]any{"agent_id": prepared.sub.id, "status": string(SubagentRunning)})
+	return string(b), nil
+}
+
+func (s *Session) prepareSubagentRun(ctx context.Context, task, model, workingDir string, maxTurns int, agentType string, reasoningEffort string, parentTasks []taskpkg.TaskTemplate, grantTools []string) (*preparedSubagentRun, error) {
 	s.mu.Lock()
 	depth := s.depth
 	maxDepth := s.cfg.MaxSubagentDepth
 	s.mu.Unlock()
 	if depth > 0 {
-		return "", errors.New("subagent management is top-level only")
+		return nil, errors.New("subagent management is top-level only")
 	}
 	if depth >= maxDepth {
-		return "", errors.New("subagent depth limit reached")
+		return nil, errors.New("subagent depth limit reached")
 	}
 
 	// Look up plugin agent configuration when agent_type is specified.
@@ -173,10 +273,10 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	if agentType = strings.TrimSpace(agentType); agentType != "" {
 		a, ok := s.pluginAgents[agentType]
 		if !ok {
-			return "", fmt.Errorf("unknown plugin agent type: %s", agentType)
+			return nil, fmt.Errorf("unknown plugin agent type: %s", agentType)
 		}
 		if agentUsesRootOnlySubagentTools(a) {
-			return "", fmt.Errorf("agent_type %q is top-level only: it requires root-only tools", agentType)
+			return nil, fmt.Errorf("agent_type %q is top-level only: it requires root-only tools", agentType)
 		}
 		agent = &a
 	}
@@ -186,7 +286,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	if model = strings.TrimSpace(model); model != "" {
 		resolved, crossProvider, err := s.resolveProfileForRef(sp, model)
 		if err != nil {
-			return "", fmt.Errorf("model override %q: %w", model, err)
+			return nil, fmt.Errorf("model override %q: %w", model, err)
 		}
 		if crossProvider {
 			resolved = resolved.WithCommunicateOverridesFrom(sp)
@@ -197,7 +297,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	if agent != nil && agent.Model != "inherit" && agent.Model != "" {
 		resolved, crossProvider, err := s.resolveProfileForRef(sp, agent.Model)
 		if err != nil {
-			return "", fmt.Errorf("agent model %q: %w", agent.Model, err)
+			return nil, fmt.Errorf("agent model %q: %w", agent.Model, err)
 		}
 		if crossProvider {
 			resolved = resolved.WithCommunicateOverridesFrom(sp)
@@ -279,7 +379,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		currentTools := s.reg.RegisteredNames()
 		for _, toolName := range canonicalGrantTools {
 			if isRootOnlySubagentTool(toolName) {
-				return "", fmt.Errorf("cannot grant tool %q: root-only tools are top-level only", toolName)
+				return nil, fmt.Errorf("cannot grant tool %q: root-only tools are top-level only", toolName)
 			}
 			baseHasTool := allTools ||
 				hasString(allowedTools, toolName) ||
@@ -288,7 +388,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 				continue
 			}
 			if !currentTools[toolName] {
-				return "", fmt.Errorf("cannot grant tool %q: it is not currently callable in this session", toolName)
+				return nil, fmt.Errorf("cannot grant tool %q: it is not currently callable in this session", toolName)
 			}
 			if len(allowedTools) > 0 {
 				allowedTools = appendUniqueStrings(allowedTools, toolName)
@@ -311,7 +411,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		if le, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
 			subEnv = le.WithWorkingDirectory(workingDir)
 		} else {
-			return "", errors.New("execution environment does not support working_dir override")
+			return nil, errors.New("execution environment does not support working_dir override")
 		}
 	}
 
@@ -321,7 +421,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 
 	subSess, err := NewSession(s.client, subProfile, subEnv, subCfg)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if len(canonicalGrantTools) > 0 {
 		var missing []string
@@ -332,7 +432,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		}
 		if len(missing) > 0 {
 			subSess.Close()
-			return "", fmt.Errorf("cannot grant tool(s) to spawned subagent: %s", strings.Join(missing, ", "))
+			return nil, fmt.Errorf("cannot grant tool(s) to spawned subagent: %s", strings.Join(missing, ", "))
 		}
 	}
 
@@ -357,7 +457,7 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	evicted, err := s.subagents.reserveSlot()
 	if err != nil {
 		subSess.Close()
-		return "", err
+		return nil, err
 	}
 	for _, ev := range evicted {
 		ev.sess.Close()
@@ -377,19 +477,6 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 		startedAt:    now,
 	}
 
-	// Register the child and enroll its run goroutine in sendersWG under s.mu,
-	// gated on the closing flag: the Add then happens-before Close()'s Wait, and a
-	// spawn racing teardown is either drained (and cancelled) here or refused.
-	s.mu.Lock()
-	if s.closingOrClosedLocked() {
-		s.mu.Unlock()
-		subSess.Close()
-		return "", errors.New("session is closed")
-	}
-	s.subagents.track(sub)
-	s.sendersWG.Add(1)
-	s.mu.Unlock()
-
 	// Subagent execution must outlive the parent tool-call context.
 	// The parent may stop waiting, finish its input, or time out while the
 	// child keeps running. Child cancellation is handled by subSess.Close(),
@@ -400,14 +487,51 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	sub.cancel = runCancel
 	sub.cancelRequested = false
 	sub.mu.Unlock()
-	go func() {
-		defer s.sendersWG.Done()
-		defer runCancel()
-		sub.run(runCtx, task)
-	}()
+	prepared := &preparedSubagentRun{
+		sub:                sub,
+		input:              task,
+		runCtx:             runCtx,
+		runCancel:          runCancel,
+		parentSessionID:    subCfg.spawn.parentSessionID,
+		parentJobID:        subCfg.spawn.parentJobID,
+		originToolCallID:   subCfg.spawn.parentToolCallID,
+		task:               task,
+		agentType:          agentType,
+		requestedModel:     model,
+		resolvedAgentName:  agentName,
+		reasoningEffort:    reasoningEffort,
+		frozenRolePrompt:   rolePrompt,
+		frozenToolNames:    frozenSubagentToolNames(allTools, allowedTools, deniedTools),
+		frozenSkillNames:   frozenSkillNames(agent),
+		workingDir:         subEnv.WorkingDirectory(),
+		localEnvPolicy:     localEnvPolicyName(subEnv),
+		resultSchema:       cloneMap(subCfg.spawn.communicateOutputSchema),
+		explicitToolGrants: append([]string(nil), canonicalGrantTools...),
+	}
+	if agent != nil && len(agent.Tasks) > 0 {
+		if current, ok := subSess.getOrCreateTaskStore().CurrentInProgress(); ok {
+			prepared.frozenTaskPrompt = current.Prompt
+		}
+	}
+	return prepared, nil
+}
 
-	b, _ := json.Marshal(map[string]any{"agent_id": sub.id, "status": string(SubagentRunning)})
-	return string(b), nil
+func (s *Session) trackAndLaunchPreparedSubagent(prepared *preparedSubagentRun) error {
+	if prepared == nil || prepared.sub == nil {
+		return errors.New("subagent run is not prepared")
+	}
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		prepared.runCancel()
+		return errors.New("session is closed")
+	}
+	s.subagents.track(prepared.sub)
+	s.sendersWG.Add(1)
+	s.mu.Unlock()
+
+	s.launchSubagentRun(prepared.runCtx, prepared.sub, prepared.runCancel, prepared.input, false)
+	return nil
 }
 
 func (s *Session) sendInput(ctx context.Context, agentID string, input string) (any, error) {

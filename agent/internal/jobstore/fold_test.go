@@ -1,6 +1,7 @@
 package jobstore
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -117,6 +118,96 @@ func TestFoldDelegateDescriptorSchemaAndStructuredReason(t *testing.T) {
 	}
 	if rec.StructuredResultReason != "schema_result_missing" {
 		t.Fatalf("reason = %q", rec.StructuredResultReason)
+	}
+}
+
+func TestDelegateRestoreDescriptorSurvivesStoreReopenAndFold(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	start := time.Unix(10, 0).UTC()
+	desc := &DelegateRestoreDescriptor{
+		Version:            1,
+		ChildSessionID:     "child_1",
+		TranscriptRef:      "local:child_1",
+		ParentSessionID:    "parent_1",
+		ParentJobID:        "job_1",
+		OwnerSessionID:     "owner_1",
+		VisibleSessionID:   "visible_1",
+		OriginTurnID:       "turn_1",
+		OriginToolCallID:   "call_1",
+		Task:               "inspect",
+		AgentType:          "reviewer",
+		RequestedModel:     "openai/gpt-5.3",
+		ResolvedProfileID:  "openai",
+		ResolvedModel:      "gpt-5.3",
+		ReasoningEffort:    "high",
+		AgentName:          "reviewer",
+		FrozenRolePrompt:   "Review carefully.",
+		FrozenTaskPrompt:   "Check the patch.",
+		FrozenToolNames:    []string{"read_file", "task_list"},
+		FrozenSkillNames:   []string{"review-skill"},
+		WorkingDir:         "/work",
+		LocalEnvPolicy:     "core_only",
+		ResultSchema:       map[string]any{"type": "object", "required": []any{"message"}},
+		ExplicitToolGrants: []string{"shell"},
+	}
+	if err := store.Append(Event{
+		Kind:             EventJobStarted,
+		JobID:            "job_1",
+		Type:             JobDelegate,
+		Task:             "inspect",
+		OwnerSessionID:   "owner_1",
+		VisibleToSession: "visible_1",
+		StartedAt:        &start,
+		TranscriptRef:    "local:child_1",
+		DelegateRestore:  desc,
+	}); err != nil {
+		t.Fatalf("append start: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	recs, err := reopened.Load()
+	if err != nil {
+		t.Fatalf("load reopened store: %v", err)
+	}
+	rec := recs["job_1"]
+	if rec == nil || rec.DelegateRestore == nil {
+		t.Fatalf("reopened record missing descriptor: %+v", rec)
+	}
+	got := rec.DelegateRestore
+	if got.ChildSessionID != desc.ChildSessionID ||
+		got.TranscriptRef != desc.TranscriptRef ||
+		got.ParentSessionID != desc.ParentSessionID ||
+		got.ParentJobID != desc.ParentJobID ||
+		got.OwnerSessionID != desc.OwnerSessionID ||
+		got.VisibleSessionID != desc.VisibleSessionID ||
+		got.OriginTurnID != desc.OriginTurnID ||
+		got.OriginToolCallID != desc.OriginToolCallID ||
+		got.RequestedModel != desc.RequestedModel ||
+		got.ResolvedProfileID != desc.ResolvedProfileID ||
+		got.ResolvedModel != desc.ResolvedModel ||
+		got.LocalEnvPolicy != desc.LocalEnvPolicy {
+		t.Fatalf("reopened descriptor = %+v, want %+v", got, desc)
+	}
+	if len(got.FrozenToolNames) != 2 || got.FrozenToolNames[0] != "read_file" || got.FrozenToolNames[1] != "task_list" {
+		t.Fatalf("frozen tool names = %+v", got.FrozenToolNames)
+	}
+	if len(got.ExplicitToolGrants) != 1 || got.ExplicitToolGrants[0] != "shell" {
+		t.Fatalf("explicit tool grants = %+v", got.ExplicitToolGrants)
+	}
+	schema, ok := got.ResultSchema.(map[string]any)
+	if !ok || schema["type"] != "object" {
+		t.Fatalf("result_schema = %#v", got.ResultSchema)
 	}
 }
 

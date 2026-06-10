@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/llm"
 )
 
@@ -167,6 +168,216 @@ func TestCreateDelegateStartupDoesNotLeaveUnreturnedRunningJob(t *testing.T) {
 	}
 
 	_, _ = sess.jobManager.stop(res.JobID)
+	waitForShellDone(t, sess.jobManager, res.JobID)
+}
+
+func TestCreateDelegateDescriptorDurableBeforeFirstModelRequest(t *testing.T) {
+	var (
+		sess                 *Session
+		recAtFirstModel      *jobstore.JobRecord
+		captureAtFirstModel  error
+		firstModelRequest    = make(chan struct{})
+		releaseModelResponse = make(chan struct{})
+		releaseOnce          sync.Once
+	)
+	defer releaseOnce.Do(func() { close(releaseModelResponse) })
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				recs, err := sess.jobManager.store.Load()
+				if err != nil {
+					captureAtFirstModel = err
+				}
+				for _, rec := range recs {
+					if rec.Type == jobstore.JobDelegate {
+						recAtFirstModel = rec
+						break
+					}
+				}
+				close(firstModelRequest)
+				<-releaseModelResponse
+				return communicateWithDefaultOutput("descriptor ready")
+			},
+		},
+	})
+	workDir := t.TempDir()
+	env := execenv.NewLocalExecutionEnvironment(workDir)
+	env.EnvPolicy = execenv.EnvPolicyCoreOnly
+	stateDir := t.TempDir()
+	var err error
+	sess, err = NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{
+		StateDir:         stateDir,
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+	sess.pluginAgents = map[string]plugin.Agent{
+		"reviewer": {
+			Name:         "reviewer",
+			Description:  "Reviews work",
+			Model:        "inherit",
+			Tools:        []string{"read_file"},
+			SystemPrompt: "Review carefully.",
+			PluginName:   "test-plugin",
+		},
+	}
+
+	origAppend := sess.jobManager.appendEvent
+	sess.jobManager.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventJobStarted && e.Type == jobstore.JobDelegate {
+			time.Sleep(250 * time.Millisecond)
+		}
+		return origAppend(e)
+	}
+
+	resultSchema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"message": map[string]any{"type": "string"},
+		},
+		"required": []string{"message"},
+	}
+	done := make(chan delegateResult, 1)
+	ctx := context.WithValue(context.Background(), ctxToolCallID, "call_delegate_descriptor")
+	go func() {
+		done <- sess.createDelegate(ctx, delegateArgs{
+			Task:            "inspect the patch",
+			AgentType:       "reviewer",
+			Model:           "gpt-5.3",
+			ReasoningEffort: "high",
+			Background:      true,
+			ResultSchema:    resultSchema,
+		})
+	}()
+
+	select {
+	case <-firstModelRequest:
+	case <-time.After(2 * time.Second):
+		t.Fatal("child model request did not start")
+	}
+	if captureAtFirstModel != nil {
+		t.Fatalf("load jobs at first model request: %v", captureAtFirstModel)
+	}
+	if recAtFirstModel == nil {
+		t.Fatal("delegate job record was not durable before first child model request")
+	}
+	desc := recAtFirstModel.DelegateRestore
+	if desc == nil {
+		t.Fatalf("delegate restore descriptor was not durable before first child model request: %+v", recAtFirstModel)
+	}
+	if desc.Version != 1 {
+		t.Fatalf("descriptor version = %d, want 1", desc.Version)
+	}
+	if recAtFirstModel.TranscriptRef == "" || desc.TranscriptRef != recAtFirstModel.TranscriptRef {
+		t.Fatalf("descriptor transcript_ref = %q, record transcript_ref = %q", desc.TranscriptRef, recAtFirstModel.TranscriptRef)
+	}
+	_, childID, err := decodeRef(recAtFirstModel.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode transcript ref: %v", err)
+	}
+	if desc.ChildSessionID != childID {
+		t.Fatalf("descriptor child_session_id = %q, want %q", desc.ChildSessionID, childID)
+	}
+	if desc.ParentSessionID != sess.ID() || desc.ParentJobID != recAtFirstModel.JobID {
+		t.Fatalf("descriptor parent ids = (%q, %q), want (%q, %q)", desc.ParentSessionID, desc.ParentJobID, sess.ID(), recAtFirstModel.JobID)
+	}
+	if desc.OwnerSessionID != sess.ID() || desc.VisibleSessionID != sess.ID() {
+		t.Fatalf("descriptor owner/visible = (%q, %q), want parent session %q", desc.OwnerSessionID, desc.VisibleSessionID, sess.ID())
+	}
+	if desc.OriginToolCallID != "call_delegate_descriptor" || desc.OriginTurnID != "" {
+		t.Fatalf("descriptor origin ids = (%q, %q), want tool call only", desc.OriginTurnID, desc.OriginToolCallID)
+	}
+	if desc.Task != "inspect the patch" || desc.AgentType != "reviewer" || desc.RequestedModel != "gpt-5.3" {
+		t.Fatalf("descriptor launch fields = task %q agent_type %q requested_model %q", desc.Task, desc.AgentType, desc.RequestedModel)
+	}
+	if desc.ResolvedProfileID != "openai" || desc.ResolvedModel != "gpt-5.3" {
+		t.Fatalf("descriptor resolved profile/model = %q/%q, want openai/gpt-5.3", desc.ResolvedProfileID, desc.ResolvedModel)
+	}
+	if desc.ReasoningEffort != "high" || desc.AgentName != "reviewer" {
+		t.Fatalf("descriptor reasoning/agent_name = %q/%q, want high/reviewer", desc.ReasoningEffort, desc.AgentName)
+	}
+	if desc.FrozenRolePrompt != "Review carefully." {
+		t.Fatalf("descriptor frozen role prompt = %q", desc.FrozenRolePrompt)
+	}
+	if !hasString(desc.FrozenToolNames, "read_file") || !hasString(desc.FrozenToolNames, "task_list") {
+		t.Fatalf("descriptor frozen tool names = %+v, want read_file and task_list", desc.FrozenToolNames)
+	}
+	if desc.WorkingDir != workDir || desc.LocalEnvPolicy != "core_only" {
+		t.Fatalf("descriptor env = %q/%q, want %q/core_only", desc.WorkingDir, desc.LocalEnvPolicy, workDir)
+	}
+	schema, ok := desc.ResultSchema.(map[string]any)
+	if !ok || schema["type"] != "object" {
+		t.Fatalf("descriptor result_schema = %#v, want object schema", desc.ResultSchema)
+	}
+	if len(desc.ExplicitToolGrants) != 0 || len(desc.FrozenSkillNames) != 0 || desc.FrozenTaskPrompt != "" {
+		t.Fatalf("descriptor optional fields must be empty when omitted: grants=%v skills=%v task_prompt=%q", desc.ExplicitToolGrants, desc.FrozenSkillNames, desc.FrozenTaskPrompt)
+	}
+
+	releaseOnce.Do(func() { close(releaseModelResponse) })
+	var res delegateResult
+	select {
+	case res = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("createDelegate did not return")
+	}
+	if res.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", res.Err)
+	}
+	_, _ = sess.jobManager.stop(res.JobID)
+	waitForShellDone(t, sess.jobManager, res.JobID)
+
+	reopened, err := newJobManager(stateDir, sess.ID(), func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("reopen job manager: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.store.Close() })
+	reopenedRec := loadShellRecord(t, reopened, res.JobID)
+	if reopenedRec.DelegateRestore == nil || reopenedRec.DelegateRestore.ChildSessionID != childID {
+		t.Fatalf("reopened descriptor = %+v, want child %q", reopenedRec.DelegateRestore, childID)
+	}
+}
+
+func TestCreateDelegateDescriptorOmitsOptionalLaunchDefaults(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				<-release
+				return communicateWithDefaultOutput("done")
+			},
+		},
+	})
+	sess := newDelegateTestSession(t, c)
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+
+	res := sess.createDelegate(context.Background(), delegateArgs{
+		Task:       "use defaults",
+		Background: true,
+	})
+	if res.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", res.Err)
+	}
+	rec := loadShellRecord(t, sess.jobManager, res.JobID)
+	if rec.DelegateRestore == nil {
+		t.Fatalf("missing delegate descriptor: %+v", rec)
+	}
+	desc := rec.DelegateRestore
+	if desc.AgentType != "" || desc.RequestedModel != "" || desc.ReasoningEffort != "" {
+		t.Fatalf("optional launch settings = agent_type %q requested_model %q reasoning %q, want empty", desc.AgentType, desc.RequestedModel, desc.ReasoningEffort)
+	}
+	if len(desc.ExplicitToolGrants) != 0 || len(desc.FrozenSkillNames) != 0 || desc.FrozenTaskPrompt != "" {
+		t.Fatalf("optional descriptor fields = grants %v skills %v task_prompt %q, want empty", desc.ExplicitToolGrants, desc.FrozenSkillNames, desc.FrozenTaskPrompt)
+	}
+
+	releaseOnce.Do(func() { close(release) })
 	waitForShellDone(t, sess.jobManager, res.JobID)
 }
 

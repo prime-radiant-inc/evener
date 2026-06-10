@@ -103,25 +103,25 @@ func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegat
 
 	jobID := jobstore.NewJobID()
 	ctx = context.WithValue(ctx, ctxParentJobID, jobID)
-	spawned, err := s.spawnAgent(ctx, task, args.Model, "", 0, args.AgentType, args.ReasoningEffort, nil, nil)
+	prepared, err := s.prepareSubagentRun(ctx, task, args.Model, "", 0, args.AgentType, args.ReasoningEffort, nil, nil)
 	if err != nil {
 		return delegateStartFailed(err)
 	}
-	childID, err := parseSpawnedAgentID(spawned)
+	childID := prepared.sub.id
+	sub := prepared.sub
+	run, err := s.attachDelegateJobWithPrepared(jm, childID, task, sub, jobID, args.ResultSchema, false, prepared)
 	if err != nil {
+		prepared.runCancel()
+		sub.sess.Close()
 		return delegateStartFailed(err)
 	}
-
-	sub := s.subagents.get(childID)
-	if sub == nil {
-		return delegateStartFailed(fmt.Errorf("spawned agent %q is not tracked", childID))
-	}
-
-	run, finalizeErr, done, err := s.attachAndBridgeDelegateJob(jm, childID, task, sub, jobID, args.ResultSchema)
-	if err != nil {
-		cancelDelegateChild(s, childID)
+	if err := s.trackAndLaunchPreparedSubagent(prepared); err != nil {
+		prepared.runCancel()
+		sub.sess.Close()
+		_ = jm.finalize(run.rec.JobID, jobstore.StatusFailed, "start_failed", nil)
 		return delegateStartFailed(err)
 	}
+	finalizeErr, done := s.bridgeDelegateFinalization(run.rec.JobID, childID, sub)
 
 	if args.Background {
 		return delegateResult{
@@ -644,12 +644,20 @@ func (s *Session) attachAndBridgeDelegateJob(jm *jobManager, childID, task strin
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	finalizeErr, bridgedDone := s.bridgeDelegateFinalization(run.rec.JobID, childID, sub)
+	return run, finalizeErr, bridgedDone, nil
+}
+
+func (s *Session) bridgeDelegateFinalization(jobID, childID string, sub *subagent) (<-chan error, <-chan struct{}) {
+	sub.mu.Lock()
+	done := sub.done
+	sub.mu.Unlock()
 	finalizeErr := make(chan error, 1)
 	go func() {
 		<-done
-		finalizeErr <- s.finalizeDelegate(run.rec.JobID, childID, sub)
+		finalizeErr <- s.finalizeDelegate(jobID, childID, sub)
 	}()
-	return run, finalizeErr, done, nil
+	return finalizeErr, done
 }
 
 func (s *Session) attachDelegateJob(jm *jobManager, childID, task string, sub *subagent) (*runningJob, error) {
@@ -661,6 +669,10 @@ func (s *Session) attachDelegateJobFromWatch(jm *jobManager, childID, task strin
 }
 
 func (s *Session) attachDelegateJobWithID(jm *jobManager, childID, task string, sub *subagent, jobID string, resultSchema any, fromWatch bool) (*runningJob, error) {
+	return s.attachDelegateJobWithPrepared(jm, childID, task, sub, jobID, resultSchema, fromWatch, nil)
+}
+
+func (s *Session) attachDelegateJobWithPrepared(jm *jobManager, childID, task string, sub *subagent, jobID string, resultSchema any, fromWatch bool, prepared *preparedSubagentRun) (*runningJob, error) {
 	startedAt := jm.now()
 	transcriptRef := encodeRef("", childID)
 	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
@@ -668,6 +680,7 @@ func (s *Session) attachDelegateJobWithID(jm *jobManager, childID, task string, 
 	if err != nil {
 		return nil, err
 	}
+	restore := s.delegateRestoreDescriptor(jobID, childID, task, transcriptRef, resultSchema, prepared)
 	run := &runningJob{
 		rec: &jobstore.JobRecord{
 			JobID:            jobID,
@@ -677,15 +690,9 @@ func (s *Session) attachDelegateJobWithID(jm *jobManager, childID, task string, 
 			OwnerSessionID:   s.id,
 			VisibleToSession: s.id,
 			TranscriptRef:    transcriptRef,
-			DelegateRestore: &jobstore.DelegateRestoreDescriptor{
-				Version:        1,
-				ChildSessionID: childID,
-				TranscriptRef:  transcriptRef,
-				Task:           task,
-				ResultSchema:   cloneDelegateResultSchema(resultSchema),
-			},
-			StartedAt:  startedAt,
-			OutputPath: outputPath,
+			DelegateRestore:  restore,
+			StartedAt:        startedAt,
+			OutputPath:       outputPath,
 		},
 		output:         output,
 		signal:         func() { cancelDelegateSub(sub) },
@@ -724,6 +731,52 @@ func (s *Session) attachDelegateJobWithID(jm *jobManager, childID, task string, 
 	jm.mu.Unlock()
 	jm.emitJobStarted(started, run)
 	return run, nil
+}
+
+func (s *Session) delegateRestoreDescriptor(jobID, childID, task, transcriptRef string, resultSchema any, prepared *preparedSubagentRun) *jobstore.DelegateRestoreDescriptor {
+	desc := &jobstore.DelegateRestoreDescriptor{
+		Version:          1,
+		ChildSessionID:   childID,
+		TranscriptRef:    transcriptRef,
+		ParentSessionID:  s.id,
+		ParentJobID:      jobID,
+		OwnerSessionID:   s.id,
+		VisibleSessionID: s.id,
+		Task:             task,
+		ResultSchema:     cloneDelegateResultSchema(resultSchema),
+	}
+	if prepared == nil {
+		if sub := s.subagents.get(childID); sub != nil && sub.sess != nil {
+			profile := sub.sess.currentProfile()
+			desc.ResolvedProfileID = profile.ID()
+			desc.ResolvedModel = profile.Model()
+		}
+		return desc
+	}
+	desc.ParentSessionID = prepared.parentSessionID
+	desc.ParentJobID = prepared.parentJobID
+	desc.OriginToolCallID = prepared.originToolCallID
+	desc.Task = prepared.task
+	desc.AgentType = prepared.agentType
+	desc.RequestedModel = prepared.requestedModel
+	desc.ReasoningEffort = prepared.reasoningEffort
+	desc.AgentName = prepared.resolvedAgentName
+	desc.FrozenRolePrompt = prepared.frozenRolePrompt
+	desc.FrozenTaskPrompt = prepared.frozenTaskPrompt
+	desc.FrozenToolNames = append([]string(nil), prepared.frozenToolNames...)
+	desc.FrozenSkillNames = append([]string(nil), prepared.frozenSkillNames...)
+	desc.WorkingDir = prepared.workingDir
+	desc.LocalEnvPolicy = prepared.localEnvPolicy
+	desc.ExplicitToolGrants = append([]string(nil), prepared.explicitToolGrants...)
+	if prepared.resultSchema != nil {
+		desc.ResultSchema = cloneDelegateResultSchema(prepared.resultSchema)
+	}
+	if prepared.sub != nil && prepared.sub.sess != nil {
+		profile := prepared.sub.sess.currentProfile()
+		desc.ResolvedProfileID = profile.ID()
+		desc.ResolvedModel = profile.Model()
+	}
+	return desc
 }
 
 func cancelDelegateChild(s *Session, childID string) {
