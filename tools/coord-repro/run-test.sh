@@ -8,7 +8,7 @@
 #   OPENAI_API_KEY=... ./run-test.sh [label] [coordinator.md-path]
 #
 # The binary is built fresh from the current source tree. If coordinator.md-path
-# is given, it replaces agent/bundled_plugins/workflow/agents/coordinator.md before building.
+# is given, it replaces the bundled coordinator.md before building.
 #
 # Output: DELEGATE or BYPASS + details
 set -euo pipefail
@@ -17,6 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 LABEL="${1:-test}"
 COORD_MD="${2:-}"
+COORDINATOR_PATH="$REPO_ROOT/agent/bundled_plugins/coordinator-workflow/agents/coordinator.md"
 
 WORKDIR="/tmp/coord-repro-work-${LABEL}"
 STATEDIR="/tmp/coord-repro-state-${LABEL}"
@@ -32,8 +33,8 @@ python3 "$SCRIPT_DIR/generate-board.py" "$WORKDIR/chess_board.png"
 ORIG_COORD=""
 if [ -n "$COORD_MD" ]; then
   ORIG_COORD=$(mktemp)
-  cp "$REPO_ROOT/agent/bundled_plugins/workflow/agents/coordinator.md" "$ORIG_COORD"
-  cp "$COORD_MD" "$REPO_ROOT/agent/bundled_plugins/workflow/agents/coordinator.md"
+  cp "$COORDINATOR_PATH" "$ORIG_COORD"
+  cp "$COORD_MD" "$COORDINATOR_PATH"
 fi
 
 cd "$REPO_ROOT"
@@ -42,7 +43,7 @@ go build -o "/tmp/serf-coord-repro-${LABEL}" ./cmd/serf/ 2>&1
 
 # Restore original coordinator.md if we swapped it
 if [ -n "$ORIG_COORD" ]; then
-  cp "$ORIG_COORD" "$REPO_ROOT/agent/bundled_plugins/workflow/agents/coordinator.md"
+  cp "$ORIG_COORD" "$COORDINATOR_PATH"
   rm -f "$ORIG_COORD"
 fi
 
