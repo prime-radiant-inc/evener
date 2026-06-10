@@ -629,8 +629,14 @@ func TestSubagentTimestamps_ResetOnResume(t *testing.T) {
 // TestSubagentCannotCallRootOnlyControlTools asserts depth>0 subagents keep
 // job_send_message for aliases while root-only controls stay unavailable.
 func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
-	if !isRootOnlyAgentManagementTool("cancel_agent") {
-		t.Fatal("cancel_agent must be a root-only agent-management tool")
+	if !isRootOnlyAgentManagementTool("delegate") {
+		t.Fatal("delegate must be a root-only agent-management tool")
+	}
+	if !isRootOnlyAgentManagementTool("job_watch") {
+		t.Fatal("job_watch must be a root-only agent-management tool")
+	}
+	if isRootOnlyAgentManagementTool("job_send_message") {
+		t.Fatal("job_send_message must not be a root-only agent-management tool")
 	}
 	if !isRootOnlySubagentTool("delegate") {
 		t.Fatal("delegate must be a root-only subagent tool")
@@ -650,9 +656,6 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	}
 	defer child.Close()
 
-	if child.reg.Get("cancel_agent") != nil {
-		t.Fatal("depth>0 child must not have cancel_agent registered")
-	}
 	if child.reg.Get("delegate") != nil {
 		t.Fatal("depth>0 child must not have delegate registered")
 	}
@@ -662,15 +665,28 @@ func TestSubagentCannotCallRootOnlyControlTools(t *testing.T) {
 	if child.reg.Get("job_send_message") == nil {
 		t.Fatal("depth>0 child must keep job_send_message registered")
 	}
-	if hasCachedToolDefinition(child, "job_watch") {
+	for _, name := range []string{"shell", "job_read_output", "job_list", "job_stop"} {
+		if child.reg.Get(name) == nil {
+			t.Fatalf("depth>0 child must keep %s registered", name)
+		}
+	}
+	if hasCachedCallableToolDefinition(child, "job_watch") {
 		t.Fatal("depth>0 child must not advertise job_watch")
 	}
-	if !hasCachedToolDefinition(child, "job_send_message") {
+	if !hasCachedCallableToolDefinition(child, "job_send_message") {
 		t.Fatal("depth>0 child must advertise job_send_message")
+	}
+	for _, name := range []string{"shell", "job_read_output", "job_list", "job_stop"} {
+		if !hasCachedCallableToolDefinition(child, name) {
+			t.Fatalf("depth>0 child must advertise %s", name)
+		}
 	}
 }
 
-func hasCachedToolDefinition(s *Session, name string) bool {
+func hasCachedCallableToolDefinition(s *Session, name string) bool {
+	if mappedName := s.profile.ToolNameMap()[name]; mappedName != "" {
+		name = mappedName
+	}
 	for _, def := range s.cachedToolDefs {
 		if def.Name == name {
 			return true

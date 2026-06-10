@@ -4903,7 +4903,7 @@ func TestSession_Subagent_DoesNotGetParentDelegationPrompt(t *testing.T) {
 		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":2000}`, agentID)),
 	})
 
-	// Verify the subagent's LLM request does NOT include delegation tools.
+	// Verify the subagent's LLM request does NOT include root-only job-control tools.
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if len(f.requests) == 0 {
@@ -4912,12 +4912,12 @@ func TestSession_Subagent_DoesNotGetParentDelegationPrompt(t *testing.T) {
 	// The subagent's request is the LAST one (after the parent's spawn_agent turn).
 	subReq := f.requests[len(f.requests)-1]
 
-	// Check API-level tool definitions — spawn_agent should NOT be callable.
+	// Check API-level tool definitions — root-only job-control tools should NOT be callable.
 	toolNames := make(map[string]bool)
 	for _, td := range subReq.Tools {
 		toolNames[td.Name] = true
 	}
-	for _, forbidden := range []string{"spawn_agent", "resume_agent", "wait", "close_agent"} {
+	for _, forbidden := range []string{"delegate", "job_watch"} {
 		if toolNames[forbidden] {
 			t.Errorf("subagent should not have %q in its API tool list", forbidden)
 		}

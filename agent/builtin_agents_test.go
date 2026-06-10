@@ -1020,7 +1020,7 @@ func TestSpawnAgent_AllToolsAgentStripsAgentManagementTools(t *testing.T) {
 	}
 }
 
-func TestSpawnAgent_GrantTools_RejectsRootOnlyManagementTool(t *testing.T) {
+func TestSpawnAgent_GrantTools_RejectsRootOnlyTool(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -1044,7 +1044,7 @@ func TestSpawnAgent_GrantTools_RejectsRootOnlyManagementTool(t *testing.T) {
 	res := sess.reg.ExecuteCall(ctx, sess.env, llm.ToolCallData{
 		ID:        "c-grant",
 		Name:      "spawn_agent",
-		Arguments: json.RawMessage(`{"task":"help with follow-up work","grant_tools":["wait"]}`),
+		Arguments: json.RawMessage(`{"task":"help with follow-up work","grant_tools":["delegate"]}`),
 	})
 	if !res.IsError {
 		t.Fatalf("expected root-only grant rejection, got %s", res.Output)
