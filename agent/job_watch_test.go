@@ -463,6 +463,54 @@ func TestWatchSendDeliversFrameToTarget(t *testing.T) {
 	}
 }
 
+func TestWatchSendBatchContinuesAfterNonTerminalPersistenceFailure(t *testing.T) {
+	jm := newTestJM(t)
+	var sent []sendMessageArgs
+	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{}
+	}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs_a", Message: "observe a", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure first watch: %v", err)
+	}
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs_b", Message: "observe b", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure second watch: %v", err)
+	}
+	realAppend := jm.appendEvent
+	appendErr := errors.New("pending append failed")
+	var failedTarget string
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventWatchSendPending &&
+			e.WatchSend != nil &&
+			failedTarget == "" {
+			failedTarget = e.WatchSend.Key.ResolvedSendTo
+			return appendErr
+		}
+		return realAppend(e)
+	}
+
+	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+
+	if failedTarget == "" {
+		t.Fatal("test did not intercept pending append")
+	}
+	if len(sent) != 1 || sent[0].Target == failedTarget {
+		t.Fatalf("sent after partial batch failure = %+v, failed target %q; want only later independent target", sent, failedTarget)
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("pending after non-terminal partial failure = %+v, want none for delivered unrelated send", pending)
+	}
+}
+
 func TestWatchSendBusyKeepsPendingAndEmitsNoDiagnostic(t *testing.T) {
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
@@ -545,6 +593,77 @@ func TestWatchSendRetryAfterIdleDeliversLatestCoalescedFrame(t *testing.T) {
 	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
 		t.Fatalf("pending after retry = %+v, want none", pending)
 	}
+}
+
+func TestWatchSendRetryAfterResumedDelegateFinishesRetriesOriginalTarget(t *testing.T) {
+	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess := newDelegateTestSession(t, c)
+
+	first := sess.createDelegate(context.Background(), delegateArgs{
+		Task:           "finish first",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	if first.Status != jobstore.StatusCompleted {
+		t.Fatalf("first delegate = %+v, want completed", first)
+	}
+	second := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:  first.JobID,
+		Message: "resume and block",
+	})
+	if second.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", second.Err)
+	}
+	if second.Action != "resumed" || second.JobID == "" || second.JobID == first.JobID {
+		t.Fatalf("second result = %+v, want resumed running delegate", second)
+	}
+	select {
+	case <-adapter.secondStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("resumed delegate did not start")
+	}
+
+	source, _ := sess.jobManager.createShell(createShellOpts{Command: "x"})
+	if _, err := sess.jobManager.configureWatch(watchArgs{
+		Target:      source.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: first.JobID, Message: "observe original target", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure watch: %v", err)
+	}
+	sess.jobManager.feedJobOutput(source.JobID, []byte("server ready\n"))
+	pending := loadWatchSendRecord(t, sess.jobManager).Pending
+	if len(pending) != 1 {
+		t.Fatalf("pending while resumed delegate is busy = %+v, want one", pending)
+	}
+	for _, state := range pending {
+		if state.Key.ResolvedSendTo != first.JobID {
+			t.Fatalf("pending send target = %q, want original job %q", state.Key.ResolvedSendTo, first.JobID)
+		}
+	}
+
+	_, _ = sess.jobManager.stop(second.JobID)
+	waitForShellDone(t, sess.jobManager, second.JobID)
+
+	if pending := loadWatchSendRecord(t, sess.jobManager).Pending; len(pending) != 0 {
+		t.Fatalf("pending after resumed delegate finished = %+v, want retried by original target", pending)
+	}
+	var retried *jobstore.JobRecord
+	for _, rec := range sess.jobManager.list(listFilter{Type: jobstore.JobDelegate}) {
+		if rec.JobID != first.JobID && rec.JobID != second.JobID && rec.TranscriptRef == first.TranscriptRef {
+			retried = rec
+		}
+	}
+	if retried == nil {
+		t.Fatalf("missing retry-created delegate job for original target %s", first.JobID)
+	}
+	_, _ = sess.jobManager.stop(retried.JobID)
+	waitForShellDone(t, sess.jobManager, retried.JobID)
 }
 
 func TestWatchSendDeliveredAppendedOnlyAfterSendSucceeds(t *testing.T) {
@@ -1187,6 +1306,86 @@ func TestWatchSendTerminalPendingPersistenceFailureRetriesFinalization(t *testin
 	jobs = jm.list(listFilter{})
 	if len(jobs) != 1 || jobs[0].NotifyState != jobstore.NotifyPending {
 		t.Fatalf("job state after retry finalization = %+v, want notification pending", jobs)
+	}
+}
+
+func TestWatchSendTerminalFlushBatchContinuesAfterPersistenceFailure(t *testing.T) {
+	jm := newTestJM(t)
+	var sent []sendMessageArgs
+	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{}
+	}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs_a", Message: "observe a", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure first watch: %v", err)
+	}
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs_b", Message: "observe b", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure second watch: %v", err)
+	}
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("server ready")); err != nil {
+		t.Fatalf("append output: %v", err)
+	}
+	appendErr := errors.New("pending append failed")
+	realAppend := jm.appendEvent
+	blockFirst := true
+	var failedTarget string
+	jm.appendEvent = func(e jobstore.Event) error {
+		if blockFirst &&
+			e.Kind == jobstore.EventWatchSendPending &&
+			e.WatchSend != nil &&
+			failedTarget == "" {
+			failedTarget = e.WatchSend.Key.ResolvedSendTo
+			return appendErr
+		}
+		return realAppend(e)
+	}
+
+	code := 0
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); !errors.Is(err, appendErr) {
+		t.Fatalf("finalize err = %v, want pending append failure", err)
+	}
+	if failedTarget == "" {
+		t.Fatal("test did not intercept pending append")
+	}
+	if len(sent) != 1 || sent[0].Target == failedTarget {
+		t.Fatalf("sent after failed terminal batch = %+v, failed target %q; want later independent target", sent, failedTarget)
+	}
+	jm.mu.Lock()
+	var retainedFirst bool
+	for cfg := range jm.terminalFlush {
+		for _, state := range cfg.pending {
+			if state.Key.ResolvedSendTo == failedTarget {
+				retainedFirst = true
+			}
+		}
+	}
+	jm.mu.Unlock()
+	if !retainedFirst {
+		t.Fatal("failed terminal delivery was not retained for finalization retry")
+	}
+	jobs := jm.list(listFilter{})
+	if len(jobs) != 1 || jobs[0].NotifyState != "" && jobs[0].NotifyState != jobstore.NotifyNotArmed {
+		t.Fatalf("job state after partial terminal failure = %+v, want terminal notification not armed", jobs)
+	}
+
+	blockFirst = false
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("retry finalize: %v", err)
+	}
+	if len(sent) != 2 {
+		t.Fatalf("sent after retry = %+v, want failed delivery retried once", sent)
+	}
+	if sent[1].Target != failedTarget {
+		t.Fatalf("retry sent target = %q, want failed target %q", sent[1].Target, failedTarget)
 	}
 }
 

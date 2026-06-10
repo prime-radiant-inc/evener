@@ -779,7 +779,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 	if err := jm.retryPendingWatchSendsForWatchTarget(context.Background(), run.rec.JobID); err != nil {
 		return err
 	}
-	if err := jm.retryPendingWatchSendsForTarget(context.Background(), run.rec.JobID); err != nil {
+	if err := jm.retryPendingWatchSendsForRunTarget(context.Background(), run.rec); err != nil {
 		return err
 	}
 

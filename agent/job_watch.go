@@ -930,12 +930,13 @@ func watchNotification(jobID, reason string) jobNotification {
 }
 
 func (jm *jobManager) deliverWatchSends(ctx context.Context, deliveries []watchSendDelivery) error {
+	var errs []error
 	for _, d := range deliveries {
 		if err := jm.deliverWatchSend(ctx, d); err != nil {
-			return err
+			errs = append(errs, err)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (jm *jobManager) snapshotWatchSendFrames(deliveries []watchSendDelivery) []watchSendDelivery {
@@ -1594,8 +1595,34 @@ type pendingWatchSendDelivery struct {
 }
 
 func (jm *jobManager) retryPendingWatchSendsForTarget(ctx context.Context, target string) error {
+	return jm.retryPendingWatchSendsForTargets(ctx, map[string]bool{target: true})
+}
+
+func (jm *jobManager) retryPendingWatchSendsForRunTarget(ctx context.Context, rec *jobstore.JobRecord) error {
+	if rec == nil {
+		return nil
+	}
+	targets := map[string]bool{rec.JobID: true}
+	if rec.Type == jobstore.JobDelegate && strings.TrimSpace(rec.TranscriptRef) != "" {
+		jobs, err := jm.listWithError(listFilter{Type: jobstore.JobDelegate})
+		if err != nil {
+			return err
+		}
+		for _, candidate := range jobs {
+			if candidate.JobID == rec.JobID ||
+				candidate.TranscriptRef != rec.TranscriptRef ||
+				!candidate.Status.IsTerminal() {
+				continue
+			}
+			targets[candidate.JobID] = true
+		}
+	}
+	return jm.retryPendingWatchSendsForTargets(ctx, targets)
+}
+
+func (jm *jobManager) retryPendingWatchSendsForTargets(ctx context.Context, targets map[string]bool) error {
 	deliveries := jm.pendingWatchSendDeliveries(func(state *jobstore.WatchSendState) bool {
-		return state.Key.ResolvedSendTo == target
+		return targets[state.Key.ResolvedSendTo]
 	})
 	return jm.retryPendingWatchSendDeliveries(ctx, deliveries)
 }
@@ -1661,12 +1688,13 @@ func (s *Session) classifyRestoredWatchSendTarget(target string) (watchSendDeliv
 }
 
 func (jm *jobManager) retryPendingWatchSendDeliveries(ctx context.Context, deliveries []pendingWatchSendDelivery) error {
+	var errs []error
 	for _, delivery := range deliveries {
 		if err := jm.deliverPendingWatchSend(ctx, delivery.cfg, delivery.state, true); err != nil {
-			return err
+			errs = append(errs, err)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func (jm *jobManager) pendingWatchSendDeliveries(include func(*jobstore.WatchSendState) bool) []pendingWatchSendDelivery {
