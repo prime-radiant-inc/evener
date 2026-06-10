@@ -182,14 +182,14 @@ func TestEventWatchIgnoresWatchOriginatedSubagentEvents(t *testing.T) {
 		t.Fatalf("configure: %v", err)
 	}
 
-	jm.onSessionEvent(events.EventSubagentEnd, events.SubagentEndData{AgentID: "obs", Status: "completed", FromWatch: true})
+	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_obs", JobType: "delegate", Status: "completed", FromWatch: true})
 	if len(sent) != 0 {
-		t.Fatalf("watch-originated subagent event retriggered watch send: %#v", sent)
+		t.Fatalf("watch-originated job event retriggered watch send: %#v", sent)
 	}
 
-	jm.onSessionEvent(events.EventSubagentEnd, events.SubagentEndData{AgentID: "worker", Status: "completed"})
+	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_worker", JobType: "delegate", Status: "completed"})
 	if len(sent) != 1 {
-		t.Fatalf("ordinary subagent event must trigger one watch send, got %d", len(sent))
+		t.Fatalf("ordinary job event must trigger one watch send, got %d", len(sent))
 	}
 }
 

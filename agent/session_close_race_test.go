@@ -12,7 +12,7 @@ import (
 )
 
 // TestSession_Close_NoRaceWithSubagentEmit reproduces PRI-1939: a subagent's run
-// goroutine emits EventSubagentEnd through the parent's emit() at the same moment
+// goroutine emits a job event through the parent's emit() at the same moment
 // Close() closes the events channel. Run under the race detector; before the fix
 // this trips a DATA RACE between the chansend in (*Session).emit and the
 // close(s.events) in (*Session).Close. After the fix Close() joins the subagent
@@ -42,7 +42,7 @@ func TestSession_Close_NoRaceWithSubagentEmit(t *testing.T) {
 			sess.Close()
 			t.Fatalf("spawn_agent error: %s", spawnRes.Output)
 		}
-		// Close immediately, racing the subagent's EventSubagentEnd emit.
+		// Close immediately, racing the subagent's detached event emission.
 		sess.Close()
 	}
 }

@@ -122,8 +122,8 @@ func TestSubagentManager_DrainForCloseReturnsAllAndClears(t *testing.T) {
 func TestSubagentManager_EmitClosureIsCaptured(t *testing.T) {
 	fe := &fakeEmit{}
 	m := newSubagentManager(fe.emit, nil)
-	m.emit(events.EventSubagentStart, nil)
-	m.emit(events.EventSubagentEnd, nil)
+	m.emit(events.EventJobStarted, nil)
+	m.emit(events.EventJobFinished, nil)
 	if got := fe.count(); got != 2 {
 		t.Fatalf("captured emit forwarded %d events, want 2", got)
 	}

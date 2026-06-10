@@ -240,8 +240,8 @@ func TestSessionEvent_ToStreamEvent_AgentOnlyEvent_ReturnsNil(t *testing.T) {
 		events.EventContextCompaction,
 		events.EventWarning,
 		events.EventError,
-		events.EventSubagentStart,
-		events.EventSubagentEnd,
+		events.EventJobStarted,
+		events.EventJobFinished,
 		events.EventUserInput,
 		events.EventToolCallOutputDelta,
 	}

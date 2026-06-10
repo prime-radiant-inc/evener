@@ -104,6 +104,12 @@ func TestHookEndData_NonZeroExitCode(t *testing.T) {
 
 func TestEventKindConstants(t *testing.T) {
 	// Verify the new event kinds have the expected string values.
+	if events.EventJobStarted != "JOB_STARTED" {
+		t.Errorf("EventJobStarted = %q, want %q", events.EventJobStarted, "JOB_STARTED")
+	}
+	if events.EventJobFinished != "JOB_FINISHED" {
+		t.Errorf("EventJobFinished = %q, want %q", events.EventJobFinished, "JOB_FINISHED")
+	}
 	if events.EventHookStart != "HOOK_START" {
 		t.Errorf("EventHookStart = %q, want %q", events.EventHookStart, "HOOK_START")
 	}

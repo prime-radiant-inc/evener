@@ -123,6 +123,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	jm.forward = cfg.spawn.forwardJobEvent
 	jm.parentJobID = cfg.spawn.parentJobID
 	jm.send = s.sendDelegateMessage
+	jm.emit = s.emit
 	s.jobManager = jm
 
 	promptSources, err := s.initSessionState(cfg.SessionStartKind)
@@ -319,6 +320,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	jm.enqueue = s.enqueueJobNotificationAndNotify
 	jm.send = s.sendDelegateMessage
+	jm.emit = s.emit
 	if err := jm.armPendingTerminalNotifications(); err != nil {
 		return nil, fmt.Errorf("job notifications: %w", err)
 	}

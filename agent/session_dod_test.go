@@ -4507,12 +4507,12 @@ func TestSession_SubagentEndEvent_EmittedOnce(t *testing.T) {
 
 	endCount := 0
 	for _, ev := range evs {
-		if ev.Kind == events.EventSubagentEnd {
+		if ev.Kind == events.EventJobFinished {
 			endCount++
 		}
 	}
 	if endCount != 1 {
-		t.Fatalf("expected exactly 1 SUBAGENT_END event, got %d", endCount)
+		t.Fatalf("expected exactly 1 JOB_FINISHED event, got %d", endCount)
 	}
 }
 

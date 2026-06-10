@@ -52,8 +52,8 @@ func (ContextCompactionData) eventKind() EventKind   { return EventContextCompac
 func (CompactionTurnData) eventKind() EventKind      { return EventCompactionTurn }
 func (WarningData) eventKind() EventKind             { return EventWarning }
 func (ErrorData) eventKind() EventKind               { return EventError }
-func (SubagentStartData) eventKind() EventKind       { return EventSubagentStart }
-func (SubagentEndData) eventKind() EventKind         { return EventSubagentEnd }
+func (JobStartedData) eventKind() EventKind          { return EventJobStarted }
+func (JobFinishedData) eventKind() EventKind         { return EventJobFinished }
 func (PluginLoadedData) eventKind() EventKind        { return EventPluginLoaded }
 func (HookStartData) eventKind() EventKind           { return EventHookStart }
 func (HookEndData) eventKind() EventKind             { return EventHookEnd }
@@ -85,8 +85,8 @@ var (
 	_ EventData = CompactionTurnData{}
 	_ EventData = WarningData{}
 	_ EventData = ErrorData{}
-	_ EventData = SubagentStartData{}
-	_ EventData = SubagentEndData{}
+	_ EventData = JobStartedData{}
+	_ EventData = JobFinishedData{}
 	_ EventData = PluginLoadedData{}
 	_ EventData = HookStartData{}
 	_ EventData = HookEndData{}

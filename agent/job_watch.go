@@ -29,7 +29,7 @@ func availableEventKindNames() []string { return append([]string(nil), WatchEven
 var modelEventKinds = map[string]events.EventKind{
 	WatchEventKindNames[0]: events.EventAssistantTextEnd,
 	WatchEventKindNames[1]: events.EventToolCallEnd,
-	WatchEventKindNames[3]: events.EventSubagentEnd, // job lifecycle; repointed to the job event in Phase 6
+	WatchEventKindNames[3]: events.EventJobFinished,
 	WatchEventKindNames[2]: events.EventCommunicate,
 }
 
@@ -424,9 +424,9 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 
 func isWatchOriginEventData(data events.EventData) bool {
 	switch d := data.(type) {
-	case events.SubagentStartData:
+	case events.JobStartedData:
 		return d.FromWatch
-	case events.SubagentEndData:
+	case events.JobFinishedData:
 		return d.FromWatch
 	default:
 		return false

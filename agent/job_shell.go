@@ -431,6 +431,7 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 		run.durableStarted = true
 	}
 	jm.mu.Unlock()
+	jm.emitJobStarted(started)
 	return nil
 }
 

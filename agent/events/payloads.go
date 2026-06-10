@@ -190,20 +190,24 @@ type ErrorCause struct {
 	Status   int    `json:"status,omitempty"`
 }
 
-// SubagentStartData is the payload for an EventSubagentStart event.
-type SubagentStartData struct {
-	AgentID   string `json:"agent_id"`
-	Task      string `json:"task"`
+// JobStartedData is the payload for an EventJobStarted event.
+type JobStartedData struct {
+	JobID     string `json:"job_id"`
+	JobType   string `json:"job_type"`
+	Status    string `json:"status"`
 	FromWatch bool   `json:"from_watch,omitempty"`
 }
 
-// SubagentEndData is the payload for an EventSubagentEnd event. Status carries the
-// run outcome (completed|failed|cancelled).
-type SubagentEndData struct {
-	AgentID   string `json:"agent_id"`
-	Status    string `json:"status"`
-	TurnsUsed int    `json:"turns_used"`
-	FromWatch bool   `json:"from_watch,omitempty"`
+// JobFinishedData is the payload for an EventJobFinished event.
+type JobFinishedData struct {
+	JobID         string `json:"job_id"`
+	JobType       string `json:"job_type"`
+	Status        string `json:"status"`
+	Reason        string `json:"reason"`
+	ExitCode      *int   `json:"exit_code,omitempty"`
+	OutputBytes   int64  `json:"output_bytes"`
+	TranscriptRef string `json:"transcript_ref,omitempty"`
+	FromWatch     bool   `json:"from_watch,omitempty"`
 }
 
 // PluginLoadedData is the payload for an EventPluginLoaded event.

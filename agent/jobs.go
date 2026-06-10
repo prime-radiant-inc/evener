@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
 
@@ -31,6 +32,7 @@ type jobManager struct {
 	watches       map[watchKey]*watchConfig
 	closing       bool
 	appendEvent   func(jobstore.Event) error
+	emit          func(events.EventKind, events.EventData)
 	forward       func(jobstore.Event)
 	parentJobID   string
 	enqueue       func(jobNotification)
@@ -52,6 +54,7 @@ type runningJob struct {
 	delegateOutputAppended bool
 	delegateOutputWritten  int
 	afterDurableFinish     func()
+	fromWatch              bool
 }
 
 type finalizeAttempt struct {
@@ -269,6 +272,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 	jm.forwardLocked(started)
 	jm.running[jobID] = run
 	jm.mu.Unlock()
+	jm.emitJobStarted(started)
 	return rec, nil
 }
 
@@ -342,6 +346,41 @@ func typeAllowed(jobType jobstore.JobType, allowed []jobstore.JobType) bool {
 		}
 	}
 	return false
+}
+
+func (jm *jobManager) emitJobStarted(e jobstore.Event) {
+	if jm == nil || jm.emit == nil {
+		return
+	}
+	jm.emit(events.EventJobStarted, events.JobStartedData{
+		JobID:   e.JobID,
+		JobType: string(e.Type),
+		Status:  string(jobstore.StatusRunning),
+	})
+}
+
+func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
+	if jm == nil || jm.emit == nil {
+		return
+	}
+	jobType := ""
+	transcriptRef := ""
+	fromWatch := false
+	if run != nil && run.rec != nil {
+		jobType = string(run.rec.Type)
+		transcriptRef = run.rec.TranscriptRef
+		fromWatch = run.fromWatch
+	}
+	jm.emit(events.EventJobFinished, events.JobFinishedData{
+		JobID:         e.JobID,
+		JobType:       jobType,
+		Status:        string(e.Status),
+		Reason:        e.Reason,
+		ExitCode:      e.ExitCode,
+		OutputBytes:   e.OutputBytes,
+		TranscriptRef: transcriptRef,
+		FromWatch:     fromWatch,
+	})
 }
 
 func (jm *jobManager) readOutput(jobID string, tailBytes int) (content string, total int64, truncated bool, err error) {
@@ -585,6 +624,7 @@ func (jm *jobManager) finishJob(run *runningJob, status jobstore.Status, reason 
 	jm.mu.Unlock()
 
 	jm.forwardLocked(finished)
+	jm.emitJobFinished(finished, run)
 
 	if afterDurableFinish != nil {
 		afterDurableFinish()

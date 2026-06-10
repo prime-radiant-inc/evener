@@ -403,11 +403,6 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
 
-	s.emit(events.EventSubagentStart, events.SubagentStartData{
-		AgentID: sub.id,
-		Task:    task,
-	})
-
 	// Subagent execution must outlive the parent tool-call context.
 	// The parent may stop waiting, finish its input, or time out while the
 	// child keeps running. Child cancellation is handled by subSess.Close(),
@@ -495,12 +490,6 @@ func resetSubagentForRunLockedFromWatch(sub *subagent, cancel context.CancelFunc
 }
 
 func (s *Session) launchSubagentRun(runCtx context.Context, sub *subagent, runCancel context.CancelFunc, input string, fromWatch bool) {
-	s.emit(events.EventSubagentStart, events.SubagentStartData{
-		AgentID:   sub.id,
-		Task:      input,
-		FromWatch: fromWatch,
-	})
-
 	// Resume runs should also be independent of the caller's wait context.
 	go func() {
 		defer s.sendersWG.Done()
@@ -598,12 +587,7 @@ func (a *subagent) run(ctx context.Context, input string) {
 		a.status = SubagentCompleted
 	}
 	done := a.done
-	emitEnd := !a.endEmitted
 	a.endEmitted = true
-	status := a.status
-	turnsUsed := a.turnsUsed
-	fromWatch := a.runFromWatch
-	emit := a.emit
 	// Arm exactly one terminal notification per run. Capture the metadata while
 	// locked, then deliver after unlocking — notify must never run under a.mu.
 	armNow := !a.notifyArmed && a.notify != nil
@@ -622,14 +606,6 @@ func (a *subagent) run(ctx context.Context, input string) {
 
 	if done != nil {
 		close(done)
-	}
-	if emitEnd && emit != nil {
-		emit(events.EventSubagentEnd, events.SubagentEndData{
-			AgentID:   a.id,
-			Status:    string(status),
-			TurnsUsed: turnsUsed,
-			FromWatch: fromWatch,
-		})
 	}
 	if armNow {
 		notify(n)

@@ -54,10 +54,10 @@ const (
 	EventWarning EventKind = "WARNING"
 	// EventError carries an error.
 	EventError EventKind = "ERROR"
-	// EventSubagentStart marks the start of a subagent.
-	EventSubagentStart EventKind = "SUBAGENT_START"
-	// EventSubagentEnd marks the end of a subagent.
-	EventSubagentEnd EventKind = "SUBAGENT_END"
+	// EventJobStarted marks the start of a job.
+	EventJobStarted EventKind = "JOB_STARTED"
+	// EventJobFinished marks the end of a job.
+	EventJobFinished EventKind = "JOB_FINISHED"
 	// EventPluginLoaded reports that a plugin was loaded.
 	EventPluginLoaded EventKind = "PLUGIN_LOADED"
 	// EventHookStart marks the start of a hook execution.

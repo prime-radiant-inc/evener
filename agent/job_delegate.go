@@ -307,6 +307,16 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate session %q is not retained", childID))
 	}
 
+	if fromWatch {
+		if jm, err := sessionJobManager(s); err == nil {
+			jm.mu.Lock()
+			if run := jm.running[rec.JobID]; run != nil {
+				run.fromWatch = true
+			}
+			jm.mu.Unlock()
+		}
+	}
+
 	sub.mu.Lock()
 	running := sub.running
 	if !running {
@@ -360,6 +370,7 @@ func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message s
 		s.sendersWG.Done()
 		return nil, nil, nil, err
 	}
+	run.fromWatch = fromWatch
 	resetSubagentForRunLockedFromWatch(sub, runCancel, resumeTime, fromWatch)
 	done := sub.done
 	sub.mu.Unlock()
@@ -561,7 +572,7 @@ func (s *Session) attachDelegateJobWithID(jm *jobManager, childID, task string, 
 		_ = os.Remove(outputPath)
 		return nil, errJobManagerClosing
 	}
-	if err := jm.appendEvent(jobstore.Event{
+	started := jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
 		JobID:            run.rec.JobID,
@@ -572,7 +583,8 @@ func (s *Session) attachDelegateJobWithID(jm *jobManager, childID, task string, 
 		StartedAt:        &startedAt,
 		OutputPath:       run.rec.OutputPath,
 		TranscriptRef:    run.rec.TranscriptRef,
-	}); err != nil {
+	}
+	if err := jm.appendEvent(started); err != nil {
 		jm.mu.Unlock()
 		_ = output.Close()
 		_ = os.Remove(outputPath)
@@ -580,6 +592,7 @@ func (s *Session) attachDelegateJobWithID(jm *jobManager, childID, task string, 
 	}
 	jm.running[run.rec.JobID] = run
 	jm.mu.Unlock()
+	jm.emitJobStarted(started)
 	return run, nil
 }
 

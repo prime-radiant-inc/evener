@@ -123,10 +123,10 @@ func TestBlockingSpawn_SnapshotHasAgentID(t *testing.T) {
 	}
 }
 
-// TestSpawn_StartEmittedBeforeRunGoroutine asserts that SUBAGENT_START for the
-// spawned agent_id appears in the event stream, and that it precedes
-// SUBAGENT_END in program order (no longer racing the run goroutine).
-func TestSpawn_StartEmittedBeforeRunGoroutine(t *testing.T) {
+// TestDelegateJobStartedEmittedBeforeJobFinished asserts that JOB_STARTED for
+// the delegate job appears in the event stream, and that it precedes
+// JOB_FINISHED in program order.
+func TestDelegateJobStartedEmittedBeforeJobFinished(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{
@@ -153,72 +153,65 @@ func TestSpawn_StartEmittedBeforeRunGoroutine(t *testing.T) {
 		}
 	}()
 
-	// Spawn a non-blocking child that completes immediately.
-	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID:        "c1",
-		Name:      "spawn_agent",
-		Arguments: json.RawMessage(`{"task":"do work"}`),
-	})
-	if spawnRes.IsError {
-		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+	res := sess.createDelegate(context.Background(), delegateArgs{Task: "do work", BlockTimeoutMS: 5000})
+	if res.Err != nil {
+		t.Fatalf("delegate error: %v", res.Err)
 	}
-	var spawned map[string]any
-	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
-		t.Fatalf("unmarshal spawn result: %v", err)
-	}
-	agentID := strings.TrimSpace(fmt.Sprint(spawned["agent_id"]))
-
-	// Wait for the child to finish so SUBAGENT_END is guaranteed to have been emitted.
-	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID:        "c2",
-		Name:      "wait",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":5000}`, agentID)),
-	})
-	if waitRes.IsError {
-		t.Fatalf("wait error: %s", waitRes.Output)
+	if res.JobID == "" {
+		t.Fatal("delegate returned empty job_id")
 	}
 
 	sess.Close()
 	<-evDone
 
-	// Locate the positions of SUBAGENT_START and SUBAGENT_END for our agent_id.
+	// Locate the positions of JOB_STARTED and JOB_FINISHED for our job_id.
 	startIdx := -1
 	endIdx := -1
 	for i, ev := range evs {
 		switch d := ev.Data.(type) {
-		case events.SubagentStartData:
-			if d.AgentID == agentID {
+		case events.JobStartedData:
+			if d.JobID == res.JobID {
 				startIdx = i
 			}
-		case events.SubagentEndData:
-			if d.AgentID == agentID {
+		case events.JobFinishedData:
+			if d.JobID == res.JobID {
 				endIdx = i
 			}
 		}
 	}
 
 	if startIdx == -1 {
-		t.Fatalf("SUBAGENT_START not found for agent_id %q in events: %v", agentID, evs)
+		t.Fatalf("JOB_STARTED not found for job_id %q in events: %v", res.JobID, evs)
 	}
 	if endIdx == -1 {
-		t.Fatalf("SUBAGENT_END not found for agent_id %q in events: %v", agentID, evs)
+		t.Fatalf("JOB_FINISHED not found for job_id %q in events: %v", res.JobID, evs)
 	}
 	if startIdx >= endIdx {
-		t.Fatalf("SUBAGENT_START (idx=%d) must precede SUBAGENT_END (idx=%d)", startIdx, endIdx)
+		t.Fatalf("JOB_STARTED (idx=%d) must precede JOB_FINISHED (idx=%d)", startIdx, endIdx)
 	}
 }
 
-// TestSubagentEndData_CarriesStatusNoReason verifies SUBAGENT_END carries the run
-// outcome in status and no longer carries a separate reason field (the record and
-// the event now agree on a single outcome axis).
-func TestSubagentEndData_CarriesStatusNoReason(t *testing.T) {
-	d := events.SubagentEndData{AgentID: "x", Status: "completed", TurnsUsed: 2}
+// TestJobFinishedData_JSONShape verifies JOB_FINISHED carries the job terminal
+// notification fields under the wire keys used by appwire/UI consumers.
+func TestJobFinishedData_JSONShape(t *testing.T) {
+	code := 0
+	d := events.JobFinishedData{
+		JobID:         "job_X",
+		JobType:       "delegate",
+		Status:        "completed",
+		Reason:        "communicated",
+		ExitCode:      &code,
+		OutputBytes:   42,
+		TranscriptRef: "local:child",
+	}
 	b, _ := json.Marshal(d)
 	if !strings.Contains(string(b), `"status":"completed"`) {
 		t.Fatalf("missing status: %s", b)
 	}
-	if strings.Contains(string(b), `"reason"`) {
-		t.Fatalf("SUBAGENT_END must not carry a reason key: %s", b)
+	for _, want := range []string{`"job_id":"job_X"`, `"job_type":"delegate"`, `"reason":"communicated"`, `"exit_code":0`, `"output_bytes":42`, `"transcript_ref":"local:child"`} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("missing %s: %s", want, b)
+		}
 	}
 }
 

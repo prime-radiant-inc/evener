@@ -1607,23 +1607,23 @@ func TestWatchOriginatedSendToRunningDelegateSuppressesLifecycleWatch(t *testing
 	_, _ = sess.jobManager.stop(first.JobID)
 	waitForShellDone(t, sess.jobManager, first.JobID)
 
-	var end events.SubagentEndData
+	var end events.JobFinishedData
 	for deadline := time.After(2 * time.Second); ; {
 		select {
 		case ev := <-sess.Events():
-			data, ok := ev.Data.(events.SubagentEndData)
-			if ok && data.AgentID == childID {
+			data, ok := ev.Data.(events.JobFinishedData)
+			if ok && data.JobID == first.JobID {
 				end = data
 				goto gotEnd
 			}
 		case <-deadline:
-			t.Fatal("timed out waiting for subagent end event")
+			t.Fatal("timed out waiting for job finished event")
 		}
 	}
 
 gotEnd:
 	if !end.FromWatch {
-		t.Fatalf("subagent end event FromWatch = false; event = %+v", end)
+		t.Fatalf("job finished event FromWatch = false; event = %+v", end)
 	}
 	if len(sent) != 0 {
 		t.Fatalf("watch-originated running delegate completion retriggered watch sends: %#v", sent)
