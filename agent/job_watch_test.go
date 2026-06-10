@@ -296,6 +296,29 @@ func TestEventWatchIgnoresWatchOriginatedSubagentEvents(t *testing.T) {
 	}
 }
 
+func TestWatchOriginSuppressesDelegateLifecycleWatchSends(t *testing.T) {
+	jm := newTestJM(t)
+	var sent []sendMessageArgs
+	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{}
+	}
+	if _, err := jm.configureWatch(watchArgs{
+		Target: "*",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "watched", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	jm.onSessionEvent(events.EventJobStarted, events.JobStartedData{JobID: "job_obs", JobType: "delegate", Status: "running", FromWatch: true})
+	jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: "job_obs", JobType: "delegate", Status: "completed", FromWatch: true})
+
+	if len(sent) != 0 {
+		t.Fatalf("watch-originated delegate lifecycle events triggered watch sends: %#v", sent)
+	}
+}
+
 func TestConcreteJobEventWatchSendsFrame(t *testing.T) {
 	jm := newTestJM(t)
 	var sent []sendMessageArgs
@@ -434,6 +457,329 @@ func TestWatchSendDeliversFrameToTarget(t *testing.T) {
 	}
 	if !strings.Contains(sent[0].Message, "output_match: server READY") {
 		t.Errorf("delivery frame must carry the match trigger; got %q", sent[0].Message)
+	}
+}
+
+func TestWatchSendBusyKeepsPendingAndEmitsNoDiagnostic(t *testing.T) {
+	jm := newTestJM(t)
+	var sent []sendMessageArgs
+	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return busyWatchSendResult()
+	}
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+
+	if len(sent) != 1 {
+		t.Fatalf("send attempts = %d, want 1", len(sent))
+	}
+	if len(notified) != 0 {
+		t.Fatalf("busy send emitted diagnostics: %+v", notified)
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("pending after busy send = %d, want 1: %+v", len(pending), pending)
+	}
+}
+
+func TestWatchSendRetryAfterIdleDeliversLatestCoalescedFrame(t *testing.T) {
+	jm := newTestJM(t)
+	target := createRunningDelegateWatchTarget(t, jm)
+	busy := true
+	var delivered []sendMessageArgs
+	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		if busy {
+			return busyWatchSendResult()
+		}
+		delivered = append(delivered, a)
+		return sendMessageResult{}
+	}
+
+	source, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      source.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: target.JobID, Message: "observe", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.feedJobOutput(source.JobID, []byte("first ready\n"))
+	jm.feedJobOutput(source.JobID, []byte("second ready\n"))
+	pending := loadWatchSendRecord(t, jm).Pending
+	if len(pending) != 1 {
+		t.Fatalf("pending before retry = %d, want 1: %+v", len(pending), pending)
+	}
+	for _, state := range pending {
+		if state.CoalescedCount != 1 {
+			t.Fatalf("coalesced_count = %d, want 1", state.CoalescedCount)
+		}
+		if !strings.Contains(state.Frame, "second ready") || strings.Contains(state.Frame, "first ready") {
+			t.Fatalf("pending frame = %q, want latest coalesced frame only", state.Frame)
+		}
+	}
+
+	busy = false
+	code := 0
+	if err := jm.finalize(target.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize target: %v", err)
+	}
+
+	if len(delivered) != 1 {
+		t.Fatalf("retry delivered sends = %d, want 1", len(delivered))
+	}
+	if !strings.Contains(delivered[0].Message, "second ready") || strings.Contains(delivered[0].Message, "first ready") {
+		t.Fatalf("retry message = %q, want latest coalesced frame", delivered[0].Message)
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("pending after retry = %+v, want none", pending)
+	}
+}
+
+func TestWatchSendDeliveredAppendedOnlyAfterSendSucceeds(t *testing.T) {
+	jm := newTestJM(t)
+	var eventsBeforeSendReturn []jobstore.EventKind
+	var eventKinds []jobstore.EventKind
+	realAppend := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error {
+		eventKinds = append(eventKinds, e.Kind)
+		return realAppend(e)
+	}
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		eventsBeforeSendReturn = append(eventsBeforeSendReturn, eventKinds...)
+		return sendMessageResult{}
+	}
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+
+	if containsEventKind(eventsBeforeSendReturn, jobstore.EventWatchSendDelivered) {
+		t.Fatalf("delivered event was appended before send returned: %v", eventsBeforeSendReturn)
+	}
+	if !eventKindOrder(eventKinds, jobstore.EventWatchSendPending, jobstore.EventWatchSendDelivered) {
+		t.Fatalf("event order = %v, want pending before delivered after send", eventKinds)
+	}
+}
+
+func TestWatchSendCrashAfterSuccessBeforeDeliveredRetriesSameDeliveryID(t *testing.T) {
+	stateDir := t.TempDir()
+	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new job manager: %v", err)
+	}
+	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	var sent []sendMessageArgs
+	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{}
+	}
+	realAppend := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventWatchSendDelivered {
+			return errors.New("crash before delivered marker")
+		}
+		return realAppend(e)
+	}
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+	if len(sent) != 1 {
+		t.Fatalf("initial sends = %d, want 1", len(sent))
+	}
+	pending := loadWatchSendRecord(t, jm).Pending
+	if len(pending) != 1 {
+		t.Fatalf("pending after failed delivered marker = %d, want 1", len(pending))
+	}
+	var deliveryID string
+	for _, state := range pending {
+		deliveryID = state.DeliveryID
+	}
+	if deliveryID == "" || !strings.Contains(sent[0].Message, "delivery_id: "+deliveryID) {
+		t.Fatalf("initial frame %q missing delivery_id %q", sent[0].Message, deliveryID)
+	}
+	if err := jm.store.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	reopened, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("reopen job manager: %v", err)
+	}
+	defer reopened.store.Close()
+	var retried []sendMessageArgs
+	reopened.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		retried = append(retried, a)
+		return sendMessageResult{}
+	}
+	if err := reopened.retryPendingWatchSendsForTarget(context.Background(), "job_obs"); err != nil {
+		t.Fatalf("retry pending: %v", err)
+	}
+
+	if len(retried) != 1 {
+		t.Fatalf("retry sends = %d, want 1", len(retried))
+	}
+	if !strings.Contains(retried[0].Message, "delivery_id: "+deliveryID) {
+		t.Fatalf("retry frame %q missing same delivery_id %q", retried[0].Message, deliveryID)
+	}
+}
+
+func TestWatchSendHardFailureDropsPendingAndDiagnosesOnceAcrossRestores(t *testing.T) {
+	stateDir := t.TempDir()
+	var notified []jobNotification
+	jm, err := newJobManager(stateDir, "S1", func(n jobNotification) { notified = append(notified, n) })
+	if err != nil {
+		t.Fatalf("new job manager: %v", err)
+	}
+	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return hardWatchSendResult(errors.New("target_not_messageable"))
+	}
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("pending after hard failure = %+v, want none", pending)
+	}
+	if len(notified) != 1 {
+		t.Fatalf("diagnostics after hard failure = %d, want 1: %+v", len(notified), notified)
+	}
+	if !strings.Contains(notified[0].Reason, "delivery_id=") {
+		t.Fatalf("diagnostic reason = %q, want delivery id", notified[0].Reason)
+	}
+	if err := jm.store.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	reopened, err := newJobManager(stateDir, "S1", func(n jobNotification) { notified = append(notified, n) })
+	if err != nil {
+		t.Fatalf("first reopen: %v", err)
+	}
+	reopened.send = jm.send
+	if err := reopened.retryPendingWatchSendsForTarget(context.Background(), "job_obs"); err != nil {
+		t.Fatalf("first retry: %v", err)
+	}
+	if err := reopened.store.Close(); err != nil {
+		t.Fatalf("close reopened store: %v", err)
+	}
+	second, err := newJobManager(stateDir, "S1", func(n jobNotification) { notified = append(notified, n) })
+	if err != nil {
+		t.Fatalf("second reopen: %v", err)
+	}
+	defer second.store.Close()
+	second.send = jm.send
+	if err := second.retryPendingWatchSendsForTarget(context.Background(), "job_obs"); err != nil {
+		t.Fatalf("second retry: %v", err)
+	}
+
+	if len(notified) != 1 {
+		t.Fatalf("diagnostics across restores = %d, want exactly 1: %+v", len(notified), notified)
+	}
+}
+
+func TestWatchSendTerminalOrderingSendsFinalFrameBeforeTerminalNotification(t *testing.T) {
+	jm := newTestJM(t)
+	var order []string
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		order = append(order, "send")
+		return sendMessageResult{}
+	}
+	jm.enqueue = func(n jobNotification) {
+		if n.Status != jobNotificationEventWatch {
+			order = append(order, "terminal")
+		}
+	}
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("server ready")); err != nil {
+		t.Fatalf("append output: %v", err)
+	}
+	code := 0
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+	if strings.Join(order, ",") != "send,terminal" {
+		t.Fatalf("order = %v, want send before terminal", order)
+	}
+}
+
+func TestWatchSendTerminalPendingPersistenceFailureRetriesFinalization(t *testing.T) {
+	jm := newTestJM(t)
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("server ready")); err != nil {
+		t.Fatalf("append output: %v", err)
+	}
+	appendErr := errors.New("pending append failed")
+	realAppend := jm.appendEvent
+	blocked := true
+	jm.appendEvent = func(e jobstore.Event) error {
+		if blocked && e.Kind == jobstore.EventWatchSendPending {
+			return appendErr
+		}
+		return realAppend(e)
+	}
+
+	code := 0
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); !errors.Is(err, appendErr) {
+		t.Fatalf("finalize err = %v, want pending append failure", err)
+	}
+	jobs := jm.list(listFilter{})
+	if len(jobs) != 1 || jobs[0].Status != jobstore.StatusCompleted {
+		t.Fatalf("job state after failed finalization = %+v, want terminal retained", jobs)
+	}
+	if jobs[0].NotifyState != "" && jobs[0].NotifyState != jobstore.NotifyNotArmed {
+		t.Fatalf("notify state after failed finalization = %q, want not armed", jobs[0].NotifyState)
+	}
+
+	blocked = false
+	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("retry finalize: %v", err)
+	}
+	jobs = jm.list(listFilter{})
+	if len(jobs) != 1 || jobs[0].NotifyState != jobstore.NotifyPending {
+		t.Fatalf("job state after retry finalization = %+v, want notification pending", jobs)
 	}
 }
 
@@ -2195,7 +2541,7 @@ func TestWatchSendFailureNotifiesCaller(t *testing.T) {
 	jm := newTestJM(t)
 	sendErr := errors.New("target_not_messageable: job_obs")
 	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
-		return sendMessageResult{Err: sendErr}
+		return hardWatchSendResult(sendErr)
 	}
 	var notified []jobNotification
 	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
@@ -2236,7 +2582,7 @@ func TestWatchSendFrameIsBounded(t *testing.T) {
 			IncludeFrame:   true,
 			IncludeExcerpt: true,
 		},
-	}, rec.JobID, strings.Repeat("trigger", watchTriggerMaxChars))
+	}, rec.JobID, strings.Repeat("trigger", watchTriggerMaxChars), "delivery_test")
 
 	if len([]rune(frame)) > watchFrameMaxChars {
 		t.Fatalf("frame length = %d, want <= %d", len([]rune(frame)), watchFrameMaxChars)
@@ -2258,7 +2604,7 @@ func TestWatchSendExcerptWithoutFrameOmitsFrameMetadata(t *testing.T) {
 			Message:        "saw ready",
 			IncludeExcerpt: true,
 		},
-	}, rec.JobID, "output_match: ready excerpt")
+	}, rec.JobID, "output_match: ready excerpt", "delivery_test")
 
 	if !strings.Contains(frame, "saw ready") || !strings.Contains(frame, "ready excerpt") {
 		t.Fatalf("excerpt-only delivery must include message and excerpt; got %q", frame)
@@ -2266,6 +2612,45 @@ func TestWatchSendExcerptWithoutFrameOmitsFrameMetadata(t *testing.T) {
 	if strings.Contains(frame, "Watch frame") || strings.Contains(frame, "trigger:") {
 		t.Fatalf("excerpt-only delivery must not include frame metadata; got %q", frame)
 	}
+}
+
+func busyWatchSendResult() sendMessageResult {
+	return sendMessageResult{
+		WatchSendDeliveryClass:    watchSendBusy,
+		WatchSendDeliveryClassSet: true,
+		Err:                       errors.New("busy"),
+	}
+}
+
+func hardWatchSendResult(err error) sendMessageResult {
+	return sendMessageResult{
+		WatchSendDeliveryClass:    watchSendHardFailure,
+		WatchSendDeliveryClassSet: true,
+		Err:                       err,
+	}
+}
+
+func containsEventKind(kinds []jobstore.EventKind, want jobstore.EventKind) bool {
+	for _, kind := range kinds {
+		if kind == want {
+			return true
+		}
+	}
+	return false
+}
+
+func eventKindOrder(kinds []jobstore.EventKind, before, after jobstore.EventKind) bool {
+	beforeIndex := -1
+	afterIndex := -1
+	for i, kind := range kinds {
+		if kind == before && beforeIndex == -1 {
+			beforeIndex = i
+		}
+		if kind == after && afterIndex == -1 {
+			afterIndex = i
+		}
+	}
+	return beforeIndex >= 0 && afterIndex >= 0 && beforeIndex < afterIndex
 }
 
 func TestProgressTimerFiresPeriodically(t *testing.T) {

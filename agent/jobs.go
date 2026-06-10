@@ -773,7 +773,12 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 
 	watchDeliveries = jm.snapshotWatchSendFrames(watchDeliveries)
 	jm.enqueueWatchNotifications(watchNotifications)
-	jm.deliverWatchSends(context.Background(), watchDeliveries)
+	if err := jm.deliverWatchSends(context.Background(), watchDeliveries); err != nil {
+		return err
+	}
+	if err := jm.retryPendingWatchSendsForTarget(context.Background(), run.rec.JobID); err != nil {
+		return err
+	}
 
 	pending := jobstore.Event{
 		Kind:        jobstore.EventJobNotificationPending,

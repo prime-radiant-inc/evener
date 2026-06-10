@@ -59,25 +59,27 @@ type sendMessageArgs struct {
 }
 
 type sendMessageResult struct {
-	Target                   string
-	JobID                    string
-	Type                     string
-	Status                   jobstore.Status
-	Reason                   string
-	RunningInBackground      bool
-	TimedOut                 bool
-	Action                   string
-	ResumedFromJobID         string
-	TranscriptRef            string
-	Output                   string
-	Truncated                bool
-	StructuredResult         any
-	StructuredResultValid    bool
-	StructuredResultValidSet bool
-	StructuredResultReason   string
-	Delivered                bool
-	MessageType              string
-	Err                      error
+	Target                    string
+	JobID                     string
+	Type                      string
+	Status                    jobstore.Status
+	Reason                    string
+	RunningInBackground       bool
+	TimedOut                  bool
+	Action                    string
+	ResumedFromJobID          string
+	TranscriptRef             string
+	Output                    string
+	Truncated                 bool
+	StructuredResult          any
+	StructuredResultValid     bool
+	StructuredResultValidSet  bool
+	StructuredResultReason    string
+	Delivered                 bool
+	MessageType               string
+	WatchSendDeliveryClass    watchSendDeliveryClass
+	WatchSendDeliveryClassSet bool
+	Err                       error
 }
 
 func (s *Session) createDelegate(ctx context.Context, args delegateArgs) delegateResult {
@@ -337,6 +339,21 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 			sub.mu.Unlock()
 			return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is running but runtime job is not live", target))
 		}
+		if rec.Status == jobstore.StatusRunning {
+			run.fromWatch.Store(true)
+			sub.runFromWatch = true
+			sub.mu.Unlock()
+			return sendMessageResult{
+				Target:                    target,
+				JobID:                     rec.JobID,
+				Type:                      string(jobstore.JobDelegate),
+				Status:                    jobstore.StatusRunning,
+				RunningInBackground:       true,
+				Action:                    "busy",
+				WatchSendDeliveryClass:    watchSendBusy,
+				WatchSendDeliveryClassSet: true,
+			}
+		}
 		run.fromWatch.Store(true)
 		sub.runFromWatch = true
 	}
@@ -399,8 +416,10 @@ func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message s
 
 func sendMessageFailed(target string, err error) sendMessageResult {
 	return sendMessageResult{
-		Target: target,
-		Err:    err,
+		Target:                    target,
+		WatchSendDeliveryClass:    watchSendHardFailure,
+		WatchSendDeliveryClassSet: true,
+		Err:                       err,
 	}
 }
 
