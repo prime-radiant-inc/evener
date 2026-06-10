@@ -348,6 +348,57 @@ func TestClosedNestedOwnerFallsBackToForwardedRecord(t *testing.T) {
 	}
 }
 
+func TestJobStopClosedNestedOwnerErrors(t *testing.T) {
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		childJM.mu.Lock()
+		run := childJM.running
+		childJM.mu.Unlock()
+		for _, running := range run {
+			if running.output != nil {
+				_ = running.output.Close()
+			}
+		}
+		_ = childJM.store.Close()
+	})
+
+	childJM.forward = parentJM.forwardEvent
+	childJM.parentJobID = "job_PARENTDELEGATE"
+	nested, err := childJM.createShell(createShellOpts{Command: "sleep 1", Description: "nested"})
+	if err != nil {
+		t.Fatalf("create nested shell: %v", err)
+	}
+	parent := &Session{
+		id:         "PARENT",
+		jobManager: parentJM,
+		subagents:  newSubagentManager(nil, nil),
+	}
+	parent.subagents.track(&subagent{
+		id:     "CHILD",
+		sess:   &Session{id: "CHILD", jobManager: childJM},
+		status: SubagentCompleted,
+		closed: true,
+	})
+
+	out, err := jobStopTool(context.Background(), parent, map[string]any{
+		"job_id": nested.JobID,
+	}, 20000)
+	if err == nil {
+		t.Fatalf("job_stop closed nested owner succeeded with output %s, want not-controllable error", out)
+	}
+	if !strings.Contains(err.Error(), "not controllable") {
+		t.Fatalf("job_stop error = %q, want not controllable", err.Error())
+	}
+}
+
 func TestClosedStoreNestedOwnerFallsBackToForwardedRecord(t *testing.T) {
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
 	if err != nil {

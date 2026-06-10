@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"fmt"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
 )
@@ -65,16 +66,20 @@ func (s *Session) nestedOrLocalJobManager(jobID string) (*jobManager, *jobstore.
 }
 
 func (s *Session) stopNestedOrLocal(jobID string) (*jobstore.JobRecord, error) {
-	jm, _, err := s.nestedOrLocalJobManager(jobID)
+	local, err := sessionJobManager(s)
 	if err != nil {
 		return nil, err
 	}
-	if jm == nil {
-		return nil, errors.New(jobManagerUnavailableReason)
+	owner, forwarded := s.ownerJobManagerFor(jobID)
+	if owner != nil {
+		// Spec 5.8's not_controllable path is reserved for future cross-process
+		// owners; a live in-process owner routes directly to its job manager.
+		return owner.stop(jobID)
 	}
-	// Spec 5.8's not_controllable path is reserved for future cross-process
-	// owners; a live in-process owner routes directly to its job manager.
-	return jm.stop(jobID)
+	if forwarded != nil && forwarded.ParentJobID != "" && forwarded.OwnerSessionID != s.id {
+		return nil, fmt.Errorf("job %q is not controllable: nested job owner runtime is not live", jobID)
+	}
+	return local.stop(jobID)
 }
 
 func (s *Session) stopChildren(delegateJobID string) ([]*jobstore.JobRecord, error) {
