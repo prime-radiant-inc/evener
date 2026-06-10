@@ -165,13 +165,13 @@ func delegateTool(ctx context.Context, s *Session, args map[string]any, maxChars
 }
 
 func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, registryMaxChars int) (string, error) {
-	jm, err := sessionJobManager(s)
-	if err != nil {
-		return "", err
-	}
 	jobID := strings.TrimSpace(stringArg(args, "job_id"))
 	if jobID == "" {
 		return "", errors.New("job_id is required")
+	}
+	jm, rec, err := s.nestedOrLocalJobManager(jobID)
+	if err != nil {
+		return "", err
 	}
 	tailBytes, err := boundedJobBytesArg(args, "tail_bytes", defaultJobOutputBytes)
 	if err != nil {
@@ -194,10 +194,6 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 		waitForJobDoneOrOutput(ctx, jm, jobID, time.Duration(timeoutMS)*time.Millisecond)
 	}
 
-	rec, err := findJobRecord(jm, jobID)
-	if err != nil {
-		return "", err
-	}
 	content, totalBytes, truncated, err := jm.readOutput(jobID, tailBytes)
 	if err != nil {
 		return "", err

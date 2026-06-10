@@ -2,10 +2,14 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/llm"
 )
@@ -163,6 +167,90 @@ func TestFindJobRecordFindsForwardedNestedJob(t *testing.T) {
 	}
 	if found.ParentJobID != "job_PARENTDELEGATE" {
 		t.Fatalf("found ParentJobID = %q, want job_PARENTDELEGATE", found.ParentJobID)
+	}
+}
+
+func TestParentReadsNestedOutputViaOwnerRuntime(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				<-release
+				return communicateWithDefaultOutput("delegate complete")
+			},
+		},
+	})
+	parentDir := t.TempDir()
+	parent, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(parentDir), SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 2,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() {
+		parent.Close()
+		releaseOnce.Do(func() { close(release) })
+	})
+
+	delegate := parent.createDelegate(context.Background(), delegateArgs{
+		Task:       "run nested output owner",
+		Background: true,
+	})
+	if delegate.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", delegate.Err)
+	}
+	_, childID, err := decodeRef(delegate.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode transcript ref: %v", err)
+	}
+	sub := parent.subagents.get(childID)
+	if sub == nil || sub.sess == nil || sub.sess.jobManager == nil {
+		t.Fatalf("tracked subagent %q not found with live jobManager", childID)
+	}
+	childJM := sub.sess.jobManager
+
+	nested, err := childJM.createShell(createShellOpts{Command: "sleep 1", Description: "nested output"})
+	if err != nil {
+		t.Fatalf("create nested shell: %v", err)
+	}
+	t.Cleanup(func() {
+		finishRunningTestJob(t, childJM, nested.JobID)
+		_, _ = parent.jobManager.stop(delegate.JobID)
+		releaseOnce.Do(func() { close(release) })
+		waitForShellDone(t, parent.jobManager, delegate.JobID)
+	})
+
+	childJM.mu.Lock()
+	run := childJM.running[nested.JobID]
+	childJM.mu.Unlock()
+	if run == nil || run.output == nil {
+		t.Fatalf("nested job %q has no live output store", nested.JobID)
+	}
+	if _, err := childJM.appendJobOutput(nested.JobID, run.output, []byte("nested owner line\n")); err != nil {
+		t.Fatalf("append nested output: %v", err)
+	}
+
+	res := parent.reg.ExecuteCall(context.Background(), parent.env, llm.ToolCallData{
+		ID:        "read",
+		Name:      "job_read_output",
+		Arguments: json.RawMessage(fmt.Sprintf(`{"job_id":%q,"tail_bytes":65536,"grep":"owner","max_chars":20000}`, nested.JobID)),
+	})
+	if res.IsError {
+		t.Fatalf("job_read_output returned error: %s", res.Output)
+	}
+	var out jobReadOutputTestResult
+	if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+		t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, res.Output)
+	}
+	if out.JobID != nested.JobID || out.Status != string(jobstore.StatusRunning) || !strings.Contains(out.Content, "nested owner line") {
+		t.Fatalf("job_read_output = %+v, want running nested output from owner", out)
+	}
+	if len(out.Matches) != 1 || !strings.Contains(out.Matches[0].Line, "nested owner line") {
+		t.Fatalf("job_read_output matches = %+v, want owner grep match", out.Matches)
 	}
 }
 
