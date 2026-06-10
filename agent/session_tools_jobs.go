@@ -192,6 +192,10 @@ func jobReadOutputTool(ctx context.Context, s *Session, args map[string]any, reg
 			return "", err
 		}
 		waitForJobDoneOrOutput(ctx, jm, jobID, time.Duration(timeoutMS)*time.Millisecond)
+		rec, err = findJobRecord(jm, jobID)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	content, totalBytes, truncated, err := jm.readOutput(jobID, tailBytes)

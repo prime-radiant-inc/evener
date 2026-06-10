@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
@@ -313,6 +314,95 @@ func TestClosedNestedOwnerFallsBackToForwardedRecord(t *testing.T) {
 	}
 	if rec == nil || rec.JobID != nested.JobID || rec.OwnerSessionID != "CHILD" {
 		t.Fatalf("nestedOrLocalJobManager record = %+v, want parent forwarded record", rec)
+	}
+}
+
+func TestNestedReadOutputBlockRefreshesOwnerRecord(t *testing.T) {
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		_ = childJM.store.Close()
+	})
+
+	childJM.forward = parentJM.forwardEvent
+	childJM.parentJobID = "job_PARENTDELEGATE"
+	nested, err := childJM.createShell(createShellOpts{Command: "sleep 1", Description: "nested"})
+	if err != nil {
+		t.Fatalf("create nested shell: %v", err)
+	}
+	parent := &Session{
+		id:         "PARENT",
+		jobManager: parentJM,
+		subagents:  newSubagentManager(nil, nil),
+	}
+	parent.subagents.track(&subagent{
+		id:     "CHILD",
+		sess:   &Session{id: "CHILD", jobManager: childJM},
+		status: SubagentRunning,
+	})
+
+	type readResult struct {
+		out string
+		err error
+	}
+	readDone := make(chan readResult, 1)
+	go func() {
+		out, err := jobReadOutputTool(context.Background(), parent, map[string]any{
+			"job_id":           nested.JobID,
+			"block":            true,
+			"block_timeout_ms": 1000,
+			"tail_bytes":       65536,
+			"max_chars":        20000,
+		}, 20000)
+		readDone <- readResult{out: out, err: err}
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	childJM.mu.Lock()
+	run := childJM.running[nested.JobID]
+	if run != nil {
+		run.structured = map[string]any{"summary": "finished during block"}
+	}
+	childJM.mu.Unlock()
+	if run == nil || run.output == nil {
+		t.Fatalf("nested job %q has no live output store", nested.JobID)
+	}
+	if _, err := childJM.appendJobOutput(nested.JobID, run.output, []byte("finished during block\n")); err != nil {
+		t.Fatalf("append nested output: %v", err)
+	}
+	code := 0
+	if err := childJM.finalize(nested.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize nested job: %v", err)
+	}
+
+	var got readResult
+	select {
+	case got = <-readDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("job_read_output did not return after nested job finalized")
+	}
+	if got.err != nil {
+		t.Fatalf("job_read_output returned error: %v", got.err)
+	}
+	var out jobReadOutputTestResult
+	if err := json.Unmarshal([]byte(got.out), &out); err != nil {
+		t.Fatalf("unmarshal job_read_output: %v (output: %s)", err, got.out)
+	}
+	if !strings.Contains(out.Content, "finished during block") {
+		t.Fatalf("content = %q, want finalized nested output", out.Content)
+	}
+	if out.Status != string(jobstore.StatusCompleted) || out.Reason == nil || *out.Reason != "exit_zero" || out.ExitCode == nil || *out.ExitCode != 0 {
+		t.Fatalf("job_read_output = %+v, want refreshed completed projection", out)
+	}
+	if !out.StructuredResultValid || out.StructuredResult["summary"] != "finished during block" {
+		t.Fatalf("structured result = %+v valid=%v, want refreshed owner result", out.StructuredResult, out.StructuredResultValid)
 	}
 }
 
