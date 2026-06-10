@@ -73,6 +73,36 @@ type DelegateRestoreDescriptor struct {
 	ExplicitToolGrants []string `json:"explicit_tool_grants,omitempty"`
 }
 
+// WatchSendKey identifies the coalescing slot for a durable watch-send frame.
+type WatchSendKey struct {
+	VisibleSessionID        string `json:"visible_session_id"`
+	WatchTarget             string `json:"watch_target"`
+	ResolvedWatchedIdentity string `json:"resolved_watched_identity"`
+	ResolvedSendTo          string `json:"resolved_send_to"`
+	WatchGeneration         string `json:"watch_generation"`
+}
+
+// WatchSendState is the durable payload for a pending or terminal watch-send
+// delivery state.
+type WatchSendState struct {
+	Key              WatchSendKey `json:"key"`
+	DeliveryID       string       `json:"delivery_id"`
+	UpdateSeq        uint64       `json:"update_seq,omitempty"`
+	Message          string       `json:"message,omitempty"`
+	Frame            string       `json:"frame,omitempty"`
+	TriggerIdentity  string       `json:"trigger_identity,omitempty"`
+	TriggerReason    string       `json:"trigger_reason,omitempty"`
+	CoalescedCount   int          `json:"coalesced_count,omitempty"`
+	DiagnosticReason string       `json:"diagnostic_reason,omitempty"`
+	CreatedAt        time.Time    `json:"created_at,omitempty"`
+	UpdatedAt        time.Time    `json:"updated_at,omitempty"`
+}
+
+// WatchSendRecord is the folded durable state for pending watch-send frames.
+type WatchSendRecord struct {
+	Pending map[WatchSendKey]*WatchSendState
+}
+
 // JobRecord is the durable storage shape reconstructed from the job event log.
 type JobRecord struct {
 	JobID                  string                     `json:"job_id"`
@@ -106,4 +136,12 @@ type JobRecord struct {
 
 func NewJobID() string {
 	return "job_" + ulid.Make().String()
+}
+
+func NewWatchGeneration() string {
+	return "wg_" + ulid.Make().String()
+}
+
+func NewWatchSendDeliveryID() string {
+	return "wd_" + ulid.Make().String()
 }

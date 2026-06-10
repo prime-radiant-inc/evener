@@ -148,7 +148,9 @@ func (jm *jobManager) close() error {
 	jm.watchNotifyMu.Lock()
 	jm.mu.Lock()
 	jm.closing = true
+	var dropped []jobstore.Event
 	for key, cfg := range jm.watches {
+		dropped = append(dropped, watchSendTerminalEventsLocked(cfg, jobstore.EventWatchSendDropped, "job manager closed", jm.now())...)
 		closeWatchConfig(cfg)
 		delete(jm.watches, key)
 	}
@@ -168,6 +170,10 @@ func (jm *jobManager) close() error {
 	jm.mu.Unlock()
 	jm.watchNotifyMu.Unlock()
 
+	var closeErr error
+	if err := jm.appendWatchSendEvents(dropped); err != nil {
+		closeErr = err
+	}
 	for _, run := range running {
 		if run.signal != nil {
 			run.signal()
@@ -191,6 +197,12 @@ waitLoop:
 			return fmt.Errorf("%w; close store: %w", waitErr, err)
 		}
 		return err
+	}
+	if closeErr != nil {
+		if waitErr != nil {
+			return fmt.Errorf("%w; close watch sends: %w", waitErr, closeErr)
+		}
+		return closeErr
 	}
 	return waitErr
 }

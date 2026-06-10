@@ -12,6 +12,10 @@ const (
 	EventJobMessageSent           EventKind = "job_message_sent"
 	EventJobNotificationPending   EventKind = "job_notification_pending"
 	EventJobNotificationDelivered EventKind = "job_notification_delivered"
+	EventWatchSendPending         EventKind = "watch_send_pending"
+	EventWatchSendDelivered       EventKind = "watch_send_delivered"
+	EventWatchSendDropped         EventKind = "watch_send_dropped"
+	EventWatchSendEvicted         EventKind = "watch_send_evicted"
 )
 
 // Event is one line in the append-only jobs.jsonl log. It carries a flat union
@@ -58,4 +62,7 @@ type Event struct {
 	// job_message_sent payload
 	Target string `json:"target,omitempty"`
 	Action string `json:"action,omitempty"`
+
+	// watch_send_* payload
+	WatchSend *WatchSendState `json:"watch_send,omitempty"`
 }

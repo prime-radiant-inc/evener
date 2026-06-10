@@ -21,6 +21,28 @@ func Fold(events []Event) map[string]*JobRecord {
 	return recs
 }
 
+// FoldWatchSends reconstructs pending watch-send frames from durable events.
+func FoldWatchSends(events []Event) WatchSendRecord {
+	sorted := append([]Event(nil), events...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+
+	rec := WatchSendRecord{Pending: make(map[WatchSendKey]*WatchSendState)}
+	for _, e := range sorted {
+		if e.WatchSend == nil {
+			continue
+		}
+		key := e.WatchSend.Key
+		switch e.Kind {
+		case EventWatchSendPending:
+			state := *e.WatchSend
+			rec.Pending[key] = &state
+		case EventWatchSendDelivered, EventWatchSendDropped, EventWatchSendEvicted:
+			delete(rec.Pending, key)
+		}
+	}
+	return rec
+}
+
 func applyEvent(r *JobRecord, e Event) {
 	switch e.Kind {
 	case EventJobStarted:

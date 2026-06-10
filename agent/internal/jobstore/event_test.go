@@ -108,6 +108,10 @@ func TestEventKindsAreStable(t *testing.T) {
 		EventJobMessageSent:           "job_message_sent",
 		EventJobNotificationPending:   "job_notification_pending",
 		EventJobNotificationDelivered: "job_notification_delivered",
+		EventWatchSendPending:         "watch_send_pending",
+		EventWatchSendDelivered:       "watch_send_delivered",
+		EventWatchSendDropped:         "watch_send_dropped",
+		EventWatchSendEvicted:         "watch_send_evicted",
 	}
 	for k, s := range want {
 		if string(k) != s {

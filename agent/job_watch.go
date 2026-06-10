@@ -43,6 +43,7 @@ const (
 	watchExcerptMaxChars       = 4096
 	watchReadErrorMaxChars     = 256
 	watchTruncatedIndicator    = "\n[truncated]"
+	defaultWatchSendPendingCap = 32
 )
 
 type watchKey struct {
@@ -64,6 +65,10 @@ type watchConfig struct {
 	triggerEvery       int
 	eventCount         int
 	send               *watchSendArgs
+	generation         string
+	pending            map[jobstore.WatchSendKey]*jobstore.WatchSendState
+	pendingOrder       []jobstore.WatchSendKey
+	nextUpdateSeq      uint64
 	progressStop       chan struct{}
 }
 
@@ -96,9 +101,12 @@ type watchResult struct {
 }
 
 type watchSendDelivery struct {
-	cfg     *watchConfig
-	jobID   string
-	trigger string
+	cfg              *watchConfig
+	send             *watchSendArgs
+	visibleSessionID string
+	watchTarget      string
+	watchedIdentity  string
+	trigger          string
 }
 
 func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
@@ -141,7 +149,7 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	}
 
 	if a.Clear {
-		return jm.clearWatch(key), nil
+		return jm.clearWatch(key)
 	}
 
 	cfg, err := newWatchConfig(a)
@@ -150,7 +158,7 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	}
 
 	jm.mu.Lock()
-	if !isWatchSessionTarget(key.Target) && !isWatchableConcreteJobLocked(jm.running[key.Target]) {
+	if run := jm.running[key.Target]; !isWatchSessionTarget(key.Target) && run != nil && !isWatchableConcreteJobLocked(run) {
 		jm.mu.Unlock()
 		return watchResult{}, watchTargetNotFoundError(key.Target)
 	}
@@ -161,11 +169,15 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 			jm.mu.Unlock()
 			return result, nil
 		}
+		dropped := watchSendTerminalEventsLocked(existing, jobstore.EventWatchSendDropped, "watch replaced", jm.now())
 		closeWatchConfig(existing)
 		stop := cfg.initProgressStop()
 		jm.watches[key] = cfg
 		result := watchResultFromConfig(cfg, true)
 		jm.mu.Unlock()
+		if err := jm.appendWatchSendEvents(dropped); err != nil {
+			return watchResult{}, err
+		}
 		jm.startProgressTimer(key, cfg, stop)
 		return result, nil
 	}
@@ -320,6 +332,7 @@ func newWatchConfig(a watchArgs) (*watchConfig, error) {
 		triggerKind:        triggerKind,
 		triggerEvery:       a.TriggerEvery,
 		send:               cloneWatchSendArgs(a.Send),
+		generation:         jobstore.NewWatchGeneration(),
 	}
 	if a.OutputMatch != "" {
 		re, err := regexp.Compile(a.OutputMatch)
@@ -365,33 +378,42 @@ func cloneWatchSendArgs(send *watchSendArgs) *watchSendArgs {
 	return &clone
 }
 
-func watchSendSnapshot(cfg *watchConfig, jobID, trigger string) watchSendDelivery {
+func (jm *jobManager) watchSendSnapshot(cfg *watchConfig, jobID, trigger string) watchSendDelivery {
 	return watchSendDelivery{
-		cfg:     &watchConfig{send: cloneWatchSendArgs(cfg.send)},
-		jobID:   jobID,
-		trigger: trigger,
+		cfg:              cfg,
+		send:             cloneWatchSendArgs(cfg.send),
+		visibleSessionID: jm.sessionID,
+		watchTarget:      cfg.target,
+		watchedIdentity:  jobID,
+		trigger:          trigger,
 	}
 }
 
-func (jm *jobManager) clearWatch(key watchKey) watchResult {
+func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
+	var dropped []jobstore.Event
 	jm.mu.Lock()
 	if key.SendTo != "" {
+		dropped = append(dropped, watchSendTerminalEventsLocked(jm.watches[key], jobstore.EventWatchSendDropped, "watch cleared", jm.now())...)
 		closeWatchConfig(jm.watches[key])
 		delete(jm.watches, key)
 	} else {
 		for existingKey, cfg := range jm.watches {
 			if existingKey.VisibleSessionID == key.VisibleSessionID && existingKey.Target == key.Target {
+				dropped = append(dropped, watchSendTerminalEventsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now())...)
 				closeWatchConfig(cfg)
 				delete(jm.watches, existingKey)
 			}
 		}
 	}
 	jm.mu.Unlock()
+	if err := jm.appendWatchSendEvents(dropped); err != nil {
+		return watchResult{}, err
+	}
 
 	return watchResult{
 		Target:   key.Target,
 		Watching: false,
-	}
+	}, nil
 }
 
 func (cfg *watchConfig) initProgressStop() chan struct{} {
@@ -489,7 +511,7 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 			}
 		}
 		if cfg.send != nil {
-			deliveries = append(deliveries, watchSendSnapshot(cfg, watchEventWatchedIdentity(cfg.target, data), fmt.Sprintf("event: %s", kind)))
+			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, watchEventWatchedIdentity(cfg.target, data), fmt.Sprintf("event: %s", kind)))
 		} else {
 			notifications = append(notifications, watchNotification(cfg.target, fmt.Sprintf("event: %s", kind)))
 		}
@@ -552,7 +574,7 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte) {
 		matches := cfg.outputMatcher.Feed(chunk)
 		for _, match := range matches {
 			if cfg.send != nil {
-				deliveries = append(deliveries, watchSendSnapshot(cfg, jobID, "output_match: "+match))
+				deliveries = append(deliveries, jm.watchSendSnapshot(cfg, jobID, "output_match: "+match))
 			} else {
 				notifications = append(notifications, watchNotification(jobID, "output_match: "+match))
 			}
@@ -575,7 +597,7 @@ func (jm *jobManager) expireJobWatchesLocked(jobID string) ([]jobNotification, [
 		if cfg.outputMatcher != nil {
 			for _, match := range cfg.outputMatcher.Flush() {
 				if cfg.send != nil {
-					deliveries = append(deliveries, watchSendSnapshot(cfg, jobID, "output_match: "+match))
+					deliveries = append(deliveries, jm.watchSendSnapshot(cfg, jobID, "output_match: "+match))
 				} else {
 					notifications = append(notifications, watchNotification(jobID, "output_match: "+match))
 				}
@@ -629,7 +651,7 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 		return false
 	}
 	if cfg.send != nil {
-		deliveries = append(deliveries, watchSendSnapshot(cfg, cfg.target, "progress_tick"))
+		deliveries = append(deliveries, jm.watchSendSnapshot(cfg, cfg.target, "progress_tick"))
 	} else {
 		notifications = append(notifications, watchNotification(cfg.target, "progress_tick"))
 	}
@@ -651,39 +673,185 @@ func watchNotification(jobID, reason string) jobNotification {
 
 func (jm *jobManager) deliverWatchSends(ctx context.Context, deliveries []watchSendDelivery) {
 	for _, d := range deliveries {
-		jm.deliverWatchSend(ctx, d.cfg, d.jobID, d.trigger)
+		jm.deliverWatchSend(ctx, d)
 	}
 }
 
-func (jm *jobManager) deliverWatchSend(ctx context.Context, cfg *watchConfig, jobID, trigger string) {
-	if cfg == nil || cfg.send == nil {
+func (jm *jobManager) deliverWatchSend(ctx context.Context, d watchSendDelivery) {
+	if d.cfg == nil || d.send == nil {
 		return
 	}
-	if jm.send == nil {
+	target, err := resolveWatchSendTarget(d.send.To, d.watchedIdentity)
+	if err != nil {
 		jm.enqueueWatchNotifications([]jobNotification{
-			watchNotification(jobID, "watch send failed: delivery unavailable"),
+			watchNotification(d.watchedIdentity, "watch send failed: "+err.Error()),
 		})
 		return
 	}
-	target, err := resolveWatchSendTarget(cfg.send.To, jobID)
-	if err != nil {
+	state := jm.watchSendState(d, target)
+	if jm.send == nil {
+		jm.persistPendingWatchSend(state, d.cfg)
 		jm.enqueueWatchNotifications([]jobNotification{
-			watchNotification(jobID, "watch send failed: "+err.Error()),
+			watchNotification(d.watchedIdentity, "watch send failed: delivery unavailable"),
 		})
 		return
 	}
 	res := jm.send(ctx, sendMessageArgs{
 		Target:        target,
-		Message:       jm.buildWatchFrame(cfg, jobID, trigger),
+		Message:       state.Frame,
 		Background:    true,
 		BackgroundSet: true,
 		FromWatch:     true,
 	})
 	if res.Err != nil {
+		jm.persistPendingWatchSend(state, d.cfg)
 		jm.enqueueWatchNotifications([]jobNotification{
-			watchNotification(jobID, "watch send failed: "+limitWatchText(res.Err.Error(), watchReadErrorMaxChars)),
+			watchNotification(d.watchedIdentity, "watch send failed: "+limitWatchText(res.Err.Error(), watchReadErrorMaxChars)),
+		})
+		return
+	}
+	delivered := state
+	jm.removePendingWatchSend(d.cfg, delivered.Key)
+	if err := jm.appendWatchSendEvents([]jobstore.Event{{
+		Kind:      jobstore.EventWatchSendDelivered,
+		TS:        jm.now(),
+		WatchSend: &delivered,
+	}}); err != nil {
+		jm.enqueueWatchNotifications([]jobNotification{
+			watchNotification(d.watchedIdentity, "watch send delivered state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})
 	}
+}
+
+func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string) jobstore.WatchSendState {
+	message := limitWatchText(strings.TrimSpace(d.send.Message), watchMessageMaxChars)
+	return jobstore.WatchSendState{
+		Key: jobstore.WatchSendKey{
+			VisibleSessionID:        d.visibleSessionID,
+			WatchTarget:             d.watchTarget,
+			ResolvedWatchedIdentity: d.watchedIdentity,
+			ResolvedSendTo:          resolvedSendTo,
+			WatchGeneration:         d.cfg.generation,
+		},
+		DeliveryID:      jobstore.NewWatchSendDeliveryID(),
+		Message:         message,
+		Frame:           jm.buildWatchFrame(&watchConfig{send: d.send}, d.watchedIdentity, d.trigger),
+		TriggerIdentity: d.watchedIdentity,
+		TriggerReason:   d.trigger,
+	}
+}
+
+func (jm *jobManager) persistPendingWatchSend(state jobstore.WatchSendState, cfg *watchConfig) {
+	events, diagnostics := jm.recordWatchSendPending(state, cfg)
+	if err := jm.appendWatchSendEvents(events); err != nil {
+		diagnostics = append(diagnostics, watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)))
+	}
+	jm.enqueueWatchNotifications(diagnostics)
+}
+
+func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, cfg *watchConfig) ([]jobstore.Event, []jobNotification) {
+	now := jm.now()
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+
+	if cfg.pending == nil {
+		cfg.pending = make(map[jobstore.WatchSendKey]*jobstore.WatchSendState)
+	}
+	if existing := cfg.pending[state.Key]; existing != nil {
+		state.CoalescedCount = existing.CoalescedCount + 1
+		state.CreatedAt = existing.CreatedAt
+	} else {
+		cfg.pendingOrder = append(cfg.pendingOrder, state.Key)
+	}
+	if state.CreatedAt.IsZero() {
+		state.CreatedAt = now
+	}
+	state.UpdatedAt = now
+	cfg.nextUpdateSeq++
+	state.UpdateSeq = cfg.nextUpdateSeq
+	pendingState := state
+	cfg.pending[state.Key] = &pendingState
+
+	events := []jobstore.Event{{
+		Kind:      jobstore.EventWatchSendPending,
+		TS:        now,
+		WatchSend: &pendingState,
+	}}
+	var diagnostics []jobNotification
+	for len(cfg.pending) > defaultWatchSendPendingCap {
+		evictedKey := cfg.pendingOrder[0]
+		cfg.pendingOrder = cfg.pendingOrder[1:]
+		evicted := cfg.pending[evictedKey]
+		if evicted == nil {
+			continue
+		}
+		delete(cfg.pending, evictedKey)
+		evictedState := *evicted
+		evictedState.DiagnosticReason = "pending cap exceeded"
+		events = append(events, jobstore.Event{
+			Kind:      jobstore.EventWatchSendEvicted,
+			TS:        now,
+			WatchSend: &evictedState,
+		})
+		diagnostics = append(diagnostics, watchNotification(evictedState.Key.ResolvedWatchedIdentity, "watch send evicted: "+evictedState.TriggerIdentity))
+	}
+	return events, diagnostics
+}
+
+func (jm *jobManager) removePendingWatchSend(cfg *watchConfig, key jobstore.WatchSendKey) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	removePendingWatchSendLocked(cfg, key)
+}
+
+func removePendingWatchSendLocked(cfg *watchConfig, key jobstore.WatchSendKey) {
+	if cfg == nil || cfg.pending == nil {
+		return
+	}
+	if _, ok := cfg.pending[key]; !ok {
+		return
+	}
+	delete(cfg.pending, key)
+	for i, orderedKey := range cfg.pendingOrder {
+		if orderedKey != key {
+			continue
+		}
+		copy(cfg.pendingOrder[i:], cfg.pendingOrder[i+1:])
+		cfg.pendingOrder = cfg.pendingOrder[:len(cfg.pendingOrder)-1]
+		return
+	}
+}
+
+func watchSendTerminalEventsLocked(cfg *watchConfig, kind jobstore.EventKind, reason string, now time.Time) []jobstore.Event {
+	if cfg == nil || len(cfg.pending) == 0 {
+		return nil
+	}
+	events := make([]jobstore.Event, 0, len(cfg.pending))
+	for _, key := range cfg.pendingOrder {
+		state := cfg.pending[key]
+		if state == nil {
+			continue
+		}
+		terminal := *state
+		terminal.DiagnosticReason = reason
+		events = append(events, jobstore.Event{
+			Kind:      kind,
+			TS:        now,
+			WatchSend: &terminal,
+		})
+		delete(cfg.pending, key)
+	}
+	cfg.pendingOrder = nil
+	return events
+}
+
+func (jm *jobManager) appendWatchSendEvents(events []jobstore.Event) error {
+	for _, e := range events {
+		if err := jm.appendEvent(e); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func resolveWatchSendTarget(target, watchedJobID string) (string, error) {

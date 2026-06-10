@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -468,6 +470,228 @@ func TestWatchSendToWatchedWildcardJobNotificationDeliversConcreteTarget(t *test
 	}
 }
 
+func TestWatchSendPendingSnapshotCoalescesAndDoesNotRereadOutput(t *testing.T) {
+	jm := newTestJM(t)
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	_, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "(?i)ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "saw ready", IncludeFrame: true, IncludeExcerpt: true},
+	})
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("first READY\ninitial excerpt\n")); err != nil {
+		t.Fatalf("append first output: %v", err)
+	}
+	if _, err := jm.appendJobOutput(rec.JobID, jm.running[rec.JobID].output, []byte("second READY\nlatest excerpt\n")); err != nil {
+		t.Fatalf("append second output: %v", err)
+	}
+	if _, err := jm.running[rec.JobID].output.Append([]byte("do not reread\n")); err != nil {
+		t.Fatalf("append later output: %v", err)
+	}
+
+	pending := loadWatchSendRecord(t, jm).Pending
+	if len(pending) != 1 {
+		t.Fatalf("pending count = %d, want 1: %+v", len(pending), pending)
+	}
+	var state *jobstore.WatchSendState
+	for _, pendingState := range pending {
+		state = pendingState
+	}
+	if state.CoalescedCount != 1 {
+		t.Fatalf("coalesced_count = %d, want 1", state.CoalescedCount)
+	}
+	if !strings.Contains(state.Frame, "second READY") || !strings.Contains(state.Frame, "latest excerpt") {
+		t.Fatalf("pending frame did not snapshot latest trigger/output: %q", state.Frame)
+	}
+	if strings.Contains(state.Frame, "do not reread") {
+		t.Fatalf("pending frame reread later output: %q", state.Frame)
+	}
+}
+
+func TestWatchSendGenerationChangesAfterRestoreAndKeepsOldPending(t *testing.T) {
+	stateDir := t.TempDir()
+	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new job manager: %v", err)
+	}
+	jm.now = func() time.Time { return time.Unix(1000, 0).UTC() }
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "(?i)ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "first generation", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure first watch: %v", err)
+	}
+	jm.feedJobOutput(rec.JobID, []byte("first READY\n"))
+	firstPending := loadWatchSendRecord(t, jm).Pending
+	if len(firstPending) != 1 {
+		t.Fatalf("first pending count = %d, want 1", len(firstPending))
+	}
+	var firstKey jobstore.WatchSendKey
+	for key := range firstPending {
+		firstKey = key
+	}
+	if err := jm.store.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	reopened, err := newJobManager(stateDir, "S1", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("reopen job manager: %v", err)
+	}
+	reopened.now = func() time.Time { return time.Unix(1001, 0).UTC() }
+	reopened.send = jm.send
+	if _, err := reopened.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "(?i)ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "second generation", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure second watch: %v", err)
+	}
+	reopened.feedJobOutput(rec.JobID, []byte("second READY\n"))
+
+	pending := loadWatchSendRecord(t, reopened).Pending
+	if len(pending) != 2 {
+		t.Fatalf("pending count after restore = %d, want 2: %+v", len(pending), pending)
+	}
+	if _, ok := pending[firstKey]; !ok {
+		t.Fatalf("old pending key was overwritten or removed: %+v", pending)
+	}
+	for key, state := range pending {
+		if key == firstKey {
+			continue
+		}
+		if key.WatchGeneration == firstKey.WatchGeneration {
+			t.Fatalf("watch generation reused after restore: %q", key.WatchGeneration)
+		}
+		if !strings.Contains(state.Frame, "second READY") {
+			t.Fatalf("new pending frame = %q, want second trigger", state.Frame)
+		}
+		return
+	}
+	t.Fatal("second pending key not found")
+}
+
+func TestWatchSendClearDropsPending(t *testing.T) {
+	jm := newTestJM(t)
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.feedJobOutput(rec.JobID, []byte("ready\n"))
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("pending before clear = %d, want 1", len(pending))
+	}
+
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("pending after clear = %+v, want none", pending)
+	}
+}
+
+func TestWatchSendPendingDeliveredRemovesBeforeNextFailure(t *testing.T) {
+	jm := newTestJM(t)
+	failSend := true
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		if failSend {
+			return sendMessageResult{Err: errors.New("busy")}
+		}
+		return sendMessageResult{}
+	}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	jm.feedJobOutput(rec.JobID, []byte("ready one\n"))
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("pending after first failure = %d, want 1", len(pending))
+	}
+	failSend = false
+	jm.feedJobOutput(rec.JobID, []byte("ready two\n"))
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 0 {
+		t.Fatalf("pending after delivered = %+v, want none", pending)
+	}
+	failSend = true
+	jm.feedJobOutput(rec.JobID, []byte("ready three\n"))
+	pending := loadWatchSendRecord(t, jm).Pending
+	if len(pending) != 1 {
+		t.Fatalf("pending after second failure = %d, want 1", len(pending))
+	}
+	for _, state := range pending {
+		if state.CoalescedCount != 0 {
+			t.Fatalf("coalesced_count after delivered cleanup = %d, want 0", state.CoalescedCount)
+		}
+	}
+}
+
+func TestWatchSendCapEvictsOldestPendingAndNotifies(t *testing.T) {
+	jm := newTestJM(t)
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	if _, err := jm.configureWatch(watchArgs{
+		Target: "*",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	for i := 0; i < defaultWatchSendPendingCap+1; i++ {
+		jobID := "job_trigger_" + string(rune('A'+i))
+		jm.onSessionEvent(events.EventJobFinished, events.JobFinishedData{JobID: jobID, JobType: "delegate", Status: "completed"})
+	}
+
+	pending := loadWatchSendRecord(t, jm).Pending
+	if len(pending) != defaultWatchSendPendingCap {
+		t.Fatalf("pending count = %d, want %d", len(pending), defaultWatchSendPendingCap)
+	}
+	for key := range pending {
+		if key.ResolvedWatchedIdentity == "job_trigger_A" {
+			t.Fatalf("oldest pending key was not evicted: %+v", pending)
+		}
+	}
+	var evictionDiagnostics int
+	for _, n := range notified {
+		if strings.Contains(n.Reason, "watch send evicted") {
+			evictionDiagnostics++
+			if !strings.Contains(n.Reason, "job_trigger_A") {
+				t.Fatalf("diagnostic reason = %q, want evicted trigger", n.Reason)
+			}
+		}
+	}
+	if evictionDiagnostics != 1 {
+		t.Fatalf("eviction diagnostic count = %d, want 1: %+v", evictionDiagnostics, notified)
+	}
+}
+
 func createRunningDelegateWatchTarget(t *testing.T, jm *jobManager) *jobstore.JobRecord {
 	t.Helper()
 	rec, err := jm.createShell(createShellOpts{Command: "delegate-output"})
@@ -481,6 +705,26 @@ func createRunningDelegateWatchTarget(t *testing.T, jm *jobManager) *jobstore.Jo
 	rec = cloneJobRecord(run.rec)
 	jm.mu.Unlock()
 	return rec
+}
+
+func loadWatchSendRecord(t *testing.T, jm *jobManager) jobstore.WatchSendRecord {
+	t.Helper()
+	b, err := os.ReadFile(jm.dir + "/jobs.jsonl")
+	if err != nil {
+		t.Fatalf("read jobs.jsonl: %v", err)
+	}
+	var events []jobstore.Event
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var e jobstore.Event
+		if err := json.Unmarshal([]byte(line), &e); err != nil {
+			t.Fatalf("parse event %q: %v", line, err)
+		}
+		events = append(events, e)
+	}
+	return jobstore.FoldWatchSends(events)
 }
 
 func TestWatchSendToWatchedRejectsSessionEventsWithoutConcreteTarget(t *testing.T) {

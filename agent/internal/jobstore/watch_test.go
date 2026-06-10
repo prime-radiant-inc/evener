@@ -6,6 +6,28 @@ import (
 	"testing"
 )
 
+func TestFoldWatchSendPendingLatestWinsAndTerminalRemoves(t *testing.T) {
+	key := WatchSendKey{
+		VisibleSessionID:        "root",
+		WatchTarget:             "job_A",
+		ResolvedWatchedIdentity: "job_A",
+		ResolvedSendTo:          "job_sidecar",
+		WatchGeneration:         "wg_1",
+	}
+	events := []Event{
+		{Kind: EventWatchSendPending, Seq: 1, WatchSend: &WatchSendState{Key: key, DeliveryID: "d1", Message: "first"}},
+		{Kind: EventWatchSendPending, Seq: 2, WatchSend: &WatchSendState{Key: key, DeliveryID: "d2", Message: "latest", CoalescedCount: 1}},
+	}
+	rec := FoldWatchSends(events)
+	if got := rec.Pending[key].Message; got != "latest" {
+		t.Fatalf("message = %q, want latest", got)
+	}
+	events = append(events, Event{Kind: EventWatchSendDelivered, Seq: 3, WatchSend: &WatchSendState{Key: key, DeliveryID: "d2"}})
+	if got := FoldWatchSends(events).Pending; len(got) != 0 {
+		t.Fatalf("pending after delivered = %+v", got)
+	}
+}
+
 func TestOutputMatcherMatchesCompletedLine(t *testing.T) {
 	m := NewOutputMatcher(regexp.MustCompile(`(?i)ready`))
 	got := m.Feed([]byte("starting\nserver ready\n"))
