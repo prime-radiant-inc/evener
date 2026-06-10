@@ -307,13 +307,14 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate session %q is not retained", childID))
 	}
 
+	var run *runningJob
 	if fromWatch {
 		if jm, err := sessionJobManager(s); err == nil {
 			jm.mu.Lock()
-			if run := jm.running[rec.JobID]; run != nil {
-				run.fromWatch = true
-			}
+			run = jm.running[rec.JobID]
 			jm.mu.Unlock()
+		} else {
+			return sendMessageFailed(target, err)
 		}
 	}
 
@@ -324,6 +325,11 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 		return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is running but session %q is not live", target, childID))
 	}
 	if fromWatch {
+		if run == nil {
+			sub.mu.Unlock()
+			return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is running but runtime job is not live", target))
+		}
+		run.fromWatch.Store(true)
 		sub.runFromWatch = true
 	}
 
@@ -566,8 +572,8 @@ func (s *Session) attachDelegateJobWithID(jm *jobManager, childID, task string, 
 		signal:         func() { cancelDelegateSub(sub) },
 		done:           make(chan struct{}),
 		durableStarted: true,
-		fromWatch:      fromWatch,
 	}
+	run.fromWatch.Store(fromWatch)
 
 	jm.mu.Lock()
 	if jm.closing {

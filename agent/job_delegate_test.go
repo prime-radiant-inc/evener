@@ -1258,6 +1258,38 @@ func TestSendDelegateMessageObservedTerminalRunningRecordFailReturnsTargetTermin
 	}
 }
 
+func TestWatchOriginatedRunningSendDoesNotMarkNonLiveDelegateFromWatch(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	sub := &subagent{
+		id:      child.ID(),
+		sess:    child,
+		running: false,
+		status:  SubagentCompleted,
+		result:  "already done",
+		done:    make(chan struct{}),
+	}
+	parent.subagents.track(sub)
+	run, err := parent.attachDelegateJob(parent.jobManager, child.ID(), "already terminal", sub)
+	if err != nil {
+		t.Fatalf("attachDelegateJob: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := parent.finalizeDelegate(run.rec.JobID, child.ID(), sub); err != nil {
+			t.Fatalf("cleanup finalizeDelegate: %v", err)
+		}
+		waitForShellDone(t, parent.jobManager, run.rec.JobID)
+	})
+
+	res := parent.sendRunningDelegateMessage(run.rec.JobID, "watch-originated steer", run.rec, true)
+	if res.Err == nil || !strings.Contains(res.Err.Error(), "not_controllable") {
+		t.Fatalf("error = %v, want not_controllable", res.Err)
+	}
+	if run.fromWatch.Load() {
+		t.Fatalf("non-live delegate was marked watch-originated after undelivered send")
+	}
+}
+
 func TestWatchOriginatedResumeMarksJobStartedFromWatch(t *testing.T) {
 	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
 	c := llm.NewClient()

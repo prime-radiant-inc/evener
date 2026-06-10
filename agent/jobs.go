@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/serf/agent/events"
@@ -54,7 +55,7 @@ type runningJob struct {
 	delegateOutputAppended bool
 	delegateOutputWritten  int
 	afterDurableFinish     func()
-	fromWatch              bool
+	fromWatch              atomic.Bool
 }
 
 type finalizeAttempt struct {
@@ -354,7 +355,7 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 	}
 	fromWatch := false
 	if run != nil {
-		fromWatch = run.fromWatch
+		fromWatch = run.fromWatch.Load()
 	}
 	jm.emit(events.EventJobStarted, events.JobStartedData{
 		JobID:     e.JobID,
@@ -374,7 +375,7 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 	if run != nil && run.rec != nil {
 		jobType = string(run.rec.Type)
 		transcriptRef = run.rec.TranscriptRef
-		fromWatch = run.fromWatch
+		fromWatch = run.fromWatch.Load()
 	}
 	jm.emit(events.EventJobFinished, events.JobFinishedData{
 		JobID:         e.JobID,
