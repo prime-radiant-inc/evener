@@ -31,9 +31,23 @@ python3 "$SCRIPT_DIR/generate-board.py" "$WORKDIR/chess_board.png"
 
 # --- Build binary with current (or overridden) coordinator.md ---
 ORIG_COORD=""
+COORD_RESTORE_NEEDED=0
+restore_coordinator() {
+  if [ "$COORD_RESTORE_NEEDED" = "1" ] && [ -n "$ORIG_COORD" ]; then
+    cp "$ORIG_COORD" "$COORDINATOR_PATH"
+  fi
+  if [ -n "$ORIG_COORD" ]; then
+    rm -f "$ORIG_COORD"
+    ORIG_COORD=""
+  fi
+  COORD_RESTORE_NEEDED=0
+}
+
 if [ -n "$COORD_MD" ]; then
   ORIG_COORD=$(mktemp)
+  trap restore_coordinator EXIT
   cp "$COORDINATOR_PATH" "$ORIG_COORD"
+  COORD_RESTORE_NEEDED=1
   cp "$COORD_MD" "$COORDINATOR_PATH"
 fi
 
@@ -42,10 +56,8 @@ go clean -cache 2>/dev/null || true
 go build -o "/tmp/serf-coord-repro-${LABEL}" ./cmd/serf/ 2>&1
 
 # Restore original coordinator.md if we swapped it
-if [ -n "$ORIG_COORD" ]; then
-  cp "$ORIG_COORD" "$COORDINATOR_PATH"
-  rm -f "$ORIG_COORD"
-fi
+restore_coordinator
+trap - EXIT
 
 BINARY="/tmp/serf-coord-repro-${LABEL}"
 
