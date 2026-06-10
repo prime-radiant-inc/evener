@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/serf/agent/events"
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/llm"
@@ -1558,6 +1559,77 @@ func TestSendDelegateMessageRunningDelegateTargetSteersWithoutNewJob(t *testing.
 	waitForShellDone(t, sess.jobManager, first.JobID)
 }
 
+func TestWatchOriginatedSendToRunningDelegateSuppressesLifecycleWatch(t *testing.T) {
+	adapter := &cancelAwareDelegateAdapter{name: "openai", started: make(chan struct{})}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess := newDelegateTestSession(t, c)
+
+	first := sess.createDelegate(context.Background(), delegateArgs{
+		Task:       "stay running",
+		Background: true,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	select {
+	case <-adapter.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("delegate child did not start")
+	}
+	_, childID, err := decodeRef(first.TranscriptRef)
+	if err != nil {
+		t.Fatalf("decode transcript ref: %v", err)
+	}
+
+	var sent []sendMessageArgs
+	sess.jobManager.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{}
+	}
+	if _, err := sess.jobManager.configureWatch(watchArgs{
+		Target: "caller",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure watch: %v", err)
+	}
+
+	res := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:    first.JobID,
+		Message:   "watch-originated steer",
+		FromWatch: true,
+	})
+	if res.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
+	}
+
+	_, _ = sess.jobManager.stop(first.JobID)
+	waitForShellDone(t, sess.jobManager, first.JobID)
+
+	var end events.SubagentEndData
+	for deadline := time.After(2 * time.Second); ; {
+		select {
+		case ev := <-sess.Events():
+			data, ok := ev.Data.(events.SubagentEndData)
+			if ok && data.AgentID == childID {
+				end = data
+				goto gotEnd
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for subagent end event")
+		}
+	}
+
+gotEnd:
+	if !end.FromWatch {
+		t.Fatalf("subagent end event FromWatch = false; event = %+v", end)
+	}
+	if len(sent) != 0 {
+		t.Fatalf("watch-originated running delegate completion retriggered watch sends: %#v", sent)
+	}
+}
+
 func TestSendDelegateMessageRunningTargetHoldsRunLockThroughSteer(t *testing.T) {
 	parent := newTestSession(t)
 	child := newTestSession(t)
@@ -1586,7 +1658,7 @@ func TestSendDelegateMessageRunningTargetHoldsRunLockThroughSteer(t *testing.T) 
 
 	done := make(chan sendMessageResult, 1)
 	go func() {
-		done <- parent.sendRunningDelegateMessage(rec.JobID, "atomic steer", rec)
+		done <- parent.sendRunningDelegateMessage(rec.JobID, "atomic steer", rec, false)
 	}()
 
 	for deadline := time.Now().Add(time.Second); sub.mu.TryLock(); {

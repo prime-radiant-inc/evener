@@ -210,7 +210,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		running := sub.running
 		sub.mu.Unlock()
 		if running {
-			return s.sendRunningDelegateMessage(target, message, rec)
+			return s.sendRunningDelegateMessage(target, message, rec, args.FromWatch)
 		}
 		if strings.TrimSpace(args.OnFinished) == "fail" {
 			return sendMessageFailed(target, fmt.Errorf("target_terminal: delegate job %q is %s", target, rec.Status))
@@ -247,7 +247,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		if err != nil {
 			return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate session %q is running but active job is unknown: %w", childID, err))
 		}
-		return s.sendRunningDelegateMessage(target, message, active)
+		return s.sendRunningDelegateMessage(target, message, active, args.FromWatch)
 	}
 
 	run, finalizeErr, active, err := s.resumeOrFindRunningDelegate(jm, childID, message, sub, rec.TranscriptRef, args.FromWatch)
@@ -255,7 +255,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: resume delegate session %q: %w", childID, err))
 	}
 	if active != nil {
-		return s.sendRunningDelegateMessage(target, message, active)
+		return s.sendRunningDelegateMessage(target, message, active, args.FromWatch)
 	}
 	if !background {
 		return waitForResumedDelegateResult(ctx, jm, target, rec.JobID, run, finalizeErr, args.BlockTimeoutMS)
@@ -295,7 +295,7 @@ func findRunningDelegateByTranscriptRef(jm *jobManager, transcriptRef string) (*
 	return found, nil
 }
 
-func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobstore.JobRecord) sendMessageResult {
+func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobstore.JobRecord, fromWatch bool) sendMessageResult {
 	_, childID, err := decodeRef(rec.TranscriptRef)
 	if err != nil {
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: invalid transcript_ref for job %q: %w", target, err))
@@ -310,6 +310,9 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 	if !running {
 		sub.mu.Unlock()
 		return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is running but session %q is not live", target, childID))
+	}
+	if fromWatch {
+		sub.runFromWatch = true
 	}
 
 	sub.sess.Steer(message)
