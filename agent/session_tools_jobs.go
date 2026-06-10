@@ -663,9 +663,10 @@ func jobListFilterFromArgs(args map[string]any) (listFilter, error) {
 		return listFilter{}, err
 	}
 	return listFilter{
-		Statuses: statuses,
-		Types:    types,
-		Limit:    limit,
+		Statuses:      statuses,
+		Types:         types,
+		Limit:         limit,
+		IncludeNested: shellBoolArg(args, "include_nested"),
 	}, nil
 }
 

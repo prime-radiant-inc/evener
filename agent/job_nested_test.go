@@ -76,6 +76,57 @@ func TestNestedShellForwardsJobStarted(t *testing.T) {
 	}
 }
 
+func TestJobListIncludeNestedFilter(t *testing.T) {
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		_ = childJM.store.Close()
+	})
+
+	childJM.forward = parentJM.forwardEvent
+	childJM.parentJobID = "job_PARENTDELEGATE"
+
+	parentRec, err := parentJM.createShell(createShellOpts{Command: "sleep 1", Description: "parent"})
+	if err != nil {
+		t.Fatalf("create parent shell: %v", err)
+	}
+	childRec, err := childJM.createShell(createShellOpts{Command: "sleep 1", Description: "nested"})
+	if err != nil {
+		t.Fatalf("create child shell: %v", err)
+	}
+	t.Cleanup(func() {
+		finishRunningTestJob(t, parentJM, parentRec.JobID)
+		finishRunningTestJob(t, childJM, childRec.JobID)
+	})
+
+	defaultJobs := parentJM.list(listFilter{})
+	if containsJobID(defaultJobs, childRec.JobID) {
+		t.Fatalf("default parent list includes nested job %q: %+v", childRec.JobID, defaultJobs)
+	}
+	if !containsJobID(defaultJobs, parentRec.JobID) {
+		t.Fatalf("default parent list = %+v, want parent job %q", defaultJobs, parentRec.JobID)
+	}
+
+	nestedJobs := parentJM.list(listFilter{IncludeNested: true})
+	nestedRec := findListedJob(nestedJobs, childRec.JobID)
+	if nestedRec == nil {
+		t.Fatalf("include_nested parent list = %+v, want nested job %q", nestedJobs, childRec.JobID)
+	}
+	if nestedRec.ParentJobID != "job_PARENTDELEGATE" {
+		t.Fatalf("nested ParentJobID = %q, want job_PARENTDELEGATE", nestedRec.ParentJobID)
+	}
+	if !containsJobID(nestedJobs, parentRec.JobID) {
+		t.Fatalf("include_nested parent list = %+v, want parent job %q", nestedJobs, parentRec.JobID)
+	}
+}
+
 func TestNestedRunShellForwardsDelayedJobStarted(t *testing.T) {
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
 	if err != nil {
@@ -393,6 +444,27 @@ func TestDelegateChildDirectSpawnDoesNotInheritForwardSeam(t *testing.T) {
 }
 
 func assertJobForwardHookType(_ func(jobstore.Event)) {}
+
+func finishRunningTestJob(t *testing.T, jm *jobManager, jobID string) {
+	t.Helper()
+	code := 0
+	if err := jm.finalize(jobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
+		t.Fatalf("finalize job %q: %v", jobID, err)
+	}
+}
+
+func containsJobID(records []*jobstore.JobRecord, jobID string) bool {
+	return findListedJob(records, jobID) != nil
+}
+
+func findListedJob(records []*jobstore.JobRecord, jobID string) *jobstore.JobRecord {
+	for _, rec := range records {
+		if rec.JobID == jobID {
+			return rec
+		}
+	}
+	return nil
+}
 
 func keysOf(records map[string]*jobstore.JobRecord) []string {
 	keys := make([]string, 0, len(records))

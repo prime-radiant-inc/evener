@@ -138,6 +138,60 @@ func TestJobToolsControlBackgroundShellJob(t *testing.T) {
 	}
 }
 
+func TestJobListToolIncludeNestedSurfacesForwardedRecords(t *testing.T) {
+	parent := newTestSession(t)
+	child := newTestSession(t)
+	child.jobManager.forward = parent.jobManager.forwardEvent
+	child.jobManager.parentJobID = "job_PARENTDELEGATE"
+
+	parentRec, err := parent.jobManager.createShell(createShellOpts{Command: "sleep 1", Description: "parent"})
+	if err != nil {
+		t.Fatalf("create parent shell: %v", err)
+	}
+	childRec, err := child.jobManager.createShell(createShellOpts{Command: "sleep 1", Description: "nested"})
+	if err != nil {
+		t.Fatalf("create child shell: %v", err)
+	}
+	t.Cleanup(func() {
+		finishRunningTestJob(t, parent.jobManager, parentRec.JobID)
+		finishRunningTestJob(t, child.jobManager, childRec.JobID)
+	})
+
+	runList := func(args string) jobListToolOutput {
+		t.Helper()
+		res := parent.reg.ExecuteCall(context.Background(), parent.env, llm.ToolCallData{
+			ID:        "list",
+			Name:      "job_list",
+			Arguments: json.RawMessage(args),
+		})
+		if res.IsError {
+			t.Fatalf("job_list returned error: %s", res.Output)
+		}
+		var out jobListToolOutput
+		if err := json.Unmarshal([]byte(res.Output), &out); err != nil {
+			t.Fatalf("unmarshal job_list output: %v (output: %s)", err, res.Output)
+		}
+		return out
+	}
+
+	defaultOut := runList(`{}`)
+	if jobListToolOutputContains(defaultOut.Jobs, childRec.JobID) {
+		t.Fatalf("default job_list jobs = %+v, want nested job hidden", defaultOut.Jobs)
+	}
+	if !jobListToolOutputContains(defaultOut.Jobs, parentRec.JobID) {
+		t.Fatalf("default job_list jobs = %+v, want parent job %q", defaultOut.Jobs, parentRec.JobID)
+	}
+
+	nestedOut := runList(`{"include_nested":true}`)
+	nestedJob := findJobListToolOutput(nestedOut.Jobs, childRec.JobID)
+	if nestedJob == nil {
+		t.Fatalf("include_nested job_list jobs = %+v, want nested job %q", nestedOut.Jobs, childRec.JobID)
+	}
+	if nestedJob.ParentJobID == nil || *nestedJob.ParentJobID != "job_PARENTDELEGATE" {
+		t.Fatalf("nested job parent_job_id = %v, want job_PARENTDELEGATE", nestedJob.ParentJobID)
+	}
+}
+
 func TestJobWatchToolConfiguresWatch(t *testing.T) {
 	s := newTestSession(t)
 
@@ -816,7 +870,7 @@ func TestJobToolsDefinitions(t *testing.T) {
 		}
 	}
 	listProps := tooldefs.DefJobList().Parameters["properties"].(map[string]any)
-	for _, param := range []string{"status", "type", "limit", "cursor"} {
+	for _, param := range []string{"status", "type", "include_nested", "limit", "cursor"} {
 		if _, ok := listProps[param]; !ok {
 			t.Fatalf("job_list missing param %q", param)
 		}
@@ -1283,6 +1337,28 @@ func waitForJobOutputBytes(t *testing.T, s *Session, jobID string, wantBytes int
 	}
 	t.Fatalf("job_read_output never reached %d bytes; last output: %s", wantBytes, last)
 	return ""
+}
+
+type jobListToolOutput struct {
+	Jobs []jobListToolEntry `json:"jobs"`
+}
+
+type jobListToolEntry struct {
+	JobID       string  `json:"job_id"`
+	ParentJobID *string `json:"parent_job_id"`
+}
+
+func jobListToolOutputContains(records []jobListToolEntry, jobID string) bool {
+	return findJobListToolOutput(records, jobID) != nil
+}
+
+func findJobListToolOutput(records []jobListToolEntry, jobID string) *jobListToolEntry {
+	for i := range records {
+		if records[i].JobID == jobID {
+			return &records[i]
+		}
+	}
+	return nil
 }
 
 func containsString(values []string, want string) bool {

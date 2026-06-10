@@ -88,11 +88,12 @@ type createShellOpts struct {
 }
 
 type listFilter struct {
-	Status   jobstore.Status
-	Statuses []jobstore.Status
-	Type     jobstore.JobType
-	Types    []jobstore.JobType
-	Limit    int
+	Status        jobstore.Status
+	Statuses      []jobstore.Status
+	Type          jobstore.JobType
+	Types         []jobstore.JobType
+	Limit         int
+	IncludeNested bool
 }
 
 // jobsDir returns the per-session job directory: <stateDir>/sessions/<id>.
@@ -296,6 +297,9 @@ func (jm *jobManager) listWithError(filter listFilter) ([]*jobstore.JobRecord, e
 
 	jobs := make([]*jobstore.JobRecord, 0, len(recs))
 	for _, rec := range recs {
+		if !filter.IncludeNested && rec.ParentJobID != "" {
+			continue
+		}
 		if filter.Status != "" && rec.Status != filter.Status {
 			continue
 		}
