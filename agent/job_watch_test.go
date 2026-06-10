@@ -763,6 +763,171 @@ func TestWatchSendRestoreRetriesPendingBeforeTerminalNotifications(t *testing.T)
 	}
 }
 
+func TestWatchSendRestoreRetriesConcreteTerminalResumableDelegateWithoutRetainedChild(t *testing.T) {
+	stateDir := t.TempDir()
+	sessionID := "S1"
+	jobID := "job_restore_delegate"
+	now := time.Unix(1000, 0).UTC()
+	resumable := true
+
+	jm, err := newJobManager(stateDir, sessionID, func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new job manager: %v", err)
+	}
+	for _, event := range restoredWatchSendDelegateEvents(sessionID, jobID, now, &resumable, jobID) {
+		if err := jm.appendEvent(event); err != nil {
+			t.Fatalf("append %s: %v", event.Kind, err)
+		}
+	}
+	if err := jm.store.Close(); err != nil {
+		t.Fatalf("close seed store: %v", err)
+	}
+
+	reopened, err := newJobManager(stateDir, sessionID, func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("reopen job manager: %v", err)
+	}
+	defer reopened.store.Close()
+	var sent []sendMessageArgs
+	reopened.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{}
+	}
+	s := &Session{
+		id:         sessionID,
+		jobManager: reopened,
+		subagents:  newSubagentManager(nil),
+	}
+
+	if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
+		t.Fatalf("retry restored pending: %v", err)
+	}
+	if err := reopened.armPendingTerminalNotifications(); err != nil {
+		t.Fatalf("arm terminal notifications: %v", err)
+	}
+
+	if len(sent) != 1 {
+		t.Fatalf("restored concrete delegate sends = %d, want 1", len(sent))
+	}
+	if sent[0].Target != jobID {
+		t.Fatalf("send target = %q, want %q", sent[0].Target, jobID)
+	}
+	if pending := loadWatchSendRecord(t, reopened).Pending; len(pending) != 0 {
+		t.Fatalf("pending after restore retry = %+v, want none", pending)
+	}
+	events := loadJobStoreEvents(t, reopened)
+	deliveredSeq := int64(0)
+	notificationSeq := int64(0)
+	for _, event := range events {
+		switch event.Kind {
+		case jobstore.EventWatchSendDelivered:
+			deliveredSeq = event.Seq
+		case jobstore.EventJobNotificationPending:
+			notificationSeq = event.Seq
+		}
+	}
+	if deliveredSeq == 0 || notificationSeq == 0 || deliveredSeq > notificationSeq {
+		t.Fatalf("event order delivered=%d notification_pending=%d, want delivered before notification pending", deliveredSeq, notificationSeq)
+	}
+}
+
+func TestWatchSendRestoreDropsHardFailureTargetsOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		sendTo   string
+		events   func(string, time.Time) []jobstore.Event
+		wantText string
+	}{
+		{
+			name:     "unknown",
+			sendTo:   "job_missing",
+			events:   func(string, time.Time) []jobstore.Event { return nil },
+			wantText: "target_not_found",
+		},
+		{
+			name:   "non_messageable",
+			sendTo: "job_shell",
+			events: func(sessionID string, now time.Time) []jobstore.Event {
+				return []jobstore.Event{{
+					Kind:             jobstore.EventJobStarted,
+					TS:               now,
+					JobID:            "job_shell",
+					Type:             jobstore.JobShell,
+					OwnerSessionID:   sessionID,
+					VisibleToSession: sessionID,
+					StartedAt:        &now,
+				}}
+			},
+			wantText: "target_not_messageable",
+		},
+		{
+			name:   "non_resumable",
+			sendTo: "job_not_resumable",
+			events: func(sessionID string, now time.Time) []jobstore.Event {
+				resumable := false
+				return restoredWatchSendDelegateEvents(sessionID, "job_not_resumable", now, &resumable, "job_not_resumable")[:3]
+			},
+			wantText: "target_not_resumable",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			sessionID := "S1"
+			now := time.Unix(1000, 0).UTC()
+			var notified []jobNotification
+			jm, err := newJobManager(stateDir, sessionID, func(n jobNotification) { notified = append(notified, n) })
+			if err != nil {
+				t.Fatalf("new job manager: %v", err)
+			}
+			for _, event := range tc.events(sessionID, now) {
+				if err := jm.appendEvent(event); err != nil {
+					t.Fatalf("append %s: %v", event.Kind, err)
+				}
+			}
+			for _, event := range restoredWatchSendPendingEvents(sessionID, "job_watched", tc.sendTo, now) {
+				if err := jm.appendEvent(event); err != nil {
+					t.Fatalf("append %s: %v", event.Kind, err)
+				}
+			}
+			if err := jm.store.Close(); err != nil {
+				t.Fatalf("close seed store: %v", err)
+			}
+			reopened, err := newJobManager(stateDir, sessionID, func(n jobNotification) { notified = append(notified, n) })
+			if err != nil {
+				t.Fatalf("reopen job manager: %v", err)
+			}
+			defer reopened.store.Close()
+			reopened.send = func(context.Context, sendMessageArgs) sendMessageResult {
+				t.Fatal("hard-failure restored target should not call send")
+				return sendMessageResult{}
+			}
+			s := &Session{
+				id:         sessionID,
+				jobManager: reopened,
+				subagents:  newSubagentManager(nil),
+			}
+
+			if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
+				t.Fatalf("first retry restored pending: %v", err)
+			}
+			if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
+				t.Fatalf("second retry restored pending: %v", err)
+			}
+
+			if pending := loadWatchSendRecord(t, reopened).Pending; len(pending) != 0 {
+				t.Fatalf("pending after hard failure retry = %+v, want none", pending)
+			}
+			if len(notified) != 1 {
+				t.Fatalf("diagnostics = %d, want exactly 1: %+v", len(notified), notified)
+			}
+			if !strings.Contains(notified[0].Reason, "delivery_id=delivery_restore_pending") ||
+				!strings.Contains(notified[0].Reason, tc.wantText) {
+				t.Fatalf("diagnostic reason = %q, want delivery id and %q", notified[0].Reason, tc.wantText)
+			}
+		})
+	}
+}
+
 func TestWatchSendHardFailureDropsPendingAndDiagnosesOnceAcrossRestores(t *testing.T) {
 	stateDir := t.TempDir()
 	var notified []jobNotification
@@ -2603,6 +2768,62 @@ func createRunningDelegateWatchTarget(t *testing.T, jm *jobManager) *jobstore.Jo
 func loadWatchSendRecord(t *testing.T, jm *jobManager) jobstore.WatchSendRecord {
 	t.Helper()
 	return jobstore.FoldWatchSends(loadJobStoreEvents(t, jm))
+}
+
+func restoredWatchSendDelegateEvents(sessionID, jobID string, now time.Time, resumable *bool, sendTo string) []jobstore.Event {
+	endedAt := now.Add(time.Second)
+	events := []jobstore.Event{
+		{
+			Kind:             jobstore.EventJobStarted,
+			TS:               now,
+			JobID:            jobID,
+			Type:             jobstore.JobDelegate,
+			OwnerSessionID:   sessionID,
+			VisibleToSession: sessionID,
+			StartedAt:        &now,
+		},
+		{
+			Kind:          jobstore.EventJobSessionAssigned,
+			TS:            now,
+			JobID:         jobID,
+			TranscriptRef: encodeRef("", "child_"+jobID),
+			Resumable:     resumable,
+		},
+		{
+			Kind:        jobstore.EventJobFinished,
+			TS:          endedAt,
+			JobID:       jobID,
+			Status:      jobstore.StatusCompleted,
+			Reason:      "exit_zero",
+			EndedAt:     &endedAt,
+			TerminalGen: "term_" + jobID,
+		},
+	}
+	return append(events, restoredWatchSendPendingEvents(sessionID, jobID, sendTo, endedAt)...)
+}
+
+func restoredWatchSendPendingEvents(sessionID, watchedJobID, sendTo string, now time.Time) []jobstore.Event {
+	return []jobstore.Event{{
+		Kind: jobstore.EventWatchSendPending,
+		TS:   now,
+		WatchSend: &jobstore.WatchSendState{
+			Key: jobstore.WatchSendKey{
+				VisibleSessionID:        sessionID,
+				WatchTarget:             watchedJobID,
+				ResolvedWatchedIdentity: watchedJobID,
+				ResolvedSendTo:          sendTo,
+				WatchGeneration:         "watch_restore_generation",
+			},
+			DeliveryID:      "delivery_restore_pending",
+			UpdateSeq:       1,
+			Message:         "restored observe",
+			Frame:           "restored observe\n\ndelivery_id: delivery_restore_pending",
+			TriggerIdentity: watchedJobID,
+			TriggerReason:   "output_match: ready",
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		},
+	}}
 }
 
 func loadJobStoreEvents(t *testing.T, jm *jobManager) []jobstore.Event {

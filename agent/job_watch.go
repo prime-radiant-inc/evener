@@ -1611,36 +1611,53 @@ func (s *Session) retryRestoredPendingWatchSends(ctx context.Context) error {
 	if s == nil || s.jobManager == nil {
 		return nil
 	}
-	deliveries := s.jobManager.pendingWatchSendDeliveries(func(state *jobstore.WatchSendState) bool {
-		return s.restoredWatchSendTargetReady(state.Key.ResolvedSendTo)
-	})
-	return s.jobManager.retryPendingWatchSendDeliveries(ctx, deliveries)
+	deliveries := s.jobManager.pendingWatchSendDeliveries(nil)
+	for _, delivery := range deliveries {
+		class, reason := s.classifyRestoredWatchSendTarget(delivery.state.Key.ResolvedSendTo)
+		switch class {
+		case watchSendDelivered:
+			if err := s.jobManager.deliverPendingWatchSend(ctx, delivery.cfg, delivery.state, true); err != nil {
+				return err
+			}
+		case watchSendBusy:
+			continue
+		case watchSendHardFailure:
+			if err := s.jobManager.dropWatchSend(delivery.state, delivery.cfg, reason); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
-func (s *Session) restoredWatchSendTargetReady(target string) bool {
+func (s *Session) classifyRestoredWatchSendTarget(target string) (watchSendDeliveryClass, string) {
 	target = strings.TrimSpace(target)
 	if isRuntimeMessageAlias(target) {
-		return true
+		return watchSendDelivered, ""
 	}
-	if s == nil || s.jobManager == nil || target == "" || isUnsupportedRuntimeMessageAlias(target) {
-		return false
+	if target == "" {
+		return watchSendHardFailure, "target is required"
+	}
+	if isUnsupportedRuntimeMessageAlias(target) {
+		return watchSendHardFailure, fmt.Sprintf("target_not_found: job %q not found", target)
+	}
+	if s == nil || s.jobManager == nil {
+		return watchSendBusy, ""
 	}
 	rec, err := findJobRecord(s.jobManager, target)
-	if err != nil || rec.Type != jobstore.JobDelegate || !rec.Status.IsTerminal() || rec.Resumable == nil || !*rec.Resumable {
-		return false
-	}
-	_, childID, err := decodeRef(rec.TranscriptRef)
 	if err != nil {
-		return false
+		return watchSendHardFailure, "target_not_found: " + err.Error()
 	}
-	sub := s.subagents.get(childID)
-	if sub == nil || sub.sess == nil {
-		return false
+	if rec.Type != jobstore.JobDelegate {
+		return watchSendHardFailure, fmt.Sprintf("target_not_messageable: job %q has type %q", target, rec.Type)
 	}
-	sub.mu.Lock()
-	running := sub.running
-	sub.mu.Unlock()
-	return !running
+	if rec.Status == jobstore.StatusRunning {
+		return watchSendBusy, ""
+	}
+	if !rec.Status.IsTerminal() || rec.Resumable == nil || !*rec.Resumable {
+		return watchSendHardFailure, fmt.Sprintf("target_not_resumable: delegate job %q is %s", target, rec.Status)
+	}
+	return watchSendDelivered, ""
 }
 
 func (jm *jobManager) retryPendingWatchSendDeliveries(ctx context.Context, deliveries []pendingWatchSendDelivery) error {
@@ -1654,9 +1671,8 @@ func (jm *jobManager) retryPendingWatchSendDeliveries(ctx context.Context, deliv
 
 func (jm *jobManager) pendingWatchSendDeliveries(include func(*jobstore.WatchSendState) bool) []pendingWatchSendDelivery {
 	jm.mu.Lock()
-	defer jm.mu.Unlock()
 
-	var deliveries []pendingWatchSendDelivery
+	var all []pendingWatchSendDelivery
 	seen := make(map[*watchConfig]bool)
 	collect := func(cfg *watchConfig) {
 		if cfg == nil || seen[cfg] {
@@ -1665,11 +1681,11 @@ func (jm *jobManager) pendingWatchSendDeliveries(include func(*jobstore.WatchSen
 		seen[cfg] = true
 		for _, key := range cfg.pendingOrder {
 			state := cfg.pending[key]
-			if state == nil || !include(state) {
+			if state == nil {
 				continue
 			}
 			copied := *state
-			deliveries = append(deliveries, pendingWatchSendDelivery{cfg: cfg, state: copied})
+			all = append(all, pendingWatchSendDelivery{cfg: cfg, state: copied})
 		}
 	}
 	for _, cfg := range jm.watches {
@@ -1677,6 +1693,14 @@ func (jm *jobManager) pendingWatchSendDeliveries(include func(*jobstore.WatchSen
 	}
 	for cfg := range jm.terminalFlush {
 		collect(cfg)
+	}
+	jm.mu.Unlock()
+
+	deliveries := all[:0]
+	for _, delivery := range all {
+		if include == nil || include(&delivery.state) {
+			deliveries = append(deliveries, delivery)
+		}
 	}
 	return deliveries
 }
