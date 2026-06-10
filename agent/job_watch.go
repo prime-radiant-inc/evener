@@ -1276,10 +1276,14 @@ func (jm *jobManager) detachedWatchSendTerminalSnapshotsLocked(key watchKey, kin
 		if !watchConfigMatchesWatchKey(cfg, key) {
 			continue
 		}
-		cfgs = append(cfgs, cfg)
 		snapshot := watchSendTerminalSnapshotMatchingKeyLocked(cfg, key, kind, reason, now)
 		if len(snapshot.events) != 0 {
+			cfgs = append(cfgs, cfg)
 			snapshots = append(snapshots, snapshot)
+			continue
+		}
+		if watchConfigSendToMatchesWatchKey(cfg, key) {
+			cfgs = append(cfgs, cfg)
 		}
 	}
 	return cfgs, snapshots
@@ -1313,13 +1317,28 @@ func watchSendKeyMatchesWatchKey(pending jobstore.WatchSendKey, key watchKey) bo
 	if pending.VisibleSessionID != key.VisibleSessionID || pending.WatchTarget != key.Target {
 		return false
 	}
-	return key.SendTo == "" || pending.ResolvedSendTo == key.SendTo
+	if key.SendTo == "" || pending.ResolvedSendTo == key.SendTo {
+		return true
+	}
+	return key.SendTo == runtimeMessageAliasWatched &&
+		pending.ResolvedWatchedIdentity != "" &&
+		pending.ResolvedSendTo == pending.ResolvedWatchedIdentity
 }
 
 func watchConfigMatchesWatchKey(cfg *watchConfig, key watchKey) bool {
 	if cfg == nil || cfg.target != key.Target {
 		return false
 	}
+	if key.SendTo == "" {
+		return true
+	}
+	if key.SendTo == runtimeMessageAliasWatched {
+		return true
+	}
+	return watchConfigSendToMatchesWatchKey(cfg, key)
+}
+
+func watchConfigSendToMatchesWatchKey(cfg *watchConfig, key watchKey) bool {
 	if key.SendTo == "" {
 		return true
 	}
