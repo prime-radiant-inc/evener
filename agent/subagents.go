@@ -72,6 +72,7 @@ type subagent struct {
 	resultConsumed  bool // true after the first wait returns this run's result
 	endEmitted      bool
 	notifyArmed     bool               // true after this run armed its one terminal notification; reset on idle-resume
+	runFromWatch    bool               // true for a run resumed by job_watch.send; suppresses observer feedback loops
 	nudgeEnabled    bool               // true for default subagents that should be nudged to communicate
 	cancel          context.CancelFunc // cancels the current run's context
 	cancelRequested bool               // set by cancel_agent so finalize maps a context.Canceled run to cancelled
@@ -453,11 +454,15 @@ func (s *Session) startOrSteerSubagentRun(sub *subagent, input string) (bool, er
 	resetSubagentForRunLocked(sub, runCancel, resumeTime)
 	sub.mu.Unlock()
 
-	s.launchSubagentRun(runCtx, sub, runCancel, input)
+	s.launchSubagentRun(runCtx, sub, runCancel, input, false)
 	return true, nil
 }
 
 func resetSubagentForRunLocked(sub *subagent, cancel context.CancelFunc, startedAt time.Time) {
+	resetSubagentForRunLockedFromWatch(sub, cancel, startedAt, false)
+}
+
+func resetSubagentForRunLockedFromWatch(sub *subagent, cancel context.CancelFunc, startedAt time.Time, fromWatch bool) {
 	sub.done = make(chan struct{})
 	sub.running = true
 	sub.status = SubagentRunning
@@ -466,6 +471,7 @@ func resetSubagentForRunLocked(sub *subagent, cancel context.CancelFunc, started
 	sub.resultConsumed = false
 	sub.endEmitted = false
 	sub.notifyArmed = false
+	sub.runFromWatch = fromWatch
 	sub.cancel = cancel
 	sub.cancelRequested = false
 	sub.startedAt = startedAt
@@ -474,10 +480,11 @@ func resetSubagentForRunLocked(sub *subagent, cancel context.CancelFunc, started
 	sub.closeTimedOut = false
 }
 
-func (s *Session) launchSubagentRun(runCtx context.Context, sub *subagent, runCancel context.CancelFunc, input string) {
+func (s *Session) launchSubagentRun(runCtx context.Context, sub *subagent, runCancel context.CancelFunc, input string, fromWatch bool) {
 	s.emit(events.EventSubagentStart, events.SubagentStartData{
-		AgentID: sub.id,
-		Task:    input,
+		AgentID:   sub.id,
+		Task:      input,
+		FromWatch: fromWatch,
 	})
 
 	// Resume runs should also be independent of the caller's wait context.
@@ -679,6 +686,7 @@ func (a *subagent) run(ctx context.Context, input string) {
 	a.endEmitted = true
 	status := a.status
 	turnsUsed := a.turnsUsed
+	fromWatch := a.runFromWatch
 	emit := a.emit
 	// Arm exactly one terminal notification per run. Capture the metadata while
 	// locked, then deliver after unlocking — notify must never run under a.mu.
@@ -704,6 +712,7 @@ func (a *subagent) run(ctx context.Context, input string) {
 			AgentID:   a.id,
 			Status:    string(status),
 			TurnsUsed: turnsUsed,
+			FromWatch: fromWatch,
 		})
 	}
 	if armNow {

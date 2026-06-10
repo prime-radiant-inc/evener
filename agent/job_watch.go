@@ -120,6 +120,9 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 	if err := jm.validateWatchTarget(a.Target); err != nil {
 		return watchResult{}, err
 	}
+	if !a.Clear && a.OutputMatch != "" && isWatchSessionTarget(a.Target) {
+		return watchResult{}, errors.New("invalid_request: output_match requires a concrete job target")
+	}
 
 	sendTo := ""
 	if a.Send != nil {
@@ -378,7 +381,9 @@ func watchResultFromConfig(cfg *watchConfig, replacedExisting bool) watchResult 
 }
 
 func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventData) {
-	_ = data
+	if isWatchOriginEventData(data) {
+		return
+	}
 	var notifications []jobNotification
 	var deliveries []watchSendDelivery
 
@@ -415,6 +420,17 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 	// re-enter session event emission.
 	jm.enqueueWatchNotifications(notifications)
 	jm.deliverWatchSends(context.Background(), deliveries)
+}
+
+func isWatchOriginEventData(data events.EventData) bool {
+	switch d := data.(type) {
+	case events.SubagentStartData:
+		return d.FromWatch
+	case events.SubagentEndData:
+		return d.FromWatch
+	default:
+		return false
+	}
 }
 
 func isActiveWatchTargetLocked(jm *jobManager, target string) bool {
@@ -543,7 +559,13 @@ func (jm *jobManager) deliverWatchSends(ctx context.Context, deliveries []watchS
 }
 
 func (jm *jobManager) deliverWatchSend(ctx context.Context, cfg *watchConfig, jobID, trigger string) {
-	if jm.send == nil || cfg == nil || cfg.send == nil {
+	if cfg == nil || cfg.send == nil {
+		return
+	}
+	if jm.send == nil {
+		jm.enqueueWatchNotifications([]jobNotification{
+			watchNotification(jobID, "watch send failed: delivery unavailable"),
+		})
 		return
 	}
 	res := jm.send(ctx, sendMessageArgs{
@@ -553,7 +575,11 @@ func (jm *jobManager) deliverWatchSend(ctx context.Context, cfg *watchConfig, jo
 		BackgroundSet: true,
 		FromWatch:     true,
 	})
-	_ = res.Err
+	if res.Err != nil {
+		jm.enqueueWatchNotifications([]jobNotification{
+			watchNotification(jobID, "watch send failed: "+limitWatchText(res.Err.Error(), watchReadErrorMaxChars)),
+		})
+	}
 }
 
 func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger string) string {

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +47,21 @@ func TestConfigureWatchTargetNotFound(t *testing.T) {
 	_, err := jm.configureWatch(watchArgs{Target: "job_does_not_exist", OutputMatch: "ready"})
 	if err == nil {
 		t.Fatal("an unknown concrete job target must error (target_not_found)")
+	}
+}
+
+func TestConfigureWatchRejectsOutputMatchOnSessionTargets(t *testing.T) {
+	jm := newTestJM(t)
+	for _, target := range []string{"caller", "main", "watched", "*"} {
+		t.Run(target, func(t *testing.T) {
+			_, err := jm.configureWatch(watchArgs{Target: target, OutputMatch: "ready"})
+			if err == nil {
+				t.Fatal("session target output_match watch must error")
+			}
+			if !strings.Contains(err.Error(), "output_match requires a concrete job target") {
+				t.Fatalf("error = %v, want output_match concrete-target validation", err)
+			}
+		})
 	}
 }
 
@@ -148,6 +164,32 @@ func TestEventWatchIgnoresUnwatchedKind(t *testing.T) {
 	jm.onSessionEvent(events.EventToolCallEnd, nil)
 	if fires != 0 {
 		t.Errorf("an unwatched event kind must not fire; fires = %d", fires)
+	}
+}
+
+func TestEventWatchIgnoresWatchOriginatedSubagentEvents(t *testing.T) {
+	jm := newTestJM(t)
+	var sent []sendMessageArgs
+	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{}
+	}
+	if _, err := jm.configureWatch(watchArgs{
+		Target: "caller",
+		Events: []string{"job.notification"},
+		Send:   &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+
+	jm.onSessionEvent(events.EventSubagentEnd, events.SubagentEndData{AgentID: "obs", Status: "completed", FromWatch: true})
+	if len(sent) != 0 {
+		t.Fatalf("watch-originated subagent event retriggered watch send: %#v", sent)
+	}
+
+	jm.onSessionEvent(events.EventSubagentEnd, events.SubagentEndData{AgentID: "worker", Status: "completed"})
+	if len(sent) != 1 {
+		t.Fatalf("ordinary subagent event must trigger one watch send, got %d", len(sent))
 	}
 }
 
@@ -289,6 +331,38 @@ func TestWatchSendDeliversFrameToTarget(t *testing.T) {
 	}
 	if !strings.Contains(sent[0].Message, "output_match: server READY") {
 		t.Errorf("delivery frame must carry the match trigger; got %q", sent[0].Message)
+	}
+}
+
+func TestWatchSendFailureNotifiesCaller(t *testing.T) {
+	jm := newTestJM(t)
+	sendErr := errors.New("target_not_messageable: job_obs")
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: sendErr}
+	}
+	var notified []jobNotification
+	jm.enqueue = func(n jobNotification) { notified = append(notified, n) }
+
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	_, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "saw ready"},
+	})
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.feedJobOutput(rec.JobID, []byte("server ready\n"))
+
+	if len(notified) != 1 {
+		t.Fatalf("failed watch send must notify caller once, got %d", len(notified))
+	}
+	if notified[0].Status != jobNotificationEventWatch {
+		t.Fatalf("notification status = %q, want watch", notified[0].Status)
+	}
+	if !strings.Contains(notified[0].Reason, "watch send failed") ||
+		!strings.Contains(notified[0].Reason, "target_not_messageable") {
+		t.Fatalf("notification reason = %q, want bounded send failure", notified[0].Reason)
 	}
 }
 

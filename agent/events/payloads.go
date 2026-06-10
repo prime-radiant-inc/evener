@@ -192,8 +192,9 @@ type ErrorCause struct {
 
 // SubagentStartData is the payload for an EventSubagentStart event.
 type SubagentStartData struct {
-	AgentID string `json:"agent_id"`
-	Task    string `json:"task"`
+	AgentID   string `json:"agent_id"`
+	Task      string `json:"task"`
+	FromWatch bool   `json:"from_watch,omitempty"`
 }
 
 // SubagentEndData is the payload for an EventSubagentEnd event. Status carries the
@@ -202,6 +203,7 @@ type SubagentEndData struct {
 	AgentID   string `json:"agent_id"`
 	Status    string `json:"status"`
 	TurnsUsed int    `json:"turns_used"`
+	FromWatch bool   `json:"from_watch,omitempty"`
 }
 
 // PluginLoadedData is the payload for an EventPluginLoaded event.

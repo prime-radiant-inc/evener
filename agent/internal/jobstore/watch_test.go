@@ -2,6 +2,7 @@ package jobstore
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -77,5 +78,42 @@ func TestOutputMatcherFlushRepeatedlyClearsCarry(t *testing.T) {
 	}
 	if got := m.Flush(); len(got) != 0 {
 		t.Fatalf("second Flush must not re-match: %#v", got)
+	}
+}
+
+func TestOutputMatcherStripsCRLFBeforeMatching(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`ready$`))
+	got := m.Feed([]byte("server ready\r\n"))
+	if len(got) != 1 || got[0] != "server ready" {
+		t.Fatalf("CRLF line matches = %#v, want [\"server ready\"]", got)
+	}
+}
+
+func TestOutputMatcherBoundsOverlongCarry(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`ready`))
+	if got := m.Feed([]byte(strings.Repeat("x", maxOutputMatcherLineBytes+1))); len(got) != 0 {
+		t.Fatalf("overlong unterminated line must not match: %#v", got)
+	}
+	if len(m.carry) > maxOutputMatcherLineBytes {
+		t.Fatalf("carry length = %d, want <= %d", len(m.carry), maxOutputMatcherLineBytes)
+	}
+	if got := m.Feed([]byte("ready\n")); len(got) != 0 {
+		t.Fatalf("overlong line must be skipped through newline: %#v", got)
+	}
+	if got := m.Feed([]byte("server ready\n")); len(got) != 1 || got[0] != "server ready" {
+		t.Fatalf("matcher did not recover after overlong line: %#v", got)
+	}
+}
+
+func TestOutputMatcherFlushSkipsOverlongPartial(t *testing.T) {
+	m := NewOutputMatcher(regexp.MustCompile(`ready`))
+	if got := m.Feed([]byte(strings.Repeat("x", maxOutputMatcherLineBytes+1) + "ready")); len(got) != 0 {
+		t.Fatalf("overlong unterminated line must not match on Feed: %#v", got)
+	}
+	if got := m.Flush(); len(got) != 0 {
+		t.Fatalf("overlong final partial line must not match on Flush: %#v", got)
+	}
+	if got := m.Feed([]byte("server ready\n")); len(got) != 1 || got[0] != "server ready" {
+		t.Fatalf("matcher did not recover after overlong flush: %#v", got)
 	}
 }

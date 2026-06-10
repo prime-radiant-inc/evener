@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/schema"
 	"primeradiant.com/serf/llm"
 )
 
@@ -156,6 +157,49 @@ func TestJobNotificationTurnDeliversWatchNotification(t *testing.T) {
 	}
 	if got := sess.peekNotifications(); got != 0 {
 		t.Fatalf("peekNotifications = %d, want 0 after watch notification delivery", got)
+	}
+}
+
+func TestWatchNotificationHistoryDoesNotSuppressDurableTerminalNotification(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return finalResponse("ack") },
+		},
+	}
+	c.Register(adapter)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	jm, err := newJobManager(dir, sess.ID(), sess.enqueueJobNotification)
+	if err != nil {
+		t.Fatalf("newJobManager: %v", err)
+	}
+	sess.jobManager = jm
+	appendPendingJobNotificationRecord(t, jm, sess.ID())
+	sess.history = append(sess.history, schema.NewTurn(
+		schema.TurnSteering,
+		llm.User(formatJobNotificationBlock(watchNotification("job_X", "output_match: ready"))),
+	))
+	sess.enqueueJobNotification(jobNotification{JobID: "job_X"})
+
+	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
+	}
+
+	if !requestsContain(adapter.Requests(),
+		"<job-notification",
+		`job_id="job_X"`,
+		`event="completed"`,
+		`job_type="shell"`,
+		`status="completed"`,
+	) {
+		t.Fatalf("model request did not contain durable terminal notification after prior watch notification")
 	}
 }
 

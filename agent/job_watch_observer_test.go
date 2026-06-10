@@ -11,7 +11,7 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
-func TestObserverSidecarReceivesFrame(t *testing.T) {
+func TestWatchSendBuildsObserverFrame(t *testing.T) {
 	s := newTestSession(t)
 
 	shellRes := s.reg.ExecuteCall(context.Background(), s.env, llm.ToolCallData{

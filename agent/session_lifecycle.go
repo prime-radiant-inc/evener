@@ -918,12 +918,35 @@ func (s *Session) jobNotificationAlreadyInjected(jobID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, turn := range s.history {
-		if strings.Contains(turn.Message.Text(), "<job-notification") &&
-			strings.Contains(turn.Message.Text(), needle) {
+		if durableJobNotificationAlreadyInjected(turn.Message.Text(), needle) {
 			return true
 		}
 	}
 	return false
+}
+
+func durableJobNotificationAlreadyInjected(text, needle string) bool {
+	for {
+		start := strings.Index(text, "<job-notification")
+		if start < 0 {
+			return false
+		}
+		text = text[start:]
+		end := strings.Index(text, "</job-notification>")
+		block := text
+		if end >= 0 {
+			block = text[:end]
+		}
+		if strings.Contains(block, needle) &&
+			!strings.Contains(block, `event="watch"`) &&
+			!strings.Contains(block, `status="watch"`) {
+			return true
+		}
+		if end < 0 {
+			return false
+		}
+		text = text[end+len("</job-notification>"):]
+	}
 }
 
 func (s *Session) markJobNotificationsDelivered(notifs []deliverableJobNotification) []jobNotification {

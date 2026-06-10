@@ -250,7 +250,7 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		return s.sendRunningDelegateMessage(target, message, active)
 	}
 
-	run, finalizeErr, active, err := s.resumeOrFindRunningDelegate(jm, childID, message, sub, rec.TranscriptRef)
+	run, finalizeErr, active, err := s.resumeOrFindRunningDelegate(jm, childID, message, sub, rec.TranscriptRef, args.FromWatch)
 	if err != nil {
 		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: resume delegate session %q: %w", childID, err))
 	}
@@ -325,7 +325,7 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 	}
 }
 
-func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message string, sub *subagent, transcriptRef string) (*runningJob, <-chan error, *jobstore.JobRecord, error) {
+func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message string, sub *subagent, transcriptRef string, fromWatch bool) (*runningJob, <-chan error, *jobstore.JobRecord, error) {
 	sub.mu.Lock()
 	if sub.running {
 		sub.mu.Unlock()
@@ -355,7 +355,7 @@ func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message s
 		s.sendersWG.Done()
 		return nil, nil, nil, err
 	}
-	resetSubagentForRunLocked(sub, runCancel, resumeTime)
+	resetSubagentForRunLockedFromWatch(sub, runCancel, resumeTime, fromWatch)
 	done := sub.done
 	sub.mu.Unlock()
 
@@ -364,7 +364,7 @@ func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message s
 		<-done
 		finalizeErr <- s.finalizeDelegate(run.rec.JobID, childID, sub)
 	}()
-	s.launchSubagentRun(runCtx, sub, runCancel, message)
+	s.launchSubagentRun(runCtx, sub, runCancel, message, fromWatch)
 	return run, finalizeErr, nil, nil
 }
 
