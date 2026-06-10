@@ -719,12 +719,18 @@ func TestStopDelegateWithoutIncludeChildrenLeavesNestedRunning(t *testing.T) {
 
 func TestStopDelegateIncludeChildrenSurfacesChildStopError(t *testing.T) {
 	parent, _ := newNestedStopTestSession(t, "")
-	delegate, err := parent.jobManager.createShell(createShellOpts{Command: "delegate", Description: "delegate"})
-	if err != nil {
-		t.Fatalf("create delegate stand-in: %v", err)
+	se := newDelayedExitStreamingExecutor()
+	var releaseOnce sync.Once
+	delegate := runShell(context.Background(), parent.jobManager, se, shellArgs{
+		Command:    "delegate",
+		Background: true,
+	})
+	if delegate.JobID == "" {
+		t.Fatalf("runShell result = %+v, want background delegate job", delegate)
 	}
 	t.Cleanup(func() {
-		finishRunningTestJob(t, parent.jobManager, delegate.JobID)
+		releaseOnce.Do(func() { close(se.release) })
+		waitForShellDone(t, parent.jobManager, delegate.JobID)
 	})
 
 	startedAt := parent.jobManager.now()
@@ -743,7 +749,7 @@ func TestStopDelegateIncludeChildrenSurfacesChildStopError(t *testing.T) {
 		t.Fatalf("append stale forwarded child: %v", err)
 	}
 
-	_, err = jobStopTool(context.Background(), parent, map[string]any{
+	_, err := jobStopTool(context.Background(), parent, map[string]any{
 		"job_id":           delegate.JobID,
 		"include_children": true,
 	}, 20000)
@@ -752,6 +758,18 @@ func TestStopDelegateIncludeChildrenSurfacesChildStopError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `job "job_missing_child" not found`) {
 		t.Fatalf("job_stop error = %q, want missing child job", err.Error())
+	}
+	if se.signals.Load() != 1 {
+		t.Fatalf("delegate shell signals = %d, want primary delegate stopped despite child error", se.signals.Load())
+	}
+	releaseOnce.Do(func() { close(se.release) })
+	waitForShellDone(t, parent.jobManager, delegate.JobID)
+	delegateRec, err := findJobRecord(parent.jobManager, delegate.JobID)
+	if err != nil {
+		t.Fatalf("find delegate record: %v", err)
+	}
+	if delegateRec.Status != jobstore.StatusCancelled || delegateRec.Reason != "stopped_by_parent" {
+		t.Fatalf("delegate record = %+v, want cancelled/stopped_by_parent", delegateRec)
 	}
 }
 

@@ -369,20 +369,22 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 	if routed, _, err := s.nestedOrLocalJobManager(jobID); err == nil {
 		targetJM = routed
 	}
+	var childStopErr error
 	if shellBoolArg(args, "include_children") {
-		if _, err := s.stopChildren(jobID); err != nil {
-			return "", err
-		}
+		_, childStopErr = s.stopChildren(jobID)
 	}
 	rec, err := s.stopNestedOrLocal(jobID)
 	if err != nil {
-		return "", err
+		return "", errors.Join(childStopErr, err)
 	}
 	if shellBoolArg(args, "block") {
 		waitForJobDone(ctx, targetJM, jobID, time.Duration(timeoutMS)*time.Millisecond)
 		if _, latest, err := s.nestedOrLocalJobManager(jobID); err == nil {
 			rec = latest
 		}
+	}
+	if childStopErr != nil {
+		return "", childStopErr
 	}
 	return marshalBoundedJSON(jobStopResult{
 		JobID:  rec.JobID,
