@@ -351,6 +351,7 @@ func (jm *jobManager) newDelayedShell(args shellArgs) (*runningJob, error) {
 			Description:      args.Description,
 			OwnerSessionID:   jm.sessionID,
 			VisibleToSession: jm.sessionID,
+			ParentJobID:      jm.parentJobID,
 			StartedAt:        startedAt,
 			OutputPath:       outputPath,
 		},
@@ -407,7 +408,7 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 	rec := cloneJobRecord(run.rec)
 
 	startedAt := rec.StartedAt
-	if err := jm.appendEvent(jobstore.Event{
+	started := jobstore.Event{
 		Kind:             jobstore.EventJobStarted,
 		TS:               startedAt,
 		JobID:            rec.JobID,
@@ -416,12 +417,15 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 		Description:      rec.Description,
 		OwnerSessionID:   rec.OwnerSessionID,
 		VisibleToSession: rec.VisibleToSession,
+		ParentJobID:      rec.ParentJobID,
 		StartedAt:        &startedAt,
 		OutputPath:       rec.OutputPath,
-	}); err != nil {
+	}
+	if err := jm.appendEvent(started); err != nil {
 		jm.mu.Unlock()
 		return err
 	}
+	jm.forwardLocked(started)
 
 	if jm.running[run.rec.JobID] == run {
 		run.durableStarted = true

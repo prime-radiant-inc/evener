@@ -43,6 +43,17 @@ func TestNestedShellForwardsJobStarted(t *testing.T) {
 	if rec.ParentJobID != "job_PARENTDELEGATE" {
 		t.Fatalf("record ParentJobID = %q, want job_PARENTDELEGATE", rec.ParentJobID)
 	}
+	childRecords, err := childJM.store.Load()
+	if err != nil {
+		t.Fatalf("load child store: %v", err)
+	}
+	childRec := childRecords[rec.JobID]
+	if childRec == nil {
+		t.Fatalf("child store keys = %v, want job %q", keysOf(childRecords), rec.JobID)
+	}
+	if childRec.ParentJobID != "job_PARENTDELEGATE" {
+		t.Fatalf("child record ParentJobID = %q, want job_PARENTDELEGATE", childRec.ParentJobID)
+	}
 	parentRecords, err := parentJM.store.Load()
 	if err != nil {
 		t.Fatalf("load parent store: %v", err)
@@ -50,6 +61,74 @@ func TestNestedShellForwardsJobStarted(t *testing.T) {
 	parentRec, ok := parentRecords[rec.JobID]
 	if !ok {
 		t.Fatalf("parent store keys = %v, want forwarded job %q", keysOf(parentRecords), rec.JobID)
+	}
+	if parentRec.ParentJobID != "job_PARENTDELEGATE" {
+		t.Fatalf("parent record ParentJobID = %q, want job_PARENTDELEGATE", parentRec.ParentJobID)
+	}
+	if parentRec.OwnerSessionID != "CHILD" {
+		t.Fatalf("parent record OwnerSessionID = %q, want CHILD", parentRec.OwnerSessionID)
+	}
+	if parentRec.VisibleToSession != "PARENT" {
+		t.Fatalf("parent record VisibleToSession = %q, want PARENT", parentRec.VisibleToSession)
+	}
+	if parentRec.Status != jobstore.StatusRunning {
+		t.Fatalf("parent record Status = %q, want %q", parentRec.Status, jobstore.StatusRunning)
+	}
+}
+
+func TestNestedRunShellForwardsDelayedJobStarted(t *testing.T) {
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		_ = childJM.store.Close()
+	})
+
+	childJM.forward = parentJM.forwardEvent
+	childJM.parentJobID = "job_PARENTDELEGATE"
+	se := newDelayedExitStreamingExecutor()
+	var jobID string
+	t.Cleanup(func() {
+		close(se.release)
+		if jobID != "" {
+			waitForShellDone(t, childJM, jobID)
+		}
+	})
+
+	res := runShell(context.Background(), childJM, se, shellArgs{
+		Command:    "sleep 1",
+		Background: true,
+	})
+	if res.JobID == "" || !res.RunningInBackground {
+		t.Fatalf("runShell result = %+v, want background job", res)
+	}
+	jobID = res.JobID
+
+	childRecords, err := childJM.store.Load()
+	if err != nil {
+		t.Fatalf("load child store: %v", err)
+	}
+	childRec := childRecords[res.JobID]
+	if childRec == nil {
+		t.Fatalf("child store keys = %v, want job %q", keysOf(childRecords), res.JobID)
+	}
+	if childRec.ParentJobID != "job_PARENTDELEGATE" {
+		t.Fatalf("child record ParentJobID = %q, want job_PARENTDELEGATE", childRec.ParentJobID)
+	}
+
+	parentRecords, err := parentJM.store.Load()
+	if err != nil {
+		t.Fatalf("load parent store: %v", err)
+	}
+	parentRec := parentRecords[res.JobID]
+	if parentRec == nil {
+		t.Fatalf("parent store keys = %v, want forwarded job %q", keysOf(parentRecords), res.JobID)
 	}
 	if parentRec.ParentJobID != "job_PARENTDELEGATE" {
 		t.Fatalf("parent record ParentJobID = %q, want job_PARENTDELEGATE", parentRec.ParentJobID)
