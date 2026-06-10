@@ -29,7 +29,7 @@ Source: adversarial contract review of `docs/job-control.md` (as of `3cbafe1f`),
 | B6 | reconcile behavior from code and document it | Contract updated: `background=true` returns after startup and does not wait on `block_timeout_ms`; `background=false` uses bounded foreground wait for delegate/resume. |
 | B7a | reconcile behavior from code and document it | Contract updated: already-terminal concrete watch targets fail as `target_not_found`. |
 | B7b | mechanical contract edit | Contract updated: session-level watches end when configured scope ends, the session/job manager closes, or retention removes them. |
-| B7c | reconcile behavior from code and document it | Contract updated: `runtime_lost` does not by itself make a delegate non-resumable when transcript state is retained. |
+| B7c | decision still needs Jesse | Open. Current code cannot resume `stopped/runtime_lost` delegates from retained transcript state alone after restore because child-session runtime bookkeeping is not reconstructed. |
 | B7d | mechanical contract edit | Contract updated with notification `event` vocabulary. |
 | B7e | mechanical contract edit | Contract updated with one-line `runtime_lost` and `supervision_lost` definitions. |
 | B7f | reconcile behavior from code and document it | Contract updated: `description` is optional; shell uses the shell description argument; delegate has no v1 description argument and may derive/omit display labels. |
@@ -103,7 +103,7 @@ For checked items below, the table above is the current disposition and the item
 - [x] **B7. Small-gap pile** (one or two sentences each in the contract):
   - [x] a. `job_watch` on an *already-terminal* concrete job: error (`target_not_watchable`?) or no-op — currently only expiry-on-reaching-terminal is defined.
   - [x] b. What ends a `*`/session-level watch's "configured scope" (`### job_watch` Rules) — session end, TTL, something else.
-  - [x] c. Whether `stopped/runtime_lost` delegates are ordinarily resumable — the natural post-restart recovery path is left entirely to the per-record flag with no stated expectation (recommended: resumable whenever the child transcript is intact).
+  - [ ] c. Whether `stopped/runtime_lost` delegates are ordinarily resumable — the natural post-restart recovery path is left entirely to the per-record flag with no stated expectation (recommended: resumable whenever the child transcript is intact). Status: **deferred/open decision**. Current implementation does not support resume-from-retained-transcript alone after restore.
   - [x] d. Enumerate the notification `event` attribute vocabulary (`## Notifications` defines the attribute but never the value set: terminal kinds + promotion + progress/match…). Pairs with A3.
   - [x] e. `supervision_lost` vs `runtime_lost`: distinguished only by example today; give each a one-line definition.
   - [x] f. Delegate record `description` provenance: `job_list` shows one, `delegate` has no such param — state the derivation (truncated `task`?) or add the param.

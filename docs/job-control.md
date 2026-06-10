@@ -684,7 +684,7 @@ Rules:
 - `job_list` is authoritative durable inventory for the visible session. Use it to recover known jobs, find `job_id`s, inspect durable state, or include nested jobs. Do not call it repeatedly to wait for completion. For completion, rely on automatic terminal notifications; for output, call `job_read_output` once for the relevant job.
 - The owning session can list its own jobs.
 - A parent session may list nested jobs owned by delegate child sessions only when those jobs have been forwarded into parent-visible durable job records.
-- Delegate records include `transcript_ref`, `resumable`, and optional `not_resumable_reason`. A stopped delegate remains ordinarily resumable when its child transcript is retained; `runtime_lost` by itself does not make the delegate non-resumable. `job_send_message(target=...)` uses the same resumability contract when the target delegate job is terminal.
+- Delegate records include `transcript_ref`, `resumable`, and optional `not_resumable_reason`. `job_send_message(target=...)` uses the same resumability contract when the target delegate job is terminal. Open decision: after restart reconciliation, `stopped/runtime_lost` delegate resumability from retained transcript state alone is not part of the shipped normative contract; current Serf requires retained live child-session bookkeeping as well as transcript state.
 - Most agents should ignore session identity fields and use only `job_id`, `status`, `type`, `reason`, `transcript_ref`, and output metadata. Session fields are for diagnostics and nested/routed job visibility.
 
 Good inventory example:
