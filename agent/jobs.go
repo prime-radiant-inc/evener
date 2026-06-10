@@ -297,7 +297,7 @@ func (jm *jobManager) listWithError(filter listFilter) ([]*jobstore.JobRecord, e
 
 	jobs := make([]*jobstore.JobRecord, 0, len(recs))
 	for _, rec := range recs {
-		if !filter.IncludeNested && rec.ParentJobID != "" {
+		if !filter.IncludeNested && rec.ParentJobID != "" && rec.OwnerSessionID != jm.sessionID {
 			continue
 		}
 		if filter.Status != "" && rec.Status != filter.Status {
@@ -426,14 +426,17 @@ func (jm *jobManager) reconcileLostJobs() error {
 		if err := jm.appendEvent(finished); err != nil {
 			return err
 		}
-		if err := jm.appendEvent(jobstore.Event{
+		jm.forwardLocked(finished)
+		pending := jobstore.Event{
 			Kind:        jobstore.EventJobNotificationPending,
 			TS:          finished.TS,
 			JobID:       finished.JobID,
 			TerminalGen: finished.TerminalGen,
-		}); err != nil {
+		}
+		if err := jm.appendEvent(pending); err != nil {
 			return err
 		}
+		jm.forwardLocked(pending)
 		if jm.enqueue != nil {
 			jm.enqueue(jobNotification{
 				JobID:         finished.JobID,
@@ -674,16 +677,18 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 	})
 
 	for _, rec := range jobs {
+		pending := jobstore.Event{
+			Kind:        jobstore.EventJobNotificationPending,
+			TS:          jm.now(),
+			JobID:       rec.JobID,
+			TerminalGen: rec.TerminalGen,
+		}
 		if rec.NotifyState == jobstore.NotifyNotArmed {
-			if err := jm.appendEvent(jobstore.Event{
-				Kind:        jobstore.EventJobNotificationPending,
-				TS:          jm.now(),
-				JobID:       rec.JobID,
-				TerminalGen: rec.TerminalGen,
-			}); err != nil {
+			if err := jm.appendEvent(pending); err != nil {
 				return err
 			}
 		}
+		jm.forwardLocked(pending)
 		if jm.enqueue != nil {
 			jm.enqueue(jobNotification{
 				JobID:         rec.JobID,

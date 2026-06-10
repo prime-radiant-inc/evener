@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -141,6 +142,11 @@ func TestJobListIncludeNestedFilter(t *testing.T) {
 		finishRunningTestJob(t, parentJM, parentRec.JobID)
 		finishRunningTestJob(t, childJM, childRec.JobID)
 	})
+
+	childDefaultJobs := childJM.list(listFilter{})
+	if !containsJobID(childDefaultJobs, childRec.JobID) {
+		t.Fatalf("default child list = %+v, want owned nested job %q", childDefaultJobs, childRec.JobID)
+	}
 
 	defaultJobs := parentJM.list(listFilter{})
 	if containsJobID(defaultJobs, childRec.JobID) {
@@ -394,8 +400,8 @@ func TestJobStopClosedNestedOwnerErrors(t *testing.T) {
 	if err == nil {
 		t.Fatalf("job_stop closed nested owner succeeded with output %s, want not-controllable error", out)
 	}
-	if !strings.Contains(err.Error(), "not controllable") {
-		t.Fatalf("job_stop error = %q, want not controllable", err.Error())
+	if !strings.Contains(err.Error(), "not_controllable:") {
+		t.Fatalf("job_stop error = %q, want not_controllable", err.Error())
 	}
 }
 
@@ -824,6 +830,94 @@ func TestStopDelegateIncludeChildrenSurfacesChildStopError(t *testing.T) {
 	}
 }
 
+func TestStopOwnerGoneNestedTerminalRecordReturnsStatus(t *testing.T) {
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+	})
+	parent := &Session{id: "PARENT", jobManager: parentJM}
+	startedAt := time.Unix(1, 0).UTC()
+	endedAt := time.Unix(2, 0).UTC()
+	if err := parentJM.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               startedAt,
+		JobID:            "job_terminal_nested",
+		Type:             jobstore.JobShell,
+		Command:          "true",
+		Description:      "owner gone terminal nested",
+		OwnerSessionID:   "CHILDGONE",
+		VisibleToSession: "PARENT",
+		ParentJobID:      "job_DELEGATE",
+		StartedAt:        &startedAt,
+	}); err != nil {
+		t.Fatalf("append started: %v", err)
+	}
+	if err := parentJM.appendEvent(jobstore.Event{
+		Kind:        jobstore.EventJobFinished,
+		TS:          endedAt,
+		JobID:       "job_terminal_nested",
+		Status:      jobstore.StatusCompleted,
+		Reason:      "exit_zero",
+		EndedAt:     &endedAt,
+		TerminalGen: "terminal-generation",
+	}); err != nil {
+		t.Fatalf("append finished: %v", err)
+	}
+
+	out, err := jobStopTool(context.Background(), parent, map[string]any{
+		"job_id": "job_terminal_nested",
+	}, 20000)
+	if err != nil {
+		t.Fatalf("job_stop terminal owner-gone nested job: %v", err)
+	}
+	var stop jobStopResult
+	if err := json.Unmarshal([]byte(out), &stop); err != nil {
+		t.Fatalf("unmarshal job_stop: %v (output: %s)", err, out)
+	}
+	if stop.JobID != "job_terminal_nested" || stop.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("job_stop result = %+v, want completed terminal nested record", stop)
+	}
+}
+
+func TestStopOwnerGoneNestedRunningRecordIsNotControllable(t *testing.T) {
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+	})
+	parent := &Session{id: "PARENT", jobManager: parentJM}
+	startedAt := time.Unix(1, 0).UTC()
+	if err := parentJM.appendEvent(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               startedAt,
+		JobID:            "job_running_nested",
+		Type:             jobstore.JobShell,
+		Command:          "sleep 30",
+		Description:      "owner gone running nested",
+		OwnerSessionID:   "CHILDGONE",
+		VisibleToSession: "PARENT",
+		ParentJobID:      "job_DELEGATE",
+		StartedAt:        &startedAt,
+	}); err != nil {
+		t.Fatalf("append started: %v", err)
+	}
+
+	_, err = jobStopTool(context.Background(), parent, map[string]any{
+		"job_id": "job_running_nested",
+	}, 20000)
+	if err == nil {
+		t.Fatal("job_stop owner-gone running nested job succeeded, want not_controllable error")
+	}
+	if !strings.Contains(err.Error(), "not_controllable:") || strings.Contains(err.Error(), "not controllable") {
+		t.Fatalf("job_stop error = %q, want canonical not_controllable token", err.Error())
+	}
+}
+
 func TestForwardedNestedReconcilesRuntimeLostOnRestart(t *testing.T) {
 	parentDir := t.TempDir()
 
@@ -902,6 +996,217 @@ func TestForwardedNestedReconcilesRuntimeLostOnRestart(t *testing.T) {
 	}
 	if len(queued) != 1 {
 		t.Fatalf("second reconcile queued another notification: %+v", queued)
+	}
+}
+
+func TestNestedReconcileLostJobsForwardsRecoveredTerminalEvents(t *testing.T) {
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childDir := t.TempDir()
+	childSeed, err := newJobManager(childDir, "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+	})
+	startedAt := time.Unix(1, 0).UTC()
+	childStarted := jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               startedAt,
+		JobID:            "job_CHILD_LOST",
+		Type:             jobstore.JobShell,
+		Command:          "sleep 999",
+		Description:      "lost nested job",
+		ParentJobID:      "job_DELEGATE",
+		OwnerSessionID:   "CHILD",
+		VisibleToSession: "CHILD",
+		StartedAt:        &startedAt,
+	}
+	if err := childSeed.store.Append(childStarted); err != nil {
+		t.Fatalf("append child started: %v", err)
+	}
+	parentStarted := childStarted
+	parentStarted.VisibleToSession = "PARENT"
+	if err := parentJM.store.Append(parentStarted); err != nil {
+		t.Fatalf("append parent started: %v", err)
+	}
+	if err := childSeed.store.Close(); err != nil {
+		t.Fatalf("close child seed store: %v", err)
+	}
+
+	var childQueued []jobNotification
+	childJM, err := newJobManager(childDir, "CHILD", func(n jobNotification) {
+		childQueued = append(childQueued, n)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = childJM.store.Close()
+	})
+	childJM.forward = parentJM.forwardEvent
+	childJM.parentJobID = "job_DELEGATE"
+	childJM.now = func() time.Time { return time.Unix(100, 0).UTC() }
+
+	if err := childJM.reconcileLostJobs(); err != nil {
+		t.Fatalf("reconcile child lost jobs: %v", err)
+	}
+	parentRecs, err := parentJM.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentRec := parentRecs["job_CHILD_LOST"]
+	if parentRec == nil {
+		t.Fatalf("parent records = %v, want job_CHILD_LOST", keysOf(parentRecs))
+	}
+	if parentRec.Status != jobstore.StatusStopped || parentRec.Reason != "runtime_lost" || parentRec.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("parent forwarded recovered record = %+v, want stopped/runtime_lost pending", parentRec)
+	}
+	if len(childQueued) != 1 || childQueued[0].JobID != "job_CHILD_LOST" {
+		t.Fatalf("child queued = %+v, want recovered notification", childQueued)
+	}
+}
+
+func TestNestedArmPendingTerminalNotificationsForwardsRecoveredPending(t *testing.T) {
+	var parentQueued []jobNotification
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(n jobNotification) {
+		parentQueued = append(parentQueued, n)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		_ = childJM.store.Close()
+	})
+	childJM.forward = parentJM.forwardEvent
+	childJM.parentJobID = "job_DELEGATE"
+	rec, err := childJM.createShell(createShellOpts{Command: "true", Description: "nested terminal"})
+	if err != nil {
+		t.Fatalf("create child shell: %v", err)
+	}
+
+	appendErr := errors.New("pending append failed")
+	origAppend := childJM.appendEvent
+	childJM.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventJobNotificationPending {
+			return appendErr
+		}
+		return origAppend(e)
+	}
+	if err := childJM.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", nil); !errors.Is(err, appendErr) {
+		t.Fatalf("finalize error = %v, want %v", err, appendErr)
+	}
+	childJM.appendEvent = origAppend
+
+	parentRecs, err := parentJM.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parentRecs[rec.JobID]; got == nil || got.NotifyState != jobstore.NotifyNotArmed {
+		t.Fatalf("parent record before recovery = %+v, want terminal not_armed", got)
+	}
+	if err := childJM.armPendingTerminalNotifications(); err != nil {
+		t.Fatalf("arm child pending notifications: %v", err)
+	}
+	parentRecs, err = parentJM.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := parentRecs[rec.JobID]
+	if got == nil || got.Status != jobstore.StatusCompleted || got.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("parent record after recovery = %+v, want completed pending", got)
+	}
+	if len(parentQueued) != 1 || parentQueued[0].JobID != rec.JobID || parentQueued[0].Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("parent queued = %+v, want forwarded recovered notification", parentQueued)
+	}
+}
+
+func TestNestedArmPendingTerminalNotificationsForwardsAlreadyPending(t *testing.T) {
+	var parentQueued []jobNotification
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(n jobNotification) {
+		parentQueued = append(parentQueued, n)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		_ = childJM.store.Close()
+	})
+	childJM.forward = parentJM.forwardEvent
+	childJM.parentJobID = "job_DELEGATE"
+	startedAt := time.Unix(1, 0).UTC()
+	endedAt := time.Unix(2, 0).UTC()
+	started := jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               startedAt,
+		JobID:            "job_ALREADY_PENDING",
+		Type:             jobstore.JobShell,
+		Command:          "true",
+		Description:      "already pending nested",
+		ParentJobID:      "job_DELEGATE",
+		OwnerSessionID:   "CHILD",
+		VisibleToSession: "CHILD",
+		StartedAt:        &startedAt,
+	}
+	childStarted := started
+	if err := childJM.store.Append(childStarted); err != nil {
+		t.Fatalf("append child started: %v", err)
+	}
+	parentStarted := started
+	parentStarted.VisibleToSession = "PARENT"
+	if err := parentJM.store.Append(parentStarted); err != nil {
+		t.Fatalf("append parent started: %v", err)
+	}
+	finished := jobstore.Event{
+		Kind:        jobstore.EventJobFinished,
+		TS:          endedAt,
+		JobID:       "job_ALREADY_PENDING",
+		Status:      jobstore.StatusCompleted,
+		Reason:      "exit_zero",
+		EndedAt:     &endedAt,
+		TerminalGen: "terminal-generation",
+	}
+	if err := childJM.store.Append(finished); err != nil {
+		t.Fatalf("append child finished: %v", err)
+	}
+	if err := parentJM.store.Append(finished); err != nil {
+		t.Fatalf("append parent finished: %v", err)
+	}
+	if err := childJM.store.Append(jobstore.Event{
+		Kind:        jobstore.EventJobNotificationPending,
+		TS:          endedAt,
+		JobID:       "job_ALREADY_PENDING",
+		TerminalGen: "terminal-generation",
+	}); err != nil {
+		t.Fatalf("append child pending: %v", err)
+	}
+
+	if err := childJM.armPendingTerminalNotifications(); err != nil {
+		t.Fatalf("arm child pending notifications: %v", err)
+	}
+	parentRecs, err := parentJM.store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := parentRecs["job_ALREADY_PENDING"]
+	if got == nil || got.NotifyState != jobstore.NotifyPending {
+		t.Fatalf("parent record after pending recovery = %+v, want pending", got)
+	}
+	if len(parentQueued) != 1 || parentQueued[0].JobID != "job_ALREADY_PENDING" {
+		t.Fatalf("parent queued = %+v, want forwarded already-pending notification", parentQueued)
 	}
 }
 

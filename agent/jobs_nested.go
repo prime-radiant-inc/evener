@@ -77,7 +77,10 @@ func (s *Session) stopNestedOrLocal(jobID string) (*jobstore.JobRecord, error) {
 		return owner.stop(jobID)
 	}
 	if forwarded != nil && forwarded.ParentJobID != "" && forwarded.OwnerSessionID != s.id {
-		return nil, fmt.Errorf("job %q is not controllable: nested job owner runtime is not live", jobID)
+		if forwarded.Status.IsTerminal() {
+			return cloneJobRecord(forwarded), nil
+		}
+		return nil, fmt.Errorf("not_controllable: nested job %q owner runtime is not live", jobID)
 	}
 	return local.stop(jobID)
 }
