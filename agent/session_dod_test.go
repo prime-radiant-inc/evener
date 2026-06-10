@@ -4444,7 +4444,7 @@ func TestCloseAgent_ReturnsStructuredStatus(t *testing.T) {
 	}
 }
 
-func TestSession_SubagentEndEvent_EmittedOnce(t *testing.T) {
+func TestSession_DelegateJobFinishedEvent_EmittedOnce(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
@@ -4470,36 +4470,16 @@ func TestSession_SubagentEndEvent_EmittedOnce(t *testing.T) {
 		}
 	}()
 
-	spawnRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID:        "c1",
-		Name:      "spawn_agent",
-		Arguments: json.RawMessage(`{"task":"do something"}`),
+	res := sess.createDelegate(context.Background(), delegateArgs{
+		Task:           "do something",
+		Background:     false,
+		BlockTimeoutMS: 5000,
 	})
-	if spawnRes.IsError {
-		t.Fatalf("spawn_agent error: %s", spawnRes.Output)
+	if res.Err != nil {
+		t.Fatalf("delegate error: %v", res.Err)
 	}
-	var spawned map[string]any
-	if err := json.Unmarshal([]byte(spawnRes.Output), &spawned); err != nil {
-		t.Fatalf("unmarshal spawn result: %v", err)
-	}
-	agentID := fmt.Sprint(spawned["agent_id"])
-
-	waitRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID:        "c2",
-		Name:      "wait",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"timeout_ms":5000}`, agentID)),
-	})
-	if waitRes.IsError {
-		t.Fatalf("wait error: %s", waitRes.Output)
-	}
-
-	closeRes := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
-		ID:        "c3",
-		Name:      "close_agent",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"agent_id":%q}`, agentID)),
-	})
-	if closeRes.IsError {
-		t.Fatalf("close_agent error: %s", closeRes.Output)
+	if res.JobID == "" {
+		t.Fatal("delegate returned empty job_id")
 	}
 
 	sess.Close()
@@ -4507,12 +4487,12 @@ func TestSession_SubagentEndEvent_EmittedOnce(t *testing.T) {
 
 	endCount := 0
 	for _, ev := range evs {
-		if ev.Kind == events.EventJobFinished {
+		if data, ok := ev.Data.(events.JobFinishedData); ok && data.JobID == res.JobID {
 			endCount++
 		}
 	}
 	if endCount != 1 {
-		t.Fatalf("expected exactly 1 JOB_FINISHED event, got %d", endCount)
+		t.Fatalf("expected exactly 1 JOB_FINISHED event for job %q, got %d", res.JobID, endCount)
 	}
 }
 

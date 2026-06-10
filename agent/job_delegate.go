@@ -363,14 +363,13 @@ func (s *Session) resumeOrFindRunningDelegate(jm *jobManager, childID, message s
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
 
-	run, err := s.attachDelegateJob(jm, childID, message, sub)
+	run, err := s.attachDelegateJobFromWatch(jm, childID, message, sub, fromWatch)
 	if err != nil {
 		sub.mu.Unlock()
 		runCancel()
 		s.sendersWG.Done()
 		return nil, nil, nil, err
 	}
-	run.fromWatch = fromWatch
 	resetSubagentForRunLockedFromWatch(sub, runCancel, resumeTime, fromWatch)
 	done := sub.done
 	sub.mu.Unlock()
@@ -523,7 +522,7 @@ func (s *Session) attachAndBridgeDelegateJob(jm *jobManager, childID, task strin
 	if done == nil {
 		return nil, nil, nil, fmt.Errorf("delegate session %q has no active run", childID)
 	}
-	run, err := s.attachDelegateJobWithID(jm, childID, task, sub, jobID)
+	run, err := s.attachDelegateJobWithID(jm, childID, task, sub, jobID, false)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -536,10 +535,14 @@ func (s *Session) attachAndBridgeDelegateJob(jm *jobManager, childID, task strin
 }
 
 func (s *Session) attachDelegateJob(jm *jobManager, childID, task string, sub *subagent) (*runningJob, error) {
-	return s.attachDelegateJobWithID(jm, childID, task, sub, jobstore.NewJobID())
+	return s.attachDelegateJobWithID(jm, childID, task, sub, jobstore.NewJobID(), false)
 }
 
-func (s *Session) attachDelegateJobWithID(jm *jobManager, childID, task string, sub *subagent, jobID string) (*runningJob, error) {
+func (s *Session) attachDelegateJobFromWatch(jm *jobManager, childID, task string, sub *subagent, fromWatch bool) (*runningJob, error) {
+	return s.attachDelegateJobWithID(jm, childID, task, sub, jobstore.NewJobID(), fromWatch)
+}
+
+func (s *Session) attachDelegateJobWithID(jm *jobManager, childID, task string, sub *subagent, jobID string, fromWatch bool) (*runningJob, error) {
 	startedAt := jm.now()
 	transcriptRef := encodeRef("", childID)
 	outputPath := filepath.Join(jm.dir, "jobs", jobID+".log")
@@ -563,6 +566,7 @@ func (s *Session) attachDelegateJobWithID(jm *jobManager, childID, task string, 
 		signal:         func() { cancelDelegateSub(sub) },
 		done:           make(chan struct{}),
 		durableStarted: true,
+		fromWatch:      fromWatch,
 	}
 
 	jm.mu.Lock()
@@ -592,7 +596,7 @@ func (s *Session) attachDelegateJobWithID(jm *jobManager, childID, task string, 
 	}
 	jm.running[run.rec.JobID] = run
 	jm.mu.Unlock()
-	jm.emitJobStarted(started)
+	jm.emitJobStarted(started, run)
 	return run, nil
 }
 

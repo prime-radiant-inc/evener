@@ -1258,6 +1258,68 @@ func TestSendDelegateMessageObservedTerminalRunningRecordFailReturnsTargetTermin
 	}
 }
 
+func TestWatchOriginatedResumeMarksJobStartedFromWatch(t *testing.T) {
+	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess := newDelegateTestSession(t, c)
+
+	first := sess.createDelegate(context.Background(), delegateArgs{
+		Task:           "finish first",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate returned error: %v", first.Err)
+	}
+	if first.Status != jobstore.StatusCompleted {
+		t.Fatalf("first result = %+v, want completed", first)
+	}
+
+drain:
+	for {
+		select {
+		case <-sess.Events():
+		default:
+			break drain
+		}
+	}
+
+	second := sess.sendDelegateMessage(context.Background(), sendMessageArgs{
+		Target:    first.JobID,
+		Message:   "watch-originated resume",
+		FromWatch: true,
+	})
+	if second.Err != nil {
+		t.Fatalf("sendDelegateMessage returned error: %v", second.Err)
+	}
+	if second.Action != "resumed" || second.JobID == "" || second.JobID == first.JobID {
+		t.Fatalf("second result = %+v, want resumed new running delegate job", second)
+	}
+
+	var start events.JobStartedData
+	for deadline := time.After(2 * time.Second); ; {
+		select {
+		case ev := <-sess.Events():
+			data, ok := ev.Data.(events.JobStartedData)
+			if ok && data.JobID == second.JobID {
+				start = data
+				goto gotStart
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for resumed job started event")
+		}
+	}
+
+gotStart:
+	if !start.FromWatch {
+		t.Fatalf("watch-originated resumed JOB_STARTED FromWatch = false; event = %+v", start)
+	}
+
+	_, _ = sess.jobManager.stop(second.JobID)
+	waitForShellDone(t, sess.jobManager, second.JobID)
+}
+
 func TestSendDelegateMessageTerminalDelegateResumeSteersActiveRun(t *testing.T) {
 	adapter := &resumeBlockingDelegateAdapter{name: "openai", secondStarted: make(chan struct{})}
 	c := llm.NewClient()

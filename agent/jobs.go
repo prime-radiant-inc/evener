@@ -272,7 +272,7 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 	jm.forwardLocked(started)
 	jm.running[jobID] = run
 	jm.mu.Unlock()
-	jm.emitJobStarted(started)
+	jm.emitJobStarted(started, run)
 	return rec, nil
 }
 
@@ -348,14 +348,19 @@ func typeAllowed(jobType jobstore.JobType, allowed []jobstore.JobType) bool {
 	return false
 }
 
-func (jm *jobManager) emitJobStarted(e jobstore.Event) {
+func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 	if jm == nil || jm.emit == nil {
 		return
 	}
+	fromWatch := false
+	if run != nil {
+		fromWatch = run.fromWatch
+	}
 	jm.emit(events.EventJobStarted, events.JobStartedData{
-		JobID:   e.JobID,
-		JobType: string(e.Type),
-		Status:  string(jobstore.StatusRunning),
+		JobID:     e.JobID,
+		JobType:   string(e.Type),
+		Status:    string(jobstore.StatusRunning),
+		FromWatch: fromWatch,
 	})
 }
 
