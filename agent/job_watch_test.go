@@ -10,7 +10,10 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/events"
+	"primeradiant.com/serf/agent/execenv"
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/schema"
+	"primeradiant.com/serf/llm"
 )
 
 func TestConfigureWatchRequiresCondition(t *testing.T) {
@@ -642,6 +645,121 @@ func TestWatchSendCrashAfterSuccessBeforeDeliveredRetriesSameDeliveryID(t *testi
 	}
 	if !strings.Contains(retried[0].Message, "delivery_id: "+deliveryID) {
 		t.Fatalf("retry frame %q missing same delivery_id %q", retried[0].Message, deliveryID)
+	}
+}
+
+func TestWatchSendRestoreRetriesPendingBeforeTerminalNotifications(t *testing.T) {
+	stateDir := t.TempDir()
+	sessionID := "01KTESTWATCHRESTORE0000000000"
+	jobID := "job_restore_idle"
+	now := time.Unix(1000, 0).UTC()
+	endedAt := now.Add(time.Second)
+	resumable := true
+
+	if err := os.MkdirAll(jobsDir(stateDir, sessionID), 0o755); err != nil {
+		t.Fatalf("mkdir jobs dir: %v", err)
+	}
+	st, err := jobstore.Open(jobsDir(stateDir, sessionID) + "/jobs.jsonl")
+	if err != nil {
+		t.Fatalf("open job store: %v", err)
+	}
+	for _, event := range []jobstore.Event{
+		{
+			Kind:             jobstore.EventJobStarted,
+			TS:               now,
+			JobID:            jobID,
+			Type:             jobstore.JobDelegate,
+			OwnerSessionID:   sessionID,
+			VisibleToSession: sessionID,
+			StartedAt:        &now,
+		},
+		{
+			Kind:          jobstore.EventJobSessionAssigned,
+			TS:            now,
+			JobID:         jobID,
+			TranscriptRef: encodeRef("", "child_restore_idle"),
+			Resumable:     &resumable,
+		},
+		{
+			Kind:        jobstore.EventJobFinished,
+			TS:          endedAt,
+			JobID:       jobID,
+			Status:      jobstore.StatusCompleted,
+			Reason:      "exit_zero",
+			EndedAt:     &endedAt,
+			TerminalGen: "term_restore_idle",
+		},
+		{
+			Kind: jobstore.EventWatchSendPending,
+			TS:   endedAt,
+			WatchSend: &jobstore.WatchSendState{
+				Key: jobstore.WatchSendKey{
+					VisibleSessionID:        sessionID,
+					WatchTarget:             jobID,
+					ResolvedWatchedIdentity: jobID,
+					ResolvedSendTo:          runtimeMessageAliasCaller,
+					WatchGeneration:         "watch_restore_generation",
+				},
+				DeliveryID:      "delivery_restore_pending",
+				UpdateSeq:       1,
+				Message:         "restored observe",
+				Frame:           "restored observe\n\ndelivery_id: delivery_restore_pending",
+				TriggerIdentity: jobID,
+				TriggerReason:   "output_match: ready",
+				CreatedAt:       endedAt,
+				UpdatedAt:       endedAt,
+			},
+		},
+	} {
+		if err := st.Append(event); err != nil {
+			t.Fatalf("append %s: %v", event.Kind, err)
+		}
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close job store: %v", err)
+	}
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	meta := schema.SessionMeta{
+		ID:        sessionID,
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{StateDir: stateDir})
+	if err != nil {
+		t.Fatalf("restore session: %v", err)
+	}
+	defer restored.Close()
+
+	queue := restored.SteeringQueueSnapshot()
+	if len(queue) != 1 {
+		t.Fatalf("steering queue = %+v, want restored pending watch send", queue)
+	}
+	if !strings.Contains(queue[0].Text, "restored observe") ||
+		!strings.Contains(queue[0].Text, "delivery_id: delivery_restore_pending") {
+		t.Fatalf("restored watch send text = %q, want stored frame with delivery id", queue[0].Text)
+	}
+	if pending := loadWatchSendRecord(t, restored.jobManager).Pending; len(pending) != 0 {
+		t.Fatalf("pending after restore retry = %+v, want none", pending)
+	}
+
+	events := loadJobStoreEvents(t, restored.jobManager)
+	deliveredSeq := int64(0)
+	notificationSeq := int64(0)
+	for _, event := range events {
+		switch event.Kind {
+		case jobstore.EventWatchSendDelivered:
+			deliveredSeq = event.Seq
+		case jobstore.EventJobNotificationPending:
+			notificationSeq = event.Seq
+		}
+	}
+	if deliveredSeq == 0 || notificationSeq == 0 || deliveredSeq > notificationSeq {
+		t.Fatalf("event order delivered=%d notification_pending=%d, want delivered before notification pending", deliveredSeq, notificationSeq)
 	}
 }
 
@@ -2484,6 +2602,11 @@ func createRunningDelegateWatchTarget(t *testing.T, jm *jobManager) *jobstore.Jo
 
 func loadWatchSendRecord(t *testing.T, jm *jobManager) jobstore.WatchSendRecord {
 	t.Helper()
+	return jobstore.FoldWatchSends(loadJobStoreEvents(t, jm))
+}
+
+func loadJobStoreEvents(t *testing.T, jm *jobManager) []jobstore.Event {
+	t.Helper()
 	b, err := os.ReadFile(jm.dir + "/jobs.jsonl")
 	if err != nil {
 		t.Fatalf("read jobs.jsonl: %v", err)
@@ -2499,7 +2622,7 @@ func loadWatchSendRecord(t *testing.T, jm *jobManager) jobstore.WatchSendRecord 
 		}
 		events = append(events, e)
 	}
-	return jobstore.FoldWatchSends(events)
+	return events
 }
 
 func runtimeWatchSendPending(t *testing.T, jm *jobManager) map[jobstore.WatchSendKey]*jobstore.WatchSendState {

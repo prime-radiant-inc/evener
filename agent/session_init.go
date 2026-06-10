@@ -315,10 +315,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	jm.enqueue = s.enqueueJobNotificationAndNotify
 	jm.send = s.sendDelegateMessage
 	jm.emit = s.emit
+	s.jobManager = jm
+	if err := s.retryRestoredPendingWatchSends(context.Background()); err != nil {
+		return nil, fmt.Errorf("watch send retry: %w", err)
+	}
 	if err := jm.armPendingTerminalNotifications(); err != nil {
 		return nil, fmt.Errorf("job notifications: %w", err)
 	}
-	s.jobManager = jm
 
 	// Restore persisted goal state before initSessionState so the goal store is
 	// populated before any turn runs. No kick is wired yet ("loaded but idle"):

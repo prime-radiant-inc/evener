@@ -1607,6 +1607,42 @@ func (jm *jobManager) retryPendingWatchSendsForWatchTarget(ctx context.Context, 
 	return jm.retryPendingWatchSendDeliveries(ctx, deliveries)
 }
 
+func (s *Session) retryRestoredPendingWatchSends(ctx context.Context) error {
+	if s == nil || s.jobManager == nil {
+		return nil
+	}
+	deliveries := s.jobManager.pendingWatchSendDeliveries(func(state *jobstore.WatchSendState) bool {
+		return s.restoredWatchSendTargetReady(state.Key.ResolvedSendTo)
+	})
+	return s.jobManager.retryPendingWatchSendDeliveries(ctx, deliveries)
+}
+
+func (s *Session) restoredWatchSendTargetReady(target string) bool {
+	target = strings.TrimSpace(target)
+	if isRuntimeMessageAlias(target) {
+		return true
+	}
+	if s == nil || s.jobManager == nil || target == "" || isUnsupportedRuntimeMessageAlias(target) {
+		return false
+	}
+	rec, err := findJobRecord(s.jobManager, target)
+	if err != nil || rec.Type != jobstore.JobDelegate || !rec.Status.IsTerminal() || rec.Resumable == nil || !*rec.Resumable {
+		return false
+	}
+	_, childID, err := decodeRef(rec.TranscriptRef)
+	if err != nil {
+		return false
+	}
+	sub := s.subagents.get(childID)
+	if sub == nil || sub.sess == nil {
+		return false
+	}
+	sub.mu.Lock()
+	running := sub.running
+	sub.mu.Unlock()
+	return !running
+}
+
 func (jm *jobManager) retryPendingWatchSendDeliveries(ctx context.Context, deliveries []pendingWatchSendDelivery) error {
 	for _, delivery := range deliveries {
 		if err := jm.deliverPendingWatchSend(ctx, delivery.cfg, delivery.state, true); err != nil {
