@@ -104,6 +104,7 @@ type watchSendDelivery struct {
 	cfg                      *watchConfig
 	key                      watchKey
 	generation               string
+	updateSeq                uint64
 	allowAfterTerminalExpiry bool
 	send                     *watchSendArgs
 	message                  string
@@ -174,15 +175,16 @@ func (jm *jobManager) configureWatch(a watchArgs) (watchResult, error) {
 			jm.mu.Unlock()
 			return result, nil
 		}
-		dropped := watchSendTerminalEventsLocked(existing, jobstore.EventWatchSendDropped, "watch replaced", jm.now())
+		dropped := []watchSendTerminalSnapshot{watchSendTerminalSnapshotsLocked(existing, jobstore.EventWatchSendDropped, "watch replaced", jm.now())}
 		closeWatchConfig(existing)
 		stop := cfg.initProgressStop()
 		jm.watches[key] = cfg
 		result := watchResultFromConfig(cfg, true)
 		jm.mu.Unlock()
-		if err := jm.appendWatchSendEvents(dropped); err != nil {
+		if err := jm.appendWatchSendTerminalSnapshots(dropped); err != nil {
 			return watchResult{}, err
 		}
+		jm.removeWatchSendTerminalSnapshots(dropped)
 		jm.startProgressTimer(key, cfg, stop)
 		return result, nil
 	}
@@ -388,10 +390,12 @@ func (jm *jobManager) watchSendSnapshot(cfg *watchConfig, jobID, trigger string)
 	if cfg.send != nil {
 		sendTo = cfg.send.To
 	}
+	cfg.nextUpdateSeq++
 	return watchSendDelivery{
 		cfg:              cfg,
 		key:              watchKey{VisibleSessionID: jm.sessionID, Target: cfg.target, SendTo: sendTo},
 		generation:       cfg.generation,
+		updateSeq:        cfg.nextUpdateSeq,
 		send:             cloneWatchSendArgs(cfg.send),
 		visibleSessionID: jm.sessionID,
 		watchTarget:      cfg.target,
@@ -401,25 +405,26 @@ func (jm *jobManager) watchSendSnapshot(cfg *watchConfig, jobID, trigger string)
 }
 
 func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
-	var dropped []jobstore.Event
+	var dropped []watchSendTerminalSnapshot
 	jm.mu.Lock()
 	if key.SendTo != "" {
-		dropped = append(dropped, watchSendTerminalEventsLocked(jm.watches[key], jobstore.EventWatchSendDropped, "watch cleared", jm.now())...)
+		dropped = append(dropped, watchSendTerminalSnapshotsLocked(jm.watches[key], jobstore.EventWatchSendDropped, "watch cleared", jm.now()))
 		closeWatchConfig(jm.watches[key])
 		delete(jm.watches, key)
 	} else {
 		for existingKey, cfg := range jm.watches {
 			if existingKey.VisibleSessionID == key.VisibleSessionID && existingKey.Target == key.Target {
-				dropped = append(dropped, watchSendTerminalEventsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now())...)
+				dropped = append(dropped, watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "watch cleared", jm.now()))
 				closeWatchConfig(cfg)
 				delete(jm.watches, existingKey)
 			}
 		}
 	}
 	jm.mu.Unlock()
-	if err := jm.appendWatchSendEvents(dropped); err != nil {
+	if err := jm.appendWatchSendTerminalSnapshots(dropped); err != nil {
 		return watchResult{}, err
 	}
+	jm.removeWatchSendTerminalSnapshots(dropped)
 
 	return watchResult{
 		Target:   key.Target,
@@ -427,13 +432,13 @@ func (jm *jobManager) clearWatch(key watchKey) (watchResult, error) {
 	}, nil
 }
 
-func (jm *jobManager) pruneWatchedTargetWatchesLocked(jobID, reason string, now time.Time) []jobstore.Event {
-	var dropped []jobstore.Event
+func (jm *jobManager) pruneWatchedTargetWatchesLocked(jobID, reason string, now time.Time) []watchSendTerminalSnapshot {
+	var dropped []watchSendTerminalSnapshot
 	for key, cfg := range jm.watches {
 		if key.Target != jobID {
 			continue
 		}
-		dropped = append(dropped, watchSendTerminalEventsLocked(cfg, jobstore.EventWatchSendDropped, reason, now)...)
+		dropped = append(dropped, watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, reason, now))
 		closeWatchConfig(cfg)
 		delete(jm.watches, key)
 	}
@@ -768,7 +773,6 @@ func (jm *jobManager) deliverWatchSend(ctx context.Context, d watchSendDelivery)
 		return
 	}
 	delivered := state
-	jm.removePendingWatchSend(d.cfg, delivered.Key)
 	if err := jm.appendWatchSendEvents([]jobstore.Event{{
 		Kind:      jobstore.EventWatchSendDelivered,
 		TS:        jm.now(),
@@ -777,7 +781,9 @@ func (jm *jobManager) deliverWatchSend(ctx context.Context, d watchSendDelivery)
 		jm.enqueueWatchNotifications([]jobNotification{
 			watchNotification(d.watchedIdentity, "watch send delivered state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})
+		return
 	}
+	jm.removePendingWatchSend(d.cfg, delivered.Key, delivered.UpdateSeq)
 }
 
 func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string) jobstore.WatchSendState {
@@ -790,6 +796,7 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 			WatchGeneration:         d.generation,
 		},
 		DeliveryID:      jobstore.NewWatchSendDeliveryID(),
+		UpdateSeq:       d.updateSeq,
 		Message:         d.message,
 		Frame:           d.frame,
 		TriggerIdentity: d.watchedIdentity,
@@ -846,8 +853,6 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 		state.CreatedAt = now
 	}
 	state.UpdatedAt = now
-	cfg.nextUpdateSeq++
-	state.UpdateSeq = cfg.nextUpdateSeq
 	pendingState := state
 	cfg.pending[state.Key] = &pendingState
 
@@ -878,18 +883,19 @@ func (jm *jobManager) recordWatchSendPending(state jobstore.WatchSendState, d wa
 	return events, diagnostics
 }
 
-func (jm *jobManager) removePendingWatchSend(cfg *watchConfig, key jobstore.WatchSendKey) {
+func (jm *jobManager) removePendingWatchSend(cfg *watchConfig, key jobstore.WatchSendKey, updateSeq uint64) {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
-	removePendingWatchSendLocked(cfg, key)
+	removePendingWatchSendLocked(cfg, key, updateSeq)
 	jm.forgetTerminalFlushIfEmptyLocked(cfg)
 }
 
-func removePendingWatchSendLocked(cfg *watchConfig, key jobstore.WatchSendKey) {
+func removePendingWatchSendLocked(cfg *watchConfig, key jobstore.WatchSendKey, updateSeq uint64) {
 	if cfg == nil || cfg.pending == nil {
 		return
 	}
-	if _, ok := cfg.pending[key]; !ok {
+	pending, ok := cfg.pending[key]
+	if !ok || updateSeq < pending.UpdateSeq {
 		return
 	}
 	delete(cfg.pending, key)
@@ -910,11 +916,17 @@ func (jm *jobManager) forgetTerminalFlushIfEmptyLocked(cfg *watchConfig) {
 	delete(jm.terminalFlush, cfg)
 }
 
-func watchSendTerminalEventsLocked(cfg *watchConfig, kind jobstore.EventKind, reason string, now time.Time) []jobstore.Event {
+type watchSendTerminalSnapshot struct {
+	cfg    *watchConfig
+	events []jobstore.Event
+}
+
+func watchSendTerminalSnapshotsLocked(cfg *watchConfig, kind jobstore.EventKind, reason string, now time.Time) watchSendTerminalSnapshot {
+	snapshot := watchSendTerminalSnapshot{cfg: cfg}
 	if cfg == nil || len(cfg.pending) == 0 {
-		return nil
+		return snapshot
 	}
-	events := make([]jobstore.Event, 0, len(cfg.pending))
+	snapshot.events = make([]jobstore.Event, 0, len(cfg.pending))
 	for _, key := range cfg.pendingOrder {
 		state := cfg.pending[key]
 		if state == nil {
@@ -922,15 +934,35 @@ func watchSendTerminalEventsLocked(cfg *watchConfig, kind jobstore.EventKind, re
 		}
 		terminal := *state
 		terminal.DiagnosticReason = reason
-		events = append(events, jobstore.Event{
+		snapshot.events = append(snapshot.events, jobstore.Event{
 			Kind:      kind,
 			TS:        now,
 			WatchSend: &terminal,
 		})
-		delete(cfg.pending, key)
 	}
-	cfg.pendingOrder = nil
-	return events
+	return snapshot
+}
+
+func (jm *jobManager) appendWatchSendTerminalSnapshots(snapshots []watchSendTerminalSnapshot) error {
+	var events []jobstore.Event
+	for _, snapshot := range snapshots {
+		events = append(events, snapshot.events...)
+	}
+	return jm.appendWatchSendEvents(events)
+}
+
+func (jm *jobManager) removeWatchSendTerminalSnapshots(snapshots []watchSendTerminalSnapshot) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	for _, snapshot := range snapshots {
+		for _, event := range snapshot.events {
+			if event.WatchSend == nil {
+				continue
+			}
+			removePendingWatchSendLocked(snapshot.cfg, event.WatchSend.Key, event.WatchSend.UpdateSeq)
+		}
+		jm.forgetTerminalFlushIfEmptyLocked(snapshot.cfg)
+	}
 }
 
 func (jm *jobManager) appendWatchSendEvents(events []jobstore.Event) error {

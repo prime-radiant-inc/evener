@@ -149,15 +149,14 @@ func (jm *jobManager) close() error {
 	jm.watchNotifyMu.Lock()
 	jm.mu.Lock()
 	jm.closing = true
-	var dropped []jobstore.Event
+	var dropped []watchSendTerminalSnapshot
 	for key, cfg := range jm.watches {
-		dropped = append(dropped, watchSendTerminalEventsLocked(cfg, jobstore.EventWatchSendDropped, "job manager closed", jm.now())...)
+		dropped = append(dropped, watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "job manager closed", jm.now()))
 		closeWatchConfig(cfg)
 		delete(jm.watches, key)
 	}
 	for cfg := range jm.terminalFlush {
-		dropped = append(dropped, watchSendTerminalEventsLocked(cfg, jobstore.EventWatchSendDropped, "job manager closed", jm.now())...)
-		delete(jm.terminalFlush, cfg)
+		dropped = append(dropped, watchSendTerminalSnapshotsLocked(cfg, jobstore.EventWatchSendDropped, "job manager closed", jm.now()))
 	}
 	running := make([]jobRuntimeHandle, 0, len(jm.running))
 	for _, run := range jm.running {
@@ -176,8 +175,10 @@ func (jm *jobManager) close() error {
 	jm.watchNotifyMu.Unlock()
 
 	var closeErr error
-	if err := jm.appendWatchSendEvents(dropped); err != nil {
+	if err := jm.appendWatchSendTerminalSnapshots(dropped); err != nil {
 		closeErr = err
+	} else {
+		jm.removeWatchSendTerminalSnapshots(dropped)
 	}
 	for _, run := range running {
 		if run.signal != nil {
@@ -215,7 +216,7 @@ waitLoop:
 func (jm *jobManager) abandonRunningJobs() {
 	jm.mu.Lock()
 	running := make([]jobRuntimeHandle, 0, len(jm.running))
-	var dropped []jobstore.Event
+	var dropped []watchSendTerminalSnapshot
 	for _, run := range jm.running {
 		running = append(running, jobRuntimeHandle{
 			jobID:  run.rec.JobID,
@@ -225,10 +226,12 @@ func (jm *jobManager) abandonRunningJobs() {
 		dropped = append(dropped, jm.pruneWatchedTargetWatchesLocked(run.rec.JobID, "watched target pruned", jm.now())...)
 	}
 	jm.mu.Unlock()
-	if err := jm.appendWatchSendEvents(dropped); err != nil {
+	if err := jm.appendWatchSendTerminalSnapshots(dropped); err != nil {
 		jm.enqueueWatchNotifications([]jobNotification{
 			watchNotification("", "watch send prune cleanup failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})
+	} else {
+		jm.removeWatchSendTerminalSnapshots(dropped)
 	}
 	for _, run := range running {
 		if run.output != nil {
@@ -240,7 +243,7 @@ func (jm *jobManager) abandonRunningJobs() {
 func (jm *jobManager) abandonRunningJob(jobID string) {
 	jm.mu.Lock()
 	run := jm.running[jobID]
-	var dropped []jobstore.Event
+	var dropped []watchSendTerminalSnapshot
 	if run != nil {
 		delete(jm.running, jobID)
 		dropped = jm.pruneWatchedTargetWatchesLocked(jobID, "watched target pruned", jm.now())
@@ -249,10 +252,12 @@ func (jm *jobManager) abandonRunningJob(jobID string) {
 	if run == nil {
 		return
 	}
-	if err := jm.appendWatchSendEvents(dropped); err != nil {
+	if err := jm.appendWatchSendTerminalSnapshots(dropped); err != nil {
 		jm.enqueueWatchNotifications([]jobNotification{
 			watchNotification(jobID, "watch send prune cleanup failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})
+	} else {
+		jm.removeWatchSendTerminalSnapshots(dropped)
 	}
 	if run.output != nil {
 		_ = run.output.Close()

@@ -837,6 +837,131 @@ func TestWatchSendPendingDeliveredRemovesBeforeNextFailure(t *testing.T) {
 	}
 }
 
+func TestWatchSendOverlapOlderDeliveredDoesNotRemoveNewerPending(t *testing.T) {
+	jm := newTestJM(t)
+	sendErr := errors.New("busy")
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: sendErr}
+	}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	first := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: first ready")
+	second := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: second ready")
+
+	jm.deliverWatchSend(context.Background(), second)
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("pending after second failure = %d, want 1", len(pending))
+	}
+	if got := len(second.cfg.pending); got != 1 {
+		t.Fatalf("in-memory pending after second failure = %d, want 1", got)
+	}
+
+	sendErr = nil
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{}
+	}
+	jm.deliverWatchSend(context.Background(), first)
+
+	pending := loadWatchSendRecord(t, jm).Pending
+	if len(pending) != 1 {
+		t.Fatalf("folded pending after older delivered = %d, want 1: %+v", len(pending), pending)
+	}
+	for _, state := range pending {
+		if !strings.Contains(state.Frame, "second ready") {
+			t.Fatalf("pending frame = %q, want newer trigger", state.Frame)
+		}
+	}
+	if got := len(second.cfg.pending); got != 1 {
+		t.Fatalf("in-memory pending after older delivered = %d, want newer pending retained", got)
+	}
+}
+
+func TestWatchSendAppendFailureDuringClearKeepsPendingInMemory(t *testing.T) {
+	jm := newTestJM(t)
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.feedJobOutput(rec.JobID, []byte("ready\n"))
+	key := watchKey{VisibleSessionID: jm.sessionID, Target: rec.JobID, SendTo: "job_obs"}
+	jm.mu.Lock()
+	cfg := jm.watches[key]
+	jm.mu.Unlock()
+	if cfg == nil || len(cfg.pending) != 1 {
+		t.Fatalf("pending before clear = %+v, want one", cfg)
+	}
+	realAppend := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventWatchSendDropped {
+			return errors.New("append dropped failed")
+		}
+		return realAppend(e)
+	}
+
+	if _, err := jm.configureWatch(watchArgs{Target: rec.JobID, Clear: true}); err == nil {
+		t.Fatal("clear succeeded, want append failure")
+	}
+
+	if got := len(cfg.pending); got != 1 {
+		t.Fatalf("in-memory pending after failed clear append = %d, want 1", got)
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("folded pending after failed clear append = %d, want 1", len(pending))
+	}
+}
+
+func TestWatchSendAppendFailureDuringDeliveredKeepsPendingInMemory(t *testing.T) {
+	jm := newTestJM(t)
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	jm.feedJobOutput(rec.JobID, []byte("ready one\n"))
+	delivery := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: ready two")
+	if got := len(delivery.cfg.pending); got != 1 {
+		t.Fatalf("pending before delivered = %d, want 1", got)
+	}
+	realAppend := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventWatchSendDelivered {
+			return errors.New("append delivered failed")
+		}
+		return realAppend(e)
+	}
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{}
+	}
+
+	jm.deliverWatchSend(context.Background(), delivery)
+
+	if got := len(delivery.cfg.pending); got != 1 {
+		t.Fatalf("in-memory pending after failed delivered append = %d, want 1", got)
+	}
+	if pending := loadWatchSendRecord(t, jm).Pending; len(pending) != 1 {
+		t.Fatalf("folded pending after failed delivered append = %d, want 1", len(pending))
+	}
+}
+
 func captureWatchSendDelivery(t *testing.T, jm *jobManager, jobID, trigger string) watchSendDelivery {
 	t.Helper()
 	jm.mu.Lock()
