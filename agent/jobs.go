@@ -178,12 +178,14 @@ func (jm *jobManager) close() error {
 	jm.mu.Unlock()
 	jm.watchNotifyMu.Unlock()
 
-	if err := jm.appendWatchSendTerminalSnapshots(dropped); err != nil {
+	applied, err := jm.appendWatchSendTerminalSnapshots(dropped)
+	if err != nil {
+		jm.removeWatchSendTerminalSnapshots(applied)
 		jm.rollbackWatchConfigSnapshotsRejecting(targets)
 		return err
 	}
 	jm.detachWatchConfigSnapshots(targets)
-	jm.removeWatchSendTerminalSnapshots(dropped)
+	jm.removeWatchSendTerminalSnapshots(applied)
 	for _, run := range running {
 		if run.signal != nil {
 			run.signal()
@@ -225,14 +227,16 @@ func (jm *jobManager) abandonRunningJobs() {
 	}
 	jm.mu.Unlock()
 	dropped := terminalSnapshots(targets)
-	if err := jm.appendWatchSendTerminalSnapshots(dropped); err != nil {
+	applied, err := jm.appendWatchSendTerminalSnapshots(dropped)
+	if err != nil {
+		jm.removeWatchSendTerminalSnapshots(applied)
 		jm.rollbackWatchConfigSnapshotsRejecting(targets)
 		jm.enqueueWatchNotifications([]jobNotification{
 			watchNotification("", "watch send prune cleanup failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})
 	} else {
 		jm.detachWatchConfigSnapshots(targets)
-		jm.removeWatchSendTerminalSnapshots(dropped)
+		jm.removeWatchSendTerminalSnapshots(applied)
 	}
 	for _, run := range running {
 		if run.output != nil {
@@ -254,14 +258,16 @@ func (jm *jobManager) abandonRunningJob(jobID string) {
 		return
 	}
 	dropped := terminalSnapshots(targets)
-	if err := jm.appendWatchSendTerminalSnapshots(dropped); err != nil {
+	applied, err := jm.appendWatchSendTerminalSnapshots(dropped)
+	if err != nil {
+		jm.removeWatchSendTerminalSnapshots(applied)
 		jm.rollbackWatchConfigSnapshotsRejecting(targets)
 		jm.enqueueWatchNotifications([]jobNotification{
 			watchNotification(jobID, "watch send prune cleanup failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
 		})
 	} else {
 		jm.detachWatchConfigSnapshots(targets)
-		jm.removeWatchSendTerminalSnapshots(dropped)
+		jm.removeWatchSendTerminalSnapshots(applied)
 	}
 	if run.output != nil {
 		_ = run.output.Close()
