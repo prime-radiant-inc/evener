@@ -847,6 +847,7 @@ func TestServerAppWireErrorEventNotifiesSubscribers(t *testing.T) {
 }
 
 func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
+	exitCode := 7
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetStatus(StatusInfo{
@@ -867,10 +868,18 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 			Skills: []SkillInfo{
 				{Name: "superpowers:systematic-debugging", Description: "debug"},
 			},
-			Plugins:   []PluginStatusInfo{{Name: "superpowers", Version: "4.3.0", SkillCount: 12, AgentCount: 2, HookCount: 4}},
-			Hooks:     map[string]int{"PreToolUse": 3},
-			Subagents: []SubagentStatusInfo{{ID: "sub-1", Status: "completed", TurnsUsed: 2}},
-			Agents:    []string{"explorer"},
+			Plugins: []PluginStatusInfo{{Name: "superpowers", Version: "4.3.0", SkillCount: 12, AgentCount: 2, HookCount: 4}},
+			Hooks:   map[string]int{"PreToolUse": 3},
+			Jobs: []JobStatusInfo{{
+				JobID:         "job-1",
+				JobType:       "delegate",
+				Status:        "failed",
+				Reason:        "exit_nonzero",
+				ExitCode:      &exitCode,
+				OutputBytes:   128,
+				TranscriptRef: "local:child-1",
+			}},
+			Agents: []string{"explorer"},
 		}
 	})
 
@@ -900,7 +909,9 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 	if diag == nil || len(diag.Tools) != 1 || len(diag.MCP) != 1 || len(diag.Skills) != 1 || len(diag.Plugins) != 1 || len(diag.Jobs) != 1 || len(diag.Agents) != 1 {
 		t.Fatalf("diagnostics=%+v", diag)
 	}
-	if diag.Jobs[0].JobID != "sub-1" || diag.Jobs[0].JobType != "delegate" || diag.Jobs[0].Status != "completed" {
+	if diag.Jobs[0].JobID != "job-1" || diag.Jobs[0].JobType != "delegate" || diag.Jobs[0].Status != "failed" ||
+		diag.Jobs[0].Reason != "exit_nonzero" || diag.Jobs[0].ExitCode == nil || *diag.Jobs[0].ExitCode != exitCode ||
+		diag.Jobs[0].OutputBytes != 128 || diag.Jobs[0].TranscriptRef != "local:child-1" {
 		t.Fatalf("job diagnostics=%+v", diag.Jobs)
 	}
 	if diag.Hooks["PreToolUse"] != 3 {

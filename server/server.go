@@ -54,22 +54,26 @@ type PluginStatusInfo struct {
 	MCPCount   int    `json:"mcp_count"`
 }
 
-// SubagentStatusInfo describes an active sub-agent.
-type SubagentStatusInfo struct {
-	ID        string `json:"id"`
-	Status    string `json:"status"`
-	TurnsUsed int    `json:"turns_used"`
+// JobStatusInfo describes an active or recent job.
+type JobStatusInfo struct {
+	JobID         string `json:"job_id"`
+	JobType       string `json:"job_type"`
+	Status        string `json:"status"`
+	Reason        string `json:"reason,omitempty"`
+	ExitCode      *int   `json:"exit_code,omitempty"`
+	OutputBytes   int64  `json:"output_bytes"`
+	TranscriptRef string `json:"transcript_ref,omitempty"`
 }
 
 // DetailedStatus captures the full session configuration for /status display.
 type DetailedStatus struct {
-	Tools     []ToolInfo           `json:"tools,omitempty"`
-	MCP       []MCPServerInfo      `json:"mcp,omitempty"`
-	Skills    []SkillInfo          `json:"skills,omitempty"`
-	Plugins   []PluginStatusInfo   `json:"plugins,omitempty"`
-	Hooks     map[string]int       `json:"hooks,omitempty"`
-	Subagents []SubagentStatusInfo `json:"subagents,omitempty"`
-	Agents    []string             `json:"agents,omitempty"`
+	Tools   []ToolInfo         `json:"tools,omitempty"`
+	MCP     []MCPServerInfo    `json:"mcp,omitempty"`
+	Skills  []SkillInfo        `json:"skills,omitempty"`
+	Plugins []PluginStatusInfo `json:"plugins,omitempty"`
+	Hooks   map[string]int     `json:"hooks,omitempty"`
+	Jobs    []JobStatusInfo    `json:"jobs,omitempty"`
+	Agents  []string           `json:"agents,omitempty"`
 }
 
 // StatusInfo is the JSON response for GET /status.

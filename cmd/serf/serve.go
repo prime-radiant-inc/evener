@@ -531,10 +531,11 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 		}
 	}
 	for _, s := range ds.Subagents {
-		out.Subagents = append(out.Subagents, server.SubagentStatusInfo{
-			ID:        s.ID,
-			Status:    string(s.Status),
-			TurnsUsed: s.TurnsUsed,
+		out.Jobs = append(out.Jobs, server.JobStatusInfo{
+			JobID:         s.ID,
+			JobType:       "delegate",
+			Status:        string(s.Status),
+			TranscriptRef: s.TranscriptRef,
 		})
 	}
 	out.Agents = ds.Agents
