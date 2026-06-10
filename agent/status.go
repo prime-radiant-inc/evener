@@ -2,8 +2,8 @@ package agent
 
 import (
 	"sort"
-	"time"
 
+	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/mcpconfig"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/agent/skill"
@@ -25,26 +25,15 @@ type PluginInfo struct {
 	MCPCount   int    `json:"mcp_count"`
 }
 
-// SubagentInfo describes a tracked sub-agent. It is the single record returned by
-// both the /status enumeration (infos) and the list_agents query; the rich fields
-// beyond id/status/turns_used reach list_agents but are dropped by the server
-// /status DTO projector.
-type SubagentInfo struct {
-	AgentID         string         `json:"agent_id"`
-	ID              string         `json:"id"`
-	Status          SubagentStatus `json:"status"`
-	Task            string         `json:"task,omitempty"`
-	AgentType       string         `json:"agent_type,omitempty"`
-	ParentSessionID string         `json:"parent_session_id,omitempty"`
-	TurnsUsed       int            `json:"turns_used"`
-	ResultAvailable bool           `json:"result_available"`
-	ResultConsumed  bool           `json:"result_consumed"`
-	TranscriptRef   string         `json:"transcript_ref,omitempty"`
-	CreatedAt       time.Time      `json:"created_at"`
-	StartedAt       time.Time      `json:"started_at"`
-	EndedAt         *time.Time     `json:"ended_at"`
-	Closed          bool           `json:"closed"`
-	CloseTimedOut   bool           `json:"close_timed_out"`
+// JobStatusInfo describes an active or recent job.
+type JobStatusInfo struct {
+	JobID         string `json:"job_id"`
+	JobType       string `json:"job_type"`
+	Status        string `json:"status"`
+	Reason        string `json:"reason,omitempty"`
+	TranscriptRef string `json:"transcript_ref,omitempty"`
+	OutputBytes   int64  `json:"output_bytes"`
+	ExitCode      *int   `json:"exit_code,omitempty"`
 }
 
 // HookEventStatus describes a single hook event's registration state and
@@ -71,12 +60,12 @@ type DetailedStatus struct {
 	// HookEvents lists all registered hook events (supported) plus any
 	// recognized-but-unsupported events declared by loaded plugins.
 	HookEvents []HookEventStatus `json:"hook_events,omitempty"`
-	Subagents  []SubagentInfo    `json:"subagents,omitempty"` // active sub-agents
-	Agents     []string          `json:"agents,omitempty"`    // public agent names
+	Jobs       []JobStatusInfo   `json:"jobs,omitempty"`   // active and recent jobs
+	Agents     []string          `json:"agents,omitempty"` // public agent names
 }
 
 // DetailedStatus builds a snapshot of the session's loaded tools, MCP servers,
-// skills, plugins, hooks, subagents, and public agent names.
+// skills, plugins, hooks, jobs, and public agent names.
 func (s *Session) DetailedStatus() DetailedStatus {
 	var ds DetailedStatus
 
@@ -161,8 +150,10 @@ func (s *Session) DetailedStatus() DetailedStatus {
 		return ds.HookEvents[i].Event < ds.HookEvents[j].Event
 	})
 
-	// Subagents.
-	ds.Subagents = append(ds.Subagents, s.subagents.infos()...)
+	// Jobs.
+	if s.jobManager != nil {
+		ds.Jobs = projectJobStatusInfos(s.jobManager.list(listFilter{}))
+	}
 
 	// Plugin agent names (sorted).
 	for name := range s.pluginAgents {
@@ -171,4 +162,20 @@ func (s *Session) DetailedStatus() DetailedStatus {
 	sort.Strings(ds.Agents)
 
 	return ds
+}
+
+func projectJobStatusInfos(records []*jobstore.JobRecord) []JobStatusInfo {
+	jobs := make([]JobStatusInfo, 0, len(records))
+	for _, rec := range records {
+		jobs = append(jobs, JobStatusInfo{
+			JobID:         rec.JobID,
+			JobType:       string(rec.Type),
+			Status:        string(rec.Status),
+			Reason:        rec.Reason,
+			TranscriptRef: rec.TranscriptRef,
+			OutputBytes:   rec.OutputBytes,
+			ExitCode:      rec.ExitCode,
+		})
+	}
+	return jobs
 }

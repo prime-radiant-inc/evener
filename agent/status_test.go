@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/execenv"
+	"primeradiant.com/serf/agent/internal/jobstore"
 	"primeradiant.com/serf/agent/plugin"
 	"primeradiant.com/serf/llm"
 )
@@ -162,9 +163,9 @@ func TestSession_DetailedStatus_EmptySections(t *testing.T) {
 	if len(ds.Plugins) != 0 {
 		t.Errorf("expected no plugins, got %d", len(ds.Plugins))
 	}
-	// No subagents.
-	if len(ds.Subagents) != 0 {
-		t.Errorf("expected no subagents, got %d", len(ds.Subagents))
+	// No jobs.
+	if len(ds.Jobs) != 0 {
+		t.Errorf("expected no jobs, got %d", len(ds.Jobs))
 	}
 	// Core agents are always present.
 	foundDefault := false
@@ -229,18 +230,11 @@ func TestSession_DetailedStatus_ConfiguredWorkflowPlugin(t *testing.T) {
 	}
 }
 
-func TestSession_DetailedStatus_Subagents(t *testing.T) {
+func TestSession_DetailedStatus_Jobs(t *testing.T) {
 	dir := t.TempDir()
 
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("sub done")}
-			},
-		},
-	}
+	f := &fakeAdapter{name: "openai"}
 	c.Register(f)
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
@@ -249,26 +243,52 @@ func TestSession_DetailedStatus_Subagents(t *testing.T) {
 	}
 	defer sess.Close()
 
-	// Spawn a subagent directly.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	result, err := sess.spawnAgent(ctx, "test task", "", "", 1, "", "", nil, nil)
-	if err != nil {
-		t.Fatalf("spawnAgent: %v", err)
+	exitCode := 7
+	startedAt := time.Now().UTC()
+	endedAt := startedAt.Add(time.Second)
+	const jobID = "job_status_projection"
+	if err := sess.jobManager.store.Append(jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               startedAt,
+		JobID:            jobID,
+		Type:             jobstore.JobDelegate,
+		OwnerSessionID:   sess.ID(),
+		VisibleToSession: sess.ID(),
+		StartedAt:        &startedAt,
+	}); err != nil {
+		t.Fatalf("append started event: %v", err)
 	}
-	_ = result
-
-	// Give subagent a moment to register.
-	time.Sleep(50 * time.Millisecond)
+	if err := sess.jobManager.store.Append(jobstore.Event{
+		Kind:          jobstore.EventJobSessionAssigned,
+		TS:            startedAt,
+		JobID:         jobID,
+		TranscriptRef: "local:child-status",
+	}); err != nil {
+		t.Fatalf("append session assignment event: %v", err)
+	}
+	if err := sess.jobManager.store.Append(jobstore.Event{
+		Kind:        jobstore.EventJobFinished,
+		TS:          endedAt,
+		JobID:       jobID,
+		Status:      jobstore.StatusFailed,
+		Reason:      "exit_nonzero",
+		ExitCode:    &exitCode,
+		EndedAt:     &endedAt,
+		OutputBytes: 128,
+	}); err != nil {
+		t.Fatalf("append finished event: %v", err)
+	}
 
 	ds := sess.DetailedStatus()
 
-	if len(ds.Subagents) != 1 {
-		t.Fatalf("expected 1 subagent, got %d", len(ds.Subagents))
+	if len(ds.Jobs) != 1 {
+		t.Fatalf("expected 1 job, got %d", len(ds.Jobs))
 	}
-	sub := ds.Subagents[0]
-	if sub.ID == "" {
-		t.Error("subagent ID should not be empty")
+	job := ds.Jobs[0]
+	if job.JobID != jobID || job.JobType != string(jobstore.JobDelegate) || job.Status != string(jobstore.StatusFailed) ||
+		job.Reason != "exit_nonzero" || job.TranscriptRef != "local:child-status" ||
+		job.OutputBytes != 128 || job.ExitCode == nil || *job.ExitCode != exitCode {
+		t.Fatalf("job status = %+v", job)
 	}
 }
 

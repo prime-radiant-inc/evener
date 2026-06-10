@@ -530,12 +530,15 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 			out.Hooks[string(event)] = count
 		}
 	}
-	for _, s := range ds.Subagents {
+	for _, job := range ds.Jobs {
 		out.Jobs = append(out.Jobs, server.JobStatusInfo{
-			JobID:         s.ID,
-			JobType:       "delegate",
-			Status:        string(s.Status),
-			TranscriptRef: s.TranscriptRef,
+			JobID:         job.JobID,
+			JobType:       job.JobType,
+			Status:        job.Status,
+			Reason:        job.Reason,
+			ExitCode:      job.ExitCode,
+			OutputBytes:   job.OutputBytes,
+			TranscriptRef: job.TranscriptRef,
 		})
 	}
 	out.Agents = ds.Agents
