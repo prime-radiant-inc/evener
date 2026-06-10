@@ -140,10 +140,10 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 	if !requestsContain(reqs, "<subagent-notification", "01CHILD") {
 		t.Fatalf("model request history did not contain the <subagent-notification ...> block for 01CHILD")
 	}
-	if !requestsContain(reqs, "job_read_output", "read_session_transcript", "local:01CHILD") {
-		t.Fatalf("model request history did not point subagent notification at job-control/transcript tools")
+	if !requestsContain(reqs, "no job_id", "read_session_transcript", "local:01CHILD") {
+		t.Fatalf("model request history did not point subagent-only notification at transcript inspection")
 	}
-	if requestsContain(reqs, "wait(") || requestsContain(reqs, "subagent_output") {
+	if requestsContain(reqs, "wait(") || requestsContain(reqs, "subagent_output") || requestsContain(reqs, "job_read_output") {
 		t.Fatalf("model request history contained deleted subagent result tool guidance")
 	}
 

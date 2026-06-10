@@ -990,7 +990,7 @@ func formatNotificationReminder(notifs []subagentNotification, jobNotifs []deliv
 	for _, n := range notifs {
 		blocks = append(blocks, fmt.Sprintf(
 			"<subagent-notification agent_id=%q status=%q turns_used=%q transcript_ref=%q>\n"+
-				"Subagent %s finished (%s). Read the matching delegate job with job_read_output using its job_id from the job notification. For archived child transcript context, use read_session_transcript with transcript_ref=%q.\n"+
+				"Subagent %s finished (%s). This notification has no job_id. Inspect the archived child transcript with read_session_transcript using transcript_ref=%q.\n"+
 				"</subagent-notification>",
 			n.AgentID, n.Status, strconv.Itoa(n.TurnsUsed), n.TranscriptRef,
 			n.AgentID, n.Status, n.TranscriptRef,
