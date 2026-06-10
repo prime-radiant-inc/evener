@@ -30,57 +30,74 @@ type readOutlineEnvelope struct {
 // accept — no translation step.
 const outlineHint = "turn numbers here are what range and expand_turn accept: range=\"7-20\" or range=\"last:40\" to zoom in; expand_turn=N (markdown only) to expand a single turn's results"
 
-// subagentRefInfo is the audit-pivot extract of a subagent lifecycle tool result:
-// the child's success/status and its transcript_ref, so the parent can pivot to
-// the child without reading the full result body. Extracted by
-// extractSubagentResult; transcript rendering uses decodeSubagentResult directly
-// for full result-body access.
-type subagentRefInfo struct {
-	success       bool
+// jobRefInfo is the audit-pivot extract of a job lifecycle tool result: the job
+// status and its transcript_ref, so the parent can pivot to the child without
+// reading the full result body. Extracted by extractJobResult; transcript
+// rendering uses decodeJobResult directly for full result-body access.
+type jobRefInfo struct {
+	jobID         string
 	status        string
 	transcriptRef string
 }
 
-// subagentLifecycleTools are the tool names whose results carry a subagentResult
-// body (status/output/success/turns_used/transcript_ref). Their outline lines are
-// special-cased to surface the child ref.
-var subagentLifecycleTools = map[string]bool{
-	"spawn_agent":  true,
-	"wait":         true,
-	"resume_agent": true,
-	"close_agent":  true,
+// jobResult is the common transcript-ref-bearing result shape returned by
+// delegate and by job_send_message when it resumes or messages a delegate job.
+type jobResult struct {
+	JobID                 string `json:"job_id"`
+	Type                  string `json:"type"`
+	Status                string `json:"status"`
+	Reason                string `json:"reason"`
+	RunningInBackground   bool   `json:"running_in_background"`
+	TimedOut              bool   `json:"timed_out"`
+	Action                string `json:"action"`
+	ResumedFromJobID      string `json:"resumed_from_job_id"`
+	TranscriptRef         string `json:"transcript_ref"`
+	Output                string `json:"output"`
+	Truncated             bool   `json:"truncated"`
+	StructuredResult      any    `json:"structured_result"`
+	StructuredResultValid *bool  `json:"structured_result_valid"`
 }
 
-// decodeSubagentResult is the single decode path for a subagent lifecycle tool
-// result body (JSON subagentResult). It reports false when the body is empty or
-// does not parse as JSON, so callers can fall back to ordinary rendering. The
-// outline (extractSubagentResult) projects this to its success/status/ref subset;
-// the markdown renderer uses the full struct (output, turns_used) — one decode,
-// no duplication.
-func decodeSubagentResult(body string) (subagentResult, bool) {
+// jobLifecycleTools are the tool names whose results carry jobResult bodies
+// with transcript refs. Their outline lines are special-cased to surface the
+// child ref.
+var jobLifecycleTools = map[string]bool{
+	"delegate":         true,
+	"job_send_message": true,
+}
+
+// decodeJobResult is the single decode path for a job lifecycle tool result
+// body. It reports false when the body is empty, does not parse as JSON, or is a
+// job_send_message alias result without a job_id/transcript_ref, so callers can
+// fall back to ordinary rendering. The outline (extractJobResult) projects this
+// to its status/ref subset; the markdown renderer uses the full struct (output).
+func decodeJobResult(body string) (jobResult, bool) {
 	body = strings.TrimSpace(body)
 	if body == "" {
-		return subagentResult{}, false
+		return jobResult{}, false
 	}
-	var r subagentResult
+	var r jobResult
 	if err := json.Unmarshal([]byte(body), &r); err != nil {
-		return subagentResult{}, false
+		return jobResult{}, false
+	}
+	if r.JobID == "" && r.TranscriptRef == "" {
+		return jobResult{}, false
 	}
 	return r, true
 }
 
-// extractSubagentResult parses a subagent lifecycle tool result body and returns
-// its success/status/transcript_ref subset for the outline line. It reports false
-// when the body does not decode as a subagentResult, so callers fall back to the
+// extractJobResult parses a job lifecycle tool result body and returns its
+// job_id/status/transcript_ref subset for the outline line. It reports false
+// when the body does not decode as a jobResult, so callers fall back to the
 // ordinary result-size rendering.
-func extractSubagentResult(body string) (subagentRefInfo, bool) {
-	r, ok := decodeSubagentResult(body)
+func extractJobResult(body string) (jobRefInfo, bool) {
+	r, ok := decodeJobResult(body)
 	if !ok {
-		return subagentRefInfo{}, false
+		return jobRefInfo{}, false
 	}
-	return subagentRefInfo{
-		success:       r.Success,
-		status:        string(r.Status),
+	return jobRefInfo{
+		jobID:         r.JobID,
+		status:        r.Status,
 		transcriptRef: r.TranscriptRef,
 	}, true
 }
@@ -144,11 +161,11 @@ func outlineLine(entries []transcript.Entry, seq int, idx *resultIndex) (string,
 
 // assistantOutlineSegments builds the assistant-specific trailing segments of an
 // outline line: tool names (in call order), a short purpose/first-line, the
-// aggregated tool status, and the result-size note. When the turn contains one or
-// more subagent lifecycle calls, each lifecycle call's success/status/child=<ref>
-// is surfaced as a compact bracket segment instead of a result-size note, so the
-// parent→child audit pivot works even when multiple agents are waited on in
-// parallel (the common spawn-then-wait pattern).
+// aggregated tool status, and the result-size note. When the turn contains one
+// or more job lifecycle calls, each lifecycle call's status/child=<ref> is
+// surfaced as a compact bracket segment instead of a result-size note, so the
+// parent to child audit pivot works even when multiple jobs are returned in one
+// round.
 func assistantOutlineSegments(t schema.Turn, idx *resultIndex) []string {
 	calls := toolCallsInOrder(t)
 
@@ -166,10 +183,9 @@ func assistantOutlineSegments(t schema.Turn, idx *resultIndex) []string {
 	}
 	segs := []string{strings.Join(names, ", ")}
 
-	// Subagent lifecycle turn: surface one audit-pivot bracket per lifecycle call.
-	// This handles both the single-call case and the parallel case (multiple
-	// wait/spawn_agent/resume_agent/close_agent calls in one round).
-	if brackets := subagentLifecycleBrackets(calls, idx); len(brackets) > 0 {
+	// Job lifecycle turn: surface one audit-pivot bracket per lifecycle call.
+	// This handles both the single-call case and the parallel case.
+	if brackets := jobLifecycleBrackets(calls, idx); len(brackets) > 0 {
 		segs = append(segs, brackets...)
 		return segs
 	}
@@ -194,26 +210,22 @@ func toolCallsInOrder(t schema.Turn) []*llm.ToolCallData {
 	return calls
 }
 
-// subagentLifecycleBrackets returns one compact bracket string per subagent
-// lifecycle call in calls (in call order), each of the form
-// "wait[success=true status=completed child=local:X]". It returns nil when no
-// call in the turn is a lifecycle tool, so the caller can fall back to the
-// ordinary result-size rendering. Mixed turns (lifecycle + non-lifecycle calls)
-// emit brackets only for the lifecycle calls; non-lifecycle calls keep their
-// names in the already-built names segment and their results count toward the
-// generic size path — but in practice the parallel subagent pattern is
-// lifecycle-only per round, so mixed rounds are not expected.
-func subagentLifecycleBrackets(calls []*llm.ToolCallData, idx *resultIndex) []string {
+// jobLifecycleBrackets returns one compact bracket string per job lifecycle call
+// in calls (in call order), each of the form
+// "delegate[status=completed child=local:X]". It returns nil when no call in the
+// turn is a lifecycle tool, so the caller can fall back to ordinary result-size
+// rendering.
+func jobLifecycleBrackets(calls []*llm.ToolCallData, idx *resultIndex) []string {
 	var brackets []string
 	for _, c := range calls {
-		if !subagentLifecycleTools[c.Name] {
+		if !jobLifecycleTools[c.Name] {
 			continue
 		}
 		paired, ok := idx.byCallID[c.ID]
 		if !ok {
 			continue
 		}
-		info, ok := extractSubagentResult(fmt.Sprint(paired.result.Content))
+		info, ok := extractJobResult(fmt.Sprint(paired.result.Content))
 		if !ok {
 			continue
 		}
@@ -221,7 +233,7 @@ func subagentLifecycleBrackets(calls []*llm.ToolCallData, idx *resultIndex) []st
 		if child == "" {
 			child = "(none)"
 		}
-		brackets = append(brackets, fmt.Sprintf("%s[success=%t status=%s child=%s]", c.Name, info.success, info.status, child))
+		brackets = append(brackets, fmt.Sprintf("%s[status=%s child=%s]", c.Name, info.status, child))
 	}
 	return brackets
 }

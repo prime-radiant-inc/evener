@@ -10,7 +10,7 @@ import (
 
 // renderToolCardForResult builds a one-round transcript (assistant call + paired
 // result), renders it, and returns the markdown. It is the shared fixture for the
-// E7 result-body rendering tests: a single tool call named toolName whose result
+// result-body rendering tests: a single tool call named toolName whose result
 // body is the given content string.
 func renderToolCardForResult(toolName, callID string, content any) string {
 	entries := []transcript.Entry{
@@ -20,38 +20,41 @@ func renderToolCardForResult(toolName, callID string, content any) string {
 	return renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
 }
 
-// TestRenderMarkdown_SubagentWaitResult is the headline E7 case: a wait result
-// whose subagentResult body carries a multi-line output renders legibly — a status
-// line surfacing success/status and the transcript_ref PROMINENTLY BEFORE the
-// output, then the output with REAL newlines (the backslash-escaped \n form gone).
-func TestRenderMarkdown_SubagentWaitResult(t *testing.T) {
-	childRef := "local:01CHILDSUBAGENT00000000"
+// TestRenderMarkdown_JobDelegateResult is the headline lifecycle case: a
+// delegate result whose job body carries a multi-line output renders legibly: a
+// status line surfacing status and the transcript_ref before the output, then
+// the output with real newlines.
+func TestRenderMarkdown_JobDelegateResult(t *testing.T) {
+	childRef := "local:01CHILDJOB000000000000"
 	output := "First line of the report.\nSECOND_LINE_NEEDLE summarizing findings.\nThird line with a conclusion."
-	body, err := json.Marshal(subagentResult{
-		Status:        SubagentCompleted,
-		Output:        output,
-		Success:       true,
-		TurnsUsed:     7,
-		TranscriptRef: childRef,
+	body, err := json.Marshal(map[string]any{
+		"job_id":                "job_delegate_1",
+		"type":                  "delegate",
+		"status":                "completed",
+		"running_in_background": false,
+		"timed_out":             false,
+		"transcript_ref":        childRef,
+		"output":                output,
+		"truncated":             false,
 	})
 	if err != nil {
-		t.Fatalf("marshal subagentResult: %v", err)
+		t.Fatalf("marshal job result: %v", err)
 	}
 
-	out := renderToolCardForResult("wait", "call_wait", string(body))
+	out := renderToolCardForResult("delegate", "call_delegate", string(body))
 
-	// The status line surfaces success/status/turns_used.
-	if !strings.Contains(out, "success=true") {
-		t.Errorf("expected success=true on the status line, got:\n%s", out)
-	}
+	// The status line surfaces status and job identity without a legacy success field.
 	if !strings.Contains(out, "status=completed") {
 		t.Errorf("expected status=completed on the status line, got:\n%s", out)
 	}
-	if !strings.Contains(out, "turns_used=7") {
-		t.Errorf("expected turns_used=7 on the status line, got:\n%s", out)
+	if !strings.Contains(out, "job_id=job_delegate_1") {
+		t.Errorf("expected job_id on the status line, got:\n%s", out)
+	}
+	if strings.Contains(out, "success=") {
+		t.Errorf("job result must not render legacy success field, got:\n%s", out)
 	}
 
-	// The transcript_ref is present and PROMINENT (before the output body).
+	// The transcript_ref is present before the output body.
 	if !strings.Contains(out, childRef) {
 		t.Errorf("expected transcript_ref %q in output, got:\n%s", childRef, out)
 	}
@@ -64,45 +67,58 @@ func TestRenderMarkdown_SubagentWaitResult(t *testing.T) {
 		t.Errorf("transcript_ref (%d) must appear BEFORE the output body (%d):\n%s", refIdx, outputIdx, out)
 	}
 
-	// The output renders with REAL newlines: the known second line appears on its
+	// The output renders with real newlines: the known second line appears on its
 	// own line (preceded by a newline, not glued to the first line).
 	if !strings.Contains(out, "\nSECOND_LINE_NEEDLE summarizing findings.") &&
 		!strings.Contains(out, "  SECOND_LINE_NEEDLE summarizing findings.") {
 		t.Errorf("output second line must appear on its own line with real newlines, got:\n%s", out)
 	}
 
-	// The backslash-escaped form must be GONE: no literal \n escape, no JSON-quoted
+	// The backslash-escaped form must be gone: no literal \n escape, no JSON-quoted
 	// output field dumped verbatim.
 	if strings.Contains(out, `\n`) {
 		t.Errorf("escaped \\n must not appear (output must be de-escaped), got:\n%s", out)
 	}
 	if strings.Contains(out, `"output":`) {
-		t.Errorf("raw JSON subagentResult must not be dumped verbatim, got:\n%s", out)
+		t.Errorf("raw JSON job result must not be dumped verbatim, got:\n%s", out)
 	}
 }
 
-// TestRenderMarkdown_SubagentFailedResult verifies the gated render also surfaces a
-// failed subagent honestly (success=false status=failed) with its ref.
-func TestRenderMarkdown_SubagentFailedResult(t *testing.T) {
-	childRef := "local:01FAILEDCHILD0000000000"
-	body, err := json.Marshal(subagentResult{
-		Status:        SubagentFailed,
-		Output:        "context deadline exceeded",
-		Success:       false,
-		TurnsUsed:     2,
-		TranscriptRef: childRef,
+// TestRenderMarkdown_JobSendMessageResult verifies the gated render also applies
+// to job_send_message results that resume a delegate and return a transcript ref.
+func TestRenderMarkdown_JobSendMessageResult(t *testing.T) {
+	childRef := "local:01RESUMEDJOB0000000000"
+	body, err := json.Marshal(map[string]any{
+		"target":                "job_old",
+		"job_id":                "job_new",
+		"type":                  "delegate",
+		"status":                "failed",
+		"reason":                "child_failed",
+		"running_in_background": false,
+		"timed_out":             false,
+		"action":                "resumed",
+		"resumed_from_job_id":   "job_old",
+		"transcript_ref":        childRef,
+		"output":                "context deadline exceeded",
+		"truncated":             false,
 	})
 	if err != nil {
-		t.Fatalf("marshal subagentResult: %v", err)
+		t.Fatalf("marshal job_send_message result: %v", err)
 	}
 
-	out := renderToolCardForResult("wait", "call_wait", string(body))
+	out := renderToolCardForResult("job_send_message", "call_send", string(body))
 
-	if !strings.Contains(out, "success=false") {
-		t.Errorf("expected success=false, got:\n%s", out)
-	}
 	if !strings.Contains(out, "status=failed") {
 		t.Errorf("expected status=failed, got:\n%s", out)
+	}
+	if !strings.Contains(out, "job_id=job_new") {
+		t.Errorf("expected resumed job id, got:\n%s", out)
+	}
+	if !strings.Contains(out, "reason=child_failed") {
+		t.Errorf("expected reason, got:\n%s", out)
+	}
+	if strings.Contains(out, "success=") {
+		t.Errorf("job result must not render legacy success field, got:\n%s", out)
 	}
 	if !strings.Contains(out, childRef) {
 		t.Errorf("expected transcript_ref %q, got:\n%s", childRef, out)
@@ -112,29 +128,32 @@ func TestRenderMarkdown_SubagentFailedResult(t *testing.T) {
 	}
 }
 
-// TestRenderMarkdown_SubagentResultHugeOutputBounded verifies a subagent result
-// with a very long output is still bounded (head+tail truncated with the elision
-// marker), and the ref stays visible (before the truncated output).
-func TestRenderMarkdown_SubagentResultHugeOutputBounded(t *testing.T) {
-	childRef := "local:01HUGECHILD000000000000"
+// TestRenderMarkdown_JobResultHugeOutputBounded verifies a job result with a
+// very long output is still bounded, and the ref stays visible before the
+// truncated output.
+func TestRenderMarkdown_JobResultHugeOutputBounded(t *testing.T) {
+	childRef := "local:01HUGEJOB00000000000000"
 	// Far more than resultBodyWholeMax non-empty lines so truncation kicks in.
 	output := makeNumberedLines(resultBodyWholeMax + 100)
-	body, err := json.Marshal(subagentResult{
-		Status:        SubagentCompleted,
-		Output:        output,
-		Success:       true,
-		TurnsUsed:     12,
-		TranscriptRef: childRef,
+	body, err := json.Marshal(map[string]any{
+		"job_id":                "job_huge",
+		"type":                  "delegate",
+		"status":                "completed",
+		"running_in_background": false,
+		"timed_out":             false,
+		"transcript_ref":        childRef,
+		"output":                output,
+		"truncated":             false,
 	})
 	if err != nil {
-		t.Fatalf("marshal subagentResult: %v", err)
+		t.Fatalf("marshal job result: %v", err)
 	}
 
-	out := renderToolCardForResult("wait", "call_wait", string(body))
+	out := renderToolCardForResult("delegate", "call_delegate", string(body))
 
 	// Bounded: an elision marker is present.
 	if !strings.Contains(out, "lines elided") {
-		t.Errorf("huge subagent output must be truncated with an elision marker, got:\n%s", out)
+		t.Errorf("huge job output must be truncated with an elision marker, got:\n%s", out)
 	}
 	// The ref is still visible even though the output was truncated.
 	if !strings.Contains(out, childRef) {
@@ -155,16 +174,13 @@ func TestRenderMarkdown_SubagentResultHugeOutputBounded(t *testing.T) {
 	}
 }
 
-// TestRenderMarkdown_SubagentResultWithExtraKeysFallsBack verifies that when a
-// subagent-named result body carries keys beyond the known subagentResult fields
-// (e.g. data/artifacts), the render falls back to the general JSON pretty-print
-// rather than hiding the extra evidence. Gated on tool name, but evidence fidelity
-// wins over the status-line treatment.
-func TestRenderMarkdown_SubagentResultWithExtraKeysFallsBack(t *testing.T) {
-	// A subagent-shaped body that ALSO carries an "artifacts" key not in the struct.
-	bodyStr := `{"status":"completed","output":"did stuff","success":true,"turns_used":3,"transcript_ref":"local:01X","artifacts":["a.txt","b.txt"]}`
+// TestRenderMarkdown_JobResultWithExtraKeysFallsBack verifies that when a job
+// result body carries keys beyond the known job-result fields, the render falls
+// back to the general JSON pretty-print rather than hiding the extra evidence.
+func TestRenderMarkdown_JobResultWithExtraKeysFallsBack(t *testing.T) {
+	bodyStr := `{"job_id":"job_extra","type":"delegate","status":"completed","running_in_background":false,"timed_out":false,"transcript_ref":"local:01X","output":"did stuff","truncated":false,"artifacts":["a.txt","b.txt"]}`
 
-	out := renderToolCardForResult("wait", "call_wait", bodyStr)
+	out := renderToolCardForResult("delegate", "call_delegate", bodyStr)
 
 	// The extra evidence must remain visible (not hidden by struct decoding).
 	if !strings.Contains(out, "artifacts") {
@@ -176,7 +192,7 @@ func TestRenderMarkdown_SubagentResultWithExtraKeysFallsBack(t *testing.T) {
 }
 
 // TestRenderMarkdown_GenericJSONResultPrettyPrinted verifies a generic JSON result
-// from a NON-subagent tool is pretty-printed (indented) but NOT given the subagent
+// from a non-job tool is pretty-printed (indented) but NOT given the job
 // status-line treatment — the no-false-positive case.
 func TestRenderMarkdown_GenericJSONResultPrettyPrinted(t *testing.T) {
 	// A read_file result whose content is compact JSON.
@@ -195,9 +211,9 @@ func TestRenderMarkdown_GenericJSONResultPrettyPrinted(t *testing.T) {
 		t.Errorf("compact JSON must be reformatted, not dumped verbatim, got:\n%s", out)
 	}
 
-	// NO false positive: the subagent status-line treatment must NOT appear.
-	if strings.Contains(out, "success=") || strings.Contains(out, "turns_used=") {
-		t.Errorf("non-subagent JSON must NOT get the subagent status-line treatment, got:\n%s", out)
+	// NO false positive: the job status-line treatment must NOT appear.
+	if strings.Contains(out, "job_id=") || strings.Contains(out, "transcript_ref=") {
+		t.Errorf("non-job JSON must NOT get the job status-line treatment, got:\n%s", out)
 	}
 }
 
@@ -213,46 +229,41 @@ func TestRenderMarkdown_NonJSONResultUnchanged(t *testing.T) {
 	if !strings.Contains(out, "PASS") {
 		t.Errorf("plain-text second line must render, got:\n%s", out)
 	}
-	// No subagent treatment.
-	if strings.Contains(out, "success=") {
-		t.Errorf("plain-text result must not get subagent treatment, got:\n%s", out)
+	// No job treatment.
+	if strings.Contains(out, "job_id=") {
+		t.Errorf("plain-text result must not get job treatment, got:\n%s", out)
 	}
 }
 
-// TestRenderMarkdown_SubagentResultUnparseableFallsBack verifies that a
-// subagent-named result whose body is NOT a subagentResult (here: plain text that
-// is not even JSON) falls back to the normal/plain rendering without error.
-func TestRenderMarkdown_SubagentResultUnparseableFallsBack(t *testing.T) {
-	// A wait result that errored at the tool layer and returned a plain string.
-	plain := "wait timeout"
-	out := renderToolCardForResult("wait", "call_wait", plain)
+// TestRenderMarkdown_JobResultUnparseableFallsBack verifies that a job-named
+// result whose body is not a job result falls back to normal/plain rendering.
+func TestRenderMarkdown_JobResultUnparseableFallsBack(t *testing.T) {
+	plain := "delegate timeout"
+	out := renderToolCardForResult("delegate", "call_delegate", plain)
 
-	if !strings.Contains(out, "wait timeout") {
-		t.Errorf("non-JSON subagent body must render as plain text, got:\n%s", out)
+	if !strings.Contains(out, "delegate timeout") {
+		t.Errorf("non-JSON job body must render as plain text, got:\n%s", out)
 	}
-	if strings.Contains(out, "success=") {
-		t.Errorf("non-decodable subagent body must not fabricate a status line, got:\n%s", out)
+	if strings.Contains(out, "job_id=") {
+		t.Errorf("non-decodable job body must not fabricate a status line, got:\n%s", out)
 	}
 }
 
-// TestDecodeSubagentResult exercises the unified decode path directly: a full
-// subagentResult decodes (with output/turns_used available to E7), while empty and
-// non-matching bodies report false so callers fall back.
-func TestDecodeSubagentResult(t *testing.T) {
+// TestDecodeJobResult exercises the unified decode path directly: a full job
+// result decodes, while empty and non-matching bodies report false so callers
+// fall back.
+func TestDecodeJobResult(t *testing.T) {
 	t.Run("full struct decodes with all fields", func(t *testing.T) {
-		body := `{"status":"completed","output":"line one\nline two","success":true,"turns_used":9,"transcript_ref":"local:01Z"}`
-		r, ok := decodeSubagentResult(body)
+		body := `{"job_id":"job_decode","type":"delegate","status":"completed","running_in_background":false,"timed_out":false,"transcript_ref":"local:01Z","output":"line one\nline two","truncated":false}`
+		r, ok := decodeJobResult(body)
 		if !ok {
 			t.Fatalf("expected decode to succeed for %q", body)
 		}
-		if r.Status != SubagentCompleted {
+		if r.JobID != "job_decode" {
+			t.Errorf("JobID: got %q, want job_decode", r.JobID)
+		}
+		if r.Status != "completed" {
 			t.Errorf("Status: got %q, want completed", r.Status)
-		}
-		if !r.Success {
-			t.Errorf("Success: got false, want true")
-		}
-		if r.TurnsUsed != 9 {
-			t.Errorf("TurnsUsed: got %d, want 9", r.TurnsUsed)
 		}
 		if r.TranscriptRef != "local:01Z" {
 			t.Errorf("TranscriptRef: got %q, want local:01Z", r.TranscriptRef)
@@ -264,28 +275,47 @@ func TestDecodeSubagentResult(t *testing.T) {
 	})
 
 	t.Run("empty body reports false", func(t *testing.T) {
-		if _, ok := decodeSubagentResult("   "); ok {
+		if _, ok := decodeJobResult("   "); ok {
 			t.Errorf("empty body must report false")
 		}
 	})
 
 	t.Run("non-JSON body reports false", func(t *testing.T) {
-		if _, ok := decodeSubagentResult("not json at all"); ok {
+		if _, ok := decodeJobResult("not json at all"); ok {
 			t.Errorf("non-JSON body must report false")
 		}
 	})
 
-	t.Run("extractSubagentResult subset agrees with decode", func(t *testing.T) {
-		body := `{"status":"failed","output":"boom","success":false,"turns_used":1,"transcript_ref":"local:01Q"}`
-		info, ok := extractSubagentResult(body)
+	t.Run("extractJobResult subset agrees with decode", func(t *testing.T) {
+		body := `{"job_id":"job_failed","type":"delegate","status":"failed","reason":"child_failed","running_in_background":false,"timed_out":false,"transcript_ref":"local:01Q","output":"boom","truncated":false}`
+		info, ok := extractJobResult(body)
 		if !ok {
-			t.Fatalf("extractSubagentResult should succeed")
+			t.Fatalf("extractJobResult should succeed")
 		}
-		full, _ := decodeSubagentResult(body)
-		if info.success != full.Success || info.status != string(full.Status) || info.transcriptRef != full.TranscriptRef {
+		full, _ := decodeJobResult(body)
+		if info.jobID != full.JobID || info.status != full.Status || info.transcriptRef != full.TranscriptRef {
 			t.Errorf("subset %+v disagrees with full decode %+v", info, full)
 		}
 	})
+}
+
+func TestRenderOutline_JobLifecycleBrackets(t *testing.T) {
+	childRef := "local:01OUTLINEJOB000000000"
+	body := `{"job_id":"job_outline","type":"delegate","status":"completed","running_in_background":false,"timed_out":false,"transcript_ref":"` + childRef + `","output":"done","truncated":false}`
+	entries := []transcript.Entry{
+		toolCallEntry(call("call_delegate", "delegate", `{}`)),
+		toolResultEntry(result("call_delegate", "delegate", body, false)),
+	}
+
+	out, _, _ := renderOutline(entries, 0, len(entries)-1)
+
+	want := "delegate[status=completed child=" + childRef + "]"
+	if !strings.Contains(out, want) {
+		t.Fatalf("outline missing job lifecycle bracket %q:\n%s", want, out)
+	}
+	if strings.Contains(out, "success=") {
+		t.Fatalf("outline job bracket must not include legacy success field:\n%s", out)
+	}
 }
 
 // TestRenderMarkdown_GenericJSONArrayResult verifies a top-level JSON array body

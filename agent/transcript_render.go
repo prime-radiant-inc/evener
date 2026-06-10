@@ -951,12 +951,11 @@ const (
 // writeToolResultBody renders a tool result body, choosing the most legible form
 // for the audit reader while never hiding evidence:
 //
-//   - When toolName is a subagent lifecycle tool (spawn_agent/wait/resume_agent/
-//     close_agent) and the body decodes as a subagentResult with no extra keys,
-//     it renders a status line (success/status/turns_used + the transcript_ref
-//     PROMINENTLY, before the output) followed by the output text with real
-//     newlines. The ref-before-output layout means the parent can pivot to the
-//     child even when the output is long and gets truncated.
+//   - When toolName is a job lifecycle tool and the body decodes as a jobResult
+//     with no extra keys, it renders a status line with the job status and
+//     transcript_ref before the output text. The ref-before-output layout means
+//     the parent can pivot to the child even when the output is long and gets
+//     truncated.
 //   - Otherwise, when the body parses as JSON (object or array), it is
 //     pretty-printed (indented, nesting de-escaped into real newlines).
 //   - Otherwise the body renders verbatim, exactly as before.
@@ -967,8 +966,8 @@ const (
 func writeToolResultBody(b *strings.Builder, toolName string, content any, full bool) {
 	raw := fmt.Sprint(content)
 
-	if subagentLifecycleTools[toolName] {
-		if body, ok := subagentResultBody(raw); ok {
+	if jobLifecycleTools[toolName] {
+		if body, ok := jobResultBody(raw); ok {
 			writeFencedBody(b, body, full)
 			return
 		}
@@ -982,18 +981,17 @@ func writeToolResultBody(b *strings.Builder, toolName string, content any, full 
 	writeFencedBody(b, raw, full)
 }
 
-// subagentResultBody renders a decoded subagentResult as a status line followed by
-// its de-escaped output, or reports false so the caller falls back. It reports
-// false when the body does not decode as a subagentResult OR when it carries keys
-// beyond the known struct fields (e.g. data/artifacts): in that case the general
-// JSON pretty-print keeps the extra evidence visible rather than the struct
-// silently dropping it.
-func subagentResultBody(raw string) (string, bool) {
-	r, ok := decodeSubagentResult(raw)
+// jobResultBody renders a decoded jobResult as a status line followed by its
+// de-escaped output, or reports false so the caller falls back. It reports false
+// when the body does not decode as a jobResult OR when it carries keys beyond the
+// known job result fields: in that case the general JSON pretty-print keeps the
+// extra evidence visible rather than the struct silently dropping it.
+func jobResultBody(raw string) (string, bool) {
+	r, ok := decodeJobResult(raw)
 	if !ok {
 		return "", false
 	}
-	if hasNonSubagentResultKeys(raw) {
+	if hasNonJobResultKeys(raw) {
 		return "", false
 	}
 
@@ -1001,47 +999,87 @@ func subagentResultBody(raw string) (string, bool) {
 	if ref == "" {
 		ref = "(none)"
 	}
-	// Status line first, with the ref prominent and BEFORE the output body.
-	status := fmt.Sprintf("success=%t status=%s turns_used=%d transcript_ref=%s",
-		r.Success, r.Status, r.TurnsUsed, ref)
+	jobID := r.JobID
+	if jobID == "" {
+		jobID = "(none)"
+	}
+	// Status line first, with the ref prominent and before the output body.
+	statusParts := []string{
+		"job_id=" + jobID,
+		"status=" + r.Status,
+	}
+	if r.Reason != "" {
+		statusParts = append(statusParts, "reason="+r.Reason)
+	}
+	statusParts = append(statusParts, "transcript_ref="+ref)
 
 	var b strings.Builder
-	b.WriteString(status)
+	b.WriteString(strings.Join(statusParts, " "))
 	b.WriteString("\n")
 	if r.Output != "" {
 		b.WriteString(r.Output) // already de-escaped (real newlines) by the JSON decoder
 		b.WriteString("\n")
 	}
+	if r.StructuredResult != nil {
+		b.WriteString("structured_result:\n")
+		if pretty, ok := prettyJSONValue(r.StructuredResult); ok {
+			b.WriteString(pretty)
+		} else {
+			b.WriteString(fmt.Sprint(r.StructuredResult))
+		}
+		b.WriteString("\n")
+	}
 	return b.String(), true
 }
 
-// subagentResultKnownKeys is the set of JSON keys the subagentResult struct
-// captures. A body with any key outside this set is rendered via the general JSON
+// jobResultKnownKeys is the set of JSON keys captured by jobResult. A body with
+// any key outside this set is rendered via the general JSON
 // pretty-print so the extra evidence stays visible.
-var subagentResultKnownKeys = map[string]bool{
-	"agent_id":       true,
-	"status":         true,
-	"closed":         true,
-	"output":         true,
-	"success":        true,
-	"turns_used":     true,
-	"transcript_ref": true,
+var jobResultKnownKeys = map[string]bool{
+	"target":                  true,
+	"job_id":                  true,
+	"type":                    true,
+	"status":                  true,
+	"reason":                  true,
+	"running_in_background":   true,
+	"timed_out":               true,
+	"action":                  true,
+	"resumed_from_job_id":     true,
+	"transcript_ref":          true,
+	"output":                  true,
+	"truncated":               true,
+	"exit_code":               true,
+	"structured_result":       true,
+	"structured_result_valid": true,
+	"delivered":               true,
+	"message_type":            true,
 }
 
-// hasNonSubagentResultKeys reports whether the JSON object in raw carries any
-// top-level key the subagentResult struct does not capture. A non-object or
+// hasNonJobResultKeys reports whether the JSON object in raw carries any
+// top-level key the jobResult struct does not capture. A non-object or
 // unparseable body reports false (the struct decode already gates those).
-func hasNonSubagentResultKeys(raw string) bool {
+func hasNonJobResultKeys(raw string) bool {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &m); err != nil {
 		return false
 	}
 	for k := range m {
-		if !subagentResultKnownKeys[k] {
+		if !jobResultKnownKeys[k] {
 			return true
 		}
 	}
 	return false
+}
+
+func prettyJSONValue(v any) (string, bool) {
+	var buf strings.Builder
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		return "", false
+	}
+	return strings.TrimRight(buf.String(), "\n"), true
 }
 
 // prettyJSON re-indents a JSON object or array body for readability, returning
@@ -1071,7 +1109,7 @@ func prettyJSON(raw string) (string, bool) {
 
 // writeResultBody renders a tool result body verbatim inside a fenced code block,
 // with the standard head+tail truncation. It is the plain path used for "call not
-// shown" results; writeToolResultBody adds the legible JSON/subagent forms on top.
+// shown" results; writeToolResultBody adds the legible JSON/job forms on top.
 func writeResultBody(b *strings.Builder, content any, full bool) {
 	writeFencedBody(b, fmt.Sprint(content), full)
 }
@@ -1299,25 +1337,18 @@ func toolInputSummary(name string, args json.RawMessage) string {
 	case "web_search":
 		return quoteIfSet(get("query"))
 
-	case "spawn_agent":
+	case "delegate":
 		parts := []string{truncRunes(get("task"), 80)}
 		if at := get("agent_type"); at != "" {
 			parts = append(parts, "type="+at)
 		}
-		if bl := get("blocking"); bl != "" {
-			parts = append(parts, "blocking="+bl)
+		if bg := get("background"); bg != "" {
+			parts = append(parts, "background="+bg)
 		}
 		return joinSummary(parts...)
 
-	case "resume_agent":
-		return joinSummary(get("agent_id"), quoteIfSet(truncRunes(get("message"), 80)))
-
-	case "wait":
-		s := get("agent_id")
-		if t := get("timeout_ms"); t != "" {
-			s = joinSummary(s, "timeout_ms="+t)
-		}
-		return s
+	case "job_send_message":
+		return joinSummary(get("target"), quoteIfSet(truncRunes(get("message"), 80)))
 
 	case "use_skill":
 		return get("skill_name")
