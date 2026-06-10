@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -3735,6 +3736,110 @@ func TestSubagent_MaxTurns_DefaultsTo500_NotInheritedFromParent(t *testing.T) {
 		t.Fatalf("subagent MaxTurns=%d, want 500 (should not inherit parent's 100)", mt)
 	}
 }
+
+func TestSession_Subagent_IndependentHistory(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+								ID:        "s1",
+								Name:      "shell",
+								Arguments: json.RawMessage(`{"command":"echo sub"}`),
+								Type:      "function",
+							}},
+						},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				return finalResponse("subagent done")
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	parentHistBefore := len(sess.history)
+	agentID := spawnRuntimeAgent(t, sess, "do something", "", 0, "", "", nil)
+	waitForRuntimeSubagent(t, sess, agentID)
+
+	parentHistAfter := len(sess.history)
+	if parentHistAfter != parentHistBefore {
+		t.Fatalf("parent history changed: before=%d after=%d; subagent history leaked into parent", parentHistBefore, parentHistAfter)
+	}
+}
+
+func TestSession_Subagent_SharedFilesystem(t *testing.T) {
+	dir := t.TempDir()
+	c := llm.NewClient()
+
+	if err := os.WriteFile(filepath.Join(dir, "shared.txt"), []byte("hello from parent"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return llm.Response{
+					Message: llm.Message{
+						Role: llm.RoleAssistant,
+						Content: []llm.ContentPart{
+							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+								ID:        "s1",
+								Name:      "read_file",
+								Arguments: json.RawMessage(`{"file_path":"shared.txt"}`),
+								Type:      "function",
+							}},
+						},
+					},
+				}
+			},
+			func(req llm.Request) llm.Response {
+				return finalResponse("read it")
+			},
+		},
+	}
+	c.Register(f)
+
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	agentID := spawnRuntimeAgent(t, sess, "read shared.txt", "", 0, "", "", nil)
+	waitForRuntimeSubagent(t, sess, agentID)
+
+	for _, req := range f.Requests() {
+		for _, msg := range req.Messages {
+			for _, p := range msg.Content {
+				if p.Kind == llm.ContentToolResult && strings.Contains(fmt.Sprint(p.ToolResult.Content), "hello from parent") {
+					return
+				}
+			}
+		}
+	}
+	t.Fatal("subagent did not receive parent-written file content via shared filesystem")
+}
+
 func TestSession_DelegateJobFinishedEvent_EmittedOnce(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()

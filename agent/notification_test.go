@@ -204,7 +204,7 @@ func TestNotification_EmptyNoOpDoesNotSuppressNextTurnEnd(t *testing.T) {
 	}
 	collect := drainEvents(sess)
 
-	// No enqueueNotification: the notification queue is empty.
+	// No job notification is queued: the notification queue is empty.
 	// Enqueue a real user message so popQueueHead picks it up after the no-op.
 	if err := sess.Enqueue(context.Background(), "queued user message"); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -252,7 +252,7 @@ func TestNotificationTurn_EmptyQueueIsNoOp(t *testing.T) {
 	}
 	collect := drainEvents(sess)
 
-	// No enqueueNotification: the queue is empty.
+	// No job notification is queued: the queue is empty.
 	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
 	}

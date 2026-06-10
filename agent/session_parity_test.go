@@ -776,6 +776,36 @@ func TestParity_ReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestParity_SubagentNoMCPInheritance(t *testing.T) {
+	pc := providerCases[0]
+	steps := []func(llm.Request) llm.Response{
+		func(req llm.Request) llm.Response {
+			return finalResponse("subagent done")
+		},
+		func(req llm.Request) llm.Response {
+			return finalResponse("subagent done")
+		},
+	}
+	sess, _ := newParitySession(t, pc, steps)
+	defer sess.Close()
+
+	sess.cfg.MCPConfigFiles = []string{"/fake/mcp.json"}
+	sess.cfg.MCPInline = []string{"test:echo hello"}
+
+	agentID := spawnRuntimeAgent(t, sess, "check mcp", "", 0, "", "", nil)
+	sub := sess.getSub(agentID)
+	if sub == nil {
+		t.Fatal("subagent not found")
+	}
+	if len(sub.sess.cfg.MCPConfigFiles) != 0 {
+		t.Errorf("subagent should not inherit MCPConfigFiles, got: %v", sub.sess.cfg.MCPConfigFiles)
+	}
+	if len(sub.sess.cfg.MCPInline) != 0 {
+		t.Errorf("subagent should not inherit MCPInline, got: %v", sub.sess.cfg.MCPInline)
+	}
+	waitForRuntimeSubagent(t, sess, agentID)
+}
+
 func TestParity_WorkingDirRemovedFromSchema(t *testing.T) {
 	// working_dir is not model-configurable; delegated jobs always use the parent's working dir.
 	pc := providerCases[0]

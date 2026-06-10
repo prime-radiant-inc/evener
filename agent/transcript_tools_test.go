@@ -926,9 +926,6 @@ func TestRead_OutlineRange(t *testing.T) {
 	}
 }
 
-// TestRead_OutlineLifecycleBracket verifies that a session with a subagent
-// lifecycle "wait" call shows the audit-pivot bracket (child=...) in the outline.// --- TestFind_ChildrenOf_ProjBucket ---
-
 // TestFind_ChildrenOf_ProjBucket verifies children_of for a parent in a sibling
 // project (proj: ref): the parent's bucket is resolved from the ref with no stat, and
 // the child comes back with a proj: ref into that bucket.
