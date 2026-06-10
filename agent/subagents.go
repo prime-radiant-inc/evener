@@ -216,6 +216,8 @@ func (s *Session) spawnAgent(ctx context.Context, task, model, workingDir string
 	s.mu.Unlock()
 	subCfg.MCPConfigFiles = nil
 	subCfg.MCPInline = nil
+	subCfg.spawn.parentJobID = ""
+	subCfg.spawn.forwardJobEvent = nil
 	subCfg.spawn.parentSessionID = s.id
 	subCfg.spawn.subagentTask = task
 	subCfg.spawn.depth = depth + 1
