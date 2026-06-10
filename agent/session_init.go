@@ -224,6 +224,7 @@ type RestoreSessionConfig struct {
 	ModelFallbacks []string
 	LLMRetryPolicy *llm.RetryPolicy
 	LLMSleep       llm.SleepFunc
+	spawn          spawnConfig
 }
 
 // RestoreSessionFromMeta creates a Session from a SessionMeta, recovering
@@ -239,6 +240,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	cfg := configFromSnapshot(meta.Config)
 	cfg.StateDir = restoreCfg.StateDir
 	cfg.ResolveProfile = restoreCfg.ResolveProfile
+	if restoreCfg.spawn.parentSessionID != "" {
+		cfg.spawn = restoreCfg.spawn
+	}
 	if restoreCfg.ModelFallbacks != nil {
 		cfg.ModelFallbacks = append([]string(nil), restoreCfg.ModelFallbacks...)
 	}

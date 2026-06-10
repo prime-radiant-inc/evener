@@ -831,6 +831,116 @@ func TestWatchSendRestoreRetriesConcreteTerminalResumableDelegateWithoutRetained
 	}
 }
 
+func TestWatchSendRestoreRetriesConcreteDelegateThroughProductionSend(t *testing.T) {
+	stateDir := t.TempDir()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput("first complete")
+			},
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput("watch follow-up complete")
+			},
+		},
+	}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		StateDir:         stateDir,
+		NoProjectPrompts: true,
+		MaxSubagentDepth: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	first := sess.createDelegate(context.Background(), delegateArgs{
+		Task:           "first task",
+		Background:     false,
+		BlockTimeoutMS: 5000,
+	})
+	if first.Err != nil {
+		t.Fatalf("createDelegate: %v", first.Err)
+	}
+	if first.Status != jobstore.StatusCompleted {
+		t.Fatalf("first delegate = %+v, want completed", first)
+	}
+	parentMeta := sess.Meta()
+	sess.Close()
+
+	now := time.Unix(2000, 0).UTC()
+	st, err := jobstore.Open(jobsDir(stateDir, sess.ID()) + "/jobs.jsonl")
+	if err != nil {
+		t.Fatalf("open job store: %v", err)
+	}
+	resumable := true
+	if err := st.Append(jobstore.Event{
+		Kind:          jobstore.EventJobSessionAssigned,
+		TS:            now,
+		JobID:         first.JobID,
+		TranscriptRef: first.TranscriptRef,
+		Resumable:     &resumable,
+	}); err != nil {
+		t.Fatalf("append resumable assignment: %v", err)
+	}
+	for _, event := range restoredWatchSendPendingEvents(sess.ID(), first.JobID, first.JobID, now) {
+		if err := st.Append(event); err != nil {
+			t.Fatalf("append %s: %v", event.Kind, err)
+		}
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close job store: %v", err)
+	}
+
+	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), parentMeta, RestoreSessionConfig{StateDir: stateDir})
+	if err != nil {
+		t.Fatalf("restore session: %v", err)
+	}
+	defer restored.Close()
+
+	if pending := loadWatchSendRecord(t, restored.jobManager).Pending; len(pending) != 0 {
+		t.Fatalf("pending after production restore retry = %+v, want none", pending)
+	}
+	events := loadJobStoreEvents(t, restored.jobManager)
+	deliveredSeq := int64(0)
+	notificationSeq := int64(0)
+	var resumedJob string
+	var droppedReasons []string
+	for _, event := range events {
+		switch event.Kind {
+		case jobstore.EventWatchSendDelivered:
+			deliveredSeq = event.Seq
+		case jobstore.EventWatchSendDropped:
+			if event.WatchSend != nil {
+				droppedReasons = append(droppedReasons, event.WatchSend.DiagnosticReason)
+			}
+		case jobstore.EventJobNotificationPending:
+			notificationSeq = event.Seq
+		case jobstore.EventJobStarted:
+			if event.JobID != first.JobID && event.TranscriptRef == first.TranscriptRef {
+				resumedJob = event.JobID
+			}
+		}
+	}
+	if deliveredSeq == 0 {
+		t.Fatalf("missing watch_send_delivered event; dropped reasons = %v", droppedReasons)
+	}
+	if notificationSeq == 0 || deliveredSeq > notificationSeq {
+		t.Fatalf("event order delivered=%d notification_pending=%d, want delivered before notification pending", deliveredSeq, notificationSeq)
+	}
+	if resumedJob == "" {
+		t.Fatalf("missing resumed delegate job for transcript %q", first.TranscriptRef)
+	}
+	waitForShellDone(t, restored.jobManager, resumedJob)
+	output, _, _, err := restored.jobManager.readOutput(resumedJob, shellInlineOutputBytes)
+	if err != nil {
+		t.Fatalf("read resumed output: %v", err)
+	}
+	if !strings.Contains(output, "watch follow-up complete") {
+		t.Fatalf("resumed output = %q, want watch follow-up complete", output)
+	}
+}
+
 func TestWatchSendRestoreDropsHardFailureTargetsOnce(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/serf/agent/internal/jobstore"
+	"primeradiant.com/serf/agent/schema"
 )
 
 const (
@@ -248,7 +249,10 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 	}
 	sub := s.subagents.get(childID)
 	if sub == nil || sub.sess == nil {
-		return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate session %q is not retained", childID))
+		sub, err = s.restoreTerminalDelegateChild(rec, childID)
+		if err != nil {
+			return sendMessageFailed(target, fmt.Errorf("target_not_resumable: delegate session %q is not retained: %w", childID, err))
+		}
 	}
 
 	sub.mu.Lock()
@@ -281,6 +285,84 @@ func (s *Session) sendDelegateMessage(ctx context.Context, args sendMessageArgs)
 		Action:              "resumed",
 		ResumedFromJobID:    rec.JobID,
 		TranscriptRef:       run.rec.TranscriptRef,
+	}
+}
+
+func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID string) (*subagent, error) {
+	if s == nil || s.subagents == nil || rec == nil {
+		return nil, errors.New("delegate session restore unavailable")
+	}
+	if rec.Resumable == nil || !*rec.Resumable {
+		return nil, errors.New("delegate job is not resumable")
+	}
+	if rec.DelegateRestore == nil {
+		return nil, errors.New("missing delegate restore descriptor")
+	}
+	if strings.TrimSpace(rec.DelegateRestore.ChildSessionID) != childID {
+		return nil, fmt.Errorf("restore descriptor child %q does not match transcript child %q", rec.DelegateRestore.ChildSessionID, childID)
+	}
+	if s.stateDir == "" {
+		return nil, errors.New("state directory is not configured")
+	}
+	meta, err := schema.LoadSessionMeta(s.stateDir, childID)
+	if err != nil {
+		return nil, err
+	}
+	profile := s.profile
+	if model := strings.TrimSpace(meta.Model); model != "" {
+		resolved, crossProvider, err := s.resolveProfileForRef(s.profile, model)
+		if err != nil {
+			return nil, err
+		}
+		if crossProvider {
+			resolved = resolved.WithCommunicateOverridesFrom(s.profile)
+		}
+		profile = resolved
+	}
+	restoreCfg := RestoreSessionConfig{
+		StateDir:       s.stateDir,
+		ResolveProfile: s.resolveProfile,
+		ModelFallbacks: append([]string(nil), s.cfg.ModelFallbacks...),
+		LLMRetryPolicy: s.cfg.LLMRetryPolicy,
+		LLMSleep:       s.cfg.LLMSleep,
+		spawn: spawnConfig{
+			parentSessionID: s.id,
+			subagentTask:    rec.DelegateRestore.Task,
+			depth:           s.depth + 1,
+			parentSteer:     s.Steer,
+		},
+	}
+	child, err := RestoreSessionFromMetaWithConfig(s.client, profile, s.env, meta, restoreCfg)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	status := subagentStatusFromJobStatus(rec.Status)
+	sub := &subagent{
+		id:           childID,
+		sess:         child,
+		emit:         s.emit,
+		status:       status,
+		nudgeEnabled: true,
+		agentType:    rec.DelegateRestore.AgentType,
+		createdAt:    now,
+		startedAt:    now,
+		endedAt:      &now,
+	}
+	s.subagents.track(sub)
+	return sub, nil
+}
+
+func subagentStatusFromJobStatus(status jobstore.Status) SubagentStatus {
+	switch status {
+	case jobstore.StatusCompleted:
+		return SubagentCompleted
+	case jobstore.StatusCancelled:
+		return SubagentCancelled
+	case jobstore.StatusFailed:
+		return SubagentFailed
+	default:
+		return SubagentFailed
 	}
 }
 
