@@ -514,6 +514,43 @@ func TestWatchSendPendingSnapshotCoalescesAndDoesNotRereadOutput(t *testing.T) {
 	}
 }
 
+func TestWatchSendPendingUsesTriggerTimeFrameSnapshot(t *testing.T) {
+	jm := newTestJM(t)
+	jm.send = func(context.Context, sendMessageArgs) sendMessageResult {
+		return sendMessageResult{Err: errors.New("busy")}
+	}
+	rec, _ := jm.createShell(createShellOpts{Command: "x"})
+	if _, err := jm.configureWatch(watchArgs{
+		Target:      rec.JobID,
+		OutputMatch: "ready",
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true, IncludeExcerpt: true},
+	}); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if _, err := jm.running[rec.JobID].output.Append([]byte("server ready\ninitial excerpt\n")); err != nil {
+		t.Fatalf("append trigger output: %v", err)
+	}
+	delivery := captureWatchSendDelivery(t, jm, rec.JobID, "output_match: server ready")
+	if _, err := jm.running[rec.JobID].output.Append([]byte("later output must not be snapshotted\n")); err != nil {
+		t.Fatalf("append later output: %v", err)
+	}
+
+	jm.deliverWatchSend(context.Background(), delivery)
+
+	pending := loadWatchSendRecord(t, jm).Pending
+	if len(pending) != 1 {
+		t.Fatalf("pending count = %d, want 1: %+v", len(pending), pending)
+	}
+	for _, state := range pending {
+		if !strings.Contains(state.Frame, "initial excerpt") {
+			t.Fatalf("pending frame = %q, want trigger-time excerpt", state.Frame)
+		}
+		if strings.Contains(state.Frame, "later output must not be snapshotted") {
+			t.Fatalf("pending frame reread output after trigger: %q", state.Frame)
+		}
+	}
+}
+
 func TestWatchSendGenerationChangesAfterRestoreAndKeepsOldPending(t *testing.T) {
 	stateDir := t.TempDir()
 	jm, err := newJobManager(stateDir, "S1", func(jobNotification) {})
@@ -803,14 +840,18 @@ func TestWatchSendPendingDeliveredRemovesBeforeNextFailure(t *testing.T) {
 func captureWatchSendDelivery(t *testing.T, jm *jobManager, jobID, trigger string) watchSendDelivery {
 	t.Helper()
 	jm.mu.Lock()
-	defer jm.mu.Unlock()
+	var delivery watchSendDelivery
 	for _, cfg := range jm.watches {
 		if cfg.target == jobID {
-			return jm.watchSendSnapshot(cfg, jobID, trigger)
+			delivery = jm.watchSendSnapshot(cfg, jobID, trigger)
+			break
 		}
 	}
-	t.Fatalf("watch for %s not found", jobID)
-	return watchSendDelivery{}
+	jm.mu.Unlock()
+	if delivery.cfg == nil {
+		t.Fatalf("watch for %s not found", jobID)
+	}
+	return jm.snapshotWatchSendFrame(delivery)
 }
 
 func TestWatchSendCapEvictsOldestPendingAndNotifies(t *testing.T) {

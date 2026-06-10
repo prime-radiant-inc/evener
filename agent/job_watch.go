@@ -106,6 +106,8 @@ type watchSendDelivery struct {
 	generation               string
 	allowAfterTerminalExpiry bool
 	send                     *watchSendArgs
+	message                  string
+	frame                    string
 	visibleSessionID         string
 	watchTarget              string
 	watchedIdentity          string
@@ -542,6 +544,7 @@ func (jm *jobManager) onSessionEvent(kind events.EventKind, data events.EventDat
 
 	// Called from Session.emit; only enqueue here so watch delivery does not
 	// re-enter session event emission.
+	deliveries = jm.snapshotWatchSendFrames(deliveries)
 	jm.enqueueWatchNotifications(notifications)
 	jm.deliverWatchSends(context.Background(), deliveries)
 }
@@ -604,6 +607,7 @@ func (jm *jobManager) feedJobOutput(jobID string, chunk []byte) {
 	}
 	jm.mu.Unlock()
 
+	deliveries = jm.snapshotWatchSendFrames(deliveries)
 	jm.enqueueWatchNotifications(notifications)
 	jm.deliverWatchSends(context.Background(), deliveries)
 }
@@ -681,6 +685,7 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 	}
 	jm.mu.Unlock()
 
+	deliveries = jm.snapshotWatchSendFrames(deliveries)
 	jm.enqueueWatchNotifications(notifications)
 	jm.deliverWatchSends(context.Background(), deliveries)
 	return true
@@ -699,6 +704,22 @@ func (jm *jobManager) deliverWatchSends(ctx context.Context, deliveries []watchS
 	for _, d := range deliveries {
 		jm.deliverWatchSend(ctx, d)
 	}
+}
+
+func (jm *jobManager) snapshotWatchSendFrames(deliveries []watchSendDelivery) []watchSendDelivery {
+	for i := range deliveries {
+		deliveries[i] = jm.snapshotWatchSendFrame(deliveries[i])
+	}
+	return deliveries
+}
+
+func (jm *jobManager) snapshotWatchSendFrame(d watchSendDelivery) watchSendDelivery {
+	if d.send == nil {
+		return d
+	}
+	d.message = limitWatchText(strings.TrimSpace(d.send.Message), watchMessageMaxChars)
+	d.frame = jm.buildWatchFrame(&watchConfig{send: d.send}, d.watchedIdentity, d.trigger)
+	return d
 }
 
 func (jm *jobManager) deliverWatchSend(ctx context.Context, d watchSendDelivery) {
@@ -760,7 +781,6 @@ func (jm *jobManager) deliverWatchSend(ctx context.Context, d watchSendDelivery)
 }
 
 func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string) jobstore.WatchSendState {
-	message := limitWatchText(strings.TrimSpace(d.send.Message), watchMessageMaxChars)
 	return jobstore.WatchSendState{
 		Key: jobstore.WatchSendKey{
 			VisibleSessionID:        d.visibleSessionID,
@@ -770,8 +790,8 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 			WatchGeneration:         d.generation,
 		},
 		DeliveryID:      jobstore.NewWatchSendDeliveryID(),
-		Message:         message,
-		Frame:           jm.buildWatchFrame(&watchConfig{send: d.send}, d.watchedIdentity, d.trigger),
+		Message:         d.message,
+		Frame:           d.frame,
 		TriggerIdentity: d.watchedIdentity,
 		TriggerReason:   d.trigger,
 	}

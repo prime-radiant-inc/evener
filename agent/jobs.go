@@ -748,6 +748,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 	watchNotifications, watchDeliveries := jm.expireJobWatchesLocked(run.rec.JobID)
 	jm.mu.Unlock()
 
+	watchDeliveries = jm.snapshotWatchSendFrames(watchDeliveries)
 	jm.enqueueWatchNotifications(watchNotifications)
 	jm.deliverWatchSends(context.Background(), watchDeliveries)
 
