@@ -1,6 +1,10 @@
 package agent
 
-import "primeradiant.com/serf/agent/internal/jobstore"
+import (
+	"errors"
+
+	"primeradiant.com/serf/agent/internal/jobstore"
+)
 
 func (s *Session) ownerJobManagerFor(jobID string) (*jobManager, *jobstore.JobRecord) {
 	if s == nil || s.jobManager == nil || s.jobManager.store == nil {
@@ -27,7 +31,14 @@ func (s *Session) ownerJobManagerFor(jobID string) (*jobManager, *jobstore.JobRe
 	if closed {
 		return nil, rec
 	}
-	return sub.sess.jobManager, rec
+	owner := sub.sess.jobManager
+	if owner.store == nil {
+		return nil, rec
+	}
+	if _, err := owner.store.Load(); errors.Is(err, jobstore.ErrStoreClosed) {
+		return nil, rec
+	}
+	return owner, rec
 }
 
 func (s *Session) nestedOrLocalJobManager(jobID string) (*jobManager, *jobstore.JobRecord, error) {
