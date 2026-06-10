@@ -102,10 +102,6 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"shell",
 			"grep",
 			"glob",
-			"spawn_agent",
-			"resume_agent",
-			"wait",
-			"close_agent",
 			"job_read_output",
 			"job_list",
 			"job_stop",
@@ -127,10 +123,6 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"shell",
 			"grep",
 			"glob",
-			"spawn_agent",
-			"resume_agent",
-			"wait",
-			"close_agent",
 			"job_read_output",
 			"job_list",
 			"job_stop",
@@ -156,10 +148,6 @@ func TestProviderProfiles_ToolLists_MatchSpec(t *testing.T) {
 			"grep",
 			"glob",
 			"list_dir",
-			"spawn_agent",
-			"resume_agent",
-			"wait",
-			"close_agent",
 			"job_read_output",
 			"job_list",
 			"job_stop",
@@ -1211,65 +1199,43 @@ func TestProviderProfile_KnowledgeCutoff(t *testing.T) {
 }
 
 func TestSendInput_UsesMessageParam(t *testing.T) {
-	profiles := []*provider.Profile{
-		NewOpenAIProfile("gpt-5.2"),
-		newAnthropicProfile("claude-sonnet-4-20250514"),
-		newGeminiProfile("gemini-2.5-pro"),
+	td := tool.DefSendInput()
+	if td.Name != "resume_agent" {
+		t.Fatalf("Name = %q, want resume_agent", td.Name)
 	}
-	for _, p := range profiles {
-		t.Run(p.ID(), func(t *testing.T) {
-			for _, td := range p.ToolDefinitions() {
-				if td.Name == "resume_agent" {
-					props := td.Parameters["properties"].(map[string]any)
-					if _, ok := props["message"]; !ok {
-						t.Fatal("resume_agent should have 'message' parameter")
-					}
-					if _, ok := props["input"]; ok {
-						t.Fatal("resume_agent should not have 'input' parameter")
-					}
-					req := td.Parameters["required"].([]string)
-					found := false
-					for _, r := range req {
-						if r == "message" {
-							found = true
-						}
-						if r == "input" {
-							t.Fatal("required should not contain 'input'")
-						}
-					}
-					if !found {
-						t.Fatal("required should contain 'message'")
-					}
-					return
-				}
-			}
-			t.Fatal("resume_agent tool not found")
-		})
+	props := td.Parameters["properties"].(map[string]any)
+	if _, ok := props["message"]; !ok {
+		t.Fatal("resume_agent should have 'message' parameter")
+	}
+	if _, ok := props["input"]; ok {
+		t.Fatal("resume_agent should not have 'input' parameter")
+	}
+	req := td.Parameters["required"].([]string)
+	found := false
+	for _, r := range req {
+		if r == "message" {
+			found = true
+		}
+		if r == "input" {
+			t.Fatal("required should not contain 'input'")
+		}
+	}
+	if !found {
+		t.Fatal("required should contain 'message'")
 	}
 }
 
 func TestSpawnAgent_HasMaxTurns(t *testing.T) {
-	profiles := []*provider.Profile{
-		NewOpenAIProfile("gpt-5.2"),
-		newAnthropicProfile("claude-sonnet-4-20250514"),
-		newGeminiProfile("gemini-2.5-pro"),
+	td := tool.DefSpawnAgent()
+	if td.Name != "spawn_agent" {
+		t.Fatalf("Name = %q, want spawn_agent", td.Name)
 	}
-	for _, p := range profiles {
-		t.Run(p.ID(), func(t *testing.T) {
-			for _, td := range p.ToolDefinitions() {
-				if td.Name == "spawn_agent" {
-					props := td.Parameters["properties"].(map[string]any)
-					if _, ok := props["working_dir"]; ok {
-						t.Fatal("spawn_agent should NOT have working_dir parameter (removed)")
-					}
-					if _, ok := props["max_turns"]; !ok {
-						t.Fatal("spawn_agent missing max_turns parameter")
-					}
-					return
-				}
-			}
-			t.Fatal("spawn_agent tool not found")
-		})
+	props := td.Parameters["properties"].(map[string]any)
+	if _, ok := props["working_dir"]; ok {
+		t.Fatal("spawn_agent should NOT have working_dir parameter (removed)")
+	}
+	if _, ok := props["max_turns"]; !ok {
+		t.Fatal("spawn_agent missing max_turns parameter")
 	}
 }
 
@@ -1743,10 +1709,6 @@ func TestMiniMaxProfile_ToolListExact(t *testing.T) {
 		"shell",
 		"grep",
 		"glob",
-		"spawn_agent",
-		"resume_agent",
-		"wait",
-		"close_agent",
 		"job_read_output",
 		"job_list",
 		"job_stop",
