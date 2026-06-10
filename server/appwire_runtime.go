@@ -497,7 +497,7 @@ func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.SerfDiagnostic
 		out.Hooks[event] = count
 	}
 	for _, sub := range ds.Subagents {
-		out.Subagents = append(out.Subagents, appwire.SerfSubagentInfo{ID: sub.ID, Status: sub.Status, TurnsUsed: sub.TurnsUsed})
+		out.Jobs = append(out.Jobs, appwire.SerfJobInfo{JobID: sub.ID, JobType: "delegate", Status: sub.Status})
 	}
 	out.Agents = append(out.Agents, ds.Agents...)
 	return out

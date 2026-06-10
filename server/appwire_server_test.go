@@ -897,8 +897,11 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 		t.Fatalf("context metrics=%+v", data.Thread.Serf)
 	}
 	diag := data.Thread.Serf.Diagnostics
-	if diag == nil || len(diag.Tools) != 1 || len(diag.MCP) != 1 || len(diag.Skills) != 1 || len(diag.Plugins) != 1 || len(diag.Subagents) != 1 || len(diag.Agents) != 1 {
+	if diag == nil || len(diag.Tools) != 1 || len(diag.MCP) != 1 || len(diag.Skills) != 1 || len(diag.Plugins) != 1 || len(diag.Jobs) != 1 || len(diag.Agents) != 1 {
 		t.Fatalf("diagnostics=%+v", diag)
+	}
+	if diag.Jobs[0].JobID != "sub-1" || diag.Jobs[0].JobType != "delegate" || diag.Jobs[0].Status != "completed" {
+		t.Fatalf("job diagnostics=%+v", diag.Jobs)
 	}
 	if diag.Hooks["PreToolUse"] != 3 {
 		t.Fatalf("hooks=%+v", diag.Hooks)

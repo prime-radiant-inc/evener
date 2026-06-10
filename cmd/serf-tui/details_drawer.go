@@ -157,9 +157,9 @@ func writeSerfDiagnostics(b *strings.Builder, diag *appwire.SerfDiagnostics) {
 		fmt.Fprintf(b, "\n  %s", strings.Join(hooks, "  "))
 	}
 
-	fmt.Fprintf(b, "\n\nSubagents (%d):", len(diag.Subagents))
-	for _, sub := range diag.Subagents {
-		fmt.Fprintf(b, "\n  %s (%s, %d turns)", sub.ID, sub.Status, sub.TurnsUsed)
+	fmt.Fprintf(b, "\n\nJobs (%d):", len(diag.Jobs))
+	for _, job := range diag.Jobs {
+		fmt.Fprintf(b, "\n  %s (%s, %s)", job.JobID, job.JobType, job.Status)
 	}
 
 	fmt.Fprintf(b, "\n\nAgents (%d):", len(diag.Agents))

@@ -85,7 +85,7 @@ func formatContextFragment(detail hubSessionDetail) string {
 	return ""
 }
 
-// appendDiagnosticsSections writes the tool/MCP/skill/plugin/hook/subagent/agent
+// appendDiagnosticsSections writes the tool/MCP/skill/plugin/hook/job/agent
 // breakdown that the legacy standalone TUI showed under /status. The data is
 // already on the wire (appwire.SerfDiagnostics) — this just renders it.
 func appendDiagnosticsSections(b *strings.Builder, ds *appwire.SerfDiagnostics, width int) {
@@ -154,9 +154,9 @@ func appendDiagnosticsSections(b *strings.Builder, ds *appwire.SerfDiagnostics, 
 		b.WriteString("\n  " + strings.Join(parts, "  "))
 	}
 
-	fmt.Fprintf(b, "\n\nSubagents (%d):", len(ds.Subagents))
-	for _, sub := range ds.Subagents {
-		fmt.Fprintf(b, "\n  %s (%s, %d turns)", sub.ID, sub.Status, sub.TurnsUsed)
+	fmt.Fprintf(b, "\n\nJobs (%d):", len(ds.Jobs))
+	for _, job := range ds.Jobs {
+		fmt.Fprintf(b, "\n  %s (%s, %s)", job.JobID, job.JobType, job.Status)
 	}
 
 	fmt.Fprintf(b, "\n\nAgents (%d):", len(ds.Agents))

@@ -541,7 +541,7 @@ func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 			Status:        "failed",
 			Reason:        "signal",
 			ExitCode:      &exitCode,
-			OutputBytes:   4096,
+			OutputBytes:   0,
 			TranscriptRef: "local:child",
 		},
 	})
@@ -558,8 +558,12 @@ func TestAppEventProjectorProjectsJobEvents(t *testing.T) {
 	}
 	if finishedJob.JobID != "job_1" || finishedJob.JobType != "delegate" || finishedJob.Status != "failed" ||
 		finishedJob.Reason != "signal" || finishedJob.ExitCode == nil || *finishedJob.ExitCode != exitCode ||
-		finishedJob.OutputBytes != 4096 || finishedJob.TranscriptRef != "local:child" {
+		finishedJob.OutputBytes != 0 || finishedJob.TranscriptRef != "local:child" {
 		t.Fatalf("finished job=%+v", finishedJob)
+	}
+	finishedJSON := string(notificationParamsJSON(t, finished, appwire.NotifySerfJobFinished))
+	if !strings.Contains(finishedJSON, `"output_bytes":0`) {
+		t.Fatalf("finished notification json=%s missing zero output_bytes", finishedJSON)
 	}
 }
 

@@ -43,7 +43,7 @@ func TestRenderHubSessionStatusWithoutDiagnosticsMatchesThinSummary(t *testing.T
 
 // TestRenderHubSessionStatusRendersDiagnosticsSections verifies the rich
 // /status output: tools by source, MCP servers, skills, plugins, hooks,
-// subagents, agents. Mirrors the legacy standalone TUI's renderDetailedStatus.
+// jobs, agents. Mirrors the legacy standalone TUI's renderDetailedStatus.
 func TestRenderHubSessionStatusRendersDiagnosticsSections(t *testing.T) {
 	detail := hubSessionDetail{
 		SessionID: "01ABC",
@@ -69,8 +69,8 @@ func TestRenderHubSessionStatusRendersDiagnosticsSections(t *testing.T) {
 				"SessionStart":     2,
 				"UserPromptSubmit": 1,
 			},
-			Subagents: []appwire.SerfSubagentInfo{
-				{ID: "agent_1", Status: "running", TurnsUsed: 5},
+			Jobs: []appwire.SerfJobInfo{
+				{JobID: "job_1", JobType: "delegate", Status: "running"},
 			},
 			Agents: []string{"reviewer", "planner"},
 		},
@@ -96,8 +96,8 @@ func TestRenderHubSessionStatusRendersDiagnosticsSections(t *testing.T) {
 		"Hooks (2):",
 		"SessionStart: 2",
 		"UserPromptSubmit: 1",
-		"Subagents (1):",
-		"agent_1 (running, 5 turns)",
+		"Jobs (1):",
+		"job_1 (delegate, running)",
 		"Agents (2):",
 		"reviewer",
 		"planner",

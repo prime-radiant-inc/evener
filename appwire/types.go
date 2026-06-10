@@ -282,7 +282,7 @@ type SerfJobInfo struct {
 	Status        string `json:"status"`
 	Reason        string `json:"reason,omitempty"`
 	ExitCode      *int   `json:"exit_code,omitempty"`
-	OutputBytes   int64  `json:"output_bytes,omitempty"`
+	OutputBytes   int64  `json:"output_bytes"`
 	TranscriptRef string `json:"transcript_ref,omitempty"`
 	FromWatch     bool   `json:"from_watch,omitempty"`
 }

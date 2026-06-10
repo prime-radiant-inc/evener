@@ -48,7 +48,7 @@ func TestSerfDiagnosticsJobsJSONRoundTrip(t *testing.T) {
 				Status:        "failed",
 				Reason:        "exit",
 				ExitCode:      &exitCode,
-				OutputBytes:   1234,
+				OutputBytes:   0,
 				TranscriptRef: "local:child",
 				FromWatch:     true,
 			},
@@ -66,7 +66,7 @@ func TestSerfDiagnosticsJobsJSONRoundTrip(t *testing.T) {
 		`"status":"failed"`,
 		`"reason":"exit"`,
 		`"exit_code":2`,
-		`"output_bytes":1234`,
+		`"output_bytes":0`,
 		`"transcript_ref":"local:child"`,
 		`"from_watch":true`,
 	} {
@@ -89,7 +89,7 @@ func TestSerfDiagnosticsJobsJSONRoundTrip(t *testing.T) {
 	job := out.Jobs[0]
 	if job.JobID != "job_1" || job.JobType != "delegate" || job.Status != "failed" ||
 		job.Reason != "exit" || job.ExitCode == nil || *job.ExitCode != exitCode ||
-		job.OutputBytes != 1234 || job.TranscriptRef != "local:child" || !job.FromWatch {
+		job.OutputBytes != 0 || job.TranscriptRef != "local:child" || !job.FromWatch {
 		t.Fatalf("roundtrip job=%+v", job)
 	}
 }
