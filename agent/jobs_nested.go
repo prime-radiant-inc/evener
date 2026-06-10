@@ -64,6 +64,47 @@ func (s *Session) nestedOrLocalJobManager(jobID string) (*jobManager, *jobstore.
 	return owner, rec, nil
 }
 
+func (s *Session) stopNestedOrLocal(jobID string) (*jobstore.JobRecord, error) {
+	jm, _, err := s.nestedOrLocalJobManager(jobID)
+	if err != nil {
+		return nil, err
+	}
+	if jm == nil {
+		return nil, errors.New(jobManagerUnavailableReason)
+	}
+	// Spec 5.8's not_controllable path is reserved for future cross-process
+	// owners; a live in-process owner routes directly to its job manager.
+	return jm.stop(jobID)
+}
+
+func (s *Session) stopChildren(delegateJobID string) ([]*jobstore.JobRecord, error) {
+	local, err := sessionJobManager(s)
+	if err != nil {
+		return nil, err
+	}
+	recs, err := local.store.Load()
+	if err != nil {
+		return nil, err
+	}
+
+	var stopped []*jobstore.JobRecord
+	var stopErr error
+	for jobID, rec := range recs {
+		if rec.ParentJobID != delegateJobID || rec.Status.IsTerminal() {
+			continue
+		}
+		stoppedRec, err := s.stopNestedOrLocal(jobID)
+		if err != nil {
+			stopErr = errors.Join(stopErr, err)
+			continue
+		}
+		if stoppedRec != nil {
+			stopped = append(stopped, stoppedRec)
+		}
+	}
+	return stopped, stopErr
+}
+
 func (jm *jobManager) forwardLocked(e jobstore.Event) {
 	if jm.forward == nil || jm.parentJobID == "" {
 		return

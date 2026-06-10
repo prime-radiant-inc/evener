@@ -15,6 +15,37 @@ import (
 	"primeradiant.com/serf/llm"
 )
 
+func newNestedStopTestSession(t *testing.T, parentJobID string) (*Session, *jobManager) {
+	t.Helper()
+	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new parent jobManager: %v", err)
+	}
+	childJM, err := newJobManager(t.TempDir(), "CHILD", func(jobNotification) {})
+	if err != nil {
+		t.Fatalf("new child jobManager: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = parentJM.store.Close()
+		_ = childJM.store.Close()
+	})
+
+	childJM.forward = parentJM.forwardEvent
+	childJM.parentJobID = parentJobID
+
+	parent := &Session{
+		id:         "PARENT",
+		jobManager: parentJM,
+		subagents:  newSubagentManager(nil, nil),
+	}
+	parent.subagents.track(&subagent{
+		id:     "CHILD",
+		sess:   &Session{id: "CHILD", jobManager: childJM},
+		status: SubagentRunning,
+	})
+	return parent, childJM
+}
+
 func TestNestedShellForwardsJobStarted(t *testing.T) {
 	parentJM, err := newJobManager(t.TempDir(), "PARENT", func(jobNotification) {})
 	if err != nil {
@@ -536,6 +567,153 @@ func TestNestedReadOutputBlockRefreshesOwnerRecord(t *testing.T) {
 	}
 	if !out.StructuredResultValid || out.StructuredResult["summary"] != "finished during block" {
 		t.Fatalf("structured result = %+v valid=%v, want refreshed owner result", out.StructuredResult, out.StructuredResultValid)
+	}
+}
+
+func TestParentStopsNestedJobViaOwner(t *testing.T) {
+	parent, childJM := newNestedStopTestSession(t, "job_PARENTDELEGATE")
+	se := newDelayedExitStreamingExecutor()
+	var releaseOnce sync.Once
+	var jobID string
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(se.release) })
+		if jobID != "" {
+			waitForShellDone(t, childJM, jobID)
+		}
+	})
+
+	nested := runShell(context.Background(), childJM, se, shellArgs{
+		Command:    "sleep 30",
+		Background: true,
+	})
+	if nested.JobID == "" {
+		t.Fatalf("runShell result = %+v, want background nested job", nested)
+	}
+	jobID = nested.JobID
+
+	rec, err := parent.stopNestedOrLocal(nested.JobID)
+	if err != nil {
+		t.Fatalf("parent stop of nested job: %v", err)
+	}
+	if rec.JobID != nested.JobID {
+		t.Fatalf("stopped job = %q, want %q", rec.JobID, nested.JobID)
+	}
+	if rec.Status != jobstore.StatusCancelled {
+		t.Fatalf("nested job status after stop = %q, want %q", rec.Status, jobstore.StatusCancelled)
+	}
+	if rec.Reason != "stopped_by_parent" {
+		t.Fatalf("nested job reason after stop = %q, want stopped_by_parent", rec.Reason)
+	}
+	if se.signals.Load() != 1 {
+		t.Fatalf("nested shell signals = %d, want 1", se.signals.Load())
+	}
+	releaseOnce.Do(func() { close(se.release) })
+	waitForShellDone(t, childJM, nested.JobID)
+	parentRec, err := findJobRecord(parent.jobManager, nested.JobID)
+	if err != nil {
+		t.Fatalf("find parent forwarded nested record: %v", err)
+	}
+	if parentRec.Status != jobstore.StatusCancelled || parentRec.Reason != "stopped_by_parent" {
+		t.Fatalf("parent forwarded nested record = %+v, want cancelled/stopped_by_parent", parentRec)
+	}
+}
+
+func TestStopDelegateIncludeChildrenStopsNested(t *testing.T) {
+	parent, childJM := newNestedStopTestSession(t, "")
+	delegate, err := parent.jobManager.createShell(createShellOpts{Command: "delegate", Description: "delegate"})
+	if err != nil {
+		t.Fatalf("create delegate stand-in: %v", err)
+	}
+	childJM.parentJobID = delegate.JobID
+	se := newDelayedExitStreamingExecutor()
+	var releaseOnce sync.Once
+	var jobID string
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(se.release) })
+		if jobID != "" {
+			waitForShellDone(t, childJM, jobID)
+		}
+		finishRunningTestJob(t, parent.jobManager, delegate.JobID)
+	})
+
+	nested := runShell(context.Background(), childJM, se, shellArgs{
+		Command:    "sleep 30",
+		Background: true,
+	})
+	if nested.JobID == "" {
+		t.Fatalf("runShell result = %+v, want background nested job", nested)
+	}
+	jobID = nested.JobID
+
+	out, err := jobStopTool(context.Background(), parent, map[string]any{
+		"job_id":           delegate.JobID,
+		"include_children": true,
+	}, 20000)
+	if err != nil {
+		t.Fatalf("job_stop include_children: %v", err)
+	}
+	var stop jobStopResult
+	if err := json.Unmarshal([]byte(out), &stop); err != nil {
+		t.Fatalf("unmarshal job_stop: %v (output: %s)", err, out)
+	}
+	if stop.JobID != delegate.JobID {
+		t.Fatalf("job_stop job_id = %q, want primary delegate %q", stop.JobID, delegate.JobID)
+	}
+	if se.signals.Load() != 1 {
+		t.Fatalf("nested shell signals = %d, want include_children to signal it once", se.signals.Load())
+	}
+	releaseOnce.Do(func() { close(se.release) })
+	waitForShellDone(t, childJM, nested.JobID)
+	childRec, err := findJobRecord(childJM, nested.JobID)
+	if err != nil {
+		t.Fatalf("find nested record: %v", err)
+	}
+	if childRec.Status != jobstore.StatusCancelled || childRec.Reason != "stopped_by_parent" {
+		t.Fatalf("nested child record = %+v, want cancelled/stopped_by_parent", childRec)
+	}
+}
+
+func TestStopDelegateWithoutIncludeChildrenLeavesNestedRunning(t *testing.T) {
+	parent, childJM := newNestedStopTestSession(t, "")
+	delegate, err := parent.jobManager.createShell(createShellOpts{Command: "delegate", Description: "delegate"})
+	if err != nil {
+		t.Fatalf("create delegate stand-in: %v", err)
+	}
+	childJM.parentJobID = delegate.JobID
+	se := newDelayedExitStreamingExecutor()
+	var releaseOnce sync.Once
+	var jobID string
+	t.Cleanup(func() {
+		releaseOnce.Do(func() { close(se.release) })
+		if jobID != "" {
+			waitForShellDone(t, childJM, jobID)
+		}
+		finishRunningTestJob(t, parent.jobManager, delegate.JobID)
+	})
+
+	nested := runShell(context.Background(), childJM, se, shellArgs{
+		Command:    "sleep 30",
+		Background: true,
+	})
+	if nested.JobID == "" {
+		t.Fatalf("runShell result = %+v, want background nested job", nested)
+	}
+	jobID = nested.JobID
+
+	if _, err := jobStopTool(context.Background(), parent, map[string]any{
+		"job_id": delegate.JobID,
+	}, 20000); err != nil {
+		t.Fatalf("job_stop without include_children: %v", err)
+	}
+	if se.signals.Load() != 0 {
+		t.Fatalf("nested shell signals = %d, want include_children=false to leave it running", se.signals.Load())
+	}
+	childRec, err := findJobRecord(childJM, nested.JobID)
+	if err != nil {
+		t.Fatalf("find nested record: %v", err)
+	}
+	if childRec.Status != jobstore.StatusRunning {
+		t.Fatalf("nested child record status = %q, want running", childRec.Status)
 	}
 }
 

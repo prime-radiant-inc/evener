@@ -365,13 +365,20 @@ func jobStopTool(ctx context.Context, s *Session, args map[string]any, maxChars 
 		return "", err
 	}
 
-	rec, err := jm.stop(jobID)
+	targetJM := jm
+	if routed, _, err := s.nestedOrLocalJobManager(jobID); err == nil {
+		targetJM = routed
+	}
+	if shellBoolArg(args, "include_children") {
+		_, _ = s.stopChildren(jobID)
+	}
+	rec, err := s.stopNestedOrLocal(jobID)
 	if err != nil {
 		return "", err
 	}
 	if shellBoolArg(args, "block") {
-		waitForJobDone(ctx, jm, jobID, time.Duration(timeoutMS)*time.Millisecond)
-		if latest, err := findJobRecord(jm, jobID); err == nil {
+		waitForJobDone(ctx, targetJM, jobID, time.Duration(timeoutMS)*time.Millisecond)
+		if _, latest, err := s.nestedOrLocalJobManager(jobID); err == nil {
 			rec = latest
 		}
 	}
