@@ -1,6 +1,6 @@
 ---
 name: planner
-description: "Task decomposition and planning agent. Reads specs and codebases to produce actionable task breakdowns. Resumable via resume_agent for replanning when tasks fail."
+description: "Task decomposition and planning agent. Reads specs and codebases to produce actionable task breakdowns and revised plans when tasks fail."
 model: inherit
 color: green
 tools: [glob, grep, read_file, shell]
@@ -37,7 +37,7 @@ than 3-4 files or implementing more than one logical feature, split it further.
 
 ## Replanning
 
-When resumed via resume_agent with failure information:
+When asked to replan with failure information:
 - Analyze WHY the task failed
 - Determine if the approach was wrong or the task was too large
 - Produce a revised plan that addresses the failure
