@@ -35,7 +35,7 @@ This reference contract is not itself the runtime system prompt, but the followi
 - Delegate work starts in the background by default; omit `background` unless intentionally overriding it. Shell and delegate defaults differ deliberately: shell commands are usually short decision-producing calls, while delegates are independent agentic work.
 - Use `delegate` to start a new delegate conversation/job. It does not continue an existing conversation.
 - Use `job_send_message` for follow-up on a messageable target: if a delegate target is running, it injects guidance; if a delegate target is terminal and resumable, it starts a new delegate job in that same delegate conversation by default. Use `on_finished="fail"` only for live-only nudges that must not resume terminal work.
-- Use `job_send_message` for observer/sidecar commentary too. Runtime aliases such as `caller`, `main`, or `watched` may resolve to session endpoints according to caller context and permissions.
+- Use `job_send_message` for observer/sidecar commentary too. Runtime aliases such as `caller`, `main`, or `watched` are available in current Serf for runtime-originated steering, but their final v1 vocabulary and per-context resolution semantics remain an open product decision. Ordinary delegate follow-up should target a concrete `job_id`.
 - After starting a background job, continue useful work or respond to the user. Do not immediately wait, poll `job_list`, or loop on `job_read_output`.
 - Serf automatically injects one terminal notification for notification-armed background jobs when they complete, fail, are cancelled, or are stopped/lost.
 - Use `job_watch` when a condition should notify the caller or send a configured message/frame to another target. `send` is the delivery discriminator: omit it for caller notification, include it for target delivery. Trigger sources are orthogonal: `output_match`, `progress_interval_ms`, and, for event/frame watches, `events`/`trigger`. Do not use `job_watch` to learn when a job completes.
@@ -301,7 +301,7 @@ Defaults:
 - `delegate` does not accept `target`, `mode`, `job_id`, or `transcript_ref` for continuation.
 - With `background=false`, `block_timeout_ms` has the same foreground wait semantics and bounds as shell creation: timeout leaves the delegate job running in the background. With `background=true`, Serf returns after creating/starting the delegate job and does not wait for terminal completion.
 - Delegates have no model-facing `max_runtime_ms` in v1. Delegate runtime limits, if any, are implementation policy rather than a tool argument.
-- `result_schema`, when supplied, is a JSON Schema-like contract for the delegate final result. The delegate output remains readable as prose/log text, but Serf should also validate and surface a structured result when possible.
+- `result_schema`, when supplied, is a JSON Schema-like contract for the initial delegate final result. The delegate output remains readable as prose/log text, but Serf should also validate and surface a structured result when possible. Open decision: whether resumed delegate jobs inherit the original schema, and the exact guaranteed shape when validation/capture fails, is not yet part of the shipped normative contract.
 - Delegate interaction is turn-based in this target contract. A delegate that needs more input should finish with a request for that input; the parent follows up with `job_send_message`. Mid-turn interactive input/awaiting-input notifications are not a v1 guarantee. Delegate `status="completed"` means the delegate turn ended normally; it does not assert that the requested task succeeded. Agents must inspect `output`, `structured_result`, or task-specific schema fields for task success/failure.
 
 Background return shape:
@@ -376,7 +376,7 @@ Core target resolution:
 | --- | --- |
 | `job_...` | A concrete messageable job, initially delegate jobs. |
 
-Advanced/contextual aliases are available for observer/sidecar and runtime contexts, subject to permissions: `caller`, `main`, and `watched`. Ordinary delegate follow-up should target a concrete `job_id`.
+Advanced/contextual aliases are available in current Serf for observer/sidecar and runtime contexts, subject to permissions: `caller`, `main`, and `watched`. Ordinary delegate follow-up should target a concrete `job_id`. Open decision: the final v1 alias vocabulary and exact resolution for `caller`, `main`, and `watched` in every caller/watch context are not yet normative.
 
 Semantics:
 
@@ -658,7 +658,7 @@ It then returns current status and bytes. Timeout does not stop the job.
 
 If output metadata exists but content was pruned, `job_read_output` returns durable status plus `output_unavailable=true` and reason `retention_pruned`, rather than pretending the job does not exist.
 
-For delegate jobs, output is the parent-visible execution log for that delegate invocation. It must include the delegate's final user-facing report or terminal error/cancellation diagnostic. If the delegate was created with `result_schema`, `job_read_output` should also expose `structured_result` and `structured_result_valid` when available. It may include streamed assistant text, tool-use summaries, permission/status diagnostics, and nested job notifications. It is not the complete child transcript.
+For delegate jobs, output is the parent-visible execution log for that delegate invocation. It must include the delegate's final user-facing report or terminal error/cancellation diagnostic. If the delegate invocation captured a structured result, `job_read_output` should also expose `structured_result` and `structured_result_valid` when available. It may include streamed assistant text, tool-use summaries, permission/status diagnostics, and nested job notifications. It is not the complete child transcript. Open decision: resumed delegate jobs do not yet have a normative `result_schema` inheritance or validation-failure contract.
 
 ### `job_list`
 
@@ -952,7 +952,7 @@ Rules:
 
 Terminal job notifications are automatic for notification-armed jobs. A model should not need to subscribe to learn that a background job finished.
 
-A job is notification-armed if its creating tool call returned before terminal state, including shell foreground calls that timed out and were promoted to durable background jobs. A job that completed synchronously before the creating tool returned is not required to inject a duplicate terminal notification; the terminal result is already in the tool result. `job_send_message` against a running job or session alias does not arm an additional terminal notification. `job_send_message` against a terminal/resumable delegate job creates a new notification-armed delegate job. Internal observer/sidecar jobs may run in the background with terminal notifications hidden or routed to diagnostics; this is the main case where `running_in_background` and notification arming diverge.
+A job is notification-armed if its creating tool call returned before terminal state, including shell foreground calls that timed out and were promoted to durable background jobs. A job that completed synchronously before the creating tool returned is not required to inject a duplicate terminal notification; the terminal result is already in the tool result. `job_send_message` against a running job or session alias does not arm an additional terminal notification. `job_send_message` against a terminal/resumable delegate job creates a new notification-armed delegate job. Open decision: v1 does not yet define a model-facing/private sidecar marker that would hide or reroute terminal notifications for observer sidecars; until that exists, sidecars use ordinary delegate notification semantics unless an implementation-specific policy explicitly documents otherwise.
 
 Notification example:
 
@@ -1073,9 +1073,9 @@ flowchart TD
 
 ## Observer and sidecar composition
 
-Observer sidecars are a v1 Serf feature. Claude Monitor covers only the basic stream-notification profile; Serf also supports sidecars that receive bounded event/output frames and comment back through normal message delivery. Serf does not need a separate observer-comment command or a Sprout-style raw handle model. Observers and sidecars are composed from existing job primitives:
+Observer sidecars are a v1 Serf composition pattern. Claude Monitor covers only the basic stream-notification profile; Serf also supports sidecars that receive bounded event/output frames and comment back through normal message delivery. Serf does not need a separate observer-comment command or a Sprout-style raw handle model. The private-sidecar marker and separate sidecar capacity class remain open decisions; the shipped composition uses existing job primitives:
 
-1. Start a sidecar with `delegate(...)`; this creates a private or normal delegate job depending on configuration.
+1. Start a sidecar with `delegate(...)`; this creates a normal delegate job unless an implementation-specific policy explicitly marks sidecars differently.
 2. Configure `job_watch(...)` over a job, session alias, or `*`.
 3. Set `send.to` to the sidecar job and `include_frame=true` so the watch condition sends bounded event/output frames to the sidecar.
 4. The sidecar responds with `job_send_message(target="caller"|"watched"|"main", message=...)` when it has useful commentary or advice.
@@ -1093,7 +1093,7 @@ Safety and behavior rules:
 - Observer/sidecar telemetry should be excluded from frames by default to avoid feedback loops.
 - Observer advice is runtime-originated commentary, not user instruction.
 - Observer failures should not fail the watched session; they produce diagnostics or warnings. A failed watch send must surface as a caller-visible diagnostic notification rather than silently dropping the matched condition.
-- Access control is target-resolution based: aliases such as `caller`, `watched`, and `main` resolve according to caller context and permissions.
+- Access control is target-resolution based: aliases such as `caller`, `watched`, and `main` resolve according to caller context and permissions. The final alias vocabulary and exact resolution table remain open decisions.
 - Broad watches such as `target="*"` are allowed only over events/jobs visible to the caller.
 
 ## Relationship to transcript tools
@@ -1158,7 +1158,7 @@ Implementations must enforce a documented concurrency policy for jobs. The polic
 - concurrent shell jobs;
 - concurrent delegate jobs;
 - total jobs visible/running in one session;
-- observer/sidecar jobs.
+- observer/sidecar work within the relevant delegate/job capacity class. A separate private sidecar capacity class remains an open decision.
 
 Exact limits are implementation/configuration details, but unbounded delegate fan-out or unbounded shell process creation is not part of the target contract.
 

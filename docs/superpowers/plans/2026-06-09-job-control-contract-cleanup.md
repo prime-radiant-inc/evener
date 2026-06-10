@@ -1,6 +1,6 @@
 # Job Control Contract Cleanup — post-implementation punch list
 
-Status: evaluated post-Phase-6. Mechanical and code-reconciled contract edits landed in `docs/job-control.md`; unresolved product decisions are explicitly deferred below rather than silently decided.
+Status: evaluated post-Phase-6. Mechanical and code-reconciled contract edits landed in `docs/job-control.md`; unresolved product decisions remain unchecked below and are explicitly deferred rather than silently decided.
 
 Source: adversarial contract review of `docs/job-control.md` (as of `3cbafe1f`), 2026-06-09 session. The review found the core contract (lifecycle, statuses, notification durability, restart, identity, the six tools + shell) coherent and implementable; the items below are the complete list of internal inconsistencies, underspecified corners, and nits it caught. The observer/sidecar/alias corner holds most of the weight.
 
@@ -15,16 +15,16 @@ Source: adversarial contract review of `docs/job-control.md` (as of `3cbafe1f`),
 
 | Item | Classification | Disposition |
 | --- | --- | --- |
-| A1 | decision still needs Jesse | Deferred with B2. Current code surfaces failed watch sends as caller-visible diagnostics, but it does not implement queued/coalesced retry for busy sidecars. The contract now states diagnostics must be visible; the full busy-sidecar precedence decision remains open. |
+| A1 | decision still needs Jesse | Open with B2. Current code surfaces failed watch sends as caller-visible diagnostics, but it does not implement queued/coalesced retry for busy sidecars. The full busy-sidecar precedence decision remains open. |
 | A2 | reconcile behavior from code and document it | Contract updated: notifications wake visible sessions; child/delegate sessions with no live run queue must not be resumed solely for notification delivery. |
 | A3 | mechanical contract edit | Contract updated: `running` notifications include foreground-promotion announcements as well as progress/match. |
 | A4 | mechanical contract edit | Contract updated: Parent/Owner/Visible vocabulary and top-level vs nested field semantics are explicit. |
 | A5 | mechanical contract edit | Contract updated: `limit_bytes` is canonical bounded read/grep result shape, not advanced absolute paging. |
 | A6 | fixed by Phase 6/current contract cleanup | Implementation emits no `target_not_delegate`; removed it from the canonical synchronous-error list. |
-| B1 | decision still needs Jesse | Deferred. Implementation treats `caller`, `main`, and `watched` as equivalent runtime steering aliases today; that does not settle whether v1 should keep all three names or trim/reserve one. |
-| B2 | decision still needs Jesse | Partially documented current behavior: watch sends use `job_send_message` default resume semantics and background delivery, with failed sends producing diagnostic notifications. Busy-sidecar queue/coalesce/drop semantics remain a product decision. |
-| B3 | decision still needs Jesse | Deferred. Current resume path does not clearly inherit the original `result_schema`; deciding inheritance and validation-failure shape is a product/API decision. |
-| B4 | decision still needs Jesse | Deferred. Current code has a watch-origin runtime marker, but no model-facing/private sidecar marker or capacity class. |
+| B1 | decision still needs Jesse | Open. Implementation treats `caller`, `main`, and `watched` as equivalent runtime steering aliases today; that does not settle whether v1 should keep all three names or trim/reserve one. |
+| B2 | decision still needs Jesse | Open. Current behavior is partly documented: watch sends use `job_send_message` default resume semantics and background delivery, with failed sends producing diagnostic notifications. Busy-sidecar queue/coalesce/drop semantics remain a product decision. |
+| B3 | decision still needs Jesse | Open. Current resume path does not clearly inherit the original `result_schema`; deciding inheritance and validation-failure shape is a product/API decision. |
+| B4 | decision still needs Jesse | Open. Current code has a watch-origin runtime marker, but no model-facing/private sidecar marker or capacity class. |
 | B5 | reconcile behavior from code and document it | Contract updated with the v1 tool-availability matrix: root-only `delegate`/`job_watch`; subagents keep shell and alias-capable `job_send_message`; concrete delegate targets remain root-only. |
 | B6 | reconcile behavior from code and document it | Contract updated: `background=true` returns after startup and does not wait on `block_timeout_ms`; `background=false` uses bounded foreground wait for delegate/resume. |
 | B7a | reconcile behavior from code and document it | Contract updated: already-terminal concrete watch targets fail as `target_not_found`. |
@@ -38,12 +38,14 @@ Source: adversarial contract review of `docs/job-control.md` (as of `3cbafe1f`),
 | C1 | fixed by current contract already | Existing contract already explains that foreground-promotion notification is not terminal and carries guidance; no behavior change. |
 | C2 | mechanical contract edit | Header refreshed to describe the shipped job-control contract. |
 
+For checked items below, the table above is the current disposition and the item body is retained as review provenance. Unchecked items remain open and include a `Status:` line describing what is still deferred.
+
 ## A. Internal contradictions
 
-- [x] **A1. Watch-send delivery rules collide — resolved jointly with B2.**
+- [ ] **A1. Watch-send delivery rules collide — resolved jointly with B2.**
   Where: `### job_watch` Rules ("coalescing must not turn a matched condition into silence") vs `## Observer and sidecar composition` safety rules ("Observer failures should not fail the watched session; they produce diagnostics or warnings").
   Problem: for a `send` watch whose sidecar can't accept delivery (mid-turn — the *common* case for an `events` watch), the two rules give opposite answers: no-silence forbids dropping, diagnostics-only permits it.
-  Cleanup: one decision covering this and B2; edit both passages together so the precedence is explicit. Tag: **decision (Jesse) + reconcile**.
+  Status: **deferred/open decision**. Current code reports failed watch sends through caller-visible diagnostics, but the full busy-sidecar queue/coalesce/drop policy still needs Jesse. Keep this unchecked until B2 is decided.
 
 - [x] **A2. "Wake the owning session" contradicts the turn-based delegate model.**
   Where: `## Notifications` Rules ("Notifications wake the owning/visible session if idle") vs design principle 10 and the `### delegate` turn-based paragraph (only `job_send_message` resumes a delegate).
@@ -68,25 +70,25 @@ Source: adversarial contract review of `docs/job-control.md` (as of `3cbafe1f`),
 
 ## B. Underspecified contract points
 
-- [x] **B1. Alias semantics (`caller`/`main`/`watched`) are hand-waved.**
+- [ ] **B1. Alias semantics (`caller`/`main`/`watched`) are hand-waved.**
   Where: `### job_send_message` ("Advanced/contextual aliases"), `## Model-facing guidance requirements`, `## Observer and sidecar composition` — resolution is only ever "according to caller context and permissions."
   Problems: what `watched` resolves to when the originating watch target was `*` (not one session); what `caller` means from the root session (self? error?); `caller` and `main` are indistinguishable in every v1 topology, so v1 defines three aliases of which two are synonyms.
-  Cleanup: either define each alias's resolution per caller context, or trim v1 to `caller` + `watched` and reserve `main` for nested-delegate futures. Check what the implementation resolves today. Tag: **decision (Jesse) + reconcile**.
+  Status: **deferred/open decision**. Current implementation treats all three as runtime steering aliases, but that does not settle whether the contract should keep all three names or trim/reserve one.
 
-- [x] **B2. Watch→send delivery semantics — the steady state of the observer feature.**
+- [ ] **B2. Watch→send delivery semantics — the steady state of the observer feature.**
   Where: `### job_watch` Delivery modes + `### job_send_message` semantics.
   Problems: (a) a frame arriving at a terminal-but-resumable sidecar *resumes it* via the `on_finished=resume` default — this implicit auto-resume is the load-bearing mechanism of the observer pattern and is never stated; (b) whether watch-sends pass `on_finished`, and which value, is unspecified; (c) busy-sidecar handling (queue / coalesce / drop) is unspecified, and is the A1 contradiction.
-  Cleanup: state the resume behavior explicitly; define busy handling (recommended: coalesce frames per watch key and deliver when the sidecar is next idle — satisfies both A1 rules; drop only on hard failure, with a caller-visible diagnostic); define behavior when the sidecar is terminal and *not* resumable (clear the watch? notify the caller?). Reconcile with Phase 4/5 behavior. Tag: **decision (Jesse) + reconcile**.
+  Status: **deferred/open decision**. The contract documents the shipped default resume/background send behavior and diagnostic-on-failure behavior, but busy-sidecar handling and non-resumable sidecar policy remain open.
 
-- [x] **B3. `result_schema` across resume + the validation-failure surface.**
+- [ ] **B3. `result_schema` across resume + the validation-failure surface.**
   Where: `### delegate` defaults, `### job_send_message` (no `result_schema` param), `### job_read_output` delegate paragraph.
   Problems: whether a resumed job inherits the original delegate call's schema is unspecified, so the structured-result contract for any follow-up turn is undefined. And the failure surface is soft throughout ("should… when possible / when available") — the contract never commits to what the parent sees when no valid structured result exists (`structured_result` absent vs `structured_result_valid=false`).
-  Note: the design spec pins the mechanism (communicate-boundary schema enforcement → valid-by-construction), which makes the *inheritance* question the live one. Cleanup: specify inheritance (recommended: a resumed job inherits the delegate session's schema) and specify the guaranteed shape when validation/capture fails. Tag: **decision (Jesse) + reconcile**.
+  Status: **deferred/open decision**. Current code does not clearly establish schema inheritance for resumed jobs, and the guaranteed validation-failure shape still needs an API decision.
 
-- [x] **B4. "Private" sidecar jobs have no defined marker.**
+- [ ] **B4. "Private" sidecar jobs have no defined marker.**
   Where: `## Notifications` ("Internal observer/sidecar jobs may run … with terminal notifications hidden"), `## Observer and sidecar composition` step 1 ("a private or normal delegate job depending on configuration"), `## Capacity and discovery requirements` (requires bounding "observer/sidecar jobs" as a class).
   Problem: no parameter, config surface, or named mechanism defines what makes a job a sidecar — so the notification-arming divergence is unreachable and the capacity-class bound is unenforceable as written.
-  Cleanup: name the mechanism (delegate param? linkage minted when a watch's `send.to` targets the job? implementation config?) or explicitly delegate it to implementations *and* restate the capacity requirement in enforceable terms. Check what Phase 4 built. Tag: **decision (Jesse) + reconcile**.
+  Status: **deferred/open decision**. Current code has watch-origin runtime bookkeeping, but no model-facing/private sidecar marker or separate capacity class.
 
 - [x] **B5. The v1 tool-availability matrix is half-stated.**
   Where: `## Nested jobs` ("Subagents must be able to start shell jobs"), design principle 9 (sidecars shouldn't delegate) — and nothing else.
