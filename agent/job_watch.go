@@ -965,6 +965,9 @@ func (jm *jobManager) deliverWatchSend(ctx context.Context, d watchSendDelivery)
 	state := jm.watchSendState(d, target)
 	persisted, persistErr := jm.persistPendingWatchSend(state, d)
 	if persistErr != nil {
+		if d.allowAfterTerminalExpiry {
+			jm.rememberUnpersistedTerminalPendingWatchSend(d.cfg, state)
+		}
 		return persistErr
 	}
 	if !persisted {
@@ -973,7 +976,7 @@ func (jm *jobManager) deliverWatchSend(ctx context.Context, d watchSendDelivery)
 	if err != nil {
 		return jm.dropWatchSend(state, d.cfg, err.Error())
 	}
-	return jm.deliverPendingWatchSend(ctx, d.cfg, state)
+	return jm.deliverPendingWatchSend(ctx, d.cfg, state, false)
 }
 
 func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string) jobstore.WatchSendState {
@@ -998,9 +1001,17 @@ func (jm *jobManager) watchSendState(d watchSendDelivery, resolvedSendTo string)
 	}
 }
 
-func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchConfig, state jobstore.WatchSendState) error {
+func (jm *jobManager) deliverPendingWatchSend(ctx context.Context, cfg *watchConfig, state jobstore.WatchSendState, ensurePending bool) error {
 	if !jm.isCurrentPendingWatchSend(cfg, state) {
 		return nil
+	}
+	if ensurePending {
+		if err := jm.appendWatchSendPendingState(cfg, state); err != nil {
+			jm.enqueueWatchNotifications([]jobNotification{
+				watchNotification(state.Key.ResolvedWatchedIdentity, "watch send pending state failed: "+limitWatchText(err.Error(), watchReadErrorMaxChars)),
+			})
+			return err
+		}
 	}
 	if jm.send == nil {
 		return jm.dropWatchSend(state, cfg, "delivery unavailable")
@@ -1102,6 +1113,28 @@ func (cfg *watchConfig) sendTo() string {
 		return ""
 	}
 	return cfg.send.To
+}
+
+func (jm *jobManager) rememberUnpersistedTerminalPendingWatchSend(cfg *watchConfig, state jobstore.WatchSendState) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	if cfg == nil || cfg.rejectingDelivery || jm.closing {
+		return
+	}
+	if cfg.pending == nil {
+		cfg.pending = make(map[jobstore.WatchSendKey]*jobstore.WatchSendState)
+	}
+	if cfg.pending[state.Key] == nil {
+		cfg.pendingOrder = append(cfg.pendingOrder, state.Key)
+	}
+	now := jm.now()
+	if state.CreatedAt.IsZero() {
+		state.CreatedAt = now
+	}
+	state.UpdatedAt = now
+	pending := state
+	cfg.pending[state.Key] = &pending
+	jm.rememberDetachedPendingLocked(cfg)
 }
 
 func (jm *jobManager) isCurrentWatchSendDelivery(d watchSendDelivery) bool {
@@ -1543,22 +1576,47 @@ func (jm *jobManager) appendWatchSendEvents(events []jobstore.Event) error {
 	return nil
 }
 
+func (jm *jobManager) appendWatchSendPendingState(cfg *watchConfig, state jobstore.WatchSendState) error {
+	if !jm.isCurrentPendingWatchSend(cfg, state) {
+		return nil
+	}
+	pending := state
+	return jm.appendWatchSendEvents([]jobstore.Event{{
+		Kind:      jobstore.EventWatchSendPending,
+		TS:        jm.now(),
+		WatchSend: &pending,
+	}})
+}
+
 type pendingWatchSendDelivery struct {
 	cfg   *watchConfig
 	state jobstore.WatchSendState
 }
 
 func (jm *jobManager) retryPendingWatchSendsForTarget(ctx context.Context, target string) error {
-	deliveries := jm.pendingWatchSendDeliveriesForTarget(target)
+	deliveries := jm.pendingWatchSendDeliveries(func(state *jobstore.WatchSendState) bool {
+		return state.Key.ResolvedSendTo == target
+	})
+	return jm.retryPendingWatchSendDeliveries(ctx, deliveries)
+}
+
+func (jm *jobManager) retryPendingWatchSendsForWatchTarget(ctx context.Context, target string) error {
+	deliveries := jm.pendingWatchSendDeliveries(func(state *jobstore.WatchSendState) bool {
+		return state.Key.WatchTarget == target
+	})
+	return jm.retryPendingWatchSendDeliveries(ctx, deliveries)
+}
+
+func (jm *jobManager) retryPendingWatchSendDeliveries(ctx context.Context, deliveries []pendingWatchSendDelivery) error {
 	for _, delivery := range deliveries {
-		if err := jm.deliverPendingWatchSend(ctx, delivery.cfg, delivery.state); err != nil {
+		if err := jm.deliverPendingWatchSend(ctx, delivery.cfg, delivery.state, true); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (jm *jobManager) pendingWatchSendDeliveriesForTarget(target string) []pendingWatchSendDelivery {
+func (jm *jobManager) pendingWatchSendDeliveries(include func(*jobstore.WatchSendState) bool) []pendingWatchSendDelivery {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 
@@ -1571,7 +1629,7 @@ func (jm *jobManager) pendingWatchSendDeliveriesForTarget(target string) []pendi
 		seen[cfg] = true
 		for _, key := range cfg.pendingOrder {
 			state := cfg.pending[key]
-			if state == nil || state.Key.ResolvedSendTo != target {
+			if state == nil || !include(state) {
 				continue
 			}
 			copied := *state
@@ -1604,7 +1662,7 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 
 	message := limitWatchText(strings.TrimSpace(cfg.send.Message), watchMessageMaxChars)
 	if !cfg.send.IncludeFrame && !cfg.send.IncludeExcerpt {
-		return limitWatchText(message, watchFrameMaxChars)
+		return limitWatchText(watchFrameMessageWithDeliveryID(message, deliveryID), watchFrameMaxChars)
 	}
 
 	var b strings.Builder
@@ -1622,10 +1680,13 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 		}
 		b.WriteString("\ntrigger: ")
 		b.WriteString(limitWatchText(trigger, watchTriggerMaxChars))
+	} else if deliveryID != "" {
+		b.WriteString("delivery_id: ")
+		b.WriteString(limitWatchText(deliveryID, watchTriggerMaxChars))
 	}
 
 	if cfg.send.IncludeExcerpt {
-		if cfg.send.IncludeFrame {
+		if cfg.send.IncludeFrame || deliveryID != "" {
 			b.WriteString("\n")
 		}
 		excerpt, _, truncated, err := jm.readOutput(jobID, watchExcerptTailBytes)
@@ -1642,6 +1703,16 @@ func (jm *jobManager) buildWatchFrame(cfg *watchConfig, jobID string, trigger st
 	}
 
 	return limitWatchText(b.String(), watchFrameMaxChars)
+}
+
+func watchFrameMessageWithDeliveryID(message, deliveryID string) string {
+	if deliveryID == "" {
+		return message
+	}
+	if message == "" {
+		return "delivery_id: " + limitWatchText(deliveryID, watchTriggerMaxChars)
+	}
+	return message + "\n\n" + "delivery_id: " + limitWatchText(deliveryID, watchTriggerMaxChars)
 }
 
 func limitWatchText(s string, maxChars int) string {

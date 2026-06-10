@@ -1711,7 +1711,7 @@ func TestSendDelegateMessageRunningDelegateTargetSteersWithoutNewJob(t *testing.
 	waitForShellDone(t, sess.jobManager, first.JobID)
 }
 
-func TestWatchOriginatedSendToRunningDelegateSuppressesLifecycleWatch(t *testing.T) {
+func TestWatchOriginatedBusySendToRunningDelegateDoesNotMarkLifecycleFromWatch(t *testing.T) {
 	adapter := &cancelAwareDelegateAdapter{name: "openai", started: make(chan struct{})}
 	c := llm.NewClient()
 	c.Register(adapter)
@@ -1755,6 +1755,9 @@ func TestWatchOriginatedSendToRunningDelegateSuppressesLifecycleWatch(t *testing
 	if res.Err != nil {
 		t.Fatalf("sendDelegateMessage returned error: %v", res.Err)
 	}
+	if !res.WatchSendDeliveryClassSet || res.WatchSendDeliveryClass != watchSendBusy {
+		t.Fatalf("sendDelegateMessage class = (%v, %v), want busy", res.WatchSendDeliveryClassSet, res.WatchSendDeliveryClass)
+	}
 
 	_, _ = sess.jobManager.stop(first.JobID)
 	waitForShellDone(t, sess.jobManager, first.JobID)
@@ -1774,11 +1777,11 @@ func TestWatchOriginatedSendToRunningDelegateSuppressesLifecycleWatch(t *testing
 	}
 
 gotEnd:
-	if !end.FromWatch {
-		t.Fatalf("job finished event FromWatch = false; event = %+v", end)
+	if end.FromWatch {
+		t.Fatalf("busy watch-originated send marked existing job finished FromWatch; event = %+v", end)
 	}
-	if len(sent) != 0 {
-		t.Fatalf("watch-originated running delegate completion retriggered watch sends: %#v", sent)
+	if len(sent) != 1 {
+		t.Fatalf("ordinary running delegate completion watch sends = %d, want 1: %#v", len(sent), sent)
 	}
 }
 

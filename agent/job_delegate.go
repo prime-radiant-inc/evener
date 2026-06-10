@@ -340,8 +340,6 @@ func (s *Session) sendRunningDelegateMessage(target, message string, rec *jobsto
 			return sendMessageFailed(target, fmt.Errorf("not_controllable: delegate job %q is running but runtime job is not live", target))
 		}
 		if rec.Status == jobstore.StatusRunning {
-			run.fromWatch.Store(true)
-			sub.runFromWatch = true
 			sub.mu.Unlock()
 			return sendMessageResult{
 				Target:                    target,

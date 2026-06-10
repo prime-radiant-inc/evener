@@ -740,11 +740,16 @@ func TestWatchSendTerminalOrderingSendsFinalFrameBeforeTerminalNotification(t *t
 
 func TestWatchSendTerminalPendingPersistenceFailureRetriesFinalization(t *testing.T) {
 	jm := newTestJM(t)
+	var sent []sendMessageArgs
+	jm.send = func(_ context.Context, a sendMessageArgs) sendMessageResult {
+		sent = append(sent, a)
+		return sendMessageResult{}
+	}
 	rec, _ := jm.createShell(createShellOpts{Command: "x"})
 	if _, err := jm.configureWatch(watchArgs{
 		Target:      rec.JobID,
 		OutputMatch: "ready",
-		Send:        &watchSendArgs{To: "job_obs", Message: "observe"},
+		Send:        &watchSendArgs{To: "job_obs", Message: "observe", IncludeFrame: true},
 	}); err != nil {
 		t.Fatalf("configure: %v", err)
 	}
@@ -765,6 +770,9 @@ func TestWatchSendTerminalPendingPersistenceFailureRetriesFinalization(t *testin
 	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); !errors.Is(err, appendErr) {
 		t.Fatalf("finalize err = %v, want pending append failure", err)
 	}
+	if len(sent) != 0 {
+		t.Fatalf("final watch send delivered despite failed pending persistence: %#v", sent)
+	}
 	jobs := jm.list(listFilter{})
 	if len(jobs) != 1 || jobs[0].Status != jobstore.StatusCompleted {
 		t.Fatalf("job state after failed finalization = %+v, want terminal retained", jobs)
@@ -776,6 +784,12 @@ func TestWatchSendTerminalPendingPersistenceFailureRetriesFinalization(t *testin
 	blocked = false
 	if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", &code); err != nil {
 		t.Fatalf("retry finalize: %v", err)
+	}
+	if len(sent) != 1 {
+		t.Fatalf("final watch send after retry = %d, want 1", len(sent))
+	}
+	if !strings.Contains(sent[0].Message, "output_match: server ready") {
+		t.Fatalf("retried final watch frame = %q, want original final trigger", sent[0].Message)
 	}
 	jobs = jm.list(listFilter{})
 	if len(jobs) != 1 || jobs[0].NotifyState != jobstore.NotifyPending {
@@ -2609,8 +2623,29 @@ func TestWatchSendExcerptWithoutFrameOmitsFrameMetadata(t *testing.T) {
 	if !strings.Contains(frame, "saw ready") || !strings.Contains(frame, "ready excerpt") {
 		t.Fatalf("excerpt-only delivery must include message and excerpt; got %q", frame)
 	}
+	if !strings.Contains(frame, "delivery_id: delivery_test") {
+		t.Fatalf("excerpt-only delivery must include delivery id; got %q", frame)
+	}
 	if strings.Contains(frame, "Watch frame") || strings.Contains(frame, "trigger:") {
 		t.Fatalf("excerpt-only delivery must not include frame metadata; got %q", frame)
+	}
+}
+
+func TestWatchSendMessageOnlyIncludesDeliveryID(t *testing.T) {
+	jm := newTestJM(t)
+
+	frame := jm.buildWatchFrame(&watchConfig{
+		send: &watchSendArgs{Message: "plain message"},
+	}, "job_target", "output_match: ready", "delivery_message_only")
+
+	if !strings.Contains(frame, "plain message") {
+		t.Fatalf("message-only delivery must include message; got %q", frame)
+	}
+	if !strings.Contains(frame, "delivery_id: delivery_message_only") {
+		t.Fatalf("message-only delivery must include delivery id; got %q", frame)
+	}
+	if strings.Contains(frame, "Watch frame") || strings.Contains(frame, "trigger:") {
+		t.Fatalf("message-only delivery must not include full frame metadata; got %q", frame)
 	}
 }
 
