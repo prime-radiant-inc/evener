@@ -1113,6 +1113,67 @@ func TestWatchSendRestoreDoesNotAutoResumeRuntimeLostDelegate(t *testing.T) {
 	}
 }
 
+func TestWatchSendRestoreDropsDynamicallyNonResumableRuntimeLostDelegate(t *testing.T) {
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				return communicateWithDefaultOutput("restore retry must not run")
+			},
+		},
+	}
+	c := llm.NewClient()
+	c.Register(adapter)
+	s := newDelegateRestorePreflightSession(t, c)
+	rec := seedStoppedDelegateRestoreRecord(t, s)
+	markStoredDelegateResumable(t, s, rec)
+	rec = loadShellRecord(t, s.jobManager, rec.JobID)
+	rec.DelegateRestore.LocalEnvPolicy = "not-a-policy"
+	replaceStoredDelegateRecord(t, s, rec)
+	childID := rec.DelegateRestore.ChildSessionID
+	now := time.Unix(3100, 0).UTC()
+	for _, event := range restoredWatchSendPendingEvents(s.ID(), rec.JobID, rec.JobID, now) {
+		if err := s.jobManager.appendEvent(event); err != nil {
+			t.Fatalf("append %s: %v", event.Kind, err)
+		}
+	}
+	parentMeta := s.Meta()
+	stateDir := s.stateDir
+	beforeJobs := len(s.jobManager.list(listFilter{Type: jobstore.JobDelegate}))
+	s.Close()
+
+	restored, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), parentMeta, RestoreSessionConfig{StateDir: stateDir})
+	if err != nil {
+		t.Fatalf("restore session: %v", err)
+	}
+	defer restored.Close()
+
+	if sub := restored.subagents.get(childID); sub != nil {
+		t.Fatalf("restore reconstructed child runtime = %+v, want none for non-resumable target", sub)
+	}
+	if jobs := restored.jobManager.list(listFilter{Type: jobstore.JobDelegate}); len(jobs) != beforeJobs {
+		t.Fatalf("delegate jobs after restore = %+v, want %d existing runtime_lost job only", jobs, beforeJobs)
+	}
+	if requests := adapter.Requests(); len(requests) != 0 {
+		t.Fatalf("adapter requests = %+v, want no model calls during restore", requests)
+	}
+	if pending := loadWatchSendRecord(t, restored.jobManager).Pending; len(pending) != 0 {
+		t.Fatalf("pending after restore retry = %+v, want dropped watch send", pending)
+	}
+	var droppedReason string
+	for _, event := range loadJobStoreEvents(t, restored.jobManager) {
+		if event.Kind == jobstore.EventWatchSendDropped && event.WatchSend != nil {
+			droppedReason = event.WatchSend.DiagnosticReason
+		}
+		if event.Kind == jobstore.EventJobStarted && event.JobID != rec.JobID && event.TranscriptRef == rec.TranscriptRef {
+			t.Fatalf("restore appended resumed delegate job: %+v", event)
+		}
+	}
+	if !strings.Contains(droppedReason, "target_not_resumable:parent_linkage_unavailable") {
+		t.Fatalf("dropped reason = %q, want dynamic not-resumable reason", droppedReason)
+	}
+}
+
 func TestWatchSendRestoreDropsHardFailureTargetsOnce(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

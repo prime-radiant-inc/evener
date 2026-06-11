@@ -2602,6 +2602,66 @@ func TestFailedPreflightDoesNotReconstructDelegateRuntime(t *testing.T) {
 	}
 }
 
+func TestReconstructDelegateRuntimeMissingRequiredToolsFailsBeforeTracking(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*jobstore.DelegateRestoreDescriptor)
+	}{
+		{
+			name: "frozen tool missing",
+			mutate: func(desc *jobstore.DelegateRestoreDescriptor) {
+				desc.FrozenToolNames = []string{"missing_frozen_tool"}
+			},
+		},
+		{
+			name: "explicit grant missing",
+			mutate: func(desc *jobstore.DelegateRestoreDescriptor) {
+				desc.ExplicitToolGrants = []string{"missing_explicit_tool"}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			adapter := &fakeAdapter{name: "openai"}
+			c := llm.NewClient()
+			c.Register(adapter)
+			s := newDelegateRestorePreflightSession(t, c)
+			rec := seedStoppedDelegateRestoreRecord(t, s)
+			childID := rec.DelegateRestore.ChildSessionID
+			tc.mutate(rec.DelegateRestore)
+			replaceStoredDelegateRecord(t, s, rec)
+			rec = loadShellRecord(t, s.jobManager, rec.JobID)
+			beforeEvents := len(loadJobStoreEvents(t, s.jobManager))
+			beforeJobs := len(s.jobManager.list(listFilter{Type: jobstore.JobDelegate}))
+
+			res := s.sendDelegateMessage(context.Background(), sendMessageArgs{
+				Target:  rec.JobID,
+				Message: "resume",
+			})
+
+			if res.Err == nil {
+				t.Fatal("sendDelegateMessage succeeded, want missing tool failure")
+			}
+			errText := res.Err.Error()
+			if !strings.Contains(errText, "target_not_resumable") || !strings.Contains(errText, "missing_") {
+				t.Fatalf("error = %v, want target_not_resumable with missing tool name", res.Err)
+			}
+			if got := len(loadJobStoreEvents(t, s.jobManager)); got != beforeEvents {
+				t.Fatalf("jobstore event count = %d, want unchanged %d", got, beforeEvents)
+			}
+			if got := len(s.jobManager.list(listFilter{Type: jobstore.JobDelegate})); got != beforeJobs {
+				t.Fatalf("delegate job count = %d, want unchanged %d", got, beforeJobs)
+			}
+			if sub := s.subagents.get(childID); sub != nil {
+				t.Fatalf("retained child runtime = %+v, want none after missing tool failure", sub)
+			}
+			if requests := adapter.Requests(); len(requests) != 0 {
+				t.Fatalf("adapter requests = %+v, want none", requests)
+			}
+		})
+	}
+}
+
 func TestSendDelegateMessageRunningDelegateTargetSteersWithoutNewJob(t *testing.T) {
 	adapter := &cancelAwareDelegateAdapter{name: "openai", started: make(chan struct{})}
 	c := llm.NewClient()

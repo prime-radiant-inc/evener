@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -536,6 +537,10 @@ func (s *Session) restoreTerminalDelegateChild(rec *jobstore.JobRecord, childID 
 	if err != nil {
 		return nil, err
 	}
+	if err := validateRestoredDelegateTools(child, desc); err != nil {
+		child.close(false)
+		return nil, err
+	}
 	now := time.Now()
 	status := subagentStatusFromJobStatus(rec.Status)
 	sub := &subagent{
@@ -602,6 +607,57 @@ func restoredDelegateAllowedTools(desc *jobstore.DelegateRestoreDescriptor) []st
 		return nil
 	}
 	return appendUniqueStrings(append([]string(nil), desc.FrozenToolNames...), desc.ExplicitToolGrants...)
+}
+
+func validateRestoredDelegateTools(child *Session, desc *jobstore.DelegateRestoreDescriptor) error {
+	required := restoredDelegateRequiredTools(desc)
+	if len(required) == 0 {
+		return nil
+	}
+	if child == nil || child.reg == nil {
+		return errors.New("restored delegate tool registry unavailable")
+	}
+	registered := child.reg.RegisteredNames()
+	var missing []string
+	for _, name := range required {
+		if !registered[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	sort.Strings(missing)
+	return fmt.Errorf("restored delegate required tool(s) unavailable: %s", strings.Join(missing, ", "))
+}
+
+func restoredDelegateRequiredTools(desc *jobstore.DelegateRestoreDescriptor) []string {
+	if desc == nil {
+		return nil
+	}
+	var required []string
+	if !(len(desc.FrozenToolNames) == 1 && desc.FrozenToolNames[0] == "*") {
+		required = append(required, desc.FrozenToolNames...)
+	}
+	required = appendUniqueStrings(required, desc.ExplicitToolGrants...)
+	return compactToolNames(required)
+}
+
+func compactToolNames(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(names))
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" || name == "*" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
 }
 
 func delegateResultSchemaMap(schema any) map[string]any {
